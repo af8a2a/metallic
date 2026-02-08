@@ -2,7 +2,7 @@
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
 
-#include <simd/simd.h>
+#include <ml.h>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -26,25 +26,23 @@
 #include <regex>
 
 struct Uniforms {
-    simd_float4x4 mvp;
-    simd_float4x4 modelView;
-    simd_float4   lightDir;
-    simd_float4   frustumPlanes[6];
-    simd_float4   cameraPos;
-    uint32_t      enableFrustumCull;
-    uint32_t      enableConeCull;
-    uint32_t      pad0;
-    uint32_t      pad1;
+    float4x4 mvp;
+    float4x4 modelView;
+    float4   lightDir;
+    float4   frustumPlanes[6];
+    float4   cameraPos;
+    uint32_t enableFrustumCull;
+    uint32_t enableConeCull;
+    uint32_t pad0;
+    uint32_t pad1;
 };
 
-static void extractFrustumPlanes(simd_float4x4 mvp, simd_float4* planes) {
+static void extractFrustumPlanes(const float4x4& mvp, float4* planes) {
     // Gribb-Hartmann method: extract planes from MVP matrix rows
-    // mvp is column-major (simd_float4x4 columns[4])
-    // Row i of the matrix = (columns[0][i], columns[1][i], columns[2][i], columns[3][i])
-    simd_float4 row0 = simd_make_float4(mvp.columns[0][0], mvp.columns[1][0], mvp.columns[2][0], mvp.columns[3][0]);
-    simd_float4 row1 = simd_make_float4(mvp.columns[0][1], mvp.columns[1][1], mvp.columns[2][1], mvp.columns[3][1]);
-    simd_float4 row2 = simd_make_float4(mvp.columns[0][2], mvp.columns[1][2], mvp.columns[2][2], mvp.columns[3][2]);
-    simd_float4 row3 = simd_make_float4(mvp.columns[0][3], mvp.columns[1][3], mvp.columns[2][3], mvp.columns[3][3]);
+    float4 row0 = mvp.Row(0);
+    float4 row1 = mvp.Row(1);
+    float4 row2 = mvp.Row(2);
+    float4 row3 = mvp.Row(3);
 
     planes[0] = row3 + row0; // left
     planes[1] = row3 - row0; // right
@@ -55,7 +53,7 @@ static void extractFrustumPlanes(simd_float4x4 mvp, simd_float4* planes) {
 
     // Normalize each plane
     for (int i = 0; i < 6; i++) {
-        float len = simd_length(simd_make_float3(planes[i].x, planes[i].y, planes[i].z));
+        float len = length(planes[i].xyz);
         if (len > 0.0f)
             planes[i] /= len;
     }
@@ -405,20 +403,19 @@ int main() {
 
         // Compute matrices
         float aspect = (float)width / (float)height;
-        simd_float4x4 view = camera.viewMatrix();
-        simd_float4x4 proj = camera.projectionMatrix(aspect);
-        simd_float4x4 model = matrix_identity_float4x4;
-        simd_float4x4 modelView = simd_mul(view, model);
-        simd_float4x4 mvp = simd_mul(proj, modelView);
+        float4x4 view = camera.viewMatrix();
+        float4x4 proj = camera.projectionMatrix(aspect);
+        float4x4 model = float4x4::Identity();
+        float4x4 modelView = view * model;
+        float4x4 mvp = proj * modelView;
 
         // Light direction in view space (from upper-right-front)
-        simd_float4 worldLightDir = simd_make_float4(
-            simd_normalize(simd_make_float3(0.5f, 1.0f, 0.8f)), 0.0f);
-        simd_float4 viewLightDir = simd_mul(view, worldLightDir);
+        float4 worldLightDir = float4(normalize(float3(0.5f, 1.0f, 0.8f)), 0.0f);
+        float4 viewLightDir = view * worldLightDir;
 
         Uniforms uniforms;
-        uniforms.mvp = simd_transpose(mvp);
-        uniforms.modelView = simd_transpose(modelView);
+        uniforms.mvp = transpose(mvp);
+        uniforms.modelView = transpose(modelView);
         uniforms.lightDir = viewLightDir;
 
         // Extract frustum planes from non-transposed MVP (world-space planes)
@@ -427,7 +424,7 @@ int main() {
         // Camera position in world space
         float cosA = std::cos(camera.azimuth), sinA = std::sin(camera.azimuth);
         float cosE = std::cos(camera.elevation), sinE = std::sin(camera.elevation);
-        uniforms.cameraPos = simd_make_float4(
+        uniforms.cameraPos = float4(
             camera.target.x + camera.distance * cosE * sinA,
             camera.target.y + camera.distance * sinE,
             camera.target.z + camera.distance * cosE * cosA,

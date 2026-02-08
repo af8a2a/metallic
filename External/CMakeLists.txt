@@ -37,3 +37,6 @@ target_include_directories(imgui PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/backends
 )
 target_link_libraries(imgui PUBLIC glfw metal-cpp "-framework Metal" "-framework AppKit")
+
+
+add_subdirectory(MathLib)
