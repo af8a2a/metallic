@@ -1,7 +1,10 @@
 #include "input.h"
 #include "camera.h"
+#include "imgui.h"
 
 static void mouseButtonCallback(GLFWwindow* window, int button, int action, int /*mods*/) {
+    if (ImGui::GetIO().WantCaptureMouse)
+        return;
     auto* state = static_cast<InputState*>(glfwGetWindowUserPointer(window));
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         state->mouseDown = (action == GLFW_PRESS);
@@ -12,6 +15,8 @@ static void mouseButtonCallback(GLFWwindow* window, int button, int action, int 
 }
 
 static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
+    if (ImGui::GetIO().WantCaptureMouse)
+        return;
     auto* state = static_cast<InputState*>(glfwGetWindowUserPointer(window));
     if (state->mouseDown && state->camera) {
         double dx = xpos - state->lastMouseX;
@@ -23,6 +28,8 @@ static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
 }
 
 static void scrollCallback(GLFWwindow* window, double /*xoffset*/, double yoffset) {
+    if (ImGui::GetIO().WantCaptureMouse)
+        return;
     auto* state = static_cast<InputState*>(glfwGetWindowUserPointer(window));
     if (state->camera) {
         state->camera->zoom((float)yoffset);

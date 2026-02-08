@@ -8,10 +8,14 @@
 #include <GLFW/glfw3.h>
 
 #include "glfw_metal_bridge.h"
+#include "imgui_metal_bridge.h"
 #include "mesh_loader.h"
 #include "meshlet_builder.h"
 #include "camera.h"
 #include "input.h"
+
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
 
 #include <slang.h>
 #include <slang-com-ptr.h>
@@ -137,6 +141,12 @@ int main() {
     InputState inputState;
     inputState.camera = &camera;
     setupInputCallbacks(window, &inputState);
+
+    // Init Dear ImGui
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui_ImplGlfw_InitForOther(window, true);
+    imguiInit(device);
 
     // Compile Slang shader to Metal source
     std::string metalSource = compileSlangToMetal("Shaders/bunny");
@@ -279,6 +289,18 @@ int main() {
         MTL::RenderCommandEncoder* encoder =
             commandBuffer->renderCommandEncoder(renderPass);
 
+        // ImGui new frame
+        imguiNewFrame(renderPass);
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(10, 10));
+        ImGui::Begin("##fps", nullptr,
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+        ImGui::Text("%.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
+        ImGui::End();
+        ImGui::Render();
+
         encoder->setRenderPipelineState(pipelineState);
         encoder->setDepthStencilState(depthState);
         encoder->setFrontFacingWinding(MTL::WindingCounterClockwise);
@@ -294,6 +316,9 @@ int main() {
             bunny.indexCount, MTL::IndexTypeUInt32,
             bunny.indexBuffer, 0);
 
+        // Render ImGui on top
+        imguiRenderDrawData(commandBuffer, encoder);
+
         encoder->endEncoding();
         commandBuffer->presentDrawable(drawable);
         commandBuffer->commit();
@@ -301,6 +326,11 @@ int main() {
         renderPass->release();
         pool->release();
     }
+
+    // Cleanup ImGui
+    imguiShutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
 
     // Cleanup
     depthTexture->release();
