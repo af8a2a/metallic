@@ -1,0 +1,192 @@
+/Users/af8a2a/project/rendergraph/cmake-build-debug/Source/rendergraph
+Metal device: Apple M4 Pro
+Loaded bunny: 36218 vertices, 208353 indices
+Built 730 meshlets (avg 63 verts, 95 tris per meshlet)
+Slang compiled Metal shader (2336 bytes)
+=== Raw Slang-generated Metal source (mesh shader) ===
+#include <metal_stdlib>
+#include <metal_math>
+#include <metal_texture>
+using namespace metal;
+
+#line 22 "Shaders/meshlet.slang"
+struct MeshOutput_0
+{
+    float4 clipPos_0 [[position]];
+    float3 viewNormal_0;
+    float3 viewPos_0;
+};
+
+
+#line 7
+struct GPUMeshlet_0
+{
+    uint vertex_offset_0;
+    uint triangle_offset_0;
+    uint vertex_count_0;
+    uint triangle_count_0;
+};
+
+
+#line 1
+struct Uniforms_0
+{
+    matrix<float,int(4),int(4)>  mvp_0;
+    matrix<float,int(4),int(4)>  modelView_0;
+    float4 lightDir_0;
+};
+
+
+#line 1
+struct KernelContext_0
+{
+    GPUMeshlet_0 device* meshlets_0;
+    uint device* meshletVertices_0;
+    float device* positions_0;
+    float device* normals_0;
+    Uniforms_0 constant* uniforms_0;
+    uint device* meshletTriangles_0;
+};
+
+
+#line 34
+[[mesh]] void meshMain(uint3 groupID_0 [[threadgroup_position_in_grid]], uint3 groupThreadID_0 [[thread_position_in_threadgroup]], metal::mesh<MeshOutput_0, void, 64U, 124U, metal::topology::triangle> _slang_mesh, GPUMeshlet_0 device* meshlets_1 [[buffer(3)]], uint device* meshletVertices_1 [[buffer(4)]], float device* positions_1 [[buffer(1)]], float device* normals_1 [[buffer(2)]], Uniforms_0 constant* uniforms_1 [[buffer(0)]], uint device* meshletTriangles_1 [[buffer(5)]])
+{
+    thread KernelContext_0 kernelContext_0;
+
+#line 36
+    (&kernelContext_0)->meshlets_0 = meshlets_1;
+
+#line 36
+    (&kernelContext_0)->meshletVertices_0 = meshletVertices_1;
+
+#line 36
+    (&kernelContext_0)->positions_0 = positions_1;
+
+#line 36
+    (&kernelContext_0)->normals_0 = normals_1;
+
+#line 36
+    (&kernelContext_0)->uniforms_0 = uniforms_1;
+
+#line 36
+    (&kernelContext_0)->meshletTriangles_0 = meshletTriangles_1;
+
+#line 36
+    uint groupThreadID_1 = groupThreadID_0.x;
+
+
+
+    GPUMeshlet_0 m_0 = meshlets_1[groupID_0.x];
+
+    _slang_mesh.set_primitive_count((m_0.triangle_count_0));
+
+    if(groupThreadID_1 < (m_0.vertex_count_0))
+    {
+
+
+        uint _S1 = (&kernelContext_0)->meshletVertices_0[m_0.vertex_offset_0 + groupThreadID_1] * 3U;
+        uint _S2 = _S1 + 1U;
+        uint _S3 = _S1 + 2U;
+
+        float3 nrm_0 = float3((&kernelContext_0)->normals_0[_S1], (&kernelContext_0)->normals_0[_S2], (&kernelContext_0)->normals_0[_S3]);
+
+#line 57
+        thread MeshOutput_0 o_0;
+        float4 _S4 = float4(float3((&kernelContext_0)->positions_0[_S1], (&kernelContext_0)->positions_0[_S2], (&kernelContext_0)->positions_0[_S3]), 1.0);
+
+#line 58
+        (&o_0)->clipPos_0 = (((_S4) * ((&kernelContext_0)->uniforms_0->mvp_0)));
+
+
+        (&o_0)->viewPos_0 = (((_S4) * ((&kernelContext_0)->uniforms_0->modelView_0))).xyz;
+
+
+        thread float3 n_0;
+        n_0.x = dot((&kernelContext_0)->uniforms_0->modelView_0[int(0)].xyz, nrm_0);
+        n_0.y = dot((&kernelContext_0)->uniforms_0->modelView_0[int(1)].xyz, nrm_0);
+        n_0.z = dot((&kernelContext_0)->uniforms_0->modelView_0[int(2)].xyz, nrm_0);
+        (&o_0)->viewNormal_0 = normalize(n_0);
+
+        _slang_mesh.set_vertex(groupThreadID_1,o_0);
+
+#line 44
+    }
+
+#line 73
+    if(groupThreadID_1 < (m_0.triangle_count_0))
+    {
+
+#line 74
+        uint packed_0 = (&kernelContext_0)->meshletTriangles_0[m_0.triangle_offset_0 + groupThreadID_1];
+
+
+
+        _slang_mesh.set_index(groupThreadID_1*3+0,(uint3((packed_0 >> 0U) & 255U, (packed_0 >> 8U) & 255U, (packed_0 >> 16U) & 255U))[0]);
+        _slang_mesh.set_index(groupThreadID_1*3+1,(uint3((packed_0 >> 0U) & 255U, (packed_0 >> 8U) & 255U, (packed_0 >> 16U) & 255U))[1]);
+        _slang_mesh.set_index(groupThreadID_1*3+2,(uint3((packed_0 >> 0U) & 255U, (packed_0 >> 8U) & 255U, (packed_0 >> 16U) & 255U))[2]);
+        ;
+
+#line 73
+    }
+
+#line 80
+    return;
+}
+
+
+#line 13419 "hlsl.meta.slang"
+struct pixelOutput_0
+{
+    float4 output_0 [[color(0)]];
+};
+
+
+#line 13419
+struct pixelInput_0
+{
+    float3 viewNormal_1 [[user(NORMAL)]];
+    float3 viewPos_1 [[user(TEXCOORD)]];
+};
+
+
+#line 83 "Shaders/meshlet.slang"
+[[fragment]] pixelOutput_0 fragmentMain(pixelInput_0 _S5 [[stage_in]], float4 clipPos_1 [[position]], GPUMeshlet_0 device* meshlets_2 [[buffer(3)]], uint device* meshletVertices_2 [[buffer(4)]], float device* positions_2 [[buffer(1)]], float device* normals_2 [[buffer(2)]], Uniforms_0 constant* uniforms_2 [[buffer(0)]], uint device* meshletTriangles_2 [[buffer(5)]])
+{
+
+#line 83
+    thread KernelContext_0 kernelContext_1;
+
+#line 83
+    (&kernelContext_1)->meshlets_0 = meshlets_2;
+
+#line 83
+    (&kernelContext_1)->meshletVertices_0 = meshletVertices_2;
+
+#line 83
+    (&kernelContext_1)->positions_0 = positions_2;
+
+#line 83
+    (&kernelContext_1)->normals_0 = normals_2;
+
+#line 83
+    (&kernelContext_1)->uniforms_0 = uniforms_2;
+
+#line 83
+    (&kernelContext_1)->meshletTriangles_0 = meshletTriangles_2;
+    float3 N_0 = normalize(_S5.viewNormal_1);
+    float3 L_0 = normalize(uniforms_2->lightDir_0.xyz);
+
+#line 85
+    pixelOutput_0 _S6 = { float4(float3(0.69999998807907104, 0.69999998807907104, 0.72000002861022949) * float3((0.15000000596046448 + max(dot(N_0, L_0), 0.0) * 0.75))  + float3(pow(max(dot(N_0, normalize(L_0 + normalize(- _S5.viewPos_1))), 0.0), 64.0))  * float3(0.40000000596046448) , 1.0) };
+
+#line 96
+    return _S6;
+}
+
+
+=== End of raw Metal source ===
+Mesh shader compiled (5175 bytes)
+Failed to create mesh pipeline state: Fragment input(s) `user(TEXCOORD)` mismatching mesh shader output type(s) or not written by mesh shader
+
+进程已结束，退出代码为 1

@@ -23,6 +23,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <regex>
 
 struct Uniforms {
     simd_float4x4 mvp;
@@ -77,6 +78,77 @@ static std::string compileSlangToMetal(const char* shaderPath) {
 
     return std::string(static_cast<const char*>(metalCode->getBufferPointer()),
                        metalCode->getBufferSize());
+}
+
+static std::string compileSlangMeshShaderToMetal(const char* shaderPath) {
+    Slang::ComPtr<slang::IGlobalSession> globalSession;
+    slang::createGlobalSession(globalSession.writeRef());
+
+    slang::SessionDesc sessionDesc = {};
+    slang::TargetDesc targetDesc = {};
+    targetDesc.format = SLANG_METAL;
+    targetDesc.profile = globalSession->findProfile("metal");
+    sessionDesc.targets = &targetDesc;
+    sessionDesc.targetCount = 1;
+
+    Slang::ComPtr<slang::ISession> session;
+    globalSession->createSession(sessionDesc, session.writeRef());
+
+    Slang::ComPtr<slang::IBlob> diagnostics;
+    slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
+    if (!module) {
+        if (diagnostics)
+            std::cerr << "Slang load error: "
+                      << static_cast<const char*>(diagnostics->getBufferPointer()) << std::endl;
+        return {};
+    }
+
+    Slang::ComPtr<slang::IEntryPoint> meshEntry;
+    module->findEntryPointByName("meshMain", meshEntry.writeRef());
+    Slang::ComPtr<slang::IEntryPoint> fragmentEntry;
+    module->findEntryPointByName("fragmentMain", fragmentEntry.writeRef());
+
+    std::vector<slang::IComponentType*> components = {module, meshEntry, fragmentEntry};
+    Slang::ComPtr<slang::IComponentType> program;
+    session->createCompositeComponentType(
+        components.data(), components.size(), program.writeRef(), diagnostics.writeRef());
+
+    Slang::ComPtr<slang::IComponentType> linkedProgram;
+    program->link(linkedProgram.writeRef(), diagnostics.writeRef());
+
+    Slang::ComPtr<slang::IBlob> metalCode;
+    linkedProgram->getTargetCode(0, metalCode.writeRef(), diagnostics.writeRef());
+    if (!metalCode) {
+        if (diagnostics)
+            std::cerr << "Slang mesh shader compile error: "
+                      << static_cast<const char*>(diagnostics->getBufferPointer()) << std::endl;
+        return {};
+    }
+
+    return std::string(static_cast<const char*>(metalCode->getBufferPointer()),
+                       metalCode->getBufferSize());
+}
+
+static std::string patchMeshShaderMetalSource(const std::string& source) {
+    std::cout << "=== Raw Slang-generated Metal source (mesh shader) ===" << std::endl;
+    std::cout << source << std::endl;
+    std::cout << "=== End of raw Metal source ===" << std::endl;
+
+    // Slang v2026.1.2 bug: mesh output struct members lack [[user(...)]] attributes
+    // that the fragment shader's [[stage_in]] expects. We patch them in.
+    std::string patched = source;
+
+    // Pattern: find fields like "float3 viewNormal_0;" and add [[user(NORMAL)]]
+    // and "float3 viewPos_0;" and add [[user(TEXCOORD0)]]
+    // The exact field names depend on Slang's mangling, so we use regex.
+    patched = std::regex_replace(patched,
+        std::regex(R"((float3\s+\w*viewNormal\w*)\s*;)"),
+        "$1 [[user(NORMAL)]];");
+    patched = std::regex_replace(patched,
+        std::regex(R"((float3\s+\w*viewPos\w*)\s*;)"),
+        "$1 [[user(TEXCOORD)]];");
+
+    return patched;
 }
 
 static MTL::Texture* createDepthTexture(MTL::Device* device, int width, int height) {
@@ -213,6 +285,52 @@ int main() {
     fragmentFn->release();
     library->release();
 
+    // --- Mesh shader pipeline ---
+    std::string meshMetalSource = compileSlangMeshShaderToMetal("Shaders/meshlet");
+    if (meshMetalSource.empty()) {
+        std::cerr << "Failed to compile Slang mesh shader" << std::endl;
+        return 1;
+    }
+    meshMetalSource = patchMeshShaderMetalSource(meshMetalSource);
+    std::cout << "Mesh shader compiled (" << meshMetalSource.size() << " bytes)" << std::endl;
+
+    NS::String* meshSourceStr = NS::String::string(meshMetalSource.c_str(), NS::UTF8StringEncoding);
+    MTL::CompileOptions* meshCompileOpts = MTL::CompileOptions::alloc()->init();
+    MTL::Library* meshLibrary = device->newLibrary(meshSourceStr, meshCompileOpts, &error);
+    meshCompileOpts->release();
+    if (!meshLibrary) {
+        std::cerr << "Failed to create mesh Metal library: "
+                  << error->localizedDescription()->utf8String() << std::endl;
+        return 1;
+    }
+
+    MTL::Function* meshFn = meshLibrary->newFunction(
+        NS::String::string("meshMain", NS::UTF8StringEncoding));
+    MTL::Function* meshFragFn = meshLibrary->newFunction(
+        NS::String::string("fragmentMain", NS::UTF8StringEncoding));
+
+    auto* meshPipelineDesc = MTL::MeshRenderPipelineDescriptor::alloc()->init();
+    meshPipelineDesc->setMeshFunction(meshFn);
+    meshPipelineDesc->setFragmentFunction(meshFragFn);
+    meshPipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+    meshPipelineDesc->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
+
+    NS::Error* meshError = nullptr;
+    MTL::RenderPipelineReflection* meshReflection = nullptr;
+    MTL::RenderPipelineState* meshPipelineState = device->newRenderPipelineState(
+        meshPipelineDesc, MTL::PipelineOptionNone, &meshReflection, &meshError);
+    if (!meshPipelineState) {
+        std::cerr << "Failed to create mesh pipeline state: "
+                  << meshError->localizedDescription()->utf8String() << std::endl;
+        return 1;
+    }
+    meshPipelineDesc->release();
+    meshFn->release();
+    meshFragFn->release();
+    meshLibrary->release();
+
+    bool useMeshShader = false;
+
     // Create depth stencil state
     MTL::DepthStencilDescriptor* depthDesc = MTL::DepthStencilDescriptor::alloc()->init();
     depthDesc->setDepthCompareFunction(MTL::CompareFunctionLess);
@@ -298,23 +416,45 @@ int main() {
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
         ImGui::Text("%.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
+        ImGui::Separator();
+        int renderMode = useMeshShader ? 1 : 0;
+        ImGui::RadioButton("Vertex Shader", &renderMode, 0);
+        ImGui::RadioButton("Mesh Shader", &renderMode, 1);
+        useMeshShader = (renderMode == 1);
+        if (useMeshShader) {
+            ImGui::Text("Meshlets: %u", meshletData.meshletCount);
+        }
         ImGui::End();
         ImGui::Render();
 
-        encoder->setRenderPipelineState(pipelineState);
         encoder->setDepthStencilState(depthState);
         encoder->setFrontFacingWinding(MTL::WindingCounterClockwise);
         encoder->setCullMode(MTL::CullModeBack);
 
-        encoder->setVertexBuffer(bunny.positionBuffer, 0, 1);
-        encoder->setVertexBuffer(bunny.normalBuffer, 0, 2);
-        encoder->setVertexBytes(&uniforms, sizeof(uniforms), 0);
-        encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
-
-        encoder->drawIndexedPrimitives(
-            MTL::PrimitiveTypeTriangle,
-            bunny.indexCount, MTL::IndexTypeUInt32,
-            bunny.indexBuffer, 0);
+        if (useMeshShader) {
+            encoder->setRenderPipelineState(meshPipelineState);
+            encoder->setMeshBytes(&uniforms, sizeof(uniforms), 0);
+            encoder->setMeshBuffer(bunny.positionBuffer, 0, 1);
+            encoder->setMeshBuffer(bunny.normalBuffer, 0, 2);
+            encoder->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
+            encoder->setMeshBuffer(meshletData.meshletVertices, 0, 4);
+            encoder->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
+            encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+            encoder->drawMeshThreadgroups(
+                MTL::Size(meshletData.meshletCount, 1, 1),
+                MTL::Size(1, 1, 1),
+                MTL::Size(128, 1, 1));
+        } else {
+            encoder->setRenderPipelineState(pipelineState);
+            encoder->setVertexBuffer(bunny.positionBuffer, 0, 1);
+            encoder->setVertexBuffer(bunny.normalBuffer, 0, 2);
+            encoder->setVertexBytes(&uniforms, sizeof(uniforms), 0);
+            encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+            encoder->drawIndexedPrimitives(
+                MTL::PrimitiveTypeTriangle,
+                bunny.indexCount, MTL::IndexTypeUInt32,
+                bunny.indexBuffer, 0);
+        }
 
         // Render ImGui on top
         imguiRenderDrawData(commandBuffer, encoder);
@@ -341,6 +481,7 @@ int main() {
     bunny.normalBuffer->release();
     bunny.indexBuffer->release();
     depthState->release();
+    meshPipelineState->release();
     pipelineState->release();
     commandQueue->release();
     device->release();
