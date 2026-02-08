@@ -2,10 +2,15 @@
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
 
+#include <simd/simd.h>
+
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
 #include "glfw_metal_bridge.h"
+#include "mesh_loader.h"
+#include "camera.h"
+#include "input.h"
 
 #include <slang.h>
 #include <slang-com-ptr.h>
@@ -13,11 +18,11 @@
 #include <iostream>
 #include <string>
 #include <vector>
-#include <cstddef>
 
-struct Vertex {
-    float position[3];
-    float color[3];
+struct Uniforms {
+    simd_float4x4 mvp;
+    simd_float4x4 modelView;
+    simd_float4   lightDir;
 };
 
 static std::string compileSlangToMetal(const char* shaderPath) {
@@ -69,6 +74,14 @@ static std::string compileSlangToMetal(const char* shaderPath) {
                        metalCode->getBufferSize());
 }
 
+static MTL::Texture* createDepthTexture(MTL::Device* device, int width, int height) {
+    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatDepth32Float, width, height, false);
+    desc->setStorageMode(MTL::StorageModePrivate);
+    desc->setUsage(MTL::TextureUsageRenderTarget);
+    return device->newTexture(desc);
+}
+
 int main() {
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW" << std::endl;
@@ -76,7 +89,7 @@ int main() {
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow* window = glfwCreateWindow(800, 600, "RenderGraph", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(800, 600, "RenderGraph - Stanford Bunny", nullptr, nullptr);
     if (!window) {
         std::cerr << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -99,8 +112,26 @@ int main() {
     metalLayer->setDevice(device);
     metalLayer->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
 
+    // Load bunny mesh
+    LoadedMesh bunny;
+    if (!loadGLTFMesh(device, "Asset/StandfordBunny/scene.gltf", bunny)) {
+        std::cerr << "Failed to load bunny mesh" << std::endl;
+        return 1;
+    }
+    std::cout << "Loaded bunny: " << bunny.vertexCount << " vertices, "
+              << bunny.indexCount << " indices" << std::endl;
+
+    // Init orbit camera
+    OrbitCamera camera;
+    camera.initForBunny(bunny.bboxMin, bunny.bboxMax);
+
+    // Setup input
+    InputState inputState;
+    inputState.camera = &camera;
+    setupInputCallbacks(window, &inputState);
+
     // Compile Slang shader to Metal source
-    std::string metalSource = compileSlangToMetal("Shaders/triangle");
+    std::string metalSource = compileSlangToMetal("Shaders/bunny");
     if (metalSource.empty()) {
         std::cerr << "Failed to compile Slang shader" << std::endl;
         return 1;
@@ -124,26 +155,31 @@ int main() {
     MTL::Function* fragmentFn = library->newFunction(
         NS::String::string("fragmentMain", NS::UTF8StringEncoding));
 
-    // Create render pipeline state
+    // Vertex descriptor: buffer 1 = positions, buffer 2 = normals
+    // (buffer 0 is reserved for Slang's uniform ConstantBuffer)
+    MTL::VertexDescriptor* vertexDesc = MTL::VertexDescriptor::alloc()->init();
+    // attribute(0) = position: float3 from buffer 1
+    vertexDesc->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+    vertexDesc->attributes()->object(0)->setOffset(0);
+    vertexDesc->attributes()->object(0)->setBufferIndex(1);
+    // attribute(1) = normal: float3 from buffer 2
+    vertexDesc->attributes()->object(1)->setFormat(MTL::VertexFormatFloat3);
+    vertexDesc->attributes()->object(1)->setOffset(0);
+    vertexDesc->attributes()->object(1)->setBufferIndex(2);
+    // layout for buffer 1 (positions)
+    vertexDesc->layouts()->object(1)->setStride(12);
+    vertexDesc->layouts()->object(1)->setStepFunction(MTL::VertexStepFunctionPerVertex);
+    // layout for buffer 2 (normals)
+    vertexDesc->layouts()->object(2)->setStride(12);
+    vertexDesc->layouts()->object(2)->setStepFunction(MTL::VertexStepFunctionPerVertex);
+
+    // Create render pipeline
     MTL::RenderPipelineDescriptor* pipelineDesc =
         MTL::RenderPipelineDescriptor::alloc()->init();
     pipelineDesc->setVertexFunction(vertexFn);
     pipelineDesc->setFragmentFunction(fragmentFn);
     pipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
-
-    // Vertex descriptor matching Slang's attribute layout
-    MTL::VertexDescriptor* vertexDesc = MTL::VertexDescriptor::alloc()->init();
-    // attribute(0) = position: float3 at offset 0
-    vertexDesc->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
-    vertexDesc->attributes()->object(0)->setOffset(0);
-    vertexDesc->attributes()->object(0)->setBufferIndex(0);
-    // attribute(1) = color: float3 at offset 12
-    vertexDesc->attributes()->object(1)->setFormat(MTL::VertexFormatFloat3);
-    vertexDesc->attributes()->object(1)->setOffset(offsetof(Vertex, color));
-    vertexDesc->attributes()->object(1)->setBufferIndex(0);
-    // layout for buffer 0
-    vertexDesc->layouts()->object(0)->setStride(sizeof(Vertex));
-    vertexDesc->layouts()->object(0)->setStepFunction(MTL::VertexStepFunctionPerVertex);
+    pipelineDesc->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
     pipelineDesc->setVertexDescriptor(vertexDesc);
     vertexDesc->release();
 
@@ -159,14 +195,18 @@ int main() {
     fragmentFn->release();
     library->release();
 
-    // Create vertex buffer with triangle data
-    const Vertex triangleVertices[] = {
-        {{ 0.0f,  0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},  // top - red
-        {{-0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},  // bottom left - green
-        {{ 0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}},  // bottom right - blue
-    };
-    MTL::Buffer* vertexBuffer = device->newBuffer(
-        triangleVertices, sizeof(triangleVertices), MTL::ResourceStorageModeShared);
+    // Create depth stencil state
+    MTL::DepthStencilDescriptor* depthDesc = MTL::DepthStencilDescriptor::alloc()->init();
+    depthDesc->setDepthCompareFunction(MTL::CompareFunctionLess);
+    depthDesc->setDepthWriteEnabled(true);
+    MTL::DepthStencilState* depthState = device->newDepthStencilState(depthDesc);
+    depthDesc->release();
+
+    // Create initial depth texture
+    int fbWidth, fbHeight;
+    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+    MTL::Texture* depthTexture = createDepthTexture(device, fbWidth, fbHeight);
+    int prevWidth = fbWidth, prevHeight = fbHeight;
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -175,7 +215,19 @@ int main() {
 
         int width, height;
         glfwGetFramebufferSize(window, &width, &height);
+        if (width == 0 || height == 0) {
+            pool->release();
+            continue;
+        }
         metalLayer->setDrawableSize(CGSizeMake(width, height));
+
+        // Recreate depth texture on resize
+        if (width != prevWidth || height != prevHeight) {
+            depthTexture->release();
+            depthTexture = createDepthTexture(device, width, height);
+            prevWidth = width;
+            prevHeight = height;
+        }
 
         CA::MetalDrawable* drawable = metalLayer->nextDrawable();
         if (!drawable) {
@@ -183,6 +235,25 @@ int main() {
             continue;
         }
 
+        // Compute matrices
+        float aspect = (float)width / (float)height;
+        simd_float4x4 view = camera.viewMatrix();
+        simd_float4x4 proj = camera.projectionMatrix(aspect);
+        simd_float4x4 model = matrix_identity_float4x4;
+        simd_float4x4 modelView = simd_mul(view, model);
+        simd_float4x4 mvp = simd_mul(proj, modelView);
+
+        // Light direction in view space (from upper-right-front)
+        simd_float4 worldLightDir = simd_make_float4(
+            simd_normalize(simd_make_float3(0.5f, 1.0f, 0.8f)), 0.0f);
+        simd_float4 viewLightDir = simd_mul(view, worldLightDir);
+
+        Uniforms uniforms;
+        uniforms.mvp = simd_transpose(mvp);
+        uniforms.modelView = simd_transpose(modelView);
+        uniforms.lightDir = viewLightDir;
+
+        // Render pass
         MTL::RenderPassDescriptor* renderPass = MTL::RenderPassDescriptor::alloc()->init();
         auto* colorAttachment = renderPass->colorAttachments()->object(0);
         colorAttachment->setTexture(drawable->texture());
@@ -190,13 +261,30 @@ int main() {
         colorAttachment->setClearColor(MTL::ClearColor(0.1, 0.2, 0.3, 1.0));
         colorAttachment->setStoreAction(MTL::StoreActionStore);
 
+        auto* depthAttachment = renderPass->depthAttachment();
+        depthAttachment->setTexture(depthTexture);
+        depthAttachment->setLoadAction(MTL::LoadActionClear);
+        depthAttachment->setClearDepth(1.0);
+        depthAttachment->setStoreAction(MTL::StoreActionDontCare);
+
         MTL::CommandBuffer* commandBuffer = commandQueue->commandBuffer();
         MTL::RenderCommandEncoder* encoder =
             commandBuffer->renderCommandEncoder(renderPass);
 
         encoder->setRenderPipelineState(pipelineState);
-        encoder->setVertexBuffer(vertexBuffer, 0, 0);
-        encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+        encoder->setDepthStencilState(depthState);
+        encoder->setFrontFacingWinding(MTL::WindingCounterClockwise);
+        encoder->setCullMode(MTL::CullModeBack);
+
+        encoder->setVertexBuffer(bunny.positionBuffer, 0, 1);
+        encoder->setVertexBuffer(bunny.normalBuffer, 0, 2);
+        encoder->setVertexBytes(&uniforms, sizeof(uniforms), 0);
+        encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+
+        encoder->drawIndexedPrimitives(
+            MTL::PrimitiveTypeTriangle,
+            bunny.indexCount, MTL::IndexTypeUInt32,
+            bunny.indexBuffer, 0);
 
         encoder->endEncoding();
         commandBuffer->presentDrawable(drawable);
@@ -206,7 +294,12 @@ int main() {
         pool->release();
     }
 
-    vertexBuffer->release();
+    // Cleanup
+    depthTexture->release();
+    bunny.positionBuffer->release();
+    bunny.normalBuffer->release();
+    bunny.indexBuffer->release();
+    depthState->release();
     pipelineState->release();
     commandQueue->release();
     device->release();

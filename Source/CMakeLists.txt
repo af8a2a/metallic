@@ -1,4 +1,5 @@
-add_executable(rendergraph main.cpp metal_impl.cpp glfw_metal_bridge.mm)
+add_executable(rendergraph main.cpp metal_impl.cpp glfw_metal_bridge.mm mesh_loader.cpp input.cpp)
+target_include_directories(rendergraph PRIVATE "${CMAKE_SOURCE_DIR}/External/cgltf")
 target_link_libraries(rendergraph PRIVATE metal-cpp glfw slang::slang "-framework AppKit")
 
 # Copy Slang dylibs next to executable at build time
@@ -17,4 +18,11 @@ add_custom_command(TARGET rendergraph POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/Shaders"
         "$<TARGET_FILE_DIR:rendergraph>/Shaders"
+)
+
+# Copy asset files next to executable
+add_custom_command(TARGET rendergraph POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/Asset"
+        "$<TARGET_FILE_DIR:rendergraph>/Asset"
 )
