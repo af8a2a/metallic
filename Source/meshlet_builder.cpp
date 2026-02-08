@@ -42,6 +42,29 @@ bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out
             meshlets[i].vertex_count);
     }
 
+    // Compute meshlet bounds (bounding sphere + normal cone) for culling
+    std::vector<GPUMeshletBounds> gpuBounds(meshletCount);
+    for (size_t i = 0; i < meshletCount; i++) {
+        meshopt_Bounds bounds = meshopt_computeMeshletBounds(
+            &meshletVertices[meshlets[i].vertex_offset],
+            &meshletTriangles[meshlets[i].triangle_offset],
+            meshlets[i].triangle_count,
+            positions, vertexCount, vertexStride);
+
+        gpuBounds[i].center[0]    = bounds.center[0];
+        gpuBounds[i].center[1]    = bounds.center[1];
+        gpuBounds[i].center[2]    = bounds.center[2];
+        gpuBounds[i].radius       = bounds.radius;
+        gpuBounds[i].cone_apex[0] = bounds.cone_apex[0];
+        gpuBounds[i].cone_apex[1] = bounds.cone_apex[1];
+        gpuBounds[i].cone_apex[2] = bounds.cone_apex[2];
+        gpuBounds[i].pad0         = 0.0f;
+        gpuBounds[i].cone_axis[0] = bounds.cone_axis[0];
+        gpuBounds[i].cone_axis[1] = bounds.cone_axis[1];
+        gpuBounds[i].cone_axis[2] = bounds.cone_axis[2];
+        gpuBounds[i].cone_cutoff  = bounds.cone_cutoff;
+    }
+
     // Compute actual used sizes for vertex and triangle arrays
     const meshopt_Meshlet& last = meshlets.back();
     size_t totalVertices = last.vertex_offset + last.vertex_count;
@@ -89,6 +112,9 @@ bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out
         packedTriangles.data(), packedTriangles.size() * sizeof(uint32_t),
         MTL::ResourceStorageModeShared);
     out.meshletCount = static_cast<uint32_t>(meshletCount);
+    out.boundsBuffer = device->newBuffer(
+        gpuBounds.data(), gpuBounds.size() * sizeof(GPUMeshletBounds),
+        MTL::ResourceStorageModeShared);
 
     // Print stats
     size_t totalTris = 0, totalVerts = 0;

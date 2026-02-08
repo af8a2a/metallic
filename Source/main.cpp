@@ -29,7 +29,37 @@ struct Uniforms {
     simd_float4x4 mvp;
     simd_float4x4 modelView;
     simd_float4   lightDir;
+    simd_float4   frustumPlanes[6];
+    simd_float4   cameraPos;
+    uint32_t      enableFrustumCull;
+    uint32_t      enableConeCull;
+    uint32_t      pad0;
+    uint32_t      pad1;
 };
+
+static void extractFrustumPlanes(simd_float4x4 mvp, simd_float4* planes) {
+    // Gribb-Hartmann method: extract planes from MVP matrix rows
+    // mvp is column-major (simd_float4x4 columns[4])
+    // Row i of the matrix = (columns[0][i], columns[1][i], columns[2][i], columns[3][i])
+    simd_float4 row0 = simd_make_float4(mvp.columns[0][0], mvp.columns[1][0], mvp.columns[2][0], mvp.columns[3][0]);
+    simd_float4 row1 = simd_make_float4(mvp.columns[0][1], mvp.columns[1][1], mvp.columns[2][1], mvp.columns[3][1]);
+    simd_float4 row2 = simd_make_float4(mvp.columns[0][2], mvp.columns[1][2], mvp.columns[2][2], mvp.columns[3][2]);
+    simd_float4 row3 = simd_make_float4(mvp.columns[0][3], mvp.columns[1][3], mvp.columns[2][3], mvp.columns[3][3]);
+
+    planes[0] = row3 + row0; // left
+    planes[1] = row3 - row0; // right
+    planes[2] = row3 + row1; // bottom
+    planes[3] = row3 - row1; // top
+    planes[4] = row2;        // near  (Metal NDC z in [0,1])
+    planes[5] = row3 - row2; // far
+
+    // Normalize each plane
+    for (int i = 0; i < 6; i++) {
+        float len = simd_length(simd_make_float3(planes[i].x, planes[i].y, planes[i].z));
+        if (len > 0.0f)
+            planes[i] /= len;
+    }
+}
 
 static std::string compileSlangToMetal(const char* shaderPath) {
     Slang::ComPtr<slang::IGlobalSession> globalSession;
@@ -330,6 +360,8 @@ int main() {
     meshLibrary->release();
 
     bool useMeshShader = false;
+    bool enableFrustumCull = false;
+    bool enableConeCull = false;
 
     // Create depth stencil state
     MTL::DepthStencilDescriptor* depthDesc = MTL::DepthStencilDescriptor::alloc()->init();
@@ -389,6 +421,23 @@ int main() {
         uniforms.modelView = simd_transpose(modelView);
         uniforms.lightDir = viewLightDir;
 
+        // Extract frustum planes from non-transposed MVP (world-space planes)
+        extractFrustumPlanes(mvp, uniforms.frustumPlanes);
+
+        // Camera position in world space
+        float cosA = std::cos(camera.azimuth), sinA = std::sin(camera.azimuth);
+        float cosE = std::cos(camera.elevation), sinE = std::sin(camera.elevation);
+        uniforms.cameraPos = simd_make_float4(
+            camera.target.x + camera.distance * cosE * sinA,
+            camera.target.y + camera.distance * sinE,
+            camera.target.z + camera.distance * cosE * cosA,
+            0.0f);
+
+        uniforms.enableFrustumCull = enableFrustumCull ? 1 : 0;
+        uniforms.enableConeCull = enableConeCull ? 1 : 0;
+        uniforms.pad0 = 0;
+        uniforms.pad1 = 0;
+
         // Render pass
         MTL::RenderPassDescriptor* renderPass = MTL::RenderPassDescriptor::alloc()->init();
         auto* colorAttachment = renderPass->colorAttachments()->object(0);
@@ -423,6 +472,8 @@ int main() {
         useMeshShader = (renderMode == 1);
         if (useMeshShader) {
             ImGui::Text("Meshlets: %u", meshletData.meshletCount);
+            ImGui::Checkbox("Frustum Culling", &enableFrustumCull);
+            ImGui::Checkbox("Backface Culling", &enableConeCull);
         }
         ImGui::End();
         ImGui::Render();
@@ -439,6 +490,7 @@ int main() {
             encoder->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
             encoder->setMeshBuffer(meshletData.meshletVertices, 0, 4);
             encoder->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
+            encoder->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
             encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
             encoder->drawMeshThreadgroups(
                 MTL::Size(meshletData.meshletCount, 1, 1),
@@ -477,6 +529,7 @@ int main() {
     meshletData.meshletBuffer->release();
     meshletData.meshletVertices->release();
     meshletData.meshletTriangles->release();
+    meshletData.boundsBuffer->release();
     bunny.positionBuffer->release();
     bunny.normalBuffer->release();
     bunny.indexBuffer->release();

@@ -2,6 +2,12 @@ struct Uniforms {
     float4x4 mvp;
     float4x4 modelView;
     float4   lightDir; // view-space light direction (normalized), w unused
+    float4   frustumPlanes[6]; // left, right, bottom, top, near, far
+    float4   cameraPos;        // world-space camera position (xyz), w unused
+    uint     enableFrustumCull;
+    uint     enableConeCull;
+    uint     pad0;
+    uint     pad1;
 };
 
 struct GPUMeshlet {
@@ -11,13 +17,23 @@ struct GPUMeshlet {
     uint triangle_count;
 };
 
+struct GPUMeshletBounds {
+    float3 center;
+    float  radius;
+    float3 cone_apex;
+    float  pad0;
+    float3 cone_axis;
+    float  cone_cutoff;
+};
+
 // Global buffer bindings
-ConstantBuffer<Uniforms>      uniforms;        // buffer(0)
-StructuredBuffer<float>       positions;       // flat float array, 3 per vertex
-StructuredBuffer<float>       normals;         // flat float array, 3 per vertex
-StructuredBuffer<GPUMeshlet>  meshlets;
-StructuredBuffer<uint>        meshletVertices;
-StructuredBuffer<uint>        meshletTriangles;
+ConstantBuffer<Uniforms>           uniforms;        // buffer(0)
+StructuredBuffer<float>            positions;       // flat float array, 3 per vertex
+StructuredBuffer<float>            normals;         // flat float array, 3 per vertex
+StructuredBuffer<GPUMeshlet>       meshlets;
+StructuredBuffer<uint>             meshletVertices;
+StructuredBuffer<uint>             meshletTriangles;
+StructuredBuffer<GPUMeshletBounds> meshletBounds;
 
 struct MeshOutput {
     float4 clipPos    : SV_Position;
@@ -38,6 +54,30 @@ void meshMain(
     OutputIndices<uint3, kMaxTriangles>       outTris)
 {
     GPUMeshlet m = meshlets[groupID];
+    GPUMeshletBounds b = meshletBounds[groupID];
+
+    // Frustum culling: test bounding sphere against 6 planes
+    if (uniforms.enableFrustumCull != 0) {
+        bool culled = false;
+        [unroll]
+        for (int i = 0; i < 6; i++) {
+            if (dot(uniforms.frustumPlanes[i].xyz, b.center) + uniforms.frustumPlanes[i].w + b.radius < 0.0)
+                culled = true;
+        }
+        if (culled) {
+            SetMeshOutputCounts(0, 0);
+            return;
+        }
+    }
+
+    // Cone/backface culling
+    if (uniforms.enableConeCull != 0) {
+        float3 view = normalize(b.cone_apex - uniforms.cameraPos.xyz);
+        if (dot(view, b.cone_axis) >= b.cone_cutoff) {
+            SetMeshOutputCounts(0, 0);
+            return;
+        }
+    }
 
     SetMeshOutputCounts(m.vertex_count, m.triangle_count);
 
