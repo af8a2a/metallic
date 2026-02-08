@@ -54,3 +54,9 @@ After cloning, run `git submodule update --init` to fetch GLFW.
 - Shaders are written in Slang (not MSL directly) and compiled to Metal source code at runtime via the Slang API
 - Platform bridging (Cocoa/Metal layer) lives in `.mm` files with C-linkage headers
 - Metal objects use manual reference counting (retain/release)
+
+
+
+## Development
+- when I start debug, I will add the issue content(log/screenshot) in `Issue` directory.You can get bug information from it.
+- 

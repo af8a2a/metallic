@@ -9,6 +9,7 @@
 
 #include "glfw_metal_bridge.h"
 #include "mesh_loader.h"
+#include "meshlet_builder.h"
 #include "camera.h"
 #include "input.h"
 
@@ -120,6 +121,13 @@ int main() {
     }
     std::cout << "Loaded bunny: " << bunny.vertexCount << " vertices, "
               << bunny.indexCount << " indices" << std::endl;
+
+    // Build meshlets for future mesh shader rendering
+    MeshletData meshletData;
+    if (!buildMeshlets(device, bunny, meshletData)) {
+        std::cerr << "Failed to build meshlets" << std::endl;
+        return 1;
+    }
 
     // Init orbit camera
     OrbitCamera camera;
@@ -296,6 +304,9 @@ int main() {
 
     // Cleanup
     depthTexture->release();
+    meshletData.meshletBuffer->release();
+    meshletData.meshletVertices->release();
+    meshletData.meshletTriangles->release();
     bunny.positionBuffer->release();
     bunny.normalBuffer->release();
     bunny.indexBuffer->release();
