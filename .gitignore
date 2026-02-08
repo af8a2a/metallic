@@ -68,5 +68,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+# Slang (downloaded binary)
+External/slang/
+
 #Apple Specifc
 .DS_Store
