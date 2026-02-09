@@ -377,6 +377,8 @@ int main() {
     // Init Dear ImGui
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui_ImplGlfw_InitForOther(window, true);
     imguiInit(device);
 
@@ -568,6 +570,8 @@ int main() {
     bool enableFrustumCull = false;
     bool enableConeCull = false;
     bool showGraphDebug = false;
+    bool showSceneGraphWindow = true;
+    bool showImGuiDemo = false;
     bool exportGraphKeyDown = false;
 
     // Create depth stencil state
@@ -664,9 +668,22 @@ int main() {
         imguiNewFrame(imguiFramePass);
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+
+        if (ImGui::BeginMainMenuBar()) {
+            if (ImGui::BeginMenu("View")) {
+                ImGui::MenuItem("Scene Graph", nullptr, &showSceneGraphWindow);
+                ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
+                ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
+                ImGui::EndMenu();
+            }
+            ImGui::EndMainMenuBar();
+        }
+
         ImGui::SetNextWindowPos(ImVec2(10, 10));
+        ImGui::SetNextWindowBgAlpha(0.7f);
         ImGui::Begin("##fps", nullptr,
-            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize |
             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
         ImGui::Text("%.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
         ImGui::Separator();
@@ -683,7 +700,11 @@ int main() {
         imguiFramePass->release();
         } // end ImGui Frame zone
 
-        drawSceneGraphUI(sceneGraph);
+        if (showSceneGraphWindow)
+            drawSceneGraphUI(sceneGraph);
+
+        if (showImGuiDemo)
+            ImGui::ShowDemoWindow(&showImGuiDemo);
 
         std::vector<uint32_t> visibleMeshletNodes;
         std::vector<uint32_t> visibleIndexNodes;
