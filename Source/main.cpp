@@ -26,6 +26,9 @@
 #include <vector>
 #include <regex>
 
+#include <tracy/Tracy.hpp>
+#include "tracy_metal.h"
+
 struct Uniforms {
     float4x4 mvp;
     float4x4 modelView;
@@ -333,6 +336,9 @@ int main() {
 
     MTL::CommandQueue* commandQueue = device->newCommandQueue();
 
+    // Tracy GPU profiling context
+    TracyMetalCtxHandle tracyGpuCtx = tracyMetalCreate(device);
+
     CA::MetalLayer* metalLayer = static_cast<CA::MetalLayer*>(
         attachMetalLayerToGLFWWindow(window));
     metalLayer->setDevice(device);
@@ -578,6 +584,7 @@ int main() {
     int prevWidth = fbWidth, prevHeight = fbHeight;
 
     while (!glfwWindowShouldClose(window)) {
+        ZoneScopedN("Frame");
         glfwPollEvents();
 
         NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
@@ -609,49 +616,60 @@ int main() {
         }
 
         // Compute matrices
-        float aspect = (float)width / (float)height;
-        float4x4 view = camera.viewMatrix();
-        float4x4 proj = camera.projectionMatrix(aspect);
-        float4x4 model = float4x4::Identity();
-        float4x4 modelView = view * model;
-        float4x4 mvp = proj * modelView;
-
-        // Light direction in view space (from upper-right-front)
-        float4 worldLightDir = float4(normalize(float3(0.5f, 1.0f, 0.8f)), 0.0f);
-        float4 viewLightDir = view * worldLightDir;
-
+        float aspect;
+        float4x4 view, proj, model, modelView, mvp;
+        float4 worldLightDir, viewLightDir;
         Uniforms uniforms;
-        uniforms.mvp = transpose(mvp);
-        uniforms.modelView = transpose(modelView);
-        uniforms.lightDir = viewLightDir;
+        {
+            ZoneScopedN("Matrix Computation");
+            aspect = (float)width / (float)height;
+            view = camera.viewMatrix();
+            proj = camera.projectionMatrix(aspect);
+            model = float4x4::Identity();
+            modelView = view * model;
+            mvp = proj * modelView;
 
-        // Extract frustum planes from non-transposed MVP (object-space planes)
-        extractFrustumPlanes(mvp, uniforms.frustumPlanes);
+            // Light direction in view space (from upper-right-front)
+            worldLightDir = float4(normalize(float3(0.5f, 1.0f, 0.8f)), 0.0f);
+            viewLightDir = view * worldLightDir;
 
-        // Camera position in world space
-        float cosA = std::cos(camera.azimuth), sinA = std::sin(camera.azimuth);
-        float cosE = std::cos(camera.elevation), sinE = std::sin(camera.elevation);
-        float4 cameraWorldPos = float4(
-            camera.target.x + camera.distance * cosE * sinA,
-            camera.target.y + camera.distance * sinE,
-            camera.target.z + camera.distance * cosE * cosA,
-            1.0f);
+            uniforms.mvp = transpose(mvp);
+            uniforms.modelView = transpose(modelView);
+            uniforms.lightDir = viewLightDir;
 
-        // Backface cone data is generated in object-space, so the camera needs to
-        // be transformed to object-space for robust culling when model != identity.
-        float4x4 invModel = model;
-        invModel.Invert();
-        uniforms.cameraPos = invModel * cameraWorldPos;
+            // Extract frustum planes from non-transposed MVP (object-space planes)
+            extractFrustumPlanes(mvp, uniforms.frustumPlanes);
 
-        uniforms.enableFrustumCull = enableFrustumCull ? 1 : 0;
-        uniforms.enableConeCull = enableConeCull ? 1 : 0;
-        uniforms.pad0 = 0;
-        uniforms.pad1 = 0;
+            // Camera position in world space
+            float cosA = std::cos(camera.azimuth), sinA = std::sin(camera.azimuth);
+            float cosE = std::cos(camera.elevation), sinE = std::sin(camera.elevation);
+            float4 cameraWorldPos = float4(
+                camera.target.x + camera.distance * cosE * sinA,
+                camera.target.y + camera.distance * sinE,
+                camera.target.z + camera.distance * cosE * cosA,
+                1.0f);
+
+            // Backface cone data is generated in object-space, so the camera needs to
+            // be transformed to object-space for robust culling when model != identity.
+            float4x4 invModel = model;
+            invModel.Invert();
+            uniforms.cameraPos = invModel * cameraWorldPos;
+
+            uniforms.enableFrustumCull = enableFrustumCull ? 1 : 0;
+            uniforms.enableConeCull = enableConeCull ? 1 : 0;
+            uniforms.pad0 = 0;
+            uniforms.pad1 = 0;
+        }
 
         // Render pass
         MTL::CommandBuffer* commandBuffer = commandQueue->commandBuffer();
 
+        // Collect GPU timestamps from previous frames
+        tracyMetalCollect(tracyGpuCtx);
+
         // ImGui new frame (needs a render pass descriptor for Metal backend)
+        {
+            ZoneScopedN("ImGui Frame");
         MTL::RenderPassDescriptor* imguiFramePass = MTL::RenderPassDescriptor::alloc()->init();
         imguiFramePass->colorAttachments()->object(0)->setTexture(drawable->texture());
         imguiNewFrame(imguiFramePass);
@@ -674,9 +692,11 @@ int main() {
         ImGui::End();
         ImGui::Render();
         imguiFramePass->release();
+        } // end ImGui Frame zone
 
         if (renderMode == 2) {
             // === VISIBILITY BUFFER MODE ===
+            ZoneScopedN("Visibility Buffer Mode");
 
             // Pass 1: Visibility buffer (mesh shader → R32Uint)
             MTL::RenderPassDescriptor* visPass = MTL::RenderPassDescriptor::alloc()->init();
@@ -692,6 +712,7 @@ int main() {
             visDepth->setClearDepth(1.0);
             visDepth->setStoreAction(MTL::StoreActionStore);
 
+            auto gpuVisZone = TracyMetalRenderZone(tracyGpuCtx, visPass, "Visibility Pass");
             MTL::RenderCommandEncoder* visEncoder =
                 commandBuffer->renderCommandEncoder(visPass);
             visEncoder->setDepthStencilState(depthState);
@@ -735,6 +756,7 @@ int main() {
                 MTL::Size(1, 1, 1),
                 MTL::Size(128, 1, 1));
             visEncoder->endEncoding();
+            tracyMetalZoneEnd(gpuVisZone);
             visPass->release();
             // Pass 2: Deferred lighting (compute)
             LightingUniforms lightUniforms;
@@ -753,7 +775,10 @@ int main() {
             lightUniforms.pad1 = 0;
             lightUniforms.pad2 = 0;
 
-            MTL::ComputeCommandEncoder* computeEncoder = commandBuffer->computeCommandEncoder();
+            auto* computePassDesc = MTL::ComputePassDescriptor::alloc()->init();
+            auto gpuComputeZone = TracyMetalComputeZone(tracyGpuCtx, computePassDesc, "Deferred Lighting");
+            MTL::ComputeCommandEncoder* computeEncoder = commandBuffer->computeCommandEncoder(computePassDesc);
+            computePassDesc->release();
             computeEncoder->setComputePipelineState(computePipelineState);
             computeEncoder->setBytes(&lightUniforms, sizeof(lightUniforms), 0);
             computeEncoder->setBuffer(sceneMesh.positionBuffer, 0, 1);
@@ -780,13 +805,18 @@ int main() {
                 1);
             computeEncoder->dispatchThreadgroups(gridSize, threadgroupSize);
             computeEncoder->endEncoding();
+            tracyMetalZoneEnd(gpuComputeZone);
 
             // Pass 3: Blit output texture → drawable
-            MTL::BlitCommandEncoder* blitEncoder = commandBuffer->blitCommandEncoder();
+            auto* blitPassDesc = MTL::BlitPassDescriptor::alloc()->init();
+            auto gpuBlitZone = TracyMetalBlitZone(tracyGpuCtx, blitPassDesc, "Blit to Drawable");
+            MTL::BlitCommandEncoder* blitEncoder = commandBuffer->blitCommandEncoder(blitPassDesc);
+            blitPassDesc->release();
             blitEncoder->copyFromTexture(outputTexture, 0, 0,
                 MTL::Origin(0, 0, 0), MTL::Size(width, height, 1),
                 drawable->texture(), 0, 0, MTL::Origin(0, 0, 0));
             blitEncoder->endEncoding();
+            tracyMetalZoneEnd(gpuBlitZone);
 
             // Pass 4: ImGui overlay
             MTL::RenderPassDescriptor* imguiPass = MTL::RenderPassDescriptor::alloc()->init();
@@ -794,13 +824,16 @@ int main() {
             imguiColor->setTexture(drawable->texture());
             imguiColor->setLoadAction(MTL::LoadActionLoad);
             imguiColor->setStoreAction(MTL::StoreActionStore);
+            auto gpuImguiZone = TracyMetalRenderZone(tracyGpuCtx, imguiPass, "ImGui Overlay");
             MTL::RenderCommandEncoder* imguiEncoder =
                 commandBuffer->renderCommandEncoder(imguiPass);
             imguiRenderDrawData(commandBuffer, imguiEncoder);
             imguiEncoder->endEncoding();
+            tracyMetalZoneEnd(gpuImguiZone);
             imguiPass->release();
         } else {
             // === FORWARD RENDERING (Vertex or Mesh shader) ===
+            ZoneScopedN("Forward Rendering");
             MTL::RenderPassDescriptor* renderPass = MTL::RenderPassDescriptor::alloc()->init();
             auto* colorAttachment = renderPass->colorAttachments()->object(0);
             colorAttachment->setTexture(drawable->texture());
@@ -814,6 +847,7 @@ int main() {
             depthAttachment->setClearDepth(1.0);
             depthAttachment->setStoreAction(MTL::StoreActionDontCare);
 
+            auto gpuForwardZone = TracyMetalRenderZone(tracyGpuCtx, renderPass, "Forward Pass");
             MTL::RenderCommandEncoder* encoder =
                 commandBuffer->renderCommandEncoder(renderPass);
             encoder->setDepthStencilState(depthState);
@@ -870,12 +904,14 @@ int main() {
 
             imguiRenderDrawData(commandBuffer, encoder);
             encoder->endEncoding();
+            tracyMetalZoneEnd(gpuForwardZone);
             renderPass->release();
         }
 
         commandBuffer->presentDrawable(drawable);
         commandBuffer->commit();
 
+        FrameMark;
         pool->release();
     }
 
@@ -883,6 +919,9 @@ int main() {
     imguiShutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+
+    // Cleanup Tracy GPU context
+    tracyMetalDestroy(tracyGpuCtx);
 
     // Cleanup
     depthTexture->release();

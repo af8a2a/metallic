@@ -40,3 +40,8 @@ target_link_libraries(imgui PUBLIC glfw metal-cpp "-framework Metal" "-framework
 
 
 add_subdirectory(MathLib)
+
+# Tracy Profiler
+option(TRACY_ENABLE "Enable Tracy profiler" ON)
+option(TRACY_ON_DEMAND "Tracy on-demand mode" ON)
+add_subdirectory(tracy)

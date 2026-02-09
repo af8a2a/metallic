@@ -1,6 +1,9 @@
-add_executable(rendergraph main.cpp metal_impl.cpp glfw_metal_bridge.mm imgui_metal_bridge.mm mesh_loader.cpp input.cpp meshlet_builder.cpp material_loader.cpp)
+add_executable(rendergraph main.cpp metal_impl.cpp glfw_metal_bridge.mm imgui_metal_bridge.mm mesh_loader.cpp input.cpp meshlet_builder.cpp material_loader.cpp tracy_metal.mm)
 target_include_directories(rendergraph PRIVATE "${CMAKE_SOURCE_DIR}/External/cgltf" "${CMAKE_SOURCE_DIR}/External/stb")
-target_link_libraries(rendergraph PRIVATE metal-cpp glfw meshoptimizer imgui slang::slang MathLib "-framework AppKit")
+target_link_libraries(rendergraph PRIVATE metal-cpp glfw meshoptimizer imgui slang::slang MathLib Tracy::TracyClient "-framework AppKit")
+
+# TracyMetal requires ARC (Automatic Reference Counting)
+set_source_files_properties(tracy_metal.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 # Copy Slang dylibs next to executable at build time
 set(SLANG_LIB_DIR "${CMAKE_SOURCE_DIR}/External/slang/lib")
