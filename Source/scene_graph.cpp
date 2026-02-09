@@ -208,14 +208,27 @@ uint32_t SceneGraph::addDirectionalLightNode(const std::string& name,
 }
 
 float3 SceneGraph::getSunLightDirection() const {
+    return getSunDirectionalLight().direction;
+}
+
+DirectionalLight SceneGraph::getSunDirectionalLight() const {
     if (sunLightNode >= 0 && sunLightNode < static_cast<int32_t>(nodes.size())) {
         const SceneNode& sunNode = nodes[sunLightNode];
         if (sunNode.hasLight && sunNode.light.type == LightType::Directional) {
-            float dirLen = length(sunNode.light.directional.direction);
+            DirectionalLight light = sunNode.light.directional;
+            float dirLen = length(light.direction);
             if (dirLen > 1e-6f)
-                return sunNode.light.directional.direction / dirLen;
+                light.direction /= dirLen;
+            else
+                light.direction = normalize(float3(0.5f, 1.0f, 0.8f));
+            light.intensity = std::max(0.0f, light.intensity);
+            return light;
         }
     }
 
-    return normalize(float3(0.5f, 1.0f, 0.8f));
+    DirectionalLight fallback;
+    fallback.direction = normalize(float3(0.5f, 1.0f, 0.8f));
+    fallback.color = float3(1.f, 1.f, 1.f);
+    fallback.intensity = 1.0f;
+    return fallback;
 }

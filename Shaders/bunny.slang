@@ -2,6 +2,7 @@ struct Uniforms {
     float4x4 mvp;
     float4x4 modelView;
     float4   lightDir; // view-space light direction (normalized), w unused
+    float4   lightColorIntensity; // xyz=color, w=intensity
 };
 
 // Global uniform binding — Slang maps this to a Metal buffer binding
@@ -50,6 +51,9 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float diffuse = max(dot(N, L), 0.0);
     float specular = pow(max(dot(N, H), 0.0), 64.0);
 
-    float3 color = baseColor * (ambient + diffuse * 0.75) + float3(1.0, 1.0, 1.0) * specular * 0.4;
+    float3 lightColor = uniforms.lightColorIntensity.xyz * uniforms.lightColorIntensity.w;
+    float3 color = baseColor * ambient +
+                   baseColor * (diffuse * 0.75) * lightColor +
+                   lightColor * (specular * 0.4);
     return float4(color, 1.0);
 }

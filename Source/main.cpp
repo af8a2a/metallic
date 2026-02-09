@@ -40,6 +40,7 @@ struct Uniforms {
     float4x4 mvp;
     float4x4 modelView;
     float4   lightDir;
+    float4   lightColorIntensity; // xyz=color, w=intensity
     float4   frustumPlanes[6];
     float4   cameraPos; // object-space camera position
     uint32_t enableFrustumCull;
@@ -287,6 +288,7 @@ struct LightingUniforms {
     float4x4 mvp;
     float4x4 modelView;
     float4   lightDir;
+    float4   lightColorIntensity;
     float4x4 invProj;
     uint32_t screenWidth;
     uint32_t screenHeight;
@@ -620,13 +622,19 @@ int main() {
             modelView = view * model;
             mvp = proj * modelView;
 
-            // Light direction in view space (sun directional light from scene graph)
-            worldLightDir = float4(sceneGraph.getSunLightDirection(), 0.0f);
+            // Light data from scene graph sun source.
+            DirectionalLight sunLight = sceneGraph.getSunDirectionalLight();
+            worldLightDir = float4(sunLight.direction, 0.0f);
             viewLightDir = view * worldLightDir;
 
             uniforms.mvp = transpose(mvp);
             uniforms.modelView = transpose(modelView);
             uniforms.lightDir = viewLightDir;
+            uniforms.lightColorIntensity = float4(
+                sunLight.color.x,
+                sunLight.color.y,
+                sunLight.color.z,
+                sunLight.intensity);
 
             // Extract frustum planes from non-transposed MVP (object-space planes)
             extractFrustumPlanes(mvp, uniforms.frustumPlanes);
@@ -851,6 +859,7 @@ int main() {
             lightUniforms.mvp = transpose(mvp);
             lightUniforms.modelView = transpose(modelView);
             lightUniforms.lightDir = viewLightDir;
+            lightUniforms.lightColorIntensity = uniforms.lightColorIntensity;
             float4x4 invProj = proj;
             invProj.Invert();
             lightUniforms.invProj = transpose(invProj);

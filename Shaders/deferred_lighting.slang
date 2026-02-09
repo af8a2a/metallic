@@ -2,6 +2,7 @@ struct LightingUniforms {
     float4x4 mvp;
     float4x4 modelView;
     float4   lightDir;
+    float4   lightColorIntensity;
     float4x4 invProj;
     uint     screenWidth;
     uint     screenHeight;
@@ -221,6 +222,9 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float diffuse = max(dot(N, L), 0.0);
     float specular = pow(max(dot(N, H), 0.0), 64.0);
 
-    float3 color = baseColor.rgb * (ambient + diffuse * 0.75) + float3(1.0, 1.0, 1.0) * specular * 0.4;
+    float3 lightColor = lightUniforms.lightColorIntensity.xyz * lightUniforms.lightColorIntensity.w;
+    float3 color = baseColor.rgb * ambient +
+                   baseColor.rgb * (diffuse * 0.75) * lightColor +
+                   lightColor * (specular * 0.4);
     outputTexture[pixel] = float4(color, 1.0);
 }

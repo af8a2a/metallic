@@ -75,4 +75,5 @@ public:
                                      const float3& direction,
                                      bool setAsSunSource);
     float3 getSunLightDirection() const;
+    DirectionalLight getSunDirectionalLight() const;
 };

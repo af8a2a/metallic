@@ -2,6 +2,7 @@ struct Uniforms {
     float4x4 mvp;
     float4x4 modelView;
     float4   lightDir;
+    float4   lightColorIntensity;
     float4   frustumPlanes[6];
     float4   cameraPos;
     uint     enableFrustumCull;

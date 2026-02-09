@@ -2,6 +2,7 @@ struct Uniforms {
     float4x4 mvp;
     float4x4 modelView;
     float4   lightDir; // view-space light direction (normalized), w unused
+    float4   lightColorIntensity; // xyz=color, w=intensity
     float4   frustumPlanes[6]; // left, right, bottom, top, near, far
     float4   cameraPos;        // object-space camera position (xyz), w unused
     uint     enableFrustumCull;
@@ -188,6 +189,9 @@ float4 fragmentMain(MeshOutput input) : SV_Target {
     float diffuse = max(dot(N, L), 0.0);
     float specular = pow(max(dot(N, H), 0.0), 64.0);
 
-    float3 color = baseColor.rgb * (ambient + diffuse * 0.75) + float3(1.0, 1.0, 1.0) * specular * 0.4;
+    float3 lightColor = uniforms.lightColorIntensity.xyz * uniforms.lightColorIntensity.w;
+    float3 color = baseColor.rgb * ambient +
+                   baseColor.rgb * (diffuse * 0.75) * lightColor +
+                   lightColor * (specular * 0.4);
     return float4(color, baseColor.a);
 }
