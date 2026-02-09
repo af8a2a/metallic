@@ -3,6 +3,7 @@
 #include <Metal/Metal.hpp>
 #include <cstdint>
 #include <functional>
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -44,7 +45,7 @@ struct FGResourceNode {
     bool imported = false;
     uint32_t refCount = 0;
     uint32_t producer = UINT32_MAX;  // pass index that creates this resource
-    uint32_t lastUser = 0;           // pass index of last reader/writer
+    uint32_t lastUser = UINT32_MAX;  // pass index of last live reader/writer
 };
 
 enum class FGPassType { Render, Compute, Blit };
@@ -54,6 +55,7 @@ struct FGColorAttachment {
     MTL::LoadAction loadAction = MTL::LoadActionClear;
     MTL::StoreAction storeAction = MTL::StoreActionStore;
     MTL::ClearColor clearColor = MTL::ClearColor(0, 0, 0, 1);
+    bool bound = false;
 };
 
 struct FGDepthAttachment {
@@ -128,6 +130,9 @@ public:
     void compile();
     void execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyMetalCtxHandle tracyCtx);
     void reset();
+
+    void exportGraphviz(std::ostream& os) const;
+    void debugImGui() const;
 
     MTL::Texture* getTexture(FGResource res) const;
 

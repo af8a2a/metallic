@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 #include <regex>
+#include <fstream>
 
 #include <tracy/Tracy.hpp>
 #include "tracy_metal.h"
@@ -546,6 +547,8 @@ int main() {
     int renderMode = 0; // 0=Vertex, 1=Mesh, 2=Visibility Buffer
     bool enableFrustumCull = false;
     bool enableConeCull = false;
+    bool showGraphDebug = false;
+    bool exportGraphKeyDown = false;
 
     // Create depth stencil state
     MTL::DepthStencilDescriptor* depthDesc = MTL::DepthStencilDescriptor::alloc()->init();
@@ -652,8 +655,8 @@ int main() {
             ImGui::Checkbox("Frustum Culling", &enableFrustumCull);
             ImGui::Checkbox("Backface Culling", &enableConeCull);
         }
+        ImGui::Checkbox("Show Graph", &showGraphDebug);
         ImGui::End();
-        ImGui::Render();
         imguiFramePass->release();
         } // end ImGui Frame zone
 
@@ -878,6 +881,22 @@ int main() {
         }
 
         fg.compile();
+
+        if (showGraphDebug)
+            fg.debugImGui();
+
+        ImGui::Render();
+
+        bool gKeyDown = glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS;
+        if (gKeyDown && !exportGraphKeyDown) {
+            std::ofstream dot("framegraph.dot");
+            if (dot.is_open()) {
+                fg.exportGraphviz(dot);
+                std::cout << "Exported framegraph.dot" << std::endl;
+            }
+        }
+        exportGraphKeyDown = gKeyDown;
+
         fg.execute(commandBuffer, device, tracyGpuCtx);
 
         commandBuffer->presentDrawable(drawable);
