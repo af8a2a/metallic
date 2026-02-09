@@ -8,7 +8,7 @@ struct LightingUniforms {
     uint     meshletCount;
     uint     materialCount;
     uint     textureCount;
-    uint     pad0;
+    uint     instanceCount;
     uint     pad1;
     uint     pad2;
 };
@@ -33,10 +33,16 @@ struct GPUMaterial {
     float  _pad;
 };
 
+struct SceneInstanceTransform {
+    float4x4 mvp;
+    float4x4 modelView;
+};
+
 static const uint INVALID_TEX = 0xFFFFFFFF;
 static const uint INVALID_VIS = 0xFFFFFFFF;
 static const uint kTextureArraySize = 96;
-static const uint kInstanceBits = 5;
+static const uint kInstanceBits = 11;
+static const uint kVisibilityInstanceMask = (1u << kInstanceBits) - 1u;
 static const uint kVisibilityTriangleBits = 7;
 static const uint kVisibilityTriangleMask = (1u << kVisibilityTriangleBits) - 1u;
 static const uint kVisibilityMeshletShift = kVisibilityTriangleBits + kInstanceBits;
@@ -52,6 +58,7 @@ StructuredBuffer<uint>           meshletTriangles;        // buffer(5)
 StructuredBuffer<float>          uvs;                     // buffer(6)
 StructuredBuffer<uint>           meshletMaterialIDs;      // buffer(7)
 StructuredBuffer<GPUMaterial>    materials;                // buffer(8)
+StructuredBuffer<SceneInstanceTransform> instanceTransforms; // buffer(9)
 // Texture bindings
 Texture2D<uint>              visibilityBuffer;            // texture(0)
 Texture2D<float>             depthBuffer;                 // texture(1)
@@ -59,8 +66,8 @@ RWTexture2D<float4>          outputTexture;               // texture(2)
 Texture2D                    sceneTextures[kTextureArraySize]; // texture(3..)
 SamplerState                 sceneSampler;                // sampler(0)
 
-float3 projectVertex(float3 pos) {
-    float4 clip = mul(lightUniforms.mvp, float4(pos, 1.0));
+float3 projectVertex(float4x4 mvp, float3 pos) {
+    float4 clip = mul(mvp, float4(pos, 1.0));
     float3 ndc = clip.xyz / clip.w;
     float2 screen;
     screen.x = (ndc.x * 0.5 + 0.5) * float(lightUniforms.screenWidth);
@@ -104,12 +111,19 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     // Decode visibility
     uint meshletID  = (vis >> kVisibilityMeshletShift) & kVisibilityMeshletMask;
     uint triangleID = (vis >> kInstanceBits) & kVisibilityTriangleMask;
-    // uint instanceID = vis & 0x1F; // unused for now
+    uint instanceID = vis & kVisibilityInstanceMask;
 
     if (meshletID >= lightUniforms.meshletCount) {
         outputTexture[pixel] = float4(0.1, 0.2, 0.3, 1.0);
         return;
     }
+
+    if (instanceID >= lightUniforms.instanceCount) {
+        outputTexture[pixel] = float4(0.1, 0.2, 0.3, 1.0);
+        return;
+    }
+
+    SceneInstanceTransform instance = instanceTransforms[instanceID];
 
     // Fetch triangle vertex indices
     GPUMeshlet meshlet = meshlets[meshletID];
@@ -132,9 +146,9 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint globalV1 = meshletVertices[meshlet.vertex_offset + localV1];
     uint globalV2 = meshletVertices[meshlet.vertex_offset + localV2];
     // Project vertices to screen space
-    float3 s0 = projectVertex(loadPosition(globalV0));
-    float3 s1 = projectVertex(loadPosition(globalV1));
-    float3 s2 = projectVertex(loadPosition(globalV2));
+    float3 s0 = projectVertex(instance.mvp, loadPosition(globalV0));
+    float3 s1 = projectVertex(instance.mvp, loadPosition(globalV1));
+    float3 s2 = projectVertex(instance.mvp, loadPosition(globalV2));
 
     // Compute screen-space barycentrics
     float2 p = float2(pixel) + 0.5;
@@ -171,9 +185,9 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     // Transform normal to view space
     float3 viewNormal;
-    viewNormal.x = dot(lightUniforms.modelView[0].xyz, objNormal);
-    viewNormal.y = dot(lightUniforms.modelView[1].xyz, objNormal);
-    viewNormal.z = dot(lightUniforms.modelView[2].xyz, objNormal);
+    viewNormal.x = dot(instance.modelView[0].xyz, objNormal);
+    viewNormal.y = dot(instance.modelView[1].xyz, objNormal);
+    viewNormal.z = dot(instance.modelView[2].xyz, objNormal);
     viewNormal = normalize(viewNormal);
     // Reconstruct view-space position from depth
     float depth = depthBuffer[pixel];

@@ -6,8 +6,8 @@ struct Uniforms {
     float4   cameraPos;
     uint     enableFrustumCull;
     uint     enableConeCull;
-    uint     pad0;
-    uint     pad1;
+    uint     meshletBaseOffset;
+    uint     instanceID;
 };
 
 struct GPUMeshlet {
@@ -61,7 +61,8 @@ static const uint kMaxVertices  = 64;
 static const uint kMaxTriangles = 124;
 static const uint INVALID_TEX   = 0xFFFFFFFF;
 static const uint kTextureArraySize = 96;
-static const uint kInstanceBits = 5;
+static const uint kInstanceBits = 11;
+static const uint kInstanceMask = (1u << kInstanceBits) - 1u;
 static const uint kVisibilityTriangleBits = 7;
 static const uint kVisibilityTriangleMask = (1u << kVisibilityTriangleBits) - 1u;
 static const uint kVisibilityMeshletShift = kVisibilityTriangleBits + kInstanceBits;
@@ -77,8 +78,9 @@ void meshMain(
     OutputIndices<uint3, kMaxTriangles>        outTris,
     OutputPrimitives<VisPrimitive, kMaxTriangles> outPrims)
 {
-    GPUMeshlet m = meshlets[groupID];
-    GPUMeshletBounds b = meshletBounds[groupID];
+    uint globalMeshletID = groupID + uniforms.meshletBaseOffset;
+    GPUMeshlet m = meshlets[globalMeshletID];
+    GPUMeshletBounds b = meshletBounds[globalMeshletID];
     float3 center = b.center_radius.xyz;
     float radius = b.center_radius.w;
     float3 coneAxis = b.cone_axis_cutoff.xyz;
@@ -110,7 +112,8 @@ void meshMain(
         }
     }
 
-    bool visibilityOverflow = (groupID > kVisibilityMeshletMask) ||
+    bool visibilityOverflow = (globalMeshletID > kVisibilityMeshletMask) ||
+                              (uniforms.instanceID > kInstanceMask) ||
                               (m.triangle_count > (kVisibilityTriangleMask + 1u));
 
     if (groupThreadID == 0)
@@ -122,7 +125,7 @@ void meshMain(
     if (culled || visibilityOverflow)
         return;
 
-    uint matID = meshletMaterialIDs[groupID];
+    uint matID = meshletMaterialIDs[globalMeshletID];
 
     if (groupThreadID < m.vertex_count) {
         uint vertexIndex = meshletVertices[m.vertex_offset + groupThreadID];
@@ -150,7 +153,9 @@ void meshMain(
         outTris[groupThreadID] = uint3(v0, v1, v2);
 
         VisPrimitive prim;
-        prim.visibility = (groupID << kVisibilityMeshletShift) | (groupThreadID << kInstanceBits);
+        prim.visibility = (globalMeshletID << kVisibilityMeshletShift) |
+                          (groupThreadID << kInstanceBits) |
+                          uniforms.instanceID;
         prim.materialID = matID;
         outPrims[groupThreadID] = prim;
     }

@@ -2,6 +2,7 @@
 
 #include <Metal/Metal.hpp>
 #include <cstdint>
+#include <vector>
 
 struct LoadedMesh;
 
@@ -27,6 +28,7 @@ struct MeshletData {
     MTL::Buffer* boundsBuffer     = nullptr;  // GPUMeshletBounds[]
     MTL::Buffer* materialIDs      = nullptr;  // uint32_t[] — material index per meshlet
     uint32_t meshletCount = 0;
+    std::vector<uint32_t> meshletsPerGroup; // meshlet count per primitive group
 };
 
 bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out);

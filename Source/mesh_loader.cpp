@@ -44,6 +44,7 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
 
     for (cgltf_size mi = 0; mi < data->meshes_count; mi++) {
         const cgltf_mesh& mesh = data->meshes[mi];
+        uint32_t groupStart = static_cast<uint32_t>(out.primitiveGroups.size());
         for (cgltf_size pi = 0; pi < mesh.primitives_count; pi++) {
             const cgltf_primitive& prim = mesh.primitives[pi];
 
@@ -128,6 +129,8 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
 
             totalPrimitives++;
         }
+        out.meshRanges.push_back({groupStart,
+            static_cast<uint32_t>(out.primitiveGroups.size()) - groupStart});
     }
 
     if (allPositions.empty() || allIndices.empty()) {

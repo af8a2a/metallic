@@ -18,12 +18,16 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 
+#include "scene_graph.h"
+#include "scene_graph_ui.h"
+
 #include <slang.h>
 #include <slang-com-ptr.h>
 
 #include <iostream>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <regex>
 #include <fstream>
 
@@ -40,9 +44,12 @@ struct Uniforms {
     float4   cameraPos; // object-space camera position
     uint32_t enableFrustumCull;
     uint32_t enableConeCull;
-    uint32_t pad0;
-    uint32_t pad1;
+    uint32_t meshletBaseOffset;
+    uint32_t instanceID;
 };
+
+static constexpr uint32_t kVisibilityInstanceBits = 11;
+static constexpr uint32_t kVisibilityInstanceMask = (1u << kVisibilityInstanceBits) - 1u;
 
 static void extractFrustumPlanes(const float4x4& mvp, float4* planes) {
     // Gribb-Hartmann method: extract planes from MVP matrix rows
@@ -286,9 +293,14 @@ struct LightingUniforms {
     uint32_t meshletCount;
     uint32_t materialCount;
     uint32_t textureCount;
-    uint32_t pad0;
+    uint32_t instanceCount;
     uint32_t pad1;
     uint32_t pad2;
+};
+
+struct SceneInstanceTransform {
+    float4x4 mvp;
+    float4x4 modelView;
 };
 
 int main() {
@@ -344,6 +356,14 @@ int main() {
         std::cerr << "Failed to load materials" << std::endl;
         return 1;
     }
+
+    // Build scene graph from glTF node hierarchy
+    SceneGraph sceneGraph;
+    if (!sceneGraph.buildFromGLTF("Asset/Sponza/glTF/Sponza.gltf", sceneMesh, meshletData)) {
+        std::cerr << "Failed to build scene graph" << std::endl;
+        return 1;
+    }
+    sceneGraph.updateTransforms();
 
     // Init orbit camera
     OrbitCamera camera;
@@ -585,6 +605,7 @@ int main() {
         float aspect;
         float4x4 view, proj, model, modelView, mvp;
         float4 worldLightDir, viewLightDir;
+        float4 cameraWorldPos;
         Uniforms uniforms;
         {
             ZoneScopedN("Matrix Computation");
@@ -609,7 +630,7 @@ int main() {
             // Camera position in world space
             float cosA = std::cos(camera.azimuth), sinA = std::sin(camera.azimuth);
             float cosE = std::cos(camera.elevation), sinE = std::sin(camera.elevation);
-            float4 cameraWorldPos = float4(
+            cameraWorldPos = float4(
                 camera.target.x + camera.distance * cosE * sinA,
                 camera.target.y + camera.distance * sinE,
                 camera.target.z + camera.distance * cosE * cosA,
@@ -623,8 +644,10 @@ int main() {
 
             uniforms.enableFrustumCull = enableFrustumCull ? 1 : 0;
             uniforms.enableConeCull = enableConeCull ? 1 : 0;
-            uniforms.pad0 = 0;
-            uniforms.pad1 = 0;
+            uniforms.meshletBaseOffset = 0;
+            uniforms.instanceID = 0;
+
+            sceneGraph.updateTransforms();
         }
 
         // Render pass
@@ -660,13 +683,73 @@ int main() {
         imguiFramePass->release();
         } // end ImGui Frame zone
 
+        drawSceneGraphUI(sceneGraph);
+
+        std::vector<uint32_t> visibleMeshletNodes;
+        std::vector<uint32_t> visibleIndexNodes;
+        visibleMeshletNodes.reserve(sceneGraph.nodes.size());
+        visibleIndexNodes.reserve(sceneGraph.nodes.size());
+        for (const auto& node : sceneGraph.nodes) {
+            if (!sceneGraph.isNodeVisible(node.id))
+                continue;
+            if (node.meshletCount > 0)
+                visibleMeshletNodes.push_back(node.id);
+            if (node.indexCount > 0)
+                visibleIndexNodes.push_back(node.id);
+        }
+
         // --- Build FrameGraph ---
         FrameGraph fg;
         auto drawableRes = fg.import("drawable", drawable->texture());
+        MTL::Buffer* instanceTransformBuffer = nullptr;
 
         if (renderMode == 2) {
             // === VISIBILITY BUFFER MODE ===
             ZoneScopedN("Visibility Buffer Graph Build");
+
+            static bool warnedInstanceOverflow = false;
+            if (!warnedInstanceOverflow &&
+                visibleMeshletNodes.size() > static_cast<size_t>(kVisibilityInstanceMask + 1)) {
+                std::cerr << "Visibility buffer instance limit exceeded ("
+                          << visibleMeshletNodes.size() << " > "
+                          << (kVisibilityInstanceMask + 1)
+                          << "), extra nodes will be skipped in this mode" << std::endl;
+                warnedInstanceOverflow = true;
+            }
+
+            constexpr uint32_t kVisibilityTriangleBits = 7;
+            constexpr uint32_t kVisibilityMeshletMask =
+                (1u << (32u - (kVisibilityTriangleBits + kVisibilityInstanceBits))) - 1u;
+            static bool warnedMeshletOverflow = false;
+            if (!warnedMeshletOverflow && meshletData.meshletCount > kVisibilityMeshletMask) {
+                std::cerr << "Visibility meshlet id limit exceeded ("
+                          << meshletData.meshletCount << " > "
+                          << (kVisibilityMeshletMask + 1)
+                          << "), overflowing meshlets will be culled" << std::endl;
+                warnedMeshletOverflow = true;
+            }
+
+            uint32_t visibilityInstanceCount =
+                static_cast<uint32_t>(std::min<size_t>(visibleMeshletNodes.size(),
+                                                       kVisibilityInstanceMask + 1));
+
+            std::vector<SceneInstanceTransform> visibilityInstanceTransforms;
+            visibilityInstanceTransforms.reserve(std::max<size_t>(visibilityInstanceCount, 1));
+            for (uint32_t instanceID = 0; instanceID < visibilityInstanceCount; instanceID++) {
+                const auto& node = sceneGraph.nodes[visibleMeshletNodes[instanceID]];
+                float4x4 nodeModelView = view * node.worldMatrix;
+                float4x4 nodeMVP = proj * nodeModelView;
+                visibilityInstanceTransforms.push_back({transpose(nodeMVP), transpose(nodeModelView)});
+            }
+
+            if (visibilityInstanceTransforms.empty()) {
+                visibilityInstanceTransforms.push_back({transpose(mvp), transpose(modelView)});
+            }
+
+            instanceTransformBuffer = device->newBuffer(
+                visibilityInstanceTransforms.data(),
+                visibilityInstanceTransforms.size() * sizeof(SceneInstanceTransform),
+                MTL::ResourceStorageModeShared);
 
             struct VisPassData {
                 FGResource visibility;
@@ -689,7 +772,7 @@ int main() {
                     enc->setFrontFacingWinding(MTL::WindingCounterClockwise);
                     enc->setCullMode(MTL::CullModeBack);
                     enc->setRenderPipelineState(visPipelineState);
-                    enc->setMeshBytes(&uniforms, sizeof(uniforms), 0);
+                    // Bind shared buffers once
                     enc->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
                     enc->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
                     enc->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
@@ -699,7 +782,6 @@ int main() {
                     enc->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
                     enc->setMeshBuffer(meshletData.materialIDs, 0, 8);
                     enc->setMeshBuffer(materials.materialBuffer, 0, 9);
-                    enc->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
                     enc->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
                     enc->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
                     enc->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
@@ -719,10 +801,28 @@ int main() {
                     }
                     enc->setFragmentSamplerState(materials.sampler, 0);
                     enc->setMeshSamplerState(materials.sampler, 0);
-                    enc->drawMeshThreadgroups(
-                        MTL::Size(meshletData.meshletCount, 1, 1),
-                        MTL::Size(1, 1, 1),
-                        MTL::Size(128, 1, 1));
+
+                    // Per-node dispatch
+                    for (uint32_t instanceID = 0; instanceID < visibilityInstanceCount; instanceID++) {
+                        const auto& node = sceneGraph.nodes[visibleMeshletNodes[instanceID]];
+                        float4x4 nodeModelView = view * node.worldMatrix;
+                        float4x4 nodeMVP = proj * nodeModelView;
+                        Uniforms nodeUniforms = uniforms;
+                        nodeUniforms.mvp = transpose(nodeMVP);
+                        nodeUniforms.modelView = transpose(nodeModelView);
+                        extractFrustumPlanes(nodeMVP, nodeUniforms.frustumPlanes);
+                        float4x4 invModel = node.worldMatrix;
+                        invModel.Invert();
+                        nodeUniforms.cameraPos = invModel * cameraWorldPos;
+                        nodeUniforms.meshletBaseOffset = node.meshletStart;
+                        nodeUniforms.instanceID = instanceID;
+                        enc->setMeshBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+                        enc->setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+                        enc->drawMeshThreadgroups(
+                            MTL::Size(node.meshletCount, 1, 1),
+                            MTL::Size(1, 1, 1),
+                            MTL::Size(128, 1, 1));
+                    }
                 });
 
             // Compute lighting uniforms
@@ -738,7 +838,7 @@ int main() {
             lightUniforms.meshletCount = meshletData.meshletCount;
             lightUniforms.materialCount = materials.materialCount;
             lightUniforms.textureCount = static_cast<uint32_t>(materials.textures.size());
-            lightUniforms.pad0 = 0;
+            lightUniforms.instanceCount = visibilityInstanceCount;
             lightUniforms.pad1 = 0;
             lightUniforms.pad2 = 0;
 
@@ -765,6 +865,7 @@ int main() {
                     enc->setBuffer(sceneMesh.uvBuffer, 0, 6);
                     enc->setBuffer(meshletData.materialIDs, 0, 7);
                     enc->setBuffer(materials.materialBuffer, 0, 8);
+                    enc->setBuffer(instanceTransformBuffer, 0, 9);
                     enc->setTexture(fg.getTexture(data.visibility), 0);
                     enc->setTexture(fg.getTexture(data.depth), 1);
                     enc->setTexture(fg.getTexture(data.output), 2);
@@ -830,7 +931,7 @@ int main() {
 
                     if (renderMode == 1) {
                         enc->setRenderPipelineState(meshPipelineState);
-                        enc->setMeshBytes(&uniforms, sizeof(uniforms), 0);
+                        // Bind shared buffers once
                         enc->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
                         enc->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
                         enc->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
@@ -840,7 +941,6 @@ int main() {
                         enc->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
                         enc->setMeshBuffer(meshletData.materialIDs, 0, 8);
                         enc->setMeshBuffer(materials.materialBuffer, 0, 9);
-                        enc->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
                         enc->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
                         enc->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
                         enc->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
@@ -860,20 +960,51 @@ int main() {
                         }
                         enc->setFragmentSamplerState(materials.sampler, 0);
                         enc->setMeshSamplerState(materials.sampler, 0);
-                        enc->drawMeshThreadgroups(
-                            MTL::Size(meshletData.meshletCount, 1, 1),
-                            MTL::Size(1, 1, 1),
-                            MTL::Size(128, 1, 1));
+
+                        // Per-node dispatch
+                        for (uint32_t nodeID : visibleMeshletNodes) {
+                            const auto& node = sceneGraph.nodes[nodeID];
+                            float4x4 nodeModelView = view * node.worldMatrix;
+                            float4x4 nodeMVP = proj * nodeModelView;
+                            Uniforms nodeUniforms = uniforms;
+                            nodeUniforms.mvp = transpose(nodeMVP);
+                            nodeUniforms.modelView = transpose(nodeModelView);
+                            extractFrustumPlanes(nodeMVP, nodeUniforms.frustumPlanes);
+                            float4x4 invModel = node.worldMatrix;
+                            invModel.Invert();
+                            nodeUniforms.cameraPos = invModel * cameraWorldPos;
+                            nodeUniforms.meshletBaseOffset = node.meshletStart;
+                            nodeUniforms.instanceID = 0;
+                            enc->setMeshBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+                            enc->setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+                            enc->drawMeshThreadgroups(
+                                MTL::Size(node.meshletCount, 1, 1),
+                                MTL::Size(1, 1, 1),
+                                MTL::Size(128, 1, 1));
+                        }
                     } else {
                         enc->setRenderPipelineState(pipelineState);
                         enc->setVertexBuffer(sceneMesh.positionBuffer, 0, 1);
                         enc->setVertexBuffer(sceneMesh.normalBuffer, 0, 2);
-                        enc->setVertexBytes(&uniforms, sizeof(uniforms), 0);
-                        enc->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
-                        enc->drawIndexedPrimitives(
-                            MTL::PrimitiveTypeTriangle,
-                            sceneMesh.indexCount, MTL::IndexTypeUInt32,
-                            sceneMesh.indexBuffer, 0);
+
+                        // Per-node dispatch for vertex pipeline
+                        for (uint32_t nodeID : visibleIndexNodes) {
+                            const auto& node = sceneGraph.nodes[nodeID];
+                            float4x4 nodeModelView = view * node.worldMatrix;
+                            float4x4 nodeMVP = proj * nodeModelView;
+                            Uniforms nodeUniforms = uniforms;
+                            nodeUniforms.mvp = transpose(nodeMVP);
+                            nodeUniforms.modelView = transpose(nodeModelView);
+                            float4x4 invModel = node.worldMatrix;
+                            invModel.Invert();
+                            nodeUniforms.cameraPos = invModel * cameraWorldPos;
+                            enc->setVertexBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+                            enc->setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+                            enc->drawIndexedPrimitives(
+                                MTL::PrimitiveTypeTriangle,
+                                node.indexCount, MTL::IndexTypeUInt32,
+                                sceneMesh.indexBuffer, node.indexStart * sizeof(uint32_t));
+                        }
                     }
 
                     imguiRenderDrawData(commandBuffer, enc);
@@ -901,6 +1032,9 @@ int main() {
 
         commandBuffer->presentDrawable(drawable);
         commandBuffer->commit();
+
+        if (instanceTransformBuffer)
+            instanceTransformBuffer->release();
 
         FrameMark;
         pool->release();

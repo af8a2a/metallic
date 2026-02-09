@@ -10,6 +10,8 @@ static constexpr size_t MAX_TRIANGLES = 124;
 static constexpr float  CONE_WEIGHT   = 0.5f;
 
 bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out) {
+    out.meshletsPerGroup.clear();
+
     const auto* allPositions = static_cast<const float*>(mesh.positionBuffer->contents());
     size_t totalVertexCount = mesh.vertexCount;
     size_t vertexStride = sizeof(float) * 3;
@@ -39,7 +41,10 @@ bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out
         const uint32_t* groupIndices = allIndices + group.indexOffset;
         size_t groupIndexCount = group.indexCount;
 
-        if (groupIndexCount == 0) continue;
+        if (groupIndexCount == 0) {
+            out.meshletsPerGroup.push_back(0);
+            continue;
+        }
 
         // Compute worst-case buffer sizes for this group
         size_t maxMeshlets = meshopt_buildMeshletsBound(groupIndexCount, MAX_VERTICES, MAX_TRIANGLES);
@@ -128,6 +133,8 @@ bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out
         for (size_t i = 0; i < meshletCount; i++) {
             allMaterialIDs.push_back(group.materialIndex);
         }
+
+        out.meshletsPerGroup.push_back(static_cast<uint32_t>(meshletCount));
     }
 
     size_t totalMeshlets = allGpuMeshlets.size();

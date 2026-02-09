@@ -6,8 +6,8 @@ struct Uniforms {
     float4   cameraPos;        // object-space camera position (xyz), w unused
     uint     enableFrustumCull;
     uint     enableConeCull;
-    uint     pad0;
-    uint     pad1;
+    uint     meshletBaseOffset;
+    uint     instanceID;
 };
 
 struct GPUMeshlet {
@@ -69,8 +69,9 @@ void meshMain(
     OutputVertices<MeshOutput, kMaxVertices>  outVerts,
     OutputIndices<uint3, kMaxTriangles>       outTris)
 {
-    GPUMeshlet m = meshlets[groupID];
-    GPUMeshletBounds b = meshletBounds[groupID];
+    uint globalMeshletID = groupID + uniforms.meshletBaseOffset;
+    GPUMeshlet m = meshlets[globalMeshletID];
+    GPUMeshletBounds b = meshletBounds[globalMeshletID];
     float3 center = b.center_radius.xyz;
     float radius = b.center_radius.w;
     float3 coneAxis = b.cone_axis_cutoff.xyz;
@@ -110,7 +111,7 @@ void meshMain(
     if (culled)
         return;
 
-    uint matID = meshletMaterialIDs[groupID];
+    uint matID = meshletMaterialIDs[globalMeshletID];
 
     if (groupThreadID < m.vertex_count) {
         uint vertexIndex = meshletVertices[m.vertex_offset + groupThreadID];
