@@ -620,8 +620,8 @@ int main() {
             modelView = view * model;
             mvp = proj * modelView;
 
-            // Light direction in view space (from upper-right-front)
-            worldLightDir = float4(normalize(float3(0.5f, 1.0f, 0.8f)), 0.0f);
+            // Light direction in view space (sun directional light from scene graph)
+            worldLightDir = float4(sceneGraph.getSunLightDirection(), 0.0f);
             viewLightDir = view * worldLightDir;
 
             uniforms.mvp = transpose(mvp);

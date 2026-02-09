@@ -115,6 +115,41 @@ static void drawPropertyPanel(SceneGraph& scene) {
     if (transformChanged)
         scene.markDirty(static_cast<uint32_t>(scene.selectedNode));
 
+    if (node.hasLight) {
+        ImGui::Separator();
+        ImGui::Text("Light");
+
+        if (node.light.type == LightType::Directional) {
+            ImGui::Text("Type: Directional");
+
+            float dir[3] = {
+                node.light.directional.direction.x,
+                node.light.directional.direction.y,
+                node.light.directional.direction.z
+            };
+            if (ImGui::DragFloat3("Direction", dir, 0.01f, -1.0f, 1.0f)) {
+                float3 d(dir[0], dir[1], dir[2]);
+                float len = length(d);
+                if (len > 1e-6f)
+                    node.light.directional.direction = d / len;
+            }
+
+            float color[3] = {
+                node.light.directional.color.x,
+                node.light.directional.color.y,
+                node.light.directional.color.z
+            };
+            if (ImGui::ColorEdit3("Color", color)) {
+                node.light.directional.color = float3(color[0], color[1], color[2]);
+            }
+
+            ImGui::DragFloat("Intensity", &node.light.directional.intensity, 0.01f, 0.0f, 100.0f);
+
+            if (scene.sunLightNode == scene.selectedNode)
+                ImGui::TextDisabled("Scene Sun Source");
+        }
+    }
+
     ImGui::Separator();
     ImGui::Text("Mesh Info");
     if (node.meshIndex >= 0) {

@@ -100,6 +100,7 @@ bool SceneGraph::buildFromGLTF(const std::string& gltfPath,
     nodes.clear();
     rootNodes.clear();
     selectedNode = -1;
+    sunLightNode = -1;
 
     cgltf_options options = {};
     cgltf_data* data = nullptr;
@@ -131,6 +132,8 @@ bool SceneGraph::buildFromGLTF(const std::string& gltfPath,
                          mesh, meshletGroupPrefix, *this);
         rootNodes.push_back(rootIdx);
     }
+
+    addDirectionalLightNode("Sun", normalize(float3(0.5f, 1.0f, 0.8f)), true);
 
     cgltf_free(data);
 
@@ -181,4 +184,38 @@ bool SceneGraph::isNodeVisible(uint32_t nodeId) const {
         id = static_cast<uint32_t>(nodes[id].parent);
     }
     return true;
+}
+
+uint32_t SceneGraph::addDirectionalLightNode(const std::string& name,
+                                             const float3& direction,
+                                             bool setAsSunSource) {
+    uint32_t nodeIdx = static_cast<uint32_t>(nodes.size());
+    nodes.emplace_back();
+    SceneNode& node = nodes.back();
+    node.id = nodeIdx;
+    node.name = name;
+    node.hasLight = true;
+    node.light.type = LightType::Directional;
+
+    float dirLen = length(direction);
+    node.light.directional.direction =
+        (dirLen > 1e-6f) ? (direction / dirLen) : normalize(float3(0.5f, 1.0f, 0.8f));
+
+    rootNodes.push_back(nodeIdx);
+    if (setAsSunSource)
+        sunLightNode = static_cast<int32_t>(nodeIdx);
+    return nodeIdx;
+}
+
+float3 SceneGraph::getSunLightDirection() const {
+    if (sunLightNode >= 0 && sunLightNode < static_cast<int32_t>(nodes.size())) {
+        const SceneNode& sunNode = nodes[sunLightNode];
+        if (sunNode.hasLight && sunNode.light.type == LightType::Directional) {
+            float dirLen = length(sunNode.light.directional.direction);
+            if (dirLen > 1e-6f)
+                return sunNode.light.directional.direction / dirLen;
+        }
+    }
+
+    return normalize(float3(0.5f, 1.0f, 0.8f));
 }

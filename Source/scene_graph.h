@@ -8,6 +8,21 @@
 struct LoadedMesh;
 struct MeshletData;
 
+enum class LightType : uint8_t {
+    Directional = 0
+};
+
+struct DirectionalLight {
+    float3 direction = normalize(float3(0.5f, 1.0f, 0.8f)); // world-space direction to light
+    float3 color = float3(1.f, 1.f, 1.f);
+    float intensity = 1.0f;
+};
+
+struct LightComponent {
+    LightType type = LightType::Directional;
+    DirectionalLight directional;
+};
+
 struct TransformComponent {
     float3 translation = float3(0.f, 0.f, 0.f);
     float4 rotation = float4(0.f, 0.f, 0.f, 1.f); // quaternion xyzw
@@ -36,6 +51,10 @@ struct SceneNode {
     uint32_t indexStart = 0;
     uint32_t indexCount = 0;
 
+    // Optional single light component.
+    bool hasLight = false;
+    LightComponent light;
+
     bool visible = true;
 };
 
@@ -44,6 +63,7 @@ public:
     std::vector<SceneNode> nodes;
     std::vector<uint32_t> rootNodes;
     int32_t selectedNode = -1;
+    int32_t sunLightNode = -1;
 
     bool buildFromGLTF(const std::string& gltfPath,
                        const LoadedMesh& mesh,
@@ -51,4 +71,8 @@ public:
     void updateTransforms();
     void markDirty(uint32_t nodeId);
     bool isNodeVisible(uint32_t nodeId) const;
+    uint32_t addDirectionalLightNode(const std::string& name,
+                                     const float3& direction,
+                                     bool setAsSunSource);
+    float3 getSunLightDirection() const;
 };
