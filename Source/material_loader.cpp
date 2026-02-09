@@ -5,6 +5,7 @@
 #include "material_loader.h"
 #include <iostream>
 #include <filesystem>
+#include <algorithm>
 
 static MTL::Texture* createTextureFromImage(MTL::Device* device, MTL::CommandQueue* commandQueue,
                                             const std::string& imagePath) {
@@ -70,8 +71,15 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
     std::filesystem::path basePath = std::filesystem::path(gltfPath).parent_path();
 
     // Load all images as textures
-    out.textures.resize(data->images_count, nullptr);
-    for (cgltf_size i = 0; i < data->images_count; i++) {
+    const cgltf_size textureCount = std::min<cgltf_size>(data->images_count, MAX_SCENE_TEXTURES);
+    if (data->images_count > textureCount) {
+        std::cerr << "Warning: scene has " << data->images_count
+                  << " images, but only first " << textureCount
+                  << " are bound (MAX_SCENE_TEXTURES)." << std::endl;
+    }
+
+    out.textures.resize(textureCount, nullptr);
+    for (cgltf_size i = 0; i < textureCount; i++) {
         const cgltf_image& img = data->images[i];
         if (!img.uri) continue;
         std::string fullPath = (basePath / img.uri).string();
@@ -101,6 +109,17 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
 
     std::cout << "Loaded " << out.textures.size() << " textures" << std::endl;
 
+    auto resolveTextureIndex = [&](const cgltf_texture* tex) -> uint32_t {
+        if (!tex || !tex->image)
+            return INVALID_TEXTURE_INDEX;
+
+        const uint32_t imageIndex = static_cast<uint32_t>(tex->image - data->images);
+        if (imageIndex >= out.textures.size())
+            return INVALID_TEXTURE_INDEX;
+
+        return imageIndex;
+    };
+
     // Build material array
     std::vector<GPUMaterial> materials(data->materials_count);
     for (cgltf_size i = 0; i < data->materials_count; i++) {
@@ -114,10 +133,7 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
         // Base color texture
         if (mat.has_pbr_metallic_roughness) {
             const auto& pbr = mat.pbr_metallic_roughness;
-            if (pbr.base_color_texture.texture && pbr.base_color_texture.texture->image) {
-                gpu.baseColorTexIndex = static_cast<uint32_t>(
-                    pbr.base_color_texture.texture->image - data->images);
-            }
+            gpu.baseColorTexIndex = resolveTextureIndex(pbr.base_color_texture.texture);
             gpu.baseColorFactor[0] = pbr.base_color_factor[0];
             gpu.baseColorFactor[1] = pbr.base_color_factor[1];
             gpu.baseColorFactor[2] = pbr.base_color_factor[2];
@@ -126,10 +142,7 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
             gpu.roughnessFactor = pbr.roughness_factor;
 
             // Metallic-roughness texture
-            if (pbr.metallic_roughness_texture.texture && pbr.metallic_roughness_texture.texture->image) {
-                gpu.metallicRoughnessTexIndex = static_cast<uint32_t>(
-                    pbr.metallic_roughness_texture.texture->image - data->images);
-            }
+            gpu.metallicRoughnessTexIndex = resolveTextureIndex(pbr.metallic_roughness_texture.texture);
         } else {
             gpu.baseColorFactor[0] = 1.0f;
             gpu.baseColorFactor[1] = 1.0f;
@@ -140,10 +153,7 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
         }
 
         // Normal texture
-        if (mat.normal_texture.texture && mat.normal_texture.texture->image) {
-            gpu.normalTexIndex = static_cast<uint32_t>(
-                mat.normal_texture.texture->image - data->images);
-        }
+        gpu.normalTexIndex = resolveTextureIndex(mat.normal_texture.texture);
 
         // Alpha mode
         gpu.alphaMode = (mat.alpha_mode == cgltf_alpha_mode_mask) ? 1 : 0;

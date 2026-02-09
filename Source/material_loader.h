@@ -6,6 +6,7 @@
 #include <cstdint>
 
 static constexpr uint32_t INVALID_TEXTURE_INDEX = 0xFFFFFFFF;
+static constexpr uint32_t MAX_SCENE_TEXTURES = 96;
 
 struct GPUMaterial {
     uint32_t baseColorTexIndex;

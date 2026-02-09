@@ -158,6 +158,53 @@ static std::string compileSlangMeshShaderToMetal(const char* shaderPath) {
                        metalCode->getBufferSize());
 }
 
+static std::string compileSlangComputeShaderToMetal(const char* shaderPath) {
+    Slang::ComPtr<slang::IGlobalSession> globalSession;
+    slang::createGlobalSession(globalSession.writeRef());
+
+    slang::SessionDesc sessionDesc = {};
+    slang::TargetDesc targetDesc = {};
+    targetDesc.format = SLANG_METAL;
+    targetDesc.profile = globalSession->findProfile("metal");
+    sessionDesc.targets = &targetDesc;
+    sessionDesc.targetCount = 1;
+
+    Slang::ComPtr<slang::ISession> session;
+    globalSession->createSession(sessionDesc, session.writeRef());
+
+    Slang::ComPtr<slang::IBlob> diagnostics;
+    slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
+    if (!module) {
+        if (diagnostics)
+            std::cerr << "Slang load error: "
+                      << static_cast<const char*>(diagnostics->getBufferPointer()) << std::endl;
+        return {};
+    }
+
+    Slang::ComPtr<slang::IEntryPoint> computeEntry;
+    module->findEntryPointByName("computeMain", computeEntry.writeRef());
+
+    std::vector<slang::IComponentType*> components = {module, computeEntry};
+    Slang::ComPtr<slang::IComponentType> program;
+    session->createCompositeComponentType(
+        components.data(), components.size(), program.writeRef(), diagnostics.writeRef());
+
+    Slang::ComPtr<slang::IComponentType> linkedProgram;
+    program->link(linkedProgram.writeRef(), diagnostics.writeRef());
+
+    Slang::ComPtr<slang::IBlob> metalCode;
+    linkedProgram->getTargetCode(0, metalCode.writeRef(), diagnostics.writeRef());
+    if (!metalCode) {
+        if (diagnostics)
+            std::cerr << "Slang compute shader compile error: "
+                      << static_cast<const char*>(diagnostics->getBufferPointer()) << std::endl;
+        return {};
+    }
+
+    return std::string(static_cast<const char*>(metalCode->getBufferPointer()),
+                       metalCode->getBufferSize());
+}
+
 static std::string patchMeshShaderMetalSource(const std::string& source) {
     // Slang v2026.1.2 bug: mesh output struct members lack [[user(...)]] attributes
     // that the fragment shader's [[stage_in]] expects. We patch them in.
@@ -179,19 +226,87 @@ static std::string patchMeshShaderMetalSource(const std::string& source) {
     // Slang doesn't emit [[texture(0)]] on texture array parameters.
     // Patch both mesh and fragment function signatures.
     patched = std::regex_replace(patched,
-        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(128\)>\s+\w+))"),
+        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w+))"),
         "$1 [[texture(0)]]");
 
     return patched;
+}
+
+static std::string patchVisibilityShaderMetalSource(const std::string& source) {
+    std::string patched = source;
+
+    // Patch [[user(...)]] on VisVertex members in mesh output struct
+    patched = std::regex_replace(patched,
+        std::regex(R"((float2\s+\w*uv\w*)\s*;)"),
+        "$1 [[user(TEXCOORD)]];");
+
+    // Patch [[user(...)]] on VisPrimitive members
+    patched = std::regex_replace(patched,
+        std::regex(R"((uint\s+\w*visibility\w*)\s*;)"),
+        "$1 [[user(TEXCOORD_1)]];");
+    patched = std::regex_replace(patched,
+        std::regex(R"((uint\s+\w*materialID\w*)\s*;)"),
+        "$1 [[user(TEXCOORD_2)]];");
+
+    // Patch [[texture(0)]] on texture array parameters
+    patched = std::regex_replace(patched,
+        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w+))"),
+        "$1 [[texture(0)]]");
+
+    return patched;
+}
+
+static std::string patchComputeShaderMetalSource(const std::string& source) {
+    std::string patched = source;
+
+    // Slang emits [[texture(3)]] on the KernelContext struct member but NOT on
+    // the function parameter. Patch the function parameter to add [[texture(3)]].
+    // Match array texture params that don't already have [[texture(...)]]
+    patched = std::regex_replace(patched,
+        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w+)(\s*,))"),
+        "$1 [[texture(3)]]$2");
+
+    return patched;
+}
+
+static MTL::Texture* createVisibilityTexture(MTL::Device* device, int width, int height) {
+    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatR32Uint, width, height, false);
+    desc->setStorageMode(MTL::StorageModePrivate);
+    desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
+    return device->newTexture(desc);
+}
+
+static MTL::Texture* createOutputTexture(MTL::Device* device, int width, int height) {
+    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatBGRA8Unorm, width, height, false);
+    desc->setStorageMode(MTL::StorageModePrivate);
+    desc->setUsage(MTL::TextureUsageShaderWrite | MTL::TextureUsageShaderRead);
+    return device->newTexture(desc);
 }
 
 static MTL::Texture* createDepthTexture(MTL::Device* device, int width, int height) {
     auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
         MTL::PixelFormatDepth32Float, width, height, false);
     desc->setStorageMode(MTL::StorageModePrivate);
-    desc->setUsage(MTL::TextureUsageRenderTarget);
+    desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
     return device->newTexture(desc);
 }
+
+struct LightingUniforms {
+    float4x4 mvp;
+    float4x4 modelView;
+    float4   lightDir;
+    float4x4 invProj;
+    uint32_t screenWidth;
+    uint32_t screenHeight;
+    uint32_t meshletCount;
+    uint32_t materialCount;
+    uint32_t textureCount;
+    uint32_t pad0;
+    uint32_t pad1;
+    uint32_t pad2;
+};
 
 int main() {
     if (!glfwInit()) {
@@ -368,7 +483,82 @@ int main() {
     meshFragFn->release();
     meshLibrary->release();
 
-    bool useMeshShader = false;
+    // --- Visibility buffer mesh shader pipeline ---
+    std::string visMetalSource = compileSlangMeshShaderToMetal("Shaders/visibility");
+    if (visMetalSource.empty()) {
+        std::cerr << "Failed to compile visibility shader" << std::endl;
+        return 1;
+    }
+    visMetalSource = patchVisibilityShaderMetalSource(visMetalSource);
+    std::cout << "Visibility shader compiled (" << visMetalSource.size() << " bytes)" << std::endl;
+
+    NS::String* visSourceStr = NS::String::string(visMetalSource.c_str(), NS::UTF8StringEncoding);
+    MTL::CompileOptions* visCompileOpts = MTL::CompileOptions::alloc()->init();
+    MTL::Library* visLibrary = device->newLibrary(visSourceStr, visCompileOpts, &error);
+    visCompileOpts->release();
+    if (!visLibrary) {
+        std::cerr << "Failed to create visibility Metal library: "
+                  << error->localizedDescription()->utf8String() << std::endl;
+        return 1;
+    }
+
+    MTL::Function* visMeshFn = visLibrary->newFunction(
+        NS::String::string("meshMain", NS::UTF8StringEncoding));
+    MTL::Function* visFragFn = visLibrary->newFunction(
+        NS::String::string("fragmentMain", NS::UTF8StringEncoding));
+
+    auto* visPipelineDesc = MTL::MeshRenderPipelineDescriptor::alloc()->init();
+    visPipelineDesc->setMeshFunction(visMeshFn);
+    visPipelineDesc->setFragmentFunction(visFragFn);
+    visPipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatR32Uint);
+    visPipelineDesc->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
+
+    NS::Error* visError = nullptr;
+    MTL::RenderPipelineReflection* visReflection = nullptr;
+    MTL::RenderPipelineState* visPipelineState = device->newRenderPipelineState(
+        visPipelineDesc, MTL::PipelineOptionNone, &visReflection, &visError);
+    if (!visPipelineState) {
+        std::cerr << "Failed to create visibility pipeline state: "
+                  << visError->localizedDescription()->utf8String() << std::endl;
+        return 1;
+    }
+    visPipelineDesc->release();
+    visMeshFn->release();
+    visFragFn->release();
+    visLibrary->release();
+
+    // --- Deferred lighting compute pipeline ---
+    std::string computeMetalSource = compileSlangComputeShaderToMetal("Shaders/deferred_lighting");
+    if (computeMetalSource.empty()) {
+        std::cerr << "Failed to compile deferred lighting shader" << std::endl;
+        return 1;
+    }
+    computeMetalSource = patchComputeShaderMetalSource(computeMetalSource);
+    std::cout << "Compute shader compiled (" << computeMetalSource.size() << " bytes)" << std::endl;
+
+    NS::String* computeSourceStr = NS::String::string(computeMetalSource.c_str(), NS::UTF8StringEncoding);
+    MTL::CompileOptions* computeCompileOpts = MTL::CompileOptions::alloc()->init();
+    MTL::Library* computeLibrary = device->newLibrary(computeSourceStr, computeCompileOpts, &error);
+    computeCompileOpts->release();
+    if (!computeLibrary) {
+        std::cerr << "Failed to create compute Metal library: "
+                  << error->localizedDescription()->utf8String() << std::endl;
+        return 1;
+    }
+
+    MTL::Function* computeFn = computeLibrary->newFunction(
+        NS::String::string("computeMain", NS::UTF8StringEncoding));
+    MTL::ComputePipelineState* computePipelineState =
+        device->newComputePipelineState(computeFn, &error);
+    if (!computePipelineState) {
+        std::cerr << "Failed to create compute pipeline state: "
+                  << error->localizedDescription()->utf8String() << std::endl;
+        return 1;
+    }
+    computeFn->release();
+    computeLibrary->release();
+
+    int renderMode = 0; // 0=Vertex, 1=Mesh, 2=Visibility Buffer
     bool enableFrustumCull = false;
     bool enableConeCull = false;
 
@@ -383,6 +573,8 @@ int main() {
     int fbWidth, fbHeight;
     glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
     MTL::Texture* depthTexture = createDepthTexture(device, fbWidth, fbHeight);
+    MTL::Texture* visibilityTexture = createVisibilityTexture(device, fbWidth, fbHeight);
+    MTL::Texture* outputTexture = createOutputTexture(device, fbWidth, fbHeight);
     int prevWidth = fbWidth, prevHeight = fbHeight;
 
     while (!glfwWindowShouldClose(window)) {
@@ -402,6 +594,10 @@ int main() {
         if (width != prevWidth || height != prevHeight) {
             depthTexture->release();
             depthTexture = createDepthTexture(device, width, height);
+            visibilityTexture->release();
+            visibilityTexture = createVisibilityTexture(device, width, height);
+            outputTexture->release();
+            outputTexture = createOutputTexture(device, width, height);
             prevWidth = width;
             prevHeight = height;
         }
@@ -453,25 +649,12 @@ int main() {
         uniforms.pad1 = 0;
 
         // Render pass
-        MTL::RenderPassDescriptor* renderPass = MTL::RenderPassDescriptor::alloc()->init();
-        auto* colorAttachment = renderPass->colorAttachments()->object(0);
-        colorAttachment->setTexture(drawable->texture());
-        colorAttachment->setLoadAction(MTL::LoadActionClear);
-        colorAttachment->setClearColor(MTL::ClearColor(0.1, 0.2, 0.3, 1.0));
-        colorAttachment->setStoreAction(MTL::StoreActionStore);
-
-        auto* depthAttachment = renderPass->depthAttachment();
-        depthAttachment->setTexture(depthTexture);
-        depthAttachment->setLoadAction(MTL::LoadActionClear);
-        depthAttachment->setClearDepth(1.0);
-        depthAttachment->setStoreAction(MTL::StoreActionDontCare);
-
         MTL::CommandBuffer* commandBuffer = commandQueue->commandBuffer();
-        MTL::RenderCommandEncoder* encoder =
-            commandBuffer->renderCommandEncoder(renderPass);
 
-        // ImGui new frame
-        imguiNewFrame(renderPass);
+        // ImGui new frame (needs a render pass descriptor for Metal backend)
+        MTL::RenderPassDescriptor* imguiFramePass = MTL::RenderPassDescriptor::alloc()->init();
+        imguiFramePass->colorAttachments()->object(0)->setTexture(drawable->texture());
+        imguiNewFrame(imguiFramePass);
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(10, 10));
@@ -480,81 +663,219 @@ int main() {
             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
         ImGui::Text("%.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
         ImGui::Separator();
-        int renderMode = useMeshShader ? 1 : 0;
         ImGui::RadioButton("Vertex Shader", &renderMode, 0);
         ImGui::RadioButton("Mesh Shader", &renderMode, 1);
-        useMeshShader = (renderMode == 1);
-        if (useMeshShader) {
+        ImGui::RadioButton("Visibility Buffer", &renderMode, 2);
+        if (renderMode >= 1) {
             ImGui::Text("Meshlets: %u", meshletData.meshletCount);
             ImGui::Checkbox("Frustum Culling", &enableFrustumCull);
             ImGui::Checkbox("Backface Culling", &enableConeCull);
         }
         ImGui::End();
         ImGui::Render();
+        imguiFramePass->release();
 
-        encoder->setDepthStencilState(depthState);
-        encoder->setFrontFacingWinding(MTL::WindingCounterClockwise);
-        encoder->setCullMode(MTL::CullModeBack);
+        if (renderMode == 2) {
+            // === VISIBILITY BUFFER MODE ===
 
-        if (useMeshShader) {
-            encoder->setRenderPipelineState(meshPipelineState);
-            encoder->setMeshBytes(&uniforms, sizeof(uniforms), 0);
-            encoder->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
-            encoder->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
-            encoder->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
-            encoder->setMeshBuffer(meshletData.meshletVertices, 0, 4);
-            encoder->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
-            encoder->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
-            encoder->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
-            encoder->setMeshBuffer(meshletData.materialIDs, 0, 8);
-            // Slang puts materials buffer in mesh stage KernelContext too (buffer 9)
-            encoder->setMeshBuffer(materials.materialBuffer, 0, 9);
-            encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
-            // Slang's KernelContext requires all global buffers bound to fragment stage too
-            encoder->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
-            encoder->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
-            encoder->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
-            encoder->setFragmentBuffer(meshletData.meshletVertices, 0, 4);
-            encoder->setFragmentBuffer(meshletData.meshletTriangles, 0, 5);
-            encoder->setFragmentBuffer(meshletData.boundsBuffer, 0, 6);
-            encoder->setFragmentBuffer(sceneMesh.uvBuffer, 0, 7);
-            encoder->setFragmentBuffer(meshletData.materialIDs, 0, 8);
-            encoder->setFragmentBuffer(materials.materialBuffer, 0, 9);
+            // Pass 1: Visibility buffer (mesh shader → R32Uint)
+            MTL::RenderPassDescriptor* visPass = MTL::RenderPassDescriptor::alloc()->init();
+            auto* visColor = visPass->colorAttachments()->object(0);
+            visColor->setTexture(visibilityTexture);
+            visColor->setLoadAction(MTL::LoadActionClear);
+            visColor->setClearColor(MTL::ClearColor(0xFFFFFFFF, 0, 0, 0));
+            visColor->setStoreAction(MTL::StoreActionStore);
+
+            auto* visDepth = visPass->depthAttachment();
+            visDepth->setTexture(depthTexture);
+            visDepth->setLoadAction(MTL::LoadActionClear);
+            visDepth->setClearDepth(1.0);
+            visDepth->setStoreAction(MTL::StoreActionStore);
+
+            MTL::RenderCommandEncoder* visEncoder =
+                commandBuffer->renderCommandEncoder(visPass);
+            visEncoder->setDepthStencilState(depthState);
+            visEncoder->setFrontFacingWinding(MTL::WindingCounterClockwise);
+            visEncoder->setCullMode(MTL::CullModeBack);
+            visEncoder->setRenderPipelineState(visPipelineState);
+            // Bind mesh-stage buffers (same as forward path)
+            visEncoder->setMeshBytes(&uniforms, sizeof(uniforms), 0);
+            visEncoder->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
+            visEncoder->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
+            visEncoder->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
+            visEncoder->setMeshBuffer(meshletData.meshletVertices, 0, 4);
+            visEncoder->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
+            visEncoder->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
+            visEncoder->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
+            visEncoder->setMeshBuffer(meshletData.materialIDs, 0, 8);
+            visEncoder->setMeshBuffer(materials.materialBuffer, 0, 9);
+            // Fragment-stage buffers (KernelContext requirement)
+            visEncoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+            visEncoder->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
+            visEncoder->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
+            visEncoder->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
+            visEncoder->setFragmentBuffer(meshletData.meshletVertices, 0, 4);
+            visEncoder->setFragmentBuffer(meshletData.meshletTriangles, 0, 5);
+            visEncoder->setFragmentBuffer(meshletData.boundsBuffer, 0, 6);
+            visEncoder->setFragmentBuffer(sceneMesh.uvBuffer, 0, 7);
+            visEncoder->setFragmentBuffer(meshletData.materialIDs, 0, 8);
+            visEncoder->setFragmentBuffer(materials.materialBuffer, 0, 9);
             if (!materials.textures.empty()) {
-                encoder->setFragmentTextures(
+                visEncoder->setFragmentTextures(
                     const_cast<MTL::Texture* const*>(materials.textures.data()),
                     NS::Range(0, materials.textures.size()));
-                // Mesh stage also has texture array in KernelContext
-                encoder->setMeshTextures(
+                visEncoder->setMeshTextures(
                     const_cast<MTL::Texture* const*>(materials.textures.data()),
                     NS::Range(0, materials.textures.size()));
             }
-            encoder->setFragmentSamplerState(materials.sampler, 0);
-            encoder->setMeshSamplerState(materials.sampler, 0);
-            encoder->drawMeshThreadgroups(
+            visEncoder->setFragmentSamplerState(materials.sampler, 0);
+            visEncoder->setMeshSamplerState(materials.sampler, 0);
+            visEncoder->drawMeshThreadgroups(
                 MTL::Size(meshletData.meshletCount, 1, 1),
                 MTL::Size(1, 1, 1),
                 MTL::Size(128, 1, 1));
+            visEncoder->endEncoding();
+            visPass->release();
+            // Pass 2: Deferred lighting (compute)
+            LightingUniforms lightUniforms;
+            lightUniforms.mvp = transpose(mvp);
+            lightUniforms.modelView = transpose(modelView);
+            lightUniforms.lightDir = viewLightDir;
+            float4x4 invProj = proj;
+            invProj.Invert();
+            lightUniforms.invProj = transpose(invProj);
+            lightUniforms.screenWidth = (uint32_t)width;
+            lightUniforms.screenHeight = (uint32_t)height;
+            lightUniforms.meshletCount = meshletData.meshletCount;
+            lightUniforms.materialCount = materials.materialCount;
+            lightUniforms.textureCount = static_cast<uint32_t>(materials.textures.size());
+            lightUniforms.pad0 = 0;
+            lightUniforms.pad1 = 0;
+            lightUniforms.pad2 = 0;
+
+            MTL::ComputeCommandEncoder* computeEncoder = commandBuffer->computeCommandEncoder();
+            computeEncoder->setComputePipelineState(computePipelineState);
+            computeEncoder->setBytes(&lightUniforms, sizeof(lightUniforms), 0);
+            computeEncoder->setBuffer(sceneMesh.positionBuffer, 0, 1);
+            computeEncoder->setBuffer(sceneMesh.normalBuffer, 0, 2);
+            computeEncoder->setBuffer(meshletData.meshletBuffer, 0, 3);
+            computeEncoder->setBuffer(meshletData.meshletVertices, 0, 4);
+            computeEncoder->setBuffer(meshletData.meshletTriangles, 0, 5);
+            computeEncoder->setBuffer(sceneMesh.uvBuffer, 0, 6);
+            computeEncoder->setBuffer(meshletData.materialIDs, 0, 7);
+            computeEncoder->setBuffer(materials.materialBuffer, 0, 8);
+            computeEncoder->setTexture(visibilityTexture, 0);
+            computeEncoder->setTexture(depthTexture, 1);
+            computeEncoder->setTexture(outputTexture, 2);
+            if (!materials.textures.empty()) {
+                computeEncoder->setTextures(
+                    const_cast<MTL::Texture* const*>(materials.textures.data()),
+                    NS::Range(3, materials.textures.size()));
+            }
+            computeEncoder->setSamplerState(materials.sampler, 0);
+            MTL::Size threadgroupSize(8, 8, 1);
+            MTL::Size gridSize(
+                (width + 7) / 8,
+                (height + 7) / 8,
+                1);
+            computeEncoder->dispatchThreadgroups(gridSize, threadgroupSize);
+            computeEncoder->endEncoding();
+
+            // Pass 3: Blit output texture → drawable
+            MTL::BlitCommandEncoder* blitEncoder = commandBuffer->blitCommandEncoder();
+            blitEncoder->copyFromTexture(outputTexture, 0, 0,
+                MTL::Origin(0, 0, 0), MTL::Size(width, height, 1),
+                drawable->texture(), 0, 0, MTL::Origin(0, 0, 0));
+            blitEncoder->endEncoding();
+
+            // Pass 4: ImGui overlay
+            MTL::RenderPassDescriptor* imguiPass = MTL::RenderPassDescriptor::alloc()->init();
+            auto* imguiColor = imguiPass->colorAttachments()->object(0);
+            imguiColor->setTexture(drawable->texture());
+            imguiColor->setLoadAction(MTL::LoadActionLoad);
+            imguiColor->setStoreAction(MTL::StoreActionStore);
+            MTL::RenderCommandEncoder* imguiEncoder =
+                commandBuffer->renderCommandEncoder(imguiPass);
+            imguiRenderDrawData(commandBuffer, imguiEncoder);
+            imguiEncoder->endEncoding();
+            imguiPass->release();
         } else {
-            encoder->setRenderPipelineState(pipelineState);
-            encoder->setVertexBuffer(sceneMesh.positionBuffer, 0, 1);
-            encoder->setVertexBuffer(sceneMesh.normalBuffer, 0, 2);
-            encoder->setVertexBytes(&uniforms, sizeof(uniforms), 0);
-            encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
-            encoder->drawIndexedPrimitives(
-                MTL::PrimitiveTypeTriangle,
-                sceneMesh.indexCount, MTL::IndexTypeUInt32,
-                sceneMesh.indexBuffer, 0);
+            // === FORWARD RENDERING (Vertex or Mesh shader) ===
+            MTL::RenderPassDescriptor* renderPass = MTL::RenderPassDescriptor::alloc()->init();
+            auto* colorAttachment = renderPass->colorAttachments()->object(0);
+            colorAttachment->setTexture(drawable->texture());
+            colorAttachment->setLoadAction(MTL::LoadActionClear);
+            colorAttachment->setClearColor(MTL::ClearColor(0.1, 0.2, 0.3, 1.0));
+            colorAttachment->setStoreAction(MTL::StoreActionStore);
+
+            auto* depthAttachment = renderPass->depthAttachment();
+            depthAttachment->setTexture(depthTexture);
+            depthAttachment->setLoadAction(MTL::LoadActionClear);
+            depthAttachment->setClearDepth(1.0);
+            depthAttachment->setStoreAction(MTL::StoreActionDontCare);
+
+            MTL::RenderCommandEncoder* encoder =
+                commandBuffer->renderCommandEncoder(renderPass);
+            encoder->setDepthStencilState(depthState);
+            encoder->setFrontFacingWinding(MTL::WindingCounterClockwise);
+            encoder->setCullMode(MTL::CullModeBack);
+
+            if (renderMode == 1) {
+                encoder->setRenderPipelineState(meshPipelineState);
+                encoder->setMeshBytes(&uniforms, sizeof(uniforms), 0);
+                encoder->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
+                encoder->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
+                encoder->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
+                encoder->setMeshBuffer(meshletData.meshletVertices, 0, 4);
+                encoder->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
+                encoder->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
+                encoder->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
+                encoder->setMeshBuffer(meshletData.materialIDs, 0, 8);
+                encoder->setMeshBuffer(materials.materialBuffer, 0, 9);
+                encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+                encoder->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
+                encoder->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
+                encoder->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
+                encoder->setFragmentBuffer(meshletData.meshletVertices, 0, 4);
+                encoder->setFragmentBuffer(meshletData.meshletTriangles, 0, 5);
+                encoder->setFragmentBuffer(meshletData.boundsBuffer, 0, 6);
+                encoder->setFragmentBuffer(sceneMesh.uvBuffer, 0, 7);
+                encoder->setFragmentBuffer(meshletData.materialIDs, 0, 8);
+                encoder->setFragmentBuffer(materials.materialBuffer, 0, 9);
+                if (!materials.textures.empty()) {
+                    encoder->setFragmentTextures(
+                        const_cast<MTL::Texture* const*>(materials.textures.data()),
+                        NS::Range(0, materials.textures.size()));
+                    encoder->setMeshTextures(
+                        const_cast<MTL::Texture* const*>(materials.textures.data()),
+                        NS::Range(0, materials.textures.size()));
+                }
+                encoder->setFragmentSamplerState(materials.sampler, 0);
+                encoder->setMeshSamplerState(materials.sampler, 0);
+                encoder->drawMeshThreadgroups(
+                    MTL::Size(meshletData.meshletCount, 1, 1),
+                    MTL::Size(1, 1, 1),
+                    MTL::Size(128, 1, 1));
+            } else {
+                encoder->setRenderPipelineState(pipelineState);
+                encoder->setVertexBuffer(sceneMesh.positionBuffer, 0, 1);
+                encoder->setVertexBuffer(sceneMesh.normalBuffer, 0, 2);
+                encoder->setVertexBytes(&uniforms, sizeof(uniforms), 0);
+                encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+                encoder->drawIndexedPrimitives(
+                    MTL::PrimitiveTypeTriangle,
+                    sceneMesh.indexCount, MTL::IndexTypeUInt32,
+                    sceneMesh.indexBuffer, 0);
+            }
+
+            imguiRenderDrawData(commandBuffer, encoder);
+            encoder->endEncoding();
+            renderPass->release();
         }
 
-        // Render ImGui on top
-        imguiRenderDrawData(commandBuffer, encoder);
-
-        encoder->endEncoding();
         commandBuffer->presentDrawable(drawable);
         commandBuffer->commit();
 
-        renderPass->release();
         pool->release();
     }
 
@@ -565,6 +886,8 @@ int main() {
 
     // Cleanup
     depthTexture->release();
+    visibilityTexture->release();
+    outputTexture->release();
     meshletData.meshletBuffer->release();
     meshletData.meshletVertices->release();
     meshletData.meshletTriangles->release();
@@ -580,6 +903,8 @@ int main() {
     sceneMesh.uvBuffer->release();
     sceneMesh.indexBuffer->release();
     depthState->release();
+    computePipelineState->release();
+    visPipelineState->release();
     meshPipelineState->release();
     pipelineState->release();
     commandQueue->release();

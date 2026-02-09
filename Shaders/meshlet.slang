@@ -58,6 +58,7 @@ struct MeshOutput {
 static const uint kMaxVertices  = 64;
 static const uint kMaxTriangles = 124;
 static const uint INVALID_TEX   = 0xFFFFFFFF;
+static const uint kTextureArraySize = 96;
 
 [shader("mesh")]
 [numthreads(128, 1, 1)]
@@ -159,7 +160,7 @@ void meshMain(
 StructuredBuffer<GPUMaterial> materials;  // fragment buffer (auto-assigned by Slang)
 
 // Texture array + sampler
-Texture2D sceneTextures[128];
+Texture2D sceneTextures[kTextureArraySize];
 SamplerState sceneSampler;
 
 [shader("fragment")]
