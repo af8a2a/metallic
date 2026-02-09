@@ -194,7 +194,7 @@ int main() {
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow* window = glfwCreateWindow(800, 600, "RenderGraph - Stanford Bunny", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(800, 600, "RenderGraph - Sponza", nullptr, nullptr);
     if (!window) {
         std::cerr << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -217,25 +217,23 @@ int main() {
     metalLayer->setDevice(device);
     metalLayer->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
 
-    // Load bunny mesh
-    LoadedMesh bunny;
-    if (!loadGLTFMesh(device, "Asset/StandfordBunny/scene.gltf", bunny)) {
-        std::cerr << "Failed to load bunny mesh" << std::endl;
+    // Load scene mesh
+    LoadedMesh sceneMesh;
+    if (!loadGLTFMesh(device, "Asset/Sponza/glTF/Sponza.gltf", sceneMesh)) {
+        std::cerr << "Failed to load scene mesh" << std::endl;
         return 1;
     }
-    std::cout << "Loaded bunny: " << bunny.vertexCount << " vertices, "
-              << bunny.indexCount << " indices" << std::endl;
 
-    // Build meshlets for future mesh shader rendering
+    // Build meshlets for mesh shader rendering
     MeshletData meshletData;
-    if (!buildMeshlets(device, bunny, meshletData)) {
+    if (!buildMeshlets(device, sceneMesh, meshletData)) {
         std::cerr << "Failed to build meshlets" << std::endl;
         return 1;
     }
 
     // Init orbit camera
     OrbitCamera camera;
-    camera.initForBunny(bunny.bboxMin, bunny.bboxMax);
+    camera.initFromBounds(sceneMesh.bboxMin, sceneMesh.bboxMax);
 
     // Setup input
     InputState inputState;
@@ -488,8 +486,8 @@ int main() {
         if (useMeshShader) {
             encoder->setRenderPipelineState(meshPipelineState);
             encoder->setMeshBytes(&uniforms, sizeof(uniforms), 0);
-            encoder->setMeshBuffer(bunny.positionBuffer, 0, 1);
-            encoder->setMeshBuffer(bunny.normalBuffer, 0, 2);
+            encoder->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
+            encoder->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
             encoder->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
             encoder->setMeshBuffer(meshletData.meshletVertices, 0, 4);
             encoder->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
@@ -501,14 +499,14 @@ int main() {
                 MTL::Size(128, 1, 1));
         } else {
             encoder->setRenderPipelineState(pipelineState);
-            encoder->setVertexBuffer(bunny.positionBuffer, 0, 1);
-            encoder->setVertexBuffer(bunny.normalBuffer, 0, 2);
+            encoder->setVertexBuffer(sceneMesh.positionBuffer, 0, 1);
+            encoder->setVertexBuffer(sceneMesh.normalBuffer, 0, 2);
             encoder->setVertexBytes(&uniforms, sizeof(uniforms), 0);
             encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
             encoder->drawIndexedPrimitives(
                 MTL::PrimitiveTypeTriangle,
-                bunny.indexCount, MTL::IndexTypeUInt32,
-                bunny.indexBuffer, 0);
+                sceneMesh.indexCount, MTL::IndexTypeUInt32,
+                sceneMesh.indexBuffer, 0);
         }
 
         // Render ImGui on top
@@ -533,9 +531,9 @@ int main() {
     meshletData.meshletVertices->release();
     meshletData.meshletTriangles->release();
     meshletData.boundsBuffer->release();
-    bunny.positionBuffer->release();
-    bunny.normalBuffer->release();
-    bunny.indexBuffer->release();
+    sceneMesh.positionBuffer->release();
+    sceneMesh.normalBuffer->release();
+    sceneMesh.indexBuffer->release();
     depthState->release();
     meshPipelineState->release();
     pipelineState->release();

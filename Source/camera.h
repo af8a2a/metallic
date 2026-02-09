@@ -12,7 +12,7 @@ struct OrbitCamera {
     float nearZ = 0.001f;
     float farZ  = 100.0f;
 
-    void initForBunny(const float bboxMin[3], const float bboxMax[3]) {
+    void initFromBounds(const float bboxMin[3], const float bboxMax[3]) {
         target = float3(
             (bboxMin[0] + bboxMax[0]) * 0.5f,
             (bboxMin[1] + bboxMax[1]) * 0.5f,
@@ -23,6 +23,8 @@ struct OrbitCamera {
         float dz = bboxMax[2] - bboxMin[2];
         float maxExtent = std::fmax(dx, std::fmax(dy, dz));
         distance = maxExtent * 2.5f;
+        nearZ = maxExtent * 0.001f;
+        farZ  = maxExtent * 10.0f;
         azimuth = 0.0f;
         elevation = 0.2f;
     }
