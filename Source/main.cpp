@@ -28,6 +28,8 @@
 
 #include <tracy/Tracy.hpp>
 #include "tracy_metal.h"
+#include "frame_graph.h"
+
 
 struct Uniforms {
     float4x4 mvp;
@@ -272,29 +274,6 @@ static std::string patchComputeShaderMetalSource(const std::string& source) {
     return patched;
 }
 
-static MTL::Texture* createVisibilityTexture(MTL::Device* device, int width, int height) {
-    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatR32Uint, width, height, false);
-    desc->setStorageMode(MTL::StorageModePrivate);
-    desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
-    return device->newTexture(desc);
-}
-
-static MTL::Texture* createOutputTexture(MTL::Device* device, int width, int height) {
-    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatBGRA8Unorm, width, height, false);
-    desc->setStorageMode(MTL::StorageModePrivate);
-    desc->setUsage(MTL::TextureUsageShaderWrite | MTL::TextureUsageShaderRead);
-    return device->newTexture(desc);
-}
-
-static MTL::Texture* createDepthTexture(MTL::Device* device, int width, int height) {
-    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatDepth32Float, width, height, false);
-    desc->setStorageMode(MTL::StorageModePrivate);
-    desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
-    return device->newTexture(desc);
-}
 
 struct LightingUniforms {
     float4x4 mvp;
@@ -575,13 +554,9 @@ int main() {
     MTL::DepthStencilState* depthState = device->newDepthStencilState(depthDesc);
     depthDesc->release();
 
-    // Create initial depth texture
+    // Create initial framebuffer size (used for metalLayer)
     int fbWidth, fbHeight;
     glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
-    MTL::Texture* depthTexture = createDepthTexture(device, fbWidth, fbHeight);
-    MTL::Texture* visibilityTexture = createVisibilityTexture(device, fbWidth, fbHeight);
-    MTL::Texture* outputTexture = createOutputTexture(device, fbWidth, fbHeight);
-    int prevWidth = fbWidth, prevHeight = fbHeight;
 
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("Frame");
@@ -596,18 +571,6 @@ int main() {
             continue;
         }
         metalLayer->setDrawableSize(CGSizeMake(width, height));
-
-        // Recreate depth texture on resize
-        if (width != prevWidth || height != prevHeight) {
-            depthTexture->release();
-            depthTexture = createDepthTexture(device, width, height);
-            visibilityTexture->release();
-            visibilityTexture = createVisibilityTexture(device, width, height);
-            outputTexture->release();
-            outputTexture = createOutputTexture(device, width, height);
-            prevWidth = width;
-            prevHeight = height;
-        }
 
         CA::MetalDrawable* drawable = metalLayer->nextDrawable();
         if (!drawable) {
@@ -694,71 +657,72 @@ int main() {
         imguiFramePass->release();
         } // end ImGui Frame zone
 
+        // --- Build FrameGraph ---
+        FrameGraph fg;
+        auto drawableRes = fg.import("drawable", drawable->texture());
+
         if (renderMode == 2) {
             // === VISIBILITY BUFFER MODE ===
-            ZoneScopedN("Visibility Buffer Mode");
+            ZoneScopedN("Visibility Buffer Graph Build");
 
-            // Pass 1: Visibility buffer (mesh shader → R32Uint)
-            MTL::RenderPassDescriptor* visPass = MTL::RenderPassDescriptor::alloc()->init();
-            auto* visColor = visPass->colorAttachments()->object(0);
-            visColor->setTexture(visibilityTexture);
-            visColor->setLoadAction(MTL::LoadActionClear);
-            visColor->setClearColor(MTL::ClearColor(0xFFFFFFFF, 0, 0, 0));
-            visColor->setStoreAction(MTL::StoreActionStore);
+            struct VisPassData {
+                FGResource visibility;
+                FGResource depth;
+            };
+            auto& visData = fg.addRenderPass<VisPassData>("Visibility Pass",
+                [&](FGBuilder& builder, VisPassData& data) {
+                    data.visibility = builder.create("visibility",
+                        FGTextureDesc::renderTarget(width, height, MTL::PixelFormatR32Uint));
+                    data.depth = builder.create("depth",
+                        FGTextureDesc::depthTarget(width, height));
+                    builder.setColorAttachment(0, data.visibility,
+                        MTL::LoadActionClear, MTL::StoreActionStore,
+                        MTL::ClearColor(0xFFFFFFFF, 0, 0, 0));
+                    builder.setDepthAttachment(data.depth,
+                        MTL::LoadActionClear, MTL::StoreActionStore, 1.0);
+                },
+                [&](const VisPassData&, MTL::RenderCommandEncoder* enc) {
+                    enc->setDepthStencilState(depthState);
+                    enc->setFrontFacingWinding(MTL::WindingCounterClockwise);
+                    enc->setCullMode(MTL::CullModeBack);
+                    enc->setRenderPipelineState(visPipelineState);
+                    enc->setMeshBytes(&uniforms, sizeof(uniforms), 0);
+                    enc->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
+                    enc->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
+                    enc->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
+                    enc->setMeshBuffer(meshletData.meshletVertices, 0, 4);
+                    enc->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
+                    enc->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
+                    enc->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
+                    enc->setMeshBuffer(meshletData.materialIDs, 0, 8);
+                    enc->setMeshBuffer(materials.materialBuffer, 0, 9);
+                    enc->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+                    enc->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
+                    enc->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
+                    enc->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
+                    enc->setFragmentBuffer(meshletData.meshletVertices, 0, 4);
+                    enc->setFragmentBuffer(meshletData.meshletTriangles, 0, 5);
+                    enc->setFragmentBuffer(meshletData.boundsBuffer, 0, 6);
+                    enc->setFragmentBuffer(sceneMesh.uvBuffer, 0, 7);
+                    enc->setFragmentBuffer(meshletData.materialIDs, 0, 8);
+                    enc->setFragmentBuffer(materials.materialBuffer, 0, 9);
+                    if (!materials.textures.empty()) {
+                        enc->setFragmentTextures(
+                            const_cast<MTL::Texture* const*>(materials.textures.data()),
+                            NS::Range(0, materials.textures.size()));
+                        enc->setMeshTextures(
+                            const_cast<MTL::Texture* const*>(materials.textures.data()),
+                            NS::Range(0, materials.textures.size()));
+                    }
+                    enc->setFragmentSamplerState(materials.sampler, 0);
+                    enc->setMeshSamplerState(materials.sampler, 0);
+                    enc->drawMeshThreadgroups(
+                        MTL::Size(meshletData.meshletCount, 1, 1),
+                        MTL::Size(1, 1, 1),
+                        MTL::Size(128, 1, 1));
+                });
 
-            auto* visDepth = visPass->depthAttachment();
-            visDepth->setTexture(depthTexture);
-            visDepth->setLoadAction(MTL::LoadActionClear);
-            visDepth->setClearDepth(1.0);
-            visDepth->setStoreAction(MTL::StoreActionStore);
-
-            auto gpuVisZone = TracyMetalRenderZone(tracyGpuCtx, visPass, "Visibility Pass");
-            MTL::RenderCommandEncoder* visEncoder =
-                commandBuffer->renderCommandEncoder(visPass);
-            visEncoder->setDepthStencilState(depthState);
-            visEncoder->setFrontFacingWinding(MTL::WindingCounterClockwise);
-            visEncoder->setCullMode(MTL::CullModeBack);
-            visEncoder->setRenderPipelineState(visPipelineState);
-            // Bind mesh-stage buffers (same as forward path)
-            visEncoder->setMeshBytes(&uniforms, sizeof(uniforms), 0);
-            visEncoder->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
-            visEncoder->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
-            visEncoder->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
-            visEncoder->setMeshBuffer(meshletData.meshletVertices, 0, 4);
-            visEncoder->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
-            visEncoder->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
-            visEncoder->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
-            visEncoder->setMeshBuffer(meshletData.materialIDs, 0, 8);
-            visEncoder->setMeshBuffer(materials.materialBuffer, 0, 9);
-            // Fragment-stage buffers (KernelContext requirement)
-            visEncoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
-            visEncoder->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
-            visEncoder->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
-            visEncoder->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
-            visEncoder->setFragmentBuffer(meshletData.meshletVertices, 0, 4);
-            visEncoder->setFragmentBuffer(meshletData.meshletTriangles, 0, 5);
-            visEncoder->setFragmentBuffer(meshletData.boundsBuffer, 0, 6);
-            visEncoder->setFragmentBuffer(sceneMesh.uvBuffer, 0, 7);
-            visEncoder->setFragmentBuffer(meshletData.materialIDs, 0, 8);
-            visEncoder->setFragmentBuffer(materials.materialBuffer, 0, 9);
-            if (!materials.textures.empty()) {
-                visEncoder->setFragmentTextures(
-                    const_cast<MTL::Texture* const*>(materials.textures.data()),
-                    NS::Range(0, materials.textures.size()));
-                visEncoder->setMeshTextures(
-                    const_cast<MTL::Texture* const*>(materials.textures.data()),
-                    NS::Range(0, materials.textures.size()));
-            }
-            visEncoder->setFragmentSamplerState(materials.sampler, 0);
-            visEncoder->setMeshSamplerState(materials.sampler, 0);
-            visEncoder->drawMeshThreadgroups(
-                MTL::Size(meshletData.meshletCount, 1, 1),
-                MTL::Size(1, 1, 1),
-                MTL::Size(128, 1, 1));
-            visEncoder->endEncoding();
-            tracyMetalZoneEnd(gpuVisZone);
-            visPass->release();
-            // Pass 2: Deferred lighting (compute)
+            // Compute lighting uniforms
             LightingUniforms lightUniforms;
             lightUniforms.mvp = transpose(mvp);
             lightUniforms.modelView = transpose(modelView);
@@ -775,138 +739,146 @@ int main() {
             lightUniforms.pad1 = 0;
             lightUniforms.pad2 = 0;
 
-            auto* computePassDesc = MTL::ComputePassDescriptor::alloc()->init();
-            auto gpuComputeZone = TracyMetalComputeZone(tracyGpuCtx, computePassDesc, "Deferred Lighting");
-            MTL::ComputeCommandEncoder* computeEncoder = commandBuffer->computeCommandEncoder(computePassDesc);
-            computePassDesc->release();
-            computeEncoder->setComputePipelineState(computePipelineState);
-            computeEncoder->setBytes(&lightUniforms, sizeof(lightUniforms), 0);
-            computeEncoder->setBuffer(sceneMesh.positionBuffer, 0, 1);
-            computeEncoder->setBuffer(sceneMesh.normalBuffer, 0, 2);
-            computeEncoder->setBuffer(meshletData.meshletBuffer, 0, 3);
-            computeEncoder->setBuffer(meshletData.meshletVertices, 0, 4);
-            computeEncoder->setBuffer(meshletData.meshletTriangles, 0, 5);
-            computeEncoder->setBuffer(sceneMesh.uvBuffer, 0, 6);
-            computeEncoder->setBuffer(meshletData.materialIDs, 0, 7);
-            computeEncoder->setBuffer(materials.materialBuffer, 0, 8);
-            computeEncoder->setTexture(visibilityTexture, 0);
-            computeEncoder->setTexture(depthTexture, 1);
-            computeEncoder->setTexture(outputTexture, 2);
-            if (!materials.textures.empty()) {
-                computeEncoder->setTextures(
-                    const_cast<MTL::Texture* const*>(materials.textures.data()),
-                    NS::Range(3, materials.textures.size()));
-            }
-            computeEncoder->setSamplerState(materials.sampler, 0);
-            MTL::Size threadgroupSize(8, 8, 1);
-            MTL::Size gridSize(
-                (width + 7) / 8,
-                (height + 7) / 8,
-                1);
-            computeEncoder->dispatchThreadgroups(gridSize, threadgroupSize);
-            computeEncoder->endEncoding();
-            tracyMetalZoneEnd(gpuComputeZone);
+            struct ComputePassData {
+                FGResource visibility;
+                FGResource depth;
+                FGResource output;
+            };
+            auto& computeData = fg.addComputePass<ComputePassData>("Deferred Lighting",
+                [&](FGBuilder& builder, ComputePassData& data) {
+                    data.visibility = builder.read(visData.visibility);
+                    data.depth = builder.read(visData.depth);
+                    data.output = builder.create("output",
+                        FGTextureDesc::storageTexture(width, height, MTL::PixelFormatBGRA8Unorm));
+                },
+                [&, lightUniforms](const ComputePassData& data, MTL::ComputeCommandEncoder* enc) {
+                    enc->setComputePipelineState(computePipelineState);
+                    enc->setBytes(&lightUniforms, sizeof(lightUniforms), 0);
+                    enc->setBuffer(sceneMesh.positionBuffer, 0, 1);
+                    enc->setBuffer(sceneMesh.normalBuffer, 0, 2);
+                    enc->setBuffer(meshletData.meshletBuffer, 0, 3);
+                    enc->setBuffer(meshletData.meshletVertices, 0, 4);
+                    enc->setBuffer(meshletData.meshletTriangles, 0, 5);
+                    enc->setBuffer(sceneMesh.uvBuffer, 0, 6);
+                    enc->setBuffer(meshletData.materialIDs, 0, 7);
+                    enc->setBuffer(materials.materialBuffer, 0, 8);
+                    enc->setTexture(fg.getTexture(data.visibility), 0);
+                    enc->setTexture(fg.getTexture(data.depth), 1);
+                    enc->setTexture(fg.getTexture(data.output), 2);
+                    if (!materials.textures.empty()) {
+                        enc->setTextures(
+                            const_cast<MTL::Texture* const*>(materials.textures.data()),
+                            NS::Range(3, materials.textures.size()));
+                    }
+                    enc->setSamplerState(materials.sampler, 0);
+                    MTL::Size tgSize(8, 8, 1);
+                    MTL::Size grid((width + 7) / 8, (height + 7) / 8, 1);
+                    enc->dispatchThreadgroups(grid, tgSize);
+                });
 
-            // Pass 3: Blit output texture → drawable
-            auto* blitPassDesc = MTL::BlitPassDescriptor::alloc()->init();
-            auto gpuBlitZone = TracyMetalBlitZone(tracyGpuCtx, blitPassDesc, "Blit to Drawable");
-            MTL::BlitCommandEncoder* blitEncoder = commandBuffer->blitCommandEncoder(blitPassDesc);
-            blitPassDesc->release();
-            blitEncoder->copyFromTexture(outputTexture, 0, 0,
-                MTL::Origin(0, 0, 0), MTL::Size(width, height, 1),
-                drawable->texture(), 0, 0, MTL::Origin(0, 0, 0));
-            blitEncoder->endEncoding();
-            tracyMetalZoneEnd(gpuBlitZone);
+            struct BlitPassData {
+                FGResource output;
+                FGResource drawable;
+            };
+            fg.addBlitPass<BlitPassData>("Blit to Drawable",
+                [&](FGBuilder& builder, BlitPassData& data) {
+                    data.output = builder.read(computeData.output);
+                    data.drawable = builder.write(drawableRes);
+                    builder.setSideEffect();
+                },
+                [&, w = width, h = height](const BlitPassData& data, MTL::BlitCommandEncoder* enc) {
+                    enc->copyFromTexture(fg.getTexture(data.output), 0, 0,
+                        MTL::Origin(0, 0, 0), MTL::Size(w, h, 1),
+                        fg.getTexture(data.drawable), 0, 0, MTL::Origin(0, 0, 0));
+                });
 
-            // Pass 4: ImGui overlay
-            MTL::RenderPassDescriptor* imguiPass = MTL::RenderPassDescriptor::alloc()->init();
-            auto* imguiColor = imguiPass->colorAttachments()->object(0);
-            imguiColor->setTexture(drawable->texture());
-            imguiColor->setLoadAction(MTL::LoadActionLoad);
-            imguiColor->setStoreAction(MTL::StoreActionStore);
-            auto gpuImguiZone = TracyMetalRenderZone(tracyGpuCtx, imguiPass, "ImGui Overlay");
-            MTL::RenderCommandEncoder* imguiEncoder =
-                commandBuffer->renderCommandEncoder(imguiPass);
-            imguiRenderDrawData(commandBuffer, imguiEncoder);
-            imguiEncoder->endEncoding();
-            tracyMetalZoneEnd(gpuImguiZone);
-            imguiPass->release();
+            struct ImGuiOverlayData {};
+            fg.addRenderPass<ImGuiOverlayData>("ImGui Overlay",
+                [&](FGBuilder& builder, ImGuiOverlayData&) {
+                    builder.setColorAttachment(0, drawableRes,
+                        MTL::LoadActionLoad, MTL::StoreActionStore);
+                    builder.setSideEffect();
+                },
+                [&](const ImGuiOverlayData&, MTL::RenderCommandEncoder* enc) {
+                    imguiRenderDrawData(commandBuffer, enc);
+                });
         } else {
             // === FORWARD RENDERING (Vertex or Mesh shader) ===
-            ZoneScopedN("Forward Rendering");
-            MTL::RenderPassDescriptor* renderPass = MTL::RenderPassDescriptor::alloc()->init();
-            auto* colorAttachment = renderPass->colorAttachments()->object(0);
-            colorAttachment->setTexture(drawable->texture());
-            colorAttachment->setLoadAction(MTL::LoadActionClear);
-            colorAttachment->setClearColor(MTL::ClearColor(0.1, 0.2, 0.3, 1.0));
-            colorAttachment->setStoreAction(MTL::StoreActionStore);
+            ZoneScopedN("Forward Graph Build");
 
-            auto* depthAttachment = renderPass->depthAttachment();
-            depthAttachment->setTexture(depthTexture);
-            depthAttachment->setLoadAction(MTL::LoadActionClear);
-            depthAttachment->setClearDepth(1.0);
-            depthAttachment->setStoreAction(MTL::StoreActionDontCare);
+            struct ForwardPassData {
+                FGResource depth;
+            };
+            fg.addRenderPass<ForwardPassData>("Forward Pass",
+                [&](FGBuilder& builder, ForwardPassData& data) {
+                    data.depth = builder.create("depth",
+                        FGTextureDesc::depthTarget(width, height));
+                    builder.setColorAttachment(0, drawableRes,
+                        MTL::LoadActionClear, MTL::StoreActionStore,
+                        MTL::ClearColor(0.1, 0.2, 0.3, 1.0));
+                    builder.setDepthAttachment(data.depth,
+                        MTL::LoadActionClear, MTL::StoreActionDontCare, 1.0);
+                    builder.setSideEffect();
+                },
+                [&](const ForwardPassData&, MTL::RenderCommandEncoder* enc) {
+                    enc->setDepthStencilState(depthState);
+                    enc->setFrontFacingWinding(MTL::WindingCounterClockwise);
+                    enc->setCullMode(MTL::CullModeBack);
 
-            auto gpuForwardZone = TracyMetalRenderZone(tracyGpuCtx, renderPass, "Forward Pass");
-            MTL::RenderCommandEncoder* encoder =
-                commandBuffer->renderCommandEncoder(renderPass);
-            encoder->setDepthStencilState(depthState);
-            encoder->setFrontFacingWinding(MTL::WindingCounterClockwise);
-            encoder->setCullMode(MTL::CullModeBack);
+                    if (renderMode == 1) {
+                        enc->setRenderPipelineState(meshPipelineState);
+                        enc->setMeshBytes(&uniforms, sizeof(uniforms), 0);
+                        enc->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
+                        enc->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
+                        enc->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
+                        enc->setMeshBuffer(meshletData.meshletVertices, 0, 4);
+                        enc->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
+                        enc->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
+                        enc->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
+                        enc->setMeshBuffer(meshletData.materialIDs, 0, 8);
+                        enc->setMeshBuffer(materials.materialBuffer, 0, 9);
+                        enc->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+                        enc->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
+                        enc->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
+                        enc->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
+                        enc->setFragmentBuffer(meshletData.meshletVertices, 0, 4);
+                        enc->setFragmentBuffer(meshletData.meshletTriangles, 0, 5);
+                        enc->setFragmentBuffer(meshletData.boundsBuffer, 0, 6);
+                        enc->setFragmentBuffer(sceneMesh.uvBuffer, 0, 7);
+                        enc->setFragmentBuffer(meshletData.materialIDs, 0, 8);
+                        enc->setFragmentBuffer(materials.materialBuffer, 0, 9);
+                        if (!materials.textures.empty()) {
+                            enc->setFragmentTextures(
+                                const_cast<MTL::Texture* const*>(materials.textures.data()),
+                                NS::Range(0, materials.textures.size()));
+                            enc->setMeshTextures(
+                                const_cast<MTL::Texture* const*>(materials.textures.data()),
+                                NS::Range(0, materials.textures.size()));
+                        }
+                        enc->setFragmentSamplerState(materials.sampler, 0);
+                        enc->setMeshSamplerState(materials.sampler, 0);
+                        enc->drawMeshThreadgroups(
+                            MTL::Size(meshletData.meshletCount, 1, 1),
+                            MTL::Size(1, 1, 1),
+                            MTL::Size(128, 1, 1));
+                    } else {
+                        enc->setRenderPipelineState(pipelineState);
+                        enc->setVertexBuffer(sceneMesh.positionBuffer, 0, 1);
+                        enc->setVertexBuffer(sceneMesh.normalBuffer, 0, 2);
+                        enc->setVertexBytes(&uniforms, sizeof(uniforms), 0);
+                        enc->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+                        enc->drawIndexedPrimitives(
+                            MTL::PrimitiveTypeTriangle,
+                            sceneMesh.indexCount, MTL::IndexTypeUInt32,
+                            sceneMesh.indexBuffer, 0);
+                    }
 
-            if (renderMode == 1) {
-                encoder->setRenderPipelineState(meshPipelineState);
-                encoder->setMeshBytes(&uniforms, sizeof(uniforms), 0);
-                encoder->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
-                encoder->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
-                encoder->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
-                encoder->setMeshBuffer(meshletData.meshletVertices, 0, 4);
-                encoder->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
-                encoder->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
-                encoder->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
-                encoder->setMeshBuffer(meshletData.materialIDs, 0, 8);
-                encoder->setMeshBuffer(materials.materialBuffer, 0, 9);
-                encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
-                encoder->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
-                encoder->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
-                encoder->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
-                encoder->setFragmentBuffer(meshletData.meshletVertices, 0, 4);
-                encoder->setFragmentBuffer(meshletData.meshletTriangles, 0, 5);
-                encoder->setFragmentBuffer(meshletData.boundsBuffer, 0, 6);
-                encoder->setFragmentBuffer(sceneMesh.uvBuffer, 0, 7);
-                encoder->setFragmentBuffer(meshletData.materialIDs, 0, 8);
-                encoder->setFragmentBuffer(materials.materialBuffer, 0, 9);
-                if (!materials.textures.empty()) {
-                    encoder->setFragmentTextures(
-                        const_cast<MTL::Texture* const*>(materials.textures.data()),
-                        NS::Range(0, materials.textures.size()));
-                    encoder->setMeshTextures(
-                        const_cast<MTL::Texture* const*>(materials.textures.data()),
-                        NS::Range(0, materials.textures.size()));
-                }
-                encoder->setFragmentSamplerState(materials.sampler, 0);
-                encoder->setMeshSamplerState(materials.sampler, 0);
-                encoder->drawMeshThreadgroups(
-                    MTL::Size(meshletData.meshletCount, 1, 1),
-                    MTL::Size(1, 1, 1),
-                    MTL::Size(128, 1, 1));
-            } else {
-                encoder->setRenderPipelineState(pipelineState);
-                encoder->setVertexBuffer(sceneMesh.positionBuffer, 0, 1);
-                encoder->setVertexBuffer(sceneMesh.normalBuffer, 0, 2);
-                encoder->setVertexBytes(&uniforms, sizeof(uniforms), 0);
-                encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
-                encoder->drawIndexedPrimitives(
-                    MTL::PrimitiveTypeTriangle,
-                    sceneMesh.indexCount, MTL::IndexTypeUInt32,
-                    sceneMesh.indexBuffer, 0);
-            }
-
-            imguiRenderDrawData(commandBuffer, encoder);
-            encoder->endEncoding();
-            tracyMetalZoneEnd(gpuForwardZone);
-            renderPass->release();
+                    imguiRenderDrawData(commandBuffer, enc);
+                });
         }
+
+        fg.compile();
+        fg.execute(commandBuffer, device, tracyGpuCtx);
 
         commandBuffer->presentDrawable(drawable);
         commandBuffer->commit();
@@ -924,9 +896,6 @@ int main() {
     tracyMetalDestroy(tracyGpuCtx);
 
     // Cleanup
-    depthTexture->release();
-    visibilityTexture->release();
-    outputTexture->release();
     meshletData.meshletBuffer->release();
     meshletData.meshletVertices->release();
     meshletData.meshletTriangles->release();
