@@ -3,7 +3,7 @@ struct Uniforms {
     float4x4 modelView;
     float4   lightDir; // view-space light direction (normalized), w unused
     float4   frustumPlanes[6]; // left, right, bottom, top, near, far
-    float4   cameraPos;        // world-space camera position (xyz), w unused
+    float4   cameraPos;        // object-space camera position (xyz), w unused
     uint     enableFrustumCull;
     uint     enableConeCull;
     uint     pad0;
@@ -18,12 +18,9 @@ struct GPUMeshlet {
 };
 
 struct GPUMeshletBounds {
-    float3 center;
-    float  radius;
-    float3 cone_apex;
-    float  pad0;
-    float3 cone_axis;
-    float  cone_cutoff;
+    float4 center_radius;    // xyz=center, w=radius
+    float4 cone_apex_pad;    // xyz=cone_apex, w=unused
+    float4 cone_axis_cutoff; // xyz=cone_axis, w=cone_cutoff
 };
 
 // Global buffer bindings
@@ -55,31 +52,46 @@ void meshMain(
 {
     GPUMeshlet m = meshlets[groupID];
     GPUMeshletBounds b = meshletBounds[groupID];
+    float3 center = b.center_radius.xyz;
+    float radius = b.center_radius.w;
+    float3 coneAxis = b.cone_axis_cutoff.xyz;
+    float coneCutoff = b.cone_axis_cutoff.w;
 
-    // Frustum culling: test bounding sphere against 6 planes
+    bool culled = false;
+
+    // Frustum culling: test bounding sphere against 6 planes.
     if (uniforms.enableFrustumCull != 0) {
-        bool culled = false;
         [unroll]
         for (int i = 0; i < 6; i++) {
-            if (dot(uniforms.frustumPlanes[i].xyz, b.center) + uniforms.frustumPlanes[i].w + b.radius < 0.0)
+            if (dot(uniforms.frustumPlanes[i].xyz, center) + uniforms.frustumPlanes[i].w + radius < 0.0) {
+                culled = true;
+                break;
+            }
+        }
+    }
+
+    // Cone/backface culling.
+    if (!culled && uniforms.enableConeCull != 0) {
+        // Conservative sphere-based test from meshoptimizer docs.
+        float3 cameraToCenter = center - uniforms.cameraPos.xyz;
+        float lenSq = dot(cameraToCenter, cameraToCenter);
+        if (lenSq > 1e-12) {
+            float lenV = sqrt(lenSq);
+            float lhs = dot(cameraToCenter, coneAxis);
+            float rhs = coneCutoff * lenV + radius;
+            if (lhs >= rhs)
                 culled = true;
         }
-        if (culled) {
-            SetMeshOutputCounts(0, 0);
-            return;
-        }
     }
 
-    // Cone/backface culling
-    if (uniforms.enableConeCull != 0) {
-        float3 view = normalize(b.cone_apex - uniforms.cameraPos.xyz);
-        if (dot(view, b.cone_axis) >= b.cone_cutoff) {
-            SetMeshOutputCounts(0, 0);
-            return;
-        }
-    }
+    if (groupThreadID == 0)
+        SetMeshOutputCounts(culled ? 0u : m.vertex_count, culled ? 0u : m.triangle_count);
 
-    SetMeshOutputCounts(m.vertex_count, m.triangle_count);
+    // Ensure output counts are visible before any lane writes mesh outputs.
+    GroupMemoryBarrierWithGroupSync();
+
+    if (culled)
+        return;
 
     if (groupThreadID < m.vertex_count) {
         uint vertexIndex = meshletVertices[m.vertex_offset + groupThreadID];

@@ -30,7 +30,7 @@ struct Uniforms {
     float4x4 modelView;
     float4   lightDir;
     float4   frustumPlanes[6];
-    float4   cameraPos;
+    float4   cameraPos; // object-space camera position
     uint32_t enableFrustumCull;
     uint32_t enableConeCull;
     uint32_t pad0;
@@ -418,17 +418,23 @@ int main() {
         uniforms.modelView = transpose(modelView);
         uniforms.lightDir = viewLightDir;
 
-        // Extract frustum planes from non-transposed MVP (world-space planes)
+        // Extract frustum planes from non-transposed MVP (object-space planes)
         extractFrustumPlanes(mvp, uniforms.frustumPlanes);
 
         // Camera position in world space
         float cosA = std::cos(camera.azimuth), sinA = std::sin(camera.azimuth);
         float cosE = std::cos(camera.elevation), sinE = std::sin(camera.elevation);
-        uniforms.cameraPos = float4(
+        float4 cameraWorldPos = float4(
             camera.target.x + camera.distance * cosE * sinA,
             camera.target.y + camera.distance * sinE,
             camera.target.z + camera.distance * cosE * cosA,
-            0.0f);
+            1.0f);
+
+        // Backface cone data is generated in object-space, so the camera needs to
+        // be transformed to object-space for robust culling when model != identity.
+        float4x4 invModel = model;
+        invModel.Invert();
+        uniforms.cameraPos = invModel * cameraWorldPos;
 
         uniforms.enableFrustumCull = enableFrustumCull ? 1 : 0;
         uniforms.enableConeCull = enableConeCull ? 1 : 0;

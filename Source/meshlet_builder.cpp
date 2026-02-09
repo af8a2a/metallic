@@ -51,18 +51,20 @@ bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out
             meshlets[i].triangle_count,
             positions, vertexCount, vertexStride);
 
-        gpuBounds[i].center[0]    = bounds.center[0];
-        gpuBounds[i].center[1]    = bounds.center[1];
-        gpuBounds[i].center[2]    = bounds.center[2];
-        gpuBounds[i].radius       = bounds.radius;
-        gpuBounds[i].cone_apex[0] = bounds.cone_apex[0];
-        gpuBounds[i].cone_apex[1] = bounds.cone_apex[1];
-        gpuBounds[i].cone_apex[2] = bounds.cone_apex[2];
-        gpuBounds[i].pad0         = 0.0f;
-        gpuBounds[i].cone_axis[0] = bounds.cone_axis[0];
-        gpuBounds[i].cone_axis[1] = bounds.cone_axis[1];
-        gpuBounds[i].cone_axis[2] = bounds.cone_axis[2];
-        gpuBounds[i].cone_cutoff  = bounds.cone_cutoff;
+        gpuBounds[i].center_radius[0] = bounds.center[0];
+        gpuBounds[i].center_radius[1] = bounds.center[1];
+        gpuBounds[i].center_radius[2] = bounds.center[2];
+        gpuBounds[i].center_radius[3] = bounds.radius;
+
+        gpuBounds[i].cone_apex_pad[0] = bounds.cone_apex[0];
+        gpuBounds[i].cone_apex_pad[1] = bounds.cone_apex[1];
+        gpuBounds[i].cone_apex_pad[2] = bounds.cone_apex[2];
+        gpuBounds[i].cone_apex_pad[3] = 0.0f;
+
+        gpuBounds[i].cone_axis_cutoff[0] = bounds.cone_axis[0];
+        gpuBounds[i].cone_axis_cutoff[1] = bounds.cone_axis[1];
+        gpuBounds[i].cone_axis_cutoff[2] = bounds.cone_axis[2];
+        gpuBounds[i].cone_axis_cutoff[3] = bounds.cone_cutoff;
     }
 
     // Compute actual used sizes for vertex and triangle arrays

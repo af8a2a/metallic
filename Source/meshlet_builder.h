@@ -13,13 +13,12 @@ struct GPUMeshlet {
 };
 
 struct GPUMeshletBounds {
-    float center[3];
-    float radius;
-    float cone_apex[3];
-    float pad0;
-    float cone_axis[3];
-    float cone_cutoff;
+    float center_radius[4];    // xyz=center, w=radius
+    float cone_apex_pad[4];    // xyz=cone_apex, w=unused
+    float cone_axis_cutoff[4]; // xyz=cone_axis, w=cone_cutoff
 };
+
+static_assert(sizeof(GPUMeshletBounds) == 48, "GPUMeshletBounds must match shader layout");
 
 struct MeshletData {
     MTL::Buffer* meshletBuffer    = nullptr;  // GPUMeshlet[]
