@@ -25,6 +25,7 @@ struct MeshletData {
     MTL::Buffer* meshletVertices  = nullptr;  // uint32_t[] — indices into original vertex buffer
     MTL::Buffer* meshletTriangles = nullptr;  // uint32_t[] — packed local triangle indices (3 per uint32)
     MTL::Buffer* boundsBuffer     = nullptr;  // GPUMeshletBounds[]
+    MTL::Buffer* materialIDs      = nullptr;  // uint32_t[] — material index per meshlet
     uint32_t meshletCount = 0;
 };
 

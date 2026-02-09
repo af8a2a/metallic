@@ -1,5 +1,5 @@
-add_executable(rendergraph main.cpp metal_impl.cpp glfw_metal_bridge.mm imgui_metal_bridge.mm mesh_loader.cpp input.cpp meshlet_builder.cpp)
-target_include_directories(rendergraph PRIVATE "${CMAKE_SOURCE_DIR}/External/cgltf")
+add_executable(rendergraph main.cpp metal_impl.cpp glfw_metal_bridge.mm imgui_metal_bridge.mm mesh_loader.cpp input.cpp meshlet_builder.cpp material_loader.cpp)
+target_include_directories(rendergraph PRIVATE "${CMAKE_SOURCE_DIR}/External/cgltf" "${CMAKE_SOURCE_DIR}/External/stb")
 target_link_libraries(rendergraph PRIVATE metal-cpp glfw meshoptimizer imgui slang::slang MathLib "-framework AppKit")
 
 # Copy Slang dylibs next to executable at build time

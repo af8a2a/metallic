@@ -11,6 +11,7 @@
 #include "imgui_metal_bridge.h"
 #include "mesh_loader.h"
 #include "meshlet_builder.h"
+#include "material_loader.h"
 #include "camera.h"
 #include "input.h"
 
@@ -158,23 +159,28 @@ static std::string compileSlangMeshShaderToMetal(const char* shaderPath) {
 }
 
 static std::string patchMeshShaderMetalSource(const std::string& source) {
-    std::cout << "=== Raw Slang-generated Metal source (mesh shader) ===" << std::endl;
-    std::cout << source << std::endl;
-    std::cout << "=== End of raw Metal source ===" << std::endl;
-
     // Slang v2026.1.2 bug: mesh output struct members lack [[user(...)]] attributes
     // that the fragment shader's [[stage_in]] expects. We patch them in.
     std::string patched = source;
 
-    // Pattern: find fields like "float3 viewNormal_0;" and add [[user(NORMAL)]]
-    // and "float3 viewPos_0;" and add [[user(TEXCOORD0)]]
-    // The exact field names depend on Slang's mangling, so we use regex.
     patched = std::regex_replace(patched,
         std::regex(R"((float3\s+\w*viewNormal\w*)\s*;)"),
         "$1 [[user(NORMAL)]];");
     patched = std::regex_replace(patched,
         std::regex(R"((float3\s+\w*viewPos\w*)\s*;)"),
         "$1 [[user(TEXCOORD)]];");
+    patched = std::regex_replace(patched,
+        std::regex(R"((float2\s+\w*uv\w*)\s*;)"),
+        "$1 [[user(TEXCOORD_1)]];");
+    patched = std::regex_replace(patched,
+        std::regex(R"((\[\[flat\]\]\s+uint\s+\w*materialID\w*)\s*;)"),
+        "$1 [[user(TEXCOORD_2)]];");
+
+    // Slang doesn't emit [[texture(0)]] on texture array parameters.
+    // Patch both mesh and fragment function signatures.
+    patched = std::regex_replace(patched,
+        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(128\)>\s+\w+))"),
+        "$1 [[texture(0)]]");
 
     return patched;
 }
@@ -228,6 +234,13 @@ int main() {
     MeshletData meshletData;
     if (!buildMeshlets(device, sceneMesh, meshletData)) {
         std::cerr << "Failed to build meshlets" << std::endl;
+        return 1;
+    }
+
+    // Load materials and textures
+    LoadedMaterials materials;
+    if (!loadGLTFMaterials(device, commandQueue, "Asset/Sponza/glTF/Sponza.gltf", materials)) {
+        std::cerr << "Failed to load materials" << std::endl;
         return 1;
     }
 
@@ -492,7 +505,32 @@ int main() {
             encoder->setMeshBuffer(meshletData.meshletVertices, 0, 4);
             encoder->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
             encoder->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
+            encoder->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
+            encoder->setMeshBuffer(meshletData.materialIDs, 0, 8);
+            // Slang puts materials buffer in mesh stage KernelContext too (buffer 9)
+            encoder->setMeshBuffer(materials.materialBuffer, 0, 9);
             encoder->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+            // Slang's KernelContext requires all global buffers bound to fragment stage too
+            encoder->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
+            encoder->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
+            encoder->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
+            encoder->setFragmentBuffer(meshletData.meshletVertices, 0, 4);
+            encoder->setFragmentBuffer(meshletData.meshletTriangles, 0, 5);
+            encoder->setFragmentBuffer(meshletData.boundsBuffer, 0, 6);
+            encoder->setFragmentBuffer(sceneMesh.uvBuffer, 0, 7);
+            encoder->setFragmentBuffer(meshletData.materialIDs, 0, 8);
+            encoder->setFragmentBuffer(materials.materialBuffer, 0, 9);
+            if (!materials.textures.empty()) {
+                encoder->setFragmentTextures(
+                    const_cast<MTL::Texture* const*>(materials.textures.data()),
+                    NS::Range(0, materials.textures.size()));
+                // Mesh stage also has texture array in KernelContext
+                encoder->setMeshTextures(
+                    const_cast<MTL::Texture* const*>(materials.textures.data()),
+                    NS::Range(0, materials.textures.size()));
+            }
+            encoder->setFragmentSamplerState(materials.sampler, 0);
+            encoder->setMeshSamplerState(materials.sampler, 0);
             encoder->drawMeshThreadgroups(
                 MTL::Size(meshletData.meshletCount, 1, 1),
                 MTL::Size(1, 1, 1),
@@ -531,8 +569,15 @@ int main() {
     meshletData.meshletVertices->release();
     meshletData.meshletTriangles->release();
     meshletData.boundsBuffer->release();
+    meshletData.materialIDs->release();
+    for (auto* tex : materials.textures) {
+        if (tex) tex->release();
+    }
+    materials.materialBuffer->release();
+    materials.sampler->release();
     sceneMesh.positionBuffer->release();
     sceneMesh.normalBuffer->release();
+    sceneMesh.uvBuffer->release();
     sceneMesh.indexBuffer->release();
     depthState->release();
     meshPipelineState->release();

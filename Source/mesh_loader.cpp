@@ -34,6 +34,7 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
     // Merge all primitives from all meshes into single buffers
     std::vector<float> allPositions;
     std::vector<float> allNormals;
+    std::vector<float> allUVs;
     std::vector<uint32_t> allIndices;
 
     float bboxMin[3] = { FLT_MAX,  FLT_MAX,  FLT_MAX};
@@ -51,12 +52,16 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
 
             const cgltf_accessor* posAccessor = nullptr;
             const cgltf_accessor* normAccessor = nullptr;
+            const cgltf_accessor* uvAccessor = nullptr;
 
             for (cgltf_size i = 0; i < prim.attributes_count; i++) {
                 if (prim.attributes[i].type == cgltf_attribute_type_position)
                     posAccessor = prim.attributes[i].data;
                 else if (prim.attributes[i].type == cgltf_attribute_type_normal)
                     normAccessor = prim.attributes[i].data;
+                else if (prim.attributes[i].type == cgltf_attribute_type_texcoord &&
+                         prim.attributes[i].index == 0)
+                    uvAccessor = prim.attributes[i].data;
             }
 
             if (!posAccessor || !normAccessor) {
@@ -68,6 +73,7 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
                 continue;
 
             uint32_t vertexBase = static_cast<uint32_t>(allPositions.size() / 3);
+            uint32_t indexBase = static_cast<uint32_t>(allIndices.size());
 
             // Unpack positions (handles any source component type)
             size_t posStart = allPositions.size();
@@ -78,6 +84,15 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
             size_t normStart = allNormals.size();
             allNormals.resize(normStart + normAccessor->count * 3);
             cgltf_accessor_unpack_floats(normAccessor, &allNormals[normStart], normAccessor->count * 3);
+
+            // Unpack UVs (default to 0,0 if missing)
+            size_t uvStart = allUVs.size();
+            allUVs.resize(uvStart + posAccessor->count * 2);
+            if (uvAccessor) {
+                cgltf_accessor_unpack_floats(uvAccessor, &allUVs[uvStart], uvAccessor->count * 2);
+            } else {
+                std::fill(&allUVs[uvStart], &allUVs[uvStart] + posAccessor->count * 2, 0.0f);
+            }
 
             // Update bounding box
             if (posAccessor->has_min && posAccessor->has_max) {
@@ -96,6 +111,21 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
                     static_cast<uint32_t>(cgltf_accessor_read_index(idxAccessor, i));
             }
 
+            // Determine material index
+            uint32_t materialIndex = 0;
+            if (prim.material) {
+                materialIndex = static_cast<uint32_t>(prim.material - data->materials);
+            }
+
+            // Record primitive group
+            LoadedMesh::PrimitiveGroup group;
+            group.vertexOffset = vertexBase;
+            group.vertexCount = static_cast<uint32_t>(posAccessor->count);
+            group.indexOffset = indexBase;
+            group.indexCount = static_cast<uint32_t>(idxAccessor->count);
+            group.materialIndex = materialIndex;
+            out.primitiveGroups.push_back(group);
+
             totalPrimitives++;
         }
     }
@@ -112,6 +142,9 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
     out.normalBuffer = device->newBuffer(
         allNormals.data(), allNormals.size() * sizeof(float),
         MTL::ResourceStorageModeShared);
+    out.uvBuffer = device->newBuffer(
+        allUVs.data(), allUVs.size() * sizeof(float),
+        MTL::ResourceStorageModeShared);
     out.indexBuffer = device->newBuffer(
         allIndices.data(), allIndices.size() * sizeof(uint32_t),
         MTL::ResourceStorageModeShared);
@@ -124,7 +157,8 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
         out.bboxMax[i] = bboxMax[i];
     }
 
-    std::cout << "Loaded " << totalPrimitives << " primitives: "
+    std::cout << "Loaded " << totalPrimitives << " primitives ("
+              << out.primitiveGroups.size() << " groups): "
               << out.vertexCount << " vertices, "
               << out.indexCount << " indices" << std::endl;
 
