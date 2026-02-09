@@ -8,21 +8,25 @@
 struct LoadedMesh;
 struct MeshletData;
 
+struct TransformComponent {
+    float3 translation = float3(0.f, 0.f, 0.f);
+    float4 rotation = float4(0.f, 0.f, 0.f, 1.f); // quaternion xyzw
+    float3 scale = float3(1.f, 1.f, 1.f);
+
+    float4x4 localMatrix = float4x4::Identity();
+    float4x4 worldMatrix = float4x4::Identity();
+    bool useLocalMatrix = false; // preserve authored matrix until TRS is edited
+    bool dirty = true;
+};
+
 struct SceneNode {
     std::string name;
     uint32_t id = 0;
     int32_t parent = -1;
     std::vector<uint32_t> children;
 
-    // TRS (for UI editing)
-    float3 translation = float3(0.f, 0.f, 0.f);
-    float4 rotation = float4(0.f, 0.f, 0.f, 1.f); // quaternion xyzw
-    float3 scale = float3(1.f, 1.f, 1.f);
-
-    // Computed matrices
-    float4x4 localMatrix = float4x4::Identity();
-    float4x4 worldMatrix = float4x4::Identity();
-    bool useLocalMatrix = false; // preserve authored matrix until TRS is edited
+    // Every scene object has exactly one transform component.
+    TransformComponent transform;
 
     // Mesh reference (-1 = no mesh, pure transform node)
     int32_t meshIndex = -1;
@@ -33,7 +37,6 @@ struct SceneNode {
     uint32_t indexCount = 0;
 
     bool visible = true;
-    bool dirty = true;
 };
 
 class SceneGraph {

@@ -758,7 +758,7 @@ int main() {
             visibilityInstanceTransforms.reserve(std::max<size_t>(visibilityInstanceCount, 1));
             for (uint32_t instanceID = 0; instanceID < visibilityInstanceCount; instanceID++) {
                 const auto& node = sceneGraph.nodes[visibleMeshletNodes[instanceID]];
-                float4x4 nodeModelView = view * node.worldMatrix;
+                float4x4 nodeModelView = view * node.transform.worldMatrix;
                 float4x4 nodeMVP = proj * nodeModelView;
                 visibilityInstanceTransforms.push_back({transpose(nodeMVP), transpose(nodeModelView)});
             }
@@ -826,13 +826,13 @@ int main() {
                     // Per-node dispatch
                     for (uint32_t instanceID = 0; instanceID < visibilityInstanceCount; instanceID++) {
                         const auto& node = sceneGraph.nodes[visibleMeshletNodes[instanceID]];
-                        float4x4 nodeModelView = view * node.worldMatrix;
+                        float4x4 nodeModelView = view * node.transform.worldMatrix;
                         float4x4 nodeMVP = proj * nodeModelView;
                         Uniforms nodeUniforms = uniforms;
                         nodeUniforms.mvp = transpose(nodeMVP);
                         nodeUniforms.modelView = transpose(nodeModelView);
                         extractFrustumPlanes(nodeMVP, nodeUniforms.frustumPlanes);
-                        float4x4 invModel = node.worldMatrix;
+                        float4x4 invModel = node.transform.worldMatrix;
                         invModel.Invert();
                         nodeUniforms.cameraPos = invModel * cameraWorldPos;
                         nodeUniforms.meshletBaseOffset = node.meshletStart;
@@ -985,13 +985,13 @@ int main() {
                         // Per-node dispatch
                         for (uint32_t nodeID : visibleMeshletNodes) {
                             const auto& node = sceneGraph.nodes[nodeID];
-                            float4x4 nodeModelView = view * node.worldMatrix;
+                            float4x4 nodeModelView = view * node.transform.worldMatrix;
                             float4x4 nodeMVP = proj * nodeModelView;
                             Uniforms nodeUniforms = uniforms;
                             nodeUniforms.mvp = transpose(nodeMVP);
                             nodeUniforms.modelView = transpose(nodeModelView);
                             extractFrustumPlanes(nodeMVP, nodeUniforms.frustumPlanes);
-                            float4x4 invModel = node.worldMatrix;
+                            float4x4 invModel = node.transform.worldMatrix;
                             invModel.Invert();
                             nodeUniforms.cameraPos = invModel * cameraWorldPos;
                             nodeUniforms.meshletBaseOffset = node.meshletStart;
@@ -1011,12 +1011,12 @@ int main() {
                         // Per-node dispatch for vertex pipeline
                         for (uint32_t nodeID : visibleIndexNodes) {
                             const auto& node = sceneGraph.nodes[nodeID];
-                            float4x4 nodeModelView = view * node.worldMatrix;
+                            float4x4 nodeModelView = view * node.transform.worldMatrix;
                             float4x4 nodeMVP = proj * nodeModelView;
                             Uniforms nodeUniforms = uniforms;
                             nodeUniforms.mvp = transpose(nodeMVP);
                             nodeUniforms.modelView = transpose(nodeModelView);
-                            float4x4 invModel = node.worldMatrix;
+                            float4x4 invModel = node.transform.worldMatrix;
                             invModel.Invert();
                             nodeUniforms.cameraPos = invModel * cameraWorldPos;
                             enc->setVertexBytes(&nodeUniforms, sizeof(nodeUniforms), 0);

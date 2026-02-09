@@ -28,20 +28,20 @@ static void addNodeRecursive(const cgltf_data* data,
 
     // Extract TRS
     if (gltfNode->has_translation) {
-        node.translation = float3(gltfNode->translation[0],
-                                  gltfNode->translation[1],
-                                  gltfNode->translation[2]);
+        node.transform.translation = float3(gltfNode->translation[0],
+                                            gltfNode->translation[1],
+                                            gltfNode->translation[2]);
     }
     if (gltfNode->has_rotation) {
-        node.rotation = float4(gltfNode->rotation[0],
-                               gltfNode->rotation[1],
-                               gltfNode->rotation[2],
-                               gltfNode->rotation[3]);
+        node.transform.rotation = float4(gltfNode->rotation[0],
+                                         gltfNode->rotation[1],
+                                         gltfNode->rotation[2],
+                                         gltfNode->rotation[3]);
     }
     if (gltfNode->has_scale) {
-        node.scale = float3(gltfNode->scale[0],
-                            gltfNode->scale[1],
-                            gltfNode->scale[2]);
+        node.transform.scale = float3(gltfNode->scale[0],
+                                      gltfNode->scale[1],
+                                      gltfNode->scale[2]);
     }
 
     if (gltfNode->has_matrix) {
@@ -52,11 +52,11 @@ static void addNodeRecursive(const cgltf_data* data,
         mat.Col(1) = float4(m[4], m[5], m[6], m[7]);
         mat.Col(2) = float4(m[8], m[9], m[10], m[11]);
         mat.Col(3) = float4(m[12], m[13], m[14], m[15]);
-        node.localMatrix = mat;
-        node.useLocalMatrix = true;
-        node.translation = float3(m[12], m[13], m[14]);
-        node.scale = mat.GetScale();
-        node.rotation = mat.GetQuaternion();
+        node.transform.localMatrix = mat;
+        node.transform.useLocalMatrix = true;
+        node.transform.translation = float3(m[12], m[13], m[14]);
+        node.transform.scale = mat.GetScale();
+        node.transform.rotation = mat.GetQuaternion();
     }
 
     // Map mesh reference
@@ -142,28 +142,33 @@ bool SceneGraph::buildFromGLTF(const std::string& gltfPath,
 
 void SceneGraph::updateTransforms() {
     for (auto& node : nodes) {
-        if (!node.dirty) continue;
+        if (!node.transform.dirty) continue;
 
-        if (!node.useLocalMatrix)
-            node.localMatrix = computeTRS(node.translation, node.rotation, node.scale);
+        if (!node.transform.useLocalMatrix) {
+            node.transform.localMatrix = computeTRS(
+                node.transform.translation,
+                node.transform.rotation,
+                node.transform.scale);
+        }
 
         if (node.parent >= 0)
-            node.worldMatrix = nodes[node.parent].worldMatrix * node.localMatrix;
+            node.transform.worldMatrix =
+                nodes[node.parent].transform.worldMatrix * node.transform.localMatrix;
         else
-            node.worldMatrix = node.localMatrix;
+            node.transform.worldMatrix = node.transform.localMatrix;
 
-        node.dirty = false;
+        node.transform.dirty = false;
 
         // Mark children dirty so they recompute
         for (uint32_t childId : node.children) {
-            nodes[childId].dirty = true;
+            nodes[childId].transform.dirty = true;
         }
     }
 }
 
 void SceneGraph::markDirty(uint32_t nodeId) {
     if (nodeId >= nodes.size()) return;
-    nodes[nodeId].dirty = true;
+    nodes[nodeId].transform.dirty = true;
     for (uint32_t childId : nodes[nodeId].children)
         markDirty(childId);
 }

@@ -77,6 +77,7 @@ static void drawPropertyPanel(SceneGraph& scene) {
     }
 
     SceneNode& node = scene.nodes[scene.selectedNode];
+    TransformComponent& transform = node.transform;
 
     ImGui::Text("Name: %s", node.name.c_str());
     ImGui::Text("ID: %u", node.id);
@@ -89,25 +90,25 @@ static void drawPropertyPanel(SceneGraph& scene) {
     ImGui::Separator();
     ImGui::Text("Transform");
 
-    float t[3] = {node.translation.x, node.translation.y, node.translation.z};
+    float t[3] = {transform.translation.x, transform.translation.y, transform.translation.z};
     if (ImGui::DragFloat3("Translation", t, 0.01f)) {
-        node.translation = float3(t[0], t[1], t[2]);
-        node.useLocalMatrix = false;
+        transform.translation = float3(t[0], t[1], t[2]);
+        transform.useLocalMatrix = false;
         transformChanged = true;
     }
 
-    float3 euler = quaternionToEulerDeg(node.rotation);
+    float3 euler = quaternionToEulerDeg(transform.rotation);
     float e[3] = {euler.x, euler.y, euler.z};
     if (ImGui::DragFloat3("Rotation", e, 0.1f)) {
-        node.rotation = eulerDegToQuaternion(float3(e[0], e[1], e[2]));
-        node.useLocalMatrix = false;
+        transform.rotation = eulerDegToQuaternion(float3(e[0], e[1], e[2]));
+        transform.useLocalMatrix = false;
         transformChanged = true;
     }
 
-    float s[3] = {node.scale.x, node.scale.y, node.scale.z};
+    float s[3] = {transform.scale.x, transform.scale.y, transform.scale.z};
     if (ImGui::DragFloat3("Scale", s, 0.01f, 0.001f, 100.0f)) {
-        node.scale = float3(s[0], s[1], s[2]);
-        node.useLocalMatrix = false;
+        transform.scale = float3(s[0], s[1], s[2]);
+        transform.useLocalMatrix = false;
         transformChanged = true;
     }
 
