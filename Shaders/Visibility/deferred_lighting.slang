@@ -45,12 +45,43 @@ struct SceneInstanceTransform {
 static const uint INVALID_TEX = 0xFFFFFFFF;
 static const uint INVALID_VIS = 0xFFFFFFFF;
 static const uint kTextureArraySize = 96;
+static const float kPi = 3.14159265359;
+static const float kMinPerceptualRoughness = 0.045;
+static const float kMinNoV = 1e-4;
 static const uint kInstanceBits = VISIBILITY_INSTANCE_BITS;
 static const uint kVisibilityInstanceMask = VISIBILITY_INSTANCE_MASK;
 static const uint kVisibilityTriangleBits = VISIBILITY_TRIANGLE_BITS;
 static const uint kVisibilityTriangleMask = VISIBILITY_TRIANGLE_MASK;
 static const uint kVisibilityMeshletShift = VISIBILITY_MESHLET_SHIFT;
 static const uint kVisibilityMeshletMask = VISIBILITY_MESHLET_MASK;
+
+float pow5(float x) {
+    float x2 = x * x;
+    return x2 * x2 * x;
+}
+
+float D_GGX(float roughness, float NoH) {
+    float oneMinusNoHSquared = max(1.0 - NoH * NoH, 0.0);
+    float a = NoH * roughness;
+    float k = roughness / (oneMinusNoHSquared + a * a);
+    return (k * k) * (1.0 / kPi);
+}
+
+float V_SmithGGXCorrelated(float roughness, float NoV, float NoL) {
+    float a2 = roughness * roughness;
+    float lambdaV = NoL * sqrt((NoV - a2 * NoV) * NoV + a2);
+    float lambdaL = NoV * sqrt((NoL - a2 * NoL) * NoL + a2);
+    return 0.5 / max(lambdaV + lambdaL, 1e-5);
+}
+
+float3 F_Schlick(float3 f0, float f90, float VoH) {
+    return f0 + (f90 - f0) * pow5(1.0 - VoH);
+}
+
+float3 fresnel(float3 f0, float LoH) {
+    float f90 = clamp(dot(f0, float3(50.0 * 0.33)), 0.0, 1.0);
+    return F_Schlick(f0, f90, LoH);
+}
 
 // Buffer bindings
 ConstantBuffer<LightingUniforms> lightUniforms;          // buffer(0)
@@ -236,20 +267,44 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         baseColor *= sceneTextures[mat.baseColorTexIndex].SampleGrad(sceneSampler, uv, duvdx, duvdy);
     }
 
-    // Blinn-Phong lighting
+    float metallic = clamp(mat.metallicFactor, 0.0, 1.0);
+    float perceptualRoughness = clamp(mat.roughnessFactor, 0.0, 1.0);
+    if (mat.metallicRoughnessTexIndex != INVALID_TEX && mat.metallicRoughnessTexIndex < lightUniforms.textureCount) {
+        float4 mrSample = sceneTextures[mat.metallicRoughnessTexIndex].SampleGrad(sceneSampler, uv, duvdx, duvdy);
+        // glTF metallic-roughness texture packing: G=roughness, B=metallic.
+        perceptualRoughness *= mrSample.g;
+        metallic *= mrSample.b;
+    }
+
+    perceptualRoughness = clamp(perceptualRoughness, kMinPerceptualRoughness, 1.0);
+    float roughness = perceptualRoughness * perceptualRoughness;
+    float3 diffuseColor = baseColor.rgb * (1.0 - metallic);
+    float3 f0 = 0.04 * (1.0 - metallic) + baseColor.rgb * metallic;
+
+    // Filament-style direct BRDF (GGX NDF + correlated Smith visibility + Schlick Fresnel).
     float3 N = normalize(viewNormal);
     float3 L = normalize(lightUniforms.lightDir.xyz);
     float3 V = normalize(-viewPos);
-    float3 H = normalize(L + V);
+    float NoL = max(dot(N, L), 0.0);
+    float NoV = max(dot(N, V), kMinNoV);
 
-    float ambient = 0.15;
-    float diffuse = max(dot(N, L), 0.0);
-    float specular = pow(max(dot(N, H), 0.0), 64.0);
+    float3 color = float3(0.0);
+    if (NoL > 0.0) {
+        float3 H = normalize(L + V);
+        float NoH = max(dot(N, H), 0.0);
+        float LoH = max(dot(L, H), 0.0);
 
-    float3 lightColor = lightUniforms.lightColorIntensity.xyz * lightUniforms.lightColorIntensity.w;
-    float shadow = (lightUniforms.shadowEnabled != 0) ? shadowMap[pixel].x : 1.0;
-    float3 color = baseColor.rgb * ambient +
-                   shadow * (baseColor.rgb * (diffuse * 0.75) * lightColor +
-                             lightColor * (specular * 0.4));
+        float D = D_GGX(roughness, NoH);
+        float Vis = V_SmithGGXCorrelated(roughness, NoV, NoL);
+        float3 F = fresnel(f0, LoH);
+
+        float3 Fr = (D * Vis) * F;
+        float3 Fd = diffuseColor * (1.0 / kPi);
+
+        float3 lightColor = lightUniforms.lightColorIntensity.xyz * lightUniforms.lightColorIntensity.w;
+        float shadow = (lightUniforms.shadowEnabled != 0) ? shadowMap[pixel].x : 1.0;
+        color = shadow * (Fd + Fr) * lightColor * NoL;
+    }
+
     outputTexture[pixel] = float4(color, 1.0);
 }
