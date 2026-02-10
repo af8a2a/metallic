@@ -179,6 +179,26 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float2 uv2 = loadUV(globalV2);
     float2 uv = (b0 * w0 * uv0 + b1 * w1 * uv1 + b2 * w2 * uv2) * W;
 
+    // UV gradients via neighbor-pixel barycentrics (Wicked Engine approach):
+    // Evaluate barycentrics at (pixel+1,0) and (pixel,+1) against the same
+    // triangle, interpolate UVs with perspective correction, take difference.
+    float2 e2_dx = p + float2(1, 0) - s0.xy;
+    float b1_dx = (e2_dx.x * e1.y - e2_dx.y * e1.x) * invDet;
+    float b2_dx = (e0.x * e2_dx.y - e0.y * e2_dx.x) * invDet;
+    float b0_dx = 1.0 - b1_dx - b2_dx;
+    float2 uv_nx = (b0_dx * w0 * uv0 + b1_dx * w1 * uv1 + b2_dx * w2 * uv2)
+                  / (b0_dx * w0 + b1_dx * w1 + b2_dx * w2);
+
+    float2 e2_dy = p + float2(0, 1) - s0.xy;
+    float b1_dy = (e2_dy.x * e1.y - e2_dy.y * e1.x) * invDet;
+    float b2_dy = (e0.x * e2_dy.y - e0.y * e2_dy.x) * invDet;
+    float b0_dy = 1.0 - b1_dy - b2_dy;
+    float2 uv_ny = (b0_dy * w0 * uv0 + b1_dy * w1 * uv1 + b2_dy * w2 * uv2)
+                  / (b0_dy * w0 + b1_dy * w1 + b2_dy * w2);
+
+    float2 duvdx = uv_nx - uv;
+    float2 duvdy = uv_ny - uv;
+
     // Interpolate normals with perspective correction
     float3 n0 = loadNormal(globalV0);
     float3 n1 = loadNormal(globalV1);
@@ -210,7 +230,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     float4 baseColor = mat.baseColorFactor;
     if (mat.baseColorTexIndex != INVALID_TEX && mat.baseColorTexIndex < lightUniforms.textureCount) {
-        baseColor *= sceneTextures[mat.baseColorTexIndex].Sample(sceneSampler, uv);
+        baseColor *= sceneTextures[mat.baseColorTexIndex].SampleGrad(sceneSampler, uv, duvdx, duvdy);
     }
 
     // Blinn-Phong lighting
