@@ -19,7 +19,8 @@ public:
                 const float4x4& view, const float4x4& proj,
                 const float4& cameraWorldPos,
                 MTL::CommandBuffer* cmdBuf,
-                int w, int h)
+                int w, int h,
+                bool useSky)
         : m_ctx(ctx), m_drawable(drawable), m_renderMode(renderMode)
         , m_vertexPipeline(vertexPipeline), m_meshPipeline(meshPipeline)
         , m_baseUniforms(baseUniforms)
@@ -27,7 +28,8 @@ public:
         , m_visibleIndexNodes(visibleIndexNodes)
         , m_view(view), m_proj(proj), m_cameraWorldPos(cameraWorldPos)
         , m_commandBuffer(cmdBuf)
-        , m_width(w), m_height(h) {}
+        , m_width(w), m_height(h)
+        , m_useSky(useSky) {}
 
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return "Forward Pass"; }
@@ -35,8 +37,10 @@ public:
     void setup(FGBuilder& builder) override {
         m_depth = builder.create("depth",
             FGTextureDesc::depthTarget(m_width, m_height));
+        MTL::LoadAction colorLoad =
+            m_useSky ? MTL::LoadActionLoad : MTL::LoadActionClear;
         builder.setColorAttachment(0, m_drawable,
-            MTL::LoadActionClear, MTL::StoreActionStore,
+            colorLoad, MTL::StoreActionStore,
             MTL::ClearColor(0.1, 0.2, 0.3, 1.0));
         builder.setDepthAttachment(m_depth,
             MTL::LoadActionClear, MTL::StoreActionDontCare, m_ctx.depthClearValue);
@@ -153,4 +157,5 @@ private:
     float4 m_cameraWorldPos;
     MTL::CommandBuffer* m_commandBuffer;
     int m_width, m_height;
+    bool m_useSky;
 };

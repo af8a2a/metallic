@@ -46,6 +46,7 @@
 #include "shadow_ray_pass.h"
 #include "deferred_lighting_pass.h"
 #include "forward_pass.h"
+#include "sky_pass.h"
 
 
 static std::string compileSlangToMetal(const char* shaderPath, const char* searchPath = nullptr) {
@@ -272,6 +273,147 @@ static std::string patchComputeShaderMetalSource(const std::string& source) {
     return patched;
 }
 
+struct AtmosphereTextureSet {
+    MTL::Texture* transmittance = nullptr;
+    MTL::Texture* scattering = nullptr;
+    MTL::Texture* irradiance = nullptr;
+    MTL::SamplerState* sampler = nullptr;
+
+    bool isValid() const {
+        return transmittance && scattering && irradiance && sampler;
+    }
+
+    void release() {
+        if (transmittance) { transmittance->release(); transmittance = nullptr; }
+        if (scattering) { scattering->release(); scattering = nullptr; }
+        if (irradiance) { irradiance->release(); irradiance = nullptr; }
+        if (sampler) { sampler->release(); sampler = nullptr; }
+    }
+};
+
+static std::vector<float> loadFloatData(const std::string& path, size_t expectedCount) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        spdlog::warn("Atmosphere: missing texture data {}", path);
+        return {};
+    }
+
+    file.seekg(0, std::ios::end);
+    size_t size = static_cast<size_t>(file.tellg());
+    file.seekg(0, std::ios::beg);
+    if (size == 0 || size % sizeof(float) != 0) {
+        spdlog::warn("Atmosphere: invalid data size {} ({} bytes)", path, size);
+        return {};
+    }
+
+    std::vector<float> data(size / sizeof(float));
+    file.read(reinterpret_cast<char*>(data.data()), size);
+    if (!file) {
+        spdlog::warn("Atmosphere: failed to read {}", path);
+        return {};
+    }
+
+    if (expectedCount > 0 && data.size() != expectedCount) {
+        spdlog::warn("Atmosphere: unexpected element count in {} ({} vs {})",
+                     path, data.size(), expectedCount);
+    }
+    return data;
+}
+
+static MTL::Texture* createTexture2D(MTL::Device* device, int width, int height,
+                                     const float* data) {
+    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatRGBA32Float, width, height, false);
+    desc->setStorageMode(MTL::StorageModeShared);
+    desc->setUsage(MTL::TextureUsageShaderRead);
+    auto* tex = device->newTexture(desc);
+    desc->release();
+    if (!tex) {
+        return nullptr;
+    }
+    size_t bytesPerRow = static_cast<size_t>(width) * 4 * sizeof(float);
+    tex->replaceRegion(MTL::Region(0, 0, 0, width, height, 1), 0, data, bytesPerRow);
+    return tex;
+}
+
+static MTL::Texture* createTexture3D(MTL::Device* device, int width, int height, int depth,
+                                     const float* data) {
+    auto* desc = MTL::TextureDescriptor::alloc()->init();
+    desc->setTextureType(MTL::TextureType3D);
+    desc->setPixelFormat(MTL::PixelFormatRGBA32Float);
+    desc->setWidth(width);
+    desc->setHeight(height);
+    desc->setDepth(depth);
+    desc->setMipmapLevelCount(1);
+    desc->setStorageMode(MTL::StorageModeShared);
+    desc->setUsage(MTL::TextureUsageShaderRead);
+    auto* tex = device->newTexture(desc);
+    desc->release();
+    if (!tex) {
+        return nullptr;
+    }
+    size_t bytesPerRow = static_cast<size_t>(width) * 4 * sizeof(float);
+    size_t bytesPerImage = bytesPerRow * static_cast<size_t>(height);
+    tex->replaceRegion(MTL::Region(0, 0, 0, width, height, depth), 0, 0,
+                       data, bytesPerRow, bytesPerImage);
+    return tex;
+}
+
+static bool loadAtmosphereTextures(MTL::Device* device, const char* projectRoot,
+                                   AtmosphereTextureSet& out) {
+    constexpr int kTransmittanceWidth = 256;
+    constexpr int kTransmittanceHeight = 64;
+    constexpr int kScatteringWidth = 256; // NU_SIZE * MU_S_SIZE
+    constexpr int kScatteringHeight = 128;
+    constexpr int kScatteringDepth = 32;
+    constexpr int kIrradianceWidth = 64;
+    constexpr int kIrradianceHeight = 16;
+
+    std::string basePath = std::string(projectRoot) + "/Asset/Atmosphere/";
+    auto transmittance = loadFloatData(
+        basePath + "transmittance.dat",
+        static_cast<size_t>(kTransmittanceWidth) * kTransmittanceHeight * 4);
+    auto scattering = loadFloatData(
+        basePath + "scattering.dat",
+        static_cast<size_t>(kScatteringWidth) * kScatteringHeight * kScatteringDepth * 4);
+    auto irradiance = loadFloatData(
+        basePath + "irradiance.dat",
+        static_cast<size_t>(kIrradianceWidth) * kIrradianceHeight * 4);
+
+    if (transmittance.empty() || scattering.empty() || irradiance.empty()) {
+        return false;
+    }
+
+    out.transmittance = createTexture2D(
+        device, kTransmittanceWidth, kTransmittanceHeight, transmittance.data());
+    out.scattering = createTexture3D(
+        device, kScatteringWidth, kScatteringHeight, kScatteringDepth, scattering.data());
+    out.irradiance = createTexture2D(
+        device, kIrradianceWidth, kIrradianceHeight, irradiance.data());
+
+    if (!out.transmittance || !out.scattering || !out.irradiance) {
+        out.release();
+        return false;
+    }
+
+    auto* samplerDesc = MTL::SamplerDescriptor::alloc()->init();
+    samplerDesc->setMinFilter(MTL::SamplerMinMagFilterLinear);
+    samplerDesc->setMagFilter(MTL::SamplerMinMagFilterLinear);
+    samplerDesc->setMipFilter(MTL::SamplerMipFilterNotMipmapped);
+    samplerDesc->setSAddressMode(MTL::SamplerAddressModeClampToEdge);
+    samplerDesc->setTAddressMode(MTL::SamplerAddressModeClampToEdge);
+    samplerDesc->setRAddressMode(MTL::SamplerAddressModeClampToEdge);
+    out.sampler = device->newSamplerState(samplerDesc);
+    samplerDesc->release();
+
+    if (!out.sampler) {
+        out.release();
+        return false;
+    }
+
+    return true;
+}
+
 
 // --- Shader hot-reload helpers ---
 // Each returns a new pipeline on success, nullptr on failure (caller keeps old pipeline).
@@ -311,6 +453,43 @@ static MTL::RenderPipelineState* reloadVertexShader(
     lib->release();
     if (!pso) {
         spdlog::error("Hot-reload vertex PSO: {}", error->localizedDescription()->utf8String());
+    }
+    return pso;
+}
+
+static MTL::RenderPipelineState* reloadFullscreenShader(
+    MTL::Device* device, const char* shaderPath, const char* searchPath,
+    MTL::PixelFormat colorFormat)
+{
+    std::string src = compileSlangToMetal(shaderPath, searchPath);
+    if (src.empty()) return nullptr;
+
+    NS::Error* error = nullptr;
+    auto* compileOpts = MTL::CompileOptions::alloc()->init();
+    auto* lib = device->newLibrary(
+        NS::String::string(src.c_str(), NS::UTF8StringEncoding),
+        compileOpts, &error);
+    compileOpts->release();
+    if (!lib) {
+        spdlog::error("Hot-reload fullscreen lib: {}", error->localizedDescription()->utf8String());
+        return nullptr;
+    }
+
+    auto* vf = lib->newFunction(NS::String::string("vertexMain", NS::UTF8StringEncoding));
+    auto* ff = lib->newFunction(NS::String::string("fragmentMain", NS::UTF8StringEncoding));
+
+    auto* desc = MTL::RenderPipelineDescriptor::alloc()->init();
+    desc->setVertexFunction(vf);
+    desc->setFragmentFunction(ff);
+    desc->colorAttachments()->object(0)->setPixelFormat(colorFormat);
+
+    auto* pso = device->newRenderPipelineState(desc, &error);
+    desc->release();
+    if (vf) vf->release();
+    if (ff) ff->release();
+    lib->release();
+    if (!pso) {
+        spdlog::error("Hot-reload fullscreen PSO: {}", error->localizedDescription()->utf8String());
     }
     return pso;
 }
@@ -671,10 +850,56 @@ int main() {
     computeFn->release();
     computeLibrary->release();
 
+    // --- Atmosphere sky pipeline ---
+    MTL::RenderPipelineState* skyPipelineState = nullptr;
+    std::string skyMetalSource = compileSlangToMetal("Shaders/Atmosphere/sky", projectRoot);
+    if (!skyMetalSource.empty()) {
+        NS::String* skySourceStr = NS::String::string(skyMetalSource.c_str(), NS::UTF8StringEncoding);
+        MTL::CompileOptions* skyCompileOpts = MTL::CompileOptions::alloc()->init();
+        MTL::Library* skyLibrary = device->newLibrary(skySourceStr, skyCompileOpts, &error);
+        skyCompileOpts->release();
+        if (!skyLibrary) {
+            spdlog::warn("Failed to create sky Metal library: {}",
+                         error->localizedDescription()->utf8String());
+        } else {
+            MTL::Function* skyVertexFn = skyLibrary->newFunction(
+                NS::String::string("vertexMain", NS::UTF8StringEncoding));
+            MTL::Function* skyFragmentFn = skyLibrary->newFunction(
+                NS::String::string("fragmentMain", NS::UTF8StringEncoding));
+
+            auto* skyPipelineDesc = MTL::RenderPipelineDescriptor::alloc()->init();
+            skyPipelineDesc->setVertexFunction(skyVertexFn);
+            skyPipelineDesc->setFragmentFunction(skyFragmentFn);
+            skyPipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+
+            skyPipelineState = device->newRenderPipelineState(skyPipelineDesc, &error);
+            if (!skyPipelineState) {
+                spdlog::warn("Failed to create sky pipeline state: {}",
+                             error->localizedDescription()->utf8String());
+            }
+
+            skyPipelineDesc->release();
+            if (skyVertexFn) skyVertexFn->release();
+            if (skyFragmentFn) skyFragmentFn->release();
+            skyLibrary->release();
+        }
+    } else {
+        spdlog::warn("Sky shader compile failed; atmosphere sky disabled");
+    }
+
+    AtmosphereTextureSet atmosphereTextures;
+    bool atmosphereLoaded = loadAtmosphereTextures(device, projectRoot, atmosphereTextures);
+    if (!atmosphereLoaded) {
+        spdlog::warn("Atmosphere textures not found or invalid; sky pass will use fallback");
+    }
+    bool skyAvailable = atmosphereLoaded && skyPipelineState;
+
     int renderMode = 0; // 0=Vertex, 1=Mesh, 2=Visibility Buffer
     bool enableFrustumCull = false;
     bool enableConeCull = false;
     bool enableRTShadows = true;
+    bool enableAtmosphereSky = skyAvailable;
+    float skyExposure = 10.0f;
     bool showGraphDebug = false;
     bool showSceneGraphWindow = true;
     bool showRenderPassUI = true;
@@ -708,6 +933,15 @@ int main() {
     uint8_t shadowClear = 0xFF;
     shadowDummyTex->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, &shadowClear, 1);
 
+    // 1x1 sky fallback texture (BGRA8)
+    auto* skyFallbackDesc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatBGRA8Unorm, 1, 1, false);
+    skyFallbackDesc->setStorageMode(MTL::StorageModeShared);
+    skyFallbackDesc->setUsage(MTL::TextureUsageShaderRead);
+    MTL::Texture* skyFallbackTex = device->newTexture(skyFallbackDesc);
+    uint8_t skyFallbackColor[4] = {77, 51, 26, 255}; // B, G, R, A (~0.3, 0.2, 0.1)
+    skyFallbackTex->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, skyFallbackColor, 4);
+
     // Create initial framebuffer size (used for metalLayer)
     int fbWidth, fbHeight;
     glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
@@ -738,6 +972,7 @@ int main() {
         float4 worldLightDir, viewLightDir;
         float4 cameraWorldPos;
         Uniforms uniforms;
+        AtmosphereUniforms skyUniforms;
         {
             ZoneScopedN("Matrix Computation");
             aspect = (float)width / (float)height;
@@ -785,6 +1020,20 @@ int main() {
             uniforms.instanceID = 0;
 
             sceneGraph.updateTransforms();
+
+            if (skyAvailable) {
+                float4x4 viewProj = proj * view;
+                float4x4 invViewProj = viewProj;
+                invViewProj.Invert();
+                skyUniforms.invViewProj = transpose(invViewProj);
+                skyUniforms.cameraWorldPos = cameraWorldPos;
+                skyUniforms.sunDirection = worldLightDir;
+                skyUniforms.params = float4(skyExposure, 0.0f, 0.0f, 0.0f);
+                skyUniforms.screenWidth = static_cast<uint32_t>(width);
+                skyUniforms.screenHeight = static_cast<uint32_t>(height);
+                skyUniforms.pad0 = 0;
+                skyUniforms.pad1 = 0;
+            }
         }
 
         // Render pass
@@ -835,6 +1084,12 @@ int main() {
         if (renderMode == 2 && rtShadowsAvailable) {
             ImGui::Checkbox("RT Shadows", &enableRTShadows);
         }
+        if (skyAvailable) {
+            ImGui::Checkbox("Atmosphere Sky", &enableAtmosphereSky);
+            ImGui::SliderFloat("Sky Exposure", &skyExposure, 0.1f, 20.0f, "%.2f");
+        } else {
+            ImGui::TextDisabled("Atmosphere Sky (missing textures)");
+        }
         ImGui::Checkbox("Show Graph", &showGraphDebug);
         ImGui::Separator();
         bool f5Down = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
@@ -875,7 +1130,16 @@ int main() {
                 reloaded++;
             } else { failed++; }
 
-            // 5. Shadow ray shader
+            // 5. Sky shader
+            if (auto* p = reloadFullscreenShader(device, "Shaders/Atmosphere/sky", projectRoot,
+                    MTL::PixelFormatBGRA8Unorm)) {
+                if (skyPipelineState) skyPipelineState->release();
+                skyPipelineState = p;
+                skyAvailable = atmosphereLoaded && skyPipelineState;
+                reloaded++;
+            } else { failed++; }
+
+            // 6. Shadow ray shader
             if (rtShadowsAvailable) {
                 if (reloadShadowPipeline(device, shadowResources, projectRoot)) {
                     reloaded++;
@@ -980,6 +1244,22 @@ int main() {
                 shadowMapRes = shadowPassPtr->shadowMap;
             }
 
+            FGResource skyRes{};
+            if (skyAvailable && enableAtmosphereSky) {
+                auto skyPass = std::make_unique<SkyPass>(
+                    FGResource{}, skyPipelineState,
+                    atmosphereTextures.transmittance,
+                    atmosphereTextures.scattering,
+                    atmosphereTextures.irradiance,
+                    atmosphereTextures.sampler,
+                    skyUniforms,
+                    false,
+                    width, height);
+                auto* skyPassPtr = skyPass.get();
+                fg.addPass(std::move(skyPass));
+                skyRes = skyPassPtr->output;
+            }
+
             LightingUniforms lightUniforms;
             lightUniforms.mvp = transpose(mvp);
             lightUniforms.modelView = transpose(modelView);
@@ -1000,7 +1280,7 @@ int main() {
             auto lightingPass = std::make_unique<DeferredLightingPass>(
                 ctx, computePipelineState,
                 visVisibility, visDepth,
-                shadowMapRes, instanceTransformBuffer,
+                shadowMapRes, skyRes, skyFallbackTex, instanceTransformBuffer,
                 lightUniforms, width, height);
             auto* lightingPassPtr = lightingPass.get();
             fg.addPass(std::move(lightingPass));
@@ -1017,12 +1297,26 @@ int main() {
             // === FORWARD RENDERING (Vertex or Mesh shader) ===
             ZoneScopedN("Forward Graph Build");
 
+            bool useSky = skyAvailable && enableAtmosphereSky;
+            if (useSky) {
+                auto skyPass = std::make_unique<SkyPass>(
+                    drawableRes, skyPipelineState,
+                    atmosphereTextures.transmittance,
+                    atmosphereTextures.scattering,
+                    atmosphereTextures.irradiance,
+                    atmosphereTextures.sampler,
+                    skyUniforms,
+                    true,
+                    width, height);
+                fg.addPass(std::move(skyPass));
+            }
+
             auto fwdPass = std::make_unique<ForwardPass>(
                 ctx, drawableRes, renderMode,
                 pipelineState, meshPipelineState, uniforms,
                 visibleMeshletNodes, visibleIndexNodes,
                 view, proj, cameraWorldPos,
-                commandBuffer, width, height);
+                commandBuffer, width, height, useSky);
             fg.addPass(std::move(fwdPass));
         }
 
@@ -1076,6 +1370,8 @@ int main() {
     shadowResources.release();
     imguiDepthDummy->release();
     shadowDummyTex->release();
+    skyFallbackTex->release();
+    atmosphereTextures.release();
     meshletData.meshletBuffer->release();
     meshletData.meshletVertices->release();
     meshletData.meshletTriangles->release();
@@ -1092,6 +1388,7 @@ int main() {
     sceneMesh.indexBuffer->release();
     depthState->release();
     vertexDesc->release();
+    if (skyPipelineState) skyPipelineState->release();
     computePipelineState->release();
     visPipelineState->release();
     meshPipelineState->release();

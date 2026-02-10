@@ -42,6 +42,17 @@ struct LightingUniforms {
     uint32_t pad2;
 };
 
+struct AtmosphereUniforms {
+    float4x4 invViewProj;
+    float4   cameraWorldPos;
+    float4   sunDirection;
+    float4   params; // x = exposure
+    uint32_t screenWidth;
+    uint32_t screenHeight;
+    uint32_t pad0;
+    uint32_t pad1;
+};
+
 struct SceneInstanceTransform {
     float4x4 mvp;
     float4x4 modelView;

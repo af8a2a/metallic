@@ -101,6 +101,7 @@ Texture2D<float>             depthBuffer;                 // texture(1)
 RWTexture2D<float4>          outputTexture;               // texture(2)
 Texture2D                    sceneTextures[kTextureArraySize]; // texture(3..98)
 Texture2D<float>             shadowMap;                       // texture(99)
+Texture2D<float4>            skyTexture;                      // texture(100)
 SamplerState                 sceneSampler;                // sampler(0)
 
 float3 projectVertex(float4x4 mvp, float3 pos) {
@@ -141,7 +142,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     uint vis = visibilityBuffer[pixel];
     if (vis == INVALID_VIS) {
-        outputTexture[pixel] = float4(0.1, 0.2, 0.3, 1.0);
+        outputTexture[pixel] = skyTexture[pixel];
         return;
     }
 
@@ -151,12 +152,12 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint instanceID = vis & kVisibilityInstanceMask;
 
     if (meshletID >= lightUniforms.meshletCount) {
-        outputTexture[pixel] = float4(0.1, 0.2, 0.3, 1.0);
+        outputTexture[pixel] = skyTexture[pixel];
         return;
     }
 
     if (instanceID >= lightUniforms.instanceCount) {
-        outputTexture[pixel] = float4(0.1, 0.2, 0.3, 1.0);
+        outputTexture[pixel] = skyTexture[pixel];
         return;
     }
 
@@ -165,7 +166,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     // Fetch triangle vertex indices
     GPUMeshlet meshlet = meshlets[meshletID];
     if (triangleID >= meshlet.triangle_count) {
-        outputTexture[pixel] = float4(0.1, 0.2, 0.3, 1.0);
+        outputTexture[pixel] = skyTexture[pixel];
         return;
     }
 
@@ -175,7 +176,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint localV2 = (packedTri >> 16) & 0xFF;
 
     if (localV0 >= meshlet.vertex_count || localV1 >= meshlet.vertex_count || localV2 >= meshlet.vertex_count) {
-        outputTexture[pixel] = float4(0.1, 0.2, 0.3, 1.0);
+        outputTexture[pixel] = skyTexture[pixel];
         return;
     }
 
@@ -195,7 +196,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     float det = e0.x * e1.y - e0.y * e1.x;
     if (abs(det) < 1e-10) {
-        outputTexture[pixel] = float4(0.1, 0.2, 0.3, 1.0);
+        outputTexture[pixel] = skyTexture[pixel];
         return;
     }
     float invDet = 1.0 / det;
@@ -258,7 +259,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     // Material lookup
     uint matID = meshletMaterialIDs[meshletID];
     if (matID >= lightUniforms.materialCount) {
-        outputTexture[pixel] = float4(0.1, 0.2, 0.3, 1.0);
+        outputTexture[pixel] = skyTexture[pixel];
         return;
     }
     GPUMaterial mat = materials[matID];
