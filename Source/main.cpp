@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <regex>
 #include <fstream>
+#include <functional>
 
 #include <tracy/Tracy.hpp>
 #include "tracy_metal.h"
@@ -65,7 +66,7 @@ static void extractFrustumPlanes(const float4x4& mvp, float4* planes) {
     MvpToPlanes(ML_OGL ? STYLE_OGL : STYLE_D3D, mvp, planes);
 }
 
-static std::string compileSlangToMetal(const char* shaderPath) {
+static std::string compileSlangToMetal(const char* shaderPath, const char* searchPath = nullptr) {
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     slang::createGlobalSession(globalSession.writeRef());
 
@@ -75,10 +76,15 @@ static std::string compileSlangToMetal(const char* shaderPath) {
     targetDesc.profile = globalSession->findProfile("metal");
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
+    if (searchPath) {
+        sessionDesc.searchPaths = &searchPath;
+        sessionDesc.searchPathCount = 1;
+    }
 
     Slang::ComPtr<slang::ISession> session;
     globalSession->createSession(sessionDesc, session.writeRef());
 
+    spdlog::info("Loading shader: {} (search path: {})", shaderPath, searchPath ? searchPath : "<cwd>");
     Slang::ComPtr<slang::IBlob> diagnostics;
     slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
     if (!module) {
@@ -114,7 +120,7 @@ static std::string compileSlangToMetal(const char* shaderPath) {
                        metalCode->getBufferSize());
 }
 
-static std::string compileSlangMeshShaderToMetal(const char* shaderPath) {
+static std::string compileSlangMeshShaderToMetal(const char* shaderPath, const char* searchPath = nullptr) {
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     slang::createGlobalSession(globalSession.writeRef());
 
@@ -124,10 +130,15 @@ static std::string compileSlangMeshShaderToMetal(const char* shaderPath) {
     targetDesc.profile = globalSession->findProfile("metal");
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
+    if (searchPath) {
+        sessionDesc.searchPaths = &searchPath;
+        sessionDesc.searchPathCount = 1;
+    }
 
     Slang::ComPtr<slang::ISession> session;
     globalSession->createSession(sessionDesc, session.writeRef());
 
+    spdlog::info("Loading shader: {} (search path: {})", shaderPath, searchPath ? searchPath : "<cwd>");
     Slang::ComPtr<slang::IBlob> diagnostics;
     slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
     if (!module) {
@@ -163,7 +174,7 @@ static std::string compileSlangMeshShaderToMetal(const char* shaderPath) {
                        metalCode->getBufferSize());
 }
 
-static std::string compileSlangComputeShaderToMetal(const char* shaderPath) {
+static std::string compileSlangComputeShaderToMetal(const char* shaderPath, const char* searchPath = nullptr) {
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     slang::createGlobalSession(globalSession.writeRef());
 
@@ -173,10 +184,15 @@ static std::string compileSlangComputeShaderToMetal(const char* shaderPath) {
     targetDesc.profile = globalSession->findProfile("metal");
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
+    if (searchPath) {
+        sessionDesc.searchPaths = &searchPath;
+        sessionDesc.searchPathCount = 1;
+    }
 
     Slang::ComPtr<slang::ISession> session;
     globalSession->createSession(sessionDesc, session.writeRef());
 
+    spdlog::info("Loading shader: {} (search path: {})", shaderPath, searchPath ? searchPath : "<cwd>");
     Slang::ComPtr<slang::IBlob> diagnostics;
     slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
     if (!module) {
@@ -275,6 +291,120 @@ static std::string patchComputeShaderMetalSource(const std::string& source) {
 }
 
 
+// --- Shader hot-reload helpers ---
+// Each returns a new pipeline on success, nullptr on failure (caller keeps old pipeline).
+
+static MTL::RenderPipelineState* reloadVertexShader(
+    MTL::Device* device, const char* shaderPath, const char* searchPath,
+    MTL::VertexDescriptor* vertexDesc)
+{
+    std::string src = compileSlangToMetal(shaderPath, searchPath);
+    if (src.empty()) return nullptr;
+
+    NS::Error* error = nullptr;
+    auto* compileOpts = MTL::CompileOptions::alloc()->init();
+    auto* lib = device->newLibrary(
+        NS::String::string(src.c_str(), NS::UTF8StringEncoding),
+        compileOpts, &error);
+    compileOpts->release();
+    if (!lib) {
+        spdlog::error("Hot-reload vertex lib: {}", error->localizedDescription()->utf8String());
+        return nullptr;
+    }
+
+    auto* vf = lib->newFunction(NS::String::string("vertexMain", NS::UTF8StringEncoding));
+    auto* ff = lib->newFunction(NS::String::string("fragmentMain", NS::UTF8StringEncoding));
+
+    auto* desc = MTL::RenderPipelineDescriptor::alloc()->init();
+    desc->setVertexFunction(vf);
+    desc->setFragmentFunction(ff);
+    desc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+    desc->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
+    desc->setVertexDescriptor(vertexDesc);
+
+    auto* pso = device->newRenderPipelineState(desc, &error);
+    desc->release();
+    if (vf) vf->release();
+    if (ff) ff->release();
+    lib->release();
+    if (!pso) {
+        spdlog::error("Hot-reload vertex PSO: {}", error->localizedDescription()->utf8String());
+    }
+    return pso;
+}
+
+static MTL::RenderPipelineState* reloadMeshShader(
+    MTL::Device* device, const char* shaderPath, const char* searchPath,
+    std::function<std::string(const std::string&)> patchFn,
+    MTL::PixelFormat colorFormat, MTL::PixelFormat depthFormat)
+{
+    std::string src = compileSlangMeshShaderToMetal(shaderPath, searchPath);
+    if (src.empty()) return nullptr;
+    src = patchFn(src);
+
+    NS::Error* error = nullptr;
+    auto* compileOpts = MTL::CompileOptions::alloc()->init();
+    auto* lib = device->newLibrary(
+        NS::String::string(src.c_str(), NS::UTF8StringEncoding),
+        compileOpts, &error);
+    compileOpts->release();
+    if (!lib) {
+        spdlog::error("Hot-reload mesh lib: {}", error->localizedDescription()->utf8String());
+        return nullptr;
+    }
+
+    auto* mf = lib->newFunction(NS::String::string("meshMain", NS::UTF8StringEncoding));
+    auto* ff = lib->newFunction(NS::String::string("fragmentMain", NS::UTF8StringEncoding));
+
+    auto* desc = MTL::MeshRenderPipelineDescriptor::alloc()->init();
+    desc->setMeshFunction(mf);
+    desc->setFragmentFunction(ff);
+    desc->colorAttachments()->object(0)->setPixelFormat(colorFormat);
+    desc->setDepthAttachmentPixelFormat(depthFormat);
+
+    MTL::RenderPipelineReflection* refl = nullptr;
+    auto* pso = device->newRenderPipelineState(desc, MTL::PipelineOptionNone, &refl, &error);
+    desc->release();
+    if (mf) mf->release();
+    if (ff) ff->release();
+    lib->release();
+    if (!pso) {
+        spdlog::error("Hot-reload mesh PSO: {}", error->localizedDescription()->utf8String());
+    }
+    return pso;
+}
+
+static MTL::ComputePipelineState* reloadComputeShader(
+    MTL::Device* device, const char* shaderPath, const char* searchPath,
+    const char* entryPoint,
+    std::function<std::string(const std::string&)> patchFn)
+{
+    std::string src = compileSlangComputeShaderToMetal(shaderPath, searchPath);
+    if (src.empty()) return nullptr;
+    src = patchFn(src);
+
+    NS::Error* error = nullptr;
+    auto* compileOpts = MTL::CompileOptions::alloc()->init();
+    auto* lib = device->newLibrary(
+        NS::String::string(src.c_str(), NS::UTF8StringEncoding),
+        compileOpts, &error);
+    compileOpts->release();
+    if (!lib) {
+        spdlog::error("Hot-reload compute lib: {}", error->localizedDescription()->utf8String());
+        return nullptr;
+    }
+
+    auto* fn = lib->newFunction(NS::String::string(entryPoint, NS::UTF8StringEncoding));
+    auto* pso = device->newComputePipelineState(fn, &error);
+    if (fn) fn->release();
+    lib->release();
+    if (!pso) {
+        spdlog::error("Hot-reload compute PSO: {}", error->localizedDescription()->utf8String());
+    }
+    return pso;
+}
+
+
 struct LightingUniforms {
     float4x4 mvp;
     float4x4 modelView;
@@ -359,13 +489,15 @@ int main() {
     }
     sceneGraph.updateTransforms();
 
+    const char* projectRoot = PROJECT_SOURCE_DIR;
+
     // Build raytracing acceleration structures for shadows
     RaytracedShadowResources shadowResources;
     bool rtShadowsAvailable = false;
     if (device->supportsRaytracing()) {
         ZoneScopedN("Build Acceleration Structures");
         if (buildAccelerationStructures(device, commandQueue, sceneMesh, sceneGraph, shadowResources) &&
-            createShadowPipeline(device, shadowResources)) {
+            createShadowPipeline(device, shadowResources, projectRoot)) {
             rtShadowsAvailable = true;
             spdlog::info("Raytraced shadows enabled");
         } else {
@@ -394,7 +526,7 @@ int main() {
     imguiInit(device);
 
     // Compile Slang shader to Metal source
-    std::string metalSource = compileSlangToMetal("Shaders/Vertex/bunny");
+    std::string metalSource = compileSlangToMetal("Shaders/Vertex/bunny", projectRoot);
     if (metalSource.empty()) {
         spdlog::error("Failed to compile Slang shader");
         return 1;
@@ -444,7 +576,7 @@ int main() {
     pipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
     pipelineDesc->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
     pipelineDesc->setVertexDescriptor(vertexDesc);
-    vertexDesc->release();
+    // vertexDesc kept alive for shader hot-reload
 
     MTL::RenderPipelineState* pipelineState =
         device->newRenderPipelineState(pipelineDesc, &error);
@@ -459,7 +591,7 @@ int main() {
     library->release();
 
     // --- Mesh shader pipeline ---
-    std::string meshMetalSource = compileSlangMeshShaderToMetal("Shaders/Mesh/meshlet");
+    std::string meshMetalSource = compileSlangMeshShaderToMetal("Shaders/Mesh/meshlet", projectRoot);
     if (meshMetalSource.empty()) {
         spdlog::error("Failed to compile Slang mesh shader");
         return 1;
@@ -503,7 +635,7 @@ int main() {
     meshLibrary->release();
 
     // --- Visibility buffer mesh shader pipeline ---
-    std::string visMetalSource = compileSlangMeshShaderToMetal("Shaders/Visibility/visibility");
+    std::string visMetalSource = compileSlangMeshShaderToMetal("Shaders/Visibility/visibility", projectRoot);
     if (visMetalSource.empty()) {
         spdlog::error("Failed to compile visibility shader");
         return 1;
@@ -547,7 +679,7 @@ int main() {
     visLibrary->release();
 
     // --- Deferred lighting compute pipeline ---
-    std::string computeMetalSource = compileSlangComputeShaderToMetal("Shaders/Visibility/deferred_lighting");
+    std::string computeMetalSource = compileSlangComputeShaderToMetal("Shaders/Visibility/deferred_lighting", projectRoot);
     if (computeMetalSource.empty()) {
         spdlog::error("Failed to compile deferred lighting shader");
         return 1;
@@ -585,6 +717,7 @@ int main() {
     bool showSceneGraphWindow = true;
     bool showImGuiDemo = false;
     bool exportGraphKeyDown = false;
+    bool reloadKeyDown = false;
 
     const double depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
 
@@ -739,6 +872,57 @@ int main() {
             ImGui::Checkbox("RT Shadows", &enableRTShadows);
         }
         ImGui::Checkbox("Show Graph", &showGraphDebug);
+        ImGui::Separator();
+        bool f5Down = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
+        bool triggerReload = ImGui::Button("Reload Shaders (F5)") || (f5Down && !reloadKeyDown);
+        reloadKeyDown = f5Down;
+        if (triggerReload) {
+            spdlog::info("Reloading shaders...");
+            int reloaded = 0, failed = 0;
+
+            // 1. Vertex shader
+            if (auto* p = reloadVertexShader(device, "Shaders/Vertex/bunny", projectRoot, vertexDesc)) {
+                pipelineState->release();
+                pipelineState = p;
+                reloaded++;
+            } else { failed++; }
+
+            // 2. Mesh shader
+            if (auto* p = reloadMeshShader(device, "Shaders/Mesh/meshlet", projectRoot,
+                    patchMeshShaderMetalSource, MTL::PixelFormatBGRA8Unorm, MTL::PixelFormatDepth32Float)) {
+                meshPipelineState->release();
+                meshPipelineState = p;
+                reloaded++;
+            } else { failed++; }
+
+            // 3. Visibility shader
+            if (auto* p = reloadMeshShader(device, "Shaders/Visibility/visibility", projectRoot,
+                    patchVisibilityShaderMetalSource, MTL::PixelFormatR32Uint, MTL::PixelFormatDepth32Float)) {
+                visPipelineState->release();
+                visPipelineState = p;
+                reloaded++;
+            } else { failed++; }
+
+            // 4. Compute shader (deferred lighting)
+            if (auto* p = reloadComputeShader(device, "Shaders/Visibility/deferred_lighting", projectRoot,
+                    "computeMain", patchComputeShaderMetalSource)) {
+                computePipelineState->release();
+                computePipelineState = p;
+                reloaded++;
+            } else { failed++; }
+
+            // 5. Shadow ray shader
+            if (rtShadowsAvailable) {
+                if (reloadShadowPipeline(device, shadowResources, projectRoot)) {
+                    reloaded++;
+                } else { failed++; }
+            }
+
+            if (failed == 0)
+                spdlog::info("All {} shaders reloaded successfully", reloaded);
+            else
+                spdlog::warn("{} shaders reloaded, {} failed (keeping old pipelines)", reloaded, failed);
+        }
         ImGui::End();
         imguiFramePass->release();
         } // end ImGui Frame zone
@@ -1189,6 +1373,7 @@ int main() {
     sceneMesh.uvBuffer->release();
     sceneMesh.indexBuffer->release();
     depthState->release();
+    vertexDesc->release();
     computePipelineState->release();
     visPipelineState->release();
     meshPipelineState->release();

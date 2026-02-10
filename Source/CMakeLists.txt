@@ -23,6 +23,10 @@ target_include_directories(rendergraph PRIVATE
 )
 target_link_libraries(rendergraph PRIVATE metal-cpp glfw meshoptimizer imgui slang::slang MathLib Tracy::TracyClient spdlog::spdlog_header_only "-framework AppKit")
 
+# Embed project root path so the app can load shaders from the source tree
+target_compile_definitions(rendergraph PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
 # TracyMetal requires ARC (Automatic Reference Counting)
 set_source_files_properties(Platform/tracy_metal.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
