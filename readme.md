@@ -1,6 +1,6 @@
-**Metallic** is my Metal playground,and explore the `vibe-coding` frontier
+**Metallic** is my Metal playground,and explore the `vibe-coding` limit  
 almost code is **Generated** by `Claude Opus4.6` and `OpenAI GPT-5.3 Codex`
-
+Develop in Apple M4 Pro
 
 Key technique
 - SceneGraph
