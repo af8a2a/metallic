@@ -2,7 +2,7 @@
 #include "mesh_loader.h"
 #include "meshlet_builder.h"
 #include <cgltf.h>
-#include <iostream>
+#include <spdlog/spdlog.h>
 #include <algorithm>
 
 static float4x4 computeTRS(const float3& t, const float4& q, const float3& s) {
@@ -101,7 +101,7 @@ bool SceneGraph::buildFromGLTF(const std::string& gltfPath,
     cgltf_data* data = nullptr;
     cgltf_result result = cgltf_parse_file(&options, gltfPath.c_str(), &data);
     if (result != cgltf_result_success) {
-        std::cerr << "SceneGraph: Failed to parse glTF: " << gltfPath << std::endl;
+        spdlog::error("SceneGraph: Failed to parse glTF: {}", gltfPath);
         return false;
     }
 
@@ -132,8 +132,7 @@ bool SceneGraph::buildFromGLTF(const std::string& gltfPath,
 
     cgltf_free(data);
 
-    std::cout << "SceneGraph: " << nodes.size() << " nodes, "
-              << rootNodes.size() << " roots" << std::endl;
+    spdlog::info("SceneGraph: {} nodes, {} roots", nodes.size(), rootNodes.size());
 
     return true;
 }

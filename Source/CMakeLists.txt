@@ -21,7 +21,7 @@ target_include_directories(rendergraph PRIVATE
     "${CMAKE_SOURCE_DIR}/External/cgltf"
     "${CMAKE_SOURCE_DIR}/External/stb"
 )
-target_link_libraries(rendergraph PRIVATE metal-cpp glfw meshoptimizer imgui slang::slang MathLib Tracy::TracyClient "-framework AppKit")
+target_link_libraries(rendergraph PRIVATE metal-cpp glfw meshoptimizer imgui slang::slang MathLib Tracy::TracyClient spdlog::spdlog_header_only "-framework AppKit")
 
 # TracyMetal requires ARC (Automatic Reference Counting)
 set_source_files_properties(Platform/tracy_metal.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")

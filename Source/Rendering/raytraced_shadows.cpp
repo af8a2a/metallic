@@ -3,7 +3,7 @@
 #include "scene_graph.h"
 
 #include <Metal/Metal.hpp>
-#include <iostream>
+#include <spdlog/spdlog.h>
 #include <fstream>
 #include <sstream>
 
@@ -114,7 +114,7 @@ bool buildAccelerationStructures(MTL::Device* device,
     }
 
     if (instances.empty()) {
-        std::cerr << "No mesh instances found for TLAS" << std::endl;
+        spdlog::error("No mesh instances found for TLAS");
         return false;
     }
 
@@ -149,8 +149,8 @@ bool buildAccelerationStructures(MTL::Device* device,
 
     tlasDesc->release();
 
-    std::cout << "Built TLAS with " << instances.size() << " instances, "
-              << out.referencedBLAS.size() << " unique BLAS" << std::endl;
+    spdlog::info("Built TLAS with {} instances, {} unique BLAS",
+                 instances.size(), out.referencedBLAS.size());
     return true;
 }
 
@@ -203,7 +203,7 @@ bool createShadowPipeline(MTL::Device* device,
                           RaytracedShadowResources& out) {
     std::ifstream file("Shaders/Raytracing/raytraced_shadow.metal");
     if (!file.is_open()) {
-        std::cerr << "Failed to open Shaders/Raytracing/raytraced_shadow.metal" << std::endl;
+        spdlog::error("Failed to open Shaders/Raytracing/raytraced_shadow.metal");
         return false;
     }
     std::stringstream ss;
@@ -218,26 +218,26 @@ bool createShadowPipeline(MTL::Device* device,
     out.library = device->newLibrary(sourceStr, compileOpts, &error);
     compileOpts->release();
     if (!out.library) {
-        std::cerr << "Failed to compile shadow ray shader: "
-                  << error->localizedDescription()->utf8String() << std::endl;
+        spdlog::error("Failed to compile shadow ray shader: {}",
+                      error->localizedDescription()->utf8String());
         return false;
     }
 
     auto* fn = out.library->newFunction(
         NS::String::string("shadowRayMain", NS::UTF8StringEncoding));
     if (!fn) {
-        std::cerr << "Failed to find shadowRayMain function" << std::endl;
+        spdlog::error("Failed to find shadowRayMain function");
         return false;
     }
 
     out.pipeline = device->newComputePipelineState(fn, &error);
     fn->release();
     if (!out.pipeline) {
-        std::cerr << "Failed to create shadow ray pipeline: "
-                  << error->localizedDescription()->utf8String() << std::endl;
+        spdlog::error("Failed to create shadow ray pipeline: {}",
+                      error->localizedDescription()->utf8String());
         return false;
     }
 
-    std::cout << "Shadow ray pipeline created" << std::endl;
+    spdlog::info("Shadow ray pipeline created");
     return true;
 }

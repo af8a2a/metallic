@@ -3,7 +3,7 @@
 #include <cgltf.h>
 
 #include "material_loader.h"
-#include <iostream>
+#include <spdlog/spdlog.h>
 #include <filesystem>
 #include <algorithm>
 
@@ -12,7 +12,7 @@ static MTL::Texture* createTextureFromImage(MTL::Device* device, MTL::CommandQue
     int w, h, ch;
     unsigned char* pixels = stbi_load(imagePath.c_str(), &w, &h, &ch, 4);
     if (!pixels) {
-        std::cerr << "Failed to load image: " << imagePath << std::endl;
+        spdlog::warn("Failed to load image: {}", imagePath);
         return nullptr;
     }
 
@@ -56,13 +56,13 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
 
     cgltf_result result = cgltf_parse_file(&options, gltfPath.c_str(), &data);
     if (result != cgltf_result_success) {
-        std::cerr << "Failed to parse glTF for materials: " << gltfPath << std::endl;
+        spdlog::error("Failed to parse glTF for materials: {}", gltfPath);
         return false;
     }
 
     result = cgltf_load_buffers(&options, data, gltfPath.c_str());
     if (result != cgltf_result_success) {
-        std::cerr << "Failed to load glTF buffers for materials" << std::endl;
+        spdlog::error("Failed to load glTF buffers for materials");
         cgltf_free(data);
         return false;
     }
@@ -73,9 +73,8 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
     // Load all images as textures
     const cgltf_size textureCount = std::min<cgltf_size>(data->images_count, MAX_SCENE_TEXTURES);
     if (data->images_count > textureCount) {
-        std::cerr << "Warning: scene has " << data->images_count
-                  << " images, but only first " << textureCount
-                  << " are bound (MAX_SCENE_TEXTURES)." << std::endl;
+        spdlog::warn("Scene has {} images, but only first {} are bound (MAX_SCENE_TEXTURES)",
+                     data->images_count, textureCount);
     }
 
     out.textures.resize(textureCount, nullptr);
@@ -85,7 +84,7 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
         std::string fullPath = (basePath / img.uri).string();
         out.textures[i] = createTextureFromImage(device, commandQueue, fullPath);
         if (!out.textures[i]) {
-            std::cerr << "Warning: failed to load texture " << i << ": " << fullPath << std::endl;
+            spdlog::warn("Failed to load texture {}: {}", i, fullPath);
         }
     }
 
@@ -107,7 +106,7 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
     }
     if (placeholder) placeholder->release();
 
-    std::cout << "Loaded " << out.textures.size() << " textures" << std::endl;
+    spdlog::info("Loaded {} textures", out.textures.size());
 
     auto resolveTextureIndex = [&](const cgltf_texture* tex) -> uint32_t {
         if (!tex || !tex->image)
@@ -166,7 +165,7 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
         materials.data(), materials.size() * sizeof(GPUMaterial),
         MTL::ResourceStorageModeShared);
 
-    std::cout << "Loaded " << out.materialCount << " materials" << std::endl;
+    spdlog::info("Loaded {} materials", out.materialCount);
 
     // Create shared sampler (LINEAR + mipmap + REPEAT)
     auto* samplerDesc = MTL::SamplerDescriptor::alloc()->init();

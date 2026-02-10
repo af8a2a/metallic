@@ -2,7 +2,7 @@
 #include <cgltf.h>
 
 #include "mesh_loader.h"
-#include <iostream>
+#include <spdlog/spdlog.h>
 #include <cstring>
 #include <vector>
 #include <cfloat>
@@ -14,19 +14,19 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
 
     cgltf_result result = cgltf_parse_file(&options, gltfPath.c_str(), &data);
     if (result != cgltf_result_success) {
-        std::cerr << "Failed to parse glTF: " << gltfPath << std::endl;
+        spdlog::error("Failed to parse glTF: {}", gltfPath);
         return false;
     }
 
     result = cgltf_load_buffers(&options, data, gltfPath.c_str());
     if (result != cgltf_result_success) {
-        std::cerr << "Failed to load glTF buffers" << std::endl;
+        spdlog::error("Failed to load glTF buffers");
         cgltf_free(data);
         return false;
     }
 
     if (data->meshes_count == 0) {
-        std::cerr << "No meshes found" << std::endl;
+        spdlog::error("No meshes found");
         cgltf_free(data);
         return false;
     }
@@ -66,7 +66,7 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
             }
 
             if (!posAccessor || !normAccessor) {
-                std::cerr << "Primitive " << pi << " missing POSITION or NORMAL, skipping" << std::endl;
+                spdlog::warn("Primitive {} missing POSITION or NORMAL, skipping", pi);
                 continue;
             }
 
@@ -134,7 +134,7 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
     }
 
     if (allPositions.empty() || allIndices.empty()) {
-        std::cerr << "No valid primitives found" << std::endl;
+        spdlog::error("No valid primitives found");
         cgltf_free(data);
         return false;
     }
@@ -160,10 +160,8 @@ bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& 
         out.bboxMax[i] = bboxMax[i];
     }
 
-    std::cout << "Loaded " << totalPrimitives << " primitives ("
-              << out.primitiveGroups.size() << " groups): "
-              << out.vertexCount << " vertices, "
-              << out.indexCount << " indices" << std::endl;
+    spdlog::info("Loaded {} primitives ({} groups): {} vertices, {} indices",
+                 totalPrimitives, out.primitiveGroups.size(), out.vertexCount, out.indexCount);
 
     cgltf_free(data);
     return true;

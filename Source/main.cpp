@@ -25,7 +25,7 @@
 #include <slang.h>
 #include <slang-com-ptr.h>
 
-#include <iostream>
+#include <spdlog/spdlog.h>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -85,8 +85,8 @@ static std::string compileSlangToMetal(const char* shaderPath) {
     slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
     if (!module) {
         if (diagnostics)
-            std::cerr << "Slang load error: "
-                      << static_cast<const char*>(diagnostics->getBufferPointer()) << std::endl;
+        spdlog::error("Slang load error: {}",
+                      static_cast<const char*>(diagnostics->getBufferPointer()));
         return {};
     }
 
@@ -107,8 +107,8 @@ static std::string compileSlangToMetal(const char* shaderPath) {
     linkedProgram->getTargetCode(0, metalCode.writeRef(), diagnostics.writeRef());
     if (!metalCode) {
         if (diagnostics)
-            std::cerr << "Slang compile error: "
-                      << static_cast<const char*>(diagnostics->getBufferPointer()) << std::endl;
+        spdlog::error("Slang compile error: {}",
+                      static_cast<const char*>(diagnostics->getBufferPointer()));
         return {};
     }
 
@@ -134,8 +134,8 @@ static std::string compileSlangMeshShaderToMetal(const char* shaderPath) {
     slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
     if (!module) {
         if (diagnostics)
-            std::cerr << "Slang load error: "
-                      << static_cast<const char*>(diagnostics->getBufferPointer()) << std::endl;
+        spdlog::error("Slang load error: {}",
+                      static_cast<const char*>(diagnostics->getBufferPointer()));
         return {};
     }
 
@@ -156,8 +156,8 @@ static std::string compileSlangMeshShaderToMetal(const char* shaderPath) {
     linkedProgram->getTargetCode(0, metalCode.writeRef(), diagnostics.writeRef());
     if (!metalCode) {
         if (diagnostics)
-            std::cerr << "Slang mesh shader compile error: "
-                      << static_cast<const char*>(diagnostics->getBufferPointer()) << std::endl;
+        spdlog::error("Slang mesh shader compile error: {}",
+                      static_cast<const char*>(diagnostics->getBufferPointer()));
         return {};
     }
 
@@ -183,8 +183,8 @@ static std::string compileSlangComputeShaderToMetal(const char* shaderPath) {
     slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
     if (!module) {
         if (diagnostics)
-            std::cerr << "Slang load error: "
-                      << static_cast<const char*>(diagnostics->getBufferPointer()) << std::endl;
+        spdlog::error("Slang load error: {}",
+                      static_cast<const char*>(diagnostics->getBufferPointer()));
         return {};
     }
 
@@ -203,8 +203,8 @@ static std::string compileSlangComputeShaderToMetal(const char* shaderPath) {
     linkedProgram->getTargetCode(0, metalCode.writeRef(), diagnostics.writeRef());
     if (!metalCode) {
         if (diagnostics)
-            std::cerr << "Slang compute shader compile error: "
-                      << static_cast<const char*>(diagnostics->getBufferPointer()) << std::endl;
+        spdlog::error("Slang compute shader compile error: {}",
+                      static_cast<const char*>(diagnostics->getBufferPointer()));
         return {};
     }
 
@@ -300,26 +300,26 @@ struct SceneInstanceTransform {
 
 int main() {
     if (!glfwInit()) {
-        std::cerr << "Failed to initialize GLFW" << std::endl;
+        spdlog::error("Failed to initialize GLFW");
         return 1;
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow* window = glfwCreateWindow(800, 600, "RenderGraph - Sponza", nullptr, nullptr);
     if (!window) {
-        std::cerr << "Failed to create GLFW window" << std::endl;
+        spdlog::error("Failed to create GLFW window");
         glfwTerminate();
         return 1;
     }
 
     MTL::Device* device = MTL::CreateSystemDefaultDevice();
     if (!device) {
-        std::cerr << "Metal is not supported on this device" << std::endl;
+        spdlog::error("Metal is not supported on this device");
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
     }
-    std::cout << "Metal device: " << device->name()->utf8String() << std::endl;
+    spdlog::info("Metal device: {}", device->name()->utf8String());
 
     MTL::CommandQueue* commandQueue = device->newCommandQueue();
 
@@ -335,28 +335,28 @@ int main() {
     // Load scene mesh
     LoadedMesh sceneMesh;
     if (!loadGLTFMesh(device, "Asset/Sponza/glTF/Sponza.gltf", sceneMesh)) {
-        std::cerr << "Failed to load scene mesh" << std::endl;
+        spdlog::error("Failed to load scene mesh");
         return 1;
     }
 
     // Build meshlets for mesh shader rendering
     MeshletData meshletData;
     if (!buildMeshlets(device, sceneMesh, meshletData)) {
-        std::cerr << "Failed to build meshlets" << std::endl;
+        spdlog::error("Failed to build meshlets");
         return 1;
     }
 
     // Load materials and textures
     LoadedMaterials materials;
     if (!loadGLTFMaterials(device, commandQueue, "Asset/Sponza/glTF/Sponza.gltf", materials)) {
-        std::cerr << "Failed to load materials" << std::endl;
+        spdlog::error("Failed to load materials");
         return 1;
     }
 
     // Build scene graph from glTF node hierarchy
     SceneGraph sceneGraph;
     if (!sceneGraph.buildFromGLTF("Asset/Sponza/glTF/Sponza.gltf", sceneMesh, meshletData)) {
-        std::cerr << "Failed to build scene graph" << std::endl;
+        spdlog::error("Failed to build scene graph");
         return 1;
     }
     sceneGraph.updateTransforms();
@@ -369,13 +369,13 @@ int main() {
         if (buildAccelerationStructures(device, commandQueue, sceneMesh, sceneGraph, shadowResources) &&
             createShadowPipeline(device, shadowResources)) {
             rtShadowsAvailable = true;
-            std::cout << "Raytraced shadows enabled" << std::endl;
+            spdlog::info("Raytraced shadows enabled");
         } else {
-            std::cerr << "Failed to initialize raytraced shadows" << std::endl;
+            spdlog::error("Failed to initialize raytraced shadows");
             shadowResources.release();
         }
     } else {
-        std::cout << "Raytracing not supported on this device" << std::endl;
+        spdlog::info("Raytracing not supported on this device");
     }
 
     // Init orbit camera
@@ -398,10 +398,10 @@ int main() {
     // Compile Slang shader to Metal source
     std::string metalSource = compileSlangToMetal("Shaders/Vertex/bunny");
     if (metalSource.empty()) {
-        std::cerr << "Failed to compile Slang shader" << std::endl;
+        spdlog::error("Failed to compile Slang shader");
         return 1;
     }
-    std::cout << "Slang compiled Metal shader (" << metalSource.size() << " bytes)" << std::endl;
+    spdlog::info("Slang compiled Metal shader ({} bytes)", metalSource.size());
 
     // Create Metal library from compiled source
     NS::Error* error = nullptr;
@@ -410,8 +410,8 @@ int main() {
     MTL::Library* library = device->newLibrary(sourceStr, compileOpts, &error);
     compileOpts->release();
     if (!library) {
-        std::cerr << "Failed to create Metal library: "
-                  << error->localizedDescription()->utf8String() << std::endl;
+        spdlog::error("Failed to create Metal library: {}",
+                      error->localizedDescription()->utf8String());
         return 1;
     }
 
@@ -451,8 +451,8 @@ int main() {
     MTL::RenderPipelineState* pipelineState =
         device->newRenderPipelineState(pipelineDesc, &error);
     if (!pipelineState) {
-        std::cerr << "Failed to create pipeline state: "
-                  << error->localizedDescription()->utf8String() << std::endl;
+        spdlog::error("Failed to create pipeline state: {}",
+                      error->localizedDescription()->utf8String());
         return 1;
     }
     pipelineDesc->release();
@@ -463,19 +463,19 @@ int main() {
     // --- Mesh shader pipeline ---
     std::string meshMetalSource = compileSlangMeshShaderToMetal("Shaders/Mesh/meshlet");
     if (meshMetalSource.empty()) {
-        std::cerr << "Failed to compile Slang mesh shader" << std::endl;
+        spdlog::error("Failed to compile Slang mesh shader");
         return 1;
     }
     meshMetalSource = patchMeshShaderMetalSource(meshMetalSource);
-    std::cout << "Mesh shader compiled (" << meshMetalSource.size() << " bytes)" << std::endl;
+    spdlog::info("Mesh shader compiled ({} bytes)", meshMetalSource.size());
 
     NS::String* meshSourceStr = NS::String::string(meshMetalSource.c_str(), NS::UTF8StringEncoding);
     MTL::CompileOptions* meshCompileOpts = MTL::CompileOptions::alloc()->init();
     MTL::Library* meshLibrary = device->newLibrary(meshSourceStr, meshCompileOpts, &error);
     meshCompileOpts->release();
     if (!meshLibrary) {
-        std::cerr << "Failed to create mesh Metal library: "
-                  << error->localizedDescription()->utf8String() << std::endl;
+        spdlog::error("Failed to create mesh Metal library: {}",
+                      error->localizedDescription()->utf8String());
         return 1;
     }
 
@@ -495,8 +495,8 @@ int main() {
     MTL::RenderPipelineState* meshPipelineState = device->newRenderPipelineState(
         meshPipelineDesc, MTL::PipelineOptionNone, &meshReflection, &meshError);
     if (!meshPipelineState) {
-        std::cerr << "Failed to create mesh pipeline state: "
-                  << meshError->localizedDescription()->utf8String() << std::endl;
+        spdlog::error("Failed to create mesh pipeline state: {}",
+                      meshError->localizedDescription()->utf8String());
         return 1;
     }
     meshPipelineDesc->release();
@@ -507,19 +507,19 @@ int main() {
     // --- Visibility buffer mesh shader pipeline ---
     std::string visMetalSource = compileSlangMeshShaderToMetal("Shaders/Visibility/visibility");
     if (visMetalSource.empty()) {
-        std::cerr << "Failed to compile visibility shader" << std::endl;
+        spdlog::error("Failed to compile visibility shader");
         return 1;
     }
     visMetalSource = patchVisibilityShaderMetalSource(visMetalSource);
-    std::cout << "Visibility shader compiled (" << visMetalSource.size() << " bytes)" << std::endl;
+    spdlog::info("Visibility shader compiled ({} bytes)", visMetalSource.size());
 
     NS::String* visSourceStr = NS::String::string(visMetalSource.c_str(), NS::UTF8StringEncoding);
     MTL::CompileOptions* visCompileOpts = MTL::CompileOptions::alloc()->init();
     MTL::Library* visLibrary = device->newLibrary(visSourceStr, visCompileOpts, &error);
     visCompileOpts->release();
     if (!visLibrary) {
-        std::cerr << "Failed to create visibility Metal library: "
-                  << error->localizedDescription()->utf8String() << std::endl;
+        spdlog::error("Failed to create visibility Metal library: {}",
+                      error->localizedDescription()->utf8String());
         return 1;
     }
 
@@ -539,8 +539,8 @@ int main() {
     MTL::RenderPipelineState* visPipelineState = device->newRenderPipelineState(
         visPipelineDesc, MTL::PipelineOptionNone, &visReflection, &visError);
     if (!visPipelineState) {
-        std::cerr << "Failed to create visibility pipeline state: "
-                  << visError->localizedDescription()->utf8String() << std::endl;
+        spdlog::error("Failed to create visibility pipeline state: {}",
+                      visError->localizedDescription()->utf8String());
         return 1;
     }
     visPipelineDesc->release();
@@ -551,19 +551,19 @@ int main() {
     // --- Deferred lighting compute pipeline ---
     std::string computeMetalSource = compileSlangComputeShaderToMetal("Shaders/Visibility/deferred_lighting");
     if (computeMetalSource.empty()) {
-        std::cerr << "Failed to compile deferred lighting shader" << std::endl;
+        spdlog::error("Failed to compile deferred lighting shader");
         return 1;
     }
     computeMetalSource = patchComputeShaderMetalSource(computeMetalSource);
-    std::cout << "Compute shader compiled (" << computeMetalSource.size() << " bytes)" << std::endl;
+    spdlog::info("Compute shader compiled ({} bytes)", computeMetalSource.size());
 
     NS::String* computeSourceStr = NS::String::string(computeMetalSource.c_str(), NS::UTF8StringEncoding);
     MTL::CompileOptions* computeCompileOpts = MTL::CompileOptions::alloc()->init();
     MTL::Library* computeLibrary = device->newLibrary(computeSourceStr, computeCompileOpts, &error);
     computeCompileOpts->release();
     if (!computeLibrary) {
-        std::cerr << "Failed to create compute Metal library: "
-                  << error->localizedDescription()->utf8String() << std::endl;
+        spdlog::error("Failed to create compute Metal library: {}",
+                      error->localizedDescription()->utf8String());
         return 1;
     }
 
@@ -572,8 +572,8 @@ int main() {
     MTL::ComputePipelineState* computePipelineState =
         device->newComputePipelineState(computeFn, &error);
     if (!computePipelineState) {
-        std::cerr << "Failed to create compute pipeline state: "
-                  << error->localizedDescription()->utf8String() << std::endl;
+        spdlog::error("Failed to create compute pipeline state: {}",
+                      error->localizedDescription()->utf8String());
         return 1;
     }
     computeFn->release();
@@ -767,10 +767,8 @@ int main() {
             static bool warnedInstanceOverflow = false;
             if (!warnedInstanceOverflow &&
                 visibleMeshletNodes.size() > static_cast<size_t>(kVisibilityInstanceMask + 1)) {
-                std::cerr << "Visibility buffer instance limit exceeded ("
-                          << visibleMeshletNodes.size() << " > "
-                          << (kVisibilityInstanceMask + 1)
-                          << "), extra nodes will be skipped in this mode" << std::endl;
+                spdlog::warn("Visibility buffer instance limit exceeded ({} > {}), extra nodes will be skipped in this mode",
+                             visibleMeshletNodes.size(), kVisibilityInstanceMask + 1);
                 warnedInstanceOverflow = true;
             }
 
@@ -779,10 +777,8 @@ int main() {
                 (1u << (32u - (kVisibilityTriangleBits + kVisibilityInstanceBits))) - 1u;
             static bool warnedMeshletOverflow = false;
             if (!warnedMeshletOverflow && meshletData.meshletCount > kVisibilityMeshletMask) {
-                std::cerr << "Visibility meshlet id limit exceeded ("
-                          << meshletData.meshletCount << " > "
-                          << (kVisibilityMeshletMask + 1)
-                          << "), overflowing meshlets will be culled" << std::endl;
+                spdlog::warn("Visibility meshlet id limit exceeded ({} > {}), overflowing meshlets will be culled",
+                             meshletData.meshletCount, kVisibilityMeshletMask + 1);
                 warnedMeshletOverflow = true;
             }
 
@@ -1137,7 +1133,7 @@ int main() {
             std::ofstream dot("framegraph.dot");
             if (dot.is_open()) {
                 fg.exportGraphviz(dot);
-                std::cout << "Exported framegraph.dot" << std::endl;
+                spdlog::info("Exported framegraph.dot");
             }
         }
         exportGraphKeyDown = gKeyDown;

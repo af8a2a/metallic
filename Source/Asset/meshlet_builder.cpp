@@ -1,7 +1,7 @@
 #include "meshlet_builder.h"
 #include "mesh_loader.h"
 #include <meshoptimizer.h>
-#include <iostream>
+#include <spdlog/spdlog.h>
 #include <vector>
 #include <cstring>
 
@@ -139,7 +139,7 @@ bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out
 
     size_t totalMeshlets = allGpuMeshlets.size();
     if (totalMeshlets == 0) {
-        std::cerr << "No meshlets built" << std::endl;
+        spdlog::error("No meshlets built");
         return false;
     }
 
@@ -167,9 +167,8 @@ bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out
         totalTris += gm.triangle_count;
         totalVerts += gm.vertex_count;
     }
-    std::cout << "Built " << totalMeshlets << " meshlets from " << groups.size() << " groups"
-              << " (avg " << (totalVerts / totalMeshlets) << " verts, "
-              << (totalTris / totalMeshlets) << " tris per meshlet)" << std::endl;
+    spdlog::info("Built {} meshlets from {} groups (avg {} verts, {} tris per meshlet)",
+                 totalMeshlets, groups.size(), totalVerts / totalMeshlets, totalTris / totalMeshlets);
 
     return true;
 }

@@ -45,3 +45,6 @@ add_subdirectory(MathLib)
 option(TRACY_ENABLE "Enable Tracy profiler" ON)
 option(TRACY_ON_DEMAND "Tracy on-demand mode" ON)
 add_subdirectory(tracy)
+
+# spdlog logging library
+add_subdirectory(spdlog)

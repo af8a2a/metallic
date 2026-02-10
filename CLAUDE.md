@@ -55,8 +55,9 @@ Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
 | cgltf | `External/cgltf/cgltf.h` | Single-header glTF parser |
 | stb_image | `External/stb/` | Single-header image loader |
 | MathLib | `External/MathLib/` | HLSL-style math library |
+| spdlog | `External/spdlog/` | Git submodule, header-only logging |
 
-After cloning, run `git submodule update --init` to fetch GLFW and Tracy.
+After cloning, run `git submodule update --init` to fetch GLFW, Tracy, and spdlog.
 
 ### CMake structure
 
@@ -84,6 +85,7 @@ Slang shaders are compiled to Metal source at runtime. Raytracing shaders are na
 - ObjC++ files (`.mm`) that need ARC get `-fobjc-arc` via `set_source_files_properties` in CMake
 - Rendering has 3 modes: Vertex pipeline, Mesh shader, Visibility buffer (deferred lighting)
 - Visibility buffer pipeline: Visibility Pass → Shadow Ray Pass → Deferred Lighting → Blit → ImGui
+- Use `spdlog` for all logging (`spdlog::info`, `spdlog::warn`, `spdlog::error`). Do not use `std::cout`/`std::cerr`.
 
 
 
