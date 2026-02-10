@@ -70,7 +70,11 @@ struct OrbitCamera {
 
     static float4x4 perspectiveMatrix(float fovY, float aspect, float nearZ, float farZ) {
         float4x4 m;
-        m.SetupByHalfFovy(fovY * 0.5f, aspect, nearZ, farZ);
+        uint32_t projFlags = 0;
+#if ML_DEPTH_REVERSED
+        projFlags |= PROJ_REVERSED_Z;
+#endif
+        m.SetupByHalfFovy(fovY * 0.5f, aspect, nearZ, farZ, projFlags);
         return m;
     }
 

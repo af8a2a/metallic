@@ -64,7 +64,8 @@ StructuredBuffer<SceneInstanceTransform> instanceTransforms; // buffer(9)
 Texture2D<uint>              visibilityBuffer;            // texture(0)
 Texture2D<float>             depthBuffer;                 // texture(1)
 RWTexture2D<float4>          outputTexture;               // texture(2)
-Texture2D                    sceneTextures[kTextureArraySize]; // texture(3..)
+Texture2D                    sceneTextures[kTextureArraySize]; // texture(3..98)
+Texture2D<float>             shadowMap;                       // texture(99)
 SamplerState                 sceneSampler;                // sampler(0)
 
 float3 projectVertex(float4x4 mvp, float3 pos) {
@@ -223,8 +224,9 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float specular = pow(max(dot(N, H), 0.0), 64.0);
 
     float3 lightColor = lightUniforms.lightColorIntensity.xyz * lightUniforms.lightColorIntensity.w;
+    float shadow = shadowMap[pixel].x;
     float3 color = baseColor.rgb * ambient +
-                   baseColor.rgb * (diffuse * 0.75) * lightColor +
-                   lightColor * (specular * 0.4);
+                   shadow * (baseColor.rgb * (diffuse * 0.75) * lightColor +
+                             lightColor * (specular * 0.4));
     outputTexture[pixel] = float4(color, 1.0);
 }

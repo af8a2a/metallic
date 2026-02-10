@@ -20,6 +20,7 @@
 
 #include "scene_graph.h"
 #include "scene_graph_ui.h"
+#include "raytraced_shadows.h"
 
 #include <slang.h>
 #include <slang-com-ptr.h>
@@ -49,29 +50,21 @@ struct Uniforms {
     uint32_t instanceID;
 };
 
+struct ShadowUniforms {
+    float4x4 invViewProj;
+    float4   lightDir;       // world-space direction TO light
+    uint32_t screenWidth;
+    uint32_t screenHeight;
+    float    normalBias;
+    float    maxRayDistance;
+    uint32_t reversedZ;
+};
+
 static constexpr uint32_t kVisibilityInstanceBits = 11;
 static constexpr uint32_t kVisibilityInstanceMask = (1u << kVisibilityInstanceBits) - 1u;
 
 static void extractFrustumPlanes(const float4x4& mvp, float4* planes) {
-    // Gribb-Hartmann method: extract planes from MVP matrix rows
-    float4 row0 = mvp.Row(0);
-    float4 row1 = mvp.Row(1);
-    float4 row2 = mvp.Row(2);
-    float4 row3 = mvp.Row(3);
-
-    planes[0] = row3 + row0; // left
-    planes[1] = row3 - row0; // right
-    planes[2] = row3 + row1; // bottom
-    planes[3] = row3 - row1; // top
-    planes[4] = row2;        // near  (Metal NDC z in [0,1])
-    planes[5] = row3 - row2; // far
-
-    // Normalize each plane
-    for (int i = 0; i < 6; i++) {
-        float len = length(planes[i].xyz);
-        if (len > 0.0f)
-            planes[i] /= len;
-    }
+    MvpToPlanes(ML_OGL ? STYLE_OGL : STYLE_D3D, mvp, planes);
 }
 
 static std::string compileSlangToMetal(const char* shaderPath) {
@@ -337,6 +330,7 @@ int main() {
         attachMetalLayerToGLFWWindow(window));
     metalLayer->setDevice(device);
     metalLayer->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+    metalLayer->setFramebufferOnly(false);
 
     // Load scene mesh
     LoadedMesh sceneMesh;
@@ -366,6 +360,23 @@ int main() {
         return 1;
     }
     sceneGraph.updateTransforms();
+
+    // Build raytracing acceleration structures for shadows
+    RaytracedShadowResources shadowResources;
+    bool rtShadowsAvailable = false;
+    if (device->supportsRaytracing()) {
+        ZoneScopedN("Build Acceleration Structures");
+        if (buildAccelerationStructures(device, commandQueue, sceneMesh, sceneGraph, shadowResources) &&
+            createShadowPipeline(device, shadowResources)) {
+            rtShadowsAvailable = true;
+            std::cout << "Raytraced shadows enabled" << std::endl;
+        } else {
+            std::cerr << "Failed to initialize raytraced shadows" << std::endl;
+            shadowResources.release();
+        }
+    } else {
+        std::cout << "Raytracing not supported on this device" << std::endl;
+    }
 
     // Init orbit camera
     OrbitCamera camera;
@@ -571,17 +582,28 @@ int main() {
     int renderMode = 0; // 0=Vertex, 1=Mesh, 2=Visibility Buffer
     bool enableFrustumCull = false;
     bool enableConeCull = false;
+    bool enableRTShadows = true;
     bool showGraphDebug = false;
     bool showSceneGraphWindow = true;
     bool showImGuiDemo = false;
     bool exportGraphKeyDown = false;
 
+    const double depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
+
     // Create depth stencil state
     MTL::DepthStencilDescriptor* depthDesc = MTL::DepthStencilDescriptor::alloc()->init();
-    depthDesc->setDepthCompareFunction(MTL::CompareFunctionLess);
+    depthDesc->setDepthCompareFunction(
+        ML_DEPTH_REVERSED ? MTL::CompareFunctionGreater : MTL::CompareFunctionLess);
     depthDesc->setDepthWriteEnabled(true);
     MTL::DepthStencilState* depthState = device->newDepthStencilState(depthDesc);
     depthDesc->release();
+
+    // 1x1 depth texture used only to tell ImGui about the depth pixel format
+    auto* imguiDepthTexDesc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatDepth32Float, 1, 1, false);
+    imguiDepthTexDesc->setStorageMode(MTL::StorageModePrivate);
+    imguiDepthTexDesc->setUsage(MTL::TextureUsageRenderTarget);
+    MTL::Texture* imguiDepthDummy = device->newTexture(imguiDepthTexDesc);
 
     // Create initial framebuffer size (used for metalLayer)
     int fbWidth, fbHeight;
@@ -673,6 +695,9 @@ int main() {
             ZoneScopedN("ImGui Frame");
         MTL::RenderPassDescriptor* imguiFramePass = MTL::RenderPassDescriptor::alloc()->init();
         imguiFramePass->colorAttachments()->object(0)->setTexture(drawable->texture());
+        // Always provide a depth attachment so the ImGui pipeline matches even when
+        // switching render modes within the same frame.
+        imguiFramePass->depthAttachment()->setTexture(imguiDepthDummy);
         imguiNewFrame(imguiFramePass);
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -702,6 +727,9 @@ int main() {
             ImGui::Text("Meshlets: %u", meshletData.meshletCount);
             ImGui::Checkbox("Frustum Culling", &enableFrustumCull);
             ImGui::Checkbox("Backface Culling", &enableConeCull);
+        }
+        if (renderMode == 2 && rtShadowsAvailable) {
+            ImGui::Checkbox("RT Shadows", &enableRTShadows);
         }
         ImGui::Checkbox("Show Graph", &showGraphDebug);
         ImGui::End();
@@ -794,7 +822,7 @@ int main() {
                         MTL::LoadActionClear, MTL::StoreActionStore,
                         MTL::ClearColor(0xFFFFFFFF, 0, 0, 0));
                     builder.setDepthAttachment(data.depth,
-                        MTL::LoadActionClear, MTL::StoreActionStore, 1.0);
+                        MTL::LoadActionClear, MTL::StoreActionStore, depthClearValue);
                 },
                 [&](const VisPassData&, MTL::RenderCommandEncoder* enc) {
                     enc->setDepthStencilState(depthState);
@@ -854,6 +882,50 @@ int main() {
                     }
                 });
 
+            // --- Shadow Ray Pass (only when RT shadows available) ---
+            struct ShadowPassData {
+                FGResource depth;
+                FGResource shadowMap;
+            };
+            ShadowPassData shadowData;
+            bool shadowPassActive = rtShadowsAvailable && enableRTShadows;
+            if (rtShadowsAvailable) {
+                auto& sd = fg.addComputePass<ShadowPassData>("Shadow Ray Pass",
+                    [&](FGBuilder& builder, ShadowPassData& data) {
+                        data.depth = builder.read(visData.depth);
+                        data.shadowMap = builder.create("shadowMap",
+                            FGTextureDesc::storageTexture(width, height, MTL::PixelFormatR8Unorm));
+                    },
+                    [&, shadowPassActive](const ShadowPassData& data, MTL::ComputeCommandEncoder* enc) {
+                        enc->setComputePipelineState(shadowResources.pipeline);
+                        ShadowUniforms shadowUni;
+                        float4x4 viewProj = proj * view;
+                        float4x4 invViewProj = viewProj;
+                        invViewProj.Invert();
+                        shadowUni.invViewProj = invViewProj;
+                        shadowUni.lightDir = worldLightDir;
+                        shadowUni.screenWidth = (uint32_t)width;
+                        shadowUni.screenHeight = (uint32_t)height;
+                        shadowUni.normalBias = shadowPassActive ? 0.05f : 0.0f;
+                        shadowUni.maxRayDistance = shadowPassActive ? camera.farZ : 0.0f;
+                        shadowUni.reversedZ = ML_DEPTH_REVERSED ? 1 : 0;
+                        enc->setBytes(&shadowUni, sizeof(shadowUni), 0);
+                        enc->setAccelerationStructure(shadowResources.tlas, 1);
+                        enc->setTexture(fg.getTexture(data.depth), 0);
+                        enc->setTexture(fg.getTexture(data.shadowMap), 1);
+                        enc->useResource(shadowResources.tlas, MTL::ResourceUsageRead);
+                        for (auto* blas : shadowResources.blasArray) {
+                            if (blas) enc->useResource(blas, MTL::ResourceUsageRead);
+                        }
+                        enc->useResource(sceneMesh.positionBuffer, MTL::ResourceUsageRead);
+                        enc->useResource(sceneMesh.indexBuffer, MTL::ResourceUsageRead);
+                        MTL::Size tgSize(8, 8, 1);
+                        MTL::Size grid((width + 7) / 8, (height + 7) / 8, 1);
+                        enc->dispatchThreadgroups(grid, tgSize);
+                    });
+                shadowData = sd;
+            }
+
             // Compute lighting uniforms
             LightingUniforms lightUniforms;
             lightUniforms.mvp = transpose(mvp);
@@ -876,11 +948,15 @@ int main() {
                 FGResource visibility;
                 FGResource depth;
                 FGResource output;
+                FGResource shadowMap;
             };
             auto& computeData = fg.addComputePass<ComputePassData>("Deferred Lighting",
                 [&](FGBuilder& builder, ComputePassData& data) {
                     data.visibility = builder.read(visData.visibility);
                     data.depth = builder.read(visData.depth);
+                    if (rtShadowsAvailable && shadowData.shadowMap.isValid()) {
+                        data.shadowMap = builder.read(shadowData.shadowMap);
+                    }
                     data.output = builder.create("output",
                         FGTextureDesc::storageTexture(width, height, MTL::PixelFormatBGRA8Unorm));
                 },
@@ -904,6 +980,9 @@ int main() {
                             const_cast<MTL::Texture* const*>(materials.textures.data()),
                             NS::Range(3, materials.textures.size()));
                     }
+                    if (data.shadowMap.isValid()) {
+                        enc->setTexture(fg.getTexture(data.shadowMap), 99);
+                    }
                     enc->setSamplerState(materials.sampler, 0);
                     MTL::Size tgSize(8, 8, 1);
                     MTL::Size grid((width + 7) / 8, (height + 7) / 8, 1);
@@ -926,11 +1005,16 @@ int main() {
                         fg.getTexture(data.drawable), 0, 0, MTL::Origin(0, 0, 0));
                 });
 
-            struct ImGuiOverlayData {};
+            struct ImGuiOverlayData {
+                FGResource depth;
+            };
             fg.addRenderPass<ImGuiOverlayData>("ImGui Overlay",
-                [&](FGBuilder& builder, ImGuiOverlayData&) {
+                [&](FGBuilder& builder, ImGuiOverlayData& data) {
                     builder.setColorAttachment(0, drawableRes,
                         MTL::LoadActionLoad, MTL::StoreActionStore);
+                    data.depth = builder.read(visData.depth);
+                    builder.setDepthAttachment(data.depth,
+                        MTL::LoadActionLoad, MTL::StoreActionDontCare, depthClearValue);
                     builder.setSideEffect();
                 },
                 [&](const ImGuiOverlayData&, MTL::RenderCommandEncoder* enc) {
@@ -951,7 +1035,7 @@ int main() {
                         MTL::LoadActionClear, MTL::StoreActionStore,
                         MTL::ClearColor(0.1, 0.2, 0.3, 1.0));
                     builder.setDepthAttachment(data.depth,
-                        MTL::LoadActionClear, MTL::StoreActionDontCare, 1.0);
+                        MTL::LoadActionClear, MTL::StoreActionDontCare, depthClearValue);
                     builder.setSideEffect();
                 },
                 [&](const ForwardPassData&, MTL::RenderCommandEncoder* enc) {
@@ -1058,6 +1142,12 @@ int main() {
         }
         exportGraphKeyDown = gKeyDown;
 
+        // Update TLAS with current scene transforms before executing the frame graph
+        if (rtShadowsAvailable && renderMode == 2) {
+            ZoneScopedN("Update TLAS");
+            updateTLAS(commandBuffer, sceneGraph, shadowResources);
+        }
+
         fg.execute(commandBuffer, device, tracyGpuCtx);
 
         commandBuffer->presentDrawable(drawable);
@@ -1079,6 +1169,8 @@ int main() {
     tracyMetalDestroy(tracyGpuCtx);
 
     // Cleanup
+    shadowResources.release();
+    imguiDepthDummy->release();
     meshletData.meshletBuffer->release();
     meshletData.meshletVertices->release();
     meshletData.meshletTriangles->release();
