@@ -201,9 +201,9 @@ void updateTLAS(MTL::CommandBuffer* commandBuffer,
 
 bool createShadowPipeline(MTL::Device* device,
                           RaytracedShadowResources& out) {
-    std::ifstream file("Shaders/raytraced_shadow.metal");
+    std::ifstream file("Shaders/Raytracing/raytraced_shadow.metal");
     if (!file.is_open()) {
-        std::cerr << "Failed to open Shaders/raytraced_shadow.metal" << std::endl;
+        std::cerr << "Failed to open Shaders/Raytracing/raytraced_shadow.metal" << std::endl;
         return false;
     }
     std::stringstream ss;

@@ -396,7 +396,7 @@ int main() {
     imguiInit(device);
 
     // Compile Slang shader to Metal source
-    std::string metalSource = compileSlangToMetal("Shaders/bunny");
+    std::string metalSource = compileSlangToMetal("Shaders/Vertex/bunny");
     if (metalSource.empty()) {
         std::cerr << "Failed to compile Slang shader" << std::endl;
         return 1;
@@ -461,7 +461,7 @@ int main() {
     library->release();
 
     // --- Mesh shader pipeline ---
-    std::string meshMetalSource = compileSlangMeshShaderToMetal("Shaders/meshlet");
+    std::string meshMetalSource = compileSlangMeshShaderToMetal("Shaders/Mesh/meshlet");
     if (meshMetalSource.empty()) {
         std::cerr << "Failed to compile Slang mesh shader" << std::endl;
         return 1;
@@ -505,7 +505,7 @@ int main() {
     meshLibrary->release();
 
     // --- Visibility buffer mesh shader pipeline ---
-    std::string visMetalSource = compileSlangMeshShaderToMetal("Shaders/visibility");
+    std::string visMetalSource = compileSlangMeshShaderToMetal("Shaders/Visibility/visibility");
     if (visMetalSource.empty()) {
         std::cerr << "Failed to compile visibility shader" << std::endl;
         return 1;
@@ -549,7 +549,7 @@ int main() {
     visLibrary->release();
 
     // --- Deferred lighting compute pipeline ---
-    std::string computeMetalSource = compileSlangComputeShaderToMetal("Shaders/deferred_lighting");
+    std::string computeMetalSource = compileSlangComputeShaderToMetal("Shaders/Visibility/deferred_lighting");
     if (computeMetalSource.empty()) {
         std::cerr << "Failed to compile deferred lighting shader" << std::endl;
         return 1;

@@ -28,17 +28,19 @@ Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
 ### Key source files
 
 - `Source/main.cpp` — Entry point, Metal device/queue setup, Slang shader compilation, render loop
-- `Source/metal_impl.cpp` — Sole translation unit for metal-cpp `*_PRIVATE_IMPLEMENTATION` macros (NS, MTL, CA). **These must only be defined once across all TUs** to avoid duplicate symbols. Do not add these defines to any other .cpp file.
-- `Source/frame_graph.h/cpp` — FrameGraph system for declarative render pass management with Graphviz DOT export
-- `Source/mesh_loader.h/cpp` — glTF mesh loading via cgltf (positions, normals, UVs, primitive groups)
-- `Source/meshlet_builder.h/cpp` — Meshlet building with per-meshlet material IDs (uses meshoptimizer)
-- `Source/material_loader.h/cpp` — PBR material + texture loading from glTF (stb_image)
-- `Source/camera.h` — Header-only orbit camera (simd/simd.h)
-- `Source/input.h/cpp` — GLFW mouse/scroll input callbacks
-- `Source/raytraced_shadows.h/cpp` — BLAS/TLAS building, per-frame TLAS update, shadow ray compute pipeline creation
-- `Source/tracy_metal.h/mm` — Tracy Metal GPU profiling bridge (ObjC++ with ARC)
-- `Source/imgui_metal_bridge.h/mm` — ImGui Metal/GLFW integration bridge
-- `Source/glfw_metal_bridge.mm/h` — Objective-C++ bridge: attaches CAMetalLayer to GLFW's NSWindow
+- `Source/Platform/metal_impl.cpp` — Sole translation unit for metal-cpp `*_PRIVATE_IMPLEMENTATION` macros (NS, MTL, CA). **These must only be defined once across all TUs** to avoid duplicate symbols. Do not add these defines to any other .cpp file.
+- `Source/Platform/glfw_metal_bridge.mm/h` — Objective-C++ bridge: attaches CAMetalLayer to GLFW's NSWindow
+- `Source/Platform/imgui_metal_bridge.h/mm` — ImGui Metal/GLFW integration bridge
+- `Source/Platform/tracy_metal.h/mm` — Tracy Metal GPU profiling bridge (ObjC++ with ARC)
+- `Source/Asset/mesh_loader.h/cpp` — glTF mesh loading via cgltf (positions, normals, UVs, primitive groups)
+- `Source/Asset/meshlet_builder.h/cpp` — Meshlet building with per-meshlet material IDs (uses meshoptimizer)
+- `Source/Asset/material_loader.h/cpp` — PBR material + texture loading from glTF (stb_image)
+- `Source/Scene/scene_graph.h/cpp` — Node hierarchy, transforms, components
+- `Source/Scene/scene_graph_ui.h/cpp` — ImGui scene inspector
+- `Source/Rendering/camera.h` — Header-only orbit camera (simd/simd.h)
+- `Source/Rendering/input.h/cpp` — GLFW mouse/scroll input callbacks
+- `Source/Rendering/frame_graph.h/cpp` — FrameGraph system for declarative render pass management with Graphviz DOT export
+- `Source/Rendering/raytraced_shadows.h/cpp` — BLAS/TLAS building, per-frame TLAS update, shadow ray compute pipeline creation
 
 ### Dependencies
 
@@ -60,25 +62,25 @@ After cloning, run `git submodule update --init` to fetch GLFW and Tracy.
 
 - Root `CMakeLists.txt` — Project config, includes `cmake/DownloadSlang.cmake`, finds Slang package
 - `External/CMakeLists.txt` — metal-cpp INTERFACE lib (links Metal/Foundation/QuartzCore frameworks), GLFW config
-- `Source/CMakeLists.txt` — `rendergraph` executable, links metal-cpp + glfw + slang + AppKit. Post-build copies Slang dylibs and Shaders/ to build dir.
+- `Source/CMakeLists.txt` — `rendergraph` executable, links metal-cpp + glfw + slang + AppKit. Includes subdirectory headers (Platform/, Asset/, Scene/, Rendering/). Post-build copies Slang dylibs and Shaders/ to build dir.
 
 ### Shaders
 
 Slang shaders are compiled to Metal source at runtime. Raytracing shaders are native Metal (Slang doesn't support Metal raytracing):
-- `Shaders/triangle.slang` — Basic vertex/fragment triangle shader
-- `Shaders/bunny.slang` — MVP + Blinn-Phong lit shader (vertex pipeline)
-- `Shaders/meshlet.slang` — Mesh shader + fragment shader for meshlet rendering
-- `Shaders/visibility.slang` — Visibility buffer mesh + fragment shader (R32Uint output)
-- `Shaders/deferred_lighting.slang` — Compute shader for deferred lighting from visibility buffer (samples shadow map at texture 99)
-- `Shaders/raytraced_shadow.metal` — **Native Metal** compute shader: traces shadow rays against TLAS, writes R8Unorm shadow map
+- `Shaders/Vertex/triangle.slang` — Basic vertex/fragment triangle shader
+- `Shaders/Vertex/bunny.slang` — MVP + Blinn-Phong lit shader (vertex pipeline)
+- `Shaders/Mesh/meshlet.slang` — Mesh shader + fragment shader for meshlet rendering
+- `Shaders/Visibility/visibility.slang` — Visibility buffer mesh + fragment shader (R32Uint output)
+- `Shaders/Visibility/deferred_lighting.slang` — Compute shader for deferred lighting from visibility buffer (samples shadow map at texture 99)
+- `Shaders/Raytracing/raytraced_shadow.metal` — **Native Metal** compute shader: traces shadow rays against TLAS, writes R8Unorm shadow map
 
 ## Conventions
 
 - Shaders are written in Slang (not MSL directly) and compiled to Metal source code at runtime via the Slang API
-- **Exception:** Raytracing shaders (`raytraced_shadow.metal`) are native Metal Shading Language, compiled at runtime with `MTL::LanguageVersion3_1`. Slang does not support Metal raytracing.
-- Platform bridging (Cocoa/Metal layer) lives in `.mm` files with C-linkage headers
+- **Exception:** Raytracing shaders (`Shaders/Raytracing/raytraced_shadow.metal`) are native Metal Shading Language, compiled at runtime with `MTL::LanguageVersion3_1`. Slang does not support Metal raytracing.
+- Platform bridging (Cocoa/Metal layer) lives in `Source/Platform/*.mm` files with C-linkage headers
 - Metal objects use manual reference counting (retain/release)
-- Single-header libs use `#define *_IMPLEMENTATION` in exactly one TU: `CGLTF_IMPLEMENTATION` in `mesh_loader.cpp`, `STB_IMAGE_IMPLEMENTATION` in `material_loader.cpp`
+- Single-header libs use `#define *_IMPLEMENTATION` in exactly one TU: `CGLTF_IMPLEMENTATION` in `Asset/mesh_loader.cpp`, `STB_IMAGE_IMPLEMENTATION` in `Asset/material_loader.cpp`
 - ObjC++ files (`.mm`) that need ARC get `-fobjc-arc` via `set_source_files_properties` in CMake
 - Rendering has 3 modes: Vertex pipeline, Mesh shader, Visibility buffer (deferred lighting)
 - Visibility buffer pipeline: Visibility Pass → Shadow Ray Pass → Deferred Lighting → Blit → ImGui

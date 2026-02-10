@@ -1,9 +1,30 @@
-add_executable(rendergraph main.cpp metal_impl.cpp glfw_metal_bridge.mm imgui_metal_bridge.mm mesh_loader.cpp input.cpp meshlet_builder.cpp material_loader.cpp frame_graph.cpp scene_graph.cpp scene_graph_ui.cpp raytraced_shadows.cpp tracy_metal.mm)
-target_include_directories(rendergraph PRIVATE "${CMAKE_SOURCE_DIR}/External/cgltf" "${CMAKE_SOURCE_DIR}/External/stb")
+add_executable(rendergraph
+    main.cpp
+    Platform/metal_impl.cpp
+    Platform/glfw_metal_bridge.mm
+    Platform/imgui_metal_bridge.mm
+    Platform/tracy_metal.mm
+    Asset/mesh_loader.cpp
+    Asset/meshlet_builder.cpp
+    Asset/material_loader.cpp
+    Scene/scene_graph.cpp
+    Scene/scene_graph_ui.cpp
+    Rendering/input.cpp
+    Rendering/frame_graph.cpp
+    Rendering/raytraced_shadows.cpp
+)
+target_include_directories(rendergraph PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Asset"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Scene"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
+    "${CMAKE_SOURCE_DIR}/External/cgltf"
+    "${CMAKE_SOURCE_DIR}/External/stb"
+)
 target_link_libraries(rendergraph PRIVATE metal-cpp glfw meshoptimizer imgui slang::slang MathLib Tracy::TracyClient "-framework AppKit")
 
 # TracyMetal requires ARC (Automatic Reference Counting)
-set_source_files_properties(tracy_metal.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+set_source_files_properties(Platform/tracy_metal.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 # Copy Slang dylibs next to executable at build time
 set(SLANG_LIB_DIR "${CMAKE_SOURCE_DIR}/External/slang/lib")
