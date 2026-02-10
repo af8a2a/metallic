@@ -677,6 +677,7 @@ int main() {
     bool enableRTShadows = true;
     bool showGraphDebug = false;
     bool showSceneGraphWindow = true;
+    bool showRenderPassUI = true;
     bool showImGuiDemo = false;
     bool exportGraphKeyDown = false;
     bool reloadKeyDown = false;
@@ -808,6 +809,7 @@ int main() {
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("View")) {
                 ImGui::MenuItem("Scene Graph", nullptr, &showSceneGraphWindow);
+                ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
                 ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
                 ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
                 ImGui::EndMenu();
@@ -1028,6 +1030,9 @@ int main() {
 
         if (showGraphDebug)
             fg.debugImGui();
+
+        if (showRenderPassUI)
+            fg.renderPassUI();
 
         ImGui::Render();
 

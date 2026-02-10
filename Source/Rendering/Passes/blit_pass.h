@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render_pass.h"
+#include "imgui.h"
 
 class BlitPass : public RenderPass {
 public:
@@ -22,6 +23,10 @@ public:
             MTL::Origin(0, 0, 0), MTL::Size(m_width, m_height, 1),
             m_frameGraph->getTexture(m_destWrite), 0, 0,
             MTL::Origin(0, 0, 0));
+    }
+
+    void renderUI() override {
+        ImGui::Text("Copy: %d x %d", m_width, m_height);
     }
 
 private:

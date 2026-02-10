@@ -3,6 +3,7 @@
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "imgui_metal_bridge.h"
+#include "imgui.h"
 #include <vector>
 
 class ForwardPass : public RenderPass {
@@ -123,6 +124,18 @@ public:
         }
 
         imguiRenderDrawData(m_commandBuffer, enc);
+    }
+
+    void renderUI() override {
+        ImGui::Text("Resolution: %d x %d", m_width, m_height);
+        ImGui::Text("Mode: %s", m_renderMode == 1 ? "Mesh Shader" : "Vertex Shader");
+        if (m_renderMode == 1) {
+            ImGui::Text("Visible Meshlet Nodes: %zu", m_visibleMeshletNodes.size());
+            ImGui::Text("Frustum Cull: %s", m_baseUniforms.enableFrustumCull ? "On" : "Off");
+            ImGui::Text("Cone Cull: %s", m_baseUniforms.enableConeCull ? "On" : "Off");
+        } else {
+            ImGui::Text("Visible Index Nodes: %zu", m_visibleIndexNodes.size());
+        }
     }
 
 private:

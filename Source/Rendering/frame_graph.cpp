@@ -543,3 +543,30 @@ void FrameGraph::debugImGui() const {
 
     ImGui::End();
 }
+
+void FrameGraph::renderPassUI() {
+    bool hasAnyUI = false;
+    for (auto& pass : m_ownedPasses) {
+        // Probe: only show window if at least one pass overrides renderUI
+        // We always iterate — renderUI() is a no-op by default
+        hasAnyUI = true;
+        break;
+    }
+    if (!hasAnyUI)
+        return;
+
+    if (!ImGui::Begin("Render Passes")) {
+        ImGui::End();
+        return;
+    }
+
+    for (auto& pass : m_ownedPasses) {
+        if (ImGui::CollapsingHeader(pass->name(), ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID(pass.get());
+            pass->renderUI();
+            ImGui::PopID();
+        }
+    }
+
+    ImGui::End();
+}

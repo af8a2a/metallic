@@ -2,6 +2,7 @@
 
 #include "render_pass.h"
 #include "render_uniforms.h"
+#include "imgui.h"
 
 class DeferredLightingPass : public RenderPass {
 public:
@@ -63,6 +64,15 @@ public:
         MTL::Size tgSize(8, 8, 1);
         MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);
         enc->dispatchThreadgroups(grid, tgSize);
+    }
+
+    void renderUI() override {
+        ImGui::Text("Resolution: %d x %d", m_width, m_height);
+        ImGui::Text("Instances: %u", m_lightUniforms.instanceCount);
+        ImGui::Text("Meshlets: %u", m_lightUniforms.meshletCount);
+        ImGui::Text("Materials: %u", m_lightUniforms.materialCount);
+        ImGui::Text("Textures: %u", m_lightUniforms.textureCount);
+        ImGui::Text("Shadows: %s", m_lightUniforms.shadowEnabled ? "Enabled" : "Disabled");
     }
 
 private:

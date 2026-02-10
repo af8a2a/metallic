@@ -2,6 +2,7 @@
 
 #include "render_pass.h"
 #include "render_uniforms.h"
+#include "imgui.h"
 #include <vector>
 
 class VisibilityPass : public RenderPass {
@@ -95,6 +96,13 @@ public:
                 MTL::Size(1, 1, 1),
                 MTL::Size(128, 1, 1));
         }
+    }
+
+    void renderUI() override {
+        ImGui::Text("Resolution: %d x %d", m_width, m_height);
+        ImGui::Text("Visible Nodes: %u", m_instanceCount);
+        ImGui::Text("Frustum Cull: %s", m_baseUniforms.enableFrustumCull ? "On" : "Off");
+        ImGui::Text("Cone Cull: %s", m_baseUniforms.enableConeCull ? "On" : "Off");
     }
 
 private:

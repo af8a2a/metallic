@@ -27,6 +27,7 @@ public:
     virtual void executeRender(MTL::RenderCommandEncoder*) {}
     virtual void executeCompute(MTL::ComputeCommandEncoder*) {}
     virtual void executeBlit(MTL::BlitCommandEncoder*) {}
+    virtual void renderUI() {}
 
     FrameGraph* m_frameGraph = nullptr;
 };

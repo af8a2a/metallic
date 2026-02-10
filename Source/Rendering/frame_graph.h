@@ -137,6 +137,7 @@ public:
 
     void exportGraphviz(std::ostream& os) const;
     void debugImGui() const;
+    void renderPassUI();
 
     MTL::Texture* getTexture(FGResource res) const;
 

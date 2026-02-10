@@ -2,6 +2,7 @@
 
 #include "render_pass.h"
 #include "render_uniforms.h"
+#include "imgui.h"
 
 class ShadowRayPass : public RenderPass {
 public:
@@ -15,6 +16,8 @@ public:
         , m_view(view), m_proj(proj)
         , m_worldLightDir(worldLightDir)
         , m_cameraFarZ(cameraFarZ), m_shadowEnabled(shadowEnabled)
+        , m_normalBias(shadowEnabled ? 0.05f : 0.0f)
+        , m_maxRayDistance(shadowEnabled ? cameraFarZ : 0.0f)
         , m_width(w), m_height(h) {}
 
     FGPassType passType() const override { return FGPassType::Compute; }
@@ -38,8 +41,8 @@ public:
         shadowUni.lightDir = m_worldLightDir;
         shadowUni.screenWidth = (uint32_t)m_width;
         shadowUni.screenHeight = (uint32_t)m_height;
-        shadowUni.normalBias = m_shadowEnabled ? 0.05f : 0.0f;
-        shadowUni.maxRayDistance = m_shadowEnabled ? m_cameraFarZ : 0.0f;
+        shadowUni.normalBias = m_normalBias;
+        shadowUni.maxRayDistance = m_maxRayDistance;
         shadowUni.reversedZ = ML_DEPTH_REVERSED ? 1 : 0;
         enc->setBytes(&shadowUni, sizeof(shadowUni), 0);
         enc->setAccelerationStructure(m_ctx.shadowResources.tlas, 1);
@@ -56,6 +59,13 @@ public:
         enc->dispatchThreadgroups(grid, tgSize);
     }
 
+    void renderUI() override {
+        ImGui::Text("Resolution: %d x %d", m_width, m_height);
+        ImGui::Text("Enabled: %s", m_shadowEnabled ? "Yes" : "No");
+        ImGui::SliderFloat("Normal Bias", &m_normalBias, 0.0f, 0.5f, "%.3f");
+        ImGui::SliderFloat("Max Ray Distance", &m_maxRayDistance, 0.0f, m_cameraFarZ * 2.0f, "%.1f");
+    }
+
 private:
     const RenderContext& m_ctx;
     FGResource m_depthInput;
@@ -64,5 +74,7 @@ private:
     float4 m_worldLightDir;
     float m_cameraFarZ;
     bool m_shadowEnabled;
+    float m_normalBias;
+    float m_maxRayDistance;
     int m_width, m_height;
 };
