@@ -63,7 +63,8 @@ float pow5(float x) {
 float D_GGX(float roughness, float NoH) {
     float oneMinusNoHSquared = max(1.0 - NoH * NoH, 0.0);
     float a = NoH * roughness;
-    float k = roughness / (oneMinusNoHSquared + a * a);
+    // Clamp k to avoid fp16 overflow (Filament parity).
+    float k = min(roughness / (oneMinusNoHSquared + a * a), 453.5);
     return (k * k) * (1.0 / kPi);
 }
 
