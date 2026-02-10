@@ -32,39 +32,21 @@
 #include <regex>
 #include <fstream>
 #include <functional>
+#include <memory>
 
 #include <tracy/Tracy.hpp>
 #include "tracy_metal.h"
 #include "frame_graph.h"
 #include "visibility_constants.h"
+#include "render_uniforms.h"
+#include "render_pass.h"
+#include "blit_pass.h"
+#include "imgui_overlay_pass.h"
+#include "visibility_pass.h"
+#include "shadow_ray_pass.h"
+#include "deferred_lighting_pass.h"
+#include "forward_pass.h"
 
-
-struct Uniforms {
-    float4x4 mvp;
-    float4x4 modelView;
-    float4   lightDir;
-    float4   lightColorIntensity; // xyz=color, w=intensity
-    float4   frustumPlanes[6];
-    float4   cameraPos; // object-space camera position
-    uint32_t enableFrustumCull;
-    uint32_t enableConeCull;
-    uint32_t meshletBaseOffset;
-    uint32_t instanceID;
-};
-
-struct ShadowUniforms {
-    float4x4 invViewProj;
-    float4   lightDir;       // world-space direction TO light
-    uint32_t screenWidth;
-    uint32_t screenHeight;
-    float    normalBias;
-    float    maxRayDistance;
-    uint32_t reversedZ;
-};
-
-static void extractFrustumPlanes(const float4x4& mvp, float4* planes) {
-    MvpToPlanes(ML_OGL ? STYLE_OGL : STYLE_D3D, mvp, planes);
-}
 
 static std::string compileSlangToMetal(const char* shaderPath, const char* searchPath = nullptr) {
     Slang::ComPtr<slang::IGlobalSession> globalSession;
@@ -405,26 +387,6 @@ static MTL::ComputePipelineState* reloadComputeShader(
 }
 
 
-struct LightingUniforms {
-    float4x4 mvp;
-    float4x4 modelView;
-    float4   lightDir;
-    float4   lightColorIntensity;
-    float4x4 invProj;
-    uint32_t screenWidth;
-    uint32_t screenHeight;
-    uint32_t meshletCount;
-    uint32_t materialCount;
-    uint32_t textureCount;
-    uint32_t instanceCount;
-    uint32_t shadowEnabled;
-    uint32_t pad2;
-};
-
-struct SceneInstanceTransform {
-    float4x4 mvp;
-    float4x4 modelView;
-};
 
 int main() {
     if (!glfwInit()) {
@@ -951,6 +913,9 @@ int main() {
         auto drawableRes = fg.import("drawable", drawable->texture());
         MTL::Buffer* instanceTransformBuffer = nullptr;
 
+        RenderContext ctx{sceneMesh, meshletData, materials, sceneGraph,
+                          shadowResources, depthState, shadowDummyTex, depthClearValue};
+
         if (renderMode == 2) {
             // === VISIBILITY BUFFER MODE ===
             ZoneScopedN("Visibility Buffer Graph Build");
@@ -993,125 +958,26 @@ int main() {
                 visibilityInstanceTransforms.size() * sizeof(SceneInstanceTransform),
                 MTL::ResourceStorageModeShared);
 
-            struct VisPassData {
-                FGResource visibility;
-                FGResource depth;
-            };
-            auto& visData = fg.addRenderPass<VisPassData>("Visibility Pass",
-                [&](FGBuilder& builder, VisPassData& data) {
-                    data.visibility = builder.create("visibility",
-                        FGTextureDesc::renderTarget(width, height, MTL::PixelFormatR32Uint));
-                    data.depth = builder.create("depth",
-                        FGTextureDesc::depthTarget(width, height));
-                    builder.setColorAttachment(0, data.visibility,
-                        MTL::LoadActionClear, MTL::StoreActionStore,
-                        MTL::ClearColor(0xFFFFFFFF, 0, 0, 0));
-                    builder.setDepthAttachment(data.depth,
-                        MTL::LoadActionClear, MTL::StoreActionStore, depthClearValue);
-                },
-                [&](const VisPassData&, MTL::RenderCommandEncoder* enc) {
-                    enc->setDepthStencilState(depthState);
-                    enc->setFrontFacingWinding(MTL::WindingCounterClockwise);
-                    enc->setCullMode(MTL::CullModeBack);
-                    enc->setRenderPipelineState(visPipelineState);
-                    // Bind shared buffers once
-                    enc->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
-                    enc->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
-                    enc->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
-                    enc->setMeshBuffer(meshletData.meshletVertices, 0, 4);
-                    enc->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
-                    enc->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
-                    enc->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
-                    enc->setMeshBuffer(meshletData.materialIDs, 0, 8);
-                    enc->setMeshBuffer(materials.materialBuffer, 0, 9);
-                    enc->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
-                    enc->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
-                    enc->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
-                    enc->setFragmentBuffer(meshletData.meshletVertices, 0, 4);
-                    enc->setFragmentBuffer(meshletData.meshletTriangles, 0, 5);
-                    enc->setFragmentBuffer(meshletData.boundsBuffer, 0, 6);
-                    enc->setFragmentBuffer(sceneMesh.uvBuffer, 0, 7);
-                    enc->setFragmentBuffer(meshletData.materialIDs, 0, 8);
-                    enc->setFragmentBuffer(materials.materialBuffer, 0, 9);
-                    if (!materials.textures.empty()) {
-                        enc->setFragmentTextures(
-                            const_cast<MTL::Texture* const*>(materials.textures.data()),
-                            NS::Range(0, materials.textures.size()));
-                        enc->setMeshTextures(
-                            const_cast<MTL::Texture* const*>(materials.textures.data()),
-                            NS::Range(0, materials.textures.size()));
-                    }
-                    enc->setFragmentSamplerState(materials.sampler, 0);
-                    enc->setMeshSamplerState(materials.sampler, 0);
-
-                    // Per-node dispatch
-                    for (uint32_t instanceID = 0; instanceID < visibilityInstanceCount; instanceID++) {
-                        const auto& node = sceneGraph.nodes[visibleMeshletNodes[instanceID]];
-                        float4x4 nodeModelView = view * node.transform.worldMatrix;
-                        float4x4 nodeMVP = proj * nodeModelView;
-                        Uniforms nodeUniforms = uniforms;
-                        nodeUniforms.mvp = transpose(nodeMVP);
-                        nodeUniforms.modelView = transpose(nodeModelView);
-                        extractFrustumPlanes(nodeMVP, nodeUniforms.frustumPlanes);
-                        float4x4 invModel = node.transform.worldMatrix;
-                        invModel.Invert();
-                        nodeUniforms.cameraPos = invModel * cameraWorldPos;
-                        nodeUniforms.meshletBaseOffset = node.meshletStart;
-                        nodeUniforms.instanceID = instanceID;
-                        enc->setMeshBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-                        enc->setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-                        enc->drawMeshThreadgroups(
-                            MTL::Size(node.meshletCount, 1, 1),
-                            MTL::Size(1, 1, 1),
-                            MTL::Size(128, 1, 1));
-                    }
-                });
-
-            // --- Shadow Ray Pass (only when RT shadows available) ---
-            struct ShadowPassData {
-                FGResource depth;
-                FGResource shadowMap;
-            };
-            ShadowPassData shadowData;
+            auto visPass = std::make_unique<VisibilityPass>(
+                ctx, visPipelineState, uniforms,
+                visibleMeshletNodes, visibilityInstanceCount,
+                view, proj, cameraWorldPos, width, height);
+            auto* visPassPtr = visPass.get();
+            fg.addPass(std::move(visPass));
+            FGResource visDepth = visPassPtr->depth;
+            FGResource visVisibility = visPassPtr->visibility;
             bool shadowPassActive = rtShadowsAvailable && enableRTShadows;
+            FGResource shadowMapRes{};
             if (rtShadowsAvailable) {
-                auto& sd = fg.addComputePass<ShadowPassData>("Shadow Ray Pass",
-                    [&](FGBuilder& builder, ShadowPassData& data) {
-                        data.depth = builder.read(visData.depth);
-                        data.shadowMap = builder.create("shadowMap",
-                            FGTextureDesc::storageTexture(width, height, MTL::PixelFormatR8Unorm));
-                    },
-                    [&, shadowPassActive](const ShadowPassData& data, MTL::ComputeCommandEncoder* enc) {
-                        enc->setComputePipelineState(shadowResources.pipeline);
-                        ShadowUniforms shadowUni;
-                        float4x4 viewProj = proj * view;
-                        float4x4 invViewProj = viewProj;
-                        invViewProj.Invert();
-                        shadowUni.invViewProj = invViewProj;
-                        shadowUni.lightDir = worldLightDir;
-                        shadowUni.screenWidth = (uint32_t)width;
-                        shadowUni.screenHeight = (uint32_t)height;
-                        shadowUni.normalBias = shadowPassActive ? 0.05f : 0.0f;
-                        shadowUni.maxRayDistance = shadowPassActive ? camera.farZ : 0.0f;
-                        shadowUni.reversedZ = ML_DEPTH_REVERSED ? 1 : 0;
-                        enc->setBytes(&shadowUni, sizeof(shadowUni), 0);
-                        enc->setAccelerationStructure(shadowResources.tlas, 1);
-                        enc->setTexture(fg.getTexture(data.depth), 0);
-                        enc->setTexture(fg.getTexture(data.shadowMap), 1);
-                        enc->useResource(shadowResources.tlas, MTL::ResourceUsageRead);
-                        for (auto* blas : shadowResources.blasArray) {
-                            if (blas) enc->useResource(blas, MTL::ResourceUsageRead);
-                        }
-                        enc->useResource(sceneMesh.positionBuffer, MTL::ResourceUsageRead);
-                        enc->useResource(sceneMesh.indexBuffer, MTL::ResourceUsageRead);
-                        MTL::Size tgSize(8, 8, 1);
-                        MTL::Size grid((width + 7) / 8, (height + 7) / 8, 1);
-                        enc->dispatchThreadgroups(grid, tgSize);
-                    });
-                shadowData = sd;
+                auto shadowPass = std::make_unique<ShadowRayPass>(
+                    ctx, visDepth, view, proj,
+                    worldLightDir, camera.farZ, shadowPassActive,
+                    width, height);
+                auto* shadowPassPtr = shadowPass.get();
+                fg.addPass(std::move(shadowPass));
+                shadowMapRes = shadowPassPtr->shadowMap;
             }
 
-            // Compute lighting uniforms
             LightingUniforms lightUniforms;
             lightUniforms.mvp = transpose(mvp);
             lightUniforms.modelView = transpose(modelView);
@@ -1129,186 +995,33 @@ int main() {
             lightUniforms.shadowEnabled = (rtShadowsAvailable && enableRTShadows) ? 1 : 0;
             lightUniforms.pad2 = 0;
 
-            struct ComputePassData {
-                FGResource visibility;
-                FGResource depth;
-                FGResource output;
-                FGResource shadowMap;
-            };
-            auto& computeData = fg.addComputePass<ComputePassData>("Deferred Lighting",
-                [&](FGBuilder& builder, ComputePassData& data) {
-                    data.visibility = builder.read(visData.visibility);
-                    data.depth = builder.read(visData.depth);
-                    if (rtShadowsAvailable && shadowData.shadowMap.isValid()) {
-                        data.shadowMap = builder.read(shadowData.shadowMap);
-                    }
-                    data.output = builder.create("output",
-                        FGTextureDesc::storageTexture(width, height, MTL::PixelFormatBGRA8Unorm));
-                },
-                [&, lightUniforms](const ComputePassData& data, MTL::ComputeCommandEncoder* enc) {
-                    enc->setComputePipelineState(computePipelineState);
-                    enc->setBytes(&lightUniforms, sizeof(lightUniforms), 0);
-                    enc->setBuffer(sceneMesh.positionBuffer, 0, 1);
-                    enc->setBuffer(sceneMesh.normalBuffer, 0, 2);
-                    enc->setBuffer(meshletData.meshletBuffer, 0, 3);
-                    enc->setBuffer(meshletData.meshletVertices, 0, 4);
-                    enc->setBuffer(meshletData.meshletTriangles, 0, 5);
-                    enc->setBuffer(sceneMesh.uvBuffer, 0, 6);
-                    enc->setBuffer(meshletData.materialIDs, 0, 7);
-                    enc->setBuffer(materials.materialBuffer, 0, 8);
-                    enc->setBuffer(instanceTransformBuffer, 0, 9);
-                    enc->setTexture(fg.getTexture(data.visibility), 0);
-                    enc->setTexture(fg.getTexture(data.depth), 1);
-                    enc->setTexture(fg.getTexture(data.output), 2);
-                    if (!materials.textures.empty()) {
-                        enc->setTextures(
-                            const_cast<MTL::Texture* const*>(materials.textures.data()),
-                            NS::Range(3, materials.textures.size()));
-                    }
-                    MTL::Texture* shadowTex = data.shadowMap.isValid()
-                        ? fg.getTexture(data.shadowMap)
-                        : shadowDummyTex;
-                    enc->setTexture(shadowTex, 99);
-                    enc->setSamplerState(materials.sampler, 0);
-                    MTL::Size tgSize(8, 8, 1);
-                    MTL::Size grid((width + 7) / 8, (height + 7) / 8, 1);
-                    enc->dispatchThreadgroups(grid, tgSize);
-                });
+            auto lightingPass = std::make_unique<DeferredLightingPass>(
+                ctx, computePipelineState,
+                visVisibility, visDepth,
+                shadowMapRes, instanceTransformBuffer,
+                lightUniforms, width, height);
+            auto* lightingPassPtr = lightingPass.get();
+            fg.addPass(std::move(lightingPass));
+            FGResource lightingOutput = lightingPassPtr->output;
 
-            struct BlitPassData {
-                FGResource output;
-                FGResource drawable;
-            };
-            fg.addBlitPass<BlitPassData>("Blit to Drawable",
-                [&](FGBuilder& builder, BlitPassData& data) {
-                    data.output = builder.read(computeData.output);
-                    data.drawable = builder.write(drawableRes);
-                    builder.setSideEffect();
-                },
-                [&, w = width, h = height](const BlitPassData& data, MTL::BlitCommandEncoder* enc) {
-                    enc->copyFromTexture(fg.getTexture(data.output), 0, 0,
-                        MTL::Origin(0, 0, 0), MTL::Size(w, h, 1),
-                        fg.getTexture(data.drawable), 0, 0, MTL::Origin(0, 0, 0));
-                });
+            auto blitPass = std::make_unique<BlitPass>(
+                lightingOutput, drawableRes, width, height);
+            fg.addPass(std::move(blitPass));
 
-            struct ImGuiOverlayData {
-                FGResource depth;
-            };
-            fg.addRenderPass<ImGuiOverlayData>("ImGui Overlay",
-                [&](FGBuilder& builder, ImGuiOverlayData& data) {
-                    builder.setColorAttachment(0, drawableRes,
-                        MTL::LoadActionLoad, MTL::StoreActionStore);
-                    data.depth = builder.read(visData.depth);
-                    builder.setDepthAttachment(data.depth,
-                        MTL::LoadActionLoad, MTL::StoreActionDontCare, depthClearValue);
-                    builder.setSideEffect();
-                },
-                [&](const ImGuiOverlayData&, MTL::RenderCommandEncoder* enc) {
-                    imguiRenderDrawData(commandBuffer, enc);
-                });
+            auto imguiPass = std::make_unique<ImGuiOverlayPass>(
+                drawableRes, visDepth, depthClearValue, commandBuffer);
+            fg.addPass(std::move(imguiPass));
         } else {
             // === FORWARD RENDERING (Vertex or Mesh shader) ===
             ZoneScopedN("Forward Graph Build");
 
-            struct ForwardPassData {
-                FGResource depth;
-            };
-            fg.addRenderPass<ForwardPassData>("Forward Pass",
-                [&](FGBuilder& builder, ForwardPassData& data) {
-                    data.depth = builder.create("depth",
-                        FGTextureDesc::depthTarget(width, height));
-                    builder.setColorAttachment(0, drawableRes,
-                        MTL::LoadActionClear, MTL::StoreActionStore,
-                        MTL::ClearColor(0.1, 0.2, 0.3, 1.0));
-                    builder.setDepthAttachment(data.depth,
-                        MTL::LoadActionClear, MTL::StoreActionDontCare, depthClearValue);
-                    builder.setSideEffect();
-                },
-                [&](const ForwardPassData&, MTL::RenderCommandEncoder* enc) {
-                    enc->setDepthStencilState(depthState);
-                    enc->setFrontFacingWinding(MTL::WindingCounterClockwise);
-                    enc->setCullMode(MTL::CullModeBack);
-
-                    if (renderMode == 1) {
-                        enc->setRenderPipelineState(meshPipelineState);
-                        // Bind shared buffers once
-                        enc->setMeshBuffer(sceneMesh.positionBuffer, 0, 1);
-                        enc->setMeshBuffer(sceneMesh.normalBuffer, 0, 2);
-                        enc->setMeshBuffer(meshletData.meshletBuffer, 0, 3);
-                        enc->setMeshBuffer(meshletData.meshletVertices, 0, 4);
-                        enc->setMeshBuffer(meshletData.meshletTriangles, 0, 5);
-                        enc->setMeshBuffer(meshletData.boundsBuffer, 0, 6);
-                        enc->setMeshBuffer(sceneMesh.uvBuffer, 0, 7);
-                        enc->setMeshBuffer(meshletData.materialIDs, 0, 8);
-                        enc->setMeshBuffer(materials.materialBuffer, 0, 9);
-                        enc->setFragmentBuffer(sceneMesh.positionBuffer, 0, 1);
-                        enc->setFragmentBuffer(sceneMesh.normalBuffer, 0, 2);
-                        enc->setFragmentBuffer(meshletData.meshletBuffer, 0, 3);
-                        enc->setFragmentBuffer(meshletData.meshletVertices, 0, 4);
-                        enc->setFragmentBuffer(meshletData.meshletTriangles, 0, 5);
-                        enc->setFragmentBuffer(meshletData.boundsBuffer, 0, 6);
-                        enc->setFragmentBuffer(sceneMesh.uvBuffer, 0, 7);
-                        enc->setFragmentBuffer(meshletData.materialIDs, 0, 8);
-                        enc->setFragmentBuffer(materials.materialBuffer, 0, 9);
-                        if (!materials.textures.empty()) {
-                            enc->setFragmentTextures(
-                                const_cast<MTL::Texture* const*>(materials.textures.data()),
-                                NS::Range(0, materials.textures.size()));
-                            enc->setMeshTextures(
-                                const_cast<MTL::Texture* const*>(materials.textures.data()),
-                                NS::Range(0, materials.textures.size()));
-                        }
-                        enc->setFragmentSamplerState(materials.sampler, 0);
-                        enc->setMeshSamplerState(materials.sampler, 0);
-
-                        // Per-node dispatch
-                        for (uint32_t nodeID : visibleMeshletNodes) {
-                            const auto& node = sceneGraph.nodes[nodeID];
-                            float4x4 nodeModelView = view * node.transform.worldMatrix;
-                            float4x4 nodeMVP = proj * nodeModelView;
-                            Uniforms nodeUniforms = uniforms;
-                            nodeUniforms.mvp = transpose(nodeMVP);
-                            nodeUniforms.modelView = transpose(nodeModelView);
-                            extractFrustumPlanes(nodeMVP, nodeUniforms.frustumPlanes);
-                            float4x4 invModel = node.transform.worldMatrix;
-                            invModel.Invert();
-                            nodeUniforms.cameraPos = invModel * cameraWorldPos;
-                            nodeUniforms.meshletBaseOffset = node.meshletStart;
-                            nodeUniforms.instanceID = 0;
-                            enc->setMeshBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-                            enc->setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-                            enc->drawMeshThreadgroups(
-                                MTL::Size(node.meshletCount, 1, 1),
-                                MTL::Size(1, 1, 1),
-                                MTL::Size(128, 1, 1));
-                        }
-                    } else {
-                        enc->setRenderPipelineState(pipelineState);
-                        enc->setVertexBuffer(sceneMesh.positionBuffer, 0, 1);
-                        enc->setVertexBuffer(sceneMesh.normalBuffer, 0, 2);
-
-                        // Per-node dispatch for vertex pipeline
-                        for (uint32_t nodeID : visibleIndexNodes) {
-                            const auto& node = sceneGraph.nodes[nodeID];
-                            float4x4 nodeModelView = view * node.transform.worldMatrix;
-                            float4x4 nodeMVP = proj * nodeModelView;
-                            Uniforms nodeUniforms = uniforms;
-                            nodeUniforms.mvp = transpose(nodeMVP);
-                            nodeUniforms.modelView = transpose(nodeModelView);
-                            float4x4 invModel = node.transform.worldMatrix;
-                            invModel.Invert();
-                            nodeUniforms.cameraPos = invModel * cameraWorldPos;
-                            enc->setVertexBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-                            enc->setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-                            enc->drawIndexedPrimitives(
-                                MTL::PrimitiveTypeTriangle,
-                                node.indexCount, MTL::IndexTypeUInt32,
-                                sceneMesh.indexBuffer, node.indexStart * sizeof(uint32_t));
-                        }
-                    }
-
-                    imguiRenderDrawData(commandBuffer, enc);
-                });
+            auto fwdPass = std::make_unique<ForwardPass>(
+                ctx, drawableRes, renderMode,
+                pipelineState, meshPipelineState, uniforms,
+                visibleMeshletNodes, visibleIndexNodes,
+                view, proj, cameraWorldPos,
+                commandBuffer, width, height);
+            fg.addPass(std::move(fwdPass));
         }
 
         fg.compile();

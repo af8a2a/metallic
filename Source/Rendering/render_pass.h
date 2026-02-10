@@ -1,0 +1,32 @@
+#pragma once
+
+#include "frame_graph.h"
+#include "mesh_loader.h"
+#include "meshlet_builder.h"
+#include "material_loader.h"
+#include "scene_graph.h"
+#include "raytraced_shadows.h"
+
+struct RenderContext {
+    const LoadedMesh& sceneMesh;
+    const MeshletData& meshletData;
+    const LoadedMaterials& materials;
+    const SceneGraph& sceneGraph;
+    const RaytracedShadowResources& shadowResources;
+    MTL::DepthStencilState* depthState;
+    MTL::Texture* shadowDummyTex;
+    double depthClearValue;
+};
+
+class RenderPass {
+public:
+    virtual ~RenderPass();
+    virtual FGPassType passType() const = 0;
+    virtual const char* name() const = 0;
+    virtual void setup(FGBuilder& builder) = 0;
+    virtual void executeRender(MTL::RenderCommandEncoder*) {}
+    virtual void executeCompute(MTL::ComputeCommandEncoder*) {}
+    virtual void executeBlit(MTL::BlitCommandEncoder*) {}
+
+    FrameGraph* m_frameGraph = nullptr;
+};

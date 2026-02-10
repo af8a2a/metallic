@@ -1,4 +1,5 @@
 #include "frame_graph.h"
+#include "render_pass.h"
 #include <algorithm>
 #include <cassert>
 #include <deque>
@@ -100,6 +101,33 @@ FGResource FrameGraph::import(const char* name, MTL::Texture* texture) {
     node.imported = true;
     m_resources.push_back(std::move(node));
     return res;
+}
+
+void FrameGraph::addPass(std::unique_ptr<RenderPass> pass) {
+    RenderPass* passPtr = pass.get();
+    m_ownedPasses.push_back(std::move(pass));
+    passPtr->m_frameGraph = this;
+    uint32_t passIndex = static_cast<uint32_t>(m_passes.size());
+    m_passes.push_back({});
+    auto& node = m_passes.back();
+    node.name = passPtr->name();
+    node.type = passPtr->passType();
+    m_passData.push_back({});
+
+    FGBuilder builder(*this, passIndex);
+    passPtr->setup(builder);
+
+    switch (passPtr->passType()) {
+        case FGPassType::Render:
+            node.executeRender = [passPtr](MTL::RenderCommandEncoder* enc) { passPtr->executeRender(enc); };
+            break;
+        case FGPassType::Compute:
+            node.executeCompute = [passPtr](MTL::ComputeCommandEncoder* enc) { passPtr->executeCompute(enc); };
+            break;
+        case FGPassType::Blit:
+            node.executeBlit = [passPtr](MTL::BlitCommandEncoder* enc) { passPtr->executeBlit(enc); };
+            break;
+    }
 }
 
 void FrameGraph::compile() {
@@ -252,6 +280,7 @@ void FrameGraph::reset() {
     m_passes.clear();
     m_passData.clear();
     m_transientTextures.clear();
+    m_ownedPasses.clear();
 }
 
 // --- Visualization helpers ---

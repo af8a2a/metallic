@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <ostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -89,6 +90,7 @@ struct FGPassNode {
 // --- Builder ---
 
 class FrameGraph; // forward decl
+class RenderPass; // forward decl
 
 class FGBuilder {
 public:
@@ -118,6 +120,8 @@ class FrameGraph {
 public:
     FGResource import(const char* name, MTL::Texture* texture);
 
+    void addPass(std::unique_ptr<RenderPass> pass);
+
     template<typename Data, typename Setup, typename Exec>
     Data& addRenderPass(const char* name, Setup&& setup, Exec&& exec);
 
@@ -139,6 +143,7 @@ public:
 private:
     std::vector<FGResourceNode> m_resources;
     std::vector<FGPassNode> m_passes;
+    std::vector<std::unique_ptr<RenderPass>> m_ownedPasses;
 
     // Type-erased pass data storage
     struct PassDataHolder {

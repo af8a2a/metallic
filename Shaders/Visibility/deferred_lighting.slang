@@ -251,5 +251,5 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float3 color = baseColor.rgb * ambient +
                    shadow * (baseColor.rgb * (diffuse * 0.75) * lightColor +
                              lightColor * (specular * 0.4));
-    outputTexture[pixel] = 1;float4(color, 1.0);
+    outputTexture[pixel] = float4(color, 1.0);
 }

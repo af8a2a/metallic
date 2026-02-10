@@ -12,12 +12,14 @@ add_executable(rendergraph
     Rendering/input.cpp
     Rendering/frame_graph.cpp
     Rendering/raytraced_shadows.cpp
+    Rendering/render_pass.cpp
 )
 target_include_directories(rendergraph PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
     "${CMAKE_CURRENT_SOURCE_DIR}/Asset"
     "${CMAKE_CURRENT_SOURCE_DIR}/Scene"
     "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Passes"
     "${CMAKE_SOURCE_DIR}/External/cgltf"
     "${CMAKE_SOURCE_DIR}/External/stb"
 )
