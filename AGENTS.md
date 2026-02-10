@@ -16,7 +16,7 @@
 - Clean rebuild (useful after shader/dependency changes):
   - `cmake --build build --clean-first -j4`
 - Run app:
-  - `./build/Source/rendergraph`
+  - `./build/Source/Metallic`
 
 Notes: this project targets macOS + Metal (`AppKit`, `.mm` files). `Source/CMakeLists.txt` handles shader/asset and Slang dylib copying automatically.
 

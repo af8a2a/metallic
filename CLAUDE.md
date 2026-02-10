@@ -14,7 +14,7 @@ cmake and ninja are not on PATH. Use CLion-bundled tools:
 /Users/af8a2a/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -C build
 
 # Run
-./build/Source/rendergraph
+./build/Source/Metallic
 ```
 
 The first configure will download Slang compiler (v2026.1.2) automatically to `External/slang/`.
@@ -40,7 +40,19 @@ Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
 - `Source/Rendering/camera.h` — Header-only orbit camera (simd/simd.h)
 - `Source/Rendering/input.h/cpp` — GLFW mouse/scroll input callbacks
 - `Source/Rendering/frame_graph.h/cpp` — FrameGraph system for declarative render pass management with Graphviz DOT export
+- `Source/Rendering/render_pass.h/cpp` — Base `RenderPass` class with `RenderContext`, Tracy profiling zones, and per-pass ImGui UI
+- `Source/Rendering/render_uniforms.h` — Shared uniform structs (Uniforms, ShadowUniforms, LightingUniforms, AtmosphereUniforms, TonemapUniforms)
+- `Source/Rendering/visibility_constants.h` — Shared visibility buffer bit-packing constants (CPU + Slang)
 - `Source/Rendering/raytraced_shadows.h/cpp` — BLAS/TLAS building, per-frame TLAS update, shadow ray compute pipeline creation
+- `Source/Rendering/Passes/` — Modular render pass implementations:
+  - `forward_pass.h` — Vertex/mesh shader forward rendering
+  - `visibility_pass.h` — Visibility buffer mesh shader pass (R32Uint output)
+  - `shadow_ray_pass.h` — Raytraced shadow compute pass
+  - `sky_pass.h` — Atmospheric scattering sky rendering
+  - `deferred_lighting_pass.h` — Compute deferred lighting from visibility buffer
+  - `tonemap_pass.h` — Tonemapping post-process (Filmic, Uncharted2, ACES, AgX, Khronos PBR, Clip)
+  - `blit_pass.h` — Blit compute output to drawable
+  - `imgui_overlay_pass.h` — ImGui overlay rendering
 
 ### Dependencies
 
@@ -63,7 +75,7 @@ After cloning, run `git submodule update --init` to fetch GLFW, Tracy, and spdlo
 
 - Root `CMakeLists.txt` — Project config, includes `cmake/DownloadSlang.cmake`, finds Slang package
 - `External/CMakeLists.txt` — metal-cpp INTERFACE lib (links Metal/Foundation/QuartzCore frameworks), GLFW config
-- `Source/CMakeLists.txt` — `rendergraph` executable, links metal-cpp + glfw + slang + AppKit. Includes subdirectory headers (Platform/, Asset/, Scene/, Rendering/). Post-build copies Slang dylibs and Shaders/ to build dir.
+- `Source/CMakeLists.txt` — `Metallic` executable, links metal-cpp + glfw + slang + AppKit. Includes subdirectory headers (Platform/, Asset/, Scene/, Rendering/, Rendering/Passes/). Post-build copies Slang dylibs, Shaders/, visibility_constants.h, and Asset/ to build dir.
 
 ### Shaders
 
@@ -73,6 +85,8 @@ Slang shaders are compiled to Metal source at runtime. Raytracing shaders are na
 - `Shaders/Mesh/meshlet.slang` — Mesh shader + fragment shader for meshlet rendering
 - `Shaders/Visibility/visibility.slang` — Visibility buffer mesh + fragment shader (R32Uint output)
 - `Shaders/Visibility/deferred_lighting.slang` — Compute shader for deferred lighting from visibility buffer (samples shadow map at texture 99)
+- `Shaders/Atmosphere/sky.slang` — Atmospheric scattering sky rendering (precomputed transmittance/scattering/irradiance textures)
+- `Shaders/Post/tonemap.slang` — Fullscreen tonemapping post-process (6 methods)
 - `Shaders/Raytracing/raytraced_shadow.metal` — **Native Metal** compute shader: traces shadow rays against TLAS, writes R8Unorm shadow map
 
 ## Conventions
@@ -84,7 +98,10 @@ Slang shaders are compiled to Metal source at runtime. Raytracing shaders are na
 - Single-header libs use `#define *_IMPLEMENTATION` in exactly one TU: `CGLTF_IMPLEMENTATION` in `Asset/mesh_loader.cpp`, `STB_IMAGE_IMPLEMENTATION` in `Asset/material_loader.cpp`
 - ObjC++ files (`.mm`) that need ARC get `-fobjc-arc` via `set_source_files_properties` in CMake
 - Rendering has 3 modes: Vertex pipeline, Mesh shader, Visibility buffer (deferred lighting)
-- Visibility buffer pipeline: Visibility Pass → Shadow Ray Pass → Deferred Lighting → Blit → ImGui
+- Visibility buffer pipeline: Visibility Pass → Shadow Ray Pass → Sky Pass → Deferred Lighting → Tonemap → ImGui
+- Forward pipeline: Sky Pass → Forward Pass → Tonemap → ImGui
+- Render passes are modular classes inheriting from `RenderPass` (see `Source/Rendering/Passes/`)
+- Shader hot-reload via F5 key
 - Use `spdlog` for all logging (`spdlog::info`, `spdlog::warn`, `spdlog::error`). Do not use `std::cout`/`std::cerr`.
 
 
