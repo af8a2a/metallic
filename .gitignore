@@ -75,3 +75,4 @@ External/slang/
 .DS_Store
 Issue
 package-lock.json
+_builds

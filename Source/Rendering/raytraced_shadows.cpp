@@ -200,10 +200,16 @@ void updateTLAS(MTL::CommandBuffer* commandBuffer,
 }
 
 bool createShadowPipeline(MTL::Device* device,
-                          RaytracedShadowResources& out) {
-    std::ifstream file("Shaders/Raytracing/raytraced_shadow.metal");
+                          RaytracedShadowResources& out,
+                          const char* shaderBasePath) {
+    std::string shaderPath = "Shaders/Raytracing/raytraced_shadow.metal";
+    if (shaderBasePath) {
+        shaderPath = std::string(shaderBasePath) + "/" + shaderPath;
+    }
+    spdlog::info("Loading shader: {}", shaderPath);
+    std::ifstream file(shaderPath);
     if (!file.is_open()) {
-        spdlog::error("Failed to open Shaders/Raytracing/raytraced_shadow.metal");
+        spdlog::error("Failed to open {}", shaderPath);
         return false;
     }
     std::stringstream ss;
@@ -239,5 +245,61 @@ bool createShadowPipeline(MTL::Device* device,
     }
 
     spdlog::info("Shadow ray pipeline created");
+    return true;
+}
+
+bool reloadShadowPipeline(MTL::Device* device,
+                           RaytracedShadowResources& res,
+                           const char* shaderBasePath) {
+    std::string shaderPath = "Shaders/Raytracing/raytraced_shadow.metal";
+    if (shaderBasePath) {
+        shaderPath = std::string(shaderBasePath) + "/" + shaderPath;
+    }
+    spdlog::info("Reloading shader: {}", shaderPath);
+    std::ifstream file(shaderPath);
+    if (!file.is_open()) {
+        spdlog::error("Hot-reload: Failed to open {}", shaderPath);
+        return false;
+    }
+    std::stringstream ss;
+    ss << file.rdbuf();
+    std::string metalSource = ss.str();
+
+    NS::Error* error = nullptr;
+    auto* sourceStr = NS::String::string(metalSource.c_str(), NS::UTF8StringEncoding);
+    auto* compileOpts = MTL::CompileOptions::alloc()->init();
+    compileOpts->setLanguageVersion(MTL::LanguageVersion3_1);
+
+    auto* newLibrary = device->newLibrary(sourceStr, compileOpts, &error);
+    compileOpts->release();
+    if (!newLibrary) {
+        spdlog::error("Hot-reload: Failed to compile shadow shader: {}",
+                      error->localizedDescription()->utf8String());
+        return false;
+    }
+
+    auto* fn = newLibrary->newFunction(
+        NS::String::string("shadowRayMain", NS::UTF8StringEncoding));
+    if (!fn) {
+        spdlog::error("Hot-reload: Failed to find shadowRayMain function");
+        newLibrary->release();
+        return false;
+    }
+
+    auto* newPipeline = device->newComputePipelineState(fn, &error);
+    fn->release();
+    if (!newPipeline) {
+        spdlog::error("Hot-reload: Failed to create shadow pipeline: {}",
+                      error->localizedDescription()->utf8String());
+        newLibrary->release();
+        return false;
+    }
+
+    // Success — swap old resources
+    if (res.pipeline) res.pipeline->release();
+    if (res.library) res.library->release();
+    res.pipeline = newPipeline;
+    res.library = newLibrary;
+    spdlog::info("Hot-reload: Shadow ray pipeline reloaded");
     return true;
 }

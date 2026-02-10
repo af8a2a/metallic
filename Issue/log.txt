@@ -1,0 +1,71 @@
+/Users/af8a2a/project/rendergraph/cmake-build-debug/Source/rendergraph — TRACY_ON_DEMAND
+Metal device: Apple M4 Pro
+Loaded 103 primitives (103 groups): 192496 vertices, 786801 indices
+Built 3476 meshlets from 103 groups (avg 63 verts, 75 tris per meshlet)
+Loaded 69 textures
+Loaded 25 materials
+SceneGraph: 2 nodes, 2 roots
+Built TLAS with 1 instances, 1 unique BLAS
+Failed to compile shadow ray shader: program_source:1:1: error: unknown type name 'i'
+i#include <metal_stdlib>
+^
+program_source:1:2: error: expected unqualified-id
+i#include <metal_stdlib>
+ ^
+program_source:4:17: error: no namespace named 'raytracing'; did you mean 'metal::raytracing'?
+using namespace raytracing;
+                ^~~~~~~~~~
+                metal::raytracing
+/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/metal_raytracing:19:11: note: namespace 'metal::raytracing' defined here
+namespace raytracing
+          ^
+program_source:7:5: error: unknown type name 'float4x4'; did you mean 'metal::float4x4'?
+    float4x4 invViewProj;
+    ^~~~~~~~
+    metal::float4x4
+/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/metal_matrix:3874:29: note: 'metal::float4x4' declared here
+typedef matrix<float, 4, 4> float4x4;
+                            ^
+program_source:19:22: error: use of undeclared identifier 'access'; did you mean 'metal::access'?
+    texture2d<float, access::read> depthTex [[texture(0)]],
+                     ^~~~~~
+                     metal::access
+/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/metal_imageblocks:92:12: note: 'metal::access' declared here
+enum class access;
+           ^
+program_source:19:5: error: no template named 'texture2d'; did you mean 'metal::texture2d'?
+    texture2d<float, access::read> depthTex [[texture(0)]],
+    ^~~~~~~~~
+    metal::texture2d
+/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/__bits/metal_texture2d:2339:8: note: 'metal::texture2d' declared here
+struct texture2d : _texture2d<T, a, __memory_coherence_threadgroup>
+       ^
+program_source:20:22: error: use of undeclared identifier 'access'; did you mean 'metal::access'?
+    texture2d<float, access::write> shadowMap [[texture(1)]],
+                     ^~~~~~
+                     metal::access
+/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/metal_imageblocks:92:12: note: 'metal::access' declared here
+enum class access;
+           ^
+program_source:20:5: error: no template named 'texture2d'; did you mean 'metal::texture2d'?
+    texture2d<float, access::write> shadowMap [[texture(1)]],
+    ^~~~~~~~~
+    metal::texture2d
+/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/__bits/metal_texture2d:2339:8: note: 'metal::texture2d' declared here
+struct texture2d : _texture2d<T, a, __memory_coherence_threadgroup>
+       ^
+program_source:48:23: error: use of undeclared identifier 'normalize'; did you mean 'metal::normalize'?
+    float3 lightDir = normalize(uniforms.lightDir.xyz);
+                      ^~~~~~~~~
+                      metal::normalize
+/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/metal_geometric:683:19: note: 'metal::normalize' declared here
+METAL_FUNC float3 normalize(float3 x)
+                  ^
+
+Failed to initialize raytraced shadows
+Slang compiled Metal shader (2572 bytes)
+Mesh shader compiled (11388 bytes)
+Visibility shader compiled (11168 bytes)
+Compute shader compiled (12871 bytes)
+
+Process finished with exit code 0

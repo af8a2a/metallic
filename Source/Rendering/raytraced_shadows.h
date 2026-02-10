@@ -34,4 +34,9 @@ void updateTLAS(MTL::CommandBuffer* commandBuffer,
                 RaytracedShadowResources& res);
 
 bool createShadowPipeline(MTL::Device* device,
-                          RaytracedShadowResources& out);
+                          RaytracedShadowResources& out,
+                          const char* shaderBasePath = nullptr);
+
+bool reloadShadowPipeline(MTL::Device* device,
+                           RaytracedShadowResources& res,
+                           const char* shaderBasePath = nullptr);
