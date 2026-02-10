@@ -23,6 +23,7 @@ public:
     }
 
     void executeRender(MTL::RenderCommandEncoder* enc) override {
+        ZoneScopedN("ImGuiOverlayPass");
         imguiRenderDrawData(m_commandBuffer, enc);
     }
 

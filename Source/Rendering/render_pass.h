@@ -6,6 +6,7 @@
 #include "material_loader.h"
 #include "scene_graph.h"
 #include "raytraced_shadows.h"
+#include <tracy/Tracy.hpp>
 
 struct RenderContext {
     const LoadedMesh& sceneMesh;

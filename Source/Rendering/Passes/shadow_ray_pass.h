@@ -32,6 +32,7 @@ public:
     }
 
     void executeCompute(MTL::ComputeCommandEncoder* enc) override {
+        ZoneScopedN("ShadowRayPass");
         enc->setComputePipelineState(m_ctx.shadowResources.pipeline);
         ShadowUniforms shadowUni;
         float4x4 viewProj = m_proj * m_view;

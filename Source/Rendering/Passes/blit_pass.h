@@ -18,6 +18,7 @@ public:
     }
 
     void executeBlit(MTL::BlitCommandEncoder* enc) override {
+        ZoneScopedN("BlitPass");
         enc->copyFromTexture(
             m_frameGraph->getTexture(m_sourceRead), 0, 0,
             MTL::Origin(0, 0, 0), MTL::Size(m_width, m_height, 1),

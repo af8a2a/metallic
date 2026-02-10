@@ -44,6 +44,7 @@ public:
     }
 
     void executeRender(MTL::RenderCommandEncoder* enc) override {
+        ZoneScopedN("ForwardPass");
         enc->setDepthStencilState(m_ctx.depthState);
         enc->setFrontFacingWinding(MTL::WindingCounterClockwise);
         enc->setCullMode(MTL::CullModeBack);

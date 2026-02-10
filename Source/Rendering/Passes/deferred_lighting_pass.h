@@ -37,6 +37,7 @@ public:
     }
 
     void executeCompute(MTL::ComputeCommandEncoder* enc) override {
+        ZoneScopedN("DeferredLightingPass");
         enc->setComputePipelineState(m_pipeline);
         enc->setBytes(&m_lightUniforms, sizeof(m_lightUniforms), 0);
         enc->setBuffer(m_ctx.sceneMesh.positionBuffer, 0, 1);
