@@ -44,6 +44,15 @@ add_custom_command(TARGET rendergraph POST_BUILD
         "$<TARGET_FILE_DIR:rendergraph>/Shaders"
 )
 
+# Copy shared visibility constants header for runtime Slang includes
+add_custom_command(TARGET rendergraph POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:rendergraph>/Source/Rendering"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/Source/Rendering/visibility_constants.h"
+        "$<TARGET_FILE_DIR:rendergraph>/Source/Rendering/visibility_constants.h"
+)
+
 # Copy asset files next to executable
 add_custom_command(TARGET rendergraph POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory

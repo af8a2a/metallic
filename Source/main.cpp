@@ -35,6 +35,7 @@
 #include <tracy/Tracy.hpp>
 #include "tracy_metal.h"
 #include "frame_graph.h"
+#include "visibility_constants.h"
 
 
 struct Uniforms {
@@ -59,9 +60,6 @@ struct ShadowUniforms {
     float    maxRayDistance;
     uint32_t reversedZ;
 };
-
-static constexpr uint32_t kVisibilityInstanceBits = 11;
-static constexpr uint32_t kVisibilityInstanceMask = (1u << kVisibilityInstanceBits) - 1u;
 
 static void extractFrustumPlanes(const float4x4& mvp, float4* planes) {
     MvpToPlanes(ML_OGL ? STYLE_OGL : STYLE_D3D, mvp, planes);
@@ -289,7 +287,7 @@ struct LightingUniforms {
     uint32_t materialCount;
     uint32_t textureCount;
     uint32_t instanceCount;
-    uint32_t pad1;
+    uint32_t shadowEnabled;
     uint32_t pad2;
 };
 
@@ -605,6 +603,15 @@ int main() {
     imguiDepthTexDesc->setUsage(MTL::TextureUsageRenderTarget);
     MTL::Texture* imguiDepthDummy = device->newTexture(imguiDepthTexDesc);
 
+    // 1x1 shadow texture for non-RT paths (white = fully lit)
+    auto* shadowDummyDesc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatR8Unorm, 1, 1, false);
+    shadowDummyDesc->setStorageMode(MTL::StorageModeShared);
+    shadowDummyDesc->setUsage(MTL::TextureUsageShaderRead);
+    MTL::Texture* shadowDummyTex = device->newTexture(shadowDummyDesc);
+    uint8_t shadowClear = 0xFF;
+    shadowDummyTex->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, &shadowClear, 1);
+
     // Create initial framebuffer size (used for metalLayer)
     int fbWidth, fbHeight;
     glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
@@ -772,11 +779,9 @@ int main() {
                 warnedInstanceOverflow = true;
             }
 
-            constexpr uint32_t kVisibilityTriangleBits = 7;
-            constexpr uint32_t kVisibilityMeshletMask =
-                (1u << (32u - (kVisibilityTriangleBits + kVisibilityInstanceBits))) - 1u;
             static bool warnedMeshletOverflow = false;
-            if (!warnedMeshletOverflow && meshletData.meshletCount > kVisibilityMeshletMask) {
+            if (!warnedMeshletOverflow &&
+                meshletData.meshletCount > (kVisibilityMeshletMask + 1u)) {
                 spdlog::warn("Visibility meshlet id limit exceeded ({} > {}), overflowing meshlets will be culled",
                              meshletData.meshletCount, kVisibilityMeshletMask + 1);
                 warnedMeshletOverflow = true;
@@ -937,7 +942,7 @@ int main() {
             lightUniforms.materialCount = materials.materialCount;
             lightUniforms.textureCount = static_cast<uint32_t>(materials.textures.size());
             lightUniforms.instanceCount = visibilityInstanceCount;
-            lightUniforms.pad1 = 0;
+            lightUniforms.shadowEnabled = (rtShadowsAvailable && enableRTShadows) ? 1 : 0;
             lightUniforms.pad2 = 0;
 
             struct ComputePassData {
@@ -976,9 +981,10 @@ int main() {
                             const_cast<MTL::Texture* const*>(materials.textures.data()),
                             NS::Range(3, materials.textures.size()));
                     }
-                    if (data.shadowMap.isValid()) {
-                        enc->setTexture(fg.getTexture(data.shadowMap), 99);
-                    }
+                    MTL::Texture* shadowTex = data.shadowMap.isValid()
+                        ? fg.getTexture(data.shadowMap)
+                        : shadowDummyTex;
+                    enc->setTexture(shadowTex, 99);
                     enc->setSamplerState(materials.sampler, 0);
                     MTL::Size tgSize(8, 8, 1);
                     MTL::Size grid((width + 7) / 8, (height + 7) / 8, 1);
@@ -1167,6 +1173,7 @@ int main() {
     // Cleanup
     shadowResources.release();
     imguiDepthDummy->release();
+    shadowDummyTex->release();
     meshletData.meshletBuffer->release();
     meshletData.meshletVertices->release();
     meshletData.meshletTriangles->release();

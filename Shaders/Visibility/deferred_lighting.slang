@@ -1,3 +1,6 @@
+// Shared visibility bit packing constants
+#include "../../Source/Rendering/visibility_constants.h"
+
 struct LightingUniforms {
     float4x4 mvp;
     float4x4 modelView;
@@ -10,7 +13,7 @@ struct LightingUniforms {
     uint     materialCount;
     uint     textureCount;
     uint     instanceCount;
-    uint     pad1;
+    uint     shadowEnabled;
     uint     pad2;
 };
 
@@ -42,12 +45,12 @@ struct SceneInstanceTransform {
 static const uint INVALID_TEX = 0xFFFFFFFF;
 static const uint INVALID_VIS = 0xFFFFFFFF;
 static const uint kTextureArraySize = 96;
-static const uint kInstanceBits = 11;
-static const uint kVisibilityInstanceMask = (1u << kInstanceBits) - 1u;
-static const uint kVisibilityTriangleBits = 7;
-static const uint kVisibilityTriangleMask = (1u << kVisibilityTriangleBits) - 1u;
-static const uint kVisibilityMeshletShift = kVisibilityTriangleBits + kInstanceBits;
-static const uint kVisibilityMeshletMask = (1u << (32u - kVisibilityMeshletShift)) - 1u;
+static const uint kInstanceBits = VISIBILITY_INSTANCE_BITS;
+static const uint kVisibilityInstanceMask = VISIBILITY_INSTANCE_MASK;
+static const uint kVisibilityTriangleBits = VISIBILITY_TRIANGLE_BITS;
+static const uint kVisibilityTriangleMask = VISIBILITY_TRIANGLE_MASK;
+static const uint kVisibilityMeshletShift = VISIBILITY_MESHLET_SHIFT;
+static const uint kVisibilityMeshletMask = VISIBILITY_MESHLET_MASK;
 
 // Buffer bindings
 ConstantBuffer<LightingUniforms> lightUniforms;          // buffer(0)
@@ -244,7 +247,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float specular = pow(max(dot(N, H), 0.0), 64.0);
 
     float3 lightColor = lightUniforms.lightColorIntensity.xyz * lightUniforms.lightColorIntensity.w;
-    float shadow = shadowMap[pixel].x;
+    float shadow = (lightUniforms.shadowEnabled != 0) ? shadowMap[pixel].x : 1.0;
     float3 color = baseColor.rgb * ambient +
                    shadow * (baseColor.rgb * (diffuse * 0.75) * lightColor +
                              lightColor * (specular * 0.4));
