@@ -35,6 +35,7 @@ Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
 - `Source/material_loader.h/cpp` — PBR material + texture loading from glTF (stb_image)
 - `Source/camera.h` — Header-only orbit camera (simd/simd.h)
 - `Source/input.h/cpp` — GLFW mouse/scroll input callbacks
+- `Source/raytraced_shadows.h/cpp` — BLAS/TLAS building, per-frame TLAS update, shadow ray compute pipeline creation
 - `Source/tracy_metal.h/mm` — Tracy Metal GPU profiling bridge (ObjC++ with ARC)
 - `Source/imgui_metal_bridge.h/mm` — ImGui Metal/GLFW integration bridge
 - `Source/glfw_metal_bridge.mm/h` — Objective-C++ bridge: attaches CAMetalLayer to GLFW's NSWindow
@@ -63,21 +64,24 @@ After cloning, run `git submodule update --init` to fetch GLFW and Tracy.
 
 ### Shaders
 
-All shaders are Slang, compiled to Metal source at runtime:
+Slang shaders are compiled to Metal source at runtime. Raytracing shaders are native Metal (Slang doesn't support Metal raytracing):
 - `Shaders/triangle.slang` — Basic vertex/fragment triangle shader
 - `Shaders/bunny.slang` — MVP + Blinn-Phong lit shader (vertex pipeline)
 - `Shaders/meshlet.slang` — Mesh shader + fragment shader for meshlet rendering
 - `Shaders/visibility.slang` — Visibility buffer mesh + fragment shader (R32Uint output)
-- `Shaders/deferred_lighting.slang` — Compute shader for deferred lighting from visibility buffer
+- `Shaders/deferred_lighting.slang` — Compute shader for deferred lighting from visibility buffer (samples shadow map at texture 99)
+- `Shaders/raytraced_shadow.metal` — **Native Metal** compute shader: traces shadow rays against TLAS, writes R8Unorm shadow map
 
 ## Conventions
 
 - Shaders are written in Slang (not MSL directly) and compiled to Metal source code at runtime via the Slang API
+- **Exception:** Raytracing shaders (`raytraced_shadow.metal`) are native Metal Shading Language, compiled at runtime with `MTL::LanguageVersion3_1`. Slang does not support Metal raytracing.
 - Platform bridging (Cocoa/Metal layer) lives in `.mm` files with C-linkage headers
 - Metal objects use manual reference counting (retain/release)
 - Single-header libs use `#define *_IMPLEMENTATION` in exactly one TU: `CGLTF_IMPLEMENTATION` in `mesh_loader.cpp`, `STB_IMAGE_IMPLEMENTATION` in `material_loader.cpp`
 - ObjC++ files (`.mm`) that need ARC get `-fobjc-arc` via `set_source_files_properties` in CMake
 - Rendering has 3 modes: Vertex pipeline, Mesh shader, Visibility buffer (deferred lighting)
+- Visibility buffer pipeline: Visibility Pass → Shadow Ray Pass → Deferred Lighting → Blit → ImGui
 
 
 
@@ -89,8 +93,16 @@ All shaders are Slang, compiled to Metal source at runtime:
 - Slang wraps globals into a `KernelContext` struct passed to ALL entry points. Fragment shader expects all mesh-stage buffers bound even if unused.
 - Global `ConstantBuffer<T>` gets `[[buffer(0)]]` — vertex buffers must start at index 1+ to avoid conflicts.
 
+## Raytracing Shadows
 
+- **BLAS** (one per glTF mesh): built once at startup from `LoadedMesh::meshRanges` / `primitiveGroups`. Each primitive group becomes a triangle geometry descriptor.
+- **TLAS** (one instance per visible scene node with a mesh): rebuilt every frame via `updateTLAS()` to track scene graph transform changes. Instance descriptor buffer is `StorageModeShared` for CPU writes.
+- **Shadow ray shader** (`raytraced_shadow.metal`): native Metal compute, reads depth buffer, reconstructs world position via `invViewProj`, traces toward directional light using `intersector<triangle_data, instancing>` with `accept_any_intersection(true)`.
+- **Matrix convention:** Native Metal shader uses standard column-major multiplication — do NOT `transpose()` the `invViewProj` (unlike Slang shaders which need transposed matrices).
+- **Reversed-Z:** Shadow shader receives a `reversedZ` uniform to correctly detect sky pixels (depth == 0.0 for reversed-Z, depth == 1.0 for normal-Z).
+- **Texture binding:** Shadow map is `R8Unorm` at texture index 99 in `deferred_lighting.slang`. Slang correctly emits `[[texture(99)]]` for scalar `Texture2D<float>` — no patching needed (unlike texture arrays).
+- **CAMetalLayer:** `setFramebufferOnly(false)` is required because the visibility buffer path blits compute output to the drawable.
 
 ## Development
 - when I start debug, I will add the issue content(log/screenshot) in `Issue` directory.You can get bug information from it.
-- 
+-

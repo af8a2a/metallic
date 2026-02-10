@@ -38,11 +38,6 @@ static void addNodeRecursive(const cgltf_data* data,
                                          gltfNode->rotation[2],
                                          gltfNode->rotation[3]);
     }
-    if (gltfNode->has_scale) {
-        node.transform.scale = float3(gltfNode->scale[0],
-                                      gltfNode->scale[1],
-                                      gltfNode->scale[2]);
-    }
 
     if (gltfNode->has_matrix) {
         const float* m = gltfNode->matrix;
@@ -55,7 +50,7 @@ static void addNodeRecursive(const cgltf_data* data,
         node.transform.localMatrix = mat;
         node.transform.useLocalMatrix = true;
         node.transform.translation = float3(m[12], m[13], m[14]);
-        node.transform.scale = mat.GetScale();
+        node.transform.scale = float3(1.f, 1.f, 1.f);
         node.transform.rotation = mat.GetQuaternion();
     }
 
