@@ -40,7 +40,7 @@ public:
             m_skyRead = builder.read(m_skyInput);
         }
         output = builder.create("output",
-            FGTextureDesc::storageTexture(m_width, m_height, MTL::PixelFormatBGRA8Unorm));
+            FGTextureDesc::storageTexture(m_width, m_height, MTL::PixelFormatRGBA16Float));
     }
 
     void executeCompute(MTL::ComputeCommandEncoder* enc) override {

@@ -42,7 +42,7 @@ public:
             output = m_target;
         } else {
             output = builder.create("skyColor",
-                FGTextureDesc::renderTarget(m_width, m_height, MTL::PixelFormatBGRA8Unorm));
+                FGTextureDesc::renderTarget(m_width, m_height, MTL::PixelFormatRGBA16Float));
             builder.setColorAttachment(0, output,
                 MTL::LoadActionClear, MTL::StoreActionStore,
                 MTL::ClearColor(0.0, 0.0, 0.0, 1.0));

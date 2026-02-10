@@ -2,14 +2,12 @@
 
 #include "render_pass.h"
 #include "render_uniforms.h"
-#include "imgui_metal_bridge.h"
 #include "imgui.h"
 #include <vector>
 
 class ForwardPass : public RenderPass {
 public:
     ForwardPass(const RenderContext& ctx,
-                FGResource drawable,
                 int renderMode,
                 MTL::RenderPipelineState* vertexPipeline,
                 MTL::RenderPipelineState* meshPipeline,
@@ -18,33 +16,40 @@ public:
                 const std::vector<uint32_t>& visibleIndexNodes,
                 const float4x4& view, const float4x4& proj,
                 const float4& cameraWorldPos,
-                MTL::CommandBuffer* cmdBuf,
                 int w, int h,
-                bool useSky)
-        : m_ctx(ctx), m_drawable(drawable), m_renderMode(renderMode)
+                bool useSky,
+                FGResource target)
+        : m_ctx(ctx), m_target(target), m_renderMode(renderMode)
         , m_vertexPipeline(vertexPipeline), m_meshPipeline(meshPipeline)
         , m_baseUniforms(baseUniforms)
         , m_visibleMeshletNodes(visibleMeshletNodes)
         , m_visibleIndexNodes(visibleIndexNodes)
         , m_view(view), m_proj(proj), m_cameraWorldPos(cameraWorldPos)
-        , m_commandBuffer(cmdBuf)
         , m_width(w), m_height(h)
         , m_useSky(useSky) {}
 
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return "Forward Pass"; }
 
+    FGResource output;
+    FGResource depth;
+
     void setup(FGBuilder& builder) override {
-        m_depth = builder.create("depth",
+        if (m_target.isValid()) {
+            output = m_target;
+        } else {
+            output = builder.create("forwardColor",
+                FGTextureDesc::renderTarget(m_width, m_height, MTL::PixelFormatRGBA16Float));
+        }
+        depth = builder.create("depth",
             FGTextureDesc::depthTarget(m_width, m_height));
         MTL::LoadAction colorLoad =
-            m_useSky ? MTL::LoadActionLoad : MTL::LoadActionClear;
-        builder.setColorAttachment(0, m_drawable,
+            (m_useSky && m_target.isValid()) ? MTL::LoadActionLoad : MTL::LoadActionClear;
+        builder.setColorAttachment(0, output,
             colorLoad, MTL::StoreActionStore,
             MTL::ClearColor(0.1, 0.2, 0.3, 1.0));
-        builder.setDepthAttachment(m_depth,
+        builder.setDepthAttachment(depth,
             MTL::LoadActionClear, MTL::StoreActionDontCare, m_ctx.depthClearValue);
-        builder.setSideEffect();
     }
 
     void executeRender(MTL::RenderCommandEncoder* enc) override {
@@ -128,7 +133,6 @@ public:
             }
         }
 
-        imguiRenderDrawData(m_commandBuffer, enc);
     }
 
     void renderUI() override {
@@ -145,8 +149,7 @@ public:
 
 private:
     const RenderContext& m_ctx;
-    FGResource m_drawable;
-    FGResource m_depth;
+    FGResource m_target;
     int m_renderMode;
     MTL::RenderPipelineState* m_vertexPipeline;
     MTL::RenderPipelineState* m_meshPipeline;
@@ -155,7 +158,6 @@ private:
     const std::vector<uint32_t>& m_visibleIndexNodes;
     float4x4 m_view, m_proj;
     float4 m_cameraWorldPos;
-    MTL::CommandBuffer* m_commandBuffer;
     int m_width, m_height;
     bool m_useSky;
 };

@@ -53,6 +53,19 @@ struct AtmosphereUniforms {
     uint32_t pad1;
 };
 
+struct TonemapUniforms {
+    uint32_t isActive;
+    uint32_t method;
+    float exposure;
+    float contrast;
+    float brightness;
+    float saturation;
+    float vignette;
+    uint32_t dither;
+    float2 invResolution;
+    float2 pad;
+};
+
 struct SceneInstanceTransform {
     float4x4 mvp;
     float4x4 modelView;

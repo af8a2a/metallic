@@ -41,6 +41,7 @@
 #include "render_uniforms.h"
 #include "render_pass.h"
 #include "blit_pass.h"
+#include "tonemap_pass.h"
 #include "imgui_overlay_pass.h"
 #include "visibility_pass.h"
 #include "shadow_ray_pass.h"
@@ -442,7 +443,7 @@ static MTL::RenderPipelineState* reloadVertexShader(
     auto* desc = MTL::RenderPipelineDescriptor::alloc()->init();
     desc->setVertexFunction(vf);
     desc->setFragmentFunction(ff);
-    desc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+    desc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatRGBA16Float);
     desc->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
     desc->setVertexDescriptor(vertexDesc);
 
@@ -714,7 +715,7 @@ int main() {
         MTL::RenderPipelineDescriptor::alloc()->init();
     pipelineDesc->setVertexFunction(vertexFn);
     pipelineDesc->setFragmentFunction(fragmentFn);
-    pipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+    pipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatRGBA16Float);
     pipelineDesc->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
     pipelineDesc->setVertexDescriptor(vertexDesc);
     // vertexDesc kept alive for shader hot-reload
@@ -758,7 +759,7 @@ int main() {
     auto* meshPipelineDesc = MTL::MeshRenderPipelineDescriptor::alloc()->init();
     meshPipelineDesc->setMeshFunction(meshFn);
     meshPipelineDesc->setFragmentFunction(meshFragFn);
-    meshPipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+    meshPipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatRGBA16Float);
     meshPipelineDesc->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
 
     NS::Error* meshError = nullptr;
@@ -870,7 +871,7 @@ int main() {
             auto* skyPipelineDesc = MTL::RenderPipelineDescriptor::alloc()->init();
             skyPipelineDesc->setVertexFunction(skyVertexFn);
             skyPipelineDesc->setFragmentFunction(skyFragmentFn);
-            skyPipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+            skyPipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatRGBA16Float);
 
             skyPipelineState = device->newRenderPipelineState(skyPipelineDesc, &error);
             if (!skyPipelineState) {
@@ -887,6 +888,58 @@ int main() {
         spdlog::warn("Sky shader compile failed; atmosphere sky disabled");
     }
 
+    // --- Tonemap pipeline ---
+    std::string tonemapMetalSource = compileSlangToMetal("Shaders/Post/tonemap", projectRoot);
+    if (tonemapMetalSource.empty()) {
+        spdlog::error("Failed to compile tonemap shader");
+        return 1;
+    }
+
+    NS::String* tonemapSourceStr = NS::String::string(tonemapMetalSource.c_str(), NS::UTF8StringEncoding);
+    MTL::CompileOptions* tonemapCompileOpts = MTL::CompileOptions::alloc()->init();
+    MTL::Library* tonemapLibrary = device->newLibrary(tonemapSourceStr, tonemapCompileOpts, &error);
+    tonemapCompileOpts->release();
+    if (!tonemapLibrary) {
+        spdlog::error("Failed to create tonemap Metal library: {}",
+                      error->localizedDescription()->utf8String());
+        return 1;
+    }
+
+    MTL::Function* tonemapVertexFn = tonemapLibrary->newFunction(
+        NS::String::string("vertexMain", NS::UTF8StringEncoding));
+    MTL::Function* tonemapFragmentFn = tonemapLibrary->newFunction(
+        NS::String::string("fragmentMain", NS::UTF8StringEncoding));
+
+    auto* tonemapPipelineDesc = MTL::RenderPipelineDescriptor::alloc()->init();
+    tonemapPipelineDesc->setVertexFunction(tonemapVertexFn);
+    tonemapPipelineDesc->setFragmentFunction(tonemapFragmentFn);
+    tonemapPipelineDesc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+
+    MTL::RenderPipelineState* tonemapPipelineState =
+        device->newRenderPipelineState(tonemapPipelineDesc, &error);
+    if (!tonemapPipelineState) {
+        spdlog::error("Failed to create tonemap pipeline state: {}",
+                      error->localizedDescription()->utf8String());
+        return 1;
+    }
+    tonemapPipelineDesc->release();
+    if (tonemapVertexFn) tonemapVertexFn->release();
+    if (tonemapFragmentFn) tonemapFragmentFn->release();
+    tonemapLibrary->release();
+
+    auto* tonemapSamplerDesc = MTL::SamplerDescriptor::alloc()->init();
+    tonemapSamplerDesc->setMinFilter(MTL::SamplerMinMagFilterLinear);
+    tonemapSamplerDesc->setMagFilter(MTL::SamplerMinMagFilterLinear);
+    tonemapSamplerDesc->setMipFilter(MTL::SamplerMipFilterNotMipmapped);
+    tonemapSamplerDesc->setSAddressMode(MTL::SamplerAddressModeClampToEdge);
+    tonemapSamplerDesc->setTAddressMode(MTL::SamplerAddressModeClampToEdge);
+    MTL::SamplerState* tonemapSampler = device->newSamplerState(tonemapSamplerDesc);
+    tonemapSamplerDesc->release();
+    if (!tonemapSampler) {
+        spdlog::error("Failed to create tonemap sampler state");
+        return 1;
+    }
+
     AtmosphereTextureSet atmosphereTextures;
     bool atmosphereLoaded = loadAtmosphereTextures(device, projectRoot, atmosphereTextures);
     if (!atmosphereLoaded) {
@@ -900,6 +953,14 @@ int main() {
     bool enableRTShadows = true;
     bool enableAtmosphereSky = skyAvailable;
     float skyExposure = 10.0f;
+    bool enableTonemap = true;
+    int tonemapMethod = 0;
+    float tonemapExposure = 1.0f;
+    float tonemapContrast = 1.0f;
+    float tonemapBrightness = 1.0f;
+    float tonemapSaturation = 1.0f;
+    float tonemapVignette = 0.0f;
+    bool tonemapDither = true;
     bool showGraphDebug = false;
     bool showSceneGraphWindow = true;
     bool showRenderPassUI = true;
@@ -1090,6 +1151,19 @@ int main() {
         } else {
             ImGui::TextDisabled("Atmosphere Sky (missing textures)");
         }
+        ImGui::Separator();
+        ImGui::Text("Tonemapping");
+        ImGui::Checkbox("Enable Tonemap", &enableTonemap);
+        const char* tonemapLabels[] = {
+            "Filmic", "Uncharted2", "Clip", "ACES", "AgX", "Khronos PBR"
+        };
+        ImGui::Combo("Tonemap Method", &tonemapMethod, tonemapLabels, IM_ARRAYSIZE(tonemapLabels));
+        ImGui::SliderFloat("Exposure", &tonemapExposure, 0.1f, 4.0f, "%.2f");
+        ImGui::SliderFloat("Contrast", &tonemapContrast, 0.5f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Brightness", &tonemapBrightness, 0.5f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Saturation", &tonemapSaturation, 0.0f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Vignette", &tonemapVignette, 0.0f, 1.0f, "%.2f");
+        ImGui::Checkbox("Dither", &tonemapDither);
         ImGui::Checkbox("Show Graph", &showGraphDebug);
         ImGui::Separator();
         bool f5Down = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
@@ -1108,7 +1182,7 @@ int main() {
 
             // 2. Mesh shader
             if (auto* p = reloadMeshShader(device, "Shaders/Mesh/meshlet", projectRoot,
-                    patchMeshShaderMetalSource, MTL::PixelFormatBGRA8Unorm, MTL::PixelFormatDepth32Float)) {
+                    patchMeshShaderMetalSource, MTL::PixelFormatRGBA16Float, MTL::PixelFormatDepth32Float)) {
                 meshPipelineState->release();
                 meshPipelineState = p;
                 reloaded++;
@@ -1132,14 +1206,22 @@ int main() {
 
             // 5. Sky shader
             if (auto* p = reloadFullscreenShader(device, "Shaders/Atmosphere/sky", projectRoot,
-                    MTL::PixelFormatBGRA8Unorm)) {
+                    MTL::PixelFormatRGBA16Float)) {
                 if (skyPipelineState) skyPipelineState->release();
                 skyPipelineState = p;
                 skyAvailable = atmosphereLoaded && skyPipelineState;
                 reloaded++;
             } else { failed++; }
 
-            // 6. Shadow ray shader
+            // 6. Tonemap shader
+            if (auto* p = reloadFullscreenShader(device, "Shaders/Post/tonemap", projectRoot,
+                    MTL::PixelFormatBGRA8Unorm)) {
+                tonemapPipelineState->release();
+                tonemapPipelineState = p;
+                reloaded++;
+            } else { failed++; }
+
+            // 7. Shadow ray shader
             if (rtShadowsAvailable) {
                 if (reloadShadowPipeline(device, shadowResources, projectRoot)) {
                     reloaded++;
@@ -1173,6 +1255,18 @@ int main() {
             if (node.indexCount > 0)
                 visibleIndexNodes.push_back(node.id);
         }
+
+        TonemapUniforms tonemapUniforms{};
+        tonemapUniforms.isActive = enableTonemap ? 1u : 0u;
+        tonemapUniforms.method = static_cast<uint32_t>(tonemapMethod);
+        tonemapUniforms.exposure = tonemapExposure;
+        tonemapUniforms.contrast = tonemapContrast;
+        tonemapUniforms.brightness = tonemapBrightness;
+        tonemapUniforms.saturation = tonemapSaturation;
+        tonemapUniforms.vignette = tonemapVignette;
+        tonemapUniforms.dither = tonemapDither ? 1u : 0u;
+        tonemapUniforms.invResolution = float2(1.0f / float(width), 1.0f / float(height));
+        tonemapUniforms.pad = float2(0.0f, 0.0f);
 
         // --- Build FrameGraph ---
         FrameGraph fg;
@@ -1286,9 +1380,11 @@ int main() {
             fg.addPass(std::move(lightingPass));
             FGResource lightingOutput = lightingPassPtr->output;
 
-            auto blitPass = std::make_unique<BlitPass>(
-                lightingOutput, drawableRes, width, height);
-            fg.addPass(std::move(blitPass));
+            auto tonemapPass = std::make_unique<TonemapPass>(
+                lightingOutput, drawableRes,
+                tonemapPipelineState, tonemapSampler,
+                tonemapUniforms, width, height);
+            fg.addPass(std::move(tonemapPass));
 
             auto imguiPass = std::make_unique<ImGuiOverlayPass>(
                 drawableRes, visDepth, depthClearValue, commandBuffer);
@@ -1298,26 +1394,40 @@ int main() {
             ZoneScopedN("Forward Graph Build");
 
             bool useSky = skyAvailable && enableAtmosphereSky;
+            FGResource skyTarget{};
             if (useSky) {
                 auto skyPass = std::make_unique<SkyPass>(
-                    drawableRes, skyPipelineState,
+                    FGResource{}, skyPipelineState,
                     atmosphereTextures.transmittance,
                     atmosphereTextures.scattering,
                     atmosphereTextures.irradiance,
                     atmosphereTextures.sampler,
                     skyUniforms,
-                    true,
+                    false,
                     width, height);
+                auto* skyPassPtr = skyPass.get();
                 fg.addPass(std::move(skyPass));
+                skyTarget = skyPassPtr->output;
             }
 
             auto fwdPass = std::make_unique<ForwardPass>(
-                ctx, drawableRes, renderMode,
+                ctx, renderMode,
                 pipelineState, meshPipelineState, uniforms,
                 visibleMeshletNodes, visibleIndexNodes,
                 view, proj, cameraWorldPos,
-                commandBuffer, width, height, useSky);
+                width, height, useSky, skyTarget);
+            auto* fwdPassPtr = fwdPass.get();
             fg.addPass(std::move(fwdPass));
+
+            auto tonemapPass = std::make_unique<TonemapPass>(
+                fwdPassPtr->output, drawableRes,
+                tonemapPipelineState, tonemapSampler,
+                tonemapUniforms, width, height);
+            fg.addPass(std::move(tonemapPass));
+
+            auto imguiPass = std::make_unique<ImGuiOverlayPass>(
+                drawableRes, fwdPassPtr->depth, depthClearValue, commandBuffer);
+            fg.addPass(std::move(imguiPass));
         }
 
         fg.compile();
@@ -1390,6 +1500,8 @@ int main() {
     vertexDesc->release();
     if (skyPipelineState) skyPipelineState->release();
     computePipelineState->release();
+    tonemapSampler->release();
+    tonemapPipelineState->release();
     visPipelineState->release();
     meshPipelineState->release();
     pipelineState->release();

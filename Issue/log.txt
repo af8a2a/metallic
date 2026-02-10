@@ -1,71 +1,58 @@
-/Users/af8a2a/project/rendergraph/cmake-build-debug/Source/rendergraph — TRACY_ON_DEMAND
-Metal device: Apple M4 Pro
-Loaded 103 primitives (103 groups): 192496 vertices, 786801 indices
-Built 3476 meshlets from 103 groups (avg 63 verts, 75 tris per meshlet)
-Loaded 69 textures
-Loaded 25 materials
-SceneGraph: 2 nodes, 2 roots
-Built TLAS with 1 instances, 1 unique BLAS
-Failed to compile shadow ray shader: program_source:1:1: error: unknown type name 'i'
-i#include <metal_stdlib>
-^
-program_source:1:2: error: expected unqualified-id
-i#include <metal_stdlib>
- ^
-program_source:4:17: error: no namespace named 'raytracing'; did you mean 'metal::raytracing'?
-using namespace raytracing;
-                ^~~~~~~~~~
-                metal::raytracing
-/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/metal_raytracing:19:11: note: namespace 'metal::raytracing' defined here
-namespace raytracing
-          ^
-program_source:7:5: error: unknown type name 'float4x4'; did you mean 'metal::float4x4'?
-    float4x4 invViewProj;
-    ^~~~~~~~
-    metal::float4x4
-/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/metal_matrix:3874:29: note: 'metal::float4x4' declared here
-typedef matrix<float, 4, 4> float4x4;
-                            ^
-program_source:19:22: error: use of undeclared identifier 'access'; did you mean 'metal::access'?
-    texture2d<float, access::read> depthTex [[texture(0)]],
-                     ^~~~~~
-                     metal::access
-/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/metal_imageblocks:92:12: note: 'metal::access' declared here
-enum class access;
-           ^
-program_source:19:5: error: no template named 'texture2d'; did you mean 'metal::texture2d'?
-    texture2d<float, access::read> depthTex [[texture(0)]],
-    ^~~~~~~~~
-    metal::texture2d
-/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/__bits/metal_texture2d:2339:8: note: 'metal::texture2d' declared here
-struct texture2d : _texture2d<T, a, __memory_coherence_threadgroup>
-       ^
-program_source:20:22: error: use of undeclared identifier 'access'; did you mean 'metal::access'?
-    texture2d<float, access::write> shadowMap [[texture(1)]],
-                     ^~~~~~
-                     metal::access
-/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/metal_imageblocks:92:12: note: 'metal::access' declared here
-enum class access;
-           ^
-program_source:20:5: error: no template named 'texture2d'; did you mean 'metal::texture2d'?
-    texture2d<float, access::write> shadowMap [[texture(1)]],
-    ^~~~~~~~~
-    metal::texture2d
-/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/__bits/metal_texture2d:2339:8: note: 'metal::texture2d' declared here
-struct texture2d : _texture2d<T, a, __memory_coherence_threadgroup>
-       ^
-program_source:48:23: error: use of undeclared identifier 'normalize'; did you mean 'metal::normalize'?
-    float3 lightDir = normalize(uniforms.lightDir.xyz);
-                      ^~~~~~~~~
-                      metal::normalize
-/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.850/include/metal/metal_geometric:683:19: note: 'metal::normalize' declared here
-METAL_FUNC float3 normalize(float3 x)
-                  ^
+/Users/af8a2a/project/rendergraph/cmake-build-release/Source/Metallic
+[2026-02-10 19:46:42.523] [info] Metal device: Apple M4 Pro
+[2026-02-10 19:46:42.530] [info] Loaded 103 primitives (103 groups): 192496 vertices, 786801 indices
+[2026-02-10 19:46:42.613] [info] Built 3476 meshlets from 103 groups (avg 63 verts, 75 tris per meshlet)
+[2026-02-10 19:46:43.332] [info] Loaded 69 textures
+[2026-02-10 19:46:43.332] [info] Loaded 25 materials
+[2026-02-10 19:46:43.332] [info] SceneGraph: 2 nodes, 2 roots
+[2026-02-10 19:46:43.354] [info] Built TLAS with 1 instances, 1 unique BLAS
+[2026-02-10 19:46:43.354] [info] Loading shader: /Users/af8a2a/project/rendergraph/Shaders/Raytracing/raytraced_shadow.metal
+[2026-02-10 19:46:43.356] [info] Shadow ray pipeline created
+[2026-02-10 19:46:43.356] [info] Raytraced shadows enabled
+[2026-02-10 19:46:43.384] [info] Loading shader: Shaders/Vertex/bunny (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-10 19:46:43.403] [info] Slang compiled Metal shader (2579 bytes)
+[2026-02-10 19:46:43.472] [info] Loading shader: Shaders/Mesh/meshlet (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-10 19:46:43.515] [info] Mesh shader compiled (11398 bytes)
+[2026-02-10 19:46:43.554] [info] Loading shader: Shaders/Visibility/visibility (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-10 19:46:43.594] [info] Visibility shader compiled (11190 bytes)
+[2026-02-10 19:46:43.613] [info] Loading shader: Shaders/Visibility/deferred_lighting (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-10 19:46:43.675] [info] Compute shader compiled (17403 bytes)
+[2026-02-10 19:46:43.693] [info] Loading shader: Shaders/Atmosphere/sky (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-10 19:46:43.765] [info] Loading shader: Shaders/Post/tonemap (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-10 19:46:43.791] [error] Slang load error: Shaders/Post/tonemap.slang(33): error 33071: expected a string literal
+[shader(vertex)]
+        ^~~~~~
+Shaders/Post/tonemap.slang(215): error 33071: expected a string literal
+[shader(fragment)]
+        ^~~~~~~~
+Shaders/Post/tonemap.slang(171): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
+        case ToneMapMethod::eFilmic:
+                            ^~~~~~~
+Shaders/Post/tonemap.slang(171): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
+Shaders/Post/tonemap.slang(174): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
+        case ToneMapMethod::eUncharted2:
+                            ^~~~~~~~~~~
+Shaders/Post/tonemap.slang(174): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
+Shaders/Post/tonemap.slang(177): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
+        case ToneMapMethod::eClip:
+                            ^~~~~
+Shaders/Post/tonemap.slang(177): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
+Shaders/Post/tonemap.slang(180): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
+        case ToneMapMethod::eACES:
+                            ^~~~~
+Shaders/Post/tonemap.slang(180): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
+Shaders/Post/tonemap.slang(183): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
+        case ToneMapMethod::eAgX:
+                            ^~~~
+Shaders/Post/tonemap.slang(183): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
+Shaders/Post/tonemap.slang(186): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
+        case ToneMapMethod::eKhronosPBR:
+                            ^~~~~~~~~~~
+Shaders/Post/tonemap.slang(186): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
+(0): error 39999: import of module 'Shaders/Post/tonemap' failed because of a compilation error
+(0): fatal error 39999: compilation ceased
+abort compilation: (0): fatal error 39999: compilation ceased
 
-Failed to initialize raytraced shadows
-Slang compiled Metal shader (2572 bytes)
-Mesh shader compiled (11388 bytes)
-Visibility shader compiled (11168 bytes)
-Compute shader compiled (12871 bytes)
+[2026-02-10 19:46:43.793] [error] Failed to compile tonemap shader
 
-Process finished with exit code 0
+Process finished with exit code 1
