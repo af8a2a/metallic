@@ -2,38 +2,8 @@
 #include "render_pass.h"
 #include <algorithm>
 #include <cassert>
-#include <deque>
-#include <string_view>
-#include <unordered_map>
 
 #include "imgui.h"
-
-namespace {
-
-const TracyMetalSrcLoc* getTracySrcLoc(const std::string& passName) {
-    struct Entry {
-        std::string name;
-        TracyMetalSrcLoc srcLoc;
-    };
-
-    static std::deque<Entry> entries;
-    static std::unordered_map<std::string, size_t> indexByName;
-
-    auto it = indexByName.find(passName);
-    if (it != indexByName.end()) {
-        return &entries[it->second].srcLoc;
-    }
-
-    entries.push_back({});
-    size_t index = entries.size() - 1;
-    auto& entry = entries[index];
-    entry.name = passName;
-    entry.srcLoc = {entry.name.c_str(), "FrameGraph::execute", __FILE__, __LINE__, 0};
-    indexByName.emplace(entry.name, index);
-    return &entry.srcLoc;
-}
-
-} // namespace
 
 // --- FGBuilder ---
 
@@ -71,7 +41,7 @@ void FGBuilder::setColorAttachment(uint32_t index, FGResource resource,
                                    MTL::ClearColor clear) {
     auto& pass = m_fg.m_passes[m_passIndex];
     assert(index < 8);
-    pass.colorAttachments[index] = {resource, load, store, clear, true};
+    pass.colorAttachments[index] = {resource, load, store, clear};
     if (index >= pass.colorAttachmentCount)
         pass.colorAttachmentCount = index + 1;
     // Implicitly writes the attachment
@@ -131,55 +101,36 @@ void FrameGraph::addPass(std::unique_ptr<RenderPass> pass) {
 }
 
 void FrameGraph::compile() {
-    // Reset resource state that is recomputed every compile.
+    // Step 1: Initialize refCounts — side-effect passes start at 1
+    for (auto& pass : m_passes) {
+        pass.refCount = pass.hasSideEffect ? 1 : 0;
+    }
+
+    // Step 2: Count readers per resource → resource.refCount
     for (auto& res : m_resources) {
         res.refCount = 0;
-        res.lastUser = UINT32_MAX;
     }
-
-    // Determine live passes by walking backwards from side-effect passes.
-    std::vector<uint8_t> livePass(m_passes.size(), 0);
-    std::deque<uint32_t> worklist;
-    for (uint32_t pi = 0; pi < m_passes.size(); ++pi) {
-        if (m_passes[pi].hasSideEffect) {
-            livePass[pi] = 1;
-            worklist.push_back(pi);
-        }
-    }
-
-    while (!worklist.empty()) {
-        const uint32_t pi = worklist.front();
-        worklist.pop_front();
-
-        for (auto& r : m_passes[pi].reads) {
-            auto& res = m_resources[r.id];
-            if (res.producer != UINT32_MAX && !livePass[res.producer]) {
-                livePass[res.producer] = 1;
-                worklist.push_back(res.producer);
-            }
-        }
-    }
-
-    // Populate pass/resource refCounts for the live subgraph only.
-    for (uint32_t pi = 0; pi < m_passes.size(); ++pi) {
-        auto& pass = m_passes[pi];
-        pass.refCount = livePass[pi] ? 1 : 0;
-        if (!livePass[pi]) {
-            continue;
-        }
-
-        for (auto& r : pass.reads) {
-            auto& res = m_resources[r.id];
-            res.refCount++;
-            if (res.producer != UINT32_MAX) {
-                m_passes[res.producer].refCount++;
-            }
-        }
-    }
-
-    // Calculate transient lifetime in the live subgraph.
     for (uint32_t pi = 0; pi < m_passes.size(); pi++) {
-        if (!livePass[pi]) continue;
+        auto& pass = m_passes[pi];
+        for (auto& r : pass.reads) {
+            m_resources[r.id].refCount++;
+        }
+    }
+
+    // Step 3: Propagate resource refCounts to producer passes
+    for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
+        auto& res = m_resources[ri];
+        if (res.refCount > 0 && res.producer != UINT32_MAX) {
+            m_passes[res.producer].refCount += res.refCount;
+        }
+    }
+
+    // Step 4: Cull passes with refCount == 0
+    // (We don't remove them, just skip during execute)
+
+    // Step 5: Calculate lastUser for each transient resource
+    for (uint32_t pi = 0; pi < m_passes.size(); pi++) {
+        if (m_passes[pi].refCount == 0) continue;
         auto& pass = m_passes[pi];
         for (auto& r : pass.reads) {
             m_resources[r.id].lastUser = std::max(m_resources[r.id].lastUser, pi);
@@ -217,9 +168,6 @@ void FrameGraph::execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyM
             auto* rpDesc = MTL::RenderPassDescriptor::alloc()->init();
             for (uint32_t ci = 0; ci < pass.colorAttachmentCount; ci++) {
                 auto& ca = pass.colorAttachments[ci];
-                if (!ca.bound) {
-                    continue;
-                }
                 auto* att = rpDesc->colorAttachments()->object(ci);
                 att->setTexture(m_resources[ca.resource.id].texture);
                 att->setLoadAction(ca.loadAction);
@@ -234,7 +182,9 @@ void FrameGraph::execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyM
                 da->setClearDepth(pass.depthAttachment.clearDepth);
             }
 
-            auto gpuZone = tracyMetalZoneBeginRender(tracyCtx, rpDesc, getTracySrcLoc(pass.name));
+            static TracyMetalSrcLoc srcLocs[64];
+            srcLocs[pi] = {pass.name.c_str(), "FrameGraph::execute", __FILE__, __LINE__, 0};
+            auto gpuZone = tracyMetalZoneBeginRender(tracyCtx, rpDesc, &srcLocs[pi]);
 
             auto* encoder = cmdBuf->renderCommandEncoder(rpDesc);
             pass.executeRender(encoder);
@@ -244,7 +194,9 @@ void FrameGraph::execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyM
         } else if (pass.type == FGPassType::Compute) {
             auto* cpDesc = MTL::ComputePassDescriptor::alloc()->init();
 
-            auto gpuZone = tracyMetalZoneBeginCompute(tracyCtx, cpDesc, getTracySrcLoc(pass.name));
+            static TracyMetalSrcLoc srcLocs[64];
+            srcLocs[pi] = {pass.name.c_str(), "FrameGraph::execute", __FILE__, __LINE__, 0};
+            auto gpuZone = tracyMetalZoneBeginCompute(tracyCtx, cpDesc, &srcLocs[pi]);
 
             auto* encoder = cmdBuf->computeCommandEncoder(cpDesc);
             cpDesc->release();
@@ -254,7 +206,9 @@ void FrameGraph::execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyM
         } else if (pass.type == FGPassType::Blit) {
             auto* bpDesc = MTL::BlitPassDescriptor::alloc()->init();
 
-            auto gpuZone = tracyMetalZoneBeginBlit(tracyCtx, bpDesc, getTracySrcLoc(pass.name));
+            static TracyMetalSrcLoc srcLocs[64];
+            srcLocs[pi] = {pass.name.c_str(), "FrameGraph::execute", __FILE__, __LINE__, 0};
+            auto gpuZone = tracyMetalZoneBeginBlit(tracyCtx, bpDesc, &srcLocs[pi]);
 
             auto* encoder = cmdBuf->blitCommandEncoder(bpDesc);
             bpDesc->release();
