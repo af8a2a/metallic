@@ -48,3 +48,14 @@ add_subdirectory(tracy)
 
 # spdlog logging library
 add_subdirectory(spdlog)
+
+# nlohmann/json (single-header JSON library)
+add_library(nlohmann_json INTERFACE)
+target_include_directories(nlohmann_json INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/nlohmann)
+
+# imnodes - node editor for ImGui
+add_library(imnodes STATIC
+    imnodes/imnodes.cpp
+)
+target_include_directories(imnodes PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/imnodes)
+target_link_libraries(imnodes PUBLIC imgui)

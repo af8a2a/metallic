@@ -1,0 +1,68 @@
+{
+  "name": "ForwardPipeline",
+  "resources": [
+    {
+      "name": "forwardColor",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen"
+    },
+    {
+      "name": "depth",
+      "type": "texture",
+      "format": "Depth32Float",
+      "size": "screen"
+    },
+    {
+      "name": "skyOutput",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen"
+    }
+  ],
+  "passes": [
+    {
+      "name": "Sky Pass",
+      "type": "SkyPass",
+      "inputs": [],
+      "outputs": ["skyOutput"],
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "exposure": 10.0
+      }
+    },
+    {
+      "name": "Forward Pass",
+      "type": "ForwardPass",
+      "inputs": ["skyOutput"],
+      "outputs": ["forwardColor", "depth"],
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "renderMode": 1
+      }
+    },
+    {
+      "name": "Tonemap",
+      "type": "TonemapPass",
+      "inputs": ["forwardColor"],
+      "outputs": ["$backbuffer"],
+      "enabled": true,
+      "sideEffect": true,
+      "config": {
+        "method": "ACES",
+        "exposure": 1.0
+      }
+    },
+    {
+      "name": "ImGui Overlay",
+      "type": "ImGuiOverlayPass",
+      "inputs": ["depth"],
+      "outputs": ["$backbuffer"],
+      "enabled": true,
+      "sideEffect": true,
+      "config": {}
+    }
+  ]
+}

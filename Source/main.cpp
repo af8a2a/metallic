@@ -48,6 +48,8 @@
 #include "deferred_lighting_pass.h"
 #include "forward_pass.h"
 #include "sky_pass.h"
+#include "pipeline_asset.h"
+#include "pipeline_editor.h"
 
 
 static std::string compileSlangToMetal(const char* shaderPath, const char* searchPath = nullptr) {
@@ -965,8 +967,23 @@ int main() {
     bool showSceneGraphWindow = true;
     bool showRenderPassUI = true;
     bool showImGuiDemo = false;
+    bool showPipelineEditor = false;
     bool exportGraphKeyDown = false;
     bool reloadKeyDown = false;
+    bool pipelineReloadKeyDown = false;
+
+    // Load pipeline asset (optional - falls back to code-driven if not found)
+    PipelineAsset pipelineAsset;
+    PipelineEditor pipelineEditor;
+    std::string pipelinePath = std::string(projectRoot) + "/Pipelines/visibility_buffer.json";
+    spdlog::info("Loading pipeline from: {}", pipelinePath);
+    pipelineAsset = PipelineAsset::load(pipelinePath);
+    if (!pipelineAsset.name.empty()) {
+        spdlog::info("Loaded pipeline asset: {} ({} passes, {} resources)",
+                     pipelineAsset.name, pipelineAsset.passes.size(), pipelineAsset.resources.size());
+    } else {
+        spdlog::warn("Failed to load pipeline asset, using code-driven pipeline");
+    }
 
     const double depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
 
@@ -1121,6 +1138,7 @@ int main() {
                 ImGui::MenuItem("Scene Graph", nullptr, &showSceneGraphWindow);
                 ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
                 ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
+                ImGui::MenuItem("Pipeline Editor", nullptr, &showPipelineEditor);
                 ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
                 ImGui::EndMenu();
             }
@@ -1242,6 +1260,27 @@ int main() {
 
         if (showImGuiDemo)
             ImGui::ShowDemoWindow(&showImGuiDemo);
+
+        // Pipeline editor
+        pipelineEditor.setVisible(showPipelineEditor);
+        pipelineEditor.render(pipelineAsset);
+        showPipelineEditor = pipelineEditor.isVisible();
+
+        // Pipeline hot-reload (F6)
+        bool f6Down = glfwGetKey(window, GLFW_KEY_F6) == GLFW_PRESS;
+        if (f6Down && !pipelineReloadKeyDown) {
+            pipelineAsset = PipelineAsset::load(pipelinePath);
+            if (!pipelineAsset.name.empty()) {
+                spdlog::info("Reloaded pipeline: {}", pipelineAsset.name);
+            }
+        }
+        pipelineReloadKeyDown = f6Down;
+
+        // Save pipeline if editor marked it dirty
+        if (pipelineEditor.isDirty()) {
+            pipelineAsset.save(pipelinePath);
+            pipelineEditor.markClean();
+        }
 
         std::vector<uint32_t> visibleMeshletNodes;
         std::vector<uint32_t> visibleIndexNodes;

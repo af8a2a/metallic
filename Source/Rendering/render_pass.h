@@ -6,6 +6,7 @@
 #include "material_loader.h"
 #include "scene_graph.h"
 #include "raytraced_shadows.h"
+#include "pass_registry.h"
 #include <tracy/Tracy.hpp>
 
 struct RenderContext {
@@ -29,6 +30,12 @@ public:
     virtual void executeCompute(MTL::ComputeCommandEncoder*) {}
     virtual void executeBlit(MTL::BlitCommandEncoder*) {}
     virtual void renderUI() {}
+
+    // Data-driven configuration support
+    virtual void configure(const PassConfig& config) {}
+
+    // Get output resources by name (for pipeline builder)
+    virtual FGResource getOutput(const std::string& name) const { return FGResource{}; }
 
     FrameGraph* m_frameGraph = nullptr;
 };

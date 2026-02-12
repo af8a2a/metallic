@@ -53,6 +53,10 @@ Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
   - `tonemap_pass.h` — Tonemapping post-process (Filmic, Uncharted2, ACES, AgX, Khronos PBR, Clip)
   - `blit_pass.h` — Blit compute output to drawable
   - `imgui_overlay_pass.h` — ImGui overlay rendering
+- `Source/Rendering/pass_registry.h/cpp` — Factory pattern for pass instantiation with REGISTER_PASS macro
+- `Source/Rendering/pipeline_asset.h/cpp` — JSON pipeline schema, load/save, DAG validation
+- `Source/Rendering/pipeline_builder.h/cpp` — Constructs FrameGraph from PipelineAsset
+- `Source/Rendering/pipeline_editor.h/cpp` — ImGui node graph pipeline editor (using imnodes)
 
 ### Dependencies
 
@@ -68,6 +72,8 @@ Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
 | stb_image | `External/stb/` | Single-header image loader |
 | MathLib | `External/MathLib/` | HLSL-style math library |
 | spdlog | `External/spdlog/` | Git submodule, header-only logging |
+| nlohmann/json | `External/nlohmann/` | Single-header JSON library |
+| imnodes | `External/imnodes/` | Node graph editor for ImGui |
 
 After cloning, run `git submodule update --init` to fetch GLFW, Tracy, and spdlog.
 
@@ -102,7 +108,51 @@ Slang shaders are compiled to Metal source at runtime. Raytracing shaders are na
 - Forward pipeline: Sky Pass → Forward Pass → Tonemap → ImGui
 - Render passes are modular classes inheriting from `RenderPass` (see `Source/Rendering/Passes/`)
 - Shader hot-reload via F5 key
+- Pipeline hot-reload via F6 key (reloads JSON pipeline definition)
 - Use `spdlog` for all logging (`spdlog::info`, `spdlog::warn`, `spdlog::error`). Do not use `std::cout`/`std::cerr`.
+
+### Data-Driven Pipeline System
+
+The rendering pipeline can be defined in JSON files (inspired by EA's Gigi):
+
+- `Pipelines/visibility_buffer.json` — Visibility buffer deferred rendering pipeline
+- `Pipelines/forward.json` — Forward rendering pipeline
+
+**Key components:**
+- `Source/Rendering/pass_registry.h/cpp` — Factory pattern for pass instantiation
+- `Source/Rendering/pipeline_asset.h/cpp` — JSON schema, load/save, DAG validation
+- `Source/Rendering/pipeline_builder.h/cpp` — Constructs FrameGraph from PipelineAsset
+- `Source/Rendering/pipeline_editor.h/cpp` — ImGui node graph pipeline editor (using imnodes)
+
+**Pipeline JSON schema:**
+```json
+{
+  "name": "PipelineName",
+  "resources": [
+    { "name": "visibility", "type": "texture", "format": "R32Uint", "size": "screen" }
+  ],
+  "passes": [
+    {
+      "name": "Pass Name",
+      "type": "VisibilityPass",
+      "inputs": ["depth"],
+      "outputs": ["visibility", "depth"],
+      "enabled": true,
+      "sideEffect": false,
+      "config": {}
+    }
+  ]
+}
+```
+
+**Special resources:** `$backbuffer` refers to the drawable texture.
+
+**View menu:** Pipeline Editor opens the visual node graph editor for modifying pipelines at runtime. Features include:
+- Blue nodes for resources, orange nodes for passes
+- Drag to pan, scroll to zoom, minimap in corner
+- Click nodes to edit properties in the side panel
+- Delete key removes selected nodes
+- Add menu to create new passes/resources
 
 
 

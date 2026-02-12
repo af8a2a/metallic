@@ -1,0 +1,106 @@
+{
+  "name": "VisibilityBufferPipeline",
+  "resources": [
+    {
+      "name": "visibility",
+      "type": "texture",
+      "format": "R32Uint",
+      "size": "screen"
+    },
+    {
+      "name": "depth",
+      "type": "texture",
+      "format": "Depth32Float",
+      "size": "screen"
+    },
+    {
+      "name": "shadowMap",
+      "type": "texture",
+      "format": "R8Unorm",
+      "size": "screen"
+    },
+    {
+      "name": "skyOutput",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen"
+    },
+    {
+      "name": "lightingOutput",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen"
+    }
+  ],
+  "passes": [
+    {
+      "name": "Visibility Pass",
+      "type": "VisibilityPass",
+      "inputs": [],
+      "outputs": ["visibility", "depth"],
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "clearColor": [4294967295, 0, 0, 0]
+      }
+    },
+    {
+      "name": "Shadow Ray Pass",
+      "type": "ShadowRayPass",
+      "inputs": ["depth"],
+      "outputs": ["shadowMap"],
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "normalBias": 0.05,
+        "maxRayDistance": 1000.0
+      }
+    },
+    {
+      "name": "Sky Pass",
+      "type": "SkyPass",
+      "inputs": [],
+      "outputs": ["skyOutput"],
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "exposure": 10.0
+      }
+    },
+    {
+      "name": "Deferred Lighting",
+      "type": "DeferredLightingPass",
+      "inputs": ["visibility", "depth", "shadowMap", "skyOutput"],
+      "outputs": ["lightingOutput"],
+      "enabled": true,
+      "sideEffect": false,
+      "config": {}
+    },
+    {
+      "name": "Tonemap",
+      "type": "TonemapPass",
+      "inputs": ["lightingOutput"],
+      "outputs": ["$backbuffer"],
+      "enabled": true,
+      "sideEffect": true,
+      "config": {
+        "method": "ACES",
+        "exposure": 1.0,
+        "contrast": 1.0,
+        "brightness": 1.0,
+        "saturation": 1.0,
+        "vignette": 0.0,
+        "dither": true
+      }
+    },
+    {
+      "name": "ImGui Overlay",
+      "type": "ImGuiOverlayPass",
+      "inputs": ["depth"],
+      "outputs": ["$backbuffer"],
+      "enabled": true,
+      "sideEffect": true,
+      "config": {}
+    }
+  ]
+}

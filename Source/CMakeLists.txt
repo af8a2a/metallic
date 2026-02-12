@@ -13,6 +13,10 @@ add_executable(Metallic
     Rendering/frame_graph.cpp
     Rendering/raytraced_shadows.cpp
     Rendering/render_pass.cpp
+    Rendering/pass_registry.cpp
+    Rendering/pipeline_asset.cpp
+    Rendering/pipeline_builder.cpp
+    Rendering/pipeline_editor.cpp
 )
 target_include_directories(Metallic PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
@@ -23,7 +27,7 @@ target_include_directories(Metallic PRIVATE
     "${CMAKE_SOURCE_DIR}/External/cgltf"
     "${CMAKE_SOURCE_DIR}/External/stb"
 )
-target_link_libraries(Metallic PRIVATE metal-cpp glfw meshoptimizer imgui slang::slang MathLib Tracy::TracyClient spdlog::spdlog_header_only "-framework AppKit")
+target_link_libraries(Metallic PRIVATE metal-cpp glfw meshoptimizer imgui imnodes slang::slang MathLib Tracy::TracyClient spdlog::spdlog_header_only nlohmann_json "-framework AppKit")
 
 # Embed project root path so the app can load shaders from the source tree
 target_compile_definitions(Metallic PRIVATE
@@ -64,4 +68,11 @@ add_custom_command(TARGET Metallic POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/Asset"
         "$<TARGET_FILE_DIR:Metallic>/Asset"
+)
+
+# Copy pipeline JSON files next to executable
+add_custom_command(TARGET Metallic POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/Pipelines"
+        "$<TARGET_FILE_DIR:Metallic>/Pipelines"
 )
