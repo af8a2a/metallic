@@ -1,3 +1,6 @@
+# PipelineEditor library
+add_subdirectory(PipelineEditor)
+
 add_executable(Metallic
     main.cpp
     Platform/metal_impl.cpp
@@ -13,10 +16,7 @@ add_executable(Metallic
     Rendering/frame_graph.cpp
     Rendering/raytraced_shadows.cpp
     Rendering/render_pass.cpp
-    Rendering/pass_registry.cpp
-    Rendering/pipeline_asset.cpp
-    Rendering/pipeline_builder.cpp
-    Rendering/pipeline_editor.cpp
+    Rendering/pass_registrations.cpp
 )
 target_include_directories(Metallic PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
@@ -27,7 +27,18 @@ target_include_directories(Metallic PRIVATE
     "${CMAKE_SOURCE_DIR}/External/cgltf"
     "${CMAKE_SOURCE_DIR}/External/stb"
 )
-target_link_libraries(Metallic PRIVATE metal-cpp glfw meshoptimizer imgui imnodes slang::slang MathLib Tracy::TracyClient spdlog::spdlog_header_only nlohmann_json "-framework AppKit")
+target_link_libraries(Metallic PRIVATE
+    metal-cpp
+    glfw
+    meshoptimizer
+    imgui
+    slang::slang
+    MathLib
+    Tracy::TracyClient
+    spdlog::spdlog_header_only
+    PipelineEditorLib
+    "-framework AppKit"
+)
 
 # Embed project root path so the app can load shaders from the source tree
 target_compile_definitions(Metallic PRIVATE

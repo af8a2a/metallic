@@ -53,10 +53,12 @@ Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
   - `tonemap_pass.h` — Tonemapping post-process (Filmic, Uncharted2, ACES, AgX, Khronos PBR, Clip)
   - `blit_pass.h` — Blit compute output to drawable
   - `imgui_overlay_pass.h` — ImGui overlay rendering
-- `Source/Rendering/pass_registry.h/cpp` — Factory pattern for pass instantiation with REGISTER_PASS macro
-- `Source/Rendering/pipeline_asset.h/cpp` — JSON pipeline schema, load/save, DAG validation
-- `Source/Rendering/pipeline_builder.h/cpp` — Constructs FrameGraph from PipelineAsset
-- `Source/Rendering/pipeline_editor.h/cpp` — ImGui node graph pipeline editor (using imnodes)
+- `Source/Rendering/pass_registrations.cpp` — Pass metadata registration for pipeline editor
+- `Source/PipelineEditor/` — Standalone library for data-driven pipeline editing:
+  - `pass_registry.h/cpp` — Factory pattern with `REGISTER_PASS_INFO` macro for pass metadata
+  - `pipeline_asset.h/cpp` — JSON pipeline schema, load/save, DAG validation
+  - `pipeline_builder.h/cpp` — Constructs FrameGraph from PipelineAsset
+  - `pipeline_editor.h/cpp` — ImGui node graph editor (using imnodes)
 
 ### Dependencies
 
@@ -80,8 +82,9 @@ After cloning, run `git submodule update --init` to fetch GLFW, Tracy, and spdlo
 ### CMake structure
 
 - Root `CMakeLists.txt` — Project config, includes `cmake/DownloadSlang.cmake`, finds Slang package
-- `External/CMakeLists.txt` — metal-cpp INTERFACE lib (links Metal/Foundation/QuartzCore frameworks), GLFW config
-- `Source/CMakeLists.txt` — `Metallic` executable, links metal-cpp + glfw + slang + AppKit. Includes subdirectory headers (Platform/, Asset/, Scene/, Rendering/, Rendering/Passes/). Post-build copies Slang dylibs, Shaders/, visibility_constants.h, and Asset/ to build dir.
+- `External/CMakeLists.txt` — metal-cpp INTERFACE lib (links Metal/Foundation/QuartzCore frameworks), GLFW, imnodes, nlohmann_json
+- `Source/CMakeLists.txt` — `Metallic` executable, links PipelineEditor + rendering libs. Post-build copies Slang dylibs, Shaders/, Pipelines/, and Asset/ to build dir.
+- `Source/PipelineEditor/CMakeLists.txt` — `PipelineEditor` static library for data-driven pipeline editing
 
 ### Shaders
 
@@ -118,11 +121,29 @@ The rendering pipeline can be defined in JSON files (inspired by EA's Gigi):
 - `Pipelines/visibility_buffer.json` — Visibility buffer deferred rendering pipeline
 - `Pipelines/forward.json` — Forward rendering pipeline
 
-**Key components:**
-- `Source/Rendering/pass_registry.h/cpp` — Factory pattern for pass instantiation
-- `Source/Rendering/pipeline_asset.h/cpp` — JSON schema, load/save, DAG validation
-- `Source/Rendering/pipeline_builder.h/cpp` — Constructs FrameGraph from PipelineAsset
-- `Source/Rendering/pipeline_editor.h/cpp` — ImGui node graph pipeline editor (using imnodes)
+**Key components (in `Source/PipelineEditor/`):**
+- `pass_registry.h/cpp` — Factory pattern with registration macros
+- `pipeline_asset.h/cpp` — JSON schema, load/save, DAG validation
+- `pipeline_builder.h/cpp` — Constructs FrameGraph from PipelineAsset
+- `pipeline_editor.h/cpp` — ImGui node graph editor (using imnodes)
+
+**Pass Registration Macros:**
+Since C++ lacks static reflection, passes must be registered with metadata using macros in `pass_registrations.cpp`:
+
+```cpp
+// Register pass metadata for the pipeline editor
+REGISTER_PASS_INFO(VisibilityPass, "Visibility Pass", "Geometry",
+    (std::vector<std::string>{}),                        // default inputs
+    (std::vector<std::string>{"visibility", "depth"}),   // default outputs
+    PassTypeInfo::Type::Render);
+
+REGISTER_PASS_INFO(ShadowRayPass, "Shadow Ray Pass", "Lighting",
+    (std::vector<std::string>{"depth"}),
+    (std::vector<std::string>{"shadowMap"}),
+    PassTypeInfo::Type::Compute);
+```
+
+Categories: `Geometry`, `Lighting`, `Environment`, `Post-Process`, `Utility`, `UI`
 
 **Pipeline JSON schema:**
 ```json
@@ -152,7 +173,7 @@ The rendering pipeline can be defined in JSON files (inspired by EA's Gigi):
 - Drag to pan, scroll to zoom, minimap in corner
 - Click nodes to edit properties in the side panel
 - Delete key removes selected nodes
-- Add menu to create new passes/resources
+- Add menu shows passes grouped by category
 
 
 

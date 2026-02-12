@@ -6,8 +6,10 @@
 #include "material_loader.h"
 #include "scene_graph.h"
 #include "raytraced_shadows.h"
-#include "pass_registry.h"
 #include <tracy/Tracy.hpp>
+
+// Forward declaration for PassConfig (defined in PipelineEditor/pass_registry.h)
+struct PassConfig;
 
 struct RenderContext {
     const LoadedMesh& sceneMesh;

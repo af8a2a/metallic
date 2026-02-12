@@ -5,11 +5,12 @@
 #include <unordered_map>
 
 // Node graph pipeline editor using imnodes
+// Note: imnodes context must be created before using this class
 
 class PipelineEditor {
 public:
-    PipelineEditor();
-    ~PipelineEditor();
+    PipelineEditor() = default;
+    ~PipelineEditor() = default;
 
     // Render the editor UI
     void render(PipelineAsset& asset);
@@ -21,6 +22,9 @@ public:
     // Show/hide the editor
     void setVisible(bool visible) { m_visible = visible; }
     bool isVisible() const { return m_visible; }
+
+    // Public for main menu access
+    bool m_visible = false;
 
 private:
     void renderNodeGraph(PipelineAsset& asset);
@@ -43,7 +47,6 @@ private:
     int getResourceIndexFromPinId(int pinId) const;
 
     bool m_dirty = false;
-    bool m_visible = false;
     int m_selectedPassIndex = -1;
     int m_selectedResourceIndex = -1;
     bool m_firstFrame = true;

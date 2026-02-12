@@ -5,21 +5,6 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 
-PipelineEditor::PipelineEditor() {
-    ImNodes::CreateContext();
-    ImNodes::StyleColorsDark();
-
-    // Customize style
-    ImNodesStyle& style = ImNodes::GetStyle();
-    style.NodeCornerRounding = 4.0f;
-    style.NodePadding = ImVec2(8.0f, 8.0f);
-    style.NodeBorderThickness = 1.0f;
-}
-
-PipelineEditor::~PipelineEditor() {
-    ImNodes::DestroyContext();
-}
-
 int PipelineEditor::getPassIndexFromNodeId(int id) const {
     if (id >= 1000 && id < 2000) return id - 1000;
     return -1;
@@ -72,14 +57,23 @@ void PipelineEditor::render(PipelineAsset& asset) {
             }
             if (ImGui::BeginMenu("Add")) {
                 if (ImGui::BeginMenu("Pass")) {
-                    for (const auto& type : PassRegistry::instance().registeredTypes()) {
-                        if (ImGui::MenuItem(type.c_str())) {
-                            PassDecl newPass;
-                            newPass.name = type + "_" + std::to_string(asset.passes.size());
-                            newPass.type = type;
-                            newPass.enabled = true;
-                            asset.passes.push_back(newPass);
-                            m_dirty = true;
+                    // Group passes by category
+                    auto byCategory = PassRegistry::instance().getTypesByCategory();
+                    for (const auto& [category, infos] : byCategory) {
+                        if (ImGui::BeginMenu(category.c_str())) {
+                            for (const auto* info : infos) {
+                                if (ImGui::MenuItem(info->displayName.c_str())) {
+                                    PassDecl newPass;
+                                    newPass.name = info->typeName + "_" + std::to_string(asset.passes.size());
+                                    newPass.type = info->typeName;
+                                    newPass.inputs = info->defaultInputs;
+                                    newPass.outputs = info->defaultOutputs;
+                                    newPass.enabled = true;
+                                    asset.passes.push_back(newPass);
+                                    m_dirty = true;
+                                }
+                            }
+                            ImGui::EndMenu();
                         }
                     }
                     ImGui::EndMenu();

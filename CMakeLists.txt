@@ -10,3 +10,4 @@ find_package(slang REQUIRED)
 
 add_subdirectory(External)
 add_subdirectory(Source)
+add_subdirectory(Tools)
