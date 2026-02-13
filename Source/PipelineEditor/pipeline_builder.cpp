@@ -6,27 +6,36 @@
 PipelineBuilder::PipelineBuilder(const RenderContext& ctx)
     : m_ctx(ctx) {}
 
-bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg,
+bool PipelineBuilder::needsRebuild(int width, int height) const {
+    return !m_built || m_builtWidth != width || m_builtHeight != height;
+}
+
+bool PipelineBuilder::build(const PipelineAsset& asset,
                             const PipelineRuntimeContext& rtCtx,
                             int width, int height) {
+    // Reset all state
+    m_fg = FrameGraph{};
     m_resourceMap.clear();
     m_passes.clear();
     m_lastError.clear();
+    m_backbufferRes = FGResource{};
 
     // Validate the pipeline first
     if (!asset.validate(m_lastError)) {
+        m_built = false;
         return false;
     }
 
     // Import special resources
     if (rtCtx.backbuffer) {
-        m_resourceMap["$backbuffer"] = fg.import("backbuffer", rtCtx.backbuffer);
+        m_backbufferRes = m_fg.import("backbuffer", rtCtx.backbuffer);
+        m_resourceMap["$backbuffer"] = m_backbufferRes;
     }
 
     // Import any pre-existing textures
     for (const auto& [name, tex] : rtCtx.importedTextures) {
         if (tex) {
-            m_resourceMap[name] = fg.import(name.c_str(), tex);
+            m_resourceMap[name] = m_fg.import(name.c_str(), tex);
         }
     }
 
@@ -67,6 +76,7 @@ bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg,
         auto pass = PassRegistry::instance().create(passDecl.type, config, m_ctx, width, height);
         if (!pass) {
             m_lastError = "Failed to create pass of type '" + passDecl.type + "'";
+            m_built = false;
             return false;
         }
 
@@ -78,7 +88,6 @@ bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg,
 
         // Wire up input resources
         for (const auto& inputName : passDecl.inputs) {
-            // Check if this input comes from a previous pass's output
             auto producerIt = outputProducers.find(inputName);
             if (producerIt != outputProducers.end()) {
                 auto passIt = passMap.find(producerIt->second);
@@ -90,7 +99,6 @@ bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg,
                     }
                 }
             }
-            // Check if it's an imported resource
             else if (m_resourceMap.find(inputName) != m_resourceMap.end()) {
                 pass->setInput(inputName, m_resourceMap[inputName]);
             }
@@ -109,7 +117,7 @@ bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg,
         m_passes.push_back(passPtr);
 
         // Add pass to frame graph
-        fg.addPass(std::move(pass));
+        m_fg.addPass(std::move(pass));
 
         // After setup (which happens in addPass), retrieve output resources
         for (const auto& outputName : passDecl.outputs) {
@@ -120,9 +128,29 @@ bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg,
         }
     }
 
+    m_builtWidth = width;
+    m_builtHeight = height;
+    m_built = true;
+
     spdlog::info("PipelineBuilder: built pipeline '{}' with {} passes",
                  asset.name, m_passes.size());
     return true;
+}
+
+void PipelineBuilder::updateFrame(MTL::Texture* backbuffer, const FrameContext* frameCtx) {
+    if (m_backbufferRes.isValid()) {
+        m_fg.updateImport(m_backbufferRes, backbuffer);
+    }
+    m_fg.resetTransients();
+    setFrameContext(frameCtx);
+}
+
+void PipelineBuilder::compile() {
+    m_fg.compile();
+}
+
+void PipelineBuilder::execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyMetalCtxHandle tracyCtx) {
+    m_fg.execute(cmdBuf, device, tracyCtx);
 }
 
 void PipelineBuilder::setFrameContext(const FrameContext* ctx) {

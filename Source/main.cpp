@@ -1023,6 +1023,24 @@ int main() {
     int fbWidth, fbHeight;
     glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
 
+    // Persistent render context and pipeline builder (hoisted out of frame loop)
+    RenderContext ctx{sceneMesh, meshletData, materials, sceneGraph,
+                      shadowResources, depthState, shadowDummyTex, skyFallbackTex, depthClearValue};
+    PipelineRuntimeContext rtCtx;
+    rtCtx.device = device;
+    rtCtx.renderPipelines["VisibilityPass"] = visPipelineState;
+    rtCtx.renderPipelines["SkyPass"] = skyPipelineState;
+    rtCtx.renderPipelines["TonemapPass"] = tonemapPipelineState;
+    rtCtx.computePipelines["DeferredLightingPass"] = computePipelineState;
+    rtCtx.samplers["tonemap"] = tonemapSampler;
+    rtCtx.samplers["atmosphere"] = atmosphereTextures.sampler;
+    rtCtx.importedTextures["transmittance"] = atmosphereTextures.transmittance;
+    rtCtx.importedTextures["scattering"] = atmosphereTextures.scattering;
+    rtCtx.importedTextures["irradiance"] = atmosphereTextures.irradiance;
+
+    PipelineBuilder pipelineBuilder(ctx);
+    bool pipelineNeedsRebuild = true;
+
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("Frame");
         glfwPollEvents();
@@ -1265,6 +1283,7 @@ int main() {
             pipelineAsset = PipelineAsset::load(pipelinePath);
             if (!pipelineAsset.name.empty()) {
                 spdlog::info("Reloaded pipeline: {}", pipelineAsset.name);
+                pipelineNeedsRebuild = true;
             }
         }
         pipelineReloadKeyDown = f6Down;
@@ -1295,15 +1314,9 @@ int main() {
         tonemapUniforms.pad = float2(0.0f, 0.0f);
 
         // --- Build FrameGraph ---
-        FrameGraph fg;
-        auto drawableRes = fg.import("drawable", drawable->texture());
+        FrameGraph fg;  // used only for forward path
         MTL::Buffer* instanceTransformBuffer = nullptr;
 
-        RenderContext ctx{sceneMesh, meshletData, materials, sceneGraph,
-                          shadowResources, depthState, shadowDummyTex, skyFallbackTex, depthClearValue};
-
-        // Declared at outer scope so they survive through fg.execute()
-        PipelineRuntimeContext rtCtx;
         FrameContext frameCtx;
 
         if (renderMode == 2 && !pipelineAsset.name.empty()) {
@@ -1347,19 +1360,6 @@ int main() {
                 visibilityInstanceTransforms.data(),
                 visibilityInstanceTransforms.size() * sizeof(SceneInstanceTransform),
                 MTL::ResourceStorageModeShared);
-
-            // Setup runtime context with pipelines and textures
-            rtCtx.device = device;
-            rtCtx.backbuffer = drawable->texture();
-            rtCtx.renderPipelines["VisibilityPass"] = visPipelineState;
-            rtCtx.renderPipelines["SkyPass"] = skyPipelineState;
-            rtCtx.renderPipelines["TonemapPass"] = tonemapPipelineState;
-            rtCtx.computePipelines["DeferredLightingPass"] = computePipelineState;
-            rtCtx.samplers["tonemap"] = tonemapSampler;
-            rtCtx.samplers["atmosphere"] = atmosphereTextures.sampler;
-            rtCtx.importedTextures["transmittance"] = atmosphereTextures.transmittance;
-            rtCtx.importedTextures["scattering"] = atmosphereTextures.scattering;
-            rtCtx.importedTextures["irradiance"] = atmosphereTextures.irradiance;
 
             // Setup frame context
             frameCtx.width = width;
@@ -1405,17 +1405,24 @@ int main() {
             lightUniforms.pad2 = 0;
             frameCtx.lightingUniforms = lightUniforms;
 
-            // Build pipeline from JSON
-            PipelineBuilder builder(ctx);
-            if (!builder.build(pipelineAsset, fg, rtCtx, width, height)) {
-                spdlog::error("Failed to build pipeline: {}", builder.lastError());
-            } else {
-                // Set frame context on all passes
-                builder.setFrameContext(&frameCtx);
+            // Rebuild pipeline only when needed (first frame, F6 reload, resolution change)
+            if (pipelineNeedsRebuild || pipelineBuilder.needsRebuild(width, height)) {
+                rtCtx.backbuffer = drawable->texture();
+                if (!pipelineBuilder.build(pipelineAsset, rtCtx, width, height)) {
+                    spdlog::error("Failed to build pipeline: {}", pipelineBuilder.lastError());
+                } else {
+                    pipelineBuilder.compile();
+                }
+                pipelineNeedsRebuild = false;
             }
+
+            // Per-frame: swap backbuffer, update frame context, reset transients
+            pipelineBuilder.updateFrame(drawable->texture(), &frameCtx);
         } else {
             // === FORWARD RENDERING (Vertex or Mesh shader) ===
             ZoneScopedN("Forward Graph Build");
+
+            auto drawableRes = fg.import("drawable", drawable->texture());
 
             bool useSky = skyAvailable && enableAtmosphereSky;
             FGResource skyTarget{};
@@ -1454,13 +1461,19 @@ int main() {
             fg.addPass(std::move(imguiPass));
         }
 
-        fg.compile();
+        // Use the appropriate frame graph
+        bool useDataDriven = (renderMode == 2 && !pipelineAsset.name.empty());
+        FrameGraph& activeFg = useDataDriven ? pipelineBuilder.frameGraph() : fg;
+
+        if (!useDataDriven) {
+            fg.compile();
+        }
 
         if (showGraphDebug)
-            fg.debugImGui();
+            activeFg.debugImGui();
 
         if (showRenderPassUI)
-            fg.renderPassUI();
+            activeFg.renderPassUI();
 
         ImGui::Render();
 
@@ -1468,7 +1481,7 @@ int main() {
         if (gKeyDown && !exportGraphKeyDown) {
             std::ofstream dot("framegraph.dot");
             if (dot.is_open()) {
-                fg.exportGraphviz(dot);
+                activeFg.exportGraphviz(dot);
                 spdlog::info("Exported framegraph.dot");
             }
         }
@@ -1480,7 +1493,7 @@ int main() {
             updateTLAS(commandBuffer, sceneGraph, shadowResources);
         }
 
-        fg.execute(commandBuffer, device, tracyGpuCtx);
+        activeFg.execute(commandBuffer, device, tracyGpuCtx);
 
         commandBuffer->presentDrawable(drawable);
         commandBuffer->commit();

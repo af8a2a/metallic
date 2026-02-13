@@ -73,6 +73,25 @@ FGResource FrameGraph::import(const char* name, MTL::Texture* texture) {
     return res;
 }
 
+void FrameGraph::updateImport(FGResource res, MTL::Texture* texture) {
+    assert(res.isValid() && res.id < m_resources.size());
+    assert(m_resources[res.id].imported);
+    m_resources[res.id].texture = texture;
+}
+
+void FrameGraph::resetTransients() {
+    // Release and null transient textures so execute() reallocates them
+    for (auto* tex : m_transientTextures) {
+        tex->release();
+    }
+    m_transientTextures.clear();
+    for (auto& res : m_resources) {
+        if (!res.imported) {
+            res.texture = nullptr;
+        }
+    }
+}
+
 void FrameGraph::addPass(std::unique_ptr<RenderPass> pass) {
     RenderPass* passPtr = pass.get();
     m_ownedPasses.push_back(std::move(pass));

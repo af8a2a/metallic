@@ -119,6 +119,12 @@ class FrameGraph {
 public:
     FGResource import(const char* name, MTL::Texture* texture);
 
+    // Swap an imported resource's texture pointer (e.g. backbuffer each frame)
+    void updateImport(FGResource res, MTL::Texture* texture);
+
+    // Null out transient texture pointers so execute() reallocates them
+    void resetTransients();
+
     void addPass(std::unique_ptr<RenderPass> pass);
 
     template<typename Data, typename Setup, typename Exec>
