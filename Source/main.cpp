@@ -985,14 +985,6 @@ int main() {
     bool enableRTShadows = true;
     bool enableAtmosphereSky = skyAvailable;
     float skyExposure = 10.0f;
-    bool enableTonemap = true;
-    int tonemapMethod = 0;
-    float tonemapExposure = 1.0f;
-    float tonemapContrast = 1.0f;
-    float tonemapBrightness = 1.0f;
-    float tonemapSaturation = 1.0f;
-    float tonemapVignette = 0.0f;
-    bool tonemapDither = true;
     bool showGraphDebug = false;
     bool showSceneGraphWindow = true;
     bool showRenderPassUI = true;
@@ -1095,36 +1087,24 @@ int main() {
 
         // Compute matrices
         float aspect;
-        float4x4 view, proj, model, modelView, mvp;
-        float4 worldLightDir, viewLightDir;
+        float4x4 view, proj;
+        float4 worldLightDir, viewLightDir, lightColorIntensity;
         float4 cameraWorldPos;
-        Uniforms uniforms;
-        AtmosphereUniforms skyUniforms;
         {
             ZoneScopedN("Matrix Computation");
             aspect = (float)width / (float)height;
             view = camera.viewMatrix();
             proj = camera.projectionMatrix(aspect);
-            model = float4x4::Identity();
-            modelView = view * model;
-            mvp = proj * modelView;
 
             // Light data from scene graph sun source.
             DirectionalLight sunLight = sceneGraph.getSunDirectionalLight();
             worldLightDir = float4(sunLight.direction, 0.0f);
             viewLightDir = view * worldLightDir;
-
-            uniforms.mvp = transpose(mvp);
-            uniforms.modelView = transpose(modelView);
-            uniforms.lightDir = viewLightDir;
-            uniforms.lightColorIntensity = float4(
+            lightColorIntensity = float4(
                 sunLight.color.x,
                 sunLight.color.y,
                 sunLight.color.z,
                 sunLight.intensity);
-
-            // Extract frustum planes from non-transposed MVP (object-space planes)
-            extractFrustumPlanes(mvp, uniforms.frustumPlanes);
 
             // Camera position in world space
             float cosA = std::cos(camera.azimuth), sinA = std::sin(camera.azimuth);
@@ -1135,32 +1115,7 @@ int main() {
                 camera.target.z + camera.distance * cosE * cosA,
                 1.0f);
 
-            // Backface cone data is generated in object-space, so the camera needs to
-            // be transformed to object-space for robust culling when model != identity.
-            float4x4 invModel = model;
-            invModel.Invert();
-            uniforms.cameraPos = invModel * cameraWorldPos;
-
-            uniforms.enableFrustumCull = enableFrustumCull ? 1 : 0;
-            uniforms.enableConeCull = enableConeCull ? 1 : 0;
-            uniforms.meshletBaseOffset = 0;
-            uniforms.instanceID = 0;
-
             sceneGraph.updateTransforms();
-
-            if (skyAvailable) {
-                float4x4 viewProj = proj * view;
-                float4x4 invViewProj = viewProj;
-                invViewProj.Invert();
-                skyUniforms.invViewProj = transpose(invViewProj);
-                skyUniforms.cameraWorldPos = cameraWorldPos;
-                skyUniforms.sunDirection = worldLightDir;
-                skyUniforms.params = float4(skyExposure, 0.0f, 0.0f, 0.0f);
-                skyUniforms.screenWidth = static_cast<uint32_t>(width);
-                skyUniforms.screenHeight = static_cast<uint32_t>(height);
-                skyUniforms.pad0 = 0;
-                skyUniforms.pad1 = 0;
-            }
         }
 
         // Render pass
@@ -1214,19 +1169,6 @@ int main() {
         } else {
             ImGui::TextDisabled("Atmosphere Sky (missing textures)");
         }
-        ImGui::Separator();
-        ImGui::Text("Tonemapping");
-        ImGui::Checkbox("Enable Tonemap", &enableTonemap);
-        const char* tonemapLabels[] = {
-            "Filmic", "Uncharted2", "Clip", "ACES", "AgX", "Khronos PBR"
-        };
-        ImGui::Combo("Tonemap Method", &tonemapMethod, tonemapLabels, IM_ARRAYSIZE(tonemapLabels));
-        ImGui::SliderFloat("Exposure", &tonemapExposure, 0.1f, 4.0f, "%.2f");
-        ImGui::SliderFloat("Contrast", &tonemapContrast, 0.5f, 2.0f, "%.2f");
-        ImGui::SliderFloat("Brightness", &tonemapBrightness, 0.5f, 2.0f, "%.2f");
-        ImGui::SliderFloat("Saturation", &tonemapSaturation, 0.0f, 2.0f, "%.2f");
-        ImGui::SliderFloat("Vignette", &tonemapVignette, 0.0f, 1.0f, "%.2f");
-        ImGui::Checkbox("Dither", &tonemapDither);
         ImGui::Checkbox("Show Graph", &showGraphDebug);
         ImGui::Separator();
         bool f5Down = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
@@ -1362,18 +1304,6 @@ int main() {
                 visibleIndexNodes.push_back(node.id);
         }
 
-        TonemapUniforms tonemapUniforms{};
-        tonemapUniforms.isActive = enableTonemap ? 1u : 0u;
-        tonemapUniforms.method = static_cast<uint32_t>(tonemapMethod);
-        tonemapUniforms.exposure = tonemapExposure;
-        tonemapUniforms.contrast = tonemapContrast;
-        tonemapUniforms.brightness = tonemapBrightness;
-        tonemapUniforms.saturation = tonemapSaturation;
-        tonemapUniforms.vignette = tonemapVignette;
-        tonemapUniforms.dither = tonemapDither ? 1u : 0u;
-        tonemapUniforms.invResolution = float2(1.0f / float(width), 1.0f / float(height));
-        tonemapUniforms.pad = float2(0.0f, 0.0f);
-
         // --- Build FrameGraph (unified data-driven path) ---
         MTL::Buffer* instanceTransformBuffer = nullptr;
 
@@ -1414,7 +1344,10 @@ int main() {
             }
 
             if (visibilityInstanceTransforms.empty()) {
-                visibilityInstanceTransforms.push_back({transpose(mvp), transpose(modelView)});
+                float4x4 identity = float4x4::Identity();
+                float4x4 fallbackMV = view * identity;
+                float4x4 fallbackMVP = proj * fallbackMV;
+                visibilityInstanceTransforms.push_back({transpose(fallbackMVP), transpose(fallbackMV)});
             }
 
             instanceTransformBuffer = device->newBuffer(
@@ -1431,10 +1364,10 @@ int main() {
         frameCtx.cameraWorldPos = cameraWorldPos;
         frameCtx.worldLightDir = worldLightDir;
         frameCtx.viewLightDir = viewLightDir;
-        frameCtx.lightColorIntensity = uniforms.lightColorIntensity;
-        frameCtx.baseUniforms = uniforms;
-        frameCtx.skyUniforms = skyUniforms;
-        frameCtx.tonemapUniforms = tonemapUniforms;
+        frameCtx.lightColorIntensity = lightColorIntensity;
+        frameCtx.meshletCount = meshletData.meshletCount;
+        frameCtx.materialCount = materials.materialCount;
+        frameCtx.textureCount = static_cast<uint32_t>(materials.textures.size());
         frameCtx.visibleMeshletNodes = visibleMeshletNodes;
         frameCtx.visibleIndexNodes = visibleIndexNodes;
         frameCtx.visibilityInstanceCount = visibilityInstanceCount;
@@ -1447,27 +1380,6 @@ int main() {
         frameCtx.enableRTShadows = rtShadowsAvailable && enableRTShadows;
         frameCtx.enableAtmosphereSky = skyAvailable && enableAtmosphereSky;
         frameCtx.renderMode = renderMode;
-
-        if (renderMode == 2) {
-            // Lighting uniforms (only needed for visibility buffer deferred lighting)
-            LightingUniforms lightUniforms;
-            lightUniforms.mvp = transpose(mvp);
-            lightUniforms.modelView = transpose(modelView);
-            lightUniforms.lightDir = viewLightDir;
-            lightUniforms.lightColorIntensity = uniforms.lightColorIntensity;
-            float4x4 invProj = proj;
-            invProj.Invert();
-            lightUniforms.invProj = transpose(invProj);
-            lightUniforms.screenWidth = (uint32_t)width;
-            lightUniforms.screenHeight = (uint32_t)height;
-            lightUniforms.meshletCount = meshletData.meshletCount;
-            lightUniforms.materialCount = materials.materialCount;
-            lightUniforms.textureCount = static_cast<uint32_t>(materials.textures.size());
-            lightUniforms.instanceCount = visibilityInstanceCount;
-            lightUniforms.shadowEnabled = frameCtx.enableRTShadows ? 1 : 0;
-            lightUniforms.pad2 = 0;
-            frameCtx.lightingUniforms = lightUniforms;
-        }
 
         // Select active pipeline asset based on render mode
         const PipelineAsset& activePipelineAsset = (renderMode == 2) ? visPipelineAsset : fwdPipelineAsset;

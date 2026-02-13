@@ -1,6 +1,5 @@
 #pragma once
 
-#include "render_uniforms.h"
 #include <ml.h>
 #include <Metal/Metal.hpp>
 #include <vector>
@@ -23,11 +22,10 @@ struct FrameContext {
     float4 viewLightDir;
     float4 lightColorIntensity;
 
-    // Base uniforms (shared across passes)
-    Uniforms baseUniforms;
-    AtmosphereUniforms skyUniforms;
-    LightingUniforms lightingUniforms;
-    TonemapUniforms tonemapUniforms;
+    // Scene data for deferred lighting
+    uint32_t meshletCount = 0;
+    uint32_t materialCount = 0;
+    uint32_t textureCount = 0;
 
     // Visible nodes for rendering
     std::vector<uint32_t> visibleMeshletNodes;

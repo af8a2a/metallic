@@ -95,11 +95,19 @@ public:
         // Per-node dispatch
         const auto& visibleNodes = m_frameContext->visibleMeshletNodes;
         uint32_t instanceCount = m_frameContext->visibilityInstanceCount;
+
+        // Build base uniforms from FrameContext raw data
+        Uniforms baseUni{};
+        baseUni.lightDir = m_frameContext->viewLightDir;
+        baseUni.lightColorIntensity = m_frameContext->lightColorIntensity;
+        baseUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1 : 0;
+        baseUni.enableConeCull = m_frameContext->enableConeCull ? 1 : 0;
+
         for (uint32_t instanceID = 0; instanceID < instanceCount; instanceID++) {
             const auto& node = m_ctx.sceneGraph.nodes[visibleNodes[instanceID]];
             float4x4 nodeModelView = m_frameContext->view * node.transform.worldMatrix;
             float4x4 nodeMVP = m_frameContext->proj * nodeModelView;
-            Uniforms nodeUniforms = m_frameContext->baseUniforms;
+            Uniforms nodeUniforms = baseUni;
             nodeUniforms.mvp = transpose(nodeMVP);
             nodeUniforms.modelView = transpose(nodeModelView);
             extractFrustumPlanes(nodeMVP, nodeUniforms.frustumPlanes);

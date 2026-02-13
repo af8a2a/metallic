@@ -48,7 +48,26 @@ public:
         auto pipeIt = m_runtimeContext->computePipelines.find("DeferredLightingPass");
         if (pipeIt == m_runtimeContext->computePipelines.end()) return;
 
-        LightingUniforms lightUniforms = m_frameContext->lightingUniforms;
+        // Build LightingUniforms from FrameContext raw data
+        float4x4 modelView = m_frameContext->view; // model is identity
+        float4x4 mvp = m_frameContext->proj * modelView;
+        float4x4 invProj = m_frameContext->proj;
+        invProj.Invert();
+
+        LightingUniforms lightUniforms;
+        lightUniforms.mvp = transpose(mvp);
+        lightUniforms.modelView = transpose(modelView);
+        lightUniforms.lightDir = m_frameContext->viewLightDir;
+        lightUniforms.lightColorIntensity = m_frameContext->lightColorIntensity;
+        lightUniforms.invProj = transpose(invProj);
+        lightUniforms.screenWidth = static_cast<uint32_t>(m_frameContext->width);
+        lightUniforms.screenHeight = static_cast<uint32_t>(m_frameContext->height);
+        lightUniforms.meshletCount = m_frameContext->meshletCount;
+        lightUniforms.materialCount = m_frameContext->materialCount;
+        lightUniforms.textureCount = m_frameContext->textureCount;
+        lightUniforms.instanceCount = m_frameContext->visibilityInstanceCount;
+        lightUniforms.shadowEnabled = m_frameContext->enableRTShadows ? 1 : 0;
+        lightUniforms.pad2 = 0;
 
         enc->setComputePipelineState(pipeIt->second);
         enc->setBytes(&lightUniforms, sizeof(lightUniforms), 0);
@@ -88,10 +107,10 @@ public:
     void renderUI() override {
         ImGui::Text("Resolution: %d x %d", m_width, m_height);
         if (m_frameContext) {
-            ImGui::Text("Instances: %u", m_frameContext->lightingUniforms.instanceCount);
-            ImGui::Text("Meshlets: %u", m_frameContext->lightingUniforms.meshletCount);
-            ImGui::Text("Materials: %u", m_frameContext->lightingUniforms.materialCount);
-            ImGui::Text("Shadows: %s", m_frameContext->lightingUniforms.shadowEnabled ? "Enabled" : "Disabled");
+            ImGui::Text("Instances: %u", m_frameContext->visibilityInstanceCount);
+            ImGui::Text("Meshlets: %u", m_frameContext->meshletCount);
+            ImGui::Text("Materials: %u", m_frameContext->materialCount);
+            ImGui::Text("Shadows: %s", m_frameContext->enableRTShadows ? "Enabled" : "Disabled");
         }
     }
 

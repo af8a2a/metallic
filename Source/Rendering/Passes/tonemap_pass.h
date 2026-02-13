@@ -5,30 +5,11 @@
 #include "frame_context.h"
 #include "pass_registry.h"
 #include "imgui.h"
-#include <algorithm>
 
 class TonemapPass : public RenderPass {
 public:
-    // Data-driven constructor
     TonemapPass(const RenderContext& ctx, int w, int h)
-        : m_ctx(ctx), m_width(w), m_height(h), m_legacyMode(false) {}
-
-    // Legacy constructor
-    TonemapPass(FGResource source,
-                FGResource dest,
-                MTL::RenderPipelineState* pipeline,
-                MTL::SamplerState* sampler,
-                const TonemapUniforms& uniforms,
-                int w, int h)
-        : m_ctx(*(RenderContext*)nullptr)  // Not used in legacy mode
-        , m_legacySource(source)
-        , m_legacyDest(dest)
-        , m_pipeline(pipeline)
-        , m_sampler(sampler)
-        , m_legacyUniforms(uniforms)
-        , m_width(w)
-        , m_height(h)
-        , m_legacyMode(true) {}
+        : m_ctx(ctx), m_width(w), m_height(h) {}
 
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return m_name.c_str(); }
@@ -68,41 +49,22 @@ public:
         m_sourceRead = FGResource{};
         m_dest = FGResource{};
 
-        if (m_legacyMode) {
-            m_sourceRead = builder.read(m_legacySource);
-            builder.setColorAttachment(0, m_legacyDest,
+        FGResource sourceInput = getSourceInput();
+        if (sourceInput.isValid()) {
+            m_sourceRead = builder.read(sourceInput);
+        }
+
+        m_dest = getInput("$backbuffer");
+        if (m_dest.isValid()) {
+            builder.setColorAttachment(0, m_dest,
                 MTL::LoadActionDontCare, MTL::StoreActionStore,
                 MTL::ClearColor(0.0, 0.0, 0.0, 1.0));
-            builder.setSideEffect();
-            m_dest = m_legacyDest;
-        } else {
-            FGResource sourceInput = getSourceInput();
-            if (sourceInput.isValid()) {
-                m_sourceRead = builder.read(sourceInput);
-            }
-
-            // Backbuffer destination is injected by the pipeline builder.
-            m_dest = getInput("$backbuffer");
-            if (m_dest.isValid()) {
-                builder.setColorAttachment(0, m_dest,
-                    MTL::LoadActionDontCare, MTL::StoreActionStore,
-                    MTL::ClearColor(0.0, 0.0, 0.0, 1.0));
-            }
-            builder.setSideEffect();
         }
+        builder.setSideEffect();
     }
 
     void executeRender(MTL::RenderCommandEncoder* enc) override {
         ZoneScopedN("TonemapPass");
-
-        if (m_legacyMode) {
-            enc->setRenderPipelineState(m_pipeline);
-            enc->setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
-            enc->setFragmentSamplerState(m_sampler, 0);
-            enc->setFragmentBytes(&m_legacyUniforms, sizeof(m_legacyUniforms), 0);
-            enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
-            return;
-        }
 
         if (!m_runtimeContext || !m_sourceRead.isValid()) return;
 
@@ -113,23 +75,20 @@ public:
         if (samplerIt == m_runtimeContext->samplers.end()) return;
 
         TonemapUniforms uniforms{};
+        uniforms.isActive = m_enabled ? 1u : 0u;
+        uniforms.method = static_cast<uint32_t>(m_method);
+        uniforms.exposure = m_exposure;
+        uniforms.contrast = m_contrast;
+        uniforms.brightness = m_brightness;
+        uniforms.saturation = m_saturation;
+        uniforms.vignette = m_vignette;
+        uniforms.dither = m_dither ? 1u : 0u;
         if (m_frameContext) {
-            uniforms = m_frameContext->tonemapUniforms;
+            uniforms.invResolution = float2(1.0f / float(m_frameContext->width), 1.0f / float(m_frameContext->height));
         } else {
-            uniforms.isActive = 1u;
-            uniforms.method = static_cast<uint32_t>(m_method);
-            uniforms.exposure = m_exposure;
-            uniforms.contrast = m_contrast;
-            uniforms.brightness = m_brightness;
-            uniforms.saturation = m_saturation;
-            uniforms.vignette = m_vignette;
-            uniforms.dither = m_dither ? 1u : 0u;
-            uniforms.invResolution = float2(1.0f / float(m_width), 1.0f / float(m_height));
-            uniforms.pad = float2(0.0f, 0.0f);
-        }
-        if (uniforms.invResolution.x <= 0.0f || uniforms.invResolution.y <= 0.0f) {
             uniforms.invResolution = float2(1.0f / float(m_width), 1.0f / float(m_height));
         }
+        uniforms.pad = float2(0.0f, 0.0f);
 
         enc->setRenderPipelineState(pipeIt->second);
         enc->setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
@@ -140,22 +99,7 @@ public:
 
     void renderUI() override {
         ImGui::Text("Resolution: %d x %d", m_width, m_height);
-        if (m_frameContext) {
-            const TonemapUniforms& uniforms = m_frameContext->tonemapUniforms;
-            const char* methods[] = {"Filmic", "Uncharted2", "Clip", "ACES", "AgX", "Khronos PBR"};
-            uint32_t method = std::min<uint32_t>(uniforms.method, static_cast<uint32_t>(IM_ARRAYSIZE(methods) - 1));
-            ImGui::Text("Driven by frame controls");
-            ImGui::Text("Active: %s", uniforms.isActive ? "Yes" : "No");
-            ImGui::Text("Method: %s", methods[method]);
-            ImGui::Text("Exposure: %.2f", uniforms.exposure);
-            ImGui::Text("Contrast: %.2f", uniforms.contrast);
-            ImGui::Text("Brightness: %.2f", uniforms.brightness);
-            ImGui::Text("Saturation: %.2f", uniforms.saturation);
-            ImGui::Text("Vignette: %.2f", uniforms.vignette);
-            ImGui::Text("Dither: %s", uniforms.dither ? "On" : "Off");
-            return;
-        }
-
+        ImGui::Checkbox("Enable", &m_enabled);
         const char* methods[] = {"Filmic", "Uncharted2", "Clip", "ACES", "AgX", "Khronos PBR"};
         ImGui::Combo("Method", &m_method, methods, IM_ARRAYSIZE(methods));
         ImGui::SliderFloat("Exposure", &m_exposure, 0.1f, 4.0f, "%.2f");
@@ -174,25 +118,19 @@ private:
                 return source;
             }
         }
-
         for (const auto& [inputName, resource] : m_inputResources) {
             if (!inputName.empty() && inputName[0] == '$') continue;
             if (resource.isValid()) return resource;
         }
-
         return FGResource{};
     }
 
     const RenderContext& m_ctx;
-    FGResource m_legacySource;
-    FGResource m_legacyDest;
     FGResource m_sourceRead;
     FGResource m_dest;
-    MTL::RenderPipelineState* m_pipeline = nullptr;
-    MTL::SamplerState* m_sampler = nullptr;
-    TonemapUniforms m_legacyUniforms;
     int m_width, m_height;
     std::string m_name = "Tonemap";
+    bool m_enabled = true;
     int m_method = 3; // ACES
     float m_exposure = 1.0f;
     float m_contrast = 1.0f;
@@ -201,5 +139,4 @@ private:
     float m_vignette = 0.0f;
     bool m_dither = true;
     std::string m_sourceInputName;
-    bool m_legacyMode = false;
 };

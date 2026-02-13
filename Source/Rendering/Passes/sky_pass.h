@@ -8,32 +8,8 @@
 
 class SkyPass : public RenderPass {
 public:
-    // Data-driven constructor
     SkyPass(const RenderContext& ctx, int w, int h)
-        : m_ctx(ctx), m_width(w), m_height(h), m_legacyMode(false) {}
-
-    // Legacy constructor for forward rendering mode
-    SkyPass(FGResource target,
-            MTL::RenderPipelineState* pipeline,
-            MTL::Texture* transmittance,
-            MTL::Texture* scattering,
-            MTL::Texture* irradiance,
-            MTL::SamplerState* sampler,
-            const AtmosphereUniforms& uniforms,
-            bool sideEffect,
-            int w, int h)
-        : m_ctx(*(RenderContext*)nullptr)  // Not used in legacy mode
-        , m_target(target)
-        , m_pipeline(pipeline)
-        , m_transmittance(transmittance)
-        , m_scattering(scattering)
-        , m_irradiance(irradiance)
-        , m_sampler(sampler)
-        , m_legacyUniforms(uniforms)
-        , m_sideEffect(sideEffect)
-        , m_width(w)
-        , m_height(h)
-        , m_legacyMode(true) {}
+        : m_ctx(ctx), m_width(w), m_height(h) {}
 
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return m_name.c_str(); }
@@ -54,43 +30,19 @@ public:
     }
 
     void setup(FGBuilder& builder) override {
-        if (m_legacyMode && m_target.isValid()) {
-            builder.setColorAttachment(0, m_target,
-                MTL::LoadActionClear, MTL::StoreActionStore,
-                MTL::ClearColor(0.0, 0.0, 0.0, 1.0));
-            if (m_sideEffect) {
-                builder.setSideEffect();
-            }
-            output = m_target;
-        } else {
-            output = builder.create("skyColor",
-                FGTextureDesc::renderTarget(m_width, m_height, MTL::PixelFormatRGBA16Float));
-            builder.setColorAttachment(0, output,
-                MTL::LoadActionClear, MTL::StoreActionStore,
-                MTL::ClearColor(0.0, 0.0, 0.0, 1.0));
-            if (m_sideEffect) {
-                builder.setSideEffect();
-            }
+        output = builder.create("skyColor",
+            FGTextureDesc::renderTarget(m_width, m_height, MTL::PixelFormatRGBA16Float));
+        builder.setColorAttachment(0, output,
+            MTL::LoadActionClear, MTL::StoreActionStore,
+            MTL::ClearColor(0.0, 0.0, 0.0, 1.0));
+        if (m_sideEffect) {
+            builder.setSideEffect();
         }
     }
 
     void executeRender(MTL::RenderCommandEncoder* enc) override {
         ZoneScopedN("SkyPass");
 
-        if (m_legacyMode) {
-            // Legacy execution path
-            enc->setRenderPipelineState(m_pipeline);
-            enc->setVertexBytes(&m_legacyUniforms, sizeof(m_legacyUniforms), 0);
-            enc->setFragmentBytes(&m_legacyUniforms, sizeof(m_legacyUniforms), 0);
-            enc->setFragmentTexture(m_transmittance, 0);
-            enc->setFragmentTexture(m_scattering, 1);
-            enc->setFragmentTexture(m_irradiance, 2);
-            enc->setFragmentSamplerState(m_sampler, 0);
-            enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
-            return;
-        }
-
-        // Data-driven execution path
         if (!m_frameContext || !m_runtimeContext) return;
         if (!m_frameContext->enableAtmosphereSky) return;
 
@@ -109,8 +61,20 @@ public:
             return;
         }
 
-        AtmosphereUniforms uniforms = m_frameContext->skyUniforms;
-        uniforms.params.x = m_exposure;
+        // Build AtmosphereUniforms from FrameContext raw data
+        float4x4 viewProj = m_frameContext->proj * m_frameContext->view;
+        float4x4 invViewProj = viewProj;
+        invViewProj.Invert();
+
+        AtmosphereUniforms uniforms;
+        uniforms.invViewProj = transpose(invViewProj);
+        uniforms.cameraWorldPos = m_frameContext->cameraWorldPos;
+        uniforms.sunDirection = m_frameContext->worldLightDir;
+        uniforms.params = float4(m_exposure, 0.0f, 0.0f, 0.0f);
+        uniforms.screenWidth = static_cast<uint32_t>(m_frameContext->width);
+        uniforms.screenHeight = static_cast<uint32_t>(m_frameContext->height);
+        uniforms.pad0 = 0;
+        uniforms.pad1 = 0;
 
         enc->setRenderPipelineState(pipeIt->second);
         enc->setVertexBytes(&uniforms, sizeof(uniforms), 0);
@@ -129,16 +93,8 @@ public:
 
 private:
     const RenderContext& m_ctx;
-    FGResource m_target;
-    MTL::RenderPipelineState* m_pipeline = nullptr;
-    MTL::Texture* m_transmittance = nullptr;
-    MTL::Texture* m_scattering = nullptr;
-    MTL::Texture* m_irradiance = nullptr;
-    MTL::SamplerState* m_sampler = nullptr;
-    AtmosphereUniforms m_legacyUniforms;
     int m_width, m_height;
     std::string m_name = "Atmosphere Sky";
     bool m_sideEffect = false;
     float m_exposure = 10.0f;
-    bool m_legacyMode = false;
 };
