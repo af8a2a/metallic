@@ -13,6 +13,7 @@
 #include "imgui_overlay_pass.h"
 #include "forward_pass.h"
 #include "blit_pass.h"
+#include "output_pass.h"
 
 // Register all passes with factories for data-driven pipeline building
 
@@ -45,13 +46,16 @@ REGISTER_RENDER_PASS(ImGuiOverlayPass, "ImGui Overlay", "UI",
     (std::vector<std::string>{"depth"}),
     (std::vector<std::string>{"$backbuffer"}));
 
-// Metadata-only registrations for passes with complex constructors
-REGISTER_PASS_INFO(ForwardPass, "Forward Pass", "Geometry",
+// Geometry passes (forward)
+REGISTER_RENDER_PASS(ForwardPass, "Forward Pass", "Geometry",
     (std::vector<std::string>{"skyOutput"}),
-    (std::vector<std::string>{"forwardColor", "depth"}),
-    PassTypeInfo::PassType::Render);
+    (std::vector<std::string>{"forwardColor", "depth"}));
 
 REGISTER_PASS_INFO(BlitPass, "Blit", "Utility",
     (std::vector<std::string>{"source"}),
     (std::vector<std::string>{"destination"}),
     PassTypeInfo::PassType::Blit);
+
+REGISTER_RENDER_PASS(OutputPass, "Output", "Utility",
+    (std::vector<std::string>{"source"}),
+    (std::vector<std::string>{"$backbuffer"}));

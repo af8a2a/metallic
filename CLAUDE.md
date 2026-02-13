@@ -51,9 +51,10 @@ Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
   - `sky_pass.h` — Atmospheric scattering sky rendering
   - `deferred_lighting_pass.h` — Compute deferred lighting from visibility buffer
   - `tonemap_pass.h` — Tonemapping post-process (Filmic, Uncharted2, ACES, AgX, Khronos PBR, Clip)
+  - `output_pass.h` — Debug passthrough (saturate-clamp, no tonemapping) for bypassing tonemap
   - `blit_pass.h` — Blit compute output to drawable
   - `imgui_overlay_pass.h` — ImGui overlay rendering
-- `Source/Rendering/pass_registrations.cpp` — Pass metadata registration for pipeline editor
+- `Source/Rendering/pass_registrations.cpp` — Pass factory + metadata registration for pipeline builder
 - `Source/PipelineEditor/` — Standalone library for data-driven pipeline editing:
   - `pass_registry.h/cpp` — Factory pattern with `REGISTER_PASS_INFO` macro for pass metadata
   - `pipeline_asset.h/cpp` — JSON pipeline schema, load/save, DAG validation
@@ -85,6 +86,7 @@ After cloning, run `git submodule update --init` to fetch GLFW, Tracy, and spdlo
 - `External/CMakeLists.txt` — metal-cpp INTERFACE lib (links Metal/Foundation/QuartzCore frameworks), GLFW, imnodes, nlohmann_json
 - `Source/CMakeLists.txt` — `Metallic` executable, links PipelineEditor + rendering libs. Post-build copies Slang dylibs, Shaders/, Pipelines/, and Asset/ to build dir.
 - `Source/PipelineEditor/CMakeLists.txt` — `PipelineEditor` static library for data-driven pipeline editing
+- `Tools/PipelineEditor/CMakeLists.txt` — `PipelineEditorTool` standalone executable (OpenGL-based, no Metal dependency). Uses `pass_registrations_editor.cpp` with `REGISTER_PASS_INFO` (metadata-only) so all pass types appear in the Add menu without linking the renderer.
 
 ### Shaders
 
@@ -96,6 +98,7 @@ Slang shaders are compiled to Metal source at runtime. Raytracing shaders are na
 - `Shaders/Visibility/deferred_lighting.slang` — Compute shader for deferred lighting from visibility buffer (samples shadow map at texture 99)
 - `Shaders/Atmosphere/sky.slang` — Atmospheric scattering sky rendering (precomputed transmittance/scattering/irradiance textures)
 - `Shaders/Post/tonemap.slang` — Fullscreen tonemapping post-process (6 methods)
+- `Shaders/Post/passthrough.slang` — Fullscreen passthrough (saturate-clamp, for debug output)
 - `Shaders/Raytracing/raytraced_shadow.metal` — **Native Metal** compute shader: traces shadow rays against TLAS, writes R8Unorm shadow map
 
 ## Conventions
@@ -107,8 +110,10 @@ Slang shaders are compiled to Metal source at runtime. Raytracing shaders are na
 - Single-header libs use `#define *_IMPLEMENTATION` in exactly one TU: `CGLTF_IMPLEMENTATION` in `Asset/mesh_loader.cpp`, `STB_IMAGE_IMPLEMENTATION` in `Asset/material_loader.cpp`
 - ObjC++ files (`.mm`) that need ARC get `-fobjc-arc` via `set_source_files_properties` in CMake
 - Rendering has 3 modes: Vertex pipeline, Mesh shader, Visibility buffer (deferred lighting)
-- Visibility buffer pipeline: Visibility Pass → Shadow Ray Pass → Sky Pass → Deferred Lighting → Tonemap → ImGui
+- All render modes use the data-driven PipelineAsset/PipelineBuilder system (JSON pipeline definitions)
+- Visibility buffer pipeline: Visibility Pass → Shadow Ray Pass → Sky Pass → Deferred Lighting → Output/Tonemap → ImGui
 - Forward pipeline: Sky Pass → Forward Pass → Tonemap → ImGui
+- **`$backbuffer` ordering rule:** In pipeline JSON, passes writing to `$backbuffer` execute in declaration order. ImGuiOverlayPass must always be the LAST pass writing to `$backbuffer`, otherwise later passes overwrite the UI overlay.
 - Render passes are modular classes inheriting from `RenderPass` (see `Source/Rendering/Passes/`)
 - Shader hot-reload via F5 key
 - Pipeline hot-reload via F6 key (reloads JSON pipeline definition)
@@ -131,16 +136,20 @@ The rendering pipeline can be defined in JSON files (inspired by EA's Gigi):
 Since C++ lacks static reflection, passes must be registered with metadata using macros in `pass_registrations.cpp`:
 
 ```cpp
-// Register pass metadata for the pipeline editor
-REGISTER_PASS_INFO(VisibilityPass, "Visibility Pass", "Geometry",
-    (std::vector<std::string>{}),                        // default inputs
-    (std::vector<std::string>{"visibility", "depth"}),   // default outputs
-    PassTypeInfo::Type::Render);
+// Register pass with factory + metadata (used by PipelineBuilder to instantiate from JSON)
+REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
+    (std::vector<std::string>{}),
+    (std::vector<std::string>{"visibility", "depth"}));
 
-REGISTER_PASS_INFO(ShadowRayPass, "Shadow Ray Pass", "Lighting",
+REGISTER_COMPUTE_PASS(ShadowRayPass, "Shadow Ray Pass", "Lighting",
     (std::vector<std::string>{"depth"}),
-    (std::vector<std::string>{"shadowMap"}),
-    PassTypeInfo::Type::Compute);
+    (std::vector<std::string>{"shadowMap"}));
+
+// Metadata-only (no factory, for editor display only — used in Tools/PipelineEditor/)
+REGISTER_PASS_INFO(BlitPass, "Blit", "Utility",
+    (std::vector<std::string>{"source"}),
+    (std::vector<std::string>{"destination"}),
+    PassTypeInfo::PassType::Blit);
 ```
 
 Categories: `Geometry`, `Lighting`, `Environment`, `Post-Process`, `Utility`, `UI`

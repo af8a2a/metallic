@@ -964,6 +964,14 @@ int main() {
         return 1;
     }
 
+    // Passthrough (output) pipeline — same pattern as tonemap but no processing
+    MTL::RenderPipelineState* outputPipelineState =
+        reloadFullscreenShader(device, "Shaders/Post/passthrough", projectRoot, MTL::PixelFormatBGRA8Unorm);
+    if (!outputPipelineState) {
+        spdlog::error("Failed to create output passthrough pipeline");
+        return 1;
+    }
+
     AtmosphereTextureSet atmosphereTextures;
     bool atmosphereLoaded = loadAtmosphereTextures(device, projectRoot, atmosphereTextures);
     if (!atmosphereLoaded) {
@@ -1053,6 +1061,7 @@ int main() {
     rtCtx.renderPipelines["TonemapPass"] = tonemapPipelineState;
     rtCtx.renderPipelines["ForwardPass"] = pipelineState;
     rtCtx.renderPipelines["ForwardMeshPass"] = meshPipelineState;
+    rtCtx.renderPipelines["OutputPass"] = outputPipelineState;
     rtCtx.computePipelines["DeferredLightingPass"] = computePipelineState;
     rtCtx.samplers["tonemap"] = tonemapSampler;
     rtCtx.samplers["atmosphere"] = atmosphereTextures.sampler;
@@ -1278,7 +1287,15 @@ int main() {
                 reloaded++;
             } else { failed++; }
 
-            // 7. Shadow ray shader
+            // 7. Passthrough (output) shader
+            if (auto* p = reloadFullscreenShader(device, "Shaders/Post/passthrough", projectRoot,
+                    MTL::PixelFormatBGRA8Unorm)) {
+                outputPipelineState->release();
+                outputPipelineState = p;
+                reloaded++;
+            } else { failed++; }
+
+            // 8. Shadow ray shader
             if (rtShadowsAvailable) {
                 if (reloadShadowPipeline(device, shadowResources, projectRoot)) {
                     reloaded++;
@@ -1296,6 +1313,7 @@ int main() {
             rtCtx.renderPipelines["TonemapPass"] = tonemapPipelineState;
             rtCtx.renderPipelines["ForwardPass"] = pipelineState;
             rtCtx.renderPipelines["ForwardMeshPass"] = meshPipelineState;
+            rtCtx.renderPipelines["OutputPass"] = outputPipelineState;
             rtCtx.computePipelines["DeferredLightingPass"] = computePipelineState;
             pipelineNeedsRebuild = true;
         }
@@ -1550,6 +1568,7 @@ int main() {
     computePipelineState->release();
     tonemapSampler->release();
     tonemapPipelineState->release();
+    outputPipelineState->release();
     visPipelineState->release();
     meshPipelineState->release();
     pipelineState->release();

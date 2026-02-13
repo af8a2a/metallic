@@ -39,9 +39,7 @@
       "outputs": ["forwardColor", "depth"],
       "enabled": true,
       "sideEffect": false,
-      "config": {
-        "renderMode": 1
-      }
+      "config": {}
     },
     {
       "name": "Tonemap",

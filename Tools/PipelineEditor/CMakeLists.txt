@@ -3,6 +3,7 @@
 add_executable(PipelineEditorTool
     main.cpp
     pipeline_editor.cpp
+    pass_registrations_editor.cpp
 )
 
 target_include_directories(PipelineEditorTool PRIVATE
