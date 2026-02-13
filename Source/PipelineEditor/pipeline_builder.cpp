@@ -1,12 +1,16 @@
 #include "pipeline_builder.h"
 #include "render_pass.h"
+#include "frame_context.h"
 #include <spdlog/spdlog.h>
 
-PipelineBuilder::PipelineBuilder(const RenderContext& ctx, const PipelineRuntimeContext& rtCtx)
-    : m_ctx(ctx), m_rtCtx(rtCtx) {}
+PipelineBuilder::PipelineBuilder(const RenderContext& ctx)
+    : m_ctx(ctx) {}
 
-bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg, int width, int height) {
+bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg,
+                            const PipelineRuntimeContext& rtCtx,
+                            int width, int height) {
     m_resourceMap.clear();
+    m_passes.clear();
     m_lastError.clear();
 
     // Validate the pipeline first
@@ -15,12 +19,12 @@ bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg, int widt
     }
 
     // Import special resources
-    if (m_rtCtx.backbuffer) {
-        m_resourceMap["$backbuffer"] = fg.import("backbuffer", m_rtCtx.backbuffer);
+    if (rtCtx.backbuffer) {
+        m_resourceMap["$backbuffer"] = fg.import("backbuffer", rtCtx.backbuffer);
     }
 
     // Import any pre-existing textures
-    for (const auto& [name, tex] : m_rtCtx.importedTextures) {
+    for (const auto& [name, tex] : rtCtx.importedTextures) {
         if (tex) {
             m_resourceMap[name] = fg.import(name.c_str(), tex);
         }
@@ -29,7 +33,18 @@ bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg, int widt
     // Get topologically sorted pass order
     auto sortedOrder = asset.topologicalSort();
 
+    // Build a map of output name -> pass index for wiring
+    std::unordered_map<std::string, size_t> outputProducers;
+    for (size_t i = 0; i < asset.passes.size(); i++) {
+        for (const auto& output : asset.passes[i].outputs) {
+            outputProducers[output] = i;
+        }
+    }
+
     // Create passes in sorted order
+    std::vector<std::unique_ptr<RenderPass>> createdPasses;
+    std::unordered_map<size_t, RenderPass*> passMap; // original index -> pass ptr
+
     for (size_t idx : sortedOrder) {
         const auto& passDecl = asset.passes[idx];
 
@@ -48,14 +63,6 @@ bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg, int widt
         config.sideEffect = passDecl.sideEffect;
         config.config = passDecl.config;
 
-        // Resolve input resources
-        for (const auto& input : passDecl.inputs) {
-            if (m_resourceMap.find(input) == m_resourceMap.end()) {
-                m_lastError = "Pass '" + passDecl.name + "' references unknown resource: " + input;
-                return false;
-            }
-        }
-
         // Create the pass via registry
         auto pass = PassRegistry::instance().create(passDecl.type, config, m_ctx, width, height);
         if (!pass) {
@@ -63,20 +70,71 @@ bool PipelineBuilder::build(const PipelineAsset& asset, FrameGraph& fg, int widt
             return false;
         }
 
+        // Configure the pass with JSON config
+        pass->configure(config);
+
+        // Set runtime context
+        pass->setRuntimeContext(&rtCtx);
+
+        // Wire up input resources
+        for (const auto& inputName : passDecl.inputs) {
+            // Check if this input comes from a previous pass's output
+            auto producerIt = outputProducers.find(inputName);
+            if (producerIt != outputProducers.end()) {
+                auto passIt = passMap.find(producerIt->second);
+                if (passIt != passMap.end()) {
+                    FGResource res = passIt->second->getOutput(inputName);
+                    if (res.isValid()) {
+                        pass->setInput(inputName, res);
+                        m_resourceMap[inputName] = res;
+                    }
+                }
+            }
+            // Check if it's an imported resource
+            else if (m_resourceMap.find(inputName) != m_resourceMap.end()) {
+                pass->setInput(inputName, m_resourceMap[inputName]);
+            }
+        }
+
+        // For passes that output to $backbuffer, set it as input
+        for (const auto& outputName : passDecl.outputs) {
+            if (outputName == "$backbuffer" && m_resourceMap.find("$backbuffer") != m_resourceMap.end()) {
+                pass->setInput("$backbuffer", m_resourceMap["$backbuffer"]);
+            }
+        }
+
         // Store pass pointer before moving
         RenderPass* passPtr = pass.get();
+        passMap[idx] = passPtr;
+        m_passes.push_back(passPtr);
 
         // Add pass to frame graph
         fg.addPass(std::move(pass));
 
-        // After setup, the pass may have created output resources
-        // We need a way to retrieve them - this requires passes to expose their outputs
-        // For now, we'll handle this in the pass configure() method
+        // After setup (which happens in addPass), retrieve output resources
+        for (const auto& outputName : passDecl.outputs) {
+            FGResource res = passPtr->getOutput(outputName);
+            if (res.isValid()) {
+                m_resourceMap[outputName] = res;
+            }
+        }
     }
 
     spdlog::info("PipelineBuilder: built pipeline '{}' with {} passes",
-                 asset.name, sortedOrder.size());
+                 asset.name, m_passes.size());
     return true;
+}
+
+void PipelineBuilder::setFrameContext(const FrameContext* ctx) {
+    for (auto* pass : m_passes) {
+        pass->setFrameContext(ctx);
+    }
+}
+
+void PipelineBuilder::setRuntimeContext(const PipelineRuntimeContext* ctx) {
+    for (auto* pass : m_passes) {
+        pass->setRuntimeContext(ctx);
+    }
 }
 
 FGResource PipelineBuilder::getResource(const std::string& name) const {

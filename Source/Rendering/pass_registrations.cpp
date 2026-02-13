@@ -1,47 +1,57 @@
 // Pass registrations for the Pipeline Editor
-// This file registers all render passes with metadata for the visual editor
+// This file registers all render passes with factories for data-driven pipeline building
 
 #include "pass_registry.h"
+#include "render_pass.h"
 
-// Register all pass types with their metadata
-// These are metadata-only registrations since the passes use legacy constructors
+// Include all pass headers
+#include "visibility_pass.h"
+#include "shadow_ray_pass.h"
+#include "sky_pass.h"
+#include "deferred_lighting_pass.h"
+#include "tonemap_pass.h"
+#include "imgui_overlay_pass.h"
+#include "forward_pass.h"
+#include "blit_pass.h"
 
-REGISTER_PASS_INFO(VisibilityPass, "Visibility Pass", "Geometry",
+// Register all passes with factories for data-driven pipeline building
+
+// Geometry passes
+REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
     (std::vector<std::string>{}),
-    (std::vector<std::string>{"visibility", "depth"}),
-    PassTypeInfo::Type::Render);
+    (std::vector<std::string>{"visibility", "depth"}));
 
+// Lighting passes
+REGISTER_COMPUTE_PASS(ShadowRayPass, "Shadow Ray Pass", "Lighting",
+    (std::vector<std::string>{"depth"}),
+    (std::vector<std::string>{"shadowMap"}));
+
+REGISTER_COMPUTE_PASS(DeferredLightingPass, "Deferred Lighting", "Lighting",
+    (std::vector<std::string>{"visibility", "depth", "shadowMap", "skyOutput"}),
+    (std::vector<std::string>{"lightingOutput"}));
+
+// Environment passes
+REGISTER_RENDER_PASS(SkyPass, "Sky Pass", "Environment",
+    (std::vector<std::string>{}),
+    (std::vector<std::string>{"skyOutput"}));
+
+// Post-process passes
+REGISTER_RENDER_PASS(TonemapPass, "Tonemap", "Post-Process",
+    (std::vector<std::string>{"lightingOutput"}),
+    (std::vector<std::string>{"$backbuffer"}));
+
+// UI passes
+REGISTER_RENDER_PASS(ImGuiOverlayPass, "ImGui Overlay", "UI",
+    (std::vector<std::string>{"depth"}),
+    (std::vector<std::string>{"$backbuffer"}));
+
+// Metadata-only registrations for passes with complex constructors
 REGISTER_PASS_INFO(ForwardPass, "Forward Pass", "Geometry",
     (std::vector<std::string>{"skyOutput"}),
     (std::vector<std::string>{"forwardColor", "depth"}),
-    PassTypeInfo::Type::Render);
-
-REGISTER_PASS_INFO(ShadowRayPass, "Shadow Ray Pass", "Lighting",
-    (std::vector<std::string>{"depth"}),
-    (std::vector<std::string>{"shadowMap"}),
-    PassTypeInfo::Type::Compute);
-
-REGISTER_PASS_INFO(SkyPass, "Sky Pass", "Environment",
-    (std::vector<std::string>{}),
-    (std::vector<std::string>{"skyOutput"}),
-    PassTypeInfo::Type::Render);
-
-REGISTER_PASS_INFO(DeferredLightingPass, "Deferred Lighting", "Lighting",
-    (std::vector<std::string>{"visibility", "depth", "shadowMap", "skyOutput"}),
-    (std::vector<std::string>{"lightingOutput"}),
-    PassTypeInfo::Type::Compute);
-
-REGISTER_PASS_INFO(TonemapPass, "Tonemap", "Post-Process",
-    (std::vector<std::string>{"lightingOutput"}),
-    (std::vector<std::string>{"$backbuffer"}),
-    PassTypeInfo::Type::Render);
+    PassTypeInfo::PassType::Render);
 
 REGISTER_PASS_INFO(BlitPass, "Blit", "Utility",
     (std::vector<std::string>{"source"}),
     (std::vector<std::string>{"destination"}),
-    PassTypeInfo::Type::Blit);
-
-REGISTER_PASS_INFO(ImGuiOverlayPass, "ImGui Overlay", "UI",
-    (std::vector<std::string>{"depth"}),
-    (std::vector<std::string>{"$backbuffer"}),
-    PassTypeInfo::Type::Render);
+    PassTypeInfo::PassType::Blit);

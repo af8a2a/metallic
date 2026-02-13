@@ -35,7 +35,7 @@ struct PassTypeInfo {
     nlohmann::json configSchema;
 
     // Pass type (render, compute, blit)
-    enum class Type { Render, Compute, Blit } passType = Type::Render;
+    enum class PassType { Render, Compute, Blit } passType = PassType::Render;
 };
 
 // Factory function signature
@@ -98,7 +98,7 @@ public:
     static PassRegistrar _registrar_##Type(#Type, \
         [](const PassConfig& cfg, const RenderContext& ctx, int w, int h) \
             -> std::unique_ptr<RenderPass> { \
-            return std::make_unique<Type>(cfg, ctx, w, h); \
+            return std::make_unique<Type>(ctx, w, h); \
         })
 
 // Full registration macro with metadata for pipeline editor
@@ -111,35 +111,35 @@ public:
     static PassRegistrar _registrar_##Type(#Type, \
         [](const PassConfig& cfg, const RenderContext& ctx, int w, int h) \
             -> std::unique_ptr<RenderPass> { \
-            return std::make_unique<Type>(cfg, ctx, w, h); \
+            return std::make_unique<Type>(ctx, w, h); \
         }, \
         PassTypeInfo{ \
-            #Type, DisplayName, Category, Inputs, Outputs, {}, PassTypeInfo::Type::Render \
+            #Type, DisplayName, Category, Inputs, Outputs, {}, PassTypeInfo::PassType::Render \
         })
 
 #define REGISTER_COMPUTE_PASS(Type, DisplayName, Category, Inputs, Outputs) \
     static PassRegistrar _registrar_##Type(#Type, \
         [](const PassConfig& cfg, const RenderContext& ctx, int w, int h) \
             -> std::unique_ptr<RenderPass> { \
-            return std::make_unique<Type>(cfg, ctx, w, h); \
+            return std::make_unique<Type>(ctx, w, h); \
         }, \
         PassTypeInfo{ \
-            #Type, DisplayName, Category, Inputs, Outputs, {}, PassTypeInfo::Type::Compute \
+            #Type, DisplayName, Category, Inputs, Outputs, {}, PassTypeInfo::PassType::Compute \
         })
 
 #define REGISTER_BLIT_PASS(Type, DisplayName, Category, Inputs, Outputs) \
     static PassRegistrar _registrar_##Type(#Type, \
         [](const PassConfig& cfg, const RenderContext& ctx, int w, int h) \
             -> std::unique_ptr<RenderPass> { \
-            return std::make_unique<Type>(cfg, ctx, w, h); \
+            return std::make_unique<Type>(ctx, w, h); \
         }, \
         PassTypeInfo{ \
-            #Type, DisplayName, Category, Inputs, Outputs, {}, PassTypeInfo::Type::Blit \
+            #Type, DisplayName, Category, Inputs, Outputs, {}, PassTypeInfo::PassType::Blit \
         })
 
 // Metadata-only registration (no factory, for editor display only)
 // Use when passes have complex constructors that can't use PassConfig
-#define REGISTER_PASS_INFO(Type, DisplayName, Category, Inputs, Outputs, PassType) \
+#define REGISTER_PASS_INFO(Type, DisplayName, Category, Inputs, Outputs, PassTypeVal) \
     namespace { \
         static bool _info_registered_##Type = []() { \
             PassTypeInfo info; \
@@ -148,7 +148,7 @@ public:
             info.category = Category; \
             info.defaultInputs = Inputs; \
             info.defaultOutputs = Outputs; \
-            info.passType = PassType; \
+            info.passType = PassTypeVal; \
             PassRegistry::instance().registerPass(#Type, nullptr, info); \
             return true; \
         }(); \

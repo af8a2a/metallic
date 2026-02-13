@@ -7,10 +7,14 @@
 #include "scene_graph.h"
 #include "raytraced_shadows.h"
 #include <tracy/Tracy.hpp>
+#include <unordered_map>
 
-// Forward declaration for PassConfig (defined in PipelineEditor/pass_registry.h)
+// Forward declarations
 struct PassConfig;
+struct FrameContext;
+struct PipelineRuntimeContext;
 
+// Static context (scene data, depth state, etc.)
 struct RenderContext {
     const LoadedMesh& sceneMesh;
     const MeshletData& meshletData;
@@ -19,6 +23,7 @@ struct RenderContext {
     const RaytracedShadowResources& shadowResources;
     MTL::DepthStencilState* depthState;
     MTL::Texture* shadowDummyTex;
+    MTL::Texture* skyFallbackTex;
     double depthClearValue;
 };
 
@@ -36,8 +41,30 @@ public:
     // Data-driven configuration support
     virtual void configure(const PassConfig& config) {}
 
-    // Get output resources by name (for pipeline builder)
+    // Set per-frame context before execution
+    virtual void setFrameContext(const FrameContext* ctx) { m_frameContext = ctx; }
+
+    // Set runtime context (pipelines, samplers)
+    virtual void setRuntimeContext(const PipelineRuntimeContext* ctx) { m_runtimeContext = ctx; }
+
+    // Get output resources by name (for pipeline builder to wire up dependencies)
     virtual FGResource getOutput(const std::string& name) const { return FGResource{}; }
 
+    // Set input resources by name (called by pipeline builder)
+    virtual void setInput(const std::string& name, FGResource resource) {
+        m_inputResources[name] = resource;
+    }
+
+    // Get input resource by name
+    FGResource getInput(const std::string& name) const {
+        auto it = m_inputResources.find(name);
+        return it != m_inputResources.end() ? it->second : FGResource{};
+    }
+
     FrameGraph* m_frameGraph = nullptr;
+
+protected:
+    const FrameContext* m_frameContext = nullptr;
+    const PipelineRuntimeContext* m_runtimeContext = nullptr;
+    std::unordered_map<std::string, FGResource> m_inputResources;
 };

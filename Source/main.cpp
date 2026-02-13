@@ -49,6 +49,8 @@
 #include "forward_pass.h"
 #include "sky_pass.h"
 #include "pipeline_asset.h"
+#include "pipeline_builder.h"
+#include "frame_context.h"
 
 
 static std::string compileSlangToMetal(const char* shaderPath, const char* searchPath = nullptr) {
@@ -1298,11 +1300,15 @@ int main() {
         MTL::Buffer* instanceTransformBuffer = nullptr;
 
         RenderContext ctx{sceneMesh, meshletData, materials, sceneGraph,
-                          shadowResources, depthState, shadowDummyTex, depthClearValue};
+                          shadowResources, depthState, shadowDummyTex, skyFallbackTex, depthClearValue};
 
-        if (renderMode == 2) {
-            // === VISIBILITY BUFFER MODE ===
-            ZoneScopedN("Visibility Buffer Graph Build");
+        // Declared at outer scope so they survive through fg.execute()
+        PipelineRuntimeContext rtCtx;
+        FrameContext frameCtx;
+
+        if (renderMode == 2 && !pipelineAsset.name.empty()) {
+            // === DATA-DRIVEN VISIBILITY BUFFER MODE ===
+            ZoneScopedN("Visibility Buffer Graph Build (Data-Driven)");
 
             static bool warnedInstanceOverflow = false;
             if (!warnedInstanceOverflow &&
@@ -1342,42 +1348,45 @@ int main() {
                 visibilityInstanceTransforms.size() * sizeof(SceneInstanceTransform),
                 MTL::ResourceStorageModeShared);
 
-            auto visPass = std::make_unique<VisibilityPass>(
-                ctx, visPipelineState, uniforms,
-                visibleMeshletNodes, visibilityInstanceCount,
-                view, proj, cameraWorldPos, width, height);
-            auto* visPassPtr = visPass.get();
-            fg.addPass(std::move(visPass));
-            FGResource visDepth = visPassPtr->depth;
-            FGResource visVisibility = visPassPtr->visibility;
-            bool shadowPassActive = rtShadowsAvailable && enableRTShadows;
-            FGResource shadowMapRes{};
-            if (rtShadowsAvailable) {
-                auto shadowPass = std::make_unique<ShadowRayPass>(
-                    ctx, visDepth, view, proj,
-                    worldLightDir, camera.farZ, shadowPassActive,
-                    width, height);
-                auto* shadowPassPtr = shadowPass.get();
-                fg.addPass(std::move(shadowPass));
-                shadowMapRes = shadowPassPtr->shadowMap;
-            }
+            // Setup runtime context with pipelines and textures
+            rtCtx.device = device;
+            rtCtx.backbuffer = drawable->texture();
+            rtCtx.renderPipelines["VisibilityPass"] = visPipelineState;
+            rtCtx.renderPipelines["SkyPass"] = skyPipelineState;
+            rtCtx.renderPipelines["TonemapPass"] = tonemapPipelineState;
+            rtCtx.computePipelines["DeferredLightingPass"] = computePipelineState;
+            rtCtx.samplers["tonemap"] = tonemapSampler;
+            rtCtx.samplers["atmosphere"] = atmosphereTextures.sampler;
+            rtCtx.importedTextures["transmittance"] = atmosphereTextures.transmittance;
+            rtCtx.importedTextures["scattering"] = atmosphereTextures.scattering;
+            rtCtx.importedTextures["irradiance"] = atmosphereTextures.irradiance;
 
-            FGResource skyRes{};
-            if (skyAvailable && enableAtmosphereSky) {
-                auto skyPass = std::make_unique<SkyPass>(
-                    FGResource{}, skyPipelineState,
-                    atmosphereTextures.transmittance,
-                    atmosphereTextures.scattering,
-                    atmosphereTextures.irradiance,
-                    atmosphereTextures.sampler,
-                    skyUniforms,
-                    false,
-                    width, height);
-                auto* skyPassPtr = skyPass.get();
-                fg.addPass(std::move(skyPass));
-                skyRes = skyPassPtr->output;
-            }
+            // Setup frame context
+            frameCtx.width = width;
+            frameCtx.height = height;
+            frameCtx.view = view;
+            frameCtx.proj = proj;
+            frameCtx.cameraWorldPos = cameraWorldPos;
+            frameCtx.worldLightDir = worldLightDir;
+            frameCtx.viewLightDir = viewLightDir;
+            frameCtx.lightColorIntensity = uniforms.lightColorIntensity;
+            frameCtx.baseUniforms = uniforms;
+            frameCtx.skyUniforms = skyUniforms;
+            frameCtx.tonemapUniforms = tonemapUniforms;
+            frameCtx.visibleMeshletNodes = visibleMeshletNodes;
+            frameCtx.visibleIndexNodes = visibleIndexNodes;
+            frameCtx.visibilityInstanceCount = visibilityInstanceCount;
+            frameCtx.instanceTransformBuffer = instanceTransformBuffer;
+            frameCtx.commandBuffer = commandBuffer;
+            frameCtx.depthClearValue = depthClearValue;
+            frameCtx.cameraFarZ = camera.farZ;
+            frameCtx.enableFrustumCull = enableFrustumCull;
+            frameCtx.enableConeCull = enableConeCull;
+            frameCtx.enableRTShadows = rtShadowsAvailable && enableRTShadows;
+            frameCtx.enableAtmosphereSky = skyAvailable && enableAtmosphereSky;
+            frameCtx.renderMode = renderMode;
 
+            // Setup lighting uniforms
             LightingUniforms lightUniforms;
             lightUniforms.mvp = transpose(mvp);
             lightUniforms.modelView = transpose(modelView);
@@ -1392,27 +1401,18 @@ int main() {
             lightUniforms.materialCount = materials.materialCount;
             lightUniforms.textureCount = static_cast<uint32_t>(materials.textures.size());
             lightUniforms.instanceCount = visibilityInstanceCount;
-            lightUniforms.shadowEnabled = (rtShadowsAvailable && enableRTShadows) ? 1 : 0;
+            lightUniforms.shadowEnabled = frameCtx.enableRTShadows ? 1 : 0;
             lightUniforms.pad2 = 0;
+            frameCtx.lightingUniforms = lightUniforms;
 
-            auto lightingPass = std::make_unique<DeferredLightingPass>(
-                ctx, computePipelineState,
-                visVisibility, visDepth,
-                shadowMapRes, skyRes, skyFallbackTex, instanceTransformBuffer,
-                lightUniforms, width, height);
-            auto* lightingPassPtr = lightingPass.get();
-            fg.addPass(std::move(lightingPass));
-            FGResource lightingOutput = lightingPassPtr->output;
-
-            auto tonemapPass = std::make_unique<TonemapPass>(
-                lightingOutput, drawableRes,
-                tonemapPipelineState, tonemapSampler,
-                tonemapUniforms, width, height);
-            fg.addPass(std::move(tonemapPass));
-
-            auto imguiPass = std::make_unique<ImGuiOverlayPass>(
-                drawableRes, visDepth, depthClearValue, commandBuffer);
-            fg.addPass(std::move(imguiPass));
+            // Build pipeline from JSON
+            PipelineBuilder builder(ctx);
+            if (!builder.build(pipelineAsset, fg, rtCtx, width, height)) {
+                spdlog::error("Failed to build pipeline: {}", builder.lastError());
+            } else {
+                // Set frame context on all passes
+                builder.setFrameContext(&frameCtx);
+            }
         } else {
             // === FORWARD RENDERING (Vertex or Mesh shader) ===
             ZoneScopedN("Forward Graph Build");

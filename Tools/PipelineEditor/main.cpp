@@ -24,52 +24,52 @@
 // Register all known pass types for the editor
 // These are metadata-only - no factory functions needed since we don't instantiate passes
 static void registerPassTypes() {
-    using Type = PassTypeInfo::Type;
+    using PType = PassTypeInfo::PassType;
 
     auto& reg = PassRegistry::instance();
 
     // Geometry passes
     reg.registerPass("VisibilityPass", nullptr, {
         "VisibilityPass", "Visibility Pass", "Geometry",
-        {}, {"visibility", "depth"}, {}, Type::Render
+        {}, {"visibility", "depth"}, {}, PType::Render
     });
     reg.registerPass("ForwardPass", nullptr, {
         "ForwardPass", "Forward Pass", "Geometry",
-        {"skyOutput"}, {"forwardColor", "depth"}, {}, Type::Render
+        {"skyOutput"}, {"forwardColor", "depth"}, {}, PType::Render
     });
 
     // Lighting passes
     reg.registerPass("ShadowRayPass", nullptr, {
         "ShadowRayPass", "Shadow Ray Pass", "Lighting",
-        {"depth"}, {"shadowMap"}, {}, Type::Compute
+        {"depth"}, {"shadowMap"}, {}, PType::Compute
     });
     reg.registerPass("DeferredLightingPass", nullptr, {
         "DeferredLightingPass", "Deferred Lighting", "Lighting",
-        {"visibility", "depth", "shadowMap", "skyOutput"}, {"lightingOutput"}, {}, Type::Compute
+        {"visibility", "depth", "shadowMap", "skyOutput"}, {"lightingOutput"}, {}, PType::Compute
     });
 
     // Environment passes
     reg.registerPass("SkyPass", nullptr, {
         "SkyPass", "Sky Pass", "Environment",
-        {}, {"skyOutput"}, {}, Type::Render
+        {}, {"skyOutput"}, {}, PType::Render
     });
 
     // Post-process passes
     reg.registerPass("TonemapPass", nullptr, {
         "TonemapPass", "Tonemap", "Post-Process",
-        {"lightingOutput"}, {"$backbuffer"}, {}, Type::Render
+        {"lightingOutput"}, {"$backbuffer"}, {}, PType::Render
     });
 
     // Utility passes
     reg.registerPass("BlitPass", nullptr, {
         "BlitPass", "Blit", "Utility",
-        {"source"}, {"destination"}, {}, Type::Blit
+        {"source"}, {"destination"}, {}, PType::Blit
     });
 
     // UI passes
     reg.registerPass("ImGuiOverlayPass", nullptr, {
         "ImGuiOverlayPass", "ImGui Overlay", "UI",
-        {"depth"}, {"$backbuffer"}, {}, Type::Render
+        {"depth"}, {"$backbuffer"}, {}, PType::Render
     });
 }
 

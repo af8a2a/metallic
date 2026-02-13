@@ -91,9 +91,7 @@ std::vector<size_t> PipelineAsset::topologicalSort() const {
     std::unordered_map<std::string, size_t> resourceProducer;
     for (size_t i = 0; i < passes.size(); i++) {
         for (const auto& output : passes[i].outputs) {
-            if (!output.empty() && output[0] != '$') {
-                resourceProducer[output] = i;
-            }
+            resourceProducer[output] = i;
         }
     }
 
@@ -103,12 +101,28 @@ std::vector<size_t> PipelineAsset::topologicalSort() const {
 
     for (size_t i = 0; i < passes.size(); i++) {
         for (const auto& input : passes[i].inputs) {
-            if (input.empty() || input[0] == '$') continue;
+            if (input.empty()) continue;
             auto it = resourceProducer.find(input);
             if (it != resourceProducer.end() && it->second != i) {
                 adj[it->second].push_back(i);
                 inDegree[i]++;
             }
+        }
+    }
+
+    // Chain passes that share the same output (e.g. $backbuffer).
+    // When multiple passes write to the same resource, they must execute
+    // in declaration order so later passes see earlier writes.
+    std::unordered_map<std::string, std::vector<size_t>> outputWriters;
+    for (size_t i = 0; i < passes.size(); i++) {
+        for (const auto& output : passes[i].outputs) {
+            outputWriters[output].push_back(i);
+        }
+    }
+    for (const auto& [name, writers] : outputWriters) {
+        for (size_t w = 1; w < writers.size(); w++) {
+            adj[writers[w - 1]].push_back(writers[w]);
+            inDegree[writers[w]]++;
         }
     }
 
