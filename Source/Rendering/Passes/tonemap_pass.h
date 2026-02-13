@@ -5,6 +5,7 @@
 #include "frame_context.h"
 #include "pass_registry.h"
 #include "imgui.h"
+#include <algorithm>
 
 class TonemapPass : public RenderPass {
 public:
@@ -34,6 +35,13 @@ public:
 
     void configure(const PassConfig& config) override {
         m_name = config.name;
+        m_sourceInputName.clear();
+        for (const auto& inputName : config.inputs) {
+            if (!inputName.empty() && inputName[0] != '$') {
+                m_sourceInputName = inputName;
+                break;
+            }
+        }
         if (config.config.contains("method")) {
             std::string method = config.config["method"].get<std::string>();
             if (method == "Filmic") m_method = 0;
@@ -57,6 +65,9 @@ public:
     }
 
     void setup(FGBuilder& builder) override {
+        m_sourceRead = FGResource{};
+        m_dest = FGResource{};
+
         if (m_legacyMode) {
             m_sourceRead = builder.read(m_legacySource);
             builder.setColorAttachment(0, m_legacyDest,
@@ -65,13 +76,12 @@ public:
             builder.setSideEffect();
             m_dest = m_legacyDest;
         } else {
-            // Read source from input
-            FGResource sourceInput = getInput("lightingOutput");
+            FGResource sourceInput = getSourceInput();
             if (sourceInput.isValid()) {
                 m_sourceRead = builder.read(sourceInput);
             }
 
-            // Get backbuffer from runtime context (set via setInput)
+            // Backbuffer destination is injected by the pipeline builder.
             m_dest = getInput("$backbuffer");
             if (m_dest.isValid()) {
                 builder.setColorAttachment(0, m_dest,
@@ -94,7 +104,7 @@ public:
             return;
         }
 
-        if (!m_frameContext || !m_runtimeContext) return;
+        if (!m_runtimeContext || !m_sourceRead.isValid()) return;
 
         auto pipeIt = m_runtimeContext->renderPipelines.find("TonemapPass");
         if (pipeIt == m_runtimeContext->renderPipelines.end()) return;
@@ -103,15 +113,23 @@ public:
         if (samplerIt == m_runtimeContext->samplers.end()) return;
 
         TonemapUniforms uniforms{};
-        uniforms.isActive = 1u;
-        uniforms.method = static_cast<uint32_t>(m_method);
-        uniforms.exposure = m_exposure;
-        uniforms.contrast = m_contrast;
-        uniforms.brightness = m_brightness;
-        uniforms.saturation = m_saturation;
-        uniforms.vignette = m_vignette;
-        uniforms.dither = m_dither ? 1u : 0u;
-        uniforms.invResolution = float2(1.0f / float(m_width), 1.0f / float(m_height));
+        if (m_frameContext) {
+            uniforms = m_frameContext->tonemapUniforms;
+        } else {
+            uniforms.isActive = 1u;
+            uniforms.method = static_cast<uint32_t>(m_method);
+            uniforms.exposure = m_exposure;
+            uniforms.contrast = m_contrast;
+            uniforms.brightness = m_brightness;
+            uniforms.saturation = m_saturation;
+            uniforms.vignette = m_vignette;
+            uniforms.dither = m_dither ? 1u : 0u;
+            uniforms.invResolution = float2(1.0f / float(m_width), 1.0f / float(m_height));
+            uniforms.pad = float2(0.0f, 0.0f);
+        }
+        if (uniforms.invResolution.x <= 0.0f || uniforms.invResolution.y <= 0.0f) {
+            uniforms.invResolution = float2(1.0f / float(m_width), 1.0f / float(m_height));
+        }
 
         enc->setRenderPipelineState(pipeIt->second);
         enc->setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
@@ -122,6 +140,22 @@ public:
 
     void renderUI() override {
         ImGui::Text("Resolution: %d x %d", m_width, m_height);
+        if (m_frameContext) {
+            const TonemapUniforms& uniforms = m_frameContext->tonemapUniforms;
+            const char* methods[] = {"Filmic", "Uncharted2", "Clip", "ACES", "AgX", "Khronos PBR"};
+            uint32_t method = std::min<uint32_t>(uniforms.method, static_cast<uint32_t>(IM_ARRAYSIZE(methods) - 1));
+            ImGui::Text("Driven by frame controls");
+            ImGui::Text("Active: %s", uniforms.isActive ? "Yes" : "No");
+            ImGui::Text("Method: %s", methods[method]);
+            ImGui::Text("Exposure: %.2f", uniforms.exposure);
+            ImGui::Text("Contrast: %.2f", uniforms.contrast);
+            ImGui::Text("Brightness: %.2f", uniforms.brightness);
+            ImGui::Text("Saturation: %.2f", uniforms.saturation);
+            ImGui::Text("Vignette: %.2f", uniforms.vignette);
+            ImGui::Text("Dither: %s", uniforms.dither ? "On" : "Off");
+            return;
+        }
+
         const char* methods[] = {"Filmic", "Uncharted2", "Clip", "ACES", "AgX", "Khronos PBR"};
         ImGui::Combo("Method", &m_method, methods, IM_ARRAYSIZE(methods));
         ImGui::SliderFloat("Exposure", &m_exposure, 0.1f, 4.0f, "%.2f");
@@ -133,6 +167,22 @@ public:
     }
 
 private:
+    FGResource getSourceInput() const {
+        if (!m_sourceInputName.empty()) {
+            FGResource source = getInput(m_sourceInputName);
+            if (source.isValid()) {
+                return source;
+            }
+        }
+
+        for (const auto& [inputName, resource] : m_inputResources) {
+            if (!inputName.empty() && inputName[0] == '$') continue;
+            if (resource.isValid()) return resource;
+        }
+
+        return FGResource{};
+    }
+
     const RenderContext& m_ctx;
     FGResource m_legacySource;
     FGResource m_legacyDest;
@@ -150,5 +200,6 @@ private:
     float m_saturation = 1.0f;
     float m_vignette = 0.0f;
     bool m_dither = true;
+    std::string m_sourceInputName;
     bool m_legacyMode = false;
 };

@@ -569,6 +569,27 @@ static MTL::ComputePipelineState* reloadComputeShader(
     return pso;
 }
 
+static bool loadPipelineAssetChecked(const std::string& path,
+                                     const char* label,
+                                     PipelineAsset& outAsset) {
+    PipelineAsset loaded = PipelineAsset::load(path);
+    if (loaded.name.empty()) {
+        spdlog::error("Failed to load {} pipeline from '{}'", label, path);
+        return false;
+    }
+
+    std::string validationError;
+    if (!loaded.validate(validationError)) {
+        spdlog::error("Invalid {} pipeline '{}': {}", label, path, validationError);
+        return false;
+    }
+
+    outAsset = std::move(loaded);
+    spdlog::info("Loaded {} pipeline: {} ({} passes, {} resources)",
+                 label, outAsset.name, outAsset.passes.size(), outAsset.resources.size());
+    return true;
+}
+
 
 
 int main() {
@@ -972,16 +993,15 @@ int main() {
     bool reloadKeyDown = false;
     bool pipelineReloadKeyDown = false;
 
-    // Load pipeline asset (optional - falls back to code-driven if not found)
-    PipelineAsset pipelineAsset;
-    std::string pipelinePath = std::string(projectRoot) + "/Pipelines/visibility_buffer.json";
-    spdlog::info("Loading pipeline from: {}", pipelinePath);
-    pipelineAsset = PipelineAsset::load(pipelinePath);
-    if (!pipelineAsset.name.empty()) {
-        spdlog::info("Loaded pipeline asset: {} ({} passes, {} resources)",
-                     pipelineAsset.name, pipelineAsset.passes.size(), pipelineAsset.resources.size());
-    } else {
-        spdlog::warn("Failed to load pipeline asset, using code-driven pipeline");
+    // Load pipeline assets
+    PipelineAsset visPipelineAsset;
+    PipelineAsset fwdPipelineAsset;
+    std::string visPipelinePath = std::string(projectRoot) + "/Pipelines/visibility_buffer.json";
+    std::string fwdPipelinePath = std::string(projectRoot) + "/Pipelines/forward.json";
+
+    if (!loadPipelineAssetChecked(visPipelinePath, "visibility buffer", visPipelineAsset) ||
+        !loadPipelineAssetChecked(fwdPipelinePath, "forward", fwdPipelineAsset)) {
+        return 1;
     }
 
     const double depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
@@ -1031,6 +1051,8 @@ int main() {
     rtCtx.renderPipelines["VisibilityPass"] = visPipelineState;
     rtCtx.renderPipelines["SkyPass"] = skyPipelineState;
     rtCtx.renderPipelines["TonemapPass"] = tonemapPipelineState;
+    rtCtx.renderPipelines["ForwardPass"] = pipelineState;
+    rtCtx.renderPipelines["ForwardMeshPass"] = meshPipelineState;
     rtCtx.computePipelines["DeferredLightingPass"] = computePipelineState;
     rtCtx.samplers["tonemap"] = tonemapSampler;
     rtCtx.samplers["atmosphere"] = atmosphereTextures.sampler;
@@ -1040,6 +1062,7 @@ int main() {
 
     PipelineBuilder pipelineBuilder(ctx);
     bool pipelineNeedsRebuild = true;
+    int lastRenderMode = -1;
 
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("Frame");
@@ -1266,6 +1289,15 @@ int main() {
                 spdlog::info("All {} shaders reloaded successfully", reloaded);
             else
                 spdlog::warn("{} shaders reloaded, {} failed (keeping old pipelines)", reloaded, failed);
+
+            // Update runtime context with reloaded pipelines
+            rtCtx.renderPipelines["VisibilityPass"] = visPipelineState;
+            rtCtx.renderPipelines["SkyPass"] = skyPipelineState;
+            rtCtx.renderPipelines["TonemapPass"] = tonemapPipelineState;
+            rtCtx.renderPipelines["ForwardPass"] = pipelineState;
+            rtCtx.renderPipelines["ForwardMeshPass"] = meshPipelineState;
+            rtCtx.computePipelines["DeferredLightingPass"] = computePipelineState;
+            pipelineNeedsRebuild = true;
         }
         ImGui::End();
         imguiFramePass->release();
@@ -1280,11 +1312,25 @@ int main() {
         // Pipeline hot-reload (F6)
         bool f6Down = glfwGetKey(window, GLFW_KEY_F6) == GLFW_PRESS;
         if (f6Down && !pipelineReloadKeyDown) {
-            pipelineAsset = PipelineAsset::load(pipelinePath);
-            if (!pipelineAsset.name.empty()) {
-                spdlog::info("Reloaded pipeline: {}", pipelineAsset.name);
-                pipelineNeedsRebuild = true;
+            bool reloadedAnyPipeline = false;
+
+            PipelineAsset reloadedVis;
+            if (loadPipelineAssetChecked(visPipelinePath, "visibility buffer", reloadedVis)) {
+                visPipelineAsset = std::move(reloadedVis);
+                reloadedAnyPipeline = true;
+            } else {
+                spdlog::warn("Keeping previous visibility buffer pipeline: {}", visPipelineAsset.name);
             }
+
+            PipelineAsset reloadedFwd;
+            if (loadPipelineAssetChecked(fwdPipelinePath, "forward", reloadedFwd)) {
+                fwdPipelineAsset = std::move(reloadedFwd);
+                reloadedAnyPipeline = true;
+            } else {
+                spdlog::warn("Keeping previous forward pipeline: {}", fwdPipelineAsset.name);
+            }
+
+            pipelineNeedsRebuild = reloadedAnyPipeline;
         }
         pipelineReloadKeyDown = f6Down;
 
@@ -1313,15 +1359,15 @@ int main() {
         tonemapUniforms.invResolution = float2(1.0f / float(width), 1.0f / float(height));
         tonemapUniforms.pad = float2(0.0f, 0.0f);
 
-        // --- Build FrameGraph ---
-        FrameGraph fg;  // used only for forward path
+        // --- Build FrameGraph (unified data-driven path) ---
         MTL::Buffer* instanceTransformBuffer = nullptr;
 
         FrameContext frameCtx;
 
-        if (renderMode == 2 && !pipelineAsset.name.empty()) {
-            // === DATA-DRIVEN VISIBILITY BUFFER MODE ===
-            ZoneScopedN("Visibility Buffer Graph Build (Data-Driven)");
+        // Visibility buffer mode needs instance transform buffer
+        uint32_t visibilityInstanceCount = 0;
+        if (renderMode == 2) {
+            ZoneScopedN("Visibility Instance Setup");
 
             static bool warnedInstanceOverflow = false;
             if (!warnedInstanceOverflow &&
@@ -1339,7 +1385,7 @@ int main() {
                 warnedMeshletOverflow = true;
             }
 
-            uint32_t visibilityInstanceCount =
+            visibilityInstanceCount =
                 static_cast<uint32_t>(std::min<size_t>(visibleMeshletNodes.size(),
                                                        kVisibilityInstanceMask + 1));
 
@@ -1360,33 +1406,35 @@ int main() {
                 visibilityInstanceTransforms.data(),
                 visibilityInstanceTransforms.size() * sizeof(SceneInstanceTransform),
                 MTL::ResourceStorageModeShared);
+        }
 
-            // Setup frame context
-            frameCtx.width = width;
-            frameCtx.height = height;
-            frameCtx.view = view;
-            frameCtx.proj = proj;
-            frameCtx.cameraWorldPos = cameraWorldPos;
-            frameCtx.worldLightDir = worldLightDir;
-            frameCtx.viewLightDir = viewLightDir;
-            frameCtx.lightColorIntensity = uniforms.lightColorIntensity;
-            frameCtx.baseUniforms = uniforms;
-            frameCtx.skyUniforms = skyUniforms;
-            frameCtx.tonemapUniforms = tonemapUniforms;
-            frameCtx.visibleMeshletNodes = visibleMeshletNodes;
-            frameCtx.visibleIndexNodes = visibleIndexNodes;
-            frameCtx.visibilityInstanceCount = visibilityInstanceCount;
-            frameCtx.instanceTransformBuffer = instanceTransformBuffer;
-            frameCtx.commandBuffer = commandBuffer;
-            frameCtx.depthClearValue = depthClearValue;
-            frameCtx.cameraFarZ = camera.farZ;
-            frameCtx.enableFrustumCull = enableFrustumCull;
-            frameCtx.enableConeCull = enableConeCull;
-            frameCtx.enableRTShadows = rtShadowsAvailable && enableRTShadows;
-            frameCtx.enableAtmosphereSky = skyAvailable && enableAtmosphereSky;
-            frameCtx.renderMode = renderMode;
+        // Populate frame context (shared across all modes)
+        frameCtx.width = width;
+        frameCtx.height = height;
+        frameCtx.view = view;
+        frameCtx.proj = proj;
+        frameCtx.cameraWorldPos = cameraWorldPos;
+        frameCtx.worldLightDir = worldLightDir;
+        frameCtx.viewLightDir = viewLightDir;
+        frameCtx.lightColorIntensity = uniforms.lightColorIntensity;
+        frameCtx.baseUniforms = uniforms;
+        frameCtx.skyUniforms = skyUniforms;
+        frameCtx.tonemapUniforms = tonemapUniforms;
+        frameCtx.visibleMeshletNodes = visibleMeshletNodes;
+        frameCtx.visibleIndexNodes = visibleIndexNodes;
+        frameCtx.visibilityInstanceCount = visibilityInstanceCount;
+        frameCtx.instanceTransformBuffer = instanceTransformBuffer;
+        frameCtx.commandBuffer = commandBuffer;
+        frameCtx.depthClearValue = depthClearValue;
+        frameCtx.cameraFarZ = camera.farZ;
+        frameCtx.enableFrustumCull = enableFrustumCull;
+        frameCtx.enableConeCull = enableConeCull;
+        frameCtx.enableRTShadows = rtShadowsAvailable && enableRTShadows;
+        frameCtx.enableAtmosphereSky = skyAvailable && enableAtmosphereSky;
+        frameCtx.renderMode = renderMode;
 
-            // Setup lighting uniforms
+        if (renderMode == 2) {
+            // Lighting uniforms (only needed for visibility buffer deferred lighting)
             LightingUniforms lightUniforms;
             lightUniforms.mvp = transpose(mvp);
             lightUniforms.modelView = transpose(modelView);
@@ -1404,70 +1452,33 @@ int main() {
             lightUniforms.shadowEnabled = frameCtx.enableRTShadows ? 1 : 0;
             lightUniforms.pad2 = 0;
             frameCtx.lightingUniforms = lightUniforms;
-
-            // Rebuild pipeline only when needed (first frame, F6 reload, resolution change)
-            if (pipelineNeedsRebuild || pipelineBuilder.needsRebuild(width, height)) {
-                rtCtx.backbuffer = drawable->texture();
-                if (!pipelineBuilder.build(pipelineAsset, rtCtx, width, height)) {
-                    spdlog::error("Failed to build pipeline: {}", pipelineBuilder.lastError());
-                } else {
-                    pipelineBuilder.compile();
-                }
-                pipelineNeedsRebuild = false;
-            }
-
-            // Per-frame: swap backbuffer, update frame context, reset transients
-            pipelineBuilder.updateFrame(drawable->texture(), &frameCtx);
-        } else {
-            // === FORWARD RENDERING (Vertex or Mesh shader) ===
-            ZoneScopedN("Forward Graph Build");
-
-            auto drawableRes = fg.import("drawable", drawable->texture());
-
-            bool useSky = skyAvailable && enableAtmosphereSky;
-            FGResource skyTarget{};
-            if (useSky) {
-                auto skyPass = std::make_unique<SkyPass>(
-                    FGResource{}, skyPipelineState,
-                    atmosphereTextures.transmittance,
-                    atmosphereTextures.scattering,
-                    atmosphereTextures.irradiance,
-                    atmosphereTextures.sampler,
-                    skyUniforms,
-                    false,
-                    width, height);
-                auto* skyPassPtr = skyPass.get();
-                fg.addPass(std::move(skyPass));
-                skyTarget = skyPassPtr->output;
-            }
-
-            auto fwdPass = std::make_unique<ForwardPass>(
-                ctx, renderMode,
-                pipelineState, meshPipelineState, uniforms,
-                visibleMeshletNodes, visibleIndexNodes,
-                view, proj, cameraWorldPos,
-                width, height, useSky, skyTarget);
-            auto* fwdPassPtr = fwdPass.get();
-            fg.addPass(std::move(fwdPass));
-
-            auto tonemapPass = std::make_unique<TonemapPass>(
-                fwdPassPtr->output, drawableRes,
-                tonemapPipelineState, tonemapSampler,
-                tonemapUniforms, width, height);
-            fg.addPass(std::move(tonemapPass));
-
-            auto imguiPass = std::make_unique<ImGuiOverlayPass>(
-                drawableRes, fwdPassPtr->depth, depthClearValue, commandBuffer);
-            fg.addPass(std::move(imguiPass));
         }
 
-        // Use the appropriate frame graph
-        bool useDataDriven = (renderMode == 2 && !pipelineAsset.name.empty());
-        FrameGraph& activeFg = useDataDriven ? pipelineBuilder.frameGraph() : fg;
+        // Select active pipeline asset based on render mode
+        const PipelineAsset& activePipelineAsset = (renderMode == 2) ? visPipelineAsset : fwdPipelineAsset;
 
-        if (!useDataDriven) {
-            fg.compile();
+        // Detect mode switch
+        if (renderMode != lastRenderMode) {
+            pipelineNeedsRebuild = true;
+            lastRenderMode = renderMode;
         }
+
+        // Rebuild pipeline only when needed (first frame, F6 reload, resolution change, mode switch)
+        if (pipelineNeedsRebuild || pipelineBuilder.needsRebuild(width, height)) {
+            rtCtx.backbuffer = drawable->texture();
+            bool buildSucceeded = pipelineBuilder.build(activePipelineAsset, rtCtx, width, height);
+            if (!buildSucceeded) {
+                spdlog::error("Failed to build pipeline: {}", pipelineBuilder.lastError());
+            } else {
+                pipelineBuilder.compile();
+            }
+            pipelineNeedsRebuild = !buildSucceeded;
+        }
+
+        // Per-frame: swap backbuffer, update frame context, reset transients
+        pipelineBuilder.updateFrame(drawable->texture(), &frameCtx);
+
+        FrameGraph& activeFg = pipelineBuilder.frameGraph();
 
         if (showGraphDebug)
             activeFg.debugImGui();

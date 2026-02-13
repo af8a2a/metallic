@@ -13,18 +13,19 @@ bool PipelineBuilder::needsRebuild(int width, int height) const {
 bool PipelineBuilder::build(const PipelineAsset& asset,
                             const PipelineRuntimeContext& rtCtx,
                             int width, int height) {
-    // Reset all state
-    m_fg = FrameGraph{};
-    m_resourceMap.clear();
-    m_passes.clear();
     m_lastError.clear();
-    m_backbufferRes = FGResource{};
 
     // Validate the pipeline first
     if (!asset.validate(m_lastError)) {
-        m_built = false;
         return false;
     }
+
+    // Reset all state only after validation so a bad hot-reload does not
+    // destroy an already-built graph.
+    m_fg = FrameGraph{};
+    m_resourceMap.clear();
+    m_passes.clear();
+    m_backbufferRes = FGResource{};
 
     // Import special resources
     if (rtCtx.backbuffer) {

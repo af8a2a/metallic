@@ -35,6 +35,15 @@ void PipelineAsset::save(const std::string& path) const {
 }
 
 bool PipelineAsset::validate(std::string& errorMsg) const {
+    if (name.empty()) {
+        errorMsg = "Pipeline name is empty";
+        return false;
+    }
+    if (passes.empty()) {
+        errorMsg = "Pipeline has no passes";
+        return false;
+    }
+
     // Check for duplicate resource names
     std::unordered_set<std::string> resourceNames;
     for (const auto& res : resources) {
@@ -48,6 +57,14 @@ bool PipelineAsset::validate(std::string& errorMsg) const {
     // Build map of resource producers (which pass outputs each resource)
     std::unordered_map<std::string, std::string> resourceProducer;
     for (const auto& pass : passes) {
+        if (pass.name.empty()) {
+            errorMsg = "Pipeline contains a pass with an empty name";
+            return false;
+        }
+        if (pass.type.empty()) {
+            errorMsg = "Pass '" + pass.name + "' has an empty type";
+            return false;
+        }
         for (const auto& output : pass.outputs) {
             if (output.empty() || output[0] == '$') continue;  // skip special resources like $backbuffer
             if (resourceProducer.count(output)) {
