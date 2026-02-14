@@ -9,18 +9,14 @@
 
 #include "glfw_metal_bridge.h"
 #include "imgui_metal_bridge.h"
-#include "mesh_loader.h"
-#include "meshlet_builder.h"
-#include "material_loader.h"
 #include "camera.h"
 #include "input.h"
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 
-#include "scene_graph.h"
 #include "scene_graph_ui.h"
-#include "raytraced_shadows.h"
+#include "scene_context.h"
 
 #include <spdlog/spdlog.h>
 #include <string>
@@ -47,148 +43,6 @@
 #include "pipeline_asset.h"
 #include "pipeline_builder.h"
 #include "frame_context.h"
-
-
-struct AtmosphereTextureSet {
-    MTL::Texture* transmittance = nullptr;
-    MTL::Texture* scattering = nullptr;
-    MTL::Texture* irradiance = nullptr;
-    MTL::SamplerState* sampler = nullptr;
-
-    bool isValid() const {
-        return transmittance && scattering && irradiance && sampler;
-    }
-
-    void release() {
-        if (transmittance) { transmittance->release(); transmittance = nullptr; }
-        if (scattering) { scattering->release(); scattering = nullptr; }
-        if (irradiance) { irradiance->release(); irradiance = nullptr; }
-        if (sampler) { sampler->release(); sampler = nullptr; }
-    }
-};
-
-static std::vector<float> loadFloatData(const std::string& path, size_t expectedCount) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) {
-        spdlog::warn("Atmosphere: missing texture data {}", path);
-        return {};
-    }
-
-    file.seekg(0, std::ios::end);
-    size_t size = static_cast<size_t>(file.tellg());
-    file.seekg(0, std::ios::beg);
-    if (size == 0 || size % sizeof(float) != 0) {
-        spdlog::warn("Atmosphere: invalid data size {} ({} bytes)", path, size);
-        return {};
-    }
-
-    std::vector<float> data(size / sizeof(float));
-    file.read(reinterpret_cast<char*>(data.data()), size);
-    if (!file) {
-        spdlog::warn("Atmosphere: failed to read {}", path);
-        return {};
-    }
-
-    if (expectedCount > 0 && data.size() != expectedCount) {
-        spdlog::warn("Atmosphere: unexpected element count in {} ({} vs {})",
-                     path, data.size(), expectedCount);
-    }
-    return data;
-}
-
-static MTL::Texture* createTexture2D(MTL::Device* device, int width, int height,
-                                     const float* data) {
-    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatRGBA32Float, width, height, false);
-    desc->setStorageMode(MTL::StorageModeShared);
-    desc->setUsage(MTL::TextureUsageShaderRead);
-    auto* tex = device->newTexture(desc);
-    desc->release();
-    if (!tex) {
-        return nullptr;
-    }
-    size_t bytesPerRow = static_cast<size_t>(width) * 4 * sizeof(float);
-    tex->replaceRegion(MTL::Region(0, 0, 0, width, height, 1), 0, data, bytesPerRow);
-    return tex;
-}
-
-static MTL::Texture* createTexture3D(MTL::Device* device, int width, int height, int depth,
-                                     const float* data) {
-    auto* desc = MTL::TextureDescriptor::alloc()->init();
-    desc->setTextureType(MTL::TextureType3D);
-    desc->setPixelFormat(MTL::PixelFormatRGBA32Float);
-    desc->setWidth(width);
-    desc->setHeight(height);
-    desc->setDepth(depth);
-    desc->setMipmapLevelCount(1);
-    desc->setStorageMode(MTL::StorageModeShared);
-    desc->setUsage(MTL::TextureUsageShaderRead);
-    auto* tex = device->newTexture(desc);
-    desc->release();
-    if (!tex) {
-        return nullptr;
-    }
-    size_t bytesPerRow = static_cast<size_t>(width) * 4 * sizeof(float);
-    size_t bytesPerImage = bytesPerRow * static_cast<size_t>(height);
-    tex->replaceRegion(MTL::Region(0, 0, 0, width, height, depth), 0, 0,
-                       data, bytesPerRow, bytesPerImage);
-    return tex;
-}
-
-static bool loadAtmosphereTextures(MTL::Device* device, const char* projectRoot,
-                                   AtmosphereTextureSet& out) {
-    constexpr int kTransmittanceWidth = 256;
-    constexpr int kTransmittanceHeight = 64;
-    constexpr int kScatteringWidth = 256; // NU_SIZE * MU_S_SIZE
-    constexpr int kScatteringHeight = 128;
-    constexpr int kScatteringDepth = 32;
-    constexpr int kIrradianceWidth = 64;
-    constexpr int kIrradianceHeight = 16;
-
-    std::string basePath = std::string(projectRoot) + "/Asset/Atmosphere/";
-    auto transmittance = loadFloatData(
-        basePath + "transmittance.dat",
-        static_cast<size_t>(kTransmittanceWidth) * kTransmittanceHeight * 4);
-    auto scattering = loadFloatData(
-        basePath + "scattering.dat",
-        static_cast<size_t>(kScatteringWidth) * kScatteringHeight * kScatteringDepth * 4);
-    auto irradiance = loadFloatData(
-        basePath + "irradiance.dat",
-        static_cast<size_t>(kIrradianceWidth) * kIrradianceHeight * 4);
-
-    if (transmittance.empty() || scattering.empty() || irradiance.empty()) {
-        return false;
-    }
-
-    out.transmittance = createTexture2D(
-        device, kTransmittanceWidth, kTransmittanceHeight, transmittance.data());
-    out.scattering = createTexture3D(
-        device, kScatteringWidth, kScatteringHeight, kScatteringDepth, scattering.data());
-    out.irradiance = createTexture2D(
-        device, kIrradianceWidth, kIrradianceHeight, irradiance.data());
-
-    if (!out.transmittance || !out.scattering || !out.irradiance) {
-        out.release();
-        return false;
-    }
-
-    auto* samplerDesc = MTL::SamplerDescriptor::alloc()->init();
-    samplerDesc->setMinFilter(MTL::SamplerMinMagFilterLinear);
-    samplerDesc->setMagFilter(MTL::SamplerMinMagFilterLinear);
-    samplerDesc->setMipFilter(MTL::SamplerMipFilterNotMipmapped);
-    samplerDesc->setSAddressMode(MTL::SamplerAddressModeClampToEdge);
-    samplerDesc->setTAddressMode(MTL::SamplerAddressModeClampToEdge);
-    samplerDesc->setRAddressMode(MTL::SamplerAddressModeClampToEdge);
-    out.sampler = device->newSamplerState(samplerDesc);
-    samplerDesc->release();
-
-    if (!out.sampler) {
-        out.release();
-        return false;
-    }
-
-    return true;
-}
 
 
 static bool loadPipelineAssetChecked(const std::string& path,
@@ -248,57 +102,15 @@ int main() {
     metalLayer->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
     metalLayer->setFramebufferOnly(false);
 
-    // Load scene mesh
-    LoadedMesh sceneMesh;
-    if (!loadGLTFMesh(device, "Asset/Sponza/glTF/Sponza.gltf", sceneMesh)) {
-        spdlog::error("Failed to load scene mesh");
-        return 1;
-    }
-
-    // Build meshlets for mesh shader rendering
-    MeshletData meshletData;
-    if (!buildMeshlets(device, sceneMesh, meshletData)) {
-        spdlog::error("Failed to build meshlets");
-        return 1;
-    }
-
-    // Load materials and textures
-    LoadedMaterials materials;
-    if (!loadGLTFMaterials(device, commandQueue, "Asset/Sponza/glTF/Sponza.gltf", materials)) {
-        spdlog::error("Failed to load materials");
-        return 1;
-    }
-
-    // Build scene graph from glTF node hierarchy
-    SceneGraph sceneGraph;
-    if (!sceneGraph.buildFromGLTF("Asset/Sponza/glTF/Sponza.gltf", sceneMesh, meshletData)) {
-        spdlog::error("Failed to build scene graph");
-        return 1;
-    }
-    sceneGraph.updateTransforms();
-
     const char* projectRoot = PROJECT_SOURCE_DIR;
 
-    // Build raytracing acceleration structures for shadows
-    RaytracedShadowResources shadowResources;
-    bool rtShadowsAvailable = false;
-    if (device->supportsRaytracing()) {
-        ZoneScopedN("Build Acceleration Structures");
-        if (buildAccelerationStructures(device, commandQueue, sceneMesh, sceneGraph, shadowResources) &&
-            createShadowPipeline(device, shadowResources, projectRoot)) {
-            rtShadowsAvailable = true;
-            spdlog::info("Raytraced shadows enabled");
-        } else {
-            spdlog::error("Failed to initialize raytraced shadows");
-            shadowResources.release();
-        }
-    } else {
-        spdlog::info("Raytracing not supported on this device");
-    }
+    // Load all scene data
+    SceneContext scene(device, commandQueue, projectRoot);
+    if (!scene.loadAll("Asset/Sponza/glTF/Sponza.gltf")) return 1;
 
     // Init orbit camera
     OrbitCamera camera;
-    camera.initFromBounds(sceneMesh.bboxMin, sceneMesh.bboxMax);
+    camera.initFromBounds(scene.mesh().bboxMin, scene.mesh().bboxMax);
 
     // Setup input
     InputState inputState;
@@ -317,19 +129,14 @@ int main() {
     ShaderManager shaderManager(device, projectRoot);
     if (!shaderManager.buildAll()) return 1;
 
-    AtmosphereTextureSet atmosphereTextures;
-    bool atmosphereLoaded = loadAtmosphereTextures(device, projectRoot, atmosphereTextures);
-    if (!atmosphereLoaded) {
-        spdlog::warn("Atmosphere textures not found or invalid; sky pass will use fallback");
+    if (scene.atmosphereLoaded()) {
+        auto& atm = scene.atmosphereTextures();
+        shaderManager.importTexture("transmittance", atm.transmittance);
+        shaderManager.importTexture("scattering", atm.scattering);
+        shaderManager.importTexture("irradiance", atm.irradiance);
+        shaderManager.importSampler("atmosphere", atm.sampler);
     }
-
-    if (atmosphereLoaded) {
-        shaderManager.importTexture("transmittance", atmosphereTextures.transmittance);
-        shaderManager.importTexture("scattering", atmosphereTextures.scattering);
-        shaderManager.importTexture("irradiance", atmosphereTextures.irradiance);
-        shaderManager.importSampler("atmosphere", atmosphereTextures.sampler);
-    }
-    bool skyAvailable = atmosphereLoaded && shaderManager.hasSkyPipeline();
+    bool skyAvailable = scene.atmosphereLoaded() && shaderManager.hasSkyPipeline();
 
     int renderMode = 0; // 0=Vertex, 1=Mesh, 2=Visibility Buffer
     bool enableFrustumCull = false;
@@ -356,48 +163,12 @@ int main() {
         return 1;
     }
 
-    const double depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
-
-    // Create depth stencil state
-    MTL::DepthStencilDescriptor* depthDesc = MTL::DepthStencilDescriptor::alloc()->init();
-    depthDesc->setDepthCompareFunction(
-        ML_DEPTH_REVERSED ? MTL::CompareFunctionGreater : MTL::CompareFunctionLess);
-    depthDesc->setDepthWriteEnabled(true);
-    MTL::DepthStencilState* depthState = device->newDepthStencilState(depthDesc);
-    depthDesc->release();
-
-    // 1x1 depth texture used only to tell ImGui about the depth pixel format
-    auto* imguiDepthTexDesc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatDepth32Float, 1, 1, false);
-    imguiDepthTexDesc->setStorageMode(MTL::StorageModePrivate);
-    imguiDepthTexDesc->setUsage(MTL::TextureUsageRenderTarget);
-    MTL::Texture* imguiDepthDummy = device->newTexture(imguiDepthTexDesc);
-
-    // 1x1 shadow texture for non-RT paths (white = fully lit)
-    auto* shadowDummyDesc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatR8Unorm, 1, 1, false);
-    shadowDummyDesc->setStorageMode(MTL::StorageModeShared);
-    shadowDummyDesc->setUsage(MTL::TextureUsageShaderRead);
-    MTL::Texture* shadowDummyTex = device->newTexture(shadowDummyDesc);
-    uint8_t shadowClear = 0xFF;
-    shadowDummyTex->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, &shadowClear, 1);
-
-    // 1x1 sky fallback texture (BGRA8)
-    auto* skyFallbackDesc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatBGRA8Unorm, 1, 1, false);
-    skyFallbackDesc->setStorageMode(MTL::StorageModeShared);
-    skyFallbackDesc->setUsage(MTL::TextureUsageShaderRead);
-    MTL::Texture* skyFallbackTex = device->newTexture(skyFallbackDesc);
-    uint8_t skyFallbackColor[4] = {77, 51, 26, 255}; // B, G, R, A (~0.3, 0.2, 0.1)
-    skyFallbackTex->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, skyFallbackColor, 4);
-
     // Create initial framebuffer size (used for metalLayer)
     int fbWidth, fbHeight;
     glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
 
-    // Persistent render context and pipeline builder (hoisted out of frame loop)
-    RenderContext ctx{sceneMesh, meshletData, materials, sceneGraph,
-                      shadowResources, depthState, shadowDummyTex, skyFallbackTex, depthClearValue};
+    // Persistent render context and pipeline builder
+    RenderContext ctx = scene.renderContext();
     PipelineRuntimeContext& rtCtx = shaderManager.runtimeContext();
 
     PipelineBuilder pipelineBuilder(ctx);
@@ -436,7 +207,7 @@ int main() {
             proj = camera.projectionMatrix(aspect);
 
             // Light data from scene graph sun source.
-            DirectionalLight sunLight = sceneGraph.getSunDirectionalLight();
+            DirectionalLight sunLight = scene.sceneGraph().getSunDirectionalLight();
             worldLightDir = float4(sunLight.direction, 0.0f);
             viewLightDir = view * worldLightDir;
             lightColorIntensity = float4(
@@ -454,7 +225,7 @@ int main() {
                 camera.target.z + camera.distance * cosE * cosA,
                 1.0f);
 
-            sceneGraph.updateTransforms();
+            scene.sceneGraph().updateTransforms();
         }
 
         // Render pass
@@ -470,7 +241,7 @@ int main() {
         imguiFramePass->colorAttachments()->object(0)->setTexture(drawable->texture());
         // Always provide a depth attachment so the ImGui pipeline matches even when
         // switching render modes within the same frame.
-        imguiFramePass->depthAttachment()->setTexture(imguiDepthDummy);
+        imguiFramePass->depthAttachment()->setTexture(scene.imguiDepthDummy());
         imguiNewFrame(imguiFramePass);
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -495,11 +266,11 @@ int main() {
         ImGui::RadioButton("Mesh Shader", &renderMode, 1);
         ImGui::RadioButton("Visibility Buffer", &renderMode, 2);
         if (renderMode >= 1) {
-            ImGui::Text("Meshlets: %u", meshletData.meshletCount);
+            ImGui::Text("Meshlets: %u", scene.meshlets().meshletCount);
             ImGui::Checkbox("Frustum Culling", &enableFrustumCull);
             ImGui::Checkbox("Backface Culling", &enableConeCull);
         }
-        if (renderMode == 2 && rtShadowsAvailable) {
+        if (renderMode == 2 && scene.rtShadowsAvailable()) {
             ImGui::Checkbox("RT Shadows", &enableRTShadows);
         }
         if (skyAvailable) {
@@ -518,13 +289,13 @@ int main() {
             auto [reloaded, failed] = shaderManager.reloadAll();
 
             // Shadow ray shader (native Metal, not managed by ShaderManager)
-            if (rtShadowsAvailable) {
-                if (reloadShadowPipeline(device, shadowResources, projectRoot)) {
+            if (scene.rtShadowsAvailable()) {
+                if (reloadShadowPipeline(device, scene.shadowResources(), projectRoot)) {
                     reloaded++;
                 } else { failed++; }
             }
 
-            skyAvailable = atmosphereLoaded && shaderManager.hasSkyPipeline();
+            skyAvailable = scene.atmosphereLoaded() && shaderManager.hasSkyPipeline();
 
             if (failed == 0)
                 spdlog::info("All {} shaders reloaded successfully", reloaded);
@@ -538,7 +309,7 @@ int main() {
         } // end ImGui Frame zone
 
         if (showSceneGraphWindow)
-            drawSceneGraphUI(sceneGraph);
+            drawSceneGraphUI(scene.sceneGraph());
 
         if (showImGuiDemo)
             ImGui::ShowDemoWindow(&showImGuiDemo);
@@ -570,10 +341,10 @@ int main() {
 
         std::vector<uint32_t> visibleMeshletNodes;
         std::vector<uint32_t> visibleIndexNodes;
-        visibleMeshletNodes.reserve(sceneGraph.nodes.size());
-        visibleIndexNodes.reserve(sceneGraph.nodes.size());
-        for (const auto& node : sceneGraph.nodes) {
-            if (!sceneGraph.isNodeVisible(node.id))
+        visibleMeshletNodes.reserve(scene.sceneGraph().nodes.size());
+        visibleIndexNodes.reserve(scene.sceneGraph().nodes.size());
+        for (const auto& node : scene.sceneGraph().nodes) {
+            if (!scene.sceneGraph().isNodeVisible(node.id))
                 continue;
             if (node.meshletCount > 0)
                 visibleMeshletNodes.push_back(node.id);
@@ -601,9 +372,9 @@ int main() {
 
             static bool warnedMeshletOverflow = false;
             if (!warnedMeshletOverflow &&
-                meshletData.meshletCount > (kVisibilityMeshletMask + 1u)) {
+                scene.meshlets().meshletCount > (kVisibilityMeshletMask + 1u)) {
                 spdlog::warn("Visibility meshlet id limit exceeded ({} > {}), overflowing meshlets will be culled",
-                             meshletData.meshletCount, kVisibilityMeshletMask + 1);
+                             scene.meshlets().meshletCount, kVisibilityMeshletMask + 1);
                 warnedMeshletOverflow = true;
             }
 
@@ -614,7 +385,7 @@ int main() {
             std::vector<SceneInstanceTransform> visibilityInstanceTransforms;
             visibilityInstanceTransforms.reserve(std::max<size_t>(visibilityInstanceCount, 1));
             for (uint32_t instanceID = 0; instanceID < visibilityInstanceCount; instanceID++) {
-                const auto& node = sceneGraph.nodes[visibleMeshletNodes[instanceID]];
+                const auto& node = scene.sceneGraph().nodes[visibleMeshletNodes[instanceID]];
                 float4x4 nodeModelView = view * node.transform.worldMatrix;
                 float4x4 nodeMVP = proj * nodeModelView;
                 visibilityInstanceTransforms.push_back({transpose(nodeMVP), transpose(nodeModelView)});
@@ -642,19 +413,19 @@ int main() {
         frameCtx.worldLightDir = worldLightDir;
         frameCtx.viewLightDir = viewLightDir;
         frameCtx.lightColorIntensity = lightColorIntensity;
-        frameCtx.meshletCount = meshletData.meshletCount;
-        frameCtx.materialCount = materials.materialCount;
-        frameCtx.textureCount = static_cast<uint32_t>(materials.textures.size());
+        frameCtx.meshletCount = scene.meshlets().meshletCount;
+        frameCtx.materialCount = scene.materials().materialCount;
+        frameCtx.textureCount = static_cast<uint32_t>(scene.materials().textures.size());
         frameCtx.visibleMeshletNodes = visibleMeshletNodes;
         frameCtx.visibleIndexNodes = visibleIndexNodes;
         frameCtx.visibilityInstanceCount = visibilityInstanceCount;
         frameCtx.instanceTransformBuffer = instanceTransformBuffer;
         frameCtx.commandBuffer = commandBuffer;
-        frameCtx.depthClearValue = depthClearValue;
+        frameCtx.depthClearValue = scene.depthClearValue();
         frameCtx.cameraFarZ = camera.farZ;
         frameCtx.enableFrustumCull = enableFrustumCull;
         frameCtx.enableConeCull = enableConeCull;
-        frameCtx.enableRTShadows = rtShadowsAvailable && enableRTShadows;
+        frameCtx.enableRTShadows = scene.rtShadowsAvailable() && enableRTShadows;
         frameCtx.enableAtmosphereSky = skyAvailable && enableAtmosphereSky;
         frameCtx.renderMode = renderMode;
 
@@ -703,9 +474,9 @@ int main() {
         exportGraphKeyDown = gKeyDown;
 
         // Update TLAS with current scene transforms before executing the frame graph
-        if (rtShadowsAvailable && renderMode == 2) {
+        if (scene.rtShadowsAvailable() && renderMode == 2) {
             ZoneScopedN("Update TLAS");
-            updateTLAS(commandBuffer, sceneGraph, shadowResources);
+            updateTLAS(commandBuffer, scene.sceneGraph(), scene.shadowResources());
         }
 
         activeFg.execute(commandBuffer, device, tracyGpuCtx);
@@ -729,26 +500,6 @@ int main() {
     tracyMetalDestroy(tracyGpuCtx);
 
     // Cleanup
-    shadowResources.release();
-    imguiDepthDummy->release();
-    shadowDummyTex->release();
-    skyFallbackTex->release();
-    atmosphereTextures.release();
-    meshletData.meshletBuffer->release();
-    meshletData.meshletVertices->release();
-    meshletData.meshletTriangles->release();
-    meshletData.boundsBuffer->release();
-    meshletData.materialIDs->release();
-    for (auto* tex : materials.textures) {
-        if (tex) tex->release();
-    }
-    materials.materialBuffer->release();
-    materials.sampler->release();
-    sceneMesh.positionBuffer->release();
-    sceneMesh.normalBuffer->release();
-    sceneMesh.uvBuffer->release();
-    sceneMesh.indexBuffer->release();
-    depthState->release();
     commandQueue->release();
     device->release();
     glfwDestroyWindow(window);

@@ -1,58 +1,33 @@
-/Users/af8a2a/project/rendergraph/cmake-build-release/Source/Metallic
-[2026-02-10 19:46:42.523] [info] Metal device: Apple M4 Pro
-[2026-02-10 19:46:42.530] [info] Loaded 103 primitives (103 groups): 192496 vertices, 786801 indices
-[2026-02-10 19:46:42.613] [info] Built 3476 meshlets from 103 groups (avg 63 verts, 75 tris per meshlet)
-[2026-02-10 19:46:43.332] [info] Loaded 69 textures
-[2026-02-10 19:46:43.332] [info] Loaded 25 materials
-[2026-02-10 19:46:43.332] [info] SceneGraph: 2 nodes, 2 roots
-[2026-02-10 19:46:43.354] [info] Built TLAS with 1 instances, 1 unique BLAS
-[2026-02-10 19:46:43.354] [info] Loading shader: /Users/af8a2a/project/rendergraph/Shaders/Raytracing/raytraced_shadow.metal
-[2026-02-10 19:46:43.356] [info] Shadow ray pipeline created
-[2026-02-10 19:46:43.356] [info] Raytraced shadows enabled
-[2026-02-10 19:46:43.384] [info] Loading shader: Shaders/Vertex/bunny (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-10 19:46:43.403] [info] Slang compiled Metal shader (2579 bytes)
-[2026-02-10 19:46:43.472] [info] Loading shader: Shaders/Mesh/meshlet (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-10 19:46:43.515] [info] Mesh shader compiled (11398 bytes)
-[2026-02-10 19:46:43.554] [info] Loading shader: Shaders/Visibility/visibility (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-10 19:46:43.594] [info] Visibility shader compiled (11190 bytes)
-[2026-02-10 19:46:43.613] [info] Loading shader: Shaders/Visibility/deferred_lighting (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-10 19:46:43.675] [info] Compute shader compiled (17403 bytes)
-[2026-02-10 19:46:43.693] [info] Loading shader: Shaders/Atmosphere/sky (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-10 19:46:43.765] [info] Loading shader: Shaders/Post/tonemap (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-10 19:46:43.791] [error] Slang load error: Shaders/Post/tonemap.slang(33): error 33071: expected a string literal
-[shader(vertex)]
-        ^~~~~~
-Shaders/Post/tonemap.slang(215): error 33071: expected a string literal
-[shader(fragment)]
-        ^~~~~~~~
-Shaders/Post/tonemap.slang(171): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
-        case ToneMapMethod::eFilmic:
-                            ^~~~~~~
-Shaders/Post/tonemap.slang(171): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
-Shaders/Post/tonemap.slang(174): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
-        case ToneMapMethod::eUncharted2:
-                            ^~~~~~~~~~~
-Shaders/Post/tonemap.slang(174): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
-Shaders/Post/tonemap.slang(177): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
-        case ToneMapMethod::eClip:
-                            ^~~~~
-Shaders/Post/tonemap.slang(177): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
-Shaders/Post/tonemap.slang(180): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
-        case ToneMapMethod::eACES:
-                            ^~~~~
-Shaders/Post/tonemap.slang(180): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
-Shaders/Post/tonemap.slang(183): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
-        case ToneMapMethod::eAgX:
-                            ^~~~
-Shaders/Post/tonemap.slang(183): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
-Shaders/Post/tonemap.slang(186): error 30019: expected an expression of type 'uint', got 'ToneMapMethod'
-        case ToneMapMethod::eKhronosPBR:
-                            ^~~~~~~~~~~
-Shaders/Post/tonemap.slang(186): note: explicit conversion from 'ToneMapMethod' to 'uint' is possible
-(0): error 39999: import of module 'Shaders/Post/tonemap' failed because of a compilation error
-(0): fatal error 39999: compilation ceased
-abort compilation: (0): fatal error 39999: compilation ceased
-
-[2026-02-10 19:46:43.793] [error] Failed to compile tonemap shader
-
-Process finished with exit code 1
+Cannot index window tabs due to missing main bundle identifier
+[2026-02-13 11:32:43.016] [info] Metal device: Apple M4 Pro
+[2026-02-13 11:32:43.041] [info] Loaded 103 primitives (103 groups): 192496 vertices, 786801 indices
+[2026-02-13 11:32:43.310] [info] Built 3476 meshlets from 103 groups (avg 63 verts, 75 tris per meshlet)
+[2026-02-13 11:32:45.595] [info] Loaded 69 textures
+[2026-02-13 11:32:45.595] [info] Loaded 25 materials
+[2026-02-13 11:32:45.596] [info] SceneGraph: 2 nodes, 2 roots
+[2026-02-13 11:32:45.629] [info] Built TLAS with 1 instances, 1 unique BLAS
+[2026-02-13 11:32:45.629] [info] Loading shader: /Users/af8a2a/project/rendergraph/Shaders/Raytracing/raytraced_shadow.metal
+[2026-02-13 11:32:45.633] [info] Shadow ray pipeline created
+[2026-02-13 11:32:45.633] [info] Raytraced shadows enabled
+[2026-02-13 11:32:45.679] [info] Loading shader: Shaders/Vertex/bunny (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-13 11:32:45.714] [info] Slang compiled Metal shader (2579 bytes)
+[2026-02-13 11:32:45.733] [info] Loading shader: Shaders/Mesh/meshlet (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-13 11:32:45.795] [info] Mesh shader compiled (11398 bytes)
+[2026-02-13 11:32:45.817] [info] Loading shader: Shaders/Visibility/visibility (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-13 11:32:45.871] [info] Visibility shader compiled (11190 bytes)
+[2026-02-13 11:32:45.889] [info] Loading shader: Shaders/Visibility/deferred_lighting (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-13 11:32:45.953] [info] Compute shader compiled (17403 bytes)
+[2026-02-13 11:32:45.969] [info] Loading shader: Shaders/Atmosphere/sky (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-13 11:32:46.026] [info] Loading shader: Shaders/Post/tonemap (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-13 11:32:46.095] [info] Loaded pipeline: VisibilityBufferPipeline (6 passes, 5 resources)
+[2026-02-13 11:32:46.095] [info] Loaded pipeline: ForwardPipeline (4 passes, 3 resources)
+Unable to obtain a task name port right for pid 166: (os/kern) failure (0x5)
+[2026-02-13 11:32:46.176] [info] PipelineBuilder: built pipeline 'ForwardPipeline' with 4 passes
+-[MTLDebugRenderCommandEncoder setRenderPipelineState:]:1639: failed assertion `Set Render Pipeline State Validation
+For color attachment 0, the renderPipelineState pixelFormat must be MTLPixelFormatInvalid, as no texture is set.
+the pipelineState's per sample imageBlock usage(8) is greater than the encoder's perSample imageBlock usage(0)
+'
+-[MTLDebugRenderCommandEncoder setRenderPipelineState:]:1639: failed assertion `Set Render Pipeline State Validation
+For color attachment 0, the renderPipelineState pixelFormat must be MTLPixelFormatInvalid, as no texture is set.
+the pipelineState's per sample imageBlock usage(8) is greater than the encoder's perSample imageBlock usage(0)
+'

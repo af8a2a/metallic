@@ -19,6 +19,7 @@ add_executable(Metallic
     Rendering/pass_registrations.cpp
     Rendering/slang_compiler.cpp
     Rendering/shader_manager.cpp
+    Rendering/scene_context.cpp
 )
 target_include_directories(Metallic PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
