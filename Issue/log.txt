@@ -1,33 +1,41 @@
 Cannot index window tabs due to missing main bundle identifier
-[2026-02-13 11:32:43.016] [info] Metal device: Apple M4 Pro
-[2026-02-13 11:32:43.041] [info] Loaded 103 primitives (103 groups): 192496 vertices, 786801 indices
-[2026-02-13 11:32:43.310] [info] Built 3476 meshlets from 103 groups (avg 63 verts, 75 tris per meshlet)
-[2026-02-13 11:32:45.595] [info] Loaded 69 textures
-[2026-02-13 11:32:45.595] [info] Loaded 25 materials
-[2026-02-13 11:32:45.596] [info] SceneGraph: 2 nodes, 2 roots
-[2026-02-13 11:32:45.629] [info] Built TLAS with 1 instances, 1 unique BLAS
-[2026-02-13 11:32:45.629] [info] Loading shader: /Users/af8a2a/project/rendergraph/Shaders/Raytracing/raytraced_shadow.metal
-[2026-02-13 11:32:45.633] [info] Shadow ray pipeline created
-[2026-02-13 11:32:45.633] [info] Raytraced shadows enabled
-[2026-02-13 11:32:45.679] [info] Loading shader: Shaders/Vertex/bunny (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-13 11:32:45.714] [info] Slang compiled Metal shader (2579 bytes)
-[2026-02-13 11:32:45.733] [info] Loading shader: Shaders/Mesh/meshlet (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-13 11:32:45.795] [info] Mesh shader compiled (11398 bytes)
-[2026-02-13 11:32:45.817] [info] Loading shader: Shaders/Visibility/visibility (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-13 11:32:45.871] [info] Visibility shader compiled (11190 bytes)
-[2026-02-13 11:32:45.889] [info] Loading shader: Shaders/Visibility/deferred_lighting (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-13 11:32:45.953] [info] Compute shader compiled (17403 bytes)
-[2026-02-13 11:32:45.969] [info] Loading shader: Shaders/Atmosphere/sky (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-13 11:32:46.026] [info] Loading shader: Shaders/Post/tonemap (search path: /Users/af8a2a/project/rendergraph)
-[2026-02-13 11:32:46.095] [info] Loaded pipeline: VisibilityBufferPipeline (6 passes, 5 resources)
-[2026-02-13 11:32:46.095] [info] Loaded pipeline: ForwardPipeline (4 passes, 3 resources)
+[2026-02-14 16:10:24.906] [info] Metal device: Apple M4 Pro
+[2026-02-14 16:10:24.931] [info] Loaded 103 primitives (103 groups): 192496 vertices, 786801 indices
+[2026-02-14 16:10:25.200] [info] Built 3476 meshlets from 103 groups (avg 63 verts, 75 tris per meshlet)
+[2026-02-14 16:10:27.493] [info] Loaded 69 textures
+[2026-02-14 16:10:27.494] [info] Loaded 25 materials
+[2026-02-14 16:10:27.495] [info] SceneGraph: 2 nodes, 2 roots
+[2026-02-14 16:10:27.524] [info] Built TLAS with 1 instances, 1 unique BLAS
+[2026-02-14 16:10:27.524] [info] Loading shader: /Users/af8a2a/project/rendergraph/Shaders/Raytracing/raytraced_shadow.metal
+[2026-02-14 16:10:27.526] [info] Shadow ray pipeline created
+[2026-02-14 16:10:27.526] [info] Raytraced shadows enabled
+[2026-02-14 16:10:27.601] [info] Loading shader: Shaders/Vertex/bunny (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-14 16:10:27.633] [info] Slang compiled Metal shader (2579 bytes)
+[2026-02-14 16:10:27.651] [info] Loading shader: Shaders/Mesh/meshlet (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-14 16:10:27.712] [info] Mesh shader compiled (11398 bytes)
+[2026-02-14 16:10:27.734] [info] Loading shader: Shaders/Visibility/visibility (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-14 16:10:27.788] [info] Visibility shader compiled (11190 bytes)
+[2026-02-14 16:10:27.808] [info] Loading shader: Shaders/Visibility/visibility_indirect (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-14 16:10:27.853] [info] Visibility indirect shader compiled (8861 bytes)
+[2026-02-14 16:10:28.054] [info] Loading shader: Shaders/Visibility/meshlet_cull (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-14 16:10:28.083] [info] Meshlet cull shader compiled (7353 bytes)
+[2026-02-14 16:10:28.154] [info] Loading shader: Shaders/Visibility/build_indirect (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-14 16:10:28.159] [info] Build indirect shader compiled (746 bytes)
+[2026-02-14 16:10:28.186] [info] Loading shader: Shaders/Visibility/deferred_lighting (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-14 16:10:28.253] [info] Compute shader compiled (17403 bytes)
+[2026-02-14 16:10:28.270] [info] Loading shader: Shaders/Atmosphere/sky (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-14 16:10:28.331] [info] Loading shader: Shaders/Post/tonemap (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-14 16:10:28.384] [info] Loading shader: Shaders/Post/passthrough (search path: /Users/af8a2a/project/rendergraph)
+[2026-02-14 16:10:28.434] [info] Loaded visibility buffer pipeline: VisibilityBufferPipeline (7 passes, 6 resources)
+[2026-02-14 16:10:28.434] [info] Loaded forward pipeline: ForwardPipeline (4 passes, 3 resources)
+[2026-02-14 16:10:28.470] [info] PipelineBuilder: built pipeline 'ForwardPipeline' with 4 passes
 Unable to obtain a task name port right for pid 166: (os/kern) failure (0x5)
-[2026-02-13 11:32:46.176] [info] PipelineBuilder: built pipeline 'ForwardPipeline' with 4 passes
--[MTLDebugRenderCommandEncoder setRenderPipelineState:]:1639: failed assertion `Set Render Pipeline State Validation
-For color attachment 0, the renderPipelineState pixelFormat must be MTLPixelFormatInvalid, as no texture is set.
-the pipelineState's per sample imageBlock usage(8) is greater than the encoder's perSample imageBlock usage(0)
+[2026-02-14 16:10:39.643] [info] PipelineBuilder: built pipeline 'VisibilityBufferPipeline' with 7 passes
+-[MTLDebugRenderCommandEncoder validateCommonDrawErrors:]:5970: failed assertion `Draw Errors Validation
+Fragment Function(fragmentMain): missing Buffer binding at index 6 for uvs_2[0].
+Mesh Function(meshMain): missing Buffer binding at index 6 for uvs_1[0].
 '
--[MTLDebugRenderCommandEncoder setRenderPipelineState:]:1639: failed assertion `Set Render Pipeline State Validation
-For color attachment 0, the renderPipelineState pixelFormat must be MTLPixelFormatInvalid, as no texture is set.
-the pipelineState's per sample imageBlock usage(8) is greater than the encoder's perSample imageBlock usage(0)
+-[MTLDebugRenderCommandEncoder validateCommonDrawErrors:]:5970: failed assertion `Draw Errors Validation
+Fragment Function(fragmentMain): missing Buffer binding at index 6 for uvs_2[0].
+Mesh Function(meshMain): missing Buffer binding at index 6 for uvs_1[0].
 '

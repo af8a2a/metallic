@@ -124,7 +124,7 @@ public:
         mutableCtx->gpuCounterBuffer = m_counterBuffer;
         mutableCtx->gpuInstanceDataBuffer = m_instanceDataBuffer;
 
-        m_lastVisibleCount = totalMeshlets;
+        // m_lastVisibleCount is set at the top of this function via 1-frame-delayed readback
     }
 
     void renderUI() override {
