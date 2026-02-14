@@ -2,6 +2,12 @@
   "name": "VisibilityBufferPipeline",
   "resources": [
     {
+      "name": "cullResult",
+      "type": "texture",
+      "format": "R8Unorm",
+      "size": "1x1"
+    },
+    {
       "name": "visibility",
       "type": "texture",
       "format": "R32Uint",
@@ -34,9 +40,18 @@
   ],
   "passes": [
     {
+      "name": "Meshlet Cull",
+      "type": "MeshletCullPass",
+      "inputs": [],
+      "outputs": ["cullResult"],
+      "enabled": true,
+      "sideEffect": true,
+      "config": {}
+    },
+    {
       "name": "Visibility Pass",
       "type": "VisibilityPass",
-      "inputs": [],
+      "inputs": ["cullResult"],
       "outputs": ["visibility", "depth"],
       "enabled": true,
       "sideEffect": false,

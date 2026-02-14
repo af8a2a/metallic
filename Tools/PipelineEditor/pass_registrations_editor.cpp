@@ -6,6 +6,11 @@
 #include "pass_registry.h"
 
 // Geometry
+REGISTER_PASS_INFO(MeshletCullPass, "Meshlet Cull", "Geometry",
+    (std::vector<std::string>{}),
+    (std::vector<std::string>{"cullResult"}),
+    PassTypeInfo::PassType::Compute);
+
 REGISTER_PASS_INFO(VisibilityPass, "Visibility Pass", "Geometry",
     (std::vector<std::string>{}),
     (std::vector<std::string>{"visibility", "depth"}),

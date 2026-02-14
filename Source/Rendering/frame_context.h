@@ -49,7 +49,13 @@ struct FrameContext {
     bool enableConeCull = false;
     bool enableRTShadows = true;
     bool enableAtmosphereSky = true;
+    bool gpuDrivenCulling = false;
     int renderMode = 2; // 0=Vertex, 1=Mesh, 2=Visibility
+
+    // GPU-driven cull results (set by MeshletCullPass, consumed by VisibilityPass)
+    MTL::Buffer* gpuVisibleMeshletBuffer = nullptr;
+    MTL::Buffer* gpuCounterBuffer = nullptr;
+    MTL::Buffer* gpuInstanceDataBuffer = nullptr;
 };
 
 // Runtime context for pipeline building (pipelines, textures, samplers)

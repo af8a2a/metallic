@@ -14,10 +14,15 @@
 #include "forward_pass.h"
 #include "blit_pass.h"
 #include "output_pass.h"
+#include "meshlet_cull_pass.h"
 
 // Register all passes with factories for data-driven pipeline building
 
 // Geometry passes
+REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
+    (std::vector<std::string>{}),
+    (std::vector<std::string>{"cullResult"}));
+
 REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
     (std::vector<std::string>{}),
     (std::vector<std::string>{"visibility", "depth"}));

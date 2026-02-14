@@ -17,7 +17,10 @@ ShaderManager::~ShaderManager() {
     if (m_vertexPipeline) m_vertexPipeline->release();
     if (m_meshPipeline) m_meshPipeline->release();
     if (m_visPipeline) m_visPipeline->release();
+    if (m_visIndirectPipeline) m_visIndirectPipeline->release();
     if (m_computePipeline) m_computePipeline->release();
+    if (m_cullPipeline) m_cullPipeline->release();
+    if (m_buildIndirectPipeline) m_buildIndirectPipeline->release();
     if (m_skyPipeline) m_skyPipeline->release();
     if (m_tonemapPipeline) m_tonemapPipeline->release();
     if (m_outputPipeline) m_outputPipeline->release();
@@ -59,10 +62,13 @@ void ShaderManager::syncRuntimeContext() {
     m_rtCtx->renderPipelines["ForwardPass"] = m_vertexPipeline;
     m_rtCtx->renderPipelines["ForwardMeshPass"] = m_meshPipeline;
     m_rtCtx->renderPipelines["VisibilityPass"] = m_visPipeline;
+    m_rtCtx->renderPipelines["VisibilityIndirectPass"] = m_visIndirectPipeline;
     m_rtCtx->renderPipelines["SkyPass"] = m_skyPipeline;
     m_rtCtx->renderPipelines["TonemapPass"] = m_tonemapPipeline;
     m_rtCtx->renderPipelines["OutputPass"] = m_outputPipeline;
     m_rtCtx->computePipelines["DeferredLightingPass"] = m_computePipeline;
+    m_rtCtx->computePipelines["MeshletCullPass"] = m_cullPipeline;
+    m_rtCtx->computePipelines["BuildIndirectPass"] = m_buildIndirectPipeline;
     m_rtCtx->samplers["tonemap"] = m_tonemapSampler;
 }
 
@@ -177,6 +183,93 @@ bool ShaderManager::buildAll() {
         mf->release(); ff->release(); lib->release();
         if (!m_visPipeline) {
             spdlog::error("Failed to create visibility pipeline state: {}", visError->localizedDescription()->utf8String());
+            return false;
+        }
+    }
+
+    // 3b. Visibility indirect mesh shader pipeline (GPU-driven)
+    {
+        std::string src = compileSlangMeshShaderToMetal("Shaders/Visibility/visibility_indirect", root);
+        if (src.empty()) { spdlog::error("Failed to compile visibility indirect shader"); return false; }
+        src = patchVisibilityShaderMetalSource(src);
+        spdlog::info("Visibility indirect shader compiled ({} bytes)", src.size());
+
+        NS::Error* error = nullptr;
+        auto* compileOpts = MTL::CompileOptions::alloc()->init();
+        auto* lib = m_device->newLibrary(
+            NS::String::string(src.c_str(), NS::UTF8StringEncoding), compileOpts, &error);
+        compileOpts->release();
+        if (!lib) {
+            spdlog::error("Failed to create visibility indirect Metal library: {}", error->localizedDescription()->utf8String());
+            return false;
+        }
+
+        auto* mf = lib->newFunction(NS::String::string("meshMain", NS::UTF8StringEncoding));
+        auto* ff = lib->newFunction(NS::String::string("fragmentMain", NS::UTF8StringEncoding));
+
+        auto* desc = MTL::MeshRenderPipelineDescriptor::alloc()->init();
+        desc->setMeshFunction(mf);
+        desc->setFragmentFunction(ff);
+        desc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatR32Uint);
+        desc->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
+
+        NS::Error* visError = nullptr;
+        MTL::RenderPipelineReflection* refl = nullptr;
+        m_visIndirectPipeline = m_device->newRenderPipelineState(desc, MTL::PipelineOptionNone, &refl, &visError);
+        desc->release();
+        mf->release(); ff->release(); lib->release();
+        if (!m_visIndirectPipeline) {
+            spdlog::error("Failed to create visibility indirect pipeline state: {}", visError->localizedDescription()->utf8String());
+            return false;
+        }
+    }
+
+    // 3c. Meshlet cull compute pipeline
+    {
+        std::string src = compileSlangComputeShaderToMetal("Shaders/Visibility/meshlet_cull", root);
+        if (src.empty()) { spdlog::error("Failed to compile meshlet cull shader"); return false; }
+        spdlog::info("Meshlet cull shader compiled ({} bytes)", src.size());
+
+        NS::Error* error = nullptr;
+        auto* compileOpts = MTL::CompileOptions::alloc()->init();
+        auto* lib = m_device->newLibrary(
+            NS::String::string(src.c_str(), NS::UTF8StringEncoding), compileOpts, &error);
+        compileOpts->release();
+        if (!lib) {
+            spdlog::error("Failed to create meshlet cull Metal library: {}", error->localizedDescription()->utf8String());
+            return false;
+        }
+
+        auto* fn = lib->newFunction(NS::String::string("computeMain", NS::UTF8StringEncoding));
+        m_cullPipeline = m_device->newComputePipelineState(fn, &error);
+        fn->release(); lib->release();
+        if (!m_cullPipeline) {
+            spdlog::error("Failed to create meshlet cull pipeline state: {}", error->localizedDescription()->utf8String());
+            return false;
+        }
+    }
+
+    // 3d. Build indirect compute pipeline
+    {
+        std::string src = compileSlangComputeShaderToMetal("Shaders/Visibility/build_indirect", root);
+        if (src.empty()) { spdlog::error("Failed to compile build indirect shader"); return false; }
+        spdlog::info("Build indirect shader compiled ({} bytes)", src.size());
+
+        NS::Error* error = nullptr;
+        auto* compileOpts = MTL::CompileOptions::alloc()->init();
+        auto* lib = m_device->newLibrary(
+            NS::String::string(src.c_str(), NS::UTF8StringEncoding), compileOpts, &error);
+        compileOpts->release();
+        if (!lib) {
+            spdlog::error("Failed to create build indirect Metal library: {}", error->localizedDescription()->utf8String());
+            return false;
+        }
+
+        auto* fn = lib->newFunction(NS::String::string("computeMain", NS::UTF8StringEncoding));
+        m_buildIndirectPipeline = m_device->newComputePipelineState(fn, &error);
+        fn->release(); lib->release();
+        if (!m_buildIndirectPipeline) {
+            spdlog::error("Failed to create build indirect pipeline state: {}", error->localizedDescription()->utf8String());
             return false;
         }
     }
@@ -426,7 +519,7 @@ MTL::ComputePipelineState* ShaderManager::reloadComputeShader(
 {
     std::string src = compileSlangComputeShaderToMetal(shaderPath, m_projectRoot.c_str());
     if (src.empty()) return nullptr;
-    src = patchFn(src);
+    if (patchFn) src = patchFn(src);
 
     NS::Error* error = nullptr;
     auto* compileOpts = MTL::CompileOptions::alloc()->init();
@@ -473,6 +566,31 @@ std::pair<int,int> ShaderManager::reloadAll() {
         m_visPipeline = p;
         reloaded++;
     } else { failed++; }
+
+    // 3b. Visibility indirect shader
+    if (auto* p = reloadMeshShader("Shaders/Visibility/visibility_indirect",
+            patchVisibilityShaderMetalSource, MTL::PixelFormatR32Uint, MTL::PixelFormatDepth32Float)) {
+        if (m_visIndirectPipeline) m_visIndirectPipeline->release();
+        m_visIndirectPipeline = p;
+        reloaded++;
+    } else { failed++; }
+
+    // 3c. Meshlet cull shader
+    if (auto* p = reloadComputeShader("Shaders/Visibility/meshlet_cull",
+            "computeMain", nullptr)) {
+        if (m_cullPipeline) m_cullPipeline->release();
+        m_cullPipeline = p;
+        reloaded++;
+    } else { failed++; }
+
+    // 3d. Build indirect shader
+    if (auto* p = reloadComputeShader("Shaders/Visibility/build_indirect",
+            "computeMain", nullptr)) {
+        if (m_buildIndirectPipeline) m_buildIndirectPipeline->release();
+        m_buildIndirectPipeline = p;
+        reloaded++;
+    } else { failed++; }
+
     // 4. Compute shader (deferred lighting)
     if (auto* p = reloadComputeShader("Shaders/Visibility/deferred_lighting",
             "computeMain", patchComputeShaderMetalSource)) {

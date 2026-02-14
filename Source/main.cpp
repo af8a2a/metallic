@@ -142,6 +142,7 @@ int main() {
     bool enableFrustumCull = false;
     bool enableConeCull = false;
     bool enableRTShadows = true;
+    bool enableGPUCulling = true;
     bool enableAtmosphereSky = skyAvailable;
     float skyExposure = 10.0f;
     bool showGraphDebug = false;
@@ -272,6 +273,9 @@ int main() {
         }
         if (renderMode == 2 && scene.rtShadowsAvailable()) {
             ImGui::Checkbox("RT Shadows", &enableRTShadows);
+        }
+        if (renderMode == 2) {
+            ImGui::Checkbox("GPU-Driven Culling", &enableGPUCulling);
         }
         if (skyAvailable) {
             ImGui::Checkbox("Atmosphere Sky", &enableAtmosphereSky);
@@ -427,6 +431,7 @@ int main() {
         frameCtx.enableConeCull = enableConeCull;
         frameCtx.enableRTShadows = scene.rtShadowsAvailable() && enableRTShadows;
         frameCtx.enableAtmosphereSky = skyAvailable && enableAtmosphereSky;
+        frameCtx.gpuDrivenCulling = enableGPUCulling && (renderMode == 2);
         frameCtx.renderMode = renderMode;
 
         // Select active pipeline asset based on render mode

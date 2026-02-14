@@ -34,7 +34,10 @@ private:
     MTL::RenderPipelineState* m_vertexPipeline = nullptr;
     MTL::RenderPipelineState* m_meshPipeline = nullptr;
     MTL::RenderPipelineState* m_visPipeline = nullptr;
+    MTL::RenderPipelineState* m_visIndirectPipeline = nullptr;
     MTL::ComputePipelineState* m_computePipeline = nullptr;
+    MTL::ComputePipelineState* m_cullPipeline = nullptr;
+    MTL::ComputePipelineState* m_buildIndirectPipeline = nullptr;
     MTL::RenderPipelineState* m_skyPipeline = nullptr;
     MTL::RenderPipelineState* m_tonemapPipeline = nullptr;
     MTL::RenderPipelineState* m_outputPipeline = nullptr;
