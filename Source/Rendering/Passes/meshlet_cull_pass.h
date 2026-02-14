@@ -62,8 +62,16 @@ public:
         }
         if (totalMeshlets == 0) return;
 
+        m_totalMeshlets = totalMeshlets;
+
         // Ensure GPU buffers are large enough
         ensureBuffers(totalMeshlets, instanceCount);
+
+        // Read back previous frame's visible count (1-frame delayed).
+        // build_indirect writes count to offset 4 (indirect args x) then resets offset 0.
+        // By this point the previous frame's GPU work is complete.
+        auto* counterPtr = static_cast<uint32_t*>(m_counterBuffer->contents());
+        m_lastVisibleCount = counterPtr[1]; // indirect args x from previous frame
 
         // Upload instance data (CPU → GPU, StorageModeShared)
         auto* instPtr = static_cast<GPUInstanceData*>(m_instanceDataBuffer->contents());
@@ -120,7 +128,12 @@ public:
     }
 
     void renderUI() override {
-        ImGui::Text("Total Meshlets: %u", m_lastVisibleCount);
+        ImGui::Text("Total Meshlets: %u", m_totalMeshlets);
+        ImGui::Text("Visible Meshlets: %u", m_lastVisibleCount);
+        if (m_totalMeshlets > 0) {
+            float cullRate = 1.0f - float(m_lastVisibleCount) / float(m_totalMeshlets);
+            ImGui::Text("Cull Rate: %.1f%%", cullRate * 100.0f);
+        }
         if (m_frameContext) {
             ImGui::Text("Instances: %u", m_frameContext->visibilityInstanceCount);
             ImGui::Text("GPU Culling: %s", m_frameContext->gpuDrivenCulling ? "On" : "Off");
@@ -138,6 +151,7 @@ private:
 
     uint32_t m_maxMeshlets = 0;
     uint32_t m_maxInstances = 0;
+    uint32_t m_totalMeshlets = 0;
     uint32_t m_lastVisibleCount = 0;
 
     void ensureBuffers(uint32_t totalMeshlets, uint32_t instanceCount) {

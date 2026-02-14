@@ -74,26 +74,17 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
 
     // Frustum culling in clip space
     if (cullUniforms.enableFrustumCull != 0) {
-        // Extract frustum planes from viewProj (Slang row-major convention)
+        // Extract frustum planes from viewProj.
+        // viewProj is transposed for Slang, so vp[i] = row i of original MVP.
+        // This matches MvpToPlanes: mt = transpose(m), planes from mt[3] ± mt[0/1/2].
         float4x4 vp = cullUniforms.viewProj;
         float4 planes[6];
-        // Left
-        planes[0] = float4(vp[0][3] + vp[0][0], vp[1][3] + vp[1][0],
-                           vp[2][3] + vp[2][0], vp[3][3] + vp[3][0]);
-        // Right
-        planes[1] = float4(vp[0][3] - vp[0][0], vp[1][3] - vp[1][0],
-                           vp[2][3] - vp[2][0], vp[3][3] - vp[3][0]);
-        // Bottom
-        planes[2] = float4(vp[0][3] + vp[0][1], vp[1][3] + vp[1][1],
-                           vp[2][3] + vp[2][1], vp[3][3] + vp[3][1]);
-        // Top
-        planes[3] = float4(vp[0][3] - vp[0][1], vp[1][3] - vp[1][1],
-                           vp[2][3] - vp[2][1], vp[3][3] - vp[3][1]);
-        // Near
-        planes[4] = float4(vp[0][2], vp[1][2], vp[2][2], vp[3][2]);
-        // Far
-        planes[5] = float4(vp[0][3] - vp[0][2], vp[1][3] - vp[1][2],
-                           vp[2][3] - vp[2][2], vp[3][3] - vp[3][2]);
+        planes[0] = vp[3] + vp[0]; // Left
+        planes[1] = vp[3] - vp[0]; // Right
+        planes[2] = vp[3] + vp[1]; // Bottom
+        planes[3] = vp[3] - vp[1]; // Top
+        planes[4] = vp[2];         // Near
+        planes[5] = vp[3] - vp[2]; // Far
 
         // Scale radius by max axis scale of world matrix
         float3 sx = inst.worldMatrix[0].xyz;
@@ -115,11 +106,8 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
         }
     }
 
-    // Cone/backface culling in object space (same as existing visibility.slang)
+    // Cone/backface culling in world space
     if (!culled && cullUniforms.enableConeCull != 0) {
-        // Transform camera to object space
-        float4x4 invWorld = inst.worldMatrix;
-        // Approximate: use camera world pos directly against world-space center
         float3 cameraPosWS = cullUniforms.cameraWorldPos.xyz;
         // Rotate cone axis to world space (direction only)
         float3 coneAxisWS = normalize(mul((float3x3)inst.worldMatrix, coneAxis));
