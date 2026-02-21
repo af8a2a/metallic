@@ -50,7 +50,7 @@ struct FrameContext {
     bool enableRTShadows = true;
     bool enableAtmosphereSky = true;
     bool gpuDrivenCulling = false;
-    int renderMode = 2; // 0=Vertex, 1=Mesh, 2=Visibility
+    int renderMode = 2; // 0=Vertex, 1=Mesh, 2=Visibility, 3=Meshlet Debug
 
     // GPU-driven cull results (set by MeshletCullPass, consumed by VisibilityPass)
     MTL::Buffer* gpuVisibleMeshletBuffer = nullptr;

@@ -138,7 +138,7 @@ int main() {
     }
     bool skyAvailable = scene.atmosphereLoaded() && shaderManager.hasSkyPipeline();
 
-    int renderMode = 0; // 0=Vertex, 1=Mesh, 2=Visibility Buffer
+    int renderMode = 0; // 0=Vertex, 1=Mesh, 2=Visibility Buffer, 3=Meshlet Debug
     bool enableFrustumCull = false;
     bool enableConeCull = false;
     bool enableRTShadows = true;
@@ -156,11 +156,14 @@ int main() {
     // Load pipeline assets
     PipelineAsset visPipelineAsset;
     PipelineAsset fwdPipelineAsset;
+    PipelineAsset meshletDbgPipelineAsset;
     std::string visPipelinePath = std::string(projectRoot) + "/Pipelines/visibility_buffer.json";
     std::string fwdPipelinePath = std::string(projectRoot) + "/Pipelines/forward.json";
+    std::string meshletDbgPipelinePath = std::string(projectRoot) + "/Pipelines/meshlet_debug.json";
 
     if (!loadPipelineAssetChecked(visPipelinePath, "visibility buffer", visPipelineAsset) ||
-        !loadPipelineAssetChecked(fwdPipelinePath, "forward", fwdPipelineAsset)) {
+        !loadPipelineAssetChecked(fwdPipelinePath, "forward", fwdPipelineAsset) ||
+        !loadPipelineAssetChecked(meshletDbgPipelinePath, "meshlet debug", meshletDbgPipelineAsset)) {
         return 1;
     }
 
@@ -266,6 +269,7 @@ int main() {
         ImGui::RadioButton("Vertex Shader", &renderMode, 0);
         ImGui::RadioButton("Mesh Shader", &renderMode, 1);
         ImGui::RadioButton("Visibility Buffer", &renderMode, 2);
+        ImGui::RadioButton("Meshlet Debug", &renderMode, 3);
         if (renderMode >= 1) {
             ImGui::Text("Meshlets: %u", scene.meshlets().meshletCount);
             ImGui::Checkbox("Frustum Culling", &enableFrustumCull);
@@ -274,7 +278,7 @@ int main() {
         if (renderMode == 2 && scene.rtShadowsAvailable()) {
             ImGui::Checkbox("RT Shadows", &enableRTShadows);
         }
-        if (renderMode == 2) {
+        if (renderMode == 2 || renderMode == 3) {
             ImGui::Checkbox("GPU-Driven Culling", &enableGPUCulling);
         }
         if (skyAvailable) {
@@ -339,6 +343,14 @@ int main() {
                 spdlog::warn("Keeping previous forward pipeline: {}", fwdPipelineAsset.name);
             }
 
+            PipelineAsset reloadedDbg;
+            if (loadPipelineAssetChecked(meshletDbgPipelinePath, "meshlet debug", reloadedDbg)) {
+                meshletDbgPipelineAsset = std::move(reloadedDbg);
+                reloadedAnyPipeline = true;
+            } else {
+                spdlog::warn("Keeping previous meshlet debug pipeline: {}", meshletDbgPipelineAsset.name);
+            }
+
             pipelineNeedsRebuild = reloadedAnyPipeline;
         }
         pipelineReloadKeyDown = f6Down;
@@ -363,7 +375,7 @@ int main() {
 
         // Visibility buffer mode needs instance transform buffer
         uint32_t visibilityInstanceCount = 0;
-        if (renderMode == 2) {
+        if (renderMode == 2 || renderMode == 3) {
             ZoneScopedN("Visibility Instance Setup");
 
             static bool warnedInstanceOverflow = false;
@@ -431,11 +443,13 @@ int main() {
         frameCtx.enableConeCull = enableConeCull;
         frameCtx.enableRTShadows = scene.rtShadowsAvailable() && enableRTShadows;
         frameCtx.enableAtmosphereSky = skyAvailable && enableAtmosphereSky;
-        frameCtx.gpuDrivenCulling = enableGPUCulling && (renderMode == 2);
+        frameCtx.gpuDrivenCulling = enableGPUCulling && (renderMode == 2 || renderMode == 3);
         frameCtx.renderMode = renderMode;
 
         // Select active pipeline asset based on render mode
-        const PipelineAsset& activePipelineAsset = (renderMode == 2) ? visPipelineAsset : fwdPipelineAsset;
+        const PipelineAsset& activePipelineAsset =
+            (renderMode == 3) ? meshletDbgPipelineAsset :
+            (renderMode == 2) ? visPipelineAsset : fwdPipelineAsset;
 
         // Detect mode switch
         if (renderMode != lastRenderMode) {

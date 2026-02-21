@@ -15,6 +15,7 @@
 #include "blit_pass.h"
 #include "output_pass.h"
 #include "meshlet_cull_pass.h"
+#include "meshlet_visualize_pass.h"
 
 // Register all passes with factories for data-driven pipeline building
 
@@ -34,6 +35,10 @@ REGISTER_COMPUTE_PASS(ShadowRayPass, "Shadow Ray Pass", "Lighting",
 
 REGISTER_COMPUTE_PASS(DeferredLightingPass, "Deferred Lighting", "Lighting",
     (std::vector<std::string>{"visibility", "depth", "shadowMap", "skyOutput"}),
+    (std::vector<std::string>{"lightingOutput"}));
+
+REGISTER_COMPUTE_PASS(MeshletVisualizePass, "Meshlet Visualize", "Geometry",
+    (std::vector<std::string>{"visibility"}),
     (std::vector<std::string>{"lightingOutput"}));
 
 // Environment passes

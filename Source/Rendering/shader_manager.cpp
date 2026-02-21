@@ -69,6 +69,8 @@ void ShaderManager::syncRuntimeContext() {
     m_rtCtx->computePipelines["DeferredLightingPass"] = m_computePipeline;
     m_rtCtx->computePipelines["MeshletCullPass"] = m_cullPipeline;
     m_rtCtx->computePipelines["BuildIndirectPass"] = m_buildIndirectPipeline;
+    if (m_meshletVisPipeline)
+        m_rtCtx->computePipelines["MeshletVisualizePass"] = m_meshletVisPipeline;
     m_rtCtx->samplers["tonemap"] = m_tonemapSampler;
 }
 
@@ -297,6 +299,30 @@ bool ShaderManager::buildAll() {
         if (!m_computePipeline) {
             spdlog::error("Failed to create compute pipeline state: {}", error->localizedDescription()->utf8String());
             return false;
+        }
+    }
+
+    // 4b. Meshlet visualize compute pipeline (non-fatal)
+    {
+        std::string src = compileSlangComputeShaderToMetal("Shaders/Visibility/meshlet_visualize", root);
+        if (!src.empty()) {
+            NS::Error* error = nullptr;
+            auto* compileOpts = MTL::CompileOptions::alloc()->init();
+            auto* lib = m_device->newLibrary(
+                NS::String::string(src.c_str(), NS::UTF8StringEncoding), compileOpts, &error);
+            compileOpts->release();
+            if (!lib) {
+                spdlog::warn("Failed to create meshlet visualize Metal library: {}", error->localizedDescription()->utf8String());
+            } else {
+                auto* fn = lib->newFunction(NS::String::string("computeMain", NS::UTF8StringEncoding));
+                m_meshletVisPipeline = m_device->newComputePipelineState(fn, &error);
+                fn->release(); lib->release();
+                if (!m_meshletVisPipeline) {
+                    spdlog::warn("Failed to create meshlet visualize pipeline: {}", error->localizedDescription()->utf8String());
+                }
+            }
+        } else {
+            spdlog::warn("Failed to compile meshlet visualize shader");
         }
     }
 // PLACEHOLDER_BUILD_ALL_SKY
@@ -596,6 +622,14 @@ std::pair<int,int> ShaderManager::reloadAll() {
             "computeMain", patchComputeShaderMetalSource)) {
         m_computePipeline->release();
         m_computePipeline = p;
+        reloaded++;
+    } else { failed++; }
+
+    // 4b. Meshlet visualize compute shader
+    if (auto* p = reloadComputeShader("Shaders/Visibility/meshlet_visualize",
+            "computeMain", nullptr)) {
+        if (m_meshletVisPipeline) m_meshletVisPipeline->release();
+        m_meshletVisPipeline = p;
         reloaded++;
     } else { failed++; }
 

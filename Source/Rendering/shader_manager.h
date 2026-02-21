@@ -38,6 +38,7 @@ private:
     MTL::ComputePipelineState* m_computePipeline = nullptr;
     MTL::ComputePipelineState* m_cullPipeline = nullptr;
     MTL::ComputePipelineState* m_buildIndirectPipeline = nullptr;
+    MTL::ComputePipelineState* m_meshletVisPipeline = nullptr;
     MTL::RenderPipelineState* m_skyPipeline = nullptr;
     MTL::RenderPipelineState* m_tonemapPipeline = nullptr;
     MTL::RenderPipelineState* m_outputPipeline = nullptr;

@@ -32,6 +32,11 @@ REGISTER_PASS_INFO(DeferredLightingPass, "Deferred Lighting", "Lighting",
     (std::vector<std::string>{"lightingOutput"}),
     PassTypeInfo::PassType::Compute);
 
+REGISTER_PASS_INFO(MeshletVisualizePass, "Meshlet Visualize", "Geometry",
+    (std::vector<std::string>{"visibility"}),
+    (std::vector<std::string>{"lightingOutput"}),
+    PassTypeInfo::PassType::Compute);
+
 // Environment
 REGISTER_PASS_INFO(SkyPass, "Sky Pass", "Environment",
     (std::vector<std::string>{}),
