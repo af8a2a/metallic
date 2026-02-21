@@ -81,4 +81,32 @@ struct OrbitCamera {
     float4x4 projectionMatrix(float aspect) const {
         return perspectiveMatrix(fovY, aspect, nearZ, farZ);
     }
+
+    // Halton low-discrepancy sequence for TAA jitter
+    static float halton(int index, int base) {
+        float f = 1.0f, result = 0.0f;
+        for (int i = index; i > 0; i /= base) {
+            f /= static_cast<float>(base);
+            result += f * static_cast<float>(i % base);
+        }
+        return result;
+    }
+
+    // Returns jitter in [-0.5, 0.5] pixel range using Halton bases 2,3
+    static float2 haltonJitter(uint32_t frameIndex) {
+        // Use 1-based index (Halton(0) = 0)
+        int idx = static_cast<int>((frameIndex % 16) + 1);
+        return float2(halton(idx, 2) - 0.5f, halton(idx, 3) - 0.5f);
+    }
+
+    // Perspective projection with sub-pixel jitter applied in clip space
+    static float4x4 jitteredProjectionMatrix(float fovY, float aspect, float nearZ, float farZ,
+                                              float jitterX, float jitterY,
+                                              uint32_t screenWidth, uint32_t screenHeight) {
+        float4x4 proj = perspectiveMatrix(fovY, aspect, nearZ, farZ);
+        // Apply sub-pixel offset to projection matrix column 2 (clip-space translation)
+        proj[2].x += (2.0f * jitterX) / static_cast<float>(screenWidth);
+        proj[2].y += (2.0f * jitterY) / static_cast<float>(screenHeight);
+        return proj;
+    }
 };

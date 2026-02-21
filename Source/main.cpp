@@ -144,6 +144,8 @@ int main() {
     bool enableRTShadows = true;
     bool enableGPUCulling = true;
     bool enableAtmosphereSky = skyAvailable;
+    bool enableTAA = true;
+    uint32_t frameIndex = 0;
     float skyExposure = 10.0f;
     bool showGraphDebug = false;
     bool showSceneGraphWindow = true;
@@ -179,6 +181,8 @@ int main() {
     bool pipelineNeedsRebuild = true;
     int lastRenderMode = -1;
     double lastFrameTime = glfwGetTime();
+    float4x4 prevView, prevProj;
+    bool hasPrevMatrices = false;
 
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("Frame");
@@ -205,11 +209,21 @@ int main() {
         float4x4 view, proj;
         float4 worldLightDir, viewLightDir, lightColorIntensity;
         float4 cameraWorldPos;
+        float2 jitterOffset = float2(0.f, 0.f);
         {
             ZoneScopedN("Matrix Computation");
             aspect = (float)width / (float)height;
             view = camera.viewMatrix();
             proj = camera.projectionMatrix(aspect);
+
+            // Apply jitter to projection for TAA
+            if (enableTAA) {
+                jitterOffset = OrbitCamera::haltonJitter(frameIndex);
+                proj = OrbitCamera::jitteredProjectionMatrix(
+                    camera.fovY, aspect, camera.nearZ, camera.farZ,
+                    jitterOffset.x, jitterOffset.y,
+                    static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            }
 
             // Light data from scene graph sun source.
             DirectionalLight sunLight = scene.sceneGraph().getSunDirectionalLight();
@@ -278,6 +292,9 @@ int main() {
         }
         if (renderMode == 2 && scene.rtShadowsAvailable()) {
             ImGui::Checkbox("RT Shadows", &enableRTShadows);
+        }
+        if (renderMode == 2) {
+            ImGui::Checkbox("TAA", &enableTAA);
         }
         if (renderMode == 2 || renderMode == 3) {
             ImGui::Checkbox("GPU-Driven Culling", &enableGPUCulling);
@@ -451,6 +468,11 @@ int main() {
         frameCtx.enableAtmosphereSky = skyAvailable && enableAtmosphereSky;
         frameCtx.gpuDrivenCulling = enableGPUCulling && (renderMode == 2 || renderMode == 3);
         frameCtx.renderMode = renderMode;
+        frameCtx.prevView = hasPrevMatrices ? prevView : view;
+        frameCtx.prevProj = hasPrevMatrices ? prevProj : camera.projectionMatrix(aspect);
+        frameCtx.jitterOffset = jitterOffset;
+        frameCtx.frameIndex = frameIndex;
+        frameCtx.enableTAA = enableTAA;
 
         // Select active pipeline asset based on render mode
         const PipelineAsset& activePipelineAsset =
@@ -511,6 +533,12 @@ int main() {
 
         if (instanceTransformBuffer)
             instanceTransformBuffer->release();
+
+        // Store unjittered matrices for next frame's motion vectors
+        prevView = view;
+        prevProj = camera.projectionMatrix(aspect);
+        hasPrevMatrices = true;
+        frameIndex++;
 
         FrameMark;
         pool->release();

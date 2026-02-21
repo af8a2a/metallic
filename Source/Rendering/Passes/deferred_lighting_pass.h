@@ -19,9 +19,11 @@ public:
     }
 
     FGResource output;
+    FGResource motionVectorsOutput;
 
     FGResource getOutput(const std::string& name) const override {
         if (name == "lightingOutput") return output;
+        if (name == "motionVectors") return motionVectorsOutput;
         return FGResource{};
     }
 
@@ -39,6 +41,8 @@ public:
 
         output = builder.create("output",
             FGTextureDesc::storageTexture(m_width, m_height, MTL::PixelFormatRGBA16Float));
+        motionVectorsOutput = builder.create("motionVectors",
+            FGTextureDesc::storageTexture(m_width, m_height, MTL::PixelFormatRG16Float));
     }
 
     void executeCompute(MTL::ComputeCommandEncoder* enc) override {
@@ -69,6 +73,10 @@ public:
         lightUniforms.shadowEnabled = m_frameContext->enableRTShadows ? 1 : 0;
         lightUniforms.pad2 = 0;
 
+        // Compute prevViewProj for motion vectors (transposed for Slang convention)
+        float4x4 prevViewProj = m_frameContext->prevProj * m_frameContext->prevView;
+        lightUniforms.prevViewProj = transpose(prevViewProj);
+
         enc->setComputePipelineState(pipeIt->second);
         enc->setBytes(&lightUniforms, sizeof(lightUniforms), 0);
         enc->setBuffer(m_ctx.sceneMesh.positionBuffer, 0, 1);
@@ -98,6 +106,7 @@ public:
             ? m_frameGraph->getTexture(m_skyRead)
             : m_ctx.skyFallbackTex;
         enc->setTexture(skyTex, 100);
+        enc->setTexture(m_frameGraph->getTexture(motionVectorsOutput), 101);
         enc->setSamplerState(m_ctx.materials.sampler, 0);
         MTL::Size tgSize(8, 8, 1);
         MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);

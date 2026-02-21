@@ -29,7 +29,7 @@ REGISTER_PASS_INFO(ShadowRayPass, "Shadow Ray Pass", "Lighting",
 
 REGISTER_PASS_INFO(DeferredLightingPass, "Deferred Lighting", "Lighting",
     (std::vector<std::string>{"visibility", "depth", "shadowMap", "skyOutput"}),
-    (std::vector<std::string>{"lightingOutput"}),
+    (std::vector<std::string>{"lightingOutput", "motionVectors"}),
     PassTypeInfo::PassType::Compute);
 
 REGISTER_PASS_INFO(MeshletVisualizePass, "Meshlet Visualize", "Geometry",
@@ -47,6 +47,11 @@ REGISTER_PASS_INFO(SkyPass, "Sky Pass", "Environment",
 REGISTER_PASS_INFO(AutoExposurePass, "Auto Exposure", "Post-Process",
     (std::vector<std::string>{"lightingOutput"}),
     (std::vector<std::string>{"exposureLut"}),
+    PassTypeInfo::PassType::Compute);
+
+REGISTER_PASS_INFO(TAAPass, "TAA", "Post-Process",
+    (std::vector<std::string>{"lightingOutput", "depth", "motionVectors"}),
+    (std::vector<std::string>{"taaOutput"}),
     PassTypeInfo::PassType::Compute);
 
 REGISTER_PASS_INFO(TonemapPass, "Tonemap", "Post-Process",

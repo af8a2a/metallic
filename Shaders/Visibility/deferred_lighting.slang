@@ -15,6 +15,7 @@ struct LightingUniforms {
     uint     instanceCount;
     uint     shadowEnabled;
     uint     pad2;
+    float4x4 prevViewProj;
 };
 
 struct GPUMeshlet {
@@ -102,6 +103,7 @@ RWTexture2D<float4>          outputTexture;               // texture(2)
 Texture2D                    sceneTextures[kTextureArraySize]; // texture(3..98)
 Texture2D<float>             shadowMap;                       // texture(99)
 Texture2D<float4>            skyTexture;                      // texture(100)
+RWTexture2D<float2>          motionVectors;                   // texture(101)
 SamplerState                 sceneSampler;                // sampler(0)
 
 float3 projectVertex(float4x4 mvp, float3 pos) {
@@ -143,6 +145,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint vis = visibilityBuffer[pixel];
     if (vis == INVALID_VIS) {
         outputTexture[pixel] = skyTexture[pixel];
+        motionVectors[pixel] = float2(0.0);
         return;
     }
 
@@ -153,11 +156,13 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     if (meshletID >= lightUniforms.meshletCount) {
         outputTexture[pixel] = skyTexture[pixel];
+        motionVectors[pixel] = float2(0.0);
         return;
     }
 
     if (instanceID >= lightUniforms.instanceCount) {
         outputTexture[pixel] = skyTexture[pixel];
+        motionVectors[pixel] = float2(0.0);
         return;
     }
 
@@ -167,6 +172,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     GPUMeshlet meshlet = meshlets[meshletID];
     if (triangleID >= meshlet.triangle_count) {
         outputTexture[pixel] = skyTexture[pixel];
+        motionVectors[pixel] = float2(0.0);
         return;
     }
 
@@ -309,4 +315,22 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     outputTexture[pixel] = float4(color, 1.0);
+
+    // Motion vectors: reproject object-space position with previous frame's viewProj
+    {
+        // Perspective-correct interpolation of object-space position
+        float3 op0 = loadPosition(globalV0);
+        float3 op1 = loadPosition(globalV1);
+        float3 op2 = loadPosition(globalV2);
+        float3 objPos = (b0 * w0 * op0 + b1 * w1 * op1 + b2 * w2 * op2) * W;
+
+        float2 pixelCenter = float2(pixel) + 0.5;
+        float2 currentUV = pixelCenter / float2(lightUniforms.screenWidth, lightUniforms.screenHeight);
+
+        float4 prevClip = mul(lightUniforms.prevViewProj, float4(objPos, 1.0));
+        float2 prevNDC = prevClip.xy / prevClip.w;
+        float2 prevUV = float2(prevNDC.x * 0.5 + 0.5, 0.5 - prevNDC.y * 0.5);
+
+        motionVectors[pixel] = currentUV - prevUV;
+    }
 }

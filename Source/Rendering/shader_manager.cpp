@@ -26,6 +26,7 @@ ShaderManager::~ShaderManager() {
     if (m_outputPipeline) m_outputPipeline->release();
     if (m_histogramPipeline) m_histogramPipeline->release();
     if (m_autoExposurePipeline) m_autoExposurePipeline->release();
+    if (m_taaPipeline) m_taaPipeline->release();
     if (m_tonemapSampler) m_tonemapSampler->release();
     if (m_vertexDesc) m_vertexDesc->release();
     delete m_rtCtx;
@@ -77,6 +78,8 @@ void ShaderManager::syncRuntimeContext() {
         m_rtCtx->computePipelines["HistogramPass"] = m_histogramPipeline;
     if (m_autoExposurePipeline)
         m_rtCtx->computePipelines["AutoExposurePass"] = m_autoExposurePipeline;
+    if (m_taaPipeline)
+        m_rtCtx->computePipelines["TAAPass"] = m_taaPipeline;
     m_rtCtx->samplers["tonemap"] = m_tonemapSampler;
 }
 
@@ -443,6 +446,16 @@ bool ShaderManager::buildAll() {
         }
     }
 
+    // 9. TAA compute pipeline (non-fatal)
+    {
+        auto* taaPso = reloadComputeShader("Shaders/Post/taa", "taaMain", nullptr);
+        if (taaPso) {
+            m_taaPipeline = taaPso;
+        } else {
+            spdlog::warn("Failed to compile TAA shader; TAA disabled");
+        }
+    }
+
     syncRuntimeContext();
     return true;
 }
@@ -687,6 +700,13 @@ std::pair<int,int> ShaderManager::reloadAll() {
     if (auto* p = reloadComputeShader("Shaders/Post/auto_exposure", "exposureMain", nullptr)) {
         if (m_autoExposurePipeline) m_autoExposurePipeline->release();
         m_autoExposurePipeline = p;
+        reloaded++;
+    } else { failed++; }
+
+    // 9. TAA compute shader
+    if (auto* p = reloadComputeShader("Shaders/Post/taa", "taaMain", nullptr)) {
+        if (m_taaPipeline) m_taaPipeline->release();
+        m_taaPipeline = p;
         reloaded++;
     } else { failed++; }
 

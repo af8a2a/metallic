@@ -40,6 +40,7 @@ struct LightingUniforms {
     uint32_t instanceCount;
     uint32_t shadowEnabled;
     uint32_t pad2;
+    float4x4 prevViewProj;
 };
 
 struct AtmosphereUniforms {
@@ -76,6 +77,19 @@ struct AutoExposureUniforms {
     uint32_t screenHeight;
     float lowPercentile;
     float highPercentile;
+};
+
+struct TAAUniforms {
+    float2 jitterOffset;
+    float2 invResolution;
+    uint32_t screenWidth;
+    uint32_t screenHeight;
+    float blendMin;             // 0.05 — favor history
+    float blendMax;             // 1.0 — full current on disocclusion
+    float varianceClipGamma;    // 1.0
+    uint32_t frameIndex;
+    float motionWeightScale;    // motion rejection sensitivity
+    float pad;
 };
 
 struct SceneInstanceTransform {

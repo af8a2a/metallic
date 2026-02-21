@@ -73,7 +73,8 @@
       ],
       "name": "Deferred Lighting",
       "outputs": [
-        "lightingOutput"
+        "lightingOutput",
+        "motionVectors"
       ],
       "sideEffect": false,
       "type": "DeferredLightingPass"
@@ -82,7 +83,22 @@
       "config": {},
       "enabled": true,
       "inputs": [
-        "lightingOutput"
+        "lightingOutput",
+        "depth",
+        "motionVectors"
+      ],
+      "name": "TAA",
+      "outputs": [
+        "taaOutput"
+      ],
+      "sideEffect": false,
+      "type": "TAAPass"
+    },
+    {
+      "config": {},
+      "enabled": true,
+      "inputs": [
+        "taaOutput"
       ],
       "name": "Auto Exposure",
       "outputs": [
@@ -104,7 +120,7 @@
       },
       "enabled": true,
       "inputs": [
-        "lightingOutput",
+        "taaOutput",
         "exposureLut"
       ],
       "name": "Tonemap",
@@ -162,6 +178,18 @@
     {
       "format": "RGBA16Float",
       "name": "lightingOutput",
+      "size": "screen",
+      "type": "texture"
+    },
+    {
+      "format": "RG16Float",
+      "name": "motionVectors",
+      "size": "screen",
+      "type": "texture"
+    },
+    {
+      "format": "RGBA16Float",
+      "name": "taaOutput",
       "size": "screen",
       "type": "texture"
     },

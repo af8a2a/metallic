@@ -17,6 +17,7 @@
 #include "meshlet_cull_pass.h"
 #include "meshlet_visualize_pass.h"
 #include "auto_exposure_pass.h"
+#include "taa_pass.h"
 
 // Register all passes with factories for data-driven pipeline building
 
@@ -36,7 +37,7 @@ REGISTER_COMPUTE_PASS(ShadowRayPass, "Shadow Ray Pass", "Lighting",
 
 REGISTER_COMPUTE_PASS(DeferredLightingPass, "Deferred Lighting", "Lighting",
     (std::vector<std::string>{"visibility", "depth", "shadowMap", "skyOutput"}),
-    (std::vector<std::string>{"lightingOutput"}));
+    (std::vector<std::string>{"lightingOutput", "motionVectors"}));
 
 REGISTER_COMPUTE_PASS(MeshletVisualizePass, "Meshlet Visualize", "Geometry",
     (std::vector<std::string>{"visibility"}),
@@ -51,6 +52,10 @@ REGISTER_RENDER_PASS(SkyPass, "Sky Pass", "Environment",
 REGISTER_COMPUTE_PASS(AutoExposurePass, "Auto Exposure", "Post-Process",
     (std::vector<std::string>{"lightingOutput"}),
     (std::vector<std::string>{"exposureLut"}));
+
+REGISTER_COMPUTE_PASS(TAAPass, "TAA", "Post-Process",
+    (std::vector<std::string>{"lightingOutput", "depth", "motionVectors"}),
+    (std::vector<std::string>{"taaOutput"}));
 
 REGISTER_RENDER_PASS(TonemapPass, "Tonemap", "Post-Process",
     (std::vector<std::string>{"lightingOutput"}),
