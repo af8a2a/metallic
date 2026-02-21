@@ -24,6 +24,8 @@ ShaderManager::~ShaderManager() {
     if (m_skyPipeline) m_skyPipeline->release();
     if (m_tonemapPipeline) m_tonemapPipeline->release();
     if (m_outputPipeline) m_outputPipeline->release();
+    if (m_histogramPipeline) m_histogramPipeline->release();
+    if (m_autoExposurePipeline) m_autoExposurePipeline->release();
     if (m_tonemapSampler) m_tonemapSampler->release();
     if (m_vertexDesc) m_vertexDesc->release();
     delete m_rtCtx;
@@ -71,6 +73,10 @@ void ShaderManager::syncRuntimeContext() {
     m_rtCtx->computePipelines["BuildIndirectPass"] = m_buildIndirectPipeline;
     if (m_meshletVisPipeline)
         m_rtCtx->computePipelines["MeshletVisualizePass"] = m_meshletVisPipeline;
+    if (m_histogramPipeline)
+        m_rtCtx->computePipelines["HistogramPass"] = m_histogramPipeline;
+    if (m_autoExposurePipeline)
+        m_rtCtx->computePipelines["AutoExposurePass"] = m_autoExposurePipeline;
     m_rtCtx->samplers["tonemap"] = m_tonemapSampler;
 }
 
@@ -420,6 +426,23 @@ bool ShaderManager::buildAll() {
         return false;
     }
 
+    // 8. Auto-exposure compute pipelines (non-fatal)
+    {
+        auto* histPso = reloadComputeShader("Shaders/Post/auto_exposure", "histogramMain", nullptr);
+        if (histPso) {
+            m_histogramPipeline = histPso;
+        } else {
+            spdlog::warn("Failed to compile histogram shader; auto-exposure disabled");
+        }
+
+        auto* expPso = reloadComputeShader("Shaders/Post/auto_exposure", "exposureMain", nullptr);
+        if (expPso) {
+            m_autoExposurePipeline = expPso;
+        } else {
+            spdlog::warn("Failed to compile auto-exposure shader; auto-exposure disabled");
+        }
+    }
+
     syncRuntimeContext();
     return true;
 }
@@ -543,7 +566,7 @@ MTL::ComputePipelineState* ShaderManager::reloadComputeShader(
     const char* shaderPath, const char* entryPoint,
     std::string (*patchFn)(const std::string&))
 {
-    std::string src = compileSlangComputeShaderToMetal(shaderPath, m_projectRoot.c_str());
+    std::string src = compileSlangComputeShaderToMetal(shaderPath, m_projectRoot.c_str(), entryPoint);
     if (src.empty()) return nullptr;
     if (patchFn) src = patchFn(src);
 
@@ -651,6 +674,19 @@ std::pair<int,int> ShaderManager::reloadAll() {
     if (auto* p = reloadFullscreenShader("Shaders/Post/passthrough", MTL::PixelFormatBGRA8Unorm)) {
         m_outputPipeline->release();
         m_outputPipeline = p;
+        reloaded++;
+    } else { failed++; }
+
+    // 8. Auto-exposure compute shaders
+    if (auto* p = reloadComputeShader("Shaders/Post/auto_exposure", "histogramMain", nullptr)) {
+        if (m_histogramPipeline) m_histogramPipeline->release();
+        m_histogramPipeline = p;
+        reloaded++;
+    } else { failed++; }
+
+    if (auto* p = reloadComputeShader("Shaders/Post/auto_exposure", "exposureMain", nullptr)) {
+        if (m_autoExposurePipeline) m_autoExposurePipeline->release();
+        m_autoExposurePipeline = p;
         reloaded++;
     } else { failed++; }
 

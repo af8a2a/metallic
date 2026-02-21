@@ -19,8 +19,11 @@ public:
         m_sourceInputName.clear();
         for (const auto& inputName : config.inputs) {
             if (!inputName.empty() && inputName[0] != '$') {
-                m_sourceInputName = inputName;
-                break;
+                if (inputName == "exposureLut") {
+                    m_hasExposureLutInput = true;
+                } else if (m_sourceInputName.empty()) {
+                    m_sourceInputName = inputName;
+                }
             }
         }
         if (config.config.contains("method")) {
@@ -38,6 +41,7 @@ public:
         if (config.config.contains("saturation")) m_saturation = config.config["saturation"].get<float>();
         if (config.config.contains("vignette")) m_vignette = config.config["vignette"].get<float>();
         if (config.config.contains("dither")) m_dither = config.config["dither"].get<bool>();
+        if (config.config.contains("autoExposure")) m_autoExposure = config.config["autoExposure"].get<bool>();
     }
 
     FGResource getOutput(const std::string& name) const override {
@@ -47,11 +51,19 @@ public:
 
     void setup(FGBuilder& builder) override {
         m_sourceRead = FGResource{};
+        m_exposureLutRead = FGResource{};
         m_dest = FGResource{};
 
         FGResource sourceInput = getSourceInput();
         if (sourceInput.isValid()) {
             m_sourceRead = builder.read(sourceInput);
+        }
+
+        if (m_hasExposureLutInput) {
+            FGResource lutInput = getInput("exposureLut");
+            if (lutInput.isValid()) {
+                m_exposureLutRead = builder.read(lutInput);
+            }
         }
 
         m_dest = getInput("$backbuffer");
@@ -88,11 +100,15 @@ public:
         } else {
             uniforms.invResolution = float2(1.0f / float(m_width), 1.0f / float(m_height));
         }
-        uniforms.pad = float2(0.0f, 0.0f);
+        uniforms.pad = 0.0f;
+        uniforms.autoExposure = (m_autoExposure && m_exposureLutRead.isValid()) ? 1u : 0u;
 
         enc->setRenderPipelineState(pipeIt->second);
         enc->setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
         enc->setFragmentSamplerState(samplerIt->second, 0);
+        if (m_exposureLutRead.isValid()) {
+            enc->setFragmentTexture(m_frameGraph->getTexture(m_exposureLutRead), 1);
+        }
         enc->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
         enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
     }
@@ -102,7 +118,16 @@ public:
         ImGui::Checkbox("Enable", &m_enabled);
         const char* methods[] = {"Filmic", "Uncharted2", "Clip", "ACES", "AgX", "Khronos PBR"};
         ImGui::Combo("Method", &m_method, methods, IM_ARRAYSIZE(methods));
-        ImGui::SliderFloat("Exposure", &m_exposure, 0.1f, 4.0f, "%.2f");
+        if (m_hasExposureLutInput) {
+            ImGui::Checkbox("Auto Exposure", &m_autoExposure);
+        }
+        if (!m_autoExposure) {
+            ImGui::SliderFloat("Exposure", &m_exposure, 0.1f, 4.0f, "%.2f");
+        } else {
+            ImGui::BeginDisabled();
+            ImGui::SliderFloat("Exposure", &m_exposure, 0.1f, 4.0f, "%.2f");
+            ImGui::EndDisabled();
+        }
         ImGui::SliderFloat("Contrast", &m_contrast, 0.5f, 2.0f, "%.2f");
         ImGui::SliderFloat("Brightness", &m_brightness, 0.5f, 2.0f, "%.2f");
         ImGui::SliderFloat("Saturation", &m_saturation, 0.0f, 2.0f, "%.2f");
@@ -127,6 +152,7 @@ private:
 
     const RenderContext& m_ctx;
     FGResource m_sourceRead;
+    FGResource m_exposureLutRead;
     FGResource m_dest;
     int m_width, m_height;
     std::string m_name = "Tonemap";
@@ -138,5 +164,7 @@ private:
     float m_saturation = 1.0f;
     float m_vignette = 0.0f;
     bool m_dither = true;
+    bool m_autoExposure = false;
+    bool m_hasExposureLutInput = false;
     std::string m_sourceInputName;
 };

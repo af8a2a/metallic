@@ -16,6 +16,7 @@
 #include "output_pass.h"
 #include "meshlet_cull_pass.h"
 #include "meshlet_visualize_pass.h"
+#include "auto_exposure_pass.h"
 
 // Register all passes with factories for data-driven pipeline building
 
@@ -47,6 +48,10 @@ REGISTER_RENDER_PASS(SkyPass, "Sky Pass", "Environment",
     (std::vector<std::string>{"skyOutput"}));
 
 // Post-process passes
+REGISTER_COMPUTE_PASS(AutoExposurePass, "Auto Exposure", "Post-Process",
+    (std::vector<std::string>{"lightingOutput"}),
+    (std::vector<std::string>{"exposureLut"}));
+
 REGISTER_RENDER_PASS(TonemapPass, "Tonemap", "Post-Process",
     (std::vector<std::string>{"lightingOutput"}),
     (std::vector<std::string>{"$backbuffer"}));

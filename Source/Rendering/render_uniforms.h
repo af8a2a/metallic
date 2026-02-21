@@ -63,7 +63,19 @@ struct TonemapUniforms {
     float vignette;
     uint32_t dither;
     float2 invResolution;
-    float2 pad;
+    uint32_t autoExposure;
+    float pad;
+};
+
+struct AutoExposureUniforms {
+    float evMinValue;
+    float evMaxValue;
+    float adaptationSpeed;
+    float deltaTime;
+    uint32_t screenWidth;
+    uint32_t screenHeight;
+    float lowPercentile;
+    float highPercentile;
 };
 
 struct SceneInstanceTransform {

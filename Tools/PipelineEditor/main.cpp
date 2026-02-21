@@ -185,8 +185,8 @@ int main(int argc, char* argv[]) {
         ImGui::Text("Pipeline Files:");
         ImGui::Separator();
 
-        // List JSON files in Pipelines directory
-        std::string pipelinesDir = "Pipelines";
+        // List JSON files in source tree Pipelines directory
+        std::string pipelinesDir = std::string(PROJECT_SOURCE_DIR) + "/Pipelines";
         if (std::filesystem::exists(pipelinesDir)) {
             for (const auto& entry : std::filesystem::directory_iterator(pipelinesDir)) {
                 if (entry.path().extension() == ".json") {

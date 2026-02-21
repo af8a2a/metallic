@@ -114,7 +114,7 @@ std::string compileSlangMeshShaderToMetal(const char* shaderPath, const char* se
                        metalCode->getBufferSize());
 }
 
-std::string compileSlangComputeShaderToMetal(const char* shaderPath, const char* searchPath) {
+std::string compileSlangComputeShaderToMetal(const char* shaderPath, const char* searchPath, const char* entryPoint) {
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     slang::createGlobalSession(globalSession.writeRef());
 
@@ -143,7 +143,11 @@ std::string compileSlangComputeShaderToMetal(const char* shaderPath, const char*
     }
 
     Slang::ComPtr<slang::IEntryPoint> computeEntry;
-    module->findEntryPointByName("computeMain", computeEntry.writeRef());
+    module->findEntryPointByName(entryPoint, computeEntry.writeRef());
+    if (!computeEntry) {
+        spdlog::error("Slang: entry point '{}' not found in {}", entryPoint, shaderPath);
+        return {};
+    }
 
     std::vector<slang::IComponentType*> components = {module, computeEntry};
     Slang::ComPtr<slang::IComponentType> program;

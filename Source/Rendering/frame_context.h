@@ -44,6 +44,9 @@ struct FrameContext {
     // Camera far plane (for shadow rays)
     float cameraFarZ = 1000.0f;
 
+    // Frame timing
+    float deltaTime = 0.016f;
+
     // Feature flags
     bool enableFrustumCull = false;
     bool enableConeCull = false;

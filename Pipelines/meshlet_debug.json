@@ -1,31 +1,5 @@
 {
   "name": "MeshletDebugPipeline",
-  "resources": [
-    {
-      "format": "R8Unorm",
-      "name": "cullResult",
-      "size": "1x1",
-      "type": "texture"
-    },
-    {
-      "format": "R32Uint",
-      "name": "visibility",
-      "size": "screen",
-      "type": "texture"
-    },
-    {
-      "format": "Depth32Float",
-      "name": "depth",
-      "size": "screen",
-      "type": "texture"
-    },
-    {
-      "format": "RGBA16Float",
-      "name": "lightingOutput",
-      "size": "screen",
-      "type": "texture"
-    }
-  ],
   "passes": [
     {
       "config": {},
@@ -105,6 +79,43 @@
       ],
       "sideEffect": true,
       "type": "ImGuiOverlayPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [],
+      "name": "SkyPass_5",
+      "outputs": [
+        "skyOutput"
+      ],
+      "sideEffect": true,
+      "type": "SkyPass"
+    }
+  ],
+  "resources": [
+    {
+      "format": "R8Unorm",
+      "name": "cullResult",
+      "size": "1x1",
+      "type": "texture"
+    },
+    {
+      "format": "R32Uint",
+      "name": "visibility",
+      "size": "screen",
+      "type": "texture"
+    },
+    {
+      "format": "Depth32Float",
+      "name": "depth",
+      "size": "screen",
+      "type": "texture"
+    },
+    {
+      "format": "RGBA16Float",
+      "name": "lightingOutput",
+      "size": "screen",
+      "type": "texture"
     }
   ]
 }

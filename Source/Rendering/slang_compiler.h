@@ -7,7 +7,7 @@
 
 std::string compileSlangToMetal(const char* shaderPath, const char* searchPath = nullptr);
 std::string compileSlangMeshShaderToMetal(const char* shaderPath, const char* searchPath = nullptr);
-std::string compileSlangComputeShaderToMetal(const char* shaderPath, const char* searchPath = nullptr);
+std::string compileSlangComputeShaderToMetal(const char* shaderPath, const char* searchPath = nullptr, const char* entryPoint = "computeMain");
 
 // Slang bug workarounds — patch generated Metal source before compilation.
 std::string patchMeshShaderMetalSource(const std::string& source);

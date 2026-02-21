@@ -9,7 +9,8 @@ struct TonemapUniforms {
     float vignette;
     uint dither;
     float2 invResolution;
-    float2 pad;
+    uint autoExposure;
+    float pad;
 };
 
 enum ToneMapMethod {
@@ -23,6 +24,7 @@ enum ToneMapMethod {
 
 ConstantBuffer<TonemapUniforms> tm;
 Texture2D<float4> inputTexture;
+Texture2D<float> exposureLut;
 SamplerState linearSampler;
 
 struct VSOut {
@@ -216,6 +218,14 @@ inline float3 applyTonemap(TonemapUniforms tmData, float3 color, float2 pixel)
 float4 fragmentMain(VSOut input) : SV_Target {
     float3 color = inputTexture.Sample(linearSampler, input.uv).rgb;
     float2 pixel = input.position.xy;
+
+    // Apply auto-exposure if enabled
+    if (tm.autoExposure != 0) {
+        float adaptedLum = exposureLut[uint2(0, 0)];
+        float autoExp = 0.18 / max(adaptedLum, 0.001);
+        color *= autoExp;
+    }
+
     float3 mapped = applyTonemap(tm, color, pixel);
     return float4(mapped, 1.0);
 }

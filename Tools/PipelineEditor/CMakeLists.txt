@@ -14,6 +14,10 @@ target_include_directories(PipelineEditorTool PRIVATE
 # Find OpenGL for the standalone editor
 find_package(OpenGL REQUIRED)
 
+# Embed project root path so the editor reads/writes source tree pipelines
+target_compile_definitions(PipelineEditorTool PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
 target_link_libraries(PipelineEditorTool PRIVATE
     PipelineEditorLib
     imgui_opengl
@@ -23,9 +27,3 @@ target_link_libraries(PipelineEditorTool PRIVATE
     spdlog::spdlog_header_only
 )
 
-# Copy Pipelines directory to build output
-add_custom_command(TARGET PipelineEditorTool POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/Pipelines"
-        "$<TARGET_FILE_DIR:PipelineEditorTool>/Pipelines"
-)

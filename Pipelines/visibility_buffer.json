@@ -79,6 +79,19 @@
       "type": "DeferredLightingPass"
     },
     {
+      "config": {},
+      "enabled": true,
+      "inputs": [
+        "lightingOutput"
+      ],
+      "name": "Auto Exposure",
+      "outputs": [
+        "exposureLut"
+      ],
+      "sideEffect": true,
+      "type": "AutoExposurePass"
+    },
+    {
       "config": {
         "brightness": 1.0,
         "contrast": 1.0,
@@ -86,11 +99,13 @@
         "exposure": 1.0,
         "method": "ACES",
         "saturation": 1.0,
-        "vignette": 0.0
+        "vignette": 0.0,
+        "autoExposure": true
       },
       "enabled": true,
       "inputs": [
-        "lightingOutput"
+        "lightingOutput",
+        "exposureLut"
       ],
       "name": "Tonemap",
       "outputs": [
@@ -148,6 +163,12 @@
       "format": "RGBA16Float",
       "name": "lightingOutput",
       "size": "screen",
+      "type": "texture"
+    },
+    {
+      "format": "R32Float",
+      "name": "exposureLut",
+      "size": "1x1",
       "type": "texture"
     }
   ]

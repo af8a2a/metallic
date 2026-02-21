@@ -42,6 +42,8 @@ private:
     MTL::RenderPipelineState* m_skyPipeline = nullptr;
     MTL::RenderPipelineState* m_tonemapPipeline = nullptr;
     MTL::RenderPipelineState* m_outputPipeline = nullptr;
+    MTL::ComputePipelineState* m_histogramPipeline = nullptr;
+    MTL::ComputePipelineState* m_autoExposurePipeline = nullptr;
     MTL::SamplerState* m_tonemapSampler = nullptr;
 
     void createVertexDescriptor();

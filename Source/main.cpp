@@ -178,6 +178,7 @@ int main() {
     PipelineBuilder pipelineBuilder(ctx);
     bool pipelineNeedsRebuild = true;
     int lastRenderMode = -1;
+    double lastFrameTime = glfwGetTime();
 
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("Frame");
@@ -439,6 +440,11 @@ int main() {
         frameCtx.commandBuffer = commandBuffer;
         frameCtx.depthClearValue = scene.depthClearValue();
         frameCtx.cameraFarZ = camera.farZ;
+        {
+            double now = glfwGetTime();
+            frameCtx.deltaTime = static_cast<float>(now - lastFrameTime);
+            lastFrameTime = now;
+        }
         frameCtx.enableFrustumCull = enableFrustumCull;
         frameCtx.enableConeCull = enableConeCull;
         frameCtx.enableRTShadows = scene.rtShadowsAvailable() && enableRTShadows;

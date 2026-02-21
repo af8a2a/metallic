@@ -44,6 +44,11 @@ REGISTER_PASS_INFO(SkyPass, "Sky Pass", "Environment",
     PassTypeInfo::PassType::Render);
 
 // Post-process
+REGISTER_PASS_INFO(AutoExposurePass, "Auto Exposure", "Post-Process",
+    (std::vector<std::string>{"lightingOutput"}),
+    (std::vector<std::string>{"exposureLut"}),
+    PassTypeInfo::PassType::Compute);
+
 REGISTER_PASS_INFO(TonemapPass, "Tonemap", "Post-Process",
     (std::vector<std::string>{"lightingOutput"}),
     (std::vector<std::string>{"$backbuffer"}),
