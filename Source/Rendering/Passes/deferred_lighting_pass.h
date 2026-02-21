@@ -73,10 +73,6 @@ public:
         lightUniforms.shadowEnabled = m_frameContext->enableRTShadows ? 1 : 0;
         lightUniforms.pad2 = 0;
 
-        // Compute prevViewProj for motion vectors (transposed for Slang convention)
-        float4x4 prevViewProj = m_frameContext->prevProj * m_frameContext->prevView;
-        lightUniforms.prevViewProj = transpose(prevViewProj);
-
         enc->setComputePipelineState(pipeIt->second);
         enc->setBytes(&lightUniforms, sizeof(lightUniforms), 0);
         enc->setBuffer(m_ctx.sceneMesh.positionBuffer, 0, 1);

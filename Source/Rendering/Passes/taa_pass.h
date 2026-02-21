@@ -41,8 +41,16 @@ public:
         m_depthRead = FGResource{};
         m_motionRead = FGResource{};
         m_taaOutput = FGResource{};
+        m_passthroughNoPipeline = false;
 
         FGResource sourceInput = getSourceInput();
+        if (!hasTAAPipeline() && sourceInput.isValid()) {
+            // If TAA shader is unavailable, forward the current color so taaOutput stays valid.
+            m_sourceRead = sourceInput;
+            m_taaOutput = sourceInput;
+            m_passthroughNoPipeline = true;
+            return;
+        }
         if (sourceInput.isValid())
             m_sourceRead = builder.read(sourceInput);
 
@@ -61,13 +69,17 @@ public:
     void executeCompute(MTL::ComputeCommandEncoder* enc) override {
         ZoneScopedN("TAAPass");
         if (!m_frameContext || !m_runtimeContext) return;
+        if (m_passthroughNoPipeline) return;
         if (!m_frameContext->enableTAA) {
             copyCurrentToOutput(enc);
             return;
         }
 
         auto pipeIt = m_runtimeContext->computePipelines.find("TAAPass");
-        if (pipeIt == m_runtimeContext->computePipelines.end()) return;
+        if (pipeIt == m_runtimeContext->computePipelines.end() || !pipeIt->second) {
+            copyCurrentToOutput(enc);
+            return;
+        }
 
         ensureHistory();
 
@@ -76,6 +88,8 @@ public:
         MTL::Texture* motionTex = m_motionRead.isValid() ? m_frameGraph->getTexture(m_motionRead) : nullptr;
         MTL::Texture* outputTex = m_frameGraph->getTexture(m_taaOutput);
         if (!currentTex || !outputTex) return;
+        if (!depthTex) depthTex = currentTex;
+        if (!motionTex) motionTex = currentTex;
 
         TAAUniforms uniforms{};
         uniforms.jitterOffset = m_frameContext->jitterOffset;
@@ -87,6 +101,7 @@ public:
         uniforms.varianceClipGamma = m_varianceClipGamma;
         uniforms.frameIndex = m_historyValid ? m_frameContext->frameIndex : 0;
         uniforms.motionWeightScale = m_motionWeightScale;
+        uniforms.copyOnly = 0;
 
         // PLACEHOLDER_DISPATCH
 
@@ -102,9 +117,7 @@ public:
         enc->setTexture(outputTex, 4);
         enc->setTexture(historyWriteTex, 5);
 
-        auto samplerIt = m_runtimeContext->samplers.find("tonemap");
-        if (samplerIt != m_runtimeContext->samplers.end())
-            enc->setSamplerState(samplerIt->second, 0);
+        bindTonemapSampler(enc);
 
         MTL::Size tgSize(8, 8, 1);
         MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);
@@ -136,6 +149,20 @@ private:
         return FGResource{};
     }
 
+    bool hasTAAPipeline() const {
+        if (!m_runtimeContext) return false;
+        auto it = m_runtimeContext->computePipelines.find("TAAPass");
+        return it != m_runtimeContext->computePipelines.end() && it->second;
+    }
+
+    void bindTonemapSampler(MTL::ComputeCommandEncoder* enc) const {
+        if (!m_runtimeContext) return;
+        auto samplerIt = m_runtimeContext->samplers.find("tonemap");
+        if (samplerIt != m_runtimeContext->samplers.end() && samplerIt->second) {
+            enc->setSamplerState(samplerIt->second, 0);
+        }
+    }
+
     // PLACEHOLDER_PRIVATE_METHODS
 
     void ensureHistory() {
@@ -164,38 +191,49 @@ private:
     }
 
     void copyCurrentToOutput(MTL::ComputeCommandEncoder* enc) {
-        // When TAA is disabled, pass through the source to output
-        // Use a simple copy via the TAA pipeline with frameIndex=0 (forces blendFactor=1.0)
+        // When TAA is disabled, run a copy-only dispatch that bypasses history sampling.
         auto pipeIt = m_runtimeContext->computePipelines.find("TAAPass");
-        if (pipeIt == m_runtimeContext->computePipelines.end()) return;
+        if (pipeIt == m_runtimeContext->computePipelines.end() || !pipeIt->second) return;
 
         ensureHistory();
 
         MTL::Texture* currentTex = m_sourceRead.isValid() ? m_frameGraph->getTexture(m_sourceRead) : nullptr;
+        MTL::Texture* depthTex = m_depthRead.isValid() ? m_frameGraph->getTexture(m_depthRead) : nullptr;
+        MTL::Texture* motionTex = m_motionRead.isValid() ? m_frameGraph->getTexture(m_motionRead) : nullptr;
         MTL::Texture* outputTex = m_frameGraph->getTexture(m_taaOutput);
         if (!currentTex || !outputTex) return;
+        if (!depthTex) depthTex = currentTex;
+        if (!motionTex) motionTex = currentTex;
+
+        MTL::Texture* historyReadTex = m_historyTextures[1 - m_historyIndex];
+        MTL::Texture* historyWriteTex = m_historyTextures[m_historyIndex];
 
         TAAUniforms uniforms{};
         uniforms.invResolution = float2(1.0f / m_width, 1.0f / m_height);
         uniforms.screenWidth = static_cast<uint32_t>(m_width);
         uniforms.screenHeight = static_cast<uint32_t>(m_height);
-        uniforms.blendMin = 1.0f;
-        uniforms.blendMax = 1.0f;
+        uniforms.blendMin = m_blendMin;
+        uniforms.blendMax = m_blendMax;
+        uniforms.varianceClipGamma = m_varianceClipGamma;
         uniforms.frameIndex = 0;
+        uniforms.motionWeightScale = m_motionWeightScale;
+        uniforms.copyOnly = 1;
 
         enc->setComputePipelineState(pipeIt->second);
         enc->setBytes(&uniforms, sizeof(uniforms), 0);
         enc->setTexture(currentTex, 0);
-        enc->setTexture(currentTex, 1); // dummy depth
-        enc->setTexture(currentTex, 2); // dummy motion
-        enc->setTexture(m_historyTextures[0], 3);
+        enc->setTexture(depthTex, 1);
+        enc->setTexture(motionTex, 2);
+        enc->setTexture(historyReadTex, 3);
         enc->setTexture(outputTex, 4);
-        enc->setTexture(m_historyTextures[0], 5);
+        enc->setTexture(historyWriteTex, 5);
+        bindTonemapSampler(enc);
 
         MTL::Size tgSize(8, 8, 1);
         MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);
         enc->dispatchThreadgroups(grid, tgSize);
 
+        m_historyIndex = 0;
         m_historyValid = false;
     }
 
@@ -205,6 +243,7 @@ private:
     std::string m_sourceInputName;
 
     FGResource m_sourceRead, m_depthRead, m_motionRead, m_taaOutput;
+    bool m_passthroughNoPipeline = false;
 
     MTL::Texture* m_historyTextures[2] = {nullptr, nullptr};
     int m_historyIndex = 0;

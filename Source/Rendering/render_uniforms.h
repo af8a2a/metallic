@@ -40,7 +40,6 @@ struct LightingUniforms {
     uint32_t instanceCount;
     uint32_t shadowEnabled;
     uint32_t pad2;
-    float4x4 prevViewProj;
 };
 
 struct AtmosphereUniforms {
@@ -89,12 +88,14 @@ struct TAAUniforms {
     float varianceClipGamma;    // 1.0
     uint32_t frameIndex;
     float motionWeightScale;    // motion rejection sensitivity
-    float pad;
+    uint32_t copyOnly;          // bypass TAA and copy current color
+    float2 pad;
 };
 
 struct SceneInstanceTransform {
     float4x4 mvp;
     float4x4 modelView;
+    float4x4 prevMvp;
 };
 
 inline void extractFrustumPlanes(const float4x4& mvp, float4* planes) {

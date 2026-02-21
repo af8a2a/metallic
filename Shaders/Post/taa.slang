@@ -12,7 +12,8 @@ struct TAAUniforms {
     float  varianceClipGamma;   // 1.0
     uint   frameIndex;
     float  motionWeightScale;   // motion rejection sensitivity
-    float  pad;
+    uint   copyOnly;
+    float2 pad;
 };
 
 ConstantBuffer<TAAUniforms> params;
@@ -89,8 +90,15 @@ void taaMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float2 pixelCenter = float2(pixel) + 0.5;
     float2 uv = pixelCenter * params.invResolution;
 
+    float4 currentSample = currentColor[pixel];
+    if (params.copyOnly != 0) {
+        taaOutput[pixel] = currentSample;
+        historyWrite[pixel] = currentSample;
+        return;
+    }
+
     // Sample current frame (already rendered with jitter)
-    float3 current = tonemap(currentColor[pixel].rgb);
+    float3 current = tonemap(currentSample.rgb);
 
     // Motion vector lookup and history reprojection
     float2 motion = motionVectors[pixel];

@@ -15,7 +15,6 @@ struct LightingUniforms {
     uint     instanceCount;
     uint     shadowEnabled;
     uint     pad2;
-    float4x4 prevViewProj;
 };
 
 struct GPUMeshlet {
@@ -41,6 +40,7 @@ struct GPUMaterial {
 struct SceneInstanceTransform {
     float4x4 mvp;
     float4x4 modelView;
+    float4x4 prevMvp;
 };
 
 static const uint INVALID_TEX = 0xFFFFFFFF;
@@ -142,10 +142,11 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     if (pixel.x >= lightUniforms.screenWidth || pixel.y >= lightUniforms.screenHeight)
         return;
 
+    motionVectors[pixel] = float2(0.0);
+
     uint vis = visibilityBuffer[pixel];
     if (vis == INVALID_VIS) {
         outputTexture[pixel] = skyTexture[pixel];
-        motionVectors[pixel] = float2(0.0);
         return;
     }
 
@@ -156,13 +157,11 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     if (meshletID >= lightUniforms.meshletCount) {
         outputTexture[pixel] = skyTexture[pixel];
-        motionVectors[pixel] = float2(0.0);
         return;
     }
 
     if (instanceID >= lightUniforms.instanceCount) {
         outputTexture[pixel] = skyTexture[pixel];
-        motionVectors[pixel] = float2(0.0);
         return;
     }
 
@@ -316,7 +315,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     outputTexture[pixel] = float4(color, 1.0);
 
-    // Motion vectors: reproject object-space position with previous frame's viewProj
+    // Motion vectors: reproject object-space position with this instance's previous MVP.
     {
         // Perspective-correct interpolation of object-space position
         float3 op0 = loadPosition(globalV0);
@@ -327,10 +326,11 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         float2 pixelCenter = float2(pixel) + 0.5;
         float2 currentUV = pixelCenter / float2(lightUniforms.screenWidth, lightUniforms.screenHeight);
 
-        float4 prevClip = mul(lightUniforms.prevViewProj, float4(objPos, 1.0));
-        float2 prevNDC = prevClip.xy / prevClip.w;
-        float2 prevUV = float2(prevNDC.x * 0.5 + 0.5, 0.5 - prevNDC.y * 0.5);
-
-        motionVectors[pixel] = currentUV - prevUV;
+        float4 prevClip = mul(instance.prevMvp, float4(objPos, 1.0));
+        if (abs(prevClip.w) > 1e-6) {
+            float2 prevNDC = prevClip.xy / prevClip.w;
+            float2 prevUV = float2(prevNDC.x * 0.5 + 0.5, 0.5 - prevNDC.y * 0.5);
+            motionVectors[pixel] = currentUV - prevUV;
+        }
     }
 }

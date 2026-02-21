@@ -418,18 +418,32 @@ int main() {
 
             std::vector<SceneInstanceTransform> visibilityInstanceTransforms;
             visibilityInstanceTransforms.reserve(std::max<size_t>(visibilityInstanceCount, 1));
+            float4x4 prevViewForMotion = hasPrevMatrices ? prevView : view;
+            float4x4 prevProjForMotion = hasPrevMatrices ? prevProj : camera.projectionMatrix(aspect);
             for (uint32_t instanceID = 0; instanceID < visibilityInstanceCount; instanceID++) {
                 const auto& node = scene.sceneGraph().nodes[visibleMeshletNodes[instanceID]];
                 float4x4 nodeModelView = view * node.transform.worldMatrix;
                 float4x4 nodeMVP = proj * nodeModelView;
-                visibilityInstanceTransforms.push_back({transpose(nodeMVP), transpose(nodeModelView)});
+                float4x4 prevNodeModelView = prevViewForMotion * node.transform.worldMatrix;
+                float4x4 prevNodeMVP = prevProjForMotion * prevNodeModelView;
+                SceneInstanceTransform instanceTransform{};
+                instanceTransform.mvp = transpose(nodeMVP);
+                instanceTransform.modelView = transpose(nodeModelView);
+                instanceTransform.prevMvp = transpose(prevNodeMVP);
+                visibilityInstanceTransforms.push_back(instanceTransform);
             }
 
             if (visibilityInstanceTransforms.empty()) {
                 float4x4 identity = float4x4::Identity();
                 float4x4 fallbackMV = view * identity;
                 float4x4 fallbackMVP = proj * fallbackMV;
-                visibilityInstanceTransforms.push_back({transpose(fallbackMVP), transpose(fallbackMV)});
+                float4x4 prevFallbackMV = prevViewForMotion * identity;
+                float4x4 prevFallbackMVP = prevProjForMotion * prevFallbackMV;
+                SceneInstanceTransform fallbackTransform{};
+                fallbackTransform.mvp = transpose(fallbackMVP);
+                fallbackTransform.modelView = transpose(fallbackMV);
+                fallbackTransform.prevMvp = transpose(prevFallbackMVP);
+                visibilityInstanceTransforms.push_back(fallbackTransform);
             }
 
             instanceTransformBuffer = device->newBuffer(
