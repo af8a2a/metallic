@@ -3,7 +3,6 @@
 #include "pipeline_asset.h"
 #include "frame_graph.h"
 #include "pass_registry.h"
-#include <Metal/Metal.hpp>
 #include <unordered_map>
 #include <vector>
 
@@ -24,11 +23,11 @@ public:
     bool needsRebuild(int width, int height) const;
 
     // Per-frame update: swap backbuffer, set frame context, reset transients
-    void updateFrame(MTL::Texture* backbuffer, const FrameContext* frameCtx);
+    void updateFrame(RhiTexture* backbuffer, const FrameContext* frameCtx);
 
     // Forward to internal FrameGraph
     void compile();
-    void execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyMetalCtxHandle tracyCtx);
+    void execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& backend);
 
     // Access internal FrameGraph (for debug UI, graphviz export, etc.)
     FrameGraph& frameGraph() { return m_fg; }
@@ -49,7 +48,7 @@ public:
     const std::vector<RenderPass*>& passes() const { return m_passes; }
 
 private:
-    MTL::PixelFormat parsePixelFormat(const std::string& format) const;
+    RhiFormat parsePixelFormat(const std::string& format) const;
     FGTextureDesc parseTextureDesc(const ResourceDecl& decl, int width, int height) const;
 
     const RenderContext& m_ctx;

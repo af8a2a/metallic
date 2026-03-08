@@ -4,6 +4,7 @@
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class ForwardPass : public RenderPass {
@@ -34,19 +35,20 @@ public:
             output = skyInput;       // render into sky's texture
         } else {
             output = builder.create("forwardColor",
-                FGTextureDesc::renderTarget(m_width, m_height, MTL::PixelFormatRGBA16Float));
+                FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::RGBA16Float));
         }
         depth = builder.create("depth",
             FGTextureDesc::depthTarget(m_width, m_height));
-        MTL::LoadAction colorLoad = skyInput.isValid() ? MTL::LoadActionLoad : MTL::LoadActionClear;
+        RhiLoadAction colorLoad = skyInput.isValid() ? RhiLoadAction::Load : RhiLoadAction::Clear;
         builder.setColorAttachment(0, output,
-            colorLoad, MTL::StoreActionStore,
-            MTL::ClearColor(0.1, 0.2, 0.3, 1.0));
+            colorLoad, RhiStoreAction::Store,
+            RhiClearColor(0.1, 0.2, 0.3, 1.0));
         builder.setDepthAttachment(depth,
-            MTL::LoadActionClear, MTL::StoreActionStore, m_ctx.depthClearValue);
+            RhiLoadAction::Clear, RhiStoreAction::Store, m_ctx.depthClearValue);
     }
 
-    void executeRender(MTL::RenderCommandEncoder* enc) override {
+    void executeRender(RhiRenderCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("ForwardPass");
         enc->setDepthStencilState(m_ctx.depthState);
         enc->setFrontFacingWinding(MTL::WindingCounterClockwise);

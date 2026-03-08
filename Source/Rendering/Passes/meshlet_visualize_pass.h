@@ -3,6 +3,7 @@
 #include "render_pass.h"
 #include "frame_context.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class MeshletVisualizePass : public RenderPass {
@@ -35,10 +36,11 @@ public:
         if (visInput.isValid()) m_visRead = builder.read(visInput);
 
         output = builder.create("meshletVisOutput",
-            FGTextureDesc::storageTexture(m_width, m_height, MTL::PixelFormatRGBA16Float));
+            FGTextureDesc::storageTexture(m_width, m_height, RhiFormat::RGBA16Float));
     }
 
-    void executeCompute(MTL::ComputeCommandEncoder* enc) override {
+    void executeCompute(RhiComputeCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("MeshletVisualizePass");
         if (!m_frameContext || !m_runtimeContext) return;
 
@@ -58,8 +60,8 @@ public:
 
         enc->setComputePipelineState(pipeIt->second);
         enc->setBytes(&uniforms, sizeof(uniforms), 0);
-        enc->setTexture(m_frameGraph->getTexture(m_visRead), 0);
-        enc->setTexture(m_frameGraph->getTexture(output), 1);
+        enc->setTexture(metalTexture(m_frameGraph->getTexture(m_visRead)), 0);
+        enc->setTexture(metalTexture(m_frameGraph->getTexture(output)), 1);
 
         MTL::Size tgSize(8, 8, 1);
         MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);
@@ -79,3 +81,5 @@ private:
     int m_colorMode = 0;
     std::string m_name = "Meshlet Visualize";
 };
+
+

@@ -85,3 +85,17 @@ External/                       # Dependencies (metal-cpp, GLFW, Slang, ImGui, T
 | [stb_image](https://github.com/nothings/stb) | Image loading |
 | [spdlog](https://github.com/gabime/spdlog) | Logging |
 | [MathLib](External/MathLib/) | HLSL-style math |
+
+## Windows Vulkan Bootstrap
+
+The repository now includes a backend-agnostic RHI bootstrap path and a Windows Vulkan 1.4 backend.
+
+```powershell
+cmake -S . -B build -DSLANG_ROOT=D:/path/to/slang
+cmake --build build --config Debug --target Metallic
+./build/Source/Debug/Metallic.exe
+```
+
+- The Windows path initializes the new RHI/Vulkan stack, compiles `Shaders/Vertex/triangle` from Slang to SPIR-V, and renders a diagnostic triangle with ImGui.
+- The existing FrameGraph, pass system, and ray-traced shadows remain on the Metal path.
+- If `External/slang` is absent, configure with `-DSLANG_ROOT=<sdk-root>` or set `SLANG_ROOT` / `SLANG_DIR` in the environment.

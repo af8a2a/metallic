@@ -5,6 +5,7 @@
 #include "frame_context.h"
 #include "gpu_cull_resources.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 #include <spdlog/spdlog.h>
 
@@ -36,11 +37,12 @@ public:
     void setup(FGBuilder& builder) override {
         // Dummy 1x1 texture just for frame graph dependency ordering
         cullResult = builder.create("cullResult",
-            FGTextureDesc::storageTexture(1, 1, MTL::PixelFormatR8Unorm));
+            FGTextureDesc::storageTexture(1, 1, RhiFormat::R8Unorm));
         builder.setSideEffect();
     }
 
-    void executeCompute(MTL::ComputeCommandEncoder* enc) override {
+    void executeCompute(RhiComputeCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("MeshletCullPass");
         if (!m_frameContext || !m_runtimeContext) return;
         if (!m_frameContext->gpuDrivenCulling) return;
@@ -73,7 +75,7 @@ public:
         auto* counterPtr = static_cast<uint32_t*>(m_counterBuffer->contents());
         m_lastVisibleCount = counterPtr[1]; // indirect args x from previous frame
 
-        // Upload instance data (CPU â†’ GPU, StorageModeShared)
+        // Upload instance data (CPU â†?GPU, StorageModeShared)
         auto* instPtr = static_cast<GPUInstanceData*>(m_instanceDataBuffer->contents());
         for (uint32_t i = 0; i < instanceCount; i++) {
             const auto& node = m_ctx.sceneGraph.nodes[visibleNodes[i]];
@@ -118,7 +120,7 @@ public:
         enc->dispatchThreadgroups(MTL::Size(1, 1, 1), MTL::Size(1, 1, 1));
 
         // Publish results to FrameContext for VisibilityPass
-        // (const_cast is safe here â€” we own the data and VisibilityPass reads it later in the same frame)
+        // (const_cast is safe here â€?we own the data and VisibilityPass reads it later in the same frame)
         auto* mutableCtx = const_cast<FrameContext*>(m_frameContext);
         mutableCtx->gpuVisibleMeshletBuffer = m_visibleMeshletBuffer;
         mutableCtx->gpuCounterBuffer = m_counterBuffer;
@@ -185,3 +187,5 @@ private:
         }
     }
 };
+
+

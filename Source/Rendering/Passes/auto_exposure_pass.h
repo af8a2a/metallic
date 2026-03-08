@@ -4,6 +4,7 @@
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class AutoExposurePass : public RenderPass {
@@ -49,11 +50,12 @@ public:
         }
 
         m_exposureLut = builder.create("exposureLut",
-            FGTextureDesc::storageTexture(1, 1, MTL::PixelFormatR32Float));
+            FGTextureDesc::storageTexture(1, 1, RhiFormat::R32Float));
         builder.setSideEffect();
     }
 
-    void executeCompute(MTL::ComputeCommandEncoder* enc) override {
+    void executeCompute(RhiComputeCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("AutoExposurePass");
         if (!m_runtimeContext || !m_sourceRead.isValid()) return;
 
@@ -79,10 +81,10 @@ public:
         uniforms.lowPercentile = m_lowPercentile;
         uniforms.highPercentile = m_highPercentile;
 
-        MTL::Texture* hdrTex = m_frameGraph->getTexture(m_sourceRead);
-        MTL::Texture* lutTex = m_frameGraph->getTexture(m_exposureLut);
+        MTL::Texture* hdrTex = metalTexture(m_frameGraph->getTexture(m_sourceRead));
+        MTL::Texture* lutTex = metalTexture(m_frameGraph->getTexture(m_exposureLut));
 
-        // Slang wraps all globals into KernelContext â€” both kernels expect all bindings:
+        // Slang wraps all globals into KernelContext â€?both kernels expect all bindings:
         // buffer(0) = uniforms, texture(0) = hdrInput, buffer(1) = histogramBuffer, texture(1) = exposureLut
 
         // Dispatch 1: Histogram
@@ -144,3 +146,5 @@ private:
     float m_lowPercentile = 0.1f;
     float m_highPercentile = 0.9f;
 };
+
+

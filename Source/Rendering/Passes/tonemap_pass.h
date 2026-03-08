@@ -4,6 +4,7 @@
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class TonemapPass : public RenderPass {
@@ -69,13 +70,14 @@ public:
         m_dest = getInput("$backbuffer");
         if (m_dest.isValid()) {
             builder.setColorAttachment(0, m_dest,
-                MTL::LoadActionDontCare, MTL::StoreActionStore,
-                MTL::ClearColor(0.0, 0.0, 0.0, 1.0));
+                RhiLoadAction::DontCare, RhiStoreAction::Store,
+                RhiClearColor(0.0, 0.0, 0.0, 1.0));
         }
         builder.setSideEffect();
     }
 
-    void executeRender(MTL::RenderCommandEncoder* enc) override {
+    void executeRender(RhiRenderCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("TonemapPass");
 
         if (!m_runtimeContext || !m_sourceRead.isValid()) return;
@@ -104,10 +106,10 @@ public:
         uniforms.autoExposure = (m_autoExposure && m_exposureLutRead.isValid()) ? 1u : 0u;
 
         enc->setRenderPipelineState(pipeIt->second);
-        enc->setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
+        enc->setFragmentTexture(metalTexture(m_frameGraph->getTexture(m_sourceRead)), 0);
         enc->setFragmentSamplerState(samplerIt->second, 0);
         if (m_exposureLutRead.isValid()) {
-            enc->setFragmentTexture(m_frameGraph->getTexture(m_exposureLutRead), 1);
+            enc->setFragmentTexture(metalTexture(m_frameGraph->getTexture(m_exposureLutRead)), 1);
         }
         enc->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
         enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
@@ -168,3 +170,5 @@ private:
     bool m_hasExposureLutInput = false;
     std::string m_sourceInputName;
 };
+
+

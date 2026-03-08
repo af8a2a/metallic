@@ -20,6 +20,7 @@
 
 #include <spdlog/spdlog.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <algorithm>
 #include <fstream>
@@ -43,6 +44,7 @@
 #include "pipeline_asset.h"
 #include "pipeline_builder.h"
 #include "frame_context.h"
+#include "metal_frame_graph.h"
 
 
 static bool loadPipelineAssetChecked(const std::string& path,
@@ -129,11 +131,22 @@ int main() {
     ShaderManager shaderManager(device, projectRoot);
     if (!shaderManager.buildAll()) return 1;
 
+    PipelineRuntimeContext& rtCtx = shaderManager.runtimeContext();
+    std::unordered_map<std::string, std::unique_ptr<MetalImportedTexture>> importedTextureWrappers;
+
+    auto importRuntimeTexture = [&](const std::string& name, MTL::Texture* texture) {
+        shaderManager.importTexture(name, texture);
+
+        auto wrapper = std::make_unique<MetalImportedTexture>(texture);
+        rtCtx.importedRhiTextures[name] = wrapper.get();
+        importedTextureWrappers[name] = std::move(wrapper);
+    };
+
     if (scene.atmosphereLoaded()) {
         auto& atm = scene.atmosphereTextures();
-        shaderManager.importTexture("transmittance", atm.transmittance);
-        shaderManager.importTexture("scattering", atm.scattering);
-        shaderManager.importTexture("irradiance", atm.irradiance);
+        importRuntimeTexture("transmittance", atm.transmittance);
+        importRuntimeTexture("scattering", atm.scattering);
+        importRuntimeTexture("irradiance", atm.irradiance);
         shaderManager.importSampler("atmosphere", atm.sampler);
     }
     bool skyAvailable = scene.atmosphereLoaded() && shaderManager.hasSkyPipeline();
@@ -175,9 +188,9 @@ int main() {
 
     // Persistent render context and pipeline builder
     RenderContext ctx = scene.renderContext();
-    PipelineRuntimeContext& rtCtx = shaderManager.runtimeContext();
-
     PipelineBuilder pipelineBuilder(ctx);
+    MetalFrameGraphBackend frameGraphBackend(device);
+    MetalImportedTexture backbufferTexture;
     bool pipelineNeedsRebuild = true;
     int lastRenderMode = -1;
     double lastFrameTime = glfwGetTime();
@@ -502,6 +515,8 @@ int main() {
         // Rebuild pipeline only when needed (first frame, F6 reload, resolution change, mode switch)
         if (pipelineNeedsRebuild || pipelineBuilder.needsRebuild(width, height)) {
             rtCtx.backbuffer = drawable->texture();
+            backbufferTexture.setTexture(drawable->texture());
+            rtCtx.backbufferRhi = &backbufferTexture;
             bool buildSucceeded = pipelineBuilder.build(activePipelineAsset, rtCtx, width, height);
             if (!buildSucceeded) {
                 spdlog::error("Failed to build pipeline: {}", pipelineBuilder.lastError());
@@ -512,7 +527,10 @@ int main() {
         }
 
         // Per-frame: swap backbuffer, update frame context, reset transients
-        pipelineBuilder.updateFrame(drawable->texture(), &frameCtx);
+        rtCtx.backbuffer = drawable->texture();
+        backbufferTexture.setTexture(drawable->texture());
+        rtCtx.backbufferRhi = &backbufferTexture;
+        pipelineBuilder.updateFrame(rtCtx.backbufferRhi, &frameCtx);
 
         FrameGraph& activeFg = pipelineBuilder.frameGraph();
 
@@ -540,7 +558,8 @@ int main() {
             updateTLAS(commandBuffer, scene.sceneGraph(), scene.shadowResources());
         }
 
-        activeFg.execute(commandBuffer, device, tracyGpuCtx);
+        MetalCommandBuffer fgCommandBuffer(commandBuffer, tracyGpuCtx);
+        pipelineBuilder.execute(fgCommandBuffer, frameGraphBackend);
 
         commandBuffer->presentDrawable(drawable);
         commandBuffer->commit();

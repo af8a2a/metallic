@@ -5,6 +5,7 @@
 #include "frame_context.h"
 #include "gpu_cull_resources.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 #include <vector>
 
@@ -22,7 +23,7 @@ public:
         if (config.config.contains("clearColor")) {
             auto& cc = config.config["clearColor"];
             if (cc.is_array() && cc.size() >= 4) {
-                m_clearColor = MTL::ClearColor(
+                m_clearColor = RhiClearColor(
                     cc[0].get<double>(), cc[1].get<double>(),
                     cc[2].get<double>(), cc[3].get<double>());
             }
@@ -46,16 +47,17 @@ public:
             builder.read(cullInput);
         }
         visibility = builder.create("visibility",
-            FGTextureDesc::renderTarget(m_width, m_height, MTL::PixelFormatR32Uint));
+            FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::R32Uint));
         depth = builder.create("depth",
             FGTextureDesc::depthTarget(m_width, m_height));
         builder.setColorAttachment(0, visibility,
-            MTL::LoadActionClear, MTL::StoreActionStore, m_clearColor);
+            RhiLoadAction::Clear, RhiStoreAction::Store, m_clearColor);
         builder.setDepthAttachment(depth,
-            MTL::LoadActionClear, MTL::StoreActionStore, m_ctx.depthClearValue);
+            RhiLoadAction::Clear, RhiStoreAction::Store, m_ctx.depthClearValue);
     }
 
-    void executeRender(MTL::RenderCommandEncoder* enc) override {
+    void executeRender(RhiRenderCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("VisibilityPass");
         if (!m_frameContext || !m_runtimeContext) return;
 
@@ -218,6 +220,8 @@ private:
     const RenderContext& m_ctx;
     int m_width, m_height;
     std::string m_name = "Visibility Pass";
-    MTL::ClearColor m_clearColor = MTL::ClearColor(0xFFFFFFFF, 0, 0, 0);
+    RhiClearColor m_clearColor = RhiClearColor(0xFFFFFFFF, 0, 0, 0);
     bool m_gpuDrivenLastFrame = false;
 };
+
+

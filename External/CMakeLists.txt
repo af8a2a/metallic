@@ -1,11 +1,12 @@
-# metal-cpp
-add_library(metal-cpp INTERFACE)
-target_include_directories(metal-cpp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/metal-cpp)
-target_link_libraries(metal-cpp INTERFACE
-    "-framework Metal"
-    "-framework Foundation"
-    "-framework QuartzCore"
-)
+if(APPLE)
+    add_library(metal-cpp INTERFACE)
+    target_include_directories(metal-cpp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/metal-cpp)
+    target_link_libraries(metal-cpp INTERFACE
+        "-framework Metal"
+        "-framework Foundation"
+        "-framework QuartzCore"
+    )
+endif()
 
 # meshoptimizer
 add_library(meshoptimizer STATIC
@@ -30,13 +31,26 @@ add_library(imgui STATIC
     imgui/imgui_widgets.cpp
     imgui/imgui_demo.cpp
     imgui/backends/imgui_impl_glfw.cpp
-    imgui/backends/imgui_impl_metal.mm
 )
+
+if(APPLE)
+    target_sources(imgui PRIVATE imgui/backends/imgui_impl_metal.mm)
+elseif(WIN32)
+    find_package(Vulkan REQUIRED)
+    target_sources(imgui PRIVATE imgui/backends/imgui_impl_vulkan.cpp)
+endif()
+
 target_include_directories(imgui PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/backends
 )
-target_link_libraries(imgui PUBLIC glfw metal-cpp "-framework Metal" "-framework AppKit")
+target_link_libraries(imgui PUBLIC glfw)
+
+if(APPLE)
+    target_link_libraries(imgui PUBLIC metal-cpp "-framework Metal" "-framework AppKit")
+elseif(WIN32)
+    target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
+endif()
 
 
 add_subdirectory(MathLib)

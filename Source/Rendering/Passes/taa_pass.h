@@ -4,6 +4,7 @@
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class TAAPass : public RenderPass {
@@ -63,10 +64,11 @@ public:
             m_motionRead = builder.read(motionInput);
 
         m_taaOutput = builder.create("taaOutput",
-            FGTextureDesc::storageTexture(m_width, m_height, MTL::PixelFormatRGBA16Float));
+            FGTextureDesc::storageTexture(m_width, m_height, RhiFormat::RGBA16Float));
     }
 
-    void executeCompute(MTL::ComputeCommandEncoder* enc) override {
+    void executeCompute(RhiComputeCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("TAAPass");
         if (!m_frameContext || !m_runtimeContext) return;
         if (m_passthroughNoPipeline) return;
@@ -83,10 +85,10 @@ public:
 
         ensureHistory();
 
-        MTL::Texture* currentTex = m_sourceRead.isValid() ? m_frameGraph->getTexture(m_sourceRead) : nullptr;
-        MTL::Texture* depthTex = m_depthRead.isValid() ? m_frameGraph->getTexture(m_depthRead) : nullptr;
-        MTL::Texture* motionTex = m_motionRead.isValid() ? m_frameGraph->getTexture(m_motionRead) : nullptr;
-        MTL::Texture* outputTex = m_frameGraph->getTexture(m_taaOutput);
+        MTL::Texture* currentTex = m_sourceRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_sourceRead)) : nullptr;
+        MTL::Texture* depthTex = m_depthRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_depthRead)) : nullptr;
+        MTL::Texture* motionTex = m_motionRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_motionRead)) : nullptr;
+        MTL::Texture* outputTex = metalTexture(m_frameGraph->getTexture(m_taaOutput));
         if (!currentTex || !outputTex) return;
         if (!depthTex) depthTex = currentTex;
         if (!motionTex) motionTex = currentTex;
@@ -175,7 +177,7 @@ private:
 
         releaseHistory();
         auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
-            MTL::PixelFormatRGBA16Float, w, h, false);
+            RhiFormat::RGBA16Float, w, h, false);
         desc->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
         desc->setStorageMode(MTL::StorageModePrivate);
         m_historyTextures[0] = m_runtimeContext->device->newTexture(desc);
@@ -197,10 +199,10 @@ private:
 
         ensureHistory();
 
-        MTL::Texture* currentTex = m_sourceRead.isValid() ? m_frameGraph->getTexture(m_sourceRead) : nullptr;
-        MTL::Texture* depthTex = m_depthRead.isValid() ? m_frameGraph->getTexture(m_depthRead) : nullptr;
-        MTL::Texture* motionTex = m_motionRead.isValid() ? m_frameGraph->getTexture(m_motionRead) : nullptr;
-        MTL::Texture* outputTex = m_frameGraph->getTexture(m_taaOutput);
+        MTL::Texture* currentTex = m_sourceRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_sourceRead)) : nullptr;
+        MTL::Texture* depthTex = m_depthRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_depthRead)) : nullptr;
+        MTL::Texture* motionTex = m_motionRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_motionRead)) : nullptr;
+        MTL::Texture* outputTex = metalTexture(m_frameGraph->getTexture(m_taaOutput));
         if (!currentTex || !outputTex) return;
         if (!depthTex) depthTex = currentTex;
         if (!motionTex) motionTex = currentTex;
@@ -254,3 +256,5 @@ private:
     float m_varianceClipGamma = 1.0f;
     float m_motionWeightScale = 20.0f;
 };
+
+

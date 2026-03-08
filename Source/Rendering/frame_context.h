@@ -5,6 +5,8 @@
 #include <vector>
 #include <unordered_map>
 
+class RhiTexture;
+
 // Per-frame runtime context for data-driven pipeline execution
 // This holds all the dynamic data that changes each frame
 struct FrameContext {
@@ -83,7 +85,9 @@ struct PipelineRuntimeContext {
 
     // Imported textures (atmosphere, fallbacks, etc.)
     std::unordered_map<std::string, MTL::Texture*> importedTextures;
+    std::unordered_map<std::string, RhiTexture*> importedRhiTextures;
 
     // Current frame's drawable
     MTL::Texture* backbuffer = nullptr;
+    RhiTexture* backbufferRhi = nullptr;
 };

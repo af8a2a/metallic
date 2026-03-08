@@ -3,10 +3,11 @@
 #include "render_pass.h"
 #include "frame_context.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 
 // Fullscreen passthrough: samples any input texture and writes to $backbuffer.
-// Safely handles RGBA16Float â†’ BGRA8Unorm conversion (clamp to [0,1]).
+// Safely handles RGBA16Float â†?BGRA8Unorm conversion (clamp to [0,1]).
 // Drop-in replacement for TonemapPass when debugging.
 class OutputPass : public RenderPass {
 public:
@@ -37,13 +38,14 @@ public:
         m_dest = getInput("$backbuffer");
         if (m_dest.isValid()) {
             builder.setColorAttachment(0, m_dest,
-                MTL::LoadActionDontCare, MTL::StoreActionStore,
-                MTL::ClearColor(0.0, 0.0, 0.0, 1.0));
+                RhiLoadAction::DontCare, RhiStoreAction::Store,
+                RhiClearColor(0.0, 0.0, 0.0, 1.0));
         }
         builder.setSideEffect();
     }
 
-    void executeRender(MTL::RenderCommandEncoder* enc) override {
+    void executeRender(RhiRenderCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("OutputPass");
         if (!m_runtimeContext) return;
 
@@ -54,7 +56,7 @@ public:
         if (samplerIt == m_runtimeContext->samplers.end()) return;
 
         enc->setRenderPipelineState(pipeIt->second);
-        enc->setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
+        enc->setFragmentTexture(metalTexture(m_frameGraph->getTexture(m_sourceRead)), 0);
         enc->setFragmentSamplerState(samplerIt->second, 0);
         enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
     }
@@ -70,3 +72,5 @@ private:
     int m_width, m_height;
     std::string m_name = "Output";
 };
+
+

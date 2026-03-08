@@ -4,6 +4,7 @@
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class SkyPass : public RenderPass {
@@ -31,16 +32,17 @@ public:
 
     void setup(FGBuilder& builder) override {
         output = builder.create("skyColor",
-            FGTextureDesc::renderTarget(m_width, m_height, MTL::PixelFormatRGBA16Float));
+            FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::RGBA16Float));
         builder.setColorAttachment(0, output,
-            MTL::LoadActionClear, MTL::StoreActionStore,
-            MTL::ClearColor(0.0, 0.0, 0.0, 1.0));
+            RhiLoadAction::Clear, RhiStoreAction::Store,
+            RhiClearColor(0.0, 0.0, 0.0, 1.0));
         if (m_sideEffect) {
             builder.setSideEffect();
         }
     }
 
-    void executeRender(MTL::RenderCommandEncoder* enc) override {
+    void executeRender(RhiRenderCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("SkyPass");
 
         if (!m_frameContext || !m_runtimeContext) return;
@@ -98,3 +100,5 @@ private:
     bool m_sideEffect = false;
     float m_exposure = 10.0f;
 };
+
+

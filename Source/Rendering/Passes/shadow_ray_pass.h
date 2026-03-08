@@ -4,6 +4,7 @@
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class ShadowRayPass : public RenderPass {
@@ -38,10 +39,11 @@ public:
             m_depthRead = builder.read(depthInput);
         }
         shadowMap = builder.create("shadowMap",
-            FGTextureDesc::storageTexture(m_width, m_height, MTL::PixelFormatR8Unorm));
+            FGTextureDesc::storageTexture(m_width, m_height, RhiFormat::R8Unorm));
     }
 
-    void executeCompute(MTL::ComputeCommandEncoder* enc) override {
+    void executeCompute(RhiComputeCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("ShadowRayPass");
         if (!m_frameContext) return;
         if (!m_frameContext->enableRTShadows) return;
@@ -60,8 +62,8 @@ public:
         shadowUni.reversedZ = ML_DEPTH_REVERSED ? 1 : 0;
         enc->setBytes(&shadowUni, sizeof(shadowUni), 0);
         enc->setAccelerationStructure(m_ctx.shadowResources.tlas, 1);
-        enc->setTexture(m_frameGraph->getTexture(m_depthRead), 0);
-        enc->setTexture(m_frameGraph->getTexture(shadowMap), 1);
+        enc->setTexture(metalTexture(m_frameGraph->getTexture(m_depthRead)), 0);
+        enc->setTexture(metalTexture(m_frameGraph->getTexture(shadowMap)), 1);
         enc->useResource(m_ctx.shadowResources.tlas, MTL::ResourceUsageRead);
         for (auto* blas : m_ctx.shadowResources.blasArray) {
             if (blas) enc->useResource(blas, MTL::ResourceUsageRead);
@@ -90,3 +92,5 @@ private:
     float m_normalBias = 0.05f;
     float m_maxRayDistance = 1000.0f;
 };
+
+

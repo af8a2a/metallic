@@ -28,13 +28,13 @@ bool PipelineBuilder::build(const PipelineAsset& asset,
     m_backbufferRes = FGResource{};
 
     // Import special resources
-    if (rtCtx.backbuffer) {
-        m_backbufferRes = m_fg.import("backbuffer", rtCtx.backbuffer);
+    if (rtCtx.backbufferRhi) {
+        m_backbufferRes = m_fg.import("backbuffer", rtCtx.backbufferRhi);
         m_resourceMap["$backbuffer"] = m_backbufferRes;
     }
 
     // Import any pre-existing textures
-    for (const auto& [name, tex] : rtCtx.importedTextures) {
+    for (const auto& [name, tex] : rtCtx.importedRhiTextures) {
         if (tex) {
             m_resourceMap[name] = m_fg.import(name.c_str(), tex);
         }
@@ -138,7 +138,7 @@ bool PipelineBuilder::build(const PipelineAsset& asset,
     return true;
 }
 
-void PipelineBuilder::updateFrame(MTL::Texture* backbuffer, const FrameContext* frameCtx) {
+void PipelineBuilder::updateFrame(RhiTexture* backbuffer, const FrameContext* frameCtx) {
     if (m_backbufferRes.isValid()) {
         m_fg.updateImport(m_backbufferRes, backbuffer);
     }
@@ -150,8 +150,8 @@ void PipelineBuilder::compile() {
     m_fg.compile();
 }
 
-void PipelineBuilder::execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyMetalCtxHandle tracyCtx) {
-    m_fg.execute(cmdBuf, device, tracyCtx);
+void PipelineBuilder::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& backend) {
+    m_fg.execute(commandBuffer, backend);
 }
 
 void PipelineBuilder::setFrameContext(const FrameContext* ctx) {
@@ -174,21 +174,21 @@ FGResource PipelineBuilder::getResource(const std::string& name) const {
     return FGResource{};
 }
 
-MTL::PixelFormat PipelineBuilder::parsePixelFormat(const std::string& format) const {
-    static const std::unordered_map<std::string, MTL::PixelFormat> formatMap = {
-        {"R8Unorm", MTL::PixelFormatR8Unorm},
-        {"R16Float", MTL::PixelFormatR16Float},
-        {"R32Float", MTL::PixelFormatR32Float},
-        {"R32Uint", MTL::PixelFormatR32Uint},
-        {"RG8Unorm", MTL::PixelFormatRG8Unorm},
-        {"RG16Float", MTL::PixelFormatRG16Float},
-        {"RG32Float", MTL::PixelFormatRG32Float},
-        {"RGBA8Unorm", MTL::PixelFormatRGBA8Unorm},
-        {"BGRA8Unorm", MTL::PixelFormatBGRA8Unorm},
-        {"RGBA16Float", MTL::PixelFormatRGBA16Float},
-        {"RGBA32Float", MTL::PixelFormatRGBA32Float},
-        {"Depth32Float", MTL::PixelFormatDepth32Float},
-        {"Depth16Unorm", MTL::PixelFormatDepth16Unorm},
+RhiFormat PipelineBuilder::parsePixelFormat(const std::string& format) const {
+    static const std::unordered_map<std::string, RhiFormat> formatMap = {
+        {"R8Unorm", RhiFormat::R8Unorm},
+        {"R16Float", RhiFormat::R16Float},
+        {"R32Float", RhiFormat::R32Float},
+        {"R32Uint", RhiFormat::R32Uint},
+        {"RG8Unorm", RhiFormat::RG8Unorm},
+        {"RG16Float", RhiFormat::RG16Float},
+        {"RG32Float", RhiFormat::RG32Float},
+        {"RGBA8Unorm", RhiFormat::RGBA8Unorm},
+        {"BGRA8Unorm", RhiFormat::BGRA8Unorm},
+        {"RGBA16Float", RhiFormat::RGBA16Float},
+        {"RGBA32Float", RhiFormat::RGBA32Float},
+        {"Depth32Float", RhiFormat::D32Float},
+        {"Depth16Unorm", RhiFormat::D16Unorm},
     };
 
     auto it = formatMap.find(format);
@@ -196,7 +196,7 @@ MTL::PixelFormat PipelineBuilder::parsePixelFormat(const std::string& format) co
         return it->second;
     }
     spdlog::warn("PipelineBuilder: unknown pixel format '{}', defaulting to BGRA8Unorm", format);
-    return MTL::PixelFormatBGRA8Unorm;
+    return RhiFormat::BGRA8Unorm;
 }
 
 FGTextureDesc PipelineBuilder::parseTextureDesc(const ResourceDecl& decl, int width, int height) const {
@@ -223,12 +223,12 @@ FGTextureDesc PipelineBuilder::parseTextureDesc(const ResourceDecl& decl, int wi
 
     // Set usage based on format
     if (decl.format.find("Depth") != std::string::npos) {
-        desc.usage = MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead;
+        desc.usage = RhiTextureUsage::RenderTarget | RhiTextureUsage::ShaderRead;
     } else {
-        desc.usage = MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite;
+        desc.usage = RhiTextureUsage::RenderTarget | RhiTextureUsage::ShaderRead | RhiTextureUsage::ShaderWrite;
     }
 
-    desc.storageMode = MTL::StorageModePrivate;
+    desc.storageMode = RhiTextureStorageMode::Private;
 
     return desc;
 }

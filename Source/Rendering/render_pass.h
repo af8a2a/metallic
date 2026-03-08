@@ -33,9 +33,9 @@ public:
     virtual FGPassType passType() const = 0;
     virtual const char* name() const = 0;
     virtual void setup(FGBuilder& builder) = 0;
-    virtual void executeRender(MTL::RenderCommandEncoder*) {}
-    virtual void executeCompute(MTL::ComputeCommandEncoder*) {}
-    virtual void executeBlit(MTL::BlitCommandEncoder*) {}
+    virtual void executeRender(RhiRenderCommandEncoder&) {}
+    virtual void executeCompute(RhiComputeCommandEncoder&) {}
+    virtual void executeBlit(RhiBlitCommandEncoder&) {}
     virtual void renderUI() {}
 
     // Data-driven configuration support

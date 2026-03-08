@@ -1,95 +1,69 @@
 #pragma once
 
-#include <Metal/Metal.hpp>
 #include <cstdint>
 #include <functional>
-#include <ostream>
 #include <memory>
+#include <ostream>
 #include <string>
 #include <vector>
 
-#include "tracy_metal.h"
-
-// --- Resource Handle ---
+#include "rhi_backend.h"
 
 struct FGResource {
     uint32_t id = UINT32_MAX;
     bool isValid() const { return id != UINT32_MAX; }
 };
 
-// --- Texture Descriptor (transient resources) ---
-
-struct FGTextureDesc {
-    uint32_t width = 0;
-    uint32_t height = 0;
-    MTL::PixelFormat format = MTL::PixelFormatBGRA8Unorm;
-    MTL::TextureUsage usage = MTL::TextureUsageRenderTarget;
-    MTL::StorageMode storageMode = MTL::StorageModePrivate;
-
-    static FGTextureDesc renderTarget(uint32_t w, uint32_t h, MTL::PixelFormat fmt) {
-        return {w, h, fmt, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead, MTL::StorageModePrivate};
-    }
-    static FGTextureDesc depthTarget(uint32_t w, uint32_t h) {
-        return {w, h, MTL::PixelFormatDepth32Float, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead, MTL::StorageModePrivate};
-    }
-    static FGTextureDesc storageTexture(uint32_t w, uint32_t h, MTL::PixelFormat fmt) {
-        return {w, h, fmt, MTL::TextureUsageShaderWrite | MTL::TextureUsageShaderRead, MTL::StorageModePrivate};
-    }
-};
-
-// --- Internal Node Types ---
+using FGTextureDesc = RhiTextureDesc;
 
 struct FGResourceNode {
     std::string name;
     FGTextureDesc desc;
-    MTL::Texture* texture = nullptr; // set during execute (transient) or import
+    RhiTexture* texture = nullptr;
+    std::unique_ptr<RhiTexture> ownedTexture;
     bool imported = false;
     uint32_t refCount = 0;
-    uint32_t producer = UINT32_MAX;  // pass index that creates this resource
-    uint32_t lastUser = 0;           // pass index of last reader/writer
+    uint32_t producer = UINT32_MAX;
+    uint32_t lastUser = 0;
 };
 
 enum class FGPassType { Render, Compute, Blit };
 
 struct FGColorAttachment {
     FGResource resource;
-    MTL::LoadAction loadAction = MTL::LoadActionClear;
-    MTL::StoreAction storeAction = MTL::StoreActionStore;
-    MTL::ClearColor clearColor = MTL::ClearColor(0, 0, 0, 1);
+    RhiLoadAction loadAction = RhiLoadAction::Clear;
+    RhiStoreAction storeAction = RhiStoreAction::Store;
+    RhiClearColor clearColor{};
 };
 
 struct FGDepthAttachment {
     FGResource resource;
-    MTL::LoadAction loadAction = MTL::LoadActionClear;
-    MTL::StoreAction storeAction = MTL::StoreActionDontCare;
+    RhiLoadAction loadAction = RhiLoadAction::Clear;
+    RhiStoreAction storeAction = RhiStoreAction::DontCare;
     double clearDepth = 1.0;
     bool bound = false;
 };
 
 struct FGPassNode {
     std::string name;
-    FGPassType type;
+    FGPassType type = FGPassType::Render;
     uint32_t refCount = 0;
     bool hasSideEffect = false;
 
     std::vector<FGResource> reads;
     std::vector<FGResource> writes;
 
-    // Render pass config
     FGColorAttachment colorAttachments[8];
     uint32_t colorAttachmentCount = 0;
     FGDepthAttachment depthAttachment;
 
-    // Execute callbacks (only one is set based on type)
-    std::function<void(MTL::RenderCommandEncoder*)> executeRender;
-    std::function<void(MTL::ComputeCommandEncoder*)> executeCompute;
-    std::function<void(MTL::BlitCommandEncoder*)> executeBlit;
+    std::function<void(RhiRenderCommandEncoder&)> executeRender;
+    std::function<void(RhiComputeCommandEncoder&)> executeCompute;
+    std::function<void(RhiBlitCommandEncoder&)> executeBlit;
 };
 
-// --- Builder ---
-
-class FrameGraph; // forward decl
-class RenderPass; // forward decl
+class FrameGraph;
+class RenderPass;
 
 class FGBuilder {
 public:
@@ -100,10 +74,10 @@ public:
     FGResource write(FGResource resource);
 
     void setColorAttachment(uint32_t index, FGResource resource,
-                            MTL::LoadAction load, MTL::StoreAction store,
-                            MTL::ClearColor clear = MTL::ClearColor(0, 0, 0, 1));
+                            RhiLoadAction load, RhiStoreAction store,
+                            RhiClearColor clear = RhiClearColor());
     void setDepthAttachment(FGResource resource,
-                            MTL::LoadAction load, MTL::StoreAction store,
+                            RhiLoadAction load, RhiStoreAction store,
                             double clearDepth = 1.0);
     void setSideEffect();
 
@@ -112,17 +86,11 @@ private:
     uint32_t m_passIndex;
 };
 
-// --- FrameGraph ---
-
 class FrameGraph {
     friend class FGBuilder;
 public:
-    FGResource import(const char* name, MTL::Texture* texture);
-
-    // Swap an imported resource's texture pointer (e.g. backbuffer each frame)
-    void updateImport(FGResource res, MTL::Texture* texture);
-
-    // Null out transient texture pointers so execute() reallocates them
+    FGResource import(const char* name, RhiTexture* texture);
+    void updateImport(FGResource res, RhiTexture* texture);
     void resetTransients();
 
     void addPass(std::unique_ptr<RenderPass> pass);
@@ -137,21 +105,20 @@ public:
     Data& addBlitPass(const char* name, Setup&& setup, Exec&& exec);
 
     void compile();
-    void execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyMetalCtxHandle tracyCtx);
+    void execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& backend);
     void reset();
 
     void exportGraphviz(std::ostream& os) const;
     void debugImGui() const;
     void renderPassUI();
 
-    MTL::Texture* getTexture(FGResource res) const;
+    RhiTexture* getTexture(FGResource res) const;
 
 private:
     std::vector<FGResourceNode> m_resources;
     std::vector<FGPassNode> m_passes;
     std::vector<std::unique_ptr<RenderPass>> m_ownedPasses;
 
-    // Type-erased pass data storage
     struct PassDataHolder {
         void* data = nullptr;
         void (*deleter)(void*) = nullptr;
@@ -159,19 +126,21 @@ private:
         PassDataHolder() = default;
         PassDataHolder(PassDataHolder&& o) noexcept : data(o.data), deleter(o.deleter) { o.data = nullptr; }
         PassDataHolder& operator=(PassDataHolder&& o) noexcept {
-            if (this != &o) { if (data && deleter) deleter(data); data = o.data; deleter = o.deleter; o.data = nullptr; }
+            if (this != &o) {
+                if (data && deleter) {
+                    deleter(data);
+                }
+                data = o.data;
+                deleter = o.deleter;
+                o.data = nullptr;
+            }
             return *this;
         }
         PassDataHolder(const PassDataHolder&) = delete;
         PassDataHolder& operator=(const PassDataHolder&) = delete;
     };
     std::vector<PassDataHolder> m_passData;
-
-    // Transient textures created during execute
-    std::vector<MTL::Texture*> m_transientTextures;
 };
-
-// --- Template implementations ---
 
 template<typename Data, typename Setup, typename Exec>
 Data& FrameGraph::addRenderPass(const char* name, Setup&& setup, Exec&& exec) {
@@ -190,8 +159,8 @@ Data& FrameGraph::addRenderPass(const char* name, Setup&& setup, Exec&& exec) {
     FGBuilder builder(*this, passIndex);
     setup(builder, data);
 
-    pass.executeRender = [&data, fn = std::forward<Exec>(exec)](MTL::RenderCommandEncoder* enc) {
-        fn(const_cast<const Data&>(data), enc);
+    pass.executeRender = [&data, fn = std::forward<Exec>(exec)](RhiRenderCommandEncoder& encoder) {
+        fn(const_cast<const Data&>(data), encoder);
     };
     return data;
 }
@@ -213,8 +182,8 @@ Data& FrameGraph::addComputePass(const char* name, Setup&& setup, Exec&& exec) {
     FGBuilder builder(*this, passIndex);
     setup(builder, data);
 
-    pass.executeCompute = [&data, fn = std::forward<Exec>(exec)](MTL::ComputeCommandEncoder* enc) {
-        fn(const_cast<const Data&>(data), enc);
+    pass.executeCompute = [&data, fn = std::forward<Exec>(exec)](RhiComputeCommandEncoder& encoder) {
+        fn(const_cast<const Data&>(data), encoder);
     };
     return data;
 }
@@ -236,8 +205,9 @@ Data& FrameGraph::addBlitPass(const char* name, Setup&& setup, Exec&& exec) {
     FGBuilder builder(*this, passIndex);
     setup(builder, data);
 
-    pass.executeBlit = [&data, fn = std::forward<Exec>(exec)](MTL::BlitCommandEncoder* enc) {
-        fn(const_cast<const Data&>(data), enc);
+    pass.executeBlit = [&data, fn = std::forward<Exec>(exec)](RhiBlitCommandEncoder& encoder) {
+        fn(const_cast<const Data&>(data), encoder);
     };
     return data;
 }
+

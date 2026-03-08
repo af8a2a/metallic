@@ -13,6 +13,7 @@ target_include_directories(PipelineEditorLib PUBLIC
 
 # Need access to Rendering headers for frame_graph.h, render_pass.h
 target_include_directories(PipelineEditorLib PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../RHI
     ${CMAKE_CURRENT_SOURCE_DIR}/../Rendering
     ${CMAKE_CURRENT_SOURCE_DIR}/../Asset
     ${CMAKE_CURRENT_SOURCE_DIR}/../Scene

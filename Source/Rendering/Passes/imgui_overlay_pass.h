@@ -3,7 +3,9 @@
 #include "render_pass.h"
 #include "frame_context.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui_metal_bridge.h"
+#include "metal_frame_graph.h"
 
 class ImGuiOverlayPass : public RenderPass {
 public:
@@ -28,17 +30,18 @@ public:
 
         if (m_drawable.isValid()) {
             builder.setColorAttachment(0, m_drawable,
-                MTL::LoadActionLoad, MTL::StoreActionStore);
+                RhiLoadAction::Load, RhiStoreAction::Store);
         }
         if (depthInput.isValid()) {
             m_depthRead = builder.read(depthInput);
             builder.setDepthAttachment(m_depthRead,
-                MTL::LoadActionLoad, MTL::StoreActionDontCare, m_ctx.depthClearValue);
+                RhiLoadAction::Load, RhiStoreAction::DontCare, m_ctx.depthClearValue);
         }
         builder.setSideEffect();
     }
 
-    void executeRender(MTL::RenderCommandEncoder* enc) override {
+    void executeRender(RhiRenderCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("ImGuiOverlayPass");
         if (!m_frameContext) return;
         imguiRenderDrawData(m_frameContext->commandBuffer, enc);
@@ -51,3 +54,5 @@ private:
     int m_width, m_height;
     std::string m_name = "ImGui Overlay";
 };
+
+

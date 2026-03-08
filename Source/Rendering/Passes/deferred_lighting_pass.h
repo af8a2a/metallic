@@ -4,6 +4,7 @@
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
+#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class DeferredLightingPass : public RenderPass {
@@ -40,12 +41,13 @@ public:
         if (skyInput.isValid()) m_skyRead = builder.read(skyInput);
 
         output = builder.create("output",
-            FGTextureDesc::storageTexture(m_width, m_height, MTL::PixelFormatRGBA16Float));
+            FGTextureDesc::storageTexture(m_width, m_height, RhiFormat::RGBA16Float));
         motionVectorsOutput = builder.create("motionVectors",
-            FGTextureDesc::storageTexture(m_width, m_height, MTL::PixelFormatRG16Float));
+            FGTextureDesc::storageTexture(m_width, m_height, RhiFormat::RG16Float));
     }
 
-    void executeCompute(MTL::ComputeCommandEncoder* enc) override {
+    void executeCompute(RhiComputeCommandEncoder& encoder) override {
+        auto* enc = metalEncoder(encoder);
         ZoneScopedN("DeferredLightingPass");
         if (!m_frameContext || !m_runtimeContext) return;
 
@@ -86,23 +88,23 @@ public:
         if (m_frameContext->instanceTransformBuffer) {
             enc->setBuffer(m_frameContext->instanceTransformBuffer, 0, 9);
         }
-        enc->setTexture(m_frameGraph->getTexture(m_visRead), 0);
-        enc->setTexture(m_frameGraph->getTexture(m_depthRead), 1);
-        enc->setTexture(m_frameGraph->getTexture(output), 2);
+        enc->setTexture(metalTexture(m_frameGraph->getTexture(m_visRead)), 0);
+        enc->setTexture(metalTexture(m_frameGraph->getTexture(m_depthRead)), 1);
+        enc->setTexture(metalTexture(m_frameGraph->getTexture(output)), 2);
         if (!m_ctx.materials.textures.empty()) {
             enc->setTextures(
                 const_cast<MTL::Texture* const*>(m_ctx.materials.textures.data()),
                 NS::Range(3, m_ctx.materials.textures.size()));
         }
         MTL::Texture* shadowTex = m_shadowRead.isValid()
-            ? m_frameGraph->getTexture(m_shadowRead)
+            ? metalTexture(m_frameGraph->getTexture(m_shadowRead))
             : m_ctx.shadowDummyTex;
         enc->setTexture(shadowTex, 99);
         MTL::Texture* skyTex = m_skyRead.isValid()
-            ? m_frameGraph->getTexture(m_skyRead)
+            ? metalTexture(m_frameGraph->getTexture(m_skyRead))
             : m_ctx.skyFallbackTex;
         enc->setTexture(skyTex, 100);
-        enc->setTexture(m_frameGraph->getTexture(motionVectorsOutput), 101);
+        enc->setTexture(metalTexture(m_frameGraph->getTexture(motionVectorsOutput)), 101);
         enc->setSamplerState(m_ctx.materials.sampler, 0);
         MTL::Size tgSize(8, 8, 1);
         MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);
@@ -125,3 +127,5 @@ private:
     int m_width, m_height;
     std::string m_name = "Deferred Lighting";
 };
+
+

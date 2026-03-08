@@ -37,8 +37,8 @@ FGResource FGBuilder::write(FGResource resource) {
 }
 
 void FGBuilder::setColorAttachment(uint32_t index, FGResource resource,
-                                   MTL::LoadAction load, MTL::StoreAction store,
-                                   MTL::ClearColor clear) {
+                                   RhiLoadAction load, RhiStoreAction store,
+                                   RhiClearColor clear) {
     auto& pass = m_fg.m_passes[m_passIndex];
     assert(index < 8);
     pass.colorAttachments[index] = {resource, load, store, clear};
@@ -49,7 +49,7 @@ void FGBuilder::setColorAttachment(uint32_t index, FGResource resource,
 }
 
 void FGBuilder::setDepthAttachment(FGResource resource,
-                                   MTL::LoadAction load, MTL::StoreAction store,
+                                   RhiLoadAction load, RhiStoreAction store,
                                    double clearDepth) {
     auto& pass = m_fg.m_passes[m_passIndex];
     pass.depthAttachment = {resource, load, store, clearDepth, true};
@@ -62,7 +62,7 @@ void FGBuilder::setSideEffect() {
 
 // --- FrameGraph ---
 
-FGResource FrameGraph::import(const char* name, MTL::Texture* texture) {
+FGResource FrameGraph::import(const char* name, RhiTexture* texture) {
     FGResource res;
     res.id = static_cast<uint32_t>(m_resources.size());
     FGResourceNode node;
@@ -73,20 +73,16 @@ FGResource FrameGraph::import(const char* name, MTL::Texture* texture) {
     return res;
 }
 
-void FrameGraph::updateImport(FGResource res, MTL::Texture* texture) {
+void FrameGraph::updateImport(FGResource res, RhiTexture* texture) {
     assert(res.isValid() && res.id < m_resources.size());
     assert(m_resources[res.id].imported);
     m_resources[res.id].texture = texture;
 }
 
 void FrameGraph::resetTransients() {
-    // Release and null transient textures so execute() reallocates them
-    for (auto* tex : m_transientTextures) {
-        tex->release();
-    }
-    m_transientTextures.clear();
     for (auto& res : m_resources) {
         if (!res.imported) {
+            res.ownedTexture.reset();
             res.texture = nullptr;
         }
     }
@@ -108,13 +104,13 @@ void FrameGraph::addPass(std::unique_ptr<RenderPass> pass) {
 
     switch (passPtr->passType()) {
         case FGPassType::Render:
-            node.executeRender = [passPtr](MTL::RenderCommandEncoder* enc) { passPtr->executeRender(enc); };
+            node.executeRender = [passPtr](RhiRenderCommandEncoder& encoder) { passPtr->executeRender(encoder); };
             break;
         case FGPassType::Compute:
-            node.executeCompute = [passPtr](MTL::ComputeCommandEncoder* enc) { passPtr->executeCompute(enc); };
+            node.executeCompute = [passPtr](RhiComputeCommandEncoder& encoder) { passPtr->executeCompute(encoder); };
             break;
         case FGPassType::Blit:
-            node.executeBlit = [passPtr](MTL::BlitCommandEncoder* enc) { passPtr->executeBlit(enc); };
+            node.executeBlit = [passPtr](RhiBlitCommandEncoder& encoder) { passPtr->executeBlit(encoder); };
             break;
     }
 }
@@ -160,12 +156,12 @@ void FrameGraph::compile() {
     }
 }
 
-MTL::Texture* FrameGraph::getTexture(FGResource res) const {
+RhiTexture* FrameGraph::getTexture(FGResource res) const {
     assert(res.isValid() && res.id < m_resources.size());
     return m_resources[res.id].texture;
 }
 
-void FrameGraph::execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyMetalCtxHandle tracyCtx) {
+void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& backend) {
     for (uint32_t pi = 0; pi < m_passes.size(); pi++) {
         auto& pass = m_passes[pi];
         if (pass.refCount == 0) continue;
@@ -174,85 +170,63 @@ void FrameGraph::execute(MTL::CommandBuffer* cmdBuf, MTL::Device* device, TracyM
         for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
             auto& res = m_resources[ri];
             if (!res.imported && res.producer == pi && res.texture == nullptr) {
-                auto* texDesc = MTL::TextureDescriptor::texture2DDescriptor(
-                    res.desc.format, res.desc.width, res.desc.height, false);
-                texDesc->setStorageMode(res.desc.storageMode);
-                texDesc->setUsage(res.desc.usage);
-                res.texture = device->newTexture(texDesc);
-                m_transientTextures.push_back(res.texture);
+                res.ownedTexture = backend.createTexture(res.desc);
+                res.texture = res.ownedTexture.get();
             }
         }
 
         if (pass.type == FGPassType::Render) {
-            auto* rpDesc = MTL::RenderPassDescriptor::alloc()->init();
+            RhiRenderPassDesc renderPassDesc;
+            renderPassDesc.label = pass.name.c_str();
             for (uint32_t ci = 0; ci < pass.colorAttachmentCount; ci++) {
                 auto& ca = pass.colorAttachments[ci];
-                auto* att = rpDesc->colorAttachments()->object(ci);
-                att->setTexture(m_resources[ca.resource.id].texture);
-                att->setLoadAction(ca.loadAction);
-                att->setStoreAction(ca.storeAction);
-                att->setClearColor(ca.clearColor);
+                renderPassDesc.colorAttachments[ci] = {
+                    m_resources[ca.resource.id].texture,
+                    ca.loadAction,
+                    ca.storeAction,
+                    ca.clearColor,
+                };
             }
+            renderPassDesc.colorAttachmentCount = pass.colorAttachmentCount;
             if (pass.depthAttachment.bound) {
-                auto* da = rpDesc->depthAttachment();
-                da->setTexture(m_resources[pass.depthAttachment.resource.id].texture);
-                da->setLoadAction(pass.depthAttachment.loadAction);
-                da->setStoreAction(pass.depthAttachment.storeAction);
-                da->setClearDepth(pass.depthAttachment.clearDepth);
+                renderPassDesc.depthAttachment = {
+                    m_resources[pass.depthAttachment.resource.id].texture,
+                    pass.depthAttachment.loadAction,
+                    pass.depthAttachment.storeAction,
+                    pass.depthAttachment.clearDepth,
+                    true,
+                };
             }
 
-            static TracyMetalSrcLoc srcLocs[64];
-            srcLocs[pi] = {pass.name.c_str(), "FrameGraph::execute", __FILE__, __LINE__, 0};
-            auto gpuZone = tracyMetalZoneBeginRender(tracyCtx, rpDesc, &srcLocs[pi]);
-
-            auto* encoder = cmdBuf->renderCommandEncoder(rpDesc);
-            pass.executeRender(encoder);
-            encoder->endEncoding();
-            tracyMetalZoneEnd(gpuZone);
-            rpDesc->release();
+            auto encoder = commandBuffer.beginRenderPass(renderPassDesc);
+            pass.executeRender(*encoder);
         } else if (pass.type == FGPassType::Compute) {
-            auto* cpDesc = MTL::ComputePassDescriptor::alloc()->init();
-
-            static TracyMetalSrcLoc srcLocs[64];
-            srcLocs[pi] = {pass.name.c_str(), "FrameGraph::execute", __FILE__, __LINE__, 0};
-            auto gpuZone = tracyMetalZoneBeginCompute(tracyCtx, cpDesc, &srcLocs[pi]);
-
-            auto* encoder = cmdBuf->computeCommandEncoder(cpDesc);
-            cpDesc->release();
-            pass.executeCompute(encoder);
-            encoder->endEncoding();
-            tracyMetalZoneEnd(gpuZone);
+            RhiComputePassDesc computePassDesc;
+            computePassDesc.label = pass.name.c_str();
+            auto encoder = commandBuffer.beginComputePass(computePassDesc);
+            pass.executeCompute(*encoder);
         } else if (pass.type == FGPassType::Blit) {
-            auto* bpDesc = MTL::BlitPassDescriptor::alloc()->init();
-
-            static TracyMetalSrcLoc srcLocs[64];
-            srcLocs[pi] = {pass.name.c_str(), "FrameGraph::execute", __FILE__, __LINE__, 0};
-            auto gpuZone = tracyMetalZoneBeginBlit(tracyCtx, bpDesc, &srcLocs[pi]);
-
-            auto* encoder = cmdBuf->blitCommandEncoder(bpDesc);
-            bpDesc->release();
-            pass.executeBlit(encoder);
-            encoder->endEncoding();
-            tracyMetalZoneEnd(gpuZone);
+            RhiBlitPassDesc blitPassDesc;
+            blitPassDesc.label = pass.name.c_str();
+            auto encoder = commandBuffer.beginBlitPass(blitPassDesc);
+            pass.executeBlit(*encoder);
         }
 
         // Release transient textures after their last user
         for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
             auto& res = m_resources[ri];
             if (!res.imported && res.lastUser == pi && res.texture != nullptr) {
-                res.texture->release();
+                res.ownedTexture.reset();
                 res.texture = nullptr;
             }
         }
     }
-    m_transientTextures.clear();
 }
 
 void FrameGraph::reset() {
     m_resources.clear();
     m_passes.clear();
     m_passData.clear();
-    m_transientTextures.clear();
     m_ownedPasses.clear();
 }
 
@@ -290,16 +264,21 @@ std::string dotEscapeLabel(std::string_view value) {
     return out;
 }
 
-const char* pixelFormatName(MTL::PixelFormat fmt) {
+const char* pixelFormatName(RhiFormat fmt) {
     switch (fmt) {
-        case MTL::PixelFormatBGRA8Unorm:    return "BGRA8";
-        case MTL::PixelFormatRGBA8Unorm:    return "RGBA8";
-        case MTL::PixelFormatR32Uint:       return "R32Uint";
-        case MTL::PixelFormatR32Float:      return "R32Float";
-        case MTL::PixelFormatRG32Float:     return "RG32Float";
-        case MTL::PixelFormatRGBA32Float:   return "RGBA32Float";
-        case MTL::PixelFormatRGBA16Float:   return "RGBA16Float";
-        case MTL::PixelFormatDepth32Float:  return "Depth32F";
+        case RhiFormat::R8Unorm:            return "R8Unorm";
+        case RhiFormat::R16Float:           return "R16Float";
+        case RhiFormat::R32Float:           return "R32Float";
+        case RhiFormat::R32Uint:            return "R32Uint";
+        case RhiFormat::RG8Unorm:           return "RG8Unorm";
+        case RhiFormat::RG16Float:          return "RG16Float";
+        case RhiFormat::RG32Float:          return "RG32Float";
+        case RhiFormat::RGBA8Unorm:         return "RGBA8";
+        case RhiFormat::BGRA8Unorm:         return "BGRA8";
+        case RhiFormat::RGBA16Float:        return "RGBA16Float";
+        case RhiFormat::RGBA32Float:        return "RGBA32Float";
+        case RhiFormat::D32Float:           return "Depth32F";
+        case RhiFormat::D16Unorm:           return "Depth16";
         default:                            return "Unknown";
     }
 }
