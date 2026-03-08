@@ -1,11 +1,15 @@
 #pragma once
 
 #include <ml.h>
-#include <Metal/Metal.hpp>
+#include "rhi_backend.h"
+
+#include <string>
 #include <vector>
 #include <unordered_map>
 
 class RhiTexture;
+class RhiBuffer;
+class RhiFrameGraphBackend;
 
 // Per-frame runtime context for data-driven pipeline execution
 // This holds all the dynamic data that changes each frame
@@ -44,10 +48,10 @@ struct FrameContext {
     uint32_t visibilityInstanceCount = 0;
 
     // Instance transform buffer (for visibility buffer mode)
-    MTL::Buffer* instanceTransformBuffer = nullptr;
+    RhiBuffer* instanceTransformBufferRhi = nullptr;
 
     // Command buffer (for ImGui pass)
-    MTL::CommandBuffer* commandBuffer = nullptr;
+    void* commandBufferHandle = nullptr;
 
     // Depth clear value
     double depthClearValue = 1.0;
@@ -67,27 +71,26 @@ struct FrameContext {
     int renderMode = 2; // 0=Vertex, 1=Mesh, 2=Visibility, 3=Meshlet Debug
 
     // GPU-driven cull results (set by MeshletCullPass, consumed by VisibilityPass)
-    MTL::Buffer* gpuVisibleMeshletBuffer = nullptr;
-    MTL::Buffer* gpuCounterBuffer = nullptr;
-    MTL::Buffer* gpuInstanceDataBuffer = nullptr;
+    RhiBuffer* gpuVisibleMeshletBufferRhi = nullptr;
+    RhiBuffer* gpuCounterBufferRhi = nullptr;
+    RhiBuffer* gpuInstanceDataBufferRhi = nullptr;
 };
 
 // Runtime context for pipeline building (pipelines, textures, samplers)
 struct PipelineRuntimeContext {
-    MTL::Device* device = nullptr;
-
     // Pipeline states (keyed by pass type)
-    std::unordered_map<std::string, MTL::RenderPipelineState*> renderPipelines;
-    std::unordered_map<std::string, MTL::ComputePipelineState*> computePipelines;
+    std::unordered_map<std::string, RhiGraphicsPipelineHandle> renderPipelinesRhi;
+    std::unordered_map<std::string, RhiComputePipelineHandle> computePipelinesRhi;
 
     // Samplers
-    std::unordered_map<std::string, MTL::SamplerState*> samplers;
+    std::unordered_map<std::string, RhiSamplerHandle> samplersRhi;
 
     // Imported textures (atmosphere, fallbacks, etc.)
-    std::unordered_map<std::string, MTL::Texture*> importedTextures;
-    std::unordered_map<std::string, RhiTexture*> importedRhiTextures;
+    std::unordered_map<std::string, RhiTextureHandle> importedTexturesRhi;
 
     // Current frame's drawable
-    MTL::Texture* backbuffer = nullptr;
     RhiTexture* backbufferRhi = nullptr;
+
+    // Resource creation for pass-owned persistent resources
+    RhiFrameGraphBackend* resourceFactory = nullptr;
 };

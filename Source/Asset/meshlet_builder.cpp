@@ -1,5 +1,7 @@
 #include "meshlet_builder.h"
 #include "mesh_loader.h"
+
+#include <Metal/Metal.hpp>
 #include <meshoptimizer.h>
 #include <spdlog/spdlog.h>
 #include <vector>
@@ -9,10 +11,19 @@ static constexpr size_t MAX_VERTICES  = 64;
 static constexpr size_t MAX_TRIANGLES = 124;
 static constexpr float  CONE_WEIGHT   = 0.5f;
 
-bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out) {
+static MTL::Device* metalDevice(void* handle) {
+    return static_cast<MTL::Device*>(handle);
+}
+
+static MTL::Buffer* metalBuffer(void* handle) {
+    return static_cast<MTL::Buffer*>(handle);
+}
+
+bool buildMeshlets(void* deviceHandle, const LoadedMesh& mesh, MeshletData& out) {
+    auto* device = metalDevice(deviceHandle);
     out.meshletsPerGroup.clear();
 
-    const auto* allPositions = static_cast<const float*>(mesh.positionBuffer->contents());
+    const auto* allPositions = static_cast<const float*>(metalBuffer(mesh.positionBuffer)->contents());
     size_t totalVertexCount = mesh.vertexCount;
     size_t vertexStride = sizeof(float) * 3;
 
@@ -35,7 +46,7 @@ bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out
         groups.push_back(g);
     }
 
-    const auto* allIndices = static_cast<const uint32_t*>(mesh.indexBuffer->contents());
+    const auto* allIndices = static_cast<const uint32_t*>(metalBuffer(mesh.indexBuffer)->contents());
 
     for (const auto& group : groups) {
         const uint32_t* groupIndices = allIndices + group.indexOffset;

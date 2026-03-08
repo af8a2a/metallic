@@ -1,7 +1,6 @@
 #pragma once
 
 #include "render_pass.h"
-#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class BlitPass : public RenderPass {
@@ -19,13 +18,20 @@ public:
     }
 
     void executeBlit(RhiBlitCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("BlitPass");
-        enc->copyFromTexture(
-            metalTexture(m_frameGraph->getTexture(m_sourceRead)), 0, 0,
-            MTL::Origin(0, 0, 0), MTL::Size(m_width, m_height, 1),
-            metalTexture(m_frameGraph->getTexture(m_destWrite)), 0, 0,
-            MTL::Origin(0, 0, 0));
+        auto* source = m_frameGraph->getTexture(m_sourceRead);
+        auto* destination = m_frameGraph->getTexture(m_destWrite);
+        if (!source || !destination) return;
+
+        encoder.copyTexture(*source,
+                            0,
+                            0,
+                            {0, 0, 0},
+                            {static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height), 1},
+                            *destination,
+                            0,
+                            0,
+                            {0, 0, 0});
     }
 
     void renderUI() override {

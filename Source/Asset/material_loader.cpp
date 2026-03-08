@@ -3,6 +3,8 @@
 #include <cgltf.h>
 
 #include "material_loader.h"
+
+#include <Metal/Metal.hpp>
 #include <spdlog/spdlog.h>
 #include <filesystem>
 #include <algorithm>
@@ -49,8 +51,19 @@ static MTL::Texture* createTextureFromImage(MTL::Device* device, MTL::CommandQue
 
     return texture;
 }
-bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
+
+static MTL::Device* metalDevice(void* handle) {
+    return static_cast<MTL::Device*>(handle);
+}
+
+static MTL::CommandQueue* metalCommandQueue(void* handle) {
+    return static_cast<MTL::CommandQueue*>(handle);
+}
+
+bool loadGLTFMaterials(void* deviceHandle, void* commandQueueHandle,
                        const std::string& gltfPath, LoadedMaterials& out) {
+    auto* device = metalDevice(deviceHandle);
+    auto* commandQueue = metalCommandQueue(commandQueueHandle);
     cgltf_options options = {};
     cgltf_data* data = nullptr;
 
@@ -90,7 +103,7 @@ bool loadGLTFMaterials(MTL::Device* device, MTL::CommandQueue* commandQueue,
 
     // Create 1x1 white placeholder for any null texture slots
     MTL::Texture* placeholder = nullptr;
-    for (auto*& tex : out.textures) {
+    for (auto& tex : out.textures) {
         if (!tex) {
             if (!placeholder) {
                 auto* desc = MTL::TextureDescriptor::texture2DDescriptor(

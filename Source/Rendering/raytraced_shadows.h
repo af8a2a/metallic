@@ -4,16 +4,23 @@
 #include <vector>
 #include <cstdint>
 
+#include "rhi_backend.h"
+
 struct LoadedMesh;
 struct MeshletData;
 class SceneGraph;
 
 struct RaytracedShadowResources {
     std::vector<MTL::AccelerationStructure*> blasArray;
+    std::vector<RhiAccelerationStructureHandle> blasHandles;
     MTL::AccelerationStructure* tlas = nullptr;
+    RhiAccelerationStructureHandle tlasRhi;
     MTL::Buffer* instanceDescriptorBuffer = nullptr;
+    RhiBufferHandle instanceDescriptorBufferRhi;
     MTL::Buffer* scratchBuffer = nullptr;
+    RhiBufferHandle scratchBufferRhi;
     MTL::ComputePipelineState* pipeline = nullptr;
+    RhiComputePipelineHandle pipelineRhi;
     MTL::Library* library = nullptr;
 
     // Cached for TLAS rebuild

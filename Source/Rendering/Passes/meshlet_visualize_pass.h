@@ -1,9 +1,8 @@
-#pragma once
+﻿#pragma once
 
 #include "render_pass.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class MeshletVisualizePass : public RenderPass {
@@ -40,12 +39,11 @@ public:
     }
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("MeshletVisualizePass");
         if (!m_frameContext || !m_runtimeContext) return;
 
-        auto pipeIt = m_runtimeContext->computePipelines.find("MeshletVisualizePass");
-        if (pipeIt == m_runtimeContext->computePipelines.end()) return;
+        auto pipeIt = m_runtimeContext->computePipelinesRhi.find("MeshletVisualizePass");
+        if (pipeIt == m_runtimeContext->computePipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
 
         struct MeshletVisUniforms {
             uint32_t screenWidth;
@@ -58,14 +56,12 @@ public:
         uniforms.colorMode = static_cast<uint32_t>(m_colorMode);
         uniforms.pad = 0;
 
-        enc->setComputePipelineState(pipeIt->second);
-        enc->setBytes(&uniforms, sizeof(uniforms), 0);
-        enc->setTexture(metalTexture(m_frameGraph->getTexture(m_visRead)), 0);
-        enc->setTexture(metalTexture(m_frameGraph->getTexture(output)), 1);
-
-        MTL::Size tgSize(8, 8, 1);
-        MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);
-        enc->dispatchThreadgroups(grid, tgSize);
+        encoder.setComputePipeline(pipeIt->second);
+        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setTexture(m_frameGraph->getTexture(m_visRead), 0);
+        encoder.setTexture(m_frameGraph->getTexture(output), 1);
+        encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
+                                     {8, 8, 1});
     }
 
     void renderUI() override {
@@ -81,5 +77,6 @@ private:
     int m_colorMode = 0;
     std::string m_name = "Meshlet Visualize";
 };
+
 
 

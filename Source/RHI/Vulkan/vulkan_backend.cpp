@@ -208,6 +208,7 @@ public:
     }
 
     size_t size() const override { return m_size; }
+    void* nativeHandle() const override { return reinterpret_cast<void*>(m_buffer); }
     VkBuffer handle() const { return m_buffer; }
 
 private:
@@ -231,6 +232,7 @@ public:
         }
     }
 
+    void* nativeHandle() const override { return reinterpret_cast<void*>(m_pipeline); }
     VkPipeline pipeline() const { return m_pipeline; }
 
 private:

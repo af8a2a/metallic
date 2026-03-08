@@ -1,13 +1,12 @@
-#pragma once
+﻿#pragma once
 
 #include "render_pass.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "metal_frame_graph.h"
 #include "imgui.h"
 
 // Fullscreen passthrough: samples any input texture and writes to $backbuffer.
-// Safely handles RGBA16Float �?BGRA8Unorm conversion (clamp to [0,1]).
+// Safely handles RGBA16Float 鈫?BGRA8Unorm conversion (clamp to [0,1]).
 // Drop-in replacement for TonemapPass when debugging.
 class OutputPass : public RenderPass {
 public:
@@ -45,20 +44,19 @@ public:
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("OutputPass");
         if (!m_runtimeContext) return;
 
-        auto pipeIt = m_runtimeContext->renderPipelines.find("OutputPass");
-        if (pipeIt == m_runtimeContext->renderPipelines.end()) return;
+        auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("OutputPass");
+        if (pipeIt == m_runtimeContext->renderPipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
 
-        auto samplerIt = m_runtimeContext->samplers.find("tonemap");
-        if (samplerIt == m_runtimeContext->samplers.end()) return;
+        auto samplerIt = m_runtimeContext->samplersRhi.find("tonemap");
+        if (samplerIt == m_runtimeContext->samplersRhi.end() || !samplerIt->second.nativeHandle()) return;
 
-        enc->setRenderPipelineState(pipeIt->second);
-        enc->setFragmentTexture(metalTexture(m_frameGraph->getTexture(m_sourceRead)), 0);
-        enc->setFragmentSamplerState(samplerIt->second, 0);
-        enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+        encoder.setRenderPipeline(pipeIt->second);
+        encoder.setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
+        encoder.setFragmentSampler(&samplerIt->second, 0);
+        encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
     }
 
     void renderUI() override {
@@ -72,5 +70,6 @@ private:
     int m_width, m_height;
     std::string m_name = "Output";
 };
+
 
 

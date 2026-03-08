@@ -1,6 +1,5 @@
 #pragma once
 
-#include <Metal/Metal.hpp>
 #include <string>
 
 #include "mesh_loader.h"
@@ -10,22 +9,22 @@
 #include "raytraced_shadows.h"
 #include "render_pass.h"
 
+namespace MTL {
+class Texture;
+class SamplerState;
+class Device;
+class CommandQueue;
+class DepthStencilState;
+}
+
 struct AtmosphereTextureSet {
     MTL::Texture* transmittance = nullptr;
     MTL::Texture* scattering = nullptr;
     MTL::Texture* irradiance = nullptr;
     MTL::SamplerState* sampler = nullptr;
 
-    bool isValid() const {
-        return transmittance && scattering && irradiance && sampler;
-    }
-
-    void release() {
-        if (transmittance) { transmittance->release(); transmittance = nullptr; }
-        if (scattering) { scattering->release(); scattering = nullptr; }
-        if (irradiance) { irradiance->release(); irradiance = nullptr; }
-        if (sampler) { sampler->release(); sampler = nullptr; }
-    }
+    bool isValid() const;
+    void release();
 };
 
 class SceneContext {
@@ -43,9 +42,6 @@ public:
     RaytracedShadowResources& shadowResources() { return m_shadowResources; }
     bool rtShadowsAvailable() const { return m_rtShadowsAvailable; }
 
-    MTL::DepthStencilState* depthState() const { return m_depthState; }
-    MTL::Texture* shadowDummyTex() const { return m_shadowDummyTex; }
-    MTL::Texture* skyFallbackTex() const { return m_skyFallbackTex; }
     MTL::Texture* imguiDepthDummy() const { return m_imguiDepthDummy; }
     double depthClearValue() const { return m_depthClearValue; }
 

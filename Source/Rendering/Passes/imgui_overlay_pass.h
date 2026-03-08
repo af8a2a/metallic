@@ -1,11 +1,8 @@
-#pragma once
+﻿#pragma once
 
 #include "render_pass.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "metal_frame_graph.h"
-#include "imgui_metal_bridge.h"
-#include "metal_frame_graph.h"
 
 class ImGuiOverlayPass : public RenderPass {
 public:
@@ -41,10 +38,9 @@ public:
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("ImGuiOverlayPass");
         if (!m_frameContext) return;
-        imguiRenderDrawData(m_frameContext->commandBuffer, enc);
+        encoder.renderImGuiDrawData(m_frameContext->commandBufferHandle);
     }
 
 private:
@@ -54,5 +50,6 @@ private:
     int m_width, m_height;
     std::string m_name = "ImGui Overlay";
 };
+
 
 

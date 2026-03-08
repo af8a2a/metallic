@@ -1,11 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "metal_frame_graph.h"
 #include "imgui.h"
+#include <vector>
 
 class ForwardPass : public RenderPass {
 public:
@@ -48,13 +48,18 @@ public:
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("ForwardPass");
-        enc->setDepthStencilState(m_ctx.depthState);
-        enc->setFrontFacingWinding(MTL::WindingCounterClockwise);
-        enc->setCullMode(MTL::CullModeBack);
+        encoder.setDepthStencilState(&m_ctx.depthStateRhi);
+        encoder.setFrontFacingWinding(RhiWinding::CounterClockwise);
+        encoder.setCullMode(RhiCullMode::Back);
 
         if (!m_frameContext || !m_runtimeContext) return;
+
+        std::vector<const RhiTexture*> materialTextures;
+        materialTextures.reserve(m_ctx.materials.textureViews.size());
+        for (auto* texture : m_ctx.materials.textureViews) {
+            materialTextures.push_back(texture);
+        }
 
         // Build base uniforms from FrameContext raw data
         Uniforms baseUni{};
@@ -67,39 +72,35 @@ public:
 
         if (mode == 1) {
             // Mesh shader path
-            auto pipeIt = m_runtimeContext->renderPipelines.find("ForwardMeshPass");
-            if (pipeIt == m_runtimeContext->renderPipelines.end()) return;
-            enc->setRenderPipelineState(pipeIt->second);
+            auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("ForwardMeshPass");
+            if (pipeIt == m_runtimeContext->renderPipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
+            encoder.setRenderPipeline(pipeIt->second);
 
-            enc->setMeshBuffer(m_ctx.sceneMesh.positionBuffer, 0, 1);
-            enc->setMeshBuffer(m_ctx.sceneMesh.normalBuffer, 0, 2);
-            enc->setMeshBuffer(m_ctx.meshletData.meshletBuffer, 0, 3);
-            enc->setMeshBuffer(m_ctx.meshletData.meshletVertices, 0, 4);
-            enc->setMeshBuffer(m_ctx.meshletData.meshletTriangles, 0, 5);
-            enc->setMeshBuffer(m_ctx.meshletData.boundsBuffer, 0, 6);
-            enc->setMeshBuffer(m_ctx.sceneMesh.uvBuffer, 0, 7);
-            enc->setMeshBuffer(m_ctx.meshletData.materialIDs, 0, 8);
-            enc->setMeshBuffer(m_ctx.materials.materialBuffer, 0, 9);
-            enc->setFragmentBuffer(m_ctx.sceneMesh.positionBuffer, 0, 1);
-            enc->setFragmentBuffer(m_ctx.sceneMesh.normalBuffer, 0, 2);
-            enc->setFragmentBuffer(m_ctx.meshletData.meshletBuffer, 0, 3);
-            enc->setFragmentBuffer(m_ctx.meshletData.meshletVertices, 0, 4);
-            enc->setFragmentBuffer(m_ctx.meshletData.meshletTriangles, 0, 5);
-            enc->setFragmentBuffer(m_ctx.meshletData.boundsBuffer, 0, 6);
-            enc->setFragmentBuffer(m_ctx.sceneMesh.uvBuffer, 0, 7);
-            enc->setFragmentBuffer(m_ctx.meshletData.materialIDs, 0, 8);
-            enc->setFragmentBuffer(m_ctx.materials.materialBuffer, 0, 9);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletBufferRhi, 0, 3);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletVerticesRhi, 0, 4);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletTrianglesRhi, 0, 5);
+            encoder.setMeshBuffer(&m_ctx.meshletData.boundsBufferRhi, 0, 6);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBufferRhi, 0, 7);
+            encoder.setMeshBuffer(&m_ctx.meshletData.materialIDsRhi, 0, 8);
+            encoder.setMeshBuffer(&m_ctx.materials.materialBufferRhi, 0, 9);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBufferRhi, 0, 3);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVerticesRhi, 0, 4);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTrianglesRhi, 0, 5);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBufferRhi, 0, 6);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBufferRhi, 0, 7);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDsRhi, 0, 8);
+            encoder.setFragmentBuffer(&m_ctx.materials.materialBufferRhi, 0, 9);
             // PLACEHOLDER_FORWARD_PASS_REST
-            if (!m_ctx.materials.textures.empty()) {
-                enc->setFragmentTextures(
-                    const_cast<MTL::Texture* const*>(m_ctx.materials.textures.data()),
-                    NS::Range(0, m_ctx.materials.textures.size()));
-                enc->setMeshTextures(
-                    const_cast<MTL::Texture* const*>(m_ctx.materials.textures.data()),
-                    NS::Range(0, m_ctx.materials.textures.size()));
+            if (!materialTextures.empty()) {
+                encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
+                encoder.setMeshTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
             }
-            enc->setFragmentSamplerState(m_ctx.materials.sampler, 0);
-            enc->setMeshSamplerState(m_ctx.materials.sampler, 0);
+            encoder.setFragmentSampler(&m_ctx.materials.samplerRhi, 0);
+            encoder.setMeshSampler(&m_ctx.materials.samplerRhi, 0);
 
             for (uint32_t nodeID : m_frameContext->visibleMeshletNodes) {
                 const auto& node = m_ctx.sceneGraph.nodes[nodeID];
@@ -114,20 +115,19 @@ public:
                 nodeUniforms.cameraPos = invModel * m_frameContext->cameraWorldPos;
                 nodeUniforms.meshletBaseOffset = node.meshletStart;
                 nodeUniforms.instanceID = 0;
-                enc->setMeshBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-                enc->setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-                enc->drawMeshThreadgroups(
-                    MTL::Size(node.meshletCount, 1, 1),
-                    MTL::Size(1, 1, 1),
-                    MTL::Size(128, 1, 1));
+                encoder.setMeshBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+                encoder.setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+                encoder.drawMeshThreadgroups({node.meshletCount, 1, 1},
+                                             {1, 1, 1},
+                                             {128, 1, 1});
             }
         } else {
             // Vertex shader path
-            auto pipeIt = m_runtimeContext->renderPipelines.find("ForwardPass");
-            if (pipeIt == m_runtimeContext->renderPipelines.end()) return;
-            enc->setRenderPipelineState(pipeIt->second);
-            enc->setVertexBuffer(m_ctx.sceneMesh.positionBuffer, 0, 1);
-            enc->setVertexBuffer(m_ctx.sceneMesh.normalBuffer, 0, 2);
+            auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("ForwardPass");
+            if (pipeIt == m_runtimeContext->renderPipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
+            encoder.setRenderPipeline(pipeIt->second);
+            encoder.setVertexBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
+            encoder.setVertexBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
 
             for (uint32_t nodeID : m_frameContext->visibleIndexNodes) {
                 const auto& node = m_ctx.sceneGraph.nodes[nodeID];
@@ -139,12 +139,13 @@ public:
                 float4x4 invModel = node.transform.worldMatrix;
                 invModel.Invert();
                 nodeUniforms.cameraPos = invModel * m_frameContext->cameraWorldPos;
-                enc->setVertexBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-                enc->setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-                enc->drawIndexedPrimitives(
-                    MTL::PrimitiveTypeTriangle,
-                    node.indexCount, MTL::IndexTypeUInt32,
-                    m_ctx.sceneMesh.indexBuffer, node.indexStart * sizeof(uint32_t));
+                encoder.setVertexBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+                encoder.setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+                encoder.drawIndexedPrimitives(RhiPrimitiveType::Triangle,
+                                              node.indexCount,
+                                              RhiIndexType::UInt32,
+                                              m_ctx.sceneMesh.indexBufferRhi,
+                                              node.indexStart * sizeof(uint32_t));
             }
         }
     }
@@ -169,3 +170,4 @@ private:
     int m_width, m_height;
     std::string m_name = "Forward Pass";
 };
+

@@ -1,9 +1,34 @@
 #include "scene_context.h"
 
+#include <Metal/Metal.hpp>
+
 #include <spdlog/spdlog.h>
 #include <tracy/Tracy.hpp>
 #include <fstream>
 #include <vector>
+
+static MTL::Buffer* metalBuffer(void* handle) {
+    return static_cast<MTL::Buffer*>(handle);
+}
+
+static MTL::Texture* metalTexture(void* handle) {
+    return static_cast<MTL::Texture*>(handle);
+}
+
+static MTL::SamplerState* metalSampler(void* handle) {
+    return static_cast<MTL::SamplerState*>(handle);
+}
+
+bool AtmosphereTextureSet::isValid() const {
+    return transmittance && scattering && irradiance && sampler;
+}
+
+void AtmosphereTextureSet::release() {
+    if (transmittance) { transmittance->release(); transmittance = nullptr; }
+    if (scattering) { scattering->release(); scattering = nullptr; }
+    if (irradiance) { irradiance->release(); irradiance = nullptr; }
+    if (sampler) { sampler->release(); sampler = nullptr; }
+}
 
 // --- Atmosphere texture helpers (moved from main.cpp) ---
 
@@ -34,6 +59,51 @@ static std::vector<float> loadFloatData(const std::string& path, size_t expected
                      path, data.size(), expectedCount);
     }
     return data;
+}
+
+static void syncMeshRhiViews(LoadedMesh& mesh) {
+    mesh.positionBufferRhi.setNativeHandle(mesh.positionBuffer);
+    mesh.normalBufferRhi.setNativeHandle(mesh.normalBuffer);
+    mesh.uvBufferRhi.setNativeHandle(mesh.uvBuffer);
+    mesh.indexBufferRhi.setNativeHandle(mesh.indexBuffer);
+}
+
+static void syncMeshletRhiViews(MeshletData& meshlets) {
+    meshlets.meshletBufferRhi.setNativeHandle(meshlets.meshletBuffer);
+    meshlets.meshletVerticesRhi.setNativeHandle(meshlets.meshletVertices);
+    meshlets.meshletTrianglesRhi.setNativeHandle(meshlets.meshletTriangles);
+    meshlets.boundsBufferRhi.setNativeHandle(meshlets.boundsBuffer);
+    meshlets.materialIDsRhi.setNativeHandle(meshlets.materialIDs);
+}
+
+static void syncMaterialRhiViews(LoadedMaterials& materials) {
+    materials.textureHandles.clear();
+    materials.textureViews.clear();
+    materials.textureHandles.reserve(materials.textures.size());
+    materials.textureViews.reserve(materials.textures.size());
+    for (void* textureHandle : materials.textures) {
+        auto* texture = metalTexture(textureHandle);
+        materials.textureHandles.emplace_back(textureHandle,
+                                              texture ? static_cast<uint32_t>(texture->width()) : 0,
+                                              texture ? static_cast<uint32_t>(texture->height()) : 0);
+    }
+    for (auto& textureHandle : materials.textureHandles) {
+        materials.textureViews.push_back(&textureHandle);
+    }
+    materials.materialBufferRhi.setNativeHandle(materials.materialBuffer);
+    materials.samplerRhi.setNativeHandle(materials.sampler);
+}
+
+static void syncShadowRhiViews(RaytracedShadowResources& shadowResources) {
+    shadowResources.blasHandles.clear();
+    shadowResources.blasHandles.reserve(shadowResources.blasArray.size());
+    for (auto* blas : shadowResources.blasArray) {
+        shadowResources.blasHandles.emplace_back(blas);
+    }
+    shadowResources.tlasRhi.setNativeHandle(shadowResources.tlas);
+    shadowResources.instanceDescriptorBufferRhi.setNativeHandle(shadowResources.instanceDescriptorBuffer);
+    shadowResources.scratchBufferRhi.setNativeHandle(shadowResources.scratchBuffer);
+    shadowResources.pipelineRhi.setNativeHandle(shadowResources.pipeline);
 }
 
 static MTL::Texture* createTexture2D(MTL::Device* device, int width, int height,
@@ -137,20 +207,21 @@ SceneContext::~SceneContext() {
     if (m_shadowDummyTex) m_shadowDummyTex->release();
     if (m_skyFallbackTex) m_skyFallbackTex->release();
     m_atmosphereTextures.release();
-    if (m_meshlets.meshletBuffer) m_meshlets.meshletBuffer->release();
-    if (m_meshlets.meshletVertices) m_meshlets.meshletVertices->release();
-    if (m_meshlets.meshletTriangles) m_meshlets.meshletTriangles->release();
-    if (m_meshlets.boundsBuffer) m_meshlets.boundsBuffer->release();
-    if (m_meshlets.materialIDs) m_meshlets.materialIDs->release();
-    for (auto* tex : m_materials.textures) {
+    if (m_meshlets.meshletBuffer) metalBuffer(m_meshlets.meshletBuffer)->release();
+    if (m_meshlets.meshletVertices) metalBuffer(m_meshlets.meshletVertices)->release();
+    if (m_meshlets.meshletTriangles) metalBuffer(m_meshlets.meshletTriangles)->release();
+    if (m_meshlets.boundsBuffer) metalBuffer(m_meshlets.boundsBuffer)->release();
+    if (m_meshlets.materialIDs) metalBuffer(m_meshlets.materialIDs)->release();
+    for (void* texHandle : m_materials.textures) {
+        auto* tex = metalTexture(texHandle);
         if (tex) tex->release();
     }
-    if (m_materials.materialBuffer) m_materials.materialBuffer->release();
-    if (m_materials.sampler) m_materials.sampler->release();
-    if (m_mesh.positionBuffer) m_mesh.positionBuffer->release();
-    if (m_mesh.normalBuffer) m_mesh.normalBuffer->release();
-    if (m_mesh.uvBuffer) m_mesh.uvBuffer->release();
-    if (m_mesh.indexBuffer) m_mesh.indexBuffer->release();
+    if (m_materials.materialBuffer) metalBuffer(m_materials.materialBuffer)->release();
+    if (m_materials.sampler) metalSampler(m_materials.sampler)->release();
+    if (m_mesh.positionBuffer) metalBuffer(m_mesh.positionBuffer)->release();
+    if (m_mesh.normalBuffer) metalBuffer(m_mesh.normalBuffer)->release();
+    if (m_mesh.uvBuffer) metalBuffer(m_mesh.uvBuffer)->release();
+    if (m_mesh.indexBuffer) metalBuffer(m_mesh.indexBuffer)->release();
     if (m_depthState) m_depthState->release();
 }
 
@@ -161,16 +232,19 @@ bool SceneContext::loadAll(const char* gltfPath) {
         spdlog::error("Failed to load scene mesh");
         return false;
     }
+    syncMeshRhiViews(m_mesh);
 
     if (!buildMeshlets(m_device, m_mesh, m_meshlets)) {
         spdlog::error("Failed to build meshlets");
         return false;
     }
+    syncMeshletRhiViews(m_meshlets);
 
     if (!loadGLTFMaterials(m_device, m_queue, gltfPath, m_materials)) {
         spdlog::error("Failed to load materials");
         return false;
     }
+    syncMaterialRhiViews(m_materials);
 
     if (!m_sceneGraph.buildFromGLTF(gltfPath, m_mesh, m_meshlets)) {
         spdlog::error("Failed to build scene graph");
@@ -183,6 +257,7 @@ bool SceneContext::loadAll(const char* gltfPath) {
         ZoneScopedN("Build Acceleration Structures");
         if (buildAccelerationStructures(m_device, m_queue, m_mesh, m_sceneGraph, m_shadowResources) &&
             createShadowPipeline(m_device, m_shadowResources, m_projectRoot.c_str())) {
+            syncShadowRhiViews(m_shadowResources);
             m_rtShadowsAvailable = true;
             spdlog::info("Raytraced shadows enabled");
         } else {
@@ -237,8 +312,17 @@ bool SceneContext::loadAll(const char* gltfPath) {
 }
 
 RenderContext SceneContext::renderContext() const {
-    return RenderContext{
+    RenderContext ctx{
         m_mesh, m_meshlets, m_materials, m_sceneGraph,
-        m_shadowResources, m_depthState, m_shadowDummyTex, m_skyFallbackTex, m_depthClearValue
+        m_shadowResources,
+        RhiDepthStencilStateHandle(m_depthState),
+        RhiTextureHandle(m_shadowDummyTex,
+                         m_shadowDummyTex ? static_cast<uint32_t>(m_shadowDummyTex->width()) : 0,
+                         m_shadowDummyTex ? static_cast<uint32_t>(m_shadowDummyTex->height()) : 0),
+        RhiTextureHandle(m_skyFallbackTex,
+                         m_skyFallbackTex ? static_cast<uint32_t>(m_skyFallbackTex->width()) : 0,
+                         m_skyFallbackTex ? static_cast<uint32_t>(m_skyFallbackTex->height()) : 0),
+        m_depthClearValue
     };
+    return ctx;
 }

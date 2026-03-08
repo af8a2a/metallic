@@ -1,15 +1,20 @@
 #pragma once
 
-#include <Metal/Metal.hpp>
 #include <string>
 #include <vector>
 #include <cstdint>
 
+#include "rhi_backend.h"
+
 struct LoadedMesh {
-    MTL::Buffer* positionBuffer = nullptr;
-    MTL::Buffer* normalBuffer   = nullptr;
-    MTL::Buffer* uvBuffer       = nullptr;
-    MTL::Buffer* indexBuffer    = nullptr;
+    void* positionBuffer = nullptr;
+    void* normalBuffer   = nullptr;
+    void* uvBuffer       = nullptr;
+    void* indexBuffer    = nullptr;
+    RhiBufferHandle positionBufferRhi;
+    RhiBufferHandle normalBufferRhi;
+    RhiBufferHandle uvBufferRhi;
+    RhiBufferHandle indexBufferRhi;
     uint32_t vertexCount = 0;
     uint32_t indexCount  = 0;
     float bboxMin[3] = {};
@@ -32,4 +37,4 @@ struct LoadedMesh {
     std::vector<MeshPrimitiveRange> meshRanges;
 };
 
-bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& out);
+bool loadGLTFMesh(void* deviceHandle, const std::string& gltfPath, LoadedMesh& out);

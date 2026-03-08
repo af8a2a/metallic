@@ -15,6 +15,8 @@ public:
     void setTexture(MTL::Texture* texture) { m_texture = texture; }
     MTL::Texture* texture() const { return m_texture; }
     void* nativeHandle() const override { return m_texture; }
+    uint32_t width() const override { return m_texture ? static_cast<uint32_t>(m_texture->width()) : 0; }
+    uint32_t height() const override { return m_texture ? static_cast<uint32_t>(m_texture->height()) : 0; }
 
 private:
     MTL::Texture* m_texture = nullptr;
@@ -26,6 +28,7 @@ public:
         : m_device(device) {}
 
     std::unique_ptr<RhiTexture> createTexture(const RhiTextureDesc& desc) override;
+    std::unique_ptr<RhiBuffer> createBuffer(const RhiBufferDesc& desc) override;
 
 private:
     MTL::Device* m_device = nullptr;
@@ -60,4 +63,3 @@ MTL::StoreAction metalStoreAction(RhiStoreAction action);
 MTL::ClearColor metalClearColor(const RhiClearColor& color);
 
 #endif
-

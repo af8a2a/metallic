@@ -1,10 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class TonemapPass : public RenderPass {
@@ -77,16 +76,15 @@ public:
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("TonemapPass");
 
         if (!m_runtimeContext || !m_sourceRead.isValid()) return;
 
-        auto pipeIt = m_runtimeContext->renderPipelines.find("TonemapPass");
-        if (pipeIt == m_runtimeContext->renderPipelines.end()) return;
+        auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("TonemapPass");
+        if (pipeIt == m_runtimeContext->renderPipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
 
-        auto samplerIt = m_runtimeContext->samplers.find("tonemap");
-        if (samplerIt == m_runtimeContext->samplers.end()) return;
+        auto samplerIt = m_runtimeContext->samplersRhi.find("tonemap");
+        if (samplerIt == m_runtimeContext->samplersRhi.end() || !samplerIt->second.nativeHandle()) return;
 
         TonemapUniforms uniforms{};
         uniforms.isActive = m_enabled ? 1u : 0u;
@@ -105,14 +103,14 @@ public:
         uniforms.pad = 0.0f;
         uniforms.autoExposure = (m_autoExposure && m_exposureLutRead.isValid()) ? 1u : 0u;
 
-        enc->setRenderPipelineState(pipeIt->second);
-        enc->setFragmentTexture(metalTexture(m_frameGraph->getTexture(m_sourceRead)), 0);
-        enc->setFragmentSamplerState(samplerIt->second, 0);
+        encoder.setRenderPipeline(pipeIt->second);
+        encoder.setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
+        encoder.setFragmentSampler(&samplerIt->second, 0);
         if (m_exposureLutRead.isValid()) {
-            enc->setFragmentTexture(metalTexture(m_frameGraph->getTexture(m_exposureLutRead)), 1);
+            encoder.setFragmentTexture(m_frameGraph->getTexture(m_exposureLutRead), 1);
         }
-        enc->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
-        enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+        encoder.setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
     }
 
     void renderUI() override {
@@ -170,5 +168,6 @@ private:
     bool m_hasExposureLutInput = false;
     std::string m_sourceInputName;
 };
+
 
 

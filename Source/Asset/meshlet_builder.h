@@ -1,8 +1,9 @@
 #pragma once
 
-#include <Metal/Metal.hpp>
 #include <cstdint>
 #include <vector>
+
+#include "rhi_backend.h"
 
 struct LoadedMesh;
 
@@ -14,21 +15,26 @@ struct GPUMeshlet {
 };
 
 struct GPUMeshletBounds {
-    float center_radius[4];    // xyz=center, w=radius
-    float cone_apex_pad[4];    // xyz=cone_apex, w=unused
-    float cone_axis_cutoff[4]; // xyz=cone_axis, w=cone_cutoff
+    float center_radius[4];
+    float cone_apex_pad[4];
+    float cone_axis_cutoff[4];
 };
 
 static_assert(sizeof(GPUMeshletBounds) == 48, "GPUMeshletBounds must match shader layout");
 
 struct MeshletData {
-    MTL::Buffer* meshletBuffer    = nullptr;  // GPUMeshlet[]
-    MTL::Buffer* meshletVertices  = nullptr;  // uint32_t[] — indices into original vertex buffer
-    MTL::Buffer* meshletTriangles = nullptr;  // uint32_t[] — packed local triangle indices (3 per uint32)
-    MTL::Buffer* boundsBuffer     = nullptr;  // GPUMeshletBounds[]
-    MTL::Buffer* materialIDs      = nullptr;  // uint32_t[] — material index per meshlet
+    void* meshletBuffer = nullptr;
+    RhiBufferHandle meshletBufferRhi;
+    void* meshletVertices = nullptr;
+    void* meshletTriangles = nullptr;
+    void* boundsBuffer = nullptr;
+    void* materialIDs = nullptr;
+    RhiBufferHandle meshletVerticesRhi;
+    RhiBufferHandle meshletTrianglesRhi;
+    RhiBufferHandle boundsBufferRhi;
+    RhiBufferHandle materialIDsRhi;
     uint32_t meshletCount = 0;
-    std::vector<uint32_t> meshletsPerGroup; // meshlet count per primitive group
+    std::vector<uint32_t> meshletsPerGroup;
 };
 
-bool buildMeshlets(MTL::Device* device, const LoadedMesh& mesh, MeshletData& out);
+bool buildMeshlets(void* deviceHandle, const LoadedMesh& mesh, MeshletData& out);

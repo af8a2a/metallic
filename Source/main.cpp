@@ -132,14 +132,9 @@ int main() {
     if (!shaderManager.buildAll()) return 1;
 
     PipelineRuntimeContext& rtCtx = shaderManager.runtimeContext();
-    std::unordered_map<std::string, std::unique_ptr<MetalImportedTexture>> importedTextureWrappers;
 
     auto importRuntimeTexture = [&](const std::string& name, MTL::Texture* texture) {
         shaderManager.importTexture(name, texture);
-
-        auto wrapper = std::make_unique<MetalImportedTexture>(texture);
-        rtCtx.importedRhiTextures[name] = wrapper.get();
-        importedTextureWrappers[name] = std::move(wrapper);
     };
 
     if (scene.atmosphereLoaded()) {
@@ -191,6 +186,7 @@ int main() {
     PipelineBuilder pipelineBuilder(ctx);
     MetalFrameGraphBackend frameGraphBackend(device);
     MetalImportedTexture backbufferTexture;
+    rtCtx.resourceFactory = &frameGraphBackend;
     bool pipelineNeedsRebuild = true;
     int lastRenderMode = -1;
     double lastFrameTime = glfwGetTime();
@@ -401,6 +397,7 @@ int main() {
 
         // --- Build FrameGraph (unified data-driven path) ---
         MTL::Buffer* instanceTransformBuffer = nullptr;
+        RhiBufferHandle instanceTransformBufferRhi;
 
         FrameContext frameCtx;
 
@@ -480,8 +477,9 @@ int main() {
         frameCtx.visibleMeshletNodes = visibleMeshletNodes;
         frameCtx.visibleIndexNodes = visibleIndexNodes;
         frameCtx.visibilityInstanceCount = visibilityInstanceCount;
-        frameCtx.instanceTransformBuffer = instanceTransformBuffer;
-        frameCtx.commandBuffer = commandBuffer;
+        instanceTransformBufferRhi.setNativeHandle(instanceTransformBuffer);
+        frameCtx.instanceTransformBufferRhi = instanceTransformBuffer ? &instanceTransformBufferRhi : nullptr;
+        frameCtx.commandBufferHandle = commandBuffer;
         frameCtx.depthClearValue = scene.depthClearValue();
         frameCtx.cameraFarZ = camera.farZ;
         {
@@ -514,7 +512,6 @@ int main() {
 
         // Rebuild pipeline only when needed (first frame, F6 reload, resolution change, mode switch)
         if (pipelineNeedsRebuild || pipelineBuilder.needsRebuild(width, height)) {
-            rtCtx.backbuffer = drawable->texture();
             backbufferTexture.setTexture(drawable->texture());
             rtCtx.backbufferRhi = &backbufferTexture;
             bool buildSucceeded = pipelineBuilder.build(activePipelineAsset, rtCtx, width, height);
@@ -527,7 +524,6 @@ int main() {
         }
 
         // Per-frame: swap backbuffer, update frame context, reset transients
-        rtCtx.backbuffer = drawable->texture();
         backbufferTexture.setTexture(drawable->texture());
         rtCtx.backbufferRhi = &backbufferTexture;
         pipelineBuilder.updateFrame(rtCtx.backbufferRhi, &frameCtx);

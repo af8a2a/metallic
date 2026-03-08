@@ -8,6 +8,14 @@
 #include <vector>
 
 struct GLFWwindow;
+struct RhiBufferDesc;
+
+class RhiBuffer;
+class RhiGraphicsPipeline;
+class RhiComputePipeline;
+class RhiSampler;
+class RhiDepthStencilState;
+class RhiAccelerationStructure;
 
 enum class RhiBackendType {
     Metal,
@@ -60,6 +68,58 @@ enum class RhiStoreAction {
     Store,
 };
 
+enum class RhiWinding {
+    Clockwise,
+    CounterClockwise,
+};
+
+enum class RhiCullMode {
+    None,
+    Front,
+    Back,
+};
+
+enum class RhiPrimitiveType {
+    Triangle,
+};
+
+enum class RhiIndexType {
+    UInt16,
+    UInt32,
+};
+
+enum class RhiBarrierScope : uint32_t {
+    None = 0,
+    Buffers = 1u << 0,
+    Textures = 1u << 1,
+    RenderTargets = 1u << 2,
+};
+
+enum class RhiResourceUsage : uint32_t {
+    Read = 1u << 0,
+    Write = 1u << 1,
+};
+
+constexpr RhiBarrierScope operator|(RhiBarrierScope lhs, RhiBarrierScope rhs) {
+    return static_cast<RhiBarrierScope>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr RhiResourceUsage operator|(RhiResourceUsage lhs, RhiResourceUsage rhs) {
+    return static_cast<RhiResourceUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+struct RhiOrigin3D {
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t z = 0;
+};
+
+struct RhiSize3D {
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t depth = 1;
+};
+
 constexpr RhiTextureUsage operator|(RhiTextureUsage lhs, RhiTextureUsage rhs) {
     return static_cast<RhiTextureUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
 }
@@ -108,6 +168,93 @@ class RhiTexture {
 public:
     virtual ~RhiTexture() = default;
     virtual void* nativeHandle() const = 0;
+    virtual uint32_t width() const = 0;
+    virtual uint32_t height() const = 0;
+};
+
+class RhiSampler {
+public:
+    virtual ~RhiSampler() = default;
+    virtual void* nativeHandle() const = 0;
+};
+
+class RhiDepthStencilState {
+public:
+    virtual ~RhiDepthStencilState() = default;
+    virtual void* nativeHandle() const = 0;
+};
+
+class RhiAccelerationStructure {
+public:
+    virtual ~RhiAccelerationStructure() = default;
+    virtual void* nativeHandle() const = 0;
+};
+
+class RhiComputePipeline {
+public:
+    virtual ~RhiComputePipeline() = default;
+    virtual void* nativeHandle() const = 0;
+};
+
+class RhiTextureHandle final : public RhiTexture {
+public:
+    constexpr RhiTextureHandle() = default;
+    constexpr RhiTextureHandle(void* native, uint32_t w = 0, uint32_t h = 0)
+        : m_native(native), m_width(w), m_height(h) {}
+
+    void setNativeHandle(void* native, uint32_t w = 0, uint32_t h = 0) {
+        m_native = native;
+        m_width = w;
+        m_height = h;
+    }
+
+    void* nativeHandle() const override { return m_native; }
+    uint32_t width() const override { return m_width; }
+    uint32_t height() const override { return m_height; }
+
+private:
+    void* m_native = nullptr;
+    uint32_t m_width = 0;
+    uint32_t m_height = 0;
+};
+
+class RhiSamplerHandle final : public RhiSampler {
+public:
+    constexpr RhiSamplerHandle() = default;
+    explicit constexpr RhiSamplerHandle(void* native)
+        : m_native(native) {}
+
+    void setNativeHandle(void* native) { m_native = native; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
+};
+
+class RhiDepthStencilStateHandle final : public RhiDepthStencilState {
+public:
+    constexpr RhiDepthStencilStateHandle() = default;
+    explicit constexpr RhiDepthStencilStateHandle(void* native)
+        : m_native(native) {}
+
+    void setNativeHandle(void* native) { m_native = native; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
+};
+
+class RhiAccelerationStructureHandle final : public RhiAccelerationStructure {
+public:
+    constexpr RhiAccelerationStructureHandle() = default;
+    explicit constexpr RhiAccelerationStructureHandle(void* native)
+        : m_native(native) {}
+
+    void setNativeHandle(void* native) { m_native = native; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
 };
 
 struct RhiColorAttachmentDesc {
@@ -144,18 +291,67 @@ class RhiRenderCommandEncoder {
 public:
     virtual ~RhiRenderCommandEncoder() = default;
     virtual void* nativeHandle() const = 0;
+    virtual void setDepthStencilState(const RhiDepthStencilState* state) = 0;
+    virtual void setFrontFacingWinding(RhiWinding winding) = 0;
+    virtual void setCullMode(RhiCullMode cullMode) = 0;
+    virtual void setRenderPipeline(const RhiGraphicsPipeline& pipeline) = 0;
+    virtual void setVertexBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) = 0;
+    virtual void setFragmentBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) = 0;
+    virtual void setMeshBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) = 0;
+    virtual void setVertexBytes(const void* data, size_t size, uint32_t index) = 0;
+    virtual void setFragmentBytes(const void* data, size_t size, uint32_t index) = 0;
+    virtual void setMeshBytes(const void* data, size_t size, uint32_t index) = 0;
+    virtual void setFragmentTexture(const RhiTexture* texture, uint32_t index) = 0;
+    virtual void setFragmentTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) = 0;
+    virtual void setMeshTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) = 0;
+    virtual void setFragmentSampler(const RhiSampler* sampler, uint32_t index) = 0;
+    virtual void setMeshSampler(const RhiSampler* sampler, uint32_t index) = 0;
+    virtual void drawPrimitives(RhiPrimitiveType primitiveType, uint32_t vertexStart, uint32_t vertexCount) = 0;
+    virtual void drawIndexedPrimitives(RhiPrimitiveType primitiveType,
+                                       uint32_t indexCount,
+                                       RhiIndexType indexType,
+                                       const RhiBuffer& indexBuffer,
+                                       uint64_t indexBufferOffset) = 0;
+    virtual void drawMeshThreadgroups(RhiSize3D threadgroupsPerGrid,
+                                      RhiSize3D threadsPerObjectThreadgroup,
+                                      RhiSize3D threadsPerMeshThreadgroup) = 0;
+    virtual void drawMeshThreadgroupsIndirect(const RhiBuffer& indirectBuffer,
+                                              uint64_t indirectBufferOffset,
+                                              RhiSize3D threadsPerObjectThreadgroup,
+                                              RhiSize3D threadsPerMeshThreadgroup) = 0;
+    virtual void renderImGuiDrawData(void* commandBufferHandle) = 0;
 };
 
 class RhiComputeCommandEncoder {
 public:
     virtual ~RhiComputeCommandEncoder() = default;
     virtual void* nativeHandle() const = 0;
+    virtual void setComputePipeline(const RhiComputePipeline& pipeline) = 0;
+    virtual void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) = 0;
+    virtual void setBytes(const void* data, size_t size, uint32_t index) = 0;
+    virtual void setTexture(const RhiTexture* texture, uint32_t index) = 0;
+    virtual void setTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) = 0;
+    virtual void setSampler(const RhiSampler* sampler, uint32_t index) = 0;
+    virtual void setAccelerationStructure(const RhiAccelerationStructure* accelerationStructure, uint32_t index) = 0;
+    virtual void useResource(const RhiBuffer& resource, RhiResourceUsage usage) = 0;
+    virtual void useResource(const RhiAccelerationStructure& resource, RhiResourceUsage usage) = 0;
+    virtual void memoryBarrier(RhiBarrierScope scope) = 0;
+    virtual void dispatchThreadgroups(RhiSize3D threadgroupsPerGrid, RhiSize3D threadsPerThreadgroup) = 0;
 };
 
 class RhiBlitCommandEncoder {
 public:
     virtual ~RhiBlitCommandEncoder() = default;
     virtual void* nativeHandle() const = 0;
+    virtual void copyTexture(const RhiTexture& source,
+                             uint32_t sourceSlice,
+                             uint32_t sourceLevel,
+                             RhiOrigin3D sourceOrigin,
+                             RhiSize3D sourceSize,
+                             const RhiTexture& destination,
+                             uint32_t destinationSlice,
+                             uint32_t destinationLevel,
+                             RhiOrigin3D destinationOrigin) = 0;
 };
 
 class RhiCommandBuffer {
@@ -170,6 +366,7 @@ class RhiFrameGraphBackend {
 public:
     virtual ~RhiFrameGraphBackend() = default;
     virtual std::unique_ptr<RhiTexture> createTexture(const RhiTextureDesc& desc) = 0;
+    virtual std::unique_ptr<RhiBuffer> createBuffer(const RhiBufferDesc& desc) = 0;
 };
 
 struct RhiFeatures {
@@ -227,11 +424,59 @@ class RhiBuffer {
 public:
     virtual ~RhiBuffer() = default;
     virtual size_t size() const = 0;
+    virtual void* nativeHandle() const = 0;
+    virtual void* mappedData() { return nullptr; }
+};
+
+class RhiBufferHandle final : public RhiBuffer {
+public:
+    constexpr RhiBufferHandle() = default;
+    constexpr RhiBufferHandle(void* native, size_t byteSize = 0)
+        : m_native(native), m_size(byteSize) {}
+
+    void setNativeHandle(void* native, size_t byteSize = 0) {
+        m_native = native;
+        m_size = byteSize;
+    }
+
+    size_t size() const override { return m_size; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
+    size_t m_size = 0;
 };
 
 class RhiGraphicsPipeline {
 public:
     virtual ~RhiGraphicsPipeline() = default;
+    virtual void* nativeHandle() const = 0;
+};
+
+class RhiGraphicsPipelineHandle final : public RhiGraphicsPipeline {
+public:
+    constexpr RhiGraphicsPipelineHandle() = default;
+    explicit constexpr RhiGraphicsPipelineHandle(void* native)
+        : m_native(native) {}
+
+    void setNativeHandle(void* native) { m_native = native; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
+};
+
+class RhiComputePipelineHandle final : public RhiComputePipeline {
+public:
+    constexpr RhiComputePipelineHandle() = default;
+    explicit constexpr RhiComputePipelineHandle(void* native)
+        : m_native(native) {}
+
+    void setNativeHandle(void* native) { m_native = native; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
 };
 
 struct RhiGraphicsPipelineDesc {
@@ -304,4 +549,3 @@ public:
 std::unique_ptr<RhiContext> createRhiContext(RhiBackendType backend,
                                              const RhiCreateInfo& createInfo,
                                              std::string& errorMessage);
-

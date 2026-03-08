@@ -21,9 +21,9 @@ struct RenderContext {
     const LoadedMaterials& materials;
     const SceneGraph& sceneGraph;
     const RaytracedShadowResources& shadowResources;
-    MTL::DepthStencilState* depthState;
-    MTL::Texture* shadowDummyTex;
-    MTL::Texture* skyFallbackTex;
+    RhiDepthStencilStateHandle depthStateRhi;
+    RhiTextureHandle shadowDummyTexRhi;
+    RhiTextureHandle skyFallbackTexRhi;
     double depthClearValue;
 };
 

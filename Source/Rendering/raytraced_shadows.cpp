@@ -7,6 +7,10 @@
 #include <fstream>
 #include <sstream>
 
+static MTL::Buffer* metalBuffer(void* handle) {
+    return static_cast<MTL::Buffer*>(handle);
+}
+
 void RaytracedShadowResources::release() {
     for (auto* blas : blasArray) {
         if (blas) blas->release();
@@ -38,11 +42,11 @@ bool buildAccelerationStructures(MTL::Device* device,
         for (uint32_t g = 0; g < range.groupCount; g++) {
             const auto& group = mesh.primitiveGroups[range.firstGroup + g];
             auto* triGeom = MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
-            triGeom->setVertexBuffer(mesh.positionBuffer);
+            triGeom->setVertexBuffer(metalBuffer(mesh.positionBuffer));
             triGeom->setVertexBufferOffset(0);
             triGeom->setVertexStride(sizeof(float) * 3);
             triGeom->setVertexFormat(MTL::AttributeFormatFloat3);
-            triGeom->setIndexBuffer(mesh.indexBuffer);
+            triGeom->setIndexBuffer(metalBuffer(mesh.indexBuffer));
             triGeom->setIndexBufferOffset(group.indexOffset * sizeof(uint32_t));
             triGeom->setIndexType(MTL::IndexTypeUInt32);
             triGeom->setTriangleCount(group.indexCount / 3);

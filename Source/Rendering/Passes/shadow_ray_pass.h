@@ -1,10 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class ShadowRayPass : public RenderPass {
@@ -43,12 +42,13 @@ public:
     }
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("ShadowRayPass");
         if (!m_frameContext) return;
         if (!m_frameContext->enableRTShadows) return;
 
-        enc->setComputePipelineState(m_ctx.shadowResources.pipeline);
+        if (!m_ctx.shadowResources.pipelineRhi.nativeHandle()) return;
+
+        encoder.setComputePipeline(m_ctx.shadowResources.pipelineRhi);
         ShadowUniforms shadowUni;
         float4x4 viewProj = m_frameContext->proj * m_frameContext->view;
         float4x4 invViewProj = viewProj;
@@ -60,19 +60,20 @@ public:
         shadowUni.normalBias = m_normalBias;
         shadowUni.maxRayDistance = m_maxRayDistance > 0 ? m_maxRayDistance : m_frameContext->cameraFarZ;
         shadowUni.reversedZ = ML_DEPTH_REVERSED ? 1 : 0;
-        enc->setBytes(&shadowUni, sizeof(shadowUni), 0);
-        enc->setAccelerationStructure(m_ctx.shadowResources.tlas, 1);
-        enc->setTexture(metalTexture(m_frameGraph->getTexture(m_depthRead)), 0);
-        enc->setTexture(metalTexture(m_frameGraph->getTexture(shadowMap)), 1);
-        enc->useResource(m_ctx.shadowResources.tlas, MTL::ResourceUsageRead);
-        for (auto* blas : m_ctx.shadowResources.blasArray) {
-            if (blas) enc->useResource(blas, MTL::ResourceUsageRead);
+        encoder.setBytes(&shadowUni, sizeof(shadowUni), 0);
+        encoder.setAccelerationStructure(&m_ctx.shadowResources.tlasRhi, 1);
+        encoder.setTexture(m_frameGraph->getTexture(m_depthRead), 0);
+        encoder.setTexture(m_frameGraph->getTexture(shadowMap), 1);
+        encoder.useResource(m_ctx.shadowResources.tlasRhi, RhiResourceUsage::Read);
+        for (auto& blas : m_ctx.shadowResources.blasHandles) {
+            if (blas.nativeHandle()) {
+                encoder.useResource(blas, RhiResourceUsage::Read);
+            }
         }
-        enc->useResource(m_ctx.sceneMesh.positionBuffer, MTL::ResourceUsageRead);
-        enc->useResource(m_ctx.sceneMesh.indexBuffer, MTL::ResourceUsageRead);
-        MTL::Size tgSize(8, 8, 1);
-        MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);
-        enc->dispatchThreadgroups(grid, tgSize);
+        encoder.useResource(m_ctx.sceneMesh.positionBufferRhi, RhiResourceUsage::Read);
+        encoder.useResource(m_ctx.sceneMesh.indexBufferRhi, RhiResourceUsage::Read);
+        encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
+                                     {8, 8, 1});
     }
 
     void renderUI() override {
@@ -92,5 +93,6 @@ private:
     float m_normalBias = 0.05f;
     float m_maxRayDistance = 1000.0f;
 };
+
 
 

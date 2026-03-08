@@ -9,9 +9,7 @@ ShaderManager::ShaderManager(MTL::Device* device, const char* projectRoot)
     : m_device(device)
     , m_projectRoot(projectRoot)
     , m_rtCtx(new PipelineRuntimeContext{})
-{
-    m_rtCtx->device = device;
-}
+{}
 
 ShaderManager::~ShaderManager() {
     if (m_vertexPipeline) m_vertexPipeline->release();
@@ -36,11 +34,14 @@ PipelineRuntimeContext& ShaderManager::runtimeContext() { return *m_rtCtx; }
 bool ShaderManager::hasSkyPipeline() const { return m_skyPipeline != nullptr; }
 
 void ShaderManager::importTexture(const std::string& name, MTL::Texture* tex) {
-    m_rtCtx->importedTextures[name] = tex;
+    m_rtCtx->importedTexturesRhi[name].setNativeHandle(
+        tex,
+        tex ? static_cast<uint32_t>(tex->width()) : 0,
+        tex ? static_cast<uint32_t>(tex->height()) : 0);
 }
 
 void ShaderManager::importSampler(const std::string& name, MTL::SamplerState* sampler) {
-    m_rtCtx->samplers[name] = sampler;
+    m_rtCtx->samplersRhi[name].setNativeHandle(sampler);
 }
 
 void ShaderManager::createVertexDescriptor() {
@@ -62,25 +63,27 @@ void ShaderManager::createVertexDescriptor() {
 }
 
 void ShaderManager::syncRuntimeContext() {
-    m_rtCtx->renderPipelines["ForwardPass"] = m_vertexPipeline;
-    m_rtCtx->renderPipelines["ForwardMeshPass"] = m_meshPipeline;
-    m_rtCtx->renderPipelines["VisibilityPass"] = m_visPipeline;
-    m_rtCtx->renderPipelines["VisibilityIndirectPass"] = m_visIndirectPipeline;
-    m_rtCtx->renderPipelines["SkyPass"] = m_skyPipeline;
-    m_rtCtx->renderPipelines["TonemapPass"] = m_tonemapPipeline;
-    m_rtCtx->renderPipelines["OutputPass"] = m_outputPipeline;
-    m_rtCtx->computePipelines["DeferredLightingPass"] = m_computePipeline;
-    m_rtCtx->computePipelines["MeshletCullPass"] = m_cullPipeline;
-    m_rtCtx->computePipelines["BuildIndirectPass"] = m_buildIndirectPipeline;
+    m_rtCtx->renderPipelinesRhi["ForwardPass"].setNativeHandle(m_vertexPipeline);
+    m_rtCtx->renderPipelinesRhi["ForwardMeshPass"].setNativeHandle(m_meshPipeline);
+    m_rtCtx->renderPipelinesRhi["VisibilityPass"].setNativeHandle(m_visPipeline);
+    m_rtCtx->renderPipelinesRhi["VisibilityIndirectPass"].setNativeHandle(m_visIndirectPipeline);
+    m_rtCtx->renderPipelinesRhi["SkyPass"].setNativeHandle(m_skyPipeline);
+    m_rtCtx->renderPipelinesRhi["TonemapPass"].setNativeHandle(m_tonemapPipeline);
+    m_rtCtx->renderPipelinesRhi["OutputPass"].setNativeHandle(m_outputPipeline);
+
+    m_rtCtx->computePipelinesRhi["DeferredLightingPass"].setNativeHandle(m_computePipeline);
+    m_rtCtx->computePipelinesRhi["MeshletCullPass"].setNativeHandle(m_cullPipeline);
+    m_rtCtx->computePipelinesRhi["BuildIndirectPass"].setNativeHandle(m_buildIndirectPipeline);
     if (m_meshletVisPipeline)
-        m_rtCtx->computePipelines["MeshletVisualizePass"] = m_meshletVisPipeline;
+        m_rtCtx->computePipelinesRhi["MeshletVisualizePass"].setNativeHandle(m_meshletVisPipeline);
     if (m_histogramPipeline)
-        m_rtCtx->computePipelines["HistogramPass"] = m_histogramPipeline;
+        m_rtCtx->computePipelinesRhi["HistogramPass"].setNativeHandle(m_histogramPipeline);
     if (m_autoExposurePipeline)
-        m_rtCtx->computePipelines["AutoExposurePass"] = m_autoExposurePipeline;
+        m_rtCtx->computePipelinesRhi["AutoExposurePass"].setNativeHandle(m_autoExposurePipeline);
     if (m_taaPipeline)
-        m_rtCtx->computePipelines["TAAPass"] = m_taaPipeline;
-    m_rtCtx->samplers["tonemap"] = m_tonemapSampler;
+        m_rtCtx->computePipelinesRhi["TAAPass"].setNativeHandle(m_taaPipeline);
+
+    m_rtCtx->samplersRhi["tonemap"].setNativeHandle(m_tonemapSampler);
 }
 
 bool ShaderManager::buildAll() {

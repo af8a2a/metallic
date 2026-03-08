@@ -1,11 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "metal_frame_graph.h"
 #include "imgui.h"
+#include <vector>
 
 class DeferredLightingPass : public RenderPass {
 public:
@@ -47,12 +47,11 @@ public:
     }
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("DeferredLightingPass");
         if (!m_frameContext || !m_runtimeContext) return;
 
-        auto pipeIt = m_runtimeContext->computePipelines.find("DeferredLightingPass");
-        if (pipeIt == m_runtimeContext->computePipelines.end()) return;
+        auto pipeIt = m_runtimeContext->computePipelinesRhi.find("DeferredLightingPass");
+        if (pipeIt == m_runtimeContext->computePipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
 
         // Build LightingUniforms from FrameContext raw data
         float4x4 modelView = m_frameContext->view; // model is identity
@@ -75,40 +74,43 @@ public:
         lightUniforms.shadowEnabled = m_frameContext->enableRTShadows ? 1 : 0;
         lightUniforms.pad2 = 0;
 
-        enc->setComputePipelineState(pipeIt->second);
-        enc->setBytes(&lightUniforms, sizeof(lightUniforms), 0);
-        enc->setBuffer(m_ctx.sceneMesh.positionBuffer, 0, 1);
-        enc->setBuffer(m_ctx.sceneMesh.normalBuffer, 0, 2);
-        enc->setBuffer(m_ctx.meshletData.meshletBuffer, 0, 3);
-        enc->setBuffer(m_ctx.meshletData.meshletVertices, 0, 4);
-        enc->setBuffer(m_ctx.meshletData.meshletTriangles, 0, 5);
-        enc->setBuffer(m_ctx.sceneMesh.uvBuffer, 0, 6);
-        enc->setBuffer(m_ctx.meshletData.materialIDs, 0, 7);
-        enc->setBuffer(m_ctx.materials.materialBuffer, 0, 8);
-        if (m_frameContext->instanceTransformBuffer) {
-            enc->setBuffer(m_frameContext->instanceTransformBuffer, 0, 9);
+        encoder.setComputePipeline(pipeIt->second);
+        encoder.setBytes(&lightUniforms, sizeof(lightUniforms), 0);
+        encoder.setBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
+        encoder.setBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
+        encoder.setBuffer(&m_ctx.meshletData.meshletBufferRhi, 0, 3);
+        encoder.setBuffer(&m_ctx.meshletData.meshletVerticesRhi, 0, 4);
+        encoder.setBuffer(&m_ctx.meshletData.meshletTrianglesRhi, 0, 5);
+        encoder.setBuffer(&m_ctx.sceneMesh.uvBufferRhi, 0, 6);
+        encoder.setBuffer(&m_ctx.meshletData.materialIDsRhi, 0, 7);
+        encoder.setBuffer(&m_ctx.materials.materialBufferRhi, 0, 8);
+        if (m_frameContext->instanceTransformBufferRhi) {
+            encoder.setBuffer(m_frameContext->instanceTransformBufferRhi, 0, 9);
         }
-        enc->setTexture(metalTexture(m_frameGraph->getTexture(m_visRead)), 0);
-        enc->setTexture(metalTexture(m_frameGraph->getTexture(m_depthRead)), 1);
-        enc->setTexture(metalTexture(m_frameGraph->getTexture(output)), 2);
-        if (!m_ctx.materials.textures.empty()) {
-            enc->setTextures(
-                const_cast<MTL::Texture* const*>(m_ctx.materials.textures.data()),
-                NS::Range(3, m_ctx.materials.textures.size()));
+        encoder.setTexture(m_frameGraph->getTexture(m_visRead), 0);
+        encoder.setTexture(m_frameGraph->getTexture(m_depthRead), 1);
+        encoder.setTexture(m_frameGraph->getTexture(output), 2);
+        std::vector<const RhiTexture*> materialTextures;
+        materialTextures.reserve(m_ctx.materials.textureViews.size());
+        for (auto* texture : m_ctx.materials.textureViews) {
+            materialTextures.push_back(texture);
         }
-        MTL::Texture* shadowTex = m_shadowRead.isValid()
-            ? metalTexture(m_frameGraph->getTexture(m_shadowRead))
-            : m_ctx.shadowDummyTex;
-        enc->setTexture(shadowTex, 99);
-        MTL::Texture* skyTex = m_skyRead.isValid()
-            ? metalTexture(m_frameGraph->getTexture(m_skyRead))
-            : m_ctx.skyFallbackTex;
-        enc->setTexture(skyTex, 100);
-        enc->setTexture(metalTexture(m_frameGraph->getTexture(motionVectorsOutput)), 101);
-        enc->setSamplerState(m_ctx.materials.sampler, 0);
-        MTL::Size tgSize(8, 8, 1);
-        MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);
-        enc->dispatchThreadgroups(grid, tgSize);
+        if (!materialTextures.empty()) {
+            encoder.setTextures(materialTextures.data(), 3,
+                                static_cast<uint32_t>(materialTextures.size()));
+        }
+        const RhiTexture* shadowTex = m_shadowRead.isValid()
+            ? m_frameGraph->getTexture(m_shadowRead)
+            : &m_ctx.shadowDummyTexRhi;
+        encoder.setTexture(shadowTex, 99);
+        const RhiTexture* skyTex = m_skyRead.isValid()
+            ? m_frameGraph->getTexture(m_skyRead)
+            : &m_ctx.skyFallbackTexRhi;
+        encoder.setTexture(skyTex, 100);
+        encoder.setTexture(m_frameGraph->getTexture(motionVectorsOutput), 101);
+        encoder.setSampler(&m_ctx.materials.samplerRhi, 0);
+        encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
+                                     {8, 8, 1});
     }
 
     void renderUI() override {
@@ -127,5 +129,6 @@ private:
     int m_width, m_height;
     std::string m_name = "Deferred Lighting";
 };
+
 
 

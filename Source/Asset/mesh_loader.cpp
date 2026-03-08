@@ -2,13 +2,20 @@
 #include <cgltf.h>
 
 #include "mesh_loader.h"
+
+#include <Metal/Metal.hpp>
 #include <spdlog/spdlog.h>
 #include <cstring>
 #include <vector>
 #include <cfloat>
 #include <algorithm>
 
-bool loadGLTFMesh(MTL::Device* device, const std::string& gltfPath, LoadedMesh& out) {
+static MTL::Device* metalDevice(void* handle) {
+    return static_cast<MTL::Device*>(handle);
+}
+
+bool loadGLTFMesh(void* deviceHandle, const std::string& gltfPath, LoadedMesh& out) {
+    auto* device = metalDevice(deviceHandle);
     cgltf_options options = {};
     cgltf_data* data = nullptr;
 

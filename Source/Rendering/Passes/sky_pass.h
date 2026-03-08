@@ -1,10 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class SkyPass : public RenderPass {
@@ -42,24 +41,27 @@ public:
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("SkyPass");
 
         if (!m_frameContext || !m_runtimeContext) return;
         if (!m_frameContext->enableAtmosphereSky) return;
 
-        auto pipeIt = m_runtimeContext->renderPipelines.find("SkyPass");
-        if (pipeIt == m_runtimeContext->renderPipelines.end()) return;
+        auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("SkyPass");
+        if (pipeIt == m_runtimeContext->renderPipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
 
-        auto transmittanceIt = m_runtimeContext->importedTextures.find("transmittance");
-        auto scatteringIt = m_runtimeContext->importedTextures.find("scattering");
-        auto irradianceIt = m_runtimeContext->importedTextures.find("irradiance");
-        auto samplerIt = m_runtimeContext->samplers.find("atmosphere");
+        auto transmittanceIt = m_runtimeContext->importedTexturesRhi.find("transmittance");
+        auto scatteringIt = m_runtimeContext->importedTexturesRhi.find("scattering");
+        auto irradianceIt = m_runtimeContext->importedTexturesRhi.find("irradiance");
+        auto samplerIt = m_runtimeContext->samplersRhi.find("atmosphere");
 
-        if (transmittanceIt == m_runtimeContext->importedTextures.end() ||
-            scatteringIt == m_runtimeContext->importedTextures.end() ||
-            irradianceIt == m_runtimeContext->importedTextures.end() ||
-            samplerIt == m_runtimeContext->samplers.end()) {
+        if (transmittanceIt == m_runtimeContext->importedTexturesRhi.end() ||
+            scatteringIt == m_runtimeContext->importedTexturesRhi.end() ||
+            irradianceIt == m_runtimeContext->importedTexturesRhi.end() ||
+            samplerIt == m_runtimeContext->samplersRhi.end() ||
+            !transmittanceIt->second.nativeHandle() ||
+            !scatteringIt->second.nativeHandle() ||
+            !irradianceIt->second.nativeHandle() ||
+            !samplerIt->second.nativeHandle()) {
             return;
         }
 
@@ -78,14 +80,14 @@ public:
         uniforms.pad0 = 0;
         uniforms.pad1 = 0;
 
-        enc->setRenderPipelineState(pipeIt->second);
-        enc->setVertexBytes(&uniforms, sizeof(uniforms), 0);
-        enc->setFragmentBytes(&uniforms, sizeof(uniforms), 0);
-        enc->setFragmentTexture(transmittanceIt->second, 0);
-        enc->setFragmentTexture(scatteringIt->second, 1);
-        enc->setFragmentTexture(irradianceIt->second, 2);
-        enc->setFragmentSamplerState(samplerIt->second, 0);
-        enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+        encoder.setRenderPipeline(pipeIt->second);
+        encoder.setVertexBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setFragmentTexture(&transmittanceIt->second, 0);
+        encoder.setFragmentTexture(&scatteringIt->second, 1);
+        encoder.setFragmentTexture(&irradianceIt->second, 2);
+        encoder.setFragmentSampler(&samplerIt->second, 0);
+        encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
     }
 
     void renderUI() override {
@@ -100,5 +102,6 @@ private:
     bool m_sideEffect = false;
     float m_exposure = 10.0f;
 };
+
 
 

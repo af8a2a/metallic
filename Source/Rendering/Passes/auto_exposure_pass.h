@@ -1,10 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class AutoExposurePass : public RenderPass {
@@ -55,21 +54,25 @@ public:
     }
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("AutoExposurePass");
         if (!m_runtimeContext || !m_sourceRead.isValid()) return;
 
         // Lazy-create histogram buffer
-        if (!m_histogramBuffer && m_runtimeContext->device) {
-            m_histogramBuffer = m_runtimeContext->device->newBuffer(
-                256 * sizeof(uint32_t), MTL::ResourceStorageModePrivate);
+        if (!m_histogramBuffer && m_runtimeContext->resourceFactory) {
+            RhiBufferDesc desc;
+            desc.size = 256 * sizeof(uint32_t);
+            desc.hostVisible = false;
+            desc.debugName = "AutoExposureHistogram";
+            m_histogramBuffer = m_runtimeContext->resourceFactory->createBuffer(desc);
         }
         if (!m_histogramBuffer) return;
 
-        auto histIt = m_runtimeContext->computePipelines.find("HistogramPass");
-        auto expIt = m_runtimeContext->computePipelines.find("AutoExposurePass");
-        if (histIt == m_runtimeContext->computePipelines.end() ||
-            expIt == m_runtimeContext->computePipelines.end()) return;
+        auto histIt = m_runtimeContext->computePipelinesRhi.find("HistogramPass");
+        auto expIt = m_runtimeContext->computePipelinesRhi.find("AutoExposurePass");
+        if (histIt == m_runtimeContext->computePipelinesRhi.end() ||
+            expIt == m_runtimeContext->computePipelinesRhi.end() ||
+            !histIt->second.nativeHandle() ||
+            !expIt->second.nativeHandle()) return;
 
         AutoExposureUniforms uniforms{};
         uniforms.evMinValue = m_evMin;
@@ -81,32 +84,31 @@ public:
         uniforms.lowPercentile = m_lowPercentile;
         uniforms.highPercentile = m_highPercentile;
 
-        MTL::Texture* hdrTex = metalTexture(m_frameGraph->getTexture(m_sourceRead));
-        MTL::Texture* lutTex = metalTexture(m_frameGraph->getTexture(m_exposureLut));
+        auto* hdrTex = m_frameGraph->getTexture(m_sourceRead);
+        auto* lutTex = m_frameGraph->getTexture(m_exposureLut);
 
-        // Slang wraps all globals into KernelContext �?both kernels expect all bindings:
+        // Slang wraps all globals into KernelContext 鈥?both kernels expect all bindings:
         // buffer(0) = uniforms, texture(0) = hdrInput, buffer(1) = histogramBuffer, texture(1) = exposureLut
 
         // Dispatch 1: Histogram
-        enc->setComputePipelineState(histIt->second);
-        enc->setBytes(&uniforms, sizeof(uniforms), 0);
-        enc->setTexture(hdrTex, 0);
-        enc->setTexture(lutTex, 1);
-        enc->setBuffer(m_histogramBuffer, 0, 1);
-        MTL::Size histTgSize(16, 16, 1);
-        MTL::Size histGrid((m_width + 15) / 16, (m_height + 15) / 16, 1);
-        enc->dispatchThreadgroups(histGrid, histTgSize);
+        encoder.setComputePipeline(histIt->second);
+        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setTexture(hdrTex, 0);
+        encoder.setTexture(lutTex, 1);
+        encoder.setBuffer(m_histogramBuffer.get(), 0, 1);
+        encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 15) / 16), static_cast<uint32_t>((m_height + 15) / 16), 1},
+                                     {16, 16, 1});
 
         // Memory barrier between dispatches
-        enc->memoryBarrier(MTL::BarrierScopeBuffers);
+        encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
         // Dispatch 2: Exposure
-        enc->setComputePipelineState(expIt->second);
-        enc->setBytes(&uniforms, sizeof(uniforms), 0);
-        enc->setTexture(hdrTex, 0);
-        enc->setTexture(lutTex, 1);
-        enc->setBuffer(m_histogramBuffer, 0, 1);
-        enc->dispatchThreadgroups(MTL::Size(1, 1, 1), MTL::Size(256, 1, 1));
+        encoder.setComputePipeline(expIt->second);
+        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setTexture(hdrTex, 0);
+        encoder.setTexture(lutTex, 1);
+        encoder.setBuffer(m_histogramBuffer.get(), 0, 1);
+        encoder.dispatchThreadgroups({1, 1, 1}, {256, 1, 1});
     }
 
     void renderUI() override {
@@ -138,7 +140,7 @@ private:
 
     FGResource m_sourceRead;
     FGResource m_exposureLut;
-    MTL::Buffer* m_histogramBuffer = nullptr;
+    std::unique_ptr<RhiBuffer> m_histogramBuffer;
 
     float m_evMin = -5.0f;
     float m_evMax = 10.0f;
@@ -146,5 +148,6 @@ private:
     float m_lowPercentile = 0.1f;
     float m_highPercentile = 0.9f;
 };
+
 
 

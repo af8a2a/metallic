@@ -1,10 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "metal_frame_graph.h"
 #include "imgui.h"
 
 class TAAPass : public RenderPass {
@@ -68,27 +67,26 @@ public:
     }
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
-        auto* enc = metalEncoder(encoder);
         ZoneScopedN("TAAPass");
         if (!m_frameContext || !m_runtimeContext) return;
         if (m_passthroughNoPipeline) return;
         if (!m_frameContext->enableTAA) {
-            copyCurrentToOutput(enc);
+            copyCurrentToOutput(encoder);
             return;
         }
 
-        auto pipeIt = m_runtimeContext->computePipelines.find("TAAPass");
-        if (pipeIt == m_runtimeContext->computePipelines.end() || !pipeIt->second) {
-            copyCurrentToOutput(enc);
+        auto pipeIt = m_runtimeContext->computePipelinesRhi.find("TAAPass");
+        if (pipeIt == m_runtimeContext->computePipelinesRhi.end() || !pipeIt->second.nativeHandle()) {
+            copyCurrentToOutput(encoder);
             return;
         }
 
         ensureHistory();
 
-        MTL::Texture* currentTex = m_sourceRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_sourceRead)) : nullptr;
-        MTL::Texture* depthTex = m_depthRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_depthRead)) : nullptr;
-        MTL::Texture* motionTex = m_motionRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_motionRead)) : nullptr;
-        MTL::Texture* outputTex = metalTexture(m_frameGraph->getTexture(m_taaOutput));
+        RhiTexture* currentTex = m_sourceRead.isValid() ? m_frameGraph->getTexture(m_sourceRead) : nullptr;
+        RhiTexture* depthTex = m_depthRead.isValid() ? m_frameGraph->getTexture(m_depthRead) : nullptr;
+        RhiTexture* motionTex = m_motionRead.isValid() ? m_frameGraph->getTexture(m_motionRead) : nullptr;
+        RhiTexture* outputTex = m_frameGraph->getTexture(m_taaOutput);
         if (!currentTex || !outputTex) return;
         if (!depthTex) depthTex = currentTex;
         if (!motionTex) motionTex = currentTex;
@@ -107,23 +105,22 @@ public:
 
         // PLACEHOLDER_DISPATCH
 
-        MTL::Texture* historyReadTex = m_historyTextures[1 - m_historyIndex];
-        MTL::Texture* historyWriteTex = m_historyTextures[m_historyIndex];
+        RhiTexture* historyReadTex = m_historyTextures[1 - m_historyIndex].get();
+        RhiTexture* historyWriteTex = m_historyTextures[m_historyIndex].get();
 
-        enc->setComputePipelineState(pipeIt->second);
-        enc->setBytes(&uniforms, sizeof(uniforms), 0);
-        enc->setTexture(currentTex, 0);
-        enc->setTexture(depthTex, 1);
-        enc->setTexture(motionTex, 2);
-        enc->setTexture(historyReadTex, 3);
-        enc->setTexture(outputTex, 4);
-        enc->setTexture(historyWriteTex, 5);
+        encoder.setComputePipeline(pipeIt->second);
+        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setTexture(currentTex, 0);
+        encoder.setTexture(depthTex, 1);
+        encoder.setTexture(motionTex, 2);
+        encoder.setTexture(historyReadTex, 3);
+        encoder.setTexture(outputTex, 4);
+        encoder.setTexture(historyWriteTex, 5);
 
-        bindTonemapSampler(enc);
+        bindTonemapSampler(encoder);
 
-        MTL::Size tgSize(8, 8, 1);
-        MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);
-        enc->dispatchThreadgroups(grid, tgSize);
+        encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
+                                     {8, 8, 1});
 
         m_historyIndex = 1 - m_historyIndex;
         m_historyValid = true;
@@ -153,22 +150,22 @@ private:
 
     bool hasTAAPipeline() const {
         if (!m_runtimeContext) return false;
-        auto it = m_runtimeContext->computePipelines.find("TAAPass");
-        return it != m_runtimeContext->computePipelines.end() && it->second;
+        auto it = m_runtimeContext->computePipelinesRhi.find("TAAPass");
+        return it != m_runtimeContext->computePipelinesRhi.end() && it->second.nativeHandle();
     }
 
-    void bindTonemapSampler(MTL::ComputeCommandEncoder* enc) const {
+    void bindTonemapSampler(RhiComputeCommandEncoder& encoder) const {
         if (!m_runtimeContext) return;
-        auto samplerIt = m_runtimeContext->samplers.find("tonemap");
-        if (samplerIt != m_runtimeContext->samplers.end() && samplerIt->second) {
-            enc->setSamplerState(samplerIt->second, 0);
+        auto samplerIt = m_runtimeContext->samplersRhi.find("tonemap");
+        if (samplerIt != m_runtimeContext->samplersRhi.end() && samplerIt->second.nativeHandle()) {
+            encoder.setSampler(&samplerIt->second, 0);
         }
     }
 
     // PLACEHOLDER_PRIVATE_METHODS
 
     void ensureHistory() {
-        if (!m_runtimeContext || !m_runtimeContext->device) return;
+        if (!m_runtimeContext || !m_runtimeContext->resourceFactory) return;
         uint32_t w = static_cast<uint32_t>(m_width);
         uint32_t h = static_cast<uint32_t>(m_height);
 
@@ -176,39 +173,36 @@ private:
             return;
 
         releaseHistory();
-        auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
-            RhiFormat::RGBA16Float, w, h, false);
-        desc->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
-        desc->setStorageMode(MTL::StorageModePrivate);
-        m_historyTextures[0] = m_runtimeContext->device->newTexture(desc);
-        m_historyTextures[1] = m_runtimeContext->device->newTexture(desc);
+        RhiTextureDesc desc = RhiTextureDesc::storageTexture(w, h, RhiFormat::RGBA16Float);
+        m_historyTextures[0] = m_runtimeContext->resourceFactory->createTexture(desc);
+        m_historyTextures[1] = m_runtimeContext->resourceFactory->createTexture(desc);
         m_historyValid = false;
         m_historyIndex = 0;
     }
 
     void releaseHistory() {
         for (auto& tex : m_historyTextures) {
-            if (tex) { tex->release(); tex = nullptr; }
+            tex.reset();
         }
     }
 
-    void copyCurrentToOutput(MTL::ComputeCommandEncoder* enc) {
+    void copyCurrentToOutput(RhiComputeCommandEncoder& encoder) {
         // When TAA is disabled, run a copy-only dispatch that bypasses history sampling.
-        auto pipeIt = m_runtimeContext->computePipelines.find("TAAPass");
-        if (pipeIt == m_runtimeContext->computePipelines.end() || !pipeIt->second) return;
+        auto pipeIt = m_runtimeContext->computePipelinesRhi.find("TAAPass");
+        if (pipeIt == m_runtimeContext->computePipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
 
         ensureHistory();
 
-        MTL::Texture* currentTex = m_sourceRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_sourceRead)) : nullptr;
-        MTL::Texture* depthTex = m_depthRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_depthRead)) : nullptr;
-        MTL::Texture* motionTex = m_motionRead.isValid() ? metalTexture(m_frameGraph->getTexture(m_motionRead)) : nullptr;
-        MTL::Texture* outputTex = metalTexture(m_frameGraph->getTexture(m_taaOutput));
+        RhiTexture* currentTex = m_sourceRead.isValid() ? m_frameGraph->getTexture(m_sourceRead) : nullptr;
+        RhiTexture* depthTex = m_depthRead.isValid() ? m_frameGraph->getTexture(m_depthRead) : nullptr;
+        RhiTexture* motionTex = m_motionRead.isValid() ? m_frameGraph->getTexture(m_motionRead) : nullptr;
+        RhiTexture* outputTex = m_frameGraph->getTexture(m_taaOutput);
         if (!currentTex || !outputTex) return;
         if (!depthTex) depthTex = currentTex;
         if (!motionTex) motionTex = currentTex;
 
-        MTL::Texture* historyReadTex = m_historyTextures[1 - m_historyIndex];
-        MTL::Texture* historyWriteTex = m_historyTextures[m_historyIndex];
+        RhiTexture* historyReadTex = m_historyTextures[1 - m_historyIndex].get();
+        RhiTexture* historyWriteTex = m_historyTextures[m_historyIndex].get();
 
         TAAUniforms uniforms{};
         uniforms.invResolution = float2(1.0f / m_width, 1.0f / m_height);
@@ -221,19 +215,18 @@ private:
         uniforms.motionWeightScale = m_motionWeightScale;
         uniforms.copyOnly = 1;
 
-        enc->setComputePipelineState(pipeIt->second);
-        enc->setBytes(&uniforms, sizeof(uniforms), 0);
-        enc->setTexture(currentTex, 0);
-        enc->setTexture(depthTex, 1);
-        enc->setTexture(motionTex, 2);
-        enc->setTexture(historyReadTex, 3);
-        enc->setTexture(outputTex, 4);
-        enc->setTexture(historyWriteTex, 5);
-        bindTonemapSampler(enc);
+        encoder.setComputePipeline(pipeIt->second);
+        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setTexture(currentTex, 0);
+        encoder.setTexture(depthTex, 1);
+        encoder.setTexture(motionTex, 2);
+        encoder.setTexture(historyReadTex, 3);
+        encoder.setTexture(outputTex, 4);
+        encoder.setTexture(historyWriteTex, 5);
+        bindTonemapSampler(encoder);
 
-        MTL::Size tgSize(8, 8, 1);
-        MTL::Size grid((m_width + 7) / 8, (m_height + 7) / 8, 1);
-        enc->dispatchThreadgroups(grid, tgSize);
+        encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
+                                     {8, 8, 1});
 
         m_historyIndex = 0;
         m_historyValid = false;
@@ -247,7 +240,7 @@ private:
     FGResource m_sourceRead, m_depthRead, m_motionRead, m_taaOutput;
     bool m_passthroughNoPipeline = false;
 
-    MTL::Texture* m_historyTextures[2] = {nullptr, nullptr};
+    std::unique_ptr<RhiTexture> m_historyTextures[2];
     int m_historyIndex = 0;
     bool m_historyValid = false;
 
@@ -256,5 +249,6 @@ private:
     float m_varianceClipGamma = 1.0f;
     float m_motionWeightScale = 20.0f;
 };
+
 
 
