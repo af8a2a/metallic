@@ -4,14 +4,7 @@
 
 // Tracy Metal GPU profiling bridge.
 // TracyMetal.hmm requires ObjC++ and ARC, so we wrap it behind a C++ interface.
-// metal-cpp pointers are binary-compatible with ObjC id<MTL...> types.
-
-namespace MTL {
-class Device;
-class RenderPassDescriptor;
-class ComputePassDescriptor;
-class BlitPassDescriptor;
-}
+// Metal objects cross this boundary as opaque native handles.
 
 // Opaque handle to tracy::MetalCtx
 using TracyMetalCtxHandle = void*;
@@ -29,19 +22,19 @@ struct TracyMetalSrcLoc {
     uint32_t color;
 };
 
-TracyMetalCtxHandle tracyMetalCreate(MTL::Device* device);
+TracyMetalCtxHandle tracyMetalCreate(void* deviceHandle);
 void tracyMetalDestroy(TracyMetalCtxHandle ctx);
 void tracyMetalCollect(TracyMetalCtxHandle ctx);
 
 // GPU zone begin/end — srcloc must point to static storage
 TracyMetalGpuZone tracyMetalZoneBeginRender(TracyMetalCtxHandle ctx,
-                                             MTL::RenderPassDescriptor* desc,
+                                             void* renderPassDescHandle,
                                              const TracyMetalSrcLoc* srcloc);
 TracyMetalGpuZone tracyMetalZoneBeginCompute(TracyMetalCtxHandle ctx,
-                                              MTL::ComputePassDescriptor* desc,
+                                              void* computePassDescHandle,
                                               const TracyMetalSrcLoc* srcloc);
 TracyMetalGpuZone tracyMetalZoneBeginBlit(TracyMetalCtxHandle ctx,
-                                           MTL::BlitPassDescriptor* desc,
+                                           void* blitPassDescHandle,
                                            const TracyMetalSrcLoc* srcloc);
 void tracyMetalZoneEnd(TracyMetalGpuZone zone);
 

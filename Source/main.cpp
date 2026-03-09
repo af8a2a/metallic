@@ -1,13 +1,12 @@
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
-#include <QuartzCore/QuartzCore.hpp>
 
 #include <ml.h>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
-#include "glfw_metal_bridge.h"
+#include "metal_runtime.h"
 #include "imgui_metal_bridge.h"
 #include "camera.h"
 #include "input.h"
@@ -84,30 +83,23 @@ int main() {
         return 1;
     }
 
-    MTL::Device* device = MTL::CreateSystemDefaultDevice();
-    if (!device) {
-        spdlog::error("Metal is not supported on this device");
+    MetalRuntimeContext runtime;
+    std::string runtimeError;
+    if (!createMetalRuntime(window, runtime, runtimeError)) {
+        spdlog::error("{}", runtimeError);
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
     }
-    spdlog::info("Metal device: {}", device->name()->utf8String());
+    spdlog::info("Metal device: {}", metalRuntimeDeviceName(runtime));
 
-    MTL::CommandQueue* commandQueue = device->newCommandQueue();
-
-    // Tracy GPU profiling context
-    TracyMetalCtxHandle tracyGpuCtx = tracyMetalCreate(device);
-
-    CA::MetalLayer* metalLayer = static_cast<CA::MetalLayer*>(
-        attachMetalLayerToGLFWWindow(window));
-    metalLayer->setDevice(device);
-    metalLayer->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
-    metalLayer->setFramebufferOnly(false);
+    auto* device = static_cast<MTL::Device*>(runtime.device);
+    TracyMetalCtxHandle tracyGpuCtx = runtime.tracyContext;
 
     const char* projectRoot = PROJECT_SOURCE_DIR;
 
     // Load all scene data
-    SceneContext scene(device, commandQueue, projectRoot);
+    SceneContext scene(runtime.device, runtime.commandQueue, projectRoot);
     if (!scene.loadAll("Asset/Sponza/glTF/Sponza.gltf")) return 1;
 
     // Init orbit camera
@@ -125,10 +117,10 @@ int main() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui_ImplGlfw_InitForOther(window, true);
-    imguiInit(device);
+    imguiInit(runtime.device);
 
     // Build all shader pipelines
-    ShaderManager shaderManager(device, projectRoot);
+    ShaderManager shaderManager(runtime.device, projectRoot);
     if (!shaderManager.buildAll()) return 1;
 
     PipelineRuntimeContext& rtCtx = shaderManager.runtimeContext();
@@ -184,7 +176,7 @@ int main() {
     // Persistent render context and pipeline builder
     RenderContext ctx = scene.renderContext();
     PipelineBuilder pipelineBuilder(ctx);
-    MetalFrameGraphBackend frameGraphBackend(device);
+    MetalFrameGraphBackend frameGraphBackend(runtime.device);
     MetalImportedTexture backbufferTexture;
     rtCtx.resourceFactory = &frameGraphBackend;
     bool pipelineNeedsRebuild = true;
@@ -205,13 +197,14 @@ int main() {
             pool->release();
             continue;
         }
-        metalLayer->setDrawableSize(CGSizeMake(width, height));
+        metalRuntimeSetDrawableSize(runtime, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
 
-        CA::MetalDrawable* drawable = metalLayer->nextDrawable();
+        void* drawable = metalRuntimeNextDrawable(runtime);
         if (!drawable) {
             pool->release();
             continue;
         }
+        auto* drawableTexture = static_cast<MTL::Texture*>(metalRuntimeDrawableTexture(drawable));
 
         // Compute matrices
         float aspect;
@@ -257,7 +250,11 @@ int main() {
         }
 
         // Render pass
-        MTL::CommandBuffer* commandBuffer = commandQueue->commandBuffer();
+        void* commandBuffer = metalRuntimeCreateCommandBuffer(runtime);
+        if (!commandBuffer) {
+            pool->release();
+            continue;
+        }
 
         // Collect GPU timestamps from previous frames
         tracyMetalCollect(tracyGpuCtx);
@@ -266,7 +263,7 @@ int main() {
         {
             ZoneScopedN("ImGui Frame");
         MTL::RenderPassDescriptor* imguiFramePass = MTL::RenderPassDescriptor::alloc()->init();
-        imguiFramePass->colorAttachments()->object(0)->setTexture(drawable->texture());
+        imguiFramePass->colorAttachments()->object(0)->setTexture(drawableTexture);
         // Always provide a depth attachment so the ImGui pipeline matches even when
         // switching render modes within the same frame.
         imguiFramePass->depthAttachment()->setTexture(static_cast<MTL::Texture*>(scene.imguiDepthDummy()));
@@ -512,7 +509,7 @@ int main() {
 
         // Rebuild pipeline only when needed (first frame, F6 reload, resolution change, mode switch)
         if (pipelineNeedsRebuild || pipelineBuilder.needsRebuild(width, height)) {
-            backbufferTexture.setTexture(drawable->texture());
+            backbufferTexture.setTexture(drawableTexture);
             rtCtx.backbufferRhi = &backbufferTexture;
             bool buildSucceeded = pipelineBuilder.build(activePipelineAsset, rtCtx, width, height);
             if (!buildSucceeded) {
@@ -524,7 +521,7 @@ int main() {
         }
 
         // Per-frame: swap backbuffer, update frame context, reset transients
-        backbufferTexture.setTexture(drawable->texture());
+        backbufferTexture.setTexture(drawableTexture);
         rtCtx.backbufferRhi = &backbufferTexture;
         pipelineBuilder.updateFrame(rtCtx.backbufferRhi, &frameCtx);
 
@@ -557,8 +554,8 @@ int main() {
         MetalCommandBuffer fgCommandBuffer(commandBuffer, tracyGpuCtx);
         pipelineBuilder.execute(fgCommandBuffer, frameGraphBackend);
 
-        commandBuffer->presentDrawable(drawable);
-        commandBuffer->commit();
+        metalRuntimePresentDrawable(commandBuffer, drawable);
+        metalRuntimeCommit(commandBuffer);
 
         if (instanceTransformBuffer)
             instanceTransformBuffer->release();
@@ -578,12 +575,8 @@ int main() {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
-    // Cleanup Tracy GPU context
-    tracyMetalDestroy(tracyGpuCtx);
-
     // Cleanup
-    commandQueue->release();
-    device->release();
+    destroyMetalRuntime(runtime);
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;

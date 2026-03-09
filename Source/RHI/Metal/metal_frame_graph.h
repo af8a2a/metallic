@@ -9,10 +9,10 @@
 
 class MetalImportedTexture final : public RhiTexture {
 public:
-    explicit MetalImportedTexture(MTL::Texture* texture = nullptr)
-        : m_texture(texture) {}
+    explicit MetalImportedTexture(void* textureHandle = nullptr)
+        : m_texture(static_cast<MTL::Texture*>(textureHandle)) {}
 
-    void setTexture(MTL::Texture* texture) { m_texture = texture; }
+    void setTexture(void* textureHandle) { m_texture = static_cast<MTL::Texture*>(textureHandle); }
     MTL::Texture* texture() const { return m_texture; }
     void* nativeHandle() const override { return m_texture; }
     uint32_t width() const override { return m_texture ? static_cast<uint32_t>(m_texture->width()) : 0; }
@@ -24,8 +24,8 @@ private:
 
 class MetalFrameGraphBackend final : public RhiFrameGraphBackend {
 public:
-    explicit MetalFrameGraphBackend(MTL::Device* device)
-        : m_device(device) {}
+    explicit MetalFrameGraphBackend(void* deviceHandle)
+        : m_device(static_cast<MTL::Device*>(deviceHandle)) {}
 
     std::unique_ptr<RhiTexture> createTexture(const RhiTextureDesc& desc) override;
     std::unique_ptr<RhiBuffer> createBuffer(const RhiBufferDesc& desc) override;
@@ -36,7 +36,7 @@ private:
 
 class MetalCommandBuffer final : public RhiCommandBuffer {
 public:
-    MetalCommandBuffer(MTL::CommandBuffer* commandBuffer, TracyMetalCtxHandle tracyContext = nullptr);
+    MetalCommandBuffer(void* commandBufferHandle, TracyMetalCtxHandle tracyContext = nullptr);
 
     std::unique_ptr<RhiRenderCommandEncoder> beginRenderPass(const RhiRenderPassDesc& desc) override;
     std::unique_ptr<RhiComputeCommandEncoder> beginComputePass(const RhiComputePassDesc& desc) override;

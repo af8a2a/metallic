@@ -13,8 +13,8 @@
 // TracyMetalSrcLoc is layout-compatible with tracy::SourceLocationData.
 static_assert(sizeof(TracyMetalSrcLoc) == sizeof(tracy::SourceLocationData));
 
-TracyMetalCtxHandle tracyMetalCreate(MTL::Device* device) {
-    auto* ctx = TracyMetalContext((__bridge id<MTLDevice>)device);
+TracyMetalCtxHandle tracyMetalCreate(void* deviceHandle) {
+    auto* ctx = TracyMetalContext((__bridge id<MTLDevice>)deviceHandle);
     return static_cast<TracyMetalCtxHandle>(ctx);
 }
 
@@ -27,30 +27,30 @@ void tracyMetalCollect(TracyMetalCtxHandle ctx) {
 }
 
 TracyMetalGpuZone tracyMetalZoneBeginRender(TracyMetalCtxHandle ctx,
-                                             MTL::RenderPassDescriptor* desc,
+                                             void* renderPassDescHandle,
                                              const TracyMetalSrcLoc* srcloc) {
     auto* metalCtx = static_cast<tracy::MetalCtx*>(ctx);
-    auto* objcDesc = (__bridge MTLRenderPassDescriptor*)desc;
+    auto* objcDesc = (__bridge MTLRenderPassDescriptor*)renderPassDescHandle;
     auto* zone = new tracy::MetalZoneScope(metalCtx, objcDesc,
         reinterpret_cast<const tracy::SourceLocationData*>(srcloc), true);
     return static_cast<TracyMetalGpuZone>(zone);
 }
 
 TracyMetalGpuZone tracyMetalZoneBeginCompute(TracyMetalCtxHandle ctx,
-                                              MTL::ComputePassDescriptor* desc,
+                                              void* computePassDescHandle,
                                               const TracyMetalSrcLoc* srcloc) {
     auto* metalCtx = static_cast<tracy::MetalCtx*>(ctx);
-    auto* objcDesc = (__bridge MTLComputePassDescriptor*)desc;
+    auto* objcDesc = (__bridge MTLComputePassDescriptor*)computePassDescHandle;
     auto* zone = new tracy::MetalZoneScope(metalCtx, objcDesc,
         reinterpret_cast<const tracy::SourceLocationData*>(srcloc), true);
     return static_cast<TracyMetalGpuZone>(zone);
 }
 
 TracyMetalGpuZone tracyMetalZoneBeginBlit(TracyMetalCtxHandle ctx,
-                                           MTL::BlitPassDescriptor* desc,
+                                           void* blitPassDescHandle,
                                            const TracyMetalSrcLoc* srcloc) {
     auto* metalCtx = static_cast<tracy::MetalCtx*>(ctx);
-    auto* objcDesc = (__bridge MTLBlitPassDescriptor*)desc;
+    auto* objcDesc = (__bridge MTLBlitPassDescriptor*)blitPassDescHandle;
     auto* zone = new tracy::MetalZoneScope(metalCtx, objcDesc,
         reinterpret_cast<const tracy::SourceLocationData*>(srcloc), true);
     return static_cast<TracyMetalGpuZone>(zone);
@@ -63,15 +63,15 @@ void tracyMetalZoneEnd(TracyMetalGpuZone zone) {
 
 #else // !TRACY_ENABLE
 
-TracyMetalCtxHandle tracyMetalCreate(MTL::Device*) { return nullptr; }
+TracyMetalCtxHandle tracyMetalCreate(void*) { return nullptr; }
 void tracyMetalDestroy(TracyMetalCtxHandle) {}
 void tracyMetalCollect(TracyMetalCtxHandle) {}
 
-TracyMetalGpuZone tracyMetalZoneBeginRender(TracyMetalCtxHandle, MTL::RenderPassDescriptor*,
+TracyMetalGpuZone tracyMetalZoneBeginRender(TracyMetalCtxHandle, void*,
                                              const TracyMetalSrcLoc*) { return nullptr; }
-TracyMetalGpuZone tracyMetalZoneBeginCompute(TracyMetalCtxHandle, MTL::ComputePassDescriptor*,
+TracyMetalGpuZone tracyMetalZoneBeginCompute(TracyMetalCtxHandle, void*,
                                               const TracyMetalSrcLoc*) { return nullptr; }
-TracyMetalGpuZone tracyMetalZoneBeginBlit(TracyMetalCtxHandle, MTL::BlitPassDescriptor*,
+TracyMetalGpuZone tracyMetalZoneBeginBlit(TracyMetalCtxHandle, void*,
                                            const TracyMetalSrcLoc*) { return nullptr; }
 void tracyMetalZoneEnd(TracyMetalGpuZone) {}
 

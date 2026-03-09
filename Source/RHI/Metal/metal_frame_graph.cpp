@@ -393,8 +393,9 @@ std::unique_ptr<RhiBuffer> MetalFrameGraphBackend::createBuffer(const RhiBufferD
     return std::make_unique<MetalOwnedBuffer>(buffer, desc.size);
 }
 
-MetalCommandBuffer::MetalCommandBuffer(MTL::CommandBuffer* commandBuffer, TracyMetalCtxHandle tracyContext)
-    : m_commandBuffer(commandBuffer), m_tracyContext(tracyContext) {}
+MetalCommandBuffer::MetalCommandBuffer(void* commandBufferHandle, TracyMetalCtxHandle tracyContext)
+    : m_commandBuffer(static_cast<MTL::CommandBuffer*>(commandBufferHandle)),
+      m_tracyContext(tracyContext) {}
 
 std::unique_ptr<RhiRenderCommandEncoder> MetalCommandBuffer::beginRenderPass(const RhiRenderPassDesc& desc) {
     auto* renderPassDesc = MTL::RenderPassDescriptor::alloc()->init();

@@ -4,6 +4,7 @@ if(APPLE)
     add_executable(Metallic
         main.cpp
         Platform/metal_impl.cpp
+        Platform/metal_runtime.mm
         Platform/glfw_metal_bridge.mm
         Platform/imgui_metal_bridge.mm
         Platform/tracy_metal.mm
