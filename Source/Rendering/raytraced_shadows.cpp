@@ -11,23 +11,49 @@ static MTL::Buffer* metalBuffer(void* handle) {
     return static_cast<MTL::Buffer*>(handle);
 }
 
-void RaytracedShadowResources::release() {
-    for (auto* blas : blasArray) {
-        if (blas) blas->release();
-    }
-    blasArray.clear();
-    if (tlas) { tlas->release(); tlas = nullptr; }
-    if (instanceDescriptorBuffer) { instanceDescriptorBuffer->release(); instanceDescriptorBuffer = nullptr; }
-    if (scratchBuffer) { scratchBuffer->release(); scratchBuffer = nullptr; }
-    if (pipeline) { pipeline->release(); pipeline = nullptr; }
-    if (library) { library->release(); library = nullptr; }
+static MTL::Device* metalDevice(void* handle) {
+    return static_cast<MTL::Device*>(handle);
 }
 
-bool buildAccelerationStructures(MTL::Device* device,
-                                 MTL::CommandQueue* commandQueue,
+static MTL::CommandQueue* metalCommandQueue(void* handle) {
+    return static_cast<MTL::CommandQueue*>(handle);
+}
+
+static MTL::CommandBuffer* metalCommandBuffer(void* handle) {
+    return static_cast<MTL::CommandBuffer*>(handle);
+}
+
+static MTL::AccelerationStructure* metalAccelerationStructure(void* handle) {
+    return static_cast<MTL::AccelerationStructure*>(handle);
+}
+
+static MTL::ComputePipelineState* metalComputePipeline(void* handle) {
+    return static_cast<MTL::ComputePipelineState*>(handle);
+}
+
+static MTL::Library* metalLibrary(void* handle) {
+    return static_cast<MTL::Library*>(handle);
+}
+
+void RaytracedShadowResources::release() {
+    for (void* blas : blasArray) {
+        if (blas) metalAccelerationStructure(blas)->release();
+    }
+    blasArray.clear();
+    if (tlas) { metalAccelerationStructure(tlas)->release(); tlas = nullptr; }
+    if (instanceDescriptorBuffer) { metalBuffer(instanceDescriptorBuffer)->release(); instanceDescriptorBuffer = nullptr; }
+    if (scratchBuffer) { metalBuffer(scratchBuffer)->release(); scratchBuffer = nullptr; }
+    if (pipeline) { metalComputePipeline(pipeline)->release(); pipeline = nullptr; }
+    if (library) { metalLibrary(library)->release(); library = nullptr; }
+}
+
+bool buildAccelerationStructures(void* deviceHandle,
+                                 void* commandQueueHandle,
                                  const LoadedMesh& mesh,
                                  const SceneGraph& sceneGraph,
                                  RaytracedShadowResources& out) {
+    auto* device = metalDevice(deviceHandle);
+    auto* commandQueue = metalCommandQueue(commandQueueHandle);
     // --- Build one BLAS per glTF mesh ---
     out.blasArray.resize(mesh.meshRanges.size(), nullptr);
 
@@ -130,7 +156,7 @@ bool buildAccelerationStructures(MTL::Device* device,
 
     auto* tlasDesc = MTL::InstanceAccelerationStructureDescriptor::alloc()->init();
     tlasDesc->setInstanceCount(instances.size());
-    tlasDesc->setInstanceDescriptorBuffer(out.instanceDescriptorBuffer);
+    tlasDesc->setInstanceDescriptorBuffer(metalBuffer(out.instanceDescriptorBuffer));
     tlasDesc->setInstanceDescriptorType(
         MTL::AccelerationStructureInstanceDescriptorTypeDefault);
 
@@ -146,7 +172,10 @@ bool buildAccelerationStructures(MTL::Device* device,
 
     auto* cmdBuf = commandQueue->commandBuffer();
     auto* enc = cmdBuf->accelerationStructureCommandEncoder();
-    enc->buildAccelerationStructure(out.tlas, tlasDesc, out.scratchBuffer, 0);
+    enc->buildAccelerationStructure(metalAccelerationStructure(out.tlas),
+                                    tlasDesc,
+                                    metalBuffer(out.scratchBuffer),
+                                    0);
     enc->endEncoding();
     cmdBuf->commit();
     cmdBuf->waitUntilCompleted();
@@ -158,15 +187,16 @@ bool buildAccelerationStructures(MTL::Device* device,
     return true;
 }
 
-void updateTLAS(MTL::CommandBuffer* commandBuffer,
+void updateTLAS(void* commandBufferHandle,
                 const SceneGraph& sceneGraph,
                 RaytracedShadowResources& res) {
+    auto* commandBuffer = metalCommandBuffer(commandBufferHandle);
     if (!res.tlas || !res.instanceDescriptorBuffer || res.instanceCount == 0)
         return;
 
     // Rewrite instance transforms from current scene graph world matrices
     auto* instDescs = static_cast<MTL::AccelerationStructureInstanceDescriptor*>(
-        res.instanceDescriptorBuffer->contents());
+        metalBuffer(res.instanceDescriptorBuffer)->contents());
 
     uint32_t idx = 0;
     for (const auto& node : sceneGraph.nodes) {
@@ -187,7 +217,7 @@ void updateTLAS(MTL::CommandBuffer* commandBuffer,
     // Rebuild TLAS with updated transforms
     auto* tlasDesc = MTL::InstanceAccelerationStructureDescriptor::alloc()->init();
     tlasDesc->setInstanceCount(res.instanceCount);
-    tlasDesc->setInstanceDescriptorBuffer(res.instanceDescriptorBuffer);
+    tlasDesc->setInstanceDescriptorBuffer(metalBuffer(res.instanceDescriptorBuffer));
     tlasDesc->setInstanceDescriptorType(
         MTL::AccelerationStructureInstanceDescriptorTypeDefault);
 
@@ -197,15 +227,19 @@ void updateTLAS(MTL::CommandBuffer* commandBuffer,
     tlasDesc->setInstancedAccelerationStructures(blasNSArray);
 
     auto* enc = commandBuffer->accelerationStructureCommandEncoder();
-    enc->buildAccelerationStructure(res.tlas, tlasDesc, res.scratchBuffer, 0);
+    enc->buildAccelerationStructure(metalAccelerationStructure(res.tlas),
+                                    tlasDesc,
+                                    metalBuffer(res.scratchBuffer),
+                                    0);
     enc->endEncoding();
 
     tlasDesc->release();
 }
 
-bool createShadowPipeline(MTL::Device* device,
+bool createShadowPipeline(void* deviceHandle,
                           RaytracedShadowResources& out,
                           const char* shaderBasePath) {
+    auto* device = metalDevice(deviceHandle);
     std::string shaderPath = "Shaders/Raytracing/raytraced_shadow.metal";
     if (shaderBasePath) {
         shaderPath = std::string(shaderBasePath) + "/" + shaderPath;
@@ -233,7 +267,7 @@ bool createShadowPipeline(MTL::Device* device,
         return false;
     }
 
-    auto* fn = out.library->newFunction(
+    auto* fn = metalLibrary(out.library)->newFunction(
         NS::String::string("shadowRayMain", NS::UTF8StringEncoding));
     if (!fn) {
         spdlog::error("Failed to find shadowRayMain function");
@@ -252,9 +286,10 @@ bool createShadowPipeline(MTL::Device* device,
     return true;
 }
 
-bool reloadShadowPipeline(MTL::Device* device,
-                           RaytracedShadowResources& res,
-                           const char* shaderBasePath) {
+bool reloadShadowPipeline(void* deviceHandle,
+                          RaytracedShadowResources& res,
+                          const char* shaderBasePath) {
+    auto* device = metalDevice(deviceHandle);
     std::string shaderPath = "Shaders/Raytracing/raytraced_shadow.metal";
     if (shaderBasePath) {
         shaderPath = std::string(shaderBasePath) + "/" + shaderPath;
@@ -300,8 +335,8 @@ bool reloadShadowPipeline(MTL::Device* device,
     }
 
     // Success — swap old resources
-    if (res.pipeline) res.pipeline->release();
-    if (res.library) res.library->release();
+    if (res.pipeline) metalComputePipeline(res.pipeline)->release();
+    if (res.library) metalLibrary(res.library)->release();
     res.pipeline = newPipeline;
     res.library = newLibrary;
     spdlog::info("Hot-reload: Shadow ray pipeline reloaded");

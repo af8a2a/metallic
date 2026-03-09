@@ -1,8 +1,17 @@
 #pragma once
 
-#include <Metal/Metal.hpp>
 #include <string>
 #include <utility>
+
+#include "rhi_backend.h"
+
+namespace MTL {
+class Device;
+class VertexDescriptor;
+class RenderPipelineState;
+class ComputePipelineState;
+class SamplerState;
+}
 
 struct PipelineRuntimeContext;
 
@@ -18,8 +27,8 @@ public:
     std::pair<int,int> reloadAll();
 
     // Import external textures/samplers into the runtime context.
-    void importTexture(const std::string& name, MTL::Texture* tex);
-    void importSampler(const std::string& name, MTL::SamplerState* sampler);
+    void importTexture(const std::string& name, void* textureHandle);
+    void importSampler(const std::string& name, void* samplerHandle);
 
     PipelineRuntimeContext& runtimeContext();
     bool hasSkyPipeline() const;
@@ -52,11 +61,11 @@ private:
 
     // Internal reload helpers (return new PSO on success, nullptr on failure)
     MTL::RenderPipelineState* reloadVertexShader(const char* shaderPath);
-    MTL::RenderPipelineState* reloadFullscreenShader(const char* shaderPath, MTL::PixelFormat colorFormat);
+    MTL::RenderPipelineState* reloadFullscreenShader(const char* shaderPath, RhiFormat colorFormat);
     MTL::RenderPipelineState* reloadMeshShader(
         const char* shaderPath,
         std::string (*patchFn)(const std::string&),
-        MTL::PixelFormat colorFormat, MTL::PixelFormat depthFormat);
+        RhiFormat colorFormat, RhiFormat depthFormat);
     MTL::ComputePipelineState* reloadComputeShader(
         const char* shaderPath, const char* entryPoint,
         std::string (*patchFn)(const std::string&));

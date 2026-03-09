@@ -11,6 +11,14 @@ static MTL::Buffer* metalBuffer(void* handle) {
     return static_cast<MTL::Buffer*>(handle);
 }
 
+static MTL::Device* metalDevice(void* handle) {
+    return static_cast<MTL::Device*>(handle);
+}
+
+static MTL::CommandQueue* metalCommandQueue(void* handle) {
+    return static_cast<MTL::CommandQueue*>(handle);
+}
+
 static MTL::Texture* metalTexture(void* handle) {
     return static_cast<MTL::Texture*>(handle);
 }
@@ -19,15 +27,19 @@ static MTL::SamplerState* metalSampler(void* handle) {
     return static_cast<MTL::SamplerState*>(handle);
 }
 
+static MTL::DepthStencilState* metalDepthStencilState(void* handle) {
+    return static_cast<MTL::DepthStencilState*>(handle);
+}
+
 bool AtmosphereTextureSet::isValid() const {
     return transmittance && scattering && irradiance && sampler;
 }
 
 void AtmosphereTextureSet::release() {
-    if (transmittance) { transmittance->release(); transmittance = nullptr; }
-    if (scattering) { scattering->release(); scattering = nullptr; }
-    if (irradiance) { irradiance->release(); irradiance = nullptr; }
-    if (sampler) { sampler->release(); sampler = nullptr; }
+    if (transmittance) { metalTexture(transmittance)->release(); transmittance = nullptr; }
+    if (scattering) { metalTexture(scattering)->release(); scattering = nullptr; }
+    if (irradiance) { metalTexture(irradiance)->release(); irradiance = nullptr; }
+    if (sampler) { metalSampler(sampler)->release(); sampler = nullptr; }
 }
 
 // --- Atmosphere texture helpers (moved from main.cpp) ---
@@ -97,7 +109,7 @@ static void syncMaterialRhiViews(LoadedMaterials& materials) {
 static void syncShadowRhiViews(RaytracedShadowResources& shadowResources) {
     shadowResources.blasHandles.clear();
     shadowResources.blasHandles.reserve(shadowResources.blasArray.size());
-    for (auto* blas : shadowResources.blasArray) {
+    for (void* blas : shadowResources.blasArray) {
         shadowResources.blasHandles.emplace_back(blas);
     }
     shadowResources.tlasRhi.setNativeHandle(shadowResources.tlas);
@@ -198,14 +210,14 @@ static bool loadAtmosphereTextures(MTL::Device* device, const char* projectRoot,
 
 // --- SceneContext implementation ---
 
-SceneContext::SceneContext(MTL::Device* device, MTL::CommandQueue* queue, const char* projectRoot)
-    : m_device(device), m_queue(queue), m_projectRoot(projectRoot) {}
+SceneContext::SceneContext(void* deviceHandle, void* queueHandle, const char* projectRoot)
+    : m_device(deviceHandle), m_queue(queueHandle), m_projectRoot(projectRoot) {}
 
 SceneContext::~SceneContext() {
     m_shadowResources.release();
-    if (m_imguiDepthDummy) m_imguiDepthDummy->release();
-    if (m_shadowDummyTex) m_shadowDummyTex->release();
-    if (m_skyFallbackTex) m_skyFallbackTex->release();
+    if (m_imguiDepthDummy) metalTexture(m_imguiDepthDummy)->release();
+    if (m_shadowDummyTex) metalTexture(m_shadowDummyTex)->release();
+    if (m_skyFallbackTex) metalTexture(m_skyFallbackTex)->release();
     m_atmosphereTextures.release();
     if (m_meshlets.meshletBuffer) metalBuffer(m_meshlets.meshletBuffer)->release();
     if (m_meshlets.meshletVertices) metalBuffer(m_meshlets.meshletVertices)->release();
@@ -222,11 +234,12 @@ SceneContext::~SceneContext() {
     if (m_mesh.normalBuffer) metalBuffer(m_mesh.normalBuffer)->release();
     if (m_mesh.uvBuffer) metalBuffer(m_mesh.uvBuffer)->release();
     if (m_mesh.indexBuffer) metalBuffer(m_mesh.indexBuffer)->release();
-    if (m_depthState) m_depthState->release();
+    if (m_depthState) metalDepthStencilState(m_depthState)->release();
 }
 
 bool SceneContext::loadAll(const char* gltfPath) {
     ZoneScopedN("SceneContext::loadAll");
+    auto* device = metalDevice(m_device);
 
     if (!loadGLTFMesh(m_device, gltfPath, m_mesh)) {
         spdlog::error("Failed to load scene mesh");
@@ -253,7 +266,7 @@ bool SceneContext::loadAll(const char* gltfPath) {
     m_sceneGraph.updateTransforms();
 
     // Raytracing acceleration structures (non-fatal)
-    if (m_device->supportsRaytracing()) {
+    if (device->supportsRaytracing()) {
         ZoneScopedN("Build Acceleration Structures");
         if (buildAccelerationStructures(m_device, m_queue, m_mesh, m_sceneGraph, m_shadowResources) &&
             createShadowPipeline(m_device, m_shadowResources, m_projectRoot.c_str())) {
@@ -269,7 +282,7 @@ bool SceneContext::loadAll(const char* gltfPath) {
     }
 
     // Atmosphere textures (non-fatal)
-    m_atmosphereLoaded = loadAtmosphereTextures(m_device, m_projectRoot.c_str(), m_atmosphereTextures);
+    m_atmosphereLoaded = loadAtmosphereTextures(device, m_projectRoot.c_str(), m_atmosphereTextures);
     if (!m_atmosphereLoaded) {
         spdlog::warn("Atmosphere textures not found or invalid; sky pass will use fallback");
     }
@@ -280,7 +293,7 @@ bool SceneContext::loadAll(const char* gltfPath) {
     depthDesc->setDepthCompareFunction(
         ML_DEPTH_REVERSED ? MTL::CompareFunctionGreater : MTL::CompareFunctionLess);
     depthDesc->setDepthWriteEnabled(true);
-    m_depthState = m_device->newDepthStencilState(depthDesc);
+    m_depthState = device->newDepthStencilState(depthDesc);
     depthDesc->release();
 
     // 1x1 depth texture for ImGui pipeline matching
@@ -288,40 +301,42 @@ bool SceneContext::loadAll(const char* gltfPath) {
         MTL::PixelFormatDepth32Float, 1, 1, false);
     imguiDepthTexDesc->setStorageMode(MTL::StorageModePrivate);
     imguiDepthTexDesc->setUsage(MTL::TextureUsageRenderTarget);
-    m_imguiDepthDummy = m_device->newTexture(imguiDepthTexDesc);
+    m_imguiDepthDummy = device->newTexture(imguiDepthTexDesc);
 
     // 1x1 shadow texture for non-RT paths (white = fully lit)
     auto* shadowDummyDesc = MTL::TextureDescriptor::texture2DDescriptor(
         MTL::PixelFormatR8Unorm, 1, 1, false);
     shadowDummyDesc->setStorageMode(MTL::StorageModeShared);
     shadowDummyDesc->setUsage(MTL::TextureUsageShaderRead);
-    m_shadowDummyTex = m_device->newTexture(shadowDummyDesc);
+    m_shadowDummyTex = device->newTexture(shadowDummyDesc);
     uint8_t shadowClear = 0xFF;
-    m_shadowDummyTex->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, &shadowClear, 1);
+    metalTexture(m_shadowDummyTex)->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, &shadowClear, 1);
 
     // 1x1 sky fallback texture (BGRA8)
     auto* skyFallbackDesc = MTL::TextureDescriptor::texture2DDescriptor(
         MTL::PixelFormatBGRA8Unorm, 1, 1, false);
     skyFallbackDesc->setStorageMode(MTL::StorageModeShared);
     skyFallbackDesc->setUsage(MTL::TextureUsageShaderRead);
-    m_skyFallbackTex = m_device->newTexture(skyFallbackDesc);
+    m_skyFallbackTex = device->newTexture(skyFallbackDesc);
     uint8_t skyFallbackColor[4] = {77, 51, 26, 255};
-    m_skyFallbackTex->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, skyFallbackColor, 4);
+    metalTexture(m_skyFallbackTex)->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, skyFallbackColor, 4);
 
     return true;
 }
 
 RenderContext SceneContext::renderContext() const {
+    auto* shadowDummyTexture = metalTexture(m_shadowDummyTex);
+    auto* skyFallbackTexture = metalTexture(m_skyFallbackTex);
     RenderContext ctx{
         m_mesh, m_meshlets, m_materials, m_sceneGraph,
         m_shadowResources,
         RhiDepthStencilStateHandle(m_depthState),
         RhiTextureHandle(m_shadowDummyTex,
-                         m_shadowDummyTex ? static_cast<uint32_t>(m_shadowDummyTex->width()) : 0,
-                         m_shadowDummyTex ? static_cast<uint32_t>(m_shadowDummyTex->height()) : 0),
+                         shadowDummyTexture ? static_cast<uint32_t>(shadowDummyTexture->width()) : 0,
+                         shadowDummyTexture ? static_cast<uint32_t>(shadowDummyTexture->height()) : 0),
         RhiTextureHandle(m_skyFallbackTex,
-                         m_skyFallbackTex ? static_cast<uint32_t>(m_skyFallbackTex->width()) : 0,
-                         m_skyFallbackTex ? static_cast<uint32_t>(m_skyFallbackTex->height()) : 0),
+                         skyFallbackTexture ? static_cast<uint32_t>(skyFallbackTexture->width()) : 0,
+                         skyFallbackTexture ? static_cast<uint32_t>(skyFallbackTexture->height()) : 0),
         m_depthClearValue
     };
     return ctx;

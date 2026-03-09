@@ -133,8 +133,8 @@ int main() {
 
     PipelineRuntimeContext& rtCtx = shaderManager.runtimeContext();
 
-    auto importRuntimeTexture = [&](const std::string& name, MTL::Texture* texture) {
-        shaderManager.importTexture(name, texture);
+    auto importRuntimeTexture = [&](const std::string& name, void* textureHandle) {
+        shaderManager.importTexture(name, textureHandle);
     };
 
     if (scene.atmosphereLoaded()) {
@@ -269,7 +269,7 @@ int main() {
         imguiFramePass->colorAttachments()->object(0)->setTexture(drawable->texture());
         // Always provide a depth attachment so the ImGui pipeline matches even when
         // switching render modes within the same frame.
-        imguiFramePass->depthAttachment()->setTexture(scene.imguiDepthDummy());
+        imguiFramePass->depthAttachment()->setTexture(static_cast<MTL::Texture*>(scene.imguiDepthDummy()));
         imguiNewFrame(imguiFramePass);
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();

@@ -5,6 +5,16 @@
 #include <Foundation/Foundation.hpp>
 #include <spdlog/spdlog.h>
 
+static MTL::PixelFormat metalPixelFormat(RhiFormat format) {
+    switch (format) {
+    case RhiFormat::R32Uint: return MTL::PixelFormatR32Uint;
+    case RhiFormat::RGBA16Float: return MTL::PixelFormatRGBA16Float;
+    case RhiFormat::BGRA8Unorm: return MTL::PixelFormatBGRA8Unorm;
+    case RhiFormat::D32Float: return MTL::PixelFormatDepth32Float;
+    default: return MTL::PixelFormatInvalid;
+    }
+}
+
 ShaderManager::ShaderManager(MTL::Device* device, const char* projectRoot)
     : m_device(device)
     , m_projectRoot(projectRoot)
@@ -33,15 +43,16 @@ ShaderManager::~ShaderManager() {
 PipelineRuntimeContext& ShaderManager::runtimeContext() { return *m_rtCtx; }
 bool ShaderManager::hasSkyPipeline() const { return m_skyPipeline != nullptr; }
 
-void ShaderManager::importTexture(const std::string& name, MTL::Texture* tex) {
+void ShaderManager::importTexture(const std::string& name, void* textureHandle) {
+    auto* tex = static_cast<MTL::Texture*>(textureHandle);
     m_rtCtx->importedTexturesRhi[name].setNativeHandle(
-        tex,
+        textureHandle,
         tex ? static_cast<uint32_t>(tex->width()) : 0,
         tex ? static_cast<uint32_t>(tex->height()) : 0);
 }
 
-void ShaderManager::importSampler(const std::string& name, MTL::SamplerState* sampler) {
-    m_rtCtx->samplersRhi[name].setNativeHandle(sampler);
+void ShaderManager::importSampler(const std::string& name, void* samplerHandle) {
+    m_rtCtx->samplersRhi[name].setNativeHandle(samplerHandle);
 }
 
 void ShaderManager::createVertexDescriptor() {
@@ -426,7 +437,7 @@ bool ShaderManager::buildAll() {
     }
 
     // 7. Output passthrough pipeline
-    m_outputPipeline = reloadFullscreenShader("Shaders/Post/passthrough", MTL::PixelFormatBGRA8Unorm);
+    m_outputPipeline = reloadFullscreenShader("Shaders/Post/passthrough", RhiFormat::BGRA8Unorm);
     if (!m_outputPipeline) {
         spdlog::error("Failed to create output passthrough pipeline");
         return false;
@@ -502,7 +513,7 @@ MTL::RenderPipelineState* ShaderManager::reloadVertexShader(const char* shaderPa
 }
 
 MTL::RenderPipelineState* ShaderManager::reloadFullscreenShader(
-    const char* shaderPath, MTL::PixelFormat colorFormat)
+    const char* shaderPath, RhiFormat colorFormat)
 {
     std::string src = compileSlangToMetal(shaderPath, m_projectRoot.c_str());
     if (src.empty()) return nullptr;
@@ -524,7 +535,7 @@ MTL::RenderPipelineState* ShaderManager::reloadFullscreenShader(
     auto* desc = MTL::RenderPipelineDescriptor::alloc()->init();
     desc->setVertexFunction(vf);
     desc->setFragmentFunction(ff);
-    desc->colorAttachments()->object(0)->setPixelFormat(colorFormat);
+    desc->colorAttachments()->object(0)->setPixelFormat(metalPixelFormat(colorFormat));
 
     auto* pso = m_device->newRenderPipelineState(desc, &error);
     desc->release();
@@ -540,7 +551,7 @@ MTL::RenderPipelineState* ShaderManager::reloadFullscreenShader(
 MTL::RenderPipelineState* ShaderManager::reloadMeshShader(
     const char* shaderPath,
     std::string (*patchFn)(const std::string&),
-    MTL::PixelFormat colorFormat, MTL::PixelFormat depthFormat)
+    RhiFormat colorFormat, RhiFormat depthFormat)
 {
     std::string src = compileSlangMeshShaderToMetal(shaderPath, m_projectRoot.c_str());
     if (src.empty()) return nullptr;
@@ -562,8 +573,8 @@ MTL::RenderPipelineState* ShaderManager::reloadMeshShader(
     auto* desc = MTL::MeshRenderPipelineDescriptor::alloc()->init();
     desc->setMeshFunction(mf);
     desc->setFragmentFunction(ff);
-    desc->colorAttachments()->object(0)->setPixelFormat(colorFormat);
-    desc->setDepthAttachmentPixelFormat(depthFormat);
+    desc->colorAttachments()->object(0)->setPixelFormat(metalPixelFormat(colorFormat));
+    desc->setDepthAttachmentPixelFormat(metalPixelFormat(depthFormat));
 
     MTL::RenderPipelineReflection* refl = nullptr;
     auto* pso = m_device->newRenderPipelineState(desc, MTL::PipelineOptionNone, &refl, &error);
@@ -618,7 +629,7 @@ std::pair<int,int> ShaderManager::reloadAll() {
 
     // 2. Mesh shader
     if (auto* p = reloadMeshShader("Shaders/Mesh/meshlet",
-            patchMeshShaderMetalSource, MTL::PixelFormatRGBA16Float, MTL::PixelFormatDepth32Float)) {
+            patchMeshShaderMetalSource, RhiFormat::RGBA16Float, RhiFormat::D32Float)) {
         m_meshPipeline->release();
         m_meshPipeline = p;
         reloaded++;
@@ -626,7 +637,7 @@ std::pair<int,int> ShaderManager::reloadAll() {
 
     // 3. Visibility shader
     if (auto* p = reloadMeshShader("Shaders/Visibility/visibility",
-            patchVisibilityShaderMetalSource, MTL::PixelFormatR32Uint, MTL::PixelFormatDepth32Float)) {
+            patchVisibilityShaderMetalSource, RhiFormat::R32Uint, RhiFormat::D32Float)) {
         m_visPipeline->release();
         m_visPipeline = p;
         reloaded++;
@@ -634,7 +645,7 @@ std::pair<int,int> ShaderManager::reloadAll() {
 
     // 3b. Visibility indirect shader
     if (auto* p = reloadMeshShader("Shaders/Visibility/visibility_indirect",
-            patchVisibilityShaderMetalSource, MTL::PixelFormatR32Uint, MTL::PixelFormatDepth32Float)) {
+            patchVisibilityShaderMetalSource, RhiFormat::R32Uint, RhiFormat::D32Float)) {
         if (m_visIndirectPipeline) m_visIndirectPipeline->release();
         m_visIndirectPipeline = p;
         reloaded++;
@@ -673,21 +684,21 @@ std::pair<int,int> ShaderManager::reloadAll() {
     } else { failed++; }
 
     // 5. Sky shader
-    if (auto* p = reloadFullscreenShader("Shaders/Atmosphere/sky", MTL::PixelFormatRGBA16Float)) {
+    if (auto* p = reloadFullscreenShader("Shaders/Atmosphere/sky", RhiFormat::RGBA16Float)) {
         if (m_skyPipeline) m_skyPipeline->release();
         m_skyPipeline = p;
         reloaded++;
     } else { failed++; }
 
     // 6. Tonemap shader
-    if (auto* p = reloadFullscreenShader("Shaders/Post/tonemap", MTL::PixelFormatBGRA8Unorm)) {
+    if (auto* p = reloadFullscreenShader("Shaders/Post/tonemap", RhiFormat::BGRA8Unorm)) {
         m_tonemapPipeline->release();
         m_tonemapPipeline = p;
         reloaded++;
     } else { failed++; }
 
     // 7. Passthrough (output) shader
-    if (auto* p = reloadFullscreenShader("Shaders/Post/passthrough", MTL::PixelFormatBGRA8Unorm)) {
+    if (auto* p = reloadFullscreenShader("Shaders/Post/passthrough", RhiFormat::BGRA8Unorm)) {
         m_outputPipeline->release();
         m_outputPipeline = p;
         reloaded++;

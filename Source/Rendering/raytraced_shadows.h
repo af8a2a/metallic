@@ -1,49 +1,46 @@
 #pragma once
 
-#include <Metal/Metal.hpp>
-#include <vector>
 #include <cstdint>
+#include <vector>
 
 #include "rhi_backend.h"
 
 struct LoadedMesh;
-struct MeshletData;
 class SceneGraph;
 
 struct RaytracedShadowResources {
-    std::vector<MTL::AccelerationStructure*> blasArray;
+    std::vector<void*> blasArray;
     std::vector<RhiAccelerationStructureHandle> blasHandles;
-    MTL::AccelerationStructure* tlas = nullptr;
+    void* tlas = nullptr;
     RhiAccelerationStructureHandle tlasRhi;
-    MTL::Buffer* instanceDescriptorBuffer = nullptr;
+    void* instanceDescriptorBuffer = nullptr;
     RhiBufferHandle instanceDescriptorBufferRhi;
-    MTL::Buffer* scratchBuffer = nullptr;
+    void* scratchBuffer = nullptr;
     RhiBufferHandle scratchBufferRhi;
-    MTL::ComputePipelineState* pipeline = nullptr;
+    void* pipeline = nullptr;
     RhiComputePipelineHandle pipelineRhi;
-    MTL::Library* library = nullptr;
+    void* library = nullptr;
 
-    // Cached for TLAS rebuild
-    std::vector<MTL::AccelerationStructure*> referencedBLAS;
+    std::vector<void*> referencedBLAS;
     uint32_t instanceCount = 0;
 
     void release();
 };
 
-bool buildAccelerationStructures(MTL::Device* device,
-                                 MTL::CommandQueue* commandQueue,
+bool buildAccelerationStructures(void* deviceHandle,
+                                 void* commandQueueHandle,
                                  const LoadedMesh& mesh,
                                  const SceneGraph& sceneGraph,
                                  RaytracedShadowResources& out);
 
-void updateTLAS(MTL::CommandBuffer* commandBuffer,
+void updateTLAS(void* commandBufferHandle,
                 const SceneGraph& sceneGraph,
                 RaytracedShadowResources& res);
 
-bool createShadowPipeline(MTL::Device* device,
+bool createShadowPipeline(void* deviceHandle,
                           RaytracedShadowResources& out,
                           const char* shaderBasePath = nullptr);
 
-bool reloadShadowPipeline(MTL::Device* device,
-                           RaytracedShadowResources& res,
-                           const char* shaderBasePath = nullptr);
+bool reloadShadowPipeline(void* deviceHandle,
+                          RaytracedShadowResources& res,
+                          const char* shaderBasePath = nullptr);

@@ -9,19 +9,11 @@
 #include "raytraced_shadows.h"
 #include "render_pass.h"
 
-namespace MTL {
-class Texture;
-class SamplerState;
-class Device;
-class CommandQueue;
-class DepthStencilState;
-}
-
 struct AtmosphereTextureSet {
-    MTL::Texture* transmittance = nullptr;
-    MTL::Texture* scattering = nullptr;
-    MTL::Texture* irradiance = nullptr;
-    MTL::SamplerState* sampler = nullptr;
+    void* transmittance = nullptr;
+    void* scattering = nullptr;
+    void* irradiance = nullptr;
+    void* sampler = nullptr;
 
     bool isValid() const;
     void release();
@@ -29,7 +21,7 @@ struct AtmosphereTextureSet {
 
 class SceneContext {
 public:
-    SceneContext(MTL::Device* device, MTL::CommandQueue* queue, const char* projectRoot);
+    SceneContext(void* deviceHandle, void* queueHandle, const char* projectRoot);
     ~SceneContext();
 
     bool loadAll(const char* gltfPath);
@@ -42,7 +34,7 @@ public:
     RaytracedShadowResources& shadowResources() { return m_shadowResources; }
     bool rtShadowsAvailable() const { return m_rtShadowsAvailable; }
 
-    MTL::Texture* imguiDepthDummy() const { return m_imguiDepthDummy; }
+    void* imguiDepthDummy() const { return m_imguiDepthDummy; }
     double depthClearValue() const { return m_depthClearValue; }
 
     bool atmosphereLoaded() const { return m_atmosphereLoaded; }
@@ -51,8 +43,8 @@ public:
     RenderContext renderContext() const;
 
 private:
-    MTL::Device* m_device;
-    MTL::CommandQueue* m_queue;
+    void* m_device = nullptr;
+    void* m_queue = nullptr;
     std::string m_projectRoot;
 
     LoadedMesh m_mesh;
@@ -65,9 +57,9 @@ private:
     AtmosphereTextureSet m_atmosphereTextures;
     bool m_atmosphereLoaded = false;
 
-    MTL::DepthStencilState* m_depthState = nullptr;
-    MTL::Texture* m_shadowDummyTex = nullptr;
-    MTL::Texture* m_skyFallbackTex = nullptr;
-    MTL::Texture* m_imguiDepthDummy = nullptr;
+    void* m_depthState = nullptr;
+    void* m_shadowDummyTex = nullptr;
+    void* m_skyFallbackTex = nullptr;
+    void* m_imguiDepthDummy = nullptr;
     double m_depthClearValue = 1.0;
 };
