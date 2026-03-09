@@ -5,19 +5,11 @@
 
 #include "rhi_backend.h"
 
-namespace MTL {
-class Device;
-class VertexDescriptor;
-class RenderPipelineState;
-class ComputePipelineState;
-class SamplerState;
-}
-
 struct PipelineRuntimeContext;
 
 class ShaderManager {
 public:
-    ShaderManager(MTL::Device* device, const char* projectRoot);
+    ShaderManager(void* deviceHandle, const char* projectRoot);
     ~ShaderManager();
 
     // Initial creation of all pipelines + samplers. Returns false on fatal failure.
@@ -34,39 +26,39 @@ public:
     bool hasSkyPipeline() const;
 
 private:
-    MTL::Device* m_device;
+    void* m_device = nullptr;
     std::string m_projectRoot;
     PipelineRuntimeContext* m_rtCtx;
-    MTL::VertexDescriptor* m_vertexDesc = nullptr;
+    void* m_vertexDesc = nullptr;
 
     // Owned pipeline states
-    MTL::RenderPipelineState* m_vertexPipeline = nullptr;
-    MTL::RenderPipelineState* m_meshPipeline = nullptr;
-    MTL::RenderPipelineState* m_visPipeline = nullptr;
-    MTL::RenderPipelineState* m_visIndirectPipeline = nullptr;
-    MTL::ComputePipelineState* m_computePipeline = nullptr;
-    MTL::ComputePipelineState* m_cullPipeline = nullptr;
-    MTL::ComputePipelineState* m_buildIndirectPipeline = nullptr;
-    MTL::ComputePipelineState* m_meshletVisPipeline = nullptr;
-    MTL::RenderPipelineState* m_skyPipeline = nullptr;
-    MTL::RenderPipelineState* m_tonemapPipeline = nullptr;
-    MTL::RenderPipelineState* m_outputPipeline = nullptr;
-    MTL::ComputePipelineState* m_histogramPipeline = nullptr;
-    MTL::ComputePipelineState* m_autoExposurePipeline = nullptr;
-    MTL::ComputePipelineState* m_taaPipeline = nullptr;
-    MTL::SamplerState* m_tonemapSampler = nullptr;
+    void* m_vertexPipeline = nullptr;
+    void* m_meshPipeline = nullptr;
+    void* m_visPipeline = nullptr;
+    void* m_visIndirectPipeline = nullptr;
+    void* m_computePipeline = nullptr;
+    void* m_cullPipeline = nullptr;
+    void* m_buildIndirectPipeline = nullptr;
+    void* m_meshletVisPipeline = nullptr;
+    void* m_skyPipeline = nullptr;
+    void* m_tonemapPipeline = nullptr;
+    void* m_outputPipeline = nullptr;
+    void* m_histogramPipeline = nullptr;
+    void* m_autoExposurePipeline = nullptr;
+    void* m_taaPipeline = nullptr;
+    void* m_tonemapSampler = nullptr;
 
     void createVertexDescriptor();
     void syncRuntimeContext();
 
     // Internal reload helpers (return new PSO on success, nullptr on failure)
-    MTL::RenderPipelineState* reloadVertexShader(const char* shaderPath);
-    MTL::RenderPipelineState* reloadFullscreenShader(const char* shaderPath, RhiFormat colorFormat);
-    MTL::RenderPipelineState* reloadMeshShader(
+    void* reloadVertexShader(const char* shaderPath);
+    void* reloadFullscreenShader(const char* shaderPath, RhiFormat colorFormat);
+    void* reloadMeshShader(
         const char* shaderPath,
         std::string (*patchFn)(const std::string&),
         RhiFormat colorFormat, RhiFormat depthFormat);
-    MTL::ComputePipelineState* reloadComputeShader(
+    void* reloadComputeShader(
         const char* shaderPath, const char* entryPoint,
         std::string (*patchFn)(const std::string&));
 };
