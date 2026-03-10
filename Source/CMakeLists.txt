@@ -27,6 +27,7 @@ if(APPLE)
         RHI/rhi_resource_utils.cpp
         RHI/rhi_shader_utils.cpp
         RHI/rhi_raytracing_utils.cpp
+        RHI/Metal/metal_window_runtime.cpp
         RHI/Metal/metal_frame_graph.cpp
     )
     target_include_directories(Metallic PRIVATE

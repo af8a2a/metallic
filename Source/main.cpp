@@ -3,8 +3,6 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
-#include "metal_runtime.h"
-#include "imgui_metal_bridge.h"
 #include "camera.h"
 #include "input.h"
 
@@ -39,7 +37,7 @@
 #include "pipeline_asset.h"
 #include "pipeline_builder.h"
 #include "frame_context.h"
-#include "metal_frame_graph.h"
+#include "rhi_window_runtime.h"
 
 
 static bool loadPipelineAssetChecked(const std::string& path,
@@ -79,17 +77,17 @@ int main() {
         return 1;
     }
 
-    MetalRuntimeContext runtime;
     std::string runtimeError;
-    if (!createMetalRuntime(window, runtime, runtimeError)) {
+    auto runtime = createRhiWindowRuntime(RhiBackendType::Metal, window, runtimeError);
+    if (!runtime) {
         spdlog::error("{}", runtimeError);
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
     }
-    spdlog::info("Metal device: {}", metalRuntimeDeviceName(runtime));
-    RhiDeviceHandle device(runtime.device);
-    RhiCommandQueueHandle commandQueue(runtime.commandQueue);
+    spdlog::info("RHI device: {}", runtime->deviceName());
+    const RhiDevice& device = runtime->device();
+    const RhiCommandQueue& commandQueue = runtime->commandQueue();
 
     const char* projectRoot = PROJECT_SOURCE_DIR;
 
@@ -112,7 +110,7 @@ int main() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui_ImplGlfw_InitForOther(window, true);
-    imguiInit(runtime.device);
+    runtime->initImGui();
 
     // Build all shader pipelines
     ShaderManager shaderManager(device, projectRoot);
@@ -164,16 +162,11 @@ int main() {
         return 1;
     }
 
-    // Create initial framebuffer size (used for metalLayer)
-    int fbWidth, fbHeight;
-    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
-
     // Persistent render context and pipeline builder
     RenderContext ctx = scene.renderContext();
     PipelineBuilder pipelineBuilder(ctx);
-    MetalFrameGraphBackend frameGraphBackend(runtime.device);
-    RhiTextureHandle backbufferTexture;
-    rtCtx.resourceFactory = &frameGraphBackend;
+    auto frameGraphBackend = runtime->createFrameGraphBackend();
+    rtCtx.resourceFactory = frameGraphBackend.get();
     bool pipelineNeedsRebuild = true;
     int lastRenderMode = -1;
     double lastFrameTime = glfwGetTime();
@@ -184,22 +177,15 @@ int main() {
         ZoneScopedN("Frame");
         glfwPollEvents();
 
-        void* autoreleasePool = metalRuntimeCreateAutoreleasePool();
-
         int width, height;
         glfwGetFramebufferSize(window, &width, &height);
         if (width == 0 || height == 0) {
-            metalRuntimeDestroyAutoreleasePool(autoreleasePool);
             continue;
         }
-        metalRuntimeSetDrawableSize(runtime, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
 
-        void* drawable = metalRuntimeNextDrawable(runtime);
-        if (!drawable) {
-            metalRuntimeDestroyAutoreleasePool(autoreleasePool);
+        if (!runtime->beginFrame(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
             continue;
         }
-        void* drawableTexture = metalRuntimeDrawableTexture(drawable);
 
         // Compute matrices
         float aspect;
@@ -244,91 +230,84 @@ int main() {
             scene.sceneGraph().updateTransforms();
         }
 
-        // Render pass
-        void* commandBuffer = metalRuntimeCreateCommandBuffer(runtime);
-        if (!commandBuffer) {
-            metalRuntimeDestroyAutoreleasePool(autoreleasePool);
-            continue;
-        }
-
         // Collect GPU timestamps from previous frames
-        metalRuntimeCollectGpuTimestamps(runtime);
+        runtime->collectGpuTimestamps();
 
-        // ImGui new frame (needs a render pass descriptor for Metal backend)
+        // ImGui new frame
         {
             ZoneScopedN("ImGui Frame");
-        // Always provide a depth attachment so the ImGui pipeline matches even when
-        // switching render modes within the same frame.
-        imguiNewFrameForTargets(drawableTexture, scene.imguiDepthDummy().nativeHandle());
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
-        ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+            // Always provide a depth attachment so the ImGui pipeline matches even when
+            // switching render modes within the same frame.
+            runtime->beginImGuiFrame(&scene.imguiDepthDummy());
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+            ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 
-        if (ImGui::BeginMainMenuBar()) {
-            if (ImGui::BeginMenu("View")) {
-                ImGui::MenuItem("Scene Graph", nullptr, &showSceneGraphWindow);
-                ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
-                ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
-                ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
-                ImGui::EndMenu();
-            }
-            ImGui::EndMainMenuBar();
-        }
-
-        ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Renderer");
-        ImGui::Text("%.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
-        ImGui::Separator();
-        ImGui::RadioButton("Vertex Shader", &renderMode, 0);
-        ImGui::RadioButton("Mesh Shader", &renderMode, 1);
-        ImGui::RadioButton("Visibility Buffer", &renderMode, 2);
-        ImGui::RadioButton("Meshlet Debug", &renderMode, 3);
-        if (renderMode >= 1) {
-            ImGui::Text("Meshlets: %u", scene.meshlets().meshletCount);
-            ImGui::Checkbox("Frustum Culling", &enableFrustumCull);
-            ImGui::Checkbox("Backface Culling", &enableConeCull);
-        }
-        if (renderMode == 2 && scene.rtShadowsAvailable()) {
-            ImGui::Checkbox("RT Shadows", &enableRTShadows);
-        }
-        if (renderMode == 2) {
-            ImGui::Checkbox("TAA", &enableTAA);
-        }
-        if (renderMode == 2 || renderMode == 3) {
-            ImGui::Checkbox("GPU-Driven Culling", &enableGPUCulling);
-        }
-        if (skyAvailable) {
-            ImGui::Checkbox("Atmosphere Sky", &enableAtmosphereSky);
-            ImGui::SliderFloat("Sky Exposure", &skyExposure, 0.1f, 20.0f, "%.2f");
-        } else {
-            ImGui::TextDisabled("Atmosphere Sky (missing textures)");
-        }
-        ImGui::Checkbox("Show Graph", &showGraphDebug);
-        ImGui::Separator();
-        bool f5Down = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
-        bool triggerReload = ImGui::Button("Reload Shaders (F5)") || (f5Down && !reloadKeyDown);
-        reloadKeyDown = f5Down;
-        if (triggerReload) {
-            spdlog::info("Reloading shaders...");
-            auto [reloaded, failed] = shaderManager.reloadAll();
-
-            // Shadow ray shader (native Metal, not managed by ShaderManager)
-            if (scene.rtShadowsAvailable()) {
-                if (reloadShadowPipeline(device, scene.shadowResources(), projectRoot)) {
-                    reloaded++;
-                } else { failed++; }
+            if (ImGui::BeginMainMenuBar()) {
+                if (ImGui::BeginMenu("View")) {
+                    ImGui::MenuItem("Scene Graph", nullptr, &showSceneGraphWindow);
+                    ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
+                    ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
+                    ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
+                    ImGui::EndMenu();
+                }
+                ImGui::EndMainMenuBar();
             }
 
-            skyAvailable = scene.atmosphereLoaded() && shaderManager.hasSkyPipeline();
+            ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_FirstUseEver);
+            ImGui::Begin("Renderer");
+            ImGui::Text("%.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
+            ImGui::Separator();
+            ImGui::RadioButton("Vertex Shader", &renderMode, 0);
+            ImGui::RadioButton("Mesh Shader", &renderMode, 1);
+            ImGui::RadioButton("Visibility Buffer", &renderMode, 2);
+            ImGui::RadioButton("Meshlet Debug", &renderMode, 3);
+            if (renderMode >= 1) {
+                ImGui::Text("Meshlets: %u", scene.meshlets().meshletCount);
+                ImGui::Checkbox("Frustum Culling", &enableFrustumCull);
+                ImGui::Checkbox("Backface Culling", &enableConeCull);
+            }
+            if (renderMode == 2 && scene.rtShadowsAvailable()) {
+                ImGui::Checkbox("RT Shadows", &enableRTShadows);
+            }
+            if (renderMode == 2) {
+                ImGui::Checkbox("TAA", &enableTAA);
+            }
+            if (renderMode == 2 || renderMode == 3) {
+                ImGui::Checkbox("GPU-Driven Culling", &enableGPUCulling);
+            }
+            if (skyAvailable) {
+                ImGui::Checkbox("Atmosphere Sky", &enableAtmosphereSky);
+                ImGui::SliderFloat("Sky Exposure", &skyExposure, 0.1f, 20.0f, "%.2f");
+            } else {
+                ImGui::TextDisabled("Atmosphere Sky (missing textures)");
+            }
+            ImGui::Checkbox("Show Graph", &showGraphDebug);
+            ImGui::Separator();
+            bool f5Down = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
+            bool triggerReload = ImGui::Button("Reload Shaders (F5)") || (f5Down && !reloadKeyDown);
+            reloadKeyDown = f5Down;
+            if (triggerReload) {
+                spdlog::info("Reloading shaders...");
+                auto [reloaded, failed] = shaderManager.reloadAll();
 
-            if (failed == 0)
-                spdlog::info("All {} shaders reloaded successfully", reloaded);
-            else
-                spdlog::warn("{} shaders reloaded, {} failed (keeping old pipelines)", reloaded, failed);
+                // Shadow ray shader is still rebuilt through the backend utility path.
+                if (scene.rtShadowsAvailable()) {
+                    if (reloadShadowPipeline(device, scene.shadowResources(), projectRoot)) {
+                        reloaded++;
+                    } else { failed++; }
+                }
 
-            pipelineNeedsRebuild = true;
-        }
-        ImGui::End();
+                skyAvailable = scene.atmosphereLoaded() && shaderManager.hasSkyPipeline();
+
+                if (failed == 0)
+                    spdlog::info("All {} shaders reloaded successfully", reloaded);
+                else
+                    spdlog::warn("{} shaders reloaded, {} failed (keeping old pipelines)", reloaded, failed);
+
+                pipelineNeedsRebuild = true;
+            }
+            ImGui::End();
         } // end ImGui Frame zone
 
         if (showSceneGraphWindow)
@@ -449,7 +428,7 @@ int main() {
             instanceBufferDesc.initialData = visibilityInstanceTransforms.data();
             instanceBufferDesc.hostVisible = true;
             instanceBufferDesc.debugName = "Visibility Instance Transforms";
-            instanceTransformBuffer = frameGraphBackend.createBuffer(instanceBufferDesc);
+            instanceTransformBuffer = frameGraphBackend->createBuffer(instanceBufferDesc);
         }
 
         // Populate frame context (shared across all modes)
@@ -468,7 +447,7 @@ int main() {
         frameCtx.visibleIndexNodes = visibleIndexNodes;
         frameCtx.visibilityInstanceCount = visibilityInstanceCount;
         frameCtx.instanceTransformBufferRhi = instanceTransformBuffer.get();
-        frameCtx.commandBuffer.setNativeHandle(commandBuffer);
+        frameCtx.commandBuffer = &runtime->currentCommandBuffer();
         frameCtx.depthClearValue = scene.depthClearValue();
         frameCtx.cameraFarZ = camera.farZ;
         {
@@ -501,10 +480,7 @@ int main() {
 
         // Rebuild pipeline only when needed (first frame, F6 reload, resolution change, mode switch)
         if (pipelineNeedsRebuild || pipelineBuilder.needsRebuild(width, height)) {
-            backbufferTexture.setNativeHandle(drawableTexture,
-                                              static_cast<uint32_t>(width),
-                                              static_cast<uint32_t>(height));
-            rtCtx.backbufferRhi = &backbufferTexture;
+            rtCtx.backbufferRhi = &runtime->currentBackbufferTexture();
             bool buildSucceeded = pipelineBuilder.build(activePipelineAsset, rtCtx, width, height);
             if (!buildSucceeded) {
                 spdlog::error("Failed to build pipeline: {}", pipelineBuilder.lastError());
@@ -515,10 +491,7 @@ int main() {
         }
 
         // Per-frame: swap backbuffer, update frame context, reset transients
-        backbufferTexture.setNativeHandle(drawableTexture,
-                                          static_cast<uint32_t>(width),
-                                          static_cast<uint32_t>(height));
-        rtCtx.backbufferRhi = &backbufferTexture;
+        rtCtx.backbufferRhi = &runtime->currentBackbufferTexture();
         pipelineBuilder.updateFrame(rtCtx.backbufferRhi, &frameCtx);
 
         FrameGraph& activeFg = pipelineBuilder.frameGraph();
@@ -544,14 +517,13 @@ int main() {
         // Update TLAS with current scene transforms before executing the frame graph
         if (scene.rtShadowsAvailable() && renderMode == 2) {
             ZoneScopedN("Update TLAS");
-            updateTLAS(frameCtx.commandBuffer, scene.sceneGraph(), scene.shadowResources());
+            updateTLAS(*frameCtx.commandBuffer, scene.sceneGraph(), scene.shadowResources());
         }
 
-        MetalCommandBuffer fgCommandBuffer(commandBuffer, runtime.tracyContext);
-        pipelineBuilder.execute(fgCommandBuffer, frameGraphBackend);
+        auto fgCommandBuffer = runtime->createCommandBuffer();
+        pipelineBuilder.execute(*fgCommandBuffer, *frameGraphBackend);
 
-        metalRuntimePresentDrawable(commandBuffer, drawable);
-        metalRuntimeCommit(commandBuffer);
+        runtime->present();
 
         // Store unjittered matrices for next frame's motion vectors
         prevView = view;
@@ -560,16 +532,14 @@ int main() {
         frameIndex++;
 
         FrameMark;
-        metalRuntimeDestroyAutoreleasePool(autoreleasePool);
     }
 
     // Cleanup ImGui
-    imguiShutdown();
+    runtime->shutdownImGui();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
     // Cleanup
-    destroyMetalRuntime(runtime);
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;

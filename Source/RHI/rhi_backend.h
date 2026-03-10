@@ -419,7 +419,7 @@ public:
                                               uint64_t indirectBufferOffset,
                                               RhiSize3D threadsPerObjectThreadgroup,
                                               RhiSize3D threadsPerMeshThreadgroup) = 0;
-    virtual void renderImGuiDrawData(void* commandBufferHandle) = 0;
+    virtual void renderImGuiDrawData(const RhiNativeCommandBuffer& commandBuffer) = 0;
 };
 
 class RhiComputeCommandEncoder {
