@@ -1,45 +1,24 @@
 #include "scene_context.h"
 
-#include <Metal/Metal.hpp>
+#include "rhi_resource_utils.h"
 
 #include <spdlog/spdlog.h>
 #include <tracy/Tracy.hpp>
 #include <fstream>
 #include <vector>
 
-static MTL::Buffer* metalBuffer(void* handle) {
-    return static_cast<MTL::Buffer*>(handle);
-}
-
-static MTL::Device* metalDevice(void* handle) {
-    return static_cast<MTL::Device*>(handle);
-}
-
-static MTL::CommandQueue* metalCommandQueue(void* handle) {
-    return static_cast<MTL::CommandQueue*>(handle);
-}
-
-static MTL::Texture* metalTexture(void* handle) {
-    return static_cast<MTL::Texture*>(handle);
-}
-
-static MTL::SamplerState* metalSampler(void* handle) {
-    return static_cast<MTL::SamplerState*>(handle);
-}
-
-static MTL::DepthStencilState* metalDepthStencilState(void* handle) {
-    return static_cast<MTL::DepthStencilState*>(handle);
-}
-
 bool AtmosphereTextureSet::isValid() const {
-    return transmittance && scattering && irradiance && sampler;
+    return transmittance.nativeHandle() &&
+           scattering.nativeHandle() &&
+           irradiance.nativeHandle() &&
+           sampler.nativeHandle();
 }
 
 void AtmosphereTextureSet::release() {
-    if (transmittance) { metalTexture(transmittance)->release(); transmittance = nullptr; }
-    if (scattering) { metalTexture(scattering)->release(); scattering = nullptr; }
-    if (irradiance) { metalTexture(irradiance)->release(); irradiance = nullptr; }
-    if (sampler) { metalSampler(sampler)->release(); sampler = nullptr; }
+    rhiReleaseHandle(transmittance);
+    rhiReleaseHandle(scattering);
+    rhiReleaseHandle(irradiance);
+    rhiReleaseHandle(sampler);
 }
 
 // --- Atmosphere texture helpers (moved from main.cpp) ---
@@ -73,87 +52,7 @@ static std::vector<float> loadFloatData(const std::string& path, size_t expected
     return data;
 }
 
-static void syncMeshRhiViews(LoadedMesh& mesh) {
-    mesh.positionBufferRhi.setNativeHandle(mesh.positionBuffer);
-    mesh.normalBufferRhi.setNativeHandle(mesh.normalBuffer);
-    mesh.uvBufferRhi.setNativeHandle(mesh.uvBuffer);
-    mesh.indexBufferRhi.setNativeHandle(mesh.indexBuffer);
-}
-
-static void syncMeshletRhiViews(MeshletData& meshlets) {
-    meshlets.meshletBufferRhi.setNativeHandle(meshlets.meshletBuffer);
-    meshlets.meshletVerticesRhi.setNativeHandle(meshlets.meshletVertices);
-    meshlets.meshletTrianglesRhi.setNativeHandle(meshlets.meshletTriangles);
-    meshlets.boundsBufferRhi.setNativeHandle(meshlets.boundsBuffer);
-    meshlets.materialIDsRhi.setNativeHandle(meshlets.materialIDs);
-}
-
-static void syncMaterialRhiViews(LoadedMaterials& materials) {
-    materials.textureHandles.clear();
-    materials.textureViews.clear();
-    materials.textureHandles.reserve(materials.textures.size());
-    materials.textureViews.reserve(materials.textures.size());
-    for (void* textureHandle : materials.textures) {
-        auto* texture = metalTexture(textureHandle);
-        materials.textureHandles.emplace_back(textureHandle,
-                                              texture ? static_cast<uint32_t>(texture->width()) : 0,
-                                              texture ? static_cast<uint32_t>(texture->height()) : 0);
-    }
-    for (auto& textureHandle : materials.textureHandles) {
-        materials.textureViews.push_back(&textureHandle);
-    }
-    materials.materialBufferRhi.setNativeHandle(materials.materialBuffer);
-    materials.samplerRhi.setNativeHandle(materials.sampler);
-}
-
-static void syncShadowRhiViews(RaytracedShadowResources& shadowResources) {
-    shadowResources.blasHandles.clear();
-    shadowResources.blasHandles.reserve(shadowResources.blasArray.size());
-    for (void* blas : shadowResources.blasArray) {
-        shadowResources.blasHandles.emplace_back(blas);
-    }
-    shadowResources.tlasRhi.setNativeHandle(shadowResources.tlas);
-    shadowResources.instanceDescriptorBufferRhi.setNativeHandle(shadowResources.instanceDescriptorBuffer);
-    shadowResources.scratchBufferRhi.setNativeHandle(shadowResources.scratchBuffer);
-    shadowResources.pipelineRhi.setNativeHandle(shadowResources.pipeline);
-}
-
-static MTL::Texture* createTexture2D(MTL::Device* device, int width, int height,
-                                     const float* data) {
-    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatRGBA32Float, width, height, false);
-    desc->setStorageMode(MTL::StorageModeShared);
-    desc->setUsage(MTL::TextureUsageShaderRead);
-    auto* tex = device->newTexture(desc);
-    desc->release();
-    if (!tex) return nullptr;
-    size_t bytesPerRow = static_cast<size_t>(width) * 4 * sizeof(float);
-    tex->replaceRegion(MTL::Region(0, 0, 0, width, height, 1), 0, data, bytesPerRow);
-    return tex;
-}
-
-static MTL::Texture* createTexture3D(MTL::Device* device, int width, int height, int depth,
-                                     const float* data) {
-    auto* desc = MTL::TextureDescriptor::alloc()->init();
-    desc->setTextureType(MTL::TextureType3D);
-    desc->setPixelFormat(MTL::PixelFormatRGBA32Float);
-    desc->setWidth(width);
-    desc->setHeight(height);
-    desc->setDepth(depth);
-    desc->setMipmapLevelCount(1);
-    desc->setStorageMode(MTL::StorageModeShared);
-    desc->setUsage(MTL::TextureUsageShaderRead);
-    auto* tex = device->newTexture(desc);
-    desc->release();
-    if (!tex) return nullptr;
-    size_t bytesPerRow = static_cast<size_t>(width) * 4 * sizeof(float);
-    size_t bytesPerImage = bytesPerRow * static_cast<size_t>(height);
-    tex->replaceRegion(MTL::Region(0, 0, 0, width, height, depth), 0, 0,
-                       data, bytesPerRow, bytesPerImage);
-    return tex;
-}
-
-static bool loadAtmosphereTextures(MTL::Device* device, const char* projectRoot,
+static bool loadAtmosphereTextures(const RhiDevice& device, const char* projectRoot,
                                    AtmosphereTextureSet& out) {
     constexpr int kTransmittanceWidth = 256;
     constexpr int kTransmittanceHeight = 64;
@@ -178,29 +77,68 @@ static bool loadAtmosphereTextures(MTL::Device* device, const char* projectRoot,
         return false;
     }
 
-    out.transmittance = createTexture2D(
-        device, kTransmittanceWidth, kTransmittanceHeight, transmittance.data());
-    out.scattering = createTexture3D(
-        device, kScatteringWidth, kScatteringHeight, kScatteringDepth, scattering.data());
-    out.irradiance = createTexture2D(
-        device, kIrradianceWidth, kIrradianceHeight, irradiance.data());
+    out.transmittance = rhiCreateTexture2D(
+        device,
+        kTransmittanceWidth,
+        kTransmittanceHeight,
+        RhiFormat::RGBA32Float,
+        false,
+        1,
+        RhiTextureStorageMode::Shared,
+        RhiTextureUsage::ShaderRead);
+    out.scattering = rhiCreateTexture3D(
+        device,
+        kScatteringWidth,
+        kScatteringHeight,
+        kScatteringDepth,
+        RhiFormat::RGBA32Float,
+        RhiTextureStorageMode::Shared,
+        RhiTextureUsage::ShaderRead);
+    out.irradiance = rhiCreateTexture2D(
+        device,
+        kIrradianceWidth,
+        kIrradianceHeight,
+        RhiFormat::RGBA32Float,
+        false,
+        1,
+        RhiTextureStorageMode::Shared,
+        RhiTextureUsage::ShaderRead);
 
-    if (!out.transmittance || !out.scattering || !out.irradiance) {
+    if (!out.transmittance.nativeHandle() ||
+        !out.scattering.nativeHandle() ||
+        !out.irradiance.nativeHandle()) {
         out.release();
         return false;
     }
 
-    auto* samplerDesc = MTL::SamplerDescriptor::alloc()->init();
-    samplerDesc->setMinFilter(MTL::SamplerMinMagFilterLinear);
-    samplerDesc->setMagFilter(MTL::SamplerMinMagFilterLinear);
-    samplerDesc->setMipFilter(MTL::SamplerMipFilterNotMipmapped);
-    samplerDesc->setSAddressMode(MTL::SamplerAddressModeClampToEdge);
-    samplerDesc->setTAddressMode(MTL::SamplerAddressModeClampToEdge);
-    samplerDesc->setRAddressMode(MTL::SamplerAddressModeClampToEdge);
-    out.sampler = device->newSamplerState(samplerDesc);
-    samplerDesc->release();
+    rhiUploadTexture2D(out.transmittance,
+                       kTransmittanceWidth,
+                       kTransmittanceHeight,
+                       transmittance.data(),
+                       static_cast<size_t>(kTransmittanceWidth) * 4 * sizeof(float));
+    rhiUploadTexture3D(out.scattering,
+                       kScatteringWidth,
+                       kScatteringHeight,
+                       kScatteringDepth,
+                       scattering.data(),
+                       static_cast<size_t>(kScatteringWidth) * 4 * sizeof(float),
+                       static_cast<size_t>(kScatteringWidth) * kScatteringHeight * 4 * sizeof(float));
+    rhiUploadTexture2D(out.irradiance,
+                       kIrradianceWidth,
+                       kIrradianceHeight,
+                       irradiance.data(),
+                       static_cast<size_t>(kIrradianceWidth) * 4 * sizeof(float));
 
-    if (!out.sampler) {
+    RhiSamplerDesc samplerDesc;
+    samplerDesc.minFilter = RhiSamplerFilterMode::Linear;
+    samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
+    samplerDesc.mipFilter = RhiSamplerMipFilterMode::None;
+    samplerDesc.addressModeS = RhiSamplerAddressMode::ClampToEdge;
+    samplerDesc.addressModeT = RhiSamplerAddressMode::ClampToEdge;
+    samplerDesc.addressModeR = RhiSamplerAddressMode::ClampToEdge;
+    out.sampler = rhiCreateSampler(device, samplerDesc);
+
+    if (!out.sampler.nativeHandle()) {
         out.release();
         return false;
     }
@@ -210,54 +148,49 @@ static bool loadAtmosphereTextures(MTL::Device* device, const char* projectRoot,
 
 // --- SceneContext implementation ---
 
-SceneContext::SceneContext(void* deviceHandle, void* queueHandle, const char* projectRoot)
-    : m_device(deviceHandle), m_queue(queueHandle), m_projectRoot(projectRoot) {}
+SceneContext::SceneContext(RhiDeviceHandle device, RhiCommandQueueHandle queue, const char* projectRoot)
+    : m_device(device), m_queue(queue), m_projectRoot(projectRoot) {}
 
 SceneContext::~SceneContext() {
     m_shadowResources.release();
-    if (m_imguiDepthDummy) metalTexture(m_imguiDepthDummy)->release();
-    if (m_shadowDummyTex) metalTexture(m_shadowDummyTex)->release();
-    if (m_skyFallbackTex) metalTexture(m_skyFallbackTex)->release();
+    rhiReleaseHandle(m_imguiDepthDummy);
+    rhiReleaseHandle(m_shadowDummyTex);
+    rhiReleaseHandle(m_skyFallbackTex);
     m_atmosphereTextures.release();
-    if (m_meshlets.meshletBuffer) metalBuffer(m_meshlets.meshletBuffer)->release();
-    if (m_meshlets.meshletVertices) metalBuffer(m_meshlets.meshletVertices)->release();
-    if (m_meshlets.meshletTriangles) metalBuffer(m_meshlets.meshletTriangles)->release();
-    if (m_meshlets.boundsBuffer) metalBuffer(m_meshlets.boundsBuffer)->release();
-    if (m_meshlets.materialIDs) metalBuffer(m_meshlets.materialIDs)->release();
-    for (void* texHandle : m_materials.textures) {
-        auto* tex = metalTexture(texHandle);
-        if (tex) tex->release();
+    rhiReleaseHandle(m_meshlets.meshletBuffer);
+    rhiReleaseHandle(m_meshlets.meshletVertices);
+    rhiReleaseHandle(m_meshlets.meshletTriangles);
+    rhiReleaseHandle(m_meshlets.boundsBuffer);
+    rhiReleaseHandle(m_meshlets.materialIDs);
+    for (auto& texture : m_materials.textures) {
+        rhiReleaseHandle(texture);
     }
-    if (m_materials.materialBuffer) metalBuffer(m_materials.materialBuffer)->release();
-    if (m_materials.sampler) metalSampler(m_materials.sampler)->release();
-    if (m_mesh.positionBuffer) metalBuffer(m_mesh.positionBuffer)->release();
-    if (m_mesh.normalBuffer) metalBuffer(m_mesh.normalBuffer)->release();
-    if (m_mesh.uvBuffer) metalBuffer(m_mesh.uvBuffer)->release();
-    if (m_mesh.indexBuffer) metalBuffer(m_mesh.indexBuffer)->release();
-    if (m_depthState) metalDepthStencilState(m_depthState)->release();
+    rhiReleaseHandle(m_materials.materialBuffer);
+    rhiReleaseHandle(m_materials.sampler);
+    rhiReleaseHandle(m_mesh.positionBuffer);
+    rhiReleaseHandle(m_mesh.normalBuffer);
+    rhiReleaseHandle(m_mesh.uvBuffer);
+    rhiReleaseHandle(m_mesh.indexBuffer);
+    rhiReleaseHandle(m_depthState);
 }
 
 bool SceneContext::loadAll(const char* gltfPath) {
     ZoneScopedN("SceneContext::loadAll");
-    auto* device = metalDevice(m_device);
 
     if (!loadGLTFMesh(m_device, gltfPath, m_mesh)) {
         spdlog::error("Failed to load scene mesh");
         return false;
     }
-    syncMeshRhiViews(m_mesh);
 
     if (!buildMeshlets(m_device, m_mesh, m_meshlets)) {
         spdlog::error("Failed to build meshlets");
         return false;
     }
-    syncMeshletRhiViews(m_meshlets);
 
     if (!loadGLTFMaterials(m_device, m_queue, gltfPath, m_materials)) {
         spdlog::error("Failed to load materials");
         return false;
     }
-    syncMaterialRhiViews(m_materials);
 
     if (!m_sceneGraph.buildFromGLTF(gltfPath, m_mesh, m_meshlets)) {
         spdlog::error("Failed to build scene graph");
@@ -266,11 +199,10 @@ bool SceneContext::loadAll(const char* gltfPath) {
     m_sceneGraph.updateTransforms();
 
     // Raytracing acceleration structures (non-fatal)
-    if (device->supportsRaytracing()) {
+    if (rhiSupportsRaytracing(m_device)) {
         ZoneScopedN("Build Acceleration Structures");
         if (buildAccelerationStructures(m_device, m_queue, m_mesh, m_sceneGraph, m_shadowResources) &&
             createShadowPipeline(m_device, m_shadowResources, m_projectRoot.c_str())) {
-            syncShadowRhiViews(m_shadowResources);
             m_rtShadowsAvailable = true;
             spdlog::info("Raytraced shadows enabled");
         } else {
@@ -282,61 +214,59 @@ bool SceneContext::loadAll(const char* gltfPath) {
     }
 
     // Atmosphere textures (non-fatal)
-    m_atmosphereLoaded = loadAtmosphereTextures(device, m_projectRoot.c_str(), m_atmosphereTextures);
+    m_atmosphereLoaded = loadAtmosphereTextures(m_device, m_projectRoot.c_str(), m_atmosphereTextures);
     if (!m_atmosphereLoaded) {
         spdlog::warn("Atmosphere textures not found or invalid; sky pass will use fallback");
     }
 
     // Depth state (reversed-Z aware)
     m_depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
-    MTL::DepthStencilDescriptor* depthDesc = MTL::DepthStencilDescriptor::alloc()->init();
-    depthDesc->setDepthCompareFunction(
-        ML_DEPTH_REVERSED ? MTL::CompareFunctionGreater : MTL::CompareFunctionLess);
-    depthDesc->setDepthWriteEnabled(true);
-    m_depthState = device->newDepthStencilState(depthDesc);
-    depthDesc->release();
+    m_depthState = rhiCreateDepthStencilState(m_device, true, ML_DEPTH_REVERSED);
 
     // 1x1 depth texture for ImGui pipeline matching
-    auto* imguiDepthTexDesc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatDepth32Float, 1, 1, false);
-    imguiDepthTexDesc->setStorageMode(MTL::StorageModePrivate);
-    imguiDepthTexDesc->setUsage(MTL::TextureUsageRenderTarget);
-    m_imguiDepthDummy = device->newTexture(imguiDepthTexDesc);
+    m_imguiDepthDummy = rhiCreateTexture2D(m_device,
+                                           1,
+                                           1,
+                                           RhiFormat::D32Float,
+                                           false,
+                                           1,
+                                           RhiTextureStorageMode::Private,
+                                           RhiTextureUsage::RenderTarget);
 
     // 1x1 shadow texture for non-RT paths (white = fully lit)
-    auto* shadowDummyDesc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatR8Unorm, 1, 1, false);
-    shadowDummyDesc->setStorageMode(MTL::StorageModeShared);
-    shadowDummyDesc->setUsage(MTL::TextureUsageShaderRead);
-    m_shadowDummyTex = device->newTexture(shadowDummyDesc);
+    m_shadowDummyTex = rhiCreateTexture2D(m_device,
+                                          1,
+                                          1,
+                                          RhiFormat::R8Unorm,
+                                          false,
+                                          1,
+                                          RhiTextureStorageMode::Shared,
+                                          RhiTextureUsage::ShaderRead);
     uint8_t shadowClear = 0xFF;
-    metalTexture(m_shadowDummyTex)->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, &shadowClear, 1);
+    rhiUploadTexture2D(m_shadowDummyTex, 1, 1, &shadowClear, 1);
 
     // 1x1 sky fallback texture (BGRA8)
-    auto* skyFallbackDesc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatBGRA8Unorm, 1, 1, false);
-    skyFallbackDesc->setStorageMode(MTL::StorageModeShared);
-    skyFallbackDesc->setUsage(MTL::TextureUsageShaderRead);
-    m_skyFallbackTex = device->newTexture(skyFallbackDesc);
+    m_skyFallbackTex = rhiCreateTexture2D(m_device,
+                                          1,
+                                          1,
+                                          RhiFormat::BGRA8Unorm,
+                                          false,
+                                          1,
+                                          RhiTextureStorageMode::Shared,
+                                          RhiTextureUsage::ShaderRead);
     uint8_t skyFallbackColor[4] = {77, 51, 26, 255};
-    metalTexture(m_skyFallbackTex)->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, skyFallbackColor, 4);
+    rhiUploadTexture2D(m_skyFallbackTex, 1, 1, skyFallbackColor, 4);
 
     return true;
 }
 
 RenderContext SceneContext::renderContext() const {
-    auto* shadowDummyTexture = metalTexture(m_shadowDummyTex);
-    auto* skyFallbackTexture = metalTexture(m_skyFallbackTex);
     RenderContext ctx{
         m_mesh, m_meshlets, m_materials, m_sceneGraph,
         m_shadowResources,
-        RhiDepthStencilStateHandle(m_depthState),
-        RhiTextureHandle(m_shadowDummyTex,
-                         shadowDummyTexture ? static_cast<uint32_t>(shadowDummyTexture->width()) : 0,
-                         shadowDummyTexture ? static_cast<uint32_t>(shadowDummyTexture->height()) : 0),
-        RhiTextureHandle(m_skyFallbackTex,
-                         skyFallbackTexture ? static_cast<uint32_t>(skyFallbackTexture->width()) : 0,
-                         skyFallbackTexture ? static_cast<uint32_t>(skyFallbackTexture->height()) : 0),
+        m_depthState,
+        m_shadowDummyTex,
+        m_skyFallbackTex,
         m_depthClearValue
     };
     return ctx;

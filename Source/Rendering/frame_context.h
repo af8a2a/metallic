@@ -50,8 +50,8 @@ struct FrameContext {
     // Instance transform buffer (for visibility buffer mode)
     RhiBuffer* instanceTransformBufferRhi = nullptr;
 
-    // Command buffer (for ImGui pass)
-    void* commandBufferHandle = nullptr;
+    // Native command buffer for backend integrations that are not fully abstracted yet.
+    RhiNativeCommandBufferHandle commandBuffer;
 
     // Depth clear value
     double depthClearValue = 1.0;

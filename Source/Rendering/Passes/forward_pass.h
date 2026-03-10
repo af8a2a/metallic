@@ -49,7 +49,7 @@ public:
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("ForwardPass");
-        encoder.setDepthStencilState(&m_ctx.depthStateRhi);
+        encoder.setDepthStencilState(&m_ctx.depthState);
         encoder.setFrontFacingWinding(RhiWinding::CounterClockwise);
         encoder.setCullMode(RhiCullMode::Back);
 
@@ -76,31 +76,31 @@ public:
             if (pipeIt == m_runtimeContext->renderPipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
             encoder.setRenderPipeline(pipeIt->second);
 
-            encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
-            encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
-            encoder.setMeshBuffer(&m_ctx.meshletData.meshletBufferRhi, 0, 3);
-            encoder.setMeshBuffer(&m_ctx.meshletData.meshletVerticesRhi, 0, 4);
-            encoder.setMeshBuffer(&m_ctx.meshletData.meshletTrianglesRhi, 0, 5);
-            encoder.setMeshBuffer(&m_ctx.meshletData.boundsBufferRhi, 0, 6);
-            encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBufferRhi, 0, 7);
-            encoder.setMeshBuffer(&m_ctx.meshletData.materialIDsRhi, 0, 8);
-            encoder.setMeshBuffer(&m_ctx.materials.materialBufferRhi, 0, 9);
-            encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
-            encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBufferRhi, 0, 3);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVerticesRhi, 0, 4);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTrianglesRhi, 0, 5);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBufferRhi, 0, 6);
-            encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBufferRhi, 0, 7);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDsRhi, 0, 8);
-            encoder.setFragmentBuffer(&m_ctx.materials.materialBufferRhi, 0, 9);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
+            encoder.setMeshBuffer(&m_ctx.meshletData.boundsBuffer, 0, 6);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
+            encoder.setMeshBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
+            encoder.setMeshBuffer(&m_ctx.materials.materialBuffer, 0, 9);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBuffer, 0, 6);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
+            encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, 9);
             // PLACEHOLDER_FORWARD_PASS_REST
             if (!materialTextures.empty()) {
                 encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
                 encoder.setMeshTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
             }
-            encoder.setFragmentSampler(&m_ctx.materials.samplerRhi, 0);
-            encoder.setMeshSampler(&m_ctx.materials.samplerRhi, 0);
+            encoder.setFragmentSampler(&m_ctx.materials.sampler, 0);
+            encoder.setMeshSampler(&m_ctx.materials.sampler, 0);
 
             for (uint32_t nodeID : m_frameContext->visibleMeshletNodes) {
                 const auto& node = m_ctx.sceneGraph.nodes[nodeID];
@@ -126,8 +126,8 @@ public:
             auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("ForwardPass");
             if (pipeIt == m_runtimeContext->renderPipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
             encoder.setRenderPipeline(pipeIt->second);
-            encoder.setVertexBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
-            encoder.setVertexBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
+            encoder.setVertexBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
+            encoder.setVertexBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
 
             for (uint32_t nodeID : m_frameContext->visibleIndexNodes) {
                 const auto& node = m_ctx.sceneGraph.nodes[nodeID];
@@ -144,7 +144,7 @@ public:
                 encoder.drawIndexedPrimitives(RhiPrimitiveType::Triangle,
                                               node.indexCount,
                                               RhiIndexType::UInt32,
-                                              m_ctx.sceneMesh.indexBufferRhi,
+                                              m_ctx.sceneMesh.indexBuffer,
                                               node.indexStart * sizeof(uint32_t));
             }
         }

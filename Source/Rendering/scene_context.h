@@ -10,10 +10,10 @@
 #include "render_pass.h"
 
 struct AtmosphereTextureSet {
-    void* transmittance = nullptr;
-    void* scattering = nullptr;
-    void* irradiance = nullptr;
-    void* sampler = nullptr;
+    RhiTextureHandle transmittance;
+    RhiTextureHandle scattering;
+    RhiTextureHandle irradiance;
+    RhiSamplerHandle sampler;
 
     bool isValid() const;
     void release();
@@ -21,7 +21,7 @@ struct AtmosphereTextureSet {
 
 class SceneContext {
 public:
-    SceneContext(void* deviceHandle, void* queueHandle, const char* projectRoot);
+    SceneContext(RhiDeviceHandle device, RhiCommandQueueHandle queue, const char* projectRoot);
     ~SceneContext();
 
     bool loadAll(const char* gltfPath);
@@ -34,17 +34,17 @@ public:
     RaytracedShadowResources& shadowResources() { return m_shadowResources; }
     bool rtShadowsAvailable() const { return m_rtShadowsAvailable; }
 
-    void* imguiDepthDummy() const { return m_imguiDepthDummy; }
+    const RhiTextureHandle& imguiDepthDummy() const { return m_imguiDepthDummy; }
     double depthClearValue() const { return m_depthClearValue; }
 
     bool atmosphereLoaded() const { return m_atmosphereLoaded; }
-    AtmosphereTextureSet& atmosphereTextures() { return m_atmosphereTextures; }
+    const AtmosphereTextureSet& atmosphereTextures() const { return m_atmosphereTextures; }
 
     RenderContext renderContext() const;
 
 private:
-    void* m_device = nullptr;
-    void* m_queue = nullptr;
+    RhiDeviceHandle m_device;
+    RhiCommandQueueHandle m_queue;
     std::string m_projectRoot;
 
     LoadedMesh m_mesh;
@@ -57,9 +57,9 @@ private:
     AtmosphereTextureSet m_atmosphereTextures;
     bool m_atmosphereLoaded = false;
 
-    void* m_depthState = nullptr;
-    void* m_shadowDummyTex = nullptr;
-    void* m_skyFallbackTex = nullptr;
-    void* m_imguiDepthDummy = nullptr;
+    RhiDepthStencilStateHandle m_depthState;
+    RhiTextureHandle m_shadowDummyTex;
+    RhiTextureHandle m_skyFallbackTex;
+    RhiTextureHandle m_imguiDepthDummy;
     double m_depthClearValue = 1.0;
 };

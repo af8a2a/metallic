@@ -9,7 +9,7 @@ struct PipelineRuntimeContext;
 
 class ShaderManager {
 public:
-    ShaderManager(void* deviceHandle, const char* projectRoot);
+    ShaderManager(RhiDeviceHandle device, const char* projectRoot);
     ~ShaderManager();
 
     // Initial creation of all pipelines + samplers. Returns false on fatal failure.
@@ -19,46 +19,50 @@ public:
     std::pair<int,int> reloadAll();
 
     // Import external textures/samplers into the runtime context.
-    void importTexture(const std::string& name, void* textureHandle);
-    void importSampler(const std::string& name, void* samplerHandle);
+    void importTexture(const std::string& name, const RhiTexture& texture);
+    void importSampler(const std::string& name, const RhiSampler& sampler);
 
     PipelineRuntimeContext& runtimeContext();
     bool hasSkyPipeline() const;
 
 private:
-    void* m_device = nullptr;
+    RhiDeviceHandle m_device;
     std::string m_projectRoot;
     PipelineRuntimeContext* m_rtCtx;
-    void* m_vertexDesc = nullptr;
+    RhiVertexDescriptorHandle m_vertexDesc;
 
     // Owned pipeline states
-    void* m_vertexPipeline = nullptr;
-    void* m_meshPipeline = nullptr;
-    void* m_visPipeline = nullptr;
-    void* m_visIndirectPipeline = nullptr;
-    void* m_computePipeline = nullptr;
-    void* m_cullPipeline = nullptr;
-    void* m_buildIndirectPipeline = nullptr;
-    void* m_meshletVisPipeline = nullptr;
-    void* m_skyPipeline = nullptr;
-    void* m_tonemapPipeline = nullptr;
-    void* m_outputPipeline = nullptr;
-    void* m_histogramPipeline = nullptr;
-    void* m_autoExposurePipeline = nullptr;
-    void* m_taaPipeline = nullptr;
-    void* m_tonemapSampler = nullptr;
+    RhiGraphicsPipelineHandle m_vertexPipeline;
+    RhiGraphicsPipelineHandle m_meshPipeline;
+    RhiGraphicsPipelineHandle m_visPipeline;
+    RhiGraphicsPipelineHandle m_visIndirectPipeline;
+    RhiComputePipelineHandle m_computePipeline;
+    RhiComputePipelineHandle m_cullPipeline;
+    RhiComputePipelineHandle m_buildIndirectPipeline;
+    RhiComputePipelineHandle m_meshletVisPipeline;
+    RhiGraphicsPipelineHandle m_skyPipeline;
+    RhiGraphicsPipelineHandle m_tonemapPipeline;
+    RhiGraphicsPipelineHandle m_outputPipeline;
+    RhiComputePipelineHandle m_histogramPipeline;
+    RhiComputePipelineHandle m_autoExposurePipeline;
+    RhiComputePipelineHandle m_taaPipeline;
+    RhiSamplerHandle m_tonemapSampler;
 
     void createVertexDescriptor();
     void syncRuntimeContext();
 
-    // Internal reload helpers (return new PSO on success, nullptr on failure)
-    void* reloadVertexShader(const char* shaderPath);
-    void* reloadFullscreenShader(const char* shaderPath, RhiFormat colorFormat);
-    void* reloadMeshShader(
+    // Internal reload helpers (return empty handle on failure)
+    RhiGraphicsPipelineHandle reloadVertexShader(const char* shaderPath, std::string* errorMessage = nullptr);
+    RhiGraphicsPipelineHandle reloadFullscreenShader(const char* shaderPath,
+                                                     RhiFormat colorFormat,
+                                                     std::string* errorMessage = nullptr);
+    RhiGraphicsPipelineHandle reloadMeshShader(
         const char* shaderPath,
-        std::string (*patchFn)(const std::string&),
-        RhiFormat colorFormat, RhiFormat depthFormat);
-    void* reloadComputeShader(
+        std::string (*patchFn)(RhiBackendType, const std::string&),
+        RhiFormat colorFormat, RhiFormat depthFormat,
+        std::string* errorMessage = nullptr);
+    RhiComputePipelineHandle reloadComputeShader(
         const char* shaderPath, const char* entryPoint,
-        std::string (*patchFn)(const std::string&));
+        std::string (*patchFn)(RhiBackendType, const std::string&),
+        std::string* errorMessage = nullptr);
 };

@@ -7,14 +7,10 @@
 #include "rhi_backend.h"
 
 struct LoadedMesh {
-    void* positionBuffer = nullptr;
-    void* normalBuffer   = nullptr;
-    void* uvBuffer       = nullptr;
-    void* indexBuffer    = nullptr;
-    RhiBufferHandle positionBufferRhi;
-    RhiBufferHandle normalBufferRhi;
-    RhiBufferHandle uvBufferRhi;
-    RhiBufferHandle indexBufferRhi;
+    RhiBufferHandle positionBuffer;
+    RhiBufferHandle normalBuffer;
+    RhiBufferHandle uvBuffer;
+    RhiBufferHandle indexBuffer;
     uint32_t vertexCount = 0;
     uint32_t indexCount  = 0;
     float bboxMin[3] = {};
@@ -37,4 +33,4 @@ struct LoadedMesh {
     std::vector<MeshPrimitiveRange> meshRanges;
 };
 
-bool loadGLTFMesh(void* deviceHandle, const std::string& gltfPath, LoadedMesh& out);
+bool loadGLTFMesh(const RhiDevice& device, const std::string& gltfPath, LoadedMesh& out);

@@ -24,15 +24,12 @@ struct GPUMaterial {
 static_assert(sizeof(GPUMaterial) == 48, "GPUMaterial must be 48 bytes");
 
 struct LoadedMaterials {
-    std::vector<void*> textures;
-    std::vector<RhiTextureHandle> textureHandles;
-    std::vector<RhiTexture*> textureViews;
-    void* materialBuffer = nullptr;
-    RhiBufferHandle materialBufferRhi;
-    void* sampler = nullptr;
-    RhiSamplerHandle samplerRhi;
+    std::vector<RhiTextureHandle> textures;
+    std::vector<const RhiTexture*> textureViews;
+    RhiBufferHandle materialBuffer;
+    RhiSamplerHandle sampler;
     uint32_t materialCount = 0;
 };
 
-bool loadGLTFMaterials(void* deviceHandle, void* commandQueueHandle,
+bool loadGLTFMaterials(const RhiDevice& device, const RhiCommandQueue& commandQueue,
                        const std::string& gltfPath, LoadedMaterials& out);

@@ -1,22 +1,37 @@
 #pragma once
 
+#include "rhi_backend.h"
+
 #include <string>
 #include <vector>
 
-// Slang → Metal source compilation utilities.
-// All functions return the generated Metal source string, or empty on failure.
+// Backend-aware Slang compilation helpers.
+// Source output is currently used by the Metal path.
+// SPIR-V output is currently used by the Vulkan path.
 
-std::string compileSlangToMetal(const char* shaderPath, const char* searchPath = nullptr);
-std::string compileSlangMeshShaderToMetal(const char* shaderPath, const char* searchPath = nullptr);
-std::string compileSlangComputeShaderToMetal(const char* shaderPath, const char* searchPath = nullptr, const char* entryPoint = "computeMain");
+std::string compileSlangGraphicsSource(RhiBackendType backend,
+                                       const char* shaderPath,
+                                       const char* searchPath = nullptr);
+std::string compileSlangMeshSource(RhiBackendType backend,
+                                   const char* shaderPath,
+                                   const char* searchPath = nullptr);
+std::string compileSlangComputeSource(RhiBackendType backend,
+                                      const char* shaderPath,
+                                      const char* searchPath = nullptr,
+                                      const char* entryPoint = "computeMain");
 
-std::vector<uint32_t> compileSlangToSpirv(const char* shaderPath, const char* searchPath = nullptr);
-std::vector<uint32_t> compileSlangMeshShaderToSpirv(const char* shaderPath, const char* searchPath = nullptr);
-std::vector<uint32_t> compileSlangComputeShaderToSpirv(const char* shaderPath,
-                                                       const char* searchPath = nullptr,
-                                                       const char* entryPoint = "computeMain");
+std::vector<uint32_t> compileSlangGraphicsBinary(RhiBackendType backend,
+                                                 const char* shaderPath,
+                                                 const char* searchPath = nullptr);
+std::vector<uint32_t> compileSlangMeshBinary(RhiBackendType backend,
+                                             const char* shaderPath,
+                                             const char* searchPath = nullptr);
+std::vector<uint32_t> compileSlangComputeBinary(RhiBackendType backend,
+                                                const char* shaderPath,
+                                                const char* searchPath = nullptr,
+                                                const char* entryPoint = "computeMain");
 
-// Slang bug workarounds — patch generated Metal source before compilation.
-std::string patchMeshShaderMetalSource(const std::string& source);
-std::string patchVisibilityShaderMetalSource(const std::string& source);
-std::string patchComputeShaderMetalSource(const std::string& source);
+// Backend-specific Slang output workarounds.
+std::string patchMeshShaderSource(RhiBackendType backend, const std::string& source);
+std::string patchVisibilityShaderSource(RhiBackendType backend, const std::string& source);
+std::string patchComputeShaderSource(RhiBackendType backend, const std::string& source);

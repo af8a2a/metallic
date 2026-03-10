@@ -97,7 +97,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const auto spirv = compileSlangToSpirv("Shaders/Vertex/triangle", PROJECT_SOURCE_DIR);
+    const auto spirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
+                                                  "Shaders/Vertex/triangle",
+                                                  PROJECT_SOURCE_DIR);
     if (spirv.empty()) {
         spdlog::error("Failed to compile SPIR-V for triangle shader");
         glfwDestroyWindow(window);

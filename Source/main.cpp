@@ -1,6 +1,3 @@
-#include <Foundation/Foundation.hpp>
-#include <Metal/Metal.hpp>
-
 #include <ml.h>
 
 #define GLFW_INCLUDE_NONE
@@ -26,7 +23,6 @@
 #include <memory>
 
 #include <tracy/Tracy.hpp>
-#include "tracy_metal.h"
 #include "frame_graph.h"
 #include "visibility_constants.h"
 #include "render_uniforms.h"
@@ -92,14 +88,13 @@ int main() {
         return 1;
     }
     spdlog::info("Metal device: {}", metalRuntimeDeviceName(runtime));
-
-    auto* device = static_cast<MTL::Device*>(runtime.device);
-    TracyMetalCtxHandle tracyGpuCtx = runtime.tracyContext;
+    RhiDeviceHandle device(runtime.device);
+    RhiCommandQueueHandle commandQueue(runtime.commandQueue);
 
     const char* projectRoot = PROJECT_SOURCE_DIR;
 
     // Load all scene data
-    SceneContext scene(runtime.device, runtime.commandQueue, projectRoot);
+    SceneContext scene(device, commandQueue, projectRoot);
     if (!scene.loadAll("Asset/Sponza/glTF/Sponza.gltf")) return 1;
 
     // Init orbit camera
@@ -120,13 +115,13 @@ int main() {
     imguiInit(runtime.device);
 
     // Build all shader pipelines
-    ShaderManager shaderManager(runtime.device, projectRoot);
+    ShaderManager shaderManager(device, projectRoot);
     if (!shaderManager.buildAll()) return 1;
 
     PipelineRuntimeContext& rtCtx = shaderManager.runtimeContext();
 
-    auto importRuntimeTexture = [&](const std::string& name, void* textureHandle) {
-        shaderManager.importTexture(name, textureHandle);
+    auto importRuntimeTexture = [&](const std::string& name, const RhiTexture& texture) {
+        shaderManager.importTexture(name, texture);
     };
 
     if (scene.atmosphereLoaded()) {
@@ -177,7 +172,7 @@ int main() {
     RenderContext ctx = scene.renderContext();
     PipelineBuilder pipelineBuilder(ctx);
     MetalFrameGraphBackend frameGraphBackend(runtime.device);
-    MetalImportedTexture backbufferTexture;
+    RhiTextureHandle backbufferTexture;
     rtCtx.resourceFactory = &frameGraphBackend;
     bool pipelineNeedsRebuild = true;
     int lastRenderMode = -1;
@@ -189,22 +184,22 @@ int main() {
         ZoneScopedN("Frame");
         glfwPollEvents();
 
-        NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+        void* autoreleasePool = metalRuntimeCreateAutoreleasePool();
 
         int width, height;
         glfwGetFramebufferSize(window, &width, &height);
         if (width == 0 || height == 0) {
-            pool->release();
+            metalRuntimeDestroyAutoreleasePool(autoreleasePool);
             continue;
         }
         metalRuntimeSetDrawableSize(runtime, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
 
         void* drawable = metalRuntimeNextDrawable(runtime);
         if (!drawable) {
-            pool->release();
+            metalRuntimeDestroyAutoreleasePool(autoreleasePool);
             continue;
         }
-        auto* drawableTexture = static_cast<MTL::Texture*>(metalRuntimeDrawableTexture(drawable));
+        void* drawableTexture = metalRuntimeDrawableTexture(drawable);
 
         // Compute matrices
         float aspect;
@@ -252,22 +247,19 @@ int main() {
         // Render pass
         void* commandBuffer = metalRuntimeCreateCommandBuffer(runtime);
         if (!commandBuffer) {
-            pool->release();
+            metalRuntimeDestroyAutoreleasePool(autoreleasePool);
             continue;
         }
 
         // Collect GPU timestamps from previous frames
-        tracyMetalCollect(tracyGpuCtx);
+        metalRuntimeCollectGpuTimestamps(runtime);
 
         // ImGui new frame (needs a render pass descriptor for Metal backend)
         {
             ZoneScopedN("ImGui Frame");
-        MTL::RenderPassDescriptor* imguiFramePass = MTL::RenderPassDescriptor::alloc()->init();
-        imguiFramePass->colorAttachments()->object(0)->setTexture(drawableTexture);
         // Always provide a depth attachment so the ImGui pipeline matches even when
         // switching render modes within the same frame.
-        imguiFramePass->depthAttachment()->setTexture(static_cast<MTL::Texture*>(scene.imguiDepthDummy()));
-        imguiNewFrame(imguiFramePass);
+        imguiNewFrameForTargets(drawableTexture, scene.imguiDepthDummy().nativeHandle());
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
@@ -337,7 +329,6 @@ int main() {
             pipelineNeedsRebuild = true;
         }
         ImGui::End();
-        imguiFramePass->release();
         } // end ImGui Frame zone
 
         if (showSceneGraphWindow)
@@ -393,8 +384,7 @@ int main() {
         }
 
         // --- Build FrameGraph (unified data-driven path) ---
-        MTL::Buffer* instanceTransformBuffer = nullptr;
-        RhiBufferHandle instanceTransformBufferRhi;
+        std::unique_ptr<RhiBuffer> instanceTransformBuffer;
 
         FrameContext frameCtx;
 
@@ -453,10 +443,13 @@ int main() {
                 visibilityInstanceTransforms.push_back(fallbackTransform);
             }
 
-            instanceTransformBuffer = device->newBuffer(
-                visibilityInstanceTransforms.data(),
-                visibilityInstanceTransforms.size() * sizeof(SceneInstanceTransform),
-                MTL::ResourceStorageModeShared);
+            RhiBufferDesc instanceBufferDesc;
+            instanceBufferDesc.size =
+                visibilityInstanceTransforms.size() * sizeof(SceneInstanceTransform);
+            instanceBufferDesc.initialData = visibilityInstanceTransforms.data();
+            instanceBufferDesc.hostVisible = true;
+            instanceBufferDesc.debugName = "Visibility Instance Transforms";
+            instanceTransformBuffer = frameGraphBackend.createBuffer(instanceBufferDesc);
         }
 
         // Populate frame context (shared across all modes)
@@ -474,9 +467,8 @@ int main() {
         frameCtx.visibleMeshletNodes = visibleMeshletNodes;
         frameCtx.visibleIndexNodes = visibleIndexNodes;
         frameCtx.visibilityInstanceCount = visibilityInstanceCount;
-        instanceTransformBufferRhi.setNativeHandle(instanceTransformBuffer);
-        frameCtx.instanceTransformBufferRhi = instanceTransformBuffer ? &instanceTransformBufferRhi : nullptr;
-        frameCtx.commandBufferHandle = commandBuffer;
+        frameCtx.instanceTransformBufferRhi = instanceTransformBuffer.get();
+        frameCtx.commandBuffer.setNativeHandle(commandBuffer);
         frameCtx.depthClearValue = scene.depthClearValue();
         frameCtx.cameraFarZ = camera.farZ;
         {
@@ -509,7 +501,9 @@ int main() {
 
         // Rebuild pipeline only when needed (first frame, F6 reload, resolution change, mode switch)
         if (pipelineNeedsRebuild || pipelineBuilder.needsRebuild(width, height)) {
-            backbufferTexture.setTexture(drawableTexture);
+            backbufferTexture.setNativeHandle(drawableTexture,
+                                              static_cast<uint32_t>(width),
+                                              static_cast<uint32_t>(height));
             rtCtx.backbufferRhi = &backbufferTexture;
             bool buildSucceeded = pipelineBuilder.build(activePipelineAsset, rtCtx, width, height);
             if (!buildSucceeded) {
@@ -521,7 +515,9 @@ int main() {
         }
 
         // Per-frame: swap backbuffer, update frame context, reset transients
-        backbufferTexture.setTexture(drawableTexture);
+        backbufferTexture.setNativeHandle(drawableTexture,
+                                          static_cast<uint32_t>(width),
+                                          static_cast<uint32_t>(height));
         rtCtx.backbufferRhi = &backbufferTexture;
         pipelineBuilder.updateFrame(rtCtx.backbufferRhi, &frameCtx);
 
@@ -548,17 +544,14 @@ int main() {
         // Update TLAS with current scene transforms before executing the frame graph
         if (scene.rtShadowsAvailable() && renderMode == 2) {
             ZoneScopedN("Update TLAS");
-            updateTLAS(commandBuffer, scene.sceneGraph(), scene.shadowResources());
+            updateTLAS(frameCtx.commandBuffer, scene.sceneGraph(), scene.shadowResources());
         }
 
-        MetalCommandBuffer fgCommandBuffer(commandBuffer, tracyGpuCtx);
+        MetalCommandBuffer fgCommandBuffer(commandBuffer, runtime.tracyContext);
         pipelineBuilder.execute(fgCommandBuffer, frameGraphBackend);
 
         metalRuntimePresentDrawable(commandBuffer, drawable);
         metalRuntimeCommit(commandBuffer);
-
-        if (instanceTransformBuffer)
-            instanceTransformBuffer->release();
 
         // Store unjittered matrices for next frame's motion vectors
         prevView = view;
@@ -567,7 +560,7 @@ int main() {
         frameIndex++;
 
         FrameMark;
-        pool->release();
+        metalRuntimeDestroyAutoreleasePool(autoreleasePool);
     }
 
     // Cleanup ImGui

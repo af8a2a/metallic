@@ -1,7 +1,7 @@
 #include "meshlet_builder.h"
 #include "mesh_loader.h"
+#include "rhi_resource_utils.h"
 
-#include <Metal/Metal.hpp>
 #include <meshoptimizer.h>
 #include <spdlog/spdlog.h>
 #include <vector>
@@ -11,19 +11,10 @@ static constexpr size_t MAX_VERTICES  = 64;
 static constexpr size_t MAX_TRIANGLES = 124;
 static constexpr float  CONE_WEIGHT   = 0.5f;
 
-static MTL::Device* metalDevice(void* handle) {
-    return static_cast<MTL::Device*>(handle);
-}
-
-static MTL::Buffer* metalBuffer(void* handle) {
-    return static_cast<MTL::Buffer*>(handle);
-}
-
-bool buildMeshlets(void* deviceHandle, const LoadedMesh& mesh, MeshletData& out) {
-    auto* device = metalDevice(deviceHandle);
+bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData& out) {
     out.meshletsPerGroup.clear();
 
-    const auto* allPositions = static_cast<const float*>(metalBuffer(mesh.positionBuffer)->contents());
+    const auto* allPositions = static_cast<const float*>(rhiBufferContents(mesh.positionBuffer));
     size_t totalVertexCount = mesh.vertexCount;
     size_t vertexStride = sizeof(float) * 3;
 
@@ -46,7 +37,7 @@ bool buildMeshlets(void* deviceHandle, const LoadedMesh& mesh, MeshletData& out)
         groups.push_back(g);
     }
 
-    const auto* allIndices = static_cast<const uint32_t*>(metalBuffer(mesh.indexBuffer)->contents());
+    const auto* allIndices = static_cast<const uint32_t*>(rhiBufferContents(mesh.indexBuffer));
 
     for (const auto& group : groups) {
         const uint32_t* groupIndices = allIndices + group.indexOffset;
@@ -154,22 +145,16 @@ bool buildMeshlets(void* deviceHandle, const LoadedMesh& mesh, MeshletData& out)
         return false;
     }
 
-    // Create Metal buffers
-    out.meshletBuffer = device->newBuffer(
-        allGpuMeshlets.data(), allGpuMeshlets.size() * sizeof(GPUMeshlet),
-        MTL::ResourceStorageModeShared);
-    out.meshletVertices = device->newBuffer(
-        allMeshletVertices.data(), allMeshletVertices.size() * sizeof(uint32_t),
-        MTL::ResourceStorageModeShared);
-    out.meshletTriangles = device->newBuffer(
-        allPackedTriangles.data(), allPackedTriangles.size() * sizeof(uint32_t),
-        MTL::ResourceStorageModeShared);
-    out.boundsBuffer = device->newBuffer(
-        allBounds.data(), allBounds.size() * sizeof(GPUMeshletBounds),
-        MTL::ResourceStorageModeShared);
-    out.materialIDs = device->newBuffer(
-        allMaterialIDs.data(), allMaterialIDs.size() * sizeof(uint32_t),
-        MTL::ResourceStorageModeShared);
+    out.meshletBuffer = rhiCreateSharedBuffer(
+        device, allGpuMeshlets.data(), allGpuMeshlets.size() * sizeof(GPUMeshlet), "Meshlets");
+    out.meshletVertices = rhiCreateSharedBuffer(
+        device, allMeshletVertices.data(), allMeshletVertices.size() * sizeof(uint32_t), "Meshlet Vertices");
+    out.meshletTriangles = rhiCreateSharedBuffer(
+        device, allPackedTriangles.data(), allPackedTriangles.size() * sizeof(uint32_t), "Meshlet Triangles");
+    out.boundsBuffer = rhiCreateSharedBuffer(
+        device, allBounds.data(), allBounds.size() * sizeof(GPUMeshletBounds), "Meshlet Bounds");
+    out.materialIDs = rhiCreateSharedBuffer(
+        device, allMaterialIDs.data(), allMaterialIDs.size() * sizeof(uint32_t), "Meshlet Material IDs");
     out.meshletCount = static_cast<uint32_t>(totalMeshlets);
 
     // Print stats

@@ -3,19 +3,20 @@
 #include <cgltf.h>
 
 #include "material_loader.h"
+#include "rhi_resource_utils.h"
 
-#include <Metal/Metal.hpp>
 #include <spdlog/spdlog.h>
 #include <filesystem>
 #include <algorithm>
 
-static MTL::Texture* createTextureFromImage(MTL::Device* device, MTL::CommandQueue* commandQueue,
-                                            const std::string& imagePath) {
+static RhiTextureHandle createTextureFromImage(const RhiDevice& device,
+                                               const RhiCommandQueue& commandQueue,
+                                               const std::string& imagePath) {
     int w, h, ch;
     unsigned char* pixels = stbi_load(imagePath.c_str(), &w, &h, &ch, 4);
     if (!pixels) {
         spdlog::warn("Failed to load image: {}", imagePath);
-        return nullptr;
+        return {};
     }
 
     // Compute mip levels
@@ -25,45 +26,34 @@ static MTL::Texture* createTextureFromImage(MTL::Device* device, MTL::CommandQue
         while (dim > 1) { dim >>= 1; mipLevels++; }
     }
 
-    auto* texDesc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatRGBA8Unorm, w, h, true);
-    texDesc->setMipmapLevelCount(mipLevels);
-    texDesc->setStorageMode(MTL::StorageModeShared);
-    texDesc->setUsage(MTL::TextureUsageShaderRead);
-
-    MTL::Texture* texture = device->newTexture(texDesc);
-    if (!texture) {
+    RhiTextureHandle texture = rhiCreateTexture2D(device,
+                                                  static_cast<uint32_t>(w),
+                                                  static_cast<uint32_t>(h),
+                                                  RhiFormat::RGBA8Unorm,
+                                                  true,
+                                                  mipLevels,
+                                                  RhiTextureStorageMode::Shared,
+                                                  RhiTextureUsage::ShaderRead);
+    if (!texture.nativeHandle()) {
         stbi_image_free(pixels);
-        return nullptr;
+        return {};
     }
 
     // Upload base mip level
-    texture->replaceRegion(MTL::Region(0, 0, 0, w, h, 1), 0, pixels, w * 4);
+    rhiUploadTexture2D(texture,
+                       static_cast<uint32_t>(w),
+                       static_cast<uint32_t>(h),
+                       pixels,
+                       static_cast<size_t>(w) * 4u);
     stbi_image_free(pixels);
 
-    // Generate mipmaps via blit encoder
-    MTL::CommandBuffer* cmdBuf = commandQueue->commandBuffer();
-    MTL::BlitCommandEncoder* blit = cmdBuf->blitCommandEncoder();
-    blit->generateMipmaps(texture);
-    blit->endEncoding();
-    cmdBuf->commit();
-    cmdBuf->waitUntilCompleted();
+    rhiGenerateMipmaps(commandQueue, texture);
 
     return texture;
 }
 
-static MTL::Device* metalDevice(void* handle) {
-    return static_cast<MTL::Device*>(handle);
-}
-
-static MTL::CommandQueue* metalCommandQueue(void* handle) {
-    return static_cast<MTL::CommandQueue*>(handle);
-}
-
-bool loadGLTFMaterials(void* deviceHandle, void* commandQueueHandle,
+bool loadGLTFMaterials(const RhiDevice& device, const RhiCommandQueue& commandQueue,
                        const std::string& gltfPath, LoadedMaterials& out) {
-    auto* device = metalDevice(deviceHandle);
-    auto* commandQueue = metalCommandQueue(commandQueueHandle);
     cgltf_options options = {};
     cgltf_data* data = nullptr;
 
@@ -90,34 +80,37 @@ bool loadGLTFMaterials(void* deviceHandle, void* commandQueueHandle,
                      data->images_count, textureCount);
     }
 
-    out.textures.resize(textureCount, nullptr);
+    out.textures.resize(textureCount);
     for (cgltf_size i = 0; i < textureCount; i++) {
         const cgltf_image& img = data->images[i];
         if (!img.uri) continue;
         std::string fullPath = (basePath / img.uri).string();
         out.textures[i] = createTextureFromImage(device, commandQueue, fullPath);
-        if (!out.textures[i]) {
+        if (!out.textures[i].nativeHandle()) {
             spdlog::warn("Failed to load texture {}: {}", i, fullPath);
         }
     }
 
     // Create 1x1 white placeholder for any null texture slots
-    MTL::Texture* placeholder = nullptr;
+    RhiTextureHandle placeholder;
     for (auto& tex : out.textures) {
-        if (!tex) {
-            if (!placeholder) {
-                auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
-                    MTL::PixelFormatRGBA8Unorm, 1, 1, false);
-                desc->setStorageMode(MTL::StorageModeShared);
-                desc->setUsage(MTL::TextureUsageShaderRead);
-                placeholder = device->newTexture(desc);
+        if (!tex.nativeHandle()) {
+            if (!placeholder.nativeHandle()) {
+                placeholder = rhiCreateTexture2D(device,
+                                                 1,
+                                                 1,
+                                                 RhiFormat::RGBA8Unorm,
+                                                 false,
+                                                 1,
+                                                 RhiTextureStorageMode::Shared,
+                                                 RhiTextureUsage::ShaderRead);
                 uint32_t white = 0xFFFFFFFF;
-                placeholder->replaceRegion(MTL::Region(0, 0, 0, 1, 1, 1), 0, &white, 4);
+                rhiUploadTexture2D(placeholder, 1, 1, &white, 4);
             }
-            tex = placeholder->retain();
+            tex = rhiRetainTexture(placeholder);
         }
     }
-    if (placeholder) placeholder->release();
+    rhiReleaseHandle(placeholder);
 
     spdlog::info("Loaded {} textures", out.textures.size());
 
@@ -174,21 +167,24 @@ bool loadGLTFMaterials(void* deviceHandle, void* commandQueueHandle,
     }
 
     out.materialCount = static_cast<uint32_t>(materials.size());
-    out.materialBuffer = device->newBuffer(
-        materials.data(), materials.size() * sizeof(GPUMaterial),
-        MTL::ResourceStorageModeShared);
+    out.materialBuffer = rhiCreateSharedBuffer(
+        device, materials.data(), materials.size() * sizeof(GPUMaterial), "Materials");
 
     spdlog::info("Loaded {} materials", out.materialCount);
 
     // Create shared sampler (LINEAR + mipmap + REPEAT)
-    auto* samplerDesc = MTL::SamplerDescriptor::alloc()->init();
-    samplerDesc->setMinFilter(MTL::SamplerMinMagFilterLinear);
-    samplerDesc->setMagFilter(MTL::SamplerMinMagFilterLinear);
-    samplerDesc->setMipFilter(MTL::SamplerMipFilterLinear);
-    samplerDesc->setSAddressMode(MTL::SamplerAddressModeRepeat);
-    samplerDesc->setTAddressMode(MTL::SamplerAddressModeRepeat);
-    out.sampler = device->newSamplerState(samplerDesc);
-    samplerDesc->release();
+    RhiSamplerDesc samplerDesc;
+    samplerDesc.minFilter = RhiSamplerFilterMode::Linear;
+    samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
+    samplerDesc.mipFilter = RhiSamplerMipFilterMode::Linear;
+    samplerDesc.addressModeS = RhiSamplerAddressMode::Repeat;
+    samplerDesc.addressModeT = RhiSamplerAddressMode::Repeat;
+    out.sampler = rhiCreateSampler(device, samplerDesc);
+    out.textureViews.clear();
+    out.textureViews.reserve(out.textures.size());
+    for (const auto& texture : out.textures) {
+        out.textureViews.push_back(&texture);
+    }
 
     cgltf_free(data);
     return true;

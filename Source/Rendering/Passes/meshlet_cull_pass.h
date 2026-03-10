@@ -100,7 +100,7 @@ public:
         encoder.setComputePipeline(cullIt->second);
         encoder.setBytes(&cullUni, sizeof(cullUni), 0);
         encoder.setBuffer(m_instanceDataBuffer.get(), 0, 1);
-        encoder.setBuffer(&m_ctx.meshletData.boundsBufferRhi, 0, 2);
+        encoder.setBuffer(&m_ctx.meshletData.boundsBuffer, 0, 2);
         encoder.setBuffer(m_visibleMeshletBuffer.get(), 0, 3);
         encoder.setBuffer(m_counterBuffer.get(), 0, 4);
 

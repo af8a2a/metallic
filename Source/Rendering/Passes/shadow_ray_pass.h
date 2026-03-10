@@ -46,9 +46,9 @@ public:
         if (!m_frameContext) return;
         if (!m_frameContext->enableRTShadows) return;
 
-        if (!m_ctx.shadowResources.pipelineRhi.nativeHandle()) return;
+        if (!m_ctx.shadowResources.pipeline.nativeHandle()) return;
 
-        encoder.setComputePipeline(m_ctx.shadowResources.pipelineRhi);
+        encoder.setComputePipeline(m_ctx.shadowResources.pipeline);
         ShadowUniforms shadowUni;
         float4x4 viewProj = m_frameContext->proj * m_frameContext->view;
         float4x4 invViewProj = viewProj;
@@ -61,17 +61,17 @@ public:
         shadowUni.maxRayDistance = m_maxRayDistance > 0 ? m_maxRayDistance : m_frameContext->cameraFarZ;
         shadowUni.reversedZ = ML_DEPTH_REVERSED ? 1 : 0;
         encoder.setBytes(&shadowUni, sizeof(shadowUni), 0);
-        encoder.setAccelerationStructure(&m_ctx.shadowResources.tlasRhi, 1);
+        encoder.setAccelerationStructure(&m_ctx.shadowResources.tlas, 1);
         encoder.setTexture(m_frameGraph->getTexture(m_depthRead), 0);
         encoder.setTexture(m_frameGraph->getTexture(shadowMap), 1);
-        encoder.useResource(m_ctx.shadowResources.tlasRhi, RhiResourceUsage::Read);
-        for (auto& blas : m_ctx.shadowResources.blasHandles) {
+        encoder.useResource(m_ctx.shadowResources.tlas, RhiResourceUsage::Read);
+        for (auto& blas : m_ctx.shadowResources.blasArray) {
             if (blas.nativeHandle()) {
                 encoder.useResource(blas, RhiResourceUsage::Read);
             }
         }
-        encoder.useResource(m_ctx.sceneMesh.positionBufferRhi, RhiResourceUsage::Read);
-        encoder.useResource(m_ctx.sceneMesh.indexBufferRhi, RhiResourceUsage::Read);
+        encoder.useResource(m_ctx.sceneMesh.positionBuffer, RhiResourceUsage::Read);
+        encoder.useResource(m_ctx.sceneMesh.indexBuffer, RhiResourceUsage::Read);
         encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
                                      {8, 8, 1});
     }

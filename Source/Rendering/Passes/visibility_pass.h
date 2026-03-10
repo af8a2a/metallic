@@ -59,7 +59,7 @@ public:
         ZoneScopedN("VisibilityPass");
         if (!m_frameContext || !m_runtimeContext) return;
 
-        encoder.setDepthStencilState(&m_ctx.depthStateRhi);
+        encoder.setDepthStencilState(&m_ctx.depthState);
         encoder.setFrontFacingWinding(RhiWinding::CounterClockwise);
         encoder.setCullMode(RhiCullMode::Back);
 
@@ -86,28 +86,28 @@ public:
         if (useGPUPath) {
 
             // Bind shared geometry buffers (same indices as visibility.slang)
-            encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
-            encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
-            encoder.setMeshBuffer(&m_ctx.meshletData.meshletBufferRhi, 0, 3);
-            encoder.setMeshBuffer(&m_ctx.meshletData.meshletVerticesRhi, 0, 4);
-            encoder.setMeshBuffer(&m_ctx.meshletData.meshletTrianglesRhi, 0, 5);
-            encoder.setMeshBuffer(&m_ctx.meshletData.boundsBufferRhi, 0, 6);
-            encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBufferRhi, 0, 7);
-            encoder.setMeshBuffer(&m_ctx.meshletData.materialIDsRhi, 0, 8);
-            encoder.setMeshBuffer(&m_ctx.materials.materialBufferRhi, 0, 9);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
+            encoder.setMeshBuffer(&m_ctx.meshletData.boundsBuffer, 0, 6);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
+            encoder.setMeshBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
+            encoder.setMeshBuffer(&m_ctx.materials.materialBuffer, 0, 9);
             encoder.setMeshBuffer(m_frameContext->gpuVisibleMeshletBufferRhi, 0, 10);
             encoder.setMeshBuffer(m_frameContext->gpuInstanceDataBufferRhi, 0, 11);
 
             // Fragment stage needs all buffers too (Slang KernelContext)
-            encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
-            encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBufferRhi, 0, 3);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVerticesRhi, 0, 4);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTrianglesRhi, 0, 5);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBufferRhi, 0, 6);
-            encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBufferRhi, 0, 7);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDsRhi, 0, 8);
-            encoder.setFragmentBuffer(&m_ctx.materials.materialBufferRhi, 0, 9);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBuffer, 0, 6);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
+            encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, 9);
             encoder.setFragmentBuffer(m_frameContext->gpuVisibleMeshletBufferRhi, 0, 10);
             encoder.setFragmentBuffer(m_frameContext->gpuInstanceDataBufferRhi, 0, 11);
 
@@ -115,8 +115,8 @@ public:
                 encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
                 encoder.setMeshTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
             }
-            encoder.setFragmentSampler(&m_ctx.materials.samplerRhi, 0);
-            encoder.setMeshSampler(&m_ctx.materials.samplerRhi, 0);
+            encoder.setFragmentSampler(&m_ctx.materials.sampler, 0);
+            encoder.setMeshSampler(&m_ctx.materials.sampler, 0);
 
             // GlobalUniforms at buffer(0) via setMeshBytes
             struct { float4 lightDir; float4 lightColorIntensity; } globalUni;
@@ -143,30 +143,30 @@ public:
         encoder.setRenderPipeline(pipeIt->second);
 
         // Bind shared buffers once
-        encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
-        encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
-        encoder.setMeshBuffer(&m_ctx.meshletData.meshletBufferRhi, 0, 3);
-        encoder.setMeshBuffer(&m_ctx.meshletData.meshletVerticesRhi, 0, 4);
-        encoder.setMeshBuffer(&m_ctx.meshletData.meshletTrianglesRhi, 0, 5);
-        encoder.setMeshBuffer(&m_ctx.meshletData.boundsBufferRhi, 0, 6);
-        encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBufferRhi, 0, 7);
-        encoder.setMeshBuffer(&m_ctx.meshletData.materialIDsRhi, 0, 8);
-        encoder.setMeshBuffer(&m_ctx.materials.materialBufferRhi, 0, 9);
-        encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
-        encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
-        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBufferRhi, 0, 3);
-        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVerticesRhi, 0, 4);
-        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTrianglesRhi, 0, 5);
-        encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBufferRhi, 0, 6);
-        encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBufferRhi, 0, 7);
-        encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDsRhi, 0, 8);
-        encoder.setFragmentBuffer(&m_ctx.materials.materialBufferRhi, 0, 9);
+        encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
+        encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
+        encoder.setMeshBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
+        encoder.setMeshBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
+        encoder.setMeshBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
+        encoder.setMeshBuffer(&m_ctx.meshletData.boundsBuffer, 0, 6);
+        encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
+        encoder.setMeshBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
+        encoder.setMeshBuffer(&m_ctx.materials.materialBuffer, 0, 9);
+        encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
+        encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
+        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
+        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
+        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
+        encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBuffer, 0, 6);
+        encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
+        encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
+        encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, 9);
         if (!materialTextures.empty()) {
             encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
             encoder.setMeshTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
         }
-        encoder.setFragmentSampler(&m_ctx.materials.samplerRhi, 0);
-        encoder.setMeshSampler(&m_ctx.materials.samplerRhi, 0);
+        encoder.setFragmentSampler(&m_ctx.materials.sampler, 0);
+        encoder.setMeshSampler(&m_ctx.materials.sampler, 0);
 
         // Per-node dispatch (CPU fallback)
         const auto& visibleNodes = m_frameContext->visibleMeshletNodes;

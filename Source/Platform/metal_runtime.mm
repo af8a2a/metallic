@@ -2,6 +2,7 @@
 
 #include "glfw_metal_bridge.h"
 
+#include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
 
@@ -82,12 +83,26 @@ void destroyMetalRuntime(MetalRuntimeContext& runtime) {
     runtime.layer = nullptr;
 }
 
+void* metalRuntimeCreateAutoreleasePool() {
+    return NS::AutoreleasePool::alloc()->init();
+}
+
+void metalRuntimeDestroyAutoreleasePool(void* poolHandle) {
+    if (poolHandle) {
+        static_cast<NS::AutoreleasePool*>(poolHandle)->release();
+    }
+}
+
 std::string metalRuntimeDeviceName(const MetalRuntimeContext& runtime) {
     auto* device = metalDevice(runtime.device);
     if (!device || !device->name()) {
         return {};
     }
     return device->name()->utf8String();
+}
+
+void metalRuntimeCollectGpuTimestamps(const MetalRuntimeContext& runtime) {
+    tracyMetalCollect(runtime.tracyContext);
 }
 
 void metalRuntimeSetDrawableSize(MetalRuntimeContext& runtime, uint32_t width, uint32_t height) {

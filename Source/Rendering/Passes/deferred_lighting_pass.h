@@ -76,14 +76,14 @@ public:
 
         encoder.setComputePipeline(pipeIt->second);
         encoder.setBytes(&lightUniforms, sizeof(lightUniforms), 0);
-        encoder.setBuffer(&m_ctx.sceneMesh.positionBufferRhi, 0, 1);
-        encoder.setBuffer(&m_ctx.sceneMesh.normalBufferRhi, 0, 2);
-        encoder.setBuffer(&m_ctx.meshletData.meshletBufferRhi, 0, 3);
-        encoder.setBuffer(&m_ctx.meshletData.meshletVerticesRhi, 0, 4);
-        encoder.setBuffer(&m_ctx.meshletData.meshletTrianglesRhi, 0, 5);
-        encoder.setBuffer(&m_ctx.sceneMesh.uvBufferRhi, 0, 6);
-        encoder.setBuffer(&m_ctx.meshletData.materialIDsRhi, 0, 7);
-        encoder.setBuffer(&m_ctx.materials.materialBufferRhi, 0, 8);
+        encoder.setBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
+        encoder.setBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
+        encoder.setBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
+        encoder.setBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
+        encoder.setBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
+        encoder.setBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 6);
+        encoder.setBuffer(&m_ctx.meshletData.materialIDs, 0, 7);
+        encoder.setBuffer(&m_ctx.materials.materialBuffer, 0, 8);
         if (m_frameContext->instanceTransformBufferRhi) {
             encoder.setBuffer(m_frameContext->instanceTransformBufferRhi, 0, 9);
         }
@@ -101,14 +101,14 @@ public:
         }
         const RhiTexture* shadowTex = m_shadowRead.isValid()
             ? m_frameGraph->getTexture(m_shadowRead)
-            : &m_ctx.shadowDummyTexRhi;
+            : &m_ctx.shadowDummyTex;
         encoder.setTexture(shadowTex, 99);
         const RhiTexture* skyTex = m_skyRead.isValid()
             ? m_frameGraph->getTexture(m_skyRead)
-            : &m_ctx.skyFallbackTexRhi;
+            : &m_ctx.skyFallbackTex;
         encoder.setTexture(skyTex, 100);
         encoder.setTexture(m_frameGraph->getTexture(motionVectorsOutput), 101);
-        encoder.setSampler(&m_ctx.materials.samplerRhi, 0);
+        encoder.setSampler(&m_ctx.materials.sampler, 0);
         encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
                                      {8, 8, 1});
     }

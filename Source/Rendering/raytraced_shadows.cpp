@@ -1,344 +1,321 @@
 #include "raytraced_shadows.h"
+
 #include "mesh_loader.h"
+#include "rhi_raytracing_utils.h"
+#include "rhi_resource_utils.h"
+#include "rhi_shader_utils.h"
 #include "scene_graph.h"
 
-#include <Metal/Metal.hpp>
-#include <spdlog/spdlog.h>
+#include <algorithm>
 #include <fstream>
+#include <spdlog/spdlog.h>
 #include <sstream>
+#include <string>
+#include <vector>
 
-static MTL::Buffer* metalBuffer(void* handle) {
-    return static_cast<MTL::Buffer*>(handle);
+namespace {
+
+RhiRayTracingInstanceDesc makeInstanceDesc(const float4x4& transform, uint32_t blasIndex) {
+    RhiRayTracingInstanceDesc instance{};
+    instance.transform[0] = transform[0].x;
+    instance.transform[1] = transform[0].y;
+    instance.transform[2] = transform[0].z;
+    instance.transform[3] = transform[1].x;
+    instance.transform[4] = transform[1].y;
+    instance.transform[5] = transform[1].z;
+    instance.transform[6] = transform[2].x;
+    instance.transform[7] = transform[2].y;
+    instance.transform[8] = transform[2].z;
+    instance.transform[9] = transform[3].x;
+    instance.transform[10] = transform[3].y;
+    instance.transform[11] = transform[3].z;
+    instance.accelerationStructureIndex = blasIndex;
+    instance.mask = 0xFF;
+    instance.opaque = true;
+    return instance;
 }
 
-static MTL::Device* metalDevice(void* handle) {
-    return static_cast<MTL::Device*>(handle);
+std::string loadTextFile(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return {};
+    }
+
+    std::stringstream stream;
+    stream << file.rdbuf();
+    return stream.str();
 }
 
-static MTL::CommandQueue* metalCommandQueue(void* handle) {
-    return static_cast<MTL::CommandQueue*>(handle);
-}
-
-static MTL::CommandBuffer* metalCommandBuffer(void* handle) {
-    return static_cast<MTL::CommandBuffer*>(handle);
-}
-
-static MTL::AccelerationStructure* metalAccelerationStructure(void* handle) {
-    return static_cast<MTL::AccelerationStructure*>(handle);
-}
-
-static MTL::ComputePipelineState* metalComputePipeline(void* handle) {
-    return static_cast<MTL::ComputePipelineState*>(handle);
-}
-
-static MTL::Library* metalLibrary(void* handle) {
-    return static_cast<MTL::Library*>(handle);
-}
+} // namespace
 
 void RaytracedShadowResources::release() {
-    for (void* blas : blasArray) {
-        if (blas) metalAccelerationStructure(blas)->release();
+    for (auto& blas : blasArray) {
+        rhiReleaseHandle(blas);
     }
     blasArray.clear();
-    if (tlas) { metalAccelerationStructure(tlas)->release(); tlas = nullptr; }
-    if (instanceDescriptorBuffer) { metalBuffer(instanceDescriptorBuffer)->release(); instanceDescriptorBuffer = nullptr; }
-    if (scratchBuffer) { metalBuffer(scratchBuffer)->release(); scratchBuffer = nullptr; }
-    if (pipeline) { metalComputePipeline(pipeline)->release(); pipeline = nullptr; }
-    if (library) { metalLibrary(library)->release(); library = nullptr; }
+    referencedBlas.clear();
+
+    rhiReleaseHandle(tlas);
+    rhiReleaseHandle(instanceDescriptorBuffer);
+    rhiReleaseHandle(scratchBuffer);
+    rhiReleaseHandle(pipeline);
+    rhiReleaseHandle(library);
+    instanceCount = 0;
 }
 
-bool buildAccelerationStructures(void* deviceHandle,
-                                 void* commandQueueHandle,
+bool buildAccelerationStructures(const RhiDevice& device,
+                                 const RhiCommandQueue& commandQueue,
                                  const LoadedMesh& mesh,
                                  const SceneGraph& sceneGraph,
                                  RaytracedShadowResources& out) {
-    auto* device = metalDevice(deviceHandle);
-    auto* commandQueue = metalCommandQueue(commandQueueHandle);
-    // --- Build one BLAS per glTF mesh ---
-    out.blasArray.resize(mesh.meshRanges.size(), nullptr);
+    out.release();
+    out.blasArray.resize(mesh.meshRanges.size());
 
-    for (size_t meshIdx = 0; meshIdx < mesh.meshRanges.size(); meshIdx++) {
-        const auto& range = mesh.meshRanges[meshIdx];
-        if (range.groupCount == 0) continue;
-
-        // Create geometry descriptors for each primitive group
-        std::vector<MTL::AccelerationStructureTriangleGeometryDescriptor*> geomDescs;
-        geomDescs.reserve(range.groupCount);
-
-        for (uint32_t g = 0; g < range.groupCount; g++) {
-            const auto& group = mesh.primitiveGroups[range.firstGroup + g];
-            auto* triGeom = MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
-            triGeom->setVertexBuffer(metalBuffer(mesh.positionBuffer));
-            triGeom->setVertexBufferOffset(0);
-            triGeom->setVertexStride(sizeof(float) * 3);
-            triGeom->setVertexFormat(MTL::AttributeFormatFloat3);
-            triGeom->setIndexBuffer(metalBuffer(mesh.indexBuffer));
-            triGeom->setIndexBufferOffset(group.indexOffset * sizeof(uint32_t));
-            triGeom->setIndexType(MTL::IndexTypeUInt32);
-            triGeom->setTriangleCount(group.indexCount / 3);
-            triGeom->setOpaque(true);
-            geomDescs.push_back(triGeom);
+    for (size_t meshIndex = 0; meshIndex < mesh.meshRanges.size(); ++meshIndex) {
+        const auto& range = mesh.meshRanges[meshIndex];
+        if (range.groupCount == 0) {
+            continue;
         }
 
-        auto* geomArray = NS::Array::array(
-            reinterpret_cast<const NS::Object* const*>(geomDescs.data()),
-            geomDescs.size());
+        std::vector<RhiRayTracingGeometryRange> geometryRanges;
+        geometryRanges.reserve(range.groupCount);
+        for (uint32_t groupIndex = 0; groupIndex < range.groupCount; ++groupIndex) {
+            const auto& group = mesh.primitiveGroups[range.firstGroup + groupIndex];
+            geometryRanges.push_back({group.indexOffset, group.indexCount});
+        }
 
-        auto* primDesc = MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
-        primDesc->setGeometryDescriptors(geomArray);
+        std::string errorMessage;
+        RhiAccelerationStructureHandle blas;
+        if (!rhiBuildBottomLevelAccelerationStructure(device,
+                                                      commandQueue,
+                                                      mesh.positionBuffer,
+                                                      static_cast<uint32_t>(sizeof(float) * 3),
+                                                      mesh.indexBuffer,
+                                                      geometryRanges.data(),
+                                                      static_cast<uint32_t>(geometryRanges.size()),
+                                                      blas,
+                                                      errorMessage)) {
+            spdlog::error("Failed to build BLAS for mesh {}: {}", meshIndex, errorMessage);
+            out.release();
+            return false;
+        }
 
-        auto sizes = device->accelerationStructureSizes(primDesc);
-        auto* blas = device->newAccelerationStructure(sizes.accelerationStructureSize);
-        auto* scratch = device->newBuffer(sizes.buildScratchBufferSize, MTL::ResourceStorageModePrivate);
-
-        auto* cmdBuf = commandQueue->commandBuffer();
-        auto* enc = cmdBuf->accelerationStructureCommandEncoder();
-        enc->buildAccelerationStructure(blas, primDesc, scratch, 0);
-        enc->endEncoding();
-        cmdBuf->commit();
-        cmdBuf->waitUntilCompleted();
-
-        scratch->release();
-        primDesc->release();
-        for (auto* gd : geomDescs) gd->release();
-
-        out.blasArray[meshIdx] = blas;
+        out.blasArray[meshIndex] = blas;
     }
 
-    // --- Build TLAS ---
-    // Collect instances: one per scene node that has a mesh
-    std::vector<MTL::AccelerationStructureInstanceDescriptor> instances;
-    out.referencedBLAS.clear();
+    std::vector<RhiRayTracingInstanceDesc> instances;
+    out.referencedBlas.clear();
 
     for (const auto& node : sceneGraph.nodes) {
-        if (node.meshIndex < 0) continue;
-        if (!sceneGraph.isNodeVisible(node.id)) continue;
-        uint32_t mi = static_cast<uint32_t>(node.meshIndex);
-        if (mi >= out.blasArray.size() || !out.blasArray[mi]) continue;
+        if (node.meshIndex < 0 || !sceneGraph.isNodeVisible(node.id)) {
+            continue;
+        }
 
-        // Find or add this BLAS to the referenced list
-        uint32_t blasIdx = UINT32_MAX;
-        for (uint32_t i = 0; i < out.referencedBLAS.size(); i++) {
-            if (out.referencedBLAS[i] == out.blasArray[mi]) {
-                blasIdx = i;
+        const uint32_t meshIndex = static_cast<uint32_t>(node.meshIndex);
+        if (meshIndex >= out.blasArray.size() || !out.blasArray[meshIndex].nativeHandle()) {
+            continue;
+        }
+
+        uint32_t blasIndex = UINT32_MAX;
+        for (uint32_t index = 0; index < out.referencedBlas.size(); ++index) {
+            if (out.referencedBlas[index].nativeHandle() == out.blasArray[meshIndex].nativeHandle()) {
+                blasIndex = index;
                 break;
             }
         }
-        if (blasIdx == UINT32_MAX) {
-            blasIdx = static_cast<uint32_t>(out.referencedBLAS.size());
-            out.referencedBLAS.push_back(out.blasArray[mi]);
+
+        if (blasIndex == UINT32_MAX) {
+            blasIndex = static_cast<uint32_t>(out.referencedBlas.size());
+            out.referencedBlas.push_back(out.blasArray[meshIndex]);
         }
 
-        MTL::AccelerationStructureInstanceDescriptor inst = {};
-        // Convert column-major float4x4 to PackedFloat4x3 (4 columns, 3 rows each)
-        const float4x4& m = node.transform.worldMatrix;
-        inst.transformationMatrix.columns[0] = {m[0].x, m[0].y, m[0].z};
-        inst.transformationMatrix.columns[1] = {m[1].x, m[1].y, m[1].z};
-        inst.transformationMatrix.columns[2] = {m[2].x, m[2].y, m[2].z};
-        inst.transformationMatrix.columns[3] = {m[3].x, m[3].y, m[3].z};
-        inst.options = MTL::AccelerationStructureInstanceOptionOpaque;
-        inst.mask = 0xFF;
-        inst.intersectionFunctionTableOffset = 0;
-        inst.accelerationStructureIndex = blasIdx;
-        instances.push_back(inst);
+        instances.push_back(makeInstanceDesc(node.transform.worldMatrix, blasIndex));
     }
 
     if (instances.empty()) {
         spdlog::error("No mesh instances found for TLAS");
+        out.release();
         return false;
     }
 
     out.instanceCount = static_cast<uint32_t>(instances.size());
-    out.instanceDescriptorBuffer = device->newBuffer(
-        instances.data(),
-        instances.size() * sizeof(MTL::AccelerationStructureInstanceDescriptor),
-        MTL::ResourceStorageModeShared);
-
-    auto* tlasDesc = MTL::InstanceAccelerationStructureDescriptor::alloc()->init();
-    tlasDesc->setInstanceCount(instances.size());
-    tlasDesc->setInstanceDescriptorBuffer(metalBuffer(out.instanceDescriptorBuffer));
-    tlasDesc->setInstanceDescriptorType(
-        MTL::AccelerationStructureInstanceDescriptorTypeDefault);
-
-    auto* blasNSArray = NS::Array::array(
-        reinterpret_cast<const NS::Object* const*>(out.referencedBLAS.data()),
-        out.referencedBLAS.size());
-    tlasDesc->setInstancedAccelerationStructures(blasNSArray);
-
-    auto tlasSizes = device->accelerationStructureSizes(tlasDesc);
-    out.tlas = device->newAccelerationStructure(tlasSizes.accelerationStructureSize);
-    out.scratchBuffer = device->newBuffer(tlasSizes.buildScratchBufferSize,
-                                          MTL::ResourceStorageModePrivate);
-
-    auto* cmdBuf = commandQueue->commandBuffer();
-    auto* enc = cmdBuf->accelerationStructureCommandEncoder();
-    enc->buildAccelerationStructure(metalAccelerationStructure(out.tlas),
-                                    tlasDesc,
-                                    metalBuffer(out.scratchBuffer),
-                                    0);
-    enc->endEncoding();
-    cmdBuf->commit();
-    cmdBuf->waitUntilCompleted();
-
-    tlasDesc->release();
+    std::vector<const RhiAccelerationStructure*> referencedBlasViews;
+    referencedBlasViews.reserve(out.referencedBlas.size());
+    for (const auto& blas : out.referencedBlas) {
+        referencedBlasViews.push_back(&blas);
+    }
+    std::string errorMessage;
+    if (!rhiBuildTopLevelAccelerationStructure(device,
+                                               commandQueue,
+                                               referencedBlasViews.data(),
+                                               static_cast<uint32_t>(referencedBlasViews.size()),
+                                               instances.data(),
+                                               out.instanceCount,
+                                               out.tlas,
+                                               out.instanceDescriptorBuffer,
+                                               out.scratchBuffer,
+                                               errorMessage)) {
+        spdlog::error("Failed to build TLAS: {}", errorMessage);
+        out.release();
+        return false;
+    }
 
     spdlog::info("Built TLAS with {} instances, {} unique BLAS",
-                 instances.size(), out.referencedBLAS.size());
+                 instances.size(),
+                 out.referencedBlas.size());
     return true;
 }
 
-void updateTLAS(void* commandBufferHandle,
+void updateTLAS(const RhiNativeCommandBuffer& commandBuffer,
                 const SceneGraph& sceneGraph,
                 RaytracedShadowResources& res) {
-    auto* commandBuffer = metalCommandBuffer(commandBufferHandle);
-    if (!res.tlas || !res.instanceDescriptorBuffer || res.instanceCount == 0)
+    if (!res.tlas.nativeHandle() ||
+        !res.instanceDescriptorBuffer.nativeHandle() ||
+        !res.scratchBuffer.nativeHandle() ||
+        res.instanceCount == 0) {
         return;
-
-    // Rewrite instance transforms from current scene graph world matrices
-    auto* instDescs = static_cast<MTL::AccelerationStructureInstanceDescriptor*>(
-        metalBuffer(res.instanceDescriptorBuffer)->contents());
-
-    uint32_t idx = 0;
-    for (const auto& node : sceneGraph.nodes) {
-        if (node.meshIndex < 0) continue;
-        if (!sceneGraph.isNodeVisible(node.id)) continue;
-        uint32_t mi = static_cast<uint32_t>(node.meshIndex);
-        if (mi >= res.blasArray.size() || !res.blasArray[mi]) continue;
-        if (idx >= res.instanceCount) break;
-
-        const float4x4& m = node.transform.worldMatrix;
-        instDescs[idx].transformationMatrix.columns[0] = {m[0].x, m[0].y, m[0].z};
-        instDescs[idx].transformationMatrix.columns[1] = {m[1].x, m[1].y, m[1].z};
-        instDescs[idx].transformationMatrix.columns[2] = {m[2].x, m[2].y, m[2].z};
-        instDescs[idx].transformationMatrix.columns[3] = {m[3].x, m[3].y, m[3].z};
-        idx++;
     }
 
-    // Rebuild TLAS with updated transforms
-    auto* tlasDesc = MTL::InstanceAccelerationStructureDescriptor::alloc()->init();
-    tlasDesc->setInstanceCount(res.instanceCount);
-    tlasDesc->setInstanceDescriptorBuffer(metalBuffer(res.instanceDescriptorBuffer));
-    tlasDesc->setInstanceDescriptorType(
-        MTL::AccelerationStructureInstanceDescriptorTypeDefault);
+    std::vector<RhiRayTracingInstanceDesc> instances;
+    instances.reserve(res.instanceCount);
 
-    auto* blasNSArray = NS::Array::array(
-        reinterpret_cast<const NS::Object* const*>(res.referencedBLAS.data()),
-        res.referencedBLAS.size());
-    tlasDesc->setInstancedAccelerationStructures(blasNSArray);
+    for (const auto& node : sceneGraph.nodes) {
+        if (node.meshIndex < 0 || !sceneGraph.isNodeVisible(node.id)) {
+            continue;
+        }
 
-    auto* enc = commandBuffer->accelerationStructureCommandEncoder();
-    enc->buildAccelerationStructure(metalAccelerationStructure(res.tlas),
-                                    tlasDesc,
-                                    metalBuffer(res.scratchBuffer),
-                                    0);
-    enc->endEncoding();
+        const uint32_t meshIndex = static_cast<uint32_t>(node.meshIndex);
+        if (meshIndex >= res.blasArray.size() || !res.blasArray[meshIndex].nativeHandle()) {
+            continue;
+        }
 
-    tlasDesc->release();
+        uint32_t blasIndex = UINT32_MAX;
+        for (uint32_t index = 0; index < res.referencedBlas.size(); ++index) {
+            if (res.referencedBlas[index].nativeHandle() == res.blasArray[meshIndex].nativeHandle()) {
+                blasIndex = index;
+                break;
+            }
+        }
+
+        if (blasIndex == UINT32_MAX) {
+            continue;
+        }
+
+        instances.push_back(makeInstanceDesc(node.transform.worldMatrix, blasIndex));
+        if (instances.size() >= res.instanceCount) {
+            break;
+        }
+    }
+
+    if (instances.empty()) {
+        return;
+    }
+
+    std::vector<const RhiAccelerationStructure*> referencedBlasViews;
+    referencedBlasViews.reserve(res.referencedBlas.size());
+    for (const auto& blas : res.referencedBlas) {
+        referencedBlasViews.push_back(&blas);
+    }
+    std::string errorMessage;
+    if (!rhiUpdateTopLevelAccelerationStructure(commandBuffer,
+                                                referencedBlasViews.data(),
+                                                static_cast<uint32_t>(referencedBlasViews.size()),
+                                                instances.data(),
+                                                static_cast<uint32_t>(instances.size()),
+                                                res.tlas,
+                                                res.instanceDescriptorBuffer,
+                                                res.scratchBuffer,
+                                                errorMessage)) {
+        spdlog::error("Failed to update TLAS: {}", errorMessage);
+    } else if (instances.size() < res.instanceCount) {
+        spdlog::debug("TLAS updated with {} / {} instances", instances.size(), res.instanceCount);
+    }
 }
 
-bool createShadowPipeline(void* deviceHandle,
+bool createShadowPipeline(const RhiDevice& device,
                           RaytracedShadowResources& out,
                           const char* shaderBasePath) {
-    auto* device = metalDevice(deviceHandle);
     std::string shaderPath = "Shaders/Raytracing/raytraced_shadow.metal";
     if (shaderBasePath) {
         shaderPath = std::string(shaderBasePath) + "/" + shaderPath;
     }
+
     spdlog::info("Loading shader: {}", shaderPath);
-    std::ifstream file(shaderPath);
-    if (!file.is_open()) {
+    std::string metalSource = loadTextFile(shaderPath);
+    if (metalSource.empty()) {
         spdlog::error("Failed to open {}", shaderPath);
         return false;
     }
-    std::stringstream ss;
-    ss << file.rdbuf();
-    std::string metalSource = ss.str();
 
-    NS::Error* error = nullptr;
-    auto* sourceStr = NS::String::string(metalSource.c_str(), NS::UTF8StringEncoding);
-    auto* compileOpts = MTL::CompileOptions::alloc()->init();
-    compileOpts->setLanguageVersion(MTL::LanguageVersion3_1);
+    RhiShaderLibrarySourceDesc libraryDesc;
+    libraryDesc.languageVersion = 31;
 
-    out.library = device->newLibrary(sourceStr, compileOpts, &error);
-    compileOpts->release();
-    if (!out.library) {
-        spdlog::error("Failed to compile shadow ray shader: {}",
-                      error->localizedDescription()->utf8String());
+    std::string errorMessage;
+    RhiShaderLibraryHandle newLibrary = rhiCreateShaderLibraryFromSource(device, metalSource, libraryDesc, errorMessage);
+    if (!newLibrary.nativeHandle()) {
+        spdlog::error("Failed to compile shadow ray shader: {}", errorMessage);
         return false;
     }
 
-    auto* fn = metalLibrary(out.library)->newFunction(
-        NS::String::string("shadowRayMain", NS::UTF8StringEncoding));
-    if (!fn) {
-        spdlog::error("Failed to find shadowRayMain function");
+    RhiComputePipelineHandle newPipeline = rhiCreateComputePipelineFromLibrary(device,
+                                                                               newLibrary,
+                                                                               "shadowRayMain",
+                                                                               errorMessage);
+    if (!newPipeline.nativeHandle()) {
+        spdlog::error("Failed to create shadow ray pipeline: {}", errorMessage);
+        rhiReleaseHandle(newLibrary);
         return false;
     }
 
-    out.pipeline = device->newComputePipelineState(fn, &error);
-    fn->release();
-    if (!out.pipeline) {
-        spdlog::error("Failed to create shadow ray pipeline: {}",
-                      error->localizedDescription()->utf8String());
-        return false;
-    }
+    rhiReleaseHandle(out.pipeline);
+    rhiReleaseHandle(out.library);
+    out.library = newLibrary;
+    out.pipeline = newPipeline;
 
     spdlog::info("Shadow ray pipeline created");
     return true;
 }
 
-bool reloadShadowPipeline(void* deviceHandle,
+bool reloadShadowPipeline(const RhiDevice& device,
                           RaytracedShadowResources& res,
                           const char* shaderBasePath) {
-    auto* device = metalDevice(deviceHandle);
     std::string shaderPath = "Shaders/Raytracing/raytraced_shadow.metal";
     if (shaderBasePath) {
         shaderPath = std::string(shaderBasePath) + "/" + shaderPath;
     }
+
     spdlog::info("Reloading shader: {}", shaderPath);
-    std::ifstream file(shaderPath);
-    if (!file.is_open()) {
+    std::string metalSource = loadTextFile(shaderPath);
+    if (metalSource.empty()) {
         spdlog::error("Hot-reload: Failed to open {}", shaderPath);
         return false;
     }
-    std::stringstream ss;
-    ss << file.rdbuf();
-    std::string metalSource = ss.str();
 
-    NS::Error* error = nullptr;
-    auto* sourceStr = NS::String::string(metalSource.c_str(), NS::UTF8StringEncoding);
-    auto* compileOpts = MTL::CompileOptions::alloc()->init();
-    compileOpts->setLanguageVersion(MTL::LanguageVersion3_1);
+    RhiShaderLibrarySourceDesc libraryDesc;
+    libraryDesc.languageVersion = 31;
 
-    auto* newLibrary = device->newLibrary(sourceStr, compileOpts, &error);
-    compileOpts->release();
-    if (!newLibrary) {
-        spdlog::error("Hot-reload: Failed to compile shadow shader: {}",
-                      error->localizedDescription()->utf8String());
+    std::string errorMessage;
+    RhiShaderLibraryHandle newLibrary = rhiCreateShaderLibraryFromSource(device, metalSource, libraryDesc, errorMessage);
+    if (!newLibrary.nativeHandle()) {
+        spdlog::error("Hot-reload: Failed to compile shadow shader: {}", errorMessage);
         return false;
     }
 
-    auto* fn = newLibrary->newFunction(
-        NS::String::string("shadowRayMain", NS::UTF8StringEncoding));
-    if (!fn) {
-        spdlog::error("Hot-reload: Failed to find shadowRayMain function");
-        newLibrary->release();
+    RhiComputePipelineHandle newPipeline = rhiCreateComputePipelineFromLibrary(device,
+                                                                               newLibrary,
+                                                                               "shadowRayMain",
+                                                                               errorMessage);
+    if (!newPipeline.nativeHandle()) {
+        spdlog::error("Hot-reload: Failed to create shadow pipeline: {}", errorMessage);
+        rhiReleaseHandle(newLibrary);
         return false;
     }
 
-    auto* newPipeline = device->newComputePipelineState(fn, &error);
-    fn->release();
-    if (!newPipeline) {
-        spdlog::error("Hot-reload: Failed to create shadow pipeline: {}",
-                      error->localizedDescription()->utf8String());
-        newLibrary->release();
-        return false;
-    }
-
-    // Success — swap old resources
-    if (res.pipeline) metalComputePipeline(res.pipeline)->release();
-    if (res.library) metalLibrary(res.library)->release();
+    rhiReleaseHandle(res.pipeline);
+    rhiReleaseHandle(res.library);
     res.pipeline = newPipeline;
     res.library = newLibrary;
+
     spdlog::info("Hot-reload: Shadow ray pipeline reloaded");
     return true;
 }

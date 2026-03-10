@@ -6,6 +6,7 @@ extern "C" {
 
 void imguiInit(void* mtlDevice);
 void imguiNewFrame(void* mtlRenderPassDescriptor);
+void imguiNewFrameForTargets(void* colorTextureHandle, void* depthTextureHandle);
 void imguiRenderDrawData(void* mtlCommandBuffer, void* mtlRenderCommandEncoder);
 void imguiShutdown(void);
 

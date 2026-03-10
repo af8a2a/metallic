@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -17,7 +18,11 @@ bool createMetalRuntime(void* glfwWindowHandle,
                         std::string& errorMessage);
 void destroyMetalRuntime(MetalRuntimeContext& runtime);
 
+void* metalRuntimeCreateAutoreleasePool();
+void metalRuntimeDestroyAutoreleasePool(void* poolHandle);
+
 std::string metalRuntimeDeviceName(const MetalRuntimeContext& runtime);
+void metalRuntimeCollectGpuTimestamps(const MetalRuntimeContext& runtime);
 void metalRuntimeSetDrawableSize(MetalRuntimeContext& runtime, uint32_t width, uint32_t height);
 void* metalRuntimeNextDrawable(MetalRuntimeContext& runtime);
 void* metalRuntimeDrawableTexture(void* drawableHandle);

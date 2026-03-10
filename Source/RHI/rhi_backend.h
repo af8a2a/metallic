@@ -16,6 +16,11 @@ class RhiComputePipeline;
 class RhiSampler;
 class RhiDepthStencilState;
 class RhiAccelerationStructure;
+class RhiDevice;
+class RhiCommandQueue;
+class RhiNativeCommandBuffer;
+class RhiShaderLibrary;
+class RhiVertexDescriptor;
 
 enum class RhiBackendType {
     Metal,
@@ -194,6 +199,101 @@ class RhiComputePipeline {
 public:
     virtual ~RhiComputePipeline() = default;
     virtual void* nativeHandle() const = 0;
+};
+
+class RhiDevice {
+public:
+    virtual ~RhiDevice() = default;
+    virtual void* nativeHandle() const = 0;
+};
+
+class RhiCommandQueue {
+public:
+    virtual ~RhiCommandQueue() = default;
+    virtual void* nativeHandle() const = 0;
+};
+
+class RhiNativeCommandBuffer {
+public:
+    virtual ~RhiNativeCommandBuffer() = default;
+    virtual void* nativeHandle() const = 0;
+};
+
+class RhiShaderLibrary {
+public:
+    virtual ~RhiShaderLibrary() = default;
+    virtual void* nativeHandle() const = 0;
+};
+
+class RhiVertexDescriptor {
+public:
+    virtual ~RhiVertexDescriptor() = default;
+    virtual void* nativeHandle() const = 0;
+};
+
+class RhiDeviceHandle final : public RhiDevice {
+public:
+    constexpr RhiDeviceHandle() = default;
+    explicit constexpr RhiDeviceHandle(void* native)
+        : m_native(native) {}
+
+    void setNativeHandle(void* native) { m_native = native; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
+};
+
+class RhiCommandQueueHandle final : public RhiCommandQueue {
+public:
+    constexpr RhiCommandQueueHandle() = default;
+    explicit constexpr RhiCommandQueueHandle(void* native)
+        : m_native(native) {}
+
+    void setNativeHandle(void* native) { m_native = native; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
+};
+
+class RhiNativeCommandBufferHandle final : public RhiNativeCommandBuffer {
+public:
+    constexpr RhiNativeCommandBufferHandle() = default;
+    explicit constexpr RhiNativeCommandBufferHandle(void* native)
+        : m_native(native) {}
+
+    void setNativeHandle(void* native) { m_native = native; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
+};
+
+class RhiShaderLibraryHandle final : public RhiShaderLibrary {
+public:
+    constexpr RhiShaderLibraryHandle() = default;
+    explicit constexpr RhiShaderLibraryHandle(void* native)
+        : m_native(native) {}
+
+    void setNativeHandle(void* native) { m_native = native; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
+};
+
+class RhiVertexDescriptorHandle final : public RhiVertexDescriptor {
+public:
+    constexpr RhiVertexDescriptorHandle() = default;
+    explicit constexpr RhiVertexDescriptorHandle(void* native)
+        : m_native(native) {}
+
+    void setNativeHandle(void* native) { m_native = native; }
+    void* nativeHandle() const override { return m_native; }
+
+private:
+    void* m_native = nullptr;
 };
 
 class RhiTextureHandle final : public RhiTexture {

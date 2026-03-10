@@ -23,18 +23,13 @@ struct GPUMeshletBounds {
 static_assert(sizeof(GPUMeshletBounds) == 48, "GPUMeshletBounds must match shader layout");
 
 struct MeshletData {
-    void* meshletBuffer = nullptr;
-    RhiBufferHandle meshletBufferRhi;
-    void* meshletVertices = nullptr;
-    void* meshletTriangles = nullptr;
-    void* boundsBuffer = nullptr;
-    void* materialIDs = nullptr;
-    RhiBufferHandle meshletVerticesRhi;
-    RhiBufferHandle meshletTrianglesRhi;
-    RhiBufferHandle boundsBufferRhi;
-    RhiBufferHandle materialIDsRhi;
+    RhiBufferHandle meshletBuffer;
+    RhiBufferHandle meshletVertices;
+    RhiBufferHandle meshletTriangles;
+    RhiBufferHandle boundsBuffer;
+    RhiBufferHandle materialIDs;
     uint32_t meshletCount = 0;
     std::vector<uint32_t> meshletsPerGroup;
 };
 
-bool buildMeshlets(void* deviceHandle, const LoadedMesh& mesh, MeshletData& out);
+bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData& out);

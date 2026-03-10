@@ -2,20 +2,15 @@
 #include <cgltf.h>
 
 #include "mesh_loader.h"
+#include "rhi_resource_utils.h"
 
-#include <Metal/Metal.hpp>
 #include <spdlog/spdlog.h>
 #include <cstring>
 #include <vector>
 #include <cfloat>
 #include <algorithm>
 
-static MTL::Device* metalDevice(void* handle) {
-    return static_cast<MTL::Device*>(handle);
-}
-
-bool loadGLTFMesh(void* deviceHandle, const std::string& gltfPath, LoadedMesh& out) {
-    auto* device = metalDevice(deviceHandle);
+bool loadGLTFMesh(const RhiDevice& device, const std::string& gltfPath, LoadedMesh& out) {
     cgltf_options options = {};
     cgltf_data* data = nullptr;
 
@@ -146,18 +141,14 @@ bool loadGLTFMesh(void* deviceHandle, const std::string& gltfPath, LoadedMesh& o
         return false;
     }
 
-    out.positionBuffer = device->newBuffer(
-        allPositions.data(), allPositions.size() * sizeof(float),
-        MTL::ResourceStorageModeShared);
-    out.normalBuffer = device->newBuffer(
-        allNormals.data(), allNormals.size() * sizeof(float),
-        MTL::ResourceStorageModeShared);
-    out.uvBuffer = device->newBuffer(
-        allUVs.data(), allUVs.size() * sizeof(float),
-        MTL::ResourceStorageModeShared);
-    out.indexBuffer = device->newBuffer(
-        allIndices.data(), allIndices.size() * sizeof(uint32_t),
-        MTL::ResourceStorageModeShared);
+    out.positionBuffer = rhiCreateSharedBuffer(
+        device, allPositions.data(), allPositions.size() * sizeof(float), "Mesh Positions");
+    out.normalBuffer = rhiCreateSharedBuffer(
+        device, allNormals.data(), allNormals.size() * sizeof(float), "Mesh Normals");
+    out.uvBuffer = rhiCreateSharedBuffer(
+        device, allUVs.data(), allUVs.size() * sizeof(float), "Mesh UVs");
+    out.indexBuffer = rhiCreateSharedBuffer(
+        device, allIndices.data(), allIndices.size() * sizeof(uint32_t), "Mesh Indices");
 
     out.vertexCount = static_cast<uint32_t>(allPositions.size() / 3);
     out.indexCount  = static_cast<uint32_t>(allIndices.size());

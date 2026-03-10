@@ -3,23 +3,76 @@
 #include <slang.h>
 #include <slang-com-ptr.h>
 #include <spdlog/spdlog.h>
+
 #include <cstring>
 #include <regex>
 #include <vector>
 
 namespace {
 
-std::vector<uint32_t> compileSlangComponentToSpirv(const char* shaderPath,
-                                                   const char* searchPath,
-                                                   const std::vector<const char*>& entryPoints,
-                                                   const char* label) {
-    Slang::ComPtr<slang::IGlobalSession> globalSession;
-    slang::createGlobalSession(globalSession.writeRef());
+enum class SlangOutputKind {
+    SourceText,
+    SpirvBinary,
+};
+
+struct SlangTargetConfig {
+    SlangCompileTarget format = SLANG_TARGET_NONE;
+    const char* profile = nullptr;
+    const char* backendLabel = nullptr;
+};
+
+bool resolveSlangTarget(RhiBackendType backend,
+                        SlangOutputKind outputKind,
+                        SlangTargetConfig& outConfig) {
+    switch (outputKind) {
+    case SlangOutputKind::SourceText:
+        if (backend == RhiBackendType::Metal) {
+            outConfig.format = SLANG_METAL;
+            outConfig.profile = "metal";
+            outConfig.backendLabel = "Metal";
+            return true;
+        }
+        spdlog::error("Slang source output is not supported for this backend");
+        return false;
+
+    case SlangOutputKind::SpirvBinary:
+        if (backend == RhiBackendType::Vulkan) {
+            outConfig.format = SLANG_SPIRV;
+            outConfig.profile = "spirv_1_5";
+            outConfig.backendLabel = "Vulkan";
+            return true;
+        }
+        spdlog::error("SPIR-V output is only valid for the Vulkan backend");
+        return false;
+    }
+
+    return false;
+}
+
+void logDiagnostics(const char* prefix, slang::IBlob* diagnostics) {
+    if (!diagnostics) {
+        return;
+    }
+
+    spdlog::error("{}: {}",
+                  prefix,
+                  static_cast<const char*>(diagnostics->getBufferPointer()));
+}
+
+bool createSession(const SlangTargetConfig& targetConfig,
+                   const char* shaderPath,
+                   const char* searchPath,
+                   Slang::ComPtr<slang::IGlobalSession>& outGlobalSession,
+                   Slang::ComPtr<slang::ISession>& outSession) {
+    if (SLANG_FAILED(slang::createGlobalSession(outGlobalSession.writeRef()))) {
+        spdlog::error("Slang: failed to create global session for {}", shaderPath);
+        return false;
+    }
 
     slang::SessionDesc sessionDesc = {};
     slang::TargetDesc targetDesc = {};
-    targetDesc.format = SLANG_SPIRV;
-    targetDesc.profile = globalSession->findProfile("spirv_1_5");
+    targetDesc.format = targetConfig.format;
+    targetDesc.profile = outGlobalSession->findProfile(targetConfig.profile);
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
     if (searchPath) {
@@ -27,25 +80,41 @@ std::vector<uint32_t> compileSlangComponentToSpirv(const char* shaderPath,
         sessionDesc.searchPathCount = 1;
     }
 
-    Slang::ComPtr<slang::ISession> session;
-    if (SLANG_FAILED(globalSession->createSession(sessionDesc, session.writeRef()))) {
-        spdlog::error("Slang: failed to create SPIR-V session for {}", shaderPath);
-        return {};
+    if (SLANG_FAILED(outGlobalSession->createSession(sessionDesc, outSession.writeRef()))) {
+        spdlog::error("Slang: failed to create {} session for {}",
+                      targetConfig.backendLabel,
+                      shaderPath);
+        return false;
     }
 
+    return true;
+}
+
+slang::IModule* loadModule(slang::ISession* session,
+                           const char* shaderPath,
+                           const char* searchPath,
+                           const char* label,
+                           Slang::ComPtr<slang::IBlob>& ioDiagnostics) {
     spdlog::info("Loading {} shader: {} (search path: {})",
-                 label, shaderPath, searchPath ? searchPath : "<cwd>");
+                 label,
+                 shaderPath,
+                 searchPath ? searchPath : "<cwd>");
 
-    Slang::ComPtr<slang::IBlob> diagnostics;
-    slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
+    slang::IModule* module = session->loadModule(shaderPath, ioDiagnostics.writeRef());
     if (!module) {
-        if (diagnostics) {
-            spdlog::error("Slang load error: {}",
-                          static_cast<const char*>(diagnostics->getBufferPointer()));
-        }
-        return {};
+        logDiagnostics("Slang load error", ioDiagnostics);
+        return nullptr;
     }
 
+    return module;
+}
+
+bool buildLinkedProgram(slang::ISession* session,
+                        slang::IModule* module,
+                        const std::vector<const char*>& entryPoints,
+                        const char* shaderPath,
+                        Slang::ComPtr<slang::IBlob>& ioDiagnostics,
+                        Slang::ComPtr<slang::IComponentType>& outLinkedProgram) {
     std::vector<slang::IComponentType*> components;
     components.reserve(entryPoints.size() + 1);
     components.push_back(module);
@@ -58,232 +127,113 @@ std::vector<uint32_t> compileSlangComponentToSpirv(const char* shaderPath,
         module->findEntryPointByName(entryPointName, entryPoint.writeRef());
         if (!entryPoint) {
             spdlog::error("Slang: entry point '{}' not found in {}", entryPointName, shaderPath);
-            return {};
+            return false;
         }
+
         components.push_back(entryPoint);
         resolvedEntries.push_back(entryPoint);
     }
 
     Slang::ComPtr<slang::IComponentType> program;
     if (SLANG_FAILED(session->createCompositeComponentType(
-            components.data(), components.size(), program.writeRef(), diagnostics.writeRef()))) {
-        if (diagnostics) {
-            spdlog::error("Slang program creation error: {}",
-                          static_cast<const char*>(diagnostics->getBufferPointer()));
-        }
+            components.data(),
+            components.size(),
+            program.writeRef(),
+            ioDiagnostics.writeRef()))) {
+        logDiagnostics("Slang program creation error", ioDiagnostics);
+        return false;
+    }
+
+    if (SLANG_FAILED(program->link(outLinkedProgram.writeRef(), ioDiagnostics.writeRef()))) {
+        logDiagnostics("Slang link error", ioDiagnostics);
+        return false;
+    }
+
+    return true;
+}
+
+std::string compileSlangComponentToSource(RhiBackendType backend,
+                                          const char* shaderPath,
+                                          const char* searchPath,
+                                          const std::vector<const char*>& entryPoints,
+                                          const char* label) {
+    SlangTargetConfig targetConfig;
+    if (!resolveSlangTarget(backend, SlangOutputKind::SourceText, targetConfig)) {
+        return {};
+    }
+
+    Slang::ComPtr<slang::IGlobalSession> globalSession;
+    Slang::ComPtr<slang::ISession> session;
+    if (!createSession(targetConfig, shaderPath, searchPath, globalSession, session)) {
+        return {};
+    }
+
+    Slang::ComPtr<slang::IBlob> diagnostics;
+    slang::IModule* module = loadModule(session, shaderPath, searchPath, label, diagnostics);
+    if (!module) {
         return {};
     }
 
     Slang::ComPtr<slang::IComponentType> linkedProgram;
-    if (SLANG_FAILED(program->link(linkedProgram.writeRef(), diagnostics.writeRef()))) {
-        if (diagnostics) {
-            spdlog::error("Slang link error: {}",
-                          static_cast<const char*>(diagnostics->getBufferPointer()));
-        }
+    if (!buildLinkedProgram(session, module, entryPoints, shaderPath, diagnostics, linkedProgram)) {
         return {};
     }
 
-    Slang::ComPtr<slang::IBlob> spirvCode;
-    if (SLANG_FAILED(linkedProgram->getTargetCode(0, spirvCode.writeRef(), diagnostics.writeRef())) || !spirvCode) {
-        if (diagnostics) {
-            spdlog::error("Slang SPIR-V compile error: {}",
-                          static_cast<const char*>(diagnostics->getBufferPointer()));
-        }
+    Slang::ComPtr<slang::IBlob> sourceCode;
+    if (SLANG_FAILED(linkedProgram->getTargetCode(0, sourceCode.writeRef(), diagnostics.writeRef())) || !sourceCode) {
+        logDiagnostics("Slang source compile error", diagnostics);
         return {};
     }
 
-    const size_t byteSize = spirvCode->getBufferSize();
+    return std::string(static_cast<const char*>(sourceCode->getBufferPointer()),
+                       sourceCode->getBufferSize());
+}
+
+std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
+                                                    const char* shaderPath,
+                                                    const char* searchPath,
+                                                    const std::vector<const char*>& entryPoints,
+                                                    const char* label) {
+    SlangTargetConfig targetConfig;
+    if (!resolveSlangTarget(backend, SlangOutputKind::SpirvBinary, targetConfig)) {
+        return {};
+    }
+
+    Slang::ComPtr<slang::IGlobalSession> globalSession;
+    Slang::ComPtr<slang::ISession> session;
+    if (!createSession(targetConfig, shaderPath, searchPath, globalSession, session)) {
+        return {};
+    }
+
+    Slang::ComPtr<slang::IBlob> diagnostics;
+    slang::IModule* module = loadModule(session, shaderPath, searchPath, label, diagnostics);
+    if (!module) {
+        return {};
+    }
+
+    Slang::ComPtr<slang::IComponentType> linkedProgram;
+    if (!buildLinkedProgram(session, module, entryPoints, shaderPath, diagnostics, linkedProgram)) {
+        return {};
+    }
+
+    Slang::ComPtr<slang::IBlob> binaryCode;
+    if (SLANG_FAILED(linkedProgram->getTargetCode(0, binaryCode.writeRef(), diagnostics.writeRef())) || !binaryCode) {
+        logDiagnostics("Slang binary compile error", diagnostics);
+        return {};
+    }
+
+    const size_t byteSize = binaryCode->getBufferSize();
     if (byteSize == 0 || (byteSize % sizeof(uint32_t)) != 0) {
         spdlog::error("Slang returned invalid SPIR-V blob size {} for {}", byteSize, shaderPath);
         return {};
     }
 
-    std::vector<uint32_t> spirvWords(byteSize / sizeof(uint32_t));
-    std::memcpy(spirvWords.data(), spirvCode->getBufferPointer(), byteSize);
-    return spirvWords;
+    std::vector<uint32_t> words(byteSize / sizeof(uint32_t));
+    std::memcpy(words.data(), binaryCode->getBufferPointer(), byteSize);
+    return words;
 }
 
-} // namespace
-
-std::string compileSlangToMetal(const char* shaderPath, const char* searchPath) {
-    Slang::ComPtr<slang::IGlobalSession> globalSession;
-    slang::createGlobalSession(globalSession.writeRef());
-
-    slang::SessionDesc sessionDesc = {};
-    slang::TargetDesc targetDesc = {};
-    targetDesc.format = SLANG_METAL;
-    targetDesc.profile = globalSession->findProfile("metal");
-    sessionDesc.targets = &targetDesc;
-    sessionDesc.targetCount = 1;
-    if (searchPath) {
-        sessionDesc.searchPaths = &searchPath;
-        sessionDesc.searchPathCount = 1;
-    }
-
-    Slang::ComPtr<slang::ISession> session;
-    globalSession->createSession(sessionDesc, session.writeRef());
-
-    spdlog::info("Loading shader: {} (search path: {})", shaderPath, searchPath ? searchPath : "<cwd>");
-    Slang::ComPtr<slang::IBlob> diagnostics;
-    slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
-    if (!module) {
-        if (diagnostics)
-        spdlog::error("Slang load error: {}",
-                      static_cast<const char*>(diagnostics->getBufferPointer()));
-        return {};
-    }
-
-    Slang::ComPtr<slang::IEntryPoint> vertexEntry;
-    module->findEntryPointByName("vertexMain", vertexEntry.writeRef());
-    Slang::ComPtr<slang::IEntryPoint> fragmentEntry;
-    module->findEntryPointByName("fragmentMain", fragmentEntry.writeRef());
-
-    std::vector<slang::IComponentType*> components = {module, vertexEntry, fragmentEntry};
-    Slang::ComPtr<slang::IComponentType> program;
-    session->createCompositeComponentType(
-        components.data(), components.size(), program.writeRef(), diagnostics.writeRef());
-
-    Slang::ComPtr<slang::IComponentType> linkedProgram;
-    program->link(linkedProgram.writeRef(), diagnostics.writeRef());
-
-    Slang::ComPtr<slang::IBlob> metalCode;
-    linkedProgram->getTargetCode(0, metalCode.writeRef(), diagnostics.writeRef());
-    if (!metalCode) {
-        if (diagnostics)
-        spdlog::error("Slang compile error: {}",
-                      static_cast<const char*>(diagnostics->getBufferPointer()));
-        return {};
-    }
-
-    return std::string(static_cast<const char*>(metalCode->getBufferPointer()),
-                       metalCode->getBufferSize());
-}
-
-std::string compileSlangMeshShaderToMetal(const char* shaderPath, const char* searchPath) {
-    Slang::ComPtr<slang::IGlobalSession> globalSession;
-    slang::createGlobalSession(globalSession.writeRef());
-
-    slang::SessionDesc sessionDesc = {};
-    slang::TargetDesc targetDesc = {};
-    targetDesc.format = SLANG_METAL;
-    targetDesc.profile = globalSession->findProfile("metal");
-    sessionDesc.targets = &targetDesc;
-    sessionDesc.targetCount = 1;
-    if (searchPath) {
-        sessionDesc.searchPaths = &searchPath;
-        sessionDesc.searchPathCount = 1;
-    }
-
-    Slang::ComPtr<slang::ISession> session;
-    globalSession->createSession(sessionDesc, session.writeRef());
-
-    spdlog::info("Loading shader: {} (search path: {})", shaderPath, searchPath ? searchPath : "<cwd>");
-    Slang::ComPtr<slang::IBlob> diagnostics;
-    slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
-    if (!module) {
-        if (diagnostics)
-        spdlog::error("Slang load error: {}",
-                      static_cast<const char*>(diagnostics->getBufferPointer()));
-        return {};
-    }
-
-    Slang::ComPtr<slang::IEntryPoint> meshEntry;
-    module->findEntryPointByName("meshMain", meshEntry.writeRef());
-    Slang::ComPtr<slang::IEntryPoint> fragmentEntry;
-    module->findEntryPointByName("fragmentMain", fragmentEntry.writeRef());
-
-    std::vector<slang::IComponentType*> components = {module, meshEntry, fragmentEntry};
-    Slang::ComPtr<slang::IComponentType> program;
-    session->createCompositeComponentType(
-        components.data(), components.size(), program.writeRef(), diagnostics.writeRef());
-
-    Slang::ComPtr<slang::IComponentType> linkedProgram;
-    program->link(linkedProgram.writeRef(), diagnostics.writeRef());
-
-    Slang::ComPtr<slang::IBlob> metalCode;
-    linkedProgram->getTargetCode(0, metalCode.writeRef(), diagnostics.writeRef());
-    if (!metalCode) {
-        if (diagnostics)
-        spdlog::error("Slang mesh shader compile error: {}",
-                      static_cast<const char*>(diagnostics->getBufferPointer()));
-        return {};
-    }
-
-    return std::string(static_cast<const char*>(metalCode->getBufferPointer()),
-                       metalCode->getBufferSize());
-}
-
-std::string compileSlangComputeShaderToMetal(const char* shaderPath, const char* searchPath, const char* entryPoint) {
-    Slang::ComPtr<slang::IGlobalSession> globalSession;
-    slang::createGlobalSession(globalSession.writeRef());
-
-    slang::SessionDesc sessionDesc = {};
-    slang::TargetDesc targetDesc = {};
-    targetDesc.format = SLANG_METAL;
-    targetDesc.profile = globalSession->findProfile("metal");
-    sessionDesc.targets = &targetDesc;
-    sessionDesc.targetCount = 1;
-    if (searchPath) {
-        sessionDesc.searchPaths = &searchPath;
-        sessionDesc.searchPathCount = 1;
-    }
-
-    Slang::ComPtr<slang::ISession> session;
-    globalSession->createSession(sessionDesc, session.writeRef());
-
-    spdlog::info("Loading shader: {} (search path: {})", shaderPath, searchPath ? searchPath : "<cwd>");
-    Slang::ComPtr<slang::IBlob> diagnostics;
-    slang::IModule* module = session->loadModule(shaderPath, diagnostics.writeRef());
-    if (!module) {
-        if (diagnostics)
-        spdlog::error("Slang load error: {}",
-                      static_cast<const char*>(diagnostics->getBufferPointer()));
-        return {};
-    }
-
-    Slang::ComPtr<slang::IEntryPoint> computeEntry;
-    module->findEntryPointByName(entryPoint, computeEntry.writeRef());
-    if (!computeEntry) {
-        spdlog::error("Slang: entry point '{}' not found in {}", entryPoint, shaderPath);
-        return {};
-    }
-
-    std::vector<slang::IComponentType*> components = {module, computeEntry};
-    Slang::ComPtr<slang::IComponentType> program;
-    session->createCompositeComponentType(
-        components.data(), components.size(), program.writeRef(), diagnostics.writeRef());
-
-    Slang::ComPtr<slang::IComponentType> linkedProgram;
-    program->link(linkedProgram.writeRef(), diagnostics.writeRef());
-
-    Slang::ComPtr<slang::IBlob> metalCode;
-    linkedProgram->getTargetCode(0, metalCode.writeRef(), diagnostics.writeRef());
-    if (!metalCode) {
-        if (diagnostics)
-        spdlog::error("Slang compute shader compile error: {}",
-                      static_cast<const char*>(diagnostics->getBufferPointer()));
-        return {};
-    }
-
-    return std::string(static_cast<const char*>(metalCode->getBufferPointer()),
-                       metalCode->getBufferSize());
-}
-
-std::vector<uint32_t> compileSlangToSpirv(const char* shaderPath, const char* searchPath) {
-    return compileSlangComponentToSpirv(shaderPath, searchPath, {"vertexMain", "fragmentMain"}, "graphics");
-}
-
-std::vector<uint32_t> compileSlangMeshShaderToSpirv(const char* shaderPath, const char* searchPath) {
-    return compileSlangComponentToSpirv(shaderPath, searchPath, {"meshMain", "fragmentMain"}, "mesh");
-}
-
-std::vector<uint32_t> compileSlangComputeShaderToSpirv(const char* shaderPath,
-                                                       const char* searchPath,
-                                                       const char* entryPoint) {
-    return compileSlangComponentToSpirv(shaderPath, searchPath, {entryPoint}, "compute");
-}
-
-std::string patchMeshShaderMetalSource(const std::string& source) {
+std::string patchMeshMetalSource(const std::string& source) {
     std::string patched = source;
 
     patched = std::regex_replace(patched,
@@ -306,7 +256,7 @@ std::string patchMeshShaderMetalSource(const std::string& source) {
     return patched;
 }
 
-std::string patchVisibilityShaderMetalSource(const std::string& source) {
+std::string patchVisibilityMetalSource(const std::string& source) {
     std::string patched = source;
 
     patched = std::regex_replace(patched,
@@ -327,7 +277,7 @@ std::string patchVisibilityShaderMetalSource(const std::string& source) {
     return patched;
 }
 
-std::string patchComputeShaderMetalSource(const std::string& source) {
+std::string patchComputeMetalSource(const std::string& source) {
     std::string patched = source;
 
     patched = std::regex_replace(patched,
@@ -335,4 +285,80 @@ std::string patchComputeShaderMetalSource(const std::string& source) {
         "$1 [[texture(3)]]$2");
 
     return patched;
+}
+
+} // namespace
+
+std::string compileSlangGraphicsSource(RhiBackendType backend,
+                                       const char* shaderPath,
+                                       const char* searchPath) {
+    return compileSlangComponentToSource(backend,
+                                         shaderPath,
+                                         searchPath,
+                                         {"vertexMain", "fragmentMain"},
+                                         "graphics");
+}
+
+std::string compileSlangMeshSource(RhiBackendType backend,
+                                   const char* shaderPath,
+                                   const char* searchPath) {
+    return compileSlangComponentToSource(backend,
+                                         shaderPath,
+                                         searchPath,
+                                         {"meshMain", "fragmentMain"},
+                                         "mesh");
+}
+
+std::string compileSlangComputeSource(RhiBackendType backend,
+                                      const char* shaderPath,
+                                      const char* searchPath,
+                                      const char* entryPoint) {
+    return compileSlangComponentToSource(backend,
+                                         shaderPath,
+                                         searchPath,
+                                         {entryPoint},
+                                         "compute");
+}
+
+std::vector<uint32_t> compileSlangGraphicsBinary(RhiBackendType backend,
+                                                 const char* shaderPath,
+                                                 const char* searchPath) {
+    return compileSlangComponentToBinary(backend,
+                                         shaderPath,
+                                         searchPath,
+                                         {"vertexMain", "fragmentMain"},
+                                         "graphics");
+}
+
+std::vector<uint32_t> compileSlangMeshBinary(RhiBackendType backend,
+                                             const char* shaderPath,
+                                             const char* searchPath) {
+    return compileSlangComponentToBinary(backend,
+                                         shaderPath,
+                                         searchPath,
+                                         {"meshMain", "fragmentMain"},
+                                         "mesh");
+}
+
+std::vector<uint32_t> compileSlangComputeBinary(RhiBackendType backend,
+                                                const char* shaderPath,
+                                                const char* searchPath,
+                                                const char* entryPoint) {
+    return compileSlangComponentToBinary(backend,
+                                         shaderPath,
+                                         searchPath,
+                                         {entryPoint},
+                                         "compute");
+}
+
+std::string patchMeshShaderSource(RhiBackendType backend, const std::string& source) {
+    return backend == RhiBackendType::Metal ? patchMeshMetalSource(source) : source;
+}
+
+std::string patchVisibilityShaderSource(RhiBackendType backend, const std::string& source) {
+    return backend == RhiBackendType::Metal ? patchVisibilityMetalSource(source) : source;
+}
+
+std::string patchComputeShaderSource(RhiBackendType backend, const std::string& source) {
+    return backend == RhiBackendType::Metal ? patchComputeMetalSource(source) : source;
 }

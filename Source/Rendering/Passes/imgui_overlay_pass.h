@@ -40,7 +40,7 @@ public:
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("ImGuiOverlayPass");
         if (!m_frameContext) return;
-        encoder.renderImGuiDrawData(m_frameContext->commandBufferHandle);
+        encoder.renderImGuiDrawData(m_frameContext->commandBuffer.nativeHandle());
     }
 
 private:

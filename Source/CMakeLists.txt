@@ -4,6 +4,9 @@ if(APPLE)
     add_executable(Metallic
         main.cpp
         Platform/metal_impl.cpp
+        Platform/metal_raytracing_utils.cpp
+        Platform/metal_resource_utils.cpp
+        Platform/metal_shader_utils.cpp
         Platform/metal_runtime.mm
         Platform/glfw_metal_bridge.mm
         Platform/imgui_metal_bridge.mm
@@ -21,6 +24,9 @@ if(APPLE)
         Rendering/slang_compiler.cpp
         Rendering/shader_manager.cpp
         Rendering/scene_context.cpp
+        RHI/rhi_resource_utils.cpp
+        RHI/rhi_shader_utils.cpp
+        RHI/rhi_raytracing_utils.cpp
         RHI/Metal/metal_frame_graph.cpp
     )
     target_include_directories(Metallic PRIVATE
