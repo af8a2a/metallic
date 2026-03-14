@@ -599,6 +599,7 @@ struct RhiNativeHandles {
     void* device = nullptr;
     void* queue = nullptr;
     void* descriptorPool = nullptr;
+    void* allocator = nullptr;  // VmaAllocator for Vulkan, unused for Metal
     uint32_t graphicsQueueFamily = 0;
     uint32_t swapchainImageCount = 0;
     uint32_t colorFormat = 0;

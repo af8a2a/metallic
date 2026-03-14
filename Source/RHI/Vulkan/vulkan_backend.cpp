@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
+#include <vk_mem_alloc.h>
 
 #ifndef VK_API_VERSION_1_4
 #define VK_API_VERSION_1_4 VK_MAKE_API_VERSION(0, 1, 4, 0)
@@ -255,6 +256,7 @@ public:
         createSurface(createInfo.window);
         pickPhysicalDevice(createInfo.requireVulkan14);
         createLogicalDevice(createInfo.enableValidation);
+        createVmaAllocator();
         createCommandObjects();
         createDescriptorPool();
         recreateSwapchain();
@@ -282,6 +284,10 @@ public:
             if (frame.inFlight != VK_NULL_HANDLE) {
                 vkDestroyFence(m_device, frame.inFlight, nullptr);
             }
+        }
+
+        if (m_allocator != nullptr) {
+            vmaDestroyAllocator(m_allocator);
         }
 
         if (m_device != VK_NULL_HANDLE) {
@@ -1028,6 +1034,7 @@ private:
         m_nativeHandles.device = m_device;
         m_nativeHandles.queue = m_graphicsQueue;
         m_nativeHandles.descriptorPool = m_descriptorPool;
+        m_nativeHandles.allocator = m_allocator;
         m_nativeHandles.graphicsQueueFamily = m_queueFamilies.graphics.value_or(0);
         m_nativeHandles.swapchainImageCount = static_cast<uint32_t>(m_swapchainImages.size());
         m_nativeHandles.colorFormat = static_cast<uint32_t>(m_swapchainFormat.format);
@@ -1047,6 +1054,15 @@ private:
         }
 
         throw std::runtime_error("Failed to find a suitable Vulkan memory type.");
+    }
+
+    void createVmaAllocator() {
+        VmaAllocatorCreateInfo allocatorInfo{};
+        allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_4;
+        allocatorInfo.physicalDevice = m_physicalDevice;
+        allocatorInfo.device = m_device;
+        allocatorInfo.instance = m_instance;
+        checkVk(vmaCreateAllocator(&allocatorInfo, &m_allocator), "Failed to create VMA allocator");
     }
 
     void transitionCurrentImage(VkImageLayout oldLayout,
@@ -1084,6 +1100,7 @@ private:
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties m_physicalDeviceProperties{};
     VkDevice m_device = VK_NULL_HANDLE;
+    VmaAllocator m_allocator = nullptr;
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue = VK_NULL_HANDLE;
     QueueFamilyIndices m_queueFamilies;
@@ -1113,6 +1130,31 @@ private:
 };
 
 } // namespace
+
+// Accessor functions for VulkanContext internals (used by frame graph backend, resource utils, etc.)
+VmaAllocator getVulkanAllocator(RhiContext& context) {
+    return static_cast<VmaAllocator>(context.nativeHandles().allocator);
+}
+
+VkDevice getVulkanDevice(RhiContext& context) {
+    return static_cast<VkDevice>(context.nativeHandles().device);
+}
+
+VkPhysicalDevice getVulkanPhysicalDevice(RhiContext& context) {
+    return static_cast<VkPhysicalDevice>(context.nativeHandles().physicalDevice);
+}
+
+VkCommandBuffer getVulkanCurrentCommandBuffer(RhiContext& context) {
+    return static_cast<VkCommandBuffer>(context.commandContext().nativeCommandBuffer());
+}
+
+VkQueue getVulkanGraphicsQueue(RhiContext& context) {
+    return static_cast<VkQueue>(context.nativeHandles().queue);
+}
+
+uint32_t getVulkanGraphicsQueueFamily(RhiContext& context) {
+    return context.nativeHandles().graphicsQueueFamily;
+}
 
 std::unique_ptr<RhiContext> createVulkanContext(const RhiCreateInfo& createInfo,
                                                 std::string& errorMessage) {

@@ -63,11 +63,14 @@ elseif(WIN32)
         Rendering/slang_compiler.cpp
         RHI/rhi_backend.cpp
         RHI/Vulkan/vulkan_backend.cpp
+        RHI/Vulkan/vulkan_frame_graph.cpp
     )
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Vulkan"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
+        "${CMAKE_SOURCE_DIR}/External/VulkanMemoryAllocator/include"
     )
     target_link_libraries(Metallic PRIVATE
         glfw
