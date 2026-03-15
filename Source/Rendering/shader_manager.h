@@ -9,7 +9,10 @@ struct PipelineRuntimeContext;
 
 class ShaderManager {
 public:
-    ShaderManager(RhiDeviceHandle device, const char* projectRoot);
+    ShaderManager(RhiDeviceHandle device,
+                  const char* projectRoot,
+                  bool supportsMeshShaders = true,
+                  bool validateVisibilityPipelines = true);
     ~ShaderManager();
 
     // Initial creation of all pipelines + samplers. Returns false on fatal failure.
@@ -28,6 +31,8 @@ public:
 private:
     RhiDeviceHandle m_device;
     std::string m_projectRoot;
+    bool m_supportsMeshShaders = true;
+    bool m_validateVisibilityPipelines = true;
     PipelineRuntimeContext* m_rtCtx;
     RhiVertexDescriptorHandle m_vertexDesc;
 

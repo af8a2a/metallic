@@ -734,6 +734,11 @@ void rhiReleaseNativeHandle(void* handle) {
         delete pipeline;
         break;
     }
+    case VulkanResourceType::VertexDescriptor: {
+        auto* vertexDescriptor = static_cast<VulkanVertexDescriptorResource*>(handle);
+        delete vertexDescriptor;
+        break;
+    }
     }
 }
 

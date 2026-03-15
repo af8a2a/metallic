@@ -1,5 +1,6 @@
 #include "shader_manager.h"
 
+#include "frame_context.h"
 #include "rhi_resource_utils.h"
 #include "rhi_shader_utils.h"
 #include "slang_compiler.h"
@@ -14,6 +15,9 @@ constexpr RhiBackendType kShaderBackend = RhiBackendType::Metal;
 #else
 constexpr RhiBackendType kShaderBackend = RhiBackendType::Vulkan;
 #endif
+
+constexpr const char* kSlangVisibilityPerPrimitiveIssueUrl =
+    "https://github.com/shader-slang/slang/issues/7019";
 
 // On Vulkan, compile to SPIR-V binary and pack into a string for rhiCreatePipelineFromSource.
 // On Metal, compile to MSL source string directly.
@@ -65,9 +69,14 @@ std::string formatError(const std::string* errorMessage, const char* fallback) {
 
 } // namespace
 
-ShaderManager::ShaderManager(RhiDeviceHandle device, const char* projectRoot)
+ShaderManager::ShaderManager(RhiDeviceHandle device,
+                             const char* projectRoot,
+                             bool supportsMeshShaders,
+                             bool validateVisibilityPipelines)
     : m_device(device)
     , m_projectRoot(projectRoot)
+    , m_supportsMeshShaders(supportsMeshShaders)
+    , m_validateVisibilityPipelines(validateVisibilityPipelines)
     , m_rtCtx(new PipelineRuntimeContext{})
 {}
 
@@ -152,39 +161,57 @@ bool ShaderManager::buildAll() {
     }
 
     errorMessage.clear();
-    m_meshPipeline = reloadMeshShader("Shaders/Mesh/meshlet",
-                                      patchMeshShaderSource,
-                                      RhiFormat::RGBA16Float,
-                                      RhiFormat::D32Float,
-                                      &errorMessage);
-    if (!m_meshPipeline.nativeHandle()) {
-        spdlog::error("Failed to create mesh pipeline: {}",
-                      formatError(&errorMessage, "Slang mesh shader compilation failed"));
-        return false;
+    if (m_supportsMeshShaders) {
+        m_meshPipeline = reloadMeshShader("Shaders/Mesh/meshlet",
+                                          patchMeshShaderSource,
+                                          RhiFormat::RGBA16Float,
+                                          RhiFormat::D32Float,
+                                          &errorMessage);
+        if (!m_meshPipeline.nativeHandle()) {
+            spdlog::error("Failed to create mesh pipeline: {}",
+                          formatError(&errorMessage, "Slang mesh shader compilation failed"));
+            return false;
+        }
+    } else {
+        spdlog::info("Skipping mesh pipeline validation because mesh shaders are not supported");
     }
 
     errorMessage.clear();
-    m_visPipeline = reloadMeshShader("Shaders/Visibility/visibility",
-                                     patchVisibilityShaderSource,
-                                     RhiFormat::R32Uint,
-                                     RhiFormat::D32Float,
-                                     &errorMessage);
-    if (!m_visPipeline.nativeHandle()) {
-        spdlog::error("Failed to create visibility pipeline: {}",
-                      formatError(&errorMessage, "Slang visibility shader compilation failed"));
-        return false;
+    if (m_supportsMeshShaders && m_validateVisibilityPipelines) {
+        m_visPipeline = reloadMeshShader("Shaders/Visibility/visibility",
+                                         patchVisibilityShaderSource,
+                                         RhiFormat::R32Uint,
+                                         RhiFormat::D32Float,
+                                         &errorMessage);
+        if (!m_visPipeline.nativeHandle()) {
+            spdlog::error("Failed to create visibility pipeline: {}",
+                          formatError(&errorMessage, "Slang visibility shader compilation failed"));
+            return false;
+        }
+    } else if (!m_supportsMeshShaders) {
+        spdlog::info("Skipping visibility pipeline validation because mesh shaders are not supported");
+    } else {
+        spdlog::info("Skipping visibility pipeline validation on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
+                     kSlangVisibilityPerPrimitiveIssueUrl);
     }
 
     errorMessage.clear();
-    m_visIndirectPipeline = reloadMeshShader("Shaders/Visibility/visibility_indirect",
-                                             patchVisibilityShaderSource,
-                                             RhiFormat::R32Uint,
-                                             RhiFormat::D32Float,
-                                             &errorMessage);
-    if (!m_visIndirectPipeline.nativeHandle()) {
-        spdlog::error("Failed to create visibility indirect pipeline: {}",
-                      formatError(&errorMessage, "Slang visibility indirect shader compilation failed"));
-        return false;
+    if (m_supportsMeshShaders && m_validateVisibilityPipelines) {
+        m_visIndirectPipeline = reloadMeshShader("Shaders/Visibility/visibility_indirect",
+                                                 patchVisibilityShaderSource,
+                                                 RhiFormat::R32Uint,
+                                                 RhiFormat::D32Float,
+                                                 &errorMessage);
+        if (!m_visIndirectPipeline.nativeHandle()) {
+            spdlog::error("Failed to create visibility indirect pipeline: {}",
+                          formatError(&errorMessage, "Slang visibility indirect shader compilation failed"));
+            return false;
+        }
+    } else if (!m_supportsMeshShaders) {
+        spdlog::info("Skipping visibility indirect pipeline validation because mesh shaders are not supported");
+    } else {
+        spdlog::info("Skipping visibility indirect pipeline validation on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
+                     kSlangVisibilityPerPrimitiveIssueUrl);
     }
 
     errorMessage.clear();
@@ -439,33 +466,43 @@ std::pair<int, int> ShaderManager::reloadAll() {
     }
 
     errorMessage.clear();
-    auto visPipeline = reloadMeshShader("Shaders/Visibility/visibility",
-                                        patchVisibilityShaderSource,
-                                        RhiFormat::R32Uint,
-                                        RhiFormat::D32Float,
-                                        &errorMessage);
-    if (visPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_visPipeline);
-        m_visPipeline = visPipeline;
-        reloaded++;
+    if (m_validateVisibilityPipelines) {
+        auto visPipeline = reloadMeshShader("Shaders/Visibility/visibility",
+                                            patchVisibilityShaderSource,
+                                            RhiFormat::R32Uint,
+                                            RhiFormat::D32Float,
+                                            &errorMessage);
+        if (visPipeline.nativeHandle()) {
+            releaseOwnedHandle(m_visPipeline);
+            m_visPipeline = visPipeline;
+            reloaded++;
+        } else {
+            spdlog::error("Hot-reload visibility PSO: {}", formatError(&errorMessage, "Unknown failure"));
+            failed++;
+        }
     } else {
-        spdlog::error("Hot-reload visibility PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
+        spdlog::info("Skipping visibility PSO hot-reload on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
+                     kSlangVisibilityPerPrimitiveIssueUrl);
     }
 
     errorMessage.clear();
-    auto visIndirectPipeline = reloadMeshShader("Shaders/Visibility/visibility_indirect",
-                                                patchVisibilityShaderSource,
-                                                RhiFormat::R32Uint,
-                                                RhiFormat::D32Float,
-                                                &errorMessage);
-    if (visIndirectPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_visIndirectPipeline);
-        m_visIndirectPipeline = visIndirectPipeline;
-        reloaded++;
+    if (m_validateVisibilityPipelines) {
+        auto visIndirectPipeline = reloadMeshShader("Shaders/Visibility/visibility_indirect",
+                                                    patchVisibilityShaderSource,
+                                                    RhiFormat::R32Uint,
+                                                    RhiFormat::D32Float,
+                                                    &errorMessage);
+        if (visIndirectPipeline.nativeHandle()) {
+            releaseOwnedHandle(m_visIndirectPipeline);
+            m_visIndirectPipeline = visIndirectPipeline;
+            reloaded++;
+        } else {
+            spdlog::error("Hot-reload visibility indirect PSO: {}", formatError(&errorMessage, "Unknown failure"));
+            failed++;
+        }
     } else {
-        spdlog::error("Hot-reload visibility indirect PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
+        spdlog::info("Skipping visibility indirect PSO hot-reload on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
+                     kSlangVisibilityPerPrimitiveIssueUrl);
     }
 
     errorMessage.clear();

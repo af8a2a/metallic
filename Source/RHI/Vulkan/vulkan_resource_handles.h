@@ -18,6 +18,7 @@ enum class VulkanResourceType : uint32_t {
     Buffer,
     Sampler,
     Pipeline,
+    VertexDescriptor,
 };
 
 struct VulkanResourceHeader {
@@ -83,6 +84,27 @@ struct VulkanPipelineResource {
     std::array<VulkanDescriptorBindingLocation, kMaxSamplerBindings> samplerBindings{};
 };
 
+struct VulkanVertexAttributeDesc {
+    bool valid = false;
+    uint32_t location = 0;
+    uint32_t binding = 0;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t offset = 0;
+};
+
+struct VulkanVertexBindingDesc {
+    bool valid = false;
+    uint32_t binding = 0;
+    uint32_t stride = 0;
+    VkVertexInputRate inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+};
+
+struct VulkanVertexDescriptorResource {
+    VulkanResourceHeader header{VulkanResourceType::VertexDescriptor};
+    std::vector<VulkanVertexAttributeDesc> attributes;
+    std::vector<VulkanVertexBindingDesc> bindings;
+};
+
 inline VulkanResourceHeader* getVulkanResourceHeader(void* handle) {
     return static_cast<VulkanResourceHeader*>(handle);
 }
@@ -141,6 +163,18 @@ inline const VulkanPipelineResource* getVulkanPipelineResource(const RhiGraphics
 
 inline const VulkanPipelineResource* getVulkanPipelineResource(const RhiComputePipeline& pipeline) {
     return static_cast<const VulkanPipelineResource*>(pipeline.nativeHandle());
+}
+
+inline VulkanVertexDescriptorResource* getVulkanVertexDescriptorResource(const RhiVertexDescriptor* descriptor) {
+    return descriptor ? static_cast<VulkanVertexDescriptorResource*>(descriptor->nativeHandle()) : nullptr;
+}
+
+inline VulkanVertexDescriptorResource* getVulkanVertexDescriptorResource(RhiVertexDescriptor& descriptor) {
+    return static_cast<VulkanVertexDescriptorResource*>(descriptor.nativeHandle());
+}
+
+inline const VulkanVertexDescriptorResource* getVulkanVertexDescriptorResource(const RhiVertexDescriptor& descriptor) {
+    return static_cast<const VulkanVertexDescriptorResource*>(descriptor.nativeHandle());
 }
 
 inline VkPipeline getVulkanPipelineHandle(const RhiGraphicsPipeline& pipeline) {

@@ -121,6 +121,19 @@ VkDescriptorType toVkDescriptorType(SlangShaderBindingType type) {
     }
 }
 
+VkFormat toVkVertexFormat(RhiVertexFormat format) {
+    switch (format) {
+    case RhiVertexFormat::Float2:
+        return VK_FORMAT_R32G32_SFLOAT;
+    case RhiVertexFormat::Float3:
+        return VK_FORMAT_R32G32B32_SFLOAT;
+    case RhiVertexFormat::Float4:
+        return VK_FORMAT_R32G32B32A32_SFLOAT;
+    default:
+        return VK_FORMAT_UNDEFINED;
+    }
+}
+
 void destroyPipelineLayouts(VulkanPipelineResource& resource) {
     for (VkDescriptorSetLayout setLayout : resource.setLayouts) {
         if (setLayout != VK_NULL_HANDLE) {
@@ -307,28 +320,131 @@ bool buildPipelineResourceLayout(const void* data,
     return true;
 }
 
+bool buildVertexInputDescriptions(const RhiVertexDescriptor* vertexDescriptor,
+                                  std::vector<VkVertexInputBindingDescription>& outBindings,
+                                  std::vector<VkVertexInputAttributeDescription>& outAttributes,
+                                  std::string& errorMessage) {
+    outBindings.clear();
+    outAttributes.clear();
+
+    if (!vertexDescriptor || !vertexDescriptor->nativeHandle()) {
+        return true;
+    }
+
+    const auto* resource = getVulkanVertexDescriptorResource(*vertexDescriptor);
+    if (!resource) {
+        errorMessage = "Invalid Vulkan vertex descriptor handle";
+        return false;
+    }
+
+    outBindings.reserve(resource->bindings.size());
+    for (const auto& binding : resource->bindings) {
+        if (!binding.valid) {
+            continue;
+        }
+
+        VkVertexInputBindingDescription vkBinding{};
+        vkBinding.binding = binding.binding;
+        vkBinding.stride = binding.stride;
+        vkBinding.inputRate = binding.inputRate;
+        outBindings.push_back(vkBinding);
+    }
+    std::sort(outBindings.begin(),
+              outBindings.end(),
+              [](const VkVertexInputBindingDescription& lhs,
+                 const VkVertexInputBindingDescription& rhs) {
+                  return lhs.binding < rhs.binding;
+              });
+
+    outAttributes.reserve(resource->attributes.size());
+    for (const auto& attribute : resource->attributes) {
+        if (!attribute.valid) {
+            continue;
+        }
+
+        if (attribute.format == VK_FORMAT_UNDEFINED) {
+            errorMessage = "Unsupported Vulkan vertex format";
+            return false;
+        }
+
+        const bool hasBinding =
+            std::any_of(outBindings.begin(),
+                        outBindings.end(),
+                        [&](const VkVertexInputBindingDescription& binding) {
+                            return binding.binding == attribute.binding;
+                        });
+        if (!hasBinding) {
+            errorMessage = "Vertex attribute location " + std::to_string(attribute.location) +
+                " references missing vertex layout binding " + std::to_string(attribute.binding);
+            return false;
+        }
+
+        VkVertexInputAttributeDescription vkAttribute{};
+        vkAttribute.location = attribute.location;
+        vkAttribute.binding = attribute.binding;
+        vkAttribute.format = attribute.format;
+        vkAttribute.offset = attribute.offset;
+        outAttributes.push_back(vkAttribute);
+    }
+    std::sort(outAttributes.begin(),
+              outAttributes.end(),
+              [](const VkVertexInputAttributeDescription& lhs,
+                 const VkVertexInputAttributeDescription& rhs) {
+                  return lhs.location < rhs.location;
+              });
+
+    return true;
+}
+
 } // namespace
 
 void vulkanSetShaderContext(VkDevice device) {
     g_shaderDevice = device;
 }
 
-// Vertex descriptors are not used on Vulkan (vertex input is part of pipeline state)
-// but we provide stubs to satisfy the interface
 RhiVertexDescriptorHandle rhiCreateVertexDescriptor() {
-    return {};
+    return RhiVertexDescriptorHandle(new VulkanVertexDescriptorResource{});
 }
 
-void rhiVertexDescriptorSetAttribute(const RhiVertexDescriptor& /*vertexDescriptor*/,
-                                     uint32_t /*attributeIndex*/,
-                                     RhiVertexFormat /*format*/,
-                                     uint32_t /*offset*/,
-                                     uint32_t /*bufferIndex*/) {
+void rhiVertexDescriptorSetAttribute(const RhiVertexDescriptor& vertexDescriptor,
+                                     uint32_t attributeIndex,
+                                     RhiVertexFormat format,
+                                     uint32_t offset,
+                                     uint32_t bufferIndex) {
+    auto* resource = getVulkanVertexDescriptorResource(const_cast<RhiVertexDescriptor&>(vertexDescriptor));
+    if (!resource) {
+        return;
+    }
+
+    if (attributeIndex >= resource->attributes.size()) {
+        resource->attributes.resize(static_cast<size_t>(attributeIndex) + 1);
+    }
+
+    auto& attribute = resource->attributes[attributeIndex];
+    attribute.valid = true;
+    attribute.location = attributeIndex;
+    attribute.binding = bufferIndex;
+    attribute.format = toVkVertexFormat(format);
+    attribute.offset = offset;
 }
 
-void rhiVertexDescriptorSetLayout(const RhiVertexDescriptor& /*vertexDescriptor*/,
-                                  uint32_t /*bufferIndex*/,
-                                  uint32_t /*stride*/) {
+void rhiVertexDescriptorSetLayout(const RhiVertexDescriptor& vertexDescriptor,
+                                  uint32_t bufferIndex,
+                                  uint32_t stride) {
+    auto* resource = getVulkanVertexDescriptorResource(const_cast<RhiVertexDescriptor&>(vertexDescriptor));
+    if (!resource) {
+        return;
+    }
+
+    if (bufferIndex >= resource->bindings.size()) {
+        resource->bindings.resize(static_cast<size_t>(bufferIndex) + 1);
+    }
+
+    auto& binding = resource->bindings[bufferIndex];
+    binding.valid = true;
+    binding.binding = bufferIndex;
+    binding.stride = stride;
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 }
 
 RhiShaderLibraryHandle rhiCreateShaderLibraryFromSource(const RhiDevice& /*device*/,
@@ -412,8 +528,22 @@ RhiGraphicsPipelineHandle rhiCreateRenderPipelineFromSource(const RhiDevice& /*d
         stages.push_back(fragStage);
     }
 
+    std::vector<VkVertexInputBindingDescription> vertexBindings;
+    std::vector<VkVertexInputAttributeDescription> vertexAttributes;
+    if (!isMeshShader &&
+        !buildVertexInputDescriptions(desc.vertexDescriptor, vertexBindings, vertexAttributes, errorMessage)) {
+        vkDestroyShaderModule(g_shaderDevice, shaderModule, nullptr);
+        destroyPipelineLayouts(*res);
+        delete res;
+        return {};
+    }
+
     // Vertex input (empty for mesh shaders and fullscreen passes)
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(vertexBindings.size());
+    vertexInputInfo.pVertexBindingDescriptions = vertexBindings.empty() ? nullptr : vertexBindings.data();
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(vertexAttributes.size());
+    vertexInputInfo.pVertexAttributeDescriptions = vertexAttributes.empty() ? nullptr : vertexAttributes.data();
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 

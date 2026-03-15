@@ -61,6 +61,7 @@ elseif(WIN32)
     add_executable(Metallic
         main_vulkan.cpp
         Rendering/slang_compiler.cpp
+        Rendering/shader_manager.cpp
         RHI/rhi_backend.cpp
         RHI/rhi_resource_utils.cpp
         RHI/rhi_shader_utils.cpp
@@ -73,6 +74,7 @@ elseif(WIN32)
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Vulkan"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
+        "${CMAKE_SOURCE_DIR}/External/MathLib"
         "${CMAKE_SOURCE_DIR}/External/VulkanMemoryAllocator/include"
     )
     target_link_libraries(Metallic PRIVATE
