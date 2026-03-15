@@ -32,9 +32,11 @@ public:
     void setup(FGBuilder& builder) override {
         output = builder.create("skyColor",
             FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::RGBA16Float));
-        builder.setColorAttachment(0, output,
-            RhiLoadAction::Clear, RhiStoreAction::Store,
-            RhiClearColor(0.0, 0.0, 0.0, 1.0));
+        output = builder.setColorAttachment(0,
+                                            output,
+                                            RhiLoadAction::Clear,
+                                            RhiStoreAction::Store,
+                                            RhiClearColor(0.0, 0.0, 0.0, 1.0));
         if (m_sideEffect) {
             builder.setSideEffect();
         }

@@ -25,6 +25,8 @@ struct FGResourceNode {
     uint32_t refCount = 0;
     uint32_t producer = UINT32_MAX;
     uint32_t lastUser = 0;
+    uint32_t physicalResource = UINT32_MAX;
+    uint32_t previousVersion = UINT32_MAX;
 };
 
 enum class FGPassType { Render, Compute, Blit };
@@ -73,12 +75,12 @@ public:
     FGResource read(FGResource resource);
     FGResource write(FGResource resource);
 
-    void setColorAttachment(uint32_t index, FGResource resource,
-                            RhiLoadAction load, RhiStoreAction store,
-                            RhiClearColor clear = RhiClearColor());
-    void setDepthAttachment(FGResource resource,
-                            RhiLoadAction load, RhiStoreAction store,
-                            double clearDepth = 1.0);
+    FGResource setColorAttachment(uint32_t index, FGResource resource,
+                                  RhiLoadAction load, RhiStoreAction store,
+                                  RhiClearColor clear = RhiClearColor());
+    FGResource setDepthAttachment(FGResource resource,
+                                  RhiLoadAction load, RhiStoreAction store,
+                                  double clearDepth = 1.0);
     void setSideEffect();
 
 private:
@@ -115,6 +117,8 @@ public:
     RhiTexture* getTexture(FGResource res) const;
 
 private:
+    RhiTexture* resolveTexture(uint32_t resourceId) const;
+
     std::vector<FGResourceNode> m_resources;
     std::vector<FGPassNode> m_passes;
     std::vector<std::unique_ptr<RenderPass>> m_ownedPasses;
@@ -210,4 +214,3 @@ Data& FrameGraph::addBlitPass(const char* name, Setup&& setup, Exec&& exec) {
     };
     return data;
 }
-

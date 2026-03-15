@@ -49,10 +49,15 @@ public:
             FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::R32Uint));
         depth = builder.create("depth",
             FGTextureDesc::depthTarget(m_width, m_height));
-        builder.setColorAttachment(0, visibility,
-            RhiLoadAction::Clear, RhiStoreAction::Store, m_clearColor);
-        builder.setDepthAttachment(depth,
-            RhiLoadAction::Clear, RhiStoreAction::Store, m_ctx.depthClearValue);
+        visibility = builder.setColorAttachment(0,
+                                                visibility,
+                                                RhiLoadAction::Clear,
+                                                RhiStoreAction::Store,
+                                                m_clearColor);
+        depth = builder.setDepthAttachment(depth,
+                                           RhiLoadAction::Clear,
+                                           RhiStoreAction::Store,
+                                           m_ctx.depthClearValue);
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {

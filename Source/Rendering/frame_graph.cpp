@@ -9,6 +9,19 @@
 
 #include "imgui.h"
 
+namespace {
+
+void appendUniqueResource(std::vector<FGResource>& resources, FGResource resource) {
+    const auto it = std::find_if(resources.begin(), resources.end(), [resource](FGResource existing) {
+        return existing.id == resource.id;
+    });
+    if (it == resources.end()) {
+        resources.push_back(resource);
+    }
+}
+
+} // namespace
+
 // --- FGBuilder ---
 
 FGBuilder::FGBuilder(FrameGraph& fg, uint32_t passIndex)
@@ -22,42 +35,72 @@ FGResource FGBuilder::create(const char* name, const FGTextureDesc& desc) {
     node.desc = desc;
     node.imported = false;
     node.producer = m_passIndex;
+    node.physicalResource = res.id;
     m_fg.m_resources.push_back(std::move(node));
     // Creating a resource implicitly writes it
-    m_fg.m_passes[m_passIndex].writes.push_back(res);
+    appendUniqueResource(m_fg.m_passes[m_passIndex].writes, res);
     return res;
 }
 
 FGResource FGBuilder::read(FGResource resource) {
     assert(resource.isValid());
-    m_fg.m_passes[m_passIndex].reads.push_back(resource);
+    appendUniqueResource(m_fg.m_passes[m_passIndex].reads, resource);
     return resource;
 }
 
 FGResource FGBuilder::write(FGResource resource) {
     assert(resource.isValid());
-    m_fg.m_passes[m_passIndex].writes.push_back(resource);
-    return resource;
+    assert(resource.id < m_fg.m_resources.size());
+
+    auto& pass = m_fg.m_passes[m_passIndex];
+    auto& node = m_fg.m_resources[resource.id];
+    if (node.producer == m_passIndex) {
+        appendUniqueResource(pass.writes, resource);
+        return resource;
+    }
+
+    for (FGResource existingWrite : pass.writes) {
+        const auto& existingNode = m_fg.m_resources[existingWrite.id];
+        if (existingWrite.id == resource.id || existingNode.previousVersion == resource.id) {
+            return existingWrite;
+        }
+    }
+
+    FGResource versionedResource;
+    versionedResource.id = static_cast<uint32_t>(m_fg.m_resources.size());
+
+    FGResourceNode versionedNode;
+    versionedNode.name = node.name;
+    versionedNode.desc = node.desc;
+    versionedNode.imported = false;
+    versionedNode.producer = m_passIndex;
+    versionedNode.physicalResource =
+        node.physicalResource != UINT32_MAX ? node.physicalResource : resource.id;
+    versionedNode.previousVersion = resource.id;
+    m_fg.m_resources.push_back(std::move(versionedNode));
+    appendUniqueResource(pass.writes, versionedResource);
+    return versionedResource;
 }
 
-void FGBuilder::setColorAttachment(uint32_t index, FGResource resource,
-                                   RhiLoadAction load, RhiStoreAction store,
-                                   RhiClearColor clear) {
+FGResource FGBuilder::setColorAttachment(uint32_t index, FGResource resource,
+                                         RhiLoadAction load, RhiStoreAction store,
+                                         RhiClearColor clear) {
     auto& pass = m_fg.m_passes[m_passIndex];
     assert(index < 8);
-    pass.colorAttachments[index] = {resource, load, store, clear};
+    const FGResource writeResource = write(resource);
+    pass.colorAttachments[index] = {writeResource, load, store, clear};
     if (index >= pass.colorAttachmentCount)
         pass.colorAttachmentCount = index + 1;
-    // Implicitly writes the attachment
-    write(resource);
+    return writeResource;
 }
 
-void FGBuilder::setDepthAttachment(FGResource resource,
-                                   RhiLoadAction load, RhiStoreAction store,
-                                   double clearDepth) {
+FGResource FGBuilder::setDepthAttachment(FGResource resource,
+                                         RhiLoadAction load, RhiStoreAction store,
+                                         double clearDepth) {
     auto& pass = m_fg.m_passes[m_passIndex];
-    pass.depthAttachment = {resource, load, store, clearDepth, true};
-    write(resource);
+    const FGResource writeResource = write(resource);
+    pass.depthAttachment = {writeResource, load, store, clearDepth, true};
+    return writeResource;
 }
 
 void FGBuilder::setSideEffect() {
@@ -73,6 +116,7 @@ FGResource FrameGraph::import(const char* name, RhiTexture* texture) {
     node.name = name;
     node.texture = texture;
     node.imported = true;
+    node.physicalResource = res.id;
     m_resources.push_back(std::move(node));
     return res;
 }
@@ -84,8 +128,9 @@ void FrameGraph::updateImport(FGResource res, RhiTexture* texture) {
 }
 
 void FrameGraph::resetTransients() {
-    for (auto& res : m_resources) {
-        if (!res.imported) {
+    for (uint32_t ri = 0; ri < m_resources.size(); ++ri) {
+        auto& res = m_resources[ri];
+        if (!res.imported && res.physicalResource == ri) {
             res.ownedTexture.reset();
             res.texture = nullptr;
         }
@@ -128,6 +173,7 @@ void FrameGraph::compile() {
     // Step 2: Count readers per resource → resource.refCount
     for (auto& res : m_resources) {
         res.refCount = 0;
+        res.lastUser = 0;
     }
     for (uint32_t pi = 0; pi < m_passes.size(); pi++) {
         auto& pass = m_passes[pi];
@@ -162,7 +208,16 @@ void FrameGraph::compile() {
 
 RhiTexture* FrameGraph::getTexture(FGResource res) const {
     assert(res.isValid() && res.id < m_resources.size());
-    return m_resources[res.id].texture;
+    return resolveTexture(res.id);
+}
+
+RhiTexture* FrameGraph::resolveTexture(uint32_t resourceId) const {
+    assert(resourceId < m_resources.size());
+    const auto& resource = m_resources[resourceId];
+    const uint32_t physicalResource =
+        resource.physicalResource != UINT32_MAX ? resource.physicalResource : resourceId;
+    assert(physicalResource < m_resources.size());
+    return m_resources[physicalResource].texture;
 }
 
 void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& backend) {
@@ -173,7 +228,7 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
         // Create transient textures at their producer pass
         for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
             auto& res = m_resources[ri];
-            if (!res.imported && res.producer == pi && res.texture == nullptr) {
+            if (!res.imported && res.producer == pi && res.physicalResource == ri && res.texture == nullptr) {
                 res.ownedTexture = backend.createTexture(res.desc);
                 res.texture = res.ownedTexture.get();
             }
@@ -182,18 +237,30 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
         if (pass.type == FGPassType::Render) {
 #ifdef _WIN32
             if (auto* vkCommandBuffer = dynamic_cast<VulkanCommandBuffer*>(&commandBuffer)) {
+                auto isSamePhysicalResource = [&](FGResource lhs, FGResource rhs) {
+                    if (!lhs.isValid() || !rhs.isValid()) {
+                        return false;
+                    }
+                    const uint32_t lhsPhysical =
+                        m_resources[lhs.id].physicalResource != UINT32_MAX ? m_resources[lhs.id].physicalResource : lhs.id;
+                    const uint32_t rhsPhysical =
+                        m_resources[rhs.id].physicalResource != UINT32_MAX ? m_resources[rhs.id].physicalResource : rhs.id;
+                    return lhsPhysical == rhsPhysical;
+                };
+
                 auto isAttachmentRead = [&](FGResource resource) {
                     for (uint32_t ci = 0; ci < pass.colorAttachmentCount; ++ci) {
-                        if (pass.colorAttachments[ci].resource.id == resource.id) {
+                        if (isSamePhysicalResource(pass.colorAttachments[ci].resource, resource)) {
                             return true;
                         }
                     }
-                    return pass.depthAttachment.bound && pass.depthAttachment.resource.id == resource.id;
+                    return pass.depthAttachment.bound &&
+                           isSamePhysicalResource(pass.depthAttachment.resource, resource);
                 };
 
                 for (auto& read : pass.reads) {
                     if (!isAttachmentRead(read)) {
-                        vkCommandBuffer->transitionTexture(m_resources[read.id].texture,
+                        vkCommandBuffer->transitionTexture(resolveTexture(read.id),
                                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                     }
                 }
@@ -205,7 +272,7 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
             for (uint32_t ci = 0; ci < pass.colorAttachmentCount; ci++) {
                 auto& ca = pass.colorAttachments[ci];
                 renderPassDesc.colorAttachments[ci] = {
-                    m_resources[ca.resource.id].texture,
+                    resolveTexture(ca.resource.id),
                     ca.loadAction,
                     ca.storeAction,
                     ca.clearColor,
@@ -214,7 +281,7 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
             renderPassDesc.colorAttachmentCount = pass.colorAttachmentCount;
             if (pass.depthAttachment.bound) {
                 renderPassDesc.depthAttachment = {
-                    m_resources[pass.depthAttachment.resource.id].texture,
+                    resolveTexture(pass.depthAttachment.resource.id),
                     pass.depthAttachment.loadAction,
                     pass.depthAttachment.storeAction,
                     pass.depthAttachment.clearDepth,

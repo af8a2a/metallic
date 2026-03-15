@@ -31,9 +31,7 @@ public:
     void setup(FGBuilder& builder) override {
         FGResource skyInput = getInput("skyOutput");
         if (skyInput.isValid()) {
-            builder.read(skyInput);  // establish dependency on SkyPass
-            output = skyInput;       // render into sky's texture
-            builder.setSideEffect();
+            output = builder.read(skyInput);
         } else {
             output = builder.create("forwardColor",
                 FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::RGBA16Float));
@@ -41,11 +39,15 @@ public:
         depth = builder.create("depth",
             FGTextureDesc::depthTarget(m_width, m_height));
         RhiLoadAction colorLoad = skyInput.isValid() ? RhiLoadAction::Load : RhiLoadAction::Clear;
-        builder.setColorAttachment(0, output,
-            colorLoad, RhiStoreAction::Store,
-            RhiClearColor(0.1, 0.2, 0.3, 1.0));
-        builder.setDepthAttachment(depth,
-            RhiLoadAction::Clear, RhiStoreAction::Store, m_ctx.depthClearValue);
+        output = builder.setColorAttachment(0,
+                                            output,
+                                            colorLoad,
+                                            RhiStoreAction::Store,
+                                            RhiClearColor(0.1, 0.2, 0.3, 1.0));
+        depth = builder.setDepthAttachment(depth,
+                                           RhiLoadAction::Clear,
+                                           RhiStoreAction::Store,
+                                           m_ctx.depthClearValue);
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {

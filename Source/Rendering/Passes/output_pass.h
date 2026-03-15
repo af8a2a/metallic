@@ -36,9 +36,11 @@ public:
 
         m_dest = getInput("$backbuffer");
         if (m_dest.isValid()) {
-            builder.setColorAttachment(0, m_dest,
-                RhiLoadAction::DontCare, RhiStoreAction::Store,
-                RhiClearColor(0.0, 0.0, 0.0, 1.0));
+            m_dest = builder.setColorAttachment(0,
+                                                m_dest,
+                                                RhiLoadAction::DontCare,
+                                                RhiStoreAction::Store,
+                                                RhiClearColor(0.0, 0.0, 0.0, 1.0));
         }
         builder.setSideEffect();
     }

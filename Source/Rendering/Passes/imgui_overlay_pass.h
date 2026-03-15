@@ -26,13 +26,17 @@ public:
         FGResource depthInput = getInput("depth");
 
         if (m_drawable.isValid()) {
-            builder.setColorAttachment(0, m_drawable,
-                RhiLoadAction::Load, RhiStoreAction::Store);
+            m_drawable = builder.setColorAttachment(0,
+                                                    m_drawable,
+                                                    RhiLoadAction::Load,
+                                                    RhiStoreAction::Store);
         }
         if (depthInput.isValid()) {
             m_depthRead = builder.read(depthInput);
-            builder.setDepthAttachment(m_depthRead,
-                RhiLoadAction::Load, RhiStoreAction::DontCare, m_ctx.depthClearValue);
+            m_depthRead = builder.setDepthAttachment(m_depthRead,
+                                                     RhiLoadAction::Load,
+                                                     RhiStoreAction::DontCare,
+                                                     m_ctx.depthClearValue);
         }
         builder.setSideEffect();
     }
