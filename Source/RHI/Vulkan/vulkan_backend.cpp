@@ -803,13 +803,17 @@ private:
         VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
         VkPhysicalDeviceSynchronization2Features sync2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
+        VkPhysicalDeviceVulkan11Features vulkan11Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-        features2.pNext = &dynamicRenderingFeatures;
+        features2.pNext = &vulkan11Features;
+        vulkan11Features.pNext = &dynamicRenderingFeatures;
         dynamicRenderingFeatures.pNext = &sync2Features;
         sync2Features.pNext = &meshShaderFeatures;
         vkGetPhysicalDeviceFeatures2(device, &features2);
 
-        if (dynamicRenderingFeatures.dynamicRendering != VK_TRUE || sync2Features.synchronization2 != VK_TRUE) {
+        if (dynamicRenderingFeatures.dynamicRendering != VK_TRUE ||
+            sync2Features.synchronization2 != VK_TRUE ||
+            vulkan11Features.shaderDrawParameters != VK_TRUE) {
             return false;
         }
 
@@ -857,8 +861,12 @@ private:
         dynamicRenderingFeatures.dynamicRendering = VK_TRUE;
         dynamicRenderingFeatures.pNext = &sync2Features;
 
+        VkPhysicalDeviceVulkan11Features vulkan11Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+        vulkan11Features.shaderDrawParameters = VK_TRUE;
+        vulkan11Features.pNext = &dynamicRenderingFeatures;
+
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-        features2.pNext = &dynamicRenderingFeatures;
+        features2.pNext = &vulkan11Features;
 
         std::vector<const char*> layers;
         if (enableValidation && m_features.validation) {

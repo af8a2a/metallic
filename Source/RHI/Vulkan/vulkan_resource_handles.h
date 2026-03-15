@@ -3,9 +3,12 @@
 #ifdef _WIN32
 
 #include "../rhi_backend.h"
+#include "vulkan_descriptor_manager.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
@@ -56,12 +59,28 @@ struct VulkanSamplerResource {
     VkSampler sampler = VK_NULL_HANDLE;
 };
 
+struct VulkanDescriptorBindingLocation {
+    uint32_t set = UINT32_MAX;
+    uint32_t binding = UINT32_MAX;
+    uint32_t arrayElement = 0;
+    VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_MAX_ENUM;
+
+    bool valid() const {
+        return set != UINT32_MAX && binding != UINT32_MAX &&
+               descriptorType != VK_DESCRIPTOR_TYPE_MAX_ENUM;
+    }
+};
+
 struct VulkanPipelineResource {
     VulkanResourceHeader header{VulkanResourceType::Pipeline};
     VkDevice device = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     bool ownsLayout = false;
+    std::vector<VkDescriptorSetLayout> setLayouts;
+    std::array<VulkanDescriptorBindingLocation, kMaxBufferBindings> bufferBindings{};
+    std::array<VulkanDescriptorBindingLocation, kMaxTextureBindings> textureBindings{};
+    std::array<VulkanDescriptorBindingLocation, kMaxSamplerBindings> samplerBindings{};
 };
 
 inline VulkanResourceHeader* getVulkanResourceHeader(void* handle) {

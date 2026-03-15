@@ -2,6 +2,8 @@
 
 #include "rhi_backend.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -30,6 +32,31 @@ std::vector<uint32_t> compileSlangComputeBinary(RhiBackendType backend,
                                                 const char* shaderPath,
                                                 const char* searchPath = nullptr,
                                                 const char* entryPoint = "computeMain");
+
+enum class SlangShaderBindingType : uint8_t {
+    UniformBuffer,
+    StorageBuffer,
+    SampledTexture,
+    StorageTexture,
+    Sampler,
+    AccelerationStructure,
+};
+
+struct SlangShaderBindingDesc {
+    SlangShaderBindingType type = SlangShaderBindingType::StorageBuffer;
+    uint32_t bindingIndex = 0;
+    uint32_t bindingSpace = 0;
+    uint32_t descriptorCount = 1;
+    std::string name;
+};
+
+struct SlangShaderBindingLayout {
+    std::vector<SlangShaderBindingDesc> bindings;
+};
+
+bool findSlangBindingLayoutForBinary(const void* data,
+                                     size_t size,
+                                     SlangShaderBindingLayout& outLayout);
 
 // Backend-specific Slang output workarounds.
 std::string patchMeshShaderSource(RhiBackendType backend, const std::string& source);

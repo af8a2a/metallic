@@ -3,24 +3,20 @@
 #ifdef _WIN32
 
 #include <vulkan/vulkan.h>
+
 #include <array>
+#include <cstddef>
 #include <vector>
 
+struct VmaAllocator_T;
+typedef VmaAllocator_T* VmaAllocator;
+
+struct VulkanPipelineResource;
 struct VulkanTextureResource;
 
-// Maximum binding slots matching Metal's argument-based binding model
 constexpr uint32_t kMaxBufferBindings = 32;
 constexpr uint32_t kMaxTextureBindings = 128;
 constexpr uint32_t kMaxSamplerBindings = 16;
-
-// Descriptor set layout:
-//   Set 0: Storage buffers (binding 0..31)
-//   Set 1: Sampled images (binding 0..127)
-//   Set 2: Samplers (binding 0..15)
-constexpr uint32_t kDescriptorSetBuffers  = 0;
-constexpr uint32_t kDescriptorSetTextures = 1;
-constexpr uint32_t kDescriptorSetSamplers = 2;
-constexpr uint32_t kDescriptorSetCount    = 3;
 
 struct PendingBufferBinding {
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -42,36 +38,40 @@ struct PendingSamplerBinding {
     bool dirty = false;
 };
 
-// Manages descriptor set layouts, pools, and per-draw allocation.
-// Initial strategy: allocate a new descriptor set per draw/dispatch from a per-frame pool.
 class VulkanDescriptorManager {
 public:
-    void init(VkDevice device);
+    void init(VkDevice device, VmaAllocator allocator);
     void destroy();
-
-    // Call at the start of each frame to reset the pool
     void resetFrame();
 
-    // Get the shared descriptor set layouts (for pipeline layout creation)
-    const VkDescriptorSetLayout* layouts() const { return m_setLayouts.data(); }
-    uint32_t layoutCount() const { return kDescriptorSetCount; }
-    VkPipelineLayout pipelineLayout() const { return m_pipelineLayout; }
+    PendingBufferBinding createTransientUniformBuffer(const void* data, size_t size);
 
-    // Allocate and write descriptor sets from pending bindings, bind them to the command buffer
-    void flushAndBind(VkCommandBuffer cmd, VkPipelineBindPoint bindPoint,
+    void flushAndBind(VkCommandBuffer cmd,
+                      VkPipelineBindPoint bindPoint,
+                      const VulkanPipelineResource& pipeline,
                       const std::array<PendingBufferBinding, kMaxBufferBindings>& buffers,
                       const std::array<PendingTextureBinding, kMaxTextureBindings>& textures,
                       const std::array<PendingSamplerBinding, kMaxSamplerBindings>& samplers);
 
 private:
-    void createSetLayouts();
-    void createPipelineLayout();
-    void createPool();
+    struct TransientBuffer {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        void* allocation = nullptr;
+    };
+
+    struct FrameState {
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        std::vector<TransientBuffer> transientBuffers;
+    };
+
+    void createPools();
+    void destroyFrameState(FrameState& frame);
+    FrameState& currentFrame();
 
     VkDevice m_device = VK_NULL_HANDLE;
-    std::array<VkDescriptorSetLayout, kDescriptorSetCount> m_setLayouts{};
-    VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorPool m_pool = VK_NULL_HANDLE;
+    VmaAllocator m_allocator = nullptr;
+    std::array<FrameState, 2> m_frames{};
+    uint32_t m_frameIndex = 1;
 };
 
 #endif // _WIN32

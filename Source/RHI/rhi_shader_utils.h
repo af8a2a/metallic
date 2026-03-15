@@ -47,5 +47,5 @@ RhiComputePipelineHandle rhiCreateComputePipelineFromSource(const RhiDevice& dev
 
 #ifdef _WIN32
 #include <vulkan/vulkan.h>
-void vulkanSetShaderContext(VkDevice device, VkPipelineLayout sharedLayout);
+void vulkanSetShaderContext(VkDevice device);
 #endif

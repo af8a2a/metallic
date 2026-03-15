@@ -179,13 +179,95 @@ int main(int argc, char** argv) {
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
     VulkanDescriptorManager descriptorManager;
-    descriptorManager.init(vkDevice);
+    descriptorManager.init(vkDevice, vmaAllocator);
     VulkanImageLayoutTracker imageTracker;
 
-    // Initialize shader pipeline context with shared pipeline layout
-    vulkanSetShaderContext(vkDevice, descriptorManager.pipelineLayout());
+    // Initialize shader pipeline context for reflection-driven Vulkan pipeline creation.
+    vulkanSetShaderContext(vkDevice);
 
     spdlog::info("Vulkan frame graph backend initialized (VMA + DescriptorManager + ImageTracker)");
+
+    RhiDeviceHandle shaderDevice(native.device);
+    RhiComputePipelineHandle validationComputePipeline;
+    RhiGraphicsPipelineHandle validationGraphicsPipeline;
+    {
+        const auto spirvBinary = compileSlangComputeBinary(RhiBackendType::Vulkan,
+                                                           "Shaders/Post/taa",
+                                                           PROJECT_SOURCE_DIR,
+                                                           "taaMain");
+        if (spirvBinary.empty()) {
+            spdlog::error("Failed to compile SPIR-V for TAA validation shader");
+            descriptorManager.destroy();
+            ImGui_ImplVulkan_Shutdown();
+            ImGui_ImplGlfw_Shutdown();
+            ImGui::DestroyContext();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        const std::string spirvSource(reinterpret_cast<const char*>(spirvBinary.data()),
+                                      spirvBinary.size() * sizeof(uint32_t));
+        std::string pipelineError;
+        validationComputePipeline = rhiCreateComputePipelineFromSource(shaderDevice,
+                                                                       spirvSource,
+                                                                       "taaMain",
+                                                                       pipelineError);
+        if (!validationComputePipeline.nativeHandle()) {
+            spdlog::error("Failed to build reflection-driven Vulkan compute pipeline: {}",
+                          pipelineError);
+            descriptorManager.destroy();
+            ImGui_ImplVulkan_Shutdown();
+            ImGui_ImplGlfw_Shutdown();
+            ImGui::DestroyContext();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        spdlog::info("Validated reflection-driven Vulkan compute pipeline creation (TAA)");
+    }
+    {
+        const auto spirvBinary = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
+                                                            "Shaders/Post/tonemap",
+                                                            PROJECT_SOURCE_DIR);
+        if (spirvBinary.empty()) {
+            spdlog::error("Failed to compile SPIR-V for tonemap validation shader");
+            rhiReleaseHandle(validationComputePipeline);
+            descriptorManager.destroy();
+            ImGui_ImplVulkan_Shutdown();
+            ImGui_ImplGlfw_Shutdown();
+            ImGui::DestroyContext();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        const std::string spirvSource(reinterpret_cast<const char*>(spirvBinary.data()),
+                                      spirvBinary.size() * sizeof(uint32_t));
+        RhiRenderPipelineSourceDesc renderDesc;
+        renderDesc.vertexEntry = "vertexMain";
+        renderDesc.fragmentEntry = "fragmentMain";
+        renderDesc.colorFormat = rhi->colorFormat();
+
+        std::string pipelineError;
+        validationGraphicsPipeline = rhiCreateRenderPipelineFromSource(shaderDevice,
+                                                                       spirvSource,
+                                                                       renderDesc,
+                                                                       pipelineError);
+        if (!validationGraphicsPipeline.nativeHandle()) {
+            spdlog::error("Failed to build reflection-driven Vulkan graphics pipeline: {}",
+                          pipelineError);
+            rhiReleaseHandle(validationComputePipeline);
+            descriptorManager.destroy();
+            ImGui_ImplVulkan_Shutdown();
+            ImGui_ImplGlfw_Shutdown();
+            ImGui::DestroyContext();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        spdlog::info("Validated reflection-driven Vulkan graphics pipeline creation (Tonemap)");
+    }
 
     // Create a test frame graph texture to verify VMA allocation works
     {
@@ -262,6 +344,8 @@ int main(int argc, char** argv) {
     }
 
     rhi->waitIdle();
+    rhiReleaseHandle(validationComputePipeline);
+    rhiReleaseHandle(validationGraphicsPipeline);
     descriptorManager.destroy();
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();

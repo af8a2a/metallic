@@ -143,6 +143,7 @@ public:
     }
 
     void setRenderPipeline(const RhiGraphicsPipeline& pipeline) override {
+        m_boundPipeline = getVulkanPipelineResource(pipeline);
         vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           getVulkanPipelineHandle(pipeline));
     }
@@ -164,25 +165,25 @@ public:
         m_pendingBuffers[index] = {getVulkanBufferHandle(buffer), offset, buffer->size()};
     }
 
-    void setVertexBytes(const void* data, size_t size, uint32_t /*index*/) override {
-        if (data && size > 0 && m_descriptorManager) {
-            vkCmdPushConstants(m_commandBuffer, m_descriptorManager->pipelineLayout(),
-                               VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(size), data);
+    void setVertexBytes(const void* data, size_t size, uint32_t index) override {
+        if (index >= kMaxBufferBindings || !m_descriptorManager) {
+            return;
         }
+        m_pendingBuffers[index] = m_descriptorManager->createTransientUniformBuffer(data, size);
     }
 
-    void setFragmentBytes(const void* data, size_t size, uint32_t /*index*/) override {
-        if (data && size > 0 && m_descriptorManager) {
-            vkCmdPushConstants(m_commandBuffer, m_descriptorManager->pipelineLayout(),
-                               VK_SHADER_STAGE_FRAGMENT_BIT, 128, static_cast<uint32_t>(size), data);
+    void setFragmentBytes(const void* data, size_t size, uint32_t index) override {
+        if (index >= kMaxBufferBindings || !m_descriptorManager) {
+            return;
         }
+        m_pendingBuffers[index] = m_descriptorManager->createTransientUniformBuffer(data, size);
     }
 
-    void setMeshBytes(const void* data, size_t size, uint32_t /*index*/) override {
-        if (data && size > 0 && m_descriptorManager) {
-            vkCmdPushConstants(m_commandBuffer, m_descriptorManager->pipelineLayout(),
-                               VK_SHADER_STAGE_MESH_BIT_EXT, 0, static_cast<uint32_t>(size), data);
+    void setMeshBytes(const void* data, size_t size, uint32_t index) override {
+        if (index >= kMaxBufferBindings || !m_descriptorManager) {
+            return;
         }
+        m_pendingBuffers[index] = m_descriptorManager->createTransientUniformBuffer(data, size);
     }
 
     void setFragmentTexture(const RhiTexture* texture, uint32_t index) override {
@@ -281,10 +282,14 @@ private:
     }
 
     void flushDescriptors(VkPipelineBindPoint bindPoint) {
-        if (m_descriptorManager) {
+        if (m_descriptorManager && m_boundPipeline) {
             transitionPendingTextures();
-            m_descriptorManager->flushAndBind(m_commandBuffer, bindPoint,
-                                              m_pendingBuffers, m_pendingTextures, m_pendingSamplers);
+            m_descriptorManager->flushAndBind(m_commandBuffer,
+                                              bindPoint,
+                                              *m_boundPipeline,
+                                              m_pendingBuffers,
+                                              m_pendingTextures,
+                                              m_pendingSamplers);
         }
     }
 
@@ -292,6 +297,7 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     VulkanDescriptorManager* m_descriptorManager = nullptr;
     VulkanImageLayoutTracker* m_imageTracker = nullptr;
+    const VulkanPipelineResource* m_boundPipeline = nullptr;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
     std::array<PendingSamplerBinding, kMaxSamplerBindings> m_pendingSamplers{};
@@ -315,6 +321,7 @@ public:
     void* nativeHandle() const override { return m_commandBuffer; }
 
     void setComputePipeline(const RhiComputePipeline& pipeline) override {
+        m_boundPipeline = getVulkanPipelineResource(pipeline);
         vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                           getVulkanPipelineHandle(pipeline));
     }
@@ -324,11 +331,11 @@ public:
         m_pendingBuffers[index] = {getVulkanBufferHandle(buffer), offset, buffer->size()};
     }
 
-    void setBytes(const void* data, size_t size, uint32_t /*index*/) override {
-        if (data && size > 0 && m_descriptorManager) {
-            vkCmdPushConstants(m_commandBuffer, m_descriptorManager->pipelineLayout(),
-                               VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(size), data);
+    void setBytes(const void* data, size_t size, uint32_t index) override {
+        if (index >= kMaxBufferBindings || !m_descriptorManager) {
+            return;
         }
+        m_pendingBuffers[index] = m_descriptorManager->createTransientUniformBuffer(data, size);
     }
 
     void setTexture(const RhiTexture* texture, uint32_t index) override {
@@ -411,10 +418,14 @@ private:
     }
 
     void flushDescriptors() {
-        if (m_descriptorManager) {
+        if (m_descriptorManager && m_boundPipeline) {
             transitionPendingTextures();
-            m_descriptorManager->flushAndBind(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                              m_pendingBuffers, m_pendingTextures, m_pendingSamplers);
+            m_descriptorManager->flushAndBind(m_commandBuffer,
+                                              VK_PIPELINE_BIND_POINT_COMPUTE,
+                                              *m_boundPipeline,
+                                              m_pendingBuffers,
+                                              m_pendingTextures,
+                                              m_pendingSamplers);
         }
     }
 
@@ -422,6 +433,7 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     VulkanDescriptorManager* m_descriptorManager = nullptr;
     VulkanImageLayoutTracker* m_imageTracker = nullptr;
+    const VulkanPipelineResource* m_boundPipeline = nullptr;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
     std::array<PendingSamplerBinding, kMaxSamplerBindings> m_pendingSamplers{};

@@ -723,6 +723,11 @@ void rhiReleaseNativeHandle(void* handle) {
         if (pipeline->pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(pipeline->device, pipeline->pipeline, nullptr);
         }
+        for (VkDescriptorSetLayout setLayout : pipeline->setLayouts) {
+            if (setLayout != VK_NULL_HANDLE) {
+                vkDestroyDescriptorSetLayout(pipeline->device, setLayout, nullptr);
+            }
+        }
         if (pipeline->ownsLayout && pipeline->layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(pipeline->device, pipeline->layout, nullptr);
         }

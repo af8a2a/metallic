@@ -5,7 +5,9 @@
 #include <spdlog/spdlog.h>
 
 #include <cstring>
+#include <mutex>
 #include <regex>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -20,6 +22,140 @@ struct SlangTargetConfig {
     const char* profile = nullptr;
     const char* backendLabel = nullptr;
 };
+
+void logDiagnostics(const char* prefix, slang::IBlob* diagnostics);
+
+std::mutex g_bindingLayoutCacheMutex;
+std::unordered_map<uint64_t, SlangShaderBindingLayout> g_bindingLayoutCache;
+
+uint64_t hashBinaryBlob(const void* data, size_t size) {
+    constexpr uint64_t kOffsetBasis = 1469598103934665603ull;
+    constexpr uint64_t kPrime = 1099511628211ull;
+
+    uint64_t hash = kOffsetBasis;
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= kPrime;
+    }
+    return hash;
+}
+
+uint32_t getDescriptorCount(slang::TypeLayoutReflection* typeLayout,
+                            slang::ShaderReflection* /*reflection*/) {
+    if (!typeLayout || !typeLayout->isArray()) {
+        return 1;
+    }
+
+    const size_t count = typeLayout->getElementCount();
+    if (count == 0 || count == SLANG_UNBOUNDED_SIZE) {
+        return 1;
+    }
+    return static_cast<uint32_t>(count);
+}
+
+bool classifyBindingType(slang::TypeLayoutReflection* typeLayout,
+                         SlangShaderBindingType& outType) {
+    if (!typeLayout) {
+        return false;
+    }
+
+    slang::TypeLayoutReflection* leafType = typeLayout->unwrapArray();
+    if (!leafType) {
+        return false;
+    }
+
+    switch (leafType->getKind()) {
+    case slang::TypeReflection::Kind::ConstantBuffer:
+        outType = SlangShaderBindingType::UniformBuffer;
+        return true;
+    case slang::TypeReflection::Kind::SamplerState:
+        outType = SlangShaderBindingType::Sampler;
+        return true;
+    case slang::TypeReflection::Kind::Resource:
+    case slang::TypeReflection::Kind::ShaderStorageBuffer:
+    case slang::TypeReflection::Kind::TextureBuffer:
+    case slang::TypeReflection::Kind::DynamicResource: {
+        const SlangResourceShape baseShape =
+            static_cast<SlangResourceShape>(leafType->getResourceShape() & SLANG_RESOURCE_BASE_SHAPE_MASK);
+        switch (baseShape) {
+        case SLANG_TEXTURE_1D:
+        case SLANG_TEXTURE_2D:
+        case SLANG_TEXTURE_3D:
+        case SLANG_TEXTURE_CUBE:
+        case SLANG_TEXTURE_BUFFER:
+        case SLANG_TEXTURE_SUBPASS:
+            outType = leafType->getResourceAccess() == SLANG_RESOURCE_ACCESS_READ
+                ? SlangShaderBindingType::SampledTexture
+                : SlangShaderBindingType::StorageTexture;
+            return true;
+        case SLANG_STRUCTURED_BUFFER:
+        case SLANG_BYTE_ADDRESS_BUFFER:
+            outType = SlangShaderBindingType::StorageBuffer;
+            return true;
+        case SLANG_ACCELERATION_STRUCTURE:
+            outType = SlangShaderBindingType::AccelerationStructure;
+            return true;
+        default:
+            return false;
+        }
+    }
+    default:
+        return false;
+    }
+}
+
+void cacheBindingLayout(const void* data,
+                        size_t size,
+                        const SlangShaderBindingLayout& layout) {
+    std::lock_guard<std::mutex> lock(g_bindingLayoutCacheMutex);
+    g_bindingLayoutCache[hashBinaryBlob(data, size)] = layout;
+}
+
+bool buildBindingLayout(slang::IComponentType* linkedProgram,
+                        SlangShaderBindingLayout& outLayout) {
+    if (!linkedProgram) {
+        return false;
+    }
+
+    Slang::ComPtr<slang::IBlob> diagnostics;
+    slang::ProgramLayout* reflection = linkedProgram->getLayout(0, diagnostics.writeRef());
+    if (!reflection) {
+        logDiagnostics("Slang reflection error", diagnostics);
+        return false;
+    }
+
+    slang::TypeLayoutReflection* globalParams = reflection->getGlobalParamsTypeLayout();
+    if (!globalParams) {
+        return true;
+    }
+
+    const unsigned fieldCount = globalParams->getFieldCount();
+    outLayout.bindings.reserve(fieldCount);
+    for (unsigned fieldIndex = 0; fieldIndex < fieldCount; ++fieldIndex) {
+        slang::VariableLayoutReflection* field = globalParams->getFieldByIndex(fieldIndex);
+        if (!field) {
+            continue;
+        }
+
+        SlangShaderBindingType bindingType{};
+        if (!classifyBindingType(field->getTypeLayout(), bindingType)) {
+            continue;
+        }
+
+        SlangShaderBindingDesc desc;
+        desc.type = bindingType;
+        desc.bindingIndex = field->getBindingIndex();
+        desc.bindingSpace = static_cast<uint32_t>(field->getBindingSpace());
+        desc.descriptorCount = getDescriptorCount(field->getTypeLayout(), reflection);
+        if (const char* name = field->getName()) {
+            desc.name = name;
+        }
+        outLayout.bindings.push_back(std::move(desc));
+    }
+
+    return true;
+}
 
 bool resolveSlangTarget(RhiBackendType backend,
                         SlangOutputKind outputKind,
@@ -230,6 +366,11 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
 
     std::vector<uint32_t> words(byteSize / sizeof(uint32_t));
     std::memcpy(words.data(), binaryCode->getBufferPointer(), byteSize);
+
+    SlangShaderBindingLayout bindingLayout;
+    if (buildBindingLayout(linkedProgram, bindingLayout)) {
+        cacheBindingLayout(words.data(), byteSize, bindingLayout);
+    }
     return words;
 }
 
@@ -349,6 +490,23 @@ std::vector<uint32_t> compileSlangComputeBinary(RhiBackendType backend,
                                          searchPath,
                                          {entryPoint},
                                          "compute");
+}
+
+bool findSlangBindingLayoutForBinary(const void* data,
+                                     size_t size,
+                                     SlangShaderBindingLayout& outLayout) {
+    if (!data || size == 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_bindingLayoutCacheMutex);
+    auto it = g_bindingLayoutCache.find(hashBinaryBlob(data, size));
+    if (it == g_bindingLayoutCache.end()) {
+        return false;
+    }
+
+    outLayout = it->second;
+    return true;
 }
 
 std::string patchMeshShaderSource(RhiBackendType backend, const std::string& source) {

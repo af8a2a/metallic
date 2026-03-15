@@ -78,6 +78,7 @@ RhiComputePipelineHandle rhiCreateComputePipelineFromSource(const RhiDevice& dev
 #include "vulkan_resource_handles.h"
 #include "slang_compiler.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 
@@ -86,8 +87,6 @@ RhiComputePipelineHandle rhiCreateComputePipelineFromSource(const RhiDevice& dev
 
 namespace {
 
-// Stored pipeline layout from descriptor manager (set during init)
-VkPipelineLayout g_sharedPipelineLayout = VK_NULL_HANDLE;
 VkDevice g_shaderDevice = VK_NULL_HANDLE;
 
 VkShaderModule createShaderModuleFromSpirv(VkDevice device, const std::vector<uint32_t>& spirv) {
@@ -103,11 +102,215 @@ VkShaderModule createShaderModuleFromSpirv(VkDevice device, const std::vector<ui
     return module;
 }
 
+VkDescriptorType toVkDescriptorType(SlangShaderBindingType type) {
+    switch (type) {
+    case SlangShaderBindingType::UniformBuffer:
+        return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    case SlangShaderBindingType::StorageBuffer:
+        return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    case SlangShaderBindingType::SampledTexture:
+        return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    case SlangShaderBindingType::StorageTexture:
+        return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    case SlangShaderBindingType::Sampler:
+        return VK_DESCRIPTOR_TYPE_SAMPLER;
+    case SlangShaderBindingType::AccelerationStructure:
+        return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    default:
+        return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+    }
+}
+
+void destroyPipelineLayouts(VulkanPipelineResource& resource) {
+    for (VkDescriptorSetLayout setLayout : resource.setLayouts) {
+        if (setLayout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(resource.device, setLayout, nullptr);
+        }
+    }
+    resource.setLayouts.clear();
+
+    if (resource.ownsLayout && resource.layout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(resource.device, resource.layout, nullptr);
+        resource.layout = VK_NULL_HANDLE;
+    }
+}
+
+bool assignBindingLocation(VulkanDescriptorBindingLocation& location,
+                           uint32_t set,
+                           uint32_t binding,
+                           uint32_t arrayElement,
+                           VkDescriptorType descriptorType) {
+    location.set = set;
+    location.binding = binding;
+    location.arrayElement = arrayElement;
+    location.descriptorType = descriptorType;
+    return true;
+}
+
+bool buildPipelineResourceLayout(const void* data,
+                                 size_t size,
+                                 VulkanPipelineResource& outResource,
+                                 std::string& errorMessage) {
+    SlangShaderBindingLayout shaderLayout;
+    if (!findSlangBindingLayoutForBinary(data, size, shaderLayout)) {
+        errorMessage = "Missing cached Slang reflection for SPIR-V shader";
+        return false;
+    }
+
+    uint32_t maxSetIndex = 0;
+    for (const auto& binding : shaderLayout.bindings) {
+        maxSetIndex = std::max(maxSetIndex, binding.bindingSpace);
+    }
+
+    std::vector<std::vector<VkDescriptorSetLayoutBinding>> perSetBindings(
+        shaderLayout.bindings.empty() ? 0 : maxSetIndex + 1);
+    std::vector<std::vector<VkDescriptorBindingFlags>> perSetBindingFlags(perSetBindings.size());
+
+    uint32_t logicalBufferIndex = 0;
+    uint32_t logicalTextureIndex = 0;
+    uint32_t logicalSamplerIndex = 0;
+
+    for (const auto& binding : shaderLayout.bindings) {
+        const VkDescriptorType descriptorType = toVkDescriptorType(binding.type);
+        if (descriptorType == VK_DESCRIPTOR_TYPE_MAX_ENUM) {
+            errorMessage = "Unsupported Slang resource type in Vulkan binding layout";
+            destroyPipelineLayouts(outResource);
+            return false;
+        }
+
+        if (binding.bindingSpace >= perSetBindings.size()) {
+            errorMessage = "Invalid descriptor set index in Slang reflection";
+            destroyPipelineLayouts(outResource);
+            return false;
+        }
+
+        auto& setBindings = perSetBindings[binding.bindingSpace];
+        auto existingBinding = std::find_if(setBindings.begin(),
+                                            setBindings.end(),
+                                            [&](const VkDescriptorSetLayoutBinding& vkBinding) {
+                                                return vkBinding.binding == binding.bindingIndex;
+                                            });
+        if (existingBinding == setBindings.end()) {
+            VkDescriptorSetLayoutBinding layoutBinding{};
+            layoutBinding.binding = binding.bindingIndex;
+            layoutBinding.descriptorType = descriptorType;
+            layoutBinding.descriptorCount = binding.descriptorCount;
+            layoutBinding.stageFlags = VK_SHADER_STAGE_ALL;
+            setBindings.push_back(layoutBinding);
+            perSetBindingFlags[binding.bindingSpace].push_back(VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+        }
+
+        auto assignExpandedBinding = [&](auto& locations, uint32_t& logicalIndex) -> bool {
+            for (uint32_t arrayElement = 0; arrayElement < binding.descriptorCount; ++arrayElement) {
+                if (logicalIndex >= locations.size()) {
+                    errorMessage = "Slang reflection exceeded Metallic's Vulkan binding slot limits";
+                    return false;
+                }
+                assignBindingLocation(locations[logicalIndex],
+                                      binding.bindingSpace,
+                                      binding.bindingIndex,
+                                      arrayElement,
+                                      descriptorType);
+                ++logicalIndex;
+            }
+            return true;
+        };
+
+        bool ok = true;
+        switch (binding.type) {
+        case SlangShaderBindingType::UniformBuffer:
+        case SlangShaderBindingType::StorageBuffer:
+            ok = assignExpandedBinding(outResource.bufferBindings, logicalBufferIndex);
+            break;
+        case SlangShaderBindingType::SampledTexture:
+        case SlangShaderBindingType::StorageTexture:
+            ok = assignExpandedBinding(outResource.textureBindings, logicalTextureIndex);
+            break;
+        case SlangShaderBindingType::Sampler:
+            ok = assignExpandedBinding(outResource.samplerBindings, logicalSamplerIndex);
+            break;
+        case SlangShaderBindingType::AccelerationStructure:
+            errorMessage = "Acceleration structure reflection is not wired into Vulkan descriptors yet";
+            ok = false;
+            break;
+        }
+
+        if (!ok) {
+            destroyPipelineLayouts(outResource);
+            return false;
+        }
+    }
+
+    outResource.setLayouts.resize(perSetBindings.size(), VK_NULL_HANDLE);
+    for (size_t setIndex = 0; setIndex < perSetBindings.size(); ++setIndex) {
+        auto& bindings = perSetBindings[setIndex];
+        if (!bindings.empty()) {
+            std::vector<size_t> order(bindings.size());
+            for (size_t i = 0; i < order.size(); ++i) {
+                order[i] = i;
+            }
+            std::sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
+                return bindings[lhs].binding < bindings[rhs].binding;
+            });
+
+            std::vector<VkDescriptorSetLayoutBinding> sortedBindings;
+            std::vector<VkDescriptorBindingFlags> sortedFlags;
+            sortedBindings.reserve(bindings.size());
+            sortedFlags.reserve(bindings.size());
+            for (size_t orderedIndex : order) {
+                sortedBindings.push_back(bindings[orderedIndex]);
+                sortedFlags.push_back(perSetBindingFlags[setIndex][orderedIndex]);
+            }
+            bindings = std::move(sortedBindings);
+            perSetBindingFlags[setIndex] = std::move(sortedFlags);
+        }
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
+        if (!bindings.empty()) {
+            flagsInfo.bindingCount = static_cast<uint32_t>(perSetBindingFlags[setIndex].size());
+            flagsInfo.pBindingFlags = perSetBindingFlags[setIndex].data();
+            layoutInfo.pNext = &flagsInfo;
+            layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+            layoutInfo.pBindings = bindings.data();
+        }
+
+        const VkResult result = vkCreateDescriptorSetLayout(g_shaderDevice,
+                                                            &layoutInfo,
+                                                            nullptr,
+                                                            &outResource.setLayouts[setIndex]);
+        if (result != VK_SUCCESS) {
+            errorMessage = "Failed to create Vulkan descriptor set layout (VkResult: " +
+                std::to_string(result) + ")";
+            destroyPipelineLayouts(outResource);
+            return false;
+        }
+    }
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(outResource.setLayouts.size());
+    pipelineLayoutInfo.pSetLayouts = outResource.setLayouts.empty() ? nullptr : outResource.setLayouts.data();
+
+    const VkResult layoutResult = vkCreatePipelineLayout(g_shaderDevice,
+                                                         &pipelineLayoutInfo,
+                                                         nullptr,
+                                                         &outResource.layout);
+    if (layoutResult != VK_SUCCESS) {
+        errorMessage = "Failed to create Vulkan pipeline layout (VkResult: " +
+            std::to_string(layoutResult) + ")";
+        destroyPipelineLayouts(outResource);
+        return false;
+    }
+
+    outResource.ownsLayout = true;
+    return true;
+}
+
 } // namespace
 
-void vulkanSetShaderContext(VkDevice device, VkPipelineLayout sharedLayout) {
+void vulkanSetShaderContext(VkDevice device) {
     g_shaderDevice = device;
-    g_sharedPipelineLayout = sharedLayout;
 }
 
 // Vertex descriptors are not used on Vulkan (vertex input is part of pipeline state)
@@ -171,6 +374,14 @@ RhiGraphicsPipelineHandle rhiCreateRenderPipelineFromSource(const RhiDevice& /*d
     VkShaderModule shaderModule = createShaderModuleFromSpirv(g_shaderDevice, spirv);
     if (shaderModule == VK_NULL_HANDLE) {
         errorMessage = "Failed to create VkShaderModule from SPIR-V";
+        return {};
+    }
+
+    auto* res = new VulkanPipelineResource{};
+    res->device = g_shaderDevice;
+    if (!buildPipelineResourceLayout(source.data(), source.size(), *res, errorMessage)) {
+        vkDestroyShaderModule(g_shaderDevice, shaderModule, nullptr);
+        delete res;
         return {};
     }
 
@@ -264,7 +475,7 @@ RhiGraphicsPipelineHandle rhiCreateRenderPipelineFromSource(const RhiDevice& /*d
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.pDepthStencilState = hasDepth ? &depthStencil : nullptr;
-    pipelineInfo.layout = g_sharedPipelineLayout;
+    pipelineInfo.layout = res->layout;
     pipelineInfo.renderPass = VK_NULL_HANDLE;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -273,14 +484,11 @@ RhiGraphicsPipelineHandle rhiCreateRenderPipelineFromSource(const RhiDevice& /*d
 
     if (result != VK_SUCCESS) {
         errorMessage = "Failed to create Vulkan graphics pipeline (VkResult: " + std::to_string(result) + ")";
+        destroyPipelineLayouts(*res);
+        delete res;
         return {};
     }
-
-    auto* res = new VulkanPipelineResource{};
-    res->device = g_shaderDevice;
     res->pipeline = pipeline;
-    res->layout = g_sharedPipelineLayout;
-    res->ownsLayout = false;
     return RhiGraphicsPipelineHandle(res);
 }
 
@@ -307,12 +515,20 @@ RhiComputePipelineHandle rhiCreateComputePipelineFromSource(const RhiDevice& /*d
         return {};
     }
 
+    auto* res = new VulkanPipelineResource{};
+    res->device = g_shaderDevice;
+    if (!buildPipelineResourceLayout(source.data(), source.size(), *res, errorMessage)) {
+        vkDestroyShaderModule(g_shaderDevice, shaderModule, nullptr);
+        delete res;
+        return {};
+    }
+
     VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     pipelineInfo.stage.module = shaderModule;
-    pipelineInfo.stage.pName = entryPoint ? entryPoint : "computeMain";
-    pipelineInfo.layout = g_sharedPipelineLayout;
+    pipelineInfo.stage.pName = "main";
+    pipelineInfo.layout = res->layout;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkResult result = vkCreateComputePipelines(g_shaderDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
@@ -320,14 +536,11 @@ RhiComputePipelineHandle rhiCreateComputePipelineFromSource(const RhiDevice& /*d
 
     if (result != VK_SUCCESS) {
         errorMessage = "Failed to create Vulkan compute pipeline (VkResult: " + std::to_string(result) + ")";
+        destroyPipelineLayouts(*res);
+        delete res;
         return {};
     }
-
-    auto* res = new VulkanPipelineResource{};
-    res->device = g_shaderDevice;
     res->pipeline = pipeline;
-    res->layout = g_sharedPipelineLayout;
-    res->ownsLayout = false;
     return RhiComputePipelineHandle(res);
 }
 
