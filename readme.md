@@ -1,101 +1,172 @@
 # Metallic
 
-A Metal rendering playground exploring modern GPU-driven techniques on Apple Silicon.
-Almost all code is **generated** by `Claude Opus 4.6` and `OpenAI GPT-5.3 Codex` — pushing the limits of vibe-coding.
+Metallic is a rendering playground for modern GPU-driven rendering experiments.
 
-Developed on Apple M4 Pro.
+- macOS uses the original Metal renderer with scene loading, mesh shaders, visibility-buffer rendering, ray-traced shadows, atmosphere, and an ImGui debug UI.
+- Windows uses the newer backend-agnostic RHI path with a Vulkan 1.4 preview renderer and shared pipeline asset system.
+- A standalone `PipelineEditorTool` lets you inspect and edit pipeline JSON graphs outside the renderer.
+
+Most of the codebase is authored with heavy assistance from `Claude Opus 4.6` and `OpenAI GPT-5.3 Codex`.
+
+## Backend Status
+
+| Platform | Backend | Status |
+|---|---|---|
+| macOS (Apple Silicon) | Metal | Main renderer path |
+| Windows | Vulkan 1.4 | Bootstrap / preview path |
+
+Linux is not a supported target right now.
 
 ## Features
 
-### Rendering Modes
-- **Visibility Buffer** — Mesh shader writes packed meshlet/triangle/instance IDs to R32Uint, followed by compute deferred lighting with PBR materials
-- **Mesh Shader Forward** — Meshlet-based forward rendering with per-meshlet frustum and backface cone culling
-- **Legacy Vertex Forward** — Traditional vertex shader forward pass
+### Metal renderer
+- Scene loading and rendering for Sponza
+- Vertex forward, mesh shader forward, visibility buffer, and meshlet debug modes
+- Meshlet frustum culling, backface cone culling, and GPU-driven culling
+- Ray-traced shadows on the Metal path
+- Atmospheric scattering sky rendering
+- TAA, auto exposure, tonemapping, and per-pass debug UI
+- FrameGraph execution with optional Graphviz DOT export
 
-### Techniques
-- **Raytraced Shadows** — Metal raytracing API with per-frame TLAS rebuild, shadow rays traced from depth buffer
-- **Atmospheric Scattering** — Precomputed transmittance, scattering, and irradiance sky rendering
-- **Tonemapping** — 6 methods: Filmic, Uncharted2, ACES, AgX, Khronos PBR Neutral, Clip
-- **Meshlet Culling** — Frustum culling and backface cone culling per meshlet
-- **Scene Graph** — Node hierarchy with transforms, directional light, and ImGui inspector
-- **FrameGraph** — Declarative render pass graph with Graphviz DOT export
+### Shared infrastructure
+- Backend-agnostic RHI layer under `Source/RHI/`
+- Data-driven pipeline assets in `Pipelines/*.json`
+- Slang shader compilation for Metal and Vulkan targets
+- Runtime shader reload (`F5`) and pipeline asset reload (`F6`) on the Metal renderer
+- Tracy profiling and spdlog logging
 
-### Infrastructure
-- **Slang Shaders** — Written in Slang, compiled to Metal source at runtime (except raytracing: native MSL)
-- **Shader Hot-Reload** — Press F5 to recompile all shaders without restarting
-- **metal-cpp** — Header-only C++ wrapper for Metal API
-- **Tracy Profiler** — GPU and CPU profiling zones (on-demand, zero overhead when disconnected)
-- **Dear ImGui** — Docking-enabled UI with per-pass controls
-- **spdlog** — Structured logging
+### Windows Vulkan preview
+- GLFW + Vulkan bootstrap through the shared RHI
+- Slang-to-SPIR-V compilation at startup
+- Preview post stack driven by `Pipelines/vulkan_preview.json`
+- Sky preview path when atmosphere textures and the sky shader are available
+- Triangle fallback path when preview resources are unavailable
+
+### Pipeline editor tool
+- Standalone ImGui + imnodes graph editor
+- Loads and saves pipeline assets from `Pipelines/`
+- Visualizes pass/resource dependencies and validates the DAG
+
+## Repository Layout
+
+```text
+Source/
+  main.cpp                     Metal renderer entry point
+  main_vulkan.cpp              Windows Vulkan preview entry point
+  Rendering/                   Frame graph, passes, shader management, frame context
+  RHI/                         Shared interfaces and backend implementations
+  PipelineEditor/              Shared pipeline asset, registry, and builder code
+  Platform/                    Apple-specific runtime and bridge code
+  Scene/                       Scene graph and inspector UI
+  Asset/                       Mesh, meshlet, and material loading
+
+Tools/
+  PipelineEditor/              Standalone pipeline editor executable
+
+Shaders/                       Slang and native MSL shader sources
+Pipelines/                     JSON pipeline assets
+Asset/                         Runtime textures, models, and atmosphere data
+External/                      Vendored third-party dependencies
+cmake/                         Build helpers, including Slang setup
+```
 
 ## Building
 
-Requires macOS with Apple Silicon and Xcode command line tools.
+Clone with submodules:
 
 ```bash
 git clone --recursive <repo-url>
-cd rendergraph
+cd metallic
+```
 
-# Configure (downloads Slang compiler automatically)
-cmake -B build -DCMAKE_BUILD_TYPE=Debug
+If `External/slang` is missing, CMake will try to use:
 
-# Build
-cmake --build build -j$(sysctl -n hw.ncpu)
+1. `-DSLANG_ROOT=<sdk-root>`
+2. `SLANG_ROOT`
+3. `SLANG_DIR`
+4. `External/slang`
 
-# Run
+### macOS / Metal
+
+Requirements:
+- Apple Silicon Mac
+- Xcode command line tools
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --target Metallic -j$(sysctl -n hw.ncpu)
 ./build/Source/Metallic
 ```
 
-## Project Structure
+Notes:
+- The macOS build copies `Shaders/`, `Asset/`, and `Pipelines/` next to the executable.
+- The standalone pipeline editor is also available on macOS:
 
+```bash
+cmake --build build --target PipelineEditorTool -j$(sysctl -n hw.ncpu)
+./build/Tools/PipelineEditor/PipelineEditorTool
 ```
-Source/
-├── main.cpp                    # Entry point, render loop
-├── Platform/                   # Metal/GLFW/ImGui/Tracy bridges
-├── Asset/                      # glTF mesh, meshlet, material loading
-├── Scene/                      # Scene graph + ImGui inspector
-└── Rendering/
-    ├── frame_graph.h/cpp       # Declarative render pass graph
-    ├── render_pass.h/cpp       # Base RenderPass class
-    ├── raytraced_shadows.h/cpp # BLAS/TLAS management
-    └── Passes/                 # Modular render passes
 
-Shaders/
-├── Vertex/                     # Vertex pipeline shaders (Slang)
-├── Mesh/                       # Mesh shader pipeline (Slang)
-├── Visibility/                 # Visibility buffer + deferred lighting (Slang)
-├── Atmosphere/                 # Sky rendering (Slang)
-├── Post/                       # Tonemapping (Slang)
-└── Raytracing/                 # Shadow rays (native Metal)
+### Windows / Vulkan
 
-External/                       # Dependencies (metal-cpp, GLFW, Slang, ImGui, Tracy, etc.)
+Requirements:
+- Visual Studio 2022 or another CMake-capable MSVC toolchain
+- Vulkan SDK
+- A Slang SDK if `External/slang` is not populated
+
+```powershell
+cmake -S . -B build -DSLANG_ROOT=D:/path/to/slang
+cmake --build build --config Debug --target Metallic
+build/Source/Debug/Metallic.exe
 ```
+
+Standalone editor on Windows:
+
+```powershell
+cmake --build build --config Debug --target PipelineEditorTool
+build/Tools/PipelineEditor/Debug/PipelineEditorTool.exe
+```
+
+Notes:
+- The Windows renderer is currently a preview path, not feature parity with the Metal renderer.
+- It exercises the shared RHI, shader compiler, frame graph, and pipeline asset system.
+
+## Runtime Controls
+
+Metal renderer:
+- `F5`: rebuild shaders
+- `F6`: reload pipeline JSON assets
+- `G`: export `framegraph.dot`
+- ImGui renderer panel: switch render modes and toggle culling, TAA, RT shadows, and sky settings
+
+## Pipeline Assets
+
+Pipeline graphs live in `Pipelines/` and are described as JSON:
+
+- `resources`: declared textures/buffers
+- `passes`: pass type, inputs, outputs, enabled state, side-effect flag, and pass config
+
+Current in-tree examples include:
+- `Pipelines/forward.json`
+- `Pipelines/meshlet_debug.json`
+- `Pipelines/visibility_buffer.json`
+- `Pipelines/vulkan_preview.json`
+
+The shared loader validates missing resources, duplicate producers, and graph cycles before execution.
 
 ## Dependencies
 
 | Library | Purpose |
 |---|---|
-| [metal-cpp](https://developer.apple.com/metal/cpp/) | C++ Metal API wrapper |
-| [GLFW](https://www.glfw.org/) | Window management |
-| [Slang](https://shader-slang.com/) | Shader language → Metal codegen |
-| [Dear ImGui](https://github.com/ocornut/imgui) | Debug UI |
-| [Tracy](https://github.com/wolfpld/tracy) | GPU/CPU profiler |
-| [meshoptimizer](https://github.com/zeux/meshoptimizer) | Meshlet building |
-| [cgltf](https://github.com/jkuhlmann/cgltf) | glTF parsing |
-| [stb_image](https://github.com/nothings/stb) | Image loading |
-| [spdlog](https://github.com/gabime/spdlog) | Logging |
-| [MathLib](External/MathLib/) | HLSL-style math |
-
-## Windows Vulkan Bootstrap
-
-The repository now includes a backend-agnostic RHI bootstrap path and a Windows Vulkan 1.4 backend.
-
-```powershell
-cmake -S . -B build -DSLANG_ROOT=D:/path/to/slang
-cmake --build build --config Debug --target Metallic
-./build/Source/Debug/Metallic.exe
-```
-
-- The Windows path initializes the new RHI/Vulkan stack, compiles `Shaders/Vertex/triangle` from Slang to SPIR-V, and renders a diagnostic triangle with ImGui.
-- The existing FrameGraph, pass system, and ray-traced shadows remain on the Metal path.
-- If `External/slang` is absent, configure with `-DSLANG_ROOT=<sdk-root>` or set `SLANG_ROOT` / `SLANG_DIR` in the environment.
+| `metal-cpp` | Metal C++ wrapper on macOS |
+| Vulkan SDK + VMA | Windows Vulkan backend |
+| GLFW | Window creation and input |
+| Dear ImGui | Debug UI |
+| imnodes | Pipeline editor node graph UI |
+| Slang | Shader authoring and code generation |
+| Tracy | CPU/GPU profiling |
+| spdlog | Logging |
+| nlohmann/json | Pipeline asset serialization |
+| meshoptimizer | Meshlet generation and culling support |
+| cgltf / stb_image | Asset loading |
+| MathLib | HLSL-style math helpers |

@@ -142,7 +142,6 @@ void PipelineBuilder::updateFrame(RhiTexture* backbuffer, const FrameContext* fr
     if (m_backbufferRes.isValid()) {
         m_fg.updateImport(m_backbufferRes, backbuffer);
     }
-    m_fg.resetTransients();
     setFrameContext(frameCtx);
 }
 

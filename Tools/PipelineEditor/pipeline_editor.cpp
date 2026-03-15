@@ -4,6 +4,7 @@
 #include <imnodes.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <cstring>
 
 int PipelineEditor::getPassIndexFromNodeId(int id) const {
     if (id >= 1000 && id < 2000) return id - 1000;

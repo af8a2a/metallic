@@ -1,12 +1,21 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#ifndef _USE_MATH_DEFINES
+#define _USE_MATH_DEFINES
+#endif
+
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cmath>
+#include <fstream>
 #include <string>
+#include <vector>
 
+#include "camera.h"
 #include "frame_context.h"
 #include "frame_graph.h"
 #include "pipeline_asset.h"
@@ -33,6 +42,24 @@ struct AppState {
     bool framebufferResized = false;
 };
 
+struct AtmosphereTextures {
+    RhiTextureHandle transmittance;
+    RhiTextureHandle scattering;
+    RhiTextureHandle irradiance;
+
+    bool isValid() const {
+        return transmittance.nativeHandle() &&
+               scattering.nativeHandle() &&
+               irradiance.nativeHandle();
+    }
+
+    void release() {
+        rhiReleaseHandle(transmittance);
+        rhiReleaseHandle(scattering);
+        rhiReleaseHandle(irradiance);
+    }
+};
+
 void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
     auto* state = static_cast<AppState*>(glfwGetWindowUserPointer(window));
     if (state && width > 0 && height > 0) {
@@ -40,20 +67,173 @@ void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
     }
 }
 
-PipelineAsset makePresentPipelineAsset() {
+std::vector<float> loadFloatData(const std::string& path, size_t expectedCount) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        spdlog::warn("Atmosphere: missing texture data {}", path);
+        return {};
+    }
+
+    file.seekg(0, std::ios::end);
+    const size_t size = static_cast<size_t>(file.tellg());
+    file.seekg(0, std::ios::beg);
+    if (size == 0 || size % sizeof(float) != 0) {
+        spdlog::warn("Atmosphere: invalid data size {} ({} bytes)", path, size);
+        return {};
+    }
+
+    std::vector<float> data(size / sizeof(float));
+    file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size));
+    if (!file) {
+        spdlog::warn("Atmosphere: failed to read {}", path);
+        return {};
+    }
+
+    if (expectedCount > 0 && data.size() != expectedCount) {
+        spdlog::warn("Atmosphere: unexpected element count in {} ({} vs {})",
+                     path,
+                     data.size(),
+                     expectedCount);
+    }
+
+    return data;
+}
+
+bool loadPipelineAssetChecked(const std::string& path,
+                              const char* label,
+                              PipelineAsset& outAsset) {
+    PipelineAsset loaded = PipelineAsset::load(path);
+    if (loaded.name.empty()) {
+        spdlog::error("Failed to load {} pipeline from '{}'", label, path);
+        return false;
+    }
+
+    std::string validationError;
+    if (!loaded.validate(validationError)) {
+        spdlog::error("Invalid {} pipeline '{}': {}", label, path, validationError);
+        return false;
+    }
+
+    outAsset = std::move(loaded);
+    spdlog::info("Loaded {} pipeline: {} ({} passes, {} resources)",
+                 label,
+                 outAsset.name,
+                 outAsset.passes.size(),
+                 outAsset.resources.size());
+    return true;
+}
+
+bool loadAtmosphereTextures(const RhiDevice& device,
+                            const char* projectRoot,
+                            AtmosphereTextures& outTextures) {
+    constexpr uint32_t kTransmittanceWidth = 256;
+    constexpr uint32_t kTransmittanceHeight = 64;
+    constexpr uint32_t kScatteringWidth = 256;
+    constexpr uint32_t kScatteringHeight = 128;
+    constexpr uint32_t kScatteringDepth = 32;
+    constexpr uint32_t kIrradianceWidth = 64;
+    constexpr uint32_t kIrradianceHeight = 16;
+
+    const std::string basePath = std::string(projectRoot) + "/Asset/Atmosphere/";
+    const auto transmittance = loadFloatData(basePath + "transmittance.dat",
+                                             static_cast<size_t>(kTransmittanceWidth) *
+                                                 kTransmittanceHeight * 4);
+    const auto scattering = loadFloatData(basePath + "scattering.dat",
+                                          static_cast<size_t>(kScatteringWidth) *
+                                              kScatteringHeight * kScatteringDepth * 4);
+    const auto irradiance = loadFloatData(basePath + "irradiance.dat",
+                                          static_cast<size_t>(kIrradianceWidth) *
+                                              kIrradianceHeight * 4);
+
+    if (transmittance.empty() || scattering.empty() || irradiance.empty()) {
+        return false;
+    }
+
+    outTextures.release();
+    outTextures.transmittance = rhiCreateTexture2D(device,
+                                                   kTransmittanceWidth,
+                                                   kTransmittanceHeight,
+                                                   RhiFormat::RGBA32Float,
+                                                   false,
+                                                   1,
+                                                   RhiTextureStorageMode::Shared,
+                                                   RhiTextureUsage::ShaderRead);
+    outTextures.scattering = rhiCreateTexture3D(device,
+                                                kScatteringWidth,
+                                                kScatteringHeight,
+                                                kScatteringDepth,
+                                                RhiFormat::RGBA32Float,
+                                                RhiTextureStorageMode::Shared,
+                                                RhiTextureUsage::ShaderRead);
+    outTextures.irradiance = rhiCreateTexture2D(device,
+                                                kIrradianceWidth,
+                                                kIrradianceHeight,
+                                                RhiFormat::RGBA32Float,
+                                                false,
+                                                1,
+                                                RhiTextureStorageMode::Shared,
+                                                RhiTextureUsage::ShaderRead);
+
+    if (!outTextures.isValid()) {
+        outTextures.release();
+        return false;
+    }
+
+    rhiUploadTexture2D(outTextures.transmittance,
+                       kTransmittanceWidth,
+                       kTransmittanceHeight,
+                       transmittance.data(),
+                       static_cast<size_t>(kTransmittanceWidth) * 4 * sizeof(float));
+    rhiUploadTexture3D(outTextures.scattering,
+                       kScatteringWidth,
+                       kScatteringHeight,
+                       kScatteringDepth,
+                       scattering.data(),
+                       static_cast<size_t>(kScatteringWidth) * 4 * sizeof(float),
+                       static_cast<size_t>(kScatteringWidth) * kScatteringHeight * 4 * sizeof(float));
+    rhiUploadTexture2D(outTextures.irradiance,
+                       kIrradianceWidth,
+                       kIrradianceHeight,
+                       irradiance.data(),
+                       static_cast<size_t>(kIrradianceWidth) * 4 * sizeof(float));
+    return true;
+}
+
+PipelineAsset makeSceneColorPostPipelineAsset() {
     PipelineAsset asset;
-    asset.name = "VulkanPresentPipeline";
+    asset.name = "VulkanPostPipeline";
     asset.resources.push_back({"sceneColor", "texture", "RGBA16Float", "screen"});
     asset.passes.push_back({
-        "Output",
-        "OutputPass",
+        "Tonemap",
+        "TonemapPass",
         {"sceneColor"},
         {"$backbuffer"},
         true,
         true,
-        {},
+        {
+            {"method", "Clip"},
+            {"exposure", 1.0},
+            {"contrast", 1.0},
+            {"brightness", 1.0},
+            {"saturation", 1.0},
+            {"vignette", 0.0},
+            {"dither", false},
+            {"autoExposure", false},
+        },
     });
     return asset;
+}
+
+float4 orbitCameraWorldPosition(const OrbitCamera& camera) {
+    const float cosAzimuth = std::cos(camera.azimuth);
+    const float sinAzimuth = std::sin(camera.azimuth);
+    const float cosElevation = std::cos(camera.elevation);
+    const float sinElevation = std::sin(camera.elevation);
+
+    return float4(camera.target.x + camera.distance * cosElevation * sinAzimuth,
+                  camera.target.y + camera.distance * sinElevation,
+                  camera.target.z + camera.distance * cosElevation * cosAzimuth,
+                  1.0f);
 }
 
 } // namespace
@@ -110,16 +290,20 @@ int main() {
         return 1;
     }
 
-    const auto passthroughSpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
-                                                             "Shaders/Post/passthrough",
-                                                             PROJECT_SOURCE_DIR);
-    if (passthroughSpirv.empty()) {
-        spdlog::error("Failed to compile SPIR-V for passthrough shader");
+    const auto tonemapSpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
+                                                         "Shaders/Post/tonemap",
+                                                         PROJECT_SOURCE_DIR);
+    if (tonemapSpirv.empty()) {
+        spdlog::error("Failed to compile SPIR-V for tonemap shader");
         rhi->waitIdle();
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
     }
+
+    const auto skySpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
+                                                     "Shaders/Atmosphere/sky",
+                                                     PROJECT_SOURCE_DIR);
 
     const std::array<Vertex, 3> vertices = {{
         {{0.0f, -0.6f, 0.0f}, {1.0f, 0.3f, 0.2f}},
@@ -186,25 +370,46 @@ int main() {
         return 1;
     }
 
-    std::string passthroughShaderSource(reinterpret_cast<const char*>(passthroughSpirv.data()),
-                                        passthroughSpirv.size() * sizeof(uint32_t));
-    RhiRenderPipelineSourceDesc passthroughPipelineDesc;
-    passthroughPipelineDesc.vertexEntry = "vertexMain";
-    passthroughPipelineDesc.fragmentEntry = "fragmentMain";
-    passthroughPipelineDesc.colorFormat = rhi->colorFormat();
+    std::string tonemapShaderSource(reinterpret_cast<const char*>(tonemapSpirv.data()),
+                                    tonemapSpirv.size() * sizeof(uint32_t));
+    RhiRenderPipelineSourceDesc tonemapPipelineDesc;
+    tonemapPipelineDesc.vertexEntry = "vertexMain";
+    tonemapPipelineDesc.fragmentEntry = "fragmentMain";
+    tonemapPipelineDesc.colorFormat = rhi->colorFormat();
 
-    std::string passthroughPipelineError;
-    RhiGraphicsPipelineHandle passthroughPipeline =
+    std::string tonemapPipelineError;
+    RhiGraphicsPipelineHandle tonemapPipeline =
         rhiCreateRenderPipelineFromSource(deviceHandle,
-                                          passthroughShaderSource,
-                                          passthroughPipelineDesc,
-                                          passthroughPipelineError);
-    if (!passthroughPipeline.nativeHandle()) {
-        spdlog::error("Failed to create passthrough pipeline: {}", passthroughPipelineError);
+                                          tonemapShaderSource,
+                                          tonemapPipelineDesc,
+                                          tonemapPipelineError);
+    if (!tonemapPipeline.nativeHandle()) {
+        spdlog::error("Failed to create tonemap pipeline: {}", tonemapPipelineError);
         rhi->waitIdle();
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
+    }
+
+    RhiGraphicsPipelineHandle skyPipeline;
+    if (!skySpirv.empty()) {
+        std::string skyShaderSource(reinterpret_cast<const char*>(skySpirv.data()),
+                                    skySpirv.size() * sizeof(uint32_t));
+        RhiRenderPipelineSourceDesc skyPipelineDesc;
+        skyPipelineDesc.vertexEntry = "vertexMain";
+        skyPipelineDesc.fragmentEntry = "fragmentMain";
+        skyPipelineDesc.colorFormat = RhiFormat::RGBA16Float;
+
+        std::string skyPipelineError;
+        skyPipeline = rhiCreateRenderPipelineFromSource(deviceHandle,
+                                                        skyShaderSource,
+                                                        skyPipelineDesc,
+                                                        skyPipelineError);
+        if (!skyPipeline.nativeHandle()) {
+            spdlog::warn("Failed to create sky pipeline: {}", skyPipelineError);
+        }
+    } else {
+        spdlog::warn("Failed to compile SPIR-V for sky shader; falling back to sceneColor present path");
     }
 
     RhiSamplerDesc samplerDesc;
@@ -212,6 +417,7 @@ int main() {
     samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
     samplerDesc.addressModeS = RhiSamplerAddressMode::ClampToEdge;
     samplerDesc.addressModeT = RhiSamplerAddressMode::ClampToEdge;
+    samplerDesc.addressModeR = RhiSamplerAddressMode::ClampToEdge;
     RhiSamplerHandle linearSampler = rhiCreateSampler(deviceHandle, samplerDesc);
     if (!linearSampler.nativeHandle()) {
         spdlog::error("Failed to create Vulkan sampler");
@@ -219,6 +425,24 @@ int main() {
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
+    }
+
+    AtmosphereTextures atmosphereTextures;
+    if (!loadAtmosphereTextures(deviceHandle, PROJECT_SOURCE_DIR, atmosphereTextures)) {
+        spdlog::warn("Failed to load atmosphere textures; falling back to sceneColor present path");
+    }
+
+    PipelineAsset skyPipelineAsset;
+    const bool skyPipelineAssetLoaded =
+        loadPipelineAssetChecked(std::string(PROJECT_SOURCE_DIR) + "/Pipelines/vulkan_preview.json",
+                                 "Vulkan preview",
+                                 skyPipelineAsset);
+    const bool useSkyRenderGraph =
+        skyPipeline.nativeHandle() && atmosphereTextures.isValid() && skyPipelineAssetLoaded;
+    if (useSkyRenderGraph) {
+        spdlog::info("Vulkan RenderGraph mode: SkyPass -> TonemapPass");
+    } else {
+        spdlog::info("Vulkan RenderGraph mode: Triangle -> TonemapPass fallback");
     }
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
@@ -295,29 +519,39 @@ int main() {
     };
 
     PipelineRuntimeContext runtimeContext;
-    runtimeContext.renderPipelinesRhi["OutputPass"] = passthroughPipeline;
+    runtimeContext.renderPipelinesRhi["TonemapPass"] = tonemapPipeline;
+    if (skyPipeline.nativeHandle()) {
+        runtimeContext.renderPipelinesRhi["SkyPass"] = skyPipeline;
+    }
     runtimeContext.samplersRhi["tonemap"] = linearSampler;
+    runtimeContext.samplersRhi["atmosphere"] = linearSampler;
     runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
+    if (atmosphereTextures.isValid()) {
+        runtimeContext.importedTexturesRhi["transmittance"] = atmosphereTextures.transmittance;
+        runtimeContext.importedTexturesRhi["scattering"] = atmosphereTextures.scattering;
+        runtimeContext.importedTexturesRhi["irradiance"] = atmosphereTextures.irradiance;
+    }
     runtimeContext.backbufferRhi = &backbufferTexture;
     runtimeContext.resourceFactory = &frameGraphBackend;
 
-    const PipelineAsset presentAsset = makePresentPipelineAsset();
-    PipelineBuilder presentBuilder(renderContext);
-    auto rebuildPresentBuilder = [&](int targetWidth, int targetHeight) {
+    const PipelineAsset sceneColorPostAsset = makeSceneColorPostPipelineAsset();
+    PipelineBuilder postBuilder(renderContext);
+    auto rebuildPostBuilder = [&](int targetWidth, int targetHeight) {
         runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
-        if (!presentBuilder.build(presentAsset, runtimeContext, targetWidth, targetHeight)) {
-            spdlog::error("Failed to build Vulkan present pipeline: {}", presentBuilder.lastError());
+        const PipelineAsset& activePostAsset = useSkyRenderGraph ? skyPipelineAsset : sceneColorPostAsset;
+        if (!postBuilder.build(activePostAsset, runtimeContext, targetWidth, targetHeight)) {
+            spdlog::error("Failed to build Vulkan post pipeline: {}", postBuilder.lastError());
             return false;
         }
-        presentBuilder.compile();
+        postBuilder.compile();
         return true;
     };
 
-    if (!rebuildPresentBuilder(width, height)) {
+    if (!rebuildPostBuilder(width, height)) {
         rhi->waitIdle();
         descriptorManager.destroy();
         rhiReleaseHandle(linearSampler);
-        rhiReleaseHandle(passthroughPipeline);
+        rhiReleaseHandle(tonemapPipeline);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(sceneColorTexture);
         rhiReleaseHandle(vertexDescriptor);
@@ -329,6 +563,15 @@ int main() {
 
     VkImageLayout sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     FrameContext frameContext;
+    OrbitCamera previewCamera;
+    previewCamera.target = float3(0.0f, 1.2f, 0.0f);
+    previewCamera.distance = 6.0f;
+    previewCamera.azimuth = 0.35f;
+    previewCamera.elevation = 0.2f;
+    previewCamera.fovY = 45.0f * (3.1415926535f / 180.0f);
+    previewCamera.nearZ = 0.1f;
+    previewCamera.farZ = 10000.0f;
+    const float3 sunDirection = normalize(float3(0.35f, 0.85f, 0.25f));
 
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("VulkanRenderGraphFrame");
@@ -342,14 +585,16 @@ int main() {
 
         if (appState.framebufferResized) {
             rhi->resize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-            if (!recreateSceneColorTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
-                spdlog::error("Failed to recreate offscreen scene color texture");
+            if (!useSkyRenderGraph) {
+                if (!recreateSceneColorTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
+                    spdlog::error("Failed to recreate offscreen scene color texture");
+                    break;
+                }
+                sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            }
+            if (!rebuildPostBuilder(width, height)) {
                 break;
             }
-            if (!rebuildPresentBuilder(width, height)) {
-                break;
-            }
-            sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             appState.framebufferResized = false;
         }
 
@@ -372,7 +617,7 @@ int main() {
         if (backbufferImage != VK_NULL_HANDLE) {
             imageTracker.setLayout(backbufferImage, getVulkanCurrentBackbufferLayout(*rhi));
         }
-        if (sceneColorTexture.nativeHandle()) {
+        if (!useSkyRenderGraph && sceneColorTexture.nativeHandle()) {
             imageTracker.setLayout(getVulkanImage(&sceneColorTexture), sceneColorLayout);
         }
 
@@ -381,19 +626,33 @@ int main() {
                                           &descriptorManager,
                                           &imageTracker);
 
-        sceneGraph.execute(commandBuffer, frameGraphBackend);
+        if (!useSkyRenderGraph) {
+            sceneGraph.execute(commandBuffer, frameGraphBackend);
+        }
 
         RhiNativeCommandBufferHandle nativeCommandBuffer(getVulkanCurrentCommandBuffer(*rhi));
         frameContext.width = width;
         frameContext.height = height;
+        frameContext.view =
+            previewCamera.viewMatrix();
+        frameContext.proj =
+            previewCamera.projectionMatrix(static_cast<float>(width) / static_cast<float>(std::max(height, 1)));
+        frameContext.cameraWorldPos = orbitCameraWorldPosition(previewCamera);
+        frameContext.prevView = frameContext.view;
+        frameContext.prevProj = frameContext.proj;
+        frameContext.worldLightDir = float4(sunDirection.x, sunDirection.y, sunDirection.z, 0.0f);
         frameContext.commandBuffer = &nativeCommandBuffer;
+        frameContext.cameraFarZ = previewCamera.farZ;
+        frameContext.enableAtmosphereSky = useSkyRenderGraph;
 
         runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
         runtimeContext.backbufferRhi = &backbufferTexture;
-        presentBuilder.updateFrame(&backbufferTexture, &frameContext);
-        presentBuilder.execute(commandBuffer, frameGraphBackend);
+        postBuilder.updateFrame(&backbufferTexture, &frameContext);
+        postBuilder.execute(commandBuffer, frameGraphBackend);
 
-        sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        if (!useSkyRenderGraph) {
+            sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
 
         rhi->endFrame();
         FrameMark;
@@ -402,8 +661,10 @@ int main() {
     rhi->waitIdle();
     descriptorManager.destroy();
     rhiReleaseHandle(linearSampler);
-    rhiReleaseHandle(passthroughPipeline);
+    rhiReleaseHandle(skyPipeline);
+    rhiReleaseHandle(tonemapPipeline);
     rhiReleaseHandle(trianglePipeline);
+    atmosphereTextures.release();
     rhiReleaseHandle(sceneColorTexture);
     rhiReleaseHandle(vertexDescriptor);
     rhiReleaseHandle(vertexBuffer);

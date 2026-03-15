@@ -26,8 +26,12 @@ target_link_libraries(PipelineEditorLib PUBLIC
     Tracy::TracyClient
 )
 
-# Need Metal for pipeline_builder (MTL::PixelFormat)
 target_link_libraries(PipelineEditorLib PRIVATE
-    metal-cpp
     MathLib
 )
+
+if(APPLE)
+    target_link_libraries(PipelineEditorLib PRIVATE
+        metal-cpp
+    )
+endif()

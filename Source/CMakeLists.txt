@@ -56,6 +56,8 @@ if(APPLE)
 
     set_source_files_properties(Platform/tracy_metal.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 elseif(WIN32)
+    add_subdirectory(PipelineEditor)
+
     find_package(Vulkan REQUIRED)
 
     add_executable(Metallic

@@ -1,0 +1,48 @@
+{
+  "name": "VulkanSkyPreview",
+  "resources": [
+    {
+      "name": "skyOutput",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen"
+    }
+  ],
+  "passes": [
+    {
+      "name": "Sky Pass",
+      "type": "SkyPass",
+      "inputs": [],
+      "outputs": [
+        "skyOutput"
+      ],
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "exposure": 10.0
+      }
+    },
+    {
+      "name": "Tonemap",
+      "type": "TonemapPass",
+      "inputs": [
+        "skyOutput"
+      ],
+      "outputs": [
+        "$backbuffer"
+      ],
+      "enabled": true,
+      "sideEffect": true,
+      "config": {
+        "method": "Clip",
+        "exposure": 1.0,
+        "contrast": 1.0,
+        "brightness": 1.0,
+        "saturation": 1.0,
+        "vignette": 0.0,
+        "dither": false,
+        "autoExposure": false
+      }
+    }
+  ]
+}

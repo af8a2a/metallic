@@ -1,6 +1,5 @@
 # Tools - Standalone utilities for the rendergraph project
 
-if(APPLE)
+if(APPLE OR WIN32)
     add_subdirectory(PipelineEditor)
 endif()
-
