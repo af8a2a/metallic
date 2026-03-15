@@ -129,6 +129,11 @@ bool PipelineBuilder::build(const PipelineAsset& asset,
         }
     }
 
+    auto backbufferIt = m_resourceMap.find("$backbuffer");
+    if (backbufferIt != m_resourceMap.end() && backbufferIt->second.isValid()) {
+        m_fg.exportResource(backbufferIt->second);
+    }
+
     m_builtWidth = width;
     m_builtHeight = height;
     m_built = true;

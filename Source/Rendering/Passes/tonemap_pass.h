@@ -74,7 +74,6 @@ public:
                                                 RhiStoreAction::Store,
                                                 RhiClearColor(0.0, 0.0, 0.0, 1.0));
         }
-        builder.setSideEffect();
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {

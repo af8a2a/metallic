@@ -38,7 +38,6 @@ public:
                                                      RhiStoreAction::DontCare,
                                                      m_ctx.depthClearValue);
         }
-        builder.setSideEffect();
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {

@@ -27,6 +27,7 @@ struct FGResourceNode {
     uint32_t lastUser = 0;
     uint32_t physicalResource = UINT32_MAX;
     uint32_t previousVersion = UINT32_MAX;
+    bool exported = false;
 };
 
 enum class FGPassType { Render, Compute, Blit };
@@ -92,6 +93,7 @@ class FrameGraph {
     friend class FGBuilder;
 public:
     FGResource import(const char* name, RhiTexture* texture);
+    void exportResource(FGResource resource);
     void updateImport(FGResource res, RhiTexture* texture);
     void resetTransients();
 

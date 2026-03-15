@@ -603,15 +603,14 @@ int main() {
     FGResource sceneColorRes = sceneGraph.import("sceneColor", &sceneColorTexture);
     const RhiGraphicsPipeline* trianglePipelinePtr = &trianglePipeline;
     RhiBuffer* triangleBufferPtr = &vertexBuffer;
-    sceneGraph.addRenderPass<TrianglePassData>(
+    TrianglePassData& trianglePassData = sceneGraph.addRenderPass<TrianglePassData>(
         "Triangle Pass",
         [sceneColorRes](FGBuilder& builder, TrianglePassData& data) {
-            data.colorTarget = sceneColorRes;
-            builder.setColorAttachment(0,
-                                       data.colorTarget,
-                                       RhiLoadAction::Clear,
-                                       RhiStoreAction::Store,
-                                       RhiClearColor(0.08, 0.09, 0.12, 1.0));
+            data.colorTarget = builder.setColorAttachment(0,
+                                                          sceneColorRes,
+                                                          RhiLoadAction::Clear,
+                                                          RhiStoreAction::Store,
+                                                          RhiClearColor(0.08, 0.09, 0.12, 1.0));
         },
         [trianglePipelinePtr, triangleBufferPtr](const TrianglePassData&, RhiRenderCommandEncoder& encoder) {
             encoder.setRenderPipeline(*trianglePipelinePtr);
@@ -620,6 +619,7 @@ int main() {
             encoder.setVertexBuffer(triangleBufferPtr, 0, 0);
             encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
         });
+    sceneGraph.exportResource(trianglePassData.colorTarget);
     sceneGraph.compile();
 
     MeshletData emptyMeshlets;

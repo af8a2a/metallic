@@ -33,7 +33,6 @@ public:
         // Dummy 1x1 texture just for frame graph dependency ordering
         cullResult = builder.create("cullResult",
             FGTextureDesc::storageTexture(1, 1, RhiFormat::R8Unorm));
-        builder.setSideEffect();
     }
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {

@@ -50,7 +50,6 @@ public:
 
         m_exposureLut = builder.create("exposureLut",
             FGTextureDesc::storageTexture(1, 1, RhiFormat::R32Float));
-        builder.setSideEffect();
     }
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {

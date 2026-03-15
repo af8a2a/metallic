@@ -87,6 +87,9 @@ FGResource FGBuilder::setColorAttachment(uint32_t index, FGResource resource,
                                          RhiClearColor clear) {
     auto& pass = m_fg.m_passes[m_passIndex];
     assert(index < 8);
+    if (load == RhiLoadAction::Load) {
+        read(resource);
+    }
     const FGResource writeResource = write(resource);
     pass.colorAttachments[index] = {writeResource, load, store, clear};
     if (index >= pass.colorAttachmentCount)
@@ -98,6 +101,9 @@ FGResource FGBuilder::setDepthAttachment(FGResource resource,
                                          RhiLoadAction load, RhiStoreAction store,
                                          double clearDepth) {
     auto& pass = m_fg.m_passes[m_passIndex];
+    if (load == RhiLoadAction::Load) {
+        read(resource);
+    }
     const FGResource writeResource = write(resource);
     pass.depthAttachment = {writeResource, load, store, clearDepth, true};
     return writeResource;
@@ -119,6 +125,11 @@ FGResource FrameGraph::import(const char* name, RhiTexture* texture) {
     node.physicalResource = res.id;
     m_resources.push_back(std::move(node));
     return res;
+}
+
+void FrameGraph::exportResource(FGResource resource) {
+    assert(resource.isValid() && resource.id < m_resources.size());
+    m_resources[resource.id].exported = true;
 }
 
 void FrameGraph::updateImport(FGResource res, RhiTexture* texture) {
@@ -179,6 +190,11 @@ void FrameGraph::compile() {
         auto& pass = m_passes[pi];
         for (auto& r : pass.reads) {
             m_resources[r.id].refCount++;
+        }
+    }
+    for (auto& res : m_resources) {
+        if (res.exported) {
+            res.refCount++;
         }
     }
 
@@ -398,7 +414,8 @@ void FrameGraph::exportGraphviz(std::ostream& os) const {
             if (!res.imported) continue;
             os << "    R" << ri << " [shape=record, style=\"rounded,filled\", "
                << "fillcolor=lightsteelblue, label=\"{" << dotEscapeLabel(res.name)
-               << " | Imported | Refs: " << res.refCount << "}\"];\n";
+               << " | Imported" << (res.exported ? " | External" : "")
+               << " | Refs: " << res.refCount << "}\"];\n";
         }
         os << "  }\n\n";
     }
@@ -432,6 +449,7 @@ void FrameGraph::exportGraphviz(std::ostream& os) const {
                    << "fillcolor=skyblue, label=\"{" << dotEscapeLabel(res.name)
                    << " | " << res.desc.width << "x" << res.desc.height
                    << " " << pixelFormatName(res.desc.format)
+                   << (res.exported ? " | External" : "")
                    << " | Refs: " << res.refCount << "}\"];\n";
             }
             os << "  }\n\n";
@@ -550,7 +568,10 @@ void FrameGraph::debugImGui() const {
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextUnformatted(res.name.c_str());
                 ImGui::TableSetColumnIndex(2);
-                ImGui::TextUnformatted(res.imported ? "Imported" : "Transient");
+                if (res.imported)
+                    ImGui::TextUnformatted(res.exported ? "Imported, External" : "Imported");
+                else
+                    ImGui::TextUnformatted(res.exported ? "Transient, External" : "Transient");
                 ImGui::TableSetColumnIndex(3);
                 if (!res.imported)
                     ImGui::Text("%ux%u", res.desc.width, res.desc.height);
