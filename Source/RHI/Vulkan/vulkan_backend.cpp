@@ -405,6 +405,18 @@ public:
     uint32_t drawableWidth() const override { return m_swapchainExtent.width; }
     uint32_t drawableHeight() const override { return m_swapchainExtent.height; }
     RhiFormat colorFormat() const override { return fromVkFormat(m_swapchainFormat.format); }
+    VkImage currentSwapchainImage() const {
+        return m_imageIndex < m_swapchainImages.size() ? m_swapchainImages[m_imageIndex] : VK_NULL_HANDLE;
+    }
+    VkImageView currentSwapchainImageView() const {
+        return m_imageIndex < m_swapchainImageViews.size() ? m_swapchainImageViews[m_imageIndex] : VK_NULL_HANDLE;
+    }
+    VkExtent2D currentSwapchainExtent() const { return m_swapchainExtent; }
+    VkImageLayout currentSwapchainLayout() const {
+        return m_imageIndex < m_swapchainImageLayouts.size()
+                   ? m_swapchainImageLayouts[m_imageIndex]
+                   : VK_IMAGE_LAYOUT_UNDEFINED;
+    }
 
     std::unique_ptr<RhiShaderModule> createShaderModule(const RhiShaderModuleDesc& desc) override {
         if (desc.spirv.empty()) {
@@ -1171,6 +1183,22 @@ VkQueue getVulkanGraphicsQueue(RhiContext& context) {
 
 uint32_t getVulkanGraphicsQueueFamily(RhiContext& context) {
     return context.nativeHandles().graphicsQueueFamily;
+}
+
+VkImage getVulkanCurrentBackbufferImage(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).currentSwapchainImage();
+}
+
+VkImageView getVulkanCurrentBackbufferImageView(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).currentSwapchainImageView();
+}
+
+VkExtent2D getVulkanCurrentBackbufferExtent(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).currentSwapchainExtent();
+}
+
+VkImageLayout getVulkanCurrentBackbufferLayout(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).currentSwapchainLayout();
 }
 
 std::unique_ptr<RhiContext> createVulkanContext(const RhiCreateInfo& createInfo,

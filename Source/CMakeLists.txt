@@ -60,6 +60,8 @@ elseif(WIN32)
 
     add_executable(Metallic
         main_vulkan.cpp
+        Rendering/frame_graph.cpp
+        Rendering/render_pass.cpp
         Rendering/slang_compiler.cpp
         Rendering/shader_manager.cpp
         RHI/rhi_backend.cpp
@@ -72,6 +74,8 @@ elseif(WIN32)
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Vulkan"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Asset"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scene"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
         "${CMAKE_SOURCE_DIR}/External/MathLib"
@@ -81,6 +85,7 @@ elseif(WIN32)
         glfw
         imgui
         slang::slang
+        Tracy::TracyClient
         spdlog::spdlog_header_only
         Vulkan::Vulkan
     )

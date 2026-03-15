@@ -5,6 +5,9 @@
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 
+#include "imgui.h"
+#include "imgui_impl_vulkan.h"
+
 #include <array>
 #include <cstring>
 #include <stdexcept>
@@ -255,7 +258,21 @@ public:
         }
     }
 
-    void renderImGuiDrawData(const RhiNativeCommandBuffer& /*commandBuffer*/) override {}
+    void renderImGuiDrawData(const RhiNativeCommandBuffer& commandBuffer) override {
+        ImDrawData* drawData = ImGui::GetDrawData();
+        if (!drawData) {
+            return;
+        }
+
+        VkCommandBuffer nativeCommandBuffer =
+            static_cast<VkCommandBuffer>(commandBuffer.nativeHandle());
+        if (nativeCommandBuffer == VK_NULL_HANDLE) {
+            nativeCommandBuffer = m_commandBuffer;
+        }
+        if (nativeCommandBuffer != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RenderDrawData(drawData, nativeCommandBuffer);
+        }
+    }
 
 private:
     void transitionPendingTextures() {
@@ -713,6 +730,9 @@ std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(co
     if (desc.colorAttachmentCount > 0 && desc.colorAttachments[0].texture) {
         renderingInfo.renderArea.extent.width = desc.colorAttachments[0].texture->width();
         renderingInfo.renderArea.extent.height = desc.colorAttachments[0].texture->height();
+    } else if (desc.depthAttachment.bound && desc.depthAttachment.texture) {
+        renderingInfo.renderArea.extent.width = desc.depthAttachment.texture->width();
+        renderingInfo.renderArea.extent.height = desc.depthAttachment.texture->height();
     }
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = desc.colorAttachmentCount;
@@ -732,6 +752,23 @@ std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(co
     }
 
     vkCmdBeginRendering(m_commandBuffer, &renderingInfo);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(renderingInfo.renderArea.extent.width);
+    viewport.height = static_cast<float>(renderingInfo.renderArea.extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(m_commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.offset = renderingInfo.renderArea.offset;
+    scissor.extent = renderingInfo.renderArea.extent;
+    vkCmdSetScissor(m_commandBuffer, 0, 1, &scissor);
+    vkCmdSetCullMode(m_commandBuffer, VK_CULL_MODE_BACK_BIT);
+    vkCmdSetFrontFace(m_commandBuffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+
     return std::make_unique<VulkanRenderCommandEncoder>(m_commandBuffer, m_device,
                                                         m_descriptorManager, m_imageTracker);
 }

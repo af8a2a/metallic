@@ -22,11 +22,18 @@ public:
         set(image, imageView, w, h);
     }
 
-    void set(VkImage image, VkImageView imageView, uint32_t w, uint32_t h) {
+    void set(VkImage image,
+             VkImageView imageView,
+             uint32_t w,
+             uint32_t h,
+             VkFormat format = VK_FORMAT_UNDEFINED,
+             RhiTextureUsage usage = RhiTextureUsage::RenderTarget) {
         m_resource.image = image;
         m_resource.imageView = imageView;
         m_resource.width = w;
         m_resource.height = h;
+        m_resource.format = format;
+        m_resource.usage = usage;
         m_resource.ownsImage = false;
         m_resource.ownsImageView = false;
         m_resource.refCount = 1;

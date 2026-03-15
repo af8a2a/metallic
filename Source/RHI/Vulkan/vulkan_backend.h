@@ -19,4 +19,7 @@ VkPhysicalDevice getVulkanPhysicalDevice(RhiContext& context);
 VkCommandBuffer getVulkanCurrentCommandBuffer(RhiContext& context);
 VkQueue getVulkanGraphicsQueue(RhiContext& context);
 uint32_t getVulkanGraphicsQueueFamily(RhiContext& context);
-
+VkImage getVulkanCurrentBackbufferImage(RhiContext& context);
+VkImageView getVulkanCurrentBackbufferImageView(RhiContext& context);
+VkExtent2D getVulkanCurrentBackbufferExtent(RhiContext& context);
+VkImageLayout getVulkanCurrentBackbufferLayout(RhiContext& context);

@@ -1,4 +1,5 @@
 #include "raytraced_shadows.h"
+#include "rhi_resource_utils.h"
 
 #ifdef __APPLE__
 
@@ -320,6 +321,49 @@ bool reloadShadowPipeline(const RhiDevice& device,
 
     spdlog::info("Hot-reload: Shadow ray pipeline reloaded");
     return true;
+}
+
+#else
+
+void RaytracedShadowResources::release() {
+    for (auto& blas : blasArray) {
+        rhiReleaseHandle(blas);
+    }
+    blasArray.clear();
+    referencedBlas.clear();
+    rhiReleaseHandle(tlas);
+    rhiReleaseHandle(instanceDescriptorBuffer);
+    rhiReleaseHandle(scratchBuffer);
+    rhiReleaseHandle(pipeline);
+    rhiReleaseHandle(library);
+    instanceCount = 0;
+}
+
+bool buildAccelerationStructures(const RhiDevice&,
+                                 const RhiCommandQueue&,
+                                 const LoadedMesh&,
+                                 const SceneGraph&,
+                                 RaytracedShadowResources& out) {
+    out.release();
+    return false;
+}
+
+void updateTLAS(const RhiNativeCommandBuffer&,
+                const SceneGraph&,
+                RaytracedShadowResources&) {
+}
+
+bool createShadowPipeline(const RhiDevice&,
+                          RaytracedShadowResources& out,
+                          const char*) {
+    out.release();
+    return false;
+}
+
+bool reloadShadowPipeline(const RhiDevice&,
+                          RaytracedShadowResources&,
+                          const char*) {
+    return false;
 }
 
 #endif // __APPLE__
