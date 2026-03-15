@@ -583,7 +583,7 @@ int main() {
     const std::string previewPipelinePath = std::string(PROJECT_SOURCE_DIR) + "/Pipelines/vulkan_preview.json";
     PipelineAsset previewPipelineBaseAsset;
     PipelineAsset previewPipelineAsset;
-    const bool previewPipelineBaseLoaded =
+    bool previewPipelineBaseLoaded =
         loadPipelineAssetChecked(previewPipelinePath, "Vulkan preview", previewPipelineBaseAsset);
     bool previewPipelineAssetLoaded = false;
     bool previewAutoExposureAvailable = false;
@@ -766,7 +766,9 @@ int main() {
     bool showRenderPassUI = true;
     bool showImGuiDemo = false;
     bool reloadKeyDown = false;
+    bool pipelineReloadKeyDown = false;
     bool shaderReloadRequested = false;
+    bool pipelineReloadRequested = false;
     bool postBuilderNeedsRebuild = false;
 
     auto rebuildActivePipeline = [&](int targetWidth, int targetHeight) {
@@ -797,6 +799,11 @@ int main() {
             shaderReloadRequested = true;
         }
         reloadKeyDown = f5Down;
+        const bool f6Down = glfwGetKey(window, GLFW_KEY_F6) == GLFW_PRESS;
+        if (f6Down && !pipelineReloadKeyDown) {
+            pipelineReloadRequested = true;
+        }
+        pipelineReloadKeyDown = f6Down;
         glfwGetFramebufferSize(window, &width, &height);
         if (width == 0 || height == 0) {
             glfwWaitEvents();
@@ -834,6 +841,30 @@ int main() {
                 logPreviewMode();
             }
             postBuilderNeedsRebuild = true;
+        }
+
+        if (pipelineReloadRequested) {
+            pipelineReloadRequested = false;
+            spdlog::info("Reloading Vulkan preview pipeline asset...");
+
+            PipelineAsset reloadedPreviewAsset;
+            if (loadPipelineAssetChecked(previewPipelinePath, "Vulkan preview", reloadedPreviewAsset)) {
+                const bool previousPreviewRenderGraph = usePreviewRenderGraph;
+                const bool previousAutoExposure = previewAutoExposureAvailable;
+                const bool previousAtmosphereSky = atmosphereSkyAvailable;
+                previewPipelineBaseAsset = std::move(reloadedPreviewAsset);
+                previewPipelineBaseLoaded = true;
+                refreshPreviewPipelineState();
+
+                if (previousPreviewRenderGraph != usePreviewRenderGraph ||
+                    previousAutoExposure != previewAutoExposureAvailable ||
+                    previousAtmosphereSky != atmosphereSkyAvailable) {
+                    logPreviewMode();
+                }
+                postBuilderNeedsRebuild = true;
+            } else if (previewPipelineBaseLoaded) {
+                spdlog::warn("Keeping previous Vulkan preview pipeline: {}", previewPipelineBaseAsset.name);
+            }
         }
 
         if (postBuilderNeedsRebuild || postBuilder.needsRebuild(width, height)) {
@@ -906,6 +937,10 @@ int main() {
         ImGui::TextUnformatted(previewAutoExposureAvailable ? "Exposure: Auto" : "Exposure: Manual");
         if (ImGui::Button("Reload Shaders (F5)")) {
             shaderReloadRequested = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reload Pipeline (F6)")) {
+            pipelineReloadRequested = true;
         }
         ImGui::Checkbox("FrameGraph Debug", &showGraphDebug);
         ImGui::Checkbox("Render Pass UI", &showRenderPassUI);
