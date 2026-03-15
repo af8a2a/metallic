@@ -72,11 +72,13 @@ std::string formatError(const std::string* errorMessage, const char* fallback) {
 ShaderManager::ShaderManager(RhiDeviceHandle device,
                              const char* projectRoot,
                              bool supportsMeshShaders,
-                             bool validateVisibilityPipelines)
+                             bool validateVisibilityPipelines,
+                             ShaderManagerProfile profile)
     : m_device(device)
     , m_projectRoot(projectRoot)
     , m_supportsMeshShaders(supportsMeshShaders)
     , m_validateVisibilityPipelines(validateVisibilityPipelines)
+    , m_profile(profile)
     , m_rtCtx(new PipelineRuntimeContext{})
 {}
 
@@ -125,17 +127,29 @@ void ShaderManager::createVertexDescriptor() {
 }
 
 void ShaderManager::syncRuntimeContext() {
-    m_rtCtx->renderPipelinesRhi["ForwardPass"] = m_vertexPipeline;
-    m_rtCtx->renderPipelinesRhi["ForwardMeshPass"] = m_meshPipeline;
-    m_rtCtx->renderPipelinesRhi["VisibilityPass"] = m_visPipeline;
-    m_rtCtx->renderPipelinesRhi["VisibilityIndirectPass"] = m_visIndirectPipeline;
-    m_rtCtx->renderPipelinesRhi["SkyPass"] = m_skyPipeline;
-    m_rtCtx->renderPipelinesRhi["TonemapPass"] = m_tonemapPipeline;
-    m_rtCtx->renderPipelinesRhi["OutputPass"] = m_outputPipeline;
+    m_rtCtx->renderPipelinesRhi.clear();
+    if (m_vertexPipeline.nativeHandle())
+        m_rtCtx->renderPipelinesRhi["ForwardPass"] = m_vertexPipeline;
+    if (m_meshPipeline.nativeHandle())
+        m_rtCtx->renderPipelinesRhi["ForwardMeshPass"] = m_meshPipeline;
+    if (m_visPipeline.nativeHandle())
+        m_rtCtx->renderPipelinesRhi["VisibilityPass"] = m_visPipeline;
+    if (m_visIndirectPipeline.nativeHandle())
+        m_rtCtx->renderPipelinesRhi["VisibilityIndirectPass"] = m_visIndirectPipeline;
+    if (m_skyPipeline.nativeHandle())
+        m_rtCtx->renderPipelinesRhi["SkyPass"] = m_skyPipeline;
+    if (m_tonemapPipeline.nativeHandle())
+        m_rtCtx->renderPipelinesRhi["TonemapPass"] = m_tonemapPipeline;
+    if (m_outputPipeline.nativeHandle())
+        m_rtCtx->renderPipelinesRhi["OutputPass"] = m_outputPipeline;
 
-    m_rtCtx->computePipelinesRhi["DeferredLightingPass"] = m_computePipeline;
-    m_rtCtx->computePipelinesRhi["MeshletCullPass"] = m_cullPipeline;
-    m_rtCtx->computePipelinesRhi["BuildIndirectPass"] = m_buildIndirectPipeline;
+    m_rtCtx->computePipelinesRhi.clear();
+    if (m_computePipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["DeferredLightingPass"] = m_computePipeline;
+    if (m_cullPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["MeshletCullPass"] = m_cullPipeline;
+    if (m_buildIndirectPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["BuildIndirectPass"] = m_buildIndirectPipeline;
     if (m_meshletVisPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["MeshletVisualizePass"] = m_meshletVisPipeline;
     if (m_histogramPipeline.nativeHandle())
@@ -145,7 +159,10 @@ void ShaderManager::syncRuntimeContext() {
     if (m_taaPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["TAAPass"] = m_taaPipeline;
 
-    m_rtCtx->samplersRhi["tonemap"] = m_tonemapSampler;
+    if (m_tonemapSampler.nativeHandle())
+        m_rtCtx->samplersRhi["tonemap"] = m_tonemapSampler;
+    else
+        m_rtCtx->samplersRhi.erase("tonemap");
 }
 
 bool ShaderManager::buildAll() {
@@ -153,15 +170,19 @@ bool ShaderManager::buildAll() {
 
     std::string errorMessage;
 
-    m_vertexPipeline = reloadVertexShader("Shaders/Vertex/bunny", &errorMessage);
-    if (!m_vertexPipeline.nativeHandle()) {
-        spdlog::error("Failed to create vertex pipeline: {}",
-                      formatError(&errorMessage, "Slang vertex shader compilation failed"));
-        return false;
+    if (m_profile.forwardVertex) {
+        m_vertexPipeline = reloadVertexShader("Shaders/Vertex/bunny", &errorMessage);
+        if (!m_vertexPipeline.nativeHandle()) {
+            spdlog::error("Failed to create vertex pipeline: {}",
+                          formatError(&errorMessage, "Slang vertex shader compilation failed"));
+            return false;
+        }
+    } else {
+        releaseOwnedHandle(m_vertexPipeline);
     }
 
     errorMessage.clear();
-    if (m_supportsMeshShaders) {
+    if (m_profile.forwardMesh && m_supportsMeshShaders) {
         m_meshPipeline = reloadMeshShader("Shaders/Mesh/meshlet",
                                           patchMeshShaderSource,
                                           RhiFormat::RGBA16Float,
@@ -172,12 +193,15 @@ bool ShaderManager::buildAll() {
                           formatError(&errorMessage, "Slang mesh shader compilation failed"));
             return false;
         }
-    } else {
+    } else if (m_profile.forwardMesh) {
         spdlog::info("Skipping mesh pipeline validation because mesh shaders are not supported");
+        releaseOwnedHandle(m_meshPipeline);
+    } else {
+        releaseOwnedHandle(m_meshPipeline);
     }
 
     errorMessage.clear();
-    if (m_supportsMeshShaders && m_validateVisibilityPipelines) {
+    if (m_profile.visibility && m_supportsMeshShaders && m_validateVisibilityPipelines) {
         m_visPipeline = reloadMeshShader("Shaders/Visibility/visibility",
                                          patchVisibilityShaderSource,
                                          RhiFormat::R32Uint,
@@ -188,15 +212,19 @@ bool ShaderManager::buildAll() {
                           formatError(&errorMessage, "Slang visibility shader compilation failed"));
             return false;
         }
-    } else if (!m_supportsMeshShaders) {
+    } else if (m_profile.visibility && !m_supportsMeshShaders) {
         spdlog::info("Skipping visibility pipeline validation because mesh shaders are not supported");
-    } else {
+        releaseOwnedHandle(m_visPipeline);
+    } else if (m_profile.visibility) {
         spdlog::info("Skipping visibility pipeline validation on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
                      kSlangVisibilityPerPrimitiveIssueUrl);
+        releaseOwnedHandle(m_visPipeline);
+    } else {
+        releaseOwnedHandle(m_visPipeline);
     }
 
     errorMessage.clear();
-    if (m_supportsMeshShaders && m_validateVisibilityPipelines) {
+    if (m_profile.visibilityIndirect && m_supportsMeshShaders && m_validateVisibilityPipelines) {
         m_visIndirectPipeline = reloadMeshShader("Shaders/Visibility/visibility_indirect",
                                                  patchVisibilityShaderSource,
                                                  RhiFormat::R32Uint,
@@ -207,125 +235,170 @@ bool ShaderManager::buildAll() {
                           formatError(&errorMessage, "Slang visibility indirect shader compilation failed"));
             return false;
         }
-    } else if (!m_supportsMeshShaders) {
+    } else if (m_profile.visibilityIndirect && !m_supportsMeshShaders) {
         spdlog::info("Skipping visibility indirect pipeline validation because mesh shaders are not supported");
-    } else {
+        releaseOwnedHandle(m_visIndirectPipeline);
+    } else if (m_profile.visibilityIndirect) {
         spdlog::info("Skipping visibility indirect pipeline validation on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
                      kSlangVisibilityPerPrimitiveIssueUrl);
+        releaseOwnedHandle(m_visIndirectPipeline);
+    } else {
+        releaseOwnedHandle(m_visIndirectPipeline);
     }
 
     errorMessage.clear();
-    m_cullPipeline = reloadComputeShader("Shaders/Visibility/meshlet_cull",
-                                         "computeMain",
-                                         nullptr,
-                                         &errorMessage);
-    if (!m_cullPipeline.nativeHandle()) {
-        spdlog::error("Failed to create meshlet cull pipeline: {}",
-                      formatError(&errorMessage, "Slang meshlet cull shader compilation failed"));
-        return false;
+    if (m_profile.meshletCull) {
+        m_cullPipeline = reloadComputeShader("Shaders/Visibility/meshlet_cull",
+                                             "computeMain",
+                                             nullptr,
+                                             &errorMessage);
+        if (!m_cullPipeline.nativeHandle()) {
+            spdlog::error("Failed to create meshlet cull pipeline: {}",
+                          formatError(&errorMessage, "Slang meshlet cull shader compilation failed"));
+            return false;
+        }
+    } else {
+        releaseOwnedHandle(m_cullPipeline);
     }
 
     errorMessage.clear();
-    m_buildIndirectPipeline = reloadComputeShader("Shaders/Visibility/build_indirect",
-                                                  "computeMain",
+    if (m_profile.buildIndirect) {
+        m_buildIndirectPipeline = reloadComputeShader("Shaders/Visibility/build_indirect",
+                                                      "computeMain",
+                                                      nullptr,
+                                                      &errorMessage);
+        if (!m_buildIndirectPipeline.nativeHandle()) {
+            spdlog::error("Failed to create build indirect pipeline: {}",
+                          formatError(&errorMessage, "Slang build indirect shader compilation failed"));
+            return false;
+        }
+    } else {
+        releaseOwnedHandle(m_buildIndirectPipeline);
+    }
+
+    errorMessage.clear();
+    if (m_profile.deferredLighting) {
+        m_computePipeline = reloadComputeShader("Shaders/Visibility/deferred_lighting",
+                                                "computeMain",
+                                                patchComputeShaderSource,
+                                                &errorMessage);
+        if (!m_computePipeline.nativeHandle()) {
+            spdlog::error("Failed to create deferred lighting pipeline: {}",
+                          formatError(&errorMessage, "Slang deferred lighting shader compilation failed"));
+            return false;
+        }
+    } else {
+        releaseOwnedHandle(m_computePipeline);
+    }
+
+    errorMessage.clear();
+    if (m_profile.meshletVisualize) {
+        m_meshletVisPipeline = reloadComputeShader("Shaders/Visibility/meshlet_visualize",
+                                                   "computeMain",
+                                                   nullptr,
+                                                   &errorMessage);
+        if (!m_meshletVisPipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile meshlet visualize shader; visualization disabled: {}",
+                         formatError(&errorMessage, "Slang meshlet visualize shader compilation failed"));
+        }
+    } else {
+        releaseOwnedHandle(m_meshletVisPipeline);
+    }
+
+    errorMessage.clear();
+    if (m_profile.sky) {
+        m_skyPipeline = reloadFullscreenShader("Shaders/Atmosphere/sky",
+                                               RhiFormat::RGBA16Float,
+                                               &errorMessage);
+        if (!m_skyPipeline.nativeHandle()) {
+            spdlog::warn("Sky shader compile failed; atmosphere sky disabled: {}",
+                         formatError(&errorMessage, "Slang sky shader compilation failed"));
+        }
+    } else {
+        releaseOwnedHandle(m_skyPipeline);
+    }
+
+    errorMessage.clear();
+    if (m_profile.tonemap) {
+        m_tonemapPipeline = reloadFullscreenShader("Shaders/Post/tonemap",
+                                                   RhiFormat::BGRA8Unorm,
+                                                   &errorMessage);
+        if (!m_tonemapPipeline.nativeHandle()) {
+            spdlog::error("Failed to create tonemap pipeline: {}",
+                          formatError(&errorMessage, "Slang tonemap shader compilation failed"));
+            return false;
+        }
+    } else {
+        releaseOwnedHandle(m_tonemapPipeline);
+    }
+
+    if (m_profile.tonemap || m_profile.output) {
+        RhiSamplerDesc samplerDesc;
+        samplerDesc.minFilter = RhiSamplerFilterMode::Linear;
+        samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
+        samplerDesc.mipFilter = RhiSamplerMipFilterMode::None;
+        samplerDesc.addressModeS = RhiSamplerAddressMode::ClampToEdge;
+        samplerDesc.addressModeT = RhiSamplerAddressMode::ClampToEdge;
+        m_tonemapSampler = rhiCreateSampler(m_device, samplerDesc);
+        if (!m_tonemapSampler.nativeHandle()) {
+            spdlog::error("Failed to create tonemap sampler state");
+            return false;
+        }
+    } else {
+        releaseOwnedHandle(m_tonemapSampler);
+    }
+
+    errorMessage.clear();
+    if (m_profile.output) {
+        m_outputPipeline = reloadFullscreenShader("Shaders/Post/passthrough",
+                                                  RhiFormat::BGRA8Unorm,
+                                                  &errorMessage);
+        if (!m_outputPipeline.nativeHandle()) {
+            spdlog::error("Failed to create output passthrough pipeline: {}",
+                          formatError(&errorMessage, "Slang passthrough shader compilation failed"));
+            return false;
+        }
+    } else {
+        releaseOwnedHandle(m_outputPipeline);
+    }
+
+    errorMessage.clear();
+    if (m_profile.autoExposure) {
+        m_histogramPipeline = reloadComputeShader("Shaders/Post/auto_exposure",
+                                                  "histogramMain",
                                                   nullptr,
                                                   &errorMessage);
-    if (!m_buildIndirectPipeline.nativeHandle()) {
-        spdlog::error("Failed to create build indirect pipeline: {}",
-                      formatError(&errorMessage, "Slang build indirect shader compilation failed"));
-        return false;
+        if (!m_histogramPipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile histogram shader; auto-exposure disabled: {}",
+                         formatError(&errorMessage, "Slang histogram shader compilation failed"));
+        }
+
+        errorMessage.clear();
+        m_autoExposurePipeline = reloadComputeShader("Shaders/Post/auto_exposure",
+                                                     "exposureMain",
+                                                     nullptr,
+                                                     &errorMessage);
+        if (!m_autoExposurePipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile auto-exposure shader; auto-exposure disabled: {}",
+                         formatError(&errorMessage, "Slang auto-exposure shader compilation failed"));
+        }
+    } else {
+        releaseOwnedHandle(m_histogramPipeline);
+        releaseOwnedHandle(m_autoExposurePipeline);
     }
 
     errorMessage.clear();
-    m_computePipeline = reloadComputeShader("Shaders/Visibility/deferred_lighting",
-                                            "computeMain",
-                                            patchComputeShaderSource,
+    if (m_profile.taa) {
+        m_taaPipeline = reloadComputeShader("Shaders/Post/taa",
+                                            "taaMain",
+                                            nullptr,
                                             &errorMessage);
-    if (!m_computePipeline.nativeHandle()) {
-        spdlog::error("Failed to create deferred lighting pipeline: {}",
-                      formatError(&errorMessage, "Slang deferred lighting shader compilation failed"));
-        return false;
-    }
-
-    errorMessage.clear();
-    m_meshletVisPipeline = reloadComputeShader("Shaders/Visibility/meshlet_visualize",
-                                               "computeMain",
-                                               nullptr,
-                                               &errorMessage);
-    if (!m_meshletVisPipeline.nativeHandle()) {
-        spdlog::warn("Failed to compile meshlet visualize shader; visualization disabled: {}",
-                     formatError(&errorMessage, "Slang meshlet visualize shader compilation failed"));
-    }
-
-    errorMessage.clear();
-    m_skyPipeline = reloadFullscreenShader("Shaders/Atmosphere/sky",
-                                           RhiFormat::RGBA16Float,
-                                           &errorMessage);
-    if (!m_skyPipeline.nativeHandle()) {
-        spdlog::warn("Sky shader compile failed; atmosphere sky disabled: {}",
-                     formatError(&errorMessage, "Slang sky shader compilation failed"));
-    }
-
-    errorMessage.clear();
-    m_tonemapPipeline = reloadFullscreenShader("Shaders/Post/tonemap",
-                                               RhiFormat::BGRA8Unorm,
-                                               &errorMessage);
-    if (!m_tonemapPipeline.nativeHandle()) {
-        spdlog::error("Failed to create tonemap pipeline: {}",
-                      formatError(&errorMessage, "Slang tonemap shader compilation failed"));
-        return false;
-    }
-
-    RhiSamplerDesc samplerDesc;
-    samplerDesc.minFilter = RhiSamplerFilterMode::Linear;
-    samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
-    samplerDesc.mipFilter = RhiSamplerMipFilterMode::None;
-    samplerDesc.addressModeS = RhiSamplerAddressMode::ClampToEdge;
-    samplerDesc.addressModeT = RhiSamplerAddressMode::ClampToEdge;
-    m_tonemapSampler = rhiCreateSampler(m_device, samplerDesc);
-    if (!m_tonemapSampler.nativeHandle()) {
-        spdlog::error("Failed to create tonemap sampler state");
-        return false;
-    }
-
-    errorMessage.clear();
-    m_outputPipeline = reloadFullscreenShader("Shaders/Post/passthrough",
-                                              RhiFormat::BGRA8Unorm,
-                                              &errorMessage);
-    if (!m_outputPipeline.nativeHandle()) {
-        spdlog::error("Failed to create output passthrough pipeline: {}",
-                      formatError(&errorMessage, "Slang passthrough shader compilation failed"));
-        return false;
-    }
-
-    errorMessage.clear();
-    m_histogramPipeline = reloadComputeShader("Shaders/Post/auto_exposure",
-                                              "histogramMain",
-                                              nullptr,
-                                              &errorMessage);
-    if (!m_histogramPipeline.nativeHandle()) {
-        spdlog::warn("Failed to compile histogram shader; auto-exposure disabled: {}",
-                     formatError(&errorMessage, "Slang histogram shader compilation failed"));
-    }
-
-    errorMessage.clear();
-    m_autoExposurePipeline = reloadComputeShader("Shaders/Post/auto_exposure",
-                                                 "exposureMain",
-                                                 nullptr,
-                                                 &errorMessage);
-    if (!m_autoExposurePipeline.nativeHandle()) {
-        spdlog::warn("Failed to compile auto-exposure shader; auto-exposure disabled: {}",
-                     formatError(&errorMessage, "Slang auto-exposure shader compilation failed"));
-    }
-
-    errorMessage.clear();
-    m_taaPipeline = reloadComputeShader("Shaders/Post/taa",
-                                        "taaMain",
-                                        nullptr,
-                                        &errorMessage);
-    if (!m_taaPipeline.nativeHandle()) {
-        spdlog::warn("Failed to compile TAA shader; TAA disabled: {}",
-                     formatError(&errorMessage, "Slang TAA shader compilation failed"));
+        if (!m_taaPipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile TAA shader; TAA disabled: {}",
+                         formatError(&errorMessage, "Slang TAA shader compilation failed"));
+        }
+    } else {
+        releaseOwnedHandle(m_taaPipeline);
     }
 
     syncRuntimeContext();

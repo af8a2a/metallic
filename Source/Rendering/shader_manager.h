@@ -7,12 +7,45 @@
 
 struct PipelineRuntimeContext;
 
+struct ShaderManagerProfile {
+    bool forwardVertex = true;
+    bool forwardMesh = true;
+    bool visibility = true;
+    bool visibilityIndirect = true;
+    bool meshletCull = true;
+    bool buildIndirect = true;
+    bool deferredLighting = true;
+    bool meshletVisualize = true;
+    bool sky = true;
+    bool tonemap = true;
+    bool output = true;
+    bool autoExposure = true;
+    bool taa = true;
+
+    static ShaderManagerProfile full() { return {}; }
+
+    static ShaderManagerProfile preview() {
+        ShaderManagerProfile profile;
+        profile.forwardMesh = false;
+        profile.visibility = false;
+        profile.visibilityIndirect = false;
+        profile.meshletCull = false;
+        profile.buildIndirect = false;
+        profile.deferredLighting = false;
+        profile.meshletVisualize = false;
+        profile.output = false;
+        profile.taa = false;
+        return profile;
+    }
+};
+
 class ShaderManager {
 public:
     ShaderManager(RhiDeviceHandle device,
                   const char* projectRoot,
                   bool supportsMeshShaders = true,
-                  bool validateVisibilityPipelines = true);
+                  bool validateVisibilityPipelines = true,
+                  ShaderManagerProfile profile = ShaderManagerProfile::full());
     ~ShaderManager();
 
     // Initial creation of all pipelines + samplers. Returns false on fatal failure.
@@ -33,6 +66,7 @@ private:
     std::string m_projectRoot;
     bool m_supportsMeshShaders = true;
     bool m_validateVisibilityPipelines = true;
+    ShaderManagerProfile m_profile;
     PipelineRuntimeContext* m_rtCtx;
     RhiVertexDescriptorHandle m_vertexDesc;
 

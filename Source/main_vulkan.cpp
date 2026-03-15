@@ -27,6 +27,7 @@
 #include "rhi_backend.h"
 #include "rhi_resource_utils.h"
 #include "rhi_shader_utils.h"
+#include "shader_manager.h"
 #include "slang_compiler.h"
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
@@ -415,33 +416,6 @@ int main() {
         return 1;
     }
 
-    const auto tonemapSpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
-                                                         "Shaders/Post/tonemap",
-                                                         PROJECT_SOURCE_DIR);
-    if (tonemapSpirv.empty()) {
-        spdlog::error("Failed to compile SPIR-V for tonemap shader");
-        rhi->waitIdle();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1;
-    }
-
-    const auto histogramSpirv = compileSlangComputeBinary(RhiBackendType::Vulkan,
-                                                          "Shaders/Post/auto_exposure",
-                                                          PROJECT_SOURCE_DIR,
-                                                          "histogramMain");
-    const auto autoExposureSpirv = compileSlangComputeBinary(RhiBackendType::Vulkan,
-                                                             "Shaders/Post/auto_exposure",
-                                                             PROJECT_SOURCE_DIR,
-                                                             "exposureMain");
-
-    const auto forwardSpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
-                                                         "Shaders/Vertex/bunny",
-                                                         PROJECT_SOURCE_DIR);
-    const auto skySpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
-                                                     "Shaders/Atmosphere/sky",
-                                                     PROJECT_SOURCE_DIR);
-
     const std::array<Vertex, 3> vertices = {{
         {{0.0f, -0.6f, 0.0f}, {1.0f, 0.3f, 0.2f}},
         {{0.6f, 0.6f, 0.0f}, {0.2f, 0.9f, 0.4f}},
@@ -501,6 +475,35 @@ int main() {
     vulkanSetShaderContext(vkDevice);
     vulkanLoadMeshShaderFunctions(vkDevice);
 
+    ShaderManager shaderManager(deviceHandle,
+                                PROJECT_SOURCE_DIR,
+                                false,
+                                false,
+                                ShaderManagerProfile::preview());
+    if (!shaderManager.buildAll()) {
+        spdlog::error("Failed to build Vulkan preview shader set");
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        rhi->waitIdle();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
+
+    PipelineRuntimeContext& runtimeContext = shaderManager.runtimeContext();
+    auto hasRenderPipeline = [&](const char* name) {
+        auto it = runtimeContext.renderPipelinesRhi.find(name);
+        return it != runtimeContext.renderPipelinesRhi.end() && it->second.nativeHandle() != nullptr;
+    };
+    auto hasComputePipeline = [&](const char* name) {
+        auto it = runtimeContext.computePipelinesRhi.find(name);
+        return it != runtimeContext.computePipelinesRhi.end() && it->second.nativeHandle() != nullptr;
+    };
+    auto importRuntimeTexture = [&](const char* name, const RhiTexture& texture) {
+        shaderManager.importTexture(name, texture);
+    };
+
     RhiBufferHandle vertexBuffer =
         rhiCreateSharedBuffer(deviceHandle, vertices.data(), sizeof(vertices), "TriangleVB");
     if (!vertexBuffer.nativeHandle()) {
@@ -546,104 +549,6 @@ int main() {
         return 1;
     }
 
-    std::string tonemapShaderSource(reinterpret_cast<const char*>(tonemapSpirv.data()),
-                                    tonemapSpirv.size() * sizeof(uint32_t));
-    RhiRenderPipelineSourceDesc tonemapPipelineDesc;
-    tonemapPipelineDesc.vertexEntry = "vertexMain";
-    tonemapPipelineDesc.fragmentEntry = "fragmentMain";
-    tonemapPipelineDesc.colorFormat = rhi->colorFormat();
-
-    std::string tonemapPipelineError;
-    RhiGraphicsPipelineHandle tonemapPipeline =
-        rhiCreateRenderPipelineFromSource(deviceHandle,
-                                          tonemapShaderSource,
-                                          tonemapPipelineDesc,
-                                          tonemapPipelineError);
-    if (!tonemapPipeline.nativeHandle()) {
-        spdlog::error("Failed to create tonemap pipeline: {}", tonemapPipelineError);
-        rhi->waitIdle();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1;
-    }
-
-    RhiVertexDescriptorHandle forwardVertexDescriptor = rhiCreateVertexDescriptor();
-    rhiVertexDescriptorSetAttribute(forwardVertexDescriptor, 0, RhiVertexFormat::Float3, 0, 1);
-    rhiVertexDescriptorSetAttribute(forwardVertexDescriptor, 1, RhiVertexFormat::Float3, 0, 2);
-    rhiVertexDescriptorSetLayout(forwardVertexDescriptor, 1, sizeof(float) * 3);
-    rhiVertexDescriptorSetLayout(forwardVertexDescriptor, 2, sizeof(float) * 3);
-
-    RhiGraphicsPipelineHandle forwardPipeline;
-    if (!forwardSpirv.empty()) {
-        std::string forwardShaderSource(reinterpret_cast<const char*>(forwardSpirv.data()),
-                                        forwardSpirv.size() * sizeof(uint32_t));
-        RhiRenderPipelineSourceDesc forwardPipelineDesc;
-        forwardPipelineDesc.vertexEntry = "vertexMain";
-        forwardPipelineDesc.fragmentEntry = "fragmentMain";
-        forwardPipelineDesc.colorFormat = RhiFormat::RGBA16Float;
-        forwardPipelineDesc.depthFormat = RhiFormat::D32Float;
-        forwardPipelineDesc.vertexDescriptor = &forwardVertexDescriptor;
-
-        std::string forwardPipelineError;
-        forwardPipeline = rhiCreateRenderPipelineFromSource(deviceHandle,
-                                                            forwardShaderSource,
-                                                            forwardPipelineDesc,
-                                                            forwardPipelineError);
-        if (!forwardPipeline.nativeHandle()) {
-            spdlog::warn("Failed to create forward pipeline: {}", forwardPipelineError);
-        }
-    } else {
-        spdlog::warn("Failed to compile SPIR-V for forward preview shader; falling back to triangle path");
-    }
-
-    RhiGraphicsPipelineHandle skyPipeline;
-    if (!skySpirv.empty()) {
-        std::string skyShaderSource(reinterpret_cast<const char*>(skySpirv.data()),
-                                    skySpirv.size() * sizeof(uint32_t));
-        RhiRenderPipelineSourceDesc skyPipelineDesc;
-        skyPipelineDesc.vertexEntry = "vertexMain";
-        skyPipelineDesc.fragmentEntry = "fragmentMain";
-        skyPipelineDesc.colorFormat = RhiFormat::RGBA16Float;
-
-        std::string skyPipelineError;
-        skyPipeline = rhiCreateRenderPipelineFromSource(deviceHandle,
-                                                        skyShaderSource,
-                                                        skyPipelineDesc,
-                                                        skyPipelineError);
-        if (!skyPipeline.nativeHandle()) {
-            spdlog::warn("Failed to create sky pipeline: {}", skyPipelineError);
-        }
-    } else {
-        spdlog::warn("Failed to compile SPIR-V for sky shader; falling back to sceneColor present path");
-    }
-
-    auto createComputePipeline = [&](const std::vector<uint32_t>& spirv,
-                                     const char* entryPoint,
-                                     const char* label) {
-        RhiComputePipelineHandle pipeline;
-        if (spirv.empty()) {
-            spdlog::warn("Failed to compile SPIR-V for {} compute shader", label);
-            return pipeline;
-        }
-
-        std::string shaderSource(reinterpret_cast<const char*>(spirv.data()),
-                                 spirv.size() * sizeof(uint32_t));
-        std::string pipelineError;
-        pipeline = rhiCreateComputePipelineFromSource(deviceHandle,
-                                                      shaderSource,
-                                                      entryPoint,
-                                                      pipelineError);
-        if (!pipeline.nativeHandle()) {
-            spdlog::warn("Failed to create {} compute pipeline: {}", label, pipelineError);
-        }
-        return pipeline;
-    };
-
-    RhiComputePipelineHandle histogramPipeline =
-        createComputePipeline(histogramSpirv, "histogramMain", "histogram");
-    RhiComputePipelineHandle autoExposurePipeline =
-        createComputePipeline(autoExposureSpirv, "exposureMain", "auto-exposure");
-
     RhiSamplerDesc samplerDesc;
     samplerDesc.minFilter = RhiSamplerFilterMode::Linear;
     samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
@@ -658,10 +563,15 @@ int main() {
         glfwTerminate();
         return 1;
     }
+    shaderManager.importSampler("atmosphere", linearSampler);
 
     AtmosphereTextures atmosphereTextures;
     if (!loadAtmosphereTextures(deviceHandle, PROJECT_SOURCE_DIR, atmosphereTextures)) {
         spdlog::warn("Failed to load atmosphere textures; SkyPass will clear to black");
+    } else {
+        importRuntimeTexture("transmittance", atmosphereTextures.transmittance);
+        importRuntimeTexture("scattering", atmosphereTextures.scattering);
+        importRuntimeTexture("irradiance", atmosphereTextures.irradiance);
     }
 
     LoadedMesh previewMesh;
@@ -676,7 +586,7 @@ int main() {
                                  "Vulkan preview",
                                  previewPipelineAsset);
     const bool previewAutoExposureAvailable =
-        histogramPipeline.nativeHandle() && autoExposurePipeline.nativeHandle();
+        hasComputePipeline("HistogramPass") && hasComputePipeline("AutoExposurePass");
     if (previewPipelineAssetLoaded && !previewAutoExposureAvailable) {
         disablePreviewAutoExposure(previewPipelineAsset);
         std::string validationError;
@@ -689,7 +599,8 @@ int main() {
     }
     const bool usePreviewRenderGraph =
         previewPipelineAssetLoaded &&
-        forwardPipeline.nativeHandle() &&
+        hasRenderPipeline("ForwardPass") &&
+        hasRenderPipeline("TonemapPass") &&
         previewMesh.positionBuffer.nativeHandle() &&
         previewMesh.normalBuffer.nativeHandle() &&
         previewMesh.indexBuffer.nativeHandle();
@@ -712,6 +623,7 @@ int main() {
     RhiTextureHandle sceneColorTexture;
     auto recreateSceneColorTexture = [&](uint32_t targetWidth, uint32_t targetHeight) {
         rhiReleaseHandle(sceneColorTexture);
+        runtimeContext.importedTexturesRhi.erase("sceneColor");
         sceneColorTexture = rhiCreateTexture2D(deviceHandle,
                                                targetWidth,
                                                targetHeight,
@@ -720,7 +632,11 @@ int main() {
                                                1,
                                                RhiTextureStorageMode::Private,
                                                RhiTextureUsage::RenderTarget | RhiTextureUsage::ShaderRead);
-        return sceneColorTexture.nativeHandle() != nullptr;
+        if (!sceneColorTexture.nativeHandle()) {
+            return false;
+        }
+        importRuntimeTexture("sceneColor", sceneColorTexture);
+        return true;
     };
 
     if (!recreateSceneColorTexture(createInfo.width, createInfo.height)) {
@@ -777,35 +693,12 @@ int main() {
         depthClearValue,
     };
 
-    PipelineRuntimeContext runtimeContext;
-    if (forwardPipeline.nativeHandle()) {
-        runtimeContext.renderPipelinesRhi["ForwardPass"] = forwardPipeline;
-    }
-    runtimeContext.renderPipelinesRhi["TonemapPass"] = tonemapPipeline;
-    if (skyPipeline.nativeHandle()) {
-        runtimeContext.renderPipelinesRhi["SkyPass"] = skyPipeline;
-    }
-    if (histogramPipeline.nativeHandle()) {
-        runtimeContext.computePipelinesRhi["HistogramPass"] = histogramPipeline;
-    }
-    if (autoExposurePipeline.nativeHandle()) {
-        runtimeContext.computePipelinesRhi["AutoExposurePass"] = autoExposurePipeline;
-    }
-    runtimeContext.samplersRhi["tonemap"] = linearSampler;
-    runtimeContext.samplersRhi["atmosphere"] = linearSampler;
-    runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
-    if (atmosphereTextures.isValid()) {
-        runtimeContext.importedTexturesRhi["transmittance"] = atmosphereTextures.transmittance;
-        runtimeContext.importedTexturesRhi["scattering"] = atmosphereTextures.scattering;
-        runtimeContext.importedTexturesRhi["irradiance"] = atmosphereTextures.irradiance;
-    }
     runtimeContext.backbufferRhi = &backbufferTexture;
     runtimeContext.resourceFactory = &frameGraphBackend;
 
     const PipelineAsset sceneColorPostAsset = makeSceneColorPostPipelineAsset();
     PipelineBuilder postBuilder(renderContext);
     auto rebuildPostBuilder = [&](int targetWidth, int targetHeight) {
-        runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
         const PipelineAsset& activePostAsset =
             usePreviewRenderGraph ? previewPipelineAsset : sceneColorPostAsset;
         if (!postBuilder.build(activePostAsset, runtimeContext, targetWidth, targetHeight)) {
@@ -828,14 +721,8 @@ int main() {
         releaseMeshBuffers(previewMesh);
         rhiReleaseHandle(depthState);
         rhiReleaseHandle(linearSampler);
-        rhiReleaseHandle(skyPipeline);
-        rhiReleaseHandle(forwardPipeline);
-        rhiReleaseHandle(autoExposurePipeline);
-        rhiReleaseHandle(histogramPipeline);
-        rhiReleaseHandle(tonemapPipeline);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(sceneColorTexture);
-        rhiReleaseHandle(forwardVertexDescriptor);
         rhiReleaseHandle(vertexDescriptor);
         rhiReleaseHandle(vertexBuffer);
     };
@@ -857,7 +744,7 @@ int main() {
     previewCamera.nearZ = 0.1f;
     previewCamera.farZ = 100.0f;
     const float3 sunDirection = normalize(float3(0.35f, 0.85f, 0.25f));
-    const bool atmosphereSkyAvailable = skyPipeline.nativeHandle() && atmosphereTextures.isValid();
+    const bool atmosphereSkyAvailable = hasRenderPipeline("SkyPass") && atmosphereTextures.isValid();
     const std::vector<uint32_t> previewVisibleIndexNodes = {0};
     bool showGraphDebug = true;
     bool showRenderPassUI = true;
@@ -940,8 +827,6 @@ int main() {
         frameContext.depthClearValue = depthClearValue;
         frameContext.enableAtmosphereSky = atmosphereSkyAvailable;
 
-        runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
-        runtimeContext.backbufferRhi = &backbufferTexture;
         postBuilder.updateFrame(&backbufferTexture, &frameContext);
 
         ImGui_ImplVulkan_NewFrame();
