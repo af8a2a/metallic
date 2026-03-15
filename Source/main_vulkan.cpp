@@ -770,6 +770,7 @@ int main() {
     bool postBuilderNeedsRebuild = false;
 
     auto rebuildActivePipeline = [&](int targetWidth, int targetHeight) {
+        rhi->waitIdle();
         if (!usePreviewRenderGraph &&
             (!sceneColorTexture.nativeHandle() ||
              sceneColorTexture.width() != static_cast<uint32_t>(targetWidth) ||
@@ -811,6 +812,7 @@ int main() {
 
         if (shaderReloadRequested) {
             shaderReloadRequested = false;
+            rhi->waitIdle();
             spdlog::info("Reloading Vulkan preview shaders...");
             const bool previousPreviewRenderGraph = usePreviewRenderGraph;
             const bool previousAutoExposure = previewAutoExposureAvailable;
