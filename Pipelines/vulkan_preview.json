@@ -89,6 +89,19 @@
         "dither": false,
         "autoExposure": true
       }
+    },
+    {
+      "name": "ImGui Overlay",
+      "type": "ImGuiOverlayPass",
+      "inputs": [
+        "depth"
+      ],
+      "outputs": [
+        "$backbuffer"
+      ],
+      "enabled": true,
+      "sideEffect": false,
+      "config": {}
     }
   ]
 }

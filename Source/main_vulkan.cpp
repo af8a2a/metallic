@@ -18,6 +18,9 @@
 #include "camera.h"
 #include "frame_context.h"
 #include "frame_graph.h"
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_vulkan.h"
 #include "pipeline_asset.h"
 #include "pipeline_builder.h"
 #include "render_pass.h"
@@ -41,6 +44,13 @@ struct Vertex {
 struct AppState {
     bool framebufferResized = false;
 };
+
+void checkImGuiVkResult(VkResult result) {
+    if (result == VK_SUCCESS) {
+        return;
+    }
+    spdlog::error("ImGui Vulkan error: {}", static_cast<int>(result));
+}
 
 struct AtmosphereTextures {
     RhiTextureHandle transmittance;
@@ -327,6 +337,15 @@ PipelineAsset makeSceneColorPostPipelineAsset() {
             {"autoExposure", false},
         },
     });
+    asset.passes.push_back({
+        "ImGui Overlay",
+        "ImGuiOverlayPass",
+        {},
+        {"$backbuffer"},
+        true,
+        false,
+        {},
+    });
     return asset;
 }
 
@@ -434,6 +453,45 @@ int main() {
     VkPhysicalDevice vkPhysicalDevice = static_cast<VkPhysicalDevice>(native.physicalDevice);
     VmaAllocator vmaAllocator = getVulkanAllocator(*rhi);
     RhiDeviceHandle deviceHandle(native.device);
+    const uint32_t swapchainImageCount = std::max(2u, native.swapchainImageCount);
+    const VkFormat swapchainFormat = static_cast<VkFormat>(native.colorFormat);
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    ImGui_ImplGlfw_InitForOther(window, true);
+
+    VkPipelineRenderingCreateInfoKHR imguiRenderingInfo{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR};
+    imguiRenderingInfo.colorAttachmentCount = 1;
+    imguiRenderingInfo.pColorAttachmentFormats = &swapchainFormat;
+
+    ImGui_ImplVulkan_InitInfo imguiInitInfo{};
+    imguiInitInfo.ApiVersion = native.apiVersion;
+    imguiInitInfo.Instance = static_cast<VkInstance>(native.instance);
+    imguiInitInfo.PhysicalDevice = vkPhysicalDevice;
+    imguiInitInfo.Device = vkDevice;
+    imguiInitInfo.QueueFamily = native.graphicsQueueFamily;
+    imguiInitInfo.Queue = static_cast<VkQueue>(native.queue);
+    imguiInitInfo.DescriptorPool = static_cast<VkDescriptorPool>(native.descriptorPool);
+    imguiInitInfo.MinImageCount = swapchainImageCount;
+    imguiInitInfo.ImageCount = swapchainImageCount;
+    imguiInitInfo.UseDynamicRendering = true;
+    imguiInitInfo.CheckVkResultFn = checkImGuiVkResult;
+    imguiInitInfo.PipelineInfoMain.Subpass = 0;
+    imguiInitInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    imguiInitInfo.PipelineInfoMain.PipelineRenderingCreateInfo = imguiRenderingInfo;
+
+    if (!ImGui_ImplVulkan_Init(&imguiInitInfo)) {
+        spdlog::error("Failed to initialize Dear ImGui for Vulkan");
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        rhi->waitIdle();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
 
     vulkanSetResourceContext(vkDevice,
                              vkPhysicalDevice,
@@ -760,6 +818,9 @@ int main() {
 
     auto cleanupRuntimeResources = [&]() {
         rhi->waitIdle();
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
         postBuilder.frameGraph().reset();
         sceneGraph.reset();
         descriptorManager.destroy();
@@ -798,6 +859,9 @@ int main() {
     const float3 sunDirection = normalize(float3(0.35f, 0.85f, 0.25f));
     const bool atmosphereSkyAvailable = skyPipeline.nativeHandle() && atmosphereTextures.isValid();
     const std::vector<uint32_t> previewVisibleIndexNodes = {0};
+    bool showGraphDebug = true;
+    bool showRenderPassUI = true;
+    bool showImGuiDemo = false;
 
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("VulkanRenderGraphFrame");
@@ -811,6 +875,7 @@ int main() {
 
         if (appState.framebufferResized) {
             rhi->resize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            ImGui_ImplVulkan_SetMinImageCount(std::max(2u, rhi->nativeHandles().swapchainImageCount));
             if (!usePreviewRenderGraph) {
                 if (!recreateSceneColorTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
                     spdlog::error("Failed to recreate offscreen scene color texture");
@@ -878,6 +943,32 @@ int main() {
         runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
         runtimeContext.backbufferRhi = &backbufferTexture;
         postBuilder.updateFrame(&backbufferTexture, &frameContext);
+
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::Begin("Vulkan Preview");
+        ImGui::Text("Resolution: %d x %d", width, height);
+        ImGui::TextUnformatted(usePreviewRenderGraph ? "Pipeline: Preview" : "Pipeline: Triangle Fallback");
+        ImGui::TextUnformatted(previewAutoExposureAvailable ? "Exposure: Auto" : "Exposure: Manual");
+        ImGui::Checkbox("FrameGraph Debug", &showGraphDebug);
+        ImGui::Checkbox("Render Pass UI", &showRenderPassUI);
+        ImGui::Checkbox("ImGui Demo", &showImGuiDemo);
+        ImGui::End();
+
+        FrameGraph& activeFg = postBuilder.frameGraph();
+        if (showGraphDebug) {
+            activeFg.debugImGui();
+        }
+        if (showRenderPassUI) {
+            activeFg.renderPassUI();
+        }
+        if (showImGuiDemo) {
+            ImGui::ShowDemoWindow(&showImGuiDemo);
+        }
+        ImGui::Render();
+
         postBuilder.execute(commandBuffer, frameGraphBackend);
 
         if (!usePreviewRenderGraph) {

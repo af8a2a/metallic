@@ -23,20 +23,12 @@ public:
 
     void setup(FGBuilder& builder) override {
         m_drawable = getInput("$backbuffer");
-        FGResource depthInput = getInput("depth");
 
         if (m_drawable.isValid()) {
             m_drawable = builder.setColorAttachment(0,
                                                     m_drawable,
                                                     RhiLoadAction::Load,
                                                     RhiStoreAction::Store);
-        }
-        if (depthInput.isValid()) {
-            m_depthRead = builder.read(depthInput);
-            m_depthRead = builder.setDepthAttachment(m_depthRead,
-                                                     RhiLoadAction::Load,
-                                                     RhiStoreAction::DontCare,
-                                                     m_ctx.depthClearValue);
         }
     }
 
@@ -49,7 +41,6 @@ public:
 private:
     const RenderContext& m_ctx;
     FGResource m_drawable;
-    FGResource m_depthRead;
     int m_width, m_height;
     std::string m_name = "ImGui Overlay";
 };
