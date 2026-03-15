@@ -11,10 +11,14 @@ public:
     FGPassType passType() const override { return FGPassType::Blit; }
     const char* name() const override { return "Blit to Drawable"; }
 
+    FGResource getOutput(const std::string& name) const override {
+        if (name == "destination") return m_destWrite;
+        return FGResource{};
+    }
+
     void setup(FGBuilder& builder) override {
         m_sourceRead = builder.read(m_source);
         m_destWrite = builder.write(m_dest);
-        builder.setSideEffect();
     }
 
     void executeBlit(RhiBlitCommandEncoder& encoder) override {

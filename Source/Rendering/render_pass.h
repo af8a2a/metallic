@@ -46,6 +46,8 @@ public:
 
     // Set runtime context (pipelines, samplers)
     virtual void setRuntimeContext(const PipelineRuntimeContext* ctx) { m_runtimeContext = ctx; }
+    void setSideEffectEnabled(bool enabled) { m_hasSideEffect = enabled; }
+    bool hasSideEffectEnabled() const { return m_hasSideEffect; }
 
     // Get output resources by name (for pipeline builder to wire up dependencies)
     virtual FGResource getOutput(const std::string& name) const { return FGResource{}; }
@@ -67,4 +69,5 @@ protected:
     const FrameContext* m_frameContext = nullptr;
     const PipelineRuntimeContext* m_runtimeContext = nullptr;
     std::unordered_map<std::string, FGResource> m_inputResources;
+    bool m_hasSideEffect = false;
 };

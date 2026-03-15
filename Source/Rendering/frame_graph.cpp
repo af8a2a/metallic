@@ -20,6 +20,21 @@ void appendUniqueResource(std::vector<FGResource>& resources, FGResource resourc
     }
 }
 
+uint32_t findLatestVersion(const std::vector<FGResourceNode>& resources, uint32_t resourceIndex) {
+    uint32_t latest = resourceIndex;
+    bool advanced = false;
+    do {
+        advanced = false;
+        for (uint32_t ri = 0; ri < resources.size(); ++ri) {
+            if (resources[ri].previousVersion == latest) {
+                latest = ri;
+                advanced = true;
+            }
+        }
+    } while (advanced);
+    return latest;
+}
+
 } // namespace
 
 // --- FGBuilder ---
@@ -93,6 +108,10 @@ FGResource FGBuilder::write(FGResource resource) {
     versionedNode.physicalResource =
         node.physicalResource != UINT32_MAX ? node.physicalResource : resource.id;
     versionedNode.previousVersion = resource.id;
+    if (node.exported) {
+        versionedNode.exported = true;
+        node.exported = false;
+    }
     m_fg.m_resources.push_back(std::move(versionedNode));
     appendUniqueResource(pass.writes, versionedResource);
     return versionedResource;
@@ -127,10 +146,6 @@ FGResource FGBuilder::setDepthAttachment(FGResource resource,
     return writeResource;
 }
 
-void FGBuilder::setSideEffect() {
-    m_fg.m_passes[m_passIndex].hasSideEffect = true;
-}
-
 // --- FrameGraph ---
 
 FGResource FrameGraph::import(const char* name, RhiTexture* texture) {
@@ -148,7 +163,9 @@ FGResource FrameGraph::import(const char* name, RhiTexture* texture) {
 
 void FrameGraph::exportResource(FGResource resource) {
     assert(resource.isValid() && resource.id < m_resources.size());
-    m_resources[resource.id].exported = true;
+    const uint32_t latestVersion = findLatestVersion(m_resources, resource.id);
+    m_resources[resource.id].exported = false;
+    m_resources[latestVersion].exported = true;
 }
 
 void FrameGraph::updateImport(FGResource res, RhiTexture* texture) {
@@ -176,6 +193,7 @@ void FrameGraph::addPass(std::unique_ptr<RenderPass> pass) {
     auto& node = m_passes.back();
     node.name = passPtr->name();
     node.type = passPtr->passType();
+    node.hasSideEffect = passPtr->hasSideEffectEnabled();
     m_passData.push_back({});
 
     FGBuilder builder(*this, passIndex);

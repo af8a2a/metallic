@@ -83,6 +83,7 @@ bool PipelineBuilder::build(const PipelineAsset& asset,
 
         // Configure the pass with JSON config
         pass->configure(config);
+        pass->setSideEffectEnabled(config.sideEffect);
 
         // Set runtime context
         pass->setRuntimeContext(&rtCtx);

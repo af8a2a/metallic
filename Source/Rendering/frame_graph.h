@@ -86,7 +86,6 @@ public:
     FGResource setDepthAttachment(FGResource resource,
                                   RhiLoadAction load, RhiStoreAction store,
                                   double clearDepth = 1.0);
-    void setSideEffect();
 
 private:
     FrameGraph& m_fg;

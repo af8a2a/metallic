@@ -16,7 +16,6 @@ public:
 
     void configure(const PassConfig& config) override {
         m_name = config.name;
-        m_sideEffect = config.sideEffect;
         if (config.config.contains("exposure")) {
             m_exposure = config.config["exposure"].get<float>();
         }
@@ -37,9 +36,6 @@ public:
                                             RhiLoadAction::Clear,
                                             RhiStoreAction::Store,
                                             RhiClearColor(0.0, 0.0, 0.0, 1.0));
-        if (m_sideEffect) {
-            builder.setSideEffect();
-        }
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
@@ -102,7 +98,6 @@ private:
     const RenderContext& m_ctx;
     int m_width, m_height;
     std::string m_name = "Atmosphere Sky";
-    bool m_sideEffect = false;
     float m_exposure = 10.0f;
 };
 
