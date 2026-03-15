@@ -270,16 +270,13 @@ public:
         if (m_descriptorPool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
         }
-        if (m_commandPool != VK_NULL_HANDLE) {
-            vkDestroyCommandPool(m_device, m_commandPool, nullptr);
-        }
 
         for (auto& frame : m_frames) {
+            if (frame.commandPool != VK_NULL_HANDLE) {
+                vkDestroyCommandPool(m_device, frame.commandPool, nullptr);
+            }
             if (frame.imageAvailable != VK_NULL_HANDLE) {
                 vkDestroySemaphore(m_device, frame.imageAvailable, nullptr);
-            }
-            if (frame.renderFinished != VK_NULL_HANDLE) {
-                vkDestroySemaphore(m_device, frame.renderFinished, nullptr);
             }
             if (frame.inFlight != VK_NULL_HANDLE) {
                 vkDestroyFence(m_device, frame.inFlight, nullptr);
@@ -339,7 +336,7 @@ public:
         m_imagesInFlight[m_imageIndex] = frame.inFlight;
 
         checkVk(vkResetFences(m_device, 1, &frame.inFlight), "Failed to reset frame fence");
-        checkVk(vkResetCommandPool(m_device, m_commandPool, 0), "Failed to reset command pool");
+        checkVk(vkResetCommandPool(m_device, frame.commandPool, 0), "Failed to reset command pool");
 
         VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -351,6 +348,7 @@ public:
 
     void endFrame() override {
         FrameResources& frame = m_frames[m_frameIndex];
+        VkSemaphore renderFinished = m_swapchainRenderFinished[m_imageIndex];
         transitionCurrentImage(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
@@ -367,13 +365,13 @@ public:
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &frame.commandBuffer;
         submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = &frame.renderFinished;
+        submitInfo.pSignalSemaphores = &renderFinished;
 
         checkVk(vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, frame.inFlight), "Failed to submit graphics queue");
 
         VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = &frame.renderFinished;
+        presentInfo.pWaitSemaphores = &renderFinished;
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = &m_swapchain;
         presentInfo.pImageIndices = &m_imageIndex;
@@ -589,9 +587,9 @@ public:
 
 private:
     struct FrameResources {
+        VkCommandPool commandPool = VK_NULL_HANDLE;
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
         VkSemaphore imageAvailable = VK_NULL_HANDLE;
-        VkSemaphore renderFinished = VK_NULL_HANDLE;
         VkFence inFlight = VK_NULL_HANDLE;
     };
 
@@ -846,9 +844,14 @@ private:
         meshShaderFeatures.meshShader = m_features.meshShaders ? VK_TRUE : VK_FALSE;
         meshShaderFeatures.taskShader = m_features.meshShaders ? VK_TRUE : VK_FALSE;
 
+        VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
+        descriptorIndexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
+        descriptorIndexingFeatures.runtimeDescriptorArray = VK_TRUE;
+        descriptorIndexingFeatures.pNext = m_features.meshShaders ? &meshShaderFeatures : nullptr;
+
         VkPhysicalDeviceSynchronization2Features sync2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
         sync2Features.synchronization2 = VK_TRUE;
-        sync2Features.pNext = m_features.meshShaders ? &meshShaderFeatures : nullptr;
+        sync2Features.pNext = &descriptorIndexingFeatures;
 
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
         dynamicRenderingFeatures.dynamicRendering = VK_TRUE;
@@ -879,23 +882,19 @@ private:
     }
 
     void createCommandObjects() {
-        VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        poolInfo.queueFamilyIndex = m_queueFamilies.graphics.value();
-        checkVk(vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_commandPool),
-                "Failed to create Vulkan command pool");
-
-        VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        allocInfo.commandPool = m_commandPool;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandBufferCount = kMaxFramesInFlight;
-
-        std::array<VkCommandBuffer, kMaxFramesInFlight> commandBuffers{};
-        checkVk(vkAllocateCommandBuffers(m_device, &allocInfo, commandBuffers.data()),
-                "Failed to allocate Vulkan command buffers");
-
         for (size_t i = 0; i < kMaxFramesInFlight; ++i) {
-            m_frames[i].commandBuffer = commandBuffers[i];
+            VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+            poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+            poolInfo.queueFamilyIndex = m_queueFamilies.graphics.value();
+            checkVk(vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_frames[i].commandPool),
+                    "Failed to create Vulkan command pool");
+
+            VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+            allocInfo.commandPool = m_frames[i].commandPool;
+            allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocInfo.commandBufferCount = 1;
+            checkVk(vkAllocateCommandBuffers(m_device, &allocInfo, &m_frames[i].commandBuffer),
+                    "Failed to allocate Vulkan command buffer");
 
             VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
             VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -903,8 +902,6 @@ private:
 
             checkVk(vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_frames[i].imageAvailable),
                     "Failed to create Vulkan image-available semaphore");
-            checkVk(vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_frames[i].renderFinished),
-                    "Failed to create Vulkan render-finished semaphore");
             checkVk(vkCreateFence(m_device, &fenceInfo, nullptr, &m_frames[i].inFlight),
                     "Failed to create Vulkan fence");
         }
@@ -991,6 +988,7 @@ private:
 
         m_swapchainImageViews.resize(createdImageCount);
         m_swapchainImageLayouts.assign(createdImageCount, VK_IMAGE_LAYOUT_UNDEFINED);
+        m_swapchainRenderFinished.resize(createdImageCount, VK_NULL_HANDLE);
         m_imagesInFlight.assign(createdImageCount, VK_NULL_HANDLE);
 
         for (size_t i = 0; i < m_swapchainImages.size(); ++i) {
@@ -1006,6 +1004,10 @@ private:
 
             checkVk(vkCreateImageView(m_device, &viewInfo, nullptr, &m_swapchainImageViews[i]),
                     "Failed to create Vulkan swapchain image view");
+
+            VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            checkVk(vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_swapchainRenderFinished[i]),
+                    "Failed to create Vulkan render-finished semaphore");
         }
 
         populateNativeHandles();
@@ -1017,9 +1019,15 @@ private:
                 vkDestroyImageView(m_device, imageView, nullptr);
             }
         }
+        for (VkSemaphore renderFinished : m_swapchainRenderFinished) {
+            if (renderFinished != VK_NULL_HANDLE) {
+                vkDestroySemaphore(m_device, renderFinished, nullptr);
+            }
+        }
         m_swapchainImageViews.clear();
         m_swapchainImages.clear();
         m_swapchainImageLayouts.clear();
+        m_swapchainRenderFinished.clear();
         m_imagesInFlight.clear();
 
         if (m_swapchain != VK_NULL_HANDLE) {
@@ -1058,7 +1066,8 @@ private:
 
     void createVmaAllocator() {
         VmaAllocatorCreateInfo allocatorInfo{};
-        allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_4;
+        // VMA 3.1.0 supports up to Vulkan 1.3; pass 1.3 even if the device supports 1.4
+        allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
         allocatorInfo.physicalDevice = m_physicalDevice;
         allocatorInfo.device = m_device;
         allocatorInfo.instance = m_instance;
@@ -1104,7 +1113,6 @@ private:
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue = VK_NULL_HANDLE;
     QueueFamilyIndices m_queueFamilies;
-    VkCommandPool m_commandPool = VK_NULL_HANDLE;
     VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
     std::array<FrameResources, kMaxFramesInFlight> m_frames{};
 
@@ -1114,6 +1122,7 @@ private:
     std::vector<VkImage> m_swapchainImages;
     std::vector<VkImageView> m_swapchainImageViews;
     std::vector<VkImageLayout> m_swapchainImageLayouts;
+    std::vector<VkSemaphore> m_swapchainRenderFinished;
     std::vector<VkFence> m_imagesInFlight;
 
     uint32_t m_frameIndex = 0;

@@ -3,36 +3,43 @@
 #ifdef _WIN32
 
 #include "../rhi_backend.h"
+#include "vulkan_descriptor_manager.h"
+#include "vulkan_image_tracker.h"
+#include "vulkan_resource_handles.h"
 
 #include <vulkan/vulkan.h>
-#include <vk_mem_alloc.h>
-
-#include <unordered_map>
 
 // Forward declarations
 class VulkanContext;
+class VulkanOwnedTexture;
 
 // Imported texture (wraps swapchain image, non-owning)
 class VulkanImportedTexture final : public RhiTexture {
 public:
-    explicit VulkanImportedTexture(VkImage image = VK_NULL_HANDLE, uint32_t w = 0, uint32_t h = 0)
-        : m_image(image), m_width(w), m_height(h) {}
-
-    void setImage(VkImage image, uint32_t w, uint32_t h) {
-        m_image = image;
-        m_width = w;
-        m_height = h;
+    VulkanImportedTexture() = default;
+    VulkanImportedTexture(VkImage image, VkImageView imageView, uint32_t w, uint32_t h)
+    {
+        set(image, imageView, w, h);
     }
 
-    VkImage image() const { return m_image; }
-    void* nativeHandle() const override { return reinterpret_cast<void*>(m_image); }
-    uint32_t width() const override { return m_width; }
-    uint32_t height() const override { return m_height; }
+    void set(VkImage image, VkImageView imageView, uint32_t w, uint32_t h) {
+        m_resource.image = image;
+        m_resource.imageView = imageView;
+        m_resource.width = w;
+        m_resource.height = h;
+        m_resource.ownsImage = false;
+        m_resource.ownsImageView = false;
+        m_resource.refCount = 1;
+    }
+
+    VkImage image() const { return m_resource.image; }
+    VkImageView imageView() const { return m_resource.imageView; }
+    void* nativeHandle() const override { return const_cast<VulkanTextureResource*>(&m_resource); }
+    uint32_t width() const override { return m_resource.width; }
+    uint32_t height() const override { return m_resource.height; }
 
 private:
-    VkImage m_image = VK_NULL_HANDLE;
-    uint32_t m_width = 0;
-    uint32_t m_height = 0;
+    VulkanTextureResource m_resource{};
 };
 
 // Frame graph backend for Vulkan
@@ -52,7 +59,9 @@ private:
 // Command buffer abstraction
 class VulkanCommandBuffer final : public RhiCommandBuffer {
 public:
-    VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device);
+    VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
+                        VulkanDescriptorManager* descriptorManager,
+                        VulkanImageLayoutTracker* imageTracker);
 
     std::unique_ptr<RhiRenderCommandEncoder> beginRenderPass(const RhiRenderPassDesc& desc) override;
     std::unique_ptr<RhiComputeCommandEncoder> beginComputePass(const RhiComputePassDesc& desc) override;
@@ -61,12 +70,16 @@ public:
 private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
+    VulkanDescriptorManager* m_descriptorManager = nullptr;
+    VulkanImageLayoutTracker* m_imageTracker = nullptr;
 };
+
+// Load mesh shader extension functions (call once after device creation)
+void vulkanLoadMeshShaderFunctions(VkDevice device);
 
 // Helper functions for type conversions
 VkFormat toVkFormat(RhiFormat format);
 RhiFormat fromVkFormat(VkFormat format);
 VkImageUsageFlags toVkImageUsage(RhiTextureUsage usage);
-VkImageLayout toVkImageLayout(RhiTextureUsage usage);
 
 #endif // _WIN32

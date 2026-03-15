@@ -62,8 +62,11 @@ elseif(WIN32)
         main_vulkan.cpp
         Rendering/slang_compiler.cpp
         RHI/rhi_backend.cpp
+        RHI/rhi_resource_utils.cpp
+        RHI/rhi_shader_utils.cpp
         RHI/Vulkan/vulkan_backend.cpp
         RHI/Vulkan/vulkan_frame_graph.cpp
+        RHI/Vulkan/vulkan_descriptor_manager.cpp
     )
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"

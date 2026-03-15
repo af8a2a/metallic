@@ -1,5 +1,7 @@
 #include "raytraced_shadows.h"
 
+#ifdef __APPLE__
+
 #include "mesh_loader.h"
 #include "rhi_raytracing_utils.h"
 #include "rhi_resource_utils.h"
@@ -319,3 +321,5 @@ bool reloadShadowPipeline(const RhiDevice& device,
     spdlog::info("Hot-reload: Shadow ray pipeline reloaded");
     return true;
 }
+
+#endif // __APPLE__

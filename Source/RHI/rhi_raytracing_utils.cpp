@@ -1,5 +1,7 @@
 #include "rhi_raytracing_utils.h"
 
+#ifdef __APPLE__
+
 #include "metal_raytracing_utils.h"
 
 #include <vector>
@@ -130,3 +132,5 @@ bool rhiUpdateTopLevelAccelerationStructure(const RhiNativeCommandBuffer& comman
                                                     scratchBuffer.nativeHandle(),
                                                     errorMessage);
 }
+
+#endif // __APPLE__

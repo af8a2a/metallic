@@ -5,10 +5,47 @@
 #include "slang_compiler.h"
 
 #include <spdlog/spdlog.h>
+#include <cstring>
 
 namespace {
 
+#ifdef __APPLE__
 constexpr RhiBackendType kShaderBackend = RhiBackendType::Metal;
+#else
+constexpr RhiBackendType kShaderBackend = RhiBackendType::Vulkan;
+#endif
+
+// On Vulkan, compile to SPIR-V binary and pack into a string for rhiCreatePipelineFromSource.
+// On Metal, compile to MSL source string directly.
+std::string compileGraphics(const char* shaderPath, const char* projectRoot) {
+#ifdef __APPLE__
+    return compileSlangGraphicsSource(kShaderBackend, shaderPath, projectRoot);
+#else
+    auto spirv = compileSlangGraphicsBinary(kShaderBackend, shaderPath, projectRoot);
+    if (spirv.empty()) return {};
+    return std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t));
+#endif
+}
+
+std::string compileMesh(const char* shaderPath, const char* projectRoot) {
+#ifdef __APPLE__
+    return compileSlangMeshSource(kShaderBackend, shaderPath, projectRoot);
+#else
+    auto spirv = compileSlangMeshBinary(kShaderBackend, shaderPath, projectRoot);
+    if (spirv.empty()) return {};
+    return std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t));
+#endif
+}
+
+std::string compileCompute(const char* shaderPath, const char* projectRoot, const char* entryPoint) {
+#ifdef __APPLE__
+    return compileSlangComputeSource(kShaderBackend, shaderPath, projectRoot, entryPoint);
+#else
+    auto spirv = compileSlangComputeBinary(kShaderBackend, shaderPath, projectRoot, entryPoint);
+    if (spirv.empty()) return {};
+    return std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t));
+#endif
+}
 
 template <typename Handle>
 void releaseOwnedHandle(Handle& handle) {
@@ -269,7 +306,7 @@ bool ShaderManager::buildAll() {
 }
 
 RhiGraphicsPipelineHandle ShaderManager::reloadVertexShader(const char* shaderPath, std::string* errorMessage) {
-    std::string source = compileSlangGraphicsSource(kShaderBackend, shaderPath, m_projectRoot.c_str());
+    std::string source = compileGraphics(shaderPath, m_projectRoot.c_str());
     if (source.empty()) {
         if (errorMessage) {
             *errorMessage = "Slang vertex shader compilation returned empty source";
@@ -295,7 +332,7 @@ RhiGraphicsPipelineHandle ShaderManager::reloadVertexShader(const char* shaderPa
 RhiGraphicsPipelineHandle ShaderManager::reloadFullscreenShader(const char* shaderPath,
                                                                 RhiFormat colorFormat,
                                                                 std::string* errorMessage) {
-    std::string source = compileSlangGraphicsSource(kShaderBackend, shaderPath, m_projectRoot.c_str());
+    std::string source = compileGraphics(shaderPath, m_projectRoot.c_str());
     if (source.empty()) {
         if (errorMessage) {
             *errorMessage = "Slang fullscreen shader compilation returned empty source";
@@ -321,7 +358,7 @@ RhiGraphicsPipelineHandle ShaderManager::reloadMeshShader(const char* shaderPath
                                                           RhiFormat colorFormat,
                                                           RhiFormat depthFormat,
                                                           std::string* errorMessage) {
-    std::string source = compileSlangMeshSource(kShaderBackend, shaderPath, m_projectRoot.c_str());
+    std::string source = compileMesh(shaderPath, m_projectRoot.c_str());
     if (source.empty()) {
         if (errorMessage) {
             *errorMessage = "Slang mesh shader compilation returned empty source";
@@ -351,7 +388,7 @@ RhiComputePipelineHandle ShaderManager::reloadComputeShader(const char* shaderPa
                                                             const char* entryPoint,
                                                             std::string (*patchFn)(RhiBackendType, const std::string&),
                                                             std::string* errorMessage) {
-    std::string source = compileSlangComputeSource(kShaderBackend, shaderPath, m_projectRoot.c_str(), entryPoint);
+    std::string source = compileCompute(shaderPath, m_projectRoot.c_str(), entryPoint);
     if (source.empty()) {
         if (errorMessage) {
             *errorMessage = "Slang compute shader compilation returned empty source";

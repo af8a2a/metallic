@@ -80,3 +80,11 @@ inline void rhiReleaseHandle(Handle& handle) {
     rhiReleaseNativeHandle(handle.nativeHandle());
     handle.setNativeHandle(nullptr);
 }
+
+#ifdef _WIN32
+#include <vulkan/vulkan.h>
+struct VmaAllocator_T;
+typedef VmaAllocator_T* VmaAllocator;
+void vulkanSetResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
+                              VkQueue queue, uint32_t queueFamily);
+#endif

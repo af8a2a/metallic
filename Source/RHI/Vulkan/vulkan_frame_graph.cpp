@@ -9,6 +9,21 @@
 #include <cstring>
 #include <stdexcept>
 
+// Mesh shader extension function pointers (loaded dynamically)
+static PFN_vkCmdDrawMeshTasksEXT pfnCmdDrawMeshTasksEXT = nullptr;
+static PFN_vkCmdDrawMeshTasksIndirectEXT pfnCmdDrawMeshTasksIndirectEXT = nullptr;
+
+void vulkanLoadMeshShaderFunctions(VkDevice device) {
+    if (!pfnCmdDrawMeshTasksEXT) {
+        pfnCmdDrawMeshTasksEXT = reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(
+            vkGetDeviceProcAddr(device, "vkCmdDrawMeshTasksEXT"));
+    }
+    if (!pfnCmdDrawMeshTasksIndirectEXT) {
+        pfnCmdDrawMeshTasksIndirectEXT = reinterpret_cast<PFN_vkCmdDrawMeshTasksIndirectEXT>(
+            vkGetDeviceProcAddr(device, "vkCmdDrawMeshTasksIndirectEXT"));
+    }
+}
+
 namespace {
 
 // Helper to check Vulkan results
@@ -20,40 +35,30 @@ void checkVk(VkResult result, const char* message) {
 
 } // namespace
 
-// Owned texture with VMA allocation — visible outside anonymous namespace for dynamic_cast in beginRenderPass
+// Owned texture with VMA allocation backed by a shared VulkanTextureResource wrapper.
 class VulkanOwnedTexture final : public RhiTexture {
 public:
-    VulkanOwnedTexture(VkDevice device, VkImage image, VkImageView imageView,
-                       VmaAllocation allocation, VmaAllocator allocator,
-                       uint32_t w, uint32_t h)
-        : m_device(device), m_image(image), m_imageView(imageView),
-          m_allocation(allocation), m_allocator(allocator),
-          m_width(w), m_height(h) {}
+    explicit VulkanOwnedTexture(VulkanTextureResource resource)
+        : m_resource(resource) {}
 
     ~VulkanOwnedTexture() override {
-        if (m_imageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(m_device, m_imageView, nullptr);
+        if (m_resource.imageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(m_resource.device, m_resource.imageView, nullptr);
         }
-        if (m_image != VK_NULL_HANDLE && m_allocator != nullptr) {
-            vmaDestroyImage(m_allocator, m_image, m_allocation);
+        if (m_resource.image != VK_NULL_HANDLE && m_resource.allocator != nullptr) {
+            vmaDestroyImage(m_resource.allocator, m_resource.image, m_resource.allocation);
         }
     }
 
-    void* nativeHandle() const override { return reinterpret_cast<void*>(m_image); }
-    uint32_t width() const override { return m_width; }
-    uint32_t height() const override { return m_height; }
+    void* nativeHandle() const override { return const_cast<VulkanTextureResource*>(&m_resource); }
+    uint32_t width() const override { return m_resource.width; }
+    uint32_t height() const override { return m_resource.height; }
 
-    VkImage image() const { return m_image; }
-    VkImageView imageView() const { return m_imageView; }
+    VkImage image() const { return m_resource.image; }
+    VkImageView imageView() const { return m_resource.imageView; }
 
 private:
-    VkDevice m_device = VK_NULL_HANDLE;
-    VkImage m_image = VK_NULL_HANDLE;
-    VkImageView m_imageView = VK_NULL_HANDLE;
-    VmaAllocation m_allocation = nullptr;
-    VmaAllocator m_allocator = nullptr;
-    uint32_t m_width = 0;
-    uint32_t m_height = 0;
+    VulkanTextureResource m_resource{};
 };
 
 namespace {
@@ -61,39 +66,40 @@ namespace {
 // Owned buffer with VMA allocation
 class VulkanOwnedBuffer final : public RhiBuffer {
 public:
-    VulkanOwnedBuffer(VkBuffer buffer, VmaAllocation allocation, VmaAllocator allocator, size_t byteSize)
-        : m_buffer(buffer), m_allocation(allocation), m_allocator(allocator), m_size(byteSize) {}
+    explicit VulkanOwnedBuffer(VulkanBufferResource resource)
+        : m_resource(resource) {}
 
     ~VulkanOwnedBuffer() override {
-        if (m_buffer != VK_NULL_HANDLE && m_allocator != nullptr) {
-            vmaDestroyBuffer(m_allocator, m_buffer, m_allocation);
+        if (m_resource.buffer != VK_NULL_HANDLE && m_resource.allocator != nullptr) {
+            vmaDestroyBuffer(m_resource.allocator, m_resource.buffer, m_resource.allocation);
         }
     }
 
-    size_t size() const override { return m_size; }
-    void* nativeHandle() const override { return reinterpret_cast<void*>(m_buffer); }
+    size_t size() const override { return m_resource.size; }
+    void* nativeHandle() const override { return const_cast<VulkanBufferResource*>(&m_resource); }
     void* mappedData() override {
-        if (m_mappedData == nullptr && m_allocation != nullptr) {
-            vmaMapMemory(m_allocator, m_allocation, &m_mappedData);
+        if (m_resource.mappedData == nullptr && m_resource.allocation != nullptr) {
+            vmaMapMemory(m_resource.allocator, m_resource.allocation, &m_resource.mappedData);
         }
-        return m_mappedData;
+        return m_resource.mappedData;
     }
 
-    VkBuffer buffer() const { return m_buffer; }
+    VkBuffer buffer() const { return m_resource.buffer; }
 
 private:
-    VkBuffer m_buffer = VK_NULL_HANDLE;
-    VmaAllocation m_allocation = nullptr;
-    VmaAllocator m_allocator = nullptr;
-    size_t m_size = 0;
-    void* m_mappedData = nullptr;
+    VulkanBufferResource m_resource{};
 };
 
 // Render command encoder
 class VulkanRenderCommandEncoder final : public RhiRenderCommandEncoder {
 public:
-    VulkanRenderCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device)
-        : m_commandBuffer(commandBuffer), m_device(device) {}
+    VulkanRenderCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
+                               VulkanDescriptorManager* descriptorManager)
+        : m_commandBuffer(commandBuffer), m_device(device), m_descriptorManager(descriptorManager) {
+        m_pendingBuffers.fill({});
+        m_pendingTextures.fill({});
+        m_pendingSamplers.fill({});
+    }
 
     ~VulkanRenderCommandEncoder() override {
         if (m_commandBuffer != VK_NULL_HANDLE) {
@@ -103,9 +109,7 @@ public:
 
     void* nativeHandle() const override { return m_commandBuffer; }
 
-    void setDepthStencilState(const RhiDepthStencilState* /*state*/) override {
-        // Vulkan handles depth/stencil state at pipeline creation time, not dynamically
-    }
+    void setDepthStencilState(const RhiDepthStencilState* /*state*/) override {}
 
     void setFrontFacingWinding(RhiWinding winding) override {
         vkCmdSetFrontFace(m_commandBuffer,
@@ -121,66 +125,75 @@ public:
 
     void setRenderPipeline(const RhiGraphicsPipeline& pipeline) override {
         vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          reinterpret_cast<VkPipeline>(pipeline.nativeHandle()));
+                          getVulkanPipelineHandle(pipeline));
     }
 
     void setVertexBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override {
         if (!buffer) return;
-        VkBuffer vkBuf = reinterpret_cast<VkBuffer>(buffer->nativeHandle());
+        VkBuffer vkBuf = getVulkanBufferHandle(buffer);
         VkDeviceSize vkOffset = offset;
         vkCmdBindVertexBuffers(m_commandBuffer, index, 1, &vkBuf, &vkOffset);
     }
 
-    void setFragmentBuffer(const RhiBuffer* /*buffer*/, uint64_t /*offset*/, uint32_t /*index*/) override {
-        // Handled via descriptor sets in Vulkan - will be implemented with descriptor management
+    void setFragmentBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override {
+        if (!buffer || index >= kMaxBufferBindings) return;
+        m_pendingBuffers[index] = {getVulkanBufferHandle(buffer), offset, buffer->size()};
     }
 
-    void setMeshBuffer(const RhiBuffer* /*buffer*/, uint64_t /*offset*/, uint32_t /*index*/) override {
-        // Handled via descriptor sets in Vulkan
+    void setMeshBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override {
+        if (!buffer || index >= kMaxBufferBindings) return;
+        m_pendingBuffers[index] = {getVulkanBufferHandle(buffer), offset, buffer->size()};
     }
 
-    void setVertexBytes(const void* data, size_t size, uint32_t index) override {
-        if (data && size > 0 && m_currentPipelineLayout != VK_NULL_HANDLE) {
-            vkCmdPushConstants(m_commandBuffer, m_currentPipelineLayout,
+    void setVertexBytes(const void* data, size_t size, uint32_t /*index*/) override {
+        if (data && size > 0 && m_descriptorManager) {
+            vkCmdPushConstants(m_commandBuffer, m_descriptorManager->pipelineLayout(),
                                VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(size), data);
         }
     }
 
     void setFragmentBytes(const void* data, size_t size, uint32_t /*index*/) override {
-        if (data && size > 0 && m_currentPipelineLayout != VK_NULL_HANDLE) {
-            vkCmdPushConstants(m_commandBuffer, m_currentPipelineLayout,
+        if (data && size > 0 && m_descriptorManager) {
+            vkCmdPushConstants(m_commandBuffer, m_descriptorManager->pipelineLayout(),
                                VK_SHADER_STAGE_FRAGMENT_BIT, 128, static_cast<uint32_t>(size), data);
         }
     }
 
     void setMeshBytes(const void* data, size_t size, uint32_t /*index*/) override {
-        if (data && size > 0 && m_currentPipelineLayout != VK_NULL_HANDLE) {
-            vkCmdPushConstants(m_commandBuffer, m_currentPipelineLayout,
+        if (data && size > 0 && m_descriptorManager) {
+            vkCmdPushConstants(m_commandBuffer, m_descriptorManager->pipelineLayout(),
                                VK_SHADER_STAGE_MESH_BIT_EXT, 0, static_cast<uint32_t>(size), data);
         }
     }
 
-    void setFragmentTexture(const RhiTexture* /*texture*/, uint32_t /*index*/) override {
-        // Handled via descriptor sets
+    void setFragmentTexture(const RhiTexture* texture, uint32_t index) override {
+        if (index >= kMaxTextureBindings) return;
+        VkImageView view = getVulkanImageView(texture);
+        m_pendingTextures[index] = {view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
     }
 
-    void setFragmentTextures(const RhiTexture* const* /*textures*/, uint32_t /*startIndex*/, uint32_t /*count*/) override {
-        // Handled via descriptor sets
+    void setFragmentTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {
+        for (uint32_t i = 0; i < count && (startIndex + i) < kMaxTextureBindings; ++i) {
+            VkImageView view = getVulkanImageView(textures[i]);
+            m_pendingTextures[startIndex + i] = {view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
+        }
     }
 
-    void setMeshTextures(const RhiTexture* const* /*textures*/, uint32_t /*startIndex*/, uint32_t /*count*/) override {
-        // Handled via descriptor sets
+    void setMeshTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {
+        setFragmentTextures(textures, startIndex, count);
     }
 
-    void setFragmentSampler(const RhiSampler* /*sampler*/, uint32_t /*index*/) override {
-        // Handled via descriptor sets
+    void setFragmentSampler(const RhiSampler* sampler, uint32_t index) override {
+        if (!sampler || index >= kMaxSamplerBindings) return;
+        m_pendingSamplers[index] = {getVulkanSamplerHandle(sampler), true};
     }
 
-    void setMeshSampler(const RhiSampler* /*sampler*/, uint32_t /*index*/) override {
-        // Handled via descriptor sets
+    void setMeshSampler(const RhiSampler* sampler, uint32_t index) override {
+        setFragmentSampler(sampler, index);
     }
 
     void drawPrimitives(RhiPrimitiveType /*primitiveType*/, uint32_t vertexStart, uint32_t vertexCount) override {
+        flushDescriptors(VK_PIPELINE_BIND_POINT_GRAPHICS);
         vkCmdDraw(m_commandBuffer, vertexCount, 1, vertexStart, 0);
     }
 
@@ -190,47 +203,64 @@ public:
                                const RhiBuffer& indexBuffer,
                                uint64_t indexBufferOffset) override {
         VkIndexType vkIndexType = (indexType == RhiIndexType::UInt16) ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
-        vkCmdBindIndexBuffer(m_commandBuffer, reinterpret_cast<VkBuffer>(indexBuffer.nativeHandle()),
+        vkCmdBindIndexBuffer(m_commandBuffer, getVulkanBufferHandle(&indexBuffer),
                              indexBufferOffset, vkIndexType);
+        flushDescriptors(VK_PIPELINE_BIND_POINT_GRAPHICS);
         vkCmdDrawIndexed(m_commandBuffer, indexCount, 1, 0, 0, 0);
     }
 
     void drawMeshThreadgroups(RhiSize3D threadgroupsPerGrid,
                               RhiSize3D /*threadsPerObjectThreadgroup*/,
                               RhiSize3D /*threadsPerMeshThreadgroup*/) override {
-        vkCmdDrawMeshTasksEXT(m_commandBuffer,
-                              threadgroupsPerGrid.width,
-                              threadgroupsPerGrid.height,
-                              threadgroupsPerGrid.depth);
+        flushDescriptors(VK_PIPELINE_BIND_POINT_GRAPHICS);
+        if (pfnCmdDrawMeshTasksEXT) {
+            pfnCmdDrawMeshTasksEXT(m_commandBuffer,
+                                   threadgroupsPerGrid.width,
+                                   threadgroupsPerGrid.height,
+                                   threadgroupsPerGrid.depth);
+        }
     }
 
     void drawMeshThreadgroupsIndirect(const RhiBuffer& indirectBuffer,
                                       uint64_t indirectBufferOffset,
                                       RhiSize3D /*threadsPerObjectThreadgroup*/,
                                       RhiSize3D /*threadsPerMeshThreadgroup*/) override {
-        vkCmdDrawMeshTasksIndirectEXT(m_commandBuffer,
-                                      reinterpret_cast<VkBuffer>(indirectBuffer.nativeHandle()),
-                                      indirectBufferOffset, 1, 0);
+        flushDescriptors(VK_PIPELINE_BIND_POINT_GRAPHICS);
+        if (pfnCmdDrawMeshTasksIndirectEXT) {
+            pfnCmdDrawMeshTasksIndirectEXT(m_commandBuffer,
+                                           getVulkanBufferHandle(&indirectBuffer),
+                                           indirectBufferOffset, 1, 0);
+        }
     }
 
-    void renderImGuiDrawData(const RhiNativeCommandBuffer& /*commandBuffer*/) override {
-        // ImGui rendering is handled directly via ImGui_ImplVulkan_RenderDrawData
-        // with the native VkCommandBuffer in main_vulkan.cpp
-    }
-
-    void setPipelineLayout(VkPipelineLayout layout) { m_currentPipelineLayout = layout; }
+    void renderImGuiDrawData(const RhiNativeCommandBuffer& /*commandBuffer*/) override {}
 
 private:
+    void flushDescriptors(VkPipelineBindPoint bindPoint) {
+        if (m_descriptorManager) {
+            m_descriptorManager->flushAndBind(m_commandBuffer, bindPoint,
+                                              m_pendingBuffers, m_pendingTextures, m_pendingSamplers);
+        }
+    }
+
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
-    VkPipelineLayout m_currentPipelineLayout = VK_NULL_HANDLE;
+    VulkanDescriptorManager* m_descriptorManager = nullptr;
+    std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
+    std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
+    std::array<PendingSamplerBinding, kMaxSamplerBindings> m_pendingSamplers{};
 };
 
 // Compute command encoder
 class VulkanComputeCommandEncoder final : public RhiComputeCommandEncoder {
 public:
-    VulkanComputeCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device)
-        : m_commandBuffer(commandBuffer), m_device(device) {}
+    VulkanComputeCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
+                                VulkanDescriptorManager* descriptorManager)
+        : m_commandBuffer(commandBuffer), m_device(device), m_descriptorManager(descriptorManager) {
+        m_pendingBuffers.fill({});
+        m_pendingTextures.fill({});
+        m_pendingSamplers.fill({});
+    }
 
     ~VulkanComputeCommandEncoder() override = default;
 
@@ -238,45 +268,50 @@ public:
 
     void setComputePipeline(const RhiComputePipeline& pipeline) override {
         vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          reinterpret_cast<VkPipeline>(pipeline.nativeHandle()));
+                          getVulkanPipelineHandle(pipeline));
     }
 
-    void setBuffer(const RhiBuffer* /*buffer*/, uint64_t /*offset*/, uint32_t /*index*/) override {
-        // Handled via descriptor sets
+    void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override {
+        if (!buffer || index >= kMaxBufferBindings) return;
+        m_pendingBuffers[index] = {getVulkanBufferHandle(buffer), offset, buffer->size()};
     }
 
     void setBytes(const void* data, size_t size, uint32_t /*index*/) override {
-        if (data && size > 0 && m_currentPipelineLayout != VK_NULL_HANDLE) {
-            vkCmdPushConstants(m_commandBuffer, m_currentPipelineLayout,
+        if (data && size > 0 && m_descriptorManager) {
+            vkCmdPushConstants(m_commandBuffer, m_descriptorManager->pipelineLayout(),
                                VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(size), data);
         }
     }
 
-    void setTexture(const RhiTexture* /*texture*/, uint32_t /*index*/) override {
-        // Handled via descriptor sets
+    void setTexture(const RhiTexture* texture, uint32_t index) override {
+        if (index >= kMaxTextureBindings) return;
+        VkImageView view = getVulkanImageView(texture);
+        // Determine if this is a storage image (write) or sampled image (read)
+        // For compute, textures at even indices are typically read, odd are write
+        // But we'll default to sampled and let the caller override via setTextures
+        m_pendingTextures[index] = {view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
     }
 
-    void setTextures(const RhiTexture* const* /*textures*/, uint32_t /*startIndex*/, uint32_t /*count*/) override {
-        // Handled via descriptor sets
+    void setTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {
+        for (uint32_t i = 0; i < count && (startIndex + i) < kMaxTextureBindings; ++i) {
+            VkImageView view = getVulkanImageView(textures[i]);
+            m_pendingTextures[startIndex + i] = {view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
+        }
     }
 
-    void setSampler(const RhiSampler* /*sampler*/, uint32_t /*index*/) override {
-        // Handled via descriptor sets
+    void setSampler(const RhiSampler* sampler, uint32_t index) override {
+        if (!sampler || index >= kMaxSamplerBindings) return;
+        m_pendingSamplers[index] = {getVulkanSamplerHandle(sampler), true};
     }
 
     void setAccelerationStructure(const RhiAccelerationStructure* /*accelerationStructure*/, uint32_t /*index*/) override {
-        // Handled via descriptor sets with VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+        // Will be implemented in Phase 6 (Raytracing)
     }
 
-    void useResource(const RhiBuffer& /*resource*/, RhiResourceUsage /*usage*/) override {
-        // Vulkan handles resource tracking via pipeline barriers, not explicit useResource calls
-    }
+    void useResource(const RhiBuffer& /*resource*/, RhiResourceUsage /*usage*/) override {}
+    void useResource(const RhiAccelerationStructure& /*resource*/, RhiResourceUsage /*usage*/) override {}
 
-    void useResource(const RhiAccelerationStructure& /*resource*/, RhiResourceUsage /*usage*/) override {
-        // Same as above
-    }
-
-    void memoryBarrier(RhiBarrierScope scope) override {
+    void memoryBarrier(RhiBarrierScope /*scope*/) override {
         VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -290,18 +325,27 @@ public:
     }
 
     void dispatchThreadgroups(RhiSize3D threadgroupsPerGrid, RhiSize3D /*threadsPerThreadgroup*/) override {
+        flushDescriptors();
         vkCmdDispatch(m_commandBuffer,
                       threadgroupsPerGrid.width,
                       threadgroupsPerGrid.height,
                       threadgroupsPerGrid.depth);
     }
 
-    void setPipelineLayout(VkPipelineLayout layout) { m_currentPipelineLayout = layout; }
-
 private:
+    void flushDescriptors() {
+        if (m_descriptorManager) {
+            m_descriptorManager->flushAndBind(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                              m_pendingBuffers, m_pendingTextures, m_pendingSamplers);
+        }
+    }
+
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
-    VkPipelineLayout m_currentPipelineLayout = VK_NULL_HANDLE;
+    VulkanDescriptorManager* m_descriptorManager = nullptr;
+    std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
+    std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
+    std::array<PendingSamplerBinding, kMaxSamplerBindings> m_pendingSamplers{};
 };
 
 // Blit command encoder
@@ -341,9 +385,9 @@ public:
         region.extent = {sourceSize.width, sourceSize.height, sourceSize.depth};
 
         vkCmdCopyImage(m_commandBuffer,
-                       reinterpret_cast<VkImage>(source.nativeHandle()),
+                       getVulkanImage(&source),
                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       reinterpret_cast<VkImage>(destination.nativeHandle()),
+                       getVulkanImage(&destination),
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        1, &region);
     }
@@ -471,7 +515,18 @@ std::unique_ptr<RhiTexture> VulkanFrameGraphBackend::createTexture(const RhiText
         checkVk(viewResult, "Failed to create image view for frame graph texture");
     }
 
-    return std::make_unique<VulkanOwnedTexture>(m_device, image, imageView, allocation, m_allocator, desc.width, desc.height);
+    VulkanTextureResource resource{};
+    resource.device = m_device;
+    resource.image = image;
+    resource.imageView = imageView;
+    resource.allocation = allocation;
+    resource.allocator = m_allocator;
+    resource.width = desc.width;
+    resource.height = desc.height;
+    resource.mipLevels = 1;
+    resource.format = vkFormat;
+
+    return std::make_unique<VulkanOwnedTexture>(resource);
 }
 
 std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBufferDesc& desc) {
@@ -502,30 +557,49 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
         vmaSetAllocationName(m_allocator, allocation, desc.debugName);
     }
 
-    return std::make_unique<VulkanOwnedBuffer>(buffer, allocation, m_allocator, desc.size);
+    VulkanBufferResource resource{};
+    resource.device = m_device;
+    resource.buffer = buffer;
+    resource.allocation = allocation;
+    resource.allocator = m_allocator;
+    resource.mappedData = allocInfo.pMappedData;
+    resource.size = desc.size;
+
+    return std::make_unique<VulkanOwnedBuffer>(resource);
 }
 
 // --- VulkanCommandBuffer ---
 
-VulkanCommandBuffer::VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device)
-    : m_commandBuffer(commandBuffer), m_device(device) {}
+VulkanCommandBuffer::VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
+                                         VulkanDescriptorManager* descriptorManager,
+                                         VulkanImageLayoutTracker* imageTracker)
+    : m_commandBuffer(commandBuffer), m_device(device),
+      m_descriptorManager(descriptorManager), m_imageTracker(imageTracker) {}
 
 std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(const RhiRenderPassDesc& desc) {
+    // Transition color attachments to COLOR_ATTACHMENT_OPTIMAL
+    if (m_imageTracker) {
+        for (uint32_t i = 0; i < desc.colorAttachmentCount; ++i) {
+            if (desc.colorAttachments[i].texture) {
+                VkImage image = getVulkanImage(desc.colorAttachments[i].texture);
+                m_imageTracker->transition(m_commandBuffer, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            }
+        }
+        if (desc.depthAttachment.bound && desc.depthAttachment.texture) {
+            VkImage image = getVulkanImage(desc.depthAttachment.texture);
+            m_imageTracker->transition(m_commandBuffer, image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                       VK_IMAGE_ASPECT_DEPTH_BIT);
+        }
+    }
+
     std::array<VkRenderingAttachmentInfo, 8> colorAttachments{};
     for (uint32_t i = 0; i < desc.colorAttachmentCount; ++i) {
         const auto& ca = desc.colorAttachments[i];
         auto& vkCA = colorAttachments[i];
         vkCA.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
 
-        // Get the VkImageView - for VulkanOwnedTexture we have it, for imported textures we need the view
-        auto* ownedTex = dynamic_cast<const VulkanOwnedTexture*>(ca.texture);
-        if (ownedTex) {
-            vkCA.imageView = ownedTex->imageView();
-        } else {
-            // For imported textures (swapchain), the image view must be provided externally
-            // This will be handled by the window runtime setting up the imported texture properly
-            vkCA.imageView = VK_NULL_HANDLE;
-        }
+        // Get the VkImageView from any RhiTexture type
+        vkCA.imageView = getVulkanImageView(ca.texture);
 
         vkCA.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         vkCA.loadOp = (ca.loadAction == RhiLoadAction::Clear) ? VK_ATTACHMENT_LOAD_OP_CLEAR :
@@ -554,10 +628,7 @@ std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(co
 
     VkRenderingAttachmentInfo depthAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     if (desc.depthAttachment.bound && desc.depthAttachment.texture) {
-        auto* ownedDepth = dynamic_cast<const VulkanOwnedTexture*>(desc.depthAttachment.texture);
-        if (ownedDepth) {
-            depthAttachment.imageView = ownedDepth->imageView();
-        }
+        depthAttachment.imageView = getVulkanImageView(desc.depthAttachment.texture);
         depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
         depthAttachment.loadOp = (desc.depthAttachment.loadAction == RhiLoadAction::Clear) ? VK_ATTACHMENT_LOAD_OP_CLEAR :
                                   (desc.depthAttachment.loadAction == RhiLoadAction::Load) ? VK_ATTACHMENT_LOAD_OP_LOAD :
@@ -569,11 +640,11 @@ std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(co
     }
 
     vkCmdBeginRendering(m_commandBuffer, &renderingInfo);
-    return std::make_unique<VulkanRenderCommandEncoder>(m_commandBuffer, m_device);
+    return std::make_unique<VulkanRenderCommandEncoder>(m_commandBuffer, m_device, m_descriptorManager);
 }
 
 std::unique_ptr<RhiComputeCommandEncoder> VulkanCommandBuffer::beginComputePass(const RhiComputePassDesc& /*desc*/) {
-    return std::make_unique<VulkanComputeCommandEncoder>(m_commandBuffer, m_device);
+    return std::make_unique<VulkanComputeCommandEncoder>(m_commandBuffer, m_device, m_descriptorManager);
 }
 
 std::unique_ptr<RhiBlitCommandEncoder> VulkanCommandBuffer::beginBlitPass(const RhiBlitPassDesc& /*desc*/) {

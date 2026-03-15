@@ -4,6 +4,10 @@
 #include <vulkan/vulkan.h>
 
 #include "rhi_backend.h"
+#include "rhi_resource_utils.h"
+#include "rhi_shader_utils.h"
+#include "vulkan_backend.h"
+#include "vulkan_frame_graph.h"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
@@ -164,6 +168,32 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // --- Phase 1: Initialize frame graph infrastructure ---
+    VkDevice vkDevice = static_cast<VkDevice>(native.device);
+    VkPhysicalDevice vkPhysicalDevice = static_cast<VkPhysicalDevice>(native.physicalDevice);
+    VmaAllocator vmaAllocator = getVulkanAllocator(*rhi);
+
+    // Initialize Vulkan resource context for rhi_resource_utils
+    vulkanSetResourceContext(vkDevice, vkPhysicalDevice, vmaAllocator,
+                            static_cast<VkQueue>(native.queue), native.graphicsQueueFamily);
+
+    VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
+    VulkanDescriptorManager descriptorManager;
+    descriptorManager.init(vkDevice);
+    VulkanImageLayoutTracker imageTracker;
+
+    // Initialize shader pipeline context with shared pipeline layout
+    vulkanSetShaderContext(vkDevice, descriptorManager.pipelineLayout());
+
+    spdlog::info("Vulkan frame graph backend initialized (VMA + DescriptorManager + ImageTracker)");
+
+    // Create a test frame graph texture to verify VMA allocation works
+    {
+        auto testTex = frameGraphBackend.createTexture(
+            RhiTextureDesc::renderTarget(256, 256, RhiFormat::RGBA16Float));
+        spdlog::info("VMA test texture created: {}x{}", testTex->width(), testTex->height());
+    }
+
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
@@ -182,6 +212,8 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        descriptorManager.resetFrame();
+
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -197,10 +229,15 @@ int main(int argc, char** argv) {
         ImGui::Separator();
         ImGui::Text("Dynamic Rendering: %s", rhi->features().dynamicRendering ? "Yes" : "No");
         ImGui::Text("Mesh Shaders: %s", rhi->features().meshShaders ? "Yes" : "No");
-        ImGui::Text("Ray Tracing: %s", rhi->features().rayTracing ? "Yes" : "No (Metal-only currently)");
+        ImGui::Text("Ray Tracing: %s", rhi->features().rayTracing ? "Yes" : "No");
+        ImGui::Text("VMA: %s", vmaAllocator ? "Active" : "Unavailable");
         ImGui::Separator();
-        ImGui::TextWrapped("This Windows path boots the new RHI/Vulkan backend and draws a Slang-compiled triangle."
-                           " The existing render graph and pass stack remain on the Metal path for now.");
+        ImGui::Text("Phase 1 Infrastructure:");
+        ImGui::BulletText("VMA Memory Allocator");
+        ImGui::BulletText("Frame Graph Backend");
+        ImGui::BulletText("Command Encoders (Render/Compute/Blit)");
+        ImGui::BulletText("Descriptor Set Manager");
+        ImGui::BulletText("Image Layout Tracker");
         ImGui::End();
 
         ImGui::Render();
@@ -225,6 +262,7 @@ int main(int argc, char** argv) {
     }
 
     rhi->waitIdle();
+    descriptorManager.destroy();
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
