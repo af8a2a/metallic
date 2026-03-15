@@ -33,6 +33,7 @@ public:
         if (skyInput.isValid()) {
             builder.read(skyInput);  // establish dependency on SkyPass
             output = skyInput;       // render into sky's texture
+            builder.setSideEffect();
         } else {
             output = builder.create("forwardColor",
                 FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::RGBA16Float));
@@ -50,7 +51,7 @@ public:
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("ForwardPass");
         encoder.setDepthStencilState(&m_ctx.depthState);
-        encoder.setFrontFacingWinding(RhiWinding::CounterClockwise);
+        encoder.setFrontFacingWinding(RhiWinding::Clockwise);
         encoder.setCullMode(RhiCullMode::Back);
 
         if (!m_frameContext || !m_runtimeContext) return;

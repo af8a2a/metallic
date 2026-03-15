@@ -54,6 +54,7 @@ public:
         if (samplerIt == m_runtimeContext->samplersRhi.end() || !samplerIt->second.nativeHandle()) return;
 
         encoder.setRenderPipeline(pipeIt->second);
+        encoder.setCullMode(RhiCullMode::None);
         encoder.setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
         encoder.setFragmentSampler(&samplerIt->second, 0);
         encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
