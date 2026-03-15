@@ -3,7 +3,14 @@
 
 #include <vulkan/vulkan.h>
 
+#include <array>
+#include <cstddef>
+#include <string>
+
+#include "frame_context.h"
 #include "frame_graph.h"
+#include "pipeline_asset.h"
+#include "pipeline_builder.h"
 #include "render_pass.h"
 #include "rhi_backend.h"
 #include "rhi_resource_utils.h"
@@ -14,10 +21,6 @@
 
 #include <spdlog/spdlog.h>
 #include <tracy/Tracy.hpp>
-
-#include <array>
-#include <cstddef>
-#include <string>
 
 namespace {
 
@@ -35,6 +38,22 @@ void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
     if (state && width > 0 && height > 0) {
         state->framebufferResized = true;
     }
+}
+
+PipelineAsset makePresentPipelineAsset() {
+    PipelineAsset asset;
+    asset.name = "VulkanPresentPipeline";
+    asset.resources.push_back({"sceneColor", "texture", "RGBA16Float", "screen"});
+    asset.passes.push_back({
+        "Output",
+        "OutputPass",
+        {"sceneColor"},
+        {"$backbuffer"},
+        true,
+        true,
+        {},
+    });
+    return asset;
 }
 
 } // namespace
@@ -80,10 +99,10 @@ int main() {
         return 1;
     }
 
-    const auto spirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
-                                                  "Shaders/Vertex/triangle",
-                                                  PROJECT_SOURCE_DIR);
-    if (spirv.empty()) {
+    const auto triangleSpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
+                                                          "Shaders/Vertex/triangle",
+                                                          PROJECT_SOURCE_DIR);
+    if (triangleSpirv.empty()) {
         spdlog::error("Failed to compile SPIR-V for triangle shader");
         rhi->waitIdle();
         glfwDestroyWindow(window);
@@ -120,11 +139,12 @@ int main() {
                              static_cast<VkQueue>(native.queue),
                              native.graphicsQueueFamily);
     vulkanSetShaderContext(vkDevice);
+    vulkanLoadMeshShaderFunctions(vkDevice);
 
     RhiBufferHandle vertexBuffer =
         rhiCreateSharedBuffer(deviceHandle, vertices.data(), sizeof(vertices), "TriangleVB");
     if (!vertexBuffer.nativeHandle()) {
-        spdlog::error("Failed to create shared vertex buffer for RenderGraph test");
+        spdlog::error("Failed to create shared vertex buffer for Vulkan RenderGraph test");
         rhi->waitIdle();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -144,19 +164,22 @@ int main() {
                                     0);
     rhiVertexDescriptorSetLayout(vertexDescriptor, 0, sizeof(Vertex));
 
-    std::string shaderSource(reinterpret_cast<const char*>(spirv.data()),
-                             spirv.size() * sizeof(uint32_t));
-    RhiRenderPipelineSourceDesc pipelineDesc;
-    pipelineDesc.vertexEntry = "vertexMain";
-    pipelineDesc.fragmentEntry = "fragmentMain";
-    pipelineDesc.colorFormat = RhiFormat::RGBA16Float;
-    pipelineDesc.vertexDescriptor = &vertexDescriptor;
+    std::string triangleShaderSource(reinterpret_cast<const char*>(triangleSpirv.data()),
+                                     triangleSpirv.size() * sizeof(uint32_t));
+    RhiRenderPipelineSourceDesc trianglePipelineDesc;
+    trianglePipelineDesc.vertexEntry = "vertexMain";
+    trianglePipelineDesc.fragmentEntry = "fragmentMain";
+    trianglePipelineDesc.colorFormat = RhiFormat::RGBA16Float;
+    trianglePipelineDesc.vertexDescriptor = &vertexDescriptor;
 
-    std::string pipelineError;
-    RhiGraphicsPipelineHandle pipeline =
-        rhiCreateRenderPipelineFromSource(deviceHandle, shaderSource, pipelineDesc, pipelineError);
-    if (!pipeline.nativeHandle()) {
-        spdlog::error("Failed to create graphics pipeline for RenderGraph test: {}", pipelineError);
+    std::string trianglePipelineError;
+    RhiGraphicsPipelineHandle trianglePipeline =
+        rhiCreateRenderPipelineFromSource(deviceHandle,
+                                          triangleShaderSource,
+                                          trianglePipelineDesc,
+                                          trianglePipelineError);
+    if (!trianglePipeline.nativeHandle()) {
+        spdlog::error("Failed to create triangle pipeline: {}", trianglePipelineError);
         rhi->waitIdle();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -165,20 +188,19 @@ int main() {
 
     std::string passthroughShaderSource(reinterpret_cast<const char*>(passthroughSpirv.data()),
                                         passthroughSpirv.size() * sizeof(uint32_t));
-    RhiRenderPipelineSourceDesc passthroughDesc;
-    passthroughDesc.vertexEntry = "vertexMain";
-    passthroughDesc.fragmentEntry = "fragmentMain";
-    passthroughDesc.colorFormat = rhi->colorFormat();
+    RhiRenderPipelineSourceDesc passthroughPipelineDesc;
+    passthroughPipelineDesc.vertexEntry = "vertexMain";
+    passthroughPipelineDesc.fragmentEntry = "fragmentMain";
+    passthroughPipelineDesc.colorFormat = rhi->colorFormat();
 
-    std::string passthroughError;
+    std::string passthroughPipelineError;
     RhiGraphicsPipelineHandle passthroughPipeline =
         rhiCreateRenderPipelineFromSource(deviceHandle,
                                           passthroughShaderSource,
-                                          passthroughDesc,
-                                          passthroughError);
+                                          passthroughPipelineDesc,
+                                          passthroughPipelineError);
     if (!passthroughPipeline.nativeHandle()) {
-        spdlog::error("Failed to create passthrough pipeline for RenderGraph test: {}",
-                      passthroughError);
+        spdlog::error("Failed to create passthrough pipeline: {}", passthroughPipelineError);
         rhi->waitIdle();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -192,39 +214,20 @@ int main() {
     samplerDesc.addressModeT = RhiSamplerAddressMode::ClampToEdge;
     RhiSamplerHandle linearSampler = rhiCreateSampler(deviceHandle, samplerDesc);
     if (!linearSampler.nativeHandle()) {
-        spdlog::error("Failed to create Vulkan sampler for RenderGraph test");
+        spdlog::error("Failed to create Vulkan sampler");
         rhi->waitIdle();
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
     }
 
-    vulkanLoadMeshShaderFunctions(vkDevice);
-
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
     VulkanDescriptorManager descriptorManager;
     descriptorManager.init(vkDevice, vmaAllocator);
     VulkanImageLayoutTracker imageTracker;
     VulkanImportedTexture backbufferTexture;
+
     RhiTextureHandle sceneColorTexture;
-
-    struct TrianglePassData {
-        FGResource colorTarget;
-    };
-
-    struct PresentPassData {
-        FGResource source;
-        FGResource target;
-    };
-
-    FrameGraph frameGraph;
-    FGResource backbufferRes;
-    FGResource sceneColorRes;
-    const RhiGraphicsPipeline* trianglePipeline = &pipeline;
-    const RhiGraphicsPipeline* presentPipeline = &passthroughPipeline;
-    RhiBuffer* triangleBuffer = &vertexBuffer;
-    const RhiSampler* presentSampler = &linearSampler;
-
     auto recreateSceneColorTexture = [&](uint32_t targetWidth, uint32_t targetHeight) {
         rhiReleaseHandle(sceneColorTexture);
         sceneColorTexture = rhiCreateTexture2D(deviceHandle,
@@ -239,7 +242,7 @@ int main() {
     };
 
     if (!recreateSceneColorTexture(createInfo.width, createInfo.height)) {
-        spdlog::error("Failed to create offscreen scene color texture for RenderGraph test");
+        spdlog::error("Failed to create offscreen scene color texture");
         rhi->waitIdle();
         descriptorManager.destroy();
         glfwDestroyWindow(window);
@@ -247,10 +250,15 @@ int main() {
         return 1;
     }
 
-    backbufferRes = frameGraph.import("backbuffer", &backbufferTexture);
-    sceneColorRes = frameGraph.import("sceneColor", &sceneColorTexture);
+    struct TrianglePassData {
+        FGResource colorTarget;
+    };
 
-    frameGraph.addRenderPass<TrianglePassData>(
+    FrameGraph sceneGraph;
+    FGResource sceneColorRes = sceneGraph.import("sceneColor", &sceneColorTexture);
+    const RhiGraphicsPipeline* trianglePipelinePtr = &trianglePipeline;
+    RhiBuffer* triangleBufferPtr = &vertexBuffer;
+    sceneGraph.addRenderPass<TrianglePassData>(
         "Triangle Pass",
         [sceneColorRes](FGBuilder& builder, TrianglePassData& data) {
             data.colorTarget = sceneColorRes;
@@ -260,37 +268,67 @@ int main() {
                                        RhiStoreAction::Store,
                                        RhiClearColor(0.08, 0.09, 0.12, 1.0));
         },
-        [trianglePipeline, triangleBuffer](const TrianglePassData&, RhiRenderCommandEncoder& encoder) {
-            encoder.setRenderPipeline(*trianglePipeline);
+        [trianglePipelinePtr, triangleBufferPtr](const TrianglePassData&, RhiRenderCommandEncoder& encoder) {
+            encoder.setRenderPipeline(*trianglePipelinePtr);
             encoder.setFrontFacingWinding(RhiWinding::CounterClockwise);
             encoder.setCullMode(RhiCullMode::None);
-            encoder.setVertexBuffer(triangleBuffer, 0, 0);
+            encoder.setVertexBuffer(triangleBufferPtr, 0, 0);
             encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
         });
+    sceneGraph.compile();
 
-    frameGraph.addRenderPass<PresentPassData>(
-        "Present Pass",
-        [backbufferRes, sceneColorRes](FGBuilder& builder, PresentPassData& data) {
-            data.source = builder.read(sceneColorRes);
-            data.target = backbufferRes;
-            builder.setColorAttachment(0,
-                                       data.target,
-                                       RhiLoadAction::DontCare,
-                                       RhiStoreAction::Store,
-                                       RhiClearColor(0.0, 0.0, 0.0, 1.0));
-            builder.setSideEffect();
-        },
-        [&frameGraph, presentPipeline, presentSampler](const PresentPassData& data,
-                                                       RhiRenderCommandEncoder& encoder) {
-            encoder.setRenderPipeline(*presentPipeline);
-            encoder.setFrontFacingWinding(RhiWinding::CounterClockwise);
-            encoder.setCullMode(RhiCullMode::None);
-            encoder.setFragmentTexture(frameGraph.getTexture(data.source), 0);
-            encoder.setFragmentSampler(presentSampler, 0);
-            encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
-        });
+    LoadedMesh emptyMesh;
+    MeshletData emptyMeshlets;
+    LoadedMaterials emptyMaterials;
+    SceneGraph emptyScene;
+    RaytracedShadowResources emptyShadows;
+    RenderContext renderContext{
+        emptyMesh,
+        emptyMeshlets,
+        emptyMaterials,
+        emptyScene,
+        emptyShadows,
+        {},
+        {},
+        {},
+        1.0,
+    };
 
-    frameGraph.compile();
+    PipelineRuntimeContext runtimeContext;
+    runtimeContext.renderPipelinesRhi["OutputPass"] = passthroughPipeline;
+    runtimeContext.samplersRhi["tonemap"] = linearSampler;
+    runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
+    runtimeContext.backbufferRhi = &backbufferTexture;
+    runtimeContext.resourceFactory = &frameGraphBackend;
+
+    const PipelineAsset presentAsset = makePresentPipelineAsset();
+    PipelineBuilder presentBuilder(renderContext);
+    auto rebuildPresentBuilder = [&](int targetWidth, int targetHeight) {
+        runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
+        if (!presentBuilder.build(presentAsset, runtimeContext, targetWidth, targetHeight)) {
+            spdlog::error("Failed to build Vulkan present pipeline: {}", presentBuilder.lastError());
+            return false;
+        }
+        presentBuilder.compile();
+        return true;
+    };
+
+    if (!rebuildPresentBuilder(width, height)) {
+        rhi->waitIdle();
+        descriptorManager.destroy();
+        rhiReleaseHandle(linearSampler);
+        rhiReleaseHandle(passthroughPipeline);
+        rhiReleaseHandle(trianglePipeline);
+        rhiReleaseHandle(sceneColorTexture);
+        rhiReleaseHandle(vertexDescriptor);
+        rhiReleaseHandle(vertexBuffer);
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
+
+    VkImageLayout sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    FrameContext frameContext;
 
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("VulkanRenderGraphFrame");
@@ -305,9 +343,13 @@ int main() {
         if (appState.framebufferResized) {
             rhi->resize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             if (!recreateSceneColorTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
-                spdlog::error("Failed to recreate scene color texture after resize");
+                spdlog::error("Failed to recreate offscreen scene color texture");
                 break;
             }
+            if (!rebuildPresentBuilder(width, height)) {
+                break;
+            }
+            sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             appState.framebufferResized = false;
         }
 
@@ -331,13 +373,27 @@ int main() {
             imageTracker.setLayout(backbufferImage, getVulkanCurrentBackbufferLayout(*rhi));
         }
         if (sceneColorTexture.nativeHandle()) {
-            imageTracker.setLayout(getVulkanImage(&sceneColorTexture), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            imageTracker.setLayout(getVulkanImage(&sceneColorTexture), sceneColorLayout);
         }
+
         VulkanCommandBuffer commandBuffer(getVulkanCurrentCommandBuffer(*rhi),
                                           vkDevice,
                                           &descriptorManager,
                                           &imageTracker);
-        frameGraph.execute(commandBuffer, frameGraphBackend);
+
+        sceneGraph.execute(commandBuffer, frameGraphBackend);
+
+        RhiNativeCommandBufferHandle nativeCommandBuffer(getVulkanCurrentCommandBuffer(*rhi));
+        frameContext.width = width;
+        frameContext.height = height;
+        frameContext.commandBuffer = &nativeCommandBuffer;
+
+        runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
+        runtimeContext.backbufferRhi = &backbufferTexture;
+        presentBuilder.updateFrame(&backbufferTexture, &frameContext);
+        presentBuilder.execute(commandBuffer, frameGraphBackend);
+
+        sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         rhi->endFrame();
         FrameMark;
@@ -347,7 +403,7 @@ int main() {
     descriptorManager.destroy();
     rhiReleaseHandle(linearSampler);
     rhiReleaseHandle(passthroughPipeline);
-    rhiReleaseHandle(pipeline);
+    rhiReleaseHandle(trianglePipeline);
     rhiReleaseHandle(sceneColorTexture);
     rhiReleaseHandle(vertexDescriptor);
     rhiReleaseHandle(vertexBuffer);

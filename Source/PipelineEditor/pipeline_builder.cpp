@@ -36,7 +36,7 @@ bool PipelineBuilder::build(const PipelineAsset& asset,
     // Import any pre-existing textures
     for (auto& [name, tex] : rtCtx.importedTexturesRhi) {
         if (tex.nativeHandle()) {
-            m_resourceMap[name] = m_fg.import(name.c_str(), &tex);
+            m_resourceMap[name] = m_fg.import(name.c_str(), const_cast<RhiTextureHandle*>(&tex));
         }
     }
 

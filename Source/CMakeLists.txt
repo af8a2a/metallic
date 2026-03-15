@@ -60,7 +60,11 @@ elseif(WIN32)
 
     add_executable(Metallic
         main_vulkan.cpp
+        PipelineEditor/pass_registry.cpp
+        PipelineEditor/pipeline_asset.cpp
+        PipelineEditor/pipeline_builder.cpp
         Rendering/frame_graph.cpp
+        Rendering/pass_registrations_vulkan.cpp
         Rendering/render_pass.cpp
         Rendering/slang_compiler.cpp
         Rendering/shader_manager.cpp
@@ -75,8 +79,10 @@ elseif(WIN32)
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Vulkan"
         "${CMAKE_CURRENT_SOURCE_DIR}/Asset"
+        "${CMAKE_CURRENT_SOURCE_DIR}/PipelineEditor"
         "${CMAKE_CURRENT_SOURCE_DIR}/Scene"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Passes"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
         "${CMAKE_SOURCE_DIR}/External/MathLib"
         "${CMAKE_SOURCE_DIR}/External/VulkanMemoryAllocator/include"
@@ -85,6 +91,7 @@ elseif(WIN32)
         glfw
         imgui
         slang::slang
+        nlohmann_json
         Tracy::TracyClient
         spdlog::spdlog_header_only
         Vulkan::Vulkan
