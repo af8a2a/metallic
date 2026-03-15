@@ -661,9 +661,9 @@ private:
         void setViewport(float width, float height) override {
             VkViewport viewport{};
             viewport.x = 0.0f;
-            viewport.y = 0.0f;
+            viewport.y = height;
             viewport.width = width;
-            viewport.height = height;
+            viewport.height = -height;
             viewport.minDepth = 0.0f;
             viewport.maxDepth = 1.0f;
             vkCmdSetViewport(m_parent.m_frames[m_parent.m_frameIndex].commandBuffer, 0, 1, &viewport);

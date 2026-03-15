@@ -755,9 +755,9 @@ std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(co
 
     VkViewport viewport{};
     viewport.x = 0.0f;
-    viewport.y = 0.0f;
+    viewport.y = static_cast<float>(renderingInfo.renderArea.extent.height);
     viewport.width = static_cast<float>(renderingInfo.renderArea.extent.width);
-    viewport.height = static_cast<float>(renderingInfo.renderArea.extent.height);
+    viewport.height = -static_cast<float>(renderingInfo.renderArea.extent.height);
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
     vkCmdSetViewport(m_commandBuffer, 0, 1, &viewport);
