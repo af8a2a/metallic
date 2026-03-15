@@ -580,39 +580,56 @@ int main() {
         spdlog::warn("Failed to create preview mesh; falling back to triangle path");
     }
 
+    const std::string previewPipelinePath = std::string(PROJECT_SOURCE_DIR) + "/Pipelines/vulkan_preview.json";
+    PipelineAsset previewPipelineBaseAsset;
     PipelineAsset previewPipelineAsset;
-    bool previewPipelineAssetLoaded =
-        loadPipelineAssetChecked(std::string(PROJECT_SOURCE_DIR) + "/Pipelines/vulkan_preview.json",
-                                 "Vulkan preview",
-                                 previewPipelineAsset);
-    const bool previewAutoExposureAvailable =
-        hasComputePipeline("HistogramPass") && hasComputePipeline("AutoExposurePass");
-    if (previewPipelineAssetLoaded && !previewAutoExposureAvailable) {
-        disablePreviewAutoExposure(previewPipelineAsset);
-        std::string validationError;
-        previewPipelineAssetLoaded = previewPipelineAsset.validate(validationError);
-        if (!previewPipelineAssetLoaded) {
-            spdlog::error("Invalid downgraded Vulkan preview pipeline: {}", validationError);
-        } else {
-            spdlog::warn("Vulkan preview auto-exposure unavailable; falling back to manual exposure");
+    const bool previewPipelineBaseLoaded =
+        loadPipelineAssetChecked(previewPipelinePath, "Vulkan preview", previewPipelineBaseAsset);
+    bool previewPipelineAssetLoaded = false;
+    bool previewAutoExposureAvailable = false;
+    bool usePreviewRenderGraph = false;
+    bool atmosphereSkyAvailable = false;
+
+    auto refreshPreviewPipelineState = [&]() {
+        previewPipelineAssetLoaded = previewPipelineBaseLoaded;
+        previewPipelineAsset = previewPipelineBaseLoaded ? previewPipelineBaseAsset : PipelineAsset{};
+        previewAutoExposureAvailable =
+            hasComputePipeline("HistogramPass") && hasComputePipeline("AutoExposurePass");
+        if (previewPipelineAssetLoaded && !previewAutoExposureAvailable) {
+            disablePreviewAutoExposure(previewPipelineAsset);
+            std::string validationError;
+            previewPipelineAssetLoaded = previewPipelineAsset.validate(validationError);
+            if (!previewPipelineAssetLoaded) {
+                spdlog::error("Invalid downgraded Vulkan preview pipeline: {}", validationError);
+            } else {
+                spdlog::warn("Vulkan preview auto-exposure unavailable; falling back to manual exposure");
+            }
         }
-    }
-    const bool usePreviewRenderGraph =
-        previewPipelineAssetLoaded &&
-        hasRenderPipeline("ForwardPass") &&
-        hasRenderPipeline("TonemapPass") &&
-        previewMesh.positionBuffer.nativeHandle() &&
-        previewMesh.normalBuffer.nativeHandle() &&
-        previewMesh.indexBuffer.nativeHandle();
-    if (usePreviewRenderGraph) {
-        if (previewAutoExposureAvailable) {
-            spdlog::info("Vulkan RenderGraph mode: SkyPass -> ForwardPass -> AutoExposurePass -> TonemapPass");
+
+        usePreviewRenderGraph =
+            previewPipelineAssetLoaded &&
+            hasRenderPipeline("ForwardPass") &&
+            hasRenderPipeline("TonemapPass") &&
+            previewMesh.positionBuffer.nativeHandle() &&
+            previewMesh.normalBuffer.nativeHandle() &&
+            previewMesh.indexBuffer.nativeHandle();
+        atmosphereSkyAvailable = hasRenderPipeline("SkyPass") && atmosphereTextures.isValid();
+    };
+
+    auto logPreviewMode = [&]() {
+        if (usePreviewRenderGraph) {
+            if (previewAutoExposureAvailable) {
+                spdlog::info("Vulkan RenderGraph mode: SkyPass -> ForwardPass -> AutoExposurePass -> TonemapPass");
+            } else {
+                spdlog::info("Vulkan RenderGraph mode: SkyPass -> ForwardPass -> TonemapPass");
+            }
         } else {
-            spdlog::info("Vulkan RenderGraph mode: SkyPass -> ForwardPass -> TonemapPass");
+            spdlog::info("Vulkan RenderGraph mode: Triangle -> TonemapPass fallback");
         }
-    } else {
-        spdlog::info("Vulkan RenderGraph mode: Triangle -> TonemapPass fallback");
-    }
+    };
+
+    refreshPreviewPipelineState();
+    logPreviewMode();
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
     VulkanDescriptorManager descriptorManager;
@@ -744,16 +761,41 @@ int main() {
     previewCamera.nearZ = 0.1f;
     previewCamera.farZ = 100.0f;
     const float3 sunDirection = normalize(float3(0.35f, 0.85f, 0.25f));
-    const bool atmosphereSkyAvailable = hasRenderPipeline("SkyPass") && atmosphereTextures.isValid();
     const std::vector<uint32_t> previewVisibleIndexNodes = {0};
     bool showGraphDebug = true;
     bool showRenderPassUI = true;
     bool showImGuiDemo = false;
+    bool reloadKeyDown = false;
+    bool shaderReloadRequested = false;
+    bool postBuilderNeedsRebuild = false;
+
+    auto rebuildActivePipeline = [&](int targetWidth, int targetHeight) {
+        if (!usePreviewRenderGraph &&
+            (!sceneColorTexture.nativeHandle() ||
+             sceneColorTexture.width() != static_cast<uint32_t>(targetWidth) ||
+             sceneColorTexture.height() != static_cast<uint32_t>(targetHeight))) {
+            if (!recreateSceneColorTexture(static_cast<uint32_t>(targetWidth),
+                                           static_cast<uint32_t>(targetHeight))) {
+                spdlog::error("Failed to recreate offscreen scene color texture");
+                return false;
+            }
+        }
+        sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (!rebuildPostBuilder(targetWidth, targetHeight)) {
+            return false;
+        }
+        return true;
+    };
 
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("VulkanRenderGraphFrame");
 
         glfwPollEvents();
+        const bool f5Down = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
+        if (f5Down && !reloadKeyDown) {
+            shaderReloadRequested = true;
+        }
+        reloadKeyDown = f5Down;
         glfwGetFramebufferSize(window, &width, &height);
         if (width == 0 || height == 0) {
             glfwWaitEvents();
@@ -763,17 +805,40 @@ int main() {
         if (appState.framebufferResized) {
             rhi->resize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             ImGui_ImplVulkan_SetMinImageCount(std::max(2u, rhi->nativeHandles().swapchainImageCount));
-            if (!usePreviewRenderGraph) {
-                if (!recreateSceneColorTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
-                    spdlog::error("Failed to recreate offscreen scene color texture");
-                    break;
-                }
-                sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            postBuilderNeedsRebuild = true;
+            appState.framebufferResized = false;
+        }
+
+        if (shaderReloadRequested) {
+            shaderReloadRequested = false;
+            spdlog::info("Reloading Vulkan preview shaders...");
+            const bool previousPreviewRenderGraph = usePreviewRenderGraph;
+            const bool previousAutoExposure = previewAutoExposureAvailable;
+            const bool previousAtmosphereSky = atmosphereSkyAvailable;
+            auto [reloaded, failed] = shaderManager.reloadAll();
+            refreshPreviewPipelineState();
+
+            if (failed == 0) {
+                spdlog::info("All {} Vulkan preview shaders reloaded successfully", reloaded);
+            } else {
+                spdlog::warn("{} Vulkan preview shaders reloaded, {} failed (keeping old pipelines)",
+                             reloaded,
+                             failed);
             }
-            if (!rebuildPostBuilder(width, height)) {
+
+            if (previousPreviewRenderGraph != usePreviewRenderGraph ||
+                previousAutoExposure != previewAutoExposureAvailable ||
+                previousAtmosphereSky != atmosphereSkyAvailable) {
+                logPreviewMode();
+            }
+            postBuilderNeedsRebuild = true;
+        }
+
+        if (postBuilderNeedsRebuild || postBuilder.needsRebuild(width, height)) {
+            if (!rebuildActivePipeline(width, height)) {
                 break;
             }
-            appState.framebufferResized = false;
+            postBuilderNeedsRebuild = false;
         }
 
         if (!rhi->beginFrame()) {
@@ -837,6 +902,9 @@ int main() {
         ImGui::Text("Resolution: %d x %d", width, height);
         ImGui::TextUnformatted(usePreviewRenderGraph ? "Pipeline: Preview" : "Pipeline: Triangle Fallback");
         ImGui::TextUnformatted(previewAutoExposureAvailable ? "Exposure: Auto" : "Exposure: Manual");
+        if (ImGui::Button("Reload Shaders (F5)")) {
+            shaderReloadRequested = true;
+        }
         ImGui::Checkbox("FrameGraph Debug", &showGraphDebug);
         ImGui::Checkbox("Render Pass UI", &showRenderPassUI);
         ImGui::Checkbox("ImGui Demo", &showImGuiDemo);
