@@ -87,4 +87,5 @@ struct VmaAllocator_T;
 typedef VmaAllocator_T* VmaAllocator;
 void vulkanSetResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
                               VkQueue queue, uint32_t queueFamily);
+void vulkanClearResourceContext();
 #endif

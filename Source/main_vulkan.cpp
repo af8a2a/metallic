@@ -60,6 +60,85 @@ struct AtmosphereTextures {
     }
 };
 
+void releaseMeshBuffers(LoadedMesh& mesh) {
+    rhiReleaseHandle(mesh.positionBuffer);
+    rhiReleaseHandle(mesh.normalBuffer);
+    rhiReleaseHandle(mesh.uvBuffer);
+    rhiReleaseHandle(mesh.indexBuffer);
+}
+
+bool createPreviewScene(const RhiDevice& device, LoadedMesh& outMesh, SceneGraph& outScene) {
+    static constexpr std::array<float, 24 * 3> kPositions = {
+        -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f, -1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f, -1.0f,
+        -1.0f, -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
+         1.0f, -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f,  1.0f,  1.0f, -1.0f,  1.0f,
+        -1.0f, -1.0f, -1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f, -1.0f,
+    };
+    static constexpr std::array<float, 24 * 3> kNormals = {
+         0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,
+         0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,
+         0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,
+         0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,
+         1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,
+        -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f,
+    };
+    static constexpr std::array<uint32_t, 36> kIndices = {
+         0,  1,  2,  2,  3,  0,
+         4,  5,  6,  6,  7,  4,
+         8,  9, 10, 10, 11,  8,
+        12, 13, 14, 14, 15, 12,
+        16, 17, 18, 18, 19, 16,
+        20, 21, 22, 22, 23, 20,
+    };
+
+    outMesh.positionBuffer =
+        rhiCreateSharedBuffer(device, kPositions.data(), sizeof(kPositions), "Preview Positions");
+    outMesh.normalBuffer =
+        rhiCreateSharedBuffer(device, kNormals.data(), sizeof(kNormals), "Preview Normals");
+    outMesh.indexBuffer =
+        rhiCreateSharedBuffer(device, kIndices.data(), sizeof(kIndices), "Preview Indices");
+
+    if (!outMesh.positionBuffer.nativeHandle() ||
+        !outMesh.normalBuffer.nativeHandle() ||
+        !outMesh.indexBuffer.nativeHandle()) {
+        rhiReleaseHandle(outMesh.positionBuffer);
+        rhiReleaseHandle(outMesh.normalBuffer);
+        rhiReleaseHandle(outMesh.indexBuffer);
+        return false;
+    }
+
+    outMesh.vertexCount = 24;
+    outMesh.indexCount = static_cast<uint32_t>(kIndices.size());
+    outMesh.bboxMin[0] = -1.0f;
+    outMesh.bboxMin[1] = -1.0f;
+    outMesh.bboxMin[2] = -1.0f;
+    outMesh.bboxMax[0] = 1.0f;
+    outMesh.bboxMax[1] = 1.0f;
+    outMesh.bboxMax[2] = 1.0f;
+
+    outScene.nodes.clear();
+    outScene.rootNodes.clear();
+    outScene.selectedNode = -1;
+    outScene.sunLightNode = -1;
+
+    outScene.nodes.emplace_back();
+    SceneNode& node = outScene.nodes.back();
+    node.name = "PreviewCube";
+    node.id = 0;
+    node.parent = -1;
+    node.meshIndex = 0;
+    node.indexStart = 0;
+    node.indexCount = outMesh.indexCount;
+    node.transform.localMatrix = float4x4::Identity();
+    node.transform.worldMatrix = float4x4::Identity();
+    node.transform.dirty = false;
+    outScene.rootNodes.push_back(0);
+
+    return true;
+}
+
 void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
     auto* state = static_cast<AppState*>(glfwGetWindowUserPointer(window));
     if (state && width > 0 && height > 0) {
@@ -301,6 +380,9 @@ int main() {
         return 1;
     }
 
+    const auto forwardSpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
+                                                         "Shaders/Vertex/bunny",
+                                                         PROJECT_SOURCE_DIR);
     const auto skySpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
                                                      "Shaders/Atmosphere/sky",
                                                      PROJECT_SOURCE_DIR);
@@ -391,6 +473,35 @@ int main() {
         return 1;
     }
 
+    RhiVertexDescriptorHandle forwardVertexDescriptor = rhiCreateVertexDescriptor();
+    rhiVertexDescriptorSetAttribute(forwardVertexDescriptor, 0, RhiVertexFormat::Float3, 0, 1);
+    rhiVertexDescriptorSetAttribute(forwardVertexDescriptor, 1, RhiVertexFormat::Float3, 0, 2);
+    rhiVertexDescriptorSetLayout(forwardVertexDescriptor, 1, sizeof(float) * 3);
+    rhiVertexDescriptorSetLayout(forwardVertexDescriptor, 2, sizeof(float) * 3);
+
+    RhiGraphicsPipelineHandle forwardPipeline;
+    if (!forwardSpirv.empty()) {
+        std::string forwardShaderSource(reinterpret_cast<const char*>(forwardSpirv.data()),
+                                        forwardSpirv.size() * sizeof(uint32_t));
+        RhiRenderPipelineSourceDesc forwardPipelineDesc;
+        forwardPipelineDesc.vertexEntry = "vertexMain";
+        forwardPipelineDesc.fragmentEntry = "fragmentMain";
+        forwardPipelineDesc.colorFormat = RhiFormat::RGBA16Float;
+        forwardPipelineDesc.depthFormat = RhiFormat::D32Float;
+        forwardPipelineDesc.vertexDescriptor = &forwardVertexDescriptor;
+
+        std::string forwardPipelineError;
+        forwardPipeline = rhiCreateRenderPipelineFromSource(deviceHandle,
+                                                            forwardShaderSource,
+                                                            forwardPipelineDesc,
+                                                            forwardPipelineError);
+        if (!forwardPipeline.nativeHandle()) {
+            spdlog::warn("Failed to create forward pipeline: {}", forwardPipelineError);
+        }
+    } else {
+        spdlog::warn("Failed to compile SPIR-V for forward preview shader; falling back to triangle path");
+    }
+
     RhiGraphicsPipelineHandle skyPipeline;
     if (!skySpirv.empty()) {
         std::string skyShaderSource(reinterpret_cast<const char*>(skySpirv.data()),
@@ -429,18 +540,28 @@ int main() {
 
     AtmosphereTextures atmosphereTextures;
     if (!loadAtmosphereTextures(deviceHandle, PROJECT_SOURCE_DIR, atmosphereTextures)) {
-        spdlog::warn("Failed to load atmosphere textures; falling back to sceneColor present path");
+        spdlog::warn("Failed to load atmosphere textures; SkyPass will clear to black");
     }
 
-    PipelineAsset skyPipelineAsset;
-    const bool skyPipelineAssetLoaded =
+    LoadedMesh previewMesh;
+    SceneGraph previewScene;
+    if (!createPreviewScene(deviceHandle, previewMesh, previewScene)) {
+        spdlog::warn("Failed to create preview mesh; falling back to triangle path");
+    }
+
+    PipelineAsset previewPipelineAsset;
+    const bool previewPipelineAssetLoaded =
         loadPipelineAssetChecked(std::string(PROJECT_SOURCE_DIR) + "/Pipelines/vulkan_preview.json",
                                  "Vulkan preview",
-                                 skyPipelineAsset);
-    const bool useSkyRenderGraph =
-        skyPipeline.nativeHandle() && atmosphereTextures.isValid() && skyPipelineAssetLoaded;
-    if (useSkyRenderGraph) {
-        spdlog::info("Vulkan RenderGraph mode: SkyPass -> TonemapPass");
+                                 previewPipelineAsset);
+    const bool usePreviewRenderGraph =
+        previewPipelineAssetLoaded &&
+        forwardPipeline.nativeHandle() &&
+        previewMesh.positionBuffer.nativeHandle() &&
+        previewMesh.normalBuffer.nativeHandle() &&
+        previewMesh.indexBuffer.nativeHandle();
+    if (usePreviewRenderGraph) {
+        spdlog::info("Vulkan RenderGraph mode: SkyPass -> ForwardPass -> TonemapPass");
     } else {
         spdlog::info("Vulkan RenderGraph mode: Triangle -> TonemapPass fallback");
     }
@@ -501,24 +622,28 @@ int main() {
         });
     sceneGraph.compile();
 
-    LoadedMesh emptyMesh;
     MeshletData emptyMeshlets;
-    LoadedMaterials emptyMaterials;
-    SceneGraph emptyScene;
+    LoadedMaterials previewMaterials;
     RaytracedShadowResources emptyShadows;
+    const double depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
+    RhiDepthStencilStateHandle depthState =
+        rhiCreateDepthStencilState(deviceHandle, true, ML_DEPTH_REVERSED);
     RenderContext renderContext{
-        emptyMesh,
+        previewMesh,
         emptyMeshlets,
-        emptyMaterials,
-        emptyScene,
+        previewMaterials,
+        previewScene,
         emptyShadows,
+        depthState,
         {},
         {},
-        {},
-        1.0,
+        depthClearValue,
     };
 
     PipelineRuntimeContext runtimeContext;
+    if (forwardPipeline.nativeHandle()) {
+        runtimeContext.renderPipelinesRhi["ForwardPass"] = forwardPipeline;
+    }
     runtimeContext.renderPipelinesRhi["TonemapPass"] = tonemapPipeline;
     if (skyPipeline.nativeHandle()) {
         runtimeContext.renderPipelinesRhi["SkyPass"] = skyPipeline;
@@ -538,7 +663,8 @@ int main() {
     PipelineBuilder postBuilder(renderContext);
     auto rebuildPostBuilder = [&](int targetWidth, int targetHeight) {
         runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
-        const PipelineAsset& activePostAsset = useSkyRenderGraph ? skyPipelineAsset : sceneColorPostAsset;
+        const PipelineAsset& activePostAsset =
+            usePreviewRenderGraph ? previewPipelineAsset : sceneColorPostAsset;
         if (!postBuilder.build(activePostAsset, runtimeContext, targetWidth, targetHeight)) {
             spdlog::error("Failed to build Vulkan post pipeline: {}", postBuilder.lastError());
             return false;
@@ -547,15 +673,27 @@ int main() {
         return true;
     };
 
-    if (!rebuildPostBuilder(width, height)) {
+    auto cleanupRuntimeResources = [&]() {
         rhi->waitIdle();
+        postBuilder.frameGraph().reset();
+        sceneGraph.reset();
         descriptorManager.destroy();
+        atmosphereTextures.release();
+        releaseMeshBuffers(previewMesh);
+        rhiReleaseHandle(depthState);
         rhiReleaseHandle(linearSampler);
+        rhiReleaseHandle(skyPipeline);
+        rhiReleaseHandle(forwardPipeline);
         rhiReleaseHandle(tonemapPipeline);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(sceneColorTexture);
+        rhiReleaseHandle(forwardVertexDescriptor);
         rhiReleaseHandle(vertexDescriptor);
         rhiReleaseHandle(vertexBuffer);
+    };
+
+    if (!rebuildPostBuilder(width, height)) {
+        cleanupRuntimeResources();
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
@@ -564,14 +702,15 @@ int main() {
     VkImageLayout sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     FrameContext frameContext;
     OrbitCamera previewCamera;
-    previewCamera.target = float3(0.0f, 1.2f, 0.0f);
-    previewCamera.distance = 6.0f;
-    previewCamera.azimuth = 0.35f;
-    previewCamera.elevation = 0.2f;
-    previewCamera.fovY = 45.0f * (3.1415926535f / 180.0f);
+    previewCamera.initFromBounds(previewMesh.bboxMin, previewMesh.bboxMax);
+    previewCamera.distance *= 0.8f;
+    previewCamera.azimuth = 0.55f;
+    previewCamera.elevation = 0.35f;
     previewCamera.nearZ = 0.1f;
-    previewCamera.farZ = 10000.0f;
+    previewCamera.farZ = 100.0f;
     const float3 sunDirection = normalize(float3(0.35f, 0.85f, 0.25f));
+    const bool atmosphereSkyAvailable = skyPipeline.nativeHandle() && atmosphereTextures.isValid();
+    const std::vector<uint32_t> previewVisibleIndexNodes = {0};
 
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("VulkanRenderGraphFrame");
@@ -585,7 +724,7 @@ int main() {
 
         if (appState.framebufferResized) {
             rhi->resize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-            if (!useSkyRenderGraph) {
+            if (!usePreviewRenderGraph) {
                 if (!recreateSceneColorTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
                     spdlog::error("Failed to recreate offscreen scene color texture");
                     break;
@@ -617,7 +756,7 @@ int main() {
         if (backbufferImage != VK_NULL_HANDLE) {
             imageTracker.setLayout(backbufferImage, getVulkanCurrentBackbufferLayout(*rhi));
         }
-        if (!useSkyRenderGraph && sceneColorTexture.nativeHandle()) {
+        if (!usePreviewRenderGraph && sceneColorTexture.nativeHandle()) {
             imageTracker.setLayout(getVulkanImage(&sceneColorTexture), sceneColorLayout);
         }
 
@@ -626,31 +765,35 @@ int main() {
                                           &descriptorManager,
                                           &imageTracker);
 
-        if (!useSkyRenderGraph) {
+        if (!usePreviewRenderGraph) {
             sceneGraph.execute(commandBuffer, frameGraphBackend);
         }
 
         RhiNativeCommandBufferHandle nativeCommandBuffer(getVulkanCurrentCommandBuffer(*rhi));
         frameContext.width = width;
         frameContext.height = height;
-        frameContext.view =
-            previewCamera.viewMatrix();
+        frameContext.view = previewCamera.viewMatrix();
         frameContext.proj =
             previewCamera.projectionMatrix(static_cast<float>(width) / static_cast<float>(std::max(height, 1)));
         frameContext.cameraWorldPos = orbitCameraWorldPosition(previewCamera);
         frameContext.prevView = frameContext.view;
         frameContext.prevProj = frameContext.proj;
         frameContext.worldLightDir = float4(sunDirection.x, sunDirection.y, sunDirection.z, 0.0f);
+        frameContext.viewLightDir = frameContext.view * frameContext.worldLightDir;
+        frameContext.lightColorIntensity = float4(1.0f, 0.98f, 0.95f, 2.5f);
+        frameContext.visibleIndexNodes = previewVisibleIndexNodes;
+        frameContext.renderMode = 0;
         frameContext.commandBuffer = &nativeCommandBuffer;
         frameContext.cameraFarZ = previewCamera.farZ;
-        frameContext.enableAtmosphereSky = useSkyRenderGraph;
+        frameContext.depthClearValue = depthClearValue;
+        frameContext.enableAtmosphereSky = atmosphereSkyAvailable;
 
         runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
         runtimeContext.backbufferRhi = &backbufferTexture;
         postBuilder.updateFrame(&backbufferTexture, &frameContext);
         postBuilder.execute(commandBuffer, frameGraphBackend);
 
-        if (!useSkyRenderGraph) {
+        if (!usePreviewRenderGraph) {
             sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
 
@@ -658,16 +801,7 @@ int main() {
         FrameMark;
     }
 
-    rhi->waitIdle();
-    descriptorManager.destroy();
-    rhiReleaseHandle(linearSampler);
-    rhiReleaseHandle(skyPipeline);
-    rhiReleaseHandle(tonemapPipeline);
-    rhiReleaseHandle(trianglePipeline);
-    atmosphereTextures.release();
-    rhiReleaseHandle(sceneColorTexture);
-    rhiReleaseHandle(vertexDescriptor);
-    rhiReleaseHandle(vertexBuffer);
+    cleanupRuntimeResources();
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;

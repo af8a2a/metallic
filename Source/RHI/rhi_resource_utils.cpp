@@ -276,6 +276,14 @@ void vulkanSetResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, 
     setResourceContext(device, physicalDevice, allocator, queue, queueFamily);
 }
 
+void vulkanClearResourceContext() {
+    if (g_uploadPool != VK_NULL_HANDLE && g_vkResCtx.device != VK_NULL_HANDLE) {
+        vkDestroyCommandPool(g_vkResCtx.device, g_uploadPool, nullptr);
+        g_uploadPool = VK_NULL_HANDLE;
+    }
+    g_vkResCtx = {};
+}
+
 RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& /*device*/,
                                       const void* initialData,
                                       size_t size,

@@ -1,4 +1,5 @@
 #include "vulkan_backend.h"
+#include "rhi_resource_utils.h"
 
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
@@ -266,6 +267,7 @@ public:
     ~VulkanContext() override {
         waitIdle();
         cleanupSwapchain();
+        vulkanClearResourceContext();
 
         if (m_descriptorPool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
