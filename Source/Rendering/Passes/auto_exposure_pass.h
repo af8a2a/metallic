@@ -11,9 +11,7 @@ public:
     AutoExposurePass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
-    ~AutoExposurePass() override {
-        if (m_histogramBuffer) m_histogramBuffer->release();
-    }
+    ~AutoExposurePass() override = default;
 
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }

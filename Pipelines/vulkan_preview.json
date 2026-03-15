@@ -18,6 +18,12 @@
       "type": "texture",
       "format": "Depth32Float",
       "size": "screen"
+    },
+    {
+      "name": "exposureLut",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "1x1"
     }
   ],
   "passes": [
@@ -49,10 +55,24 @@
       "config": {}
     },
     {
+      "name": "Auto Exposure",
+      "type": "AutoExposurePass",
+      "inputs": [
+        "forwardColor"
+      ],
+      "outputs": [
+        "exposureLut"
+      ],
+      "enabled": true,
+      "sideEffect": false,
+      "config": {}
+    },
+    {
       "name": "Tonemap",
       "type": "TonemapPass",
       "inputs": [
-        "forwardColor"
+        "forwardColor",
+        "exposureLut"
       ],
       "outputs": [
         "$backbuffer"
@@ -67,7 +87,7 @@
         "saturation": 1.0,
         "vignette": 0.0,
         "dither": false,
-        "autoExposure": false
+        "autoExposure": true
       }
     }
   ]

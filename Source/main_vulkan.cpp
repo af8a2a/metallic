@@ -202,6 +202,33 @@ bool loadPipelineAssetChecked(const std::string& path,
     return true;
 }
 
+void disablePreviewAutoExposure(PipelineAsset& asset) {
+    asset.resources.erase(
+        std::remove_if(asset.resources.begin(), asset.resources.end(),
+                       [](const ResourceDecl& resource) {
+                           return resource.name == "exposureLut";
+                       }),
+        asset.resources.end());
+
+    asset.passes.erase(
+        std::remove_if(asset.passes.begin(), asset.passes.end(),
+                       [](const PassDecl& pass) {
+                           return pass.type == "AutoExposurePass";
+                       }),
+        asset.passes.end());
+
+    for (auto& pass : asset.passes) {
+        if (pass.type != "TonemapPass") {
+            continue;
+        }
+
+        pass.inputs.erase(
+            std::remove(pass.inputs.begin(), pass.inputs.end(), "exposureLut"),
+            pass.inputs.end());
+        pass.config["autoExposure"] = false;
+    }
+}
+
 bool loadAtmosphereTextures(const RhiDevice& device,
                             const char* projectRoot,
                             AtmosphereTextures& outTextures) {
@@ -288,7 +315,7 @@ PipelineAsset makeSceneColorPostPipelineAsset() {
         {"sceneColor"},
         {"$backbuffer"},
         true,
-        true,
+        false,
         {
             {"method", "Clip"},
             {"exposure", 1.0},
@@ -379,6 +406,15 @@ int main() {
         glfwTerminate();
         return 1;
     }
+
+    const auto histogramSpirv = compileSlangComputeBinary(RhiBackendType::Vulkan,
+                                                          "Shaders/Post/auto_exposure",
+                                                          PROJECT_SOURCE_DIR,
+                                                          "histogramMain");
+    const auto autoExposureSpirv = compileSlangComputeBinary(RhiBackendType::Vulkan,
+                                                             "Shaders/Post/auto_exposure",
+                                                             PROJECT_SOURCE_DIR,
+                                                             "exposureMain");
 
     const auto forwardSpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
                                                          "Shaders/Vertex/bunny",
@@ -523,6 +559,33 @@ int main() {
         spdlog::warn("Failed to compile SPIR-V for sky shader; falling back to sceneColor present path");
     }
 
+    auto createComputePipeline = [&](const std::vector<uint32_t>& spirv,
+                                     const char* entryPoint,
+                                     const char* label) {
+        RhiComputePipelineHandle pipeline;
+        if (spirv.empty()) {
+            spdlog::warn("Failed to compile SPIR-V for {} compute shader", label);
+            return pipeline;
+        }
+
+        std::string shaderSource(reinterpret_cast<const char*>(spirv.data()),
+                                 spirv.size() * sizeof(uint32_t));
+        std::string pipelineError;
+        pipeline = rhiCreateComputePipelineFromSource(deviceHandle,
+                                                      shaderSource,
+                                                      entryPoint,
+                                                      pipelineError);
+        if (!pipeline.nativeHandle()) {
+            spdlog::warn("Failed to create {} compute pipeline: {}", label, pipelineError);
+        }
+        return pipeline;
+    };
+
+    RhiComputePipelineHandle histogramPipeline =
+        createComputePipeline(histogramSpirv, "histogramMain", "histogram");
+    RhiComputePipelineHandle autoExposurePipeline =
+        createComputePipeline(autoExposureSpirv, "exposureMain", "auto-exposure");
+
     RhiSamplerDesc samplerDesc;
     samplerDesc.minFilter = RhiSamplerFilterMode::Linear;
     samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
@@ -550,10 +613,22 @@ int main() {
     }
 
     PipelineAsset previewPipelineAsset;
-    const bool previewPipelineAssetLoaded =
+    bool previewPipelineAssetLoaded =
         loadPipelineAssetChecked(std::string(PROJECT_SOURCE_DIR) + "/Pipelines/vulkan_preview.json",
                                  "Vulkan preview",
                                  previewPipelineAsset);
+    const bool previewAutoExposureAvailable =
+        histogramPipeline.nativeHandle() && autoExposurePipeline.nativeHandle();
+    if (previewPipelineAssetLoaded && !previewAutoExposureAvailable) {
+        disablePreviewAutoExposure(previewPipelineAsset);
+        std::string validationError;
+        previewPipelineAssetLoaded = previewPipelineAsset.validate(validationError);
+        if (!previewPipelineAssetLoaded) {
+            spdlog::error("Invalid downgraded Vulkan preview pipeline: {}", validationError);
+        } else {
+            spdlog::warn("Vulkan preview auto-exposure unavailable; falling back to manual exposure");
+        }
+    }
     const bool usePreviewRenderGraph =
         previewPipelineAssetLoaded &&
         forwardPipeline.nativeHandle() &&
@@ -561,7 +636,11 @@ int main() {
         previewMesh.normalBuffer.nativeHandle() &&
         previewMesh.indexBuffer.nativeHandle();
     if (usePreviewRenderGraph) {
-        spdlog::info("Vulkan RenderGraph mode: SkyPass -> ForwardPass -> TonemapPass");
+        if (previewAutoExposureAvailable) {
+            spdlog::info("Vulkan RenderGraph mode: SkyPass -> ForwardPass -> AutoExposurePass -> TonemapPass");
+        } else {
+            spdlog::info("Vulkan RenderGraph mode: SkyPass -> ForwardPass -> TonemapPass");
+        }
     } else {
         spdlog::info("Vulkan RenderGraph mode: Triangle -> TonemapPass fallback");
     }
@@ -648,6 +727,12 @@ int main() {
     if (skyPipeline.nativeHandle()) {
         runtimeContext.renderPipelinesRhi["SkyPass"] = skyPipeline;
     }
+    if (histogramPipeline.nativeHandle()) {
+        runtimeContext.computePipelinesRhi["HistogramPass"] = histogramPipeline;
+    }
+    if (autoExposurePipeline.nativeHandle()) {
+        runtimeContext.computePipelinesRhi["AutoExposurePass"] = autoExposurePipeline;
+    }
     runtimeContext.samplersRhi["tonemap"] = linearSampler;
     runtimeContext.samplersRhi["atmosphere"] = linearSampler;
     runtimeContext.importedTexturesRhi["sceneColor"] = sceneColorTexture;
@@ -684,6 +769,8 @@ int main() {
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(skyPipeline);
         rhiReleaseHandle(forwardPipeline);
+        rhiReleaseHandle(autoExposurePipeline);
+        rhiReleaseHandle(histogramPipeline);
         rhiReleaseHandle(tonemapPipeline);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(sceneColorTexture);

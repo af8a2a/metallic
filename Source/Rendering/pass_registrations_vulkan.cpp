@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "forward_pass.h"
+#include "auto_exposure_pass.h"
 #include "pass_registry.h"
 #include "output_pass.h"
 #include "sky_pass.h"
@@ -21,5 +22,9 @@ REGISTER_RENDER_PASS(ForwardPass, "Forward Pass", "Geometry",
 REGISTER_RENDER_PASS(TonemapPass, "Tonemap", "Post-Process",
     (std::vector<std::string>{"lightingOutput"}),
     (std::vector<std::string>{"$backbuffer"}));
+
+REGISTER_COMPUTE_PASS(AutoExposurePass, "Auto Exposure", "Post-Process",
+    (std::vector<std::string>{"lightingOutput"}),
+    (std::vector<std::string>{"exposureLut"}));
 
 #endif
