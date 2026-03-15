@@ -94,7 +94,7 @@ public:
         encoder.setComputePipeline(histIt->second);
         encoder.setBytes(&uniforms, sizeof(uniforms), 0);
         encoder.setTexture(hdrTex, 0);
-        encoder.setTexture(lutTex, 1);
+        encoder.setStorageTexture(lutTex, 1);
         encoder.setBuffer(m_histogramBuffer.get(), 0, 1);
         encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 15) / 16), static_cast<uint32_t>((m_height + 15) / 16), 1},
                                      {16, 16, 1});
@@ -106,7 +106,7 @@ public:
         encoder.setComputePipeline(expIt->second);
         encoder.setBytes(&uniforms, sizeof(uniforms), 0);
         encoder.setTexture(hdrTex, 0);
-        encoder.setTexture(lutTex, 1);
+        encoder.setStorageTexture(lutTex, 1);
         encoder.setBuffer(m_histogramBuffer.get(), 0, 1);
         encoder.dispatchThreadgroups({1, 1, 1}, {256, 1, 1});
     }

@@ -33,6 +33,23 @@ void checkVk(VkResult result, const char* message) {
     }
 }
 
+VkImageAspectFlags imageAspectMask(const VulkanTextureResource* resource) {
+    if (!resource) {
+        return VK_IMAGE_ASPECT_COLOR_BIT;
+    }
+
+    switch (resource->format) {
+    case VK_FORMAT_D16_UNORM:
+    case VK_FORMAT_D32_SFLOAT:
+        return VK_IMAGE_ASPECT_DEPTH_BIT;
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    default:
+        return VK_IMAGE_ASPECT_COLOR_BIT;
+    }
+}
+
 } // namespace
 
 // Owned texture with VMA allocation backed by a shared VulkanTextureResource wrapper.
@@ -94,8 +111,10 @@ private:
 class VulkanRenderCommandEncoder final : public RhiRenderCommandEncoder {
 public:
     VulkanRenderCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
-                               VulkanDescriptorManager* descriptorManager)
-        : m_commandBuffer(commandBuffer), m_device(device), m_descriptorManager(descriptorManager) {
+                               VulkanDescriptorManager* descriptorManager,
+                               VulkanImageLayoutTracker* imageTracker)
+        : m_commandBuffer(commandBuffer), m_device(device),
+          m_descriptorManager(descriptorManager), m_imageTracker(imageTracker) {
         m_pendingBuffers.fill({});
         m_pendingTextures.fill({});
         m_pendingSamplers.fill({});
@@ -168,14 +187,16 @@ public:
 
     void setFragmentTexture(const RhiTexture* texture, uint32_t index) override {
         if (index >= kMaxTextureBindings) return;
+        auto* resource = getVulkanTextureResource(texture);
         VkImageView view = getVulkanImageView(texture);
-        m_pendingTextures[index] = {view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
+        m_pendingTextures[index] = {resource, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
     }
 
     void setFragmentTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {
         for (uint32_t i = 0; i < count && (startIndex + i) < kMaxTextureBindings; ++i) {
+            auto* resource = getVulkanTextureResource(textures[i]);
             VkImageView view = getVulkanImageView(textures[i]);
-            m_pendingTextures[startIndex + i] = {view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
+            m_pendingTextures[startIndex + i] = {resource, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
         }
     }
 
@@ -236,8 +257,32 @@ public:
     void renderImGuiDrawData(const RhiNativeCommandBuffer& /*commandBuffer*/) override {}
 
 private:
+    void transitionPendingTextures() {
+        if (!m_imageTracker) {
+            return;
+        }
+
+        for (const auto& texture : m_pendingTextures) {
+            if (!texture.resource || texture.imageView == VK_NULL_HANDLE) {
+                continue;
+            }
+
+            const uint32_t usageMask = static_cast<uint32_t>(texture.resource->usage);
+            const bool needsTrackedLayout = texture.isStorage ||
+                (usageMask & static_cast<uint32_t>(RhiTextureUsage::ShaderWrite)) != 0 ||
+                (usageMask & static_cast<uint32_t>(RhiTextureUsage::RenderTarget)) != 0;
+            if (!needsTrackedLayout) {
+                continue;
+            }
+
+            m_imageTracker->transition(m_commandBuffer, texture.resource->image, texture.layout,
+                                       imageAspectMask(texture.resource));
+        }
+    }
+
     void flushDescriptors(VkPipelineBindPoint bindPoint) {
         if (m_descriptorManager) {
+            transitionPendingTextures();
             m_descriptorManager->flushAndBind(m_commandBuffer, bindPoint,
                                               m_pendingBuffers, m_pendingTextures, m_pendingSamplers);
         }
@@ -246,6 +291,7 @@ private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VulkanDescriptorManager* m_descriptorManager = nullptr;
+    VulkanImageLayoutTracker* m_imageTracker = nullptr;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
     std::array<PendingSamplerBinding, kMaxSamplerBindings> m_pendingSamplers{};
@@ -255,8 +301,10 @@ private:
 class VulkanComputeCommandEncoder final : public RhiComputeCommandEncoder {
 public:
     VulkanComputeCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
-                                VulkanDescriptorManager* descriptorManager)
-        : m_commandBuffer(commandBuffer), m_device(device), m_descriptorManager(descriptorManager) {
+                                VulkanDescriptorManager* descriptorManager,
+                                VulkanImageLayoutTracker* imageTracker)
+        : m_commandBuffer(commandBuffer), m_device(device),
+          m_descriptorManager(descriptorManager), m_imageTracker(imageTracker) {
         m_pendingBuffers.fill({});
         m_pendingTextures.fill({});
         m_pendingSamplers.fill({});
@@ -285,17 +333,23 @@ public:
 
     void setTexture(const RhiTexture* texture, uint32_t index) override {
         if (index >= kMaxTextureBindings) return;
+        auto* resource = getVulkanTextureResource(texture);
         VkImageView view = getVulkanImageView(texture);
-        // Determine if this is a storage image (write) or sampled image (read)
-        // For compute, textures at even indices are typically read, odd are write
-        // But we'll default to sampled and let the caller override via setTextures
-        m_pendingTextures[index] = {view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
+        m_pendingTextures[index] = {resource, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
+    }
+
+    void setStorageTexture(const RhiTexture* texture, uint32_t index) override {
+        if (index >= kMaxTextureBindings) return;
+        auto* resource = getVulkanTextureResource(texture);
+        VkImageView view = getVulkanImageView(texture);
+        m_pendingTextures[index] = {resource, view, VK_IMAGE_LAYOUT_GENERAL, true, true};
     }
 
     void setTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {
         for (uint32_t i = 0; i < count && (startIndex + i) < kMaxTextureBindings; ++i) {
+            auto* resource = getVulkanTextureResource(textures[i]);
             VkImageView view = getVulkanImageView(textures[i]);
-            m_pendingTextures[startIndex + i] = {view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
+            m_pendingTextures[startIndex + i] = {resource, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false};
         }
     }
 
@@ -333,8 +387,32 @@ public:
     }
 
 private:
+    void transitionPendingTextures() {
+        if (!m_imageTracker) {
+            return;
+        }
+
+        for (const auto& texture : m_pendingTextures) {
+            if (!texture.resource || texture.imageView == VK_NULL_HANDLE) {
+                continue;
+            }
+
+            const uint32_t usageMask = static_cast<uint32_t>(texture.resource->usage);
+            const bool needsTrackedLayout = texture.isStorage ||
+                (usageMask & static_cast<uint32_t>(RhiTextureUsage::ShaderWrite)) != 0 ||
+                (usageMask & static_cast<uint32_t>(RhiTextureUsage::RenderTarget)) != 0;
+            if (!needsTrackedLayout) {
+                continue;
+            }
+
+            m_imageTracker->transition(m_commandBuffer, texture.resource->image, texture.layout,
+                                       imageAspectMask(texture.resource));
+        }
+    }
+
     void flushDescriptors() {
         if (m_descriptorManager) {
+            transitionPendingTextures();
             m_descriptorManager->flushAndBind(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                               m_pendingBuffers, m_pendingTextures, m_pendingSamplers);
         }
@@ -343,6 +421,7 @@ private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VulkanDescriptorManager* m_descriptorManager = nullptr;
+    VulkanImageLayoutTracker* m_imageTracker = nullptr;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
     std::array<PendingSamplerBinding, kMaxSamplerBindings> m_pendingSamplers{};
@@ -525,6 +604,7 @@ std::unique_ptr<RhiTexture> VulkanFrameGraphBackend::createTexture(const RhiText
     resource.height = desc.height;
     resource.mipLevels = 1;
     resource.format = vkFormat;
+    resource.usage = desc.usage;
 
     return std::make_unique<VulkanOwnedTexture>(resource);
 }
@@ -640,11 +720,13 @@ std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(co
     }
 
     vkCmdBeginRendering(m_commandBuffer, &renderingInfo);
-    return std::make_unique<VulkanRenderCommandEncoder>(m_commandBuffer, m_device, m_descriptorManager);
+    return std::make_unique<VulkanRenderCommandEncoder>(m_commandBuffer, m_device,
+                                                        m_descriptorManager, m_imageTracker);
 }
 
 std::unique_ptr<RhiComputeCommandEncoder> VulkanCommandBuffer::beginComputePass(const RhiComputePassDesc& /*desc*/) {
-    return std::make_unique<VulkanComputeCommandEncoder>(m_commandBuffer, m_device, m_descriptorManager);
+    return std::make_unique<VulkanComputeCommandEncoder>(m_commandBuffer, m_device,
+                                                         m_descriptorManager, m_imageTracker);
 }
 
 std::unique_ptr<RhiBlitCommandEncoder> VulkanCommandBuffer::beginBlitPass(const RhiBlitPassDesc& /*desc*/) {

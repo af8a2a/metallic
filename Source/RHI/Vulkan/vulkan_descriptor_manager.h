@@ -6,6 +6,8 @@
 #include <array>
 #include <vector>
 
+struct VulkanTextureResource;
+
 // Maximum binding slots matching Metal's argument-based binding model
 constexpr uint32_t kMaxBufferBindings = 32;
 constexpr uint32_t kMaxTextureBindings = 128;
@@ -28,6 +30,7 @@ struct PendingBufferBinding {
 };
 
 struct PendingTextureBinding {
+    VulkanTextureResource* resource = nullptr;
     VkImageView imageView = VK_NULL_HANDLE;
     VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     bool dirty = false;

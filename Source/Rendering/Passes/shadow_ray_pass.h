@@ -63,7 +63,7 @@ public:
         encoder.setBytes(&shadowUni, sizeof(shadowUni), 0);
         encoder.setAccelerationStructure(&m_ctx.shadowResources.tlas, 1);
         encoder.setTexture(m_frameGraph->getTexture(m_depthRead), 0);
-        encoder.setTexture(m_frameGraph->getTexture(shadowMap), 1);
+        encoder.setStorageTexture(m_frameGraph->getTexture(shadowMap), 1);
         encoder.useResource(m_ctx.shadowResources.tlas, RhiResourceUsage::Read);
         for (auto& blas : m_ctx.shadowResources.blasArray) {
             if (blas.nativeHandle()) {

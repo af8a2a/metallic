@@ -89,7 +89,7 @@ public:
         }
         encoder.setTexture(m_frameGraph->getTexture(m_visRead), 0);
         encoder.setTexture(m_frameGraph->getTexture(m_depthRead), 1);
-        encoder.setTexture(m_frameGraph->getTexture(output), 2);
+        encoder.setStorageTexture(m_frameGraph->getTexture(output), 2);
         std::vector<const RhiTexture*> materialTextures;
         materialTextures.reserve(m_ctx.materials.textureViews.size());
         for (auto* texture : m_ctx.materials.textureViews) {
@@ -107,7 +107,7 @@ public:
             ? m_frameGraph->getTexture(m_skyRead)
             : &m_ctx.skyFallbackTex;
         encoder.setTexture(skyTex, 100);
-        encoder.setTexture(m_frameGraph->getTexture(motionVectorsOutput), 101);
+        encoder.setStorageTexture(m_frameGraph->getTexture(motionVectorsOutput), 101);
         encoder.setSampler(&m_ctx.materials.sampler, 0);
         encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
                                      {8, 8, 1});

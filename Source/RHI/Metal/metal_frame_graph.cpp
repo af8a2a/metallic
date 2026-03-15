@@ -254,6 +254,7 @@ public:
     void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override { m_encoder->setBuffer(metalBuffer(buffer), offset, index); }
     void setBytes(const void* data, size_t size, uint32_t index) override { m_encoder->setBytes(data, size, index); }
     void setTexture(const RhiTexture* texture, uint32_t index) override { m_encoder->setTexture(texture ? static_cast<MTL::Texture*>(texture->nativeHandle()) : nullptr, index); }
+    void setStorageTexture(const RhiTexture* texture, uint32_t index) override { setTexture(texture, index); }
     void setTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {
         auto metalTextures = collectMetalTextures(textures, count);
         if (count > 0) {

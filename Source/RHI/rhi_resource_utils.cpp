@@ -362,6 +362,7 @@ RhiTextureHandle rhiCreateTexture2D(const RhiDevice& /*device*/,
     res->height = height;
     res->mipLevels = imageInfo.mipLevels;
     res->format = vkFormat;
+    res->usage = usage;
 
     VkResult result = vmaCreateImage(g_vkResCtx.allocator, &imageInfo, &allocCreateInfo,
                                       &res->image, &res->allocation, nullptr);
@@ -408,6 +409,7 @@ RhiTextureHandle rhiCreateTexture3D(const RhiDevice& /*device*/,
     res->height = height;
     res->depth = depth;
     res->format = vkFormat;
+    res->usage = usage;
 
     VkResult result = vmaCreateImage(g_vkResCtx.allocator, &imageInfo, &allocCreateInfo,
                                       &res->image, &res->allocation, nullptr);

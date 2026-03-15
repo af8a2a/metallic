@@ -430,6 +430,7 @@ public:
     virtual void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) = 0;
     virtual void setBytes(const void* data, size_t size, uint32_t index) = 0;
     virtual void setTexture(const RhiTexture* texture, uint32_t index) = 0;
+    virtual void setStorageTexture(const RhiTexture* texture, uint32_t index) = 0;
     virtual void setTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) = 0;
     virtual void setSampler(const RhiSampler* sampler, uint32_t index) = 0;
     virtual void setAccelerationStructure(const RhiAccelerationStructure* accelerationStructure, uint32_t index) = 0;

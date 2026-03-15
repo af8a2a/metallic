@@ -33,6 +33,7 @@ struct VulkanTextureResource {
     uint32_t depth = 1;
     uint32_t mipLevels = 1;
     VkFormat format = VK_FORMAT_UNDEFINED;
+    RhiTextureUsage usage = RhiTextureUsage::None;
     uint32_t refCount = 1;
     bool ownsImage = true;
     bool ownsImageView = true;

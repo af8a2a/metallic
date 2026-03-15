@@ -114,8 +114,8 @@ public:
         encoder.setTexture(depthTex, 1);
         encoder.setTexture(motionTex, 2);
         encoder.setTexture(historyReadTex, 3);
-        encoder.setTexture(outputTex, 4);
-        encoder.setTexture(historyWriteTex, 5);
+        encoder.setStorageTexture(outputTex, 4);
+        encoder.setStorageTexture(historyWriteTex, 5);
 
         bindTonemapSampler(encoder);
 
@@ -221,8 +221,8 @@ private:
         encoder.setTexture(depthTex, 1);
         encoder.setTexture(motionTex, 2);
         encoder.setTexture(historyReadTex, 3);
-        encoder.setTexture(outputTex, 4);
-        encoder.setTexture(historyWriteTex, 5);
+        encoder.setStorageTexture(outputTex, 4);
+        encoder.setStorageTexture(historyWriteTex, 5);
         bindTonemapSampler(encoder);
 
         encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},

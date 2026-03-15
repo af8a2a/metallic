@@ -59,7 +59,7 @@ public:
         encoder.setComputePipeline(pipeIt->second);
         encoder.setBytes(&uniforms, sizeof(uniforms), 0);
         encoder.setTexture(m_frameGraph->getTexture(m_visRead), 0);
-        encoder.setTexture(m_frameGraph->getTexture(output), 1);
+        encoder.setStorageTexture(m_frameGraph->getTexture(output), 1);
         encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
                                      {8, 8, 1});
     }
