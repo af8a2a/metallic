@@ -513,207 +513,218 @@ std::pair<int, int> ShaderManager::reloadAll() {
     int failed = 0;
     std::string errorMessage;
 
-    auto vertexPipeline = reloadVertexShader("Shaders/Vertex/bunny", &errorMessage);
-    if (vertexPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_vertexPipeline);
-        m_vertexPipeline = vertexPipeline;
-        reloaded++;
-    } else {
-        spdlog::error("Hot-reload vertex PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
-    }
+    auto reloadPipeline = [&](bool enabled, auto& target, const char* label, auto&& reloadFn) {
+        if (!enabled) {
+            releaseOwnedHandle(target);
+            return;
+        }
 
-    errorMessage.clear();
-    auto meshPipeline = reloadMeshShader("Shaders/Mesh/meshlet",
-                                         patchMeshShaderSource,
-                                         RhiFormat::RGBA16Float,
-                                         RhiFormat::D32Float,
-                                         &errorMessage);
-    if (meshPipeline.nativeHandle()) {
+        errorMessage.clear();
+        auto pipeline = reloadFn(errorMessage);
+        if (pipeline.nativeHandle()) {
+            releaseOwnedHandle(target);
+            target = pipeline;
+            reloaded++;
+        } else {
+            spdlog::error("Hot-reload {}: {}", label, formatError(&errorMessage, "Unknown failure"));
+            failed++;
+        }
+    };
+
+    reloadPipeline(m_profile.forwardVertex,
+                   m_vertexPipeline,
+                   "vertex PSO",
+                   [&](std::string& localError) {
+                       return reloadVertexShader("Shaders/Vertex/bunny", &localError);
+                   });
+
+    if (m_profile.forwardMesh) {
+        if (m_supportsMeshShaders) {
+            reloadPipeline(true,
+                           m_meshPipeline,
+                           "mesh PSO",
+                           [&](std::string& localError) {
+                               return reloadMeshShader("Shaders/Mesh/meshlet",
+                                                       patchMeshShaderSource,
+                                                       RhiFormat::RGBA16Float,
+                                                       RhiFormat::D32Float,
+                                                       &localError);
+                           });
+        } else {
+            spdlog::info("Skipping mesh PSO hot-reload because mesh shaders are not supported");
+            releaseOwnedHandle(m_meshPipeline);
+        }
+    } else {
         releaseOwnedHandle(m_meshPipeline);
-        m_meshPipeline = meshPipeline;
-        reloaded++;
-    } else {
-        spdlog::error("Hot-reload mesh PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
     }
 
-    errorMessage.clear();
-    if (m_validateVisibilityPipelines) {
-        auto visPipeline = reloadMeshShader("Shaders/Visibility/visibility",
-                                            patchVisibilityShaderSource,
-                                            RhiFormat::R32Uint,
-                                            RhiFormat::D32Float,
-                                            &errorMessage);
-        if (visPipeline.nativeHandle()) {
+    if (m_profile.visibility) {
+        if (!m_supportsMeshShaders) {
+            spdlog::info("Skipping visibility PSO hot-reload because mesh shaders are not supported");
             releaseOwnedHandle(m_visPipeline);
-            m_visPipeline = visPipeline;
-            reloaded++;
+        } else if (!m_validateVisibilityPipelines) {
+            spdlog::info("Skipping visibility PSO hot-reload on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
+                         kSlangVisibilityPerPrimitiveIssueUrl);
+            releaseOwnedHandle(m_visPipeline);
         } else {
-            spdlog::error("Hot-reload visibility PSO: {}", formatError(&errorMessage, "Unknown failure"));
-            failed++;
+            reloadPipeline(true,
+                           m_visPipeline,
+                           "visibility PSO",
+                           [&](std::string& localError) {
+                               return reloadMeshShader("Shaders/Visibility/visibility",
+                                                       patchVisibilityShaderSource,
+                                                       RhiFormat::R32Uint,
+                                                       RhiFormat::D32Float,
+                                                       &localError);
+                           });
         }
     } else {
-        spdlog::info("Skipping visibility PSO hot-reload on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
-                     kSlangVisibilityPerPrimitiveIssueUrl);
+        releaseOwnedHandle(m_visPipeline);
     }
 
-    errorMessage.clear();
-    if (m_validateVisibilityPipelines) {
-        auto visIndirectPipeline = reloadMeshShader("Shaders/Visibility/visibility_indirect",
-                                                    patchVisibilityShaderSource,
-                                                    RhiFormat::R32Uint,
-                                                    RhiFormat::D32Float,
-                                                    &errorMessage);
-        if (visIndirectPipeline.nativeHandle()) {
+    if (m_profile.visibilityIndirect) {
+        if (!m_supportsMeshShaders) {
+            spdlog::info("Skipping visibility indirect PSO hot-reload because mesh shaders are not supported");
             releaseOwnedHandle(m_visIndirectPipeline);
-            m_visIndirectPipeline = visIndirectPipeline;
-            reloaded++;
+        } else if (!m_validateVisibilityPipelines) {
+            spdlog::info("Skipping visibility indirect PSO hot-reload on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
+                         kSlangVisibilityPerPrimitiveIssueUrl);
+            releaseOwnedHandle(m_visIndirectPipeline);
         } else {
-            spdlog::error("Hot-reload visibility indirect PSO: {}", formatError(&errorMessage, "Unknown failure"));
-            failed++;
+            reloadPipeline(true,
+                           m_visIndirectPipeline,
+                           "visibility indirect PSO",
+                           [&](std::string& localError) {
+                               return reloadMeshShader("Shaders/Visibility/visibility_indirect",
+                                                       patchVisibilityShaderSource,
+                                                       RhiFormat::R32Uint,
+                                                       RhiFormat::D32Float,
+                                                       &localError);
+                           });
         }
     } else {
-        spdlog::info("Skipping visibility indirect PSO hot-reload on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
-                     kSlangVisibilityPerPrimitiveIssueUrl);
+        releaseOwnedHandle(m_visIndirectPipeline);
     }
 
-    errorMessage.clear();
-    auto cullPipeline = reloadComputeShader("Shaders/Visibility/meshlet_cull",
-                                            "computeMain",
-                                            nullptr,
-                                            &errorMessage);
-    if (cullPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_cullPipeline);
-        m_cullPipeline = cullPipeline;
-        reloaded++;
-    } else {
-        spdlog::error("Hot-reload meshlet cull PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
-    }
-
-    errorMessage.clear();
-    auto buildIndirectPipeline = reloadComputeShader("Shaders/Visibility/build_indirect",
-                                                     "computeMain",
-                                                     nullptr,
-                                                     &errorMessage);
-    if (buildIndirectPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_buildIndirectPipeline);
-        m_buildIndirectPipeline = buildIndirectPipeline;
-        reloaded++;
-    } else {
-        spdlog::error("Hot-reload build indirect PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
-    }
-
-    errorMessage.clear();
-    auto deferredLightingPipeline = reloadComputeShader("Shaders/Visibility/deferred_lighting",
-                                                        "computeMain",
-                                                        patchComputeShaderSource,
-                                                        &errorMessage);
-    if (deferredLightingPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_computePipeline);
-        m_computePipeline = deferredLightingPipeline;
-        reloaded++;
-    } else {
-        spdlog::error("Hot-reload deferred lighting PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
-    }
-
-    errorMessage.clear();
-    auto meshletVisPipeline = reloadComputeShader("Shaders/Visibility/meshlet_visualize",
+    reloadPipeline(m_profile.meshletCull,
+                   m_cullPipeline,
+                   "meshlet cull PSO",
+                   [&](std::string& localError) {
+                       return reloadComputeShader("Shaders/Visibility/meshlet_cull",
                                                   "computeMain",
                                                   nullptr,
-                                                  &errorMessage);
-    if (meshletVisPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_meshletVisPipeline);
-        m_meshletVisPipeline = meshletVisPipeline;
-        reloaded++;
+                                                  &localError);
+                   });
+
+    reloadPipeline(m_profile.buildIndirect,
+                   m_buildIndirectPipeline,
+                   "build indirect PSO",
+                   [&](std::string& localError) {
+                       return reloadComputeShader("Shaders/Visibility/build_indirect",
+                                                  "computeMain",
+                                                  nullptr,
+                                                  &localError);
+                   });
+
+    reloadPipeline(m_profile.deferredLighting,
+                   m_computePipeline,
+                   "deferred lighting PSO",
+                   [&](std::string& localError) {
+                       return reloadComputeShader("Shaders/Visibility/deferred_lighting",
+                                                  "computeMain",
+                                                  patchComputeShaderSource,
+                                                  &localError);
+                   });
+
+    reloadPipeline(m_profile.meshletVisualize,
+                   m_meshletVisPipeline,
+                   "meshlet visualize PSO",
+                   [&](std::string& localError) {
+                       return reloadComputeShader("Shaders/Visibility/meshlet_visualize",
+                                                  "computeMain",
+                                                  nullptr,
+                                                  &localError);
+                   });
+
+    reloadPipeline(m_profile.sky,
+                   m_skyPipeline,
+                   "sky PSO",
+                   [&](std::string& localError) {
+                       return reloadFullscreenShader("Shaders/Atmosphere/sky",
+                                                     RhiFormat::RGBA16Float,
+                                                     &localError);
+                   });
+
+    reloadPipeline(m_profile.tonemap,
+                   m_tonemapPipeline,
+                   "tonemap PSO",
+                   [&](std::string& localError) {
+                       return reloadFullscreenShader("Shaders/Post/tonemap",
+                                                     RhiFormat::BGRA8Unorm,
+                                                     &localError);
+                   });
+
+    if (m_profile.tonemap || m_profile.output) {
+        if (!m_tonemapSampler.nativeHandle()) {
+            RhiSamplerDesc samplerDesc;
+            samplerDesc.minFilter = RhiSamplerFilterMode::Linear;
+            samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
+            samplerDesc.mipFilter = RhiSamplerMipFilterMode::None;
+            samplerDesc.addressModeS = RhiSamplerAddressMode::ClampToEdge;
+            samplerDesc.addressModeT = RhiSamplerAddressMode::ClampToEdge;
+            m_tonemapSampler = rhiCreateSampler(m_device, samplerDesc);
+            if (!m_tonemapSampler.nativeHandle()) {
+                spdlog::error("Hot-reload tonemap sampler: Failed to create tonemap sampler state");
+                failed++;
+            }
+        }
     } else {
-        spdlog::error("Hot-reload meshlet visualize PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
+        releaseOwnedHandle(m_tonemapSampler);
     }
 
-    errorMessage.clear();
-    auto skyPipeline = reloadFullscreenShader("Shaders/Atmosphere/sky",
-                                              RhiFormat::RGBA16Float,
-                                              &errorMessage);
-    if (skyPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_skyPipeline);
-        m_skyPipeline = skyPipeline;
-        reloaded++;
-    } else {
-        spdlog::error("Hot-reload sky PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
-    }
+    reloadPipeline(m_profile.output,
+                   m_outputPipeline,
+                   "output PSO",
+                   [&](std::string& localError) {
+                       return reloadFullscreenShader("Shaders/Post/passthrough",
+                                                     RhiFormat::BGRA8Unorm,
+                                                     &localError);
+                   });
 
-    errorMessage.clear();
-    auto tonemapPipeline = reloadFullscreenShader("Shaders/Post/tonemap",
-                                                  RhiFormat::BGRA8Unorm,
-                                                  &errorMessage);
-    if (tonemapPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_tonemapPipeline);
-        m_tonemapPipeline = tonemapPipeline;
-        reloaded++;
-    } else {
-        spdlog::error("Hot-reload tonemap PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
-    }
+    if (m_profile.autoExposure) {
+        reloadPipeline(true,
+                       m_histogramPipeline,
+                       "histogram PSO",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Post/auto_exposure",
+                                                      "histogramMain",
+                                                      nullptr,
+                                                      &localError);
+                       });
 
-    errorMessage.clear();
-    auto outputPipeline = reloadFullscreenShader("Shaders/Post/passthrough",
-                                                 RhiFormat::BGRA8Unorm,
-                                                 &errorMessage);
-    if (outputPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_outputPipeline);
-        m_outputPipeline = outputPipeline;
-        reloaded++;
+        reloadPipeline(true,
+                       m_autoExposurePipeline,
+                       "auto-exposure PSO",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Post/auto_exposure",
+                                                      "exposureMain",
+                                                      nullptr,
+                                                      &localError);
+                       });
     } else {
-        spdlog::error("Hot-reload output PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
-    }
-
-    errorMessage.clear();
-    auto histogramPipeline = reloadComputeShader("Shaders/Post/auto_exposure",
-                                                 "histogramMain",
-                                                 nullptr,
-                                                 &errorMessage);
-    if (histogramPipeline.nativeHandle()) {
         releaseOwnedHandle(m_histogramPipeline);
-        m_histogramPipeline = histogramPipeline;
-        reloaded++;
-    } else {
-        spdlog::error("Hot-reload histogram PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
-    }
-
-    errorMessage.clear();
-    auto autoExposurePipeline = reloadComputeShader("Shaders/Post/auto_exposure",
-                                                    "exposureMain",
-                                                    nullptr,
-                                                    &errorMessage);
-    if (autoExposurePipeline.nativeHandle()) {
         releaseOwnedHandle(m_autoExposurePipeline);
-        m_autoExposurePipeline = autoExposurePipeline;
-        reloaded++;
-    } else {
-        spdlog::error("Hot-reload auto-exposure PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
     }
 
-    errorMessage.clear();
-    auto taaPipeline = reloadComputeShader("Shaders/Post/taa",
-                                           "taaMain",
-                                           nullptr,
-                                           &errorMessage);
-    if (taaPipeline.nativeHandle()) {
-        releaseOwnedHandle(m_taaPipeline);
-        m_taaPipeline = taaPipeline;
-        reloaded++;
-    } else {
-        spdlog::error("Hot-reload TAA PSO: {}", formatError(&errorMessage, "Unknown failure"));
-        failed++;
-    }
+    reloadPipeline(m_profile.taa,
+                   m_taaPipeline,
+                   "TAA PSO",
+                   [&](std::string& localError) {
+                       return reloadComputeShader("Shaders/Post/taa",
+                                                  "taaMain",
+                                                  nullptr,
+                                                  &localError);
+                   });
 
     syncRuntimeContext();
     return {reloaded, failed};
