@@ -300,7 +300,6 @@ private:
 
     void flushDescriptors(VkPipelineBindPoint bindPoint) {
         if (m_descriptorManager && m_boundPipeline) {
-            transitionPendingTextures();
             m_descriptorManager->flushAndBind(m_commandBuffer,
                                               bindPoint,
                                               *m_boundPipeline,
@@ -684,6 +683,22 @@ VulkanCommandBuffer::VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice
                                          VulkanImageLayoutTracker* imageTracker)
     : m_commandBuffer(commandBuffer), m_device(device),
       m_descriptorManager(descriptorManager), m_imageTracker(imageTracker) {}
+
+void VulkanCommandBuffer::transitionTexture(const RhiTexture* texture, VkImageLayout layout) {
+    if (!texture || !m_imageTracker) {
+        return;
+    }
+
+    auto* resource = getVulkanTextureResource(texture);
+    if (!resource || resource->image == VK_NULL_HANDLE) {
+        return;
+    }
+
+    m_imageTracker->transition(m_commandBuffer,
+                               resource->image,
+                               layout,
+                               imageAspectMask(resource));
+}
 
 std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(const RhiRenderPassDesc& desc) {
     // Transition color attachments to COLOR_ATTACHMENT_OPTIMAL

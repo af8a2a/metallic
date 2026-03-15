@@ -91,6 +91,17 @@ int main() {
         return 1;
     }
 
+    const auto passthroughSpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
+                                                             "Shaders/Post/passthrough",
+                                                             PROJECT_SOURCE_DIR);
+    if (passthroughSpirv.empty()) {
+        spdlog::error("Failed to compile SPIR-V for passthrough shader");
+        rhi->waitIdle();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
+
     const std::array<Vertex, 3> vertices = {{
         {{0.0f, -0.6f, 0.0f}, {1.0f, 0.3f, 0.2f}},
         {{0.6f, 0.6f, 0.0f}, {0.2f, 0.9f, 0.4f}},
@@ -138,7 +149,7 @@ int main() {
     RhiRenderPipelineSourceDesc pipelineDesc;
     pipelineDesc.vertexEntry = "vertexMain";
     pipelineDesc.fragmentEntry = "fragmentMain";
-    pipelineDesc.colorFormat = rhi->colorFormat();
+    pipelineDesc.colorFormat = RhiFormat::RGBA16Float;
     pipelineDesc.vertexDescriptor = &vertexDescriptor;
 
     std::string pipelineError;
@@ -151,39 +162,134 @@ int main() {
         glfwTerminate();
         return 1;
     }
-    spdlog::info("Created triangle graphics pipeline");
+
+    std::string passthroughShaderSource(reinterpret_cast<const char*>(passthroughSpirv.data()),
+                                        passthroughSpirv.size() * sizeof(uint32_t));
+    RhiRenderPipelineSourceDesc passthroughDesc;
+    passthroughDesc.vertexEntry = "vertexMain";
+    passthroughDesc.fragmentEntry = "fragmentMain";
+    passthroughDesc.colorFormat = rhi->colorFormat();
+
+    std::string passthroughError;
+    RhiGraphicsPipelineHandle passthroughPipeline =
+        rhiCreateRenderPipelineFromSource(deviceHandle,
+                                          passthroughShaderSource,
+                                          passthroughDesc,
+                                          passthroughError);
+    if (!passthroughPipeline.nativeHandle()) {
+        spdlog::error("Failed to create passthrough pipeline for RenderGraph test: {}",
+                      passthroughError);
+        rhi->waitIdle();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
+
+    RhiSamplerDesc samplerDesc;
+    samplerDesc.minFilter = RhiSamplerFilterMode::Linear;
+    samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
+    samplerDesc.addressModeS = RhiSamplerAddressMode::ClampToEdge;
+    samplerDesc.addressModeT = RhiSamplerAddressMode::ClampToEdge;
+    RhiSamplerHandle linearSampler = rhiCreateSampler(deviceHandle, samplerDesc);
+    if (!linearSampler.nativeHandle()) {
+        spdlog::error("Failed to create Vulkan sampler for RenderGraph test");
+        rhi->waitIdle();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
 
     vulkanLoadMeshShaderFunctions(vkDevice);
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
+    VulkanDescriptorManager descriptorManager;
+    descriptorManager.init(vkDevice, vmaAllocator);
     VulkanImageLayoutTracker imageTracker;
     VulkanImportedTexture backbufferTexture;
-
-    FrameGraph frameGraph;
-    FGResource backbufferRes = frameGraph.import("backbuffer", &backbufferTexture);
+    RhiTextureHandle sceneColorTexture;
 
     struct TrianglePassData {
+        FGResource colorTarget;
+    };
+
+    struct PresentPassData {
+        FGResource source;
         FGResource target;
     };
 
+    FrameGraph frameGraph;
+    FGResource backbufferRes;
+    FGResource sceneColorRes;
     const RhiGraphicsPipeline* trianglePipeline = &pipeline;
+    const RhiGraphicsPipeline* presentPipeline = &passthroughPipeline;
     RhiBuffer* triangleBuffer = &vertexBuffer;
+    const RhiSampler* presentSampler = &linearSampler;
+
+    auto recreateSceneColorTexture = [&](uint32_t targetWidth, uint32_t targetHeight) {
+        rhiReleaseHandle(sceneColorTexture);
+        sceneColorTexture = rhiCreateTexture2D(deviceHandle,
+                                               targetWidth,
+                                               targetHeight,
+                                               RhiFormat::RGBA16Float,
+                                               false,
+                                               1,
+                                               RhiTextureStorageMode::Private,
+                                               RhiTextureUsage::RenderTarget | RhiTextureUsage::ShaderRead);
+        return sceneColorTexture.nativeHandle() != nullptr;
+    };
+
+    if (!recreateSceneColorTexture(createInfo.width, createInfo.height)) {
+        spdlog::error("Failed to create offscreen scene color texture for RenderGraph test");
+        rhi->waitIdle();
+        descriptorManager.destroy();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
+
+    backbufferRes = frameGraph.import("backbuffer", &backbufferTexture);
+    sceneColorRes = frameGraph.import("sceneColor", &sceneColorTexture);
+
     frameGraph.addRenderPass<TrianglePassData>(
         "Triangle Pass",
-        [backbufferRes](FGBuilder& builder, TrianglePassData& data) {
-            data.target = backbufferRes;
+        [sceneColorRes](FGBuilder& builder, TrianglePassData& data) {
+            data.colorTarget = sceneColorRes;
             builder.setColorAttachment(0,
-                                       data.target,
+                                       data.colorTarget,
                                        RhiLoadAction::Clear,
                                        RhiStoreAction::Store,
                                        RhiClearColor(0.08, 0.09, 0.12, 1.0));
-            builder.setSideEffect();
         },
         [trianglePipeline, triangleBuffer](const TrianglePassData&, RhiRenderCommandEncoder& encoder) {
             encoder.setRenderPipeline(*trianglePipeline);
+            encoder.setFrontFacingWinding(RhiWinding::CounterClockwise);
+            encoder.setCullMode(RhiCullMode::None);
             encoder.setVertexBuffer(triangleBuffer, 0, 0);
             encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
         });
+
+    frameGraph.addRenderPass<PresentPassData>(
+        "Present Pass",
+        [backbufferRes, sceneColorRes](FGBuilder& builder, PresentPassData& data) {
+            data.source = builder.read(sceneColorRes);
+            data.target = backbufferRes;
+            builder.setColorAttachment(0,
+                                       data.target,
+                                       RhiLoadAction::DontCare,
+                                       RhiStoreAction::Store,
+                                       RhiClearColor(0.0, 0.0, 0.0, 1.0));
+            builder.setSideEffect();
+        },
+        [&frameGraph, presentPipeline, presentSampler](const PresentPassData& data,
+                                                       RhiRenderCommandEncoder& encoder) {
+            encoder.setRenderPipeline(*presentPipeline);
+            encoder.setFrontFacingWinding(RhiWinding::CounterClockwise);
+            encoder.setCullMode(RhiCullMode::None);
+            encoder.setFragmentTexture(frameGraph.getTexture(data.source), 0);
+            encoder.setFragmentSampler(presentSampler, 0);
+            encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
+        });
+
     frameGraph.compile();
 
     while (!glfwWindowShouldClose(window)) {
@@ -198,6 +304,10 @@ int main() {
 
         if (appState.framebufferResized) {
             rhi->resize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            if (!recreateSceneColorTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
+                spdlog::error("Failed to recreate scene color texture after resize");
+                break;
+            }
             appState.framebufferResized = false;
         }
 
@@ -215,15 +325,17 @@ int main() {
                               static_cast<VkFormat>(native.colorFormat),
                               RhiTextureUsage::RenderTarget);
 
+        descriptorManager.resetFrame();
         imageTracker.clear();
         if (backbufferImage != VK_NULL_HANDLE) {
             imageTracker.setLayout(backbufferImage, getVulkanCurrentBackbufferLayout(*rhi));
         }
-
-        frameGraph.resetTransients();
+        if (sceneColorTexture.nativeHandle()) {
+            imageTracker.setLayout(getVulkanImage(&sceneColorTexture), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
         VulkanCommandBuffer commandBuffer(getVulkanCurrentCommandBuffer(*rhi),
                                           vkDevice,
-                                          nullptr,
+                                          &descriptorManager,
                                           &imageTracker);
         frameGraph.execute(commandBuffer, frameGraphBackend);
 
@@ -232,7 +344,11 @@ int main() {
     }
 
     rhi->waitIdle();
+    descriptorManager.destroy();
+    rhiReleaseHandle(linearSampler);
+    rhiReleaseHandle(passthroughPipeline);
     rhiReleaseHandle(pipeline);
+    rhiReleaseHandle(sceneColorTexture);
     rhiReleaseHandle(vertexDescriptor);
     rhiReleaseHandle(vertexBuffer);
     glfwDestroyWindow(window);

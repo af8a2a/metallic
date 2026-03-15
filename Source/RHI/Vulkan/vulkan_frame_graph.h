@@ -73,6 +73,7 @@ public:
     std::unique_ptr<RhiRenderCommandEncoder> beginRenderPass(const RhiRenderPassDesc& desc) override;
     std::unique_ptr<RhiComputeCommandEncoder> beginComputePass(const RhiComputePassDesc& desc) override;
     std::unique_ptr<RhiBlitCommandEncoder> beginBlitPass(const RhiBlitPassDesc& desc) override;
+    void transitionTexture(const RhiTexture* texture, VkImageLayout layout);
 
 private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;

@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <cassert>
 
+#ifdef _WIN32
+#include "vulkan_frame_graph.h"
+#endif
+
 #include "imgui.h"
 
 // --- FGBuilder ---
@@ -176,6 +180,26 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
         }
 
         if (pass.type == FGPassType::Render) {
+#ifdef _WIN32
+            if (auto* vkCommandBuffer = dynamic_cast<VulkanCommandBuffer*>(&commandBuffer)) {
+                auto isAttachmentRead = [&](FGResource resource) {
+                    for (uint32_t ci = 0; ci < pass.colorAttachmentCount; ++ci) {
+                        if (pass.colorAttachments[ci].resource.id == resource.id) {
+                            return true;
+                        }
+                    }
+                    return pass.depthAttachment.bound && pass.depthAttachment.resource.id == resource.id;
+                };
+
+                for (auto& read : pass.reads) {
+                    if (!isAttachmentRead(read)) {
+                        vkCommandBuffer->transitionTexture(m_resources[read.id].texture,
+                                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    }
+                }
+            }
+#endif
+
             RhiRenderPassDesc renderPassDesc;
             renderPassDesc.label = pass.name.c_str();
             for (uint32_t ci = 0; ci < pass.colorAttachmentCount; ci++) {
@@ -210,15 +234,6 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
             blitPassDesc.label = pass.name.c_str();
             auto encoder = commandBuffer.beginBlitPass(blitPassDesc);
             pass.executeBlit(*encoder);
-        }
-
-        // Release transient textures after their last user
-        for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
-            auto& res = m_resources[ri];
-            if (!res.imported && res.lastUser == pi && res.texture != nullptr) {
-                res.ownedTexture.reset();
-                res.texture = nullptr;
-            }
         }
     }
 }
