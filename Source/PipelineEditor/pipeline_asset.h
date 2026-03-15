@@ -7,7 +7,7 @@
 // Resource declaration in pipeline JSON
 struct ResourceDecl {
     std::string name;
-    std::string type;    // "texture", "buffer"
+    std::string type;    // "texture", "buffer", "token"
     std::string format;  // "R32Uint", "Depth32Float", "RGBA16Float", etc.
     std::string size;    // "screen", "512x512", etc.
 

@@ -32,12 +32,27 @@ FGResource FGBuilder::create(const char* name, const FGTextureDesc& desc) {
     res.id = static_cast<uint32_t>(m_fg.m_resources.size());
     FGResourceNode node;
     node.name = name;
+    node.kind = FGResourceKind::Texture;
     node.desc = desc;
     node.imported = false;
     node.producer = m_passIndex;
     node.physicalResource = res.id;
     m_fg.m_resources.push_back(std::move(node));
     // Creating a resource implicitly writes it
+    appendUniqueResource(m_fg.m_passes[m_passIndex].writes, res);
+    return res;
+}
+
+FGResource FGBuilder::createToken(const char* name) {
+    FGResource res;
+    res.id = static_cast<uint32_t>(m_fg.m_resources.size());
+    FGResourceNode node;
+    node.name = name;
+    node.kind = FGResourceKind::Token;
+    node.imported = false;
+    node.producer = m_passIndex;
+    node.physicalResource = res.id;
+    m_fg.m_resources.push_back(std::move(node));
     appendUniqueResource(m_fg.m_passes[m_passIndex].writes, res);
     return res;
 }
@@ -71,6 +86,7 @@ FGResource FGBuilder::write(FGResource resource) {
 
     FGResourceNode versionedNode;
     versionedNode.name = node.name;
+    versionedNode.kind = node.kind;
     versionedNode.desc = node.desc;
     versionedNode.imported = false;
     versionedNode.producer = m_passIndex;
@@ -87,6 +103,7 @@ FGResource FGBuilder::setColorAttachment(uint32_t index, FGResource resource,
                                          RhiClearColor clear) {
     auto& pass = m_fg.m_passes[m_passIndex];
     assert(index < 8);
+    assert(m_fg.m_resources[resource.id].kind == FGResourceKind::Texture);
     if (load == RhiLoadAction::Load) {
         read(resource);
     }
@@ -101,6 +118,7 @@ FGResource FGBuilder::setDepthAttachment(FGResource resource,
                                          RhiLoadAction load, RhiStoreAction store,
                                          double clearDepth) {
     auto& pass = m_fg.m_passes[m_passIndex];
+    assert(m_fg.m_resources[resource.id].kind == FGResourceKind::Texture);
     if (load == RhiLoadAction::Load) {
         read(resource);
     }
@@ -120,6 +138,7 @@ FGResource FrameGraph::import(const char* name, RhiTexture* texture) {
     res.id = static_cast<uint32_t>(m_resources.size());
     FGResourceNode node;
     node.name = name;
+    node.kind = FGResourceKind::Texture;
     node.texture = texture;
     node.imported = true;
     node.physicalResource = res.id;
@@ -141,7 +160,7 @@ void FrameGraph::updateImport(FGResource res, RhiTexture* texture) {
 void FrameGraph::resetTransients() {
     for (uint32_t ri = 0; ri < m_resources.size(); ++ri) {
         auto& res = m_resources[ri];
-        if (!res.imported && res.physicalResource == ri) {
+        if (res.kind == FGResourceKind::Texture && !res.imported && res.physicalResource == ri) {
             res.ownedTexture.reset();
             res.texture = nullptr;
         }
@@ -176,41 +195,57 @@ void FrameGraph::addPass(std::unique_ptr<RenderPass> pass) {
 }
 
 void FrameGraph::compile() {
-    // Step 1: Initialize refCounts — side-effect passes start at 1
     for (auto& pass : m_passes) {
-        pass.refCount = pass.hasSideEffect ? 1 : 0;
+        pass.refCount = 0;
     }
-
-    // Step 2: Count readers per resource → resource.refCount
     for (auto& res : m_resources) {
         res.refCount = 0;
         res.lastUser = 0;
     }
-    for (uint32_t pi = 0; pi < m_passes.size(); pi++) {
-        auto& pass = m_passes[pi];
-        for (auto& r : pass.reads) {
-            m_resources[r.id].refCount++;
+
+    std::vector<uint32_t> livePasses;
+    livePasses.reserve(m_passes.size());
+
+    auto addPassRef = [&](uint32_t passIndex) {
+        assert(passIndex < m_passes.size());
+        auto& pass = m_passes[passIndex];
+        const bool wasDead = pass.refCount == 0;
+        ++pass.refCount;
+        if (wasDead) {
+            livePasses.push_back(passIndex);
         }
-    }
-    for (auto& res : m_resources) {
-        if (res.exported) {
-            res.refCount++;
+    };
+
+    auto addResourceRef = [&](uint32_t resourceIndex) {
+        assert(resourceIndex < m_resources.size());
+        auto& resource = m_resources[resourceIndex];
+        ++resource.refCount;
+        if (resource.producer != UINT32_MAX) {
+            addPassRef(resource.producer);
+        }
+    };
+
+    for (uint32_t pi = 0; pi < m_passes.size(); ++pi) {
+        if (m_passes[pi].hasSideEffect) {
+            addPassRef(pi);
         }
     }
 
-    // Step 3: Propagate resource refCounts to producer passes
-    for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
-        auto& res = m_resources[ri];
-        if (res.refCount > 0 && res.producer != UINT32_MAX) {
-            m_passes[res.producer].refCount += res.refCount;
+    for (uint32_t ri = 0; ri < m_resources.size(); ++ri) {
+        if (m_resources[ri].exported) {
+            addResourceRef(ri);
         }
     }
 
-    // Step 4: Cull passes with refCount == 0
-    // (We don't remove them, just skip during execute)
+    for (size_t cursor = 0; cursor < livePasses.size(); ++cursor) {
+        const uint32_t pi = livePasses[cursor];
+        const auto& pass = m_passes[pi];
+        for (const auto& read : pass.reads) {
+            addResourceRef(read.id);
+        }
+    }
 
-    // Step 5: Calculate lastUser for each transient resource
-    for (uint32_t pi = 0; pi < m_passes.size(); pi++) {
+    for (uint32_t pi = 0; pi < m_passes.size(); ++pi) {
         if (m_passes[pi].refCount == 0) continue;
         auto& pass = m_passes[pi];
         for (auto& r : pass.reads) {
@@ -230,9 +265,11 @@ RhiTexture* FrameGraph::getTexture(FGResource res) const {
 RhiTexture* FrameGraph::resolveTexture(uint32_t resourceId) const {
     assert(resourceId < m_resources.size());
     const auto& resource = m_resources[resourceId];
+    assert(resource.kind == FGResourceKind::Texture);
     const uint32_t physicalResource =
         resource.physicalResource != UINT32_MAX ? resource.physicalResource : resourceId;
     assert(physicalResource < m_resources.size());
+    assert(m_resources[physicalResource].kind == FGResourceKind::Texture);
     return m_resources[physicalResource].texture;
 }
 
@@ -244,7 +281,11 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
         // Create transient textures at their producer pass
         for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
             auto& res = m_resources[ri];
-            if (!res.imported && res.producer == pi && res.physicalResource == ri && res.texture == nullptr) {
+            if (res.kind == FGResourceKind::Texture &&
+                !res.imported &&
+                res.producer == pi &&
+                res.physicalResource == ri &&
+                res.texture == nullptr) {
                 res.ownedTexture = backend.createTexture(res.desc);
                 res.texture = res.ownedTexture.get();
             }
@@ -275,6 +316,9 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
                 };
 
                 for (auto& read : pass.reads) {
+                    if (m_resources[read.id].kind != FGResourceKind::Texture) {
+                        continue;
+                    }
                     if (!isAttachmentRead(read)) {
                         vkCommandBuffer->transitionTexture(resolveTexture(read.id),
                                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -390,6 +434,14 @@ const char* passTypeName(FGPassType type) {
     return "Unknown";
 }
 
+const char* resourceKindName(FGResourceKind kind) {
+    switch (kind) {
+        case FGResourceKind::Texture: return "Texture";
+        case FGResourceKind::Token:   return "Token";
+    }
+    return "Unknown";
+}
+
 } // namespace
 
 // --- Graphviz DOT export ---
@@ -414,7 +466,8 @@ void FrameGraph::exportGraphviz(std::ostream& os) const {
             if (!res.imported) continue;
             os << "    R" << ri << " [shape=record, style=\"rounded,filled\", "
                << "fillcolor=lightsteelblue, label=\"{" << dotEscapeLabel(res.name)
-               << " | Imported" << (res.exported ? " | External" : "")
+               << " | Imported " << resourceKindName(res.kind)
+               << (res.exported ? " | External" : "")
                << " | Refs: " << res.refCount << "}\"];\n";
         }
         os << "  }\n\n";
@@ -446,9 +499,14 @@ void FrameGraph::exportGraphviz(std::ostream& os) const {
                 auto& res = m_resources[ri];
                 if (res.imported || res.producer != pi) continue;
                 os << "    R" << ri << " [shape=record, style=\"rounded,filled\", "
-                   << "fillcolor=skyblue, label=\"{" << dotEscapeLabel(res.name)
-                   << " | " << res.desc.width << "x" << res.desc.height
-                   << " " << pixelFormatName(res.desc.format)
+                   << "fillcolor=skyblue, label=\"{" << dotEscapeLabel(res.name);
+                if (res.kind == FGResourceKind::Texture) {
+                    os << " | " << res.desc.width << "x" << res.desc.height
+                       << " " << pixelFormatName(res.desc.format);
+                } else {
+                    os << " | " << resourceKindName(res.kind);
+                }
+                os
                    << (res.exported ? " | External" : "")
                    << " | Refs: " << res.refCount << "}\"];\n";
             }
@@ -568,17 +626,21 @@ void FrameGraph::debugImGui() const {
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextUnformatted(res.name.c_str());
                 ImGui::TableSetColumnIndex(2);
-                if (res.imported)
-                    ImGui::TextUnformatted(res.exported ? "Imported, External" : "Imported");
+                const char* residency = res.imported ? "Imported" : "Transient";
+                if (res.exported)
+                    ImGui::Text("%s %s, External", residency, resourceKindName(res.kind));
                 else
-                    ImGui::TextUnformatted(res.exported ? "Transient, External" : "Transient");
+                    ImGui::Text("%s %s", residency, resourceKindName(res.kind));
                 ImGui::TableSetColumnIndex(3);
-                if (!res.imported)
+                if (res.kind == FGResourceKind::Texture && !res.imported)
                     ImGui::Text("%ux%u", res.desc.width, res.desc.height);
                 else
                     ImGui::TextUnformatted("-");
                 ImGui::TableSetColumnIndex(4);
-                ImGui::TextUnformatted(res.imported ? "-" : pixelFormatName(res.desc.format));
+                if (res.kind == FGResourceKind::Texture && !res.imported)
+                    ImGui::TextUnformatted(pixelFormatName(res.desc.format));
+                else
+                    ImGui::TextUnformatted("-");
                 ImGui::TableSetColumnIndex(5);
                 ImGui::Text("%u", res.refCount);
                 ImGui::TableSetColumnIndex(6);

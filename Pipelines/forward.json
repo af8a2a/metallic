@@ -53,7 +53,7 @@
       "inputs": ["forwardColor"],
       "outputs": ["exposureLut"],
       "enabled": true,
-      "sideEffect": true,
+      "sideEffect": false,
       "config": {}
     },
     {
@@ -62,7 +62,7 @@
       "inputs": ["forwardColor", "exposureLut"],
       "outputs": ["$backbuffer"],
       "enabled": true,
-      "sideEffect": true,
+      "sideEffect": false,
       "config": {
         "method": "ACES",
         "exposure": 1.0,
@@ -75,7 +75,7 @@
       "inputs": ["depth"],
       "outputs": ["$backbuffer"],
       "enabled": true,
-      "sideEffect": true,
+      "sideEffect": false,
       "config": {}
     }
   ]

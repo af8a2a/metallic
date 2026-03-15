@@ -9,7 +9,7 @@
       "outputs": [
         "cullResult"
       ],
-      "sideEffect": true,
+      "sideEffect": false,
       "type": "MeshletCullPass"
     },
     {
@@ -64,7 +64,7 @@
       "outputs": [
         "$backbuffer"
       ],
-      "sideEffect": true,
+      "sideEffect": false,
       "type": "TonemapPass"
     },
     {
@@ -77,7 +77,7 @@
       "outputs": [
         "$backbuffer"
       ],
-      "sideEffect": true,
+      "sideEffect": false,
       "type": "ImGuiOverlayPass"
     },
     {
@@ -97,7 +97,7 @@
       "format": "R8Unorm",
       "name": "cullResult",
       "size": "1x1",
-      "type": "texture"
+      "type": "token"
     },
     {
       "format": "R32Uint",

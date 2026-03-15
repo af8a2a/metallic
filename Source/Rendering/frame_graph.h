@@ -16,8 +16,11 @@ struct FGResource {
 
 using FGTextureDesc = RhiTextureDesc;
 
+enum class FGResourceKind { Texture, Token };
+
 struct FGResourceNode {
     std::string name;
+    FGResourceKind kind = FGResourceKind::Texture;
     FGTextureDesc desc;
     RhiTexture* texture = nullptr;
     std::unique_ptr<RhiTexture> ownedTexture;
@@ -73,6 +76,7 @@ public:
     FGBuilder(FrameGraph& fg, uint32_t passIndex);
 
     FGResource create(const char* name, const FGTextureDesc& desc);
+    FGResource createToken(const char* name);
     FGResource read(FGResource resource);
     FGResource write(FGResource resource);
 

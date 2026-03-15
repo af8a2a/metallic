@@ -58,7 +58,7 @@
         "$backbuffer"
       ],
       "enabled": true,
-      "sideEffect": true,
+      "sideEffect": false,
       "config": {
         "method": "Clip",
         "exposure": 1.0,
