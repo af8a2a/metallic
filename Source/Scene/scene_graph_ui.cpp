@@ -49,6 +49,8 @@ static void drawNodeTree(SceneGraph& scene, uint32_t nodeIdx) {
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (node.children.empty())
         flags |= ImGuiTreeNodeFlags_Leaf;
+    if (node.parent < 0)
+        flags |= ImGuiTreeNodeFlags_DefaultOpen;
     if (scene.selectedNode == static_cast<int32_t>(nodeIdx))
         flags |= ImGuiTreeNodeFlags_Selected;
 
@@ -170,21 +172,27 @@ void drawSceneGraphUI(SceneGraph& scene) {
         return;
     }
 
-    float totalWidth = ImGui::GetContentRegionAvail().x;
-    float treeWidth = totalWidth * 0.4f;
+    if (ImGui::BeginTable("SceneGraphLayout",
+                          2,
+                          ImGuiTableFlags_Resizable |
+                              ImGuiTableFlags_BordersInnerV |
+                              ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Tree", ImGuiTableColumnFlags_WidthStretch, 0.45f);
+        ImGui::TableSetupColumn("Properties", ImGuiTableColumnFlags_WidthStretch, 0.55f);
 
-    // Left panel: tree view
-    ImGui::BeginChild("TreePanel", ImVec2(treeWidth, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
-    for (uint32_t rootIdx : scene.rootNodes)
-        drawNodeTree(scene, rootIdx);
-    ImGui::EndChild();
+        ImGui::TableNextColumn();
+        ImGui::BeginChild("TreePanel", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        for (uint32_t rootIdx : scene.rootNodes)
+            drawNodeTree(scene, rootIdx);
+        ImGui::EndChild();
 
-    ImGui::SameLine();
+        ImGui::TableNextColumn();
+        ImGui::BeginChild("PropertyPanel", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        drawPropertyPanel(scene);
+        ImGui::EndChild();
 
-    // Right panel: property editor
-    ImGui::BeginChild("PropertyPanel", ImVec2(0, 0), ImGuiChildFlags_Borders);
-    drawPropertyPanel(scene);
-    ImGui::EndChild();
+        ImGui::EndTable();
+    }
 
     ImGui::End();
 }
