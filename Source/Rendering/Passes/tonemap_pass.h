@@ -105,6 +105,7 @@ public:
         uniforms.autoExposure = (m_autoExposure && m_exposureLutRead.isValid()) ? 1u : 0u;
 
         encoder.setRenderPipeline(pipeIt->second);
+        encoder.setViewport(static_cast<float>(m_width), static_cast<float>(m_height), false);
         encoder.setCullMode(RhiCullMode::None);
         encoder.setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
         encoder.setFragmentSampler(&samplerIt->second, 0);

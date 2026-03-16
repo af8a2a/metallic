@@ -55,6 +55,7 @@ public:
         if (samplerIt == m_runtimeContext->samplersRhi.end() || !samplerIt->second.nativeHandle()) return;
 
         encoder.setRenderPipeline(pipeIt->second);
+        encoder.setViewport(static_cast<float>(m_width), static_cast<float>(m_height), false);
         encoder.setCullMode(RhiCullMode::None);
         encoder.setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
         encoder.setFragmentSampler(&samplerIt->second, 0);

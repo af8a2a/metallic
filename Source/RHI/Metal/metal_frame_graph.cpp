@@ -171,6 +171,16 @@ public:
     }
 
     void* nativeHandle() const override { return m_encoder; }
+    void setViewport(float width, float height, bool /*flipY*/ = true) override {
+        MTL::Viewport viewport{};
+        viewport.originX = 0.0;
+        viewport.originY = 0.0;
+        viewport.width = width;
+        viewport.height = height;
+        viewport.znear = 0.0;
+        viewport.zfar = 1.0;
+        m_encoder->setViewport(viewport);
+    }
     void setDepthStencilState(const RhiDepthStencilState* state) override { m_encoder->setDepthStencilState(metalDepthStencilState(state)); }
     void setFrontFacingWinding(RhiWinding winding) override { m_encoder->setFrontFacingWinding(metalWinding(winding)); }
     void setCullMode(RhiCullMode cullMode) override { m_encoder->setCullMode(metalCullMode(cullMode)); }

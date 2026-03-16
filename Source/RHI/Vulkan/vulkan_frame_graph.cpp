@@ -131,6 +131,22 @@ public:
 
     void* nativeHandle() const override { return m_commandBuffer; }
 
+    void setViewport(float width, float height, bool flipY = true) override {
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.width = width;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        if (flipY) {
+            viewport.y = height;
+            viewport.height = -height;
+        } else {
+            viewport.y = 0.0f;
+            viewport.height = height;
+        }
+        vkCmdSetViewport(m_commandBuffer, 0, 1, &viewport);
+    }
+
     void setDepthStencilState(const RhiDepthStencilState* /*state*/) override {}
 
     void setFrontFacingWinding(RhiWinding winding) override {

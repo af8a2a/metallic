@@ -391,6 +391,7 @@ class RhiRenderCommandEncoder {
 public:
     virtual ~RhiRenderCommandEncoder() = default;
     virtual void* nativeHandle() const = 0;
+    virtual void setViewport(float width, float height, bool flipY = true) = 0;
     virtual void setDepthStencilState(const RhiDepthStencilState* state) = 0;
     virtual void setFrontFacingWinding(RhiWinding winding) = 0;
     virtual void setCullMode(RhiCullMode cullMode) = 0;
