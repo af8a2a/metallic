@@ -62,6 +62,7 @@ elseif(WIN32)
 
     add_executable(Metallic
         main_vulkan.cpp
+        Asset/meshlet_builder.cpp
         PipelineEditor/pass_registry.cpp
         PipelineEditor/pipeline_asset.cpp
         PipelineEditor/pipeline_builder.cpp
@@ -76,6 +77,7 @@ elseif(WIN32)
         RHI/Vulkan/vulkan_backend.cpp
         RHI/Vulkan/vulkan_frame_graph.cpp
         RHI/Vulkan/vulkan_descriptor_manager.cpp
+        "${CMAKE_SOURCE_DIR}/External/meshoptimizer/src/clusterizer.cpp"
     )
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
@@ -87,6 +89,7 @@ elseif(WIN32)
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Passes"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
         "${CMAKE_SOURCE_DIR}/External/MathLib"
+        "${CMAKE_SOURCE_DIR}/External/meshoptimizer/src"
         "${CMAKE_SOURCE_DIR}/External/VulkanMemoryAllocator/include"
     )
     target_link_libraries(Metallic PRIVATE

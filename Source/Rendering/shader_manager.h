@@ -26,6 +26,7 @@ struct ShaderManagerProfile {
 
     static ShaderManagerProfile preview() {
         ShaderManagerProfile profile;
+        profile.forwardVertex = true;
         profile.forwardMesh = false;
         profile.visibility = false;
         profile.visibilityIndirect = false;
@@ -35,6 +36,24 @@ struct ShaderManagerProfile {
         profile.meshletVisualize = false;
         profile.output = false;
         profile.taa = false;
+        return profile;
+    }
+
+    static ShaderManagerProfile vulkanVisibility() {
+        ShaderManagerProfile profile;
+        profile.forwardVertex = false;
+        profile.forwardMesh = false;
+        profile.visibility = true;
+        profile.visibilityIndirect = false;
+        profile.meshletCull = true;
+        profile.buildIndirect = true;
+        profile.deferredLighting = true;
+        profile.meshletVisualize = false;
+        profile.sky = true;
+        profile.tonemap = true;
+        profile.output = false;
+        profile.autoExposure = true;
+        profile.taa = true;
         return profile;
     }
 };

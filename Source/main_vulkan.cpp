@@ -10,9 +10,12 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "camera.h"
@@ -24,6 +27,7 @@
 #include "pipeline_asset.h"
 #include "pipeline_builder.h"
 #include "render_pass.h"
+#include "render_uniforms.h"
 #include "rhi_backend.h"
 #include "rhi_resource_utils.h"
 #include "rhi_shader_utils.h"
@@ -53,6 +57,15 @@ void checkImGuiVkResult(VkResult result) {
     spdlog::error("ImGui Vulkan error: {}", static_cast<int>(result));
 }
 
+template <typename VkHandle>
+VkHandle nativeToVkHandle(void* handle) {
+    if constexpr (std::is_pointer_v<VkHandle>) {
+        return reinterpret_cast<VkHandle>(handle);
+    } else {
+        return static_cast<VkHandle>(reinterpret_cast<uint64_t>(handle));
+    }
+}
+
 struct AtmosphereTextures {
     RhiTextureHandle transmittance;
     RhiTextureHandle scattering;
@@ -78,6 +91,25 @@ void releaseMeshBuffers(LoadedMesh& mesh) {
     rhiReleaseHandle(mesh.indexBuffer);
 }
 
+void releaseMeshletBuffers(MeshletData& meshlets) {
+    rhiReleaseHandle(meshlets.meshletBuffer);
+    rhiReleaseHandle(meshlets.meshletVertices);
+    rhiReleaseHandle(meshlets.meshletTriangles);
+    rhiReleaseHandle(meshlets.boundsBuffer);
+    rhiReleaseHandle(meshlets.materialIDs);
+}
+
+void releaseMaterialResources(LoadedMaterials& materials) {
+    for (auto& texture : materials.textures) {
+        rhiReleaseHandle(texture);
+    }
+    materials.textures.clear();
+    materials.textureViews.clear();
+    rhiReleaseHandle(materials.materialBuffer);
+    rhiReleaseHandle(materials.sampler);
+    materials.materialCount = 0;
+}
+
 bool createPreviewScene(const RhiDevice& device, LoadedMesh& outMesh, SceneGraph& outScene) {
     static constexpr std::array<float, 24 * 3> kPositions = {
         -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f,
@@ -95,6 +127,14 @@ bool createPreviewScene(const RhiDevice& device, LoadedMesh& outMesh, SceneGraph
          1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,
         -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f,
     };
+    static constexpr std::array<float, 24 * 2> kUVs = {
+        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
+    };
     static constexpr std::array<uint32_t, 36> kIndices = {
          0,  1,  2,  2,  3,  0,
          4,  5,  6,  6,  7,  4,
@@ -108,15 +148,16 @@ bool createPreviewScene(const RhiDevice& device, LoadedMesh& outMesh, SceneGraph
         rhiCreateSharedBuffer(device, kPositions.data(), sizeof(kPositions), "Preview Positions");
     outMesh.normalBuffer =
         rhiCreateSharedBuffer(device, kNormals.data(), sizeof(kNormals), "Preview Normals");
+    outMesh.uvBuffer =
+        rhiCreateSharedBuffer(device, kUVs.data(), sizeof(kUVs), "Preview UVs");
     outMesh.indexBuffer =
         rhiCreateSharedBuffer(device, kIndices.data(), sizeof(kIndices), "Preview Indices");
 
     if (!outMesh.positionBuffer.nativeHandle() ||
         !outMesh.normalBuffer.nativeHandle() ||
+        !outMesh.uvBuffer.nativeHandle() ||
         !outMesh.indexBuffer.nativeHandle()) {
-        rhiReleaseHandle(outMesh.positionBuffer);
-        rhiReleaseHandle(outMesh.normalBuffer);
-        rhiReleaseHandle(outMesh.indexBuffer);
+        releaseMeshBuffers(outMesh);
         return false;
     }
 
@@ -128,6 +169,10 @@ bool createPreviewScene(const RhiDevice& device, LoadedMesh& outMesh, SceneGraph
     outMesh.bboxMax[0] = 1.0f;
     outMesh.bboxMax[1] = 1.0f;
     outMesh.bboxMax[2] = 1.0f;
+    outMesh.primitiveGroups.clear();
+    outMesh.primitiveGroups.push_back({0, outMesh.indexCount, 0, outMesh.vertexCount, 0});
+    outMesh.meshRanges.clear();
+    outMesh.meshRanges.push_back({0, 1});
 
     outScene.nodes.clear();
     outScene.rootNodes.clear();
@@ -140,6 +185,8 @@ bool createPreviewScene(const RhiDevice& device, LoadedMesh& outMesh, SceneGraph
     node.id = 0;
     node.parent = -1;
     node.meshIndex = 0;
+    node.meshletStart = 0;
+    node.meshletCount = 0;
     node.indexStart = 0;
     node.indexCount = outMesh.indexCount;
     node.transform.localMatrix = float4x4::Identity();
@@ -148,6 +195,161 @@ bool createPreviewScene(const RhiDevice& device, LoadedMesh& outMesh, SceneGraph
     outScene.rootNodes.push_back(0);
 
     return true;
+}
+
+void applyPreviewMeshletSceneData(const MeshletData& meshlets, SceneGraph& scene) {
+    if (scene.nodes.empty()) {
+        return;
+    }
+
+    scene.nodes[0].meshletStart = 0;
+    scene.nodes[0].meshletCount =
+        !meshlets.meshletsPerGroup.empty() ? meshlets.meshletsPerGroup[0] : meshlets.meshletCount;
+}
+
+bool createPreviewMaterials(const RhiDevice& device, LoadedMaterials& outMaterials) {
+    releaseMaterialResources(outMaterials);
+
+    GPUMaterial material{};
+    material.baseColorTexIndex = INVALID_TEXTURE_INDEX;
+    material.normalTexIndex = INVALID_TEXTURE_INDEX;
+    material.metallicRoughnessTexIndex = INVALID_TEXTURE_INDEX;
+    material.alphaMode = 0;
+    material.baseColorFactor[0] = 0.92f;
+    material.baseColorFactor[1] = 0.77f;
+    material.baseColorFactor[2] = 0.62f;
+    material.baseColorFactor[3] = 1.0f;
+    material.metallicFactor = 0.0f;
+    material.roughnessFactor = 0.75f;
+    material.alphaCutoff = 0.5f;
+    material._pad = 0.0f;
+
+    outMaterials.materialBuffer =
+        rhiCreateSharedBuffer(device, &material, sizeof(material), "Preview Material");
+    if (!outMaterials.materialBuffer.nativeHandle()) {
+        return false;
+    }
+
+    RhiSamplerDesc samplerDesc;
+    samplerDesc.minFilter = RhiSamplerFilterMode::Linear;
+    samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
+    samplerDesc.mipFilter = RhiSamplerMipFilterMode::None;
+    samplerDesc.addressModeS = RhiSamplerAddressMode::ClampToEdge;
+    samplerDesc.addressModeT = RhiSamplerAddressMode::ClampToEdge;
+    samplerDesc.addressModeR = RhiSamplerAddressMode::ClampToEdge;
+    outMaterials.sampler = rhiCreateSampler(device, samplerDesc);
+    if (!outMaterials.sampler.nativeHandle()) {
+        releaseMaterialResources(outMaterials);
+        return false;
+    }
+
+    outMaterials.materialCount = 1;
+    return true;
+}
+
+bool createPreviewFallbackTextures(const RhiDevice& device,
+                                   RhiTextureHandle& outShadowDummy,
+                                   RhiTextureHandle& outSkyFallback) {
+    rhiReleaseHandle(outShadowDummy);
+    rhiReleaseHandle(outSkyFallback);
+
+    outShadowDummy = rhiCreateTexture2D(device,
+                                        1,
+                                        1,
+                                        RhiFormat::R8Unorm,
+                                        false,
+                                        1,
+                                        RhiTextureStorageMode::Shared,
+                                        RhiTextureUsage::ShaderRead);
+    outSkyFallback = rhiCreateTexture2D(device,
+                                        1,
+                                        1,
+                                        RhiFormat::BGRA8Unorm,
+                                        false,
+                                        1,
+                                        RhiTextureStorageMode::Shared,
+                                        RhiTextureUsage::ShaderRead);
+    if (!outShadowDummy.nativeHandle() || !outSkyFallback.nativeHandle()) {
+        rhiReleaseHandle(outShadowDummy);
+        rhiReleaseHandle(outSkyFallback);
+        return false;
+    }
+
+    const uint8_t shadowValue = 0xFF;
+    const uint8_t skyValue[4] = {77, 51, 26, 255};
+    rhiUploadTexture2D(outShadowDummy, 1, 1, &shadowValue, 1);
+    rhiUploadTexture2D(outSkyFallback, 1, 1, skyValue, sizeof(skyValue));
+    return true;
+}
+
+void eraseResourceByName(PipelineAsset& asset, const char* resourceName) {
+    asset.resources.erase(
+        std::remove_if(asset.resources.begin(),
+                       asset.resources.end(),
+                       [resourceName](const ResourceDecl& resource) {
+                           return resource.name == resourceName;
+                       }),
+        asset.resources.end());
+}
+
+void erasePassByType(PipelineAsset& asset, const char* passType) {
+    asset.passes.erase(
+        std::remove_if(asset.passes.begin(),
+                       asset.passes.end(),
+                       [passType](const PassDecl& pass) {
+                           return pass.type == passType;
+                       }),
+        asset.passes.end());
+}
+
+void replacePassInput(PassDecl& pass, const char* oldName, const char* newName) {
+    for (auto& input : pass.inputs) {
+        if (input == oldName) {
+            input = newName;
+        }
+    }
+}
+
+void disablePipelineAutoExposure(PipelineAsset& asset) {
+    eraseResourceByName(asset, "exposureLut");
+    erasePassByType(asset, "AutoExposurePass");
+
+    for (auto& pass : asset.passes) {
+        if (pass.type != "TonemapPass") {
+            continue;
+        }
+
+        pass.inputs.erase(
+            std::remove(pass.inputs.begin(), pass.inputs.end(), "exposureLut"),
+            pass.inputs.end());
+        pass.config["autoExposure"] = false;
+    }
+}
+
+void disableVisibilityRayTracing(PipelineAsset& asset) {
+    eraseResourceByName(asset, "shadowMap");
+    erasePassByType(asset, "ShadowRayPass");
+
+    for (auto& pass : asset.passes) {
+        if (pass.type != "DeferredLightingPass") {
+            continue;
+        }
+
+        pass.inputs.erase(
+            std::remove(pass.inputs.begin(), pass.inputs.end(), "shadowMap"),
+            pass.inputs.end());
+    }
+}
+
+void disableVisibilityTAA(PipelineAsset& asset) {
+    eraseResourceByName(asset, "taaOutput");
+    erasePassByType(asset, "TAAPass");
+
+    for (auto& pass : asset.passes) {
+        if (pass.type == "AutoExposurePass" || pass.type == "TonemapPass") {
+            replacePassInput(pass, "taaOutput", "lightingOutput");
+        }
+    }
 }
 
 void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
@@ -211,33 +413,6 @@ bool loadPipelineAssetChecked(const std::string& path,
                  outAsset.passes.size(),
                  outAsset.resources.size());
     return true;
-}
-
-void disablePreviewAutoExposure(PipelineAsset& asset) {
-    asset.resources.erase(
-        std::remove_if(asset.resources.begin(), asset.resources.end(),
-                       [](const ResourceDecl& resource) {
-                           return resource.name == "exposureLut";
-                       }),
-        asset.resources.end());
-
-    asset.passes.erase(
-        std::remove_if(asset.passes.begin(), asset.passes.end(),
-                       [](const PassDecl& pass) {
-                           return pass.type == "AutoExposurePass";
-                       }),
-        asset.passes.end());
-
-    for (auto& pass : asset.passes) {
-        if (pass.type != "TonemapPass") {
-            continue;
-        }
-
-        pass.inputs.erase(
-            std::remove(pass.inputs.begin(), pass.inputs.end(), "exposureLut"),
-            pass.inputs.end());
-        pass.config["autoExposure"] = false;
-    }
 }
 
 bool loadAtmosphereTextures(const RhiDevice& device,
@@ -423,8 +598,8 @@ int main() {
     }};
 
     const RhiNativeHandles& native = rhi->nativeHandles();
-    VkDevice vkDevice = static_cast<VkDevice>(native.device);
-    VkPhysicalDevice vkPhysicalDevice = static_cast<VkPhysicalDevice>(native.physicalDevice);
+    VkDevice vkDevice = nativeToVkHandle<VkDevice>(native.device);
+    VkPhysicalDevice vkPhysicalDevice = nativeToVkHandle<VkPhysicalDevice>(native.physicalDevice);
     VmaAllocator vmaAllocator = getVulkanAllocator(*rhi);
     RhiDeviceHandle deviceHandle(native.device);
     const uint32_t swapchainImageCount = std::max(2u, native.swapchainImageCount);
@@ -443,12 +618,12 @@ int main() {
 
     ImGui_ImplVulkan_InitInfo imguiInitInfo{};
     imguiInitInfo.ApiVersion = native.apiVersion;
-    imguiInitInfo.Instance = static_cast<VkInstance>(native.instance);
+    imguiInitInfo.Instance = nativeToVkHandle<VkInstance>(native.instance);
     imguiInitInfo.PhysicalDevice = vkPhysicalDevice;
     imguiInitInfo.Device = vkDevice;
     imguiInitInfo.QueueFamily = native.graphicsQueueFamily;
-    imguiInitInfo.Queue = static_cast<VkQueue>(native.queue);
-    imguiInitInfo.DescriptorPool = static_cast<VkDescriptorPool>(native.descriptorPool);
+    imguiInitInfo.Queue = nativeToVkHandle<VkQueue>(native.queue);
+    imguiInitInfo.DescriptorPool = nativeToVkHandle<VkDescriptorPool>(native.descriptorPool);
     imguiInitInfo.MinImageCount = swapchainImageCount;
     imguiInitInfo.ImageCount = swapchainImageCount;
     imguiInitInfo.UseDynamicRendering = true;
@@ -470,18 +645,19 @@ int main() {
     vulkanSetResourceContext(vkDevice,
                              vkPhysicalDevice,
                              vmaAllocator,
-                             static_cast<VkQueue>(native.queue),
+                             nativeToVkHandle<VkQueue>(native.queue),
                              native.graphicsQueueFamily);
     vulkanSetShaderContext(vkDevice);
     vulkanLoadMeshShaderFunctions(vkDevice);
 
+    const RhiFeatures& features = rhi->features();
     ShaderManager shaderManager(deviceHandle,
                                 PROJECT_SOURCE_DIR,
-                                false,
-                                false,
-                                ShaderManagerProfile::preview());
+                                features.meshShaders,
+                                features.meshShaders,
+                                ShaderManagerProfile::vulkanVisibility());
     if (!shaderManager.buildAll()) {
-        spdlog::error("Failed to build Vulkan preview shader set");
+        spdlog::error("Failed to build Vulkan visibility shader set");
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
@@ -575,61 +751,135 @@ int main() {
     }
 
     LoadedMesh previewMesh;
+    MeshletData previewMeshlets;
+    LoadedMaterials previewMaterials;
     SceneGraph previewScene;
-    if (!createPreviewScene(deviceHandle, previewMesh, previewScene)) {
-        spdlog::warn("Failed to create preview mesh; falling back to triangle path");
+    RhiTextureHandle shadowDummyTexture;
+    RhiTextureHandle skyFallbackTexture;
+    bool previewSceneReady = createPreviewScene(deviceHandle, previewMesh, previewScene);
+    if (previewSceneReady) {
+        previewSceneReady = buildMeshlets(deviceHandle, previewMesh, previewMeshlets);
+        if (previewSceneReady) {
+            applyPreviewMeshletSceneData(previewMeshlets, previewScene);
+        }
+    }
+    if (previewSceneReady) {
+        previewSceneReady = createPreviewMaterials(deviceHandle, previewMaterials);
+    }
+    if (previewSceneReady) {
+        previewSceneReady =
+            createPreviewFallbackTextures(deviceHandle, shadowDummyTexture, skyFallbackTexture);
+    }
+    if (!previewSceneReady) {
+        spdlog::warn("Failed to create Vulkan visibility preview scene; falling back to triangle path");
+        releaseMaterialResources(previewMaterials);
+        releaseMeshletBuffers(previewMeshlets);
+        releaseMeshBuffers(previewMesh);
+        rhiReleaseHandle(shadowDummyTexture);
+        rhiReleaseHandle(skyFallbackTexture);
     }
 
-    const std::string previewPipelinePath = std::string(PROJECT_SOURCE_DIR) + "/Pipelines/vulkan_preview.json";
-    PipelineAsset previewPipelineBaseAsset;
-    PipelineAsset previewPipelineAsset;
-    bool previewPipelineBaseLoaded =
-        loadPipelineAssetChecked(previewPipelinePath, "Vulkan preview", previewPipelineBaseAsset);
-    bool previewPipelineAssetLoaded = false;
-    bool previewAutoExposureAvailable = false;
-    bool usePreviewRenderGraph = false;
+    const std::string visibilityPipelinePath =
+        std::string(PROJECT_SOURCE_DIR) + "/Pipelines/visibility_buffer.json";
+    PipelineAsset visibilityPipelineBaseAsset;
+    PipelineAsset visibilityPipelineAsset;
+    bool visibilityPipelineBaseLoaded =
+        loadPipelineAssetChecked(visibilityPipelinePath, "Vulkan visibility", visibilityPipelineBaseAsset);
+    bool visibilityPipelineAssetLoaded = false;
+    bool visibilityAutoExposureAvailable = false;
+    bool visibilityTaaAvailable = false;
+    bool visibilityGpuCullingAvailable = false;
+    bool useVisibilityRenderGraph = false;
     bool atmosphereSkyAvailable = false;
 
-    auto refreshPreviewPipelineState = [&]() {
-        previewPipelineAssetLoaded = previewPipelineBaseLoaded;
-        previewPipelineAsset = previewPipelineBaseLoaded ? previewPipelineBaseAsset : PipelineAsset{};
-        previewAutoExposureAvailable =
+    auto refreshVisibilityPipelineState = [&]() {
+        visibilityPipelineAssetLoaded = visibilityPipelineBaseLoaded;
+        visibilityPipelineAsset =
+            visibilityPipelineBaseLoaded ? visibilityPipelineBaseAsset : PipelineAsset{};
+        visibilityAutoExposureAvailable =
             hasComputePipeline("HistogramPass") && hasComputePipeline("AutoExposurePass");
-        if (previewPipelineAssetLoaded && !previewAutoExposureAvailable) {
-            disablePreviewAutoExposure(previewPipelineAsset);
+        visibilityTaaAvailable = hasComputePipeline("TAAPass");
+        visibilityGpuCullingAvailable =
+            hasComputePipeline("MeshletCullPass") &&
+            hasComputePipeline("BuildIndirectPass") &&
+            hasRenderPipeline("VisibilityIndirectPass");
+
+        auto validateVisibilityAsset = [&](const char* label) {
             std::string validationError;
-            previewPipelineAssetLoaded = previewPipelineAsset.validate(validationError);
-            if (!previewPipelineAssetLoaded) {
-                spdlog::error("Invalid downgraded Vulkan preview pipeline: {}", validationError);
-            } else {
-                spdlog::warn("Vulkan preview auto-exposure unavailable; falling back to manual exposure");
+            if (!visibilityPipelineAsset.validate(validationError)) {
+                spdlog::error("{}: {}", label, validationError);
+                visibilityPipelineAssetLoaded = false;
+                return false;
+            }
+            return true;
+        };
+
+        if (visibilityPipelineAssetLoaded) {
+            disableVisibilityRayTracing(visibilityPipelineAsset);
+            if (validateVisibilityAsset("Invalid Vulkan visibility pipeline without ShadowRayPass")) {
+                spdlog::info("Vulkan visibility pipeline uses dummy shadow input until ray tracing backend is ready");
             }
         }
 
-        usePreviewRenderGraph =
-            previewPipelineAssetLoaded &&
-            hasRenderPipeline("ForwardPass") &&
+        if (visibilityPipelineAssetLoaded && !visibilityTaaAvailable) {
+            disableVisibilityTAA(visibilityPipelineAsset);
+            if (validateVisibilityAsset("Invalid Vulkan visibility pipeline without TAA")) {
+                spdlog::warn("Vulkan visibility TAA unavailable; tonemap now reads lightingOutput directly");
+            }
+        }
+
+        if (visibilityPipelineAssetLoaded && !visibilityAutoExposureAvailable) {
+            disablePipelineAutoExposure(visibilityPipelineAsset);
+            if (validateVisibilityAsset("Invalid Vulkan visibility pipeline without AutoExposure")) {
+                spdlog::warn("Vulkan visibility auto-exposure unavailable; falling back to manual exposure");
+            }
+        }
+
+        useVisibilityRenderGraph =
+            visibilityPipelineAssetLoaded &&
+            previewSceneReady &&
+            hasRenderPipeline("VisibilityPass") &&
+            hasComputePipeline("DeferredLightingPass") &&
             hasRenderPipeline("TonemapPass") &&
             previewMesh.positionBuffer.nativeHandle() &&
             previewMesh.normalBuffer.nativeHandle() &&
-            previewMesh.indexBuffer.nativeHandle();
+            previewMesh.uvBuffer.nativeHandle() &&
+            previewMesh.indexBuffer.nativeHandle() &&
+            previewMeshlets.meshletBuffer.nativeHandle() &&
+            previewMeshlets.meshletVertices.nativeHandle() &&
+            previewMeshlets.meshletTriangles.nativeHandle() &&
+            previewMeshlets.boundsBuffer.nativeHandle() &&
+            previewMeshlets.materialIDs.nativeHandle() &&
+            previewMaterials.materialBuffer.nativeHandle() &&
+            previewMaterials.sampler.nativeHandle() &&
+            shadowDummyTexture.nativeHandle() &&
+            skyFallbackTexture.nativeHandle();
         atmosphereSkyAvailable = hasRenderPipeline("SkyPass") && atmosphereTextures.isValid();
     };
 
-    auto logPreviewMode = [&]() {
-        if (usePreviewRenderGraph) {
-            if (previewAutoExposureAvailable) {
-                spdlog::info("Vulkan RenderGraph mode: SkyPass -> ForwardPass -> AutoExposurePass -> TonemapPass");
+    auto logVisibilityMode = [&]() {
+        if (useVisibilityRenderGraph) {
+            std::string mode = "Vulkan RenderGraph mode: MeshletCullPass -> VisibilityPass -> SkyPass -> DeferredLightingPass";
+            if (visibilityTaaAvailable) {
+                mode += " -> TAAPass";
+            }
+            if (visibilityAutoExposureAvailable) {
+                mode += " -> AutoExposurePass";
+            }
+            mode += " -> TonemapPass";
+            spdlog::info("{}", mode);
+            if (visibilityGpuCullingAvailable) {
+                spdlog::info("Vulkan visibility dispatch: GPU-driven indirect meshlet path");
             } else {
-                spdlog::info("Vulkan RenderGraph mode: SkyPass -> ForwardPass -> TonemapPass");
+                spdlog::info("Vulkan visibility dispatch: CPU meshlet path");
             }
         } else {
             spdlog::info("Vulkan RenderGraph mode: Triangle -> TonemapPass fallback");
         }
     };
 
-    refreshPreviewPipelineState();
-    logPreviewMode();
+    refreshVisibilityPipelineState();
+    logVisibilityMode();
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
     VulkanDescriptorManager descriptorManager;
@@ -660,6 +910,19 @@ int main() {
         spdlog::error("Failed to create offscreen scene color texture");
         rhi->waitIdle();
         descriptorManager.destroy();
+        atmosphereTextures.release();
+        rhiReleaseHandle(shadowDummyTexture);
+        rhiReleaseHandle(skyFallbackTexture);
+        releaseMaterialResources(previewMaterials);
+        releaseMeshletBuffers(previewMeshlets);
+        releaseMeshBuffers(previewMesh);
+        rhiReleaseHandle(linearSampler);
+        rhiReleaseHandle(trianglePipeline);
+        rhiReleaseHandle(vertexDescriptor);
+        rhiReleaseHandle(vertexBuffer);
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
@@ -692,21 +955,19 @@ int main() {
     sceneGraph.exportResource(trianglePassData.colorTarget);
     sceneGraph.compile();
 
-    MeshletData emptyMeshlets;
-    LoadedMaterials previewMaterials;
     RaytracedShadowResources emptyShadows;
     const double depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
     RhiDepthStencilStateHandle depthState =
         rhiCreateDepthStencilState(deviceHandle, true, ML_DEPTH_REVERSED);
     RenderContext renderContext{
         previewMesh,
-        emptyMeshlets,
+        previewMeshlets,
         previewMaterials,
         previewScene,
         emptyShadows,
         depthState,
-        {},
-        {},
+        shadowDummyTexture,
+        skyFallbackTexture,
         depthClearValue,
     };
 
@@ -717,7 +978,7 @@ int main() {
     PipelineBuilder postBuilder(renderContext);
     auto rebuildPostBuilder = [&](int targetWidth, int targetHeight) {
         const PipelineAsset& activePostAsset =
-            usePreviewRenderGraph ? previewPipelineAsset : sceneColorPostAsset;
+            useVisibilityRenderGraph ? visibilityPipelineAsset : sceneColorPostAsset;
         if (!postBuilder.build(activePostAsset, runtimeContext, targetWidth, targetHeight)) {
             spdlog::error("Failed to build Vulkan post pipeline: {}", postBuilder.lastError());
             return false;
@@ -735,6 +996,10 @@ int main() {
         sceneGraph.reset();
         descriptorManager.destroy();
         atmosphereTextures.release();
+        rhiReleaseHandle(shadowDummyTexture);
+        rhiReleaseHandle(skyFallbackTexture);
+        releaseMaterialResources(previewMaterials);
+        releaseMeshletBuffers(previewMeshlets);
         releaseMeshBuffers(previewMesh);
         rhiReleaseHandle(depthState);
         rhiReleaseHandle(linearSampler);
@@ -761,6 +1026,9 @@ int main() {
     previewCamera.nearZ = 0.1f;
     previewCamera.farZ = 100.0f;
     const float3 sunDirection = normalize(float3(0.35f, 0.85f, 0.25f));
+    const std::vector<uint32_t> previewVisibleMeshletNodes = previewSceneReady
+        ? std::vector<uint32_t>{0}
+        : std::vector<uint32_t>{};
     const std::vector<uint32_t> previewVisibleIndexNodes = {0};
     bool showGraphDebug = true;
     bool showRenderPassUI = true;
@@ -770,10 +1038,15 @@ int main() {
     bool shaderReloadRequested = false;
     bool pipelineReloadRequested = false;
     bool postBuilderNeedsRebuild = false;
+    double lastFrameTime = glfwGetTime();
+    float4x4 prevView = float4x4::Identity();
+    float4x4 prevProj = float4x4::Identity();
+    bool hasPrevMatrices = false;
+    uint32_t frameIndex = 0;
 
     auto rebuildActivePipeline = [&](int targetWidth, int targetHeight) {
         rhi->waitIdle();
-        if (!usePreviewRenderGraph &&
+        if (!useVisibilityRenderGraph &&
             (!sceneColorTexture.nativeHandle() ||
              sceneColorTexture.width() != static_cast<uint32_t>(targetWidth) ||
              sceneColorTexture.height() != static_cast<uint32_t>(targetHeight))) {
@@ -820,50 +1093,57 @@ int main() {
         if (shaderReloadRequested) {
             shaderReloadRequested = false;
             rhi->waitIdle();
-            spdlog::info("Reloading Vulkan preview shaders...");
-            const bool previousPreviewRenderGraph = usePreviewRenderGraph;
-            const bool previousAutoExposure = previewAutoExposureAvailable;
+            spdlog::info("Reloading Vulkan visibility shaders...");
+            const bool previousVisibilityRenderGraph = useVisibilityRenderGraph;
+            const bool previousAutoExposure = visibilityAutoExposureAvailable;
+            const bool previousTaa = visibilityTaaAvailable;
             const bool previousAtmosphereSky = atmosphereSkyAvailable;
             auto [reloaded, failed] = shaderManager.reloadAll();
-            refreshPreviewPipelineState();
+            refreshVisibilityPipelineState();
 
             if (failed == 0) {
-                spdlog::info("All {} Vulkan preview shaders reloaded successfully", reloaded);
+                spdlog::info("All {} Vulkan visibility shaders reloaded successfully", reloaded);
             } else {
-                spdlog::warn("{} Vulkan preview shaders reloaded, {} failed (keeping old pipelines)",
+                spdlog::warn("{} Vulkan visibility shaders reloaded, {} failed (keeping old pipelines)",
                              reloaded,
                              failed);
             }
 
-            if (previousPreviewRenderGraph != usePreviewRenderGraph ||
-                previousAutoExposure != previewAutoExposureAvailable ||
+            if (previousVisibilityRenderGraph != useVisibilityRenderGraph ||
+                previousAutoExposure != visibilityAutoExposureAvailable ||
+                previousTaa != visibilityTaaAvailable ||
                 previousAtmosphereSky != atmosphereSkyAvailable) {
-                logPreviewMode();
+                logVisibilityMode();
             }
             postBuilderNeedsRebuild = true;
         }
 
         if (pipelineReloadRequested) {
             pipelineReloadRequested = false;
-            spdlog::info("Reloading Vulkan preview pipeline asset...");
+            spdlog::info("Reloading Vulkan visibility pipeline asset...");
 
-            PipelineAsset reloadedPreviewAsset;
-            if (loadPipelineAssetChecked(previewPipelinePath, "Vulkan preview", reloadedPreviewAsset)) {
-                const bool previousPreviewRenderGraph = usePreviewRenderGraph;
-                const bool previousAutoExposure = previewAutoExposureAvailable;
+            PipelineAsset reloadedVisibilityAsset;
+            if (loadPipelineAssetChecked(visibilityPipelinePath,
+                                         "Vulkan visibility",
+                                         reloadedVisibilityAsset)) {
+                const bool previousVisibilityRenderGraph = useVisibilityRenderGraph;
+                const bool previousAutoExposure = visibilityAutoExposureAvailable;
+                const bool previousTaa = visibilityTaaAvailable;
                 const bool previousAtmosphereSky = atmosphereSkyAvailable;
-                previewPipelineBaseAsset = std::move(reloadedPreviewAsset);
-                previewPipelineBaseLoaded = true;
-                refreshPreviewPipelineState();
+                visibilityPipelineBaseAsset = std::move(reloadedVisibilityAsset);
+                visibilityPipelineBaseLoaded = true;
+                refreshVisibilityPipelineState();
 
-                if (previousPreviewRenderGraph != usePreviewRenderGraph ||
-                    previousAutoExposure != previewAutoExposureAvailable ||
+                if (previousVisibilityRenderGraph != useVisibilityRenderGraph ||
+                    previousAutoExposure != visibilityAutoExposureAvailable ||
+                    previousTaa != visibilityTaaAvailable ||
                     previousAtmosphereSky != atmosphereSkyAvailable) {
-                    logPreviewMode();
+                    logVisibilityMode();
                 }
                 postBuilderNeedsRebuild = true;
-            } else if (previewPipelineBaseLoaded) {
-                spdlog::warn("Keeping previous Vulkan preview pipeline: {}", previewPipelineBaseAsset.name);
+            } else if (visibilityPipelineBaseLoaded) {
+                spdlog::warn("Keeping previous Vulkan visibility pipeline: {}",
+                             visibilityPipelineBaseAsset.name);
             }
         }
 
@@ -893,7 +1173,7 @@ int main() {
         if (backbufferImage != VK_NULL_HANDLE) {
             imageTracker.setLayout(backbufferImage, getVulkanCurrentBackbufferLayout(*rhi));
         }
-        if (!usePreviewRenderGraph && sceneColorTexture.nativeHandle()) {
+        if (!useVisibilityRenderGraph && sceneColorTexture.nativeHandle()) {
             imageTracker.setLayout(getVulkanImage(&sceneColorTexture), sceneColorLayout);
         }
 
@@ -902,28 +1182,96 @@ int main() {
                                           &descriptorManager,
                                           &imageTracker);
 
-        if (!usePreviewRenderGraph) {
+        if (!useVisibilityRenderGraph) {
             sceneGraph.execute(commandBuffer, frameGraphBackend);
         }
 
         RhiNativeCommandBufferHandle nativeCommandBuffer(getVulkanCurrentCommandBuffer(*rhi));
+        const float aspect =
+            static_cast<float>(width) / static_cast<float>(std::max(height, 1));
+        const float4x4 view = previewCamera.viewMatrix();
+        const float4x4 unjitteredProj = previewCamera.projectionMatrix(aspect);
+        float4x4 proj = unjitteredProj;
+        float2 jitterOffset = float2(0.0f, 0.0f);
+        const bool enableVisibilityTAA = useVisibilityRenderGraph && visibilityTaaAvailable;
+        if (enableVisibilityTAA) {
+            jitterOffset = OrbitCamera::haltonJitter(frameIndex);
+            proj = OrbitCamera::jitteredProjectionMatrix(previewCamera.fovY,
+                                                         aspect,
+                                                         previewCamera.nearZ,
+                                                         previewCamera.farZ,
+                                                         jitterOffset.x,
+                                                         jitterOffset.y,
+                                                         static_cast<uint32_t>(width),
+                                                         static_cast<uint32_t>(height));
+        }
+
+        std::unique_ptr<RhiBuffer> instanceTransformBuffer;
+        uint32_t visibilityInstanceCount = 0;
+        if (useVisibilityRenderGraph && !previewVisibleMeshletNodes.empty()) {
+            visibilityInstanceCount = static_cast<uint32_t>(previewVisibleMeshletNodes.size());
+            std::vector<SceneInstanceTransform> instanceTransforms;
+            instanceTransforms.reserve(visibilityInstanceCount);
+            const float4x4 prevViewForMotion = hasPrevMatrices ? prevView : view;
+            const float4x4 prevProjForMotion = hasPrevMatrices ? prevProj : unjitteredProj;
+            for (uint32_t instanceId = 0; instanceId < visibilityInstanceCount; ++instanceId) {
+                const SceneNode& node = previewScene.nodes[previewVisibleMeshletNodes[instanceId]];
+                const float4x4 nodeModelView = view * node.transform.worldMatrix;
+                const float4x4 nodeMvp = proj * nodeModelView;
+                const float4x4 prevNodeModelView = prevViewForMotion * node.transform.worldMatrix;
+                const float4x4 prevNodeMvp = prevProjForMotion * prevNodeModelView;
+
+                SceneInstanceTransform transform{};
+                transform.mvp = transpose(nodeMvp);
+                transform.modelView = transpose(nodeModelView);
+                transform.prevMvp = transpose(prevNodeMvp);
+                instanceTransforms.push_back(transform);
+            }
+
+            RhiBufferDesc instanceBufferDesc;
+            instanceBufferDesc.size = instanceTransforms.size() * sizeof(SceneInstanceTransform);
+            instanceBufferDesc.initialData = instanceTransforms.data();
+            instanceBufferDesc.hostVisible = true;
+            instanceBufferDesc.debugName = "Vulkan Visibility Instance Transforms";
+            instanceTransformBuffer = frameGraphBackend.createBuffer(instanceBufferDesc);
+            if (!instanceTransformBuffer) {
+                visibilityInstanceCount = 0;
+            }
+        }
+
+        frameContext = FrameContext{};
         frameContext.width = width;
         frameContext.height = height;
-        frameContext.view = previewCamera.viewMatrix();
-        frameContext.proj =
-            previewCamera.projectionMatrix(static_cast<float>(width) / static_cast<float>(std::max(height, 1)));
+        frameContext.view = view;
+        frameContext.proj = proj;
         frameContext.cameraWorldPos = orbitCameraWorldPosition(previewCamera);
-        frameContext.prevView = frameContext.view;
-        frameContext.prevProj = frameContext.proj;
+        frameContext.prevView = hasPrevMatrices ? prevView : view;
+        frameContext.prevProj = hasPrevMatrices ? prevProj : unjitteredProj;
+        frameContext.jitterOffset = jitterOffset;
+        frameContext.frameIndex = frameIndex;
+        frameContext.enableTAA = enableVisibilityTAA;
         frameContext.worldLightDir = float4(sunDirection.x, sunDirection.y, sunDirection.z, 0.0f);
-        frameContext.viewLightDir = frameContext.view * frameContext.worldLightDir;
+        frameContext.viewLightDir = view * frameContext.worldLightDir;
         frameContext.lightColorIntensity = float4(1.0f, 0.98f, 0.95f, 2.5f);
+        frameContext.meshletCount = previewMeshlets.meshletCount;
+        frameContext.materialCount = previewMaterials.materialCount;
+        frameContext.textureCount = static_cast<uint32_t>(previewMaterials.textures.size());
+        frameContext.visibleMeshletNodes = previewVisibleMeshletNodes;
         frameContext.visibleIndexNodes = previewVisibleIndexNodes;
-        frameContext.renderMode = 0;
+        frameContext.visibilityInstanceCount = visibilityInstanceCount;
+        frameContext.instanceTransformBufferRhi = instanceTransformBuffer.get();
         frameContext.commandBuffer = &nativeCommandBuffer;
-        frameContext.cameraFarZ = previewCamera.farZ;
         frameContext.depthClearValue = depthClearValue;
+        frameContext.cameraFarZ = previewCamera.farZ;
+        {
+            const double now = glfwGetTime();
+            frameContext.deltaTime = static_cast<float>(now - lastFrameTime);
+            lastFrameTime = now;
+        }
+        frameContext.enableRTShadows = false;
         frameContext.enableAtmosphereSky = atmosphereSkyAvailable;
+        frameContext.gpuDrivenCulling = useVisibilityRenderGraph && visibilityGpuCullingAvailable;
+        frameContext.renderMode = useVisibilityRenderGraph ? 2 : 0;
 
         postBuilder.updateFrame(&backbufferTexture, &frameContext);
 
@@ -933,8 +1281,10 @@ int main() {
 
         ImGui::Begin("Vulkan Preview");
         ImGui::Text("Resolution: %d x %d", width, height);
-        ImGui::TextUnformatted(usePreviewRenderGraph ? "Pipeline: Preview" : "Pipeline: Triangle Fallback");
-        ImGui::TextUnformatted(previewAutoExposureAvailable ? "Exposure: Auto" : "Exposure: Manual");
+        ImGui::TextUnformatted(useVisibilityRenderGraph ? "Pipeline: Visibility Buffer" : "Pipeline: Triangle Fallback");
+        ImGui::TextUnformatted(visibilityTaaAvailable ? "TAA: Enabled" : "TAA: Disabled");
+        ImGui::TextUnformatted(visibilityAutoExposureAvailable ? "Exposure: Auto" : "Exposure: Manual");
+        ImGui::TextUnformatted(visibilityGpuCullingAvailable ? "Visibility Dispatch: GPU" : "Visibility Dispatch: CPU");
         if (ImGui::Button("Reload Shaders (F5)")) {
             shaderReloadRequested = true;
         }
@@ -961,9 +1311,14 @@ int main() {
 
         postBuilder.execute(commandBuffer, frameGraphBackend);
 
-        if (!usePreviewRenderGraph) {
+        if (!useVisibilityRenderGraph) {
             sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
+
+        prevView = view;
+        prevProj = unjitteredProj;
+        hasPrevMatrices = true;
+        frameIndex++;
 
         rhi->endFrame();
         FrameMark;
