@@ -459,6 +459,23 @@ float4 orbitCameraWorldPosition(const OrbitCamera& camera) {
                   1.0f);
 }
 
+ImGuiID beginDockspace(bool& showGraphDebug, bool& showRenderPassUI, bool& showImGuiDemo) {
+    const ImGuiID dockspaceId =
+        ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
+            ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
+            ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
+
+    return dockspaceId;
+}
+
 } // namespace
 
 int main() {
@@ -1226,7 +1243,9 @@ int main() {
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        const ImGuiID dockspaceId = beginDockspace(showGraphDebug, showRenderPassUI, showImGuiDemo);
 
+        ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
         ImGui::Begin("Vulkan Sponza");
         ImGui::Text("Resolution: %d x %d", width, height);
         ImGui::TextUnformatted(useVisibilityRenderGraph ? "Pipeline: Visibility Buffer" : "Pipeline: Triangle Fallback");
@@ -1247,12 +1266,15 @@ int main() {
 
         FrameGraph& activeFg = postBuilder.frameGraph();
         if (showGraphDebug) {
+            ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
             activeFg.debugImGui();
         }
         if (showRenderPassUI) {
+            ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
             activeFg.renderPassUI();
         }
         if (showImGuiDemo) {
+            ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
             ImGui::ShowDemoWindow(&showImGuiDemo);
         }
         ImGui::Render();
