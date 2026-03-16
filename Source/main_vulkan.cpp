@@ -21,6 +21,7 @@
 #include "camera.h"
 #include "frame_context.h"
 #include "frame_graph.h"
+#include "input.h"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
@@ -47,8 +48,12 @@ struct Vertex {
 };
 
 struct AppState {
+    InputState input;
     bool framebufferResized = false;
 };
+
+static_assert(std::is_standard_layout_v<AppState>);
+static_assert(offsetof(AppState, input) == 0);
 
 void checkImGuiVkResult(VkResult result) {
     if (result == VK_SUCCESS) {
@@ -472,9 +477,12 @@ int main() {
         return 1;
     }
 
+    OrbitCamera previewCamera;
     AppState appState{};
+    appState.input.camera = &previewCamera;
     glfwSetWindowUserPointer(window, &appState);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+    setupInputCallbacks(window, &appState.input);
 
     int width = 0;
     int height = 0;
@@ -933,7 +941,6 @@ int main() {
 
     VkImageLayout sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     FrameContext frameContext;
-    OrbitCamera previewCamera;
     previewCamera.initFromBounds(previewMesh.bboxMin, previewMesh.bboxMax);
     previewCamera.distance *= 0.8f;
     previewCamera.azimuth = 0.55f;

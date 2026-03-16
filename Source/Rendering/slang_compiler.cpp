@@ -8,6 +8,7 @@
 #include <mutex>
 #include <regex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -24,6 +25,18 @@ struct SlangTargetConfig {
 };
 
 void logDiagnostics(const char* prefix, slang::IBlob* diagnostics);
+
+constexpr uint32_t kSpirvHeaderWordCount = 5;
+constexpr uint16_t kSpirvOpEntryPoint = 15;
+constexpr uint16_t kSpirvOpDecorate = 71;
+constexpr uint16_t kSpirvOpMemberDecorate = 72;
+constexpr uint16_t kSpirvOpGroupDecorate = 73;
+constexpr uint16_t kSpirvOpGroupMemberDecorate = 74;
+constexpr uint16_t kSpirvOpDecorateId = 332;
+constexpr uint32_t kSpirvExecutionModelFragment = 4;
+constexpr uint32_t kSpirvExecutionModelMeshExt = 5365;
+constexpr uint32_t kSpirvDecorationLocation = 30;
+constexpr uint32_t kSpirvDecorationPerPrimitiveExt = 5271;
 
 std::mutex g_bindingLayoutCacheMutex;
 std::unordered_map<uint64_t, SlangShaderBindingLayout> g_bindingLayoutCache;
@@ -183,6 +196,123 @@ bool resolveSlangTarget(RhiBackendType backend,
     }
 
     return false;
+}
+
+bool isSpirvAnnotationOp(uint16_t opcode) {
+    switch (opcode) {
+    case kSpirvOpDecorate:
+    case kSpirvOpMemberDecorate:
+    case kSpirvOpGroupDecorate:
+    case kSpirvOpGroupMemberDecorate:
+    case kSpirvOpDecorateId:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool patchSpirvPerPrimitiveFragmentInputs(std::vector<uint32_t>& words,
+                                          const char* shaderPath) {
+    if (words.size() <= kSpirvHeaderWordCount) {
+        return false;
+    }
+
+    std::unordered_set<uint32_t> meshInterfaceIds;
+    std::unordered_set<uint32_t> fragmentInterfaceIds;
+    std::unordered_map<uint32_t, uint32_t> locationsById;
+    std::unordered_set<uint32_t> perPrimitiveIds;
+
+    size_t insertWordIndex = 0;
+
+    for (size_t wordIndex = kSpirvHeaderWordCount; wordIndex < words.size();) {
+        const uint32_t instruction = words[wordIndex];
+        const uint16_t wordCount = static_cast<uint16_t>(instruction >> 16);
+        const uint16_t opcode = static_cast<uint16_t>(instruction & 0xFFFFu);
+        if (wordCount == 0 || (wordIndex + wordCount) > words.size()) {
+            spdlog::warn("Skipping SPIR-V per-primitive patch for {}: malformed module", shaderPath);
+            return false;
+        }
+
+        if (opcode == kSpirvOpEntryPoint && wordCount >= 4) {
+            const uint32_t executionModel = words[wordIndex + 1];
+            size_t interfaceWordIndex = wordIndex + 3;
+            while (interfaceWordIndex < wordIndex + wordCount) {
+                const uint32_t stringWord = words[interfaceWordIndex++];
+                if ((stringWord & 0xFF000000u) == 0 ||
+                    (stringWord & 0x00FF0000u) == 0 ||
+                    (stringWord & 0x0000FF00u) == 0 ||
+                    (stringWord & 0x000000FFu) == 0) {
+                    break;
+                }
+            }
+
+            auto& interfaceIds =
+                executionModel == kSpirvExecutionModelMeshExt ? meshInterfaceIds : fragmentInterfaceIds;
+            if (executionModel == kSpirvExecutionModelMeshExt ||
+                executionModel == kSpirvExecutionModelFragment) {
+                for (; interfaceWordIndex < wordIndex + wordCount; ++interfaceWordIndex) {
+                    interfaceIds.insert(words[interfaceWordIndex]);
+                }
+            }
+        } else if (opcode == kSpirvOpDecorate && wordCount >= 3) {
+            const uint32_t targetId = words[wordIndex + 1];
+            const uint32_t decoration = words[wordIndex + 2];
+            if (decoration == kSpirvDecorationLocation && wordCount >= 4) {
+                locationsById[targetId] = words[wordIndex + 3];
+            } else if (decoration == kSpirvDecorationPerPrimitiveExt) {
+                perPrimitiveIds.insert(targetId);
+            }
+        }
+
+        if (isSpirvAnnotationOp(opcode)) {
+            insertWordIndex = wordIndex + wordCount;
+        }
+
+        wordIndex += wordCount;
+    }
+
+    std::unordered_set<uint32_t> perPrimitiveLocations;
+    for (uint32_t interfaceId : meshInterfaceIds) {
+        if (perPrimitiveIds.contains(interfaceId)) {
+            auto locationIt = locationsById.find(interfaceId);
+            if (locationIt != locationsById.end()) {
+                perPrimitiveLocations.insert(locationIt->second);
+            }
+        }
+    }
+
+    if (perPrimitiveLocations.empty() || insertWordIndex == 0) {
+        return false;
+    }
+
+    std::vector<uint32_t> patchWords;
+    for (uint32_t interfaceId : fragmentInterfaceIds) {
+        auto locationIt = locationsById.find(interfaceId);
+        if (locationIt == locationsById.end()) {
+            continue;
+        }
+        if (!perPrimitiveLocations.contains(locationIt->second) ||
+            perPrimitiveIds.contains(interfaceId)) {
+            continue;
+        }
+
+        patchWords.push_back((3u << 16) | kSpirvOpDecorate);
+        patchWords.push_back(interfaceId);
+        patchWords.push_back(kSpirvDecorationPerPrimitiveExt);
+        perPrimitiveIds.insert(interfaceId);
+    }
+
+    if (patchWords.empty()) {
+        return false;
+    }
+
+    words.insert(words.begin() + static_cast<ptrdiff_t>(insertWordIndex),
+                 patchWords.begin(),
+                 patchWords.end());
+    spdlog::info("Applied SPIR-V per-primitive interface patch for {} ({} fragment inputs)",
+                 shaderPath,
+                 patchWords.size() / 3u);
+    return true;
 }
 
 void logDiagnostics(const char* prefix, slang::IBlob* diagnostics) {
@@ -367,9 +497,11 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
     std::vector<uint32_t> words(byteSize / sizeof(uint32_t));
     std::memcpy(words.data(), binaryCode->getBufferPointer(), byteSize);
 
+    patchSpirvPerPrimitiveFragmentInputs(words, shaderPath);
+
     SlangShaderBindingLayout bindingLayout;
     if (buildBindingLayout(linkedProgram, bindingLayout)) {
-        cacheBindingLayout(words.data(), byteSize, bindingLayout);
+        cacheBindingLayout(words.data(), words.size() * sizeof(uint32_t), bindingLayout);
     }
     return words;
 }

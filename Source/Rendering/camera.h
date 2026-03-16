@@ -4,11 +4,13 @@
 #include <cmath>
 
 struct OrbitCamera {
+    static constexpr float kPi = 3.14159265358979323846f;
+
     float3 target = float3(0.f);
     float distance = 1.0f;
     float azimuth  = 0.0f;   // radians
     float elevation = 0.2f;  // radians
-    float fovY = 45.0f * (M_PI / 180.0f);
+    float fovY = 45.0f * (kPi / 180.0f);
     float nearZ = 0.001f;
     float farZ  = 100.0f;
 
@@ -33,7 +35,7 @@ struct OrbitCamera {
         azimuth += dx;
         elevation += dy;
         // Clamp elevation to avoid gimbal lock
-        float limit = (float)(M_PI / 2.0 - 0.01);
+        float limit = kPi * 0.5f - 0.01f;
         if (elevation > limit) elevation = limit;
         if (elevation < -limit) elevation = -limit;
     }

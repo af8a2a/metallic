@@ -70,6 +70,7 @@ elseif(WIN32)
         PipelineEditor/pipeline_builder.cpp
         Scene/scene_graph.cpp
         Rendering/frame_graph.cpp
+        Rendering/input.cpp
         Rendering/pass_registrations_vulkan.cpp
         Rendering/render_pass.cpp
         Rendering/slang_compiler.cpp
