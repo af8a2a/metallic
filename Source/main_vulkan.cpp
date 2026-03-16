@@ -110,146 +110,63 @@ void releaseMaterialResources(LoadedMaterials& materials) {
     materials.materialCount = 0;
 }
 
-bool createPreviewScene(const RhiDevice& device, LoadedMesh& outMesh, SceneGraph& outScene) {
-    static constexpr std::array<float, 24 * 3> kPositions = {
-        -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f,
-        -1.0f, -1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f, -1.0f, -1.0f,
-        -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f, -1.0f,
-        -1.0f, -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
-         1.0f, -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f,  1.0f,  1.0f, -1.0f,  1.0f,
-        -1.0f, -1.0f, -1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f, -1.0f,
-    };
-    static constexpr std::array<float, 24 * 3> kNormals = {
-         0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,
-         0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,
-         0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,
-         0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,
-         1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,
-        -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f,
-    };
-    static constexpr std::array<float, 24 * 2> kUVs = {
-        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f,
-    };
-    static constexpr std::array<uint32_t, 36> kIndices = {
-         0,  1,  2,  2,  3,  0,
-         4,  5,  6,  6,  7,  4,
-         8,  9, 10, 10, 11,  8,
-        12, 13, 14, 14, 15, 12,
-        16, 17, 18, 18, 19, 16,
-        20, 21, 22, 22, 23, 20,
-    };
+bool loadSponzaScene(const RhiDevice& device,
+                     const RhiCommandQueue& commandQueue,
+                     const char* projectRoot,
+                     LoadedMesh& outMesh,
+                     MeshletData& outMeshlets,
+                     LoadedMaterials& outMaterials,
+                     SceneGraph& outScene) {
+    const std::string gltfPath = std::string(projectRoot) + "/Asset/Sponza/glTF/Sponza.gltf";
 
-    outMesh.positionBuffer =
-        rhiCreateSharedBuffer(device, kPositions.data(), sizeof(kPositions), "Preview Positions");
-    outMesh.normalBuffer =
-        rhiCreateSharedBuffer(device, kNormals.data(), sizeof(kNormals), "Preview Normals");
-    outMesh.uvBuffer =
-        rhiCreateSharedBuffer(device, kUVs.data(), sizeof(kUVs), "Preview UVs");
-    outMesh.indexBuffer =
-        rhiCreateSharedBuffer(device, kIndices.data(), sizeof(kIndices), "Preview Indices");
-
-    if (!outMesh.positionBuffer.nativeHandle() ||
-        !outMesh.normalBuffer.nativeHandle() ||
-        !outMesh.uvBuffer.nativeHandle() ||
-        !outMesh.indexBuffer.nativeHandle()) {
-        releaseMeshBuffers(outMesh);
-        return false;
-    }
-
-    outMesh.vertexCount = 24;
-    outMesh.indexCount = static_cast<uint32_t>(kIndices.size());
-    outMesh.bboxMin[0] = -1.0f;
-    outMesh.bboxMin[1] = -1.0f;
-    outMesh.bboxMin[2] = -1.0f;
-    outMesh.bboxMax[0] = 1.0f;
-    outMesh.bboxMax[1] = 1.0f;
-    outMesh.bboxMax[2] = 1.0f;
-    outMesh.primitiveGroups.clear();
-    outMesh.primitiveGroups.push_back({0, outMesh.indexCount, 0, outMesh.vertexCount, 0});
-    outMesh.meshRanges.clear();
-    outMesh.meshRanges.push_back({0, 1});
-
-    outScene.nodes.clear();
-    outScene.rootNodes.clear();
-    outScene.selectedNode = -1;
-    outScene.sunLightNode = -1;
-
-    outScene.nodes.emplace_back();
-    SceneNode& node = outScene.nodes.back();
-    node.name = "PreviewCube";
-    node.id = 0;
-    node.parent = -1;
-    node.meshIndex = 0;
-    node.meshletStart = 0;
-    node.meshletCount = 0;
-    node.indexStart = 0;
-    node.indexCount = outMesh.indexCount;
-    node.transform.localMatrix = float4x4::Identity();
-    node.transform.worldMatrix = float4x4::Identity();
-    node.transform.dirty = false;
-    outScene.rootNodes.push_back(0);
-
-    return true;
-}
-
-void applyPreviewMeshletSceneData(const MeshletData& meshlets, SceneGraph& scene) {
-    if (scene.nodes.empty()) {
-        return;
-    }
-
-    scene.nodes[0].meshletStart = 0;
-    scene.nodes[0].meshletCount =
-        !meshlets.meshletsPerGroup.empty() ? meshlets.meshletsPerGroup[0] : meshlets.meshletCount;
-}
-
-bool createPreviewMaterials(const RhiDevice& device, LoadedMaterials& outMaterials) {
     releaseMaterialResources(outMaterials);
+    releaseMeshletBuffers(outMeshlets);
+    releaseMeshBuffers(outMesh);
+    outMesh = LoadedMesh{};
+    outMeshlets = MeshletData{};
+    outMaterials = LoadedMaterials{};
+    outScene = SceneGraph{};
 
-    GPUMaterial material{};
-    material.baseColorTexIndex = INVALID_TEXTURE_INDEX;
-    material.normalTexIndex = INVALID_TEXTURE_INDEX;
-    material.metallicRoughnessTexIndex = INVALID_TEXTURE_INDEX;
-    material.alphaMode = 0;
-    material.baseColorFactor[0] = 0.92f;
-    material.baseColorFactor[1] = 0.77f;
-    material.baseColorFactor[2] = 0.62f;
-    material.baseColorFactor[3] = 1.0f;
-    material.metallicFactor = 0.0f;
-    material.roughnessFactor = 0.75f;
-    material.alphaCutoff = 0.5f;
-    material._pad = 0.0f;
-
-    outMaterials.materialBuffer =
-        rhiCreateSharedBuffer(device, &material, sizeof(material), "Preview Material");
-    if (!outMaterials.materialBuffer.nativeHandle()) {
+    if (!loadGLTFMesh(device, gltfPath, outMesh)) {
+        spdlog::error("Failed to load Vulkan scene mesh: {}", gltfPath);
         return false;
     }
 
-    RhiSamplerDesc samplerDesc;
-    samplerDesc.minFilter = RhiSamplerFilterMode::Linear;
-    samplerDesc.magFilter = RhiSamplerFilterMode::Linear;
-    samplerDesc.mipFilter = RhiSamplerMipFilterMode::None;
-    samplerDesc.addressModeS = RhiSamplerAddressMode::ClampToEdge;
-    samplerDesc.addressModeT = RhiSamplerAddressMode::ClampToEdge;
-    samplerDesc.addressModeR = RhiSamplerAddressMode::ClampToEdge;
-    outMaterials.sampler = rhiCreateSampler(device, samplerDesc);
-    if (!outMaterials.sampler.nativeHandle()) {
+    if (!buildMeshlets(device, outMesh, outMeshlets)) {
+        spdlog::error("Failed to build Vulkan meshlets: {}", gltfPath);
+        releaseMeshBuffers(outMesh);
+        outMesh = LoadedMesh{};
+        return false;
+    }
+
+    if (!loadGLTFMaterials(device, commandQueue, gltfPath, outMaterials)) {
+        spdlog::error("Failed to load Vulkan scene materials: {}", gltfPath);
+        releaseMeshletBuffers(outMeshlets);
+        releaseMeshBuffers(outMesh);
+        outMeshlets = MeshletData{};
+        outMesh = LoadedMesh{};
+        return false;
+    }
+
+    if (!outScene.buildFromGLTF(gltfPath, outMesh, outMeshlets)) {
+        spdlog::error("Failed to build Vulkan scene graph: {}", gltfPath);
         releaseMaterialResources(outMaterials);
+        releaseMeshletBuffers(outMeshlets);
+        releaseMeshBuffers(outMesh);
+        outMaterials = LoadedMaterials{};
+        outMeshlets = MeshletData{};
+        outMesh = LoadedMesh{};
         return false;
     }
 
-    outMaterials.materialCount = 1;
+    outScene.updateTransforms();
+    spdlog::info("Loaded Vulkan scene: {}", gltfPath);
     return true;
 }
 
-bool createPreviewFallbackTextures(const RhiDevice& device,
-                                   RhiTextureHandle& outShadowDummy,
-                                   RhiTextureHandle& outSkyFallback) {
+bool createSceneFallbackTextures(const RhiDevice& device,
+                                 RhiTextureHandle& outShadowDummy,
+                                 RhiTextureHandle& outSkyFallback) {
     rhiReleaseHandle(outShadowDummy);
     rhiReleaseHandle(outSkyFallback);
 
@@ -548,7 +465,7 @@ int main() {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "Metallic - Vulkan RenderGraph", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(1280, 720, "Metallic - Vulkan Sponza", nullptr, nullptr);
     if (!window) {
         spdlog::error("Failed to create GLFW window");
         glfwTerminate();
@@ -602,6 +519,7 @@ int main() {
     VkPhysicalDevice vkPhysicalDevice = nativeToVkHandle<VkPhysicalDevice>(native.physicalDevice);
     VmaAllocator vmaAllocator = getVulkanAllocator(*rhi);
     RhiDeviceHandle deviceHandle(native.device);
+    RhiCommandQueueHandle queueHandle(native.queue);
     const uint32_t swapchainImageCount = std::max(2u, native.swapchainImageCount);
     const VkFormat swapchainFormat = static_cast<VkFormat>(native.colorFormat);
 
@@ -756,22 +674,19 @@ int main() {
     SceneGraph previewScene;
     RhiTextureHandle shadowDummyTexture;
     RhiTextureHandle skyFallbackTexture;
-    bool previewSceneReady = createPreviewScene(deviceHandle, previewMesh, previewScene);
-    if (previewSceneReady) {
-        previewSceneReady = buildMeshlets(deviceHandle, previewMesh, previewMeshlets);
-        if (previewSceneReady) {
-            applyPreviewMeshletSceneData(previewMeshlets, previewScene);
-        }
-    }
-    if (previewSceneReady) {
-        previewSceneReady = createPreviewMaterials(deviceHandle, previewMaterials);
-    }
+    bool previewSceneReady = loadSponzaScene(deviceHandle,
+                                             queueHandle,
+                                             PROJECT_SOURCE_DIR,
+                                             previewMesh,
+                                             previewMeshlets,
+                                             previewMaterials,
+                                             previewScene);
     if (previewSceneReady) {
         previewSceneReady =
-            createPreviewFallbackTextures(deviceHandle, shadowDummyTexture, skyFallbackTexture);
+            createSceneFallbackTextures(deviceHandle, shadowDummyTexture, skyFallbackTexture);
     }
     if (!previewSceneReady) {
-        spdlog::warn("Failed to create Vulkan visibility preview scene; falling back to triangle path");
+        spdlog::warn("Failed to load Vulkan Sponza scene; falling back to triangle path");
         releaseMaterialResources(previewMaterials);
         releaseMeshletBuffers(previewMeshlets);
         releaseMeshBuffers(previewMesh);
@@ -1023,13 +938,38 @@ int main() {
     previewCamera.distance *= 0.8f;
     previewCamera.azimuth = 0.55f;
     previewCamera.elevation = 0.35f;
-    previewCamera.nearZ = 0.1f;
-    previewCamera.farZ = 100.0f;
-    const float3 sunDirection = normalize(float3(0.35f, 0.85f, 0.25f));
-    const std::vector<uint32_t> previewVisibleMeshletNodes = previewSceneReady
-        ? std::vector<uint32_t>{0}
-        : std::vector<uint32_t>{};
-    const std::vector<uint32_t> previewVisibleIndexNodes = {0};
+    if (!previewSceneReady) {
+        previewCamera.nearZ = 0.1f;
+        previewCamera.farZ = 100.0f;
+    }
+    DirectionalLight sunLight;
+    if (previewSceneReady) {
+        sunLight = previewScene.getSunDirectionalLight();
+    } else {
+        sunLight.direction = normalize(float3(0.35f, 0.85f, 0.25f));
+        sunLight.color = float3(1.0f, 0.98f, 0.95f);
+        sunLight.intensity = 2.5f;
+    }
+    const float3 sunDirection = normalize(sunLight.direction);
+    std::vector<uint32_t> previewVisibleMeshletNodes;
+    std::vector<uint32_t> previewVisibleIndexNodes;
+    if (previewSceneReady) {
+        previewVisibleMeshletNodes.reserve(previewScene.nodes.size());
+        previewVisibleIndexNodes.reserve(previewScene.nodes.size());
+        for (const auto& node : previewScene.nodes) {
+            if (!previewScene.isNodeVisible(node.id)) {
+                continue;
+            }
+            if (node.meshletCount > 0) {
+                previewVisibleMeshletNodes.push_back(node.id);
+            }
+            if (node.indexCount > 0) {
+                previewVisibleIndexNodes.push_back(node.id);
+            }
+        }
+    } else {
+        previewVisibleIndexNodes = {0};
+    }
     bool showGraphDebug = true;
     bool showRenderPassUI = true;
     bool showImGuiDemo = false;
@@ -1252,7 +1192,8 @@ int main() {
         frameContext.enableTAA = enableVisibilityTAA;
         frameContext.worldLightDir = float4(sunDirection.x, sunDirection.y, sunDirection.z, 0.0f);
         frameContext.viewLightDir = view * frameContext.worldLightDir;
-        frameContext.lightColorIntensity = float4(1.0f, 0.98f, 0.95f, 2.5f);
+        frameContext.lightColorIntensity =
+            float4(sunLight.color.x, sunLight.color.y, sunLight.color.z, sunLight.intensity);
         frameContext.meshletCount = previewMeshlets.meshletCount;
         frameContext.materialCount = previewMaterials.materialCount;
         frameContext.textureCount = static_cast<uint32_t>(previewMaterials.textures.size());
@@ -1279,7 +1220,7 @@ int main() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("Vulkan Preview");
+        ImGui::Begin("Vulkan Sponza");
         ImGui::Text("Resolution: %d x %d", width, height);
         ImGui::TextUnformatted(useVisibilityRenderGraph ? "Pipeline: Visibility Buffer" : "Pipeline: Triangle Fallback");
         ImGui::TextUnformatted(visibilityTaaAvailable ? "TAA: Enabled" : "TAA: Disabled");

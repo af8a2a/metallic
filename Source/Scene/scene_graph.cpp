@@ -1,8 +1,9 @@
+#include <spdlog/spdlog.h>
+
 #include "scene_graph.h"
 #include "mesh_loader.h"
 #include "meshlet_builder.h"
 #include <cgltf.h>
-#include <spdlog/spdlog.h>
 #include <algorithm>
 
 static float4x4 computeTRS(const float3& t, const float4& q, const float3& s) {

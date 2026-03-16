@@ -441,6 +441,7 @@ void rhiUploadTexture2D(const RhiTexture& texture,
     auto* res = static_cast<VulkanTextureResource*>(texture.nativeHandle());
     if (!res || !data) return;
 
+    const bool deferShaderReadTransition = res->mipLevels > 1 && mipLevel == 0;
     size_t imageSize = bytesPerRow * height;
 
     // Create staging buffer
@@ -491,14 +492,17 @@ void rhiUploadTexture2D(const RhiTexture& texture,
     region.imageExtent = {width, height, 1};
     vkCmdCopyBufferToImage(cmd, stagingBuffer, res->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    // Transition to SHADER_READ
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    vkCmdPipelineBarrier2(cmd, &depInfo);
+    if (!deferShaderReadTransition) {
+        // Transition to SHADER_READ
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
 
     endOneTimeCommands(g_vkResCtx.device, pool, g_vkResCtx.graphicsQueue, cmd);
     vmaDestroyBuffer(g_vkResCtx.allocator, stagingBuffer, stagingAlloc);
@@ -576,6 +580,25 @@ void rhiGenerateMipmaps(const RhiCommandQueue& /*commandQueue*/, const RhiTextur
 
     VkCommandPool pool = getUploadPool();
     VkCommandBuffer cmd = beginOneTimeCommands(g_vkResCtx.device, pool);
+
+    for (uint32_t i = 1; i < res->mipLevels; ++i) {
+        VkImageMemoryBarrier2 initBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        initBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        initBarrier.srcAccessMask = VK_ACCESS_2_NONE;
+        initBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        initBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        initBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        initBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        initBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        initBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        initBarrier.image = res->image;
+        initBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, i, 1, 0, 1};
+
+        VkDependencyInfo initDep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        initDep.imageMemoryBarrierCount = 1;
+        initDep.pImageMemoryBarriers = &initBarrier;
+        vkCmdPipelineBarrier2(cmd, &initDep);
+    }
 
     int32_t mipWidth = static_cast<int32_t>(res->width);
     int32_t mipHeight = static_cast<int32_t>(res->height);

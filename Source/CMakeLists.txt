@@ -62,10 +62,13 @@ elseif(WIN32)
 
     add_executable(Metallic
         main_vulkan.cpp
+        Asset/material_loader.cpp
+        Asset/mesh_loader.cpp
         Asset/meshlet_builder.cpp
         PipelineEditor/pass_registry.cpp
         PipelineEditor/pipeline_asset.cpp
         PipelineEditor/pipeline_builder.cpp
+        Scene/scene_graph.cpp
         Rendering/frame_graph.cpp
         Rendering/pass_registrations_vulkan.cpp
         Rendering/render_pass.cpp
@@ -88,8 +91,10 @@ elseif(WIN32)
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Passes"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
+        "${CMAKE_SOURCE_DIR}/External/cgltf"
         "${CMAKE_SOURCE_DIR}/External/MathLib"
         "${CMAKE_SOURCE_DIR}/External/meshoptimizer/src"
+        "${CMAKE_SOURCE_DIR}/External/stb"
         "${CMAKE_SOURCE_DIR}/External/VulkanMemoryAllocator/include"
     )
     target_link_libraries(Metallic PRIVATE
@@ -121,15 +126,15 @@ add_custom_command(TARGET Metallic POST_BUILD
         "$<TARGET_FILE_DIR:Metallic>/Shaders"
 )
 
-if(APPLE)
-    add_custom_command(TARGET Metallic POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:Metallic>/Source/Rendering"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/Source/Rendering/visibility_constants.h"
-            "$<TARGET_FILE_DIR:Metallic>/Source/Rendering/visibility_constants.h"
-    )
+add_custom_command(TARGET Metallic POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:Metallic>/Source/Rendering"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/Source/Rendering/visibility_constants.h"
+        "$<TARGET_FILE_DIR:Metallic>/Source/Rendering/visibility_constants.h"
+)
 
+if(APPLE)
     add_custom_command(TARGET Metallic POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/Asset"
