@@ -11,6 +11,8 @@ struct LoadedMesh {
     RhiBufferHandle normalBuffer;
     RhiBufferHandle uvBuffer;
     RhiBufferHandle indexBuffer;
+    std::vector<float> cpuPositions;
+    std::vector<uint32_t> cpuIndices;
     uint32_t vertexCount = 0;
     uint32_t indexCount  = 0;
     float bboxMin[3] = {};

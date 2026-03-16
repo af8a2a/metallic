@@ -16,6 +16,16 @@ add_library(meshoptimizer STATIC
     meshoptimizer/src/vfetchoptimizer.cpp
 )
 target_include_directories(meshoptimizer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/meshoptimizer/src)
+if(MSVC)
+    target_compile_options(meshoptimizer PRIVATE
+        $<$<CONFIG:Debug>:/O2>
+        $<$<CONFIG:Debug>:/Ob2>
+        $<$<CONFIG:Debug>:/RTC->
+    )
+else()
+    target_compile_options(meshoptimizer PRIVATE $<$<CONFIG:Debug>:-O3>)
+endif()
+target_compile_definitions(meshoptimizer PRIVATE $<$<CONFIG:Debug>:NDEBUG>)
 
 # GLFW
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

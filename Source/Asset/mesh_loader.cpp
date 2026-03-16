@@ -141,17 +141,20 @@ bool loadGLTFMesh(const RhiDevice& device, const std::string& gltfPath, LoadedMe
         return false;
     }
 
+    out.cpuPositions = std::move(allPositions);
+    out.cpuIndices = std::move(allIndices);
+
     out.positionBuffer = rhiCreateSharedBuffer(
-        device, allPositions.data(), allPositions.size() * sizeof(float), "Mesh Positions");
+        device, out.cpuPositions.data(), out.cpuPositions.size() * sizeof(float), "Mesh Positions");
     out.normalBuffer = rhiCreateSharedBuffer(
         device, allNormals.data(), allNormals.size() * sizeof(float), "Mesh Normals");
     out.uvBuffer = rhiCreateSharedBuffer(
         device, allUVs.data(), allUVs.size() * sizeof(float), "Mesh UVs");
     out.indexBuffer = rhiCreateSharedBuffer(
-        device, allIndices.data(), allIndices.size() * sizeof(uint32_t), "Mesh Indices");
+        device, out.cpuIndices.data(), out.cpuIndices.size() * sizeof(uint32_t), "Mesh Indices");
 
-    out.vertexCount = static_cast<uint32_t>(allPositions.size() / 3);
-    out.indexCount  = static_cast<uint32_t>(allIndices.size());
+    out.vertexCount = static_cast<uint32_t>(out.cpuPositions.size() / 3);
+    out.indexCount  = static_cast<uint32_t>(out.cpuIndices.size());
 
     for (int i = 0; i < 3; i++) {
         out.bboxMin[i] = bboxMin[i];

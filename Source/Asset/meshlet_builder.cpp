@@ -4,6 +4,7 @@
 
 #include <meshoptimizer.h>
 #include <spdlog/spdlog.h>
+#include <chrono>
 #include <vector>
 #include <cstring>
 
@@ -14,9 +15,20 @@ static constexpr float  CONE_WEIGHT   = 0.5f;
 bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData& out) {
     out.meshletsPerGroup.clear();
 
-    const auto* allPositions = static_cast<const float*>(rhiBufferContents(mesh.positionBuffer));
-    size_t totalVertexCount = mesh.vertexCount;
-    size_t vertexStride = sizeof(float) * 3;
+    const auto buildStart = std::chrono::steady_clock::now();
+
+    const auto* allPositions = mesh.cpuPositions.empty()
+        ? static_cast<const float*>(rhiBufferContents(mesh.positionBuffer))
+        : mesh.cpuPositions.data();
+    const auto* allIndices = mesh.cpuIndices.empty()
+        ? static_cast<const uint32_t*>(rhiBufferContents(mesh.indexBuffer))
+        : mesh.cpuIndices.data();
+    constexpr size_t kPositionStride = sizeof(float) * 3;
+
+    if (!allPositions || !allIndices) {
+        spdlog::error("Meshlet builder requires CPU-readable position and index data");
+        return false;
+    }
 
     // Accumulated output across all primitive groups
     std::vector<GPUMeshlet> allGpuMeshlets;
@@ -25,41 +37,64 @@ bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData&
     std::vector<GPUMeshletBounds> allBounds;
     std::vector<uint32_t> allMaterialIDs;
 
-    // If no primitive groups, fall back to treating entire mesh as one group
-    std::vector<LoadedMesh::PrimitiveGroup> groups = mesh.primitiveGroups;
-    if (groups.empty()) {
-        LoadedMesh::PrimitiveGroup g;
-        g.indexOffset = 0;
-        g.indexCount = mesh.indexCount;
-        g.vertexOffset = 0;
-        g.vertexCount = mesh.vertexCount;
-        g.materialIndex = 0;
-        groups.push_back(g);
+    size_t meshletBound = 0;
+    if (mesh.primitiveGroups.empty()) {
+        meshletBound = meshopt_buildMeshletsBound(mesh.indexCount, MAX_VERTICES, MAX_TRIANGLES);
+    } else {
+        for (const auto& group : mesh.primitiveGroups) {
+            meshletBound += meshopt_buildMeshletsBound(group.indexCount, MAX_VERTICES, MAX_TRIANGLES);
+        }
     }
+    allGpuMeshlets.reserve(meshletBound);
+    allBounds.reserve(meshletBound);
+    allMaterialIDs.reserve(meshletBound);
 
-    const auto* allIndices = static_cast<const uint32_t*>(rhiBufferContents(mesh.indexBuffer));
+    std::vector<meshopt_Meshlet> meshlets;
+    std::vector<unsigned int> meshletVertices;
+    std::vector<unsigned char> meshletTriangles;
+    std::vector<uint32_t> localIndices;
 
-    for (const auto& group : groups) {
+    auto buildGroupMeshlets = [&](const LoadedMesh::PrimitiveGroup& group) {
         const uint32_t* groupIndices = allIndices + group.indexOffset;
         size_t groupIndexCount = group.indexCount;
+        const uint32_t groupVertexOffset = group.vertexOffset;
+        const uint32_t groupVertexCount = group.vertexCount;
+        const auto* groupPositions = allPositions + static_cast<size_t>(groupVertexOffset) * 3;
 
-        if (groupIndexCount == 0) {
+        if (groupIndexCount == 0 || groupVertexCount == 0) {
             out.meshletsPerGroup.push_back(0);
-            continue;
+            return true;
         }
 
         // Compute worst-case buffer sizes for this group
         size_t maxMeshlets = meshopt_buildMeshletsBound(groupIndexCount, MAX_VERTICES, MAX_TRIANGLES);
-        std::vector<meshopt_Meshlet> meshlets(maxMeshlets);
-        std::vector<unsigned int> meshletVertices(maxMeshlets * MAX_VERTICES);
-        std::vector<unsigned char> meshletTriangles(maxMeshlets * MAX_TRIANGLES * 3);
+        meshlets.resize(maxMeshlets);
+        meshletVertices.resize(maxMeshlets * MAX_VERTICES);
+        meshletTriangles.resize(maxMeshlets * MAX_TRIANGLES * 3);
+
+        const uint32_t groupVertexEnd = groupVertexOffset + groupVertexCount;
+        const uint32_t* meshletSourceIndices = groupIndices;
+        if (groupVertexOffset != 0 || groupVertexCount != mesh.vertexCount) {
+            localIndices.resize(groupIndexCount);
+            for (size_t i = 0; i < groupIndexCount; ++i) {
+                const uint32_t index = groupIndices[i];
+                if (index < groupVertexOffset || index >= groupVertexEnd) {
+                    spdlog::error("Primitive group index {} out of range [{}, {})",
+                                  index,
+                                  groupVertexOffset,
+                                  groupVertexEnd);
+                    return false;
+                }
+                localIndices[i] = index - groupVertexOffset;
+            }
+            meshletSourceIndices = localIndices.data();
+        }
 
         // Build meshlets for this group
-        // Note: indices in groupIndices are global vertex indices (already offset)
         size_t meshletCount = meshopt_buildMeshlets(
             meshlets.data(), meshletVertices.data(), meshletTriangles.data(),
-            groupIndices, groupIndexCount,
-            allPositions, totalVertexCount, vertexStride,
+            meshletSourceIndices, groupIndexCount,
+            groupPositions, groupVertexCount, kPositionStride,
             MAX_VERTICES, MAX_TRIANGLES, CONE_WEIGHT);
 
         meshlets.resize(meshletCount);
@@ -79,7 +114,7 @@ bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData&
                 &meshletVertices[meshlets[i].vertex_offset],
                 &meshletTriangles[meshlets[i].triangle_offset],
                 meshlets[i].triangle_count,
-                allPositions, totalVertexCount, vertexStride);
+                groupPositions, groupVertexCount, kPositionStride);
 
             GPUMeshletBounds gb;
             gb.center_radius[0] = bounds.center[0];
@@ -102,8 +137,10 @@ bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData&
         if (meshletCount > 0) {
             const meshopt_Meshlet& last = meshlets.back();
             size_t usedVertices = last.vertex_offset + last.vertex_count;
-            allMeshletVertices.insert(allMeshletVertices.end(),
-                meshletVertices.begin(), meshletVertices.begin() + usedVertices);
+            allMeshletVertices.reserve(allMeshletVertices.size() + usedVertices);
+            for (size_t i = 0; i < usedVertices; ++i) {
+                allMeshletVertices.push_back(meshletVertices[i] + groupVertexOffset);
+            }
         }
 
         // Pack triangles and merge
@@ -137,6 +174,25 @@ bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData&
         }
 
         out.meshletsPerGroup.push_back(static_cast<uint32_t>(meshletCount));
+        return true;
+    };
+
+    if (mesh.primitiveGroups.empty()) {
+        LoadedMesh::PrimitiveGroup group;
+        group.indexOffset = 0;
+        group.indexCount = mesh.indexCount;
+        group.vertexOffset = 0;
+        group.vertexCount = mesh.vertexCount;
+        group.materialIndex = 0;
+        if (!buildGroupMeshlets(group)) {
+            return false;
+        }
+    } else {
+        for (const auto& group : mesh.primitiveGroups) {
+            if (!buildGroupMeshlets(group)) {
+                return false;
+            }
+        }
     }
 
     size_t totalMeshlets = allGpuMeshlets.size();
@@ -163,8 +219,14 @@ bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData&
         totalTris += gm.triangle_count;
         totalVerts += gm.vertex_count;
     }
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - buildStart).count();
     spdlog::info("Built {} meshlets from {} groups (avg {} verts, {} tris per meshlet)",
-                 totalMeshlets, groups.size(), totalVerts / totalMeshlets, totalTris / totalMeshlets);
+                 totalMeshlets,
+                 out.meshletsPerGroup.size(),
+                 totalVerts / totalMeshlets,
+                 totalTris / totalMeshlets);
+    spdlog::info("Meshlet build completed in {} ms", elapsedMs);
 
     return true;
 }
