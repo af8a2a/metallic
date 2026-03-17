@@ -14,3 +14,6 @@
 [submodule "External/imnodes"]
 	path = External/imnodes
 	url = https://github.com/Nelarius/imnodes.git
+[submodule "External/VulkanMemoryAllocator"]
+	path = External/VulkanMemoryAllocator
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git

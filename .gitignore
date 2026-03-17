@@ -76,3 +76,4 @@ External/slang/
 Issue
 package-lock.json
 _builds
+.claude
