@@ -817,11 +817,12 @@ int main() {
     vulkanLoadMeshShaderFunctions(vkDevice);
 
     const RhiFeatures& features = rhi->features();
+    ShaderManagerProfile shaderProfile = ShaderManagerProfile::vulkanVisibility();
     ShaderManager shaderManager(deviceHandle,
                                 PROJECT_SOURCE_DIR,
                                 features.meshShaders,
                                 features.meshShaders,
-                                ShaderManagerProfile::vulkanVisibility());
+                                shaderProfile);
     if (!shaderManager.buildAll()) {
         spdlog::error("Failed to build Vulkan visibility shader set");
         ImGui_ImplVulkan_Shutdown();

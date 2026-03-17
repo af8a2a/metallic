@@ -453,9 +453,13 @@ public:
     void memoryBarrier(RhiBarrierScope /*scope*/) override {
         VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                               VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
+                               VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
         barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT |
+                                VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
 
         VkDependencyInfo depInfo{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         depInfo.memoryBarrierCount = 1;
@@ -723,7 +727,8 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
     VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bufferInfo.size = desc.size;
     bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
     if (resourceContext.rayTracingEnabled) {
         bufferInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
                             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;

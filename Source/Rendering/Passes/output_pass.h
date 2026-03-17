@@ -5,9 +5,6 @@
 #include "pass_registry.h"
 #include "imgui.h"
 
-// Fullscreen passthrough: samples any input texture and writes to $backbuffer.
-// Safely handles RGBA16Float 鈫?BGRA8Unorm conversion (clamp to [0,1]).
-// Drop-in replacement for TonemapPass when debugging.
 class OutputPass : public RenderPass {
 public:
     OutputPass(const RenderContext& ctx, int w, int h)

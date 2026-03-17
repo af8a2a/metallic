@@ -44,7 +44,7 @@ struct ShaderManagerProfile {
         profile.forwardVertex = false;
         profile.forwardMesh = false;
         profile.visibility = true;
-        profile.visibilityIndirect = false;
+        profile.visibilityIndirect = true;
         profile.meshletCull = true;
         profile.buildIndirect = true;
         profile.deferredLighting = true;

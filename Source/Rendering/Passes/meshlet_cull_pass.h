@@ -67,7 +67,7 @@ public:
         auto* counterPtr = static_cast<uint32_t*>(m_counterBuffer->mappedData());
         m_lastVisibleCount = counterPtr[1]; // indirect args x from previous frame
 
-        // Upload instance data (CPU 鈫?GPU, StorageModeShared)
+        // Upload instance data (CPU PU, StorageModeShared)
         auto* instPtr = static_cast<GPUInstanceData*>(m_instanceDataBuffer->mappedData());
         for (uint32_t i = 0; i < instanceCount; i++) {
             const auto& node = m_ctx.sceneGraph.nodes[visibleNodes[i]];
@@ -105,11 +105,13 @@ public:
         uint32_t threadgroupSize = 256;
         uint32_t threadgroups = (totalMeshlets + threadgroupSize - 1) / threadgroupSize;
         encoder.dispatchThreadgroups({threadgroups, 1, 1}, {threadgroupSize, 1, 1});
+        encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
         // --- Dispatch 2: Build indirect args ---
         encoder.setComputePipeline(buildIt->second);
         encoder.setBuffer(m_counterBuffer.get(), 0, 0);
         encoder.dispatchThreadgroups({1, 1, 1}, {1, 1, 1});
+        encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
         // Publish results to FrameContext for VisibilityPass
         // (const_cast is safe here 鈥?we own the data and VisibilityPass reads it later in the same frame)
