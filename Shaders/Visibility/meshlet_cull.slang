@@ -2,13 +2,24 @@
 // One thread per meshlet across all instances.
 // Outputs a compact list of visible {instanceID, globalMeshletID} pairs.
 
+#include "../../Source/Rendering/hzb_constants.h"
+
 struct CullUniforms {
     float4x4 viewProj;
+    float4x4 prevViewProj;
+    float4x4 prevView;
     float4   cameraWorldPos;
+    float4   prevCameraWorldPos;
+    float2   prevProjScale;
+    float2   hzbTextureSize;
     uint     totalDispatchCount;
     uint     instanceCount;
     uint     enableFrustumCull;
     uint     enableConeCull;
+    uint     enableOcclusionCull;
+    uint     hzbLevelCount;
+    float    occlusionDepthBias;
+    float    occlusionBoundsScale;
 };
 
 struct InstanceData {
@@ -37,6 +48,22 @@ StructuredBuffer<InstanceData>      instances;       // buffer(1)
 StructuredBuffer<GPUMeshletBounds>  meshletBounds;   // buffer(2)
 RWStructuredBuffer<MeshletDrawInfo> visibleMeshlets; // buffer(3)
 RWByteAddressBuffer                 counters;        // buffer(4)
+Texture2D<float>                    hzbPyramid[HZB_MAX_LEVELS]; // texture(5+)
+
+float sampleHzb(uint level, uint2 coord) {
+    switch (level) {
+    case 0u: return hzbPyramid[0].Load(int3(coord, 0));
+    case 1u: return hzbPyramid[1].Load(int3(coord, 0));
+    case 2u: return hzbPyramid[2].Load(int3(coord, 0));
+    case 3u: return hzbPyramid[3].Load(int3(coord, 0));
+    case 4u: return hzbPyramid[4].Load(int3(coord, 0));
+    case 5u: return hzbPyramid[5].Load(int3(coord, 0));
+    case 6u: return hzbPyramid[6].Load(int3(coord, 0));
+    case 7u: return hzbPyramid[7].Load(int3(coord, 0));
+    case 8u: return hzbPyramid[8].Load(int3(coord, 0));
+    default: return hzbPyramid[9].Load(int3(coord, 0));
+    }
+}
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -69,6 +96,11 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
 
     // Transform bounds center to world space
     float3 centerWS = mul(inst.worldMatrix, float4(centerOS, 1.0)).xyz;
+    float3 sx = inst.worldMatrix[0].xyz;
+    float3 sy = inst.worldMatrix[1].xyz;
+    float3 sz = inst.worldMatrix[2].xyz;
+    float maxScale = max(length(sx), max(length(sy), length(sz)));
+    float worldRadius = radius * maxScale;
 
     bool culled = false;
 
@@ -85,13 +117,6 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
         planes[3] = vp[3] - vp[1]; // Top
         planes[4] = vp[2];         // Near
         planes[5] = vp[3] - vp[2]; // Far
-
-        // Scale radius by max axis scale of world matrix
-        float3 sx = inst.worldMatrix[0].xyz;
-        float3 sy = inst.worldMatrix[1].xyz;
-        float3 sz = inst.worldMatrix[2].xyz;
-        float maxScale = max(length(sx), max(length(sy), length(sz)));
-        float worldRadius = radius * maxScale;
 
         [unroll]
         for (int i = 0; i < 6; i++) {
@@ -116,13 +141,73 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
         if (lenSq > 1e-12) {
             float lenV = sqrt(lenSq);
             float lhs = dot(cameraToCenter, coneAxisWS);
-            float3 sx2 = inst.worldMatrix[0].xyz;
-            float3 sy2 = inst.worldMatrix[1].xyz;
-            float3 sz2 = inst.worldMatrix[2].xyz;
-            float maxScale2 = max(length(sx2), max(length(sy2), length(sz2)));
-            float rhs = coneCutoff * lenV + radius * maxScale2;
+            float rhs = coneCutoff * lenV + worldRadius;
             if (lhs >= rhs)
                 culled = true;
+        }
+    }
+
+    if (!culled &&
+        cullUniforms.enableOcclusionCull != 0 &&
+        cullUniforms.hzbLevelCount > 0u) {
+        float4 centerClip = mul(cullUniforms.prevViewProj, float4(centerWS, 1.0));
+        if (centerClip.w > 1e-5) {
+            float3 centerVS = mul(cullUniforms.prevView, float4(centerWS, 1.0)).xyz;
+            float viewDepth = max(abs(centerVS.z), 1e-4);
+            float2 ndcRadius = float2(cullUniforms.prevProjScale.x * worldRadius / viewDepth,
+                                      cullUniforms.prevProjScale.y * worldRadius / viewDepth) *
+                               cullUniforms.occlusionBoundsScale;
+            float2 centerNdc = centerClip.xy / centerClip.w;
+
+            float2 minUv = float2(centerNdc.x - ndcRadius.x, centerNdc.y + ndcRadius.y) *
+                               float2(0.5, -0.5) +
+                           float2(0.5, 0.5);
+            float2 maxUv = float2(centerNdc.x + ndcRadius.x, centerNdc.y - ndcRadius.y) *
+                               float2(0.5, -0.5) +
+                           float2(0.5, 0.5);
+            minUv = clamp(minUv, float2(0.0, 0.0), float2(1.0, 1.0));
+            maxUv = clamp(maxUv, float2(0.0, 0.0), float2(1.0, 1.0));
+            float2 uvMin = min(minUv, maxUv);
+            float2 uvMax = max(minUv, maxUv);
+
+            float2 rectSizePixels = max((uvMax - uvMin) * cullUniforms.hzbTextureSize, float2(1.0, 1.0));
+            float maxExtent = max(rectSizePixels.x, rectSizePixels.y);
+            uint level = 0u;
+            if (maxExtent > 1.0) {
+                level = min(cullUniforms.hzbLevelCount - 1u, (uint)ceil(log2(maxExtent)));
+            }
+
+            uint2 mipSize = uint2((uint)cullUniforms.hzbTextureSize.x, (uint)cullUniforms.hzbTextureSize.y);
+            for (uint mip = 0u; mip < level; ++mip) {
+                mipSize = uint2(max((mipSize.x + 1u) / 2u, 1u),
+                                max((mipSize.y + 1u) / 2u, 1u));
+            }
+
+            float2 mipScale = float2((float)mipSize.x, (float)mipSize.y);
+            uint2 minTexel = uint2(floor(uvMin * mipScale));
+            uint2 maxTexel = uint2(floor(uvMax * mipScale));
+            uint2 mipMaxCoord = uint2(max(mipSize.x, 1u) - 1u,
+                                      max(mipSize.y, 1u) - 1u);
+            minTexel = min(minTexel, mipMaxCoord);
+            maxTexel = min(maxTexel, mipMaxCoord);
+
+            float sampledDepth = sampleHzb(level, minTexel);
+            sampledDepth = max(sampledDepth, sampleHzb(level, uint2(maxTexel.x, minTexel.y)));
+            sampledDepth = max(sampledDepth, sampleHzb(level, uint2(minTexel.x, maxTexel.y)));
+            sampledDepth = max(sampledDepth, sampleHzb(level, maxTexel));
+
+            float3 prevCameraToCenter = centerWS - cullUniforms.prevCameraWorldPos.xyz;
+            float prevCameraDistanceSq = dot(prevCameraToCenter, prevCameraToCenter);
+            if (prevCameraDistanceSq > 1e-10) {
+                float3 nearestPointWS = centerWS - normalize(prevCameraToCenter) * worldRadius;
+                float4 nearestClip = mul(cullUniforms.prevViewProj, float4(nearestPointWS, 1.0));
+                if (nearestClip.w > 1e-5) {
+                    float nearestDepth = saturate(nearestClip.z / nearestClip.w);
+                    if (nearestDepth > sampledDepth + cullUniforms.occlusionDepthBias) {
+                        culled = true;
+                    }
+                }
+            }
         }
     }
 

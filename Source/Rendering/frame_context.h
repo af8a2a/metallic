@@ -26,6 +26,9 @@ struct FrameContext {
     // Previous frame camera matrices (for TAA motion vectors)
     float4x4 prevView;
     float4x4 prevProj;
+    float4x4 prevCullView;
+    float4x4 prevCullProj;
+    float4 prevCameraWorldPos;
 
     // TAA jitter
     float2 jitterOffset = float2(0.f, 0.f); // pixel-space jitter [-0.5, 0.5]

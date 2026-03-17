@@ -81,6 +81,17 @@
       "type": "ImGuiOverlayPass"
     },
     {
+      "config": {},
+      "enabled": true,
+      "inputs": [
+        "depth"
+      ],
+      "name": "HZB Build",
+      "outputs": [],
+      "sideEffect": false,
+      "type": "HZBBuildPass"
+    },
+    {
       "config": null,
       "enabled": true,
       "inputs": [],

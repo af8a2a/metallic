@@ -4,9 +4,13 @@
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "gpu_cull_resources.h"
+#include "hzb_constants.h"
 #include "pass_registry.h"
 #include "imgui.h"
-#include <spdlog/spdlog.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <vector>
 
 class MeshletCullPass : public RenderPass {
 public:
@@ -36,6 +40,19 @@ public:
 
     void setup(FGBuilder& builder) override {
         cullResult = builder.createToken("cullResult");
+
+        m_hzbHistoryRead.clear();
+        m_hzbLevelCount = computeHzbLevelCount(static_cast<uint32_t>(m_width),
+                                               static_cast<uint32_t>(m_height));
+        m_hzbHistoryRead.reserve(m_hzbLevelCount);
+        for (uint32_t level = 0; level < m_hzbLevelCount; ++level) {
+            const std::string resourceName = hzbHistoryResourceName(level);
+            m_hzbHistoryRead.push_back(
+                builder.readHistory(resourceName.c_str(),
+                                    makeHzbTextureDesc(static_cast<uint32_t>(m_width),
+                                                       static_cast<uint32_t>(m_height),
+                                                       level)));
+        }
     }
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
@@ -91,13 +108,48 @@ public:
 
         // Build CullUniforms
         float4x4 viewProj = m_frameContext->proj * m_frameContext->view;
+        float4x4 prevViewProj = m_frameContext->prevCullProj * m_frameContext->prevCullView;
         CullUniforms cullUni{};
         cullUni.viewProj = transpose(viewProj);
+        cullUni.prevViewProj = transpose(prevViewProj);
+        cullUni.prevView = transpose(m_frameContext->prevCullView);
         cullUni.cameraWorldPos = m_frameContext->cameraWorldPos;
+        cullUni.prevCameraWorldPos = m_frameContext->prevCameraWorldPos;
+        cullUni.prevProjScale = float2(std::abs(m_frameContext->prevCullProj[0].x),
+                                       std::abs(m_frameContext->prevCullProj[1].y));
         cullUni.totalDispatchCount = totalMeshlets;
         cullUni.instanceCount = instanceCount;
         cullUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1 : 0;
         cullUni.enableConeCull = m_frameContext->enableConeCull ? 1 : 0;
+
+        std::array<const RhiTexture*, kHzbMaxLevels> hzbTextures{};
+        uint32_t hzbTextureCount = 0;
+        const bool historyValid =
+            m_enableOcclusionCull &&
+            !m_hzbHistoryRead.empty() &&
+            m_frameGraph &&
+            m_frameGraph->isHistoryValid(m_hzbHistoryRead[0]);
+        if (historyValid) {
+            const uint32_t maxLevels =
+                std::min<uint32_t>(static_cast<uint32_t>(m_hzbHistoryRead.size()), kHzbMaxLevels);
+            for (uint32_t level = 0; level < maxLevels; ++level) {
+                const RhiTexture* historyTexture = m_frameGraph->getTexture(m_hzbHistoryRead[level]);
+                if (!historyTexture) {
+                    break;
+                }
+                hzbTextures[hzbTextureCount++] = historyTexture;
+            }
+        }
+
+        cullUni.enableOcclusionCull = hzbTextureCount > 0 ? 1u : 0u;
+        cullUni.hzbLevelCount = hzbTextureCount;
+        if (hzbTextureCount > 0) {
+            cullUni.hzbTextureSize =
+                float2(static_cast<float>(hzbTextures[0]->width()),
+                       static_cast<float>(hzbTextures[0]->height()));
+        }
+        cullUni.occlusionDepthBias = m_occlusionDepthBias;
+        cullUni.occlusionBoundsScale = m_occlusionBoundsScale;
 
         // --- Dispatch 1: Meshlet cull ---
         encoder.setComputePipeline(cullIt->second);
@@ -106,6 +158,9 @@ public:
         encoder.setBuffer(&m_ctx.meshletData.boundsBuffer, 0, 2);
         encoder.setBuffer(m_visibleMeshletBuffer.get(), 0, 3);
         encoder.setBuffer(m_counterBuffer.get(), 0, 4);
+        if (hzbTextureCount > 0) {
+            encoder.setTextures(hzbTextures.data(), 5, hzbTextureCount);
+        }
 
         uint32_t threadgroupSize = 256;
         uint32_t threadgroups = (totalMeshlets + threadgroupSize - 1) / threadgroupSize;
@@ -141,10 +196,16 @@ public:
         if (ImGui::Checkbox("Cone Cull", &m_enableConeCull)) {
             syncFrameContextFlags();
         }
+        ImGui::Checkbox("HZB Occlusion Cull", &m_enableOcclusionCull);
+        ImGui::SliderFloat("HZB Depth Bias", &m_occlusionDepthBias, 0.0f, 0.05f, "%.4f");
+        ImGui::SliderFloat("HZB Bounds Scale", &m_occlusionBoundsScale, 1.0f, 1.5f, "%.2f");
         if (m_frameContext) {
             ImGui::Text("Instances: %u", m_frameContext->visibilityInstanceCount);
             ImGui::Text("GPU Culling: %s", m_frameContext->gpuDrivenCulling ? "On" : "Off");
         }
+        const bool historyValid =
+            m_frameGraph && !m_hzbHistoryRead.empty() && m_frameGraph->isHistoryValid(m_hzbHistoryRead[0]);
+        ImGui::Text("HZB History: %s (%u levels)", historyValid ? "Ready" : "Warming Up", m_hzbLevelCount);
     }
 
 private:
@@ -169,8 +230,13 @@ private:
     uint32_t m_maxInstances = 0;
     uint32_t m_totalMeshlets = 0;
     uint32_t m_lastVisibleCount = 0;
+    uint32_t m_hzbLevelCount = 0;
     bool m_enableFrustumCull = false;
     bool m_enableConeCull = false;
+    bool m_enableOcclusionCull = true;
+    float m_occlusionDepthBias = 0.0015f;
+    float m_occlusionBoundsScale = 1.1f;
+    std::vector<FGResource> m_hzbHistoryRead;
 
     void ensureBuffers(uint32_t totalMeshlets, uint32_t instanceCount) {
         auto* factory = m_runtimeContext->resourceFactory;

@@ -89,6 +89,7 @@ ShaderManager::~ShaderManager() {
     releaseOwnedHandle(m_visIndirectPipeline);
     releaseOwnedHandle(m_computePipeline);
     releaseOwnedHandle(m_cullPipeline);
+    releaseOwnedHandle(m_hzbBuildPipeline);
     releaseOwnedHandle(m_buildIndirectPipeline);
     releaseOwnedHandle(m_meshletVisPipeline);
     releaseOwnedHandle(m_skyPipeline);
@@ -148,6 +149,8 @@ void ShaderManager::syncRuntimeContext() {
         m_rtCtx->computePipelinesRhi["DeferredLightingPass"] = m_computePipeline;
     if (m_cullPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["MeshletCullPass"] = m_cullPipeline;
+    if (m_hzbBuildPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["HZBBuildPass"] = m_hzbBuildPipeline;
     if (m_buildIndirectPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["BuildIndirectPass"] = m_buildIndirectPipeline;
     if (m_meshletVisPipeline.nativeHandle())
@@ -259,6 +262,21 @@ bool ShaderManager::buildAll() {
         }
     } else {
         releaseOwnedHandle(m_cullPipeline);
+    }
+
+    errorMessage.clear();
+    if (m_profile.hzbBuild) {
+        m_hzbBuildPipeline = reloadComputeShader("Shaders/Visibility/hzb_build",
+                                                 "computeMain",
+                                                 nullptr,
+                                                 &errorMessage);
+        if (!m_hzbBuildPipeline.nativeHandle()) {
+            spdlog::error("Failed to create HZB build pipeline: {}",
+                          formatError(&errorMessage, "Slang HZB build shader compilation failed"));
+            return false;
+        }
+    } else {
+        releaseOwnedHandle(m_hzbBuildPipeline);
     }
 
     errorMessage.clear();
@@ -611,6 +629,16 @@ std::pair<int, int> ShaderManager::reloadAll() {
                    "meshlet cull PSO",
                    [&](std::string& localError) {
                        return reloadComputeShader("Shaders/Visibility/meshlet_cull",
+                                                  "computeMain",
+                                                  nullptr,
+                                                  &localError);
+                   });
+
+    reloadPipeline(m_profile.hzbBuild,
+                   m_hzbBuildPipeline,
+                   "HZB build PSO",
+                   [&](std::string& localError) {
+                       return reloadComputeShader("Shaders/Visibility/hzb_build",
                                                   "computeMain",
                                                   nullptr,
                                                   &localError);

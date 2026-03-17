@@ -1255,6 +1255,9 @@ int main() {
     double lastFrameTime = glfwGetTime();
     float4x4 prevView = float4x4::Identity();
     float4x4 prevProj = float4x4::Identity();
+    float4x4 prevCullView = float4x4::Identity();
+    float4x4 prevCullProj = float4x4::Identity();
+    float4 prevCameraWorldPos = float4(0.0f, 0.0f, 0.0f, 1.0f);
     bool hasPrevMatrices = false;
     uint32_t frameIndex = 0;
 
@@ -1504,6 +1507,10 @@ int main() {
         frameContext.cameraWorldPos = orbitCameraWorldPosition(previewCamera);
         frameContext.prevView = hasPrevMatrices ? prevView : view;
         frameContext.prevProj = hasPrevMatrices ? prevProj : unjitteredProj;
+        frameContext.prevCullView = hasPrevMatrices ? prevCullView : view;
+        frameContext.prevCullProj = hasPrevMatrices ? prevCullProj : proj;
+        frameContext.prevCameraWorldPos =
+            hasPrevMatrices ? prevCameraWorldPos : frameContext.cameraWorldPos;
         frameContext.jitterOffset = jitterOffset;
         frameContext.frameIndex = frameIndex;
         frameContext.enableTAA = enableVisibilityTAA;
@@ -1565,6 +1572,9 @@ int main() {
 
         prevView = view;
         prevProj = unjitteredProj;
+        prevCullView = view;
+        prevCullProj = proj;
+        prevCameraWorldPos = frameContext.cameraWorldPos;
         hasPrevMatrices = true;
         frameIndex++;
 

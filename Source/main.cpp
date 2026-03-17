@@ -171,6 +171,8 @@ int main() {
     int lastRenderMode = -1;
     double lastFrameTime = glfwGetTime();
     float4x4 prevView, prevProj;
+    float4x4 prevCullView, prevCullProj;
+    float4 prevCameraWorldPos = float4(0.f, 0.f, 0.f, 1.f);
     bool hasPrevMatrices = false;
 
     while (!glfwWindowShouldClose(window)) {
@@ -463,6 +465,9 @@ int main() {
         frameCtx.renderMode = renderMode;
         frameCtx.prevView = hasPrevMatrices ? prevView : view;
         frameCtx.prevProj = hasPrevMatrices ? prevProj : camera.projectionMatrix(aspect);
+        frameCtx.prevCullView = hasPrevMatrices ? prevCullView : view;
+        frameCtx.prevCullProj = hasPrevMatrices ? prevCullProj : proj;
+        frameCtx.prevCameraWorldPos = hasPrevMatrices ? prevCameraWorldPos : cameraWorldPos;
         frameCtx.jitterOffset = jitterOffset;
         frameCtx.frameIndex = frameIndex;
         frameCtx.enableTAA = enableTAA;
@@ -528,6 +533,9 @@ int main() {
         // Store unjittered matrices for next frame's motion vectors
         prevView = view;
         prevProj = camera.projectionMatrix(aspect);
+        prevCullView = view;
+        prevCullProj = proj;
+        prevCameraWorldPos = cameraWorldPos;
         hasPrevMatrices = true;
         frameIndex++;
 

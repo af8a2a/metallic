@@ -5,6 +5,7 @@
 #include <memory>
 #include <ostream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <microprofile.h>
 
@@ -31,7 +32,10 @@ struct FGResourceNode {
     uint32_t lastUser = 0;
     uint32_t physicalResource = UINT32_MAX;
     uint32_t previousVersion = UINT32_MAX;
+    uint32_t historySlot = UINT32_MAX;
     bool exported = false;
+    bool historyRead = false;
+    bool historyWrite = false;
 };
 
 enum class FGPassType { Render, Compute, Blit };
@@ -80,6 +84,8 @@ public:
     FGResource createToken(const char* name);
     FGResource read(FGResource resource);
     FGResource write(FGResource resource);
+    FGResource readHistory(const char* name, const FGTextureDesc& desc);
+    FGResource writeHistory(const char* name, const FGTextureDesc& desc);
 
     FGResource setColorAttachment(uint32_t index, FGResource resource,
                                   RhiLoadAction load, RhiStoreAction store,
@@ -121,13 +127,30 @@ public:
     void renderPassUI();
 
     RhiTexture* getTexture(FGResource res) const;
+    bool isHistoryValid(FGResource res) const;
+    void commitHistory(FGResource res);
 
 private:
+    struct FGHistorySlot {
+        std::string name;
+        FGTextureDesc desc;
+        std::unique_ptr<RhiTexture> textures[2];
+        uint32_t readResource = UINT32_MAX;
+        uint32_t writeResource = UINT32_MAX;
+        uint32_t readIndex = 0;
+        bool valid = false;
+        bool writtenThisFrame = false;
+    };
+
+    uint32_t findOrCreateHistorySlot(const char* name, const FGTextureDesc& desc);
+    void ensureHistoryResources(RhiFrameGraphBackend& backend);
     RhiTexture* resolveTexture(uint32_t resourceId) const;
 
     std::vector<FGResourceNode> m_resources;
     std::vector<FGPassNode> m_passes;
     std::vector<std::unique_ptr<RenderPass>> m_ownedPasses;
+    std::vector<FGHistorySlot> m_historySlots;
+    std::unordered_map<std::string, uint32_t> m_historySlotLookup;
 
     struct PassDataHolder {
         void* data = nullptr;

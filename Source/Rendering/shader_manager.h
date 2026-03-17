@@ -13,6 +13,7 @@ struct ShaderManagerProfile {
     bool visibility = true;
     bool visibilityIndirect = true;
     bool meshletCull = true;
+    bool hzbBuild = true;
     bool buildIndirect = true;
     bool deferredLighting = true;
     bool meshletVisualize = true;
@@ -31,6 +32,7 @@ struct ShaderManagerProfile {
         profile.visibility = false;
         profile.visibilityIndirect = false;
         profile.meshletCull = false;
+        profile.hzbBuild = false;
         profile.buildIndirect = false;
         profile.deferredLighting = false;
         profile.meshletVisualize = false;
@@ -46,6 +48,7 @@ struct ShaderManagerProfile {
         profile.visibility = true;
         profile.visibilityIndirect = true;
         profile.meshletCull = true;
+        profile.hzbBuild = true;
         profile.buildIndirect = true;
         profile.deferredLighting = true;
         profile.meshletVisualize = false;
@@ -96,6 +99,7 @@ private:
     RhiGraphicsPipelineHandle m_visIndirectPipeline;
     RhiComputePipelineHandle m_computePipeline;
     RhiComputePipelineHandle m_cullPipeline;
+    RhiComputePipelineHandle m_hzbBuildPipeline;
     RhiComputePipelineHandle m_buildIndirectPipeline;
     RhiComputePipelineHandle m_meshletVisPipeline;
     RhiGraphicsPipelineHandle m_skyPipeline;

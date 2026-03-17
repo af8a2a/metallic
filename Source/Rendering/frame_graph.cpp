@@ -35,6 +35,14 @@ uint32_t findLatestVersion(const std::vector<FGResourceNode>& resources, uint32_
     return latest;
 }
 
+bool textureDescMatches(const FGTextureDesc& lhs, const FGTextureDesc& rhs) {
+    return lhs.width == rhs.width &&
+           lhs.height == rhs.height &&
+           lhs.format == rhs.format &&
+           lhs.usage == rhs.usage &&
+           lhs.storageMode == rhs.storageMode;
+}
+
 } // namespace
 
 // --- FGBuilder ---
@@ -117,6 +125,63 @@ FGResource FGBuilder::write(FGResource resource) {
     return versionedResource;
 }
 
+FGResource FGBuilder::readHistory(const char* name, const FGTextureDesc& desc) {
+    const uint32_t slotIndex = m_fg.findOrCreateHistorySlot(name, desc);
+    auto& slot = m_fg.m_historySlots[slotIndex];
+
+    if (slot.readResource == UINT32_MAX) {
+        FGResource resource;
+        resource.id = static_cast<uint32_t>(m_fg.m_resources.size());
+
+        FGResourceNode node;
+        node.name = name;
+        node.kind = FGResourceKind::Texture;
+        node.desc = desc;
+        node.imported = true;
+        node.historySlot = slotIndex;
+        node.historyRead = true;
+        node.physicalResource = resource.id;
+        m_fg.m_resources.push_back(std::move(node));
+        slot.readResource = resource.id;
+    }
+
+    FGResource resource;
+    resource.id = slot.readResource;
+    appendUniqueResource(m_fg.m_passes[m_passIndex].reads, resource);
+    return resource;
+}
+
+FGResource FGBuilder::writeHistory(const char* name, const FGTextureDesc& desc) {
+    const uint32_t slotIndex = m_fg.findOrCreateHistorySlot(name, desc);
+    auto& slot = m_fg.m_historySlots[slotIndex];
+
+    if (slot.writeResource != UINT32_MAX) {
+        const auto& existingNode = m_fg.m_resources[slot.writeResource];
+        assert(existingNode.producer == m_passIndex && "History resources currently support a single writer pass");
+        FGResource resource;
+        resource.id = slot.writeResource;
+        appendUniqueResource(m_fg.m_passes[m_passIndex].writes, resource);
+        return resource;
+    }
+
+    FGResource resource;
+    resource.id = static_cast<uint32_t>(m_fg.m_resources.size());
+
+    FGResourceNode node;
+    node.name = name;
+    node.kind = FGResourceKind::Texture;
+    node.desc = desc;
+    node.producer = m_passIndex;
+    node.historySlot = slotIndex;
+    node.historyWrite = true;
+    node.physicalResource = resource.id;
+    m_fg.m_resources.push_back(std::move(node));
+    slot.writeResource = resource.id;
+
+    appendUniqueResource(m_fg.m_passes[m_passIndex].writes, resource);
+    return resource;
+}
+
 FGResource FGBuilder::setColorAttachment(uint32_t index, FGResource resource,
                                          RhiLoadAction load, RhiStoreAction store,
                                          RhiClearColor clear) {
@@ -177,10 +242,55 @@ void FrameGraph::updateImport(FGResource res, RhiTexture* texture) {
 void FrameGraph::resetTransients() {
     for (uint32_t ri = 0; ri < m_resources.size(); ++ri) {
         auto& res = m_resources[ri];
-        if (res.kind == FGResourceKind::Texture && !res.imported && res.physicalResource == ri) {
+        if (res.kind == FGResourceKind::Texture &&
+            res.historySlot == UINT32_MAX &&
+            !res.imported &&
+            res.physicalResource == ri) {
             res.ownedTexture.reset();
             res.texture = nullptr;
         }
+    }
+}
+
+uint32_t FrameGraph::findOrCreateHistorySlot(const char* name, const FGTextureDesc& desc) {
+    assert(name != nullptr);
+
+    const auto existingIt = m_historySlotLookup.find(name);
+    if (existingIt != m_historySlotLookup.end()) {
+        auto& slot = m_historySlots[existingIt->second];
+        assert(textureDescMatches(slot.desc, desc) && "History resource description mismatch");
+        return existingIt->second;
+    }
+
+    const uint32_t slotIndex = static_cast<uint32_t>(m_historySlots.size());
+    FGHistorySlot slot;
+    slot.name = name;
+    slot.desc = desc;
+    m_historySlots.push_back(std::move(slot));
+    m_historySlotLookup.emplace(name, slotIndex);
+    return slotIndex;
+}
+
+void FrameGraph::ensureHistoryResources(RhiFrameGraphBackend& backend) {
+    for (auto& slot : m_historySlots) {
+        bool reallocated = false;
+        for (auto& texture : slot.textures) {
+            const bool needsCreate =
+                !texture ||
+                texture->width() != slot.desc.width ||
+                texture->height() != slot.desc.height;
+            if (needsCreate) {
+                texture = backend.createTexture(slot.desc);
+                reallocated = true;
+            }
+        }
+
+        if (reallocated) {
+            slot.readIndex = 0;
+            slot.valid = false;
+        }
+
+        slot.writtenThisFrame = false;
     }
 }
 
@@ -255,6 +365,12 @@ void FrameGraph::compile() {
         }
     }
 
+    for (const auto& slot : m_historySlots) {
+        if (slot.writeResource != UINT32_MAX) {
+            addResourceRef(slot.writeResource);
+        }
+    }
+
     for (size_t cursor = 0; cursor < livePasses.size(); ++cursor) {
         const uint32_t pi = livePasses[cursor];
         const auto& pass = m_passes[pi];
@@ -280,10 +396,43 @@ RhiTexture* FrameGraph::getTexture(FGResource res) const {
     return resolveTexture(res.id);
 }
 
+bool FrameGraph::isHistoryValid(FGResource res) const {
+    if (!res.isValid() || res.id >= m_resources.size()) {
+        return false;
+    }
+
+    const auto& resource = m_resources[res.id];
+    if (resource.historySlot == UINT32_MAX) {
+        return false;
+    }
+
+    return m_historySlots[resource.historySlot].valid;
+}
+
+void FrameGraph::commitHistory(FGResource res) {
+    if (!res.isValid() || res.id >= m_resources.size()) {
+        return;
+    }
+
+    const auto& resource = m_resources[res.id];
+    if (!resource.historyWrite || resource.historySlot == UINT32_MAX) {
+        return;
+    }
+
+    m_historySlots[resource.historySlot].writtenThisFrame = true;
+}
+
 RhiTexture* FrameGraph::resolveTexture(uint32_t resourceId) const {
     assert(resourceId < m_resources.size());
     const auto& resource = m_resources[resourceId];
     assert(resource.kind == FGResourceKind::Texture);
+
+    if (resource.historySlot != UINT32_MAX) {
+        const auto& slot = m_historySlots[resource.historySlot];
+        const uint32_t textureIndex = resource.historyWrite ? (1u - slot.readIndex) : slot.readIndex;
+        return slot.textures[textureIndex].get();
+    }
+
     const uint32_t physicalResource =
         resource.physicalResource != UINT32_MAX ? resource.physicalResource : resourceId;
     assert(physicalResource < m_resources.size());
@@ -293,6 +442,8 @@ RhiTexture* FrameGraph::resolveTexture(uint32_t resourceId) const {
 
 void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& backend) {
     MICROPROFILE_SCOPEI("FrameGraph", "Execute", 0xff00ff00);
+
+    ensureHistoryResources(backend);
 
     for (uint32_t pi = 0; pi < m_passes.size(); pi++) {
         auto& pass = m_passes[pi];
@@ -304,6 +455,7 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
         for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
             auto& res = m_resources[ri];
             if (res.kind == FGResourceKind::Texture &&
+                res.historySlot == UINT32_MAX &&
                 !res.imported &&
                 res.producer == pi &&
                 res.physicalResource == ri &&
@@ -385,6 +537,14 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
             pass.executeBlit(*encoder);
         }
     }
+
+    for (auto& slot : m_historySlots) {
+        if (!slot.writtenThisFrame) {
+            continue;
+        }
+        slot.readIndex = 1u - slot.readIndex;
+        slot.valid = true;
+    }
 }
 
 void FrameGraph::reset() {
@@ -392,6 +552,8 @@ void FrameGraph::reset() {
     m_passes.clear();
     m_passData.clear();
     m_ownedPasses.clear();
+    m_historySlots.clear();
+    m_historySlotLookup.clear();
 }
 
 // --- Visualization helpers ---
@@ -649,17 +811,22 @@ void FrameGraph::debugImGui() const {
                 ImGui::TextUnformatted(res.name.c_str());
                 ImGui::TableSetColumnIndex(2);
                 const char* residency = res.imported ? "Imported" : "Transient";
+                if (res.historyRead) {
+                    residency = "History Read";
+                } else if (res.historyWrite) {
+                    residency = "History Write";
+                }
                 if (res.exported)
                     ImGui::Text("%s %s, External", residency, resourceKindName(res.kind));
                 else
                     ImGui::Text("%s %s", residency, resourceKindName(res.kind));
                 ImGui::TableSetColumnIndex(3);
-                if (res.kind == FGResourceKind::Texture && !res.imported)
+                if (res.kind == FGResourceKind::Texture && (!res.imported || res.historyRead))
                     ImGui::Text("%ux%u", res.desc.width, res.desc.height);
                 else
                     ImGui::TextUnformatted("-");
                 ImGui::TableSetColumnIndex(4);
-                if (res.kind == FGResourceKind::Texture && !res.imported)
+                if (res.kind == FGResourceKind::Texture && (!res.imported || res.historyRead))
                     ImGui::TextUnformatted(pixelFormatName(res.desc.format));
                 else
                     ImGui::TextUnformatted("-");

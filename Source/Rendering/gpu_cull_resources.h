@@ -23,11 +23,20 @@ struct GPUInstanceData {
 
 struct CullUniforms {
     float4x4 viewProj;         // transposed for Slang
+    float4x4 prevViewProj;     // transposed for Slang
+    float4x4 prevView;         // transposed for Slang
     float4   cameraWorldPos;
+    float4   prevCameraWorldPos;
+    float2   prevProjScale;
+    float2   hzbTextureSize;
     uint32_t totalDispatchCount;
     uint32_t instanceCount;
     uint32_t enableFrustumCull;
     uint32_t enableConeCull;
+    uint32_t enableOcclusionCull;
+    uint32_t hzbLevelCount;
+    float    occlusionDepthBias;
+    float    occlusionBoundsScale;
 };
 
 // Counter buffer layout (16 bytes, MTL::ResourceStorageModePrivate):
