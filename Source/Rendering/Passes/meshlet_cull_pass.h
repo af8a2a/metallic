@@ -18,6 +18,11 @@ public:
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
 
+    void setFrameContext(const FrameContext* ctx) override {
+        RenderPass::setFrameContext(ctx);
+        syncFrameContextFlags();
+    }
+
     void configure(const PassConfig& config) override {
         m_name = config.name;
     }
@@ -130,6 +135,12 @@ public:
             float cullRate = 1.0f - float(m_lastVisibleCount) / float(m_totalMeshlets);
             ImGui::Text("Cull Rate: %.1f%%", cullRate * 100.0f);
         }
+        if (ImGui::Checkbox("Frustum Cull", &m_enableFrustumCull)) {
+            syncFrameContextFlags();
+        }
+        if (ImGui::Checkbox("Cone Cull", &m_enableConeCull)) {
+            syncFrameContextFlags();
+        }
         if (m_frameContext) {
             ImGui::Text("Instances: %u", m_frameContext->visibilityInstanceCount);
             ImGui::Text("GPU Culling: %s", m_frameContext->gpuDrivenCulling ? "On" : "Off");
@@ -137,6 +148,15 @@ public:
     }
 
 private:
+    void syncFrameContextFlags() {
+        if (!m_frameContext) {
+            return;
+        }
+        auto* frameContext = const_cast<FrameContext*>(m_frameContext);
+        frameContext->enableFrustumCull = m_enableFrustumCull;
+        frameContext->enableConeCull = m_enableConeCull;
+    }
+
     const RenderContext& m_ctx;
     int m_width, m_height;
     std::string m_name = "Meshlet Cull";
@@ -149,6 +169,8 @@ private:
     uint32_t m_maxInstances = 0;
     uint32_t m_totalMeshlets = 0;
     uint32_t m_lastVisibleCount = 0;
+    bool m_enableFrustumCull = false;
+    bool m_enableConeCull = false;
 
     void ensureBuffers(uint32_t totalMeshlets, uint32_t instanceCount) {
         auto* factory = m_runtimeContext->resourceFactory;
