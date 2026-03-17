@@ -3,8 +3,10 @@
 #include "scene_graph.h"
 #include "mesh_loader.h"
 #include "meshlet_builder.h"
+#include "rhi_resource_utils.h"
 #include <cgltf.h>
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 
 static float4x4 computeTRS(const float3& t, const float4& q, const float3& s) {
@@ -82,6 +84,83 @@ static void decomposeLocalMatrix(const float* m, TransformComponent& transform) 
     basisY /= safeScale.y;
     basisZ /= safeScale.z;
     transform.rotation = quaternionFromBasis(basisX, basisY, basisZ);
+}
+
+static bool nearlyZero(float value, float epsilon = 1e-4f) {
+    return std::fabs(value) <= epsilon;
+}
+
+static bool nearlyOne(float value, float epsilon = 1e-4f) {
+    return std::fabs(value - 1.0f) <= epsilon;
+}
+
+static bool isIdentityRotation(const float4& rotation, float epsilon = 1e-4f) {
+    return std::fabs(rotation.x) <= epsilon &&
+           std::fabs(rotation.y) <= epsilon &&
+           std::fabs(rotation.z) <= epsilon &&
+           std::fabs(std::fabs(rotation.w) - 1.0f) <= epsilon;
+}
+
+static bool isIdentityTransform(const TransformComponent& transform) {
+    if (transform.useLocalMatrix) {
+        return false;
+    }
+
+    return nearlyZero(transform.translation.x) &&
+           nearlyZero(transform.translation.y) &&
+           nearlyZero(transform.translation.z) &&
+           isIdentityRotation(transform.rotation) &&
+           nearlyOne(transform.scale.x) &&
+           nearlyOne(transform.scale.y) &&
+           nearlyOne(transform.scale.z);
+}
+
+static bool descendantsHaveIdentityTransforms(const SceneGraph& scene, uint32_t nodeId) {
+    if (nodeId >= scene.nodes.size()) {
+        return false;
+    }
+
+    for (uint32_t childId : scene.nodes[nodeId].children) {
+        if (childId >= scene.nodes.size() ||
+            !isIdentityTransform(scene.nodes[childId].transform) ||
+            !descendantsHaveIdentityTransforms(scene, childId)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void recomputeMeshBounds(LoadedMesh& mesh) {
+    if (mesh.cpuPositions.empty()) {
+        return;
+    }
+
+    float bboxMin[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
+    float bboxMax[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    for (size_t i = 0; i + 2 < mesh.cpuPositions.size(); i += 3) {
+        bboxMin[0] = std::min(bboxMin[0], mesh.cpuPositions[i + 0]);
+        bboxMin[1] = std::min(bboxMin[1], mesh.cpuPositions[i + 1]);
+        bboxMin[2] = std::min(bboxMin[2], mesh.cpuPositions[i + 2]);
+        bboxMax[0] = std::max(bboxMax[0], mesh.cpuPositions[i + 0]);
+        bboxMax[1] = std::max(bboxMax[1], mesh.cpuPositions[i + 1]);
+        bboxMax[2] = std::max(bboxMax[2], mesh.cpuPositions[i + 2]);
+    }
+
+    for (int axis = 0; axis < 3; ++axis) {
+        mesh.bboxMin[axis] = bboxMin[axis];
+        mesh.bboxMax[axis] = bboxMax[axis];
+    }
+}
+
+static void releaseMeshletHandles(MeshletData& meshletData) {
+    rhiReleaseHandle(meshletData.meshletBuffer);
+    rhiReleaseHandle(meshletData.meshletVertices);
+    rhiReleaseHandle(meshletData.meshletTriangles);
+    rhiReleaseHandle(meshletData.boundsBuffer);
+    rhiReleaseHandle(meshletData.materialIDs);
+    meshletData.meshletCount = 0;
+    meshletData.meshletsPerGroup.clear();
 }
 
 static std::string makeNodeName(const cgltf_node* gltfNode, uint32_t nodeIndex) {
@@ -284,6 +363,113 @@ bool SceneGraph::buildFromGLTF(const std::string& gltfPath,
 
     spdlog::info("SceneGraph: {} nodes, {} roots", nodes.size(), rootNodes.size());
 
+    return true;
+}
+
+bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
+                                          LoadedMesh& mesh,
+                                          MeshletData& meshletData) {
+    if (mesh.cpuPositions.empty()) {
+        return true;
+    }
+
+    std::vector<uint32_t> sceneRoots;
+    sceneRoots.reserve(rootNodes.size());
+    for (uint32_t candidateRootId : rootNodes) {
+        if (candidateRootId < nodes.size() && !nodes[candidateRootId].hasLight) {
+            sceneRoots.push_back(candidateRootId);
+        }
+    }
+
+    if (sceneRoots.size() != 1) {
+        return true;
+    }
+
+    const uint32_t rootId = sceneRoots.front();
+    if (rootId >= nodes.size()) {
+        return true;
+    }
+
+    SceneNode& rootNode = nodes[rootId];
+    TransformComponent& transform = rootNode.transform;
+    const bool hasIdentityTranslation =
+        nearlyZero(transform.translation.x) &&
+        nearlyZero(transform.translation.y) &&
+        nearlyZero(transform.translation.z);
+    const bool hasIdentityRotation = isIdentityRotation(transform.rotation);
+    const bool hasUniformPositiveScale =
+        transform.scale.x > 1e-6f &&
+        std::fabs(transform.scale.x - transform.scale.y) <= 1e-5f &&
+        std::fabs(transform.scale.x - transform.scale.z) <= 1e-5f;
+
+    if (transform.useLocalMatrix ||
+        !hasIdentityTranslation ||
+        !hasIdentityRotation ||
+        !hasUniformPositiveScale ||
+        nearlyOne(transform.scale.x) ||
+        !descendantsHaveIdentityTransforms(*this, rootId)) {
+        return true;
+    }
+
+    LoadedMesh scaledMesh;
+    scaledMesh.cpuPositions = mesh.cpuPositions;
+    scaledMesh.cpuIndices = mesh.cpuIndices;
+    scaledMesh.vertexCount = mesh.vertexCount;
+    scaledMesh.indexCount = mesh.indexCount;
+    scaledMesh.primitiveGroups = mesh.primitiveGroups;
+    scaledMesh.meshRanges = mesh.meshRanges;
+
+    const float scale = transform.scale.x;
+    for (float& value : scaledMesh.cpuPositions) {
+        value *= scale;
+    }
+    recomputeMeshBounds(scaledMesh);
+
+    MeshletData rebuiltMeshlets;
+    if (!buildMeshlets(device, scaledMesh, rebuiltMeshlets)) {
+        spdlog::error("SceneGraph: Failed to rebuild meshlets while normalizing root scale");
+        return false;
+    }
+
+    RhiBufferHandle rebuiltPositionBuffer = rhiCreateSharedBuffer(
+        device,
+        scaledMesh.cpuPositions.data(),
+        scaledMesh.cpuPositions.size() * sizeof(float),
+        "Mesh Positions");
+    if (!rebuiltPositionBuffer.nativeHandle()) {
+        releaseMeshletHandles(rebuiltMeshlets);
+        spdlog::error("SceneGraph: Failed to rebuild position buffer while normalizing root scale");
+        return false;
+    }
+
+    if (!meshletData.meshletsPerGroup.empty() &&
+        meshletData.meshletsPerGroup != rebuiltMeshlets.meshletsPerGroup) {
+        rhiReleaseHandle(rebuiltPositionBuffer);
+        releaseMeshletHandles(rebuiltMeshlets);
+        spdlog::error("SceneGraph: Root scale normalization changed meshlet group counts");
+        return false;
+    }
+
+    mesh.cpuPositions = std::move(scaledMesh.cpuPositions);
+    for (int axis = 0; axis < 3; ++axis) {
+        mesh.bboxMin[axis] = scaledMesh.bboxMin[axis];
+        mesh.bboxMax[axis] = scaledMesh.bboxMax[axis];
+    }
+
+    rhiReleaseHandle(mesh.positionBuffer);
+    mesh.positionBuffer = rebuiltPositionBuffer;
+    releaseMeshletHandles(meshletData);
+    meshletData = std::move(rebuiltMeshlets);
+
+    transform.translation = float3(0.f, 0.f, 0.f);
+    transform.rotation = float4(0.f, 0.f, 0.f, 1.f);
+    transform.scale = float3(1.f, 1.f, 1.f);
+    transform.localMatrix = float4x4::Identity();
+    transform.worldMatrix = float4x4::Identity();
+    transform.useLocalMatrix = false;
+
+    markDirty(rootId);
+    spdlog::info("SceneGraph: Baked root scale {} into mesh data for '{}'", scale, rootNode.name);
     return true;
 }
 

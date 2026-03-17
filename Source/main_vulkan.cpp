@@ -165,6 +165,18 @@ bool loadSponzaScene(const RhiDevice& device,
         return false;
     }
 
+    if (!outScene.normalizeSingleRootScale(device, outMesh, outMeshlets)) {
+        spdlog::error("Failed to normalize Vulkan scene root scale: {}", gltfPath);
+        releaseMaterialResources(outMaterials);
+        releaseMeshletBuffers(outMeshlets);
+        releaseMeshBuffers(outMesh);
+        outMaterials = LoadedMaterials{};
+        outMeshlets = MeshletData{};
+        outMesh = LoadedMesh{};
+        outScene = SceneGraph{};
+        return false;
+    }
+
     outScene.updateTransforms();
     spdlog::info("Loaded Vulkan scene: {}", gltfPath);
     return true;

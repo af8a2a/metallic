@@ -196,6 +196,10 @@ bool SceneContext::loadAll(const char* gltfPath) {
         spdlog::error("Failed to build scene graph");
         return false;
     }
+    if (!m_sceneGraph.normalizeSingleRootScale(m_device, m_mesh, m_meshlets)) {
+        spdlog::error("Failed to normalize scene root scale");
+        return false;
+    }
     m_sceneGraph.updateTransforms();
 
     // Raytracing acceleration structures (non-fatal)
