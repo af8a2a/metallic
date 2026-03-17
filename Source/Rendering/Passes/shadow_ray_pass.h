@@ -54,7 +54,11 @@ public:
         float4x4 viewProj = m_frameContext->proj * m_frameContext->view;
         float4x4 invViewProj = viewProj;
         invViewProj.Invert();
+#ifdef _WIN32
+        shadowUni.invViewProj = transpose(invViewProj);
+#else
         shadowUni.invViewProj = invViewProj;
+#endif
         shadowUni.lightDir = m_frameContext->worldLightDir;
         shadowUni.screenWidth = (uint32_t)m_width;
         shadowUni.screenHeight = (uint32_t)m_height;
@@ -94,6 +98,5 @@ private:
     float m_normalBias = 0.05f;
     float m_maxRayDistance = 1000.0f;
 };
-
 
 
