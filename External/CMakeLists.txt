@@ -100,6 +100,7 @@ target_include_directories(imgui_opengl PUBLIC
 )
 target_link_libraries(imgui_opengl PUBLIC glfw)
 
-# microprofile with custom config
-set(MICROPROFILE_USE_CONFIG_FILE ON CACHE BOOL "Use microprofile.config.h" FORCE)
+# microprofile
+set(MICROPROFILE_USE_CONFIG_FILE OFF CACHE BOOL "Use microprofile.config.h" FORCE)
 add_subdirectory(microprofile)
+target_compile_definitions(microprofile PUBLIC MICROPROFILE_USE_CONFIG=0)

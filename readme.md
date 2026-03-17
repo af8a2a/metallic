@@ -79,6 +79,12 @@ git clone --recursive <repo-url>
 cd metallic
 ```
 
+If you already cloned without submodules, sync the profiler dependency with:
+
+```bash
+git submodule update --init --recursive External/microprofile
+```
+
 If `External/slang` is missing, CMake will try to use:
 
 1. `-DSLANG_ROOT=<sdk-root>`
@@ -164,6 +170,7 @@ The shared loader validates missing resources, duplicate producers, and graph cy
 | Dear ImGui | Debug UI |
 | imnodes | Pipeline editor node graph UI |
 | Slang | Shader authoring and code generation |
+| microprofile | Lightweight frame scope profiling |
 | Tracy | CPU/GPU profiling |
 | spdlog | Logging |
 | nlohmann/json | Pipeline asset serialization |
