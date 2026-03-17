@@ -626,6 +626,515 @@ const char* resourceKindName(FGResourceKind kind) {
     return "Unknown";
 }
 
+const char* storageModeName(RhiTextureStorageMode storageMode) {
+    switch (storageMode) {
+        case RhiTextureStorageMode::Private: return "Private";
+        case RhiTextureStorageMode::Shared:  return "Shared";
+    }
+    return "Unknown";
+}
+
+bool hasTextureUsage(RhiTextureUsage usage, RhiTextureUsage flag) {
+    return (static_cast<uint32_t>(usage) & static_cast<uint32_t>(flag)) != 0;
+}
+
+std::string textureUsageSummary(RhiTextureUsage usage) {
+    if (usage == RhiTextureUsage::None) {
+        return "None";
+    }
+
+    std::string summary;
+    auto appendFlag = [&summary](const char* label) {
+        if (!summary.empty()) {
+            summary += " | ";
+        }
+        summary += label;
+    };
+
+    if (hasTextureUsage(usage, RhiTextureUsage::RenderTarget)) {
+        appendFlag("RT");
+    }
+    if (hasTextureUsage(usage, RhiTextureUsage::ShaderRead)) {
+        appendFlag("Read");
+    }
+    if (hasTextureUsage(usage, RhiTextureUsage::ShaderWrite)) {
+        appendFlag("Write");
+    }
+
+    return summary.empty() ? "None" : summary;
+}
+
+uint32_t resourceWidth(const FGResourceNode& resource) {
+    if (resource.desc.width != 0) {
+        return resource.desc.width;
+    }
+    if (resource.texture != nullptr) {
+        return resource.texture->width();
+    }
+    return 0;
+}
+
+uint32_t resourceHeight(const FGResourceNode& resource) {
+    if (resource.desc.height != 0) {
+        return resource.desc.height;
+    }
+    if (resource.texture != nullptr) {
+        return resource.texture->height();
+    }
+    return 0;
+}
+
+bool resourceHasKnownFormat(const FGResourceNode& resource) {
+    return resource.kind == FGResourceKind::Texture &&
+           (resource.desc.width != 0 || resource.desc.height != 0 ||
+            resource.historyRead || resource.historyWrite || !resource.imported);
+}
+
+std::string resourceResidencyLabel(const FGResourceNode& resource) {
+    if (resource.historyRead) {
+        return "History Read";
+    }
+    if (resource.historyWrite) {
+        return "History Write";
+    }
+    if (resource.imported) {
+        return "Imported";
+    }
+    return "Transient";
+}
+
+std::string abbreviateLabel(std::string_view value, size_t maxLength) {
+    if (value.size() <= maxLength) {
+        return std::string(value);
+    }
+    if (maxLength <= 3) {
+        return std::string(value.substr(0, maxLength));
+    }
+
+    std::string out(value.substr(0, maxLength - 3));
+    out += "...";
+    return out;
+}
+
+bool pointInRect(const ImVec2& point, const ImVec2& min, const ImVec2& max) {
+    return point.x >= min.x && point.y >= min.y && point.x < max.x && point.y < max.y;
+}
+
+ImU32 resourceTimelineColor(const FGResourceNode& resource, bool live) {
+    const uint8_t alpha = live ? 225 : 110;
+    if (resource.kind == FGResourceKind::Token) {
+        return IM_COL32(140, 146, 156, alpha);
+    }
+    if (resource.historyRead || resource.historyWrite) {
+        return IM_COL32(224, 184, 82, alpha);
+    }
+    if (resource.imported) {
+        return IM_COL32(82, 146, 255, alpha);
+    }
+    return IM_COL32(72, 196, 168, alpha);
+}
+
+ImU32 resourceTimelineBorderColor(const FGResourceNode& resource, bool live) {
+    if (resource.exported) {
+        return live ? IM_COL32(255, 228, 136, 255) : IM_COL32(170, 150, 98, 180);
+    }
+    return live ? IM_COL32(235, 239, 244, 140) : IM_COL32(120, 124, 132, 90);
+}
+
+ImU32 passTimelineHeaderColor(const FGPassNode& pass) {
+    if (pass.refCount == 0) {
+        return IM_COL32(84, 84, 88, 180);
+    }
+
+    switch (pass.type) {
+        case FGPassType::Render:  return IM_COL32(84, 128, 196, 220);
+        case FGPassType::Compute: return IM_COL32(80, 160, 120, 220);
+        case FGPassType::Blit:    return IM_COL32(192, 132, 78, 220);
+    }
+    return IM_COL32(92, 92, 92, 220);
+}
+
+std::string resourceMetaLabel(const FGResourceNode& resource, uint32_t aliasGroup) {
+    std::string label;
+
+    if (resource.kind == FGResourceKind::Texture) {
+        const uint32_t width = resourceWidth(resource);
+        const uint32_t height = resourceHeight(resource);
+        if (width > 0 || height > 0) {
+            label += std::to_string(width);
+            label += "x";
+            label += std::to_string(height);
+            if (resourceHasKnownFormat(resource)) {
+                label += " ";
+                label += pixelFormatName(resource.desc.format);
+            }
+        } else {
+            label += "Texture";
+        }
+    } else {
+        label += "Token";
+    }
+
+    label += " | ";
+    label += resourceResidencyLabel(resource);
+    label += " | Alias ";
+    label += std::to_string(aliasGroup + 1);
+    if (resource.exported) {
+        label += " | External";
+    }
+    return label;
+}
+
+void drawResourceTimelineImGui(const std::vector<FGResourceNode>& resources,
+                               const std::vector<FGPassNode>& passes) {
+    if (resources.empty()) {
+        ImGui::TextDisabled("No frame graph resources recorded.");
+        return;
+    }
+
+    static ImGuiTextFilter resourceFilter;
+    static bool showCulledResources = false;
+    static bool sortByFirstUse = true;
+
+    resourceFilter.Draw("Filter", 220.0f);
+    ImGui::SameLine();
+    ImGui::Checkbox("Show Culled", &showCulledResources);
+    ImGui::SameLine();
+    ImGui::Checkbox("Sort By First Use", &sortByFirstUse);
+    ImGui::TextDisabled("Blue = imported, gold = history, teal = transient, gray = token, green dots = reads, orange squares = writes.");
+
+    const size_t passCount = passes.size();
+    std::vector<std::vector<uint8_t>> readMasks(resources.size(), std::vector<uint8_t>(passCount, 0));
+    std::vector<std::vector<uint8_t>> writeMasks(resources.size(), std::vector<uint8_t>(passCount, 0));
+
+    for (size_t passIndex = 0; passIndex < passCount; ++passIndex) {
+        const auto& pass = passes[passIndex];
+        for (FGResource read : pass.reads) {
+            if (read.id < resources.size()) {
+                readMasks[read.id][passIndex] = 1;
+            }
+        }
+        for (FGResource write : pass.writes) {
+            if (write.id < resources.size()) {
+                writeMasks[write.id][passIndex] = 1;
+            }
+        }
+    }
+
+    std::unordered_map<uint32_t, uint32_t> aliasGroupLookup;
+    aliasGroupLookup.reserve(resources.size());
+
+    struct ResourceTimelineRow {
+        uint32_t resourceIndex = 0;
+        uint32_t firstPass = 0;
+        uint32_t lastPass = 0;
+        uint32_t aliasGroup = 0;
+        bool hasAccess = false;
+    };
+
+    std::vector<ResourceTimelineRow> rows;
+    rows.reserve(resources.size());
+
+    for (uint32_t resourceIndex = 0; resourceIndex < resources.size(); ++resourceIndex) {
+        const auto& resource = resources[resourceIndex];
+        if (!resourceFilter.PassFilter(resource.name.c_str())) {
+            continue;
+        }
+        if (!showCulledResources && resource.refCount == 0) {
+            continue;
+        }
+
+        const uint32_t physicalId =
+            resource.physicalResource != UINT32_MAX ? resource.physicalResource : resourceIndex;
+        auto [it, inserted] =
+            aliasGroupLookup.emplace(physicalId, static_cast<uint32_t>(aliasGroupLookup.size()));
+        (void)inserted;
+
+        ResourceTimelineRow row;
+        row.resourceIndex = resourceIndex;
+        row.aliasGroup = it->second;
+        row.firstPass = resource.producer != UINT32_MAX ? resource.producer : 0;
+        row.lastPass = row.firstPass;
+
+        for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex) {
+            if (readMasks[resourceIndex][passIndex] == 0 &&
+                writeMasks[resourceIndex][passIndex] == 0) {
+                continue;
+            }
+
+            if (!row.hasAccess) {
+                row.firstPass = passIndex;
+                row.lastPass = passIndex;
+                row.hasAccess = true;
+            } else {
+                row.firstPass = std::min(row.firstPass, passIndex);
+                row.lastPass = std::max(row.lastPass, passIndex);
+            }
+        }
+
+        if (!row.hasAccess && resource.producer != UINT32_MAX) {
+            row.hasAccess = true;
+        }
+
+        rows.push_back(row);
+    }
+
+    if (rows.empty()) {
+        ImGui::TextDisabled("No resources match the current filter.");
+        return;
+    }
+
+    if (sortByFirstUse) {
+        std::stable_sort(rows.begin(), rows.end(), [](const ResourceTimelineRow& lhs,
+                                                      const ResourceTimelineRow& rhs) {
+            if (lhs.firstPass != rhs.firstPass) {
+                return lhs.firstPass < rhs.firstPass;
+            }
+            return lhs.resourceIndex < rhs.resourceIndex;
+        });
+    }
+
+    const float headerHeight = 42.0f;
+    const float rowHeight = 36.0f;
+    const float labelWidth = 320.0f;
+    const float passWidth = passCount > 10 ? 96.0f : 116.0f;
+    const float desiredHeight =
+        std::min(520.0f, headerHeight + rowHeight * static_cast<float>(rows.size()) + 12.0f);
+
+    if (!ImGui::BeginChild("ResourceTimelineCanvas",
+                           ImVec2(0.0f, desiredHeight),
+                           ImGuiChildFlags_Borders,
+                           ImGuiWindowFlags_HorizontalScrollbar)) {
+        ImGui::EndChild();
+        return;
+    }
+
+    const float totalWidth = labelWidth + passWidth * static_cast<float>(std::max<size_t>(passCount, 1)) + 12.0f;
+    const float totalHeight = headerHeight + rowHeight * static_cast<float>(rows.size()) + 4.0f;
+    ImGui::InvisibleButton("##frame_graph_resource_timeline_canvas", ImVec2(totalWidth, totalHeight));
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec2 canvasMin = ImGui::GetItemRectMin();
+    const ImVec2 canvasMax = ImGui::GetItemRectMax();
+    const ImVec2 mousePos = ImGui::GetIO().MousePos;
+    const float lanesStartX = canvasMin.x + labelWidth;
+    const float headerBottomY = canvasMin.y + headerHeight;
+
+    drawList->AddRectFilled(canvasMin, canvasMax, IM_COL32(16, 18, 22, 255), 6.0f);
+    drawList->AddRect(canvasMin, canvasMax, IM_COL32(50, 56, 68, 255), 6.0f);
+
+    drawList->AddRectFilled(canvasMin,
+                            ImVec2(canvasMin.x + labelWidth, headerBottomY),
+                            IM_COL32(26, 29, 36, 255),
+                            6.0f,
+                            ImDrawFlags_RoundCornersTopLeft);
+    drawList->AddText(ImVec2(canvasMin.x + 10.0f, canvasMin.y + 8.0f),
+                      IM_COL32(245, 245, 245, 255),
+                      "Resources");
+    drawList->AddText(ImVec2(canvasMin.x + 10.0f, canvasMin.y + 22.0f),
+                      IM_COL32(156, 164, 176, 255),
+                      "Logical lifetime by pass");
+
+    for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex) {
+        const auto& pass = passes[passIndex];
+        const float x0 = lanesStartX + passWidth * static_cast<float>(passIndex);
+        const float x1 = x0 + passWidth;
+
+        drawList->AddRectFilled(ImVec2(x0, headerBottomY),
+                                ImVec2(x1, canvasMax.y),
+                                pass.refCount > 0 ? IM_COL32(32, 42, 56, 72) : IM_COL32(20, 22, 26, 72));
+        drawList->AddRectFilled(ImVec2(x0, canvasMin.y),
+                                ImVec2(x1, headerBottomY),
+                                passTimelineHeaderColor(pass),
+                                passIndex + 1 == passCount ? 6.0f : 0.0f,
+                                passIndex + 1 == passCount ? ImDrawFlags_RoundCornersTopRight : ImDrawFlags_None);
+        drawList->AddLine(ImVec2(x0, canvasMin.y),
+                          ImVec2(x0, canvasMax.y),
+                          IM_COL32(58, 66, 82, 180));
+
+        const std::string passId = "P" + std::to_string(passIndex);
+        const std::string passLabel = abbreviateLabel(pass.name, 14);
+        drawList->AddText(ImVec2(x0 + 8.0f, canvasMin.y + 6.0f),
+                          IM_COL32(250, 250, 250, 255),
+                          passId.c_str());
+        drawList->AddText(ImVec2(x0 + 8.0f, canvasMin.y + 20.0f),
+                          IM_COL32(232, 236, 242, 255),
+                          passLabel.c_str());
+
+        if (pointInRect(mousePos, ImVec2(x0, canvasMin.y), ImVec2(x1, headerBottomY))) {
+            ImGui::BeginTooltip();
+            ImGui::Text("P%u %s", passIndex, pass.name.c_str());
+            ImGui::Separator();
+            ImGui::Text("Type: %s", passTypeName(pass.type));
+            ImGui::Text("Status: %s", pass.refCount > 0 ? "Live" : "Culled");
+            ImGui::Text("Refs: %u", pass.refCount);
+            ImGui::Text("Reads: %zu", pass.reads.size());
+            ImGui::Text("Writes: %zu", pass.writes.size());
+            ImGui::Text("Side Effect: %s", pass.hasSideEffect ? "Yes" : "No");
+            ImGui::EndTooltip();
+        }
+    }
+    drawList->AddLine(ImVec2(lanesStartX, canvasMin.y),
+                      ImVec2(lanesStartX, canvasMax.y),
+                      IM_COL32(72, 80, 98, 255),
+                      1.5f);
+
+    for (size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+        const ResourceTimelineRow& row = rows[rowIndex];
+        const FGResourceNode& resource = resources[row.resourceIndex];
+        const bool live = resource.refCount > 0;
+
+        const float y0 = headerBottomY + rowHeight * static_cast<float>(rowIndex);
+        const float y1 = y0 + rowHeight;
+        const ImVec2 rowMin(canvasMin.x, y0);
+        const ImVec2 rowMax(canvasMax.x, y1);
+
+        const ImU32 rowBg = (rowIndex % 2 == 0) ? IM_COL32(24, 27, 34, 180) : IM_COL32(20, 23, 29, 180);
+        drawList->AddRectFilled(rowMin, rowMax, rowBg);
+        drawList->AddLine(ImVec2(canvasMin.x, y1),
+                          ImVec2(canvasMax.x, y1),
+                          IM_COL32(48, 54, 66, 168));
+
+        const std::string title =
+            "#" + std::to_string(row.resourceIndex) + " " + abbreviateLabel(resource.name, 34);
+        const std::string meta =
+            abbreviateLabel(resourceMetaLabel(resource, row.aliasGroup), 52);
+        drawList->AddText(ImVec2(canvasMin.x + 10.0f, y0 + 6.0f),
+                          live ? IM_COL32(245, 245, 245, 255) : IM_COL32(150, 155, 162, 220),
+                          title.c_str());
+        drawList->AddText(ImVec2(canvasMin.x + 10.0f, y0 + 20.0f),
+                          IM_COL32(150, 158, 170, 230),
+                          meta.c_str());
+
+        if (passCount > 0 && row.hasAccess) {
+            const float barCenterY = y0 + rowHeight * 0.5f;
+            const float barHalfHeight = 6.0f;
+            const float barMinX = lanesStartX + passWidth * static_cast<float>(row.firstPass) + 8.0f;
+            const float barMaxX = lanesStartX + passWidth * static_cast<float>(row.lastPass + 1) - 8.0f;
+            const ImVec2 barMin(barMinX, barCenterY - barHalfHeight);
+            const ImVec2 barMax(barMaxX, barCenterY + barHalfHeight);
+
+            drawList->AddRectFilled(barMin,
+                                    barMax,
+                                    resourceTimelineColor(resource, live),
+                                    6.0f);
+            drawList->AddRect(barMin,
+                              barMax,
+                              resourceTimelineBorderColor(resource, live),
+                              6.0f,
+                              ImDrawFlags_None,
+                              resource.exported ? 2.0f : 1.0f);
+
+            if (resource.imported) {
+                drawList->AddTriangleFilled(ImVec2(barMin.x - 6.0f, barCenterY),
+                                            ImVec2(barMin.x, barCenterY - 5.0f),
+                                            ImVec2(barMin.x, barCenterY + 5.0f),
+                                            resourceTimelineColor(resource, live));
+            }
+            if (resource.exported) {
+                drawList->AddTriangleFilled(ImVec2(barMax.x + 6.0f, barCenterY),
+                                            ImVec2(barMax.x, barCenterY - 5.0f),
+                                            ImVec2(barMax.x, barCenterY + 5.0f),
+                                            resourceTimelineBorderColor(resource, live));
+            }
+
+            for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex) {
+                const bool hasRead = readMasks[row.resourceIndex][passIndex] != 0;
+                const bool hasWrite = writeMasks[row.resourceIndex][passIndex] != 0;
+                if (!hasRead && !hasWrite) {
+                    continue;
+                }
+
+                const float centerX = lanesStartX + passWidth * (static_cast<float>(passIndex) + 0.5f);
+                const float readY = hasRead && hasWrite ? barCenterY - 5.0f : barCenterY;
+                const float writeY = hasRead && hasWrite ? barCenterY + 5.0f : barCenterY;
+
+                if (hasRead) {
+                    drawList->AddCircleFilled(ImVec2(centerX, readY),
+                                              3.5f,
+                                              IM_COL32(106, 222, 138, live ? 255 : 180));
+                }
+                if (hasWrite) {
+                    drawList->AddRectFilled(ImVec2(centerX - 4.0f, writeY - 4.0f),
+                                            ImVec2(centerX + 4.0f, writeY + 4.0f),
+                                            IM_COL32(255, 170, 75, live ? 255 : 180),
+                                            2.0f);
+                }
+            }
+        }
+
+        if (pointInRect(mousePos, rowMin, rowMax)) {
+            ImGui::BeginTooltip();
+            ImGui::Text("#%u %s", row.resourceIndex, resource.name.c_str());
+            ImGui::Separator();
+            ImGui::Text("Kind: %s", resourceKindName(resource.kind));
+            ImGui::Text("Residency: %s", resourceResidencyLabel(resource).c_str());
+            ImGui::Text("Status: %s", live ? "Live" : "Culled");
+            ImGui::Text("Refs: %u", resource.refCount);
+            ImGui::Text("Alias Group: %u", row.aliasGroup + 1);
+            if (resource.previousVersion != UINT32_MAX) {
+                ImGui::Text("Previous Version: #%u", resource.previousVersion);
+            }
+            if (resource.producer != UINT32_MAX && resource.producer < passes.size()) {
+                ImGui::Text("Producer: P%u %s", resource.producer, passes[resource.producer].name.c_str());
+            } else {
+                ImGui::Text("Producer: External");
+            }
+            if (resource.refCount > 0 && resource.lastUser < passes.size()) {
+                ImGui::Text("Last User: P%u %s", resource.lastUser, passes[resource.lastUser].name.c_str());
+            } else {
+                ImGui::Text("Last User: -");
+            }
+
+            if (resource.kind == FGResourceKind::Texture) {
+                const uint32_t width = resourceWidth(resource);
+                const uint32_t height = resourceHeight(resource);
+                const bool hasDescriptorInfo = resourceHasKnownFormat(resource);
+                if (width > 0 || height > 0) {
+                    ImGui::Text("Size: %ux%u", width, height);
+                } else {
+                    ImGui::Text("Size: -");
+                }
+                ImGui::Text("Format: %s",
+                            hasDescriptorInfo ? pixelFormatName(resource.desc.format) : "Unknown");
+                if (hasDescriptorInfo) {
+                    ImGui::Text("Usage: %s", textureUsageSummary(resource.desc.usage).c_str());
+                    ImGui::Text("Storage: %s", storageModeName(resource.desc.storageMode));
+                } else {
+                    ImGui::Text("Usage: -");
+                    ImGui::Text("Storage: -");
+                }
+            }
+
+            if (passCount > 0) {
+                ImGui::Separator();
+                ImGui::TextUnformatted("Pass Access");
+                bool anyAccess = false;
+                for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex) {
+                    const bool hasRead = readMasks[row.resourceIndex][passIndex] != 0;
+                    const bool hasWrite = writeMasks[row.resourceIndex][passIndex] != 0;
+                    if (!hasRead && !hasWrite) {
+                        continue;
+                    }
+
+                    const char* accessLabel = hasRead && hasWrite ? "read + write" : (hasRead ? "read" : "write");
+                    ImGui::BulletText("P%u %s (%s)",
+                                      passIndex,
+                                      passes[passIndex].name.c_str(),
+                                      accessLabel);
+                    anyAccess = true;
+                }
+                if (!anyAccess) {
+                    ImGui::TextDisabled("No pass access");
+                }
+            }
+            ImGui::EndTooltip();
+        }
+    }
+
+    ImGui::EndChild();
+}
+
 } // namespace
 
 // --- Graphviz DOT export ---
@@ -734,6 +1243,27 @@ void FrameGraph::debugImGui() const {
         return;
     }
 
+    const auto livePassCount = static_cast<uint32_t>(std::count_if(
+        m_passes.begin(),
+        m_passes.end(),
+        [](const FGPassNode& pass) { return pass.refCount > 0; }));
+    const auto liveResourceCount = static_cast<uint32_t>(std::count_if(
+        m_resources.begin(),
+        m_resources.end(),
+        [](const FGResourceNode& resource) { return resource.refCount > 0; }));
+
+    ImGui::Text("Live Passes: %u / %zu", livePassCount, m_passes.size());
+    ImGui::SameLine();
+    ImGui::Text("Live Resources: %u / %zu", liveResourceCount, m_resources.size());
+    if (!m_historySlots.empty()) {
+        ImGui::SameLine();
+        ImGui::Text("History Slots: %zu", m_historySlots.size());
+    }
+
+    if (ImGui::CollapsingHeader("Resource Timeline", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawResourceTimelineImGui(m_resources, m_passes);
+    }
+
     // Passes table
     if (ImGui::CollapsingHeader("Passes", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::BeginTable("passes", 7,
@@ -821,12 +1351,12 @@ void FrameGraph::debugImGui() const {
                 else
                     ImGui::Text("%s %s", residency, resourceKindName(res.kind));
                 ImGui::TableSetColumnIndex(3);
-                if (res.kind == FGResourceKind::Texture && (!res.imported || res.historyRead))
-                    ImGui::Text("%ux%u", res.desc.width, res.desc.height);
+                if (res.kind == FGResourceKind::Texture && (resourceWidth(res) > 0 || resourceHeight(res) > 0))
+                    ImGui::Text("%ux%u", resourceWidth(res), resourceHeight(res));
                 else
                     ImGui::TextUnformatted("-");
                 ImGui::TableSetColumnIndex(4);
-                if (res.kind == FGResourceKind::Texture && (!res.imported || res.historyRead))
+                if (res.kind == FGResourceKind::Texture && resourceHasKnownFormat(res))
                     ImGui::TextUnformatted(pixelFormatName(res.desc.format));
                 else
                     ImGui::TextUnformatted("-");
@@ -838,7 +1368,7 @@ void FrameGraph::debugImGui() const {
                 else
                     ImGui::TextUnformatted("-");
                 ImGui::TableSetColumnIndex(7);
-                if (res.lastUser < m_passes.size())
+                if (res.refCount > 0 && res.lastUser < m_passes.size())
                     ImGui::TextUnformatted(m_passes[res.lastUser].name.c_str());
                 else
                     ImGui::TextUnformatted("-");
