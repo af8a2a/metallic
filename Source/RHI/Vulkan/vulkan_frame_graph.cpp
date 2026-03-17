@@ -12,6 +12,8 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "../rhi_resource_utils.h"
+
 // Mesh shader extension function pointers (loaded dynamically)
 static PFN_vkCmdDrawMeshTasksEXT pfnCmdDrawMeshTasksEXT = nullptr;
 static PFN_vkCmdDrawMeshTasksIndirectEXT pfnCmdDrawMeshTasksIndirectEXT = nullptr;
@@ -121,6 +123,7 @@ public:
         m_pendingBuffers.fill({});
         m_pendingTextures.fill({});
         m_pendingSamplers.fill({});
+        m_pendingAccelerationStructures.fill({});
     }
 
     ~VulkanRenderCommandEncoder() override {
@@ -321,7 +324,8 @@ private:
                                               *m_boundPipeline,
                                               m_pendingBuffers,
                                               m_pendingTextures,
-                                              m_pendingSamplers);
+                                              m_pendingSamplers,
+                                              m_pendingAccelerationStructures);
         }
     }
 
@@ -333,6 +337,8 @@ private:
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
     std::array<PendingSamplerBinding, kMaxSamplerBindings> m_pendingSamplers{};
+    std::array<PendingAccelerationStructureBinding, kMaxAccelerationStructureBindings>
+        m_pendingAccelerationStructures{};
 };
 
 // Compute command encoder
@@ -346,6 +352,7 @@ public:
         m_pendingBuffers.fill({});
         m_pendingTextures.fill({});
         m_pendingSamplers.fill({});
+        m_pendingAccelerationStructures.fill({});
     }
 
     ~VulkanComputeCommandEncoder() override = default;
@@ -397,12 +404,51 @@ public:
         m_pendingSamplers[index] = {getVulkanSamplerHandle(sampler), true};
     }
 
-    void setAccelerationStructure(const RhiAccelerationStructure* /*accelerationStructure*/, uint32_t /*index*/) override {
-        // Will be implemented in Phase 6 (Raytracing)
+    void setAccelerationStructure(const RhiAccelerationStructure* accelerationStructure, uint32_t index) override {
+        if (!accelerationStructure) {
+            return;
+        }
+
+        uint32_t resolvedIndex = index;
+        if (resolvedIndex >= kMaxAccelerationStructureBindings) {
+            resolvedIndex = findFallbackAccelerationStructureBindingIndex();
+        } else if (m_boundPipeline &&
+                   !m_boundPipeline->accelerationStructureBindings[resolvedIndex].valid()) {
+            const uint32_t fallbackIndex = findFallbackAccelerationStructureBindingIndex();
+            if (fallbackIndex < kMaxAccelerationStructureBindings) {
+                resolvedIndex = fallbackIndex;
+            }
+        }
+
+        if (resolvedIndex >= kMaxAccelerationStructureBindings) {
+            return;
+        }
+
+        m_pendingAccelerationStructures[resolvedIndex] = {
+            getVulkanAccelerationStructureHandle(accelerationStructure),
+            true,
+        };
     }
 
     void useResource(const RhiBuffer& /*resource*/, RhiResourceUsage /*usage*/) override {}
-    void useResource(const RhiAccelerationStructure& /*resource*/, RhiResourceUsage /*usage*/) override {}
+    void useResource(const RhiAccelerationStructure& resource, RhiResourceUsage usage) override {
+        if ((static_cast<uint32_t>(usage) & static_cast<uint32_t>(RhiResourceUsage::Read)) == 0 ||
+            !resource.nativeHandle()) {
+            return;
+        }
+
+        VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                                VK_ACCESS_2_SHADER_READ_BIT;
+
+        VkDependencyInfo dependencyInfo{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependencyInfo.memoryBarrierCount = 1;
+        dependencyInfo.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(m_commandBuffer, &dependencyInfo);
+    }
 
     void memoryBarrier(RhiBarrierScope /*scope*/) override {
         VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -457,8 +503,25 @@ private:
                                               *m_boundPipeline,
                                               m_pendingBuffers,
                                               m_pendingTextures,
-                                              m_pendingSamplers);
+                                              m_pendingSamplers,
+                                              m_pendingAccelerationStructures);
         }
+    }
+
+    uint32_t findFallbackAccelerationStructureBindingIndex() const {
+        if (!m_boundPipeline) {
+            return kMaxAccelerationStructureBindings;
+        }
+
+        uint32_t fallbackIndex = kMaxAccelerationStructureBindings;
+        uint32_t validCount = 0;
+        for (uint32_t index = 0; index < kMaxAccelerationStructureBindings; ++index) {
+            if (m_boundPipeline->accelerationStructureBindings[index].valid()) {
+                fallbackIndex = index;
+                ++validCount;
+            }
+        }
+        return validCount == 1 ? fallbackIndex : kMaxAccelerationStructureBindings;
     }
 
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
@@ -469,6 +532,8 @@ private:
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
     std::array<PendingSamplerBinding, kMaxSamplerBindings> m_pendingSamplers{};
+    std::array<PendingAccelerationStructureBinding, kMaxAccelerationStructureBindings>
+        m_pendingAccelerationStructures{};
 };
 
 // Blit command encoder
@@ -654,10 +719,15 @@ std::unique_ptr<RhiTexture> VulkanFrameGraphBackend::createTexture(const RhiText
 }
 
 std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBufferDesc& desc) {
+    const VulkanResourceContextInfo& resourceContext = vulkanGetResourceContext();
     VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bufferInfo.size = desc.size;
     bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (resourceContext.rayTracingEnabled) {
+        bufferInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    }
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo allocCreateInfo{};
@@ -688,6 +758,21 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
     resource.allocator = m_allocator;
     resource.mappedData = allocInfo.pMappedData;
     resource.size = desc.size;
+    resource.usageFlags = bufferInfo.usage;
+    if (resourceContext.rayTracingEnabled) {
+        PFN_vkGetBufferDeviceAddress getBufferDeviceAddress =
+            reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
+                vkGetDeviceProcAddr(m_device, "vkGetBufferDeviceAddress"));
+        if (!getBufferDeviceAddress) {
+            getBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
+                vkGetDeviceProcAddr(m_device, "vkGetBufferDeviceAddressKHR"));
+        }
+        if (getBufferDeviceAddress) {
+            VkBufferDeviceAddressInfo addressInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+            addressInfo.buffer = buffer;
+            resource.deviceAddress = getBufferDeviceAddress(m_device, &addressInfo);
+        }
+    }
 
     return std::make_unique<VulkanOwnedBuffer>(resource);
 }

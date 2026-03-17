@@ -1,13 +1,10 @@
 #include "raytraced_shadows.h"
-#include "rhi_resource_utils.h"
-
-#ifdef __APPLE__
-
 #include "mesh_loader.h"
 #include "rhi_raytracing_utils.h"
 #include "rhi_resource_utils.h"
 #include "rhi_shader_utils.h"
 #include "scene_graph.h"
+#include "slang_compiler.h"
 
 #include <algorithm>
 #include <fstream>
@@ -47,6 +44,15 @@ std::string loadTextFile(const std::string& path) {
     std::stringstream stream;
     stream << file.rdbuf();
     return stream.str();
+}
+
+std::string loadBinaryBlob(const std::vector<uint32_t>& words) {
+    if (words.empty()) {
+        return {};
+    }
+
+    return std::string(reinterpret_cast<const char*>(words.data()),
+                       words.size() * sizeof(uint32_t));
 }
 
 } // namespace
@@ -238,6 +244,40 @@ void updateTLAS(const RhiNativeCommandBuffer& commandBuffer,
 bool createShadowPipeline(const RhiDevice& device,
                           RaytracedShadowResources& out,
                           const char* shaderBasePath) {
+#ifdef _WIN32
+    constexpr const char* shaderPath = "Shaders/Raytracing/raytraced_shadow.slang";
+    if (shaderBasePath) {
+        spdlog::info("Compiling Vulkan RT shadow shader: {}/{}", shaderBasePath, shaderPath);
+    } else {
+        spdlog::info("Compiling Vulkan RT shadow shader: {}", shaderPath);
+    }
+    const std::vector<uint32_t> spirv = compileSlangComputeBinary(RhiBackendType::Vulkan,
+                                                                  shaderPath,
+                                                                  shaderBasePath,
+                                                                  "computeMain");
+    if (spirv.empty()) {
+        spdlog::error("Failed to compile {}", shaderPath);
+        return false;
+    }
+
+    std::string errorMessage;
+    RhiComputePipelineHandle newPipeline = rhiCreateComputePipelineFromSource(device,
+                                                                              loadBinaryBlob(spirv),
+                                                                              "computeMain",
+                                                                              errorMessage);
+    if (!newPipeline.nativeHandle()) {
+        spdlog::error("Failed to create Vulkan shadow ray pipeline: {}", errorMessage);
+        return false;
+    }
+
+    rhiReleaseHandle(out.pipeline);
+    rhiReleaseHandle(out.library);
+    out.pipeline = newPipeline;
+    out.library = {};
+
+    spdlog::info("Vulkan shadow ray pipeline created");
+    return true;
+#else
     std::string shaderPath = "Shaders/Raytracing/raytraced_shadow.metal";
     if (shaderBasePath) {
         shaderPath = std::string(shaderBasePath) + "/" + shaderPath;
@@ -277,11 +317,46 @@ bool createShadowPipeline(const RhiDevice& device,
 
     spdlog::info("Shadow ray pipeline created");
     return true;
+#endif
 }
 
 bool reloadShadowPipeline(const RhiDevice& device,
                           RaytracedShadowResources& res,
                           const char* shaderBasePath) {
+#ifdef _WIN32
+    constexpr const char* shaderPath = "Shaders/Raytracing/raytraced_shadow.slang";
+    if (shaderBasePath) {
+        spdlog::info("Reloading Vulkan RT shadow shader: {}/{}", shaderBasePath, shaderPath);
+    } else {
+        spdlog::info("Reloading Vulkan RT shadow shader: {}", shaderPath);
+    }
+    const std::vector<uint32_t> spirv = compileSlangComputeBinary(RhiBackendType::Vulkan,
+                                                                  shaderPath,
+                                                                  shaderBasePath,
+                                                                  "computeMain");
+    if (spirv.empty()) {
+        spdlog::error("Hot-reload: Failed to compile {}", shaderPath);
+        return false;
+    }
+
+    std::string errorMessage;
+    RhiComputePipelineHandle newPipeline = rhiCreateComputePipelineFromSource(device,
+                                                                              loadBinaryBlob(spirv),
+                                                                              "computeMain",
+                                                                              errorMessage);
+    if (!newPipeline.nativeHandle()) {
+        spdlog::error("Hot-reload: Failed to create Vulkan shadow pipeline: {}", errorMessage);
+        return false;
+    }
+
+    rhiReleaseHandle(res.pipeline);
+    rhiReleaseHandle(res.library);
+    res.pipeline = newPipeline;
+    res.library = {};
+
+    spdlog::info("Hot-reload: Vulkan shadow ray pipeline reloaded");
+    return true;
+#else
     std::string shaderPath = "Shaders/Raytracing/raytraced_shadow.metal";
     if (shaderBasePath) {
         shaderPath = std::string(shaderBasePath) + "/" + shaderPath;
@@ -321,49 +396,5 @@ bool reloadShadowPipeline(const RhiDevice& device,
 
     spdlog::info("Hot-reload: Shadow ray pipeline reloaded");
     return true;
+#endif
 }
-
-#else
-
-void RaytracedShadowResources::release() {
-    for (auto& blas : blasArray) {
-        rhiReleaseHandle(blas);
-    }
-    blasArray.clear();
-    referencedBlas.clear();
-    rhiReleaseHandle(tlas);
-    rhiReleaseHandle(instanceDescriptorBuffer);
-    rhiReleaseHandle(scratchBuffer);
-    rhiReleaseHandle(pipeline);
-    rhiReleaseHandle(library);
-    instanceCount = 0;
-}
-
-bool buildAccelerationStructures(const RhiDevice&,
-                                 const RhiCommandQueue&,
-                                 const LoadedMesh&,
-                                 const SceneGraph&,
-                                 RaytracedShadowResources& out) {
-    out.release();
-    return false;
-}
-
-void updateTLAS(const RhiNativeCommandBuffer&,
-                const SceneGraph&,
-                RaytracedShadowResources&) {
-}
-
-bool createShadowPipeline(const RhiDevice&,
-                          RaytracedShadowResources& out,
-                          const char*) {
-    out.release();
-    return false;
-}
-
-bool reloadShadowPipeline(const RhiDevice&,
-                          RaytracedShadowResources&,
-                          const char*) {
-    return false;
-}
-
-#endif // __APPLE__

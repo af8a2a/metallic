@@ -30,6 +30,7 @@
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "rhi_backend.h"
+#include "raytraced_shadows.h"
 #include "rhi_resource_utils.h"
 #include "rhi_shader_utils.h"
 #include "shader_manager.h"
@@ -798,7 +799,8 @@ int main() {
                              vkPhysicalDevice,
                              vmaAllocator,
                              nativeToVkHandle<VkQueue>(native.queue),
-                             native.graphicsQueueFamily);
+                             native.graphicsQueueFamily,
+                             rhi->features().rayTracing);
     vulkanSetShaderContext(vkDevice);
     vulkanLoadMeshShaderFunctions(vkDevice);
 
@@ -928,6 +930,26 @@ int main() {
         rhiReleaseHandle(skyFallbackTexture);
     }
 
+    RaytracedShadowResources shadowResources;
+    bool rtShadowsAvailable = false;
+    bool enableRTShadows = true;
+    if (previewSceneReady && rhi->features().rayTracing) {
+        if (buildAccelerationStructures(deviceHandle,
+                                        queueHandle,
+                                        previewMesh,
+                                        previewScene,
+                                        shadowResources) &&
+            createShadowPipeline(deviceHandle, shadowResources, PROJECT_SOURCE_DIR)) {
+            rtShadowsAvailable = true;
+            spdlog::info("Vulkan raytraced shadows enabled");
+        } else {
+            spdlog::warn("Failed to initialize Vulkan raytraced shadows; continuing with fallback lighting");
+            shadowResources.release();
+        }
+    } else if (!rhi->features().rayTracing) {
+        spdlog::info("Vulkan ray tracing not supported on this device; shadow pass stays disabled");
+    }
+
     const std::string visibilityPipelinePath =
         std::string(PROJECT_SOURCE_DIR) + "/Pipelines/visibility_buffer.json";
     PipelineAsset visibilityPipelineBaseAsset;
@@ -962,13 +984,6 @@ int main() {
             }
             return true;
         };
-
-        if (visibilityPipelineAssetLoaded) {
-            disableVisibilityRayTracing(visibilityPipelineAsset);
-            if (validateVisibilityAsset("Invalid Vulkan visibility pipeline without ShadowRayPass")) {
-                spdlog::info("Vulkan visibility pipeline uses dummy shadow input until ray tracing backend is ready");
-            }
-        }
 
         if (visibilityPipelineAssetLoaded && !visibilityTaaAvailable) {
             disableVisibilityTAA(visibilityPipelineAsset);
@@ -1060,6 +1075,7 @@ int main() {
         rhi->waitIdle();
         descriptorManager.destroy();
         atmosphereTextures.release();
+        shadowResources.release();
         rhiReleaseHandle(shadowDummyTexture);
         rhiReleaseHandle(skyFallbackTexture);
         releaseMaterialResources(previewMaterials);
@@ -1104,7 +1120,6 @@ int main() {
     sceneGraph.exportResource(trianglePassData.colorTarget);
     sceneGraph.compile();
 
-    RaytracedShadowResources emptyShadows;
     const double depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
     RhiDepthStencilStateHandle depthState =
         rhiCreateDepthStencilState(deviceHandle, true, ML_DEPTH_REVERSED);
@@ -1113,7 +1128,7 @@ int main() {
         previewMeshlets,
         previewMaterials,
         previewScene,
-        emptyShadows,
+        shadowResources,
         depthState,
         shadowDummyTexture,
         skyFallbackTexture,
@@ -1145,6 +1160,7 @@ int main() {
         sceneGraph.reset();
         descriptorManager.destroy();
         atmosphereTextures.release();
+        shadowResources.release();
         rhiReleaseHandle(shadowDummyTexture);
         rhiReleaseHandle(skyFallbackTexture);
         releaseMaterialResources(previewMaterials);
@@ -1286,6 +1302,16 @@ int main() {
             auto [reloaded, failed] = shaderManager.reloadAll();
             refreshVisibilityPipelineState();
 
+            if (rtShadowsAvailable) {
+                if (reloadShadowPipeline(deviceHandle, shadowResources, PROJECT_SOURCE_DIR)) {
+                    reloaded++;
+                    spdlog::info("Reloaded Vulkan RT shadow shader");
+                } else {
+                    failed++;
+                    spdlog::warn("Failed to reload Vulkan RT shadow shader; keeping previous pipeline");
+                }
+            }
+
             if (failed == 0) {
                 spdlog::info("All {} Vulkan visibility shaders reloaded successfully", reloaded);
             } else {
@@ -1380,6 +1406,9 @@ int main() {
         ImGui::TextUnformatted(visibilityTaaAvailable ? "TAA: Enabled" : "TAA: Disabled");
         ImGui::TextUnformatted(visibilityAutoExposureAvailable ? "Exposure: Auto" : "Exposure: Manual");
         ImGui::TextUnformatted(visibilityGpuCullingAvailable ? "Visibility Dispatch: GPU" : "Visibility Dispatch: CPU");
+        if (rtShadowsAvailable && useVisibilityRenderGraph) {
+            ImGui::Checkbox("RT Shadows", &enableRTShadows);
+        }
         if (ImGui::Button("Reload Shaders (F5)")) {
             shaderReloadRequested = true;
         }
@@ -1484,7 +1513,8 @@ int main() {
             frameContext.deltaTime = static_cast<float>(now - lastFrameTime);
             lastFrameTime = now;
         }
-        frameContext.enableRTShadows = false;
+        frameContext.enableRTShadows =
+            useVisibilityRenderGraph && rtShadowsAvailable && enableRTShadows;
         frameContext.enableAtmosphereSky = atmosphereSkyAvailable;
         frameContext.gpuDrivenCulling = useVisibilityRenderGraph && visibilityGpuCullingAvailable;
         frameContext.renderMode = useVisibilityRenderGraph ? 2 : 0;
@@ -1508,6 +1538,10 @@ int main() {
 
         if (!useVisibilityRenderGraph) {
             sceneGraph.execute(commandBuffer, frameGraphBackend);
+        }
+
+        if (useVisibilityRenderGraph && rtShadowsAvailable) {
+            updateTLAS(nativeCommandBuffer, previewScene, shadowResources);
         }
 
         postBuilder.execute(commandBuffer, frameGraphBackend);

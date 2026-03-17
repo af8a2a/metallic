@@ -805,6 +805,14 @@ private:
                                                properties.apiVersion >= VK_API_VERSION_1_3;
         const bool sync2Available = hasExtension(extensions, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME) ||
                                     properties.apiVersion >= VK_API_VERSION_1_3;
+        const bool bufferDeviceAddressAvailable =
+            hasExtension(extensions, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) ||
+            properties.apiVersion >= VK_API_VERSION_1_2;
+        const bool accelerationStructureAvailable =
+            hasExtension(extensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        const bool rayQueryAvailable = hasExtension(extensions, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        const bool deferredHostOperationsAvailable =
+            hasExtension(extensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         if (!dynamicRenderingAvailable || !sync2Available) {
             return false;
         }
@@ -815,6 +823,12 @@ private:
         }
 
         VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+        VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+        VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
         VkPhysicalDeviceSynchronization2Features sync2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
         VkPhysicalDeviceVulkan11Features vulkan11Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
@@ -823,6 +837,9 @@ private:
         vulkan11Features.pNext = &dynamicRenderingFeatures;
         dynamicRenderingFeatures.pNext = &sync2Features;
         sync2Features.pNext = &meshShaderFeatures;
+        meshShaderFeatures.pNext = &bufferDeviceAddressFeatures;
+        bufferDeviceAddressFeatures.pNext = &rayQueryFeatures;
+        rayQueryFeatures.pNext = &accelerationStructureFeatures;
         vkGetPhysicalDeviceFeatures2(device, &features2);
 
         if (dynamicRenderingFeatures.dynamicRendering != VK_TRUE ||
@@ -833,6 +850,14 @@ private:
 
         m_features.dynamicRendering = true;
         m_features.meshShaders = meshShaderAvailable && meshShaderFeatures.meshShader == VK_TRUE;
+        m_features.rayTracing =
+            bufferDeviceAddressAvailable &&
+            accelerationStructureAvailable &&
+            rayQueryAvailable &&
+            deferredHostOperationsAvailable &&
+            bufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE &&
+            accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
+            rayQueryFeatures.rayQuery == VK_TRUE;
         return true;
     }
 
@@ -857,15 +882,42 @@ private:
         if (m_features.meshShaders) {
             deviceExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
         }
+        if (m_features.rayTracing) {
+            deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+            deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+            deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+            if (m_physicalDeviceProperties.apiVersion < VK_API_VERSION_1_2) {
+                deviceExtensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+            }
+        }
 
         VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
         meshShaderFeatures.meshShader = m_features.meshShaders ? VK_TRUE : VK_FALSE;
         meshShaderFeatures.taskShader = m_features.meshShaders ? VK_TRUE : VK_FALSE;
 
+        VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+        bufferDeviceAddressFeatures.bufferDeviceAddress = m_features.rayTracing ? VK_TRUE : VK_FALSE;
+
+        VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+        rayQueryFeatures.rayQuery = m_features.rayTracing ? VK_TRUE : VK_FALSE;
+        rayQueryFeatures.pNext = &bufferDeviceAddressFeatures;
+
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        accelerationStructureFeatures.accelerationStructure = m_features.rayTracing ? VK_TRUE : VK_FALSE;
+        accelerationStructureFeatures.pNext = &rayQueryFeatures;
+
         VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
         descriptorIndexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
         descriptorIndexingFeatures.runtimeDescriptorArray = VK_TRUE;
         descriptorIndexingFeatures.pNext = m_features.meshShaders ? &meshShaderFeatures : nullptr;
+        if (!m_features.meshShaders && m_features.rayTracing) {
+            descriptorIndexingFeatures.pNext = &accelerationStructureFeatures;
+        } else if (m_features.meshShaders && m_features.rayTracing) {
+            meshShaderFeatures.pNext = &accelerationStructureFeatures;
+        }
 
         VkPhysicalDeviceSynchronization2Features sync2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
         sync2Features.synchronization2 = VK_TRUE;
@@ -930,7 +982,7 @@ private:
     }
 
     void createDescriptorPool() {
-        std::array<VkDescriptorPoolSize, 11> poolSizes = {{
+        std::array<VkDescriptorPoolSize, 12> poolSizes = {{
             {VK_DESCRIPTOR_TYPE_SAMPLER, 1024},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024},
             {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024},
@@ -942,6 +994,7 @@ private:
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1024},
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1024},
             {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1024},
+            {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 256},
         }};
 
         VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -1093,6 +1146,9 @@ private:
         allocatorInfo.physicalDevice = m_physicalDevice;
         allocatorInfo.device = m_device;
         allocatorInfo.instance = m_instance;
+        if (m_features.rayTracing) {
+            allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        }
         checkVk(vmaCreateAllocator(&allocatorInfo, &m_allocator), "Failed to create VMA allocator");
     }
 

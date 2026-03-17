@@ -167,16 +167,7 @@ void rhiReleaseNativeHandle(void* handle) {
 namespace {
 
 // Stored Vulkan context handles for resource creation (set during first call)
-struct VulkanResourceContext {
-    VkDevice device = VK_NULL_HANDLE;
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-    VmaAllocator allocator = nullptr;
-    VkQueue graphicsQueue = VK_NULL_HANDLE;
-    uint32_t graphicsQueueFamily = 0;
-    bool initialized = false;
-};
-
-VulkanResourceContext g_vkResCtx;
+VulkanResourceContextInfo g_vkResCtx;
 
 void ensureResourceContext(const RhiDevice& device) {
     if (g_vkResCtx.initialized) return;
@@ -186,13 +177,44 @@ void ensureResourceContext(const RhiDevice& device) {
 }
 
 void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
-                        VkQueue queue, uint32_t queueFamily) {
+                        VkQueue queue, uint32_t queueFamily, bool rayTracingEnabled) {
     g_vkResCtx.device = device;
     g_vkResCtx.physicalDevice = physicalDevice;
     g_vkResCtx.allocator = allocator;
     g_vkResCtx.graphicsQueue = queue;
     g_vkResCtx.graphicsQueueFamily = queueFamily;
+    g_vkResCtx.rayTracingEnabled = rayTracingEnabled;
     g_vkResCtx.initialized = true;
+}
+
+PFN_vkGetBufferDeviceAddress loadGetBufferDeviceAddress(VkDevice device) {
+    auto fn = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
+        vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddress"));
+    if (!fn) {
+        fn = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
+            vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddressKHR"));
+    }
+    return fn;
+}
+
+PFN_vkDestroyAccelerationStructureKHR loadDestroyAccelerationStructure(VkDevice device) {
+    return reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(
+        vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureKHR"));
+}
+
+VkDeviceAddress queryBufferDeviceAddress(VkDevice device, VkBuffer buffer) {
+    if (device == VK_NULL_HANDLE || buffer == VK_NULL_HANDLE || !g_vkResCtx.rayTracingEnabled) {
+        return 0;
+    }
+
+    PFN_vkGetBufferDeviceAddress getBufferDeviceAddress = loadGetBufferDeviceAddress(device);
+    if (!getBufferDeviceAddress) {
+        return 0;
+    }
+
+    VkBufferDeviceAddressInfo addressInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    addressInfo.buffer = buffer;
+    return getBufferDeviceAddress(device, &addressInfo);
 }
 
 VkFilter toVkFilter(RhiSamplerFilterMode filter) {
@@ -271,9 +293,17 @@ VkCommandPool getUploadPool() {
 
 } // namespace
 
-void vulkanSetResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
-                              VkQueue queue, uint32_t queueFamily) {
-    setResourceContext(device, physicalDevice, allocator, queue, queueFamily);
+void vulkanSetResourceContext(VkDevice device,
+                              VkPhysicalDevice physicalDevice,
+                              VmaAllocator allocator,
+                              VkQueue queue,
+                              uint32_t queueFamily,
+                              bool rayTracingEnabled) {
+    setResourceContext(device, physicalDevice, allocator, queue, queueFamily, rayTracingEnabled);
+}
+
+const VulkanResourceContextInfo& vulkanGetResourceContext() {
+    return g_vkResCtx;
 }
 
 void vulkanClearResourceContext() {
@@ -294,6 +324,10 @@ RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& /*device*/,
                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    if (g_vkResCtx.rayTracingEnabled) {
+        bufferInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    }
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo allocCreateInfo{};
@@ -305,6 +339,7 @@ RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& /*device*/,
     res->device = g_vkResCtx.device;
     res->allocator = g_vkResCtx.allocator;
     res->size = size;
+    res->usageFlags = bufferInfo.usage;
 
     VmaAllocationInfo allocInfo{};
     VkResult result = vmaCreateBuffer(g_vkResCtx.allocator, &bufferInfo, &allocCreateInfo,
@@ -316,6 +351,7 @@ RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& /*device*/,
     }
 
     res->mappedData = allocInfo.pMappedData;
+    res->deviceAddress = queryBufferDeviceAddress(g_vkResCtx.device, res->buffer);
     if (initialData && res->mappedData) {
         std::memcpy(res->mappedData, initialData, size);
     }
@@ -699,8 +735,7 @@ RhiDepthStencilStateHandle rhiCreateDepthStencilState(const RhiDevice& /*device*
 }
 
 bool rhiSupportsRaytracing(const RhiDevice& /*device*/) {
-    // TODO: Check VK_KHR_acceleration_structure + VK_KHR_ray_query support
-    return false;
+    return g_vkResCtx.rayTracingEnabled;
 }
 
 RhiTextureHandle rhiRetainTexture(const RhiTexture& texture) {
@@ -768,6 +803,25 @@ void rhiReleaseNativeHandle(void* handle) {
     case VulkanResourceType::VertexDescriptor: {
         auto* vertexDescriptor = static_cast<VulkanVertexDescriptorResource*>(handle);
         delete vertexDescriptor;
+        break;
+    }
+    case VulkanResourceType::AccelerationStructure: {
+        auto* accelerationStructure = static_cast<VulkanAccelerationStructureResource*>(handle);
+        PFN_vkDestroyAccelerationStructureKHR destroyAccelerationStructure =
+            loadDestroyAccelerationStructure(accelerationStructure->device);
+        if (destroyAccelerationStructure &&
+            accelerationStructure->accelerationStructure != VK_NULL_HANDLE) {
+            destroyAccelerationStructure(accelerationStructure->device,
+                                         accelerationStructure->accelerationStructure,
+                                         nullptr);
+        }
+        if (accelerationStructure->buffer != VK_NULL_HANDLE &&
+            accelerationStructure->allocator != nullptr) {
+            vmaDestroyBuffer(accelerationStructure->allocator,
+                             accelerationStructure->buffer,
+                             accelerationStructure->allocation);
+        }
+        delete accelerationStructure;
         break;
     }
     }

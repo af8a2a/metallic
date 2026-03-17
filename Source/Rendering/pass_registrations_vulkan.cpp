@@ -7,6 +7,7 @@
 #include "meshlet_cull_pass.h"
 #include "output_pass.h"
 #include "pass_registry.h"
+#include "shadow_ray_pass.h"
 #include "sky_pass.h"
 #include "taa_pass.h"
 #include "tonemap_pass.h"
@@ -31,6 +32,10 @@ REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
 REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
     (std::vector<std::string>{"cullResult"}),
     (std::vector<std::string>{"visibility", "depth"}));
+
+REGISTER_COMPUTE_PASS(ShadowRayPass, "Shadow Ray Pass", "Lighting",
+    (std::vector<std::string>{"depth"}),
+    (std::vector<std::string>{"shadowMap"}));
 
 REGISTER_COMPUTE_PASS(DeferredLightingPass, "Deferred Lighting", "Lighting",
     (std::vector<std::string>{"visibility", "depth", "shadowMap", "skyOutput"}),

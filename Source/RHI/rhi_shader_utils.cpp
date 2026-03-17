@@ -182,6 +182,7 @@ bool buildPipelineResourceLayout(const void* data,
     uint32_t logicalBufferIndex = 0;
     uint32_t logicalTextureIndex = 0;
     uint32_t logicalSamplerIndex = 0;
+    uint32_t logicalAccelerationStructureIndex = 0;
 
     for (const auto& binding : shaderLayout.bindings) {
         const VkDescriptorType descriptorType = toVkDescriptorType(binding.type);
@@ -243,8 +244,8 @@ bool buildPipelineResourceLayout(const void* data,
             ok = assignExpandedBinding(outResource.samplerBindings, logicalSamplerIndex);
             break;
         case SlangShaderBindingType::AccelerationStructure:
-            errorMessage = "Acceleration structure reflection is not wired into Vulkan descriptors yet";
-            ok = false;
+            ok = assignExpandedBinding(outResource.accelerationStructureBindings,
+                                       logicalAccelerationStructureIndex);
             break;
         }
 

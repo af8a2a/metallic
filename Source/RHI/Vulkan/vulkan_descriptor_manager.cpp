@@ -21,12 +21,14 @@ void checkVk(VkResult result, const char* message) {
 constexpr uint32_t kMaxSetsPerFrame = 4096;
 
 VkDescriptorPool createDescriptorPool(VkDevice device) {
-    std::array<VkDescriptorPoolSize, 5> poolSizes = {{
+    std::array<VkDescriptorPoolSize, 6> poolSizes = {{
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxSetsPerFrame * kMaxBufferBindings},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kMaxSetsPerFrame * kMaxBufferBindings},
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxSetsPerFrame * kMaxTextureBindings},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kMaxSetsPerFrame * kMaxTextureBindings},
         {VK_DESCRIPTOR_TYPE_SAMPLER, kMaxSetsPerFrame * kMaxSamplerBindings},
+        {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+         kMaxSetsPerFrame * kMaxAccelerationStructureBindings},
     }};
 
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -120,7 +122,9 @@ void VulkanDescriptorManager::flushAndBind(
     const VulkanPipelineResource& pipeline,
     const std::array<PendingBufferBinding, kMaxBufferBindings>& buffers,
     const std::array<PendingTextureBinding, kMaxTextureBindings>& textures,
-    const std::array<PendingSamplerBinding, kMaxSamplerBindings>& samplers) {
+    const std::array<PendingSamplerBinding, kMaxSamplerBindings>& samplers,
+    const std::array<PendingAccelerationStructureBinding,
+                     kMaxAccelerationStructureBindings>& accelerationStructures) {
 
     if (pipeline.layout == VK_NULL_HANDLE || pipeline.setLayouts.empty()) {
         return;
@@ -141,13 +145,17 @@ void VulkanDescriptorManager::flushAndBind(
     }
 
     std::vector<VkWriteDescriptorSet> writes;
-    writes.reserve(kMaxBufferBindings + kMaxTextureBindings + kMaxSamplerBindings);
+    writes.reserve(kMaxBufferBindings + kMaxTextureBindings + kMaxSamplerBindings +
+                   kMaxAccelerationStructureBindings);
 
     std::vector<VkDescriptorBufferInfo> bufferInfos;
     bufferInfos.reserve(kMaxBufferBindings);
 
     std::vector<VkDescriptorImageInfo> imageInfos;
     imageInfos.reserve(kMaxTextureBindings + kMaxSamplerBindings);
+
+    std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationInfos;
+    accelerationInfos.reserve(kMaxAccelerationStructureBindings);
 
     for (uint32_t logicalIndex = 0; logicalIndex < kMaxBufferBindings; ++logicalIndex) {
         const VulkanDescriptorBindingLocation& location = pipeline.bufferBindings[logicalIndex];
@@ -213,6 +221,70 @@ void VulkanDescriptorManager::flushAndBind(
         write.descriptorType = location.descriptorType;
         write.pImageInfo = &imageInfos.back();
         writes.push_back(write);
+    }
+
+    int32_t fallbackLocationIndex = -1;
+    uint32_t validLocationCount = 0;
+    for (uint32_t logicalIndex = 0; logicalIndex < kMaxAccelerationStructureBindings; ++logicalIndex) {
+        if (pipeline.accelerationStructureBindings[logicalIndex].valid()) {
+            fallbackLocationIndex = static_cast<int32_t>(logicalIndex);
+            ++validLocationCount;
+        }
+    }
+
+    uint32_t pendingAccelerationStructureCount = 0;
+    int32_t fallbackPendingIndex = -1;
+    for (uint32_t logicalIndex = 0; logicalIndex < kMaxAccelerationStructureBindings; ++logicalIndex) {
+        if (accelerationStructures[logicalIndex].accelerationStructure != VK_NULL_HANDLE) {
+            fallbackPendingIndex = static_cast<int32_t>(logicalIndex);
+            ++pendingAccelerationStructureCount;
+        }
+    }
+
+    auto appendAccelerationStructureWrite = [&](uint32_t pendingIndex, uint32_t locationIndex) {
+        const VulkanDescriptorBindingLocation& location =
+            pipeline.accelerationStructureBindings[locationIndex];
+        if (!location.valid() || location.set >= sets.size()) {
+            return;
+        }
+
+        VkWriteDescriptorSetAccelerationStructureKHR accelerationInfo{
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+        accelerationInfo.accelerationStructureCount = 1;
+        accelerationInfo.pAccelerationStructures =
+            &accelerationStructures[pendingIndex].accelerationStructure;
+        accelerationInfos.push_back(accelerationInfo);
+
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.pNext = &accelerationInfos.back();
+        write.dstSet = sets[location.set];
+        write.dstBinding = location.binding;
+        write.dstArrayElement = location.arrayElement;
+        write.descriptorCount = 1;
+        write.descriptorType = location.descriptorType;
+        writes.push_back(write);
+    };
+
+    bool wroteAnyAccelerationStructure = false;
+    for (uint32_t logicalIndex = 0; logicalIndex < kMaxAccelerationStructureBindings; ++logicalIndex) {
+        const VulkanDescriptorBindingLocation& location =
+            pipeline.accelerationStructureBindings[logicalIndex];
+        if (!location.valid() ||
+            accelerationStructures[logicalIndex].accelerationStructure == VK_NULL_HANDLE) {
+            continue;
+        }
+
+        appendAccelerationStructureWrite(logicalIndex, logicalIndex);
+        wroteAnyAccelerationStructure = true;
+    }
+
+    if (!wroteAnyAccelerationStructure &&
+        validLocationCount == 1 &&
+        pendingAccelerationStructureCount == 1 &&
+        fallbackLocationIndex >= 0 &&
+        fallbackPendingIndex >= 0) {
+        appendAccelerationStructureWrite(static_cast<uint32_t>(fallbackPendingIndex),
+                                         static_cast<uint32_t>(fallbackLocationIndex));
     }
 
     if (!writes.empty()) {

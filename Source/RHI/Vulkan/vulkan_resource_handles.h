@@ -19,6 +19,7 @@ enum class VulkanResourceType : uint32_t {
     Sampler,
     Pipeline,
     VertexDescriptor,
+    AccelerationStructure,
 };
 
 struct VulkanResourceHeader {
@@ -51,6 +52,8 @@ struct VulkanBufferResource {
     VmaAllocator allocator = nullptr;
     void* mappedData = nullptr;
     size_t size = 0;
+    VkBufferUsageFlags usageFlags = 0;
+    VkDeviceAddress deviceAddress = 0;
     bool ownsBuffer = true;
 };
 
@@ -82,6 +85,17 @@ struct VulkanPipelineResource {
     std::array<VulkanDescriptorBindingLocation, kMaxBufferBindings> bufferBindings{};
     std::array<VulkanDescriptorBindingLocation, kMaxTextureBindings> textureBindings{};
     std::array<VulkanDescriptorBindingLocation, kMaxSamplerBindings> samplerBindings{};
+    std::array<VulkanDescriptorBindingLocation, kMaxAccelerationStructureBindings> accelerationStructureBindings{};
+};
+
+struct VulkanAccelerationStructureResource {
+    VulkanResourceHeader header{VulkanResourceType::AccelerationStructure};
+    VkDevice device = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = nullptr;
+    VmaAllocator allocator = nullptr;
+    VkDeviceAddress deviceAddress = 0;
 };
 
 struct VulkanVertexAttributeDesc {
@@ -139,9 +153,18 @@ inline const VulkanBufferResource* getVulkanBufferResource(const RhiBuffer& buff
     return static_cast<const VulkanBufferResource*>(buffer.nativeHandle());
 }
 
+inline VulkanBufferResource* getVulkanBufferResource(RhiBuffer& buffer) {
+    return static_cast<VulkanBufferResource*>(buffer.nativeHandle());
+}
+
 inline VkBuffer getVulkanBufferHandle(const RhiBuffer* buffer) {
     const VulkanBufferResource* resource = getVulkanBufferResource(buffer);
     return resource ? resource->buffer : VK_NULL_HANDLE;
+}
+
+inline VkDeviceAddress getVulkanBufferDeviceAddress(const RhiBuffer* buffer) {
+    const VulkanBufferResource* resource = getVulkanBufferResource(buffer);
+    return resource ? resource->deviceAddress : 0;
 }
 
 inline VulkanSamplerResource* getVulkanSamplerResource(const RhiSampler* sampler) {
@@ -163,6 +186,37 @@ inline const VulkanPipelineResource* getVulkanPipelineResource(const RhiGraphics
 
 inline const VulkanPipelineResource* getVulkanPipelineResource(const RhiComputePipeline& pipeline) {
     return static_cast<const VulkanPipelineResource*>(pipeline.nativeHandle());
+}
+
+inline VulkanAccelerationStructureResource* getVulkanAccelerationStructureResource(
+    const RhiAccelerationStructure* accelerationStructure) {
+    return accelerationStructure
+        ? static_cast<VulkanAccelerationStructureResource*>(accelerationStructure->nativeHandle())
+        : nullptr;
+}
+
+inline const VulkanAccelerationStructureResource* getVulkanAccelerationStructureResource(
+    const RhiAccelerationStructure& accelerationStructure) {
+    return static_cast<const VulkanAccelerationStructureResource*>(accelerationStructure.nativeHandle());
+}
+
+inline VulkanAccelerationStructureResource* getVulkanAccelerationStructureResource(
+    RhiAccelerationStructure& accelerationStructure) {
+    return static_cast<VulkanAccelerationStructureResource*>(accelerationStructure.nativeHandle());
+}
+
+inline VkAccelerationStructureKHR getVulkanAccelerationStructureHandle(
+    const RhiAccelerationStructure* accelerationStructure) {
+    const VulkanAccelerationStructureResource* resource =
+        getVulkanAccelerationStructureResource(accelerationStructure);
+    return resource ? resource->accelerationStructure : VK_NULL_HANDLE;
+}
+
+inline VkDeviceAddress getVulkanAccelerationStructureDeviceAddress(
+    const RhiAccelerationStructure* accelerationStructure) {
+    const VulkanAccelerationStructureResource* resource =
+        getVulkanAccelerationStructureResource(accelerationStructure);
+    return resource ? resource->deviceAddress : 0;
 }
 
 inline VulkanVertexDescriptorResource* getVulkanVertexDescriptorResource(const RhiVertexDescriptor* descriptor) {

@@ -85,7 +85,23 @@ inline void rhiReleaseHandle(Handle& handle) {
 #include <vulkan/vulkan.h>
 struct VmaAllocator_T;
 typedef VmaAllocator_T* VmaAllocator;
-void vulkanSetResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
-                              VkQueue queue, uint32_t queueFamily);
+
+struct VulkanResourceContextInfo {
+    VkDevice device = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VmaAllocator allocator = nullptr;
+    VkQueue graphicsQueue = VK_NULL_HANDLE;
+    uint32_t graphicsQueueFamily = 0;
+    bool rayTracingEnabled = false;
+    bool initialized = false;
+};
+
+void vulkanSetResourceContext(VkDevice device,
+                              VkPhysicalDevice physicalDevice,
+                              VmaAllocator allocator,
+                              VkQueue queue,
+                              uint32_t queueFamily,
+                              bool rayTracingEnabled);
+const VulkanResourceContextInfo& vulkanGetResourceContext();
 void vulkanClearResourceContext();
 #endif

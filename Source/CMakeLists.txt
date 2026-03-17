@@ -73,10 +73,12 @@ elseif(WIN32)
         Rendering/frame_graph.cpp
         Rendering/input.cpp
         Rendering/pass_registrations_vulkan.cpp
+        Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
         Rendering/slang_compiler.cpp
         Rendering/shader_manager.cpp
         RHI/rhi_backend.cpp
+        RHI/rhi_raytracing_utils.cpp
         RHI/rhi_resource_utils.cpp
         RHI/rhi_shader_utils.cpp
         RHI/Vulkan/vulkan_backend.cpp

@@ -17,6 +17,7 @@ struct VulkanTextureResource;
 constexpr uint32_t kMaxBufferBindings = 32;
 constexpr uint32_t kMaxTextureBindings = 128;
 constexpr uint32_t kMaxSamplerBindings = 16;
+constexpr uint32_t kMaxAccelerationStructureBindings = 8;
 
 struct PendingBufferBinding {
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -38,6 +39,11 @@ struct PendingSamplerBinding {
     bool dirty = false;
 };
 
+struct PendingAccelerationStructureBinding {
+    VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
+    bool dirty = false;
+};
+
 class VulkanDescriptorManager {
 public:
     void init(VkDevice device, VmaAllocator allocator);
@@ -51,7 +57,9 @@ public:
                       const VulkanPipelineResource& pipeline,
                       const std::array<PendingBufferBinding, kMaxBufferBindings>& buffers,
                       const std::array<PendingTextureBinding, kMaxTextureBindings>& textures,
-                      const std::array<PendingSamplerBinding, kMaxSamplerBindings>& samplers);
+                      const std::array<PendingSamplerBinding, kMaxSamplerBindings>& samplers,
+                      const std::array<PendingAccelerationStructureBinding,
+                                       kMaxAccelerationStructureBindings>& accelerationStructures);
 
 private:
     struct TransientBuffer {
