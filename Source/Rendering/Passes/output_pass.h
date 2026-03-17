@@ -46,6 +46,7 @@ public:
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("OutputPass");
+        MICROPROFILE_SCOPEI("RenderPass", "OutputPass", 0xffff8800);
         if (!m_runtimeContext) return;
 
         auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("OutputPass");

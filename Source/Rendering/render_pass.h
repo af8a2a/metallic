@@ -7,6 +7,7 @@
 #include "scene_graph.h"
 #include "raytraced_shadows.h"
 #include <tracy/Tracy.hpp>
+#include <microprofile.h>
 #include <unordered_map>
 
 // Forward declarations

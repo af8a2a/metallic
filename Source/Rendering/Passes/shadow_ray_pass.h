@@ -43,6 +43,7 @@ public:
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
         ZoneScopedN("ShadowRayPass");
+        MICROPROFILE_SCOPEI("RenderPass", "ShadowRayPass", 0xffff8800);
         if (!m_frameContext) return;
         if (!m_frameContext->enableRTShadows) return;
 

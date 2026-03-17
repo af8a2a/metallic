@@ -68,6 +68,7 @@ public:
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
         ZoneScopedN("TAAPass");
+        MICROPROFILE_SCOPEI("RenderPass", "TAAPass", 0xffff8800);
         if (!m_frameContext || !m_runtimeContext) return;
         if (m_passthroughNoPipeline) return;
         if (!m_frameContext->enableTAA) {

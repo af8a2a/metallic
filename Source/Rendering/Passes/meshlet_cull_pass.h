@@ -35,6 +35,7 @@ public:
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
         ZoneScopedN("MeshletCullPass");
+        MICROPROFILE_SCOPEI("RenderPass", "MeshletCullPass", 0xffff8800);
         if (!m_frameContext || !m_runtimeContext) return;
         if (!m_frameContext->gpuDrivenCulling) return;
 

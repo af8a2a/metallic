@@ -6,6 +6,7 @@
 #include <ostream>
 #include <string>
 #include <vector>
+#include <microprofile.h>
 
 #include "rhi_backend.h"
 

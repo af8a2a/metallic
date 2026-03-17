@@ -52,6 +52,7 @@ public:
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
         ZoneScopedN("AutoExposurePass");
+        MICROPROFILE_SCOPEI("RenderPass", "AutoExposurePass", 0xffff8800);
         if (!m_runtimeContext || !m_sourceRead.isValid()) return;
 
         // Lazy-create histogram buffer

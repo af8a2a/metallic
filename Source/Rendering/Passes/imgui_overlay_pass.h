@@ -34,6 +34,7 @@ public:
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("ImGuiOverlayPass");
+        MICROPROFILE_SCOPEI("RenderPass", "ImGuiOverlayPass", 0xffff8800);
         if (!m_frameContext || !m_frameContext->commandBuffer) return;
         encoder.renderImGuiDrawData(*m_frameContext->commandBuffer);
     }

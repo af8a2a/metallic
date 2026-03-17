@@ -40,6 +40,7 @@ public:
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
         ZoneScopedN("MeshletVisualizePass");
+        MICROPROFILE_SCOPEI("RenderPass", "MeshletVisualizePass", 0xffff8800);
         if (!m_frameContext || !m_runtimeContext) return;
 
         auto pipeIt = m_runtimeContext->computePipelinesRhi.find("MeshletVisualizePass");

@@ -52,6 +52,7 @@ public:
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("ForwardPass");
+        MICROPROFILE_SCOPEI("RenderPass", "ForwardPass", 0xffff8800);
         encoder.setDepthStencilState(&m_ctx.depthState);
         encoder.setFrontFacingWinding(RhiWinding::Clockwise);
         encoder.setCullMode(RhiCullMode::Back);

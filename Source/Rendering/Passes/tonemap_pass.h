@@ -78,6 +78,7 @@ public:
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("TonemapPass");
+        MICROPROFILE_SCOPEI("RenderPass", "TonemapPass", 0xffff8800);
 
         if (!m_runtimeContext || !m_sourceRead.isValid()) return;
 

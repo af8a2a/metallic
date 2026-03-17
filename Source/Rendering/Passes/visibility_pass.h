@@ -62,6 +62,7 @@ public:
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("VisibilityPass");
+        MICROPROFILE_SCOPEI("RenderPass", "VisibilityPass", 0xffff8800);
         if (!m_frameContext || !m_runtimeContext) return;
 
         encoder.setDepthStencilState(&m_ctx.depthState);

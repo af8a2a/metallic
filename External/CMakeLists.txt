@@ -99,3 +99,7 @@ target_include_directories(imgui_opengl PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/backends
 )
 target_link_libraries(imgui_opengl PUBLIC glfw)
+
+# microprofile with custom config
+set(MICROPROFILE_USE_CONFIG_FILE ON CACHE BOOL "Use microprofile.config.h" FORCE)
+add_subdirectory(microprofile)

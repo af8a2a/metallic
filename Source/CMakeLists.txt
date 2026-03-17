@@ -51,6 +51,7 @@ if(APPLE)
         Tracy::TracyClient
         spdlog::spdlog_header_only
         PipelineEditorLib
+        microprofile
         "-framework AppKit"
     )
 
@@ -105,6 +106,7 @@ elseif(WIN32)
         nlohmann_json
         Tracy::TracyClient
         spdlog::spdlog_header_only
+        microprofile
         Vulkan::Vulkan
     )
 endif()

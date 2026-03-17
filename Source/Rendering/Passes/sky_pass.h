@@ -40,6 +40,7 @@ public:
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("SkyPass");
+        MICROPROFILE_SCOPEI("RenderPass", "SkyPass", 0xffff8800);
 
         if (!m_frameContext || !m_runtimeContext) return;
         if (!m_frameContext->enableAtmosphereSky) return;

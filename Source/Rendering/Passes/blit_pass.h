@@ -23,6 +23,7 @@ public:
 
     void executeBlit(RhiBlitCommandEncoder& encoder) override {
         ZoneScopedN("BlitPass");
+        MICROPROFILE_SCOPEI("RenderPass", "BlitPass", 0xffff8800);
         auto* source = m_frameGraph->getTexture(m_sourceRead);
         auto* destination = m_frameGraph->getTexture(m_destWrite);
         if (!source || !destination) return;

@@ -292,9 +292,13 @@ RhiTexture* FrameGraph::resolveTexture(uint32_t resourceId) const {
 }
 
 void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& backend) {
+    MICROPROFILE_SCOPEI("FrameGraph", "Execute", 0xff00ff00);
+
     for (uint32_t pi = 0; pi < m_passes.size(); pi++) {
         auto& pass = m_passes[pi];
         if (pass.refCount == 0) continue;
+
+        MICROPROFILE_SCOPEI("FrameGraph", pass.name.c_str(), 0xff0088ff);
 
         // Create transient textures at their producer pass
         for (uint32_t ri = 0; ri < m_resources.size(); ri++) {

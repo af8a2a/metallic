@@ -18,12 +18,14 @@ target_include_directories(PipelineEditorLib PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../Asset
     ${CMAKE_CURRENT_SOURCE_DIR}/../Scene
     ${CMAKE_CURRENT_SOURCE_DIR}/../Platform
+    ${CMAKE_SOURCE_DIR}/External/microprofile
 )
 
 target_link_libraries(PipelineEditorLib PUBLIC
     nlohmann_json
     spdlog::spdlog_header_only
     Tracy::TracyClient
+    microprofile
 )
 
 target_link_libraries(PipelineEditorLib PRIVATE
