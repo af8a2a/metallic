@@ -9,6 +9,7 @@
 #include "pass_registry.h"
 #include "shadow_ray_pass.h"
 #include "sky_pass.h"
+#include "streamline_dlss_pass.h"
 #include "taa_pass.h"
 #include "tonemap_pass.h"
 #include "visibility_pass.h"
@@ -44,6 +45,10 @@ REGISTER_COMPUTE_PASS(DeferredLightingPass, "Deferred Lighting", "Lighting",
 REGISTER_COMPUTE_PASS(TAAPass, "TAA", "Post-Process",
     (std::vector<std::string>{"lightingOutput", "depth", "motionVectors"}),
     (std::vector<std::string>{"taaOutput"}));
+
+REGISTER_COMPUTE_PASS(StreamlineDlssPass, "DLSS", "Post-Process",
+    (std::vector<std::string>{"lightingOutput", "depth", "motionVectors"}),
+    (std::vector<std::string>{"dlssOutput"}));
 
 REGISTER_RENDER_PASS(TonemapPass, "Tonemap", "Post-Process",
     (std::vector<std::string>{"lightingOutput"}),

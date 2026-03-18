@@ -32,6 +32,13 @@ struct FrameContext {
     uint32_t frameIndex = 0;
     bool enableTAA = true;
 
+    // DLSS / upscaling
+    int displayWidth = 0;   // output (display) resolution
+    int displayHeight = 0;
+    int renderWidth = 0;    // internal render resolution (== width/height when DLSS off)
+    int renderHeight = 0;
+    bool historyReset = false; // set on resize, camera cut, pipeline reload, preset change
+
     // Light data
     float4 worldLightDir;
     float4 viewLightDir;

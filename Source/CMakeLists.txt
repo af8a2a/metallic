@@ -77,6 +77,7 @@ elseif(WIN32)
         Rendering/render_pass.cpp
         Rendering/slang_compiler.cpp
         Rendering/shader_manager.cpp
+        Rendering/streamline_context.cpp
         RHI/rhi_backend.cpp
         RHI/rhi_raytracing_utils.cpp
         RHI/rhi_resource_utils.cpp
@@ -111,6 +112,14 @@ elseif(WIN32)
         microprofile
         Vulkan::Vulkan
     )
+
+    # Streamline / DLSS integration (optional)
+    if(METALLIC_ENABLE_STREAMLINE AND TARGET streamline::streamline)
+        target_link_libraries(Metallic PRIVATE streamline::streamline)
+        target_sources(Metallic PRIVATE
+            Rendering/Passes/streamline_dlss_pass.cpp
+        )
+    endif()
 endif()
 
 target_compile_definitions(Metallic PRIVATE
@@ -124,6 +133,17 @@ foreach(SLANG_RUNTIME_LIB ${METALLIC_SLANG_RUNTIME_LIBS})
             "$<TARGET_FILE_DIR:Metallic>"
     )
 endforeach()
+
+# Copy Streamline runtime DLLs (Windows only)
+if(WIN32 AND METALLIC_ENABLE_STREAMLINE AND METALLIC_STREAMLINE_RUNTIME_DLLS)
+    foreach(SL_DLL ${METALLIC_STREAMLINE_RUNTIME_DLLS})
+        add_custom_command(TARGET Metallic POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SL_DLL}"
+                "$<TARGET_FILE_DIR:Metallic>"
+        )
+    endforeach()
+endif()
 
 add_custom_command(TARGET Metallic POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
