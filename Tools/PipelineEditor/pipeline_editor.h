@@ -29,6 +29,7 @@ public:
 private:
     void renderNodeGraph(PipelineAsset& asset);
     void renderPropertyPanel(PipelineAsset& asset);
+    void renderCompilationPreview(const PipelineAsset& asset);
     void handleNewLinks(PipelineAsset& asset);
     void handleDeletedLinks(PipelineAsset& asset);
 

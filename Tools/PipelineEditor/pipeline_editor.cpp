@@ -6,6 +6,71 @@
 #include <algorithm>
 #include <cstring>
 
+namespace {
+
+int findPassInputIndex(const PassDecl& pass, const char* inputName) {
+    for (size_t i = 0; i < pass.inputs.size(); i++) {
+        if (pass.inputs[i] == inputName) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+int findTonemapColorInputIndex(const PassDecl& pass) {
+    for (size_t i = 0; i < pass.inputs.size(); i++) {
+        if (pass.inputs[i] != "exposureLut") {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+void assignLinkedInput(PassDecl& pass, int inputIndex, const std::string& resourceName) {
+    if (pass.type == "TonemapPass") {
+        const int exposureIndex = findPassInputIndex(pass, "exposureLut");
+        if (resourceName == "exposureLut") {
+            if (exposureIndex >= 0) {
+                pass.inputs[exposureIndex] = resourceName;
+            } else if (inputIndex >= 0 && inputIndex < static_cast<int>(pass.inputs.size()) &&
+                       pass.inputs[inputIndex] == "exposureLut") {
+                pass.inputs[inputIndex] = resourceName;
+            } else {
+                pass.inputs.push_back(resourceName);
+            }
+            return;
+        }
+
+        if (inputIndex >= 0 && inputIndex < static_cast<int>(pass.inputs.size()) &&
+            pass.inputs[inputIndex] == "exposureLut") {
+            const int colorIndex = findTonemapColorInputIndex(pass);
+            if (colorIndex >= 0) {
+                pass.inputs[colorIndex] = resourceName;
+            } else {
+                pass.inputs.insert(pass.inputs.begin(), resourceName);
+            }
+            return;
+        }
+
+        if (inputIndex < static_cast<int>(pass.inputs.size())) {
+            pass.inputs[inputIndex] = resourceName;
+        } else if (exposureIndex >= 0) {
+            pass.inputs.insert(pass.inputs.begin() + exposureIndex, resourceName);
+        } else {
+            pass.inputs.push_back(resourceName);
+        }
+        return;
+    }
+
+    if (inputIndex < static_cast<int>(pass.inputs.size())) {
+        pass.inputs[inputIndex] = resourceName;
+    } else {
+        pass.inputs.push_back(resourceName);
+    }
+}
+
+} // namespace
+
 int PipelineEditor::getPassIndexFromNodeId(int id) const {
     if (id >= 1000 && id < 2000) return id - 1000;
     return -1;
@@ -312,12 +377,7 @@ void PipelineEditor::handleNewLinks(PipelineAsset& asset) {
             }
 
             if (!resourceName.empty()) {
-                // Add or update the input
-                if (dstInputIdx < static_cast<int>(asset.passes[dstPassIdx].inputs.size())) {
-                    asset.passes[dstPassIdx].inputs[dstInputIdx] = resourceName;
-                } else {
-                    asset.passes[dstPassIdx].inputs.push_back(resourceName);
-                }
+                assignLinkedInput(asset.passes[dstPassIdx], dstInputIdx, resourceName);
                 m_dirty = true;
             }
         }
@@ -470,4 +530,125 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
 
     ImGui::Text("Passes: %zu", asset.passes.size());
     ImGui::Text("Resources: %zu", asset.resources.size());
+
+    ImGui::Separator();
+    renderCompilationPreview(asset);
+}
+
+void PipelineEditor::renderCompilationPreview(const PipelineAsset& asset) {
+    if (!ImGui::CollapsingHeader("Compilation Preview", ImGuiTreeNodeFlags_DefaultOpen))
+        return;
+
+    // Topological sort (enabled passes only)
+    auto sortedIndices = asset.topologicalSort(false);
+
+    // Count enabled passes to detect cycles
+    size_t enabledCount = 0;
+    for (const auto& p : asset.passes) {
+        if (p.enabled) enabledCount++;
+    }
+
+    if (sortedIndices.size() != enabledCount) {
+        ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "Cycle detected! Cannot determine execution order.");
+        return;
+    }
+
+    // --- Execution Order Table ---
+    ImGui::Text("Execution Order:");
+    if (ImGui::BeginTable("##exec_order", 4,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 24.0f);
+        ImGui::TableSetupColumn("Pass");
+        ImGui::TableSetupColumn("Category");
+        ImGui::TableSetupColumn("I/O");
+        ImGui::TableHeadersRow();
+
+        for (size_t i = 0; i < sortedIndices.size(); i++) {
+            const auto& pass = asset.passes[sortedIndices[i]];
+            const auto* info = PassRegistry::instance().getTypeInfo(pass.type);
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu", i);
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", pass.name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", info ? info->category.c_str() : "?");
+            ImGui::TableNextColumn();
+            // Compact I/O summary
+            std::string io;
+            for (size_t j = 0; j < pass.inputs.size(); j++) {
+                if (j > 0) io += ", ";
+                io += pass.inputs[j];
+            }
+            io += " -> ";
+            for (size_t j = 0; j < pass.outputs.size(); j++) {
+                if (j > 0) io += ", ";
+                io += pass.outputs[j];
+            }
+            ImGui::TextDisabled("%s", io.c_str());
+        }
+        ImGui::EndTable();
+    }
+
+    // --- Disabled Passes ---
+    bool hasDisabled = false;
+    for (const auto& p : asset.passes) {
+        if (!p.enabled) { hasDisabled = true; break; }
+    }
+    if (hasDisabled) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("Disabled:");
+        for (const auto& p : asset.passes) {
+            if (!p.enabled) {
+                ImGui::TextDisabled("  - %s (%s)", p.name.c_str(), p.type.c_str());
+            }
+        }
+    }
+
+    // --- Resource Lifetimes ---
+    if (!asset.resources.empty() && ImGui::TreeNode("Resource Lifetimes")) {
+        // Build producer/consumer maps using sorted order
+        std::unordered_map<std::string, std::string> producer;  // resource -> pass name
+        std::unordered_map<std::string, std::string> lastConsumer; // resource -> pass name
+
+        for (size_t idx : sortedIndices) {
+            const auto& pass = asset.passes[idx];
+            for (const auto& out : pass.outputs) {
+                if (producer.find(out) == producer.end())
+                    producer[out] = pass.name;
+            }
+            for (const auto& in : pass.inputs) {
+                lastConsumer[in] = pass.name;
+            }
+        }
+
+        if (ImGui::BeginTable("##res_lifetime", 3,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Resource");
+            ImGui::TableSetupColumn("Producer");
+            ImGui::TableSetupColumn("Last Consumer");
+            ImGui::TableHeadersRow();
+
+            for (const auto& res : asset.resources) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", res.name.c_str());
+                ImGui::TableNextColumn();
+                auto pit = producer.find(res.name);
+                if (pit != producer.end())
+                    ImGui::Text("%s", pit->second.c_str());
+                else
+                    ImGui::TextDisabled("none");
+                ImGui::TableNextColumn();
+                auto cit = lastConsumer.find(res.name);
+                if (cit != lastConsumer.end())
+                    ImGui::Text("%s", cit->second.c_str());
+                else
+                    ImGui::TextDisabled("none");
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TreePop();
+    }
 }

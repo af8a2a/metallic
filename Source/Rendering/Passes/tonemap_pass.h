@@ -17,6 +17,7 @@ public:
     void configure(const PassConfig& config) override {
         m_name = config.name;
         m_sourceInputName.clear();
+        m_hasExposureLutInput = false;
         for (const auto& inputName : config.inputs) {
             if (!inputName.empty() && inputName[0] != '$') {
                 if (inputName == "exposureLut") {
@@ -88,6 +89,16 @@ public:
         auto samplerIt = m_runtimeContext->samplersRhi.find("tonemap");
         if (samplerIt == m_runtimeContext->samplersRhi.end() || !samplerIt->second.nativeHandle()) return;
 
+        uint32_t outputWidth = static_cast<uint32_t>(m_width);
+        uint32_t outputHeight = static_cast<uint32_t>(m_height);
+        if (RhiTexture* destTex = m_dest.isValid() ? m_frameGraph->getTexture(m_dest) : nullptr) {
+            outputWidth = destTex->width();
+            outputHeight = destTex->height();
+        } else if (m_frameContext && m_frameContext->displayWidth > 0 && m_frameContext->displayHeight > 0) {
+            outputWidth = static_cast<uint32_t>(m_frameContext->displayWidth);
+            outputHeight = static_cast<uint32_t>(m_frameContext->displayHeight);
+        }
+
         TonemapUniforms uniforms{};
         uniforms.isActive = m_enabled ? 1u : 0u;
         uniforms.method = static_cast<uint32_t>(m_method);
@@ -97,16 +108,15 @@ public:
         uniforms.saturation = m_saturation;
         uniforms.vignette = m_vignette;
         uniforms.dither = m_dither ? 1u : 0u;
-        if (m_frameContext) {
-            uniforms.invResolution = float2(1.0f / float(m_frameContext->width), 1.0f / float(m_frameContext->height));
-        } else {
-            uniforms.invResolution = float2(1.0f / float(m_width), 1.0f / float(m_height));
-        }
+        const float safeOutputWidth = outputWidth > 0 ? static_cast<float>(outputWidth) : 1.0f;
+        const float safeOutputHeight = outputHeight > 0 ? static_cast<float>(outputHeight) : 1.0f;
+        uniforms.invResolution = float2(1.0f / safeOutputWidth,
+                                        1.0f / safeOutputHeight);
         uniforms.pad = 0.0f;
         uniforms.autoExposure = (m_autoExposure && m_exposureLutRead.isValid()) ? 1u : 0u;
 
         encoder.setRenderPipeline(pipeIt->second);
-        encoder.setViewport(static_cast<float>(m_width), static_cast<float>(m_height), false);
+        encoder.setViewport(static_cast<float>(outputWidth), static_cast<float>(outputHeight), false);
         encoder.setCullMode(RhiCullMode::None);
         encoder.setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
         encoder.setFragmentSampler(&samplerIt->second, 0);

@@ -52,8 +52,18 @@ public:
         auto samplerIt = m_runtimeContext->samplersRhi.find("tonemap");
         if (samplerIt == m_runtimeContext->samplersRhi.end() || !samplerIt->second.nativeHandle()) return;
 
+        uint32_t outputWidth = static_cast<uint32_t>(m_width);
+        uint32_t outputHeight = static_cast<uint32_t>(m_height);
+        if (RhiTexture* destTex = m_dest.isValid() ? m_frameGraph->getTexture(m_dest) : nullptr) {
+            outputWidth = destTex->width();
+            outputHeight = destTex->height();
+        } else if (m_frameContext && m_frameContext->displayWidth > 0 && m_frameContext->displayHeight > 0) {
+            outputWidth = static_cast<uint32_t>(m_frameContext->displayWidth);
+            outputHeight = static_cast<uint32_t>(m_frameContext->displayHeight);
+        }
+
         encoder.setRenderPipeline(pipeIt->second);
-        encoder.setViewport(static_cast<float>(m_width), static_cast<float>(m_height), false);
+        encoder.setViewport(static_cast<float>(outputWidth), static_cast<float>(outputHeight), false);
         encoder.setCullMode(RhiCullMode::None);
         encoder.setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
         encoder.setFragmentSampler(&samplerIt->second, 0);

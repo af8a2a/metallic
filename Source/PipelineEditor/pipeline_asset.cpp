@@ -1,4 +1,5 @@
 #include "pipeline_asset.h"
+#include <algorithm>
 #include <fstream>
 #include <unordered_set>
 #include <unordered_map>
@@ -57,6 +58,9 @@ bool PipelineAsset::validate(std::string& errorMsg) const {
     // Build map of resource producers (which pass outputs each resource)
     std::unordered_map<std::string, std::string> resourceProducer;
     for (const auto& pass : passes) {
+        if (!pass.enabled) {
+            continue;
+        }
         if (pass.name.empty()) {
             errorMsg = "Pipeline contains a pass with an empty name";
             return false;
@@ -78,6 +82,36 @@ bool PipelineAsset::validate(std::string& errorMsg) const {
 
     // Check all inputs have producers (or are imported/special)
     for (const auto& pass : passes) {
+        if (!pass.enabled) {
+            continue;
+        }
+        if (pass.type == "TonemapPass") {
+            bool hasColorInput = false;
+            for (const auto& input : pass.inputs) {
+                if (input.empty() || input[0] == '$' || input == "exposureLut") {
+                    continue;
+                }
+                hasColorInput = true;
+                break;
+            }
+            if (!hasColorInput) {
+                errorMsg = "Pass '" + pass.name + "' is missing a color input";
+                return false;
+            }
+        } else if (pass.type == "OutputPass") {
+            bool hasSourceInput = false;
+            for (const auto& input : pass.inputs) {
+                if (input.empty() || input[0] == '$') {
+                    continue;
+                }
+                hasSourceInput = true;
+                break;
+            }
+            if (!hasSourceInput) {
+                errorMsg = "Pass '" + pass.name + "' is missing a source input";
+                return false;
+            }
+        }
         for (const auto& input : pass.inputs) {
             if (input.empty() || input[0] == '$') continue;  // skip special resources
             if (!resourceProducer.count(input) && !resourceNames.count(input)) {
@@ -88,8 +122,12 @@ bool PipelineAsset::validate(std::string& errorMsg) const {
     }
 
     // Check for cycles using topological sort
-    auto sorted = topologicalSort();
-    if (sorted.size() != passes.size()) {
+    const size_t enabledPassCount = std::count_if(
+        passes.begin(),
+        passes.end(),
+        [](const PassDecl& pass) { return pass.enabled; });
+    auto sorted = topologicalSort(false);
+    if (sorted.size() != enabledPassCount) {
         errorMsg = "Pipeline contains a cycle";
         return false;
     }
@@ -97,16 +135,22 @@ bool PipelineAsset::validate(std::string& errorMsg) const {
     return true;
 }
 
-std::vector<size_t> PipelineAsset::topologicalSort() const {
+std::vector<size_t> PipelineAsset::topologicalSort(bool includeDisabled) const {
     // Build adjacency list and in-degree count
     std::unordered_map<std::string, size_t> passIndex;
     for (size_t i = 0; i < passes.size(); i++) {
+        if (!includeDisabled && !passes[i].enabled) {
+            continue;
+        }
         passIndex[passes[i].name] = i;
     }
 
     // Map resource -> producer pass index
     std::unordered_map<std::string, size_t> resourceProducer;
     for (size_t i = 0; i < passes.size(); i++) {
+        if (!includeDisabled && !passes[i].enabled) {
+            continue;
+        }
         for (const auto& output : passes[i].outputs) {
             resourceProducer[output] = i;
         }
@@ -117,6 +161,9 @@ std::vector<size_t> PipelineAsset::topologicalSort() const {
     std::vector<size_t> inDegree(passes.size(), 0);
 
     for (size_t i = 0; i < passes.size(); i++) {
+        if (!includeDisabled && !passes[i].enabled) {
+            continue;
+        }
         for (const auto& input : passes[i].inputs) {
             if (input.empty()) continue;
             auto it = resourceProducer.find(input);
@@ -132,6 +179,9 @@ std::vector<size_t> PipelineAsset::topologicalSort() const {
     // in declaration order so later passes see earlier writes.
     std::unordered_map<std::string, std::vector<size_t>> outputWriters;
     for (size_t i = 0; i < passes.size(); i++) {
+        if (!includeDisabled && !passes[i].enabled) {
+            continue;
+        }
         for (const auto& output : passes[i].outputs) {
             outputWriters[output].push_back(i);
         }
@@ -146,13 +196,16 @@ std::vector<size_t> PipelineAsset::topologicalSort() const {
     // Kahn's algorithm
     std::queue<size_t> q;
     for (size_t i = 0; i < passes.size(); i++) {
+        if (!includeDisabled && !passes[i].enabled) {
+            continue;
+        }
         if (inDegree[i] == 0) {
             q.push(i);
         }
     }
 
     std::vector<size_t> result;
-    result.reserve(passes.size());
+    result.reserve(includeDisabled ? passes.size() : passIndex.size());
 
     while (!q.empty()) {
         size_t u = q.front();

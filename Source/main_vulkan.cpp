@@ -277,61 +277,177 @@ void disableVisibilityRayTracing(PipelineAsset& asset) {
     }
 }
 
-void disableVisibilityTAA(PipelineAsset& asset) {
-    eraseResourceByName(asset, "taaOutput");
-    erasePassByType(asset, "TAAPass");
+enum class VisibilityUpscalerMode {
+    None,
+    TAA,
+    DLSS,
+};
 
-    for (auto& pass : asset.passes) {
-        if (pass.type == "AutoExposurePass" || pass.type == "TonemapPass") {
-            replacePassInput(pass, "taaOutput", "lightingOutput");
+struct VisibilityUpscalerSelection {
+    VisibilityUpscalerMode activeMode = VisibilityUpscalerMode::None;
+    bool hasTaaPass = false;
+    bool hasDlssPass = false;
+    std::string activePostSource;
+    std::string diagnostic;
+};
+
+const PassDecl* findFirstEnabledPassByType(const PipelineAsset& asset, const char* passType) {
+    for (const auto& pass : asset.passes) {
+        if (pass.enabled && pass.type == passType) {
+            return &pass;
         }
     }
+    return nullptr;
 }
 
-// Replace TAAPass with StreamlineDlssPass in the visibility pipeline.
-// Tonemap and AutoExposure read "dlssOutput" instead of "taaOutput".
-void enableVisibilityDLSS(PipelineAsset& asset) {
-    // Remove TAA pass and its output resource
-    eraseResourceByName(asset, "taaOutput");
-    erasePassByType(asset, "TAAPass");
-
-    // Add DLSS output resource
-    ResourceDecl dlssResource;
-    dlssResource.name = "dlssOutput";
-    dlssResource.type = "texture";
-    dlssResource.format = "RGBA16Float";
-    dlssResource.size = "screen"; // MVP: display size == screen; pass internally handles upscale
-    asset.resources.push_back(dlssResource);
-
-    // Insert DLSS pass (before Tonemap, after DeferredLighting)
-    PassDecl dlssPass;
-    dlssPass.name = "DLSS";
-    dlssPass.type = "StreamlineDlssPass";
-    dlssPass.inputs = {"lightingOutput", "depth", "motionVectors"};
-    dlssPass.outputs = {"dlssOutput"};
-    dlssPass.enabled = true;
-    dlssPass.sideEffect = false;
-
-    // Find insertion point: right before TonemapPass or AutoExposurePass
-    auto insertIt = asset.passes.end();
-    for (auto it = asset.passes.begin(); it != asset.passes.end(); ++it) {
-        if (it->type == "AutoExposurePass" || it->type == "TonemapPass") {
-            insertIt = it;
-            break;
+const PassDecl* findEnabledProducerForResource(const PipelineAsset& asset, const std::string& resourceName) {
+    if (resourceName.empty()) {
+        return nullptr;
+    }
+    for (const auto& pass : asset.passes) {
+        if (!pass.enabled) {
+            continue;
+        }
+        if (std::find(pass.outputs.begin(), pass.outputs.end(), resourceName) != pass.outputs.end()) {
+            return &pass;
         }
     }
-    asset.passes.insert(insertIt, dlssPass);
+    return nullptr;
+}
 
-    // Redirect downstream passes to read dlssOutput instead of taaOutput or lightingOutput
-    for (auto& pass : asset.passes) {
-        if (pass.type == "AutoExposurePass") {
-            replacePassInput(pass, "taaOutput", "dlssOutput");
-            replacePassInput(pass, "lightingOutput", "dlssOutput");
+std::string findPrimaryInput(const PassDecl* pass, std::initializer_list<const char*> ignoredInputs = {}) {
+    if (!pass) {
+        return {};
+    }
+
+    for (const auto& input : pass->inputs) {
+        if (input.empty() || input[0] == '$') {
+            continue;
         }
-        if (pass.type == "TonemapPass") {
-            replacePassInput(pass, "taaOutput", "dlssOutput");
-            replacePassInput(pass, "lightingOutput", "dlssOutput");
+        bool ignored = false;
+        for (const char* ignoredInput : ignoredInputs) {
+            if (input == ignoredInput) {
+                ignored = true;
+                break;
+            }
         }
+        if (!ignored) {
+            return input;
+        }
+    }
+    return {};
+}
+
+bool passConsumesInput(const PassDecl* pass, const char* inputName) {
+    if (!pass || !inputName || inputName[0] == '\0') {
+        return false;
+    }
+    return std::find(pass->inputs.begin(), pass->inputs.end(), inputName) != pass->inputs.end();
+}
+
+VisibilityUpscalerSelection analyzeVisibilityUpscalerSelection(const PipelineAsset& asset) {
+    VisibilityUpscalerSelection selection;
+
+    const PassDecl* tonemapPass = findFirstEnabledPassByType(asset, "TonemapPass");
+    const PassDecl* outputPass = findFirstEnabledPassByType(asset, "OutputPass");
+    const PassDecl* autoExposurePass = findFirstEnabledPassByType(asset, "AutoExposurePass");
+
+    selection.hasTaaPass = findFirstEnabledPassByType(asset, "TAAPass") != nullptr;
+    selection.hasDlssPass = findFirstEnabledPassByType(asset, "StreamlineDlssPass") != nullptr;
+
+    const std::string tonemapSource = findPrimaryInput(tonemapPass, {"exposureLut"});
+    const std::string outputSource = findPrimaryInput(outputPass);
+    const std::string autoExposureSource = findPrimaryInput(autoExposurePass);
+
+    selection.activePostSource = !tonemapSource.empty() ? tonemapSource : outputSource;
+
+    if (!selection.activePostSource.empty()) {
+        const PassDecl* producer = findEnabledProducerForResource(asset, selection.activePostSource);
+        if (producer) {
+            if (producer->type == "TAAPass") {
+                selection.activeMode = VisibilityUpscalerMode::TAA;
+            } else if (producer->type == "StreamlineDlssPass") {
+                selection.activeMode = VisibilityUpscalerMode::DLSS;
+            }
+        }
+    }
+
+    if (selection.activeMode != VisibilityUpscalerMode::None) {
+        return selection;
+    }
+
+    if (tonemapPass && tonemapSource.empty()) {
+        if (autoExposureSource == "dlssOutput") {
+            selection.diagnostic =
+                "TonemapPass has no color input. AutoExposurePass already reads dlssOutput; "
+                "connect TonemapPass to dlssOutput and keep exposureLut as a second input.";
+        } else if (autoExposureSource == "taaOutput") {
+            selection.diagnostic =
+                "TonemapPass has no color input. AutoExposurePass already reads taaOutput; "
+                "connect TonemapPass to taaOutput and keep exposureLut as a second input.";
+        } else {
+            selection.diagnostic =
+                "TonemapPass has no color input. Connect it to lightingOutput, taaOutput, or dlssOutput.";
+        }
+        return selection;
+    }
+
+    if (!tonemapPass && outputPass && outputSource.empty()) {
+        selection.diagnostic =
+            "OutputPass has no source input. Connect it to lightingOutput, taaOutput, or dlssOutput.";
+        return selection;
+    }
+
+    if (selection.hasDlssPass) {
+        if (autoExposureSource == "dlssOutput") {
+            selection.diagnostic =
+                "StreamlineDlssPass exists and AutoExposurePass reads dlssOutput, but the active post chain does not.";
+        } else if (!selection.activePostSource.empty()) {
+            selection.diagnostic =
+                "StreamlineDlssPass exists, but the active post chain still uses '" +
+                selection.activePostSource + "'.";
+        } else if (passConsumesInput(tonemapPass, "dlssOutput") || passConsumesInput(outputPass, "dlssOutput")) {
+            selection.diagnostic =
+                "StreamlineDlssPass is wired into the graph, but the active post source could not be resolved.";
+        } else {
+            selection.diagnostic =
+                "StreamlineDlssPass is present, but TonemapPass/OutputPass is not consuming dlssOutput.";
+        }
+        return selection;
+    }
+
+    if (selection.hasTaaPass) {
+        if (autoExposureSource == "taaOutput") {
+            selection.diagnostic =
+                "TAAPass exists and AutoExposurePass reads taaOutput, but the active post chain does not.";
+        } else if (!selection.activePostSource.empty()) {
+            selection.diagnostic =
+                "TAAPass exists, but the active post chain still uses '" +
+                selection.activePostSource + "'.";
+        } else if (passConsumesInput(tonemapPass, "taaOutput") || passConsumesInput(outputPass, "taaOutput")) {
+            selection.diagnostic =
+                "TAAPass is wired into the graph, but the active post source could not be resolved.";
+        } else {
+            selection.diagnostic =
+                "TAAPass is present, but TonemapPass/OutputPass is not consuming taaOutput.";
+        }
+    }
+
+    return selection;
+}
+
+VisibilityUpscalerMode detectVisibilityUpscalerMode(const PipelineAsset& asset) {
+    return analyzeVisibilityUpscalerSelection(asset).activeMode;
+}
+
+const char* visibilityUpscalerModeName(VisibilityUpscalerMode mode) {
+    switch (mode) {
+    case VisibilityUpscalerMode::TAA:
+        return "TAA";
+    case VisibilityUpscalerMode::DLSS:
+        return "DLSS";
+    default:
+        return "None";
     }
 }
 
@@ -786,7 +902,6 @@ int main() {
     // --- Streamline / DLSS initialization (before RHI so SL can intercept device creation) ---
     StreamlineContext streamlineCtx;
     bool dlssAvailable = false;
-    bool dlssEnabled = false;
     DlssPreset dlssPreset = DlssPreset::Balanced;
     uint32_t dlssRenderWidth = 0;
     uint32_t dlssRenderHeight = 0;
@@ -1058,6 +1173,9 @@ int main() {
     bool visibilityGpuCullingAvailable = false;
     bool useVisibilityRenderGraph = false;
     bool atmosphereSkyAvailable = false;
+    VisibilityUpscalerMode visibilityUpscalerMode = VisibilityUpscalerMode::None;
+    VisibilityUpscalerSelection visibilityUpscalerSelection;
+    bool dlssStateDirty = true;
 
     auto refreshVisibilityPipelineState = [&]() {
         visibilityPipelineAssetLoaded = visibilityPipelineBaseLoaded;
@@ -1081,29 +1199,9 @@ int main() {
             return true;
         };
 
-        if (visibilityPipelineAssetLoaded && !visibilityTaaAvailable) {
-            disableVisibilityTAA(visibilityPipelineAsset);
-            if (validateVisibilityAsset("Invalid Vulkan visibility pipeline without TAA")) {
-                spdlog::warn("Vulkan visibility TAA unavailable; tonemap now reads lightingOutput directly");
-            }
-        }
-
-        // DLSS: when available and enabled, replace TAA with DLSS pass
-        if (visibilityPipelineAssetLoaded && dlssAvailable && dlssEnabled) {
-            enableVisibilityDLSS(visibilityPipelineAsset);
-            if (!validateVisibilityAsset("Invalid Vulkan visibility pipeline with DLSS")) {
-                // Fallback: revert to base and try without DLSS
-                spdlog::warn("DLSS pipeline validation failed; falling back to TAA/no-TAA path");
-                visibilityPipelineAsset =
-                    visibilityPipelineBaseLoaded ? visibilityPipelineBaseAsset : PipelineAsset{};
-                visibilityPipelineAssetLoaded = visibilityPipelineBaseLoaded;
-                if (visibilityPipelineAssetLoaded && !visibilityTaaAvailable) {
-                    disableVisibilityTAA(visibilityPipelineAsset);
-                    validateVisibilityAsset("Fallback pipeline without TAA");
-                }
-            } else {
-                spdlog::info("Vulkan visibility pipeline: DLSS SR enabled (replacing TAA)");
-            }
+        if (visibilityPipelineAssetLoaded && !validateVisibilityAsset("Invalid Vulkan visibility pipeline")) {
+            visibilityUpscalerMode = VisibilityUpscalerMode::None;
+            dlssStateDirty = true;
         }
 
         if (visibilityPipelineAssetLoaded && !visibilityAutoExposureAvailable) {
@@ -1112,6 +1210,18 @@ int main() {
                 spdlog::warn("Vulkan visibility auto-exposure unavailable; falling back to manual exposure");
             }
         }
+
+        visibilityUpscalerSelection = visibilityPipelineAssetLoaded
+            ? analyzeVisibilityUpscalerSelection(visibilityPipelineAsset)
+            : VisibilityUpscalerSelection{};
+        visibilityUpscalerMode = visibilityUpscalerSelection.activeMode;
+        if (visibilityUpscalerMode == VisibilityUpscalerMode::TAA && !visibilityTaaAvailable) {
+            spdlog::warn("Vulkan visibility pipeline selects TAAPass, but the TAA shader is unavailable; the pass will forward its source input");
+        }
+        if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS && !dlssAvailable) {
+            spdlog::warn("Vulkan visibility pipeline selects StreamlineDlssPass, but DLSS is unavailable; the pass will forward its source input");
+        }
+        dlssStateDirty = true;
 
         useVisibilityRenderGraph =
             visibilityPipelineAssetLoaded &&
@@ -1138,13 +1248,19 @@ int main() {
     auto logVisibilityMode = [&]() {
         if (useVisibilityRenderGraph) {
             std::string mode = "Vulkan RenderGraph mode: MeshletCullPass -> VisibilityPass -> SkyPass -> DeferredLightingPass";
-            if (visibilityTaaAvailable) {
+            if (visibilityUpscalerMode == VisibilityUpscalerMode::TAA) {
                 mode += " -> TAAPass";
+            } else if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) {
+                mode += " -> StreamlineDlssPass";
             }
-            if (visibilityAutoExposureAvailable) {
+            if (findFirstEnabledPassByType(visibilityPipelineAsset, "AutoExposurePass")) {
                 mode += " -> AutoExposurePass";
             }
-            mode += " -> TonemapPass";
+            if (findFirstEnabledPassByType(visibilityPipelineAsset, "TonemapPass")) {
+                mode += " -> TonemapPass";
+            } else if (findFirstEnabledPassByType(visibilityPipelineAsset, "OutputPass")) {
+                mode += " -> OutputPass";
+            }
             spdlog::info("{}", mode);
             if (visibilityGpuCullingAvailable) {
                 spdlog::info("Vulkan visibility dispatch: GPU-driven indirect meshlet path");
@@ -1156,7 +1272,60 @@ int main() {
         }
     };
 
+    auto syncVisibilityUpscalerState = [&](int displayWidth, int displayHeight) {
+        int renderWidth = displayWidth;
+        int renderHeight = displayHeight;
+        bool enableDlssEvaluation = false;
+
+#ifdef METALLIC_HAS_STREAMLINE
+        if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS &&
+            dlssAvailable &&
+            dlssPreset != DlssPreset::Off) {
+            uint32_t optimalWidth = static_cast<uint32_t>(displayWidth);
+            uint32_t optimalHeight = static_cast<uint32_t>(displayHeight);
+            if (streamlineCtx.getOptimalRenderSize(dlssPreset,
+                                                   static_cast<uint32_t>(displayWidth),
+                                                   static_cast<uint32_t>(displayHeight),
+                                                   optimalWidth,
+                                                   optimalHeight)) {
+                renderWidth = static_cast<int>(optimalWidth);
+                renderHeight = static_cast<int>(optimalHeight);
+                enableDlssEvaluation = true;
+                if (dlssStateDirty ||
+                    runtimeContext.displayWidth != displayWidth ||
+                    runtimeContext.displayHeight != displayHeight) {
+                    if (!streamlineCtx.setDlssOptions(dlssPreset,
+                                                      static_cast<uint32_t>(displayWidth),
+                                                      static_cast<uint32_t>(displayHeight))) {
+                        spdlog::warn("Failed to configure DLSS; StreamlineDlssPass will run in pass-through mode");
+                        renderWidth = displayWidth;
+                        renderHeight = displayHeight;
+                        enableDlssEvaluation = false;
+                    }
+                    dlssStateDirty = false;
+                }
+            } else if (dlssStateDirty) {
+                spdlog::warn("Failed to query optimal DLSS render size; StreamlineDlssPass will run in pass-through mode");
+                dlssStateDirty = false;
+            }
+        } else {
+            dlssStateDirty = true;
+        }
+#endif
+
+        runtimeContext.streamlineContext = streamlineCtx.isInitialized() ? &streamlineCtx : nullptr;
+        runtimeContext.dlssAvailable = dlssAvailable;
+        runtimeContext.dlssEnabled = enableDlssEvaluation;
+        runtimeContext.displayWidth = displayWidth;
+        runtimeContext.displayHeight = displayHeight;
+        runtimeContext.renderWidth = renderWidth;
+        runtimeContext.renderHeight = renderHeight;
+        dlssRenderWidth = static_cast<uint32_t>(renderWidth);
+        dlssRenderHeight = static_cast<uint32_t>(renderHeight);
+    };
+
     refreshVisibilityPipelineState();
+    syncVisibilityUpscalerState(width, height);
     logVisibilityMode();
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
@@ -1251,6 +1420,7 @@ int main() {
 
     runtimeContext.backbufferRhi = &backbufferTexture;
     runtimeContext.resourceFactory = &frameGraphBackend;
+    runtimeContext.streamlineContext = streamlineCtx.isInitialized() ? &streamlineCtx : nullptr;
 
     const PipelineAsset sceneColorPostAsset = makeSceneColorPostPipelineAsset();
     PipelineBuilder postBuilder(renderContext);
@@ -1288,13 +1458,6 @@ int main() {
         rhiReleaseHandle(vertexDescriptor);
         rhiReleaseHandle(vertexBuffer);
     };
-
-    if (!rebuildPostBuilder(width, height)) {
-        cleanupRuntimeResources();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1;
-    }
 
     VkImageLayout sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     FrameContext frameContext;
@@ -1365,6 +1528,9 @@ int main() {
 
     auto rebuildActivePipeline = [&](int targetWidth, int targetHeight) {
         rhi->waitIdle();
+        syncVisibilityUpscalerState(targetWidth, targetHeight);
+        const int buildWidth = useVisibilityRenderGraph ? runtimeContext.renderWidth : targetWidth;
+        const int buildHeight = useVisibilityRenderGraph ? runtimeContext.renderHeight : targetHeight;
         if (!useVisibilityRenderGraph &&
             (!sceneColorTexture.nativeHandle() ||
              sceneColorTexture.width() != static_cast<uint32_t>(targetWidth) ||
@@ -1376,11 +1542,18 @@ int main() {
             }
         }
         sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (!rebuildPostBuilder(targetWidth, targetHeight)) {
+        if (!rebuildPostBuilder(buildWidth, buildHeight)) {
             return false;
         }
         return true;
     };
+
+    if (!rebuildActivePipeline(width, height)) {
+        cleanupRuntimeResources();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
 
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("VulkanRenderGraphFrame");
@@ -1407,19 +1580,9 @@ int main() {
             ImGui_ImplVulkan_SetMinImageCount(std::max(2u, rhi->nativeHandles().swapchainImageCount));
             postBuilderNeedsRebuild = true;
             appState.framebufferResized = false;
-            // Reset DLSS history on resize
-            if (dlssEnabled) {
+            dlssStateDirty = true;
+            if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) {
                 streamlineCtx.resetHistory();
-                // Recompute optimal render resolution for new display size
-                uint32_t optW = 0, optH = 0;
-                if (streamlineCtx.getOptimalRenderSize(dlssPreset,
-                        static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                        optW, optH)) {
-                    dlssRenderWidth = optW;
-                    dlssRenderHeight = optH;
-                }
-                streamlineCtx.setDlssOptions(dlssPreset,
-                    static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             }
         }
 
@@ -1431,6 +1594,7 @@ int main() {
             const bool previousAutoExposure = visibilityAutoExposureAvailable;
             const bool previousTaa = visibilityTaaAvailable;
             const bool previousAtmosphereSky = atmosphereSkyAvailable;
+            const VisibilityUpscalerMode previousUpscalerMode = visibilityUpscalerMode;
             auto [reloaded, failed] = shaderManager.reloadAll();
             refreshVisibilityPipelineState();
 
@@ -1455,11 +1619,13 @@ int main() {
             if (previousVisibilityRenderGraph != useVisibilityRenderGraph ||
                 previousAutoExposure != visibilityAutoExposureAvailable ||
                 previousTaa != visibilityTaaAvailable ||
-                previousAtmosphereSky != atmosphereSkyAvailable) {
+                previousAtmosphereSky != atmosphereSkyAvailable ||
+                previousUpscalerMode != visibilityUpscalerMode) {
                 logVisibilityMode();
             }
             postBuilderNeedsRebuild = true;
-            if (dlssEnabled) streamlineCtx.resetHistory();
+            dlssStateDirty = true;
+            if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) streamlineCtx.resetHistory();
         }
 
         if (pipelineReloadRequested) {
@@ -1474,6 +1640,7 @@ int main() {
                 const bool previousAutoExposure = visibilityAutoExposureAvailable;
                 const bool previousTaa = visibilityTaaAvailable;
                 const bool previousAtmosphereSky = atmosphereSkyAvailable;
+                const VisibilityUpscalerMode previousUpscalerMode = visibilityUpscalerMode;
                 visibilityPipelineBaseAsset = std::move(reloadedVisibilityAsset);
                 visibilityPipelineBaseLoaded = true;
                 refreshVisibilityPipelineState();
@@ -1481,7 +1648,8 @@ int main() {
                 if (previousVisibilityRenderGraph != useVisibilityRenderGraph ||
                     previousAutoExposure != visibilityAutoExposureAvailable ||
                     previousTaa != visibilityTaaAvailable ||
-                    previousAtmosphereSky != atmosphereSkyAvailable) {
+                    previousAtmosphereSky != atmosphereSkyAvailable ||
+                    previousUpscalerMode != visibilityUpscalerMode) {
                     logVisibilityMode();
                 }
                 postBuilderNeedsRebuild = true;
@@ -1489,10 +1657,14 @@ int main() {
                 spdlog::warn("Keeping previous Vulkan visibility pipeline: {}",
                              visibilityPipelineBaseAsset.name);
             }
-            if (dlssEnabled) streamlineCtx.resetHistory();
+            dlssStateDirty = true;
+            if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) streamlineCtx.resetHistory();
         }
 
-        if (postBuilderNeedsRebuild || postBuilder.needsRebuild(width, height)) {
+        syncVisibilityUpscalerState(width, height);
+        const int activeBuildWidth = useVisibilityRenderGraph ? runtimeContext.renderWidth : width;
+        const int activeBuildHeight = useVisibilityRenderGraph ? runtimeContext.renderHeight : height;
+        if (postBuilderNeedsRebuild || postBuilder.needsRebuild(activeBuildWidth, activeBuildHeight)) {
             if (!rebuildActivePipeline(width, height)) {
                 break;
             }
@@ -1535,10 +1707,13 @@ int main() {
 
         ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
         ImGui::Begin("Vulkan Sponza");
+        const bool autoExposureEnabled =
+            useVisibilityRenderGraph &&
+            findFirstEnabledPassByType(visibilityPipelineAsset, "AutoExposurePass") != nullptr;
         ImGui::Text("Resolution: %d x %d", width, height);
         ImGui::TextUnformatted(useVisibilityRenderGraph ? "Pipeline: Visibility Buffer" : "Pipeline: Triangle Fallback");
-        ImGui::TextUnformatted(visibilityTaaAvailable ? "TAA: Enabled" : "TAA: Disabled");
-        ImGui::TextUnformatted(visibilityAutoExposureAvailable ? "Exposure: Auto" : "Exposure: Manual");
+        ImGui::Text("Upscaler: %s", visibilityUpscalerModeName(visibilityUpscalerMode));
+        ImGui::TextUnformatted(autoExposureEnabled ? "Exposure: Auto" : "Exposure: Manual");
         ImGui::TextUnformatted(visibilityGpuCullingAvailable ? "Visibility Dispatch: GPU" : "Visibility Dispatch: CPU");
         if (rtShadowsAvailable && useVisibilityRenderGraph) {
             ImGui::Checkbox("RT Shadows", &enableRTShadows);
@@ -1547,48 +1722,47 @@ int main() {
         // DLSS UI
         if (useVisibilityRenderGraph) {
             ImGui::Separator();
-            if (dlssAvailable) {
-                ImGui::TextUnformatted("Streamline: Available");
-                bool dlssToggle = dlssEnabled;
-                if (ImGui::Checkbox("DLSS SR", &dlssToggle)) {
-                    if (dlssToggle != dlssEnabled) {
-                        dlssEnabled = dlssToggle;
-                        refreshVisibilityPipelineState();
+            if (visibilityUpscalerSelection.hasDlssPass) {
+                ImGui::TextUnformatted(dlssAvailable
+                    ? "Streamline: Available"
+                    : "Streamline: Unavailable (pass-through)");
+                const char* presetNames[] = {
+                    "Off", "Max Performance", "Balanced", "Max Quality",
+                    "Ultra Performance", "Ultra Quality", "DLAA"
+                };
+                int presetIdx = static_cast<int>(dlssPreset);
+                if (ImGui::Combo("DLSS Preset", &presetIdx, presetNames, IM_ARRAYSIZE(presetNames))) {
+                    DlssPreset newPreset = static_cast<DlssPreset>(presetIdx);
+                    if (newPreset != dlssPreset) {
+                        dlssPreset = newPreset;
+                        dlssStateDirty = true;
+                        streamlineCtx.resetHistory();
                         postBuilderNeedsRebuild = true;
                     }
                 }
-                if (dlssEnabled) {
-                    const char* presetNames[] = {
-                        "Off", "Max Performance", "Balanced", "Max Quality",
-                        "Ultra Performance", "Ultra Quality", "DLAA"
-                    };
-                    int presetIdx = static_cast<int>(dlssPreset);
-                    if (ImGui::Combo("DLSS Preset", &presetIdx, presetNames, IM_ARRAYSIZE(presetNames))) {
-                        DlssPreset newPreset = static_cast<DlssPreset>(presetIdx);
-                        if (newPreset != dlssPreset) {
-                            dlssPreset = newPreset;
-                            // Recompute render resolution
-                            uint32_t optW = 0, optH = 0;
-                            if (streamlineCtx.getOptimalRenderSize(dlssPreset,
-                                    static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                                    optW, optH)) {
-                                dlssRenderWidth = optW;
-                                dlssRenderHeight = optH;
-                            }
-                            streamlineCtx.setDlssOptions(dlssPreset,
-                                static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-                            streamlineCtx.resetHistory();
-                            postBuilderNeedsRebuild = true;
-                        }
-                    }
+                ImGui::Text("Display: %d x %d", width, height);
+                if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) {
+                    ImGui::TextUnformatted("DLSS is the active upscaler in this graph.");
                     ImGui::Text("Render: %u x %u", dlssRenderWidth, dlssRenderHeight);
-                    ImGui::Text("Display: %d x %d", width, height);
-                    if (ImGui::Button("Reset DLSS History")) {
-                        streamlineCtx.resetHistory();
+                } else {
+                    ImGui::TextUnformatted("DLSS pass is present but not driving the active post path.");
+                    if (!visibilityUpscalerSelection.diagnostic.empty()) {
+                        ImGui::TextWrapped("%s", visibilityUpscalerSelection.diagnostic.c_str());
                     }
                 }
+                if (visibilityUpscalerMode != VisibilityUpscalerMode::DLSS) {
+                    ImGui::BeginDisabled();
+                }
+                if (ImGui::Button("Reset DLSS History")) {
+                    streamlineCtx.resetHistory();
+                }
+                if (visibilityUpscalerMode != VisibilityUpscalerMode::DLSS) {
+                    ImGui::EndDisabled();
+                }
             } else {
-                ImGui::TextUnformatted("Streamline: Unavailable");
+                ImGui::TextUnformatted(dlssAvailable
+                    ? "Active graph has no StreamlineDlssPass"
+                    : "Streamline: Unavailable");
             }
             ImGui::Separator();
         }
@@ -1612,6 +1786,8 @@ int main() {
 
         refreshPreviewSceneState();
 
+        const int renderWidth = useVisibilityRenderGraph ? runtimeContext.renderWidth : width;
+        const int renderHeight = useVisibilityRenderGraph ? runtimeContext.renderHeight : height;
         const float aspect =
             static_cast<float>(width) / static_cast<float>(std::max(height, 1));
         const float3 sunDirection = normalize(sunLight.direction);
@@ -1619,8 +1795,14 @@ int main() {
         const float4x4 unjitteredProj = previewCamera.projectionMatrix(aspect);
         float4x4 proj = unjitteredProj;
         float2 jitterOffset = float2(0.0f, 0.0f);
-        const bool enableVisibilityTAA = useVisibilityRenderGraph && visibilityTaaAvailable;
-        const bool enableVisibilityDlss = useVisibilityRenderGraph && dlssAvailable && dlssEnabled;
+        const bool enableVisibilityTAA =
+            useVisibilityRenderGraph &&
+            visibilityUpscalerMode == VisibilityUpscalerMode::TAA &&
+            visibilityTaaAvailable;
+        const bool enableVisibilityDlss =
+            useVisibilityRenderGraph &&
+            visibilityUpscalerMode == VisibilityUpscalerMode::DLSS &&
+            runtimeContext.dlssEnabled;
         const bool needsJitter = enableVisibilityTAA || enableVisibilityDlss;
         if (needsJitter) {
             jitterOffset = OrbitCamera::haltonJitter(frameIndex);
@@ -1630,8 +1812,8 @@ int main() {
                                                          previewCamera.farZ,
                                                          jitterOffset.x,
                                                          jitterOffset.y,
-                                                         static_cast<uint32_t>(width),
-                                                         static_cast<uint32_t>(height));
+                                                         static_cast<uint32_t>(renderWidth),
+                                                         static_cast<uint32_t>(renderHeight));
         }
 
         std::unique_ptr<RhiBuffer> instanceTransformBuffer;
@@ -1669,8 +1851,8 @@ int main() {
 
         RhiNativeCommandBufferHandle nativeCommandBuffer(getVulkanCurrentCommandBuffer(*rhi));
         frameContext = FrameContext{};
-        frameContext.width = width;
-        frameContext.height = height;
+        frameContext.width = renderWidth;
+        frameContext.height = renderHeight;
         frameContext.view = view;
         frameContext.proj = proj;
         frameContext.cameraWorldPos = orbitCameraWorldPosition(previewCamera);
@@ -1685,10 +1867,8 @@ int main() {
         frameContext.enableTAA = enableVisibilityTAA;
         frameContext.displayWidth = width;
         frameContext.displayHeight = height;
-        frameContext.renderWidth = (enableVisibilityDlss && dlssRenderWidth > 0)
-            ? static_cast<int>(dlssRenderWidth) : width;
-        frameContext.renderHeight = (enableVisibilityDlss && dlssRenderHeight > 0)
-            ? static_cast<int>(dlssRenderHeight) : height;
+        frameContext.renderWidth = renderWidth;
+        frameContext.renderHeight = renderHeight;
         frameContext.historyReset = false;
         frameContext.worldLightDir = float4(sunDirection.x, sunDirection.y, sunDirection.z, 0.0f);
         frameContext.viewLightDir = view * frameContext.worldLightDir;

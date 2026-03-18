@@ -77,13 +77,17 @@ public:
         uniforms.evMaxValue = m_evMax;
         uniforms.adaptationSpeed = m_adaptationSpeed;
         uniforms.deltaTime = m_frameContext ? m_frameContext->deltaTime : 0.016f;
-        uniforms.screenWidth = static_cast<uint32_t>(m_width);
-        uniforms.screenHeight = static_cast<uint32_t>(m_height);
         uniforms.lowPercentile = m_lowPercentile;
         uniforms.highPercentile = m_highPercentile;
 
         auto* hdrTex = m_frameGraph->getTexture(m_sourceRead);
         auto* lutTex = m_frameGraph->getTexture(m_exposureLut);
+        if (!hdrTex || !lutTex) return;
+
+        const uint32_t sourceWidth = hdrTex->width();
+        const uint32_t sourceHeight = hdrTex->height();
+        uniforms.screenWidth = sourceWidth > 0 ? sourceWidth : static_cast<uint32_t>(m_width);
+        uniforms.screenHeight = sourceHeight > 0 ? sourceHeight : static_cast<uint32_t>(m_height);
 
         // Slang wraps all globals into KernelContext 鈥?both kernels expect all bindings:
         // buffer(0) = uniforms, texture(0) = hdrInput, buffer(1) = histogramBuffer, texture(1) = exposureLut
@@ -94,7 +98,9 @@ public:
         encoder.setTexture(hdrTex, 0);
         encoder.setStorageTexture(lutTex, 1);
         encoder.setBuffer(m_histogramBuffer.get(), 0, 1);
-        encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 15) / 16), static_cast<uint32_t>((m_height + 15) / 16), 1},
+        encoder.dispatchThreadgroups({static_cast<uint32_t>((uniforms.screenWidth + 15) / 16),
+                                      static_cast<uint32_t>((uniforms.screenHeight + 15) / 16),
+                                      1},
                                      {16, 16, 1});
 
         // Memory barrier between dispatches

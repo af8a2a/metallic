@@ -43,7 +43,7 @@ struct PipelineAsset {
     bool validate(std::string& errorMsg) const;
 
     // Get topologically sorted pass order
-    std::vector<size_t> topologicalSort() const;
+    std::vector<size_t> topologicalSort(bool includeDisabled = true) const;
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(PipelineAsset, name, resources, passes)
 };

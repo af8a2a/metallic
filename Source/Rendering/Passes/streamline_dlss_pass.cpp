@@ -7,7 +7,8 @@
 #include <spdlog/spdlog.h>
 
 void StreamlineDlssPass::executeDlss(RhiComputeCommandEncoder& encoder) {
-    if (!m_streamlineCtx || !m_frameContext) return;
+    StreamlineContext* streamlineCtx = currentStreamlineContext();
+    if (!streamlineCtx || !m_frameContext) return;
 
     RhiTexture* colorTex = m_sourceRead.isValid() ? m_frameGraph->getTexture(m_sourceRead) : nullptr;
     RhiTexture* depthTex = m_depthRead.isValid() ? m_frameGraph->getTexture(m_depthRead) : nullptr;
@@ -29,18 +30,18 @@ void StreamlineDlssPass::executeDlss(RhiComputeCommandEncoder& encoder) {
     data.motionVectors = getVulkanImage(motionTex);
     data.motionVectorsView = getVulkanImageView(motionTex);
 
-    data.renderWidth = static_cast<uint32_t>(m_renderWidth);
-    data.renderHeight = static_cast<uint32_t>(m_renderHeight);
-    data.displayWidth = static_cast<uint32_t>(m_displayWidth);
-    data.displayHeight = static_cast<uint32_t>(m_displayHeight);
+    data.renderWidth = static_cast<uint32_t>(currentRenderWidth());
+    data.renderHeight = static_cast<uint32_t>(currentRenderHeight());
+    data.displayWidth = static_cast<uint32_t>(currentDisplayWidth());
+    data.displayHeight = static_cast<uint32_t>(currentDisplayHeight());
 
     data.jitterOffsetX = m_frameContext->jitterOffset.x;
     data.jitterOffsetY = m_frameContext->jitterOffset.y;
 
     // Motion vectors are in UV space (currentUV - prevUV), not jittered.
     // Streamline expects pixel-space motion vectors, so scale by render resolution.
-    data.mvecScaleX = static_cast<float>(m_renderWidth);
-    data.mvecScaleY = static_cast<float>(m_renderHeight);
+    data.mvecScaleX = static_cast<float>(currentRenderWidth());
+    data.mvecScaleY = static_cast<float>(currentRenderHeight());
     data.motionVectorsJittered = false;
     data.depthInverted = (m_frameContext->depthClearValue == 0.0);
     data.reset = m_frameContext->historyReset;
@@ -59,7 +60,7 @@ void StreamlineDlssPass::executeDlss(RhiComputeCommandEncoder& encoder) {
         memcpy(data.clipToPrevClip, &clipToPrevClip, sizeof(float) * 16);
     }
 
-    if (!m_streamlineCtx->evaluate(data)) {
+    if (!streamlineCtx->evaluate(data)) {
         spdlog::warn("StreamlineDlssPass: evaluate failed");
     }
 }

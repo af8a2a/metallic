@@ -9,28 +9,20 @@
 #include "imgui.h"
 
 #include <vulkan/vulkan.h>
-#include <memory>
-
-class RhiTexture;
 
 // Vulkan-only DLSS Super Resolution pass.
-// Replaces TAAPass in the visibility pipeline when DLSS is enabled.
+// This pass behaves like a first-class upscaler node in the authored render graph.
+// When DLSS is active, it reads render-resolution inputs and writes a display-resolution
+// "dlssOutput". When DLSS is unavailable or disabled, it aliases its source input so the
+// graph can keep running without a topology rewrite.
 //
-// MVP approach: this pass internally owns a display-size output texture.
-// The FrameGraph sees it as a compute pass that reads lightingOutput/depth/motionVectors
-// and produces "dlssOutput". Downstream passes (Tonemap) read dlssOutput.
-//
-// When DLSS is not available or METALLIC_HAS_STREAMLINE is not defined,
-// the pass acts as a simple passthrough (forwards its color input as output).
 class StreamlineDlssPass : public RenderPass {
 public:
     StreamlineDlssPass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_renderWidth(w), m_renderHeight(h),
           m_displayWidth(w), m_displayHeight(h) {}
 
-    ~StreamlineDlssPass() override {
-        releaseOutputTexture();
-    }
+    ~StreamlineDlssPass() override = default;
 
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
@@ -57,70 +49,61 @@ public:
         m_depthRead = FGResource{};
         m_motionRead = FGResource{};
         m_dlssOutput = FGResource{};
+        m_passthrough = false;
 
         FGResource sourceInput = getSourceInput();
-        if (sourceInput.isValid())
+        if (!shouldEvaluateDlss() && sourceInput.isValid()) {
+            m_sourceRead = sourceInput;
+            m_dlssOutput = sourceInput;
+            m_passthrough = true;
+            return;
+        }
+        if (sourceInput.isValid()) {
             m_sourceRead = builder.read(sourceInput);
+        }
 
         FGResource depthInput = getInput("depth");
-        if (depthInput.isValid())
+        if (depthInput.isValid()) {
             m_depthRead = builder.read(depthInput);
+        }
 
         FGResource motionInput = getInput("motionVectors");
-        if (motionInput.isValid())
+        if (motionInput.isValid()) {
             m_motionRead = builder.read(motionInput);
+        }
 
-        // Output at display resolution.
-        // In the MVP, display == render when DLSS is off; the pass just forwards.
-        // When DLSS is on, m_displayWidth/Height are set externally before pipeline build.
         m_dlssOutput = builder.create("dlssOutput",
-            FGTextureDesc::storageTexture(m_displayWidth, m_displayHeight, RhiFormat::RGBA16Float));
+            FGTextureDesc::storageTexture(currentDisplayWidth(),
+                                          currentDisplayHeight(),
+                                          RhiFormat::RGBA16Float));
     }
 
     void executeCompute(RhiComputeCommandEncoder& encoder) override {
         ZoneScopedN("StreamlineDlssPass");
         MICROPROFILE_SCOPEI("RenderPass", "StreamlineDlssPass", 0xff00ff00);
-        if (!m_frameContext) return;
+        if (!m_frameContext || m_passthrough) return;
 
 #ifdef METALLIC_HAS_STREAMLINE
-        if (m_streamlineCtx && m_streamlineCtx->isDlssAvailable() && isDlssEnabled()) {
+        if (shouldEvaluateDlss()) {
             executeDlss(encoder);
             return;
         }
 #endif
-        // Fallback: passthrough (no-op, dlssOutput == sourceInput forwarded by FrameGraph)
-        // The FrameGraph will have created dlssOutput; if we can't run DLSS we need to
-        // copy the source into it. We do this via a simple blit-style compute if we have
-        // a copy pipeline, or leave it black (acceptable for MVP — the pipeline should
-        // not reach here if DLSS is off, since main_vulkan swaps back to TAAPass).
     }
 
     void renderUI() override {
         ImGui::Text("DLSS Pass %d x %d -> %d x %d",
-                     m_renderWidth, m_renderHeight,
-                     m_displayWidth, m_displayHeight);
+                    currentRenderWidth(), currentRenderHeight(),
+                    currentDisplayWidth(), currentDisplayHeight());
 #ifdef METALLIC_HAS_STREAMLINE
-        if (m_streamlineCtx) {
-            ImGui::Text("Status: %s", m_streamlineCtx->statusString().c_str());
+        if (auto* streamlineCtx = currentStreamlineContext()) {
+            ImGui::Text("Status: %s", streamlineCtx->statusString().c_str());
+            ImGui::TextUnformatted(shouldEvaluateDlss() ? "Mode: DLSS" : "Mode: Pass-through");
         }
 #else
         ImGui::Text("Streamline not compiled in");
 #endif
     }
-
-    // --- External configuration (called from main_vulkan before pipeline build) ---
-
-    void setDisplaySize(int displayW, int displayH) {
-        m_displayWidth = displayW;
-        m_displayHeight = displayH;
-    }
-
-    void setStreamlineContext(StreamlineContext* ctx) {
-        m_streamlineCtx = ctx;
-    }
-
-    bool isDlssEnabled() const { return m_dlssEnabled; }
-    void setDlssEnabled(bool enabled) { m_dlssEnabled = enabled; }
 
 private:
     FGResource getSourceInput() const {
@@ -136,8 +119,61 @@ private:
         return FGResource{};
     }
 
-    void releaseOutputTexture() {
-        m_ownedOutputTexture.reset();
+    StreamlineContext* currentStreamlineContext() const {
+        return m_runtimeContext ? m_runtimeContext->streamlineContext : nullptr;
+    }
+
+    bool shouldEvaluateDlss() const {
+#ifdef METALLIC_HAS_STREAMLINE
+        StreamlineContext* streamlineCtx = currentStreamlineContext();
+        return streamlineCtx &&
+               m_runtimeContext &&
+               m_runtimeContext->dlssAvailable &&
+               m_runtimeContext->dlssEnabled &&
+               streamlineCtx->isDlssAvailable();
+#else
+        return false;
+#endif
+    }
+
+    int currentRenderWidth() const {
+        if (m_frameContext && m_frameContext->renderWidth > 0) {
+            return m_frameContext->renderWidth;
+        }
+        if (m_runtimeContext && m_runtimeContext->renderWidth > 0) {
+            return m_runtimeContext->renderWidth;
+        }
+        return m_renderWidth;
+    }
+
+    int currentRenderHeight() const {
+        if (m_frameContext && m_frameContext->renderHeight > 0) {
+            return m_frameContext->renderHeight;
+        }
+        if (m_runtimeContext && m_runtimeContext->renderHeight > 0) {
+            return m_runtimeContext->renderHeight;
+        }
+        return m_renderHeight;
+    }
+
+    int currentDisplayWidth() const {
+        if (m_frameContext && m_frameContext->displayWidth > 0) {
+            return m_frameContext->displayWidth;
+        }
+        if (m_runtimeContext && m_runtimeContext->displayWidth > 0) {
+            return m_runtimeContext->displayWidth;
+        }
+        return m_displayWidth;
+    }
+
+    int currentDisplayHeight() const {
+        if (m_frameContext && m_frameContext->displayHeight > 0) {
+            return m_frameContext->displayHeight;
+        }
+        if (m_runtimeContext && m_runtimeContext->displayHeight > 0) {
+            return m_runtimeContext->displayHeight;
+        }
+        return m_displayHeight;
     }
 
 #ifdef METALLIC_HAS_STREAMLINE
@@ -149,12 +185,9 @@ private:
     int m_displayWidth, m_displayHeight;
     std::string m_name = "DLSS";
     std::string m_sourceInputName;
-    bool m_dlssEnabled = false;
+    bool m_passthrough = false;
 
     FGResource m_sourceRead, m_depthRead, m_motionRead, m_dlssOutput;
-
-    StreamlineContext* m_streamlineCtx = nullptr;
-    std::unique_ptr<RhiTexture> m_ownedOutputTexture;
 };
 
 #endif // _WIN32

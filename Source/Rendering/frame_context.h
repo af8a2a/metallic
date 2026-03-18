@@ -10,6 +10,7 @@
 class RhiTexture;
 class RhiBuffer;
 class RhiFrameGraphBackend;
+class StreamlineContext;
 
 // Per-frame runtime context for data-driven pipeline execution
 // This holds all the dynamic data that changes each frame
@@ -100,6 +101,17 @@ struct PipelineRuntimeContext {
 
     // Current frame's drawable
     RhiTexture* backbufferRhi = nullptr;
+
+    // Output/render sizing for passes that bridge different resolution domains.
+    int displayWidth = 0;
+    int displayHeight = 0;
+    int renderWidth = 0;
+    int renderHeight = 0;
+
+    // Optional Streamline / DLSS state used by authored upscaler passes.
+    StreamlineContext* streamlineContext = nullptr;
+    bool dlssAvailable = false;
+    bool dlssEnabled = false;
 
     // Resource creation for pass-owned persistent resources
     RhiFrameGraphBackend* resourceFactory = nullptr;

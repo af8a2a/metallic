@@ -3,7 +3,6 @@
 
 #include "pipeline_editor.h"
 #include "pipeline_asset.h"
-#include "pass_registry.h"
 
 #ifdef __APPLE__
 #define GL_SILENCE_DEPRECATION
@@ -23,64 +22,14 @@
 #include <string>
 #include <filesystem>
 
-// Register all known pass types for the editor
-// These are metadata-only - no factory functions needed since we don't instantiate passes
-static void registerPassTypes() {
-    using PType = PassTypeInfo::PassType;
-
-    auto& reg = PassRegistry::instance();
-
-    // Geometry passes
-    reg.registerPass("VisibilityPass", nullptr, {
-        "VisibilityPass", "Visibility Pass", "Geometry",
-        {}, {"visibility", "depth"}, {}, PType::Render
-    });
-    reg.registerPass("ForwardPass", nullptr, {
-        "ForwardPass", "Forward Pass", "Geometry",
-        {"skyOutput"}, {"forwardColor", "depth"}, {}, PType::Render
-    });
-
-    // Lighting passes
-    reg.registerPass("ShadowRayPass", nullptr, {
-        "ShadowRayPass", "Shadow Ray Pass", "Lighting",
-        {"depth"}, {"shadowMap"}, {}, PType::Compute
-    });
-    reg.registerPass("DeferredLightingPass", nullptr, {
-        "DeferredLightingPass", "Deferred Lighting", "Lighting",
-        {"visibility", "depth", "shadowMap", "skyOutput"}, {"lightingOutput"}, {}, PType::Compute
-    });
-
-    // Environment passes
-    reg.registerPass("SkyPass", nullptr, {
-        "SkyPass", "Sky Pass", "Environment",
-        {}, {"skyOutput"}, {}, PType::Render
-    });
-
-    // Post-process passes
-    reg.registerPass("TonemapPass", nullptr, {
-        "TonemapPass", "Tonemap", "Post-Process",
-        {"lightingOutput"}, {"$backbuffer"}, {}, PType::Render
-    });
-
-    // Utility passes
-    reg.registerPass("BlitPass", nullptr, {
-        "BlitPass", "Blit", "Utility",
-        {"source"}, {"destination"}, {}, PType::Blit
-    });
-
-    // UI passes
-    reg.registerPass("ImGuiOverlayPass", nullptr, {
-        "ImGuiOverlayPass", "ImGui Overlay", "UI",
-        {"depth"}, {"$backbuffer"}, {}, PType::Render
-    });
-}
+void registerEditorPassTypes();
 
 int main(int argc, char* argv[]) {
     spdlog::set_level(spdlog::level::info);
     spdlog::info("Pipeline Editor starting...");
 
-    // Register pass types
-    registerPassTypes();
+    // Register metadata for all pass types shown in the Add menu.
+    registerEditorPassTypes();
 
     // Initialize GLFW
     if (!glfwInit()) {

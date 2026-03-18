@@ -41,11 +41,14 @@ bool PipelineBuilder::build(const PipelineAsset& asset,
     }
 
     // Get topologically sorted pass order
-    auto sortedOrder = asset.topologicalSort();
+    auto sortedOrder = asset.topologicalSort(false);
 
     // Build a map of output name -> pass index for wiring
     std::unordered_map<std::string, size_t> outputProducers;
     for (size_t i = 0; i < asset.passes.size(); i++) {
+        if (!asset.passes[i].enabled) {
+            continue;
+        }
         for (const auto& output : asset.passes[i].outputs) {
             outputProducers[output] = i;
         }
