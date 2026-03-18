@@ -783,6 +783,29 @@ int main() {
     createInfo.enableValidation = true;
     createInfo.requireVulkan14 = true;
 
+    // --- Streamline / DLSS initialization (before RHI so SL can intercept device creation) ---
+    StreamlineContext streamlineCtx;
+    bool dlssAvailable = false;
+    bool dlssEnabled = false;
+    DlssPreset dlssPreset = DlssPreset::Balanced;
+    uint32_t dlssRenderWidth = 0;
+    uint32_t dlssRenderHeight = 0;
+
+#ifdef METALLIC_HAS_STREAMLINE
+    if (streamlineCtx.init(PROJECT_SOURCE_DIR)) {
+        StreamlineVulkanRequirements slReqs;
+        if (streamlineCtx.queryVulkanRequirements(slReqs)) {
+            for (auto ext : slReqs.instanceExtensions) {
+                createInfo.extraInstanceExtensions.push_back(ext);
+            }
+            for (auto ext : slReqs.deviceExtensions) {
+                createInfo.extraDeviceExtensions.push_back(ext);
+            }
+            createInfo.enableTimelineSemaphore = slReqs.needsTimelineSemaphore;
+        }
+    }
+#endif
+
     std::string backendError;
     auto rhi = createRhiContext(RhiBackendType::Vulkan, createInfo, backendError);
     if (!rhi) {
@@ -1011,16 +1034,9 @@ int main() {
         spdlog::info("Vulkan ray tracing not supported on this device; shadow pass stays disabled");
     }
 
-    // --- Streamline / DLSS initialization ---
-    StreamlineContext streamlineCtx;
-    bool dlssAvailable = false;
-    bool dlssEnabled = false;
-    DlssPreset dlssPreset = DlssPreset::Balanced;
-    uint32_t dlssRenderWidth = 0;
-    uint32_t dlssRenderHeight = 0;
-
+    // --- Streamline: set Vulkan device and query DLSS availability ---
 #ifdef METALLIC_HAS_STREAMLINE
-    if (streamlineCtx.init(PROJECT_SOURCE_DIR)) {
+    if (streamlineCtx.isInitialized()) {
         VkInstance vkInstance = nativeToVkHandle<VkInstance>(native.instance);
         if (streamlineCtx.setVulkanDevice(vkInstance, vkPhysicalDevice, vkDevice,
                                            nativeToVkHandle<VkQueue>(native.queue),

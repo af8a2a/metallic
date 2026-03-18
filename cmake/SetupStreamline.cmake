@@ -25,13 +25,48 @@ if(NOT EXISTS "${STREAMLINE_MARKER}")
     file(DOWNLOAD "${STREAMLINE_URL}" "${STREAMLINE_DOWNLOAD_PATH}"
         STATUS STREAMLINE_DOWNLOAD_STATUS
         SHOW_PROGRESS
+        TLS_VERIFY ON
+        INACTIVITY_TIMEOUT 60
+        LOG STREAMLINE_DOWNLOAD_LOG
     )
     list(GET STREAMLINE_DOWNLOAD_STATUS 0 STREAMLINE_DOWNLOAD_ERROR)
-    if(NOT STREAMLINE_DOWNLOAD_ERROR EQUAL 0)
-        list(GET STREAMLINE_DOWNLOAD_STATUS 1 STREAMLINE_DOWNLOAD_MSG)
+
+    # Validate: check status code and file size
+    set(STREAMLINE_DOWNLOAD_OK FALSE)
+    if(STREAMLINE_DOWNLOAD_ERROR EQUAL 0 AND EXISTS "${STREAMLINE_DOWNLOAD_PATH}")
+        file(SIZE "${STREAMLINE_DOWNLOAD_PATH}" STREAMLINE_DOWNLOAD_SIZE)
+        if(STREAMLINE_DOWNLOAD_SIZE GREATER 1000000)
+            set(STREAMLINE_DOWNLOAD_OK TRUE)
+        endif()
+    endif()
+
+    # Fallback: use PowerShell on Windows (handles GitHub redirects better)
+    if(NOT STREAMLINE_DOWNLOAD_OK)
+        file(REMOVE "${STREAMLINE_DOWNLOAD_PATH}")
+        message(STATUS "CMake download failed; trying PowerShell fallback...")
+        execute_process(
+            COMMAND powershell -Command
+                "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '${STREAMLINE_URL}' -OutFile '${STREAMLINE_DOWNLOAD_PATH}' -UseBasicParsing"
+            RESULT_VARIABLE STREAMLINE_PS_RESULT
+            OUTPUT_VARIABLE STREAMLINE_PS_OUTPUT
+            ERROR_VARIABLE STREAMLINE_PS_ERROR
+            TIMEOUT 300
+        )
+        if(STREAMLINE_PS_RESULT EQUAL 0 AND EXISTS "${STREAMLINE_DOWNLOAD_PATH}")
+            file(SIZE "${STREAMLINE_DOWNLOAD_PATH}" STREAMLINE_DOWNLOAD_SIZE)
+            if(STREAMLINE_DOWNLOAD_SIZE GREATER 1000000)
+                set(STREAMLINE_DOWNLOAD_OK TRUE)
+            endif()
+        endif()
+    endif()
+
+    if(NOT STREAMLINE_DOWNLOAD_OK)
         message(WARNING
-            "Failed to download Streamline SDK: ${STREAMLINE_DOWNLOAD_MSG}\n"
-            "DLSS integration will be disabled. To enable, manually place the SDK at ${STREAMLINE_ROOT}")
+            "Failed to download Streamline SDK.\n"
+            "Please download manually from:\n  ${STREAMLINE_URL}\n"
+            "and extract to: ${STREAMLINE_ROOT}\n"
+            "DLSS integration will be disabled for now.")
+        file(REMOVE "${STREAMLINE_DOWNLOAD_PATH}")
         set(METALLIC_ENABLE_STREAMLINE OFF CACHE BOOL "" FORCE)
         return()
     endif()

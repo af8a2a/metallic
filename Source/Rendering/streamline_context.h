@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Forward declare Vulkan handles without pulling in vulkan.h.
 // These are opaque pointer types defined by the Vulkan spec.
@@ -39,6 +40,13 @@ enum class DlssPreset : uint32_t {
 };
 
 const char* dlssPresetName(DlssPreset preset);
+
+// Requirements that Streamline/DLSS needs from the Vulkan device
+struct StreamlineVulkanRequirements {
+    std::vector<const char*> instanceExtensions;
+    std::vector<const char*> deviceExtensions;
+    bool needsTimelineSemaphore = false;
+};
 
 // Per-frame data needed by Streamline evaluate
 struct StreamlineDlssFrameData {
@@ -86,7 +94,11 @@ public:
 
     // Phase 1: Initialize Streamline before Vulkan device creation.
     // Returns false if SL is unavailable (non-NVIDIA, missing DLLs, etc.)
-    bool init(const char* projectRoot, uint32_t applicationId = 0);
+    bool init(const char* projectRoot, uint32_t applicationId = 073432);
+
+    // Phase 1b: Query Vulkan extensions/features required by DLSS.
+    // Call after init(), before device creation.
+    bool queryVulkanRequirements(StreamlineVulkanRequirements& out) const;
 
     // Phase 2: Provide Vulkan handles after device creation.
     bool setVulkanDevice(VkInstance instance,

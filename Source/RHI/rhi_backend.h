@@ -491,6 +491,11 @@ struct RhiCreateInfo {
     const char* applicationName = "Metallic";
     bool enableValidation = true;
     bool requireVulkan14 = true;
+
+    // Extra Vulkan extensions requested by external integrations (e.g. Streamline)
+    std::vector<const char*> extraInstanceExtensions;
+    std::vector<const char*> extraDeviceExtensions;
+    bool enableTimelineSemaphore = false;
 };
 
 struct RhiBufferDesc {

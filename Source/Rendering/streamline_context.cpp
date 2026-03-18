@@ -5,10 +5,12 @@
 
 #ifdef METALLIC_HAS_STREAMLINE
 
+#include <vulkan/vulkan.h>
 #include <sl.h>
 #include <sl_dlss.h>
 #include <sl_helpers_vk.h>
 #include <sl_consts.h>
+#include <string_view>
 
 // Streamline SDK version used at link time
 static constexpr uint64_t kSlSdkVersion = sl::kSDKVersion;
@@ -39,9 +41,19 @@ static sl::DLSSMode toSlDlssMode(DlssPreset preset) {
 // clipToPrevClip = prevViewProj * inverse(currentViewProj)
 // The caller is expected to provide this pre-computed.
 
-static sl::float4x4 toSlMatrix(const float* m) {
+static sl::float4x4 toSlMatrix(const float* colMajor) {
+    // Convert column-major (MathLib) to row-major (Streamline)
     sl::float4x4 out{};
-    memcpy(&out, m, sizeof(float) * 16);
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++)
+            out.row[r].x = 0; // zero-init
+    // colMajor[col*4 + row] -> out.row[row][col]
+    for (int r = 0; r < 4; r++) {
+        float* dst = &out.row[r].x;
+        for (int c = 0; c < 4; c++) {
+            dst[c] = colMajor[c * 4 + r];
+        }
+    }
     return out;
 }
 
@@ -97,6 +109,50 @@ bool StreamlineContext::init(const char* projectRoot, uint32_t applicationId) {
 
     m_initialized = true;
     spdlog::info("Streamline SDK initialized");
+    return true;
+}
+
+bool StreamlineContext::queryVulkanRequirements(StreamlineVulkanRequirements& out) const {
+    if (!m_initialized) return false;
+
+    sl::FeatureRequirements requirements{};
+    sl::Result result = slGetFeatureRequirements(sl::kFeatureDLSS, requirements);
+    if (result != sl::Result::eOk) {
+        spdlog::warn("slGetFeatureRequirements(DLSS) failed (result={})", static_cast<int>(result));
+        return false;
+    }
+
+    out.instanceExtensions.clear();
+    out.deviceExtensions.clear();
+    out.needsTimelineSemaphore = false;
+
+    // Copy required Vulkan instance extensions
+    for (uint32_t i = 0; i < requirements.vkNumInstanceExtensions; i++) {
+        out.instanceExtensions.push_back(requirements.vkInstanceExtensions[i]);
+    }
+
+    // Copy required Vulkan device extensions
+    for (uint32_t i = 0; i < requirements.vkNumDeviceExtensions; i++) {
+        out.deviceExtensions.push_back(requirements.vkDeviceExtensions[i]);
+    }
+
+    // Always request timeline semaphore — DLSS needs it and it's core in Vulkan 1.2+
+    out.needsTimelineSemaphore = true;
+
+    // Also ensure VK_KHR_push_descriptor is present (DLSS requirement)
+    bool hasPushDescriptor = false;
+    for (auto ext : out.deviceExtensions) {
+        if (std::string_view(ext) == "VK_KHR_push_descriptor") {
+            hasPushDescriptor = true;
+            break;
+        }
+    }
+    if (!hasPushDescriptor) {
+        out.deviceExtensions.push_back("VK_KHR_push_descriptor");
+    }
+
+    spdlog::info("Streamline DLSS requires {} instance extensions, {} device extensions",
+                  out.instanceExtensions.size(), out.deviceExtensions.size());
     return true;
 }
 
@@ -209,7 +265,7 @@ bool StreamlineContext::evaluate(const StreamlineDlssFrameData& data) {
     constants.motionVectorsJittered = data.motionVectorsJittered ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     constants.reset = (data.reset || m_needsReset) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     constants.cameraPinholeOffset = {0.0f, 0.0f};
-    memcpy(&constants.clipToPrevClip, data.clipToPrevClip, sizeof(float) * 16);
+    constants.clipToPrevClip = toSlMatrix(data.clipToPrevClip);
 
     m_needsReset = false;
 
@@ -220,24 +276,26 @@ bool StreamlineContext::evaluate(const StreamlineDlssFrameData& data) {
     }
 
     // Tag resources
-    sl::Resource colorIn{sl::ResourceType::eTex2d, data.colorInput, nullptr,
-                         data.colorInputView, 0};
-    sl::Resource colorOut{sl::ResourceType::eTex2d, data.colorOutput, nullptr,
-                          data.colorOutputView, 0};
-    sl::Resource depthRes{sl::ResourceType::eTex2d, data.depth, nullptr,
-                          data.depthView, 0};
-    sl::Resource mvecRes{sl::ResourceType::eTex2d, data.motionVectors, nullptr,
-                         data.motionVectorsView, 0};
+    sl::Resource colorIn(sl::ResourceType::eTex2d, data.colorInput, nullptr,
+                         data.colorInputView, 0);
+    sl::Resource colorOut(sl::ResourceType::eTex2d, data.colorOutput, nullptr,
+                          data.colorOutputView, 0);
+    sl::Resource depthRes(sl::ResourceType::eTex2d, data.depth, nullptr,
+                          data.depthView, 0);
+    sl::Resource mvecRes(sl::ResourceType::eTex2d, data.motionVectors, nullptr,
+                         data.motionVectorsView, 0);
 
     sl::Extent renderExtent{};
+    renderExtent.left = 0;
+    renderExtent.top = 0;
     renderExtent.width = data.renderWidth;
     renderExtent.height = data.renderHeight;
 
     sl::ResourceTag tags[] = {
-        {&colorIn,  sl::kBufferTypeScalingInputColor,  sl::ResourceLifecycle::eValidUntilPresent, &renderExtent},
-        {&colorOut, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilPresent},
-        {&depthRes, sl::kBufferTypeDepth,              sl::ResourceLifecycle::eValidUntilPresent, &renderExtent},
-        {&mvecRes,  sl::kBufferTypeMotionVectors,      sl::ResourceLifecycle::eValidUntilPresent, &renderExtent},
+        sl::ResourceTag(&colorIn,  sl::kBufferTypeScalingInputColor,  sl::ResourceLifecycle::eValidUntilPresent, &renderExtent),
+        sl::ResourceTag(&colorOut, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilPresent),
+        sl::ResourceTag(&depthRes, sl::kBufferTypeDepth,              sl::ResourceLifecycle::eValidUntilPresent, &renderExtent),
+        sl::ResourceTag(&mvecRes,  sl::kBufferTypeMotionVectors,      sl::ResourceLifecycle::eValidUntilPresent, &renderExtent),
     };
 
     result = slSetTagForFrame(*frameToken, viewport, tags, _countof(tags),
@@ -289,6 +347,10 @@ std::string StreamlineContext::statusString() const {
 
 bool StreamlineContext::init(const char*, uint32_t) {
     spdlog::info("Streamline SDK not available in this build");
+    return false;
+}
+
+bool StreamlineContext::queryVulkanRequirements(StreamlineVulkanRequirements&) const {
     return false;
 }
 
