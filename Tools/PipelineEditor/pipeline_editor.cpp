@@ -113,6 +113,7 @@ void PipelineEditor::render(PipelineAsset& asset) {
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Save")) {
+                    collectNodePositions(asset);
                     m_dirty = true;
                 }
                 if (ImGui::MenuItem("Reset Layout")) {
@@ -152,6 +153,12 @@ void PipelineEditor::render(PipelineAsset& asset) {
                     newRes.size = "screen";
                     asset.resources.push_back(newRes);
                     m_dirty = true;
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("View")) {
+                if (ImGui::MenuItem("Auto Reorder")) {
+                    autoReorderNodes(asset);
                 }
                 ImGui::EndMenu();
             }
@@ -197,7 +204,12 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
 
         // Set position on first frame
         if (m_nodePositioned.find(nodeId) == m_nodePositioned.end()) {
-            ImNodes::SetNodeScreenSpacePos(nodeId, ImVec2(nodeX, nodeY + i * nodeSpacingY));
+            auto it = asset.editorPositions.find(res.name);
+            if (it != asset.editorPositions.end()) {
+                ImNodes::SetNodeGridSpacePos(nodeId, ImVec2(it->second[0], it->second[1]));
+            } else {
+                ImNodes::SetNodeScreenSpacePos(nodeId, ImVec2(nodeX, nodeY + i * nodeSpacingY));
+            }
             m_nodePositioned[nodeId] = true;
         }
 
@@ -234,15 +246,20 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
 
         // Set position on first frame
         if (m_nodePositioned.find(nodeId) == m_nodePositioned.end()) {
-            float x = 300.0f + col * nodeSpacingX;
-            float y = nodeY + row * nodeSpacingY;
-            ImNodes::SetNodeScreenSpacePos(nodeId, ImVec2(x, y));
-            m_nodePositioned[nodeId] = true;
-            row++;
-            if (row > 4) {
-                row = 0;
-                col++;
+            auto it = asset.editorPositions.find(pass.name);
+            if (it != asset.editorPositions.end()) {
+                ImNodes::SetNodeGridSpacePos(nodeId, ImVec2(it->second[0], it->second[1]));
+            } else {
+                float x = 300.0f + col * nodeSpacingX;
+                float y = nodeY + row * nodeSpacingY;
+                ImNodes::SetNodeScreenSpacePos(nodeId, ImVec2(x, y));
+                row++;
+                if (row > 4) {
+                    row = 0;
+                    col++;
+                }
             }
+            m_nodePositioned[nodeId] = true;
         }
 
         // Dim disabled passes
@@ -651,4 +668,78 @@ void PipelineEditor::renderCompilationPreview(const PipelineAsset& asset) {
         }
         ImGui::TreePop();
     }
+}
+
+void PipelineEditor::collectNodePositions(PipelineAsset& asset) {
+    asset.editorPositions.clear();
+    for (size_t i = 0; i < asset.resources.size(); i++) {
+        int nodeId = getResourceNodeId(static_cast<int>(i));
+        ImVec2 pos = ImNodes::GetNodeGridSpacePos(nodeId);
+        asset.editorPositions[asset.resources[i].name] = {pos.x, pos.y};
+    }
+    for (size_t i = 0; i < asset.passes.size(); i++) {
+        int nodeId = getPassNodeId(static_cast<int>(i));
+        ImVec2 pos = ImNodes::GetNodeGridSpacePos(nodeId);
+        asset.editorPositions[asset.passes[i].name] = {pos.x, pos.y};
+    }
+}
+
+void PipelineEditor::autoReorderNodes(PipelineAsset& asset) {
+    auto sortedOrder = asset.topologicalSort();
+
+    // Compute layer depth for each pass based on dependencies
+    std::unordered_map<std::string, int> resourceProducer; // resource name -> pass index in sorted order
+    std::vector<int> layerDepth(asset.passes.size(), 0);
+
+    for (size_t si = 0; si < sortedOrder.size(); si++) {
+        size_t i = sortedOrder[si];
+        const auto& pass = asset.passes[i];
+
+        // Find max layer of input dependencies
+        int maxDepLayer = 0;
+        for (const auto& input : pass.inputs) {
+            auto pit = resourceProducer.find(input);
+            if (pit != resourceProducer.end()) {
+                maxDepLayer = std::max(maxDepLayer, layerDepth[pit->second] + 1);
+            }
+        }
+        layerDepth[i] = maxDepLayer;
+
+        // Register this pass as producer of its outputs
+        for (const auto& output : pass.outputs) {
+            resourceProducer[output] = static_cast<int>(i);
+        }
+    }
+
+    // Group passes by layer for vertical stacking
+    std::map<int, std::vector<size_t>> layerPasses;
+    for (size_t i = 0; i < asset.passes.size(); i++) {
+        layerPasses[layerDepth[i]].push_back(i);
+    }
+
+    // Layout resources in left column
+    float spacingY = 140.0f;
+    for (size_t i = 0; i < asset.resources.size(); i++) {
+        int nodeId = getResourceNodeId(static_cast<int>(i));
+        ImNodes::SetNodeGridSpacePos(nodeId, ImVec2(50.0f, 50.0f + i * spacingY));
+    }
+
+    // Layout passes by layer
+    for (const auto& [layer, indices] : layerPasses) {
+        for (size_t row = 0; row < indices.size(); row++) {
+            int nodeId = getPassNodeId(static_cast<int>(indices[row]));
+            float x = 300.0f + layer * 250.0f;
+            float y = 50.0f + row * spacingY;
+            ImNodes::SetNodeGridSpacePos(nodeId, ImVec2(x, y));
+        }
+    }
+
+    // Update tracked positions and save into asset
+    m_nodePositioned.clear();
+    for (size_t i = 0; i < asset.resources.size(); i++)
+        m_nodePositioned[getResourceNodeId(static_cast<int>(i))] = true;
+    for (size_t i = 0; i < asset.passes.size(); i++)
+        m_nodePositioned[getPassNodeId(static_cast<int>(i))] = true;
+
+    collectNodePositions(asset);
 }

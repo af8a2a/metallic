@@ -11,6 +11,9 @@ class RhiTexture;
 class RhiBuffer;
 class RhiFrameGraphBackend;
 class StreamlineContext;
+#ifdef _WIN32
+class VulkanImageLayoutTracker;
+#endif
 
 // Per-frame runtime context for data-driven pipeline execution
 // This holds all the dynamic data that changes each frame
@@ -63,6 +66,11 @@ struct FrameContext {
 
     // Active native command buffer for backend integrations that are not fully abstracted yet.
     const RhiNativeCommandBuffer* commandBuffer = nullptr;
+
+#ifdef _WIN32
+    // Vulkan image layout tracker used by backend integrations such as Streamline.
+    VulkanImageLayoutTracker* imageLayoutTracker = nullptr;
+#endif
 
     // Depth clear value
     double depthClearValue = 1.0;

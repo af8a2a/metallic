@@ -23,6 +23,15 @@ public:
     void setVisible(bool visible) { m_visible = visible; }
     bool isVisible() const { return m_visible; }
 
+    // Reset layout state (call when loading a new pipeline)
+    void resetLayout() { m_nodePositioned.clear(); m_firstFrame = true; }
+
+    // Snapshot current node positions into asset.editorPositions
+    void collectNodePositions(PipelineAsset& asset);
+
+    // Auto-reorder nodes by topological depth
+    void autoReorderNodes(PipelineAsset& asset);
+
     // Public for main menu access
     bool m_visible = false;
 

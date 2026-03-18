@@ -2,6 +2,8 @@
 
 #include <string>
 #include <vector>
+#include <array>
+#include <map>
 #include <json.hpp>
 
 // Resource declaration in pipeline JSON
@@ -32,6 +34,7 @@ struct PipelineAsset {
     std::string name;
     std::vector<ResourceDecl> resources;
     std::vector<PassDecl> passes;
+    std::map<std::string, std::array<float,2>> editorPositions; // node name -> [x, y]
 
     // Load pipeline from JSON file
     static PipelineAsset load(const std::string& path);

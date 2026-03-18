@@ -1,0 +1,177 @@
+{
+  "editorPositions": {
+    "DeferredLightingPass_5": [
+      1050.0,
+      50.0
+    ],
+    "HZBBuildPass_3": [
+      800.0,
+      50.0
+    ],
+    "HZBBuildPass_7": [
+      800.0,
+      470.0
+    ],
+    "ImGuiOverlayPass_4": [
+      800.0,
+      190.0
+    ],
+    "MeshletCullPass_0": [
+      300.0,
+      50.0
+    ],
+    "ShadowRayPass_6": [
+      800.0,
+      330.0
+    ],
+    "SkyPass_8": [
+      300.0,
+      190.0
+    ],
+    "StreamlineDlssPass_10": [
+      1300.0,
+      190.0
+    ],
+    "TonemapPass_11": [
+      1518.0,
+      274.0
+    ],
+    "VisibilityPass_1": [
+      550.0,
+      50.0
+    ]
+  },
+  "name": "NewPipeline",
+  "passes": [
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [],
+      "name": "MeshletCullPass_0",
+      "outputs": [
+        "cullResult"
+      ],
+      "sideEffect": false,
+      "type": "MeshletCullPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "cullResult"
+      ],
+      "name": "VisibilityPass_1",
+      "outputs": [
+        "visibility",
+        "depth"
+      ],
+      "sideEffect": false,
+      "type": "VisibilityPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "depth"
+      ],
+      "name": "HZBBuildPass_3",
+      "outputs": [],
+      "sideEffect": false,
+      "type": "HZBBuildPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "depth"
+      ],
+      "name": "ImGuiOverlayPass_4",
+      "outputs": [
+        "$backbuffer"
+      ],
+      "sideEffect": false,
+      "type": "ImGuiOverlayPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "visibility",
+        "depth",
+        "shadowMap",
+        "skyOutput"
+      ],
+      "name": "DeferredLightingPass_5",
+      "outputs": [
+        "lightingOutput",
+        "motionVectors"
+      ],
+      "sideEffect": false,
+      "type": "DeferredLightingPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "depth"
+      ],
+      "name": "ShadowRayPass_6",
+      "outputs": [
+        "shadowMap"
+      ],
+      "sideEffect": false,
+      "type": "ShadowRayPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "depth"
+      ],
+      "name": "HZBBuildPass_7",
+      "outputs": [],
+      "sideEffect": false,
+      "type": "HZBBuildPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [],
+      "name": "SkyPass_8",
+      "outputs": [
+        "skyOutput"
+      ],
+      "sideEffect": false,
+      "type": "SkyPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "lightingOutput",
+        "depth",
+        "motionVectors"
+      ],
+      "name": "StreamlineDlssPass_10",
+      "outputs": [
+        "dlssOutput"
+      ],
+      "sideEffect": false,
+      "type": "StreamlineDlssPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "dlssOutput"
+      ],
+      "name": "TonemapPass_11",
+      "outputs": [
+        "$backbuffer"
+      ],
+      "sideEffect": false,
+      "type": "TonemapPass"
+    }
+  ],
+  "resources": []
+}

@@ -1162,7 +1162,7 @@ int main() {
 #endif
 
     const std::string visibilityPipelinePath =
-        std::string(PROJECT_SOURCE_DIR) + "/Pipelines/visibility_buffer.json";
+        std::string(PROJECT_SOURCE_DIR) + "/Pipelines/visibilitybuffer.json";
     PipelineAsset visibilityPipelineBaseAsset;
     PipelineAsset visibilityPipelineAsset;
     bool visibilityPipelineBaseLoaded =
@@ -1882,6 +1882,7 @@ int main() {
         frameContext.visibilityInstanceCount = visibilityInstanceCount;
         frameContext.instanceTransformBufferRhi = instanceTransformBuffer.get();
         frameContext.commandBuffer = &nativeCommandBuffer;
+        frameContext.imageLayoutTracker = &imageTracker;
         frameContext.depthClearValue = depthClearValue;
         frameContext.cameraFarZ = previewCamera.farZ;
         {

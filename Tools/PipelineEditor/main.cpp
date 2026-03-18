@@ -20,6 +20,7 @@
 #include <spdlog/spdlog.h>
 
 #include <string>
+#include <cstring>
 #include <filesystem>
 
 void registerEditorPassTypes();
@@ -86,6 +87,14 @@ int main(int argc, char* argv[]) {
     PipelineEditor editor;
     editor.setVisible(true);
 
+    // Save As dialog state
+    bool showSaveAsPopup = false;
+    char saveAsBuffer[256] = {};
+
+    // Open dialog state
+    bool showOpenPopup = false;
+    char openBuffer[256] = {};
+
     // Main loop
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -101,19 +110,28 @@ int main(int argc, char* argv[]) {
                     currentPipeline = PipelineAsset{};
                     currentPipeline.name = "NewPipeline";
                     currentFilePath.clear();
+                    editor.resetLayout();
                     unsavedChanges = true;
                 }
                 if (ImGui::MenuItem("Open...", "Ctrl+O")) {
-                    // Simple file dialog - in production use native file dialog
-                    // For now, just show a text input
+                    std::string defaultDir = std::string(PROJECT_SOURCE_DIR) + "/Pipelines/";
+                    std::strncpy(openBuffer, defaultDir.c_str(), sizeof(openBuffer) - 1);
+                    openBuffer[sizeof(openBuffer) - 1] = '\0';
+                    showOpenPopup = true;
                 }
                 if (ImGui::MenuItem("Save", "Ctrl+S", false, !currentFilePath.empty())) {
+                    editor.collectNodePositions(currentPipeline);
                     currentPipeline.save(currentFilePath);
                     unsavedChanges = false;
                     spdlog::info("Saved: {}", currentFilePath);
                 }
                 if (ImGui::MenuItem("Save As...")) {
-                    // Would show save dialog
+                    std::string defaultName = currentFilePath.empty()
+                        ? std::string(PROJECT_SOURCE_DIR) + "/Pipelines/new_pipeline.json"
+                        : currentFilePath;
+                    std::strncpy(saveAsBuffer, defaultName.c_str(), sizeof(saveAsBuffer) - 1);
+                    saveAsBuffer[sizeof(saveAsBuffer) - 1] = '\0';
+                    showSaveAsPopup = true;
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Exit")) {
@@ -126,6 +144,66 @@ int main(int argc, char* argv[]) {
                 ImGui::EndMenu();
             }
             ImGui::EndMainMenuBar();
+        }
+
+        // Save As popup
+        if (showSaveAsPopup) {
+            ImGui::OpenPopup("Save As");
+            showSaveAsPopup = false;
+        }
+        if (ImGui::BeginPopupModal("Save As", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("File path:");
+            ImGui::SetNextItemWidth(400);
+            bool enterPressed = ImGui::InputText("##saveas_path", saveAsBuffer, sizeof(saveAsBuffer),
+                ImGuiInputTextFlags_EnterReturnsTrue);
+            if (enterPressed || ImGui::Button("Save")) {
+                std::string path(saveAsBuffer);
+                if (!path.empty()) {
+                    editor.collectNodePositions(currentPipeline);
+                    currentPipeline.save(path);
+                    currentFilePath = path;
+                    unsavedChanges = false;
+                    spdlog::info("Saved as: {}", path);
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+
+        // Open popup
+        if (showOpenPopup) {
+            ImGui::OpenPopup("Open Pipeline");
+            showOpenPopup = false;
+        }
+        if (ImGui::BeginPopupModal("Open Pipeline", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("File path:");
+            ImGui::SetNextItemWidth(400);
+            bool enterPressed = ImGui::InputText("##open_path", openBuffer, sizeof(openBuffer),
+                ImGuiInputTextFlags_EnterReturnsTrue);
+            if (enterPressed || ImGui::Button("Open")) {
+                std::string path(openBuffer);
+                if (!path.empty() && std::filesystem::exists(path)) {
+                    currentFilePath = path;
+                    currentPipeline = PipelineAsset::load(currentFilePath);
+                    editor.resetLayout();
+                    unsavedChanges = false;
+                    if (!currentPipeline.name.empty()) {
+                        spdlog::info("Loaded: {}", currentPipeline.name);
+                    }
+                } else if (!path.empty()) {
+                    spdlog::warn("File not found: {}", path);
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
         }
 
         // Dockspace
@@ -146,6 +224,7 @@ int main(int argc, char* argv[]) {
                     if (ImGui::Selectable(filename.c_str(), isSelected)) {
                         currentFilePath = entry.path().string();
                         currentPipeline = PipelineAsset::load(currentFilePath);
+                        editor.resetLayout();
                         if (!currentPipeline.name.empty()) {
                             spdlog::info("Loaded: {}", currentPipeline.name);
                         }
@@ -188,6 +267,7 @@ int main(int argc, char* argv[]) {
         if (!currentFilePath.empty() && unsavedChanges) {
             ImGui::SameLine();
             if (ImGui::Button("Save")) {
+                editor.collectNodePositions(currentPipeline);
                 currentPipeline.save(currentFilePath);
                 unsavedChanges = false;
                 spdlog::info("Saved: {}", currentFilePath);

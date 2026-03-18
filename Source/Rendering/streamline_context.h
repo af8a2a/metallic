@@ -50,15 +50,30 @@ struct StreamlineVulkanRequirements {
 
 // Per-frame data needed by Streamline evaluate
 struct StreamlineDlssFrameData {
+    struct VulkanTextureInfo {
+        uint32_t state = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t nativeFormat = 0;
+        uint32_t mipLevels = 1;
+        uint32_t arrayLayers = 1;
+        uint32_t flags = 0;
+        uint32_t usage = 0;
+    };
+
     // Vulkan resources (native handles)
     VkImage colorInput = nullptr;       // render-res HDR color (scaling input)
     VkImageView colorInputView = nullptr;
+    VulkanTextureInfo colorInputInfo;
     VkImage colorOutput = nullptr;      // display-res HDR color (scaling output)
     VkImageView colorOutputView = nullptr;
+    VulkanTextureInfo colorOutputInfo;
     VkImage depth = nullptr;
     VkImageView depthView = nullptr;
+    VulkanTextureInfo depthInfo;
     VkImage motionVectors = nullptr;
     VkImageView motionVectorsView = nullptr;
+    VulkanTextureInfo motionVectorsInfo;
 
     // Dimensions
     uint32_t renderWidth = 0;

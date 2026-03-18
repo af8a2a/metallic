@@ -16,7 +16,18 @@ PipelineAsset PipelineAsset::load(const std::string& path) {
     try {
         nlohmann::json j;
         file >> j;
-        return j.get<PipelineAsset>();
+        auto asset = j.get<PipelineAsset>();
+
+        // Manually parse editorPositions (not in the macro to avoid deserialization issues)
+        if (j.contains("editorPositions") && j["editorPositions"].is_object()) {
+            for (auto& [key, val] : j["editorPositions"].items()) {
+                if (val.is_array() && val.size() == 2) {
+                    asset.editorPositions[key] = {val[0].get<float>(), val[1].get<float>()};
+                }
+            }
+        }
+
+        return asset;
     } catch (const nlohmann::json::exception& e) {
         spdlog::error("PipelineAsset: JSON parse error in '{}': {}", path, e.what());
         return {};
@@ -31,6 +42,16 @@ void PipelineAsset::save(const std::string& path) const {
     }
 
     nlohmann::json j = *this;
+
+    // Manually serialize editorPositions
+    if (!editorPositions.empty()) {
+        nlohmann::json posJson = nlohmann::json::object();
+        for (const auto& [key, pos] : editorPositions) {
+            posJson[key] = {pos[0], pos[1]};
+        }
+        j["editorPositions"] = posJson;
+    }
+
     file << j.dump(2);
     spdlog::info("PipelineAsset: saved '{}'", path);
 }

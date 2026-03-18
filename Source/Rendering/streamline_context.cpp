@@ -14,6 +14,7 @@
 
 // Streamline SDK version used at link time
 static constexpr uint64_t kSlSdkVersion = sl::kSDKVersion;
+static constexpr uint32_t kDefaultViewportId = 0;
 
 static void slLogCallback(sl::LogType type, const char* msg) {
     switch (type) {
@@ -57,6 +58,24 @@ static sl::float4x4 toSlMatrix(const float* colMajor) {
     return out;
 }
 
+static sl::Resource makeSlTextureResource(void* image,
+                                          void* imageView,
+                                          const StreamlineDlssFrameData::VulkanTextureInfo& info) {
+    sl::Resource resource(sl::ResourceType::eTex2d,
+                          image,
+                          nullptr,
+                          imageView,
+                          info.state);
+    resource.width = info.width;
+    resource.height = info.height;
+    resource.nativeFormat = info.nativeFormat;
+    resource.mipLevels = info.mipLevels > 0 ? info.mipLevels : 1;
+    resource.arrayLayers = info.arrayLayers > 0 ? info.arrayLayers : 1;
+    resource.flags = info.flags;
+    resource.usage = info.usage;
+    return resource;
+}
+
 #endif // METALLIC_HAS_STREAMLINE
 
 const char* dlssPresetName(DlssPreset preset) {
@@ -88,7 +107,8 @@ bool StreamlineContext::init(const char* projectRoot, uint32_t applicationId) {
     pref.logLevel = sl::LogLevel::eDefault;
     pref.logMessageCallback = slLogCallback;
     pref.flags = sl::PreferenceFlags::eDisableCLStateTracking
-               | sl::PreferenceFlags::eUseManualHooking;
+               | sl::PreferenceFlags::eUseManualHooking
+               | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
     pref.featuresToLoad = &sl::kFeatureDLSS;
     pref.numFeaturesToLoad = 1;
     pref.renderAPI = sl::RenderAPI::eVulkan;
@@ -230,7 +250,7 @@ bool StreamlineContext::setDlssOptions(DlssPreset preset, uint32_t outputWidth, 
     options.colorBuffersHDR = sl::Boolean::eTrue;
     options.preExposure = 1.0f;
 
-    sl::ViewportHandle viewport{0};
+    sl::ViewportHandle viewport{kDefaultViewportId};
     sl::Result result = slDLSSSetOptions(viewport, options);
     if (result != sl::Result::eOk) {
         spdlog::error("slDLSSSetOptions failed (result={})", static_cast<int>(result));
@@ -253,7 +273,7 @@ bool StreamlineContext::evaluate(const StreamlineDlssFrameData& data) {
         return false;
     }
 
-    sl::ViewportHandle viewport{0};
+    sl::ViewportHandle viewport{kDefaultViewportId};
 
     // Set per-frame constants
     sl::Constants constants{};
@@ -276,14 +296,18 @@ bool StreamlineContext::evaluate(const StreamlineDlssFrameData& data) {
     }
 
     // Tag resources
-    sl::Resource colorIn(sl::ResourceType::eTex2d, data.colorInput, nullptr,
-                         data.colorInputView, 0);
-    sl::Resource colorOut(sl::ResourceType::eTex2d, data.colorOutput, nullptr,
-                          data.colorOutputView, 0);
-    sl::Resource depthRes(sl::ResourceType::eTex2d, data.depth, nullptr,
-                          data.depthView, 0);
-    sl::Resource mvecRes(sl::ResourceType::eTex2d, data.motionVectors, nullptr,
-                         data.motionVectorsView, 0);
+    sl::Resource colorIn = makeSlTextureResource(data.colorInput,
+                                                 data.colorInputView,
+                                                 data.colorInputInfo);
+    sl::Resource colorOut = makeSlTextureResource(data.colorOutput,
+                                                  data.colorOutputView,
+                                                  data.colorOutputInfo);
+    sl::Resource depthRes = makeSlTextureResource(data.depth,
+                                                  data.depthView,
+                                                  data.depthInfo);
+    sl::Resource mvecRes = makeSlTextureResource(data.motionVectors,
+                                                 data.motionVectorsView,
+                                                 data.motionVectorsInfo);
 
     sl::Extent renderExtent{};
     renderExtent.left = 0;
@@ -291,9 +315,15 @@ bool StreamlineContext::evaluate(const StreamlineDlssFrameData& data) {
     renderExtent.width = data.renderWidth;
     renderExtent.height = data.renderHeight;
 
+    sl::Extent displayExtent{};
+    displayExtent.left = 0;
+    displayExtent.top = 0;
+    displayExtent.width = data.displayWidth;
+    displayExtent.height = data.displayHeight;
+
     sl::ResourceTag tags[] = {
         sl::ResourceTag(&colorIn,  sl::kBufferTypeScalingInputColor,  sl::ResourceLifecycle::eValidUntilPresent, &renderExtent),
-        sl::ResourceTag(&colorOut, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilPresent),
+        sl::ResourceTag(&colorOut, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilPresent, &displayExtent),
         sl::ResourceTag(&depthRes, sl::kBufferTypeDepth,              sl::ResourceLifecycle::eValidUntilPresent, &renderExtent),
         sl::ResourceTag(&mvecRes,  sl::kBufferTypeMotionVectors,      sl::ResourceLifecycle::eValidUntilPresent, &renderExtent),
     };
@@ -306,8 +336,8 @@ bool StreamlineContext::evaluate(const StreamlineDlssFrameData& data) {
     }
 
     // Evaluate DLSS
-    const sl::BaseStructure* inputs[] = {nullptr};
-    result = slEvaluateFeature(sl::kFeatureDLSS, *frameToken, inputs, 0,
+    const sl::BaseStructure* inputs[] = {&viewport};
+    result = slEvaluateFeature(sl::kFeatureDLSS, *frameToken, inputs, 1,
                                static_cast<sl::CommandBuffer*>(data.commandBuffer));
     if (result != sl::Result::eOk) {
         spdlog::error("slEvaluateFeature(DLSS) failed (result={})", static_cast<int>(result));
@@ -325,7 +355,7 @@ void StreamlineContext::shutdown() {
     if (!m_initialized) return;
 
     if (m_dlssAvailable) {
-        sl::ViewportHandle viewport{0};
+        sl::ViewportHandle viewport{kDefaultViewportId};
         slFreeResources(sl::kFeatureDLSS, viewport);
     }
 
