@@ -37,6 +37,7 @@
 #include "slang_compiler.h"
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
+#include "streamline_context.h"
 
 #include <spdlog/spdlog.h>
 #include <tracy/Tracy.hpp>
@@ -283,6 +284,53 @@ void disableVisibilityTAA(PipelineAsset& asset) {
     for (auto& pass : asset.passes) {
         if (pass.type == "AutoExposurePass" || pass.type == "TonemapPass") {
             replacePassInput(pass, "taaOutput", "lightingOutput");
+        }
+    }
+}
+
+// Replace TAAPass with StreamlineDlssPass in the visibility pipeline.
+// Tonemap and AutoExposure read "dlssOutput" instead of "taaOutput".
+void enableVisibilityDLSS(PipelineAsset& asset) {
+    // Remove TAA pass and its output resource
+    eraseResourceByName(asset, "taaOutput");
+    erasePassByType(asset, "TAAPass");
+
+    // Add DLSS output resource
+    ResourceDecl dlssResource;
+    dlssResource.name = "dlssOutput";
+    dlssResource.type = "texture";
+    dlssResource.format = "RGBA16Float";
+    dlssResource.size = "screen"; // MVP: display size == screen; pass internally handles upscale
+    asset.resources.push_back(dlssResource);
+
+    // Insert DLSS pass (before Tonemap, after DeferredLighting)
+    PassDecl dlssPass;
+    dlssPass.name = "DLSS";
+    dlssPass.type = "StreamlineDlssPass";
+    dlssPass.inputs = {"lightingOutput", "depth", "motionVectors"};
+    dlssPass.outputs = {"dlssOutput"};
+    dlssPass.enabled = true;
+    dlssPass.sideEffect = false;
+
+    // Find insertion point: right before TonemapPass or AutoExposurePass
+    auto insertIt = asset.passes.end();
+    for (auto it = asset.passes.begin(); it != asset.passes.end(); ++it) {
+        if (it->type == "AutoExposurePass" || it->type == "TonemapPass") {
+            insertIt = it;
+            break;
+        }
+    }
+    asset.passes.insert(insertIt, dlssPass);
+
+    // Redirect downstream passes to read dlssOutput instead of taaOutput or lightingOutput
+    for (auto& pass : asset.passes) {
+        if (pass.type == "AutoExposurePass") {
+            replacePassInput(pass, "taaOutput", "dlssOutput");
+            replacePassInput(pass, "lightingOutput", "dlssOutput");
+        }
+        if (pass.type == "TonemapPass") {
+            replacePassInput(pass, "taaOutput", "dlssOutput");
+            replacePassInput(pass, "lightingOutput", "dlssOutput");
         }
     }
 }
@@ -735,6 +783,29 @@ int main() {
     createInfo.enableValidation = true;
     createInfo.requireVulkan14 = true;
 
+    // --- Streamline / DLSS initialization (before RHI so SL can intercept device creation) ---
+    StreamlineContext streamlineCtx;
+    bool dlssAvailable = false;
+    bool dlssEnabled = false;
+    DlssPreset dlssPreset = DlssPreset::Balanced;
+    uint32_t dlssRenderWidth = 0;
+    uint32_t dlssRenderHeight = 0;
+
+#ifdef METALLIC_HAS_STREAMLINE
+    if (streamlineCtx.init(PROJECT_SOURCE_DIR)) {
+        StreamlineVulkanRequirements slReqs;
+        if (streamlineCtx.queryVulkanRequirements(slReqs)) {
+            for (auto ext : slReqs.instanceExtensions) {
+                createInfo.extraInstanceExtensions.push_back(ext);
+            }
+            for (auto ext : slReqs.deviceExtensions) {
+                createInfo.extraDeviceExtensions.push_back(ext);
+            }
+            createInfo.enableTimelineSemaphore = slReqs.needsTimelineSemaphore;
+        }
+    }
+#endif
+
     std::string backendError;
     auto rhi = createRhiContext(RhiBackendType::Vulkan, createInfo, backendError);
     if (!rhi) {
@@ -963,6 +1034,18 @@ int main() {
         spdlog::info("Vulkan ray tracing not supported on this device; shadow pass stays disabled");
     }
 
+    // --- Streamline: set Vulkan device and query DLSS availability ---
+#ifdef METALLIC_HAS_STREAMLINE
+    if (streamlineCtx.isInitialized()) {
+        VkInstance vkInstance = nativeToVkHandle<VkInstance>(native.instance);
+        if (streamlineCtx.setVulkanDevice(vkInstance, vkPhysicalDevice, vkDevice,
+                                           nativeToVkHandle<VkQueue>(native.queue),
+                                           native.graphicsQueueFamily, 0)) {
+            dlssAvailable = streamlineCtx.isDlssAvailable();
+        }
+    }
+#endif
+
     const std::string visibilityPipelinePath =
         std::string(PROJECT_SOURCE_DIR) + "/Pipelines/visibility_buffer.json";
     PipelineAsset visibilityPipelineBaseAsset;
@@ -1002,6 +1085,24 @@ int main() {
             disableVisibilityTAA(visibilityPipelineAsset);
             if (validateVisibilityAsset("Invalid Vulkan visibility pipeline without TAA")) {
                 spdlog::warn("Vulkan visibility TAA unavailable; tonemap now reads lightingOutput directly");
+            }
+        }
+
+        // DLSS: when available and enabled, replace TAA with DLSS pass
+        if (visibilityPipelineAssetLoaded && dlssAvailable && dlssEnabled) {
+            enableVisibilityDLSS(visibilityPipelineAsset);
+            if (!validateVisibilityAsset("Invalid Vulkan visibility pipeline with DLSS")) {
+                // Fallback: revert to base and try without DLSS
+                spdlog::warn("DLSS pipeline validation failed; falling back to TAA/no-TAA path");
+                visibilityPipelineAsset =
+                    visibilityPipelineBaseLoaded ? visibilityPipelineBaseAsset : PipelineAsset{};
+                visibilityPipelineAssetLoaded = visibilityPipelineBaseLoaded;
+                if (visibilityPipelineAssetLoaded && !visibilityTaaAvailable) {
+                    disableVisibilityTAA(visibilityPipelineAsset);
+                    validateVisibilityAsset("Fallback pipeline without TAA");
+                }
+            } else {
+                spdlog::info("Vulkan visibility pipeline: DLSS SR enabled (replacing TAA)");
             }
         }
 
@@ -1166,6 +1267,7 @@ int main() {
 
     auto cleanupRuntimeResources = [&]() {
         rhi->waitIdle();
+        streamlineCtx.shutdown();
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
@@ -1305,6 +1407,20 @@ int main() {
             ImGui_ImplVulkan_SetMinImageCount(std::max(2u, rhi->nativeHandles().swapchainImageCount));
             postBuilderNeedsRebuild = true;
             appState.framebufferResized = false;
+            // Reset DLSS history on resize
+            if (dlssEnabled) {
+                streamlineCtx.resetHistory();
+                // Recompute optimal render resolution for new display size
+                uint32_t optW = 0, optH = 0;
+                if (streamlineCtx.getOptimalRenderSize(dlssPreset,
+                        static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                        optW, optH)) {
+                    dlssRenderWidth = optW;
+                    dlssRenderHeight = optH;
+                }
+                streamlineCtx.setDlssOptions(dlssPreset,
+                    static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            }
         }
 
         if (shaderReloadRequested) {
@@ -1343,6 +1459,7 @@ int main() {
                 logVisibilityMode();
             }
             postBuilderNeedsRebuild = true;
+            if (dlssEnabled) streamlineCtx.resetHistory();
         }
 
         if (pipelineReloadRequested) {
@@ -1372,6 +1489,7 @@ int main() {
                 spdlog::warn("Keeping previous Vulkan visibility pipeline: {}",
                              visibilityPipelineBaseAsset.name);
             }
+            if (dlssEnabled) streamlineCtx.resetHistory();
         }
 
         if (postBuilderNeedsRebuild || postBuilder.needsRebuild(width, height)) {
@@ -1425,6 +1543,55 @@ int main() {
         if (rtShadowsAvailable && useVisibilityRenderGraph) {
             ImGui::Checkbox("RT Shadows", &enableRTShadows);
         }
+
+        // DLSS UI
+        if (useVisibilityRenderGraph) {
+            ImGui::Separator();
+            if (dlssAvailable) {
+                ImGui::TextUnformatted("Streamline: Available");
+                bool dlssToggle = dlssEnabled;
+                if (ImGui::Checkbox("DLSS SR", &dlssToggle)) {
+                    if (dlssToggle != dlssEnabled) {
+                        dlssEnabled = dlssToggle;
+                        refreshVisibilityPipelineState();
+                        postBuilderNeedsRebuild = true;
+                    }
+                }
+                if (dlssEnabled) {
+                    const char* presetNames[] = {
+                        "Off", "Max Performance", "Balanced", "Max Quality",
+                        "Ultra Performance", "Ultra Quality", "DLAA"
+                    };
+                    int presetIdx = static_cast<int>(dlssPreset);
+                    if (ImGui::Combo("DLSS Preset", &presetIdx, presetNames, IM_ARRAYSIZE(presetNames))) {
+                        DlssPreset newPreset = static_cast<DlssPreset>(presetIdx);
+                        if (newPreset != dlssPreset) {
+                            dlssPreset = newPreset;
+                            // Recompute render resolution
+                            uint32_t optW = 0, optH = 0;
+                            if (streamlineCtx.getOptimalRenderSize(dlssPreset,
+                                    static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                                    optW, optH)) {
+                                dlssRenderWidth = optW;
+                                dlssRenderHeight = optH;
+                            }
+                            streamlineCtx.setDlssOptions(dlssPreset,
+                                static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+                            streamlineCtx.resetHistory();
+                            postBuilderNeedsRebuild = true;
+                        }
+                    }
+                    ImGui::Text("Render: %u x %u", dlssRenderWidth, dlssRenderHeight);
+                    ImGui::Text("Display: %d x %d", width, height);
+                    if (ImGui::Button("Reset DLSS History")) {
+                        streamlineCtx.resetHistory();
+                    }
+                }
+            } else {
+                ImGui::TextUnformatted("Streamline: Unavailable");
+            }
+            ImGui::Separator();
+        }
         if (ImGui::Button("Reload Shaders (F5)")) {
             shaderReloadRequested = true;
         }
@@ -1453,7 +1620,9 @@ int main() {
         float4x4 proj = unjitteredProj;
         float2 jitterOffset = float2(0.0f, 0.0f);
         const bool enableVisibilityTAA = useVisibilityRenderGraph && visibilityTaaAvailable;
-        if (enableVisibilityTAA) {
+        const bool enableVisibilityDlss = useVisibilityRenderGraph && dlssAvailable && dlssEnabled;
+        const bool needsJitter = enableVisibilityTAA || enableVisibilityDlss;
+        if (needsJitter) {
             jitterOffset = OrbitCamera::haltonJitter(frameIndex);
             proj = OrbitCamera::jitteredProjectionMatrix(previewCamera.fovY,
                                                          aspect,
@@ -1514,6 +1683,13 @@ int main() {
         frameContext.jitterOffset = jitterOffset;
         frameContext.frameIndex = frameIndex;
         frameContext.enableTAA = enableVisibilityTAA;
+        frameContext.displayWidth = width;
+        frameContext.displayHeight = height;
+        frameContext.renderWidth = (enableVisibilityDlss && dlssRenderWidth > 0)
+            ? static_cast<int>(dlssRenderWidth) : width;
+        frameContext.renderHeight = (enableVisibilityDlss && dlssRenderHeight > 0)
+            ? static_cast<int>(dlssRenderHeight) : height;
+        frameContext.historyReset = false;
         frameContext.worldLightDir = float4(sunDirection.x, sunDirection.y, sunDirection.z, 0.0f);
         frameContext.viewLightDir = view * frameContext.worldLightDir;
         frameContext.lightColorIntensity =

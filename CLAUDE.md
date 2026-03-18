@@ -54,6 +54,8 @@ Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
   - `output_pass.h` — Debug passthrough (saturate-clamp, no tonemapping) for bypassing tonemap
   - `blit_pass.h` — Blit compute output to drawable
   - `imgui_overlay_pass.h` — ImGui overlay rendering
+  - `streamline_dlss_pass.h/cpp` — NVIDIA DLSS Super Resolution pass (Vulkan/Windows only, replaces TAA)
+- `Source/Rendering/streamline_context.h/cpp` — Streamline SDK lifecycle, DLSS feature management, Vulkan handle passing
 - `Source/Rendering/pass_registrations.cpp` — Pass factory + metadata registration for pipeline builder
 - `Source/PipelineEditor/` — Standalone library for data-driven pipeline editing:
   - `pass_registry.h/cpp` — Factory pattern with `REGISTER_PASS_INFO` macro for pass metadata
@@ -77,6 +79,7 @@ Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
 | spdlog | `External/spdlog/` | Git submodule, header-only logging |
 | nlohmann/json | `External/nlohmann/` | Single-header JSON library |
 | imnodes | `External/imnodes/` | Node graph editor for ImGui |
+| Streamline | `External/streamline/` | Auto-downloaded binary (Windows), .gitignored |
 
 After cloning, run `git submodule update --init` to fetch GLFW, Tracy, and spdlog.
 
@@ -203,6 +206,18 @@ Categories: `Geometry`, `Lighting`, `Environment`, `Post-Process`, `Utility`, `U
 - **Reversed-Z:** Shadow shader receives a `reversedZ` uniform to correctly detect sky pixels (depth == 0.0 for reversed-Z, depth == 1.0 for normal-Z).
 - **Texture binding:** Shadow map is `R8Unorm` at texture index 99 in `deferred_lighting.slang`. Slang correctly emits `[[texture(99)]]` for scalar `Texture2D<float>` — no patching needed (unlike texture arrays).
 - **CAMetalLayer:** `setFramebufferOnly(false)` is required because the visibility buffer path blits compute output to the drawable.
+
+## Streamline / DLSS Super Resolution (Windows Vulkan only)
+
+- **Build flag:** `METALLIC_ENABLE_STREAMLINE` CMake option (ON by default on Windows). Defines `METALLIC_HAS_STREAMLINE=1` when SDK is found.
+- **SDK download:** `cmake/SetupStreamline.cmake` auto-downloads Streamline v2.10.3 to `External/streamline/` (gitignored).
+- **Integration layer:** `Source/Rendering/streamline_context.h/cpp` — manages `slInit`/`slShutdown`, `slSetVulkanInfo`, DLSS feature queries, `slEvaluateFeature`, and history reset.
+- **DLSS pass:** `Source/Rendering/Passes/streamline_dlss_pass.h/cpp` — Vulkan-only compute pass registered as `StreamlineDlssPass`. Replaces `TAAPass` in the visibility pipeline when DLSS is enabled.
+- **Pipeline manipulation:** `enableVisibilityDLSS()` in `main_vulkan.cpp` rewrites the pipeline asset at runtime: removes TAAPass, inserts StreamlineDlssPass, redirects Tonemap/AutoExposure inputs to `dlssOutput`.
+- **Fallback:** When Streamline/DLSS is unavailable (non-NVIDIA, missing DLLs), the app falls back to the existing TAA path transparently.
+- **History reset:** Triggered on resize, F5 shader reload, F6 pipeline reload, DLSS preset change, and camera cuts.
+- **Motion vectors:** Reuses existing `deferred_lighting.slang` output (UV-space, `currentUV - prevUV`). Scaled to pixel-space for Streamline via `mvecScale`.
+- **MVP limitation:** Display-size output texture is created at `screen` size by the FrameGraph. True render/display split resolution is deferred to Phase 3.
 
 ## Development
 - when I start debug, I will add the issue content(log/screenshot) in `Issue` directory.You can get bug information from it.

@@ -4,6 +4,7 @@ project(Metallic)
 set(CMAKE_CXX_STANDARD 20)
 
 include(cmake/SetupSlang.cmake)
+include(cmake/SetupStreamline.cmake)
 
 find_package(Git QUIET)
 

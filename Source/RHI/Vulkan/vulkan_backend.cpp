@@ -17,6 +17,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -256,7 +257,7 @@ public:
         createInstance(createInfo);
         createSurface(createInfo.window);
         pickPhysicalDevice(createInfo.requireVulkan14);
-        createLogicalDevice(createInfo.enableValidation);
+        createLogicalDevice(createInfo);
         createVmaAllocator();
         createCommandObjects();
         createDescriptorPool();
@@ -717,6 +718,16 @@ private:
         }
 
         std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+        for (auto ext : createInfo.extraInstanceExtensions) {
+            extensions.push_back(ext);
+        }
+        // Deduplicate instance extensions
+        std::sort(extensions.begin(), extensions.end(),
+                  [](const char* a, const char* b) { return std::string_view(a) < std::string_view(b); });
+        extensions.erase(
+            std::unique(extensions.begin(), extensions.end(),
+                [](const char* a, const char* b) { return std::string_view(a) == std::string_view(b); }),
+            extensions.end());
 
         uint32_t availableLayerCount = 0;
         vkEnumerateInstanceLayerProperties(&availableLayerCount, nullptr);
@@ -861,7 +872,8 @@ private:
         return true;
     }
 
-    void createLogicalDevice(bool enableValidation) {
+    void createLogicalDevice(const RhiCreateInfo& createInfo) {
+        const bool enableValidation = createInfo.enableValidation;
         float queuePriority = 1.0f;
         std::set<uint32_t> uniqueQueueFamilies = {m_queueFamilies.graphics.value(), m_queueFamilies.present.value()};
 
@@ -889,6 +901,33 @@ private:
             if (m_physicalDeviceProperties.apiVersion < VK_API_VERSION_1_2) {
                 deviceExtensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
             }
+        }
+        for (auto ext : createInfo.extraDeviceExtensions) {
+            deviceExtensions.push_back(ext);
+        }
+
+        // Deduplicate and resolve conflicts:
+        // VK_KHR_buffer_device_address supersedes VK_EXT_buffer_device_address (can't enable both).
+        // On Vulkan 1.2+ bufferDeviceAddress is core, so both extension variants are unnecessary.
+        {
+            const bool bdaIsCore = m_physicalDeviceProperties.apiVersion >= VK_API_VERSION_1_2;
+            bool hasKhr = false;
+            for (auto ext : deviceExtensions) {
+                if (std::string_view(ext) == VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) hasKhr = true;
+            }
+            if (hasKhr || bdaIsCore) {
+                deviceExtensions.erase(
+                    std::remove_if(deviceExtensions.begin(), deviceExtensions.end(),
+                        [](const char* e) { return std::string_view(e) == "VK_EXT_buffer_device_address"; }),
+                    deviceExtensions.end());
+            }
+            // Also remove plain duplicates
+            std::sort(deviceExtensions.begin(), deviceExtensions.end(),
+                      [](const char* a, const char* b) { return std::string_view(a) < std::string_view(b); });
+            deviceExtensions.erase(
+                std::unique(deviceExtensions.begin(), deviceExtensions.end(),
+                    [](const char* a, const char* b) { return std::string_view(a) == std::string_view(b); }),
+                deviceExtensions.end());
         }
 
         VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
@@ -931,24 +970,35 @@ private:
         vulkan11Features.shaderDrawParameters = VK_TRUE;
         vulkan11Features.pNext = &dynamicRenderingFeatures;
 
+        // Timeline semaphore (Vulkan 1.2 core) — needed by Streamline/DLSS
+        VkPhysicalDeviceTimelineSemaphoreFeatures timelineSemaphoreFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+        timelineSemaphoreFeatures.timelineSemaphore = VK_TRUE;
+
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-        features2.pNext = &vulkan11Features;
+        if (createInfo.enableTimelineSemaphore) {
+            vulkan11Features.pNext = &timelineSemaphoreFeatures;
+            timelineSemaphoreFeatures.pNext = &dynamicRenderingFeatures;
+            features2.pNext = &vulkan11Features;
+        } else {
+            features2.pNext = &vulkan11Features;
+        }
 
         std::vector<const char*> layers;
         if (enableValidation && m_features.validation) {
             layers.push_back(kValidationLayerName);
         }
 
-        VkDeviceCreateInfo createInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-        createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
-        createInfo.pQueueCreateInfos = queueCreateInfos.data();
-        createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-        createInfo.ppEnabledExtensionNames = deviceExtensions.data();
-        createInfo.enabledLayerCount = static_cast<uint32_t>(layers.size());
-        createInfo.ppEnabledLayerNames = layers.empty() ? nullptr : layers.data();
-        createInfo.pNext = &features2;
+        VkDeviceCreateInfo deviceCreateInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+        deviceCreateInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
+        deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
+        deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
+        deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.data();
+        deviceCreateInfo.enabledLayerCount = static_cast<uint32_t>(layers.size());
+        deviceCreateInfo.ppEnabledLayerNames = layers.empty() ? nullptr : layers.data();
+        deviceCreateInfo.pNext = &features2;
 
-        checkVk(vkCreateDevice(m_physicalDevice, &createInfo, nullptr, &m_device),
+        checkVk(vkCreateDevice(m_physicalDevice, &deviceCreateInfo, nullptr, &m_device),
                 "Failed to create Vulkan logical device");
 
         vkGetDeviceQueue(m_device, m_queueFamilies.graphics.value(), 0, &m_graphicsQueue);
