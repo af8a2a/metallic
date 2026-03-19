@@ -6,6 +6,7 @@
 #include "vulkan_image_tracker.h"
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
 
 namespace {
 
@@ -149,21 +150,46 @@ void StreamlineDlssPass::executeDlss(RhiComputeCommandEncoder& encoder) {
     data.mvecScaleX = static_cast<float>(currentRenderWidth());
     data.mvecScaleY = static_cast<float>(currentRenderHeight());
     data.motionVectorsJittered = false;
+    data.motionVectors3D = false;
     data.depthInverted = (m_frameContext->depthClearValue == 0.0);
     data.reset = m_frameContext->historyReset;
+    data.cameraPos[0] = m_frameContext->cameraWorldPos.x;
+    data.cameraPos[1] = m_frameContext->cameraWorldPos.y;
+    data.cameraPos[2] = m_frameContext->cameraWorldPos.z;
+    data.cameraUp[0] = m_frameContext->cameraUp.x;
+    data.cameraUp[1] = m_frameContext->cameraUp.y;
+    data.cameraUp[2] = m_frameContext->cameraUp.z;
+    data.cameraRight[0] = m_frameContext->cameraRight.x;
+    data.cameraRight[1] = m_frameContext->cameraRight.y;
+    data.cameraRight[2] = m_frameContext->cameraRight.z;
+    data.cameraForward[0] = m_frameContext->cameraForward.x;
+    data.cameraForward[1] = m_frameContext->cameraForward.y;
+    data.cameraForward[2] = m_frameContext->cameraForward.z;
+    data.cameraNear = m_frameContext->cameraNearZ;
+    data.cameraFar = m_frameContext->cameraFarZ;
+    data.cameraFov = m_frameContext->cameraFovY;
+    data.cameraAspectRatio =
+        static_cast<float>(currentDisplayWidth()) / static_cast<float>(std::max(currentDisplayHeight(), 1));
 
     data.frameIndex = m_frameContext->frameIndex;
     data.commandBuffer = encoder.nativeHandle(); // VkCommandBuffer
 
-    // Build clipToPrevClip = prevViewProj * inv(currentViewProj)
-    // FrameContext provides view/proj as column-major float4x4.
+    memcpy(data.cameraViewToClip, &m_frameContext->unjitteredProj, sizeof(float) * 16);
     {
-        float4x4 currentVP = m_frameContext->proj * m_frameContext->view;
+        float4x4 clipToCameraView = m_frameContext->unjitteredProj;
+        clipToCameraView.Invert();
+        memcpy(data.clipToCameraView, &clipToCameraView, sizeof(float) * 16);
+
+        float4x4 currentVP = m_frameContext->unjitteredProj * m_frameContext->view;
         float4x4 invCurrentVP = currentVP;
         invCurrentVP.Invert();
         float4x4 prevVP = m_frameContext->prevProj * m_frameContext->prevView;
         float4x4 clipToPrevClip = prevVP * invCurrentVP;
         memcpy(data.clipToPrevClip, &clipToPrevClip, sizeof(float) * 16);
+
+        float4x4 prevClipToClip = clipToPrevClip;
+        prevClipToClip.Invert();
+        memcpy(data.prevClipToClip, &prevClipToClip, sizeof(float) * 16);
     }
 
     if (!streamlineCtx->evaluate(data)) {

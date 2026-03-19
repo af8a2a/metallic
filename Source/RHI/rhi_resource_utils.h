@@ -94,6 +94,10 @@ struct VulkanResourceContextInfo {
     uint32_t graphicsQueueFamily = 0;
     bool rayTracingEnabled = false;
     bool initialized = false;
+    bool streamlineHooksEnabled = false;
+    PFN_vkBeginCommandBuffer vkBeginCommandBufferProxy = nullptr;
+    PFN_vkCmdBindPipeline vkCmdBindPipelineProxy = nullptr;
+    PFN_vkCmdBindDescriptorSets vkCmdBindDescriptorSetsProxy = nullptr;
 };
 
 void vulkanSetResourceContext(VkDevice device,
@@ -101,7 +105,22 @@ void vulkanSetResourceContext(VkDevice device,
                               VmaAllocator allocator,
                               VkQueue queue,
                               uint32_t queueFamily,
-                              bool rayTracingEnabled);
+                              bool rayTracingEnabled,
+                              void* vkGetDeviceProcAddrProxy = nullptr);
 const VulkanResourceContextInfo& vulkanGetResourceContext();
 void vulkanClearResourceContext();
+void vulkanSetStreamlineHookedCommandsEnabled(bool enabled);
+VkResult vulkanBeginCommandBufferHooked(VkCommandBuffer commandBuffer,
+                                        const VkCommandBufferBeginInfo* beginInfo);
+void vulkanCmdBindPipelineHooked(VkCommandBuffer commandBuffer,
+                                 VkPipelineBindPoint pipelineBindPoint,
+                                 VkPipeline pipeline);
+void vulkanCmdBindDescriptorSetsHooked(VkCommandBuffer commandBuffer,
+                                       VkPipelineBindPoint pipelineBindPoint,
+                                       VkPipelineLayout layout,
+                                       uint32_t firstSet,
+                                       uint32_t descriptorSetCount,
+                                       const VkDescriptorSet* descriptorSets,
+                                       uint32_t dynamicOffsetCount,
+                                       const uint32_t* dynamicOffsets);
 #endif

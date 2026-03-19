@@ -25,7 +25,13 @@ struct FrameContext {
     // Camera matrices
     float4x4 view;
     float4x4 proj;
+    float4x4 unjitteredProj;
     float4 cameraWorldPos;
+    float4 cameraRight;
+    float4 cameraUp;
+    float4 cameraForward;
+    float cameraNearZ = 0.001f;
+    float cameraFovY = 45.0f * (3.14159265358979323846f / 180.0f);
 
     // Previous frame camera matrices (for TAA motion vectors)
     float4x4 prevView;

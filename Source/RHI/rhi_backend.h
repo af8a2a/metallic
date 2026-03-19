@@ -496,6 +496,9 @@ struct RhiCreateInfo {
     std::vector<const char*> extraInstanceExtensions;
     std::vector<const char*> extraDeviceExtensions;
     bool enableTimelineSemaphore = false;
+
+    // Optional Vulkan proxy lookup used by integrations such as Streamline manual hooking.
+    void* vkGetDeviceProcAddrProxy = nullptr;
 };
 
 struct RhiBufferDesc {

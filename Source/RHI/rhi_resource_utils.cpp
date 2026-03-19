@@ -169,6 +169,16 @@ namespace {
 // Stored Vulkan context handles for resource creation (set during first call)
 VulkanResourceContextInfo g_vkResCtx;
 
+template <typename Fn>
+Fn loadHookedDeviceProc(PFN_vkGetDeviceProcAddr deviceProcAddrProxy,
+                        VkDevice device,
+                        const char* name) {
+    if (!deviceProcAddrProxy || device == VK_NULL_HANDLE || !name) {
+        return nullptr;
+    }
+    return reinterpret_cast<Fn>(deviceProcAddrProxy(device, name));
+}
+
 void ensureResourceContext(const RhiDevice& device) {
     if (g_vkResCtx.initialized) return;
     // The device handle stores VkDevice on Vulkan
@@ -177,13 +187,30 @@ void ensureResourceContext(const RhiDevice& device) {
 }
 
 void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
-                        VkQueue queue, uint32_t queueFamily, bool rayTracingEnabled) {
+                        VkQueue queue, uint32_t queueFamily, bool rayTracingEnabled,
+                        void* vkGetDeviceProcAddrProxy) {
+    PFN_vkGetDeviceProcAddr deviceProcAddrProxy =
+        reinterpret_cast<PFN_vkGetDeviceProcAddr>(vkGetDeviceProcAddrProxy);
+
     g_vkResCtx.device = device;
     g_vkResCtx.physicalDevice = physicalDevice;
     g_vkResCtx.allocator = allocator;
     g_vkResCtx.graphicsQueue = queue;
     g_vkResCtx.graphicsQueueFamily = queueFamily;
     g_vkResCtx.rayTracingEnabled = rayTracingEnabled;
+    g_vkResCtx.streamlineHooksEnabled = false;
+    g_vkResCtx.vkBeginCommandBufferProxy =
+        loadHookedDeviceProc<PFN_vkBeginCommandBuffer>(deviceProcAddrProxy,
+                                                       device,
+                                                       "vkBeginCommandBuffer");
+    g_vkResCtx.vkCmdBindPipelineProxy =
+        loadHookedDeviceProc<PFN_vkCmdBindPipeline>(deviceProcAddrProxy,
+                                                    device,
+                                                    "vkCmdBindPipeline");
+    g_vkResCtx.vkCmdBindDescriptorSetsProxy =
+        loadHookedDeviceProc<PFN_vkCmdBindDescriptorSets>(deviceProcAddrProxy,
+                                                          device,
+                                                          "vkCmdBindDescriptorSets");
     g_vkResCtx.initialized = true;
 }
 
@@ -264,7 +291,7 @@ VkCommandBuffer beginOneTimeCommands(VkDevice device, VkCommandPool pool) {
 
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &beginInfo);
+    vulkanBeginCommandBufferHooked(cmd, &beginInfo);
     return cmd;
 }
 
@@ -298,12 +325,70 @@ void vulkanSetResourceContext(VkDevice device,
                               VmaAllocator allocator,
                               VkQueue queue,
                               uint32_t queueFamily,
-                              bool rayTracingEnabled) {
-    setResourceContext(device, physicalDevice, allocator, queue, queueFamily, rayTracingEnabled);
+                              bool rayTracingEnabled,
+                              void* vkGetDeviceProcAddrProxy) {
+    setResourceContext(device,
+                       physicalDevice,
+                       allocator,
+                       queue,
+                       queueFamily,
+                       rayTracingEnabled,
+                       vkGetDeviceProcAddrProxy);
 }
 
 const VulkanResourceContextInfo& vulkanGetResourceContext() {
     return g_vkResCtx;
+}
+
+void vulkanSetStreamlineHookedCommandsEnabled(bool enabled) {
+    g_vkResCtx.streamlineHooksEnabled = enabled;
+}
+
+VkResult vulkanBeginCommandBufferHooked(VkCommandBuffer commandBuffer,
+                                        const VkCommandBufferBeginInfo* beginInfo) {
+    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.vkBeginCommandBufferProxy) {
+        return g_vkResCtx.vkBeginCommandBufferProxy(commandBuffer, beginInfo);
+    }
+    return vkBeginCommandBuffer(commandBuffer, beginInfo);
+}
+
+void vulkanCmdBindPipelineHooked(VkCommandBuffer commandBuffer,
+                                 VkPipelineBindPoint pipelineBindPoint,
+                                 VkPipeline pipeline) {
+    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.vkCmdBindPipelineProxy) {
+        g_vkResCtx.vkCmdBindPipelineProxy(commandBuffer, pipelineBindPoint, pipeline);
+        return;
+    }
+    vkCmdBindPipeline(commandBuffer, pipelineBindPoint, pipeline);
+}
+
+void vulkanCmdBindDescriptorSetsHooked(VkCommandBuffer commandBuffer,
+                                       VkPipelineBindPoint pipelineBindPoint,
+                                       VkPipelineLayout layout,
+                                       uint32_t firstSet,
+                                       uint32_t descriptorSetCount,
+                                       const VkDescriptorSet* descriptorSets,
+                                       uint32_t dynamicOffsetCount,
+                                       const uint32_t* dynamicOffsets) {
+    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.vkCmdBindDescriptorSetsProxy) {
+        g_vkResCtx.vkCmdBindDescriptorSetsProxy(commandBuffer,
+                                                pipelineBindPoint,
+                                                layout,
+                                                firstSet,
+                                                descriptorSetCount,
+                                                descriptorSets,
+                                                dynamicOffsetCount,
+                                                dynamicOffsets);
+        return;
+    }
+    vkCmdBindDescriptorSets(commandBuffer,
+                            pipelineBindPoint,
+                            layout,
+                            firstSet,
+                            descriptorSetCount,
+                            descriptorSets,
+                            dynamicOffsetCount,
+                            dynamicOffsets);
 }
 
 void vulkanClearResourceContext() {

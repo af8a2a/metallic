@@ -89,9 +89,22 @@ struct StreamlineDlssFrameData {
     bool motionVectorsJittered = false;
     bool depthInverted = false;
     bool reset = false;
+    bool motionVectors3D = false;
 
     // Matrices (column-major, unjittered)
+    float cameraViewToClip[16] = {};
+    float clipToCameraView[16] = {};
     float clipToPrevClip[16] = {};
+    float prevClipToClip[16] = {};
+
+    float cameraPos[3] = {};
+    float cameraUp[3] = {};
+    float cameraRight[3] = {};
+    float cameraForward[3] = {};
+    float cameraNear = 0.0f;
+    float cameraFar = 0.0f;
+    float cameraFov = 0.0f;
+    float cameraAspectRatio = 1.0f;
 
     uint32_t frameIndex = 0;
     void* commandBuffer = nullptr; // VkCommandBuffer
@@ -126,6 +139,7 @@ public:
     // Query DLSS availability on current adapter
     bool isDlssAvailable() const { return m_dlssAvailable; }
     bool isInitialized() const { return m_initialized; }
+    void* vulkanDeviceProcAddrProxy() const { return m_vkGetDeviceProcAddrProxy; }
 
     // Get optimal render resolution for a given display size and preset
     bool getOptimalRenderSize(DlssPreset preset,
@@ -155,6 +169,7 @@ private:
     uint32_t m_currentOutputWidth = 0;
     uint32_t m_currentOutputHeight = 0;
     bool m_needsReset = false;
+    void* m_vkGetDeviceProcAddrProxy = nullptr;
 };
 
 #endif // _WIN32

@@ -407,7 +407,7 @@ bool submitImmediateBuild(const VulkanResourceContextInfo& context,
 
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    result = vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    result = vulkanBeginCommandBufferHooked(commandBuffer, &beginInfo);
     if (result != VK_SUCCESS) {
         errorMessage = "Failed to begin Vulkan ray tracing command buffer (VkResult: " +
             std::to_string(result) + ")";

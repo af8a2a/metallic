@@ -35,6 +35,7 @@
 #include "rhi_shader_utils.h"
 #include "shader_manager.h"
 #include "slang_compiler.h"
+#include "visibility_constants.h"
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
 #include "streamline_context.h"
@@ -908,6 +909,7 @@ int main() {
 
 #ifdef METALLIC_HAS_STREAMLINE
     if (streamlineCtx.init(PROJECT_SOURCE_DIR)) {
+        createInfo.vkGetDeviceProcAddrProxy = streamlineCtx.vulkanDeviceProcAddrProxy();
         StreamlineVulkanRequirements slReqs;
         if (streamlineCtx.queryVulkanRequirements(slReqs)) {
             for (auto ext : slReqs.instanceExtensions) {
@@ -998,7 +1000,8 @@ int main() {
                              vmaAllocator,
                              nativeToVkHandle<VkQueue>(native.queue),
                              native.graphicsQueueFamily,
-                             rhi->features().rayTracing);
+                             rhi->features().rayTracing,
+                             createInfo.vkGetDeviceProcAddrProxy);
     vulkanSetShaderContext(vkDevice);
     vulkanLoadMeshShaderFunctions(vkDevice);
 
@@ -1155,7 +1158,8 @@ int main() {
         VkInstance vkInstance = nativeToVkHandle<VkInstance>(native.instance);
         if (streamlineCtx.setVulkanDevice(vkInstance, vkPhysicalDevice, vkDevice,
                                            nativeToVkHandle<VkQueue>(native.queue),
-                                           native.graphicsQueueFamily, 0)) {
+                                            native.graphicsQueueFamily, 0)) {
+            vulkanSetStreamlineHookedCommandsEnabled(true);
             dlssAvailable = streamlineCtx.isDlssAvailable();
         }
     }
@@ -1793,6 +1797,12 @@ int main() {
         const float3 sunDirection = normalize(sunLight.direction);
         const float4x4 view = previewCamera.viewMatrix();
         const float4x4 unjitteredProj = previewCamera.projectionMatrix(aspect);
+        const float4 cameraWorldPos = orbitCameraWorldPosition(previewCamera);
+        const float3 cameraWorldPos3(cameraWorldPos.x, cameraWorldPos.y, cameraWorldPos.z);
+        const float3 cameraForward = normalize(previewCamera.target - cameraWorldPos3);
+        const float3 worldUp(0.0f, 1.0f, 0.0f);
+        const float3 cameraRight = normalize(cross(cameraForward, worldUp));
+        const float3 cameraUp = cross(cameraRight, cameraForward);
         float4x4 proj = unjitteredProj;
         float2 jitterOffset = float2(0.0f, 0.0f);
         const bool enableVisibilityTAA =
@@ -1819,7 +1829,9 @@ int main() {
         std::unique_ptr<RhiBuffer> instanceTransformBuffer;
         uint32_t visibilityInstanceCount = 0;
         if (useVisibilityRenderGraph && !previewVisibleMeshletNodes.empty()) {
-            visibilityInstanceCount = static_cast<uint32_t>(previewVisibleMeshletNodes.size());
+            visibilityInstanceCount = static_cast<uint32_t>(
+                std::min<size_t>(previewVisibleMeshletNodes.size(),
+                                 static_cast<size_t>(kVisibilityInstanceMask + 1u)));
             std::vector<SceneInstanceTransform> instanceTransforms;
             instanceTransforms.reserve(visibilityInstanceCount);
             const float4x4 prevViewForMotion = hasPrevMatrices ? prevView : view;
@@ -1855,7 +1867,13 @@ int main() {
         frameContext.height = renderHeight;
         frameContext.view = view;
         frameContext.proj = proj;
-        frameContext.cameraWorldPos = orbitCameraWorldPosition(previewCamera);
+        frameContext.unjitteredProj = unjitteredProj;
+        frameContext.cameraWorldPos = cameraWorldPos;
+        frameContext.cameraRight = float4(cameraRight.x, cameraRight.y, cameraRight.z, 0.0f);
+        frameContext.cameraUp = float4(cameraUp.x, cameraUp.y, cameraUp.z, 0.0f);
+        frameContext.cameraForward = float4(cameraForward.x, cameraForward.y, cameraForward.z, 0.0f);
+        frameContext.cameraNearZ = previewCamera.nearZ;
+        frameContext.cameraFovY = previewCamera.fovY;
         frameContext.prevView = hasPrevMatrices ? prevView : view;
         frameContext.prevProj = hasPrevMatrices ? prevProj : unjitteredProj;
         frameContext.prevCullView = hasPrevMatrices ? prevCullView : view;
@@ -1878,6 +1896,10 @@ int main() {
         frameContext.materialCount = previewMaterials.materialCount;
         frameContext.textureCount = static_cast<uint32_t>(previewMaterials.textures.size());
         frameContext.visibleMeshletNodes = previewVisibleMeshletNodes;
+        if (useVisibilityRenderGraph &&
+            frameContext.visibleMeshletNodes.size() > static_cast<size_t>(visibilityInstanceCount)) {
+            frameContext.visibleMeshletNodes.resize(visibilityInstanceCount);
+        }
         frameContext.visibleIndexNodes = previewVisibleIndexNodes;
         frameContext.visibilityInstanceCount = visibilityInstanceCount;
         frameContext.instanceTransformBufferRhi = instanceTransformBuffer.get();

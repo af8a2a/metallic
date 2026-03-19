@@ -166,8 +166,9 @@ public:
 
     void setRenderPipeline(const RhiGraphicsPipeline& pipeline) override {
         m_boundPipeline = getVulkanPipelineResource(pipeline);
-        vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          getVulkanPipelineHandle(pipeline));
+        vulkanCmdBindPipelineHooked(m_commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    getVulkanPipelineHandle(pipeline));
     }
 
     void setVertexBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override {
@@ -361,8 +362,9 @@ public:
 
     void setComputePipeline(const RhiComputePipeline& pipeline) override {
         m_boundPipeline = getVulkanPipelineResource(pipeline);
-        vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          getVulkanPipelineHandle(pipeline));
+        vulkanCmdBindPipelineHooked(m_commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    getVulkanPipelineHandle(pipeline));
     }
 
     void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override {

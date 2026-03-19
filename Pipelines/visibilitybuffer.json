@@ -10,31 +10,31 @@
     ],
     "HZBBuildPass_7": [
       800.0,
-      470.0
+      330.0
     ],
-    "ImGuiOverlayPass_4": [
-      800.0,
-      190.0
+    "ImGuiOverlayPass_9": [
+      0.0,
+      0.0
     ],
     "MeshletCullPass_0": [
       300.0,
       50.0
     ],
     "ShadowRayPass_6": [
-      800.0,
-      330.0
+      1050.0,
+      50.0
     ],
     "SkyPass_8": [
+      800.0,
+      470.0
+    ],
+    "StreamlineDlssPass_10": [
       300.0,
       190.0
     ],
-    "StreamlineDlssPass_10": [
+    "TonemapPass_11": [
       1300.0,
       190.0
-    ],
-    "TonemapPass_11": [
-      1518.0,
-      274.0
     ],
     "VisibilityPass_1": [
       550.0,
@@ -78,19 +78,6 @@
       "outputs": [],
       "sideEffect": false,
       "type": "HZBBuildPass"
-    },
-    {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "depth"
-      ],
-      "name": "ImGuiOverlayPass_4",
-      "outputs": [
-        "$backbuffer"
-      ],
-      "sideEffect": false,
-      "type": "ImGuiOverlayPass"
     },
     {
       "config": null,
@@ -171,6 +158,19 @@
       ],
       "sideEffect": false,
       "type": "TonemapPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "depth"
+      ],
+      "name": "ImGuiOverlayPass_9",
+      "outputs": [
+        "$backbuffer"
+      ],
+      "sideEffect": false,
+      "type": "ImGuiOverlayPass"
     }
   ],
   "resources": []

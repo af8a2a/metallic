@@ -252,12 +252,15 @@ public:
             throw std::runtime_error("Vulkan RHI requires a valid GLFW window.");
         }
 
+        m_vkGetDeviceProcAddrProxy =
+            reinterpret_cast<PFN_vkGetDeviceProcAddr>(createInfo.vkGetDeviceProcAddrProxy);
         m_requestedWidth = createInfo.width;
         m_requestedHeight = createInfo.height;
         createInstance(createInfo);
         createSurface(createInfo.window);
         pickPhysicalDevice(createInfo.requireVulkan14);
         createLogicalDevice(createInfo);
+        resolveStreamlinePresentHooks();
         createVmaAllocator();
         createCommandObjects();
         createDescriptorPool();
@@ -316,7 +319,7 @@ public:
         checkVk(vkWaitForFences(m_device, 1, &frame.inFlight, VK_TRUE, UINT64_MAX),
                 "Failed to wait for in-flight frame fence");
 
-        VkResult acquireResult = vkAcquireNextImageKHR(
+        VkResult acquireResult = acquireNextImageKHR(
             m_device,
             m_swapchain,
             UINT64_MAX,
@@ -343,7 +346,8 @@ public:
 
         VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        checkVk(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo), "Failed to begin command buffer");
+        checkVk(vulkanBeginCommandBufferHooked(frame.commandBuffer, &beginInfo),
+                "Failed to begin command buffer");
 
         m_insideRendering = false;
         return true;
@@ -379,7 +383,7 @@ public:
         presentInfo.pSwapchains = &m_swapchain;
         presentInfo.pImageIndices = &m_imageIndex;
 
-        const VkResult presentResult = vkQueuePresentKHR(m_presentQueue, &presentInfo);
+        const VkResult presentResult = queuePresentKHR(m_presentQueue, &presentInfo);
         if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || m_pendingResize) {
             recreateSwapchain();
             m_pendingResize = false;
@@ -600,7 +604,37 @@ public:
         return std::make_unique<VulkanGraphicsPipeline>(m_device, layout, pipeline);
     }
 
-private:
+ private:
+    void resolveStreamlinePresentHooks() {
+        if (!m_vkGetDeviceProcAddrProxy || m_device == VK_NULL_HANDLE) {
+            return;
+        }
+
+        m_vkAcquireNextImageKHRProxy =
+            reinterpret_cast<PFN_vkAcquireNextImageKHR>(m_vkGetDeviceProcAddrProxy(m_device, "vkAcquireNextImageKHR"));
+        m_vkQueuePresentKHRProxy =
+            reinterpret_cast<PFN_vkQueuePresentKHR>(m_vkGetDeviceProcAddrProxy(m_device, "vkQueuePresentKHR"));
+    }
+
+    VkResult acquireNextImageKHR(VkDevice device,
+                                 VkSwapchainKHR swapchain,
+                                 uint64_t timeout,
+                                 VkSemaphore semaphore,
+                                 VkFence fence,
+                                 uint32_t* imageIndex) const {
+        if (m_vkAcquireNextImageKHRProxy) {
+            return m_vkAcquireNextImageKHRProxy(device, swapchain, timeout, semaphore, fence, imageIndex);
+        }
+        return vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, imageIndex);
+    }
+
+    VkResult queuePresentKHR(VkQueue queue, const VkPresentInfoKHR* presentInfo) const {
+        if (m_vkQueuePresentKHRProxy) {
+            return m_vkQueuePresentKHRProxy(queue, presentInfo);
+        }
+        return vkQueuePresentKHR(queue, presentInfo);
+    }
+
     struct FrameResources {
         VkCommandPool commandPool = VK_NULL_HANDLE;
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
@@ -681,9 +715,9 @@ private:
 
         void bindGraphicsPipeline(const RhiGraphicsPipeline& pipeline) override {
             const auto& vkPipeline = dynamic_cast<const VulkanGraphicsPipeline&>(pipeline);
-            vkCmdBindPipeline(m_parent.m_frames[m_parent.m_frameIndex].commandBuffer,
-                              VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              vkPipeline.pipeline());
+            vulkanCmdBindPipelineHooked(m_parent.m_frames[m_parent.m_frameIndex].commandBuffer,
+                                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        vkPipeline.pipeline());
         }
 
         void bindVertexBuffer(const RhiBuffer& buffer, uint64_t offset) override {
@@ -1237,6 +1271,9 @@ private:
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties m_physicalDeviceProperties{};
     VkDevice m_device = VK_NULL_HANDLE;
+    PFN_vkGetDeviceProcAddr m_vkGetDeviceProcAddrProxy = nullptr;
+    PFN_vkAcquireNextImageKHR m_vkAcquireNextImageKHRProxy = nullptr;
+    PFN_vkQueuePresentKHR m_vkQueuePresentKHRProxy = nullptr;
     VmaAllocator m_allocator = nullptr;
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue = VK_NULL_HANDLE;

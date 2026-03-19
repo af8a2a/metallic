@@ -8,6 +8,7 @@
 #endif
 
 #include "imgui.h"
+#include <spdlog/spdlog.h>
 
 namespace {
 
@@ -157,7 +158,15 @@ FGResource FGBuilder::writeHistory(const char* name, const FGTextureDesc& desc) 
 
     if (slot.writeResource != UINT32_MAX) {
         const auto& existingNode = m_fg.m_resources[slot.writeResource];
-        assert(existingNode.producer == m_passIndex && "History resources currently support a single writer pass");
+        if (existingNode.producer != m_passIndex) {
+            const auto& existingPass = m_fg.m_passes[existingNode.producer];
+            const auto& currentPass = m_fg.m_passes[m_passIndex];
+            spdlog::warn(
+                "FrameGraph: history slot '{}' already uses writer '{}'; pass '{}' will alias the existing history output",
+                name,
+                existingPass.name,
+                currentPass.name);
+        }
         FGResource resource;
         resource.id = slot.writeResource;
         appendUniqueResource(m_fg.m_passes[m_passIndex].writes, resource);

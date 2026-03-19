@@ -6,6 +6,8 @@
 #include "gpu_cull_resources.h"
 #include "pass_registry.h"
 #include "imgui.h"
+#include <spdlog/spdlog.h>
+#include <algorithm>
 #include <vector>
 
 class VisibilityPass : public RenderPass {
@@ -81,6 +83,23 @@ public:
                 useGPUPath = false;
             else
                 encoder.setRenderPipeline(pipeIt->second);
+        }
+
+        static bool sLoggedPath = false;
+        if (!sLoggedPath) {
+            auto visIt = m_runtimeContext->renderPipelinesRhi.find("VisibilityPass");
+            auto visIndirectIt = m_runtimeContext->renderPipelinesRhi.find("VisibilityIndirectPass");
+            spdlog::info(
+                "VisibilityPass path probe: ctx={} useGPUPath={} gpuDriven={} visibleBuf={} counterBuf={} instanceBuf={} visPipe={} visIndirectPipe={}",
+                fmt::ptr(m_frameContext),
+                useGPUPath,
+                m_frameContext->gpuDrivenCulling,
+                fmt::ptr(m_frameContext->gpuVisibleMeshletBufferRhi),
+                fmt::ptr(m_frameContext->gpuCounterBufferRhi),
+                fmt::ptr(m_frameContext->gpuInstanceDataBufferRhi),
+                visIt != m_runtimeContext->renderPipelinesRhi.end() ? fmt::ptr(visIt->second.nativeHandle()) : fmt::ptr(static_cast<void*>(nullptr)),
+                visIndirectIt != m_runtimeContext->renderPipelinesRhi.end() ? fmt::ptr(visIndirectIt->second.nativeHandle()) : fmt::ptr(static_cast<void*>(nullptr)));
+            sLoggedPath = true;
         }
 
         std::vector<const RhiTexture*> materialTextures;
@@ -176,7 +195,10 @@ public:
 
         // Per-node dispatch (CPU fallback)
         const auto& visibleNodes = m_frameContext->visibleMeshletNodes;
-        uint32_t instanceCount = m_frameContext->visibilityInstanceCount;
+        uint32_t instanceCount = std::min<uint32_t>(
+            m_frameContext->visibilityInstanceCount,
+            static_cast<uint32_t>(visibleNodes.size()));
+        if (instanceCount == 0) return;
 
         Uniforms baseUni{};
         baseUni.lightDir = m_frameContext->viewLightDir;
@@ -185,7 +207,11 @@ public:
         baseUni.enableConeCull = m_frameContext->enableConeCull ? 1 : 0;
 
         for (uint32_t instanceID = 0; instanceID < instanceCount; instanceID++) {
-            const auto& node = m_ctx.sceneGraph.nodes[visibleNodes[instanceID]];
+            const uint32_t nodeID = visibleNodes[instanceID];
+            if (nodeID >= m_ctx.sceneGraph.nodes.size()) {
+                continue;
+            }
+            const auto& node = m_ctx.sceneGraph.nodes[nodeID];
             float4x4 nodeModelView = m_frameContext->view * node.transform.worldMatrix;
             float4x4 nodeMVP = m_frameContext->proj * nodeModelView;
             Uniforms nodeUniforms = baseUni;

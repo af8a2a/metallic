@@ -2,6 +2,7 @@
 
 #ifdef _WIN32
 
+#include "../rhi_resource_utils.h"
 #include "vulkan_resource_handles.h"
 
 #include <vk_mem_alloc.h>
@@ -291,14 +292,14 @@ void VulkanDescriptorManager::flushAndBind(
         vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
 
-    vkCmdBindDescriptorSets(cmd,
-                            bindPoint,
-                            pipeline.layout,
-                            0,
-                            static_cast<uint32_t>(sets.size()),
-                            sets.data(),
-                            0,
-                            nullptr);
+    vulkanCmdBindDescriptorSetsHooked(cmd,
+                                      bindPoint,
+                                      pipeline.layout,
+                                      0,
+                                      static_cast<uint32_t>(sets.size()),
+                                      sets.data(),
+                                      0,
+                                      nullptr);
 }
 
 void VulkanDescriptorManager::createPools() {

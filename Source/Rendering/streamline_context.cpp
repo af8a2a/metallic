@@ -2,6 +2,7 @@
 
 #include "streamline_context.h"
 #include <spdlog/spdlog.h>
+#include <windows.h>
 
 #ifdef METALLIC_HAS_STREAMLINE
 
@@ -76,6 +77,14 @@ static sl::Resource makeSlTextureResource(void* image,
     return resource;
 }
 
+static HMODULE findStreamlineInterposerModule() {
+    HMODULE module = GetModuleHandleW(L"sl.interposer.dll");
+    if (!module) {
+        module = LoadLibraryW(L"sl.interposer.dll");
+    }
+    return module;
+}
+
 #endif // METALLIC_HAS_STREAMLINE
 
 const char* dlssPresetName(DlssPreset preset) {
@@ -128,6 +137,13 @@ bool StreamlineContext::init(const char* projectRoot, uint32_t applicationId) {
     }
 
     m_initialized = true;
+    if (HMODULE interposerModule = findStreamlineInterposerModule()) {
+        m_vkGetDeviceProcAddrProxy =
+            reinterpret_cast<void*>(GetProcAddress(interposerModule, "vkGetDeviceProcAddr"));
+    }
+    if (!m_vkGetDeviceProcAddrProxy) {
+        spdlog::warn("Streamline Vulkan proxy lookup is unavailable; manual present hooks will fall back to native Vulkan");
+    }
     spdlog::info("Streamline SDK initialized");
     return true;
 }
@@ -277,15 +293,27 @@ bool StreamlineContext::evaluate(const StreamlineDlssFrameData& data) {
 
     // Set per-frame constants
     sl::Constants constants{};
+    constants.cameraViewToClip = toSlMatrix(data.cameraViewToClip);
+    constants.clipToCameraView = toSlMatrix(data.clipToCameraView);
     constants.mvecScale = {data.mvecScaleX, data.mvecScaleY};
     constants.jitterOffset = {data.jitterOffsetX, data.jitterOffsetY};
+    constants.cameraPos = {data.cameraPos[0], data.cameraPos[1], data.cameraPos[2]};
+    constants.cameraUp = {data.cameraUp[0], data.cameraUp[1], data.cameraUp[2]};
+    constants.cameraRight = {data.cameraRight[0], data.cameraRight[1], data.cameraRight[2]};
+    constants.cameraFwd = {data.cameraForward[0], data.cameraForward[1], data.cameraForward[2]};
+    constants.cameraNear = data.cameraNear;
+    constants.cameraFar = data.cameraFar;
+    constants.cameraFOV = data.cameraFov;
+    constants.cameraAspectRatio = data.cameraAspectRatio;
     constants.depthInverted = data.depthInverted ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     constants.cameraMotionIncluded = sl::Boolean::eTrue;
+    constants.motionVectors3D = data.motionVectors3D ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     constants.motionVectorsDilated = sl::Boolean::eFalse;
     constants.motionVectorsJittered = data.motionVectorsJittered ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     constants.reset = (data.reset || m_needsReset) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     constants.cameraPinholeOffset = {0.0f, 0.0f};
     constants.clipToPrevClip = toSlMatrix(data.clipToPrevClip);
+    constants.prevClipToClip = toSlMatrix(data.prevClipToClip);
 
     m_needsReset = false;
 
@@ -363,6 +391,7 @@ void StreamlineContext::shutdown() {
     m_initialized = false;
     m_vulkanSet = false;
     m_dlssAvailable = false;
+    m_vkGetDeviceProcAddrProxy = nullptr;
     spdlog::info("Streamline shutdown");
 }
 

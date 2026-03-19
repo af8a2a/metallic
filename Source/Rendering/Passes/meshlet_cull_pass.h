@@ -7,6 +7,7 @@
 #include "hzb_constants.h"
 #include "pass_registry.h"
 #include "imgui.h"
+#include <spdlog/spdlog.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -67,13 +68,26 @@ public:
         if (buildIt == m_runtimeContext->computePipelinesRhi.end() || !buildIt->second.nativeHandle()) return;
 
         const auto& visibleNodes = m_frameContext->visibleMeshletNodes;
-        uint32_t instanceCount = m_frameContext->visibilityInstanceCount;
+        uint32_t instanceCount = std::min<uint32_t>(
+            m_frameContext->visibilityInstanceCount,
+            static_cast<uint32_t>(visibleNodes.size()));
         if (instanceCount == 0) return;
+
+        std::vector<uint32_t> validVisibleNodes;
+        validVisibleNodes.reserve(instanceCount);
+        for (uint32_t i = 0; i < instanceCount; ++i) {
+            const uint32_t nodeID = visibleNodes[i];
+            if (nodeID < m_ctx.sceneGraph.nodes.size()) {
+                validVisibleNodes.push_back(nodeID);
+            }
+        }
+        if (validVisibleNodes.empty()) return;
+        instanceCount = static_cast<uint32_t>(validVisibleNodes.size());
 
         // Compute total meshlet count across all visible instances
         uint32_t totalMeshlets = 0;
         for (uint32_t i = 0; i < instanceCount; i++) {
-            const auto& node = m_ctx.sceneGraph.nodes[visibleNodes[i]];
+            const auto& node = m_ctx.sceneGraph.nodes[validVisibleNodes[i]];
             totalMeshlets += node.meshletCount;
         }
         if (totalMeshlets == 0) return;
@@ -92,7 +106,7 @@ public:
         // Upload instance data (CPU PU, StorageModeShared)
         auto* instPtr = static_cast<GPUInstanceData*>(m_instanceDataBuffer->mappedData());
         for (uint32_t i = 0; i < instanceCount; i++) {
-            const auto& node = m_ctx.sceneGraph.nodes[visibleNodes[i]];
+            const auto& node = m_ctx.sceneGraph.nodes[validVisibleNodes[i]];
             float4x4 nodeModelView = m_frameContext->view * node.transform.worldMatrix;
             float4x4 nodeMVP = m_frameContext->proj * nodeModelView;
 
@@ -179,6 +193,18 @@ public:
         mutableCtx->gpuVisibleMeshletBufferRhi = m_visibleMeshletBuffer.get();
         mutableCtx->gpuCounterBufferRhi = m_counterBuffer.get();
         mutableCtx->gpuInstanceDataBufferRhi = m_instanceDataBuffer.get();
+
+        static bool sLoggedGpuPublish = false;
+        if (!sLoggedGpuPublish) {
+            spdlog::info(
+                "MeshletCullPass published GPU cull buffers: instances={} meshlets={} visibleBuf={} counterBuf={} instanceBuf={}",
+                instanceCount,
+                totalMeshlets,
+                fmt::ptr(mutableCtx->gpuVisibleMeshletBufferRhi),
+                fmt::ptr(mutableCtx->gpuCounterBufferRhi),
+                fmt::ptr(mutableCtx->gpuInstanceDataBufferRhi));
+            sLoggedGpuPublish = true;
+        }
 
         // m_lastVisibleCount is set at the top of this function via 1-frame-delayed readback
     }
