@@ -29,6 +29,7 @@ MTL::PixelFormat metalPixelFormat(RhiFormat format) {
     switch (format) {
     case RhiFormat::R8Unorm: return MTL::PixelFormatR8Unorm;
     case RhiFormat::RGBA8Unorm: return MTL::PixelFormatRGBA8Unorm;
+    case RhiFormat::RGBA8Srgb: return MTL::PixelFormatRGBA8Unorm_sRGB;
     case RhiFormat::BGRA8Unorm: return MTL::PixelFormatBGRA8Unorm;
     case RhiFormat::RGBA16Float: return MTL::PixelFormatRGBA16Float;
     case RhiFormat::RGBA32Float: return MTL::PixelFormatRGBA32Float;

@@ -64,7 +64,7 @@ REGISTER_COMPUTE_PASS(TAAPass, "TAA", "Post-Process",
 
 REGISTER_RENDER_PASS(TonemapPass, "Tonemap", "Post-Process",
     (std::vector<std::string>{"lightingOutput"}),
-    (std::vector<std::string>{"$backbuffer"}));
+    (std::vector<std::string>{"tonemapOutput"}));
 
 // UI passes
 REGISTER_RENDER_PASS(ImGuiOverlayPass, "ImGui Overlay", "UI",

@@ -609,6 +609,7 @@ const char* pixelFormatName(RhiFormat fmt) {
         case RhiFormat::RG16Float:          return "RG16Float";
         case RhiFormat::RG32Float:          return "RG32Float";
         case RhiFormat::RGBA8Unorm:         return "RGBA8";
+        case RhiFormat::RGBA8Srgb:          return "RGBA8Srgb";
         case RhiFormat::BGRA8Unorm:         return "BGRA8";
         case RhiFormat::RGBA16Float:        return "RGBA16Float";
         case RhiFormat::RGBA32Float:        return "RGBA32Float";

@@ -46,7 +46,7 @@ public:
     }
 
     FGResource getOutput(const std::string& name) const override {
-        if (name == "$backbuffer") return m_dest;
+        if (name == "tonemapOutput") return m_dest;
         return FGResource{};
     }
 
@@ -67,14 +67,15 @@ public:
             }
         }
 
-        m_dest = getInput("$backbuffer");
-        if (m_dest.isValid()) {
-            m_dest = builder.setColorAttachment(0,
-                                                m_dest,
-                                                RhiLoadAction::DontCare,
-                                                RhiStoreAction::Store,
-                                                RhiClearColor(0.0, 0.0, 0.0, 1.0));
-        }
+        m_dest = builder.create("tonemapOutput",
+            FGTextureDesc::renderTarget(currentOutputWidth(),
+                                        currentOutputHeight(),
+                                        RhiFormat::RGBA8Srgb));
+        m_dest = builder.setColorAttachment(0,
+                                            m_dest,
+                                            RhiLoadAction::DontCare,
+                                            RhiStoreAction::Store,
+                                            RhiClearColor(0.0, 0.0, 0.0, 1.0));
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
@@ -181,6 +182,54 @@ private:
     bool m_autoExposure = false;
     bool m_hasExposureLutInput = false;
     std::string m_sourceInputName;
+
+    int currentRenderWidth() const {
+        if (m_frameContext && m_frameContext->renderWidth > 0) {
+            return m_frameContext->renderWidth;
+        }
+        if (m_runtimeContext && m_runtimeContext->renderWidth > 0) {
+            return m_runtimeContext->renderWidth;
+        }
+        return m_width;
+    }
+
+    int currentRenderHeight() const {
+        if (m_frameContext && m_frameContext->renderHeight > 0) {
+            return m_frameContext->renderHeight;
+        }
+        if (m_runtimeContext && m_runtimeContext->renderHeight > 0) {
+            return m_runtimeContext->renderHeight;
+        }
+        return m_height;
+    }
+
+    int currentDisplayWidth() const {
+        if (m_frameContext && m_frameContext->displayWidth > 0) {
+            return m_frameContext->displayWidth;
+        }
+        if (m_runtimeContext && m_runtimeContext->displayWidth > 0) {
+            return m_runtimeContext->displayWidth;
+        }
+        return m_width;
+    }
+
+    int currentDisplayHeight() const {
+        if (m_frameContext && m_frameContext->displayHeight > 0) {
+            return m_frameContext->displayHeight;
+        }
+        if (m_runtimeContext && m_runtimeContext->displayHeight > 0) {
+            return m_runtimeContext->displayHeight;
+        }
+        return m_height;
+    }
+
+    int currentOutputWidth() const {
+        return m_sourceInputName == "dlssOutput" ? currentDisplayWidth() : currentRenderWidth();
+    }
+
+    int currentOutputHeight() const {
+        return m_sourceInputName == "dlssOutput" ? currentDisplayHeight() : currentRenderHeight();
+    }
 };
 
 

@@ -609,6 +609,7 @@ VkFormat toVkFormat(RhiFormat format) {
     case RhiFormat::RG16Float:   return VK_FORMAT_R16G16_SFLOAT;
     case RhiFormat::RG32Float:   return VK_FORMAT_R32G32_SFLOAT;
     case RhiFormat::RGBA8Unorm:  return VK_FORMAT_R8G8B8A8_UNORM;
+    case RhiFormat::RGBA8Srgb:   return VK_FORMAT_R8G8B8A8_SRGB;
     case RhiFormat::BGRA8Unorm:  return VK_FORMAT_B8G8R8A8_UNORM;
     case RhiFormat::RGBA16Float: return VK_FORMAT_R16G16B16A16_SFLOAT;
     case RhiFormat::RGBA32Float: return VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -628,8 +629,8 @@ RhiFormat fromVkFormat(VkFormat format) {
     case VK_FORMAT_R8G8_UNORM:            return RhiFormat::RG8Unorm;
     case VK_FORMAT_R16G16_SFLOAT:         return RhiFormat::RG16Float;
     case VK_FORMAT_R32G32_SFLOAT:         return RhiFormat::RG32Float;
-    case VK_FORMAT_R8G8B8A8_UNORM:
-    case VK_FORMAT_R8G8B8A8_SRGB:         return RhiFormat::RGBA8Unorm;
+    case VK_FORMAT_R8G8B8A8_UNORM:        return RhiFormat::RGBA8Unorm;
+    case VK_FORMAT_R8G8B8A8_SRGB:         return RhiFormat::RGBA8Srgb;
     case VK_FORMAT_B8G8R8A8_UNORM:
     case VK_FORMAT_B8G8R8A8_SRGB:         return RhiFormat::BGRA8Unorm;
     case VK_FORMAT_R16G16B16A16_SFLOAT:   return RhiFormat::RGBA16Float;

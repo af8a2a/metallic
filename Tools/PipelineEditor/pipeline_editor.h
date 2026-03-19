@@ -2,7 +2,10 @@
 
 #include "pipeline_asset.h"
 #include <string>
+#include <vector>
 #include <unordered_map>
+
+#include "imgui.h"
 
 // Node graph pipeline editor using imnodes
 // Note: imnodes context must be created before using this class
@@ -32,6 +35,12 @@ public:
     // Auto-reorder nodes by topological depth
     void autoReorderNodes(PipelineAsset& asset);
 
+    // Undo/redo
+    void undo(PipelineAsset& asset);
+    void redo(PipelineAsset& asset);
+    bool canUndo() const { return !m_undoStack.empty(); }
+    bool canRedo() const { return !m_redoStack.empty(); }
+
     // Public for main menu access
     bool m_visible = false;
 
@@ -41,6 +50,9 @@ private:
     void renderCompilationPreview(const PipelineAsset& asset);
     void handleNewLinks(PipelineAsset& asset);
     void handleDeletedLinks(PipelineAsset& asset);
+
+    // Undo internals
+    void pushUndo(const PipelineAsset& asset);
 
     // Node/pin ID encoding
     int getPassNodeId(int passIndex) const { return 1000 + passIndex; }
@@ -63,4 +75,15 @@ private:
 
     // Track node positions for auto-layout
     std::unordered_map<int, bool> m_nodePositioned;
+
+    // Undo/redo stacks
+    std::vector<PipelineAsset> m_undoStack;
+    std::vector<PipelineAsset> m_redoStack;
+    static constexpr int kMaxUndoLevels = 50;
+
+    // For text input: snapshot on activation, not per-keystroke
+    bool m_hasTextEditSnapshot = false;
+
+    // Right-click context menu spawn position
+    ImVec2 m_contextMenuSpawnPos = {0, 0};
 };

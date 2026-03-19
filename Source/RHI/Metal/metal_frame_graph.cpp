@@ -483,6 +483,7 @@ MTL::PixelFormat metalPixelFormat(RhiFormat format) {
     case RhiFormat::RG16Float: return MTL::PixelFormatRG16Float;
     case RhiFormat::RG32Float: return MTL::PixelFormatRG32Float;
     case RhiFormat::RGBA8Unorm: return MTL::PixelFormatRGBA8Unorm;
+    case RhiFormat::RGBA8Srgb: return MTL::PixelFormatRGBA8Unorm_sRGB;
     case RhiFormat::BGRA8Unorm: return MTL::PixelFormatBGRA8Unorm;
     case RhiFormat::RGBA16Float: return MTL::PixelFormatRGBA16Float;
     case RhiFormat::RGBA32Float: return MTL::PixelFormatRGBA32Float;
@@ -503,6 +504,7 @@ RhiFormat metalToRhiFormat(MTL::PixelFormat format) {
     case MTL::PixelFormatRG16Float: return RhiFormat::RG16Float;
     case MTL::PixelFormatRG32Float: return RhiFormat::RG32Float;
     case MTL::PixelFormatRGBA8Unorm: return RhiFormat::RGBA8Unorm;
+    case MTL::PixelFormatRGBA8Unorm_sRGB: return RhiFormat::RGBA8Srgb;
     case MTL::PixelFormatBGRA8Unorm: return RhiFormat::BGRA8Unorm;
     case MTL::PixelFormatRGBA16Float: return RhiFormat::RGBA16Float;
     case MTL::PixelFormatRGBA32Float: return RhiFormat::RGBA32Float;

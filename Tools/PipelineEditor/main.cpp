@@ -103,6 +103,28 @@ int main(int argc, char* argv[]) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        // Undo/Redo keyboard shortcuts
+        {
+            ImGuiIO& kbIo = ImGui::GetIO();
+            if (kbIo.KeyCtrl && !kbIo.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z)) {
+                editor.undo(currentPipeline);
+                unsavedChanges = true;
+            }
+            if (kbIo.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_Y) ||
+                (kbIo.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z)))) {
+                editor.redo(currentPipeline);
+                unsavedChanges = true;
+            }
+            if (kbIo.KeyCtrl && !kbIo.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S)) {
+                if (!currentFilePath.empty()) {
+                    editor.collectNodePositions(currentPipeline);
+                    currentPipeline.save(currentFilePath);
+                    unsavedChanges = false;
+                    spdlog::info("Saved: {}", currentFilePath);
+                }
+            }
+        }
+
         // Main menu bar
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
@@ -136,6 +158,17 @@ int main(int argc, char* argv[]) {
                 ImGui::Separator();
                 if (ImGui::MenuItem("Exit")) {
                     glfwSetWindowShouldClose(window, GLFW_TRUE);
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Edit")) {
+                if (ImGui::MenuItem("Undo", "Ctrl+Z", false, editor.canUndo())) {
+                    editor.undo(currentPipeline);
+                    unsavedChanges = true;
+                }
+                if (ImGui::MenuItem("Redo", "Ctrl+Y", false, editor.canRedo())) {
+                    editor.redo(currentPipeline);
+                    unsavedChanges = true;
                 }
                 ImGui::EndMenu();
             }

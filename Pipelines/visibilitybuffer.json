@@ -13,28 +13,32 @@
       330.0
     ],
     "ImGuiOverlayPass_9": [
-      0.0,
-      0.0
+      1430.0,
+      244.0
     ],
     "MeshletCullPass_0": [
       300.0,
       50.0
     ],
+    "OutputPass_10": [
+      1593.0,
+      372.0
+    ],
     "ShadowRayPass_6": [
-      1050.0,
-      50.0
+      800.0,
+      190.0
     ],
     "SkyPass_8": [
-      800.0,
-      470.0
-    ],
-    "StreamlineDlssPass_10": [
       300.0,
       190.0
     ],
-    "TonemapPass_11": [
-      1300.0,
-      190.0
+    "StreamlineDlssPass_10": [
+      1062.0,
+      386.0
+    ],
+    "TonemapPass_10": [
+      1302.0,
+      374.0
     ],
     "VisibilityPass_1": [
       550.0,
@@ -135,26 +139,11 @@
       "config": null,
       "enabled": true,
       "inputs": [
-        "lightingOutput",
-        "depth",
-        "motionVectors"
-      ],
-      "name": "StreamlineDlssPass_10",
-      "outputs": [
         "dlssOutput"
       ],
-      "sideEffect": false,
-      "type": "StreamlineDlssPass"
-    },
-    {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "dlssOutput"
-      ],
-      "name": "TonemapPass_11",
+      "name": "TonemapPass_10",
       "outputs": [
-        "$backbuffer"
+        "tonemapOutput"
       ],
       "sideEffect": false,
       "type": "TonemapPass"
@@ -171,6 +160,34 @@
       ],
       "sideEffect": false,
       "type": "ImGuiOverlayPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "tonemapOutput"
+      ],
+      "name": "OutputPass_10",
+      "outputs": [
+        "$backbuffer"
+      ],
+      "sideEffect": false,
+      "type": "OutputPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "lightingOutput",
+        "depth",
+        "motionVectors"
+      ],
+      "name": "StreamlineDlssPass_10",
+      "outputs": [
+        "dlssOutput"
+      ],
+      "sideEffect": false,
+      "type": "StreamlineDlssPass"
     }
   ],
   "resources": []

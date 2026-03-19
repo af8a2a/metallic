@@ -339,7 +339,7 @@ bool ShaderManager::buildAll() {
     errorMessage.clear();
     if (m_profile.tonemap) {
         m_tonemapPipeline = reloadFullscreenShader("Shaders/Post/tonemap",
-                                                   RhiFormat::BGRA8Unorm,
+                                                   RhiFormat::RGBA8Srgb,
                                                    &errorMessage);
         if (!m_tonemapPipeline.nativeHandle()) {
             spdlog::error("Failed to create tonemap pipeline: {}",
@@ -688,7 +688,7 @@ std::pair<int, int> ShaderManager::reloadAll() {
                    "tonemap PSO",
                    [&](std::string& localError) {
                        return reloadFullscreenShader("Shaders/Post/tonemap",
-                                                     RhiFormat::BGRA8Unorm,
+                                                     RhiFormat::RGBA8Srgb,
                                                      &localError);
                    });
 

@@ -23,6 +23,9 @@ public:
     }
 
     void setup(FGBuilder& builder) override {
+        m_sourceRead = FGResource{};
+        m_dest = FGResource{};
+
         // Read the first non-special input as source texture
         for (const auto& [inputName, resource] : m_inputResources) {
             if (!inputName.empty() && inputName[0] != '$' && resource.isValid()) {
@@ -44,7 +47,7 @@ public:
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("OutputPass");
         MICROPROFILE_SCOPEI("RenderPass", "OutputPass", 0xffff8800);
-        if (!m_runtimeContext) return;
+        if (!m_runtimeContext || !m_sourceRead.isValid()) return;
 
         auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("OutputPass");
         if (pipeIt == m_runtimeContext->renderPipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
@@ -65,7 +68,9 @@ public:
         encoder.setRenderPipeline(pipeIt->second);
         encoder.setViewport(static_cast<float>(outputWidth), static_cast<float>(outputHeight), false);
         encoder.setCullMode(RhiCullMode::None);
-        encoder.setFragmentTexture(m_frameGraph->getTexture(m_sourceRead), 0);
+        RhiTexture* sourceTex = m_frameGraph->getTexture(m_sourceRead);
+        if (!sourceTex) return;
+        encoder.setFragmentTexture(sourceTex, 0);
         encoder.setFragmentSampler(&samplerIt->second, 0);
         encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
     }

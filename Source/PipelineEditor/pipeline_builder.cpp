@@ -192,6 +192,8 @@ RhiFormat PipelineBuilder::parsePixelFormat(const std::string& format) const {
         {"RG16Float", RhiFormat::RG16Float},
         {"RG32Float", RhiFormat::RG32Float},
         {"RGBA8Unorm", RhiFormat::RGBA8Unorm},
+        {"RGBA8Srgb", RhiFormat::RGBA8Srgb},
+        {"RGBA8_SRGB", RhiFormat::RGBA8Srgb},
         {"BGRA8Unorm", RhiFormat::BGRA8Unorm},
         {"RGBA16Float", RhiFormat::RGBA16Float},
         {"RGBA32Float", RhiFormat::RGBA32Float},

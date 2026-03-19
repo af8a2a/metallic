@@ -28,20 +28,21 @@ enum class RhiBackendType {
 };
 
 enum class RhiFormat {
-    Undefined,
-    R8Unorm,
-    R16Float,
-    R32Float,
-    R32Uint,
-    RG8Unorm,
-    RG16Float,
-    RG32Float,
-    RGBA8Unorm,
-    BGRA8Unorm,
-    RGBA16Float,
-    RGBA32Float,
-    D32Float,
-    D16Unorm,
+    Undefined = 0,
+    R8Unorm = 1,
+    R16Float = 2,
+    R32Float = 3,
+    R32Uint = 4,
+    RG8Unorm = 5,
+    RG16Float = 6,
+    RG32Float = 7,
+    RGBA8Unorm = 8,
+    BGRA8Unorm = 9,
+    RGBA16Float = 10,
+    RGBA32Float = 11,
+    D32Float = 12,
+    D16Unorm = 13,
+    RGBA8Srgb = 14,
 };
 
 enum class RhiVertexFormat {

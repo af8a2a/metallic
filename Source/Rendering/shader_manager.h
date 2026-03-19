@@ -54,7 +54,7 @@ struct ShaderManagerProfile {
         profile.meshletVisualize = false;
         profile.sky = true;
         profile.tonemap = true;
-        profile.output = false;
+        profile.output = true;
         profile.autoExposure = true;
         profile.taa = true;
         return profile;

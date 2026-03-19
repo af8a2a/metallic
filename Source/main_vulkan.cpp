@@ -58,6 +58,11 @@ struct AppState {
 static_assert(std::is_standard_layout_v<AppState>);
 static_assert(offsetof(AppState, input) == 0);
 
+static constexpr int kRenderResolutionBaseWidth = 1920;
+static constexpr int kRenderResolutionBaseHeight = 1080;
+static constexpr float kMinRenderScale = 0.25f;
+static constexpr float kMaxRenderScale = 2.0f;
+
 void checkImGuiVkResult(VkResult result) {
     if (result == VK_SUCCESS) {
         return;
@@ -244,6 +249,84 @@ void replacePassInput(PassDecl& pass, const char* oldName, const char* newName) 
         if (input == oldName) {
             input = newName;
         }
+    }
+}
+
+bool passProducesResource(const PassDecl& pass, const char* resourceName) {
+    return std::find(pass.outputs.begin(), pass.outputs.end(), resourceName) != pass.outputs.end();
+}
+
+PassDecl* findFirstEnabledPassByType(PipelineAsset& asset, const char* passType) {
+    for (auto& pass : asset.passes) {
+        if (pass.enabled && pass.type == passType) {
+            return &pass;
+        }
+    }
+    return nullptr;
+}
+
+void normalizePipelineFinalDisplayOutput(PipelineAsset& asset) {
+    PassDecl* tonemapPass = findFirstEnabledPassByType(asset, "TonemapPass");
+    if (!tonemapPass) {
+        return;
+    }
+    const std::string tonemapPassName = tonemapPass->name;
+
+    bool tonemapHasOutput = false;
+    for (auto& output : tonemapPass->outputs) {
+        if (output == "$backbuffer") {
+            output = "tonemapOutput";
+        }
+        tonemapHasOutput = tonemapHasOutput || output == "tonemapOutput";
+    }
+    if (!tonemapHasOutput) {
+        tonemapPass->outputs.push_back("tonemapOutput");
+    }
+
+    PassDecl finalOutputPass;
+    bool hasExistingOutputPass = false;
+    size_t existingOutputPassIndex = 0;
+    for (size_t i = 0; i < asset.passes.size(); ++i) {
+        if (asset.passes[i].enabled && asset.passes[i].type == "OutputPass") {
+            finalOutputPass = asset.passes[i];
+            existingOutputPassIndex = i;
+            hasExistingOutputPass = true;
+            break;
+        }
+    }
+
+    if (hasExistingOutputPass) {
+        asset.passes.erase(asset.passes.begin() + static_cast<std::ptrdiff_t>(existingOutputPassIndex));
+    } else {
+        finalOutputPass.name = "OutputPass_Final";
+        finalOutputPass.type = "OutputPass";
+        finalOutputPass.enabled = true;
+        finalOutputPass.sideEffect = false;
+        finalOutputPass.config = nlohmann::json::object();
+    }
+
+    finalOutputPass.inputs = {"tonemapOutput"};
+    finalOutputPass.outputs = {"$backbuffer"};
+
+    size_t insertIndex = asset.passes.size();
+    for (size_t i = 0; i < asset.passes.size(); ++i) {
+        if (!asset.passes[i].enabled) {
+            continue;
+        }
+        if (passProducesResource(asset.passes[i], "$backbuffer")) {
+            insertIndex = i;
+            break;
+        }
+    }
+    asset.passes.insert(asset.passes.begin() + static_cast<std::ptrdiff_t>(insertIndex), finalOutputPass);
+
+    const auto tonemapPosIt = asset.editorPositions.find(tonemapPassName);
+    if (tonemapPosIt != asset.editorPositions.end() &&
+        asset.editorPositions.find(finalOutputPass.name) == asset.editorPositions.end()) {
+        asset.editorPositions[finalOutputPass.name] = {
+            tonemapPosIt->second[0] + 240.0f,
+            tonemapPosIt->second[1]
+        };
     }
 }
 
@@ -599,7 +682,7 @@ PipelineAsset makeSceneColorPostPipelineAsset() {
         "Tonemap",
         "TonemapPass",
         {"sceneColor"},
-        {"$backbuffer"},
+        {"tonemapOutput"},
         true,
         false,
         {
@@ -612,6 +695,15 @@ PipelineAsset makeSceneColorPostPipelineAsset() {
             {"dither", false},
             {"autoExposure", false},
         },
+    });
+    asset.passes.push_back({
+        "Output",
+        "OutputPass",
+        {"tonemapOutput"},
+        {"$backbuffer"},
+        true,
+        false,
+        {},
     });
     asset.passes.push_back({
         "ImGui Overlay",
@@ -906,6 +998,7 @@ int main() {
     DlssPreset dlssPreset = DlssPreset::Balanced;
     uint32_t dlssRenderWidth = 0;
     uint32_t dlssRenderHeight = 0;
+    float visibilityRenderScale = 1.0f;
 
 #ifdef METALLIC_HAS_STREAMLINE
     if (streamlineCtx.init(PROJECT_SOURCE_DIR)) {
@@ -1203,6 +1296,10 @@ int main() {
             return true;
         };
 
+        if (visibilityPipelineAssetLoaded) {
+            normalizePipelineFinalDisplayOutput(visibilityPipelineAsset);
+        }
+
         if (visibilityPipelineAssetLoaded && !validateVisibilityAsset("Invalid Vulkan visibility pipeline")) {
             visibilityUpscalerMode = VisibilityUpscalerMode::None;
             dlssStateDirty = true;
@@ -1232,7 +1329,7 @@ int main() {
             previewSceneReady &&
             hasRenderPipeline("VisibilityPass") &&
             hasComputePipeline("DeferredLightingPass") &&
-            hasRenderPipeline("TonemapPass") &&
+            (hasRenderPipeline("TonemapPass") || hasRenderPipeline("OutputPass")) &&
             previewMesh.positionBuffer.nativeHandle() &&
             previewMesh.normalBuffer.nativeHandle() &&
             previewMesh.uvBuffer.nativeHandle() &&
@@ -1262,7 +1359,8 @@ int main() {
             }
             if (findFirstEnabledPassByType(visibilityPipelineAsset, "TonemapPass")) {
                 mode += " -> TonemapPass";
-            } else if (findFirstEnabledPassByType(visibilityPipelineAsset, "OutputPass")) {
+            }
+            if (findFirstEnabledPassByType(visibilityPipelineAsset, "OutputPass")) {
                 mode += " -> OutputPass";
             }
             spdlog::info("{}", mode);
@@ -1271,14 +1369,34 @@ int main() {
             } else {
                 spdlog::info("Vulkan visibility dispatch: CPU meshlet path");
             }
+            if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS && runtimeContext.dlssEnabled) {
+                spdlog::info("Vulkan render resolution: {} x {} -> {} x {} (DLSS)",
+                             runtimeContext.renderWidth,
+                             runtimeContext.renderHeight,
+                             runtimeContext.displayWidth,
+                             runtimeContext.displayHeight);
+            } else {
+                spdlog::info("Vulkan render resolution: {} x {} (base {} x {}, scale {:.2f}) -> {} x {}",
+                             runtimeContext.renderWidth,
+                             runtimeContext.renderHeight,
+                             kRenderResolutionBaseWidth,
+                             kRenderResolutionBaseHeight,
+                             visibilityRenderScale,
+                             runtimeContext.displayWidth,
+                             runtimeContext.displayHeight);
+            }
         } else {
-            spdlog::info("Vulkan RenderGraph mode: Triangle -> TonemapPass fallback");
+            spdlog::info("Vulkan RenderGraph mode: Triangle -> TonemapPass -> OutputPass fallback");
         }
     };
 
     auto syncVisibilityUpscalerState = [&](int displayWidth, int displayHeight) {
-        int renderWidth = displayWidth;
-        int renderHeight = displayHeight;
+        visibilityRenderScale = std::clamp(visibilityRenderScale, kMinRenderScale, kMaxRenderScale);
+
+        int renderWidth = std::max(1, static_cast<int>(std::lround(
+            static_cast<float>(kRenderResolutionBaseWidth) * visibilityRenderScale)));
+        int renderHeight = std::max(1, static_cast<int>(std::lround(
+            static_cast<float>(kRenderResolutionBaseHeight) * visibilityRenderScale)));
         bool enableDlssEvaluation = false;
 
 #ifdef METALLIC_HAS_STREAMLINE
@@ -1521,6 +1639,7 @@ int main() {
     bool shaderReloadRequested = false;
     bool pipelineReloadRequested = false;
     bool postBuilderNeedsRebuild = false;
+    bool visibilityHistoryResetRequested = false;
     double lastFrameTime = glfwGetTime();
     float4x4 prevView = float4x4::Identity();
     float4x4 prevProj = float4x4::Identity();
@@ -1585,6 +1704,7 @@ int main() {
             postBuilderNeedsRebuild = true;
             appState.framebufferResized = false;
             dlssStateDirty = true;
+            visibilityHistoryResetRequested = true;
             if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) {
                 streamlineCtx.resetHistory();
             }
@@ -1629,6 +1749,7 @@ int main() {
             }
             postBuilderNeedsRebuild = true;
             dlssStateDirty = true;
+            visibilityHistoryResetRequested = true;
             if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) streamlineCtx.resetHistory();
         }
 
@@ -1662,6 +1783,7 @@ int main() {
                              visibilityPipelineBaseAsset.name);
             }
             dlssStateDirty = true;
+            visibilityHistoryResetRequested = true;
             if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) streamlineCtx.resetHistory();
         }
 
@@ -1719,6 +1841,34 @@ int main() {
         ImGui::Text("Upscaler: %s", visibilityUpscalerModeName(visibilityUpscalerMode));
         ImGui::TextUnformatted(autoExposureEnabled ? "Exposure: Auto" : "Exposure: Manual");
         ImGui::TextUnformatted(visibilityGpuCullingAvailable ? "Visibility Dispatch: GPU" : "Visibility Dispatch: CPU");
+        if (useVisibilityRenderGraph) {
+            ImGui::Text("Render Base: %d x %d", kRenderResolutionBaseWidth, kRenderResolutionBaseHeight);
+            const bool allowManualRenderScale = visibilityUpscalerMode != VisibilityUpscalerMode::DLSS;
+            if (!allowManualRenderScale) {
+                ImGui::BeginDisabled();
+            }
+            float requestedRenderScale = visibilityRenderScale;
+            if (ImGui::SliderFloat("Render Scale",
+                                   &requestedRenderScale,
+                                   kMinRenderScale,
+                                   kMaxRenderScale,
+                                   "%.2f")) {
+                requestedRenderScale = std::clamp(requestedRenderScale, kMinRenderScale, kMaxRenderScale);
+                if (std::abs(requestedRenderScale - visibilityRenderScale) > 0.0001f) {
+                    visibilityRenderScale = requestedRenderScale;
+                    postBuilderNeedsRebuild = true;
+                    visibilityHistoryResetRequested = true;
+                    hasPrevMatrices = false;
+                }
+            }
+            if (!allowManualRenderScale) {
+                ImGui::EndDisabled();
+                ImGui::TextUnformatted("Render Scale is disabled while DLSS is the active upscaler.");
+            }
+            ImGui::Text("Render Resolution: %d x %d",
+                        runtimeContext.renderWidth,
+                        runtimeContext.renderHeight);
+        }
         if (rtShadowsAvailable && useVisibilityRenderGraph) {
             ImGui::Checkbox("RT Shadows", &enableRTShadows);
         }
@@ -1740,6 +1890,8 @@ int main() {
                     if (newPreset != dlssPreset) {
                         dlssPreset = newPreset;
                         dlssStateDirty = true;
+                        visibilityHistoryResetRequested = true;
+                        hasPrevMatrices = false;
                         streamlineCtx.resetHistory();
                         postBuilderNeedsRebuild = true;
                     }
@@ -1887,7 +2039,7 @@ int main() {
         frameContext.displayHeight = height;
         frameContext.renderWidth = renderWidth;
         frameContext.renderHeight = renderHeight;
-        frameContext.historyReset = false;
+        frameContext.historyReset = visibilityHistoryResetRequested;
         frameContext.worldLightDir = float4(sunDirection.x, sunDirection.y, sunDirection.z, 0.0f);
         frameContext.viewLightDir = view * frameContext.worldLightDir;
         frameContext.lightColorIntensity =
@@ -1944,6 +2096,7 @@ int main() {
         }
 
         postBuilder.execute(commandBuffer, frameGraphBackend);
+        visibilityHistoryResetRequested = false;
 
         if (!useVisibilityRenderGraph) {
             sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

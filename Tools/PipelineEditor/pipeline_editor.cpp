@@ -71,6 +71,32 @@ void assignLinkedInput(PassDecl& pass, int inputIndex, const std::string& resour
 
 } // namespace
 
+void PipelineEditor::pushUndo(const PipelineAsset& asset) {
+    m_undoStack.push_back(asset);
+    if (static_cast<int>(m_undoStack.size()) > kMaxUndoLevels) {
+        m_undoStack.erase(m_undoStack.begin());
+    }
+    m_redoStack.clear();
+}
+
+void PipelineEditor::undo(PipelineAsset& asset) {
+    if (m_undoStack.empty()) return;
+    m_redoStack.push_back(asset);
+    asset = m_undoStack.back();
+    m_undoStack.pop_back();
+    resetLayout();
+    m_dirty = true;
+}
+
+void PipelineEditor::redo(PipelineAsset& asset) {
+    if (m_redoStack.empty()) return;
+    m_undoStack.push_back(asset);
+    asset = m_redoStack.back();
+    m_redoStack.pop_back();
+    resetLayout();
+    m_dirty = true;
+}
+
 int PipelineEditor::getPassIndexFromNodeId(int id) const {
     if (id >= 1000 && id < 2000) return id - 1000;
     return -1;
@@ -130,6 +156,7 @@ void PipelineEditor::render(PipelineAsset& asset) {
                         if (ImGui::BeginMenu(category.c_str())) {
                             for (const auto* info : infos) {
                                 if (ImGui::MenuItem(info->displayName.c_str())) {
+                                    pushUndo(asset);
                                     PassDecl newPass;
                                     newPass.name = info->typeName + "_" + std::to_string(asset.passes.size());
                                     newPass.type = info->typeName;
@@ -146,6 +173,7 @@ void PipelineEditor::render(PipelineAsset& asset) {
                     ImGui::EndMenu();
                 }
                 if (ImGui::MenuItem("Resource")) {
+                    pushUndo(asset);
                     ResourceDecl newRes;
                     newRes.name = "resource_" + std::to_string(asset.resources.size());
                     newRes.type = "texture";
@@ -158,6 +186,7 @@ void PipelineEditor::render(PipelineAsset& asset) {
             }
             if (ImGui::BeginMenu("View")) {
                 if (ImGui::MenuItem("Auto Reorder")) {
+                    pushUndo(asset);
                     autoReorderNodes(asset);
                 }
                 ImGui::EndMenu();
@@ -345,6 +374,54 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
     ImNodes::MiniMap(0.2f, ImNodesMiniMapLocation_BottomRight);
     ImNodes::EndNodeEditor();
 
+    // Right-click context menu for adding passes/resources
+    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        m_contextMenuSpawnPos = ImGui::GetMousePos();
+        ImGui::OpenPopup("##NodeEditorContextMenu");
+    }
+    if (ImGui::BeginPopup("##NodeEditorContextMenu")) {
+        auto byCategory = PassRegistry::instance().getTypesByCategory();
+        if (ImGui::BeginMenu("Add Pass")) {
+            for (const auto& [category, infos] : byCategory) {
+                if (ImGui::BeginMenu(category.c_str())) {
+                    for (const auto* info : infos) {
+                        if (ImGui::MenuItem(info->displayName.c_str())) {
+                            pushUndo(asset);
+                            PassDecl newPass;
+                            newPass.name = info->typeName + "_" + std::to_string(asset.passes.size());
+                            newPass.type = info->typeName;
+                            newPass.inputs = info->defaultInputs;
+                            newPass.outputs = info->defaultOutputs;
+                            newPass.enabled = true;
+                            asset.passes.push_back(newPass);
+                            // Position the new node at the right-click location
+                            int nodeId = getPassNodeId(static_cast<int>(asset.passes.size() - 1));
+                            ImNodes::SetNodeScreenSpacePos(nodeId, m_contextMenuSpawnPos);
+                            m_nodePositioned[nodeId] = true;
+                            m_dirty = true;
+                        }
+                    }
+                    ImGui::EndMenu();
+                }
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::MenuItem("Add Resource")) {
+            pushUndo(asset);
+            ResourceDecl newRes;
+            newRes.name = "resource_" + std::to_string(asset.resources.size());
+            newRes.type = "texture";
+            newRes.format = "RGBA16Float";
+            newRes.size = "screen";
+            asset.resources.push_back(newRes);
+            int nodeId = getResourceNodeId(static_cast<int>(asset.resources.size() - 1));
+            ImNodes::SetNodeScreenSpacePos(nodeId, m_contextMenuSpawnPos);
+            m_nodePositioned[nodeId] = true;
+            m_dirty = true;
+        }
+        ImGui::EndPopup();
+    }
+
     // Handle selection
     int numSelected = ImNodes::NumSelectedNodes();
     if (numSelected > 0) {
@@ -394,6 +471,7 @@ void PipelineEditor::handleNewLinks(PipelineAsset& asset) {
             }
 
             if (!resourceName.empty()) {
+                pushUndo(asset);
                 assignLinkedInput(asset.passes[dstPassIdx], dstInputIdx, resourceName);
                 m_dirty = true;
             }
@@ -413,6 +491,7 @@ void PipelineEditor::handleDeletedLinks(PipelineAsset& asset) {
     if (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
         int numSelected = ImNodes::NumSelectedNodes();
         if (numSelected > 0) {
+            pushUndo(asset);
             std::vector<int> selectedNodes(numSelected);
             ImNodes::GetSelectedNodes(selectedNodes.data());
 
@@ -459,15 +538,35 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
             pass.name = nameBuf;
             m_dirty = true;
         }
+        if (ImGui::IsItemActivated() && !m_hasTextEditSnapshot) {
+            pushUndo(asset);
+            m_hasTextEditSnapshot = true;
+        }
+        if (ImGui::IsItemDeactivated()) {
+            m_hasTextEditSnapshot = false;
+        }
 
         ImGui::Text("Type: %s", pass.type.c_str());
 
-        if (ImGui::Checkbox("Enabled", &pass.enabled)) {
-            m_dirty = true;
+        {
+            bool prev = pass.enabled;
+            if (ImGui::Checkbox("Enabled", &pass.enabled)) {
+                // Snapshot with the old value
+                pass.enabled = prev;
+                pushUndo(asset);
+                pass.enabled = !prev;
+                m_dirty = true;
+            }
         }
 
-        if (ImGui::Checkbox("Side Effect", &pass.sideEffect)) {
-            m_dirty = true;
+        {
+            bool prev = pass.sideEffect;
+            if (ImGui::Checkbox("Side Effect", &pass.sideEffect)) {
+                pass.sideEffect = prev;
+                pushUndo(asset);
+                pass.sideEffect = !prev;
+                m_dirty = true;
+            }
         }
 
         ImGui::Separator();
@@ -476,6 +575,7 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
             ImGui::BulletText("%s", pass.inputs[i].c_str());
         }
         if (ImGui::Button("+ Input")) {
+            pushUndo(asset);
             pass.inputs.push_back("new_input");
             m_dirty = true;
         }
@@ -486,6 +586,7 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
             ImGui::BulletText("%s", pass.outputs[i].c_str());
         }
         if (ImGui::Button("+ Output")) {
+            pushUndo(asset);
             pass.outputs.push_back("new_output");
             m_dirty = true;
         }
@@ -503,10 +604,17 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
             res.name = nameBuf;
             m_dirty = true;
         }
+        if (ImGui::IsItemActivated() && !m_hasTextEditSnapshot) {
+            pushUndo(asset);
+            m_hasTextEditSnapshot = true;
+        }
+        if (ImGui::IsItemDeactivated()) {
+            m_hasTextEditSnapshot = false;
+        }
 
         const char* formats[] = {
             "R8Unorm", "R16Float", "R32Float", "R32Uint",
-            "RGBA8Unorm", "BGRA8Unorm", "RGBA16Float", "RGBA32Float",
+            "RGBA8Unorm", "RGBA8Srgb", "BGRA8Unorm", "RGBA16Float", "RGBA32Float",
             "Depth32Float", "Depth16Unorm"
         };
         int currentFormat = 0;
@@ -516,9 +624,15 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
                 break;
             }
         }
-        if (ImGui::Combo("Format", &currentFormat, formats, IM_ARRAYSIZE(formats))) {
-            res.format = formats[currentFormat];
-            m_dirty = true;
+        {
+            int prevFormat = currentFormat;
+            if (ImGui::Combo("Format", &currentFormat, formats, IM_ARRAYSIZE(formats))) {
+                // Snapshot with old format
+                res.format = formats[prevFormat];
+                pushUndo(asset);
+                res.format = formats[currentFormat];
+                m_dirty = true;
+            }
         }
 
         char sizeBuf[64];
@@ -527,6 +641,13 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
         if (ImGui::InputText("Size", sizeBuf, sizeof(sizeBuf))) {
             res.size = sizeBuf;
             m_dirty = true;
+        }
+        if (ImGui::IsItemActivated() && !m_hasTextEditSnapshot) {
+            pushUndo(asset);
+            m_hasTextEditSnapshot = true;
+        }
+        if (ImGui::IsItemDeactivated()) {
+            m_hasTextEditSnapshot = false;
         }
 
     } else {
