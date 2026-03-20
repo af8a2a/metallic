@@ -159,6 +159,13 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
                                cullUniforms.occlusionBoundsScale;
             float2 centerNdc = centerClip.xy / centerClip.w;
 
+            // Skip occlusion for meshlets whose reprojected bounds are outside
+            // the previous frame's viewport — we have no valid HZB data for them.
+            float2 ndcMin = centerNdc - ndcRadius;
+            float2 ndcMax = centerNdc + ndcRadius;
+            bool outsidePrevView = ndcMax.x < -1.0 || ndcMin.x > 1.0 ||
+                                   ndcMax.y < -1.0 || ndcMin.y > 1.0;
+
             float2 minUv = float2(centerNdc.x - ndcRadius.x, centerNdc.y + ndcRadius.y) *
                                float2(0.5, -0.5) +
                            float2(0.5, 0.5);
@@ -170,44 +177,48 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
             float2 uvMin = min(minUv, maxUv);
             float2 uvMax = max(minUv, maxUv);
 
-            float2 rectSizePixels = max((uvMax - uvMin) * cullUniforms.hzbTextureSize, float2(1.0, 1.0));
-            float maxExtent = max(rectSizePixels.x, rectSizePixels.y);
-            uint level = 0u;
-            if (maxExtent > 1.0) {
-                level = min(cullUniforms.hzbLevelCount - 1u, (uint)ceil(log2(maxExtent)));
-            }
+            // Only test occlusion if the meshlet was inside the previous frame's view.
+            // Meshlets outside have no valid HZB data — clamped UVs would sample wrong depths.
+            if (!outsidePrevView) {
+                float2 rectSizePixels = max((uvMax - uvMin) * cullUniforms.hzbTextureSize, float2(1.0, 1.0));
+                float maxExtent = max(rectSizePixels.x, rectSizePixels.y);
+                uint level = 0u;
+                if (maxExtent > 1.0) {
+                    level = min(cullUniforms.hzbLevelCount - 1u, (uint)ceil(log2(maxExtent)));
+                }
 
-            uint2 mipSize = uint2((uint)cullUniforms.hzbTextureSize.x, (uint)cullUniforms.hzbTextureSize.y);
-            for (uint mip = 0u; mip < level; ++mip) {
-                mipSize = uint2(max((mipSize.x + 1u) / 2u, 1u),
-                                max((mipSize.y + 1u) / 2u, 1u));
-            }
+                uint2 mipSize = uint2((uint)cullUniforms.hzbTextureSize.x, (uint)cullUniforms.hzbTextureSize.y);
+                for (uint mip = 0u; mip < level; ++mip) {
+                    mipSize = uint2(max((mipSize.x + 1u) / 2u, 1u),
+                                    max((mipSize.y + 1u) / 2u, 1u));
+                }
 
-            float2 mipScale = float2((float)mipSize.x, (float)mipSize.y);
-            uint2 minTexel = uint2(floor(uvMin * mipScale));
-            uint2 maxTexel = uint2(floor(uvMax * mipScale));
-            uint2 mipMaxCoord = uint2(max(mipSize.x, 1u) - 1u,
-                                      max(mipSize.y, 1u) - 1u);
-            minTexel = min(minTexel, mipMaxCoord);
-            maxTexel = min(maxTexel, mipMaxCoord);
+                float2 mipScale = float2((float)mipSize.x, (float)mipSize.y);
+                uint2 minTexel = uint2(floor(uvMin * mipScale));
+                uint2 maxTexel = uint2(floor(uvMax * mipScale));
+                uint2 mipMaxCoord = uint2(max(mipSize.x, 1u) - 1u,
+                                          max(mipSize.y, 1u) - 1u);
+                minTexel = min(minTexel, mipMaxCoord);
+                maxTexel = min(maxTexel, mipMaxCoord);
 
-            // Reversed-Z: HZB stores min (farthest occluder). Take min of 4 corners.
-            float sampledDepth = sampleHzb(level, minTexel);
-            sampledDepth = min(sampledDepth, sampleHzb(level, uint2(maxTexel.x, minTexel.y)));
-            sampledDepth = min(sampledDepth, sampleHzb(level, uint2(minTexel.x, maxTexel.y)));
-            sampledDepth = min(sampledDepth, sampleHzb(level, maxTexel));
+                // Reversed-Z: HZB stores min (farthest occluder). Take min of 4 corners.
+                float sampledDepth = sampleHzb(level, minTexel);
+                sampledDepth = min(sampledDepth, sampleHzb(level, uint2(maxTexel.x, minTexel.y)));
+                sampledDepth = min(sampledDepth, sampleHzb(level, uint2(minTexel.x, maxTexel.y)));
+                sampledDepth = min(sampledDepth, sampleHzb(level, maxTexel));
 
-            float3 prevCameraToCenter = centerWS - cullUniforms.prevCameraWorldPos.xyz;
-            float prevCameraDistanceSq = dot(prevCameraToCenter, prevCameraToCenter);
-            if (prevCameraDistanceSq > 1e-10) {
-                float3 nearestPointWS = centerWS - normalize(prevCameraToCenter) * worldRadius;
-                float4 nearestClip = mul(cullUniforms.prevViewProj, float4(nearestPointWS, 1.0));
-                if (nearestClip.w > 1e-5) {
-                    float nearestDepth = saturate(nearestClip.z / nearestClip.w);
-                    // Reversed-Z: closer = larger depth. Occluded if meshlet's
-                    // nearest depth is less than the farthest occluder depth.
-                    if (nearestDepth < sampledDepth - cullUniforms.occlusionDepthBias) {
-                        culled = true;
+                float3 prevCameraToCenter = centerWS - cullUniforms.prevCameraWorldPos.xyz;
+                float prevCameraDistanceSq = dot(prevCameraToCenter, prevCameraToCenter);
+                if (prevCameraDistanceSq > 1e-10) {
+                    float3 nearestPointWS = centerWS - normalize(prevCameraToCenter) * worldRadius;
+                    float4 nearestClip = mul(cullUniforms.prevViewProj, float4(nearestPointWS, 1.0));
+                    if (nearestClip.w > 1e-5) {
+                        float nearestDepth = saturate(nearestClip.z / nearestClip.w);
+                        // Reversed-Z: closer = larger depth. Occluded if meshlet's
+                        // nearest depth is less than the farthest occluder depth.
+                        if (nearestDepth < sampledDepth - cullUniforms.occlusionDepthBias) {
+                            culled = true;
+                        }
                     }
                 }
             }

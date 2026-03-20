@@ -1649,6 +1649,11 @@ int main() {
     bool hasPrevMatrices = false;
     uint32_t frameIndex = 0;
 
+    // Ring buffer to keep instance transform buffers alive for 2 frames (kMaxFramesInFlight).
+    // Without this, the GPU may still be reading a buffer that the CPU has already freed.
+    static constexpr uint32_t kBufferRingSize = 2;
+    std::unique_ptr<RhiBuffer> instanceTransformRing[kBufferRingSize];
+
     auto rebuildActivePipeline = [&](int targetWidth, int targetHeight) {
         rhi->waitIdle();
         syncVisibilityUpscalerState(targetWidth, targetHeight);
@@ -1978,7 +1983,8 @@ int main() {
                                                          static_cast<uint32_t>(renderHeight));
         }
 
-        std::unique_ptr<RhiBuffer> instanceTransformBuffer;
+        auto& instanceTransformBuffer = instanceTransformRing[frameIndex % kBufferRingSize];
+        instanceTransformBuffer.reset();
         uint32_t visibilityInstanceCount = 0;
         if (useVisibilityRenderGraph && !previewVisibleMeshletNodes.empty()) {
             visibilityInstanceCount = static_cast<uint32_t>(
