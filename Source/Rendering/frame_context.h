@@ -99,16 +99,6 @@ struct FrameContext {
     RhiBuffer* gpuVisibleMeshletBufferRhi = nullptr;
     RhiBuffer* gpuCounterBufferRhi = nullptr;
     RhiBuffer* gpuInstanceDataBufferRhi = nullptr;
-
-    // Phase 2 occlusion culling: occlusion-failed meshlets from phase 1
-    RhiBuffer* gpuOcclusionFailedBufferRhi = nullptr;
-    uint32_t gpuOcclusionFailedCount = 0;
-
-    // Mid-frame HZB textures (written by HZBBuildPass_Mid, consumed by phase 2 cull)
-    static constexpr uint32_t kMaxHzbLevels = 10;
-    const RhiTexture* hzbMipTextures[kMaxHzbLevels] = {};
-    uint32_t hzbMipCount = 0;
-    float2 hzbTextureSize = float2(0.f, 0.f);
 };
 
 // Runtime context for pipeline building (pipelines, textures, samplers)

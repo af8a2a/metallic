@@ -1682,14 +1682,6 @@ int main() {
         ZoneScopedN("VulkanRenderGraphFrame");
 
         glfwPollEvents();
-
-        // Update camera input (FPS movement, mode toggle)
-        {
-            const double now = glfwGetTime();
-            const float dt = static_cast<float>(now - lastFrameTime);
-            updateCameraInput(window, &appState.input, dt);
-        }
-
         const bool f5Down = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
         if (f5Down && !reloadKeyDown) {
             shaderReloadRequested = true;
@@ -1845,10 +1837,6 @@ int main() {
             useVisibilityRenderGraph &&
             findFirstEnabledPassByType(visibilityPipelineAsset, "AutoExposurePass") != nullptr;
         ImGui::Text("Resolution: %d x %d", width, height);
-        ImGui::Text("Camera: %s (Tab to switch)", previewCamera.mode == CameraMode::FPS ? "FPS" : "Orbit");
-        if (previewCamera.mode == CameraMode::FPS) {
-            ImGui::Text("Speed: %.1f (scroll to adjust)", previewCamera.moveSpeed);
-        }
         ImGui::TextUnformatted(useVisibilityRenderGraph ? "Pipeline: Visibility Buffer" : "Pipeline: Triangle Fallback");
         ImGui::Text("Upscaler: %s", visibilityUpscalerModeName(visibilityUpscalerMode));
         ImGui::TextUnformatted(autoExposureEnabled ? "Exposure: Auto" : "Exposure: Manual");
@@ -1961,9 +1949,9 @@ int main() {
         const float3 sunDirection = normalize(sunLight.direction);
         const float4x4 view = previewCamera.viewMatrix();
         const float4x4 unjitteredProj = previewCamera.projectionMatrix(aspect);
-        const float4 cameraWorldPos = previewCamera.worldPosition();
+        const float4 cameraWorldPos = orbitCameraWorldPosition(previewCamera);
         const float3 cameraWorldPos3(cameraWorldPos.x, cameraWorldPos.y, cameraWorldPos.z);
-        const float3 cameraForward = previewCamera.forwardDirection();
+        const float3 cameraForward = normalize(previewCamera.target - cameraWorldPos3);
         const float3 worldUp(0.0f, 1.0f, 0.0f);
         const float3 cameraRight = normalize(cross(cameraForward, worldUp));
         const float3 cameraUp = cross(cameraRight, cameraForward);

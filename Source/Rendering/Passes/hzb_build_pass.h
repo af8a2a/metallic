@@ -103,21 +103,6 @@ public:
                 encoder.memoryBarrier(RhiBarrierScope::Textures);
             }
         }
-
-        // Publish HZB textures to FrameContext for phase 2 cull to consume directly
-        auto* mutableCtx = const_cast<FrameContext*>(m_frameContext);
-        for (uint32_t level = 0; level < m_levelCount; ++level) {
-            mutableCtx->hzbMipTextures[level] = m_frameGraph->getTexture(m_historyWrites[level]);
-        }
-        mutableCtx->hzbMipCount = m_levelCount;
-        if (m_levelCount > 0) {
-            const RhiTexture* level0 = mutableCtx->hzbMipTextures[0];
-            if (level0) {
-                mutableCtx->hzbTextureSize = float2(
-                    static_cast<float>(level0->width()),
-                    static_cast<float>(level0->height()));
-            }
-        }
     }
 
     void renderUI() override {

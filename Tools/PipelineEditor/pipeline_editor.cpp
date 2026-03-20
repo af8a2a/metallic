@@ -163,14 +163,6 @@ void PipelineEditor::render(PipelineAsset& asset) {
                                     newPass.inputs = info->defaultInputs;
                                     newPass.outputs = info->defaultOutputs;
                                     newPass.enabled = true;
-                                    if (info->configSchema.is_object()) {
-                                        newPass.config = nlohmann::json::object();
-                                        for (auto& [key, schema] : info->configSchema.items()) {
-                                            if (schema.contains("default")) {
-                                                newPass.config[key] = schema["default"];
-                                            }
-                                        }
-                                    }
                                     asset.passes.push_back(newPass);
                                     m_dirty = true;
                                 }
@@ -597,62 +589,6 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
             pushUndo(asset);
             pass.outputs.push_back("new_output");
             m_dirty = true;
-        }
-
-        // Config section — driven by configSchema from PassTypeInfo
-        const auto* info = PassRegistry::instance().getTypeInfo(pass.type);
-        if (info && info->configSchema.is_object() && !info->configSchema.empty()) {
-            ImGui::Separator();
-            ImGui::Text("Config");
-            if (pass.config.is_null()) {
-                pass.config = nlohmann::json::object();
-            }
-            for (auto& [key, schema] : info->configSchema.items()) {
-                std::string type = schema.value("type", "");
-                std::string label = schema.value("label", key);
-                std::string imguiId = "##config_" + key;
-
-                if (type == "int") {
-                    int val = pass.config.contains(key) ? pass.config[key].get<int>() : schema.value("default", 0);
-                    if (ImGui::InputInt((label + imguiId).c_str(), &val)) {
-                        pushUndo(asset);
-                        pass.config[key] = val;
-                        m_dirty = true;
-                    }
-                } else if (type == "bool") {
-                    bool val = pass.config.contains(key) ? pass.config[key].get<bool>() : schema.value("default", false);
-                    bool prev = val;
-                    if (ImGui::Checkbox((label + imguiId).c_str(), &val)) {
-                        pass.config[key] = prev; // snapshot old
-                        pushUndo(asset);
-                        pass.config[key] = val;
-                        m_dirty = true;
-                    }
-                } else if (type == "float") {
-                    float val = pass.config.contains(key) ? pass.config[key].get<float>() : schema.value("default", 0.0f);
-                    if (ImGui::InputFloat((label + imguiId).c_str(), &val)) {
-                        pushUndo(asset);
-                        pass.config[key] = val;
-                        m_dirty = true;
-                    }
-                } else if (type == "string") {
-                    std::string val = pass.config.contains(key) ? pass.config[key].get<std::string>() : schema.value("default", std::string{});
-                    char buf[256];
-                    strncpy(buf, val.c_str(), sizeof(buf) - 1);
-                    buf[sizeof(buf) - 1] = '\0';
-                    if (ImGui::InputText((label + imguiId).c_str(), buf, sizeof(buf))) {
-                        pass.config[key] = std::string(buf);
-                        m_dirty = true;
-                    }
-                    if (ImGui::IsItemActivated() && !m_hasTextEditSnapshot) {
-                        pushUndo(asset);
-                        m_hasTextEditSnapshot = true;
-                    }
-                    if (ImGui::IsItemDeactivated()) {
-                        m_hasTextEditSnapshot = false;
-                    }
-                }
-            }
         }
 
     } else if (m_selectedResourceIndex >= 0 && m_selectedResourceIndex < static_cast<int>(asset.resources.size())) {

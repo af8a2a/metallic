@@ -102,7 +102,6 @@ int main() {
     // Setup input
     InputState inputState;
     inputState.camera = &camera;
-    inputState.window = window;
     setupInputCallbacks(window, &inputState);
 
     // Init Dear ImGui
@@ -180,13 +179,6 @@ int main() {
         ZoneScopedN("Frame");
         glfwPollEvents();
 
-        // Compute deltaTime for FPS camera movement
-        {
-            double now = glfwGetTime();
-            float dt = static_cast<float>(now - lastFrameTime);
-            updateCameraInput(window, &inputState, dt);
-        }
-
         int width, height;
         glfwGetFramebufferSize(window, &width, &height);
         if (width == 0 || height == 0) {
@@ -229,7 +221,13 @@ int main() {
                 sunLight.intensity);
 
             // Camera position in world space
-            cameraWorldPos = camera.worldPosition();
+            float cosA = std::cos(camera.azimuth), sinA = std::sin(camera.azimuth);
+            float cosE = std::cos(camera.elevation), sinE = std::sin(camera.elevation);
+            cameraWorldPos = float4(
+                camera.target.x + camera.distance * cosE * sinA,
+                camera.target.y + camera.distance * sinE,
+                camera.target.z + camera.distance * cosE * cosA,
+                1.0f);
 
             scene.sceneGraph().updateTransforms();
         }
@@ -261,10 +259,6 @@ int main() {
             ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_FirstUseEver);
             ImGui::Begin("Renderer");
             ImGui::Text("%.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
-            ImGui::Text("Camera: %s (Tab to switch)", camera.mode == CameraMode::FPS ? "FPS" : "Orbit");
-            if (camera.mode == CameraMode::FPS) {
-                ImGui::Text("Speed: %.1f (scroll to adjust)", camera.moveSpeed);
-            }
             ImGui::Separator();
             ImGui::RadioButton("Vertex Shader", &renderMode, 0);
             ImGui::RadioButton("Mesh Shader", &renderMode, 1);

@@ -27,34 +27,9 @@ REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
     (std::vector<std::string>{}),
     (std::vector<std::string>{"cullResult"}));
 
-// Patch configSchema for passes that need per-instance config
-namespace {
-    static bool _configSchema_MeshletCullPass = []() {
-        auto* info = const_cast<PassTypeInfo*>(PassRegistry::instance().getTypeInfo("MeshletCullPass"));
-        if (info) {
-            info->configSchema = {
-                {"phase", {{"type", "int"}, {"default", 0}, {"label", "Culling Phase"}}}
-            };
-        }
-        return true;
-    }();
-}
-
 REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
     (std::vector<std::string>{}),
     (std::vector<std::string>{"visibility", "depth"}));
-
-namespace {
-    static bool _configSchema_VisibilityPass = []() {
-        auto* info = const_cast<PassTypeInfo*>(PassRegistry::instance().getTypeInfo("VisibilityPass"));
-        if (info) {
-            info->configSchema = {
-                {"loadExisting", {{"type", "bool"}, {"default", false}, {"label", "Load Existing Attachments"}}}
-            };
-        }
-        return true;
-    }();
-}
 
 REGISTER_COMPUTE_PASS(HZBBuildPass, "HZB Build", "Geometry",
     (std::vector<std::string>{"depth"}),

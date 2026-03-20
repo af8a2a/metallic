@@ -11,18 +11,6 @@ REGISTER_PASS_INFO(MeshletCullPass, "Meshlet Cull", "Geometry",
     (std::vector<std::string>{"cullResult"}),
     PassTypeInfo::PassType::Compute);
 
-namespace {
-    static bool _configSchema_MeshletCullPass = []() {
-        auto* info = const_cast<PassTypeInfo*>(PassRegistry::instance().getTypeInfo("MeshletCullPass"));
-        if (info) {
-            info->configSchema = {
-                {"phase", {{"type", "int"}, {"default", 0}, {"label", "Culling Phase"}}}
-            };
-        }
-        return true;
-    }();
-}
-
 #ifdef _WIN32
 REGISTER_PASS_INFO(VisibilityPass, "Visibility Pass", "Geometry",
     (std::vector<std::string>{"cullResult"}),
@@ -34,18 +22,6 @@ REGISTER_PASS_INFO(VisibilityPass, "Visibility Pass", "Geometry",
     (std::vector<std::string>{"visibility", "depth"}),
     PassTypeInfo::PassType::Render);
 #endif
-
-namespace {
-    static bool _configSchema_VisibilityPass = []() {
-        auto* info = const_cast<PassTypeInfo*>(PassRegistry::instance().getTypeInfo("VisibilityPass"));
-        if (info) {
-            info->configSchema = {
-                {"loadExisting", {{"type", "bool"}, {"default", false}, {"label", "Load Existing Attachments"}}}
-            };
-        }
-        return true;
-    }();
-}
 
 REGISTER_PASS_INFO(HZBBuildPass, "HZB Build", "Geometry",
     (std::vector<std::string>{"depth"}),

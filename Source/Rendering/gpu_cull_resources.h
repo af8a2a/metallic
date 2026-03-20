@@ -37,16 +37,10 @@ struct CullUniforms {
     uint32_t hzbLevelCount;
     float    occlusionDepthBias;
     float    occlusionBoundsScale;
-    uint32_t cullingPhase;     // 0 = phase1, 1 = phase2
-    uint32_t _pad0;
 };
 
-// Counter buffer layout (32 bytes, StorageModeShared):
-//   [0]:  phase1 visible counter (uint32)
-//   [4]:  phase1 indirect args { x, y, z } (3 x uint32)
-//   [16]: occlusion-failed counter (uint32)
-//   [20]: occlusion-failed indirect args { x, y, z } (3 x uint32)
-static constexpr uint32_t kCounterBufferSize = 32;
+// Counter buffer layout (16 bytes, MTL::ResourceStorageModePrivate):
+//   offset 0:  atomic counter (uint32)
+//   offset 4:  MTLDispatchThreadgroupsIndirectArguments { x, y, z } (3 x uint32)
+static constexpr uint32_t kCounterBufferSize = 16;
 static constexpr uint32_t kIndirectArgsOffset = 4;
-static constexpr uint32_t kOccFailedCounterOffset = 16;
-static constexpr uint32_t kOccFailedIndirectOffset = 20;
