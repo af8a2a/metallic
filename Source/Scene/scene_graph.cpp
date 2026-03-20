@@ -193,6 +193,8 @@ static void assignPrimitiveGroupRange(SceneNode& node,
                                       const LoadedMesh& mesh,
                                       const std::vector<uint32_t>& meshletGroupPrefix) {
     node.meshIndex = meshIndex;
+    node.primitiveGroupStart = firstGroup;
+    node.primitiveGroupCount = groupCount;
 
     const uint32_t totalGroupCount = static_cast<uint32_t>(mesh.primitiveGroups.size());
     const uint32_t clampedFirstGroup = std::min(firstGroup, totalGroupCount);
@@ -459,12 +461,9 @@ bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
 
         // Update each node's meshletStart/meshletCount
         for (auto& node : nodes) {
-            if (node.meshIndex < 0) continue;
-            uint32_t mi = static_cast<uint32_t>(node.meshIndex);
-            if (mi >= mesh.meshRanges.size()) continue;
-            const auto& range = mesh.meshRanges[mi];
-            uint32_t firstGroup = range.firstGroup;
-            uint32_t lastGroup = firstGroup + range.groupCount;
+            if (node.primitiveGroupCount == 0) continue;
+            uint32_t firstGroup = node.primitiveGroupStart;
+            uint32_t lastGroup = firstGroup + node.primitiveGroupCount;
             if (firstGroup < newPrefix.size() && lastGroup < newPrefix.size()) {
                 node.meshletStart = newPrefix[firstGroup];
                 node.meshletCount = newPrefix[lastGroup] - newPrefix[firstGroup];

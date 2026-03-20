@@ -901,6 +901,8 @@ void drawSceneGraphProperties(SceneGraph& scene) {
     ImGui::Text("Mesh Info");
     if (node.meshIndex >= 0) {
         ImGui::Text("Mesh Index: %d", node.meshIndex);
+        ImGui::Text("Primitive Group Start: %u", node.primitiveGroupStart);
+        ImGui::Text("Primitive Group Count: %u", node.primitiveGroupCount);
         ImGui::Text("Meshlet Start: %u", node.meshletStart);
         ImGui::Text("Meshlet Count: %u", node.meshletCount);
         ImGui::Text("Index Start: %u", node.indexStart);

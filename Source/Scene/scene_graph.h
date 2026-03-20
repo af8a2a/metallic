@@ -46,6 +46,8 @@ struct SceneNode {
 
     // Mesh reference (-1 = no mesh, pure transform node)
     int32_t meshIndex = -1;
+    uint32_t primitiveGroupStart = 0;
+    uint32_t primitiveGroupCount = 0;
     uint32_t meshletStart = 0;
     uint32_t meshletCount = 0;
     // For vertex pipeline
