@@ -30,6 +30,13 @@ struct MeshletData {
     RhiBufferHandle materialIDs;
     uint32_t meshletCount = 0;
     std::vector<uint32_t> meshletsPerGroup;
+
+    // CPU-side data retained for LOD building
+    std::vector<GPUMeshlet>       cpuMeshlets;
+    std::vector<unsigned int>     cpuMeshletVertices;
+    std::vector<unsigned char>    cpuMeshletTriangles;  // raw 3-byte-per-tri format
+    std::vector<GPUMeshletBounds> cpuBounds;
+    std::vector<uint32_t>         cpuMaterialIDs;
 };
 
 bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData& out);

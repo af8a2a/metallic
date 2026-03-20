@@ -36,6 +36,7 @@
 #include "shader_manager.h"
 #include "slang_compiler.h"
 #include "visibility_constants.h"
+#include "cluster_lod_builder.h"
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
 #include "streamline_context.h"
@@ -129,7 +130,8 @@ bool loadSponzaScene(const RhiDevice& device,
                      LoadedMesh& outMesh,
                      MeshletData& outMeshlets,
                      LoadedMaterials& outMaterials,
-                     SceneGraph& outScene) {
+                     SceneGraph& outScene,
+                     ClusterLODData& outLOD) {
     const std::string gltfPath = std::string(projectRoot) + "/Asset/Sponza/glTF/Sponza.gltf";
 
     releaseMaterialResources(outMaterials);
@@ -185,6 +187,13 @@ bool loadSponzaScene(const RhiDevice& device,
     }
 
     outScene.updateTransforms();
+
+    // Build cluster LOD hierarchy
+    outLOD = ClusterLODData{};
+    if (!buildClusterLOD(device, outMesh, outMeshlets, outLOD)) {
+        spdlog::warn("Cluster LOD build failed; continuing without LOD hierarchy");
+    }
+
     spdlog::info("Loaded Vulkan scene: {}", gltfPath);
     return true;
 }
@@ -1203,6 +1212,7 @@ int main() {
     MeshletData previewMeshlets;
     LoadedMaterials previewMaterials;
     SceneGraph previewScene;
+    ClusterLODData previewLOD;
     RhiTextureHandle shadowDummyTexture;
     RhiTextureHandle skyFallbackTexture;
     bool previewSceneReady = loadSponzaScene(deviceHandle,
@@ -1211,7 +1221,8 @@ int main() {
                                              previewMesh,
                                              previewMeshlets,
                                              previewMaterials,
-                                             previewScene);
+                                             previewScene,
+                                             previewLOD);
     if (previewSceneReady) {
         previewSceneReady =
             createSceneFallbackTextures(deviceHandle, shadowDummyTexture, skyFallbackTexture);
@@ -1938,6 +1949,12 @@ int main() {
         ImGui::Checkbox("Render Pass UI", &showRenderPassUI);
         ImGui::Checkbox("Scene Graph", &showSceneGraphWindow);
         ImGui::Checkbox("ImGui Demo", &showImGuiDemo);
+
+        // LOD stats panel
+        if (previewSceneReady && previewLOD.lodLevelCount > 0) {
+            drawClusterLODStats(previewLOD);
+        }
+
         ImGui::End();
 
         if (previewSceneReady && showSceneGraphWindow) {

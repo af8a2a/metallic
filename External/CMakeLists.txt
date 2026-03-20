@@ -8,24 +8,8 @@ if(APPLE)
     )
 endif()
 
-# meshoptimizer
-add_library(meshoptimizer STATIC
-    meshoptimizer/src/clusterizer.cpp
-    meshoptimizer/src/indexgenerator.cpp
-    meshoptimizer/src/vcacheoptimizer.cpp
-    meshoptimizer/src/vfetchoptimizer.cpp
-)
-target_include_directories(meshoptimizer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/meshoptimizer/src)
-if(MSVC)
-    target_compile_options(meshoptimizer PRIVATE
-        $<$<CONFIG:Debug>:/O2>
-        $<$<CONFIG:Debug>:/Ob2>
-        $<$<CONFIG:Debug>:/RTC->
-    )
-else()
-    target_compile_options(meshoptimizer PRIVATE $<$<CONFIG:Debug>:-O3>)
-endif()
-target_compile_definitions(meshoptimizer PRIVATE $<$<CONFIG:Debug>:NDEBUG>)
+# meshoptimizer — built in subdirectory to override Debug flags
+add_subdirectory(meshoptimizer_build)
 
 # GLFW
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

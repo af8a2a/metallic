@@ -13,6 +13,7 @@ if(APPLE)
         Platform/tracy_metal.mm
         Asset/mesh_loader.cpp
         Asset/meshlet_builder.cpp
+        Asset/cluster_lod_builder.cpp
         Asset/material_loader.cpp
         Scene/scene_graph.cpp
         Scene/scene_graph_ui.cpp
@@ -66,6 +67,7 @@ elseif(WIN32)
         Asset/material_loader.cpp
         Asset/mesh_loader.cpp
         Asset/meshlet_builder.cpp
+        Asset/cluster_lod_builder.cpp
         PipelineEditor/pass_registry.cpp
         PipelineEditor/pipeline_asset.cpp
         PipelineEditor/pipeline_builder.cpp
@@ -85,7 +87,6 @@ elseif(WIN32)
         RHI/Vulkan/vulkan_backend.cpp
         RHI/Vulkan/vulkan_frame_graph.cpp
         RHI/Vulkan/vulkan_descriptor_manager.cpp
-        "${CMAKE_SOURCE_DIR}/External/meshoptimizer/src/clusterizer.cpp"
     )
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
@@ -104,6 +105,7 @@ elseif(WIN32)
     )
     target_link_libraries(Metallic PRIVATE
         glfw
+        meshoptimizer
         imgui
         slang::slang
         nlohmann_json

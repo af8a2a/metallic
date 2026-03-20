@@ -34,6 +34,7 @@ bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData&
     std::vector<GPUMeshlet> allGpuMeshlets;
     std::vector<unsigned int> allMeshletVertices;
     std::vector<uint32_t> allPackedTriangles;
+    std::vector<unsigned char> allRawTriangles;
     std::vector<GPUMeshletBounds> allBounds;
     std::vector<uint32_t> allMaterialIDs;
 
@@ -145,6 +146,7 @@ bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData&
 
         // Pack triangles and merge
         size_t packedBaseOffset = allPackedTriangles.size();
+        size_t rawTriBaseOffset = allRawTriangles.size();
         for (size_t i = 0; i < meshletCount; i++) {
             const meshopt_Meshlet& m = meshlets[i];
             for (size_t t = 0; t < m.triangle_count; t++) {
@@ -153,6 +155,9 @@ bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData&
                 uint32_t v1 = meshletTriangles[srcIdx + 1];
                 uint32_t v2 = meshletTriangles[srcIdx + 2];
                 allPackedTriangles.push_back(v0 | (v1 << 8) | (v2 << 16));
+                allRawTriangles.push_back(meshletTriangles[srcIdx + 0]);
+                allRawTriangles.push_back(meshletTriangles[srcIdx + 1]);
+                allRawTriangles.push_back(meshletTriangles[srcIdx + 2]);
             }
         }
 
@@ -200,6 +205,13 @@ bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData&
         spdlog::error("No meshlets built");
         return false;
     }
+
+    // Retain CPU-side copies for LOD building
+    out.cpuMeshlets = allGpuMeshlets;
+    out.cpuMeshletVertices = allMeshletVertices;
+    out.cpuMeshletTriangles = std::move(allRawTriangles);
+    out.cpuBounds = allBounds;
+    out.cpuMaterialIDs = allMaterialIDs;
 
     out.meshletBuffer = rhiCreateSharedBuffer(
         device, allGpuMeshlets.data(), allGpuMeshlets.size() * sizeof(GPUMeshlet), "Meshlets");
