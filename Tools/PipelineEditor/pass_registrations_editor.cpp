@@ -76,7 +76,7 @@ REGISTER_PASS_INFO(StreamlineDlssPass, "DLSS", "Post-Process",
 #endif
 
 REGISTER_PASS_INFO(TonemapPass, "Tonemap", "Post-Process",
-    (std::vector<std::string>{"lightingOutput"}),
+    (std::vector<std::string>{"lightingOutput", "exposureLut"}),
     (std::vector<std::string>{"$backbuffer"}),
     PassTypeInfo::PassType::Render);
 

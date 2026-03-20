@@ -19,14 +19,15 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
     }
 
     uint2 baseCoord = dtid.xy * uniforms.sourceScale;
-    float maxDepth = 0.0;
+    // Reversed-Z: near=1.0, far=0.0. Store min (farthest/most conservative occluder).
+    float minDepth = 1.0;
     for (uint y = 0; y < uniforms.sourceScale; ++y) {
         for (uint x = 0; x < uniforms.sourceScale; ++x) {
             uint2 sampleCoord = uint2(min(baseCoord.x + x, uniforms.srcWidth - 1u),
                                       min(baseCoord.y + y, uniforms.srcHeight - 1u));
-            maxDepth = max(maxDepth, sourceTexture.Load(int3(sampleCoord, 0)));
+            minDepth = min(minDepth, sourceTexture.Load(int3(sampleCoord, 0)));
         }
     }
 
-    destinationTexture[dtid.xy] = maxDepth;
+    destinationTexture[dtid.xy] = minDepth;
 }

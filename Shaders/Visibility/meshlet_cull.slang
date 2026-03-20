@@ -191,10 +191,11 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
             minTexel = min(minTexel, mipMaxCoord);
             maxTexel = min(maxTexel, mipMaxCoord);
 
+            // Reversed-Z: HZB stores min (farthest occluder). Take min of 4 corners.
             float sampledDepth = sampleHzb(level, minTexel);
-            sampledDepth = max(sampledDepth, sampleHzb(level, uint2(maxTexel.x, minTexel.y)));
-            sampledDepth = max(sampledDepth, sampleHzb(level, uint2(minTexel.x, maxTexel.y)));
-            sampledDepth = max(sampledDepth, sampleHzb(level, maxTexel));
+            sampledDepth = min(sampledDepth, sampleHzb(level, uint2(maxTexel.x, minTexel.y)));
+            sampledDepth = min(sampledDepth, sampleHzb(level, uint2(minTexel.x, maxTexel.y)));
+            sampledDepth = min(sampledDepth, sampleHzb(level, maxTexel));
 
             float3 prevCameraToCenter = centerWS - cullUniforms.prevCameraWorldPos.xyz;
             float prevCameraDistanceSq = dot(prevCameraToCenter, prevCameraToCenter);
@@ -203,7 +204,9 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
                 float4 nearestClip = mul(cullUniforms.prevViewProj, float4(nearestPointWS, 1.0));
                 if (nearestClip.w > 1e-5) {
                     float nearestDepth = saturate(nearestClip.z / nearestClip.w);
-                    if (nearestDepth > sampledDepth + cullUniforms.occlusionDepthBias) {
+                    // Reversed-Z: closer = larger depth. Occluded if meshlet's
+                    // nearest depth is less than the farthest occluder depth.
+                    if (nearestDepth < sampledDepth - cullUniforms.occlusionDepthBias) {
                         culled = true;
                     }
                 }

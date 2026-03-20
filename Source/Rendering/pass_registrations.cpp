@@ -63,7 +63,7 @@ REGISTER_COMPUTE_PASS(TAAPass, "TAA", "Post-Process",
     (std::vector<std::string>{"taaOutput"}));
 
 REGISTER_RENDER_PASS(TonemapPass, "Tonemap", "Post-Process",
-    (std::vector<std::string>{"lightingOutput"}),
+    (std::vector<std::string>{"lightingOutput", "exposureLut"}),
     (std::vector<std::string>{"tonemapOutput"}));
 
 // UI passes

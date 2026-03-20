@@ -1,5 +1,9 @@
 {
   "editorPositions": {
+    "AutoExposurePass_11": [
+      1300.0,
+      50.0
+    ],
     "DeferredLightingPass_5": [
       1050.0,
       50.0
@@ -13,16 +17,16 @@
       330.0
     ],
     "ImGuiOverlayPass_9": [
-      1430.0,
-      244.0
+      800.0,
+      470.0
     ],
     "MeshletCullPass_0": [
       300.0,
       50.0
     ],
     "OutputPass_10": [
-      1593.0,
-      372.0
+      1800.0,
+      50.0
     ],
     "ShadowRayPass_6": [
       800.0,
@@ -32,13 +36,13 @@
       300.0,
       190.0
     ],
-    "StreamlineDlssPass_10": [
-      1062.0,
-      386.0
+    "TAAPass_11": [
+      1300.0,
+      190.0
     ],
     "TonemapPass_10": [
-      1302.0,
-      374.0
+      1550.0,
+      50.0
     ],
     "VisibilityPass_1": [
       550.0,
@@ -139,7 +143,8 @@
       "config": null,
       "enabled": true,
       "inputs": [
-        "dlssOutput"
+        "taaOutput",
+        "exposureLut"
       ],
       "name": "TonemapPass_10",
       "outputs": [
@@ -178,16 +183,29 @@
       "config": null,
       "enabled": true,
       "inputs": [
+        "lightingOutput"
+      ],
+      "name": "AutoExposurePass_11",
+      "outputs": [
+        "exposureLut"
+      ],
+      "sideEffect": false,
+      "type": "AutoExposurePass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
         "lightingOutput",
         "depth",
         "motionVectors"
       ],
-      "name": "StreamlineDlssPass_10",
+      "name": "TAAPass_11",
       "outputs": [
-        "dlssOutput"
+        "taaOutput"
       ],
       "sideEffect": false,
-      "type": "StreamlineDlssPass"
+      "type": "TAAPass"
     }
   ],
   "resources": []
