@@ -1497,6 +1497,13 @@ int main() {
         releaseMaterialResources(previewMaterials);
         releaseMeshletBuffers(previewMeshlets);
         releaseMeshBuffers(previewMesh);
+        rhiReleaseHandle(previewLOD.meshletBuffer);
+        rhiReleaseHandle(previewLOD.meshletVerticesBuffer);
+        rhiReleaseHandle(previewLOD.meshletTrianglesBuffer);
+        rhiReleaseHandle(previewLOD.boundsBuffer);
+        rhiReleaseHandle(previewLOD.materialIDsBuffer);
+        rhiReleaseHandle(previewLOD.groupBuffer);
+        rhiReleaseHandle(previewLOD.nodeBuffer);
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(vertexDescriptor);
@@ -1584,6 +1591,14 @@ int main() {
         releaseMaterialResources(previewMaterials);
         releaseMeshletBuffers(previewMeshlets);
         releaseMeshBuffers(previewMesh);
+        // Release cluster LOD buffers
+        rhiReleaseHandle(previewLOD.meshletBuffer);
+        rhiReleaseHandle(previewLOD.meshletVerticesBuffer);
+        rhiReleaseHandle(previewLOD.meshletTrianglesBuffer);
+        rhiReleaseHandle(previewLOD.boundsBuffer);
+        rhiReleaseHandle(previewLOD.materialIDsBuffer);
+        rhiReleaseHandle(previewLOD.groupBuffer);
+        rhiReleaseHandle(previewLOD.nodeBuffer);
         rhiReleaseHandle(depthState);
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);

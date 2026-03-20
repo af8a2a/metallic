@@ -444,10 +444,32 @@ bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
 
     if (!meshletData.meshletsPerGroup.empty() &&
         meshletData.meshletsPerGroup != rebuiltMeshlets.meshletsPerGroup) {
-        rhiReleaseHandle(rebuiltPositionBuffer);
-        releaseMeshletHandles(rebuiltMeshlets);
-        spdlog::error("SceneGraph: Root scale normalization changed meshlet group counts");
-        return false;
+        spdlog::warn("SceneGraph: Root scale normalization changed meshlet group counts "
+                     "(old {} groups, new {} groups) — rebuilding node mappings",
+                     meshletData.meshletsPerGroup.size(),
+                     rebuiltMeshlets.meshletsPerGroup.size());
+
+        // Rebuild prefix sums from new meshlet counts
+        std::vector<uint32_t> newPrefix(mesh.primitiveGroups.size() + 1, 0);
+        for (size_t i = 0; i < mesh.primitiveGroups.size(); i++) {
+            uint32_t count = (i < rebuiltMeshlets.meshletsPerGroup.size())
+                ? rebuiltMeshlets.meshletsPerGroup[i] : 0;
+            newPrefix[i + 1] = newPrefix[i] + count;
+        }
+
+        // Update each node's meshletStart/meshletCount
+        for (auto& node : nodes) {
+            if (node.meshIndex < 0) continue;
+            uint32_t mi = static_cast<uint32_t>(node.meshIndex);
+            if (mi >= mesh.meshRanges.size()) continue;
+            const auto& range = mesh.meshRanges[mi];
+            uint32_t firstGroup = range.firstGroup;
+            uint32_t lastGroup = firstGroup + range.groupCount;
+            if (firstGroup < newPrefix.size() && lastGroup < newPrefix.size()) {
+                node.meshletStart = newPrefix[firstGroup];
+                node.meshletCount = newPrefix[lastGroup] - newPrefix[firstGroup];
+            }
+        }
     }
 
     mesh.cpuPositions = std::move(scaledMesh.cpuPositions);
