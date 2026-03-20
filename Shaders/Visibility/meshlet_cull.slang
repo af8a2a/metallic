@@ -20,6 +20,8 @@ struct CullUniforms {
     uint     hzbLevelCount;
     float    occlusionDepthBias;
     float    occlusionBoundsScale;
+    uint     cullingPhase;     // 0 = phase1, 1 = phase2
+    uint     _pad0;
 };
 
 struct InstanceData {
@@ -48,7 +50,9 @@ StructuredBuffer<InstanceData>      instances;       // buffer(1)
 StructuredBuffer<GPUMeshletBounds>  meshletBounds;   // buffer(2)
 RWStructuredBuffer<MeshletDrawInfo> visibleMeshlets; // buffer(3)
 RWByteAddressBuffer                 counters;        // buffer(4)
-Texture2D<float>                    hzbPyramid[HZB_MAX_LEVELS]; // texture(5+)
+RWStructuredBuffer<MeshletDrawInfo> occlusionFailedMeshlets; // buffer(5)
+StructuredBuffer<MeshletDrawInfo>   phase2InputMeshlets;     // buffer(6)
+Texture2D<float>                    hzbPyramid[HZB_MAX_LEVELS]; // texture(7+)
 
 float sampleHzb(uint level, uint2 coord) {
     switch (level) {
@@ -65,6 +69,75 @@ float sampleHzb(uint level, uint2 coord) {
     }
 }
 
+// Shared occlusion test used by both phase 1 and phase 2.
+// Returns true if the meshlet is occluded (behind the HZB).
+bool testOcclusion(float3 centerWS, float worldRadius) {
+    float4 centerClip = mul(cullUniforms.prevViewProj, float4(centerWS, 1.0));
+    if (centerClip.w <= 1e-5)
+        return false;
+
+    float3 centerVS = mul(cullUniforms.prevView, float4(centerWS, 1.0)).xyz;
+    float viewDepth = max(abs(centerVS.z), 1e-4);
+    float2 ndcRadius = float2(cullUniforms.prevProjScale.x * worldRadius / viewDepth,
+                              cullUniforms.prevProjScale.y * worldRadius / viewDepth) *
+                       cullUniforms.occlusionBoundsScale;
+    float2 centerNdc = centerClip.xy / centerClip.w;
+
+    float2 minUv = float2(centerNdc.x - ndcRadius.x, centerNdc.y + ndcRadius.y) *
+                       float2(0.5, -0.5) +
+                   float2(0.5, 0.5);
+    float2 maxUv = float2(centerNdc.x + ndcRadius.x, centerNdc.y - ndcRadius.y) *
+                       float2(0.5, -0.5) +
+                   float2(0.5, 0.5);
+    minUv = clamp(minUv, float2(0.0, 0.0), float2(1.0, 1.0));
+    maxUv = clamp(maxUv, float2(0.0, 0.0), float2(1.0, 1.0));
+    float2 uvMin = min(minUv, maxUv);
+    float2 uvMax = max(minUv, maxUv);
+
+    float2 rectSizePixels = max((uvMax - uvMin) * cullUniforms.hzbTextureSize, float2(1.0, 1.0));
+    float maxExtent = max(rectSizePixels.x, rectSizePixels.y);
+    uint level = 0u;
+    if (maxExtent > 1.0) {
+        level = min(cullUniforms.hzbLevelCount - 1u, (uint)ceil(log2(maxExtent)));
+    }
+
+    uint2 mipSize = uint2((uint)cullUniforms.hzbTextureSize.x, (uint)cullUniforms.hzbTextureSize.y);
+    for (uint mip = 0u; mip < level; ++mip) {
+        mipSize = uint2(max((mipSize.x + 1u) / 2u, 1u),
+                        max((mipSize.y + 1u) / 2u, 1u));
+    }
+
+    float2 mipScale = float2((float)mipSize.x, (float)mipSize.y);
+    uint2 minTexel = uint2(floor(uvMin * mipScale));
+    uint2 maxTexel = uint2(floor(uvMax * mipScale));
+    uint2 mipMaxCoord = uint2(max(mipSize.x, 1u) - 1u,
+                              max(mipSize.y, 1u) - 1u);
+    minTexel = min(minTexel, mipMaxCoord);
+    maxTexel = min(maxTexel, mipMaxCoord);
+
+    // Reversed-Z: HZB stores min (farthest occluder). Take min of 4 corners.
+    float sampledDepth = sampleHzb(level, minTexel);
+    sampledDepth = min(sampledDepth, sampleHzb(level, uint2(maxTexel.x, minTexel.y)));
+    sampledDepth = min(sampledDepth, sampleHzb(level, uint2(minTexel.x, maxTexel.y)));
+    sampledDepth = min(sampledDepth, sampleHzb(level, maxTexel));
+
+    float3 prevCameraToCenter = centerWS - cullUniforms.prevCameraWorldPos.xyz;
+    float prevCameraDistanceSq = dot(prevCameraToCenter, prevCameraToCenter);
+    if (prevCameraDistanceSq > 1e-10) {
+        float3 nearestPointWS = centerWS - normalize(prevCameraToCenter) * worldRadius;
+        float4 nearestClip = mul(cullUniforms.prevViewProj, float4(nearestPointWS, 1.0));
+        if (nearestClip.w > 1e-5) {
+            float nearestDepth = saturate(nearestClip.z / nearestClip.w);
+            // Reversed-Z: closer = larger depth. Occluded if meshlet's
+            // nearest depth is less than the farthest occluder depth.
+            if (nearestDepth < sampledDepth - cullUniforms.occlusionDepthBias) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void computeMain(uint3 dtid : SV_DispatchThreadID) {
@@ -72,21 +145,39 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
     if (flatID >= cullUniforms.totalDispatchCount)
         return;
 
-    // Find which instance this thread belongs to via linear scan
-    // (instance count is small, typically <100)
-    uint instIdx = 0;
-    uint remaining = flatID;
-    for (uint i = 0; i < cullUniforms.instanceCount; i++) {
-        if (remaining < instances[i].meshletCount) {
-            instIdx = i;
-            break;
-        }
-        remaining -= instances[i].meshletCount;
-    }
+    uint instIdx;
+    uint globalMeshletID;
+    InstanceData inst;
 
-    InstanceData inst = instances[instIdx];
-    uint localMeshletIdx = remaining;
-    uint globalMeshletID = inst.meshletStart + localMeshletIdx;
+    if (cullUniforms.cullingPhase == 1u) {
+        // Phase 2: read from occlusion-failed list
+        MeshletDrawInfo failedInfo = phase2InputMeshlets[flatID];
+        globalMeshletID = failedInfo.globalMeshletID;
+
+        // Find the instance by ID
+        instIdx = 0;
+        for (uint i = 0; i < cullUniforms.instanceCount; i++) {
+            if (instances[i].instanceID == failedInfo.instanceID) {
+                instIdx = i;
+                break;
+            }
+        }
+        inst = instances[instIdx];
+    } else {
+        // Phase 1: iterate all meshlets across instances
+        instIdx = 0;
+        uint remaining = flatID;
+        for (uint i = 0; i < cullUniforms.instanceCount; i++) {
+            if (remaining < instances[i].meshletCount) {
+                instIdx = i;
+                break;
+            }
+            remaining -= instances[i].meshletCount;
+        }
+        inst = instances[instIdx];
+        uint localMeshletIdx = remaining;
+        globalMeshletID = inst.meshletStart + localMeshletIdx;
+    }
 
     GPUMeshletBounds b = meshletBounds[globalMeshletID];
     float3 centerOS = b.center_radius.xyz;
@@ -103,123 +194,92 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
     float worldRadius = radius * maxScale;
 
     bool culled = false;
+    bool occlusionCulledOnly = false;
 
-    // Frustum culling in clip space
-    if (cullUniforms.enableFrustumCull != 0) {
-        // Extract frustum planes from viewProj.
-        // viewProj is transposed for Slang, so vp[i] = row i of original MVP.
-        // This matches MvpToPlanes: mt = transpose(m), planes from mt[3] ± mt[0/1/2].
-        float4x4 vp = cullUniforms.viewProj;
-        float4 planes[6];
-        planes[0] = vp[3] + vp[0]; // Left
-        planes[1] = vp[3] - vp[0]; // Right
-        planes[2] = vp[3] + vp[1]; // Bottom
-        planes[3] = vp[3] - vp[1]; // Top
-        planes[4] = vp[2];         // Near
-        planes[5] = vp[3] - vp[2]; // Far
+    if (cullUniforms.cullingPhase == 0u) {
+        // Phase 1: full frustum + cone + occlusion culling
 
-        [unroll]
-        for (int i = 0; i < 6; i++) {
-            float len = length(planes[i].xyz);
-            if (len > 1e-6) {
-                float d = (dot(planes[i].xyz, centerWS) + planes[i].w) / len;
-                if (d < -worldRadius) {
-                    culled = true;
-                    break;
-                }
-            }
-        }
-    }
+        // Frustum culling in clip space
+        if (cullUniforms.enableFrustumCull != 0) {
+            float4x4 vp = cullUniforms.viewProj;
+            float4 planes[6];
+            planes[0] = vp[3] + vp[0]; // Left
+            planes[1] = vp[3] - vp[0]; // Right
+            planes[2] = vp[3] + vp[1]; // Bottom
+            planes[3] = vp[3] - vp[1]; // Top
+            planes[4] = vp[2];         // Near
+            planes[5] = vp[3] - vp[2]; // Far
 
-    // Cone/backface culling in world space
-    if (!culled && cullUniforms.enableConeCull != 0) {
-        float3 cameraPosWS = cullUniforms.cameraWorldPos.xyz;
-        // Rotate cone axis to world space (direction only)
-        float3 coneAxisWS = normalize(mul((float3x3)inst.worldMatrix, coneAxis));
-        float3 cameraToCenter = centerWS - cameraPosWS;
-        float lenSq = dot(cameraToCenter, cameraToCenter);
-        if (lenSq > 1e-12) {
-            float lenV = sqrt(lenSq);
-            float lhs = dot(cameraToCenter, coneAxisWS);
-            float rhs = coneCutoff * lenV + worldRadius;
-            if (lhs >= rhs)
-                culled = true;
-        }
-    }
-
-    if (!culled &&
-        cullUniforms.enableOcclusionCull != 0 &&
-        cullUniforms.hzbLevelCount > 0u) {
-        float4 centerClip = mul(cullUniforms.prevViewProj, float4(centerWS, 1.0));
-        if (centerClip.w > 1e-5) {
-            float3 centerVS = mul(cullUniforms.prevView, float4(centerWS, 1.0)).xyz;
-            float viewDepth = max(abs(centerVS.z), 1e-4);
-            float2 ndcRadius = float2(cullUniforms.prevProjScale.x * worldRadius / viewDepth,
-                                      cullUniforms.prevProjScale.y * worldRadius / viewDepth) *
-                               cullUniforms.occlusionBoundsScale;
-            float2 centerNdc = centerClip.xy / centerClip.w;
-
-            float2 minUv = float2(centerNdc.x - ndcRadius.x, centerNdc.y + ndcRadius.y) *
-                               float2(0.5, -0.5) +
-                           float2(0.5, 0.5);
-            float2 maxUv = float2(centerNdc.x + ndcRadius.x, centerNdc.y - ndcRadius.y) *
-                               float2(0.5, -0.5) +
-                           float2(0.5, 0.5);
-            minUv = clamp(minUv, float2(0.0, 0.0), float2(1.0, 1.0));
-            maxUv = clamp(maxUv, float2(0.0, 0.0), float2(1.0, 1.0));
-            float2 uvMin = min(minUv, maxUv);
-            float2 uvMax = max(minUv, maxUv);
-
-            float2 rectSizePixels = max((uvMax - uvMin) * cullUniforms.hzbTextureSize, float2(1.0, 1.0));
-            float maxExtent = max(rectSizePixels.x, rectSizePixels.y);
-            uint level = 0u;
-            if (maxExtent > 1.0) {
-                level = min(cullUniforms.hzbLevelCount - 1u, (uint)ceil(log2(maxExtent)));
-            }
-
-            uint2 mipSize = uint2((uint)cullUniforms.hzbTextureSize.x, (uint)cullUniforms.hzbTextureSize.y);
-            for (uint mip = 0u; mip < level; ++mip) {
-                mipSize = uint2(max((mipSize.x + 1u) / 2u, 1u),
-                                max((mipSize.y + 1u) / 2u, 1u));
-            }
-
-            float2 mipScale = float2((float)mipSize.x, (float)mipSize.y);
-            uint2 minTexel = uint2(floor(uvMin * mipScale));
-            uint2 maxTexel = uint2(floor(uvMax * mipScale));
-            uint2 mipMaxCoord = uint2(max(mipSize.x, 1u) - 1u,
-                                      max(mipSize.y, 1u) - 1u);
-            minTexel = min(minTexel, mipMaxCoord);
-            maxTexel = min(maxTexel, mipMaxCoord);
-
-            // Reversed-Z: HZB stores min (farthest occluder). Take min of 4 corners.
-            float sampledDepth = sampleHzb(level, minTexel);
-            sampledDepth = min(sampledDepth, sampleHzb(level, uint2(maxTexel.x, minTexel.y)));
-            sampledDepth = min(sampledDepth, sampleHzb(level, uint2(minTexel.x, maxTexel.y)));
-            sampledDepth = min(sampledDepth, sampleHzb(level, maxTexel));
-
-            float3 prevCameraToCenter = centerWS - cullUniforms.prevCameraWorldPos.xyz;
-            float prevCameraDistanceSq = dot(prevCameraToCenter, prevCameraToCenter);
-            if (prevCameraDistanceSq > 1e-10) {
-                float3 nearestPointWS = centerWS - normalize(prevCameraToCenter) * worldRadius;
-                float4 nearestClip = mul(cullUniforms.prevViewProj, float4(nearestPointWS, 1.0));
-                if (nearestClip.w > 1e-5) {
-                    float nearestDepth = saturate(nearestClip.z / nearestClip.w);
-                    // Reversed-Z: closer = larger depth. Occluded if meshlet's
-                    // nearest depth is less than the farthest occluder depth.
-                    if (nearestDepth < sampledDepth - cullUniforms.occlusionDepthBias) {
+            [unroll]
+            for (int i = 0; i < 6; i++) {
+                float len = length(planes[i].xyz);
+                if (len > 1e-6) {
+                    float d = (dot(planes[i].xyz, centerWS) + planes[i].w) / len;
+                    if (d < -worldRadius) {
                         culled = true;
+                        break;
                     }
                 }
             }
         }
-    }
 
-    if (!culled) {
-        uint slot;
-        counters.InterlockedAdd(0, 1u, slot);
-        MeshletDrawInfo info;
-        info.instanceID = inst.instanceID;
-        info.globalMeshletID = globalMeshletID;
-        visibleMeshlets[slot] = info;
+        // Cone/backface culling in world space
+        if (!culled && cullUniforms.enableConeCull != 0) {
+            float3 cameraPosWS = cullUniforms.cameraWorldPos.xyz;
+            float3 coneAxisWS = normalize(mul((float3x3)inst.worldMatrix, coneAxis));
+            float3 cameraToCenter = centerWS - cameraPosWS;
+            float lenSq = dot(cameraToCenter, cameraToCenter);
+            if (lenSq > 1e-12) {
+                float lenV = sqrt(lenSq);
+                float lhs = dot(cameraToCenter, coneAxisWS);
+                float rhs = coneCutoff * lenV + worldRadius;
+                if (lhs >= rhs)
+                    culled = true;
+            }
+        }
+
+        // Occlusion culling against previous frame's HZB
+        if (!culled &&
+            cullUniforms.enableOcclusionCull != 0 &&
+            cullUniforms.hzbLevelCount > 0u) {
+            bool occluded = testOcclusion(centerWS, worldRadius);
+            if (occluded) {
+                culled = true;
+                occlusionCulledOnly = true;
+            }
+        }
+
+        if (!culled) {
+            uint slot;
+            counters.InterlockedAdd(0, 1u, slot);
+            MeshletDrawInfo info;
+            info.instanceID = inst.instanceID;
+            info.globalMeshletID = globalMeshletID;
+            visibleMeshlets[slot] = info;
+        } else if (occlusionCulledOnly) {
+            // Passed frustum+cone but failed occlusion → candidate for phase 2
+            uint slot;
+            counters.InterlockedAdd(16, 1u, slot);
+            MeshletDrawInfo info;
+            info.instanceID = inst.instanceID;
+            info.globalMeshletID = globalMeshletID;
+            occlusionFailedMeshlets[slot] = info;
+        }
+    } else {
+        // Phase 2: re-test occlusion only against mid-frame HZB
+        // (frustum+cone already passed in phase 1)
+        if (cullUniforms.enableOcclusionCull != 0 &&
+            cullUniforms.hzbLevelCount > 0u) {
+            culled = testOcclusion(centerWS, worldRadius);
+        }
+
+        if (!culled) {
+            uint slot;
+            counters.InterlockedAdd(0, 1u, slot);
+            MeshletDrawInfo info;
+            info.instanceID = inst.instanceID;
+            info.globalMeshletID = globalMeshletID;
+            visibleMeshlets[slot] = info;
+        }
     }
 }

@@ -7,9 +7,12 @@ struct OrbitCamera;
 
 struct InputState {
     OrbitCamera* camera = nullptr;
-    bool mouseDown = false;
+    GLFWwindow* window = nullptr;
+    bool mouseDown = false;       // left mouse (orbit rotate)
+    bool rightMouseDown = false;  // right mouse (FPS look)
     double lastMouseX = 0.0;
     double lastMouseY = 0.0;
 };
 
 void setupInputCallbacks(GLFWwindow* window, InputState* state);
+void updateCameraInput(GLFWwindow* window, InputState* state, float deltaTime);

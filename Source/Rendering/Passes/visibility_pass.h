@@ -29,6 +29,9 @@ public:
                     cc[2].get<double>(), cc[3].get<double>());
             }
         }
+        if (config.config.contains("loadExisting")) {
+            m_loadExisting = config.config["loadExisting"].get<bool>();
+        }
     }
 
     // Output resources
@@ -47,19 +50,38 @@ public:
         if (cullInput.isValid()) {
             builder.read(cullInput);
         }
-        visibility = builder.create("visibility",
-            FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::R32Uint));
-        depth = builder.create("depth",
-            FGTextureDesc::depthTarget(m_width, m_height));
-        visibility = builder.setColorAttachment(0,
-                                                visibility,
-                                                RhiLoadAction::Clear,
-                                                RhiStoreAction::Store,
-                                                m_clearColor);
-        depth = builder.setDepthAttachment(depth,
-                                           RhiLoadAction::Clear,
-                                           RhiStoreAction::Store,
-                                           m_ctx.depthClearValue);
+
+        if (m_loadExisting) {
+            // Phase 2: load existing depth+visibility from phase 1
+            FGResource visInput = getInput("visibility");
+            FGResource depthInput = getInput("depth");
+            if (visInput.isValid() && depthInput.isValid()) {
+                visibility = builder.setColorAttachment(0, visInput,
+                    RhiLoadAction::Load, RhiStoreAction::Store);
+                depth = builder.setDepthAttachment(depthInput,
+                    RhiLoadAction::Load, RhiStoreAction::Store);
+            } else {
+                // Fallback: create new (shouldn't happen in correct pipeline config)
+                visibility = builder.create("visibility",
+                    FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::R32Uint));
+                depth = builder.create("depth",
+                    FGTextureDesc::depthTarget(m_width, m_height));
+                visibility = builder.setColorAttachment(0, visibility,
+                    RhiLoadAction::Clear, RhiStoreAction::Store, m_clearColor);
+                depth = builder.setDepthAttachment(depth,
+                    RhiLoadAction::Clear, RhiStoreAction::Store, m_ctx.depthClearValue);
+            }
+        } else {
+            // Phase 1: create + clear (existing behavior)
+            visibility = builder.create("visibility",
+                FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::R32Uint));
+            depth = builder.create("depth",
+                FGTextureDesc::depthTarget(m_width, m_height));
+            visibility = builder.setColorAttachment(0, visibility,
+                RhiLoadAction::Clear, RhiStoreAction::Store, m_clearColor);
+            depth = builder.setDepthAttachment(depth,
+                RhiLoadAction::Clear, RhiStoreAction::Store, m_ctx.depthClearValue);
+        }
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
@@ -247,6 +269,7 @@ private:
     std::string m_name = "Visibility Pass";
     RhiClearColor m_clearColor = RhiClearColor(0xFFFFFFFF, 0, 0, 0);
     bool m_gpuDrivenLastFrame = false;
+    bool m_loadExisting = false;
 };
 
 
