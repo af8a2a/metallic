@@ -378,7 +378,6 @@ std::unique_ptr<RhiTexture> MetalFrameGraphBackend::createTexture(const RhiTextu
     textureDesc->setStorageMode(metalStorageMode(desc.storageMode));
     textureDesc->setUsage(metalTextureUsage(desc.usage));
     MTL::Texture* texture = m_device->newTexture(textureDesc);
-    textureDesc->release();
     return std::make_unique<MetalOwnedTexture>(texture);
 }
 

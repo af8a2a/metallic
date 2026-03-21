@@ -137,7 +137,6 @@ void* metalCreateTexture2D(void* deviceHandle,
     }
 
     auto* texture = device->newTexture(desc);
-    desc->release();
     return texture;
 }
 
