@@ -95,10 +95,45 @@ public:
         ImGui::Text("DLSS Pass %d x %d -> %d x %d",
                     currentRenderWidth(), currentRenderHeight(),
                     currentDisplayWidth(), currentDisplayHeight());
+
+        const PipelineUiControls* uiControls = m_runtimeContext ? m_runtimeContext->uiControls : nullptr;
 #ifdef METALLIC_HAS_STREAMLINE
         if (auto* streamlineCtx = currentStreamlineContext()) {
             ImGui::Text("Status: %s", streamlineCtx->statusString().c_str());
+        }
+        if (uiControls && uiControls->hasDlssPass) {
+            ImGui::TextUnformatted(uiControls->dlssAvailable
+                ? "Streamline: Available"
+                : "Streamline: Unavailable (pass-through)");
             ImGui::TextUnformatted(shouldEvaluateDlss() ? "Mode: DLSS" : "Mode: Pass-through");
+            const char* presetNames[] = {
+                "Off", "Max Performance", "Balanced", "Max Quality",
+                "Ultra Performance", "Ultra Quality", "DLAA"
+            };
+            int presetIdx = static_cast<int>(uiControls->currentPreset);
+            if (ImGui::Combo("DLSS Preset", &presetIdx, presetNames, IM_ARRAYSIZE(presetNames)) &&
+                uiControls->onDlssPresetChanged) {
+                uiControls->onDlssPresetChanged(static_cast<DlssPreset>(presetIdx));
+            }
+            ImGui::Text("Display: %d x %d", uiControls->displayWidth, uiControls->displayHeight);
+            if (uiControls->dlssIsActiveUpscaler) {
+                ImGui::TextUnformatted("DLSS is the active upscaler in this graph.");
+                ImGui::Text("Render: %u x %u", uiControls->dlssRenderWidth, uiControls->dlssRenderHeight);
+            } else {
+                ImGui::TextUnformatted("DLSS pass is present but not driving the active post path.");
+                if (!uiControls->dlssDiagnostic.empty()) {
+                    ImGui::TextWrapped("%s", uiControls->dlssDiagnostic.c_str());
+                }
+            }
+            if (!uiControls->dlssIsActiveUpscaler) {
+                ImGui::BeginDisabled();
+            }
+            if (ImGui::Button("Reset DLSS History") && uiControls->onResetDlssHistory) {
+                uiControls->onResetDlssHistory();
+            }
+            if (!uiControls->dlssIsActiveUpscaler) {
+                ImGui::EndDisabled();
+            }
         }
 #else
         ImGui::Text("Streamline not compiled in");

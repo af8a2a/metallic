@@ -36,9 +36,9 @@
       300.0,
       190.0
     ],
-    "TAAPass_11": [
-      1300.0,
-      190.0
+    "StreamlineDlssPass_12": [
+      1321.4976806640625,
+      190.3604736328125
     ],
     "TonemapPass_10": [
       1550.0,
@@ -143,7 +143,7 @@
       "config": null,
       "enabled": true,
       "inputs": [
-        "taaOutput",
+        "dlssOutput",
         "exposureLut"
       ],
       "name": "TonemapPass_10",
@@ -200,12 +200,12 @@
         "depth",
         "motionVectors"
       ],
-      "name": "TAAPass_11",
+      "name": "StreamlineDlssPass_12",
       "outputs": [
-        "taaOutput"
+        "dlssOutput"
       ],
       "sideEffect": false,
-      "type": "TAAPass"
+      "type": "StreamlineDlssPass"
     }
   ],
   "resources": []

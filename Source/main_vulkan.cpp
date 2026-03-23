@@ -1010,6 +1010,7 @@ int main() {
     uint32_t dlssRenderWidth = 0;
     uint32_t dlssRenderHeight = 0;
     float visibilityRenderScale = 1.0f;
+    PipelineUiControls pipelineUiControls{};
 
 #ifdef METALLIC_HAS_STREAMLINE
     if (streamlineCtx.init(PROJECT_SOURCE_DIR)) {
@@ -1563,6 +1564,7 @@ int main() {
     runtimeContext.backbufferRhi = &backbufferTexture;
     runtimeContext.resourceFactory = &frameGraphBackend;
     runtimeContext.streamlineContext = streamlineCtx.isInitialized() ? &streamlineCtx : nullptr;
+    runtimeContext.uiControls = &pipelineUiControls;
 
     const PipelineAsset sceneColorPostAsset = makeSceneColorPostPipelineAsset();
     PipelineBuilder postBuilder(renderContext);
@@ -1676,6 +1678,40 @@ int main() {
     float4 prevCameraWorldPos = float4(0.0f, 0.0f, 0.0f, 1.0f);
     bool hasPrevMatrices = false;
     uint32_t frameIndex = 0;
+
+    auto applyDlssPresetChange = [&](DlssPreset newPreset) {
+        if (newPreset == dlssPreset) {
+            return;
+        }
+        dlssPreset = newPreset;
+        dlssStateDirty = true;
+        visibilityHistoryResetRequested = true;
+        hasPrevMatrices = false;
+        streamlineCtx.resetHistory();
+        postBuilderNeedsRebuild = true;
+    };
+
+    auto refreshPipelineUiControls = [&]() {
+        pipelineUiControls.enableRTShadows = &enableRTShadows;
+        pipelineUiControls.rtShadowsAvailable = rtShadowsAvailable;
+        pipelineUiControls.useVisibilityRenderGraph = useVisibilityRenderGraph;
+        pipelineUiControls.hasDlssPass = visibilityUpscalerSelection.hasDlssPass;
+        pipelineUiControls.dlssAvailable = dlssAvailable;
+        pipelineUiControls.dlssEnabled = runtimeContext.dlssEnabled;
+        pipelineUiControls.dlssIsActiveUpscaler =
+            visibilityUpscalerMode == VisibilityUpscalerMode::DLSS;
+        pipelineUiControls.currentPreset = dlssPreset;
+        pipelineUiControls.dlssRenderWidth = dlssRenderWidth;
+        pipelineUiControls.dlssRenderHeight = dlssRenderHeight;
+        pipelineUiControls.displayWidth = width;
+        pipelineUiControls.displayHeight = height;
+        pipelineUiControls.dlssDiagnostic = visibilityUpscalerSelection.diagnostic;
+        pipelineUiControls.onDlssPresetChanged = applyDlssPresetChange;
+        pipelineUiControls.onResetDlssHistory = [&]() {
+            streamlineCtx.resetHistory();
+        };
+        runtimeContext.uiControls = &pipelineUiControls;
+    };
 
     // Ring buffer to keep instance transform buffers alive for 2 frames (kMaxFramesInFlight).
     // Without this, the GPU may still be reading a buffer that the CPU has already freed.
@@ -1821,6 +1857,7 @@ int main() {
         }
 
         syncVisibilityUpscalerState(width, height);
+        refreshPipelineUiControls();
         const int activeBuildWidth = useVisibilityRenderGraph ? runtimeContext.renderWidth : width;
         const int activeBuildHeight = useVisibilityRenderGraph ? runtimeContext.renderHeight : height;
         if (postBuilderNeedsRebuild || postBuilder.needsRebuild(activeBuildWidth, activeBuildHeight)) {
@@ -1901,59 +1938,6 @@ int main() {
             ImGui::Text("Render Resolution: %d x %d",
                         runtimeContext.renderWidth,
                         runtimeContext.renderHeight);
-        }
-        if (rtShadowsAvailable && useVisibilityRenderGraph) {
-            ImGui::Checkbox("RT Shadows", &enableRTShadows);
-        }
-
-        // DLSS UI
-        if (useVisibilityRenderGraph) {
-            ImGui::Separator();
-            if (visibilityUpscalerSelection.hasDlssPass) {
-                ImGui::TextUnformatted(dlssAvailable
-                    ? "Streamline: Available"
-                    : "Streamline: Unavailable (pass-through)");
-                const char* presetNames[] = {
-                    "Off", "Max Performance", "Balanced", "Max Quality",
-                    "Ultra Performance", "Ultra Quality", "DLAA"
-                };
-                int presetIdx = static_cast<int>(dlssPreset);
-                if (ImGui::Combo("DLSS Preset", &presetIdx, presetNames, IM_ARRAYSIZE(presetNames))) {
-                    DlssPreset newPreset = static_cast<DlssPreset>(presetIdx);
-                    if (newPreset != dlssPreset) {
-                        dlssPreset = newPreset;
-                        dlssStateDirty = true;
-                        visibilityHistoryResetRequested = true;
-                        hasPrevMatrices = false;
-                        streamlineCtx.resetHistory();
-                        postBuilderNeedsRebuild = true;
-                    }
-                }
-                ImGui::Text("Display: %d x %d", width, height);
-                if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) {
-                    ImGui::TextUnformatted("DLSS is the active upscaler in this graph.");
-                    ImGui::Text("Render: %u x %u", dlssRenderWidth, dlssRenderHeight);
-                } else {
-                    ImGui::TextUnformatted("DLSS pass is present but not driving the active post path.");
-                    if (!visibilityUpscalerSelection.diagnostic.empty()) {
-                        ImGui::TextWrapped("%s", visibilityUpscalerSelection.diagnostic.c_str());
-                    }
-                }
-                if (visibilityUpscalerMode != VisibilityUpscalerMode::DLSS) {
-                    ImGui::BeginDisabled();
-                }
-                if (ImGui::Button("Reset DLSS History")) {
-                    streamlineCtx.resetHistory();
-                }
-                if (visibilityUpscalerMode != VisibilityUpscalerMode::DLSS) {
-                    ImGui::EndDisabled();
-                }
-            } else {
-                ImGui::TextUnformatted(dlssAvailable
-                    ? "Active graph has no StreamlineDlssPass"
-                    : "Streamline: Unavailable");
-            }
-            ImGui::Separator();
         }
         if (ImGui::Button("Reload Shaders (F5)")) {
             shaderReloadRequested = true;

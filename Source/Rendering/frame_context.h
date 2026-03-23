@@ -3,6 +3,7 @@
 #include <ml.h>
 #include "rhi_backend.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -11,9 +12,30 @@ class RhiTexture;
 class RhiBuffer;
 class RhiFrameGraphBackend;
 class StreamlineContext;
+enum class DlssPreset : uint32_t;
 #ifdef _WIN32
 class VulkanImageLayoutTracker;
 #endif
+
+struct PipelineUiControls {
+    bool* enableRTShadows = nullptr;
+    bool rtShadowsAvailable = false;
+    bool useVisibilityRenderGraph = false;
+
+    bool hasDlssPass = false;
+    bool dlssAvailable = false;
+    bool dlssEnabled = false;
+    bool dlssIsActiveUpscaler = false;
+    DlssPreset currentPreset = static_cast<DlssPreset>(0);
+    uint32_t dlssRenderWidth = 0;
+    uint32_t dlssRenderHeight = 0;
+    int displayWidth = 0;
+    int displayHeight = 0;
+    std::string dlssDiagnostic;
+
+    std::function<void(DlssPreset)> onDlssPresetChanged;
+    std::function<void()> onResetDlssHistory;
+};
 
 // Per-frame runtime context for data-driven pipeline execution
 // This holds all the dynamic data that changes each frame
@@ -126,6 +148,7 @@ struct PipelineRuntimeContext {
     StreamlineContext* streamlineContext = nullptr;
     bool dlssAvailable = false;
     bool dlssEnabled = false;
+    PipelineUiControls* uiControls = nullptr;
 
     // Resource creation for pass-owned persistent resources
     RhiFrameGraphBackend* resourceFactory = nullptr;

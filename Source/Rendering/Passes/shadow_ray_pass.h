@@ -83,7 +83,13 @@ public:
 
     void renderUI() override {
         ImGui::Text("Resolution: %d x %d", m_width, m_height);
-        if (m_frameContext) {
+        const PipelineUiControls* uiControls = m_runtimeContext ? m_runtimeContext->uiControls : nullptr;
+        if (uiControls &&
+            uiControls->useVisibilityRenderGraph &&
+            uiControls->rtShadowsAvailable &&
+            uiControls->enableRTShadows) {
+            ImGui::Checkbox("Enabled", uiControls->enableRTShadows);
+        } else if (m_frameContext) {
             ImGui::Text("Enabled: %s", m_frameContext->enableRTShadows ? "Yes" : "No");
         }
         ImGui::SliderFloat("Normal Bias", &m_normalBias, 0.0f, 0.5f, "%.3f");
