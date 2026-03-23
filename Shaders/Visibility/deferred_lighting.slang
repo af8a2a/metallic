@@ -14,6 +14,7 @@ struct LightingUniforms {
     uint     textureCount;
     uint     instanceCount;
     uint     shadowEnabled;
+    float    motionVectorIntensity;
     uint     pad2;
 };
 
@@ -330,7 +331,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         if (abs(prevClip.w) > 1e-6) {
             float2 prevNDC = prevClip.xy / prevClip.w;
             float2 prevUV = float2(prevNDC.x * 0.5 + 0.5, 0.5 - prevNDC.y * 0.5);
-            motionVectors[pixel] = currentUV - prevUV;
+            motionVectors[pixel] = (currentUV - prevUV) * lightUniforms.motionVectorIntensity;
         }
     }
 }

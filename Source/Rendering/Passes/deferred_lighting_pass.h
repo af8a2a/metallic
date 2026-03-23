@@ -17,6 +17,9 @@ public:
 
     void configure(const PassConfig& config) override {
         m_name = config.name;
+        if (config.config.contains("motionVectorIntensity")) {
+            m_motionVectorIntensity = config.config["motionVectorIntensity"].get<float>();
+        }
     }
 
     FGResource output;
@@ -73,6 +76,7 @@ public:
         lightUniforms.textureCount = m_frameContext->textureCount;
         lightUniforms.instanceCount = m_frameContext->visibilityInstanceCount;
         lightUniforms.shadowEnabled = m_frameContext->enableRTShadows ? 1 : 0;
+        lightUniforms.motionVectorIntensity = m_motionVectorIntensity;
         lightUniforms.pad2 = 0;
 
         encoder.setComputePipeline(pipeIt->second);
@@ -116,6 +120,7 @@ public:
 
     void renderUI() override {
         ImGui::Text("Resolution: %d x %d", m_width, m_height);
+        ImGui::SliderFloat("Motion Vector Intensity", &m_motionVectorIntensity, 0.0f, 2.0f, "%.2f");
         if (m_frameContext) {
             ImGui::Text("Instances: %u", m_frameContext->visibilityInstanceCount);
             ImGui::Text("Meshlets: %u", m_frameContext->meshletCount);
@@ -129,6 +134,7 @@ private:
     FGResource m_visRead, m_depthRead, m_shadowRead, m_skyRead;
     int m_width, m_height;
     std::string m_name = "Deferred Lighting";
+    float m_motionVectorIntensity = 1.0f;
 };
 
 

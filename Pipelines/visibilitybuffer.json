@@ -1,8 +1,8 @@
 {
   "editorPositions": {
     "AutoExposurePass_11": [
-      1300.0,
-      50.0
+      1318.0,
+      -14.0
     ],
     "DeferredLightingPass_5": [
       1050.0,
@@ -35,10 +35,6 @@
     "SkyPass_8": [
       300.0,
       190.0
-    ],
-    "StreamlineDlssPass_12": [
-      1321.4976806640625,
-      190.3604736328125
     ],
     "TonemapPass_10": [
       1550.0,
@@ -143,7 +139,7 @@
       "config": null,
       "enabled": true,
       "inputs": [
-        "dlssOutput",
+        "lightingOutput",
         "exposureLut"
       ],
       "name": "TonemapPass_10",
@@ -191,21 +187,6 @@
       ],
       "sideEffect": false,
       "type": "AutoExposurePass"
-    },
-    {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "lightingOutput",
-        "depth",
-        "motionVectors"
-      ],
-      "name": "StreamlineDlssPass_12",
-      "outputs": [
-        "dlssOutput"
-      ],
-      "sideEffect": false,
-      "type": "StreamlineDlssPass"
     }
   ],
   "resources": []
