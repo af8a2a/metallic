@@ -2,6 +2,7 @@
 
 #include <ml.h>
 #include "rhi_backend.h"
+#include "rhi_interop.h"
 
 #include <functional>
 #include <string>
@@ -11,11 +12,7 @@
 class RhiTexture;
 class RhiBuffer;
 class RhiFrameGraphBackend;
-class StreamlineContext;
 enum class DlssPreset : uint32_t;
-#ifdef _WIN32
-class VulkanImageLayoutTracker;
-#endif
 
 struct PipelineUiControls {
     bool* enableRTShadows = nullptr;
@@ -92,14 +89,6 @@ struct FrameContext {
     // Instance transform buffer (for visibility buffer mode)
     RhiBuffer* instanceTransformBufferRhi = nullptr;
 
-    // Active native command buffer for backend integrations that are not fully abstracted yet.
-    const RhiNativeCommandBuffer* commandBuffer = nullptr;
-
-#ifdef _WIN32
-    // Vulkan image layout tracker used by backend integrations such as Streamline.
-    VulkanImageLayoutTracker* imageLayoutTracker = nullptr;
-#endif
-
     // Depth clear value
     double depthClearValue = 1.0;
 
@@ -144,10 +133,8 @@ struct PipelineRuntimeContext {
     int renderWidth = 0;
     int renderHeight = 0;
 
-    // Optional Streamline / DLSS state used by authored upscaler passes.
-    StreamlineContext* streamlineContext = nullptr;
-    bool dlssAvailable = false;
-    bool dlssEnabled = false;
+    // Optional upscaler state used by authored upscaler passes.
+    IUpscalerIntegration* upscaler = nullptr;
     PipelineUiControls* uiControls = nullptr;
 
     // Resource creation for pass-owned persistent resources

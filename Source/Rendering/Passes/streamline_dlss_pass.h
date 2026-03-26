@@ -5,10 +5,7 @@
 #include "render_pass.h"
 #include "frame_context.h"
 #include "pass_registry.h"
-#include "streamline_context.h"
 #include "imgui.h"
-
-#include <vulkan/vulkan.h>
 
 // Vulkan-only DLSS Super Resolution pass.
 // This pass behaves like a first-class upscaler node in the authored render graph.
@@ -97,9 +94,8 @@ public:
                     currentDisplayWidth(), currentDisplayHeight());
 
         const PipelineUiControls* uiControls = m_runtimeContext ? m_runtimeContext->uiControls : nullptr;
-#ifdef METALLIC_HAS_STREAMLINE
-        if (auto* streamlineCtx = currentStreamlineContext()) {
-            ImGui::Text("Status: %s", streamlineCtx->statusString().c_str());
+        if (auto* upscaler = currentUpscaler()) {
+            ImGui::Text("Status: %s", upscaler->statusString().c_str());
         }
         if (uiControls && uiControls->hasDlssPass) {
             ImGui::TextUnformatted(uiControls->dlssAvailable
@@ -135,9 +131,6 @@ public:
                 ImGui::EndDisabled();
             }
         }
-#else
-        ImGui::Text("Streamline not compiled in");
-#endif
     }
 
 private:
@@ -154,21 +147,13 @@ private:
         return FGResource{};
     }
 
-    StreamlineContext* currentStreamlineContext() const {
-        return m_runtimeContext ? m_runtimeContext->streamlineContext : nullptr;
+    IUpscalerIntegration* currentUpscaler() const {
+        return m_runtimeContext ? m_runtimeContext->upscaler : nullptr;
     }
 
     bool shouldEvaluateDlss() const {
-#ifdef METALLIC_HAS_STREAMLINE
-        StreamlineContext* streamlineCtx = currentStreamlineContext();
-        return streamlineCtx &&
-               m_runtimeContext &&
-               m_runtimeContext->dlssAvailable &&
-               m_runtimeContext->dlssEnabled &&
-               streamlineCtx->isDlssAvailable();
-#else
-        return false;
-#endif
+        IUpscalerIntegration* upscaler = currentUpscaler();
+        return upscaler && upscaler->isAvailable() && upscaler->isEnabled();
     }
 
     int currentRenderWidth() const {

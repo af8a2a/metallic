@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "rhi_interop.h"
+
 // Forward declare Vulkan handles without pulling in vulkan.h.
 // These are opaque pointer types defined by the Vulkan spec.
 struct VkInstance_T;
@@ -111,7 +113,7 @@ struct StreamlineDlssFrameData {
 };
 
 // Streamline context — manages SDK lifecycle and DLSS feature
-class StreamlineContext {
+class StreamlineContext : public IUpscalerIntegration {
 public:
     StreamlineContext();
     ~StreamlineContext();
@@ -138,28 +140,37 @@ public:
 
     // Query DLSS availability on current adapter
     bool isDlssAvailable() const { return m_dlssAvailable; }
+    bool isAvailable() const override { return m_dlssAvailable; }
+    bool isEnabled() const override { return m_currentPreset != DlssPreset::Off; }
     bool isInitialized() const { return m_initialized; }
     void* vulkanDeviceProcAddrProxy() const { return m_vkGetDeviceProcAddrProxy; }
+    void setImageLayoutTracker(class VulkanImageLayoutTracker* tracker) { m_imageLayoutTracker = tracker; }
 
     // Get optimal render resolution for a given display size and preset
     bool getOptimalRenderSize(DlssPreset preset,
                               uint32_t displayWidth, uint32_t displayHeight,
                               uint32_t& outRenderWidth, uint32_t& outRenderHeight) const;
+    bool getOptimalRenderSize(uint32_t displayWidth,
+                              uint32_t displayHeight,
+                              uint32_t& outRenderWidth,
+                              uint32_t& outRenderHeight) const override;
 
     // Set DLSS mode for the default viewport
     bool setDlssOptions(DlssPreset preset, uint32_t outputWidth, uint32_t outputHeight);
 
     // Evaluate DLSS for the current frame
     bool evaluate(const StreamlineDlssFrameData& data);
+    bool evaluate(const UpscalerEvaluateInputs& inputs,
+                  RhiComputeCommandEncoder& encoder) override;
 
     // Reset temporal history (call on resize, camera cut, pipeline reload, preset change)
-    void resetHistory();
+    void resetHistory() override;
 
     // Shutdown
     void shutdown();
 
     // Status string for UI
-    std::string statusString() const;
+    std::string statusString() const override;
 
 private:
     bool m_initialized = false;
@@ -170,6 +181,7 @@ private:
     uint32_t m_currentOutputHeight = 0;
     bool m_needsReset = false;
     void* m_vkGetDeviceProcAddrProxy = nullptr;
+    class VulkanImageLayoutTracker* m_imageLayoutTracker = nullptr;
 };
 
 #endif // _WIN32

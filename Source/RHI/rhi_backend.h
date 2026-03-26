@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "rhi_interop.h"
+
 struct GLFWwindow;
 struct RhiBufferDesc;
 
@@ -421,7 +423,7 @@ public:
                                               uint64_t indirectBufferOffset,
                                               RhiSize3D threadsPerObjectThreadgroup,
                                               RhiSize3D threadsPerMeshThreadgroup) = 0;
-    virtual void renderImGuiDrawData(const RhiNativeCommandBuffer& commandBuffer) = 0;
+    virtual void renderImGuiDrawData() = 0;
 };
 
 class RhiComputeCommandEncoder {
@@ -463,6 +465,10 @@ public:
     virtual std::unique_ptr<RhiRenderCommandEncoder> beginRenderPass(const RhiRenderPassDesc& desc) = 0;
     virtual std::unique_ptr<RhiComputeCommandEncoder> beginComputePass(const RhiComputePassDesc& desc) = 0;
     virtual std::unique_ptr<RhiBlitCommandEncoder> beginBlitPass(const RhiBlitPassDesc& desc) = 0;
+
+    // Prepare a texture for sampling in the next pass.
+    // Backend implementations handle any necessary state transitions (e.g. Vulkan layout transitions).
+    virtual void prepareTextureForSampling(const RhiTexture* /*texture*/) {}
 };
 
 class RhiFrameGraphBackend {
@@ -645,6 +651,7 @@ public:
     virtual const RhiFeatures& features() const = 0;
     virtual const RhiDeviceInfo& deviceInfo() const = 0;
     virtual const RhiNativeHandles& nativeHandles() const = 0;
+    virtual const IRhiInteropProvider* interopProvider() const { return nullptr; }
     virtual bool beginFrame() = 0;
     virtual void endFrame() = 0;
     virtual void resize(uint32_t width, uint32_t height) = 0;

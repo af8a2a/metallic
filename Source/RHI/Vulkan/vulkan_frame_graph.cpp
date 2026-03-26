@@ -278,19 +278,13 @@ public:
         }
     }
 
-    void renderImGuiDrawData(const RhiNativeCommandBuffer& commandBuffer) override {
+    void renderImGuiDrawData() override {
         ImDrawData* drawData = ImGui::GetDrawData();
         if (!drawData) {
             return;
         }
-
-        VkCommandBuffer nativeCommandBuffer =
-            static_cast<VkCommandBuffer>(commandBuffer.nativeHandle());
-        if (nativeCommandBuffer == VK_NULL_HANDLE) {
-            nativeCommandBuffer = m_commandBuffer;
-        }
-        if (nativeCommandBuffer != VK_NULL_HANDLE) {
-            ImGui_ImplVulkan_RenderDrawData(drawData, nativeCommandBuffer);
+        if (m_commandBuffer != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RenderDrawData(drawData, m_commandBuffer);
         }
     }
 
@@ -807,6 +801,10 @@ void VulkanCommandBuffer::transitionTexture(const RhiTexture* texture, VkImageLa
                                resource->image,
                                layout,
                                imageAspectMask(resource));
+}
+
+void VulkanCommandBuffer::prepareTextureForSampling(const RhiTexture* texture) {
+    transitionTexture(texture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
 std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(const RhiRenderPassDesc& desc) {

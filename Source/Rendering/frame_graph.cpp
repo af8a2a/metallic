@@ -3,10 +3,6 @@
 #include <algorithm>
 #include <cassert>
 
-#ifdef _WIN32
-#include "vulkan_frame_graph.h"
-#endif
-
 #include "imgui.h"
 #include <spdlog/spdlog.h>
 
@@ -475,8 +471,7 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
         }
 
         if (pass.type == FGPassType::Render) {
-#ifdef _WIN32
-            if (auto* vkCommandBuffer = dynamic_cast<VulkanCommandBuffer*>(&commandBuffer)) {
+            {
                 auto isSamePhysicalResource = [&](FGResource lhs, FGResource rhs) {
                     if (!lhs.isValid() || !rhs.isValid()) {
                         return false;
@@ -503,12 +498,10 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
                         continue;
                     }
                     if (!isAttachmentRead(read)) {
-                        vkCommandBuffer->transitionTexture(resolveTexture(read.id),
-                                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                        commandBuffer.prepareTextureForSampling(resolveTexture(read.id));
                     }
                 }
             }
-#endif
 
             RhiRenderPassDesc renderPassDesc;
             renderPassDesc.label = pass.name.c_str();

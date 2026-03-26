@@ -1,6 +1,8 @@
 #ifdef _WIN32
 
 #include "streamline_context.h"
+#include "vulkan_resource_handles.h"
+#include "vulkan_image_tracker.h"
 #include <spdlog/spdlog.h>
 #include <windows.h>
 
@@ -12,6 +14,8 @@
 #include <sl_helpers_vk.h>
 #include <sl_consts.h>
 #include <string_view>
+#include <algorithm>
+#include <cstring>
 
 // Streamline SDK version used at link time
 static constexpr uint64_t kSlSdkVersion = sl::kSDKVersion;
@@ -77,6 +81,88 @@ static sl::Resource makeSlTextureResource(void* image,
     return resource;
 }
 
+static bool isDepthFormat(VkFormat format) {
+    switch (format) {
+    case VK_FORMAT_D16_UNORM:
+    case VK_FORMAT_D32_SFLOAT:
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static VkImageUsageFlags toTrackedUsage(RhiTextureUsage usage, VkFormat format) {
+    VkImageUsageFlags flags = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if ((usage & RhiTextureUsage::RenderTarget) != RhiTextureUsage::None) {
+        flags |= isDepthFormat(format) ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                       : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    }
+    if ((usage & RhiTextureUsage::ShaderRead) != RhiTextureUsage::None) {
+        flags |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    }
+    if ((usage & RhiTextureUsage::ShaderWrite) != RhiTextureUsage::None) {
+        flags |= VK_IMAGE_USAGE_STORAGE_BIT;
+    }
+    return flags;
+}
+
+static VkImageLayout inferLayout(const RhiTexture* texture, VkImageLayout fallback) {
+    const VulkanTextureResource* resource = getVulkanTextureResource(texture);
+    if (!resource) {
+        return fallback;
+    }
+    if ((resource->usage & RhiTextureUsage::ShaderWrite) != RhiTextureUsage::None) {
+        return VK_IMAGE_LAYOUT_GENERAL;
+    }
+    if (isDepthFormat(resource->format)) {
+        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    if ((resource->usage & RhiTextureUsage::RenderTarget) != RhiTextureUsage::None) {
+        return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+    if ((resource->usage & RhiTextureUsage::ShaderRead) != RhiTextureUsage::None) {
+        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    return fallback;
+}
+
+static VkImageLayout getTrackedLayout(const VulkanImageLayoutTracker* tracker,
+                                      const RhiTexture* texture,
+                                      VkImageLayout fallback) {
+    if (tracker) {
+        const VkImage image = getVulkanImage(texture);
+        if (image != VK_NULL_HANDLE) {
+            const VkImageLayout tracked = tracker->getLayout(image);
+            if (tracked != VK_IMAGE_LAYOUT_UNDEFINED || fallback == VK_IMAGE_LAYOUT_UNDEFINED) {
+                return tracked;
+            }
+        }
+    }
+    return inferLayout(texture, fallback);
+}
+
+static StreamlineDlssFrameData::VulkanTextureInfo makeTextureInfo(const RhiTexture* texture,
+                                                                  VkImageLayout layout) {
+    StreamlineDlssFrameData::VulkanTextureInfo info{};
+    const VulkanTextureResource* resource = getVulkanTextureResource(texture);
+    if (!resource) {
+        info.state = static_cast<uint32_t>(layout);
+        return info;
+    }
+
+    info.state = static_cast<uint32_t>(layout);
+    info.width = resource->width;
+    info.height = resource->height;
+    info.nativeFormat = static_cast<uint32_t>(resource->format);
+    info.mipLevels = resource->mipLevels > 0 ? resource->mipLevels : 1;
+    info.arrayLayers = 1;
+    info.flags = 0;
+    info.usage = static_cast<uint32_t>(toTrackedUsage(resource->usage, resource->format));
+    return info;
+}
+
 static HMODULE findStreamlineInterposerModule() {
     HMODULE module = GetModuleHandleW(L"sl.interposer.dll");
     if (!module) {
@@ -85,7 +171,8 @@ static HMODULE findStreamlineInterposerModule() {
     return module;
 }
 
-#endif // METALLIC_HAS_STREAMLINE
+#endif // METALLIC_HAS_STREAMLINE (SDK includes and helpers)
+
 
 const char* dlssPresetName(DlssPreset preset) {
     switch (preset) {
@@ -256,6 +343,14 @@ bool StreamlineContext::getOptimalRenderSize(DlssPreset preset,
     return true;
 }
 
+bool StreamlineContext::getOptimalRenderSize(uint32_t displayWidth,
+                                             uint32_t displayHeight,
+                                             uint32_t& outRenderWidth,
+                                             uint32_t& outRenderHeight) const {
+    return getOptimalRenderSize(m_currentPreset, displayWidth, displayHeight,
+                                outRenderWidth, outRenderHeight);
+}
+
 bool StreamlineContext::setDlssOptions(DlssPreset preset, uint32_t outputWidth, uint32_t outputHeight) {
     if (!m_dlssAvailable) return false;
 
@@ -375,6 +470,75 @@ bool StreamlineContext::evaluate(const StreamlineDlssFrameData& data) {
     return true;
 }
 
+bool StreamlineContext::evaluate(const UpscalerEvaluateInputs& inputs,
+                                 RhiComputeCommandEncoder& encoder) {
+    StreamlineDlssFrameData data{};
+
+    data.colorInput = getVulkanImage(inputs.colorInput);
+    data.colorInputView = getVulkanImageView(inputs.colorInput);
+    data.colorOutput = getVulkanImage(inputs.colorOutput);
+    data.colorOutputView = getVulkanImageView(inputs.colorOutput);
+    data.depth = getVulkanImage(inputs.depth);
+    data.depthView = getVulkanImageView(inputs.depth);
+    data.motionVectors = getVulkanImage(inputs.motionVectors);
+    data.motionVectorsView = getVulkanImageView(inputs.motionVectors);
+
+    if (m_imageLayoutTracker && data.colorOutput != VK_NULL_HANDLE) {
+        VkCommandBuffer commandBuffer = static_cast<VkCommandBuffer>(encoder.nativeHandle());
+        if (commandBuffer != VK_NULL_HANDLE) {
+            m_imageLayoutTracker->transition(commandBuffer,
+                                             data.colorOutput,
+                                             VK_IMAGE_LAYOUT_GENERAL,
+                                             VK_IMAGE_ASPECT_COLOR_BIT);
+        }
+    }
+
+    data.colorInputInfo = makeTextureInfo(inputs.colorInput,
+                                          getTrackedLayout(m_imageLayoutTracker, inputs.colorInput, VK_IMAGE_LAYOUT_GENERAL));
+    data.colorOutputInfo = makeTextureInfo(inputs.colorOutput,
+                                           getTrackedLayout(m_imageLayoutTracker, inputs.colorOutput, VK_IMAGE_LAYOUT_GENERAL));
+    data.depthInfo = makeTextureInfo(inputs.depth,
+                                     getTrackedLayout(m_imageLayoutTracker, inputs.depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+    data.motionVectorsInfo = makeTextureInfo(inputs.motionVectors,
+                                             getTrackedLayout(m_imageLayoutTracker, inputs.motionVectors, VK_IMAGE_LAYOUT_GENERAL));
+
+    data.renderWidth = inputs.renderWidth;
+    data.renderHeight = inputs.renderHeight;
+    data.displayWidth = inputs.displayWidth;
+    data.displayHeight = inputs.displayHeight;
+    data.jitterOffsetX = inputs.jitterOffsetX;
+    data.jitterOffsetY = inputs.jitterOffsetY;
+    data.mvecScaleX = inputs.mvecScaleX;
+    data.mvecScaleY = inputs.mvecScaleY;
+    data.motionVectorsJittered = inputs.motionVectorsJittered;
+    data.motionVectors3D = inputs.motionVectors3D;
+    data.depthInverted = inputs.depthInverted;
+    data.reset = inputs.reset;
+    data.cameraPos[0] = inputs.cameraPos[0];
+    data.cameraPos[1] = inputs.cameraPos[1];
+    data.cameraPos[2] = inputs.cameraPos[2];
+    data.cameraUp[0] = inputs.cameraUp[0];
+    data.cameraUp[1] = inputs.cameraUp[1];
+    data.cameraUp[2] = inputs.cameraUp[2];
+    data.cameraRight[0] = inputs.cameraRight[0];
+    data.cameraRight[1] = inputs.cameraRight[1];
+    data.cameraRight[2] = inputs.cameraRight[2];
+    data.cameraForward[0] = inputs.cameraForward[0];
+    data.cameraForward[1] = inputs.cameraForward[1];
+    data.cameraForward[2] = inputs.cameraForward[2];
+    data.cameraNear = inputs.cameraNear;
+    data.cameraFar = inputs.cameraFar;
+    data.cameraFov = inputs.cameraFov;
+    data.cameraAspectRatio = inputs.cameraAspectRatio;
+    data.frameIndex = inputs.frameIndex;
+    data.commandBuffer = encoder.nativeHandle();
+    memcpy(data.cameraViewToClip, inputs.cameraViewToClip, sizeof(data.cameraViewToClip));
+    memcpy(data.clipToCameraView, inputs.clipToCameraView, sizeof(data.clipToCameraView));
+    memcpy(data.clipToPrevClip, inputs.clipToPrevClip, sizeof(data.clipToPrevClip));
+    memcpy(data.prevClipToClip, inputs.prevClipToClip, sizeof(data.prevClipToClip));
+    return evaluate(data);
+}
+
 void StreamlineContext::resetHistory() {
     m_needsReset = true;
 }
@@ -428,6 +592,16 @@ bool StreamlineContext::setDlssOptions(DlssPreset, uint32_t, uint32_t) {
 }
 
 bool StreamlineContext::evaluate(const StreamlineDlssFrameData&) {
+    return false;
+}
+
+bool StreamlineContext::evaluate(const UpscalerEvaluateInputs&,
+                                 RhiComputeCommandEncoder&) {
+    return false;
+}
+
+bool StreamlineContext::getOptimalRenderSize(uint32_t, uint32_t,
+                                             uint32_t&, uint32_t&) const {
     return false;
 }
 

@@ -1383,7 +1383,8 @@ int main() {
             } else {
                 spdlog::info("Vulkan visibility dispatch: CPU meshlet path");
             }
-            if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS && runtimeContext.dlssEnabled) {
+            if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS &&
+                runtimeContext.upscaler && runtimeContext.upscaler->isEnabled()) {
                 spdlog::info("Vulkan render resolution: {} x {} -> {} x {} (DLSS)",
                              runtimeContext.renderWidth,
                              runtimeContext.renderHeight,
@@ -1449,9 +1450,7 @@ int main() {
         }
 #endif
 
-        runtimeContext.streamlineContext = streamlineCtx.isInitialized() ? &streamlineCtx : nullptr;
-        runtimeContext.dlssAvailable = dlssAvailable;
-        runtimeContext.dlssEnabled = enableDlssEvaluation;
+        runtimeContext.upscaler = streamlineCtx.isInitialized() ? static_cast<IUpscalerIntegration*>(&streamlineCtx) : nullptr;
         runtimeContext.displayWidth = displayWidth;
         runtimeContext.displayHeight = displayHeight;
         runtimeContext.renderWidth = renderWidth;
@@ -1468,6 +1467,7 @@ int main() {
     VulkanDescriptorManager descriptorManager;
     descriptorManager.init(vkDevice, vmaAllocator);
     VulkanImageLayoutTracker imageTracker;
+    streamlineCtx.setImageLayoutTracker(&imageTracker);
     VulkanImportedTexture backbufferTexture;
 
     RhiTextureHandle sceneColorTexture;
@@ -1563,7 +1563,7 @@ int main() {
 
     runtimeContext.backbufferRhi = &backbufferTexture;
     runtimeContext.resourceFactory = &frameGraphBackend;
-    runtimeContext.streamlineContext = streamlineCtx.isInitialized() ? &streamlineCtx : nullptr;
+    runtimeContext.upscaler = streamlineCtx.isInitialized() ? static_cast<IUpscalerIntegration*>(&streamlineCtx) : nullptr;
     runtimeContext.uiControls = &pipelineUiControls;
 
     const PipelineAsset sceneColorPostAsset = makeSceneColorPostPipelineAsset();
@@ -1697,7 +1697,7 @@ int main() {
         pipelineUiControls.useVisibilityRenderGraph = useVisibilityRenderGraph;
         pipelineUiControls.hasDlssPass = visibilityUpscalerSelection.hasDlssPass;
         pipelineUiControls.dlssAvailable = dlssAvailable;
-        pipelineUiControls.dlssEnabled = runtimeContext.dlssEnabled;
+        pipelineUiControls.dlssEnabled = runtimeContext.upscaler && runtimeContext.upscaler->isEnabled();
         pipelineUiControls.dlssIsActiveUpscaler =
             visibilityUpscalerMode == VisibilityUpscalerMode::DLSS;
         pipelineUiControls.currentPreset = dlssPreset;
@@ -1987,7 +1987,7 @@ int main() {
         const bool enableVisibilityDlss =
             useVisibilityRenderGraph &&
             visibilityUpscalerMode == VisibilityUpscalerMode::DLSS &&
-            runtimeContext.dlssEnabled;
+            runtimeContext.upscaler && runtimeContext.upscaler->isEnabled();
         const bool needsJitter = enableVisibilityTAA || enableVisibilityDlss;
         if (needsJitter) {
             jitterOffset = OrbitCamera::haltonJitter(frameIndex);
@@ -2079,8 +2079,6 @@ int main() {
         frameContext.visibleIndexNodes = previewVisibleIndexNodes;
         frameContext.visibilityInstanceCount = visibilityInstanceCount;
         frameContext.instanceTransformBufferRhi = instanceTransformBuffer.get();
-        frameContext.commandBuffer = &nativeCommandBuffer;
-        frameContext.imageLayoutTracker = &imageTracker;
         frameContext.depthClearValue = depthClearValue;
         frameContext.cameraFarZ = previewCamera.farZ;
         {

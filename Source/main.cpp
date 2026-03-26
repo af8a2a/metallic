@@ -449,7 +449,6 @@ int main() {
         frameCtx.visibleIndexNodes = visibleIndexNodes;
         frameCtx.visibilityInstanceCount = visibilityInstanceCount;
         frameCtx.instanceTransformBufferRhi = instanceTransformBuffer.get();
-        frameCtx.commandBuffer = &runtime->currentCommandBuffer();
         frameCtx.depthClearValue = scene.depthClearValue();
         frameCtx.cameraFarZ = camera.farZ;
         {
@@ -522,7 +521,7 @@ int main() {
         // Update TLAS with current scene transforms before executing the frame graph
         if (scene.rtShadowsAvailable() && renderMode == 2) {
             ZoneScopedN("Update TLAS");
-            updateTLAS(*frameCtx.commandBuffer, scene.sceneGraph(), scene.shadowResources());
+            updateTLAS(runtime->currentCommandBuffer(), scene.sceneGraph(), scene.shadowResources());
         }
 
         auto fgCommandBuffer = runtime->createCommandBuffer();

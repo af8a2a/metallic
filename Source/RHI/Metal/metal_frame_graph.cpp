@@ -236,8 +236,8 @@ public:
                                         metalSize(threadsPerObjectThreadgroup),
                                         metalSize(threadsPerMeshThreadgroup));
     }
-    void renderImGuiDrawData(const RhiNativeCommandBuffer& commandBuffer) override {
-        imguiRenderDrawData(commandBuffer.nativeHandle(), m_encoder);
+    void renderImGuiDrawData() override {
+        imguiRenderDrawData(m_encoder->commandBuffer(), m_encoder);
     }
 
 private:
