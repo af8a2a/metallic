@@ -64,12 +64,7 @@ public:
         : m_resource(resource) {}
 
     ~VulkanOwnedTexture() override {
-        if (m_resource.imageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(m_resource.device, m_resource.imageView, nullptr);
-        }
-        if (m_resource.image != VK_NULL_HANDLE && m_resource.allocator != nullptr) {
-            vmaDestroyImage(m_resource.allocator, m_resource.image, m_resource.allocation);
-        }
+        vmaDestroyImageResource(m_resource);
     }
 
     void* nativeHandle() const override { return const_cast<VulkanTextureResource*>(&m_resource); }
@@ -92,9 +87,7 @@ public:
         : m_resource(resource) {}
 
     ~VulkanOwnedBuffer() override {
-        if (m_resource.buffer != VK_NULL_HANDLE && m_resource.allocator != nullptr) {
-            vmaDestroyBuffer(m_resource.allocator, m_resource.buffer, m_resource.allocation);
-        }
+        vmaDestroyBufferResource(m_resource);
     }
 
     size_t size() const override { return m_resource.size; }
@@ -666,117 +659,62 @@ std::unique_ptr<RhiTexture> VulkanFrameGraphBackend::createTexture(const RhiText
         usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     }
 
-    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.format = vkFormat;
-    imageInfo.extent = {desc.width, desc.height, 1};
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.usage = usage;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaImageCreateInfo vmaInfo{};
+    vmaInfo.device = m_device;
+    vmaInfo.allocator = m_allocator;
+    vmaInfo.depth = depth;
+    vmaInfo.imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    vmaInfo.imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    vmaInfo.imageInfo.format = vkFormat;
+    vmaInfo.imageInfo.extent = {desc.width, desc.height, 1};
+    vmaInfo.imageInfo.mipLevels = 1;
+    vmaInfo.imageInfo.arrayLayers = 1;
+    vmaInfo.imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    vmaInfo.imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    vmaInfo.imageInfo.usage = usage;
+    vmaInfo.imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vmaInfo.imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    VmaAllocationCreateInfo allocCreateInfo{};
-    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-
-    VkImage image = VK_NULL_HANDLE;
-    VmaAllocation allocation = nullptr;
-    checkVk(vmaCreateImage(m_allocator, &imageInfo, &allocCreateInfo, &image, &allocation, nullptr),
-            "Failed to create VMA image");
-
-    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    viewInfo.image = image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = vkFormat;
-    viewInfo.subresourceRange.aspectMask = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
-
-    VkImageView imageView = VK_NULL_HANDLE;
-    VkResult viewResult = vkCreateImageView(m_device, &viewInfo, nullptr, &imageView);
-    if (viewResult != VK_SUCCESS) {
-        vmaDestroyImage(m_allocator, image, allocation);
-        checkVk(viewResult, "Failed to create image view for frame graph texture");
+    const char* errorMsg = nullptr;
+    auto resource = vmaCreateImageResource(vmaInfo, &errorMsg);
+    if (!resource) {
+        checkVk(VK_ERROR_INITIALIZATION_FAILED, errorMsg ? errorMsg : "Failed to create frame graph texture");
     }
 
-    VulkanTextureResource resource{};
-    resource.device = m_device;
-    resource.image = image;
-    resource.imageView = imageView;
-    resource.allocation = allocation;
-    resource.allocator = m_allocator;
-    resource.width = desc.width;
-    resource.height = desc.height;
-    resource.mipLevels = 1;
-    resource.format = vkFormat;
-    resource.usage = desc.usage;
-
-    return std::make_unique<VulkanOwnedTexture>(resource);
+    resource->usage = desc.usage;
+    return std::make_unique<VulkanOwnedTexture>(*resource);
 }
 
 std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBufferDesc& desc) {
     const VulkanResourceContextInfo& resourceContext = vulkanGetResourceContext();
-    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufferInfo.size = desc.size;
-    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                               VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
     if (resourceContext.rayTracingEnabled) {
-        bufferInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-    }
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VmaAllocationCreateInfo allocCreateInfo{};
-    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    if (desc.hostVisible) {
-        allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
     }
 
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VmaAllocation allocation = nullptr;
-    VmaAllocationInfo allocInfo{};
-    checkVk(vmaCreateBuffer(m_allocator, &bufferInfo, &allocCreateInfo, &buffer, &allocation, &allocInfo),
-            "Failed to create VMA buffer");
+    VmaBufferCreateInfo vmaInfo{};
+    vmaInfo.device = m_device;
+    vmaInfo.allocator = m_allocator;
+    vmaInfo.size = desc.size;
+    vmaInfo.usage = usage;
+    vmaInfo.hostVisible = desc.hostVisible;
+    vmaInfo.queryDeviceAddress = resourceContext.rayTracingEnabled;
+    vmaInfo.debugName = desc.debugName;
 
-    if (desc.initialData && allocInfo.pMappedData) {
-        std::memcpy(allocInfo.pMappedData, desc.initialData, desc.size);
+    const char* errorMsg = nullptr;
+    auto resource = vmaCreateBufferResource(vmaInfo, &errorMsg);
+    if (!resource) {
+        checkVk(VK_ERROR_INITIALIZATION_FAILED, errorMsg ? errorMsg : "Failed to create frame graph buffer");
     }
 
-    if (desc.debugName) {
-        vmaSetAllocationName(m_allocator, allocation, desc.debugName);
+    if (desc.initialData && resource->mappedData) {
+        std::memcpy(resource->mappedData, desc.initialData, desc.size);
     }
 
-    VulkanBufferResource resource{};
-    resource.device = m_device;
-    resource.buffer = buffer;
-    resource.allocation = allocation;
-    resource.allocator = m_allocator;
-    resource.mappedData = allocInfo.pMappedData;
-    resource.size = desc.size;
-    resource.usageFlags = bufferInfo.usage;
-    if (resourceContext.rayTracingEnabled) {
-        PFN_vkGetBufferDeviceAddress getBufferDeviceAddress =
-            reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
-                vkGetDeviceProcAddr(m_device, "vkGetBufferDeviceAddress"));
-        if (!getBufferDeviceAddress) {
-            getBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
-                vkGetDeviceProcAddr(m_device, "vkGetBufferDeviceAddressKHR"));
-        }
-        if (getBufferDeviceAddress) {
-            VkBufferDeviceAddressInfo addressInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-            addressInfo.buffer = buffer;
-            resource.deviceAddress = getBufferDeviceAddress(m_device, &addressInfo);
-        }
-    }
-
-    return std::make_unique<VulkanOwnedBuffer>(resource);
+    return std::make_unique<VulkanOwnedBuffer>(*resource);
 }
 
 // --- VulkanCommandBuffer ---

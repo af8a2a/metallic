@@ -1,5 +1,6 @@
 #include "vulkan_backend.h"
 #include "rhi_resource_utils.h"
+#include "vulkan_resource_handles.h"
 
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
@@ -199,28 +200,29 @@ private:
 
 class VulkanBuffer final : public RhiBuffer {
 public:
-    VulkanBuffer(VkDevice device, VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize size)
-        : m_device(device), m_buffer(buffer), m_memory(memory), m_size(static_cast<size_t>(size)) {}
+    explicit VulkanBuffer(VulkanBufferResource resource)
+        : m_resource(resource) {}
 
     ~VulkanBuffer() override {
-        if (m_buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(m_device, m_buffer, nullptr);
-        }
-        if (m_memory != VK_NULL_HANDLE) {
-            vkFreeMemory(m_device, m_memory, nullptr);
-        }
+        vmaDestroyBufferResource(m_resource);
     }
 
-    size_t size() const override { return m_size; }
-    void* nativeHandle() const override { return reinterpret_cast<void*>(m_buffer); }
-    VkBuffer handle() const { return m_buffer; }
+    size_t size() const override { return m_resource.size; }
+    void* nativeHandle() const override { return const_cast<VulkanBufferResource*>(&m_resource); }
+    void* mappedData() override {
+        if (m_resource.mappedData == nullptr && m_resource.allocation != nullptr) {
+            if (vmaMapMemory(m_resource.allocator, m_resource.allocation, &m_resource.mappedData) != VK_SUCCESS) {
+                return nullptr;
+            }
+        }
+        return m_resource.mappedData;
+    }
+    VkBuffer handle() const { return m_resource.buffer; }
 
 private:
-    VkDevice m_device = VK_NULL_HANDLE;
-    VkBuffer m_buffer = VK_NULL_HANDLE;
-    VkDeviceMemory m_memory = VK_NULL_HANDLE;
-    size_t m_size = 0;
+    VulkanBufferResource m_resource{};
 };
+
 
 class VulkanGraphicsPipeline final : public RhiGraphicsPipeline {
 public:
@@ -446,40 +448,29 @@ public:
             throw std::runtime_error("Cannot create a zero-sized Vulkan buffer.");
         }
 
-        VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        bufferInfo.size = desc.size;
-        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VmaBufferCreateInfo vmaInfo{};
+        vmaInfo.device = m_device;
+        vmaInfo.allocator = m_allocator;
+        vmaInfo.size = desc.size;
+        vmaInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        vmaInfo.hostVisible = desc.hostVisible;
 
-        VkBuffer buffer = VK_NULL_HANDLE;
-        checkVk(vkCreateBuffer(m_device, &bufferInfo, nullptr, &buffer), "Failed to create Vulkan vertex buffer");
-
-        VkMemoryRequirements memoryRequirements{};
-        vkGetBufferMemoryRequirements(m_device, buffer, &memoryRequirements);
-
-        VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocInfo.allocationSize = memoryRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(
-            memoryRequirements.memoryTypeBits,
-            desc.hostVisible ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-                             : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        VkDeviceMemory memory = VK_NULL_HANDLE;
-        checkVk(vkAllocateMemory(m_device, &allocInfo, nullptr, &memory), "Failed to allocate Vulkan buffer memory");
-        checkVk(vkBindBufferMemory(m_device, buffer, memory, 0), "Failed to bind Vulkan buffer memory");
+        auto resource = vmaCreateBufferResource(vmaInfo);
+        if (!resource) {
+            throw std::runtime_error("Failed to create Vulkan vertex buffer");
+        }
 
         if (desc.initialData) {
             if (!desc.hostVisible) {
                 throw std::runtime_error("Device-local uploads are not implemented yet for Vulkan vertex buffers.");
             }
-
-            void* mappedMemory = nullptr;
-            checkVk(vkMapMemory(m_device, memory, 0, desc.size, 0, &mappedMemory), "Failed to map Vulkan buffer memory");
-            std::memcpy(mappedMemory, desc.initialData, desc.size);
-            vkUnmapMemory(m_device, memory);
+            if (!resource->mappedData) {
+                throw std::runtime_error("Failed to obtain mapped memory for Vulkan vertex buffer.");
+            }
+            std::memcpy(resource->mappedData, desc.initialData, desc.size);
         }
 
-        return std::make_unique<VulkanBuffer>(m_device, buffer, memory, bufferInfo.size);
+        return std::make_unique<VulkanBuffer>(*resource);
     }
 
     std::unique_ptr<RhiGraphicsPipeline> createGraphicsPipeline(const RhiGraphicsPipelineDesc& desc) override {
@@ -1207,21 +1198,6 @@ public:
         m_nativeHandles.swapchainImageCount = static_cast<uint32_t>(m_swapchainImages.size());
         m_nativeHandles.colorFormat = static_cast<uint32_t>(m_swapchainFormat.format);
         m_nativeHandles.apiVersion = m_physicalDeviceProperties.apiVersion;
-    }
-
-    uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const {
-        VkPhysicalDeviceMemoryProperties memoryProperties{};
-        vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memoryProperties);
-
-        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
-            const bool typeMatches = (typeFilter & (1u << i)) != 0;
-            const bool propertyMatches = (memoryProperties.memoryTypes[i].propertyFlags & properties) == properties;
-            if (typeMatches && propertyMatches) {
-                return i;
-            }
-        }
-
-        throw std::runtime_error("Failed to find a suitable Vulkan memory type.");
     }
 
     void createVmaAllocator() {

@@ -259,45 +259,23 @@ bool createBufferHandle(const VulkanResourceContextInfo& context,
         return false;
     }
 
-    auto* resource = new VulkanBufferResource{};
-    resource->device = context.device;
-    resource->allocator = context.allocator;
-    resource->size = static_cast<size_t>(size);
-    resource->usageFlags = usage;
+    VmaBufferCreateInfo vmaInfo{};
+    vmaInfo.device = context.device;
+    vmaInfo.allocator = context.allocator;
+    vmaInfo.size = size;
+    vmaInfo.usage = usage;
+    vmaInfo.hostVisible = hostVisible;
+    vmaInfo.queryDeviceAddress = true;
+    vmaInfo.debugName = debugName;
 
-    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufferInfo.size = size;
-    bufferInfo.usage = usage;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VmaAllocationCreateInfo allocationCreateInfo{};
-    allocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    if (hostVisible) {
-        allocationCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                     VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    }
-
-    VmaAllocationInfo allocationInfo{};
-    const VkResult result = vmaCreateBuffer(context.allocator,
-                                            &bufferInfo,
-                                            &allocationCreateInfo,
-                                            &resource->buffer,
-                                            &resource->allocation,
-                                            &allocationInfo);
-    if (result != VK_SUCCESS) {
-        errorMessage = "Failed to create Vulkan ray tracing buffer (VkResult: " +
-            std::to_string(result) + ")";
-        delete resource;
+    auto resource = vmaCreateBufferResource(vmaInfo);
+    if (!resource) {
+        errorMessage = "Failed to create Vulkan ray tracing buffer";
         return false;
     }
 
-    resource->mappedData = allocationInfo.pMappedData;
-    resource->deviceAddress = queryBufferDeviceAddress(functions, context.device, resource->buffer);
-    if (debugName && debugName[0] != '\0') {
-        vmaSetAllocationName(context.allocator, resource->allocation, debugName);
-    }
-
-    outBuffer = RhiBufferHandle(resource, static_cast<size_t>(size));
+    auto* res = new VulkanBufferResource(*resource);
+    outBuffer = RhiBufferHandle(res, static_cast<size_t>(size));
     return true;
 }
 
@@ -316,27 +294,23 @@ bool createAccelerationStructureHandle(const VulkanResourceContextInfo& context,
     resource->device = context.device;
     resource->allocator = context.allocator;
 
-    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufferInfo.size = size;
-    bufferInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
-                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VmaBufferCreateInfo vmaInfo{};
+    vmaInfo.device = context.device;
+    vmaInfo.allocator = context.allocator;
+    vmaInfo.size = size;
+    vmaInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
-    VmaAllocationCreateInfo allocationCreateInfo{};
-    allocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
-    const VkResult bufferResult = vmaCreateBuffer(context.allocator,
-                                                  &bufferInfo,
-                                                  &allocationCreateInfo,
-                                                  &resource->buffer,
-                                                  &resource->allocation,
-                                                  nullptr);
-    if (bufferResult != VK_SUCCESS) {
-        errorMessage = "Failed to create Vulkan acceleration structure storage buffer (VkResult: " +
-            std::to_string(bufferResult) + ")";
+    auto bufferResource = vmaCreateBufferResource(vmaInfo);
+    if (!bufferResource) {
+        errorMessage = "Failed to create Vulkan acceleration structure storage buffer";
         delete resource;
         return false;
     }
+
+    resource->buffer = bufferResource->buffer;
+    resource->allocation = bufferResource->allocation;
+    resource->deviceAddress = bufferResource->deviceAddress;
 
     VkAccelerationStructureCreateInfoKHR createInfo{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
@@ -352,7 +326,11 @@ bool createAccelerationStructureHandle(const VulkanResourceContextInfo& context,
     if (createResult != VK_SUCCESS) {
         errorMessage = "Failed to create Vulkan acceleration structure (VkResult: " +
             std::to_string(createResult) + ")";
-        vmaDestroyBuffer(context.allocator, resource->buffer, resource->allocation);
+        VulkanBufferResource asBuf{};
+        asBuf.buffer = resource->buffer;
+        asBuf.allocation = resource->allocation;
+        asBuf.allocator = resource->allocator;
+        vmaDestroyBufferResource(asBuf);
         delete resource;
         return false;
     }

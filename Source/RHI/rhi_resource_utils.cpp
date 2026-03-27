@@ -403,46 +403,33 @@ RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& /*device*/,
                                       const void* initialData,
                                       size_t size,
                                       const char* debugName) {
-    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufferInfo.size = size;
-    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                               VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
     if (g_vkResCtx.rayTracingEnabled) {
-        bufferInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+        usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
     }
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VmaAllocationCreateInfo allocCreateInfo{};
-    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                            VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaBufferCreateInfo vmaInfo{};
+    vmaInfo.device = g_vkResCtx.device;
+    vmaInfo.allocator = g_vkResCtx.allocator;
+    vmaInfo.size = size;
+    vmaInfo.usage = usage;
+    vmaInfo.hostVisible = true;
+    vmaInfo.queryDeviceAddress = true;
+    vmaInfo.debugName = debugName;
 
-    auto* res = new VulkanBufferResource{};
-    res->device = g_vkResCtx.device;
-    res->allocator = g_vkResCtx.allocator;
-    res->size = size;
-    res->usageFlags = bufferInfo.usage;
-
-    VmaAllocationInfo allocInfo{};
-    VkResult result = vmaCreateBuffer(g_vkResCtx.allocator, &bufferInfo, &allocCreateInfo,
-                                       &res->buffer, &res->allocation, &allocInfo);
-    if (result != VK_SUCCESS) {
-        spdlog::error("Failed to create Vulkan shared buffer (VkResult: {})", static_cast<int>(result));
-        delete res;
+    auto resource = vmaCreateBufferResource(vmaInfo);
+    if (!resource) {
+        spdlog::error("Failed to create Vulkan shared buffer");
         return {};
     }
 
-    res->mappedData = allocInfo.pMappedData;
-    res->deviceAddress = queryBufferDeviceAddress(g_vkResCtx.device, res->buffer);
+    auto* res = new VulkanBufferResource(*resource);
     if (initialData && res->mappedData) {
         std::memcpy(res->mappedData, initialData, size);
-    }
-
-    if (debugName) {
-        vmaSetAllocationName(g_vkResCtx.allocator, res->allocation, debugName);
     }
 
     return RhiBufferHandle(res, size);
@@ -463,46 +450,36 @@ RhiTextureHandle rhiCreateTexture2D(const RhiDevice& /*device*/,
                                     RhiTextureUsage usage) {
     VkFormat vkFormat = toVkFormat(format);
     VkImageUsageFlags vkUsage = toVkImageUsage(usage);
-    if (isVkDepthFormat(vkFormat)) {
+    bool depth = isVkDepthFormat(vkFormat);
+    if (depth) {
         vkUsage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         vkUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     }
 
-    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.format = vkFormat;
-    imageInfo.extent = {width, height, 1};
-    imageInfo.mipLevels = std::max(mipLevelCount, 1u);
-    imageInfo.arrayLayers = 1;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.usage = vkUsage;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaImageCreateInfo vmaInfo{};
+    vmaInfo.device = g_vkResCtx.device;
+    vmaInfo.allocator = g_vkResCtx.allocator;
+    vmaInfo.depth = depth;
+    vmaInfo.imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    vmaInfo.imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    vmaInfo.imageInfo.format = vkFormat;
+    vmaInfo.imageInfo.extent = {width, height, 1};
+    vmaInfo.imageInfo.mipLevels = std::max(mipLevelCount, 1u);
+    vmaInfo.imageInfo.arrayLayers = 1;
+    vmaInfo.imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    vmaInfo.imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    vmaInfo.imageInfo.usage = vkUsage;
+    vmaInfo.imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vmaInfo.imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    VmaAllocationCreateInfo allocCreateInfo{};
-    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-
-    auto* res = new VulkanTextureResource{};
-    res->device = g_vkResCtx.device;
-    res->allocator = g_vkResCtx.allocator;
-    res->width = width;
-    res->height = height;
-    res->mipLevels = imageInfo.mipLevels;
-    res->format = vkFormat;
-    res->usage = usage;
-
-    VkResult result = vmaCreateImage(g_vkResCtx.allocator, &imageInfo, &allocCreateInfo,
-                                      &res->image, &res->allocation, nullptr);
-    if (result != VK_SUCCESS) {
-        spdlog::error("Failed to create Vulkan 2D texture (VkResult: {})", static_cast<int>(result));
-        delete res;
+    auto resource = vmaCreateImageResource(vmaInfo);
+    if (!resource) {
+        spdlog::error("Failed to create Vulkan 2D texture");
         return {};
     }
 
-    res->imageView = createImageView(g_vkResCtx.device, res->image, vkFormat,
-                                      VK_IMAGE_VIEW_TYPE_2D, imageInfo.mipLevels, 1);
+    auto* res = new VulkanTextureResource(*resource);
+    res->usage = usage;
     return RhiTextureHandle(res, width, height);
 }
 
@@ -515,41 +492,29 @@ RhiTextureHandle rhiCreateTexture3D(const RhiDevice& /*device*/,
                                     RhiTextureUsage usage) {
     VkFormat vkFormat = toVkFormat(format);
 
-    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    imageInfo.imageType = VK_IMAGE_TYPE_3D;
-    imageInfo.format = vkFormat;
-    imageInfo.extent = {width, height, depth};
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.usage = toVkImageUsage(usage);
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaImageCreateInfo vmaInfo{};
+    vmaInfo.device = g_vkResCtx.device;
+    vmaInfo.allocator = g_vkResCtx.allocator;
+    vmaInfo.imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    vmaInfo.imageInfo.imageType = VK_IMAGE_TYPE_3D;
+    vmaInfo.imageInfo.format = vkFormat;
+    vmaInfo.imageInfo.extent = {width, height, depth};
+    vmaInfo.imageInfo.mipLevels = 1;
+    vmaInfo.imageInfo.arrayLayers = 1;
+    vmaInfo.imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    vmaInfo.imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    vmaInfo.imageInfo.usage = toVkImageUsage(usage);
+    vmaInfo.imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vmaInfo.imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    VmaAllocationCreateInfo allocCreateInfo{};
-    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-
-    auto* res = new VulkanTextureResource{};
-    res->device = g_vkResCtx.device;
-    res->allocator = g_vkResCtx.allocator;
-    res->width = width;
-    res->height = height;
-    res->depth = depth;
-    res->format = vkFormat;
-    res->usage = usage;
-
-    VkResult result = vmaCreateImage(g_vkResCtx.allocator, &imageInfo, &allocCreateInfo,
-                                      &res->image, &res->allocation, nullptr);
-    if (result != VK_SUCCESS) {
-        spdlog::error("Failed to create Vulkan 3D texture (VkResult: {})", static_cast<int>(result));
-        delete res;
+    auto resource = vmaCreateImageResource(vmaInfo);
+    if (!resource) {
+        spdlog::error("Failed to create Vulkan 3D texture");
         return {};
     }
 
-    res->imageView = createImageView(g_vkResCtx.device, res->image, vkFormat,
-                                      VK_IMAGE_VIEW_TYPE_3D, 1, 1);
+    auto* res = new VulkanTextureResource(*resource);
+    res->usage = usage;
     return RhiTextureHandle(res, width, height);
 }
 
@@ -566,22 +531,22 @@ void rhiUploadTexture2D(const RhiTexture& texture,
     size_t imageSize = bytesPerRow * height;
 
     // Create staging buffer
-    VkBufferCreateInfo stagingInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    stagingInfo.size = imageSize;
-    stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VmaBufferCreateInfo stagingVmaInfo{};
+    stagingVmaInfo.device = g_vkResCtx.device;
+    stagingVmaInfo.allocator = g_vkResCtx.allocator;
+    stagingVmaInfo.size = imageSize;
+    stagingVmaInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    stagingVmaInfo.hostVisible = true;
 
-    VmaAllocationCreateInfo stagingAllocInfo{};
-    stagingAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    auto stagingResource = vmaCreateBufferResource(stagingVmaInfo);
+    if (!stagingResource) {
+        spdlog::error("Failed to create staging buffer for 2D texture upload");
+        return;
+    }
+    VkBuffer stagingBuffer = stagingResource->buffer;
+    VmaAllocation stagingAlloc = stagingResource->allocation;
 
-    VkBuffer stagingBuffer = VK_NULL_HANDLE;
-    VmaAllocation stagingAlloc = nullptr;
-    VmaAllocationInfo stagingData{};
-    vmaCreateBuffer(g_vkResCtx.allocator, &stagingInfo, &stagingAllocInfo,
-                    &stagingBuffer, &stagingAlloc, &stagingData);
-
-    std::memcpy(stagingData.pMappedData, data, imageSize);
+    std::memcpy(stagingResource->mappedData, data, imageSize);
 
     VkCommandPool pool = getUploadPool();
     VkCommandBuffer cmd = beginOneTimeCommands(g_vkResCtx.device, pool);
@@ -642,21 +607,21 @@ void rhiUploadTexture3D(const RhiTexture& texture,
 
     size_t imageSize = bytesPerImage * depth;
 
-    VkBufferCreateInfo stagingInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    stagingInfo.size = imageSize;
-    stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VmaBufferCreateInfo stagingVmaInfo{};
+    stagingVmaInfo.device = g_vkResCtx.device;
+    stagingVmaInfo.allocator = g_vkResCtx.allocator;
+    stagingVmaInfo.size = imageSize;
+    stagingVmaInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    stagingVmaInfo.hostVisible = true;
 
-    VmaAllocationCreateInfo stagingAllocInfo{};
-    stagingAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-    VkBuffer stagingBuffer = VK_NULL_HANDLE;
-    VmaAllocation stagingAlloc = nullptr;
-    VmaAllocationInfo stagingData{};
-    vmaCreateBuffer(g_vkResCtx.allocator, &stagingInfo, &stagingAllocInfo,
-                    &stagingBuffer, &stagingAlloc, &stagingData);
-    std::memcpy(stagingData.pMappedData, data, imageSize);
+    auto stagingResource = vmaCreateBufferResource(stagingVmaInfo);
+    if (!stagingResource) {
+        spdlog::error("Failed to create staging buffer for 3D texture upload");
+        return;
+    }
+    VkBuffer stagingBuffer = stagingResource->buffer;
+    VmaAllocation stagingAlloc = stagingResource->allocation;
+    std::memcpy(stagingResource->mappedData, data, imageSize);
 
     VkCommandPool pool = getUploadPool();
     VkCommandBuffer cmd = beginOneTimeCommands(g_vkResCtx.device, pool);
@@ -844,20 +809,13 @@ void rhiReleaseNativeHandle(void* handle) {
             texture->refCount--;
             return;
         }
-        if (texture->ownsImageView && texture->imageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(texture->device, texture->imageView, nullptr);
-        }
-        if (texture->ownsImage && texture->image != VK_NULL_HANDLE && texture->allocator != nullptr) {
-            vmaDestroyImage(texture->allocator, texture->image, texture->allocation);
-        }
+        vmaDestroyImageResource(*texture);
         delete texture;
         break;
     }
     case VulkanResourceType::Buffer: {
         auto* buffer = static_cast<VulkanBufferResource*>(handle);
-        if (buffer->ownsBuffer && buffer->buffer != VK_NULL_HANDLE && buffer->allocator != nullptr) {
-            vmaDestroyBuffer(buffer->allocator, buffer->buffer, buffer->allocation);
-        }
+        vmaDestroyBufferResource(*buffer);
         delete buffer;
         break;
     }
@@ -900,12 +858,11 @@ void rhiReleaseNativeHandle(void* handle) {
                                          accelerationStructure->accelerationStructure,
                                          nullptr);
         }
-        if (accelerationStructure->buffer != VK_NULL_HANDLE &&
-            accelerationStructure->allocator != nullptr) {
-            vmaDestroyBuffer(accelerationStructure->allocator,
-                             accelerationStructure->buffer,
-                             accelerationStructure->allocation);
-        }
+        VulkanBufferResource asBuffer{};
+        asBuffer.buffer = accelerationStructure->buffer;
+        asBuffer.allocation = accelerationStructure->allocation;
+        asBuffer.allocator = accelerationStructure->allocator;
+        vmaDestroyBufferResource(asBuffer);
         delete accelerationStructure;
         break;
     }

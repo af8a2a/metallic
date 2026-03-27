@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -249,6 +250,153 @@ inline VkPipelineLayout getVulkanPipelineLayout(const RhiGraphicsPipeline& pipel
 inline VkPipelineLayout getVulkanPipelineLayout(const RhiComputePipeline& pipeline) {
     const VulkanPipelineResource* resource = getVulkanPipelineResource(pipeline);
     return resource ? resource->layout : VK_NULL_HANDLE;
+}
+
+// --- VMA Resource Creation Helpers ---
+// Unified VMA-backed resource creation/destruction used across vulkan_backend,
+// vulkan_frame_graph, rhi_resource_utils, and rhi_raytracing_utils.
+
+// Creates a VMA-backed buffer. On success, returns a fully populated VulkanBufferResource.
+// On failure, returns std::nullopt and sets errorMessage (if provided).
+struct VmaBufferCreateInfo {
+    VkDevice device = VK_NULL_HANDLE;
+    VmaAllocator allocator = nullptr;
+    VkDeviceSize size = 0;
+    VkBufferUsageFlags usage = 0;
+    bool hostVisible = false;
+    bool queryDeviceAddress = false;
+    const char* debugName = nullptr;
+};
+
+inline std::optional<VulkanBufferResource> vmaCreateBufferResource(const VmaBufferCreateInfo& info,
+                                                                     const char** outErrorMessage = nullptr) {
+    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = info.size;
+    bufferInfo.usage = info.usage;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocCreateInfo{};
+    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    if (info.hostVisible) {
+        allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    }
+
+    VulkanBufferResource res{};
+    res.device = info.device;
+    res.allocator = info.allocator;
+    res.size = static_cast<size_t>(info.size);
+    res.usageFlags = info.usage;
+
+    VmaAllocationInfo allocInfo{};
+    VkResult result = vmaCreateBuffer(info.allocator, &bufferInfo, &allocCreateInfo,
+                                      &res.buffer, &res.allocation, &allocInfo);
+    if (result != VK_SUCCESS) {
+        if (outErrorMessage) {
+            static constexpr const char* kMsg = "vmaCreateBufferResource failed";
+            *outErrorMessage = kMsg;
+        }
+        return std::nullopt;
+    }
+
+    res.mappedData = allocInfo.pMappedData;
+
+    if (info.queryDeviceAddress) {
+        VkBufferDeviceAddressInfo addrInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        addrInfo.buffer = res.buffer;
+        res.deviceAddress = vkGetBufferDeviceAddress(info.device, &addrInfo);
+    }
+
+    if (info.debugName && info.debugName[0] != '\0') {
+        vmaSetAllocationName(info.allocator, res.allocation, info.debugName);
+    }
+
+    return res;
+}
+
+struct VmaImageCreateInfo {
+    VkDevice device = VK_NULL_HANDLE;
+    VmaAllocator allocator = nullptr;
+    VkImageCreateInfo imageInfo{};
+    bool depth = false;
+    bool dedicated = true;
+    const char* debugName = nullptr;
+};
+
+inline std::optional<VulkanTextureResource> vmaCreateImageResource(const VmaImageCreateInfo& info,
+                                                                     const char** outErrorMessage = nullptr) {
+    VmaAllocationCreateInfo allocCreateInfo{};
+    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    if (info.dedicated) {
+        allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    }
+
+    VulkanTextureResource res{};
+    res.device = info.device;
+    res.allocator = info.allocator;
+    res.width = info.imageInfo.extent.width;
+    res.height = info.imageInfo.extent.height;
+    res.depth = info.imageInfo.extent.depth;
+    res.mipLevels = info.imageInfo.mipLevels;
+    res.format = info.imageInfo.format;
+
+    VkResult result = vmaCreateImage(info.allocator, &info.imageInfo, &allocCreateInfo,
+                                     &res.image, &res.allocation, nullptr);
+    if (result != VK_SUCCESS) {
+        if (outErrorMessage) {
+            static constexpr const char* kMsg = "vmaCreateImageResource: vmaCreateImage failed";
+            *outErrorMessage = kMsg;
+        }
+        return std::nullopt;
+    }
+
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.image = res.image;
+    viewInfo.viewType = info.imageInfo.imageType == VK_IMAGE_TYPE_3D
+                            ? VK_IMAGE_VIEW_TYPE_3D
+                            : VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = info.imageInfo.format;
+    viewInfo.subresourceRange.aspectMask = info.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = info.imageInfo.mipLevels;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = info.imageInfo.arrayLayers;
+
+    result = vkCreateImageView(info.device, &viewInfo, nullptr, &res.imageView);
+    if (result != VK_SUCCESS) {
+        vmaDestroyImage(info.allocator, res.image, res.allocation);
+        if (outErrorMessage) {
+            static constexpr const char* kMsg = "vmaCreateImageResource: vkCreateImageView failed";
+            *outErrorMessage = kMsg;
+        }
+        return std::nullopt;
+    }
+
+    if (info.debugName && info.debugName[0] != '\0') {
+        vmaSetAllocationName(info.allocator, res.allocation, info.debugName);
+    }
+
+    return res;
+}
+
+inline void vmaDestroyBufferResource(VulkanBufferResource& res) {
+    if (res.buffer != VK_NULL_HANDLE && res.allocator != nullptr) {
+        vmaDestroyBuffer(res.allocator, res.buffer, res.allocation);
+        res.buffer = VK_NULL_HANDLE;
+        res.allocation = nullptr;
+    }
+}
+
+inline void vmaDestroyImageResource(VulkanTextureResource& res) {
+    if (res.imageView != VK_NULL_HANDLE && res.device != VK_NULL_HANDLE) {
+        vkDestroyImageView(res.device, res.imageView, nullptr);
+        res.imageView = VK_NULL_HANDLE;
+    }
+    if (res.image != VK_NULL_HANDLE && res.allocator != nullptr) {
+        vmaDestroyImage(res.allocator, res.image, res.allocation);
+        res.image = VK_NULL_HANDLE;
+        res.allocation = nullptr;
+    }
 }
 
 #endif // _WIN32
