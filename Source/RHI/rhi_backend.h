@@ -504,6 +504,7 @@ public:
 
 struct RhiFeatures {
     bool dynamicRendering = false;
+    bool bufferDeviceAddress = false;
     bool meshShaders = false;
     bool rayTracing = false;
     bool validation = false;

@@ -180,7 +180,8 @@ Fn loadHookedDeviceProc(PFN_vkGetDeviceProcAddr deviceProcAddrProxy,
 }
 
 void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
-                        VkQueue queue, uint32_t queueFamily, bool rayTracingEnabled,
+                        VkQueue queue, uint32_t queueFamily, bool bufferDeviceAddressEnabled,
+                        bool rayTracingEnabled,
                         void* vkGetDeviceProcAddrProxy) {
     PFN_vkGetDeviceProcAddr deviceProcAddrProxy =
         reinterpret_cast<PFN_vkGetDeviceProcAddr>(vkGetDeviceProcAddrProxy);
@@ -190,6 +191,7 @@ void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAll
     g_vkResCtx.allocator = allocator;
     g_vkResCtx.graphicsQueue = queue;
     g_vkResCtx.graphicsQueueFamily = queueFamily;
+    g_vkResCtx.bufferDeviceAddressEnabled = bufferDeviceAddressEnabled;
     g_vkResCtx.rayTracingEnabled = rayTracingEnabled;
     g_vkResCtx.streamlineHooksEnabled = false;
     g_vkResCtx.vkBeginCommandBufferProxy =
@@ -207,34 +209,9 @@ void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAll
     g_vkResCtx.initialized = true;
 }
 
-PFN_vkGetBufferDeviceAddress loadGetBufferDeviceAddress(VkDevice device) {
-    auto fn = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
-        vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddress"));
-    if (!fn) {
-        fn = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
-            vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddressKHR"));
-    }
-    return fn;
-}
-
 PFN_vkDestroyAccelerationStructureKHR loadDestroyAccelerationStructure(VkDevice device) {
     return reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(
         vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureKHR"));
-}
-
-VkDeviceAddress queryBufferDeviceAddress(VkDevice device, VkBuffer buffer) {
-    if (device == VK_NULL_HANDLE || buffer == VK_NULL_HANDLE || !g_vkResCtx.rayTracingEnabled) {
-        return 0;
-    }
-
-    PFN_vkGetBufferDeviceAddress getBufferDeviceAddress = loadGetBufferDeviceAddress(device);
-    if (!getBufferDeviceAddress) {
-        return 0;
-    }
-
-    VkBufferDeviceAddressInfo addressInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-    addressInfo.buffer = buffer;
-    return getBufferDeviceAddress(device, &addressInfo);
 }
 
 VkFilter toVkFilter(RhiSamplerFilterMode filter) {
@@ -331,6 +308,7 @@ void vulkanSetResourceContext(VkDevice device,
                               VmaAllocator allocator,
                               VkQueue queue,
                               uint32_t queueFamily,
+                              bool bufferDeviceAddressEnabled,
                               bool rayTracingEnabled,
                               void* vkGetDeviceProcAddrProxy) {
     setResourceContext(device,
@@ -338,6 +316,7 @@ void vulkanSetResourceContext(VkDevice device,
                        allocator,
                        queue,
                        queueFamily,
+                       bufferDeviceAddressEnabled,
                        rayTracingEnabled,
                        vkGetDeviceProcAddrProxy);
 }

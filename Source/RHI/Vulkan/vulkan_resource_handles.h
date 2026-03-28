@@ -168,6 +168,26 @@ inline VkDeviceAddress getVulkanBufferDeviceAddress(const RhiBuffer* buffer) {
     return resource ? resource->deviceAddress : 0;
 }
 
+inline VkBufferUsageFlags vulkanEnableBufferDeviceAddress(VkBufferUsageFlags usage,
+                                                          bool enableBufferDeviceAddress) {
+    if (enableBufferDeviceAddress) {
+        usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    }
+    return usage;
+}
+
+inline VkBufferUsageFlags vulkanEnableAccelerationStructureBuildInput(VkBufferUsageFlags usage,
+                                                                      bool enableBuildInput) {
+    if (enableBuildInput) {
+        usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    }
+    return usage;
+}
+
+inline bool vulkanBufferUsesDeviceAddress(VkBufferUsageFlags usage) {
+    return (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0;
+}
+
 inline VulkanSamplerResource* getVulkanSamplerResource(const RhiSampler* sampler) {
     return sampler ? static_cast<VulkanSamplerResource*>(sampler->nativeHandle()) : nullptr;
 }
@@ -264,7 +284,6 @@ struct VmaBufferCreateInfo {
     VkDeviceSize size = 0;
     VkBufferUsageFlags usage = 0;
     bool hostVisible = false;
-    bool queryDeviceAddress = false;
     const char* debugName = nullptr;
 };
 
@@ -301,7 +320,7 @@ inline std::optional<VulkanBufferResource> vmaCreateBufferResource(const VmaBuff
 
     res.mappedData = allocInfo.pMappedData;
 
-    if (info.queryDeviceAddress) {
+    if (vulkanBufferUsesDeviceAddress(info.usage)) {
         VkBufferDeviceAddressInfo addrInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
         addrInfo.buffer = res.buffer;
         res.deviceAddress = vkGetBufferDeviceAddress(info.device, &addrInfo);

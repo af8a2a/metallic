@@ -690,10 +690,7 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
     VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-    if (resourceContext.rayTracingEnabled) {
-        usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-    }
+    usage = vulkanEnableBufferDeviceAddress(usage, resourceContext.bufferDeviceAddressEnabled);
 
     VmaBufferCreateInfo vmaInfo{};
     vmaInfo.device = m_device;
@@ -701,7 +698,6 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
     vmaInfo.size = desc.size;
     vmaInfo.usage = usage;
     vmaInfo.hostVisible = desc.hostVisible;
-    vmaInfo.queryDeviceAddress = resourceContext.rayTracingEnabled;
     vmaInfo.debugName = desc.debugName;
 
     const char* errorMsg = nullptr;

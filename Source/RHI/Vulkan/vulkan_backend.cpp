@@ -630,6 +630,7 @@ public:
                                  m_allocator,
                                  m_graphicsQueue,
                                  m_queueFamilies.graphics.value_or(0),
+                                 m_features.bufferDeviceAddress,
                                  m_features.rayTracing,
                                  createInfo.vkGetDeviceProcAddrProxy);
         vulkanLoadMeshShaderFunctions(m_device);
@@ -790,10 +791,8 @@ public:
                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-        if (m_features.rayTracing) {
-            usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                     VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-        }
+        usage = vulkanEnableBufferDeviceAddress(usage, m_features.bufferDeviceAddress);
+        usage = vulkanEnableAccelerationStructureBuildInput(usage, m_features.rayTracing);
 
         VmaBufferCreateInfo vmaInfo{};
         vmaInfo.device = m_device;
@@ -801,7 +800,6 @@ public:
         vmaInfo.size = size;
         vmaInfo.usage = usage;
         vmaInfo.hostVisible = true;
-        vmaInfo.queryDeviceAddress = m_features.rayTracing;
         vmaInfo.debugName = debugName;
 
         const char* errorMsg = nullptr;
@@ -1185,6 +1183,7 @@ public:
         vmaInfo.allocator = m_allocator;
         vmaInfo.size = desc.size;
         vmaInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        vmaInfo.usage = vulkanEnableBufferDeviceAddress(vmaInfo.usage, m_features.bufferDeviceAddress);
         vmaInfo.hostVisible = desc.hostVisible;
 
         auto resource = vmaCreateBufferResource(vmaInfo);
@@ -1618,13 +1617,15 @@ public:
         }
 
         m_features.dynamicRendering = true;
+        m_features.bufferDeviceAddress =
+            bufferDeviceAddressAvailable &&
+            bufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE;
         m_features.meshShaders = meshShaderAvailable && meshShaderFeatures.meshShader == VK_TRUE;
         m_features.rayTracing =
-            bufferDeviceAddressAvailable &&
+            m_features.bufferDeviceAddress &&
             accelerationStructureAvailable &&
             rayQueryAvailable &&
             deferredHostOperationsAvailable &&
-            bufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE &&
             accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
             rayQueryFeatures.rayQuery == VK_TRUE;
         return true;
@@ -1652,13 +1653,14 @@ public:
         if (m_features.meshShaders) {
             deviceExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
         }
+        if (m_features.bufferDeviceAddress &&
+            m_physicalDeviceProperties.apiVersion < VK_API_VERSION_1_2) {
+            deviceExtensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+        }
         if (m_features.rayTracing) {
             deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
             deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
             deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
-            if (m_physicalDeviceProperties.apiVersion < VK_API_VERSION_1_2) {
-                deviceExtensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
-            }
         }
         for (auto ext : createInfo.extraDeviceExtensions) {
             deviceExtensions.push_back(ext);
@@ -1694,7 +1696,7 @@ public:
 
         VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
-        bufferDeviceAddressFeatures.bufferDeviceAddress = m_features.rayTracing ? VK_TRUE : VK_FALSE;
+        bufferDeviceAddressFeatures.bufferDeviceAddress = m_features.bufferDeviceAddress ? VK_TRUE : VK_FALSE;
 
         VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
@@ -1714,6 +1716,10 @@ public:
             descriptorIndexingFeatures.pNext = &accelerationStructureFeatures;
         } else if (m_features.meshShaders && m_features.rayTracing) {
             meshShaderFeatures.pNext = &accelerationStructureFeatures;
+        } else if (!m_features.meshShaders && m_features.bufferDeviceAddress) {
+            descriptorIndexingFeatures.pNext = &bufferDeviceAddressFeatures;
+        } else if (m_features.meshShaders && m_features.bufferDeviceAddress) {
+            meshShaderFeatures.pNext = &bufferDeviceAddressFeatures;
         }
 
         VkPhysicalDeviceSynchronization2Features sync2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
@@ -1939,7 +1945,7 @@ public:
         allocatorInfo.physicalDevice = m_physicalDevice;
         allocatorInfo.device = m_device;
         allocatorInfo.instance = m_instance;
-        if (m_features.rayTracing) {
+        if (m_features.bufferDeviceAddress) {
             allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
         }
         checkVk(vmaCreateAllocator(&allocatorInfo, &m_allocator), "Failed to create VMA allocator");

@@ -247,7 +247,7 @@ VkDeviceAddress getAccelerationStructureDeviceAddress(const VulkanRayTracingFunc
 }
 
 bool createBufferHandle(const VulkanResourceContextInfo& context,
-                        const VulkanRayTracingFunctions& functions,
+                        const VulkanRayTracingFunctions& /*functions*/,
                         VkDeviceSize size,
                         VkBufferUsageFlags usage,
                         bool hostVisible,
@@ -263,9 +263,8 @@ bool createBufferHandle(const VulkanResourceContextInfo& context,
     vmaInfo.device = context.device;
     vmaInfo.allocator = context.allocator;
     vmaInfo.size = size;
-    vmaInfo.usage = usage;
+    vmaInfo.usage = vulkanEnableBufferDeviceAddress(usage, context.bufferDeviceAddressEnabled);
     vmaInfo.hostVisible = hostVisible;
-    vmaInfo.queryDeviceAddress = true;
     vmaInfo.debugName = debugName;
 
     auto resource = vmaCreateBufferResource(vmaInfo);
@@ -298,8 +297,8 @@ bool createAccelerationStructureHandle(const VulkanResourceContextInfo& context,
     vmaInfo.device = context.device;
     vmaInfo.allocator = context.allocator;
     vmaInfo.size = size;
-    vmaInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
-                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    vmaInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
+    vmaInfo.usage = vulkanEnableBufferDeviceAddress(vmaInfo.usage, context.bufferDeviceAddressEnabled);
 
     auto bufferResource = vmaCreateBufferResource(vmaInfo);
     if (!bufferResource) {
