@@ -1058,7 +1058,7 @@ int main() {
     VkDevice vkDevice = nativeToVkHandle<VkDevice>(native.device);
     VkPhysicalDevice vkPhysicalDevice = nativeToVkHandle<VkPhysicalDevice>(native.physicalDevice);
     VmaAllocator vmaAllocator = getVulkanAllocator(*rhi);
-    RhiDeviceHandle deviceHandle(native.device);
+    RhiDeviceHandle deviceHandle(native.device, rhi.get());
     RhiCommandQueueHandle queueHandle(native.queue);
     const uint32_t swapchainImageCount = std::max(2u, native.swapchainImageCount);
     const VkFormat swapchainFormat = static_cast<VkFormat>(native.colorFormat);
@@ -1099,16 +1099,6 @@ int main() {
         glfwTerminate();
         return 1;
     }
-
-    vulkanSetResourceContext(vkDevice,
-                             vkPhysicalDevice,
-                             vmaAllocator,
-                             nativeToVkHandle<VkQueue>(native.queue),
-                             native.graphicsQueueFamily,
-                             rhi->features().rayTracing,
-                             createInfo.vkGetDeviceProcAddrProxy);
-    vulkanSetShaderContext(vkDevice);
-    vulkanLoadMeshShaderFunctions(vkDevice);
 
     const RhiFeatures& features = rhi->features();
     ShaderManagerProfile shaderProfile = ShaderManagerProfile::vulkanVisibility();

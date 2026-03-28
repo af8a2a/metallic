@@ -179,13 +179,6 @@ Fn loadHookedDeviceProc(PFN_vkGetDeviceProcAddr deviceProcAddrProxy,
     return reinterpret_cast<Fn>(deviceProcAddrProxy(device, name));
 }
 
-void ensureResourceContext(const RhiDevice& device) {
-    if (g_vkResCtx.initialized) return;
-    // The device handle stores VkDevice on Vulkan
-    g_vkResCtx.device = static_cast<VkDevice>(device.nativeHandle());
-    g_vkResCtx.initialized = true;
-}
-
 void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
                         VkQueue queue, uint32_t queueFamily, bool rayTracingEnabled,
                         void* vkGetDeviceProcAddrProxy) {
@@ -318,6 +311,19 @@ VkCommandPool getUploadPool() {
     return g_uploadPool;
 }
 
+RhiContext* resolveOwningContext(const RhiDevice& device, const char* functionName) {
+    RhiContext* context = device.ownerContext();
+    if (!context) {
+        spdlog::error("{} requires an owning RhiContext on Vulkan", functionName);
+        return nullptr;
+    }
+    if (context->backendType() != RhiBackendType::Vulkan) {
+        spdlog::error("{} received a non-Vulkan RhiContext", functionName);
+        return nullptr;
+    }
+    return context;
+}
+
 } // namespace
 
 void vulkanSetResourceContext(VkDevice device,
@@ -399,40 +405,12 @@ void vulkanClearResourceContext() {
     g_vkResCtx = {};
 }
 
-RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& /*device*/,
+RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& device,
                                       const void* initialData,
                                       size_t size,
                                       const char* debugName) {
-    VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                               VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-    if (g_vkResCtx.rayTracingEnabled) {
-        usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-    }
-
-    VmaBufferCreateInfo vmaInfo{};
-    vmaInfo.device = g_vkResCtx.device;
-    vmaInfo.allocator = g_vkResCtx.allocator;
-    vmaInfo.size = size;
-    vmaInfo.usage = usage;
-    vmaInfo.hostVisible = true;
-    vmaInfo.queryDeviceAddress = true;
-    vmaInfo.debugName = debugName;
-
-    auto resource = vmaCreateBufferResource(vmaInfo);
-    if (!resource) {
-        spdlog::error("Failed to create Vulkan shared buffer");
-        return {};
-    }
-
-    auto* res = new VulkanBufferResource(*resource);
-    if (initialData && res->mappedData) {
-        std::memcpy(res->mappedData, initialData, size);
-    }
-
-    return RhiBufferHandle(res, size);
+    RhiContext* context = resolveOwningContext(device, "rhiCreateSharedBuffer");
+    return context ? context->createSharedBuffer(initialData, size, debugName) : RhiBufferHandle{};
 }
 
 void* rhiBufferContents(const RhiBuffer& buffer) {
@@ -440,82 +418,40 @@ void* rhiBufferContents(const RhiBuffer& buffer) {
     return res ? res->mappedData : nullptr;
 }
 
-RhiTextureHandle rhiCreateTexture2D(const RhiDevice& /*device*/,
+RhiTextureHandle rhiCreateTexture2D(const RhiDevice& device,
                                     uint32_t width,
                                     uint32_t height,
                                     RhiFormat format,
-                                    bool /*mipmapped*/,
+                                    bool mipmapped,
                                     uint32_t mipLevelCount,
-                                    RhiTextureStorageMode /*storageMode*/,
+                                    RhiTextureStorageMode storageMode,
                                     RhiTextureUsage usage) {
-    VkFormat vkFormat = toVkFormat(format);
-    VkImageUsageFlags vkUsage = toVkImageUsage(usage);
-    bool depth = isVkDepthFormat(vkFormat);
-    if (depth) {
-        vkUsage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        vkUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    }
-
-    VmaImageCreateInfo vmaInfo{};
-    vmaInfo.device = g_vkResCtx.device;
-    vmaInfo.allocator = g_vkResCtx.allocator;
-    vmaInfo.depth = depth;
-    vmaInfo.imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    vmaInfo.imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    vmaInfo.imageInfo.format = vkFormat;
-    vmaInfo.imageInfo.extent = {width, height, 1};
-    vmaInfo.imageInfo.mipLevels = std::max(mipLevelCount, 1u);
-    vmaInfo.imageInfo.arrayLayers = 1;
-    vmaInfo.imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    vmaInfo.imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    vmaInfo.imageInfo.usage = vkUsage;
-    vmaInfo.imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    vmaInfo.imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    auto resource = vmaCreateImageResource(vmaInfo);
-    if (!resource) {
-        spdlog::error("Failed to create Vulkan 2D texture");
-        return {};
-    }
-
-    auto* res = new VulkanTextureResource(*resource);
-    res->usage = usage;
-    return RhiTextureHandle(res, width, height);
+    RhiContext* context = resolveOwningContext(device, "rhiCreateTexture2D");
+    return context ? context->createTexture2D(width,
+                                              height,
+                                              format,
+                                              mipmapped,
+                                              mipLevelCount,
+                                              storageMode,
+                                              usage)
+                   : RhiTextureHandle{};
 }
 
-RhiTextureHandle rhiCreateTexture3D(const RhiDevice& /*device*/,
+RhiTextureHandle rhiCreateTexture3D(const RhiDevice& device,
                                     uint32_t width,
                                     uint32_t height,
                                     uint32_t depth,
                                     RhiFormat format,
-                                    RhiTextureStorageMode /*storageMode*/,
+                                    RhiTextureStorageMode storageMode,
                                     RhiTextureUsage usage) {
-    VkFormat vkFormat = toVkFormat(format);
-
-    VmaImageCreateInfo vmaInfo{};
-    vmaInfo.device = g_vkResCtx.device;
-    vmaInfo.allocator = g_vkResCtx.allocator;
-    vmaInfo.imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    vmaInfo.imageInfo.imageType = VK_IMAGE_TYPE_3D;
-    vmaInfo.imageInfo.format = vkFormat;
-    vmaInfo.imageInfo.extent = {width, height, depth};
-    vmaInfo.imageInfo.mipLevels = 1;
-    vmaInfo.imageInfo.arrayLayers = 1;
-    vmaInfo.imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    vmaInfo.imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    vmaInfo.imageInfo.usage = toVkImageUsage(usage);
-    vmaInfo.imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    vmaInfo.imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    auto resource = vmaCreateImageResource(vmaInfo);
-    if (!resource) {
-        spdlog::error("Failed to create Vulkan 3D texture");
-        return {};
-    }
-
-    auto* res = new VulkanTextureResource(*resource);
-    res->usage = usage;
-    return RhiTextureHandle(res, width, height);
+    RhiContext* context = resolveOwningContext(device, "rhiCreateTexture3D");
+    return context ? context->createTexture3D(width,
+                                              height,
+                                              depth,
+                                              format,
+                                              storageMode,
+                                              usage)
+                   : RhiTextureHandle{};
 }
 
 void rhiUploadTexture2D(const RhiTexture& texture,
@@ -754,34 +690,17 @@ void rhiGenerateMipmaps(const RhiCommandQueue& /*commandQueue*/, const RhiTextur
     endOneTimeCommands(g_vkResCtx.device, pool, g_vkResCtx.graphicsQueue, cmd);
 }
 
-RhiSamplerHandle rhiCreateSampler(const RhiDevice& /*device*/, const RhiSamplerDesc& desc) {
-    VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    samplerInfo.minFilter = toVkFilter(desc.minFilter);
-    samplerInfo.magFilter = toVkFilter(desc.magFilter);
-    samplerInfo.mipmapMode = toVkMipFilter(desc.mipFilter);
-    samplerInfo.addressModeU = toVkAddressMode(desc.addressModeS);
-    samplerInfo.addressModeV = toVkAddressMode(desc.addressModeT);
-    samplerInfo.addressModeW = toVkAddressMode(desc.addressModeR);
-    samplerInfo.maxLod = (desc.mipFilter != RhiSamplerMipFilterMode::None) ? VK_LOD_CLAMP_NONE : 0.0f;
-    samplerInfo.maxAnisotropy = 1.0f;
-
-    auto* res = new VulkanSamplerResource{};
-    res->device = g_vkResCtx.device;
-    VkResult result = vkCreateSampler(g_vkResCtx.device, &samplerInfo, nullptr, &res->sampler);
-    if (result != VK_SUCCESS) {
-        spdlog::error("Failed to create Vulkan sampler (VkResult: {})", static_cast<int>(result));
-        delete res;
-        return {};
-    }
-    return RhiSamplerHandle(res);
+RhiSamplerHandle rhiCreateSampler(const RhiDevice& device, const RhiSamplerDesc& desc) {
+    RhiContext* context = resolveOwningContext(device, "rhiCreateSampler");
+    return context ? context->createSampler(desc) : RhiSamplerHandle{};
 }
 
-RhiDepthStencilStateHandle rhiCreateDepthStencilState(const RhiDevice& /*device*/,
-                                                      bool /*depthWriteEnabled*/,
-                                                      bool /*reversedZ*/) {
-    // Vulkan handles depth/stencil state at pipeline creation time.
-    // Store params so we can query later if needed.
-    return RhiDepthStencilStateHandle(nullptr);
+RhiDepthStencilStateHandle rhiCreateDepthStencilState(const RhiDevice& device,
+                                                      bool depthWriteEnabled,
+                                                      bool reversedZ) {
+    RhiContext* context = resolveOwningContext(device, "rhiCreateDepthStencilState");
+    return context ? context->createDepthStencilState(depthWriteEnabled, reversedZ)
+                   : RhiDepthStencilStateHandle{};
 }
 
 bool rhiSupportsRaytracing(const RhiDevice& /*device*/) {

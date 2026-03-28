@@ -23,6 +23,7 @@ class RhiCommandQueue;
 class RhiNativeCommandBuffer;
 class RhiShaderLibrary;
 class RhiVertexDescriptor;
+class RhiContext;
 
 enum class RhiBackendType {
     Metal,
@@ -63,6 +64,21 @@ enum class RhiTextureUsage : uint32_t {
 enum class RhiTextureStorageMode {
     Private,
     Shared,
+};
+
+enum class RhiSamplerFilterMode {
+    Nearest,
+    Linear,
+};
+
+enum class RhiSamplerMipFilterMode {
+    None,
+    Linear,
+};
+
+enum class RhiSamplerAddressMode {
+    Repeat,
+    ClampToEdge,
 };
 
 enum class RhiLoadAction {
@@ -207,6 +223,7 @@ public:
 class RhiDevice {
 public:
     virtual ~RhiDevice() = default;
+    virtual RhiContext* ownerContext() const { return nullptr; }
     virtual void* nativeHandle() const = 0;
 };
 
@@ -237,14 +254,21 @@ public:
 class RhiDeviceHandle final : public RhiDevice {
 public:
     constexpr RhiDeviceHandle() = default;
-    explicit constexpr RhiDeviceHandle(void* native)
-        : m_native(native) {}
+    explicit constexpr RhiDeviceHandle(void* native, RhiContext* ownerContext = nullptr)
+        : m_native(native)
+        , m_ownerContext(ownerContext) {}
 
-    void setNativeHandle(void* native) { m_native = native; }
+    void setNativeHandle(void* native, RhiContext* ownerContext = nullptr) {
+        m_native = native;
+        m_ownerContext = ownerContext;
+    }
+
+    RhiContext* ownerContext() const override { return m_ownerContext; }
     void* nativeHandle() const override { return m_native; }
 
 private:
     void* m_native = nullptr;
+    RhiContext* m_ownerContext = nullptr;
 };
 
 class RhiCommandQueueHandle final : public RhiCommandQueue {
@@ -532,6 +556,15 @@ struct RhiVertexAttributeDesc {
     uint32_t offset = 0;
 };
 
+struct RhiSamplerDesc {
+    RhiSamplerFilterMode minFilter = RhiSamplerFilterMode::Linear;
+    RhiSamplerFilterMode magFilter = RhiSamplerFilterMode::Linear;
+    RhiSamplerMipFilterMode mipFilter = RhiSamplerMipFilterMode::None;
+    RhiSamplerAddressMode addressModeS = RhiSamplerAddressMode::Repeat;
+    RhiSamplerAddressMode addressModeT = RhiSamplerAddressMode::Repeat;
+    RhiSamplerAddressMode addressModeR = RhiSamplerAddressMode::Repeat;
+};
+
 class RhiShaderModule {
 public:
     virtual ~RhiShaderModule() = default;
@@ -610,6 +643,19 @@ struct RhiGraphicsPipelineDesc {
     bool enableMeshShaders = false;
 };
 
+struct RhiRenderPipelineSourceDesc {
+    const char* vertexEntry = nullptr;
+    const char* meshEntry = nullptr;
+    const char* fragmentEntry = nullptr;
+    RhiFormat colorFormat = RhiFormat::BGRA8Unorm;
+    RhiFormat depthFormat = RhiFormat::Undefined;
+    const RhiVertexDescriptor* vertexDescriptor = nullptr;
+};
+
+struct RhiShaderLibrarySourceDesc {
+    uint32_t languageVersion = 0;
+};
+
 struct RhiNativeHandles {
     void* instance = nullptr;
     void* physicalDevice = nullptr;
@@ -660,6 +706,37 @@ public:
     virtual uint32_t drawableWidth() const = 0;
     virtual uint32_t drawableHeight() const = 0;
     virtual RhiFormat colorFormat() const = 0;
+    virtual RhiBufferHandle createSharedBuffer(const void* initialData,
+                                               size_t size,
+                                               const char* debugName = nullptr) = 0;
+    virtual RhiTextureHandle createTexture2D(uint32_t width,
+                                             uint32_t height,
+                                             RhiFormat format,
+                                             bool mipmapped,
+                                             uint32_t mipLevelCount,
+                                             RhiTextureStorageMode storageMode,
+                                             RhiTextureUsage usage) = 0;
+    virtual RhiTextureHandle createTexture3D(uint32_t width,
+                                             uint32_t height,
+                                             uint32_t depth,
+                                             RhiFormat format,
+                                             RhiTextureStorageMode storageMode,
+                                             RhiTextureUsage usage) = 0;
+    virtual RhiSamplerHandle createSampler(const RhiSamplerDesc& desc) = 0;
+    virtual RhiDepthStencilStateHandle createDepthStencilState(bool depthWriteEnabled,
+                                                               bool reversedZ) = 0;
+    virtual RhiShaderLibraryHandle createShaderLibraryFromSource(const std::string& source,
+                                                                 const RhiShaderLibrarySourceDesc& desc,
+                                                                 std::string& errorMessage) = 0;
+    virtual RhiComputePipelineHandle createComputePipelineFromLibrary(const RhiShaderLibrary& library,
+                                                                      const char* entryPoint,
+                                                                      std::string& errorMessage) = 0;
+    virtual RhiGraphicsPipelineHandle createRenderPipelineFromSource(const std::string& source,
+                                                                     const RhiRenderPipelineSourceDesc& desc,
+                                                                     std::string& errorMessage) = 0;
+    virtual RhiComputePipelineHandle createComputePipelineFromSource(const std::string& source,
+                                                                     const char* entryPoint,
+                                                                     std::string& errorMessage) = 0;
     virtual std::unique_ptr<RhiShaderModule> createShaderModule(const RhiShaderModuleDesc& desc) = 0;
     virtual std::unique_ptr<RhiBuffer> createVertexBuffer(const RhiBufferDesc& desc) = 0;
     virtual std::unique_ptr<RhiGraphicsPipeline> createGraphicsPipeline(const RhiGraphicsPipelineDesc& desc) = 0;

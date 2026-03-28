@@ -1,33 +1,6 @@
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
-
 #include "rhi_backend.h"
-
-enum class RhiSamplerFilterMode {
-    Nearest,
-    Linear,
-};
-
-enum class RhiSamplerMipFilterMode {
-    None,
-    Linear,
-};
-
-enum class RhiSamplerAddressMode {
-    Repeat,
-    ClampToEdge,
-};
-
-struct RhiSamplerDesc {
-    RhiSamplerFilterMode minFilter = RhiSamplerFilterMode::Linear;
-    RhiSamplerFilterMode magFilter = RhiSamplerFilterMode::Linear;
-    RhiSamplerMipFilterMode mipFilter = RhiSamplerMipFilterMode::None;
-    RhiSamplerAddressMode addressModeS = RhiSamplerAddressMode::Repeat;
-    RhiSamplerAddressMode addressModeT = RhiSamplerAddressMode::Repeat;
-    RhiSamplerAddressMode addressModeR = RhiSamplerAddressMode::Repeat;
-};
 
 RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& device,
                                       const void* initialData,
