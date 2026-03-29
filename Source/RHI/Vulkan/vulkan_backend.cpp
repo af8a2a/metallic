@@ -256,6 +256,11 @@ bool buildPipelineResourceLayout(VkDevice device,
     bool bindlessSetPresent = false;
 
     for (const auto& binding : shaderLayout.bindings) {
+        if (binding.type == SlangShaderBindingType::PushConstantBuffer) {
+            ++logicalBufferIndex;
+            continue;
+        }
+
         const VkDescriptorType descriptorType = toVkDescriptorType(binding.type);
         if (descriptorType == VK_DESCRIPTOR_TYPE_MAX_ENUM) {
             errorMessage = "Unsupported Slang resource type in Vulkan binding layout";
@@ -399,10 +404,17 @@ bool buildPipelineResourceLayout(VkDevice device,
         }
     }
 
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_ALL;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = 128;
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(outResource.setLayouts.size());
     pipelineLayoutInfo.pSetLayouts =
         outResource.setLayouts.empty() ? nullptr : outResource.setLayouts.data();
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
     const VkResult layoutResult = vkCreatePipelineLayout(device,
                                                          &pipelineLayoutInfo,

@@ -202,6 +202,13 @@ public:
         m_pendingBuffers[index] = m_descriptorManager->uploadInlineUniformData(data, size);
     }
 
+    void setPushConstants(const void* data, size_t size) override {
+        if (!m_boundPipeline || m_boundPipeline->layout == VK_NULL_HANDLE) return;
+        vkCmdPushConstants(m_commandBuffer, m_boundPipeline->layout,
+                           VK_SHADER_STAGE_ALL, 0,
+                           static_cast<uint32_t>(size), data);
+    }
+
     void setFragmentTexture(const RhiTexture* texture, uint32_t index) override {
         if (index >= kMaxTextureBindings) return;
         auto* resource = getVulkanTextureResource(texture);
@@ -365,6 +372,13 @@ public:
             return;
         }
         m_pendingBuffers[index] = m_descriptorManager->uploadInlineUniformData(data, size);
+    }
+
+    void setPushConstants(const void* data, size_t size) override {
+        if (!m_boundPipeline || m_boundPipeline->layout == VK_NULL_HANDLE) return;
+        vkCmdPushConstants(m_commandBuffer, m_boundPipeline->layout,
+                           VK_SHADER_STAGE_ALL, 0,
+                           static_cast<uint32_t>(size), data);
     }
 
     void setTexture(const RhiTexture* texture, uint32_t index) override {

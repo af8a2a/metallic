@@ -429,6 +429,7 @@ public:
     virtual void setVertexBytes(const void* data, size_t size, uint32_t index) = 0;
     virtual void setFragmentBytes(const void* data, size_t size, uint32_t index) = 0;
     virtual void setMeshBytes(const void* data, size_t size, uint32_t index) = 0;
+    virtual void setPushConstants(const void* data, size_t size) = 0;
     virtual void setFragmentTexture(const RhiTexture* texture, uint32_t index) = 0;
     virtual void setFragmentTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) = 0;
     virtual void setMeshTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) = 0;
@@ -457,6 +458,7 @@ public:
     virtual void setComputePipeline(const RhiComputePipeline& pipeline) = 0;
     virtual void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) = 0;
     virtual void setBytes(const void* data, size_t size, uint32_t index) = 0;
+    virtual void setPushConstants(const void* data, size_t size) = 0;
     virtual void setTexture(const RhiTexture* texture, uint32_t index) = 0;
     virtual void setStorageTexture(const RhiTexture* texture, uint32_t index) = 0;
     virtual void setTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) = 0;

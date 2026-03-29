@@ -121,7 +121,7 @@ public:
         if (m_exposureLutRead.isValid()) {
             encoder.setFragmentTexture(m_frameGraph->getTexture(m_exposureLutRead), 1);
         }
-        encoder.setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
     }
 

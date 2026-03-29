@@ -8,7 +8,7 @@ struct ShadowUniforms {
     uint reversedZ;
 };
 
-ConstantBuffer<ShadowUniforms> uniforms;
+[[vk::push_constant]] ConstantBuffer<ShadowUniforms> uniforms;
 RaytracingAccelerationStructure sceneTlas;
 Texture2D<float> depthTex;
 RWTexture2D<float> shadowMap;

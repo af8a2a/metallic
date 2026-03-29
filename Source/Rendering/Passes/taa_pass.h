@@ -101,7 +101,7 @@ public:
         RhiTexture* historyWriteTex = m_historyTextures[m_historyIndex].get();
 
         encoder.setComputePipeline(pipeIt->second);
-        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.setTexture(currentTex, 0);
         encoder.setTexture(depthTex, 1);
         encoder.setTexture(motionTex, 2);
@@ -199,7 +199,7 @@ private:
         uniforms.copyOnly = 1;
 
         encoder.setComputePipeline(pipeIt->second);
-        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.setTexture(currentTex, 0);
         encoder.setTexture(depthTex, 1);
         encoder.setTexture(motionTex, 2);

@@ -151,6 +151,41 @@ bool buildBindingLayout(slang::IComponentType* linkedProgram,
             continue;
         }
 
+        bool isPushConstant = field->getCategory() == slang::ParameterCategory::PushConstantBuffer;
+        if (!isPushConstant) {
+            const unsigned categoryCount = field->getCategoryCount();
+            for (unsigned categoryIndex = 0; categoryIndex < categoryCount; ++categoryIndex) {
+                if (field->getCategoryByIndex(categoryIndex) == slang::ParameterCategory::PushConstantBuffer) {
+                    isPushConstant = true;
+                    break;
+                }
+            }
+        }
+        if (!isPushConstant) {
+            slang::TypeLayoutReflection* typeLayout = field->getTypeLayout();
+            if (typeLayout) {
+                const SlangInt bindingRangeCount = typeLayout->getBindingRangeCount();
+                for (SlangInt rangeIndex = 0; rangeIndex < bindingRangeCount; ++rangeIndex) {
+                    if (typeLayout->getBindingRangeType(rangeIndex) == slang::BindingType::PushConstant) {
+                        isPushConstant = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (isPushConstant) {
+            SlangShaderBindingDesc desc;
+            desc.type = SlangShaderBindingType::PushConstantBuffer;
+            desc.bindingIndex = 0;
+            desc.bindingSpace = 0;
+            desc.descriptorCount = 1;
+            if (const char* name = field->getName()) {
+                desc.name = name;
+            }
+            outLayout.bindings.push_back(std::move(desc));
+            continue;
+        }
+
         SlangShaderBindingType bindingType{};
         if (!classifyBindingType(field->getTypeLayout(), bindingType)) {
             continue;

@@ -40,6 +40,7 @@ enum class SlangShaderBindingType : uint8_t {
     StorageTexture,
     Sampler,
     AccelerationStructure,
+    PushConstantBuffer,
 };
 
 struct SlangShaderBindingDesc {

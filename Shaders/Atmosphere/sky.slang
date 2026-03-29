@@ -50,7 +50,7 @@ struct SkyUniforms {
     uint     pad1;
 };
 
-ConstantBuffer<SkyUniforms> skyUniforms;
+[[vk::push_constant]] ConstantBuffer<SkyUniforms> skyUniforms;
 
 Texture2D<float4> transmittance_texture;
 Texture3D<float4> scattering_texture;

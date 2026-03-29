@@ -82,12 +82,12 @@ public:
         uniforms.screenWidth = sourceWidth > 0 ? sourceWidth : static_cast<uint32_t>(m_width);
         uniforms.screenHeight = sourceHeight > 0 ? sourceHeight : static_cast<uint32_t>(m_height);
 
-        // Slang wraps all globals into KernelContext 鈥?both kernels expect all bindings:
-        // buffer(0) = uniforms, texture(0) = hdrInput, buffer(1) = histogramBuffer, texture(1) = exposureLut
+        // Slang wraps all globals into KernelContext — both kernels expect all bindings:
+        // push_constant = uniforms, texture(0) = hdrInput, buffer(1) = histogramBuffer, texture(1) = exposureLut
 
         // Dispatch 1: Histogram
         encoder.setComputePipeline(histIt->second);
-        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.setTexture(hdrTex, 0);
         encoder.setStorageTexture(lutTex, 1);
         encoder.setBuffer(m_histogramBuffer.get(), 0, 1);
@@ -101,7 +101,7 @@ public:
 
         // Dispatch 2: Exposure
         encoder.setComputePipeline(expIt->second);
-        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.setTexture(hdrTex, 0);
         encoder.setStorageTexture(lutTex, 1);
         encoder.setBuffer(m_histogramBuffer.get(), 0, 1);

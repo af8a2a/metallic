@@ -191,6 +191,10 @@ public:
     void setVertexBytes(const void* data, size_t size, uint32_t index) override { m_encoder->setVertexBytes(data, size, index); }
     void setFragmentBytes(const void* data, size_t size, uint32_t index) override { m_encoder->setFragmentBytes(data, size, index); }
     void setMeshBytes(const void* data, size_t size, uint32_t index) override { m_encoder->setMeshBytes(data, size, index); }
+    void setPushConstants(const void* data, size_t size) override {
+        m_encoder->setVertexBytes(data, size, 0);
+        m_encoder->setFragmentBytes(data, size, 0);
+    }
     void setFragmentTexture(const RhiTexture* texture, uint32_t index) override { m_encoder->setFragmentTexture(texture ? static_cast<MTL::Texture*>(texture->nativeHandle()) : nullptr, index); }
     void setFragmentTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {
         auto metalTextures = collectMetalTextures(textures, count);
@@ -263,6 +267,7 @@ public:
     void setComputePipeline(const RhiComputePipeline& pipeline) override { m_encoder->setComputePipelineState(metalComputePipeline(pipeline)); }
     void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override { m_encoder->setBuffer(metalBuffer(buffer), offset, index); }
     void setBytes(const void* data, size_t size, uint32_t index) override { m_encoder->setBytes(data, size, index); }
+    void setPushConstants(const void* data, size_t size) override { m_encoder->setBytes(data, size, 0); }
     void setTexture(const RhiTexture* texture, uint32_t index) override { m_encoder->setTexture(texture ? static_cast<MTL::Texture*>(texture->nativeHandle()) : nullptr, index); }
     void setStorageTexture(const RhiTexture* texture, uint32_t index) override { setTexture(texture, index); }
     void setTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {

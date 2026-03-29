@@ -65,7 +65,7 @@ public:
         shadowUni.normalBias = m_normalBias;
         shadowUni.maxRayDistance = m_maxRayDistance > 0 ? m_maxRayDistance : m_frameContext->cameraFarZ;
         shadowUni.reversedZ = ML_DEPTH_REVERSED ? 1 : 0;
-        encoder.setBytes(&shadowUni, sizeof(shadowUni), 0);
+        encoder.setPushConstants(&shadowUni, sizeof(shadowUni));
         encoder.setAccelerationStructure(&m_ctx.shadowResources.tlas, 1);
         encoder.setTexture(m_frameGraph->getTexture(m_depthRead), 0);
         encoder.setStorageTexture(m_frameGraph->getTexture(shadowMap), 1);

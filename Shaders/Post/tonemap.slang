@@ -22,7 +22,7 @@ enum ToneMapMethod {
     eKhronosPBR,
 };
 
-ConstantBuffer<TonemapUniforms> tm;
+[[vk::push_constant]] ConstantBuffer<TonemapUniforms> tm;
 Texture2D<float4> inputTexture;
 Texture2D<float> exposureLut;
 SamplerState linearSampler;

@@ -7,7 +7,7 @@ struct HZBBuildUniforms {
     uint3 _pad;
 };
 
-ConstantBuffer<HZBBuildUniforms> uniforms; // buffer(0)
+[[vk::push_constant]] ConstantBuffer<HZBBuildUniforms> uniforms; // buffer(0)
 Texture2D<float> sourceTexture;            // texture(0)
 RWTexture2D<float> destinationTexture;     // texture(1)
 
