@@ -1,161 +1,317 @@
 {
-  "editorPositions": {
-    "AutoExposurePass_6": [
-      1300.0,
-      50.0
-    ],
-    "DeferredLightingPass_4": [
-      1050.0,
-      50.0
-    ],
-    "HZBBuildPass_2": [
-      800.0,
-      50.0
-    ],
-    "ImGuiOverlayPass_3": [
-      800.0,
-      190.0
-    ],
-    "MeshletCullPass_0": [
-      300.0,
-      50.0
-    ],
-    "ShadowRayPass_5": [
-      800.0,
-      330.0
-    ],
-    "SkyPass_8": [
-      300.0,
-      190.0
-    ],
-    "TonemapPass_7": [
-      1550.0,
-      50.0
-    ],
-    "VisibilityPass_1": [
-      550.0,
-      50.0
-    ]
-  },
-  "name": "NewPipeline",
-  "passes": [
+  "schemaVersion": 2,
+  "name": "Visibility Buffer",
+  "resources": [
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [],
-      "name": "MeshletCullPass_0",
-      "outputs": [
-        "cullResult"
-      ],
-      "sideEffect": false,
-      "type": "MeshletCullPass"
+      "id": "00000000000000000000000000000001",
+      "name": "Backbuffer",
+      "kind": "backbuffer",
+      "type": "texture",
+      "format": "BGRA8Unorm",
+      "size": "screen",
+      "editorPos": [1840.0, 80.0]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "cullResult"
-      ],
-      "name": "VisibilityPass_1",
-      "outputs": [
-        "visibility",
-        "depth"
-      ],
-      "sideEffect": false,
-      "type": "VisibilityPass"
+      "id": "00000000000000000000000000000002",
+      "name": "Cull Result",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [60.0, 50.0]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "depth"
-      ],
-      "name": "HZBBuildPass_2",
-      "outputs": [],
-      "sideEffect": false,
-      "type": "HZBBuildPass"
+      "id": "00000000000000000000000000000003",
+      "name": "Visibility",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Uint",
+      "size": "screen",
+      "editorPos": [60.0, 190.0]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "depth"
-      ],
-      "name": "ImGuiOverlayPass_3",
-      "outputs": [
-        "$backbuffer"
-      ],
-      "sideEffect": false,
-      "type": "ImGuiOverlayPass"
+      "id": "00000000000000000000000000000004",
+      "name": "Depth",
+      "kind": "transient",
+      "type": "texture",
+      "format": "Depth32Float",
+      "size": "screen",
+      "editorPos": [60.0, 330.0]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "visibility",
-        "depth",
-        "shadowMap",
-        "skyOutput"
-      ],
-      "name": "DeferredLightingPass_4",
-      "outputs": [
-        "lightingOutput",
-        "motionVectors"
-      ],
-      "sideEffect": false,
-      "type": "DeferredLightingPass"
+      "id": "00000000000000000000000000000005",
+      "name": "Shadow Map",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R8Unorm",
+      "size": "screen",
+      "editorPos": [60.0, 470.0]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "depth"
-      ],
-      "name": "ShadowRayPass_5",
-      "outputs": [
-        "shadowMap"
-      ],
-      "sideEffect": false,
-      "type": "ShadowRayPass"
+      "id": "00000000000000000000000000000006",
+      "name": "Sky Output",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen",
+      "editorPos": [60.0, 610.0]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "lightingOutput"
-      ],
-      "name": "AutoExposurePass_6",
-      "outputs": [
-        "exposureLut"
-      ],
-      "sideEffect": false,
-      "type": "AutoExposurePass"
+      "id": "00000000000000000000000000000007",
+      "name": "Lighting Output",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen",
+      "editorPos": [60.0, 750.0]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "lightingOutput",
-        "exposureLut"
-      ],
-      "name": "TonemapPass_7",
-      "outputs": [
-        "$backbuffer"
-      ],
-      "sideEffect": false,
-      "type": "TonemapPass"
+      "id": "00000000000000000000000000000008",
+      "name": "Motion Vectors",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RG16Float",
+      "size": "screen",
+      "editorPos": [60.0, 890.0]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [],
-      "name": "SkyPass_8",
-      "outputs": [
-        "skyOutput"
-      ],
-      "sideEffect": false,
-      "type": "SkyPass"
+      "id": "00000000000000000000000000000009",
+      "name": "Exposure LUT",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "1x1",
+      "editorPos": [60.0, 1030.0]
     }
   ],
-  "resources": []
+  "passes": [
+    {
+      "id": "10000000000000000000000000000001",
+      "name": "Meshlet Cull 1",
+      "type": "MeshletCullPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [320.0, 50.0]
+    },
+    {
+      "id": "10000000000000000000000000000002",
+      "name": "Visibility Pass 1",
+      "type": "VisibilityPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [580.0, 50.0]
+    },
+    {
+      "id": "10000000000000000000000000000003",
+      "name": "HZB Build 1",
+      "type": "HZBBuildPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [840.0, 50.0]
+    },
+    {
+      "id": "10000000000000000000000000000005",
+      "name": "Deferred Lighting 1",
+      "type": "DeferredLightingPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [1100.0, 50.0]
+    },
+    {
+      "id": "10000000000000000000000000000006",
+      "name": "Shadow Ray Pass 1",
+      "type": "ShadowRayPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [840.0, 330.0]
+    },
+    {
+      "id": "10000000000000000000000000000007",
+      "name": "Auto Exposure 1",
+      "type": "AutoExposurePass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [1360.0, 50.0]
+    },
+    {
+      "id": "10000000000000000000000000000008",
+      "name": "Tonemap 1",
+      "type": "TonemapPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [1620.0, 50.0]
+    },
+    {
+      "id": "10000000000000000000000000000009",
+      "name": "Sky Pass 1",
+      "type": "SkyPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [320.0, 190.0]
+    },
+    {
+      "id": "10000000000000000000000000000004",
+      "name": "ImGui Overlay 1",
+      "type": "ImGuiOverlayPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [840.0, 190.0]
+    }
+  ],
+  "edges": [
+    {
+      "id": "20000000000000000000000000000001",
+      "passId": "10000000000000000000000000000001",
+      "slotKey": "cullResult",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000002"
+    },
+    {
+      "id": "20000000000000000000000000000002",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "cullResult",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000002"
+    },
+    {
+      "id": "20000000000000000000000000000003",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "visibility",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000003"
+    },
+    {
+      "id": "20000000000000000000000000000004",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "depth",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "20000000000000000000000000000005",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "20000000000000000000000000000006",
+      "passId": "10000000000000000000000000000004",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "20000000000000000000000000000007",
+      "passId": "10000000000000000000000000000004",
+      "slotKey": "target",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000001"
+    },
+    {
+      "id": "20000000000000000000000000000008",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "visibility",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000003"
+    },
+    {
+      "id": "20000000000000000000000000000009",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "2000000000000000000000000000000a",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "shadowMap",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000005"
+    },
+    {
+      "id": "2000000000000000000000000000000b",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "skyOutput",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000006"
+    },
+    {
+      "id": "2000000000000000000000000000000c",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "lightingOutput",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000007"
+    },
+    {
+      "id": "2000000000000000000000000000000d",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "motionVectors",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000008"
+    },
+    {
+      "id": "2000000000000000000000000000000e",
+      "passId": "10000000000000000000000000000006",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "2000000000000000000000000000000f",
+      "passId": "10000000000000000000000000000006",
+      "slotKey": "shadowMap",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000005"
+    },
+    {
+      "id": "20000000000000000000000000000010",
+      "passId": "10000000000000000000000000000007",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000007"
+    },
+    {
+      "id": "20000000000000000000000000000011",
+      "passId": "10000000000000000000000000000007",
+      "slotKey": "exposureLut",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000009"
+    },
+    {
+      "id": "20000000000000000000000000000012",
+      "passId": "10000000000000000000000000000008",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000007"
+    },
+    {
+      "id": "20000000000000000000000000000013",
+      "passId": "10000000000000000000000000000008",
+      "slotKey": "exposureLut",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000009"
+    },
+    {
+      "id": "20000000000000000000000000000014",
+      "passId": "10000000000000000000000000000008",
+      "slotKey": "output",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000001"
+    },
+    {
+      "id": "20000000000000000000000000000015",
+      "passId": "10000000000000000000000000000009",
+      "slotKey": "skyOutput",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000006"
+    }
+  ]
 }

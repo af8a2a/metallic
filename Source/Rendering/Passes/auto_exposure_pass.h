@@ -23,13 +23,6 @@ public:
         if (config.config.contains("adaptationSpeed")) m_adaptationSpeed = config.config["adaptationSpeed"].get<float>();
         if (config.config.contains("lowPercentile")) m_lowPercentile = config.config["lowPercentile"].get<float>();
         if (config.config.contains("highPercentile")) m_highPercentile = config.config["highPercentile"].get<float>();
-        m_sourceInputName.clear();
-        for (const auto& inputName : config.inputs) {
-            if (!inputName.empty() && inputName[0] != '$') {
-                m_sourceInputName = inputName;
-                break;
-            }
-        }
     }
 
     FGResource getOutput(const std::string& outputName) const override {
@@ -126,21 +119,12 @@ public:
 
 private:
     FGResource getSourceInput() const {
-        if (!m_sourceInputName.empty()) {
-            FGResource source = getInput(m_sourceInputName);
-            if (source.isValid()) return source;
-        }
-        for (const auto& [inputName, resource] : m_inputResources) {
-            if (!inputName.empty() && inputName[0] == '$') continue;
-            if (resource.isValid()) return resource;
-        }
-        return FGResource{};
+        return getInput("source");
     }
 
     const RenderContext& m_ctx;
     int m_width, m_height;
     std::string m_name = "Auto Exposure";
-    std::string m_sourceInputName;
 
     FGResource m_sourceRead;
     FGResource m_exposureLut;

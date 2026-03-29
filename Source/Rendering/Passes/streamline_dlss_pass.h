@@ -26,14 +26,6 @@ public:
 
     void configure(const PassConfig& config) override {
         m_name = config.name;
-        m_sourceInputName.clear();
-        for (const auto& inputName : config.inputs) {
-            if (inputName == "depth" || inputName == "motionVectors") continue;
-            if (!inputName.empty() && inputName[0] != '$') {
-                if (m_sourceInputName.empty())
-                    m_sourceInputName = inputName;
-            }
-        }
     }
 
     FGResource getOutput(const std::string& outputName) const override {
@@ -135,16 +127,7 @@ public:
 
 private:
     FGResource getSourceInput() const {
-        if (!m_sourceInputName.empty()) {
-            FGResource source = getInput(m_sourceInputName);
-            if (source.isValid()) return source;
-        }
-        for (const auto& [inputName, resource] : m_inputResources) {
-            if (!inputName.empty() && inputName[0] == '$') continue;
-            if (inputName == "depth" || inputName == "motionVectors") continue;
-            if (resource.isValid()) return resource;
-        }
-        return FGResource{};
+        return getInput("source");
     }
 
     IUpscalerIntegration* currentUpscaler() const {
@@ -204,7 +187,6 @@ private:
     int m_renderWidth, m_renderHeight;
     int m_displayWidth, m_displayHeight;
     std::string m_name = "DLSS";
-    std::string m_sourceInputName;
     bool m_passthrough = false;
 
     FGResource m_sourceRead, m_depthRead, m_motionRead, m_dlssOutput;

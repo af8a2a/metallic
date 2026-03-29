@@ -17,12 +17,12 @@ public:
     }
 
     FGResource getOutput(const std::string& name) const override {
-        if (name == "$backbuffer") return m_drawable;
+        if (name == "target") return m_drawable;
         return FGResource{};
     }
 
     void setup(FGBuilder& builder) override {
-        m_drawable = getInput("$backbuffer");
+        m_drawable = getOutputTarget("target");
 
         if (m_drawable.isValid()) {
             m_drawable = builder.setColorAttachment(0,

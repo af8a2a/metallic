@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <unordered_map>
 #include <json.hpp>
@@ -10,16 +11,92 @@
 class RenderPass;
 struct RenderContext;
 
+struct PassResourceBinding {
+    std::string slotKey;
+    std::string resourceId;
+    std::string resourceName;
+    std::string producerPassId;
+    std::string producerPassType;
+    std::string producerSlotKey;
+};
+
 // Pass configuration from JSON
 struct PassConfig {
     std::string name;
     std::string type;
-    std::vector<std::string> inputs;
-    std::vector<std::string> outputs;
+    std::vector<PassResourceBinding> inputBindings;
+    std::vector<PassResourceBinding> outputBindings;
     bool enabled = true;
     bool sideEffect = false;
     nlohmann::json config;
+
+    const PassResourceBinding* findInputBinding(const std::string& slotKey) const {
+        for (const auto& binding : inputBindings) {
+            if (binding.slotKey == slotKey) {
+                return &binding;
+            }
+        }
+        return nullptr;
+    }
+
+    const PassResourceBinding* findOutputBinding(const std::string& slotKey) const {
+        for (const auto& binding : outputBindings) {
+            if (binding.slotKey == slotKey) {
+                return &binding;
+            }
+        }
+        return nullptr;
+    }
 };
+
+struct PassSlotInfo {
+    std::string key;
+    std::string displayName;
+    bool optional = false;
+    std::vector<std::string> allowedResourceKinds;
+};
+
+inline PassSlotInfo makePassSlot(std::string key,
+                                 std::string displayName,
+                                 bool optional,
+                                 std::vector<std::string> allowedResourceKinds) {
+    return PassSlotInfo{
+        std::move(key),
+        std::move(displayName),
+        optional,
+        std::move(allowedResourceKinds)
+    };
+}
+
+inline PassSlotInfo makeInputSlot(std::string key,
+                                  std::string displayName,
+                                  bool optional = false,
+                                  std::vector<std::string> allowedResourceKinds = {"transient", "imported", "backbuffer"}) {
+    return makePassSlot(std::move(key),
+                        std::move(displayName),
+                        optional,
+                        std::move(allowedResourceKinds));
+}
+
+inline PassSlotInfo makeOutputSlot(std::string key,
+                                   std::string displayName,
+                                   bool optional = false,
+                                   std::vector<std::string> allowedResourceKinds = {"transient"}) {
+    return makePassSlot(std::move(key),
+                        std::move(displayName),
+                        optional,
+                        std::move(allowedResourceKinds));
+}
+
+inline PassSlotInfo makeTargetSlot(std::string key,
+                                   std::string displayName,
+                                   bool optional = false,
+                                   std::vector<std::string> allowedResourceKinds = {"imported", "backbuffer"}) {
+    return makePassSlot(std::move(key),
+                        std::move(displayName),
+                        optional,
+                        std::move(allowedResourceKinds));
+}
 
 // Metadata describing a pass type for the editor
 struct PassTypeInfo {
@@ -27,9 +104,9 @@ struct PassTypeInfo {
     std::string displayName;
     std::string category;  // e.g., "Geometry", "Lighting", "Post-Process"
 
-    // Default inputs/outputs for new instances
-    std::vector<std::string> defaultInputs;
-    std::vector<std::string> defaultOutputs;
+    // Stable slot definitions for new instances and validation
+    std::vector<PassSlotInfo> inputSlots;
+    std::vector<PassSlotInfo> outputSlots;
 
     // Config schema (JSON schema for pass-specific config)
     nlohmann::json configSchema;
@@ -104,8 +181,8 @@ public:
 // Full registration macro with metadata for pipeline editor
 // Usage:
 //   REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
-//       (std::vector<std::string>{}),
-//       (std::vector<std::string>{"visibility", "depth"})
+//       (std::vector<PassSlotInfo>{}),
+//       (std::vector<PassSlotInfo>{makeOutputSlot("visibility", "Visibility"), makeOutputSlot("depth", "Depth")})
 //   );
 #define REGISTER_RENDER_PASS(Type, DisplayName, Category, Inputs, Outputs) \
     static PassRegistrar _registrar_##Type(#Type, \
@@ -146,8 +223,8 @@ public:
             info.typeName = #Type; \
             info.displayName = DisplayName; \
             info.category = Category; \
-            info.defaultInputs = Inputs; \
-            info.defaultOutputs = Outputs; \
+            info.inputSlots = Inputs; \
+            info.outputSlots = Outputs; \
             info.passType = PassTypeVal; \
             PassRegistry::instance().registerPass(#Type, nullptr, info); \
             return true; \

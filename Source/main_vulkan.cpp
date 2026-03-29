@@ -234,17 +234,29 @@ bool createSceneFallbackTextures(const RhiDevice& device,
     return true;
 }
 
-void eraseResourceByName(PipelineAsset& asset, const char* resourceName) {
+void eraseResourceById(PipelineAsset& asset, const std::string& resourceId) {
+    asset.removeEdgesForResource(resourceId);
     asset.resources.erase(
         std::remove_if(asset.resources.begin(),
                        asset.resources.end(),
-                       [resourceName](const ResourceDecl& resource) {
-                           return resource.name == resourceName;
+                       [&resourceId](const ResourceDecl& resource) {
+                           return resource.id == resourceId;
                        }),
         asset.resources.end());
 }
 
 void erasePassByType(PipelineAsset& asset, const char* passType) {
+    std::vector<std::string> passIds;
+    for (const auto& pass : asset.passes) {
+        if (pass.type == passType) {
+            passIds.push_back(pass.id);
+        }
+    }
+
+    for (const auto& passId : passIds) {
+        asset.removeEdgesForPass(passId);
+    }
+
     asset.passes.erase(
         std::remove_if(asset.passes.begin(),
                        asset.passes.end(),
@@ -254,16 +266,101 @@ void erasePassByType(PipelineAsset& asset, const char* passType) {
         asset.passes.end());
 }
 
-void replacePassInput(PassDecl& pass, const char* oldName, const char* newName) {
-    for (auto& input : pass.inputs) {
-        if (input == oldName) {
-            input = newName;
+ResourceDecl* findFirstResourceByKind(PipelineAsset& asset, const char* resourceKind) {
+    for (auto& resource : asset.resources) {
+        if (resource.kind == resourceKind) {
+            return &resource;
         }
     }
+    return nullptr;
 }
 
-bool passProducesResource(const PassDecl& pass, const char* resourceName) {
-    return std::find(pass.outputs.begin(), pass.outputs.end(), resourceName) != pass.outputs.end();
+const ResourceDecl* findFirstResourceByKind(const PipelineAsset& asset, const char* resourceKind) {
+    for (const auto& resource : asset.resources) {
+        if (resource.kind == resourceKind) {
+            return &resource;
+        }
+    }
+    return nullptr;
+}
+
+EdgeDecl* findPassSlotBinding(PipelineAsset& asset,
+                              const PassDecl* pass,
+                              const char* direction,
+                              const char* slotKey) {
+    if (!pass) {
+        return nullptr;
+    }
+    return asset.findEdge(pass->id, direction, slotKey);
+}
+
+const EdgeDecl* findPassSlotBinding(const PipelineAsset& asset,
+                                    const PassDecl* pass,
+                                    const char* direction,
+                                    const char* slotKey) {
+    if (!pass) {
+        return nullptr;
+    }
+    return asset.findEdge(pass->id, direction, slotKey);
+}
+
+const ResourceDecl* findPassBoundResource(const PipelineAsset& asset,
+                                          const PassDecl* pass,
+                                          const char* direction,
+                                          const char* slotKey) {
+    const EdgeDecl* edge = findPassSlotBinding(asset, pass, direction, slotKey);
+    return edge ? asset.findResourceById(edge->resourceId) : nullptr;
+}
+
+void ensurePassSlotBinding(PipelineAsset& asset,
+                           const PassDecl& pass,
+                           const char* direction,
+                           const char* slotKey,
+                           const std::string& resourceId) {
+    if (EdgeDecl* edge = asset.findEdge(pass.id, direction, slotKey)) {
+        edge->resourceId = resourceId;
+        return;
+    }
+
+    asset.edges.push_back({
+        generatePipelineAssetGuid(),
+        pass.id,
+        slotKey,
+        direction,
+        resourceId,
+    });
+}
+
+void erasePassSlotBinding(PipelineAsset& asset,
+                          const PassDecl& pass,
+                          const char* direction,
+                          const char* slotKey) {
+    asset.edges.erase(
+        std::remove_if(asset.edges.begin(),
+                       asset.edges.end(),
+                       [&](const EdgeDecl& edge) {
+                           return edge.passId == pass.id &&
+                                  edge.direction == direction &&
+                                  edge.slotKey == slotKey;
+                       }),
+        asset.edges.end());
+}
+
+bool passProducesResource(const PipelineAsset& asset,
+                          const PassDecl& pass,
+                          const std::string& resourceId) {
+    if (resourceId.empty()) {
+        return false;
+    }
+
+    for (const auto& edge : asset.edges) {
+        if (edge.passId == pass.id &&
+            edge.direction == "output" &&
+            edge.resourceId == resourceId) {
+            return true;
+        }
+    }
+    return false;
 }
 
 PassDecl* findFirstEnabledPassByType(PipelineAsset& asset, const char* passType) {
@@ -276,72 +373,33 @@ PassDecl* findFirstEnabledPassByType(PipelineAsset& asset, const char* passType)
 }
 
 void normalizePipelineFinalDisplayOutput(PipelineAsset& asset) {
-    PassDecl* tonemapPass = findFirstEnabledPassByType(asset, "TonemapPass");
-    if (!tonemapPass) {
+    const ResourceDecl* backbuffer = findFirstResourceByKind(asset, "backbuffer");
+    if (!backbuffer) {
         return;
     }
-    const std::string tonemapPassName = tonemapPass->name;
 
-    bool tonemapHasOutput = false;
-    for (auto& output : tonemapPass->outputs) {
-        if (output == "$backbuffer") {
-            output = "tonemapOutput";
-        }
-        tonemapHasOutput = tonemapHasOutput || output == "tonemapOutput";
-    }
-    if (!tonemapHasOutput) {
-        tonemapPass->outputs.push_back("tonemapOutput");
+    if (PassDecl* outputPass = findFirstEnabledPassByType(asset, "OutputPass")) {
+        ensurePassSlotBinding(asset, *outputPass, "output", "target", backbuffer->id);
+    } else if (PassDecl* tonemapPass = findFirstEnabledPassByType(asset, "TonemapPass")) {
+        ensurePassSlotBinding(asset, *tonemapPass, "output", "output", backbuffer->id);
     }
 
-    PassDecl finalOutputPass;
-    bool hasExistingOutputPass = false;
-    size_t existingOutputPassIndex = 0;
-    for (size_t i = 0; i < asset.passes.size(); ++i) {
-        if (asset.passes[i].enabled && asset.passes[i].type == "OutputPass") {
-            finalOutputPass = asset.passes[i];
-            existingOutputPassIndex = i;
-            hasExistingOutputPass = true;
-            break;
-        }
-    }
-
-    if (hasExistingOutputPass) {
-        asset.passes.erase(asset.passes.begin() + static_cast<std::ptrdiff_t>(existingOutputPassIndex));
-    } else {
-        finalOutputPass.name = "OutputPass_Final";
-        finalOutputPass.type = "OutputPass";
-        finalOutputPass.enabled = true;
-        finalOutputPass.sideEffect = false;
-        finalOutputPass.config = nlohmann::json::object();
-    }
-
-    finalOutputPass.inputs = {"tonemapOutput"};
-    finalOutputPass.outputs = {"$backbuffer"};
-
-    size_t insertIndex = asset.passes.size();
-    for (size_t i = 0; i < asset.passes.size(); ++i) {
-        if (!asset.passes[i].enabled) {
-            continue;
-        }
-        if (passProducesResource(asset.passes[i], "$backbuffer")) {
-            insertIndex = i;
-            break;
-        }
-    }
-    asset.passes.insert(asset.passes.begin() + static_cast<std::ptrdiff_t>(insertIndex), finalOutputPass);
-
-    const auto tonemapPosIt = asset.editorPositions.find(tonemapPassName);
-    if (tonemapPosIt != asset.editorPositions.end() &&
-        asset.editorPositions.find(finalOutputPass.name) == asset.editorPositions.end()) {
-        asset.editorPositions[finalOutputPass.name] = {
-            tonemapPosIt->second[0] + 240.0f,
-            tonemapPosIt->second[1]
-        };
+    if (PassDecl* imguiPass = findFirstEnabledPassByType(asset, "ImGuiOverlayPass")) {
+        ensurePassSlotBinding(asset, *imguiPass, "output", "target", backbuffer->id);
     }
 }
 
 void disablePipelineAutoExposure(PipelineAsset& asset) {
-    eraseResourceByName(asset, "exposureLut");
+    std::vector<std::string> producedResourceIds;
+    for (const auto& pass : asset.passes) {
+        if (pass.type != "AutoExposurePass") {
+            continue;
+        }
+        if (const EdgeDecl* edge = findPassSlotBinding(asset, &pass, "output", "exposureLut")) {
+            producedResourceIds.push_back(edge->resourceId);
+        }
+    }
+
     erasePassByType(asset, "AutoExposurePass");
 
     for (auto& pass : asset.passes) {
@@ -349,15 +407,26 @@ void disablePipelineAutoExposure(PipelineAsset& asset) {
             continue;
         }
 
-        pass.inputs.erase(
-            std::remove(pass.inputs.begin(), pass.inputs.end(), "exposureLut"),
-            pass.inputs.end());
+        erasePassSlotBinding(asset, pass, "input", "exposureLut");
         pass.config["autoExposure"] = false;
+    }
+
+    for (const auto& resourceId : producedResourceIds) {
+        eraseResourceById(asset, resourceId);
     }
 }
 
 void disableVisibilityRayTracing(PipelineAsset& asset) {
-    eraseResourceByName(asset, "shadowMap");
+    std::vector<std::string> producedResourceIds;
+    for (const auto& pass : asset.passes) {
+        if (pass.type != "ShadowRayPass") {
+            continue;
+        }
+        if (const EdgeDecl* edge = findPassSlotBinding(asset, &pass, "output", "shadowMap")) {
+            producedResourceIds.push_back(edge->resourceId);
+        }
+    }
+
     erasePassByType(asset, "ShadowRayPass");
 
     for (auto& pass : asset.passes) {
@@ -365,9 +434,11 @@ void disableVisibilityRayTracing(PipelineAsset& asset) {
             continue;
         }
 
-        pass.inputs.erase(
-            std::remove(pass.inputs.begin(), pass.inputs.end(), "shadowMap"),
-            pass.inputs.end());
+        erasePassSlotBinding(asset, pass, "input", "shadowMap");
+    }
+
+    for (const auto& resourceId : producedResourceIds) {
+        eraseResourceById(asset, resourceId);
     }
 }
 
@@ -402,41 +473,12 @@ const PassDecl* findEnabledProducerForResource(const PipelineAsset& asset, const
         if (!pass.enabled) {
             continue;
         }
-        if (std::find(pass.outputs.begin(), pass.outputs.end(), resourceName) != pass.outputs.end()) {
+
+        if (passProducesResource(asset, pass, resourceName)) {
             return &pass;
         }
     }
     return nullptr;
-}
-
-std::string findPrimaryInput(const PassDecl* pass, std::initializer_list<const char*> ignoredInputs = {}) {
-    if (!pass) {
-        return {};
-    }
-
-    for (const auto& input : pass->inputs) {
-        if (input.empty() || input[0] == '$') {
-            continue;
-        }
-        bool ignored = false;
-        for (const char* ignoredInput : ignoredInputs) {
-            if (input == ignoredInput) {
-                ignored = true;
-                break;
-            }
-        }
-        if (!ignored) {
-            return input;
-        }
-    }
-    return {};
-}
-
-bool passConsumesInput(const PassDecl* pass, const char* inputName) {
-    if (!pass || !inputName || inputName[0] == '\0') {
-        return false;
-    }
-    return std::find(pass->inputs.begin(), pass->inputs.end(), inputName) != pass->inputs.end();
 }
 
 VisibilityUpscalerSelection analyzeVisibilityUpscalerSelection(const PipelineAsset& asset) {
@@ -449,20 +491,26 @@ VisibilityUpscalerSelection analyzeVisibilityUpscalerSelection(const PipelineAss
     selection.hasTaaPass = findFirstEnabledPassByType(asset, "TAAPass") != nullptr;
     selection.hasDlssPass = findFirstEnabledPassByType(asset, "StreamlineDlssPass") != nullptr;
 
-    const std::string tonemapSource = findPrimaryInput(tonemapPass, {"exposureLut"});
-    const std::string outputSource = findPrimaryInput(outputPass);
-    const std::string autoExposureSource = findPrimaryInput(autoExposurePass);
+    const ResourceDecl* tonemapSource =
+        findPassBoundResource(asset, tonemapPass, "input", "source");
+    const ResourceDecl* outputSource =
+        findPassBoundResource(asset, outputPass, "input", "source");
+    const ResourceDecl* autoExposureSource =
+        findPassBoundResource(asset, autoExposurePass, "input", "source");
 
-    selection.activePostSource = !tonemapSource.empty() ? tonemapSource : outputSource;
+    const ResourceDecl* activePostSource = tonemapSource ? tonemapSource : outputSource;
+    selection.activePostSource = activePostSource ? activePostSource->name : std::string{};
 
-    if (!selection.activePostSource.empty()) {
-        const PassDecl* producer = findEnabledProducerForResource(asset, selection.activePostSource);
-        if (producer) {
-            if (producer->type == "TAAPass") {
-                selection.activeMode = VisibilityUpscalerMode::TAA;
-            } else if (producer->type == "StreamlineDlssPass") {
-                selection.activeMode = VisibilityUpscalerMode::DLSS;
-            }
+    const PassDecl* activePostProducer =
+        activePostSource ? findEnabledProducerForResource(asset, activePostSource->id) : nullptr;
+    const PassDecl* autoExposureProducer =
+        autoExposureSource ? findEnabledProducerForResource(asset, autoExposureSource->id) : nullptr;
+
+    if (activePostProducer) {
+        if (activePostProducer->type == "TAAPass") {
+            selection.activeMode = VisibilityUpscalerMode::TAA;
+        } else if (activePostProducer->type == "StreamlineDlssPass") {
+            selection.activeMode = VisibilityUpscalerMode::DLSS;
         }
     }
 
@@ -470,60 +518,62 @@ VisibilityUpscalerSelection analyzeVisibilityUpscalerSelection(const PipelineAss
         return selection;
     }
 
-    if (tonemapPass && tonemapSource.empty()) {
-        if (autoExposureSource == "dlssOutput") {
+    if (tonemapPass && !tonemapSource) {
+        if (autoExposureProducer && autoExposureProducer->type == "StreamlineDlssPass") {
             selection.diagnostic =
-                "TonemapPass has no color input. AutoExposurePass already reads dlssOutput; "
-                "connect TonemapPass to dlssOutput and keep exposureLut as a second input.";
-        } else if (autoExposureSource == "taaOutput") {
+                "TonemapPass.source is unbound. AutoExposurePass already reads "
+                "StreamlineDlssPass.dlssOutput; connect TonemapPass.source to the same output "
+                "and keep TonemapPass.exposureLut as the second input.";
+        } else if (autoExposureProducer && autoExposureProducer->type == "TAAPass") {
             selection.diagnostic =
-                "TonemapPass has no color input. AutoExposurePass already reads taaOutput; "
-                "connect TonemapPass to taaOutput and keep exposureLut as a second input.";
+                "TonemapPass.source is unbound. AutoExposurePass already reads "
+                "TAAPass.taaOutput; connect TonemapPass.source to the same output and keep "
+                "TonemapPass.exposureLut as the second input.";
         } else {
             selection.diagnostic =
-                "TonemapPass has no color input. Connect it to lightingOutput, taaOutput, or dlssOutput.";
+                "TonemapPass.source is unbound. Connect it to DeferredLightingPass.lightingOutput, "
+                "TAAPass.taaOutput, or StreamlineDlssPass.dlssOutput.";
         }
         return selection;
     }
 
-    if (!tonemapPass && outputPass && outputSource.empty()) {
+    if (!tonemapPass && outputPass && !outputSource) {
         selection.diagnostic =
-            "OutputPass has no source input. Connect it to lightingOutput, taaOutput, or dlssOutput.";
+            "OutputPass.source is unbound. Connect it to DeferredLightingPass.lightingOutput, "
+            "TAAPass.taaOutput, or StreamlineDlssPass.dlssOutput.";
         return selection;
     }
 
     if (selection.hasDlssPass) {
-        if (autoExposureSource == "dlssOutput") {
+        if (autoExposureProducer && autoExposureProducer->type == "StreamlineDlssPass") {
             selection.diagnostic =
-                "StreamlineDlssPass exists and AutoExposurePass reads dlssOutput, but the active post chain does not.";
+                "StreamlineDlssPass exists and AutoExposurePass.source already reads "
+                "StreamlineDlssPass.dlssOutput, but the active post chain does not.";
         } else if (!selection.activePostSource.empty()) {
             selection.diagnostic =
                 "StreamlineDlssPass exists, but the active post chain still uses '" +
                 selection.activePostSource + "'.";
-        } else if (passConsumesInput(tonemapPass, "dlssOutput") || passConsumesInput(outputPass, "dlssOutput")) {
-            selection.diagnostic =
-                "StreamlineDlssPass is wired into the graph, but the active post source could not be resolved.";
         } else {
             selection.diagnostic =
-                "StreamlineDlssPass is present, but TonemapPass/OutputPass is not consuming dlssOutput.";
+                "StreamlineDlssPass is present, but TonemapPass.source/OutputPass.source is not "
+                "bound to StreamlineDlssPass.dlssOutput.";
         }
         return selection;
     }
 
     if (selection.hasTaaPass) {
-        if (autoExposureSource == "taaOutput") {
+        if (autoExposureProducer && autoExposureProducer->type == "TAAPass") {
             selection.diagnostic =
-                "TAAPass exists and AutoExposurePass reads taaOutput, but the active post chain does not.";
+                "TAAPass exists and AutoExposurePass.source already reads TAAPass.taaOutput, "
+                "but the active post chain does not.";
         } else if (!selection.activePostSource.empty()) {
             selection.diagnostic =
                 "TAAPass exists, but the active post chain still uses '" +
                 selection.activePostSource + "'.";
-        } else if (passConsumesInput(tonemapPass, "taaOutput") || passConsumesInput(outputPass, "taaOutput")) {
-            selection.diagnostic =
-                "TAAPass is wired into the graph, but the active post source could not be resolved.";
         } else {
             selection.diagnostic =
-                "TAAPass is present, but TonemapPass/OutputPass is not consuming taaOutput.";
+                "TAAPass is present, but TonemapPass.source/OutputPass.source is not bound to "
+                "TAAPass.taaOutput.";
         }
     }
 
@@ -686,44 +736,81 @@ bool loadAtmosphereTextures(const RhiDevice& device,
 
 PipelineAsset makeSceneColorPostPipelineAsset() {
     PipelineAsset asset;
+    asset.schemaVersion = kPipelineAssetSchemaVersion;
     asset.name = "VulkanPostPipeline";
-    asset.resources.push_back({"sceneColor", "texture", "RGBA16Float", "screen"});
-    asset.passes.push_back({
-        "Tonemap",
-        "TonemapPass",
-        {"sceneColor"},
-        {"tonemapOutput"},
-        true,
-        false,
-        {
-            {"method", "Clip"},
-            {"exposure", 1.0},
-            {"contrast", 1.0},
-            {"brightness", 1.0},
-            {"saturation", 1.0},
-            {"vignette", 0.0},
-            {"dither", false},
-            {"autoExposure", false},
-        },
-    });
-    asset.passes.push_back({
-        "Output",
-        "OutputPass",
-        {"tonemapOutput"},
-        {"$backbuffer"},
-        true,
-        false,
-        {},
-    });
-    asset.passes.push_back({
-        "ImGui Overlay",
-        "ImGuiOverlayPass",
-        {},
-        {"$backbuffer"},
-        true,
-        false,
-        {},
-    });
+
+    ResourceDecl sceneColor;
+    sceneColor.id = generatePipelineAssetGuid();
+    sceneColor.name = "Scene Color";
+    sceneColor.kind = "imported";
+    sceneColor.type = "texture";
+    sceneColor.format = "RGBA16Float";
+    sceneColor.size = "screen";
+    sceneColor.importKey = "sceneColor";
+
+    ResourceDecl tonemapOutput;
+    tonemapOutput.id = generatePipelineAssetGuid();
+    tonemapOutput.name = "Tonemap Output";
+    tonemapOutput.kind = "transient";
+    tonemapOutput.type = "texture";
+    tonemapOutput.format = "RGBA8Srgb";
+    tonemapOutput.size = "screen";
+
+    ResourceDecl backbuffer;
+    backbuffer.id = generatePipelineAssetGuid();
+    backbuffer.name = "Backbuffer";
+    backbuffer.kind = "backbuffer";
+    backbuffer.type = "texture";
+    backbuffer.format = "BGRA8Unorm";
+    backbuffer.size = "screen";
+
+    asset.resources.push_back(sceneColor);
+    asset.resources.push_back(tonemapOutput);
+    asset.resources.push_back(backbuffer);
+
+    PassDecl tonemapPass;
+    tonemapPass.id = generatePipelineAssetGuid();
+    tonemapPass.name = "Tonemap";
+    tonemapPass.type = "TonemapPass";
+    tonemapPass.enabled = true;
+    tonemapPass.sideEffect = false;
+    tonemapPass.config = {
+        {"method", "Clip"},
+        {"exposure", 1.0},
+        {"contrast", 1.0},
+        {"brightness", 1.0},
+        {"saturation", 1.0},
+        {"vignette", 0.0},
+        {"dither", false},
+        {"autoExposure", false},
+    };
+
+    PassDecl outputPass;
+    outputPass.id = generatePipelineAssetGuid();
+    outputPass.name = "Output";
+    outputPass.type = "OutputPass";
+    outputPass.enabled = true;
+    outputPass.sideEffect = false;
+    outputPass.config = nlohmann::json::object();
+
+    PassDecl imguiOverlayPass;
+    imguiOverlayPass.id = generatePipelineAssetGuid();
+    imguiOverlayPass.name = "ImGui Overlay";
+    imguiOverlayPass.type = "ImGuiOverlayPass";
+    imguiOverlayPass.enabled = true;
+    imguiOverlayPass.sideEffect = false;
+    imguiOverlayPass.config = nlohmann::json::object();
+
+    asset.passes.push_back(tonemapPass);
+    asset.passes.push_back(outputPass);
+    asset.passes.push_back(imguiOverlayPass);
+
+    asset.edges.push_back({generatePipelineAssetGuid(), tonemapPass.id, "source", "input", sceneColor.id});
+    asset.edges.push_back({generatePipelineAssetGuid(), tonemapPass.id, "output", "output", tonemapOutput.id});
+    asset.edges.push_back({generatePipelineAssetGuid(), outputPass.id, "source", "input", tonemapOutput.id});
+    asset.edges.push_back({generatePipelineAssetGuid(), outputPass.id, "target", "output", backbuffer.id});
+    asset.edges.push_back({generatePipelineAssetGuid(), imguiOverlayPass.id, "target", "output", backbuffer.id});
+
     return asset;
 }
 

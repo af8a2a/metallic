@@ -16,17 +16,11 @@ public:
 
     void configure(const PassConfig& config) override {
         m_name = config.name;
-        m_sourceInputName.clear();
-        m_hasExposureLutInput = false;
-        for (const auto& inputName : config.inputs) {
-            if (!inputName.empty() && inputName[0] != '$') {
-                if (inputName == "exposureLut") {
-                    m_hasExposureLutInput = true;
-                } else if (m_sourceInputName.empty()) {
-                    m_sourceInputName = inputName;
-                }
-            }
+        m_sourceProducerType.clear();
+        if (const auto* sourceBinding = config.findInputBinding("source")) {
+            m_sourceProducerType = sourceBinding->producerPassType;
         }
+        m_hasExposureLutInput = config.findInputBinding("exposureLut") != nullptr;
         if (config.config.contains("method")) {
             std::string method = config.config["method"].get<std::string>();
             if (method == "Filmic") m_method = 0;
@@ -46,7 +40,7 @@ public:
     }
 
     FGResource getOutput(const std::string& name) const override {
-        if (name == "tonemapOutput") return m_dest;
+        if (name == "output") return m_dest;
         return FGResource{};
     }
 
@@ -55,7 +49,7 @@ public:
         m_exposureLutRead = FGResource{};
         m_dest = FGResource{};
 
-        FGResource sourceInput = getSourceInput();
+        FGResource sourceInput = getInput("source");
         if (sourceInput.isValid()) {
             m_sourceRead = builder.read(sourceInput);
         }
@@ -67,10 +61,13 @@ public:
             }
         }
 
-        m_dest = builder.create("tonemapOutput",
-            FGTextureDesc::renderTarget(currentOutputWidth(),
-                                        currentOutputHeight(),
-                                        RhiFormat::RGBA8Srgb));
+        m_dest = getOutputTarget("output");
+        if (!m_dest.isValid()) {
+            m_dest = builder.create("tonemapOutput",
+                FGTextureDesc::renderTarget(currentOutputWidth(),
+                                            currentOutputHeight(),
+                                            RhiFormat::RGBA8Srgb));
+        }
         m_dest = builder.setColorAttachment(0,
                                             m_dest,
                                             RhiLoadAction::DontCare,
@@ -151,20 +148,6 @@ public:
     }
 
 private:
-    FGResource getSourceInput() const {
-        if (!m_sourceInputName.empty()) {
-            FGResource source = getInput(m_sourceInputName);
-            if (source.isValid()) {
-                return source;
-            }
-        }
-        for (const auto& [inputName, resource] : m_inputResources) {
-            if (!inputName.empty() && inputName[0] == '$') continue;
-            if (resource.isValid()) return resource;
-        }
-        return FGResource{};
-    }
-
     const RenderContext& m_ctx;
     FGResource m_sourceRead;
     FGResource m_exposureLutRead;
@@ -181,7 +164,7 @@ private:
     bool m_dither = true;
     bool m_autoExposure = false;
     bool m_hasExposureLutInput = false;
-    std::string m_sourceInputName;
+    std::string m_sourceProducerType;
 
     int currentRenderWidth() const {
         if (m_frameContext && m_frameContext->renderWidth > 0) {
@@ -224,11 +207,11 @@ private:
     }
 
     int currentOutputWidth() const {
-        return m_sourceInputName == "dlssOutput" ? currentDisplayWidth() : currentRenderWidth();
+        return m_sourceProducerType == "StreamlineDlssPass" ? currentDisplayWidth() : currentRenderWidth();
     }
 
     int currentOutputHeight() const {
-        return m_sourceInputName == "dlssOutput" ? currentDisplayHeight() : currentRenderHeight();
+        return m_sourceProducerType == "StreamlineDlssPass" ? currentDisplayHeight() : currentRenderHeight();
     }
 };
 
