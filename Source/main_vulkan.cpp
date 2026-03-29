@@ -1664,7 +1664,13 @@ int main() {
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
     VulkanDescriptorManager descriptorManager;
-    descriptorManager.init(vkDevice, vkPhysicalDevice, vmaAllocator);
+    {
+        const auto& limits = rhi->limits();
+        descriptorManager.init(vkDevice, vkPhysicalDevice, vmaAllocator,
+                               limits.minUniformBufferOffsetAlignment,
+                               limits.nonCoherentAtomSize,
+                               limits.maxUniformBufferRange);
+    }
     if (previewSceneReady) {
         if (!previewMaterials.textureViews.empty()) {
             descriptorManager.updateBindlessSampledTextures(previewMaterials.textureViews.data(),

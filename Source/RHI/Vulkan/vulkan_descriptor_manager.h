@@ -71,7 +71,12 @@ struct PendingAccelerationStructureBinding {
 
 class VulkanDescriptorManager {
 public:
-    void init(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator);
+    void init(VkDevice device,
+              VkPhysicalDevice physicalDevice,
+              VmaAllocator allocator,
+              VkDeviceSize minUniformBufferOffsetAlignment,
+              VkDeviceSize nonCoherentAtomSize,
+              VkDeviceSize maxUniformBufferRange);
     void destroy();
     void resetFrame();
 

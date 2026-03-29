@@ -12,6 +12,8 @@ typedef VmaAllocator_T* VmaAllocator;
 std::unique_ptr<RhiContext> createVulkanContext(const RhiCreateInfo& createInfo,
                                                 std::string& errorMessage);
 
+bool vulkanHasExtension(RhiContext& context, const char* extensionName);
+
 // Access VMA allocator and Vulkan handles from the context (for frame graph backend, resource utils, etc.)
 VmaAllocator getVulkanAllocator(RhiContext& context);
 VkDevice getVulkanDevice(RhiContext& context);

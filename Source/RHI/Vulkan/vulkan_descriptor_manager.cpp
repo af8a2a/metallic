@@ -155,19 +155,16 @@ VkDeviceSize nextUploadCapacity(VkDeviceSize requiredSize) {
 
 void VulkanDescriptorManager::init(VkDevice device,
                                    VkPhysicalDevice physicalDevice,
-                                   VmaAllocator allocator) {
+                                   VmaAllocator allocator,
+                                   VkDeviceSize minUniformBufferOffsetAlignment,
+                                   VkDeviceSize nonCoherentAtomSize,
+                                   VkDeviceSize maxUniformBufferRange) {
     m_device = device;
     m_physicalDevice = physicalDevice;
     m_allocator = allocator;
-    if (m_physicalDevice != VK_NULL_HANDLE) {
-        VkPhysicalDeviceProperties properties{};
-        vkGetPhysicalDeviceProperties(m_physicalDevice, &properties);
-        m_uniformUploadAlignment =
-            std::max<VkDeviceSize>(properties.limits.minUniformBufferOffsetAlignment, 16);
-        m_nonCoherentAtomSize =
-            std::max<VkDeviceSize>(properties.limits.nonCoherentAtomSize, 1);
-        m_maxUniformBufferRange = properties.limits.maxUniformBufferRange;
-    }
+    m_uniformUploadAlignment = std::max<VkDeviceSize>(minUniformBufferOffsetAlignment, 16);
+    m_nonCoherentAtomSize = std::max<VkDeviceSize>(nonCoherentAtomSize, 1);
+    m_maxUniformBufferRange = maxUniformBufferRange;
     createPools();
 
     std::string errorMessage;

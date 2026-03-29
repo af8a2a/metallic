@@ -510,6 +510,64 @@ struct RhiFeatures {
     bool meshShaders = false;
     bool rayTracing = false;
     bool validation = false;
+    bool synchronization2 = false;
+    bool shaderDrawParameters = false;
+    bool taskShaders = false;
+    bool descriptorIndexing = false;
+    bool timelineSemaphore = false;
+    bool externalHostMemory = false;
+};
+
+struct RhiLimits {
+    // Push constants
+    uint32_t maxPushConstantSize = 128;
+
+    // Uniform buffers
+    uint64_t minUniformBufferOffsetAlignment = 256;
+    uint32_t maxUniformBufferRange = 65536;
+
+    // Storage buffers
+    uint32_t maxStorageBufferRange = 0;
+
+    // Compute
+    uint32_t maxComputeWorkGroupCountX = 65535;
+    uint32_t maxComputeWorkGroupCountY = 65535;
+    uint32_t maxComputeWorkGroupCountZ = 65535;
+    uint32_t maxComputeWorkGroupInvocations = 1024;
+    uint32_t maxComputeWorkGroupSizeX = 1024;
+    uint32_t maxComputeWorkGroupSizeY = 1024;
+    uint32_t maxComputeWorkGroupSizeZ = 64;
+
+    // Mesh shaders
+    uint32_t maxMeshOutputVertices = 0;
+    uint32_t maxMeshOutputPrimitives = 0;
+    uint32_t maxMeshWorkGroupInvocations = 0;
+    uint32_t maxTaskWorkGroupInvocations = 0;
+
+    // Descriptors
+    uint32_t maxBoundDescriptorSets = 4;
+    uint32_t maxPerStageDescriptorSamplers = 16;
+    uint32_t maxPerStageDescriptorUniformBuffers = 12;
+    uint32_t maxPerStageDescriptorStorageBuffers = 8;
+    uint32_t maxPerStageDescriptorSampledImages = 16;
+    uint32_t maxPerStageDescriptorStorageImages = 4;
+    uint32_t maxDescriptorSetSamplers = 0;
+    uint32_t maxDescriptorSetUniformBuffers = 0;
+    uint32_t maxDescriptorSetStorageBuffers = 0;
+    uint32_t maxDescriptorSetSampledImages = 0;
+    uint32_t maxDescriptorSetStorageImages = 0;
+
+    // Memory
+    uint64_t nonCoherentAtomSize = 256;
+
+    // Textures / framebuffer
+    uint32_t maxImageDimension2D = 4096;
+    uint32_t maxFramebufferWidth = 4096;
+    uint32_t maxFramebufferHeight = 4096;
+    uint32_t maxColorAttachments = 4;
+
+    // Timing
+    float timestampPeriod = 0.0f;
 };
 
 struct RhiDeviceInfo {
@@ -667,6 +725,8 @@ struct RhiNativeHandles {
     void* descriptorPool = nullptr;
     void* allocator = nullptr;  // VmaAllocator for Vulkan, unused for Metal
     uint32_t graphicsQueueFamily = 0;
+    uint32_t computeQueueFamily = UINT32_MAX;   // UINT32_MAX = unavailable
+    uint32_t transferQueueFamily = UINT32_MAX;  // UINT32_MAX = unavailable
     uint32_t swapchainImageCount = 0;
     uint32_t colorFormat = 0;
     uint32_t apiVersion = 0;
@@ -698,6 +758,7 @@ public:
     virtual ~RhiContext() = default;
     virtual RhiBackendType backendType() const = 0;
     virtual const RhiFeatures& features() const = 0;
+    virtual const RhiLimits& limits() const = 0;
     virtual const RhiDeviceInfo& deviceInfo() const = 0;
     virtual const RhiNativeHandles& nativeHandles() const = 0;
     virtual const IRhiInteropProvider* interopProvider() const { return nullptr; }

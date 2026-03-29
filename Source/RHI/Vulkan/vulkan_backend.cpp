@@ -21,6 +21,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,6 +32,7 @@ void vulkanLoadMeshShaderFunctions(VkDevice device);
 namespace {
 
 constexpr uint32_t kMaxFramesInFlight = 2;
+constexpr uint32_t kPushConstantSize = 256;
 const char* kValidationLayerName = "VK_LAYER_KHRONOS_validation";
 
 VkFormat toVkFormat(RhiFormat format) {
@@ -407,7 +409,7 @@ bool buildPipelineResourceLayout(VkDevice device,
     VkPushConstantRange pushConstantRange{};
     pushConstantRange.stageFlags = VK_SHADER_STAGE_ALL;
     pushConstantRange.offset = 0;
-    pushConstantRange.size = 128;
+    pushConstantRange.size = kPushConstantSize;
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(outResource.setLayouts.size());
@@ -522,6 +524,8 @@ void checkVk(VkResult result, const char* message) {
 struct QueueFamilyIndices {
     std::optional<uint32_t> graphics;
     std::optional<uint32_t> present;
+    std::optional<uint32_t> compute;   // dedicated compute (no graphics bit)
+    std::optional<uint32_t> transfer;  // dedicated transfer (no graphics/compute bits)
 
     bool complete() const {
         return graphics.has_value() && present.has_value();
@@ -553,8 +557,17 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceK
             indices.present = i;
         }
 
-        if (indices.complete()) {
-            break;
+        // Dedicated compute: has compute but NOT graphics
+        if ((queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
+            !(queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+            indices.compute = i;
+        }
+
+        // Dedicated transfer: has transfer but NOT graphics and NOT compute
+        if ((queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT) &&
+            !(queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+            !(queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
+            indices.transfer = i;
         }
     }
 
@@ -712,6 +725,7 @@ public:
         createInstance(createInfo);
         createSurface(createInfo.window);
         pickPhysicalDevice(createInfo.requireVulkan14);
+        populateLimits();
         createLogicalDevice(createInfo);
         resolveStreamlinePresentHooks();
         createVmaAllocator();
@@ -725,7 +739,7 @@ public:
                                  m_graphicsQueue,
                                  m_queueFamilies.graphics.value_or(0),
                                  m_features.bufferDeviceAddress,
-                                 m_externalHostMemoryEnabled,
+                                 m_features.externalHostMemory,
                                  m_features.rayTracing,
                                  createInfo.vkGetDeviceProcAddrProxy);
         vulkanLoadMeshShaderFunctions(m_device);
@@ -769,6 +783,7 @@ public:
 
     RhiBackendType backendType() const override { return RhiBackendType::Vulkan; }
     const RhiFeatures& features() const override { return m_features; }
+    const RhiLimits& limits() const override { return m_limits; }
     const RhiDeviceInfo& deviceInfo() const override { return m_deviceInfo; }
     const RhiNativeHandles& nativeHandles() const override { return m_nativeHandles; }
 
@@ -897,7 +912,7 @@ public:
         vmaInfo.hostVisible = true;
         vmaInfo.externalMemoryHandleTypes =
             vulkanHostVisibleExternalMemoryHandleTypes(vmaInfo.hostVisible,
-                                                       m_externalHostMemoryEnabled);
+                                                       m_features.externalHostMemory);
         vmaInfo.debugName = debugName;
 
         const char* errorMsg = nullptr;
@@ -1256,6 +1271,11 @@ public:
                    : VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
+    bool hasEnabledExtension(const char* extensionName) const {
+        return std::any_of(m_enabledExtensions.begin(), m_enabledExtensions.end(),
+                           [extensionName](const std::string& ext) { return ext == extensionName; });
+    }
+
     std::unique_ptr<RhiShaderModule> createShaderModule(const RhiShaderModuleDesc& desc) override {
         if (desc.spirv.empty()) {
             throw std::runtime_error("Cannot create Vulkan shader module from an empty SPIR-V blob.");
@@ -1285,7 +1305,7 @@ public:
         vmaInfo.hostVisible = desc.hostVisible;
         vmaInfo.externalMemoryHandleTypes =
             vulkanHostVisibleExternalMemoryHandleTypes(vmaInfo.hostVisible,
-                                                       m_externalHostMemoryEnabled);
+                                                       m_features.externalHostMemory);
 
         auto resource = vmaCreateBufferResource(vmaInfo);
         if (!resource) {
@@ -1645,6 +1665,92 @@ public:
         throw std::runtime_error("No suitable Vulkan 1.4 device was found for Metallic.");
     }
 
+    void populateLimits() {
+        const VkPhysicalDeviceLimits& vkLimits = m_physicalDeviceProperties.limits;
+
+        // Push constants
+        m_limits.maxPushConstantSize = vkLimits.maxPushConstantsSize;
+
+        // Uniform buffers
+        m_limits.minUniformBufferOffsetAlignment = vkLimits.minUniformBufferOffsetAlignment;
+        m_limits.maxUniformBufferRange = vkLimits.maxUniformBufferRange;
+
+        // Storage buffers
+        m_limits.maxStorageBufferRange = vkLimits.maxStorageBufferRange;
+
+        // Compute
+        m_limits.maxComputeWorkGroupCountX = vkLimits.maxComputeWorkGroupCount[0];
+        m_limits.maxComputeWorkGroupCountY = vkLimits.maxComputeWorkGroupCount[1];
+        m_limits.maxComputeWorkGroupCountZ = vkLimits.maxComputeWorkGroupCount[2];
+        m_limits.maxComputeWorkGroupInvocations = vkLimits.maxComputeWorkGroupInvocations;
+        m_limits.maxComputeWorkGroupSizeX = vkLimits.maxComputeWorkGroupSize[0];
+        m_limits.maxComputeWorkGroupSizeY = vkLimits.maxComputeWorkGroupSize[1];
+        m_limits.maxComputeWorkGroupSizeZ = vkLimits.maxComputeWorkGroupSize[2];
+
+        // Mesh shaders (via VkPhysicalDeviceProperties2 chain)
+        if (m_features.meshShaders) {
+            VkPhysicalDeviceMeshShaderPropertiesEXT meshProps{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
+            VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            props2.pNext = &meshProps;
+            vkGetPhysicalDeviceProperties2(m_physicalDevice, &props2);
+
+            m_limits.maxMeshOutputVertices = meshProps.maxMeshOutputVertices;
+            m_limits.maxMeshOutputPrimitives = meshProps.maxMeshOutputPrimitives;
+            m_limits.maxMeshWorkGroupInvocations = meshProps.maxMeshWorkGroupInvocations;
+            m_limits.maxTaskWorkGroupInvocations = meshProps.maxTaskWorkGroupInvocations;
+        }
+
+        // Descriptors
+        m_limits.maxBoundDescriptorSets = vkLimits.maxBoundDescriptorSets;
+        m_limits.maxPerStageDescriptorSamplers = vkLimits.maxPerStageDescriptorSamplers;
+        m_limits.maxPerStageDescriptorUniformBuffers = vkLimits.maxPerStageDescriptorUniformBuffers;
+        m_limits.maxPerStageDescriptorStorageBuffers = vkLimits.maxPerStageDescriptorStorageBuffers;
+        m_limits.maxPerStageDescriptorSampledImages = vkLimits.maxPerStageDescriptorSampledImages;
+        m_limits.maxPerStageDescriptorStorageImages = vkLimits.maxPerStageDescriptorStorageImages;
+        m_limits.maxDescriptorSetSamplers = vkLimits.maxDescriptorSetSamplers;
+        m_limits.maxDescriptorSetUniformBuffers = vkLimits.maxDescriptorSetUniformBuffers;
+        m_limits.maxDescriptorSetStorageBuffers = vkLimits.maxDescriptorSetStorageBuffers;
+        m_limits.maxDescriptorSetSampledImages = vkLimits.maxDescriptorSetSampledImages;
+        m_limits.maxDescriptorSetStorageImages = vkLimits.maxDescriptorSetStorageImages;
+
+        // Memory
+        m_limits.nonCoherentAtomSize = vkLimits.nonCoherentAtomSize;
+
+        // Textures / framebuffer
+        m_limits.maxImageDimension2D = vkLimits.maxImageDimension2D;
+        m_limits.maxFramebufferWidth = vkLimits.maxFramebufferWidth;
+        m_limits.maxFramebufferHeight = vkLimits.maxFramebufferHeight;
+        m_limits.maxColorAttachments = vkLimits.maxColorAttachments;
+
+        // Timing
+        m_limits.timestampPeriod = vkLimits.timestampPeriod;
+
+        // Validate push constant size
+        if (m_limits.maxPushConstantSize < kPushConstantSize) {
+            spdlog::warn("Device maxPushConstantsSize ({}) < required kPushConstantSize ({})",
+                         m_limits.maxPushConstantSize, kPushConstantSize);
+        }
+
+        // Validate bindless limits against device capabilities
+        if (m_limits.maxDescriptorSetSampledImages < kVulkanBindlessMaxSampledImages) {
+            spdlog::warn("Device maxDescriptorSetSampledImages ({}) < METALLIC_BINDLESS_MAX_SAMPLED_IMAGES ({})",
+                         m_limits.maxDescriptorSetSampledImages, kVulkanBindlessMaxSampledImages);
+        }
+        if (m_limits.maxDescriptorSetStorageBuffers < kVulkanBindlessMaxStorageBuffers) {
+            spdlog::warn("Device maxDescriptorSetStorageBuffers ({}) < METALLIC_BINDLESS_MAX_STORAGE_BUFFERS ({})",
+                         m_limits.maxDescriptorSetStorageBuffers, kVulkanBindlessMaxStorageBuffers);
+        }
+        if (m_limits.maxDescriptorSetStorageImages < kVulkanBindlessMaxStorageImages) {
+            spdlog::warn("Device maxDescriptorSetStorageImages ({}) < METALLIC_BINDLESS_MAX_STORAGE_IMAGES ({})",
+                         m_limits.maxDescriptorSetStorageImages, kVulkanBindlessMaxStorageImages);
+        }
+        if (m_limits.maxDescriptorSetSamplers < kVulkanBindlessMaxSamplers) {
+            spdlog::warn("Device maxDescriptorSetSamplers ({}) < METALLIC_BINDLESS_MAX_SAMPLERS ({})",
+                         m_limits.maxDescriptorSetSamplers, kVulkanBindlessMaxSamplers);
+        }
+    }
+
     bool isDeviceSuitable(VkPhysicalDevice device, bool requireVulkan14) {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(device, &properties);
@@ -1720,10 +1826,14 @@ public:
         }
 
         m_features.dynamicRendering = true;
+        m_features.synchronization2 = true;
+        m_features.shaderDrawParameters = true;
+        m_features.descriptorIndexing = true;
         m_features.bufferDeviceAddress =
             bufferDeviceAddressAvailable &&
             bufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE;
         m_features.meshShaders = meshShaderAvailable && meshShaderFeatures.meshShader == VK_TRUE;
+        m_features.taskShaders = meshShaderAvailable && meshShaderFeatures.taskShader == VK_TRUE;
         m_features.rayTracing =
             m_features.bufferDeviceAddress &&
             accelerationStructureAvailable &&
@@ -1731,7 +1841,7 @@ public:
             deferredHostOperationsAvailable &&
             accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
             rayQueryFeatures.rayQuery == VK_TRUE;
-        m_externalHostMemoryEnabled = externalMemoryHostAvailable;
+        m_features.externalHostMemory = externalMemoryHostAvailable;
         return true;
     }
 
@@ -1766,7 +1876,7 @@ public:
             deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
             deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         }
-        if (m_externalHostMemoryEnabled) {
+        if (m_features.externalHostMemory) {
             deviceExtensions.push_back(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         }
         for (auto ext : createInfo.extraDeviceExtensions) {
@@ -1795,6 +1905,13 @@ public:
                 std::unique(deviceExtensions.begin(), deviceExtensions.end(),
                     [](const char* a, const char* b) { return std::string_view(a) == std::string_view(b); }),
                 deviceExtensions.end());
+        }
+
+        // Store enabled extensions for runtime queries
+        m_enabledExtensions.clear();
+        m_enabledExtensions.reserve(deviceExtensions.size());
+        for (const char* ext : deviceExtensions) {
+            m_enabledExtensions.emplace_back(ext);
         }
 
         VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
@@ -1848,6 +1965,7 @@ public:
 
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         if (createInfo.enableTimelineSemaphore) {
+            m_features.timelineSemaphore = true;
             vulkan11Features.pNext = &timelineSemaphoreFeatures;
             timelineSemaphoreFeatures.pNext = &dynamicRenderingFeatures;
             features2.pNext = &vulkan11Features;
@@ -2040,6 +2158,8 @@ public:
         m_nativeHandles.descriptorPool = m_descriptorPool;
         m_nativeHandles.allocator = m_allocator;
         m_nativeHandles.graphicsQueueFamily = m_queueFamilies.graphics.value_or(0);
+        m_nativeHandles.computeQueueFamily = m_queueFamilies.compute.value_or(UINT32_MAX);
+        m_nativeHandles.transferQueueFamily = m_queueFamilies.transfer.value_or(UINT32_MAX);
         m_nativeHandles.swapchainImageCount = static_cast<uint32_t>(m_swapchainImages.size());
         m_nativeHandles.colorFormat = static_cast<uint32_t>(m_swapchainFormat.format);
         m_nativeHandles.apiVersion = m_physicalDeviceProperties.apiVersion;
@@ -2120,9 +2240,10 @@ public:
     bool m_insideRendering = false;
 
     RhiFeatures m_features{};
-    bool m_externalHostMemoryEnabled = false;
+    RhiLimits m_limits{};
     RhiDeviceInfo m_deviceInfo{};
     RhiNativeHandles m_nativeHandles{};
+    std::vector<std::string> m_enabledExtensions;
     CommandContext m_commandContext;
 };
 
@@ -2167,6 +2288,10 @@ VkExtent2D getVulkanCurrentBackbufferExtent(RhiContext& context) {
 
 VkImageLayout getVulkanCurrentBackbufferLayout(RhiContext& context) {
     return static_cast<VulkanContext&>(context).currentSwapchainLayout();
+}
+
+bool vulkanHasExtension(RhiContext& context, const char* extensionName) {
+    return static_cast<VulkanContext&>(context).hasEnabledExtension(extensionName);
 }
 
 std::unique_ptr<RhiContext> createVulkanContext(const RhiCreateInfo& createInfo,
