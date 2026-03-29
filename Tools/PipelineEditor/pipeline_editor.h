@@ -3,6 +3,7 @@
 #include "pipeline_asset.h"
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "imgui.h"
@@ -33,6 +34,11 @@ public:
     bool m_visible = false;
 
 private:
+    enum class GraphViewMode {
+        PassFlow,
+        ResourceGraph
+    };
+
     enum class PinKind {
         ResourceInput,
         ResourceOutput,
@@ -46,6 +52,7 @@ private:
         std::string slotKey;
     };
 
+    void renderGraphToolbar(PipelineAsset& asset);
     void renderNodeGraph(PipelineAsset& asset);
     void renderPropertyPanel(PipelineAsset& asset);
     void renderCompilationPreview(const PipelineAsset& asset);
@@ -62,6 +69,7 @@ private:
                         const std::string& resourceId);
 
     bool m_dirty = false;
+    GraphViewMode m_graphViewMode = GraphViewMode::PassFlow;
     std::string m_selectedPassId;
     std::string m_selectedResourceId;
 
@@ -73,6 +81,7 @@ private:
     std::unordered_map<int, std::string> m_nodeIdToResourceId;
     std::unordered_map<int, PinInfo> m_pinInfos;
     std::unordered_map<int, std::string> m_linkIdToEdgeId;
+    std::unordered_set<int> m_renderedNodeIds;
 
     std::vector<PipelineAsset> m_undoStack;
     std::vector<PipelineAsset> m_redoStack;

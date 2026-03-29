@@ -7,10 +7,23 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cstring>
+#include <cstdio>
 #include <map>
+#include <numeric>
 
 namespace {
+
+struct PassBindingInfo {
+    const PassDecl* pass = nullptr;
+    const EdgeDecl* edge = nullptr;
+};
+
+struct ResourceFlowInfo {
+    const ResourceDecl* resource = nullptr;
+    PassBindingInfo producer;
+    std::vector<PassBindingInfo> writers;
+    std::vector<PassBindingInfo> readers;
+};
 
 bool hasStoredPosition(const std::array<float, 2>& pos) {
     return pos[0] != 0.0f || pos[1] != 0.0f;
@@ -76,9 +89,32 @@ std::string resourceLabel(const ResourceDecl& resource) {
     return resource.name + " (" + resource.kind + ")";
 }
 
+template <size_t N>
+void copyTextToBuffer(char (&buffer)[N], const std::string& value) {
+    std::snprintf(buffer, N, "%s", value.c_str());
+}
+
+std::string truncateLabel(const std::string& value, size_t maxChars = 26) {
+    if (value.size() <= maxChars) {
+        return value;
+    }
+    if (maxChars <= 3) {
+        return value.substr(0, maxChars);
+    }
+    return value.substr(0, maxChars - 3) + "...";
+}
+
 std::string findResourceName(const PipelineAsset& asset, const std::string& resourceId) {
     const ResourceDecl* resource = asset.findResourceById(resourceId);
     return resource ? resource->name : std::string{"<missing>"};
+}
+
+const ResourceDecl* findBoundResource(const PipelineAsset& asset,
+                                      const std::string& passId,
+                                      const std::string& direction,
+                                      const std::string& slotKey) {
+    const EdgeDecl* edge = asset.findEdge(passId, direction, slotKey);
+    return edge ? asset.findResourceById(edge->resourceId) : nullptr;
 }
 
 bool slotAllowsKind(const PassSlotInfo& slot, const std::string& kind) {
@@ -118,6 +154,133 @@ std::vector<const ResourceDecl*> collectCandidates(const PipelineAsset& asset, c
         }
     }
     return candidates;
+}
+
+std::unordered_map<std::string, ResourceFlowInfo> buildResourceFlowMap(const PipelineAsset& asset) {
+    std::unordered_map<std::string, ResourceFlowInfo> flow;
+    for (const auto& resource : asset.resources) {
+        flow.emplace(resource.id, ResourceFlowInfo{&resource});
+    }
+
+    for (const auto& edge : asset.edges) {
+        auto flowIt = flow.find(edge.resourceId);
+        if (flowIt == flow.end()) {
+            continue;
+        }
+
+        const PassDecl* pass = asset.findPassById(edge.passId);
+        if (!pass) {
+            continue;
+        }
+
+        PassBindingInfo binding{pass, &edge};
+        if (edge.direction == "output") {
+            flowIt->second.writers.push_back(binding);
+            if (flowIt->second.resource &&
+                flowIt->second.resource->kind == "transient" &&
+                flowIt->second.producer.pass == nullptr) {
+                flowIt->second.producer = binding;
+            }
+        } else if (edge.direction == "input") {
+            flowIt->second.readers.push_back(binding);
+        }
+    }
+
+    return flow;
+}
+
+std::vector<int> computePassLayers(const PipelineAsset& asset) {
+    const auto sortedOrder = asset.topologicalSort();
+    std::vector<int> passLayer(asset.passes.size(), 0);
+    std::unordered_map<std::string, int> resourceProducerLayer;
+
+    for (const size_t passIndex : sortedOrder) {
+        const PassDecl& pass = asset.passes[passIndex];
+        int maxLayer = 0;
+
+        const PassTypeInfo* info = PassRegistry::instance().getTypeInfo(pass.type);
+        if (!info) {
+            continue;
+        }
+
+        for (const auto& slot : info->inputSlots) {
+            const EdgeDecl* edge = asset.findEdge(pass.id, "input", slot.key);
+            if (!edge) {
+                continue;
+            }
+            auto it = resourceProducerLayer.find(edge->resourceId);
+            if (it != resourceProducerLayer.end()) {
+                maxLayer = std::max(maxLayer, it->second + 1);
+            }
+        }
+
+        passLayer[passIndex] = maxLayer;
+
+        for (const auto& slot : info->outputSlots) {
+            const EdgeDecl* edge = asset.findEdge(pass.id, "output", slot.key);
+            if (!edge) {
+                continue;
+            }
+            const ResourceDecl* resource = asset.findResourceById(edge->resourceId);
+            if (resource && resource->kind == "transient") {
+                resourceProducerLayer[resource->id] = maxLayer;
+            }
+        }
+    }
+
+    return passLayer;
+}
+
+ImU32 passCategoryTitleColor(const PassTypeInfo& info) {
+    if (info.category == "Geometry") {
+        return IM_COL32(120, 78, 32, 255);
+    }
+    if (info.category == "Lighting") {
+        return IM_COL32(118, 92, 28, 255);
+    }
+    if (info.category == "Post-Process") {
+        return IM_COL32(88, 78, 126, 255);
+    }
+    if (info.category == "Environment") {
+        return IM_COL32(44, 108, 120, 255);
+    }
+    if (info.category == "UI") {
+        return IM_COL32(100, 56, 120, 255);
+    }
+    return IM_COL32(110, 90, 54, 255);
+}
+
+ImU32 brightenColor(ImU32 color, int delta) {
+    ImVec4 value = ImGui::ColorConvertU32ToFloat4(color);
+    auto brighten = [delta](float channel) {
+        return std::clamp(channel + static_cast<float>(delta) / 255.0f, 0.0f, 1.0f);
+    };
+    return ImGui::ColorConvertFloat4ToU32(ImVec4{
+        brighten(value.x),
+        brighten(value.y),
+        brighten(value.z),
+        value.w
+    });
+}
+
+ImU32 linkColorForResource(const ResourceDecl& resource) {
+    if (resource.kind == "imported") {
+        return IM_COL32(84, 188, 132, 255);
+    }
+    if (resource.kind == "backbuffer") {
+        return IM_COL32(220, 154, 90, 255);
+    }
+    if (resource.type == "token") {
+        return IM_COL32(170, 130, 230, 255);
+    }
+    if (resource.type == "buffer") {
+        return IM_COL32(104, 168, 224, 255);
+    }
+    return IM_COL32(82, 146, 232, 255);
+}
+
+bool isTerminalResource(const ResourceDecl& resource) {
+    return resource.kind == "imported" || resource.kind == "backbuffer";
 }
 
 } // namespace
@@ -162,6 +325,7 @@ void PipelineEditor::resetLayout() {
     m_nodeIdToResourceId.clear();
     m_pinInfos.clear();
     m_linkIdToEdgeId.clear();
+    m_renderedNodeIds.clear();
 }
 
 int PipelineEditor::ensureUiId(const std::string& key) {
@@ -268,6 +432,10 @@ void PipelineEditor::render(PipelineAsset& asset) {
                                 resource.importKey = resource.name;
                             }
                             asset.resources.push_back(resource);
+                            if (m_graphViewMode == GraphViewMode::PassFlow && resource.kind == "transient") {
+                                m_graphViewMode = GraphViewMode::ResourceGraph;
+                                m_nodePositioned.clear();
+                            }
                             m_selectedResourceId = resource.id;
                             m_selectedPassId.clear();
                             m_dirty = true;
@@ -281,6 +449,7 @@ void PipelineEditor::render(PipelineAsset& asset) {
                 if (ImGui::MenuItem("Auto Reorder")) {
                     pushUndo(asset);
                     autoReorderNodes(asset);
+                    m_dirty = true;
                 }
                 ImGui::EndMenu();
             }
@@ -291,6 +460,8 @@ void PipelineEditor::render(PipelineAsset& asset) {
         const ImVec2 contentSize = ImGui::GetContentRegionAvail();
 
         ImGui::BeginChild("NodeGraph", ImVec2(contentSize.x - panelWidth - 10.0f, 0), true);
+        renderGraphToolbar(asset);
+        ImGui::Separator();
         renderNodeGraph(asset);
         ImGui::EndChild();
 
@@ -303,33 +474,86 @@ void PipelineEditor::render(PipelineAsset& asset) {
     ImGui::End();
 }
 
+void PipelineEditor::renderGraphToolbar(PipelineAsset& asset) {
+    if (ImGui::RadioButton("Pass Flow", m_graphViewMode == GraphViewMode::PassFlow)) {
+        m_graphViewMode = GraphViewMode::PassFlow;
+        m_nodePositioned.clear();
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Resource Graph", m_graphViewMode == GraphViewMode::ResourceGraph)) {
+        m_graphViewMode = GraphViewMode::ResourceGraph;
+        m_nodePositioned.clear();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Auto Layout")) {
+        pushUndo(asset);
+        autoReorderNodes(asset);
+        m_dirty = true;
+    }
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    ImGui::TextDisabled("Falcor-style tip: inspect flow in Pass Flow, edit exact resources in Resource Graph.");
+}
+
 void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
     m_nodeIdToPassId.clear();
     m_nodeIdToResourceId.clear();
     m_pinInfos.clear();
     m_linkIdToEdgeId.clear();
+    m_renderedNodeIds.clear();
+
+    const auto flowMap = buildResourceFlowMap(asset);
+    const auto passLayers = computePassLayers(asset);
+    std::unordered_map<std::string, int> passLayerById;
+    int maxPassLayer = 0;
+    for (size_t i = 0; i < asset.passes.size() && i < passLayers.size(); ++i) {
+        passLayerById[asset.passes[i].id] = passLayers[i];
+        maxPassLayer = std::max(maxPassLayer, passLayers[i]);
+    }
+
+    auto sortedOrder = asset.topologicalSort();
+    if (sortedOrder.empty() && !asset.passes.empty()) {
+        sortedOrder.resize(asset.passes.size());
+        for (size_t i = 0; i < asset.passes.size(); ++i) {
+            sortedOrder[i] = i;
+        }
+    }
 
     ImNodes::BeginNodeEditor();
 
     const float resourceX = 40.0f;
     const float resourceY = 50.0f;
-    const float passX = 340.0f;
-    const float nodeSpacingX = 260.0f;
-    const float nodeSpacingY = 150.0f;
+    const float passX = 320.0f;
+    const float nodeSpacingX = 320.0f;
+    const float nodeSpacingY = 170.0f;
+    const float terminalRightX = passX + static_cast<float>(maxPassLayer + 1) * nodeSpacingX;
 
-    for (size_t i = 0; i < asset.resources.size(); ++i) {
-        ResourceDecl& resource = asset.resources[i];
+    auto placeNode = [&](int nodeId,
+                         std::array<float, 2>& editorPos,
+                         const ImVec2& fallbackPos,
+                         bool useStoredPosition) {
+        if (m_nodePositioned.count(nodeId)) {
+            return;
+        }
+
+        if (useStoredPosition && hasStoredPosition(editorPos)) {
+            ImNodes::SetNodeGridSpacePos(nodeId, ImVec2(editorPos[0], editorPos[1]));
+        } else {
+            ImNodes::SetNodeScreenSpacePos(nodeId, fallbackPos);
+        }
+        m_nodePositioned[nodeId] = true;
+    };
+
+    auto drawResourceNode = [&](ResourceDecl& resource, const ImVec2& fallbackPos) {
         const int nodeId = ensureUiId("node:resource:" + resource.id);
         m_nodeIdToResourceId[nodeId] = resource.id;
-
-        if (!m_nodePositioned.count(nodeId)) {
-            if (hasStoredPosition(resource.editorPos)) {
-                ImNodes::SetNodeGridSpacePos(nodeId, ImVec2(resource.editorPos[0], resource.editorPos[1]));
-            } else {
-                ImNodes::SetNodeScreenSpacePos(nodeId, ImVec2(resourceX, resourceY + static_cast<float>(i) * nodeSpacingY));
-            }
-            m_nodePositioned[nodeId] = true;
-        }
+        m_renderedNodeIds.insert(nodeId);
+        placeNode(nodeId,
+                  resource.editorPos,
+                  fallbackPos,
+                  m_graphViewMode == GraphViewMode::ResourceGraph);
 
         ImNodes::PushColorStyle(ImNodesCol_TitleBar, resourceTitleColor(resource.kind));
         ImNodes::PushColorStyle(ImNodesCol_TitleBarHovered, resourceTitleHoveredColor(resource.kind));
@@ -345,63 +569,48 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
             ImGui::TextDisabled("key: %s", resource.importKey.c_str());
         }
 
+        auto flowIt = flowMap.find(resource.id);
+        if (flowIt != flowMap.end()) {
+            const ResourceFlowInfo& flow = flowIt->second;
+            if (!flow.writers.empty()) {
+                ImGui::TextDisabled("writers: %zu", flow.writers.size());
+            }
+            if (!flow.readers.empty()) {
+                ImGui::TextDisabled("readers: %zu", flow.readers.size());
+            }
+        }
+
         const int inputPinId = ensureUiId("pin:resource:in:" + resource.id);
         m_pinInfos[inputPinId] = PinInfo{PinKind::ResourceInput, resource.id, {}};
         ImNodes::BeginInputAttribute(inputPinId);
-        ImGui::Text("write");
+        ImGui::TextUnformatted("write");
         ImNodes::EndInputAttribute();
 
         const int outputPinId = ensureUiId("pin:resource:out:" + resource.id);
         m_pinInfos[outputPinId] = PinInfo{PinKind::ResourceOutput, resource.id, {}};
         ImNodes::BeginOutputAttribute(outputPinId);
-        ImGui::Text("read");
+        ImGui::TextUnformatted("read");
         ImNodes::EndOutputAttribute();
 
         ImNodes::EndNode();
         ImNodes::PopColorStyle();
         ImNodes::PopColorStyle();
         ImNodes::PopColorStyle();
-    }
+    };
 
-    auto sortedOrder = asset.topologicalSort();
-    if (sortedOrder.empty() && !asset.passes.empty()) {
-        sortedOrder.resize(asset.passes.size());
-        for (size_t i = 0; i < asset.passes.size(); ++i) {
-            sortedOrder[i] = i;
-        }
-    }
-
-    size_t defaultRow = 0;
-    size_t defaultCol = 0;
-    for (const size_t passIndex : sortedOrder) {
-        PassDecl& pass = asset.passes[passIndex];
-        const PassTypeInfo* typeInfo = PassRegistry::instance().getTypeInfo(pass.type);
-        if (!typeInfo) {
-            continue;
-        }
-
+    auto drawPassNode = [&](PassDecl& pass, const PassTypeInfo& passTypeInfo, const ImVec2& fallbackPos) {
         const int nodeId = ensureUiId("node:pass:" + pass.id);
         m_nodeIdToPassId[nodeId] = pass.id;
+        m_renderedNodeIds.insert(nodeId);
+        placeNode(nodeId,
+                  pass.editorPos,
+                  fallbackPos,
+                  m_graphViewMode == GraphViewMode::ResourceGraph);
 
-        if (!m_nodePositioned.count(nodeId)) {
-            if (hasStoredPosition(pass.editorPos)) {
-                ImNodes::SetNodeGridSpacePos(nodeId, ImVec2(pass.editorPos[0], pass.editorPos[1]));
-            } else {
-                ImNodes::SetNodeScreenSpacePos(nodeId,
-                                              ImVec2(passX + static_cast<float>(defaultCol) * nodeSpacingX,
-                                                     resourceY + static_cast<float>(defaultRow) * nodeSpacingY));
-                ++defaultRow;
-                if (defaultRow > 4) {
-                    defaultRow = 0;
-                    ++defaultCol;
-                }
-            }
-            m_nodePositioned[nodeId] = true;
-        }
-
-        ImNodes::PushColorStyle(ImNodesCol_TitleBar, IM_COL32(140, 80, 40, 255));
-        ImNodes::PushColorStyle(ImNodesCol_TitleBarHovered, IM_COL32(160, 100, 60, 255));
-        ImNodes::PushColorStyle(ImNodesCol_TitleBarSelected, IM_COL32(180, 120, 80, 255));
+        const ImU32 titleColor = passCategoryTitleColor(passTypeInfo);
+        ImNodes::PushColorStyle(ImNodesCol_TitleBar, titleColor);
+        ImNodes::PushColorStyle(ImNodesCol_TitleBarHovered, brightenColor(titleColor, 18));
+        ImNodes::PushColorStyle(ImNodesCol_TitleBarSelected, brightenColor(titleColor, 36));
         if (!pass.enabled) {
             ImNodes::PushColorStyle(ImNodesCol_NodeBackground, IM_COL32(55, 55, 55, 200));
         }
@@ -411,23 +620,29 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
         ImGui::TextUnformatted(pass.name.c_str());
         ImNodes::EndNodeTitleBar();
 
-        ImGui::TextDisabled("(%s)", pass.type.c_str());
+        ImGui::TextDisabled("(%s | %s)", pass.type.c_str(), passTypeInfo.category.c_str());
 
-        for (const auto& slot : typeInfo->inputSlots) {
+        for (const auto& slot : passTypeInfo.inputSlots) {
             const int pinId = ensureUiId("pin:pass:in:" + pass.id + ":" + slot.key);
             m_pinInfos[pinId] = PinInfo{PinKind::PassInput, pass.id, slot.key};
             ImNodes::BeginInputAttribute(pinId);
-            const std::string label = slot.displayName + ": " + slotBindingName(asset, pass.id, "input", slot);
-            ImGui::Text("-> %s", label.c_str());
+            const ResourceDecl* resource = findBoundResource(asset, pass.id, "input", slot.key);
+            ImGui::Text("-> %s", slot.displayName.c_str());
+            ImGui::TextDisabled("%s%s",
+                                resource ? truncateLabel(resource->name).c_str() : "<unbound>",
+                                slot.optional ? " (optional)" : "");
             ImNodes::EndInputAttribute();
         }
 
-        for (const auto& slot : typeInfo->outputSlots) {
+        for (const auto& slot : passTypeInfo.outputSlots) {
             const int pinId = ensureUiId("pin:pass:out:" + pass.id + ":" + slot.key);
             m_pinInfos[pinId] = PinInfo{PinKind::PassOutput, pass.id, slot.key};
             ImNodes::BeginOutputAttribute(pinId);
-            const std::string label = slot.displayName + ": " + slotBindingName(asset, pass.id, "output", slot);
-            ImGui::Text("%s ->", label.c_str());
+            const ResourceDecl* resource = findBoundResource(asset, pass.id, "output", slot.key);
+            ImGui::Text("%s ->", slot.displayName.c_str());
+            ImGui::TextDisabled("%s%s",
+                                resource ? truncateLabel(resource->name).c_str() : "<unbound>",
+                                slot.optional ? " (optional)" : "");
             ImNodes::EndOutputAttribute();
         }
 
@@ -438,28 +653,158 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
         ImNodes::PopColorStyle();
         ImNodes::PopColorStyle();
         ImNodes::PopColorStyle();
+    };
+
+    if (m_graphViewMode == GraphViewMode::ResourceGraph) {
+        for (size_t i = 0; i < asset.resources.size(); ++i) {
+            drawResourceNode(asset.resources[i],
+                             ImVec2(resourceX, resourceY + static_cast<float>(i) * nodeSpacingY));
+        }
+    } else {
+        size_t importedIndex = 0;
+        size_t backbufferIndex = 0;
+        for (auto& resource : asset.resources) {
+            if (!isTerminalResource(resource)) {
+                continue;
+            }
+
+            float fallbackY = resourceY;
+            const auto flowIt = flowMap.find(resource.id);
+            if (flowIt != flowMap.end()) {
+                float totalY = 0.0f;
+                int count = 0;
+                for (const auto& writer : flowIt->second.writers) {
+                    auto layerIt = passLayerById.find(writer.pass->id);
+                    const int layer = layerIt != passLayerById.end() ? layerIt->second : 0;
+                    totalY += resourceY + static_cast<float>(layer) * 0.25f * nodeSpacingY;
+                    ++count;
+                }
+                for (const auto& reader : flowIt->second.readers) {
+                    auto layerIt = passLayerById.find(reader.pass->id);
+                    const int layer = layerIt != passLayerById.end() ? layerIt->second : 0;
+                    totalY += resourceY + static_cast<float>(layer) * 0.25f * nodeSpacingY;
+                    ++count;
+                }
+                if (count > 0) {
+                    fallbackY = totalY / static_cast<float>(count);
+                }
+            }
+
+            const bool backbuffer = resource.kind == "backbuffer";
+            const float fallbackX = backbuffer ? terminalRightX : resourceX;
+            const size_t visibleIndex = backbuffer ? backbufferIndex++ : importedIndex++;
+            drawResourceNode(resource,
+                             ImVec2(fallbackX,
+                                    std::max(resourceY + static_cast<float>(visibleIndex) * 120.0f, fallbackY)));
+        }
     }
 
-    for (const auto& edge : asset.edges) {
-        const PassDecl* pass = asset.findPassById(edge.passId);
-        const ResourceDecl* resource = asset.findResourceById(edge.resourceId);
-        if (!pass || !resource) {
+    std::unordered_map<int, size_t> layerRowCount;
+    size_t defaultRow = 0;
+    size_t defaultCol = 0;
+    for (const size_t passIndex : sortedOrder) {
+        PassDecl& pass = asset.passes[passIndex];
+        const PassTypeInfo* typeInfo = PassRegistry::instance().getTypeInfo(pass.type);
+        if (!typeInfo) {
             continue;
         }
 
-        int srcPinId = 0;
-        int dstPinId = 0;
-        if (edge.direction == "input") {
-            srcPinId = ensureUiId("pin:resource:out:" + resource->id);
-            dstPinId = ensureUiId("pin:pass:in:" + pass->id + ":" + edge.slotKey);
+        const int layer = passIndex < passLayers.size() ? passLayers[passIndex] : 0;
+        const size_t row = layerRowCount[layer]++;
+        ImVec2 fallbackPos;
+        if (m_graphViewMode == GraphViewMode::PassFlow) {
+            fallbackPos = ImVec2(passX + static_cast<float>(layer) * nodeSpacingX,
+                                 resourceY + static_cast<float>(row) * nodeSpacingY);
         } else {
-            srcPinId = ensureUiId("pin:pass:out:" + pass->id + ":" + edge.slotKey);
-            dstPinId = ensureUiId("pin:resource:in:" + resource->id);
+            fallbackPos = ImVec2(passX + static_cast<float>(defaultCol) * nodeSpacingX,
+                                 resourceY + static_cast<float>(defaultRow) * nodeSpacingY);
+            ++defaultRow;
+            if (defaultRow > 4) {
+                defaultRow = 0;
+                ++defaultCol;
+            }
         }
 
-        const int linkId = ensureUiId("link:" + edge.id);
-        m_linkIdToEdgeId[linkId] = edge.id;
+        drawPassNode(pass, *typeInfo, fallbackPos);
+    }
+
+    auto drawLink = [&](const std::string& linkKey,
+                        const std::string& edgeId,
+                        int srcPinId,
+                        int dstPinId,
+                        ImU32 color) {
+        const int linkId = ensureUiId(linkKey);
+        m_linkIdToEdgeId[linkId] = edgeId;
+        ImNodes::PushColorStyle(ImNodesCol_Link, color);
+        ImNodes::PushColorStyle(ImNodesCol_LinkHovered, brightenColor(color, 24));
+        ImNodes::PushColorStyle(ImNodesCol_LinkSelected, brightenColor(color, 40));
         ImNodes::Link(linkId, srcPinId, dstPinId);
+        ImNodes::PopColorStyle();
+        ImNodes::PopColorStyle();
+        ImNodes::PopColorStyle();
+    };
+
+    if (m_graphViewMode == GraphViewMode::ResourceGraph) {
+        for (const auto& edge : asset.edges) {
+            const PassDecl* pass = asset.findPassById(edge.passId);
+            const ResourceDecl* resource = asset.findResourceById(edge.resourceId);
+            if (!pass || !resource) {
+                continue;
+            }
+
+            int srcPinId = 0;
+            int dstPinId = 0;
+            if (edge.direction == "input") {
+                srcPinId = ensureUiId("pin:resource:out:" + resource->id);
+                dstPinId = ensureUiId("pin:pass:in:" + pass->id + ":" + edge.slotKey);
+            } else {
+                srcPinId = ensureUiId("pin:pass:out:" + pass->id + ":" + edge.slotKey);
+                dstPinId = ensureUiId("pin:resource:in:" + resource->id);
+            }
+
+            drawLink("link:" + edge.id, edge.id, srcPinId, dstPinId, linkColorForResource(*resource));
+        }
+    } else {
+        for (const auto& edge : asset.edges) {
+            const PassDecl* consumerPass = asset.findPassById(edge.passId);
+            const ResourceDecl* resource = asset.findResourceById(edge.resourceId);
+            if (!consumerPass || !resource) {
+                continue;
+            }
+
+            if (edge.direction == "input") {
+                int srcPinId = 0;
+                int dstPinId = ensureUiId("pin:pass:in:" + consumerPass->id + ":" + edge.slotKey);
+
+                const auto flowIt = flowMap.find(resource->id);
+                const bool hasProducer = flowIt != flowMap.end() && flowIt->second.producer.pass && flowIt->second.producer.edge;
+                if (resource->kind == "transient" && hasProducer) {
+                    srcPinId = ensureUiId("pin:pass:out:" +
+                                          flowIt->second.producer.pass->id + ":" +
+                                          flowIt->second.producer.edge->slotKey);
+                    drawLink("link:flow:" + edge.id,
+                             edge.id,
+                             srcPinId,
+                             dstPinId,
+                             linkColorForResource(*resource));
+                } else if (isTerminalResource(*resource)) {
+                    srcPinId = ensureUiId("pin:resource:out:" + resource->id);
+                    drawLink("link:flow:" + edge.id,
+                             edge.id,
+                             srcPinId,
+                             dstPinId,
+                             linkColorForResource(*resource));
+                }
+            } else if (isTerminalResource(*resource)) {
+                const int srcPinId = ensureUiId("pin:pass:out:" + consumerPass->id + ":" + edge.slotKey);
+                const int dstPinId = ensureUiId("pin:resource:in:" + resource->id);
+                drawLink("link:flow:" + edge.id,
+                         edge.id,
+                         srcPinId,
+                         dstPinId,
+                         linkColorForResource(*resource));
+            }
+        }
     }
 
     ImNodes::MiniMap(0.2f, ImNodesMiniMapLocation_BottomRight);
@@ -513,6 +858,10 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
                         resource.importKey = resource.name;
                     }
                     asset.resources.push_back(resource);
+                    if (m_graphViewMode == GraphViewMode::PassFlow && resource.kind == "transient") {
+                        m_graphViewMode = GraphViewMode::ResourceGraph;
+                        m_nodePositioned.clear();
+                    }
                     const int nodeId = ensureUiId("node:resource:" + resource.id);
                     ImNodes::SetNodeScreenSpacePos(nodeId, m_contextMenuSpawnPos);
                     m_nodePositioned[nodeId] = true;
@@ -591,6 +940,49 @@ void PipelineEditor::handleNewLinks(PipelineAsset& asset) {
                 m_dirty = true;
             }
             return true;
+        }
+
+        if (src.kind == PinKind::PassOutput && dst.kind == PinKind::PassInput) {
+            const PassDecl* srcPass = asset.findPassById(src.ownerId);
+            const PassDecl* dstPass = asset.findPassById(dst.ownerId);
+            const PassTypeInfo* srcTypeInfo = srcPass ? PassRegistry::instance().getTypeInfo(srcPass->type) : nullptr;
+            const PassTypeInfo* dstTypeInfo = dstPass ? PassRegistry::instance().getTypeInfo(dstPass->type) : nullptr;
+            const PassSlotInfo* srcSlot = srcTypeInfo ? findSlotInfo(srcTypeInfo->outputSlots, src.slotKey) : nullptr;
+            const PassSlotInfo* dstSlot = dstTypeInfo ? findSlotInfo(dstTypeInfo->inputSlots, dst.slotKey) : nullptr;
+            if (!srcPass || !dstPass || !srcSlot || !dstSlot) {
+                return false;
+            }
+
+            const EdgeDecl* outputEdge = asset.findEdge(srcPass->id, "output", src.slotKey);
+            const EdgeDecl* inputEdge = asset.findEdge(dstPass->id, "input", dst.slotKey);
+            const ResourceDecl* outputResource = outputEdge ? asset.findResourceById(outputEdge->resourceId) : nullptr;
+            const ResourceDecl* inputResource = inputEdge ? asset.findResourceById(inputEdge->resourceId) : nullptr;
+
+            const ResourceDecl* bindingResource = nullptr;
+            if (outputResource && outputResource->kind == "transient" && slotAllowsKind(*dstSlot, "transient")) {
+                bindingResource = outputResource;
+            } else if (!outputResource &&
+                       inputResource &&
+                       inputResource->kind == "transient" &&
+                       slotAllowsKind(*srcSlot, "transient")) {
+                bindingResource = inputResource;
+            } else {
+                return false;
+            }
+
+            pushUndo(asset);
+            bool changed = false;
+            if ((!outputResource || outputResource->id != bindingResource->id) &&
+                slotAllowsKind(*srcSlot, bindingResource->kind)) {
+                changed |= setSlotBinding(asset, srcPass->id, "output", src.slotKey, bindingResource->id);
+            }
+            if (!inputResource || inputResource->id != bindingResource->id) {
+                changed |= setSlotBinding(asset, dstPass->id, "input", dst.slotKey, bindingResource->id);
+            }
+            if (changed) {
+                m_dirty = true;
+            }
+            return changed;
         }
 
         return false;
@@ -678,6 +1070,24 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
     ImGui::Text("Properties");
     ImGui::Separator();
 
+    const auto flowMap = buildResourceFlowMap(asset);
+    auto findFlowInfo = [&](const std::string& resourceId) -> const ResourceFlowInfo* {
+        auto it = flowMap.find(resourceId);
+        return it != flowMap.end() ? &it->second : nullptr;
+    };
+
+    auto renderPassRef = [&](const PassBindingInfo& binding, const char* prefix) {
+        if (!binding.pass || !binding.edge) {
+            return;
+        }
+        const ResourceDecl* resource = asset.findResourceById(binding.edge->resourceId);
+        ImGui::BulletText("%s%s.%s", prefix, binding.pass->name.c_str(), binding.edge->slotKey.c_str());
+        if (resource) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("[%s]", resource->name.c_str());
+        }
+    };
+
     if (!m_selectedPassId.empty()) {
         PassDecl* pass = asset.findPassById(m_selectedPassId);
         if (pass) {
@@ -687,8 +1097,7 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
             ImGui::Separator();
 
             char nameBuf[128];
-            std::strncpy(nameBuf, pass->name.c_str(), sizeof(nameBuf) - 1);
-            nameBuf[sizeof(nameBuf) - 1] = '\0';
+            copyTextToBuffer(nameBuf, pass->name);
             if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf))) {
                 pass->name = nameBuf;
                 m_dirty = true;
@@ -769,6 +1178,57 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
 
                 renderSlotEditor("Inputs", typeInfo->inputSlots, "input");
                 renderSlotEditor("Outputs", typeInfo->outputSlots, "output");
+
+                if (ImGui::CollapsingHeader("Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    std::vector<PassBindingInfo> upstream;
+                    std::vector<PassBindingInfo> downstream;
+
+                    for (const auto& slot : typeInfo->inputSlots) {
+                        const EdgeDecl* edge = asset.findEdge(pass->id, "input", slot.key);
+                        if (!edge) {
+                            continue;
+                        }
+                        const ResourceFlowInfo* flow = findFlowInfo(edge->resourceId);
+                        if (flow && flow->producer.pass && flow->producer.pass->id != pass->id) {
+                            upstream.push_back(flow->producer);
+                        }
+                    }
+
+                    for (const auto& slot : typeInfo->outputSlots) {
+                        const EdgeDecl* edge = asset.findEdge(pass->id, "output", slot.key);
+                        if (!edge) {
+                            continue;
+                        }
+                        const ResourceFlowInfo* flow = findFlowInfo(edge->resourceId);
+                        if (!flow) {
+                            continue;
+                        }
+                        for (const auto& reader : flow->readers) {
+                            if (reader.pass && reader.pass->id != pass->id) {
+                                downstream.push_back(reader);
+                            }
+                        }
+                    }
+
+                    ImGui::Text("Upstream");
+                    if (upstream.empty()) {
+                        ImGui::TextDisabled("none");
+                    } else {
+                        for (const auto& binding : upstream) {
+                            renderPassRef(binding, "");
+                        }
+                    }
+
+                    ImGui::Separator();
+                    ImGui::Text("Downstream");
+                    if (downstream.empty()) {
+                        ImGui::TextDisabled("none");
+                    } else {
+                        for (const auto& binding : downstream) {
+                            renderPassRef(binding, "");
+                        }
+                    }
+                }
             }
         }
     } else if (!m_selectedResourceId.empty()) {
@@ -778,8 +1238,7 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
             ImGui::Separator();
 
             char nameBuf[128];
-            std::strncpy(nameBuf, resource->name.c_str(), sizeof(nameBuf) - 1);
-            nameBuf[sizeof(nameBuf) - 1] = '\0';
+            copyTextToBuffer(nameBuf, resource->name);
             if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf))) {
                 resource->name = nameBuf;
                 m_dirty = true;
@@ -856,8 +1315,7 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
             }
 
             char sizeBuf[64];
-            std::strncpy(sizeBuf, resource->size.c_str(), sizeof(sizeBuf) - 1);
-            sizeBuf[sizeof(sizeBuf) - 1] = '\0';
+            copyTextToBuffer(sizeBuf, resource->size);
             if (ImGui::InputText("Size", sizeBuf, sizeof(sizeBuf))) {
                 resource->size = sizeBuf;
                 m_dirty = true;
@@ -872,8 +1330,7 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
 
             if (resource->kind == "imported") {
                 char importBuf[128];
-                std::strncpy(importBuf, resource->importKey.c_str(), sizeof(importBuf) - 1);
-                importBuf[sizeof(importBuf) - 1] = '\0';
+                copyTextToBuffer(importBuf, resource->importKey);
                 if (ImGui::InputText("Import Key", importBuf, sizeof(importBuf))) {
                     resource->importKey = importBuf;
                     m_dirty = true;
@@ -884,6 +1341,32 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
                 }
                 if (ImGui::IsItemDeactivated()) {
                     m_hasTextEditSnapshot = false;
+                }
+            }
+
+            if (ImGui::CollapsingHeader("Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
+                const ResourceFlowInfo* flow = findFlowInfo(resource->id);
+                if (!flow) {
+                    ImGui::TextDisabled("No flow data");
+                } else {
+                    ImGui::Text("Writers");
+                    if (flow->writers.empty()) {
+                        ImGui::TextDisabled("none");
+                    } else {
+                        for (const auto& writer : flow->writers) {
+                            renderPassRef(writer, "");
+                        }
+                    }
+
+                    ImGui::Separator();
+                    ImGui::Text("Readers");
+                    if (flow->readers.empty()) {
+                        ImGui::TextDisabled("none");
+                    } else {
+                        for (const auto& reader : flow->readers) {
+                            renderPassRef(reader, "");
+                        }
+                    }
                 }
             }
         }
@@ -1062,75 +1545,101 @@ void PipelineEditor::renderCompilationPreview(const PipelineAsset& asset) {
 void PipelineEditor::collectNodePositions(PipelineAsset& asset) {
     for (auto& resource : asset.resources) {
         const int nodeId = ensureUiId("node:resource:" + resource.id);
+        if (!m_renderedNodeIds.count(nodeId)) {
+            continue;
+        }
         const ImVec2 pos = ImNodes::GetNodeGridSpacePos(nodeId);
         resource.editorPos = {pos.x, pos.y};
     }
     for (auto& pass : asset.passes) {
         const int nodeId = ensureUiId("node:pass:" + pass.id);
+        if (!m_renderedNodeIds.count(nodeId)) {
+            continue;
+        }
         const ImVec2 pos = ImNodes::GetNodeGridSpacePos(nodeId);
         pass.editorPos = {pos.x, pos.y};
     }
 }
 
 void PipelineEditor::autoReorderNodes(PipelineAsset& asset) {
-    const auto sortedOrder = asset.topologicalSort();
-
-    std::unordered_map<std::string, int> resourceProducerLayer;
-    std::vector<int> passLayer(asset.passes.size(), 0);
-
-    for (const size_t passIndex : sortedOrder) {
-        const PassDecl& pass = asset.passes[passIndex];
-        int maxLayer = 0;
-
-        const PassTypeInfo* info = PassRegistry::instance().getTypeInfo(pass.type);
-        if (!info) {
-            continue;
-        }
-
-        for (const auto& slot : info->inputSlots) {
-            const EdgeDecl* edge = asset.findEdge(pass.id, "input", slot.key);
-            if (!edge) {
-                continue;
-            }
-            auto it = resourceProducerLayer.find(edge->resourceId);
-            if (it != resourceProducerLayer.end()) {
-                maxLayer = std::max(maxLayer, it->second + 1);
-            }
-        }
-        passLayer[passIndex] = maxLayer;
-
-        for (const auto& slot : info->outputSlots) {
-            const EdgeDecl* edge = asset.findEdge(pass.id, "output", slot.key);
-            if (!edge) {
-                continue;
-            }
-            const ResourceDecl* resource = asset.findResourceById(edge->resourceId);
-            if (resource && resource->kind == "transient") {
-                resourceProducerLayer[resource->id] = maxLayer;
-            }
-        }
-    }
+    const auto passLayers = computePassLayers(asset);
+    const auto flowMap = buildResourceFlowMap(asset);
 
     std::map<int, std::vector<size_t>> layerPasses;
+    int maxLayer = 0;
     for (size_t i = 0; i < asset.passes.size(); ++i) {
-        layerPasses[passLayer[i]].push_back(i);
+        const int layer = i < passLayers.size() ? passLayers[i] : 0;
+        layerPasses[layer].push_back(i);
+        maxLayer = std::max(maxLayer, layer);
     }
 
-    float y = 50.0f;
-    for (auto& resource : asset.resources) {
-        resource.editorPos = {50.0f, y};
-        y += 140.0f;
-    }
+    const float resourceX = 40.0f;
+    const float resourceY = 50.0f;
+    const float passX = 320.0f;
+    const float nodeSpacingX = 320.0f;
+    const float nodeSpacingY = 170.0f;
+    const float terminalRightX = passX + static_cast<float>(maxLayer + 1) * nodeSpacingX;
 
+    std::unordered_map<std::string, ImVec2> passPositions;
     for (const auto& [layer, indices] : layerPasses) {
         for (size_t row = 0; row < indices.size(); ++row) {
-            asset.passes[indices[row]].editorPos = {
-                320.0f + static_cast<float>(layer) * 260.0f,
-                50.0f + static_cast<float>(row) * 150.0f
+            PassDecl& pass = asset.passes[indices[row]];
+            pass.editorPos = {
+                passX + static_cast<float>(layer) * nodeSpacingX,
+                resourceY + static_cast<float>(row) * nodeSpacingY
             };
+            passPositions[pass.id] = ImVec2(pass.editorPos[0], pass.editorPos[1]);
         }
+    }
+
+    size_t importedRow = 0;
+    size_t backbufferRow = 0;
+    size_t fallbackRow = 0;
+    for (auto& resource : asset.resources) {
+        const ResourceFlowInfo* flow = nullptr;
+        auto flowIt = flowMap.find(resource.id);
+        if (flowIt != flowMap.end()) {
+            flow = &flowIt->second;
+        }
+
+        float posX = resourceX;
+        float posY = resourceY + static_cast<float>(fallbackRow++) * 120.0f;
+
+        if (resource.kind == "imported") {
+            posX = resourceX;
+            posY = resourceY + static_cast<float>(importedRow++) * 140.0f;
+            if (flow && !flow->readers.empty()) {
+                float totalY = 0.0f;
+                for (const auto& reader : flow->readers) {
+                    totalY += passPositions[reader.pass->id].y;
+                }
+                posY = totalY / static_cast<float>(flow->readers.size());
+            }
+        } else if (resource.kind == "backbuffer") {
+            posX = terminalRightX;
+            posY = resourceY + static_cast<float>(backbufferRow++) * 140.0f;
+            if (flow && !flow->writers.empty()) {
+                float totalY = 0.0f;
+                for (const auto& writer : flow->writers) {
+                    totalY += passPositions[writer.pass->id].y;
+                }
+                posY = totalY / static_cast<float>(flow->writers.size());
+            }
+        } else if (flow && flow->producer.pass) {
+            const ImVec2 producerPos = passPositions[flow->producer.pass->id];
+            posX = producerPos.x + nodeSpacingX * 0.5f;
+            posY = producerPos.y;
+            if (!flow->readers.empty()) {
+                float totalY = producerPos.y;
+                for (const auto& reader : flow->readers) {
+                    totalY += passPositions[reader.pass->id].y;
+                }
+                posY = totalY / static_cast<float>(flow->readers.size() + 1);
+            }
+        }
+
+        resource.editorPos = {posX, posY};
     }
 
     m_nodePositioned.clear();
-    collectNodePositions(asset);
 }

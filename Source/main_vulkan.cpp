@@ -372,20 +372,141 @@ PassDecl* findFirstEnabledPassByType(PipelineAsset& asset, const char* passType)
     return nullptr;
 }
 
+std::string ensureTonemapOutputResource(PipelineAsset& asset,
+                                        const std::string& tonemapPassId,
+                                        const std::string& backbufferId) {
+    if (PassDecl* outputPass = findFirstEnabledPassByType(asset, "OutputPass")) {
+        if (const ResourceDecl* outputSource =
+                findPassBoundResource(asset, outputPass, "input", "source")) {
+            if (outputSource->id != backbufferId && outputSource->kind != "backbuffer") {
+                if (PassDecl* tonemapPass = asset.findPassById(tonemapPassId)) {
+                    ensurePassSlotBinding(asset, *tonemapPass, "output", "output", outputSource->id);
+                }
+                return outputSource->id;
+            }
+        }
+    }
+
+    if (const PassDecl* tonemapPass = asset.findPassById(tonemapPassId)) {
+        if (const ResourceDecl* tonemapTarget =
+                findPassBoundResource(asset, tonemapPass, "output", "output")) {
+            if (tonemapTarget->id != backbufferId && tonemapTarget->kind != "backbuffer") {
+                return tonemapTarget->id;
+            }
+        }
+    }
+
+    const PassDecl* tonemapPass = asset.findPassById(tonemapPassId);
+    if (!tonemapPass) {
+        return {};
+    }
+
+    ResourceDecl tonemapOutput;
+    tonemapOutput.id = generatePipelineAssetGuid();
+    tonemapOutput.name = "Tonemap Output";
+    tonemapOutput.kind = "transient";
+    tonemapOutput.type = "texture";
+    tonemapOutput.format = "RGBA8Srgb";
+    tonemapOutput.size = "screen";
+    tonemapOutput.editorPos = {
+        tonemapPass->editorPos[0] + 160.0f,
+        tonemapPass->editorPos[1] + 170.0f,
+    };
+
+    const std::string tonemapOutputId = tonemapOutput.id;
+    asset.resources.push_back(std::move(tonemapOutput));
+    if (PassDecl* tonemapPassMutable = asset.findPassById(tonemapPassId)) {
+        ensurePassSlotBinding(asset, *tonemapPassMutable, "output", "output", tonemapOutputId);
+    }
+    return tonemapOutputId;
+}
+
+PassDecl* ensureDisplayOutputPass(PipelineAsset& asset,
+                                  const std::string& sourceResourceId,
+                                  const std::string& backbufferId) {
+    if (PassDecl* outputPass = findFirstEnabledPassByType(asset, "OutputPass")) {
+        if (!sourceResourceId.empty()) {
+            const ResourceDecl* outputSource =
+                findPassBoundResource(asset, outputPass, "input", "source");
+            if (!outputSource || outputSource->id == backbufferId || outputSource->kind == "backbuffer") {
+                ensurePassSlotBinding(asset, *outputPass, "input", "source", sourceResourceId);
+            }
+        }
+        ensurePassSlotBinding(asset, *outputPass, "output", "target", backbufferId);
+        return outputPass;
+    }
+
+    PassDecl outputPass;
+    outputPass.id = generatePipelineAssetGuid();
+    outputPass.name = "Output";
+    outputPass.type = "OutputPass";
+    outputPass.enabled = true;
+    outputPass.sideEffect = false;
+    outputPass.config = nlohmann::json::object();
+
+    if (const PassDecl* tonemapPass = findFirstEnabledPassByType(asset, "TonemapPass")) {
+        outputPass.editorPos = {
+            tonemapPass->editorPos[0] + 320.0f,
+            tonemapPass->editorPos[1],
+        };
+    }
+
+    auto insertIt = std::find_if(asset.passes.begin(),
+                                 asset.passes.end(),
+                                 [](const PassDecl& pass) {
+                                     return pass.enabled && pass.type == "ImGuiOverlayPass";
+                                 });
+    auto insertedIt = asset.passes.insert(insertIt, std::move(outputPass));
+    if (!sourceResourceId.empty()) {
+        ensurePassSlotBinding(asset, *insertedIt, "input", "source", sourceResourceId);
+    }
+    ensurePassSlotBinding(asset, *insertedIt, "output", "target", backbufferId);
+    return &*insertedIt;
+}
+
 void normalizePipelineFinalDisplayOutput(PipelineAsset& asset) {
     const ResourceDecl* backbuffer = findFirstResourceByKind(asset, "backbuffer");
     if (!backbuffer) {
         return;
     }
 
-    if (PassDecl* outputPass = findFirstEnabledPassByType(asset, "OutputPass")) {
-        ensurePassSlotBinding(asset, *outputPass, "output", "target", backbuffer->id);
-    } else if (PassDecl* tonemapPass = findFirstEnabledPassByType(asset, "TonemapPass")) {
-        ensurePassSlotBinding(asset, *tonemapPass, "output", "output", backbuffer->id);
+    const std::string backbufferId = backbuffer->id;
+    bool reroutedTonemapBackbufferWrite = false;
+    bool createdOutputPass = false;
+
+    if (PassDecl* tonemapPass = findFirstEnabledPassByType(asset, "TonemapPass")) {
+        const bool hadOutputPass = findFirstEnabledPassByType(asset, "OutputPass") != nullptr;
+        const ResourceDecl* tonemapTarget =
+            findPassBoundResource(asset, tonemapPass, "output", "output");
+        const bool tonemapWritesBackbuffer =
+            tonemapTarget && tonemapTarget->id == backbufferId;
+
+        std::string tonemapOutputId;
+        if (!tonemapTarget || tonemapWritesBackbuffer || tonemapTarget->kind == "backbuffer") {
+            tonemapOutputId = ensureTonemapOutputResource(asset, tonemapPass->id, backbufferId);
+            reroutedTonemapBackbufferWrite = tonemapWritesBackbuffer;
+        } else {
+            tonemapOutputId = tonemapTarget->id;
+        }
+
+        if (!tonemapOutputId.empty()) {
+            ensureDisplayOutputPass(asset, tonemapOutputId, backbufferId);
+            createdOutputPass = !hadOutputPass && findFirstEnabledPassByType(asset, "OutputPass") != nullptr;
+        }
+    } else if (PassDecl* outputPass = findFirstEnabledPassByType(asset, "OutputPass")) {
+        ensurePassSlotBinding(asset, *outputPass, "output", "target", backbufferId);
+    }
+
+    if (reroutedTonemapBackbufferWrite) {
+        spdlog::warn("Pipeline '{}' bound TonemapPass directly to the backbuffer; restoring Tonemap -> OutputPass display chain for Vulkan",
+                     asset.name);
+    } else if (createdOutputPass) {
+        spdlog::warn("Pipeline '{}' had TonemapPass without OutputPass; inserted OutputPass to present to the backbuffer",
+                     asset.name);
     }
 
     if (PassDecl* imguiPass = findFirstEnabledPassByType(asset, "ImGuiOverlayPass")) {
-        ensurePassSlotBinding(asset, *imguiPass, "output", "target", backbuffer->id);
+        ensurePassSlotBinding(asset, *imguiPass, "output", "target", backbufferId);
     }
 }
 

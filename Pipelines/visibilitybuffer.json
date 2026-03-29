@@ -9,14 +9,20 @@
       "type": "texture",
       "format": "BGRA8Unorm",
       "size": "screen",
-      "editorPos": [1840.0, 80.0]
+      "editorPos": [
+        2224.0,
+        98.75
+      ]
     },
     {
       "id": "00000000000000000000000000000002",
       "name": "Cull Result",
       "kind": "transient",
       "type": "token",
-      "editorPos": [60.0, 50.0]
+      "editorPos": [
+        60.0,
+        50.0
+      ]
     },
     {
       "id": "00000000000000000000000000000003",
@@ -25,7 +31,10 @@
       "type": "texture",
       "format": "R32Uint",
       "size": "screen",
-      "editorPos": [60.0, 190.0]
+      "editorPos": [
+        60.0,
+        190.0
+      ]
     },
     {
       "id": "00000000000000000000000000000004",
@@ -34,7 +43,10 @@
       "type": "texture",
       "format": "Depth32Float",
       "size": "screen",
-      "editorPos": [60.0, 330.0]
+      "editorPos": [
+        60.0,
+        330.0
+      ]
     },
     {
       "id": "00000000000000000000000000000005",
@@ -43,7 +55,10 @@
       "type": "texture",
       "format": "R8Unorm",
       "size": "screen",
-      "editorPos": [60.0, 470.0]
+      "editorPos": [
+        60.0,
+        470.0
+      ]
     },
     {
       "id": "00000000000000000000000000000006",
@@ -52,7 +67,10 @@
       "type": "texture",
       "format": "RGBA16Float",
       "size": "screen",
-      "editorPos": [60.0, 610.0]
+      "editorPos": [
+        60.0,
+        610.0
+      ]
     },
     {
       "id": "00000000000000000000000000000007",
@@ -61,7 +79,10 @@
       "type": "texture",
       "format": "RGBA16Float",
       "size": "screen",
-      "editorPos": [60.0, 750.0]
+      "editorPos": [
+        60.0,
+        750.0
+      ]
     },
     {
       "id": "00000000000000000000000000000008",
@@ -70,7 +91,10 @@
       "type": "texture",
       "format": "RG16Float",
       "size": "screen",
-      "editorPos": [60.0, 890.0]
+      "editorPos": [
+        60.0,
+        890.0
+      ]
     },
     {
       "id": "00000000000000000000000000000009",
@@ -79,7 +103,22 @@
       "type": "texture",
       "format": "R32Float",
       "size": "1x1",
-      "editorPos": [60.0, 1030.0]
+      "editorPos": [
+        60.0,
+        1030.0
+      ]
+    },
+    {
+      "id": "0000000000000000000000000000000a",
+      "name": "Tonemap Output",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA8Srgb",
+      "size": "screen",
+      "editorPos": [
+        2064.0,
+        120.0
+      ]
     }
   ],
   "passes": [
@@ -90,7 +129,10 @@
       "enabled": true,
       "sideEffect": false,
       "config": null,
-      "editorPos": [320.0, 50.0]
+      "editorPos": [
+        304.0,
+        -50.0
+      ]
     },
     {
       "id": "10000000000000000000000000000002",
@@ -99,7 +141,10 @@
       "enabled": true,
       "sideEffect": false,
       "config": null,
-      "editorPos": [580.0, 50.0]
+      "editorPos": [
+        624.0,
+        -50.0
+      ]
     },
     {
       "id": "10000000000000000000000000000003",
@@ -108,7 +153,10 @@
       "enabled": true,
       "sideEffect": false,
       "config": null,
-      "editorPos": [840.0, 50.0]
+      "editorPos": [
+        944.0,
+        -50.0
+      ]
     },
     {
       "id": "10000000000000000000000000000005",
@@ -117,7 +165,10 @@
       "enabled": true,
       "sideEffect": false,
       "config": null,
-      "editorPos": [1100.0, 50.0]
+      "editorPos": [
+        1264.0,
+        -50.0
+      ]
     },
     {
       "id": "10000000000000000000000000000006",
@@ -126,7 +177,10 @@
       "enabled": true,
       "sideEffect": false,
       "config": null,
-      "editorPos": [840.0, 330.0]
+      "editorPos": [
+        944.0,
+        120.0
+      ]
     },
     {
       "id": "10000000000000000000000000000007",
@@ -135,7 +189,10 @@
       "enabled": true,
       "sideEffect": false,
       "config": null,
-      "editorPos": [1360.0, 50.0]
+      "editorPos": [
+        1584.0,
+        -50.0
+      ]
     },
     {
       "id": "10000000000000000000000000000008",
@@ -144,7 +201,10 @@
       "enabled": true,
       "sideEffect": false,
       "config": null,
-      "editorPos": [1620.0, 50.0]
+      "editorPos": [
+        1904.0,
+        -50.0
+      ]
     },
     {
       "id": "10000000000000000000000000000009",
@@ -153,7 +213,22 @@
       "enabled": true,
       "sideEffect": false,
       "config": null,
-      "editorPos": [320.0, 190.0]
+      "editorPos": [
+        304.0,
+        120.0
+      ]
+    },
+    {
+      "id": "1000000000000000000000000000000a",
+      "name": "Output 1",
+      "type": "OutputPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {},
+      "editorPos": [
+        2224.0,
+        -50.0
+      ]
     },
     {
       "id": "10000000000000000000000000000004",
@@ -162,7 +237,10 @@
       "enabled": true,
       "sideEffect": false,
       "config": null,
-      "editorPos": [840.0, 190.0]
+      "editorPos": [
+        944.0,
+        290.0
+      ]
     }
   ],
   "edges": [
@@ -200,20 +278,6 @@
       "slotKey": "depth",
       "direction": "input",
       "resourceId": "00000000000000000000000000000004"
-    },
-    {
-      "id": "20000000000000000000000000000006",
-      "passId": "10000000000000000000000000000004",
-      "slotKey": "depth",
-      "direction": "input",
-      "resourceId": "00000000000000000000000000000004"
-    },
-    {
-      "id": "20000000000000000000000000000007",
-      "passId": "10000000000000000000000000000004",
-      "slotKey": "target",
-      "direction": "output",
-      "resourceId": "00000000000000000000000000000001"
     },
     {
       "id": "20000000000000000000000000000008",
@@ -304,7 +368,7 @@
       "passId": "10000000000000000000000000000008",
       "slotKey": "output",
       "direction": "output",
-      "resourceId": "00000000000000000000000000000001"
+      "resourceId": "0000000000000000000000000000000a"
     },
     {
       "id": "20000000000000000000000000000015",
@@ -312,6 +376,34 @@
       "slotKey": "skyOutput",
       "direction": "output",
       "resourceId": "00000000000000000000000000000006"
+    },
+    {
+      "id": "20000000000000000000000000000016",
+      "passId": "1000000000000000000000000000000a",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000a"
+    },
+    {
+      "id": "20000000000000000000000000000017",
+      "passId": "1000000000000000000000000000000a",
+      "slotKey": "target",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000001"
+    },
+    {
+      "id": "20000000000000000000000000000006",
+      "passId": "10000000000000000000000000000004",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "20000000000000000000000000000007",
+      "passId": "10000000000000000000000000000004",
+      "slotKey": "target",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000001"
     }
   ]
 }

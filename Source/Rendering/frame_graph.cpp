@@ -79,13 +79,17 @@ FGResource FGBuilder::createToken(const char* name) {
 
 FGResource FGBuilder::read(FGResource resource) {
     assert(resource.isValid());
-    appendUniqueResource(m_fg.m_passes[m_passIndex].reads, resource);
-    return resource;
+    FGResource latestResource = resource;
+    latestResource.id = findLatestVersion(m_fg.m_resources, resource.id);
+    appendUniqueResource(m_fg.m_passes[m_passIndex].reads, latestResource);
+    return latestResource;
 }
 
 FGResource FGBuilder::write(FGResource resource) {
     assert(resource.isValid());
     assert(resource.id < m_fg.m_resources.size());
+
+    resource.id = findLatestVersion(m_fg.m_resources, resource.id);
 
     auto& pass = m_fg.m_passes[m_passIndex];
     auto& node = m_fg.m_resources[resource.id];
