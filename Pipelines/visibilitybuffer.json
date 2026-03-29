@@ -1,38 +1,38 @@
 {
   "editorPositions": {
-    "AutoExposurePass_2": [
+    "AutoExposurePass_6": [
       1300.0,
       50.0
     ],
-    "DeferredLightingPass_7": [
+    "DeferredLightingPass_4": [
       1050.0,
       50.0
     ],
-    "HZBBuildPass_8": [
+    "HZBBuildPass_2": [
       800.0,
-      330.0
+      50.0
     ],
     "ImGuiOverlayPass_3": [
       800.0,
-      50.0
-    ],
-    "MeshletCullPass_5": [
-      300.0,
       190.0
     ],
-    "ShadowRayPass_7": [
+    "MeshletCullPass_0": [
+      300.0,
+      50.0
+    ],
+    "ShadowRayPass_5": [
       800.0,
+      330.0
+    ],
+    "SkyPass_8": [
+      300.0,
       190.0
     ],
-    "SkyPass_1": [
-      300.0,
-      50.0
-    ],
-    "TonemapPass_3": [
+    "TonemapPass_7": [
       1550.0,
       50.0
     ],
-    "VisibilityPass_6": [
+    "VisibilityPass_1": [
       550.0,
       50.0
     ]
@@ -43,39 +43,37 @@
       "config": null,
       "enabled": true,
       "inputs": [],
-      "name": "SkyPass_1",
+      "name": "MeshletCullPass_0",
       "outputs": [
-        "skyOutput"
+        "cullResult"
       ],
       "sideEffect": false,
-      "type": "SkyPass"
+      "type": "MeshletCullPass"
     },
     {
       "config": null,
       "enabled": true,
       "inputs": [
-        "lightingOutput"
+        "cullResult"
       ],
-      "name": "AutoExposurePass_2",
+      "name": "VisibilityPass_1",
       "outputs": [
-        "exposureLut"
+        "visibility",
+        "depth"
       ],
       "sideEffect": false,
-      "type": "AutoExposurePass"
+      "type": "VisibilityPass"
     },
     {
       "config": null,
       "enabled": true,
       "inputs": [
-        "skyOutput",
-        "exposureLut"
+        "depth"
       ],
-      "name": "TonemapPass_3",
-      "outputs": [
-        "$backbuffer"
-      ],
+      "name": "HZBBuildPass_2",
+      "outputs": [],
       "sideEffect": false,
-      "type": "TonemapPass"
+      "type": "HZBBuildPass"
     },
     {
       "config": null,
@@ -93,38 +91,13 @@
     {
       "config": null,
       "enabled": true,
-      "inputs": [],
-      "name": "MeshletCullPass_5",
-      "outputs": [
-        "cullResult"
-      ],
-      "sideEffect": false,
-      "type": "MeshletCullPass"
-    },
-    {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "cullResult"
-      ],
-      "name": "VisibilityPass_6",
-      "outputs": [
-        "visibility",
-        "depth"
-      ],
-      "sideEffect": false,
-      "type": "VisibilityPass"
-    },
-    {
-      "config": null,
-      "enabled": true,
       "inputs": [
         "visibility",
         "depth",
         "shadowMap",
         "skyOutput"
       ],
-      "name": "DeferredLightingPass_7",
+      "name": "DeferredLightingPass_4",
       "outputs": [
         "lightingOutput",
         "motionVectors"
@@ -138,7 +111,7 @@
       "inputs": [
         "depth"
       ],
-      "name": "ShadowRayPass_7",
+      "name": "ShadowRayPass_5",
       "outputs": [
         "shadowMap"
       ],
@@ -149,12 +122,39 @@
       "config": null,
       "enabled": true,
       "inputs": [
-        "depth"
+        "lightingOutput"
       ],
-      "name": "HZBBuildPass_8",
-      "outputs": [],
+      "name": "AutoExposurePass_6",
+      "outputs": [
+        "exposureLut"
+      ],
       "sideEffect": false,
-      "type": "HZBBuildPass"
+      "type": "AutoExposurePass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "lightingOutput",
+        "exposureLut"
+      ],
+      "name": "TonemapPass_7",
+      "outputs": [
+        "$backbuffer"
+      ],
+      "sideEffect": false,
+      "type": "TonemapPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [],
+      "name": "SkyPass_8",
+      "outputs": [
+        "skyOutput"
+      ],
+      "sideEffect": false,
+      "type": "SkyPass"
     }
   ],
   "resources": []
