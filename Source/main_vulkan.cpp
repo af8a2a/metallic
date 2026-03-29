@@ -1664,7 +1664,7 @@ int main() {
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
     VulkanDescriptorManager descriptorManager;
-    descriptorManager.init(vkDevice, vmaAllocator);
+    descriptorManager.init(vkDevice, vkPhysicalDevice, vmaAllocator);
     if (previewSceneReady) {
         if (!previewMaterials.textureViews.empty()) {
             descriptorManager.updateBindlessSampledTextures(previewMaterials.textureViews.data(),

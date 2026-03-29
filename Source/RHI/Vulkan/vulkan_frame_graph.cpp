@@ -185,21 +185,21 @@ public:
         if (index >= kMaxBufferBindings || !m_descriptorManager) {
             return;
         }
-        m_pendingBuffers[index] = m_descriptorManager->createTransientUniformBuffer(data, size);
+        m_pendingBuffers[index] = m_descriptorManager->uploadInlineUniformData(data, size);
     }
 
     void setFragmentBytes(const void* data, size_t size, uint32_t index) override {
         if (index >= kMaxBufferBindings || !m_descriptorManager) {
             return;
         }
-        m_pendingBuffers[index] = m_descriptorManager->createTransientUniformBuffer(data, size);
+        m_pendingBuffers[index] = m_descriptorManager->uploadInlineUniformData(data, size);
     }
 
     void setMeshBytes(const void* data, size_t size, uint32_t index) override {
         if (index >= kMaxBufferBindings || !m_descriptorManager) {
             return;
         }
-        m_pendingBuffers[index] = m_descriptorManager->createTransientUniformBuffer(data, size);
+        m_pendingBuffers[index] = m_descriptorManager->uploadInlineUniformData(data, size);
     }
 
     void setFragmentTexture(const RhiTexture* texture, uint32_t index) override {
@@ -364,7 +364,7 @@ public:
         if (index >= kMaxBufferBindings || !m_descriptorManager) {
             return;
         }
-        m_pendingBuffers[index] = m_descriptorManager->createTransientUniformBuffer(data, size);
+        m_pendingBuffers[index] = m_descriptorManager->uploadInlineUniformData(data, size);
     }
 
     void setTexture(const RhiTexture* texture, uint32_t index) override {

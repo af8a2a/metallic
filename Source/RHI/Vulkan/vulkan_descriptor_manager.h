@@ -18,6 +18,8 @@ class RhiTexture;
 
 struct VmaAllocator_T;
 typedef VmaAllocator_T* VmaAllocator;
+struct VmaAllocation_T;
+typedef VmaAllocation_T* VmaAllocation;
 
 struct VulkanPipelineResource;
 struct VulkanTextureResource;
@@ -69,11 +71,11 @@ struct PendingAccelerationStructureBinding {
 
 class VulkanDescriptorManager {
 public:
-    void init(VkDevice device, VmaAllocator allocator);
+    void init(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator);
     void destroy();
     void resetFrame();
 
-    PendingBufferBinding createTransientUniformBuffer(const void* data, size_t size);
+    PendingBufferBinding uploadInlineUniformData(const void* data, size_t size);
     void updateBindlessSampledTextures(const RhiTexture* const* textures,
                                        uint32_t startIndex,
                                        uint32_t count);
@@ -97,27 +99,35 @@ public:
                                        kMaxAccelerationStructureBindings>& accelerationStructures);
 
 private:
-    struct TransientBuffer {
+    struct FrameUniformUpload {
         VkBuffer buffer = VK_NULL_HANDLE;
-        void* allocation = nullptr;
+        VmaAllocation allocation = nullptr;
+        void* mappedData = nullptr;
+        VkDeviceSize capacity = 0;
+        VkDeviceSize head = 0;
     };
 
     struct FrameState {
         VkDescriptorPool pool = VK_NULL_HANDLE;
-        std::vector<TransientBuffer> transientBuffers;
+        FrameUniformUpload uniformUpload;
     };
 
     void createPools();
     void destroyFrameState(FrameState& frame);
+    bool ensureFrameUniformUploadCapacity(FrameState& frame, VkDeviceSize requiredSize);
     FrameState& currentFrame();
 
     VkDevice m_device = VK_NULL_HANDLE;
+    VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VmaAllocator m_allocator = nullptr;
     VkDescriptorPool m_bindlessPool = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_bindlessSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet m_bindlessSet = VK_NULL_HANDLE;
     std::array<FrameState, 2> m_frames{};
     uint32_t m_frameIndex = 1;
+    VkDeviceSize m_uniformUploadAlignment = 16;
+    VkDeviceSize m_nonCoherentAtomSize = 1;
+    VkDeviceSize m_maxUniformBufferRange = 65536;
 };
 
 bool vulkanRetainBindlessSetLayout(VkDevice device,

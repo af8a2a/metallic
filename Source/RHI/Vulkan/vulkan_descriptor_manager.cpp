@@ -7,6 +7,8 @@
 
 #include <vk_mem_alloc.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <mutex>
 #include <spdlog/spdlog.h>
@@ -22,6 +24,7 @@ void checkVk(VkResult result, const char* message) {
 }
 
 constexpr uint32_t kMaxSetsPerFrame = 4096;
+constexpr VkDeviceSize kDefaultInlineUniformUploadSize = 1u << 20;
 
 struct SharedBindlessLayoutState {
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
@@ -124,11 +127,47 @@ uint64_t bindlessLayoutKey(VkDevice device) {
     return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(device));
 }
 
+VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment) {
+    if (alignment == 0) {
+        return value;
+    }
+    const VkDeviceSize mask = alignment - 1;
+    return (value + mask) & ~mask;
+}
+
+VkDeviceSize alignDown(VkDeviceSize value, VkDeviceSize alignment) {
+    if (alignment == 0) {
+        return value;
+    }
+    return value & ~(alignment - 1);
+}
+
+VkDeviceSize nextUploadCapacity(VkDeviceSize requiredSize) {
+    VkDeviceSize capacity = std::max(requiredSize, kDefaultInlineUniformUploadSize);
+    VkDeviceSize rounded = kDefaultInlineUniformUploadSize;
+    while (rounded < capacity) {
+        rounded <<= 1;
+    }
+    return rounded;
+}
+
 } // namespace
 
-void VulkanDescriptorManager::init(VkDevice device, VmaAllocator allocator) {
+void VulkanDescriptorManager::init(VkDevice device,
+                                   VkPhysicalDevice physicalDevice,
+                                   VmaAllocator allocator) {
     m_device = device;
+    m_physicalDevice = physicalDevice;
     m_allocator = allocator;
+    if (m_physicalDevice != VK_NULL_HANDLE) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(m_physicalDevice, &properties);
+        m_uniformUploadAlignment =
+            std::max<VkDeviceSize>(properties.limits.minUniformBufferOffsetAlignment, 16);
+        m_nonCoherentAtomSize =
+            std::max<VkDeviceSize>(properties.limits.nonCoherentAtomSize, 1);
+        m_maxUniformBufferRange = properties.limits.maxUniformBufferRange;
+    }
     createPools();
 
     std::string errorMessage;
@@ -163,6 +202,7 @@ void VulkanDescriptorManager::destroy() {
         m_bindlessSetLayout = VK_NULL_HANDLE;
     }
     m_allocator = nullptr;
+    m_physicalDevice = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
 }
 
@@ -173,52 +213,43 @@ void VulkanDescriptorManager::resetFrame() {
     if (frame.pool != VK_NULL_HANDLE) {
         vkResetDescriptorPool(m_device, frame.pool, 0);
     }
-
-    for (const TransientBuffer& transient : frame.transientBuffers) {
-        if (transient.buffer != VK_NULL_HANDLE && transient.allocation != nullptr) {
-            vmaDestroyBuffer(m_allocator,
-                             transient.buffer,
-                             static_cast<VmaAllocation>(transient.allocation));
-        }
-    }
-    frame.transientBuffers.clear();
+    frame.uniformUpload.head = 0;
 }
 
-PendingBufferBinding VulkanDescriptorManager::createTransientUniformBuffer(const void* data, size_t size) {
+PendingBufferBinding VulkanDescriptorManager::uploadInlineUniformData(const void* data, size_t size) {
     PendingBufferBinding binding{};
     if (!data || size == 0 || m_device == VK_NULL_HANDLE || m_allocator == nullptr) {
         return binding;
     }
 
-    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufferInfo.size = size;
-    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VmaAllocationCreateInfo allocInfo{};
-    allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                      VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VmaAllocation allocation = nullptr;
-    VmaAllocationInfo allocationInfo{};
-    const VkResult result = vmaCreateBuffer(m_allocator,
-                                            &bufferInfo,
-                                            &allocInfo,
-                                            &buffer,
-                                            &allocation,
-                                            &allocationInfo);
-    if (result != VK_SUCCESS) {
-        spdlog::warn("Failed to allocate transient uniform buffer (VkResult: {})",
-                     static_cast<int>(result));
+    if (size > m_maxUniformBufferRange) {
+        spdlog::warn("Inline uniform upload of {} bytes exceeds maxUniformBufferRange {}; skipping bind",
+                     size,
+                     m_maxUniformBufferRange);
         return binding;
     }
 
-    std::memcpy(allocationInfo.pMappedData, data, size);
-    currentFrame().transientBuffers.push_back({buffer, allocation});
+    FrameState& frame = currentFrame();
+    const VkDeviceSize alignedOffset = alignUp(frame.uniformUpload.head, m_uniformUploadAlignment);
+    const VkDeviceSize requiredSize = alignedOffset + static_cast<VkDeviceSize>(size);
+    if (!ensureFrameUniformUploadCapacity(frame, requiredSize) ||
+        frame.uniformUpload.buffer == VK_NULL_HANDLE ||
+        frame.uniformUpload.mappedData == nullptr) {
+        return binding;
+    }
 
-    binding.buffer = buffer;
+    std::byte* dst = static_cast<std::byte*>(frame.uniformUpload.mappedData) + alignedOffset;
+    std::memcpy(dst, data, size);
+
+    const VkDeviceSize flushOffset = alignDown(alignedOffset, m_nonCoherentAtomSize);
+    const VkDeviceSize flushSize =
+        alignUp((alignedOffset - flushOffset) + static_cast<VkDeviceSize>(size), m_nonCoherentAtomSize);
+    vmaFlushAllocation(m_allocator, frame.uniformUpload.allocation, flushOffset, flushSize);
+
+    frame.uniformUpload.head = requiredSize;
+
+    binding.buffer = frame.uniformUpload.buffer;
+    binding.offset = alignedOffset;
     binding.range = size;
     binding.dirty = true;
     return binding;
@@ -591,19 +622,69 @@ void VulkanDescriptorManager::createPools() {
 }
 
 void VulkanDescriptorManager::destroyFrameState(FrameState& frame) {
-    for (const TransientBuffer& transient : frame.transientBuffers) {
-        if (transient.buffer != VK_NULL_HANDLE && transient.allocation != nullptr) {
-            vmaDestroyBuffer(m_allocator,
-                             transient.buffer,
-                             static_cast<VmaAllocation>(transient.allocation));
-        }
+    if (frame.uniformUpload.buffer != VK_NULL_HANDLE && frame.uniformUpload.allocation != nullptr) {
+        vmaDestroyBuffer(m_allocator,
+                         frame.uniformUpload.buffer,
+                         frame.uniformUpload.allocation);
+        frame.uniformUpload = {};
     }
-    frame.transientBuffers.clear();
 
     if (frame.pool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(m_device, frame.pool, nullptr);
         frame.pool = VK_NULL_HANDLE;
     }
+}
+
+bool VulkanDescriptorManager::ensureFrameUniformUploadCapacity(FrameState& frame,
+                                                               VkDeviceSize requiredSize) {
+    if (requiredSize == 0) {
+        return true;
+    }
+    if (frame.uniformUpload.buffer != VK_NULL_HANDLE &&
+        frame.uniformUpload.capacity >= requiredSize &&
+        frame.uniformUpload.mappedData != nullptr) {
+        return true;
+    }
+
+    if (frame.uniformUpload.buffer != VK_NULL_HANDLE && frame.uniformUpload.allocation != nullptr) {
+        vmaDestroyBuffer(m_allocator,
+                         frame.uniformUpload.buffer,
+                         frame.uniformUpload.allocation);
+        frame.uniformUpload = {};
+    }
+
+    VmaBufferCreateInfo bufferInfo{};
+    bufferInfo.device = m_device;
+    bufferInfo.allocator = m_allocator;
+    bufferInfo.size = nextUploadCapacity(requiredSize);
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bufferInfo.hostVisible = true;
+    bufferInfo.debugName = "InlineUniformUpload";
+
+    const char* errorMessage = nullptr;
+    auto resource = vmaCreateBufferResource(bufferInfo, &errorMessage);
+    if (!resource) {
+        spdlog::warn("Failed to allocate frame uniform upload buffer: {}",
+                     errorMessage ? errorMessage : "unknown error");
+        return false;
+    }
+
+    if (resource->mappedData == nullptr && resource->allocation != nullptr) {
+        void* mappedData = nullptr;
+        if (vmaMapMemory(m_allocator, resource->allocation, &mappedData) != VK_SUCCESS) {
+            vmaDestroyBuffer(m_allocator, resource->buffer, resource->allocation);
+            spdlog::warn("Failed to map frame uniform upload buffer");
+            return false;
+        }
+        resource->mappedData = mappedData;
+    }
+
+    frame.uniformUpload.buffer = resource->buffer;
+    frame.uniformUpload.allocation = resource->allocation;
+    frame.uniformUpload.mappedData = resource->mappedData;
+    frame.uniformUpload.capacity = bufferInfo.size;
+    frame.uniformUpload.head = 0;
+    return true;
 }
 
 VulkanDescriptorManager::FrameState& VulkanDescriptorManager::currentFrame() {
