@@ -181,6 +181,7 @@ Fn loadHookedDeviceProc(PFN_vkGetDeviceProcAddr deviceProcAddrProxy,
 
 void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
                         VkQueue queue, uint32_t queueFamily, bool bufferDeviceAddressEnabled,
+                        bool externalHostMemoryEnabled,
                         bool rayTracingEnabled,
                         void* vkGetDeviceProcAddrProxy) {
     PFN_vkGetDeviceProcAddr deviceProcAddrProxy =
@@ -192,6 +193,7 @@ void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAll
     g_vkResCtx.graphicsQueue = queue;
     g_vkResCtx.graphicsQueueFamily = queueFamily;
     g_vkResCtx.bufferDeviceAddressEnabled = bufferDeviceAddressEnabled;
+    g_vkResCtx.externalHostMemoryEnabled = externalHostMemoryEnabled;
     g_vkResCtx.rayTracingEnabled = rayTracingEnabled;
     g_vkResCtx.streamlineHooksEnabled = false;
     g_vkResCtx.vkBeginCommandBufferProxy =
@@ -309,6 +311,7 @@ void vulkanSetResourceContext(VkDevice device,
                               VkQueue queue,
                               uint32_t queueFamily,
                               bool bufferDeviceAddressEnabled,
+                              bool externalHostMemoryEnabled,
                               bool rayTracingEnabled,
                               void* vkGetDeviceProcAddrProxy) {
     setResourceContext(device,
@@ -317,6 +320,7 @@ void vulkanSetResourceContext(VkDevice device,
                        queue,
                        queueFamily,
                        bufferDeviceAddressEnabled,
+                       externalHostMemoryEnabled,
                        rayTracingEnabled,
                        vkGetDeviceProcAddrProxy);
 }
@@ -452,6 +456,10 @@ void rhiUploadTexture2D(const RhiTexture& texture,
     stagingVmaInfo.size = imageSize;
     stagingVmaInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     stagingVmaInfo.hostVisible = true;
+    stagingVmaInfo.externalMemoryHandleTypes =
+        g_vkResCtx.externalHostMemoryEnabled
+            ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT
+            : 0;
 
     auto stagingResource = vmaCreateBufferResource(stagingVmaInfo);
     if (!stagingResource) {
@@ -528,6 +536,10 @@ void rhiUploadTexture3D(const RhiTexture& texture,
     stagingVmaInfo.size = imageSize;
     stagingVmaInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     stagingVmaInfo.hostVisible = true;
+    stagingVmaInfo.externalMemoryHandleTypes =
+        g_vkResCtx.externalHostMemoryEnabled
+            ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT
+            : 0;
 
     auto stagingResource = vmaCreateBufferResource(stagingVmaInfo);
     if (!stagingResource) {
@@ -729,14 +741,28 @@ void rhiReleaseNativeHandle(void* handle) {
         auto* pipeline = static_cast<VulkanPipelineResource*>(handle);
         if (pipeline->pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(pipeline->device, pipeline->pipeline, nullptr);
+            pipeline->pipeline = VK_NULL_HANDLE;
         }
-        for (VkDescriptorSetLayout setLayout : pipeline->setLayouts) {
+        for (size_t setIndex = 0; setIndex < pipeline->setLayouts.size(); ++setIndex) {
+            VkDescriptorSetLayout setLayout = pipeline->setLayouts[setIndex];
             if (setLayout != VK_NULL_HANDLE) {
-                vkDestroyDescriptorSetLayout(pipeline->device, setLayout, nullptr);
+                const bool ownsSetLayout =
+                    setIndex >= pipeline->setLayoutOwnership.size() ||
+                    pipeline->setLayoutOwnership[setIndex] != 0;
+                if (ownsSetLayout) {
+                    vkDestroyDescriptorSetLayout(pipeline->device, setLayout, nullptr);
+                } else if (pipeline->device != VK_NULL_HANDLE &&
+                           pipeline->bindlessSetIndex == static_cast<uint32_t>(setIndex)) {
+                    vulkanReleaseBindlessSetLayout(pipeline->device);
+                }
             }
         }
+        pipeline->setLayouts.clear();
+        pipeline->setLayoutOwnership.clear();
+        pipeline->bindlessSetIndex = UINT32_MAX;
         if (pipeline->ownsLayout && pipeline->layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(pipeline->device, pipeline->layout, nullptr);
+            pipeline->layout = VK_NULL_HANDLE;
         }
         delete pipeline;
         break;

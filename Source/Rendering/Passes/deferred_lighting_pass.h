@@ -95,25 +95,21 @@ public:
         encoder.setTexture(m_frameGraph->getTexture(m_visRead), 0);
         encoder.setTexture(m_frameGraph->getTexture(m_depthRead), 1);
         encoder.setStorageTexture(m_frameGraph->getTexture(output), 2);
-        std::vector<const RhiTexture*> materialTextures;
-        materialTextures.reserve(m_ctx.materials.textureViews.size());
-        for (auto* texture : m_ctx.materials.textureViews) {
-            materialTextures.push_back(texture);
-        }
-        if (!materialTextures.empty()) {
-            encoder.setTextures(materialTextures.data(), 3,
-                                static_cast<uint32_t>(materialTextures.size()));
-        }
+        // Vulkan reflection compacts resource bindings into dense logical slots.
+        // Keep CPU-side binding indices aligned with shader declaration order.
+        constexpr uint32_t kShadowTextureBinding = 3;
+        constexpr uint32_t kSkyTextureBinding = 4;
+        constexpr uint32_t kMotionVectorsBinding = 5;
         const RhiTexture* shadowTex = m_shadowRead.isValid()
             ? m_frameGraph->getTexture(m_shadowRead)
             : &m_ctx.shadowDummyTex;
-        encoder.setTexture(shadowTex, 99);
+        encoder.setTexture(shadowTex, kShadowTextureBinding);
         const RhiTexture* skyTex = m_skyRead.isValid()
             ? m_frameGraph->getTexture(m_skyRead)
             : &m_ctx.skyFallbackTex;
-        encoder.setTexture(skyTex, 100);
-        encoder.setStorageTexture(m_frameGraph->getTexture(motionVectorsOutput), 101);
-        encoder.setSampler(&m_ctx.materials.sampler, 0);
+        encoder.setTexture(skyTex, kSkyTextureBinding);
+        encoder.setStorageTexture(m_frameGraph->getTexture(motionVectorsOutput),
+                                  kMotionVectorsBinding);
         encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
                                      {8, 8, 1});
     }

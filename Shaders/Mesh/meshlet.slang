@@ -1,3 +1,6 @@
+// Shared bindless scene texture declarations.
+#include "../Shared/bindless_scene.slang"
+
 struct Uniforms {
     float4x4 mvp;
     float4x4 modelView;
@@ -59,7 +62,6 @@ struct MeshOutput {
 static const uint kMaxVertices  = 64;
 static const uint kMaxTriangles = 124;
 static const uint INVALID_TEX   = 0xFFFFFFFF;
-static const uint kTextureArraySize = 96;
 
 [shader("mesh")]
 [numthreads(128, 1, 1)]
@@ -161,10 +163,6 @@ void meshMain(
 // Fragment-only buffer bindings
 StructuredBuffer<GPUMaterial> materials;  // fragment buffer (auto-assigned by Slang)
 
-// Texture array + sampler
-Texture2D sceneTextures[kTextureArraySize];
-SamplerState sceneSampler;
-
 [shader("fragment")]
 float4 fragmentMain(MeshOutput input) : SV_Target {
     GPUMaterial mat = materials[input.materialID];
@@ -172,7 +170,7 @@ float4 fragmentMain(MeshOutput input) : SV_Target {
     // Base color
     float4 baseColor = mat.baseColorFactor;
     if (mat.baseColorTexIndex != INVALID_TEX) {
-        baseColor *= sceneTextures[mat.baseColorTexIndex].Sample(sceneSampler, input.uv);
+        baseColor *= sampleBindlessSceneTexture(mat.baseColorTexIndex, input.uv);
     }
 
     // Alpha test

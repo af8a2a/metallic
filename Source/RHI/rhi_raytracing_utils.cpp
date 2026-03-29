@@ -265,6 +265,9 @@ bool createBufferHandle(const VulkanResourceContextInfo& context,
     vmaInfo.size = size;
     vmaInfo.usage = vulkanEnableBufferDeviceAddress(usage, context.bufferDeviceAddressEnabled);
     vmaInfo.hostVisible = hostVisible;
+    vmaInfo.externalMemoryHandleTypes =
+        vulkanHostVisibleExternalMemoryHandleTypes(vmaInfo.hostVisible,
+                                                   context.externalHostMemoryEnabled);
     vmaInfo.debugName = debugName;
 
     auto resource = vmaCreateBufferResource(vmaInfo);
@@ -299,6 +302,9 @@ bool createAccelerationStructureHandle(const VulkanResourceContextInfo& context,
     vmaInfo.size = size;
     vmaInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
     vmaInfo.usage = vulkanEnableBufferDeviceAddress(vmaInfo.usage, context.bufferDeviceAddressEnabled);
+    vmaInfo.externalMemoryHandleTypes =
+        vulkanHostVisibleExternalMemoryHandleTypes(vmaInfo.hostVisible,
+                                                   context.externalHostMemoryEnabled);
 
     auto bufferResource = vmaCreateBufferResource(vmaInfo);
     if (!bufferResource) {

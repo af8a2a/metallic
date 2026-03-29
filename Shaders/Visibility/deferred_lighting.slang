@@ -1,5 +1,6 @@
 // Shared visibility bit packing constants
 #include "../../Source/Rendering/visibility_constants.h"
+#include "../Shared/bindless_scene.slang"
 
 struct LightingUniforms {
     float4x4 mvp;
@@ -46,7 +47,6 @@ struct SceneInstanceTransform {
 
 static const uint INVALID_TEX = 0xFFFFFFFF;
 static const uint INVALID_VIS = 0xFFFFFFFF;
-static const uint kTextureArraySize = 96;
 static const float kPi = 3.14159265359;
 static const float kMinPerceptualRoughness = 0.045;
 static const float kMinNoV = 1e-4;
@@ -101,11 +101,9 @@ StructuredBuffer<SceneInstanceTransform> instanceTransforms; // buffer(9)
 Texture2D<uint>              visibilityBuffer;            // texture(0)
 Texture2D<float>             depthBuffer;                 // texture(1)
 RWTexture2D<float4>          outputTexture;               // texture(2)
-Texture2D                    sceneTextures[kTextureArraySize]; // texture(3..98)
-Texture2D<float>             shadowMap;                       // texture(99)
-Texture2D<float4>            skyTexture;                      // texture(100)
-RWTexture2D<float2>          motionVectors;                   // texture(101)
-SamplerState                 sceneSampler;                // sampler(0)
+Texture2D<float>             shadowMap;                  // texture(3)
+Texture2D<float4>            skyTexture;                 // texture(4)
+RWTexture2D<float2>          motionVectors;              // texture(5)
 
 float3 projectVertex(float4x4 mvp, float3 pos) {
     float4 clip = mul(mvp, float4(pos, 1.0));
@@ -272,13 +270,13 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     float4 baseColor = mat.baseColorFactor;
     if (mat.baseColorTexIndex != INVALID_TEX && mat.baseColorTexIndex < lightUniforms.textureCount) {
-        baseColor *= sceneTextures[mat.baseColorTexIndex].SampleGrad(sceneSampler, uv, duvdx, duvdy);
+        baseColor *= sampleBindlessSceneTextureGrad(mat.baseColorTexIndex, uv, duvdx, duvdy);
     }
 
     float metallic = clamp(mat.metallicFactor, 0.0, 1.0);
     float perceptualRoughness = clamp(mat.roughnessFactor, 0.0, 1.0);
     if (mat.metallicRoughnessTexIndex != INVALID_TEX && mat.metallicRoughnessTexIndex < lightUniforms.textureCount) {
-        float4 mrSample = sceneTextures[mat.metallicRoughnessTexIndex].SampleGrad(sceneSampler, uv, duvdx, duvdy);
+        float4 mrSample = sampleBindlessSceneTextureGrad(mat.metallicRoughnessTexIndex, uv, duvdx, duvdy);
         // glTF metallic-roughness texture packing: G=roughness, B=metallic.
         perceptualRoughness *= mrSample.g;
         metallic *= mrSample.b;

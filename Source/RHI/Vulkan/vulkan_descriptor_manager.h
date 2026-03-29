@@ -4,9 +4,17 @@
 
 #include <vulkan/vulkan.h>
 
+#include "../bindless_scene_constants.h"
+
 #include <array>
 #include <cstddef>
+#include <string>
 #include <vector>
+
+class RhiAccelerationStructure;
+class RhiBuffer;
+class RhiSampler;
+class RhiTexture;
 
 struct VmaAllocator_T;
 typedef VmaAllocator_T* VmaAllocator;
@@ -18,6 +26,21 @@ constexpr uint32_t kMaxBufferBindings = 32;
 constexpr uint32_t kMaxTextureBindings = 128;
 constexpr uint32_t kMaxSamplerBindings = 16;
 constexpr uint32_t kMaxAccelerationStructureBindings = 8;
+
+constexpr uint32_t kVulkanBindlessSetIndex = METALLIC_BINDLESS_SET;
+constexpr uint32_t kVulkanBindlessSampledImageBinding = METALLIC_BINDLESS_SAMPLED_IMAGE_BINDING;
+constexpr uint32_t kVulkanBindlessSamplerBinding = METALLIC_BINDLESS_SAMPLER_BINDING;
+constexpr uint32_t kVulkanBindlessStorageImageBinding = METALLIC_BINDLESS_STORAGE_IMAGE_BINDING;
+constexpr uint32_t kVulkanBindlessStorageBufferBinding = METALLIC_BINDLESS_STORAGE_BUFFER_BINDING;
+constexpr uint32_t kVulkanBindlessAccelerationStructureBinding =
+    METALLIC_BINDLESS_ACCELERATION_STRUCTURE_BINDING;
+
+constexpr uint32_t kVulkanBindlessMaxSampledImages = METALLIC_BINDLESS_MAX_SAMPLED_IMAGES;
+constexpr uint32_t kVulkanBindlessMaxSamplers = METALLIC_BINDLESS_MAX_SAMPLERS;
+constexpr uint32_t kVulkanBindlessMaxStorageImages = METALLIC_BINDLESS_MAX_STORAGE_IMAGES;
+constexpr uint32_t kVulkanBindlessMaxStorageBuffers = METALLIC_BINDLESS_MAX_STORAGE_BUFFERS;
+constexpr uint32_t kVulkanBindlessMaxAccelerationStructures =
+    METALLIC_BINDLESS_MAX_ACCELERATION_STRUCTURES;
 
 struct PendingBufferBinding {
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -51,6 +74,18 @@ public:
     void resetFrame();
 
     PendingBufferBinding createTransientUniformBuffer(const void* data, size_t size);
+    void updateBindlessSampledTextures(const RhiTexture* const* textures,
+                                       uint32_t startIndex,
+                                       uint32_t count);
+    bool updateBindlessSampledTexture(uint32_t index, const RhiTexture* texture);
+    bool updateBindlessSampler(uint32_t index, const RhiSampler* sampler);
+    bool updateBindlessStorageImage(uint32_t index, const RhiTexture* texture);
+    bool updateBindlessStorageBuffer(uint32_t index,
+                                     const RhiBuffer* buffer,
+                                     VkDeviceSize offset = 0,
+                                     VkDeviceSize range = VK_WHOLE_SIZE);
+    bool updateBindlessAccelerationStructure(uint32_t index,
+                                             const RhiAccelerationStructure* accelerationStructure);
 
     void flushAndBind(VkCommandBuffer cmd,
                       VkPipelineBindPoint bindPoint,
@@ -78,8 +113,17 @@ private:
 
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = nullptr;
+    VkDescriptorPool m_bindlessPool = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_bindlessSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet m_bindlessSet = VK_NULL_HANDLE;
     std::array<FrameState, 2> m_frames{};
     uint32_t m_frameIndex = 1;
 };
+
+bool vulkanRetainBindlessSetLayout(VkDevice device,
+                                   VkDescriptorSetLayout& outLayout,
+                                   std::string* errorMessage = nullptr);
+void vulkanReleaseBindlessSetLayout(VkDevice device);
+bool vulkanIsBindlessSetIndex(uint32_t setIndex);
 
 #endif // _WIN32

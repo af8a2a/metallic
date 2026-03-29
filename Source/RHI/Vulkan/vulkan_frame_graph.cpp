@@ -307,6 +307,7 @@ private:
 
     void flushDescriptors(VkPipelineBindPoint bindPoint) {
         if (m_descriptorManager && m_boundPipeline) {
+            transitionPendingTextures();
             m_descriptorManager->flushAndBind(m_commandBuffer,
                                               bindPoint,
                                               *m_boundPipeline,
@@ -698,6 +699,9 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
     vmaInfo.size = desc.size;
     vmaInfo.usage = usage;
     vmaInfo.hostVisible = desc.hostVisible;
+    vmaInfo.externalMemoryHandleTypes =
+        vulkanHostVisibleExternalMemoryHandleTypes(vmaInfo.hostVisible,
+                                                   resourceContext.externalHostMemoryEnabled);
     vmaInfo.debugName = desc.debugName;
 
     const char* errorMsg = nullptr;

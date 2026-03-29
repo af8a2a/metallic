@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "../rhi_backend.h"
+#include "../bindless_scene_constants.h"
 #include "vulkan_descriptor_manager.h"
 
 #include <array>
@@ -83,6 +84,8 @@ struct VulkanPipelineResource {
     VkPipelineLayout layout = VK_NULL_HANDLE;
     bool ownsLayout = false;
     std::vector<VkDescriptorSetLayout> setLayouts;
+    std::vector<uint8_t> setLayoutOwnership;
+    uint32_t bindlessSetIndex = UINT32_MAX;
     std::array<VulkanDescriptorBindingLocation, kMaxBufferBindings> bufferBindings{};
     std::array<VulkanDescriptorBindingLocation, kMaxTextureBindings> textureBindings{};
     std::array<VulkanDescriptorBindingLocation, kMaxSamplerBindings> samplerBindings{};
@@ -188,6 +191,14 @@ inline bool vulkanBufferUsesDeviceAddress(VkBufferUsageFlags usage) {
     return (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0;
 }
 
+inline VkExternalMemoryHandleTypeFlags vulkanHostVisibleExternalMemoryHandleTypes(
+    bool hostVisible,
+    bool externalHostMemoryEnabled) {
+    return (hostVisible && externalHostMemoryEnabled)
+        ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT
+        : 0;
+}
+
 inline VulkanSamplerResource* getVulkanSamplerResource(const RhiSampler* sampler) {
     return sampler ? static_cast<VulkanSamplerResource*>(sampler->nativeHandle()) : nullptr;
 }
@@ -284,6 +295,7 @@ struct VmaBufferCreateInfo {
     VkDeviceSize size = 0;
     VkBufferUsageFlags usage = 0;
     bool hostVisible = false;
+    VkExternalMemoryHandleTypeFlags externalMemoryHandleTypes = 0;
     const char* debugName = nullptr;
 };
 
@@ -293,6 +305,14 @@ inline std::optional<VulkanBufferResource> vmaCreateBufferResource(const VmaBuff
     bufferInfo.size = info.size;
     bufferInfo.usage = info.usage;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkExternalMemoryBufferCreateInfo externalMemoryInfo{
+        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+    if (info.externalMemoryHandleTypes != 0) {
+        externalMemoryInfo.handleTypes = info.externalMemoryHandleTypes;
+        externalMemoryInfo.pNext = bufferInfo.pNext;
+        bufferInfo.pNext = &externalMemoryInfo;
+    }
 
     VmaAllocationCreateInfo allocCreateInfo{};
     allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;

@@ -3,6 +3,7 @@
 // (populated by meshlet_cull.slang). No per-node CPU dispatch needed.
 
 #include "../../Source/Rendering/visibility_constants.h"
+#include "../Shared/bindless_scene.slang"
 
 struct GlobalUniforms {
     float4   lightDir;
@@ -70,7 +71,6 @@ struct VisPrimitive {
 static const uint kMaxVertices  = 64;
 static const uint kMaxTriangles = 124;
 static const uint INVALID_TEX   = 0xFFFFFFFF;
-static const uint kTextureArraySize = 96;
 static const uint kInstanceBits = VISIBILITY_INSTANCE_BITS;
 static const uint kInstanceMask = VISIBILITY_INSTANCE_MASK;
 static const uint kVisibilityTriangleBits = VISIBILITY_TRIANGLE_BITS;
@@ -147,9 +147,6 @@ void meshMain(
 }
 
 // Fragment-only buffer bindings
-Texture2D sceneTextures[kTextureArraySize];
-SamplerState sceneSampler;
-
 [shader("fragment")]
 uint fragmentMain(VisVertex vertIn, VisPrimitive primIn) : SV_Target {
     GPUMaterial mat = materials[primIn.materialID];
@@ -158,7 +155,7 @@ uint fragmentMain(VisVertex vertIn, VisPrimitive primIn) : SV_Target {
     if (mat.alphaMode == 1) {
         float4 baseColor = mat.baseColorFactor;
         if (mat.baseColorTexIndex != INVALID_TEX)
-            baseColor *= sceneTextures[mat.baseColorTexIndex].Sample(sceneSampler, vertIn.uv);
+            baseColor *= sampleBindlessSceneTexture(mat.baseColorTexIndex, vertIn.uv);
         if (baseColor.a < mat.alphaCutoff)
             discard;
     }

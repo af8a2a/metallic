@@ -139,4 +139,7 @@ struct PipelineRuntimeContext {
 
     // Resource creation for pass-owned persistent resources
     RhiFrameGraphBackend* resourceFactory = nullptr;
+
+    // Vulkan bindless/material indexing rollout toggle.
+    bool useBindlessSceneTextures = false;
 };

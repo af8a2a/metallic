@@ -11,6 +11,10 @@
 #define VK_API_VERSION_1_4 VK_MAKE_API_VERSION(0, 1, 4, 0)
 #endif
 
+#ifndef VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME
+#define VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME "VK_EXT_external_memory_host"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -149,12 +153,22 @@ VkDescriptorType toVkDescriptorType(SlangShaderBindingType type) {
 }
 
 void destroyPipelineLayouts(VulkanPipelineResource& resource) {
-    for (VkDescriptorSetLayout setLayout : resource.setLayouts) {
+    for (size_t setIndex = 0; setIndex < resource.setLayouts.size(); ++setIndex) {
+        VkDescriptorSetLayout setLayout = resource.setLayouts[setIndex];
         if (setLayout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(resource.device, setLayout, nullptr);
+            const bool ownsSetLayout =
+                setIndex >= resource.setLayoutOwnership.size() || resource.setLayoutOwnership[setIndex] != 0;
+            if (ownsSetLayout) {
+                vkDestroyDescriptorSetLayout(resource.device, setLayout, nullptr);
+            } else if (resource.device != VK_NULL_HANDLE &&
+                       resource.bindlessSetIndex == static_cast<uint32_t>(setIndex)) {
+                vulkanReleaseBindlessSetLayout(resource.device);
+            }
         }
     }
     resource.setLayouts.clear();
+    resource.setLayoutOwnership.clear();
+    resource.bindlessSetIndex = UINT32_MAX;
 
     if (resource.ownsLayout && resource.layout != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(resource.device, resource.layout, nullptr);
@@ -171,6 +185,47 @@ bool assignBindingLocation(VulkanDescriptorBindingLocation& location,
     location.binding = binding;
     location.arrayElement = arrayElement;
     location.descriptorType = descriptorType;
+    return true;
+}
+
+uint32_t bindlessDescriptorLimit(uint32_t bindingIndex, VkDescriptorType descriptorType) {
+    switch (bindingIndex) {
+    case kVulkanBindlessSampledImageBinding:
+        return descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ? kVulkanBindlessMaxSampledImages : 0;
+    case kVulkanBindlessSamplerBinding:
+        return descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ? kVulkanBindlessMaxSamplers : 0;
+    case kVulkanBindlessStorageImageBinding:
+        return descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ? kVulkanBindlessMaxStorageImages : 0;
+    case kVulkanBindlessStorageBufferBinding:
+        return descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ? kVulkanBindlessMaxStorageBuffers : 0;
+    case kVulkanBindlessAccelerationStructureBinding:
+        return descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+            ? kVulkanBindlessMaxAccelerationStructures
+            : 0;
+    default:
+        return 0;
+    }
+}
+
+bool validateBindlessBinding(const SlangShaderBindingDesc& binding,
+                             VkDescriptorType descriptorType,
+                             std::string& errorMessage) {
+    const uint32_t maxDescriptorCount = bindlessDescriptorLimit(binding.bindingIndex, descriptorType);
+    if (maxDescriptorCount == 0) {
+        errorMessage =
+            "Shader declares an unsupported bindless resource binding at set " +
+            std::to_string(binding.bindingSpace) + ", binding " + std::to_string(binding.bindingIndex);
+        return false;
+    }
+
+    if (binding.descriptorCount == 0 || binding.descriptorCount > maxDescriptorCount) {
+        errorMessage =
+            "Shader bindless resource at set " + std::to_string(binding.bindingSpace) +
+            ", binding " + std::to_string(binding.bindingIndex) +
+            " exceeds Metallic's shared bindless table capacity";
+        return false;
+    }
+
     return true;
 }
 
@@ -198,6 +253,7 @@ bool buildPipelineResourceLayout(VkDevice device,
     uint32_t logicalTextureIndex = 0;
     uint32_t logicalSamplerIndex = 0;
     uint32_t logicalAccelerationStructureIndex = 0;
+    bool bindlessSetPresent = false;
 
     for (const auto& binding : shaderLayout.bindings) {
         const VkDescriptorType descriptorType = toVkDescriptorType(binding.type);
@@ -205,6 +261,15 @@ bool buildPipelineResourceLayout(VkDevice device,
             errorMessage = "Unsupported Slang resource type in Vulkan binding layout";
             destroyPipelineLayouts(outResource);
             return false;
+        }
+
+        if (vulkanIsBindlessSetIndex(binding.bindingSpace)) {
+            if (!validateBindlessBinding(binding, descriptorType, errorMessage)) {
+                destroyPipelineLayouts(outResource);
+                return false;
+            }
+            bindlessSetPresent = true;
+            continue;
         }
 
         if (binding.bindingSpace >= perSetBindings.size()) {
@@ -271,7 +336,24 @@ bool buildPipelineResourceLayout(VkDevice device,
     }
 
     outResource.setLayouts.resize(perSetBindings.size(), VK_NULL_HANDLE);
+    outResource.setLayoutOwnership.assign(perSetBindings.size(), 1);
     for (size_t setIndex = 0; setIndex < perSetBindings.size(); ++setIndex) {
+        if (bindlessSetPresent && vulkanIsBindlessSetIndex(static_cast<uint32_t>(setIndex))) {
+            VkDescriptorSetLayout bindlessSetLayout = VK_NULL_HANDLE;
+            if (!vulkanRetainBindlessSetLayout(device, bindlessSetLayout, &errorMessage)) {
+                if (errorMessage.empty()) {
+                    errorMessage = "Failed to acquire shared bindless descriptor set layout";
+                }
+                destroyPipelineLayouts(outResource);
+                return false;
+            }
+
+            outResource.setLayouts[setIndex] = bindlessSetLayout;
+            outResource.setLayoutOwnership[setIndex] = 0;
+            outResource.bindlessSetIndex = static_cast<uint32_t>(setIndex);
+            continue;
+        }
+
         auto& bindings = perSetBindings[setIndex];
         if (!bindings.empty()) {
             std::vector<size_t> order(bindings.size());
@@ -631,6 +713,7 @@ public:
                                  m_graphicsQueue,
                                  m_queueFamilies.graphics.value_or(0),
                                  m_features.bufferDeviceAddress,
+                                 m_externalHostMemoryEnabled,
                                  m_features.rayTracing,
                                  createInfo.vkGetDeviceProcAddrProxy);
         vulkanLoadMeshShaderFunctions(m_device);
@@ -800,6 +883,9 @@ public:
         vmaInfo.size = size;
         vmaInfo.usage = usage;
         vmaInfo.hostVisible = true;
+        vmaInfo.externalMemoryHandleTypes =
+            vulkanHostVisibleExternalMemoryHandleTypes(vmaInfo.hostVisible,
+                                                       m_externalHostMemoryEnabled);
         vmaInfo.debugName = debugName;
 
         const char* errorMsg = nullptr;
@@ -1185,6 +1271,9 @@ public:
         vmaInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         vmaInfo.usage = vulkanEnableBufferDeviceAddress(vmaInfo.usage, m_features.bufferDeviceAddress);
         vmaInfo.hostVisible = desc.hostVisible;
+        vmaInfo.externalMemoryHandleTypes =
+            vulkanHostVisibleExternalMemoryHandleTypes(vmaInfo.hostVisible,
+                                                       m_externalHostMemoryEnabled);
 
         auto resource = vmaCreateBufferResource(vmaInfo);
         if (!resource) {
@@ -1581,6 +1670,8 @@ public:
         const bool rayQueryAvailable = hasExtension(extensions, VK_KHR_RAY_QUERY_EXTENSION_NAME);
         const bool deferredHostOperationsAvailable =
             hasExtension(extensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        const bool externalMemoryHostAvailable =
+            hasExtension(extensions, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         if (!dynamicRenderingAvailable || !sync2Available) {
             return false;
         }
@@ -1628,6 +1719,7 @@ public:
             deferredHostOperationsAvailable &&
             accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
             rayQueryFeatures.rayQuery == VK_TRUE;
+        m_externalHostMemoryEnabled = externalMemoryHostAvailable;
         return true;
     }
 
@@ -1661,6 +1753,9 @@ public:
             deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
             deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
             deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        }
+        if (m_externalHostMemoryEnabled) {
+            deviceExtensions.push_back(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         }
         for (auto ext : createInfo.extraDeviceExtensions) {
             deviceExtensions.push_back(ext);
@@ -2013,6 +2108,7 @@ public:
     bool m_insideRendering = false;
 
     RhiFeatures m_features{};
+    bool m_externalHostMemoryEnabled = false;
     RhiDeviceInfo m_deviceInfo{};
     RhiNativeHandles m_nativeHandles{};
     CommandContext m_commandContext;

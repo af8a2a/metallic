@@ -102,10 +102,13 @@ public:
             sLoggedPath = true;
         }
 
+        const bool useBindlessSceneTextures = m_runtimeContext->useBindlessSceneTextures;
         std::vector<const RhiTexture*> materialTextures;
-        materialTextures.reserve(m_ctx.materials.textureViews.size());
-        for (auto* texture : m_ctx.materials.textureViews) {
-            materialTextures.push_back(texture);
+        if (!useBindlessSceneTextures) {
+            materialTextures.reserve(m_ctx.materials.textureViews.size());
+            for (auto* texture : m_ctx.materials.textureViews) {
+                materialTextures.push_back(texture);
+            }
         }
 
         if (useGPUPath) {
@@ -136,12 +139,12 @@ public:
             encoder.setFragmentBuffer(m_frameContext->gpuVisibleMeshletBufferRhi, 0, 10);
             encoder.setFragmentBuffer(m_frameContext->gpuInstanceDataBufferRhi, 0, 11);
 
-            if (!materialTextures.empty()) {
+            if (!useBindlessSceneTextures && !materialTextures.empty()) {
                 encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
                 encoder.setMeshTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
+                encoder.setFragmentSampler(&m_ctx.materials.sampler, 0);
+                encoder.setMeshSampler(&m_ctx.materials.sampler, 0);
             }
-            encoder.setFragmentSampler(&m_ctx.materials.sampler, 0);
-            encoder.setMeshSampler(&m_ctx.materials.sampler, 0);
 
             // GlobalUniforms at buffer(0) via setMeshBytes
             struct { float4 lightDir; float4 lightColorIntensity; } globalUni;
@@ -186,12 +189,12 @@ public:
         encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
         encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
         encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, 9);
-        if (!materialTextures.empty()) {
+        if (!useBindlessSceneTextures && !materialTextures.empty()) {
             encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
             encoder.setMeshTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
+            encoder.setFragmentSampler(&m_ctx.materials.sampler, 0);
+            encoder.setMeshSampler(&m_ctx.materials.sampler, 0);
         }
-        encoder.setFragmentSampler(&m_ctx.materials.sampler, 0);
-        encoder.setMeshSampler(&m_ctx.materials.sampler, 0);
 
         // Per-node dispatch (CPU fallback)
         const auto& visibleNodes = m_frameContext->visibleMeshletNodes;

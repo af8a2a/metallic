@@ -59,10 +59,13 @@ public:
 
         if (!m_frameContext || !m_runtimeContext) return;
 
+        const bool useBindlessSceneTextures = m_runtimeContext->useBindlessSceneTextures;
         std::vector<const RhiTexture*> materialTextures;
-        materialTextures.reserve(m_ctx.materials.textureViews.size());
-        for (auto* texture : m_ctx.materials.textureViews) {
-            materialTextures.push_back(texture);
+        if (!useBindlessSceneTextures) {
+            materialTextures.reserve(m_ctx.materials.textureViews.size());
+            for (auto* texture : m_ctx.materials.textureViews) {
+                materialTextures.push_back(texture);
+            }
         }
 
         // Build base uniforms from FrameContext raw data
@@ -99,12 +102,12 @@ public:
             encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
             encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, 9);
             // PLACEHOLDER_FORWARD_PASS_REST
-            if (!materialTextures.empty()) {
+            if (!useBindlessSceneTextures && !materialTextures.empty()) {
                 encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
                 encoder.setMeshTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
+                encoder.setFragmentSampler(&m_ctx.materials.sampler, 0);
+                encoder.setMeshSampler(&m_ctx.materials.sampler, 0);
             }
-            encoder.setFragmentSampler(&m_ctx.materials.sampler, 0);
-            encoder.setMeshSampler(&m_ctx.materials.sampler, 0);
 
             for (uint32_t nodeID : m_frameContext->visibleMeshletNodes) {
                 const auto& node = m_ctx.sceneGraph.nodes[nodeID];

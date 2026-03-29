@@ -66,6 +66,7 @@ struct VulkanResourceContextInfo {
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     uint32_t graphicsQueueFamily = 0;
     bool bufferDeviceAddressEnabled = false;
+    bool externalHostMemoryEnabled = false;
     bool rayTracingEnabled = false;
     bool initialized = false;
     bool streamlineHooksEnabled = false;
@@ -80,6 +81,7 @@ void vulkanSetResourceContext(VkDevice device,
                               VkQueue queue,
                               uint32_t queueFamily,
                               bool bufferDeviceAddressEnabled,
+                              bool externalHostMemoryEnabled,
                               bool rayTracingEnabled,
                               void* vkGetDeviceProcAddrProxy = nullptr);
 const VulkanResourceContextInfo& vulkanGetResourceContext();

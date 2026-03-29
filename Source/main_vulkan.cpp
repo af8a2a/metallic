@@ -30,6 +30,7 @@
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "rhi_backend.h"
+#include "bindless_scene_constants.h"
 #include "raytraced_shadows.h"
 #include "rhi_resource_utils.h"
 #include "rhi_shader_utils.h"
@@ -1456,6 +1457,16 @@ int main() {
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
     VulkanDescriptorManager descriptorManager;
     descriptorManager.init(vkDevice, vmaAllocator);
+    if (previewSceneReady) {
+        if (!previewMaterials.textureViews.empty()) {
+            descriptorManager.updateBindlessSampledTextures(previewMaterials.textureViews.data(),
+                                                            0,
+                                                            static_cast<uint32_t>(previewMaterials.textureViews.size()));
+        }
+        descriptorManager.updateBindlessSampler(METALLIC_BINDLESS_SCENE_SAMPLER_INDEX,
+                                                &previewMaterials.sampler);
+        runtimeContext.useBindlessSceneTextures = true;
+    }
     VulkanImageLayoutTracker imageTracker;
     streamlineCtx.setImageLayoutTracker(&imageTracker);
     VulkanImportedTexture backbufferTexture;

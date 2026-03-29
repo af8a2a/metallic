@@ -1,46 +1,38 @@
 {
   "editorPositions": {
-    "AutoExposurePass_11": [
-      1318.0,
-      -14.0
+    "AutoExposurePass_2": [
+      1300.0,
+      50.0
     ],
-    "DeferredLightingPass_5": [
+    "DeferredLightingPass_7": [
       1050.0,
       50.0
     ],
-    "HZBBuildPass_3": [
-      800.0,
-      50.0
-    ],
-    "HZBBuildPass_7": [
+    "HZBBuildPass_8": [
       800.0,
       330.0
     ],
-    "ImGuiOverlayPass_9": [
+    "ImGuiOverlayPass_3": [
       800.0,
-      470.0
-    ],
-    "MeshletCullPass_0": [
-      300.0,
       50.0
     ],
-    "OutputPass_10": [
-      1800.0,
-      50.0
-    ],
-    "ShadowRayPass_6": [
-      800.0,
-      190.0
-    ],
-    "SkyPass_8": [
+    "MeshletCullPass_5": [
       300.0,
       190.0
     ],
-    "TonemapPass_10": [
+    "ShadowRayPass_7": [
+      800.0,
+      190.0
+    ],
+    "SkyPass_1": [
+      300.0,
+      50.0
+    ],
+    "TonemapPass_3": [
       1550.0,
       50.0
     ],
-    "VisibilityPass_1": [
+    "VisibilityPass_6": [
       550.0,
       50.0
     ]
@@ -51,7 +43,58 @@
       "config": null,
       "enabled": true,
       "inputs": [],
-      "name": "MeshletCullPass_0",
+      "name": "SkyPass_1",
+      "outputs": [
+        "skyOutput"
+      ],
+      "sideEffect": false,
+      "type": "SkyPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "lightingOutput"
+      ],
+      "name": "AutoExposurePass_2",
+      "outputs": [
+        "exposureLut"
+      ],
+      "sideEffect": false,
+      "type": "AutoExposurePass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "skyOutput",
+        "exposureLut"
+      ],
+      "name": "TonemapPass_3",
+      "outputs": [
+        "$backbuffer"
+      ],
+      "sideEffect": false,
+      "type": "TonemapPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [
+        "depth"
+      ],
+      "name": "ImGuiOverlayPass_3",
+      "outputs": [
+        "$backbuffer"
+      ],
+      "sideEffect": false,
+      "type": "ImGuiOverlayPass"
+    },
+    {
+      "config": null,
+      "enabled": true,
+      "inputs": [],
+      "name": "MeshletCullPass_5",
       "outputs": [
         "cullResult"
       ],
@@ -64,7 +107,7 @@
       "inputs": [
         "cullResult"
       ],
-      "name": "VisibilityPass_1",
+      "name": "VisibilityPass_6",
       "outputs": [
         "visibility",
         "depth"
@@ -76,23 +119,12 @@
       "config": null,
       "enabled": true,
       "inputs": [
-        "depth"
-      ],
-      "name": "HZBBuildPass_3",
-      "outputs": [],
-      "sideEffect": false,
-      "type": "HZBBuildPass"
-    },
-    {
-      "config": null,
-      "enabled": true,
-      "inputs": [
         "visibility",
         "depth",
         "shadowMap",
         "skyOutput"
       ],
-      "name": "DeferredLightingPass_5",
+      "name": "DeferredLightingPass_7",
       "outputs": [
         "lightingOutput",
         "motionVectors"
@@ -106,7 +138,7 @@
       "inputs": [
         "depth"
       ],
-      "name": "ShadowRayPass_6",
+      "name": "ShadowRayPass_7",
       "outputs": [
         "shadowMap"
       ],
@@ -119,74 +151,10 @@
       "inputs": [
         "depth"
       ],
-      "name": "HZBBuildPass_7",
+      "name": "HZBBuildPass_8",
       "outputs": [],
       "sideEffect": false,
       "type": "HZBBuildPass"
-    },
-    {
-      "config": null,
-      "enabled": true,
-      "inputs": [],
-      "name": "SkyPass_8",
-      "outputs": [
-        "skyOutput"
-      ],
-      "sideEffect": false,
-      "type": "SkyPass"
-    },
-    {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "lightingOutput",
-        "exposureLut"
-      ],
-      "name": "TonemapPass_10",
-      "outputs": [
-        "tonemapOutput"
-      ],
-      "sideEffect": false,
-      "type": "TonemapPass"
-    },
-    {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "depth"
-      ],
-      "name": "ImGuiOverlayPass_9",
-      "outputs": [
-        "$backbuffer"
-      ],
-      "sideEffect": false,
-      "type": "ImGuiOverlayPass"
-    },
-    {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "tonemapOutput"
-      ],
-      "name": "OutputPass_10",
-      "outputs": [
-        "$backbuffer"
-      ],
-      "sideEffect": false,
-      "type": "OutputPass"
-    },
-    {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "lightingOutput"
-      ],
-      "name": "AutoExposurePass_11",
-      "outputs": [
-        "exposureLut"
-      ],
-      "sideEffect": false,
-      "type": "AutoExposurePass"
     }
   ],
   "resources": []
