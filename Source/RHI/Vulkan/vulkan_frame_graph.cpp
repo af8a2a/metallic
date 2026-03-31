@@ -110,9 +110,9 @@ class VulkanRenderCommandEncoder final : public RhiRenderCommandEncoder {
 public:
     VulkanRenderCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
                                VulkanDescriptorManager* descriptorManager,
-                               VulkanImageLayoutTracker* imageTracker)
+                               VulkanResourceStateTracker* stateTracker)
         : m_commandBuffer(commandBuffer), m_device(device),
-          m_descriptorManager(descriptorManager), m_imageTracker(imageTracker) {
+          m_descriptorManager(descriptorManager), m_stateTracker(stateTracker) {
         m_pendingBuffers.fill({});
         m_pendingTextures.fill({});
         m_pendingSamplers.fill({});
@@ -290,7 +290,7 @@ public:
 
 private:
     void transitionPendingTextures() {
-        if (!m_imageTracker) {
+        if (!m_stateTracker) {
             return;
         }
 
@@ -307,14 +307,18 @@ private:
                 continue;
             }
 
-            m_imageTracker->transition(m_commandBuffer, texture.resource->image, texture.layout,
-                                       imageAspectMask(texture.resource));
+            m_stateTracker->requireImageState(texture.resource->image, texture.layout,
+                                              imageAspectMask(texture.resource));
         }
     }
 
     void flushDescriptors(VkPipelineBindPoint bindPoint) {
         if (m_descriptorManager && m_boundPipeline) {
             transitionPendingTextures();
+            // Batch-flush all accumulated barriers before binding descriptors and drawing
+            if (m_stateTracker) {
+                m_stateTracker->flushBarriers(m_commandBuffer);
+            }
             m_descriptorManager->flushAndBind(m_commandBuffer,
                                               bindPoint,
                                               *m_boundPipeline,
@@ -328,7 +332,7 @@ private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VulkanDescriptorManager* m_descriptorManager = nullptr;
-    VulkanImageLayoutTracker* m_imageTracker = nullptr;
+    VulkanResourceStateTracker* m_stateTracker = nullptr;
     const VulkanPipelineResource* m_boundPipeline = nullptr;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
@@ -342,9 +346,9 @@ class VulkanComputeCommandEncoder final : public RhiComputeCommandEncoder {
 public:
     VulkanComputeCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
                                 VulkanDescriptorManager* descriptorManager,
-                                VulkanImageLayoutTracker* imageTracker)
+                                VulkanResourceStateTracker* stateTracker)
         : m_commandBuffer(commandBuffer), m_device(device),
-          m_descriptorManager(descriptorManager), m_imageTracker(imageTracker) {
+          m_descriptorManager(descriptorManager), m_stateTracker(stateTracker) {
         m_pendingBuffers.fill({});
         m_pendingTextures.fill({});
         m_pendingSamplers.fill({});
@@ -441,34 +445,31 @@ public:
             return;
         }
 
-        VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                                VK_ACCESS_2_SHADER_READ_BIT;
-
-        VkDependencyInfo dependencyInfo{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        dependencyInfo.memoryBarrierCount = 1;
-        dependencyInfo.pMemoryBarriers = &barrier;
-        vkCmdPipelineBarrier2(m_commandBuffer, &dependencyInfo);
+        // AS build → compute read barrier (always emitted regardless of state tracking)
+        if (m_stateTracker) {
+            m_stateTracker->globalMemoryBarrier(
+                VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT);
+            m_stateTracker->flushBarriers(m_commandBuffer);
+        }
     }
 
     void memoryBarrier(RhiBarrierScope /*scope*/) override {
-        VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                               VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
-                               VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
-        barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT |
-                                VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-                                VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-
-        VkDependencyInfo depInfo{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        depInfo.memoryBarrierCount = 1;
-        depInfo.pMemoryBarriers = &barrier;
-        vkCmdPipelineBarrier2(m_commandBuffer, &depInfo);
+        // Emit a batched global memory barrier for compute→graphics/compute handoff.
+        if (m_stateTracker) {
+            m_stateTracker->globalMemoryBarrier(
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                    VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
+                    VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT |
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                    VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+            m_stateTracker->flushBarriers(m_commandBuffer);
+        }
     }
 
     void dispatchThreadgroups(RhiSize3D threadgroupsPerGrid, RhiSize3D /*threadsPerThreadgroup*/) override {
@@ -481,7 +482,7 @@ public:
 
 private:
     void transitionPendingTextures() {
-        if (!m_imageTracker) {
+        if (!m_stateTracker) {
             return;
         }
 
@@ -498,14 +499,18 @@ private:
                 continue;
             }
 
-            m_imageTracker->transition(m_commandBuffer, texture.resource->image, texture.layout,
-                                       imageAspectMask(texture.resource));
+            m_stateTracker->requireImageState(texture.resource->image, texture.layout,
+                                              imageAspectMask(texture.resource));
         }
     }
 
     void flushDescriptors() {
         if (m_descriptorManager && m_boundPipeline) {
             transitionPendingTextures();
+            // Batch-flush all accumulated barriers before dispatch
+            if (m_stateTracker) {
+                m_stateTracker->flushBarriers(m_commandBuffer);
+            }
             m_descriptorManager->flushAndBind(m_commandBuffer,
                                               VK_PIPELINE_BIND_POINT_COMPUTE,
                                               *m_boundPipeline,
@@ -535,7 +540,7 @@ private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VulkanDescriptorManager* m_descriptorManager = nullptr;
-    VulkanImageLayoutTracker* m_imageTracker = nullptr;
+    VulkanResourceStateTracker* m_stateTracker = nullptr;
     const VulkanPipelineResource* m_boundPipeline = nullptr;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
@@ -547,8 +552,9 @@ private:
 // Blit command encoder
 class VulkanBlitCommandEncoder final : public RhiBlitCommandEncoder {
 public:
-    VulkanBlitCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device)
-        : m_commandBuffer(commandBuffer), m_device(device) {}
+    VulkanBlitCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
+                             VulkanResourceStateTracker* stateTracker = nullptr)
+        : m_commandBuffer(commandBuffer), m_device(device), m_stateTracker(stateTracker) {}
 
     ~VulkanBlitCommandEncoder() override = default;
 
@@ -563,6 +569,15 @@ public:
                      uint32_t /*destinationSlice*/,
                      uint32_t destinationLevel,
                      RhiOrigin3D destinationOrigin) override {
+        // Ensure source and destination are in correct transfer layouts
+        if (m_stateTracker) {
+            m_stateTracker->requireImageState(getVulkanImage(&source),
+                                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            m_stateTracker->requireImageState(getVulkanImage(&destination),
+                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            m_stateTracker->flushBarriers(m_commandBuffer);
+        }
+
         VkImageCopy region{};
         region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         region.srcSubresource.mipLevel = sourceLevel;
@@ -591,6 +606,7 @@ public:
 private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
+    VulkanResourceStateTracker* m_stateTracker = nullptr;
 };
 
 bool isDepthFormat(RhiFormat format) {
@@ -735,12 +751,12 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
 
 VulkanCommandBuffer::VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
                                          VulkanDescriptorManager* descriptorManager,
-                                         VulkanImageLayoutTracker* imageTracker)
+                                         VulkanResourceStateTracker* stateTracker)
     : m_commandBuffer(commandBuffer), m_device(device),
-      m_descriptorManager(descriptorManager), m_imageTracker(imageTracker) {}
+      m_descriptorManager(descriptorManager), m_stateTracker(stateTracker) {}
 
 void VulkanCommandBuffer::transitionTexture(const RhiTexture* texture, VkImageLayout layout) {
-    if (!texture || !m_imageTracker) {
+    if (!texture || !m_stateTracker) {
         return;
     }
 
@@ -749,30 +765,41 @@ void VulkanCommandBuffer::transitionTexture(const RhiTexture* texture, VkImageLa
         return;
     }
 
-    m_imageTracker->transition(m_commandBuffer,
-                               resource->image,
-                               layout,
-                               imageAspectMask(resource));
+    m_stateTracker->requireImageState(resource->image, layout, imageAspectMask(resource));
+    m_stateTracker->flushBarriers(m_commandBuffer);
 }
 
 void VulkanCommandBuffer::prepareTextureForSampling(const RhiTexture* texture) {
-    transitionTexture(texture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (!texture || !m_stateTracker) return;
+    auto* resource = getVulkanTextureResource(texture);
+    if (!resource || resource->image == VK_NULL_HANDLE) return;
+    // Accumulate without flushing — FrameGraph calls flushBarriers() after all reads
+    m_stateTracker->requireImageState(resource->image,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                      imageAspectMask(resource));
+}
+
+void VulkanCommandBuffer::flushBarriers() {
+    if (m_stateTracker) {
+        m_stateTracker->flushBarriers(m_commandBuffer);
+    }
 }
 
 std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(const RhiRenderPassDesc& desc) {
-    // Transition color attachments to COLOR_ATTACHMENT_OPTIMAL
-    if (m_imageTracker) {
+    // Accumulate layout transitions for all attachments, then batch-flush
+    if (m_stateTracker) {
         for (uint32_t i = 0; i < desc.colorAttachmentCount; ++i) {
             if (desc.colorAttachments[i].texture) {
                 VkImage image = getVulkanImage(desc.colorAttachments[i].texture);
-                m_imageTracker->transition(m_commandBuffer, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+                m_stateTracker->requireImageState(image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
             }
         }
         if (desc.depthAttachment.bound && desc.depthAttachment.texture) {
             VkImage image = getVulkanImage(desc.depthAttachment.texture);
-            m_imageTracker->transition(m_commandBuffer, image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                                       VK_IMAGE_ASPECT_DEPTH_BIT);
+            m_stateTracker->requireImageState(image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                              VK_IMAGE_ASPECT_DEPTH_BIT);
         }
+        m_stateTracker->flushBarriers(m_commandBuffer);
     }
 
     std::array<VkRenderingAttachmentInfo, 8> colorAttachments{};
@@ -844,16 +871,16 @@ std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(co
     vkCmdSetFrontFace(m_commandBuffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
 
     return std::make_unique<VulkanRenderCommandEncoder>(m_commandBuffer, m_device,
-                                                        m_descriptorManager, m_imageTracker);
+                                                        m_descriptorManager, m_stateTracker);
 }
 
 std::unique_ptr<RhiComputeCommandEncoder> VulkanCommandBuffer::beginComputePass(const RhiComputePassDesc& /*desc*/) {
     return std::make_unique<VulkanComputeCommandEncoder>(m_commandBuffer, m_device,
-                                                         m_descriptorManager, m_imageTracker);
+                                                         m_descriptorManager, m_stateTracker);
 }
 
 std::unique_ptr<RhiBlitCommandEncoder> VulkanCommandBuffer::beginBlitPass(const RhiBlitPassDesc& /*desc*/) {
-    return std::make_unique<VulkanBlitCommandEncoder>(m_commandBuffer, m_device);
+    return std::make_unique<VulkanBlitCommandEncoder>(m_commandBuffer, m_device, m_stateTracker);
 }
 
 #endif // _WIN32

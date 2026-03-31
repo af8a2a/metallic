@@ -144,7 +144,7 @@ public:
     bool isEnabled() const override { return m_currentPreset != DlssPreset::Off; }
     bool isInitialized() const { return m_initialized; }
     void* vulkanDeviceProcAddrProxy() const { return m_vkGetDeviceProcAddrProxy; }
-    void setImageLayoutTracker(class VulkanImageLayoutTracker* tracker) { m_imageLayoutTracker = tracker; }
+    void setImageLayoutTracker(class VulkanResourceStateTracker* tracker) { m_imageLayoutTracker = tracker; }
 
     // Get optimal render resolution for a given display size and preset
     bool getOptimalRenderSize(DlssPreset preset,
@@ -181,7 +181,7 @@ private:
     uint32_t m_currentOutputHeight = 0;
     bool m_needsReset = false;
     void* m_vkGetDeviceProcAddrProxy = nullptr;
-    class VulkanImageLayoutTracker* m_imageLayoutTracker = nullptr;
+    class VulkanResourceStateTracker* m_imageLayoutTracker = nullptr;
 };
 
 #endif // _WIN32

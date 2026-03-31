@@ -2,7 +2,7 @@
 
 #include "streamline_context.h"
 #include "vulkan_resource_handles.h"
-#include "vulkan_image_tracker.h"
+#include "vulkan_resource_state_tracker.h"
 #include <spdlog/spdlog.h>
 #include <windows.h>
 
@@ -128,7 +128,7 @@ static VkImageLayout inferLayout(const RhiTexture* texture, VkImageLayout fallba
     return fallback;
 }
 
-static VkImageLayout getTrackedLayout(const VulkanImageLayoutTracker* tracker,
+static VkImageLayout getTrackedLayout(const VulkanResourceStateTracker* tracker,
                                       const RhiTexture* texture,
                                       VkImageLayout fallback) {
     if (tracker) {

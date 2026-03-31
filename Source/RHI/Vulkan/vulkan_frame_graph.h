@@ -4,7 +4,7 @@
 
 #include "../rhi_backend.h"
 #include "vulkan_descriptor_manager.h"
-#include "vulkan_image_tracker.h"
+#include "vulkan_resource_state_tracker.h"
 #include "vulkan_resource_handles.h"
 
 #include <vulkan/vulkan.h>
@@ -68,19 +68,20 @@ class VulkanCommandBuffer final : public RhiCommandBuffer {
 public:
     VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
                         VulkanDescriptorManager* descriptorManager,
-                        VulkanImageLayoutTracker* imageTracker);
+                        VulkanResourceStateTracker* stateTracker);
 
     std::unique_ptr<RhiRenderCommandEncoder> beginRenderPass(const RhiRenderPassDesc& desc) override;
     std::unique_ptr<RhiComputeCommandEncoder> beginComputePass(const RhiComputePassDesc& desc) override;
     std::unique_ptr<RhiBlitCommandEncoder> beginBlitPass(const RhiBlitPassDesc& desc) override;
     void prepareTextureForSampling(const RhiTexture* texture) override;
+    void flushBarriers() override;
     void transitionTexture(const RhiTexture* texture, VkImageLayout layout);
 
 private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VulkanDescriptorManager* m_descriptorManager = nullptr;
-    VulkanImageLayoutTracker* m_imageTracker = nullptr;
+    VulkanResourceStateTracker* m_stateTracker = nullptr;
 };
 
 // Load mesh shader extension functions (call once after device creation)

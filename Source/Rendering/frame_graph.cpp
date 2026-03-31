@@ -505,6 +505,9 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
                         commandBuffer.prepareTextureForSampling(resolveTexture(read.id));
                     }
                 }
+                // Attachment transitions happen inside beginRenderPass; flush the
+                // sampler-read transitions here so they land in the same barrier batch.
+                commandBuffer.flushBarriers();
             }
 
             RhiRenderPassDesc renderPassDesc;
@@ -532,6 +535,14 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
             auto encoder = commandBuffer.beginRenderPass(renderPassDesc);
             pass.executeRender(*encoder);
         } else if (pass.type == FGPassType::Compute) {
+            // Transition declared read textures to SHADER_READ_ONLY_OPTIMAL before the pass
+            for (auto& read : pass.reads) {
+                if (m_resources[read.id].kind == FGResourceKind::Texture) {
+                    commandBuffer.prepareTextureForSampling(resolveTexture(read.id));
+                }
+            }
+            commandBuffer.flushBarriers();
+
             RhiComputePassDesc computePassDesc;
             computePassDesc.label = pass.name.c_str();
             auto encoder = commandBuffer.beginComputePass(computePassDesc);

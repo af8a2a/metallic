@@ -1681,7 +1681,7 @@ int main() {
                                                 &previewMaterials.sampler);
         runtimeContext.useBindlessSceneTextures = true;
     }
-    VulkanImageLayoutTracker imageTracker;
+    VulkanResourceStateTracker imageTracker;
     streamlineCtx.setImageLayoutTracker(&imageTracker);
     VulkanImportedTexture backbufferTexture;
 
@@ -2097,6 +2097,7 @@ int main() {
                               RhiTextureUsage::RenderTarget);
 
         descriptorManager.resetFrame();
+        const auto barrierStats = imageTracker.stats();  // capture before clear
         imageTracker.clear();
         if (backbufferImage != VK_NULL_HANDLE) {
             imageTracker.setLayout(backbufferImage, getVulkanCurrentBackbufferLayout(*rhi));
@@ -2126,6 +2127,15 @@ int main() {
         ImGui::Text("Upscaler: %s", visibilityUpscalerModeName(visibilityUpscalerMode));
         ImGui::TextUnformatted(autoExposureEnabled ? "Exposure: Auto" : "Exposure: Manual");
         ImGui::TextUnformatted(visibilityGpuCullingAvailable ? "Visibility Dispatch: GPU" : "Visibility Dispatch: CPU");
+
+        if (ImGui::CollapsingHeader("Barrier Stats (prev frame)")) {
+            ImGui::Text("Image barriers:   %u", barrierStats.imageBarriers);
+            ImGui::Text("Buffer barriers:  %u", barrierStats.bufferBarriers);
+            ImGui::Text("Memory barriers:  %u", barrierStats.memoryBarriers);
+            ImGui::Text("Redundant skips:  %u", barrierStats.redundantSkips);
+            ImGui::Text("Flush calls:      %u", barrierStats.flushCalls);
+            ImGui::Text("Empty flushes:    %u", barrierStats.emptyFlushCalls);
+        }
         if (useVisibilityRenderGraph) {
             ImGui::Text("Render Base: %d x %d", kRenderResolutionBaseWidth, kRenderResolutionBaseHeight);
             const bool allowManualRenderScale = visibilityUpscalerMode != VisibilityUpscalerMode::DLSS;

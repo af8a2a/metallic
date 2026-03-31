@@ -495,6 +495,10 @@ public:
     // Prepare a texture for sampling in the next pass.
     // Backend implementations handle any necessary state transitions (e.g. Vulkan layout transitions).
     virtual void prepareTextureForSampling(const RhiTexture* /*texture*/) {}
+
+    // Flush all accumulated pending barriers as a single batched pipeline barrier.
+    // No-op on backends that insert barriers eagerly (e.g. Metal).
+    virtual void flushBarriers() {}
 };
 
 class RhiFrameGraphBackend {
