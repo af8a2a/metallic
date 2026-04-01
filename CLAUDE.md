@@ -4,221 +4,79 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build Commands
 
-cmake and ninja are not on PATH. Use CLion-bundled tools:
-
+**Configure** (pass `-DSLANG_ROOT=<path>` if `External/slang` is missing; Windows needs Vulkan SDK):
 ```bash
-# Configure
-/Users/af8a2a/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/bin/cmake -B build -DCMAKE_BUILD_TYPE=Debug
-
-# Build
-/Users/af8a2a/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -C build
-
-# Run
-./build/Source/Metallic
+cmake -S . -B build
 ```
 
-The first configure will download Slang compiler (v2026.1.2) automatically to `External/slang/`.
+**Build renderer:**
+```bash
+# macOS (single-config)
+cmake --build build --target Metallic -j$(sysctl -n hw.ncpu)
+./build/Source/Metallic
+
+# Windows / MSVC (multi-config)
+cmake --build build --config Debug --target Metallic
+build/Source/Debug/Metallic.exe
+```
+
+**Build pipeline editor tool:**
+```bash
+cmake --build build --config Debug --target PipelineEditorTool
+```
+
+**Clean rebuild:**
+```bash
+cmake --build build --target Metallic --config Debug --clean-first
+```
+
+No automated test suite exists. Validate with: clean build → app launch → verify touched rendering path works. Runtime controls: `F5` shader reload, `F6` pipeline reload, `G` export framegraph DOT.
 
 ## Architecture
 
-Metal rendering project using C++20 on Apple Silicon (M4 Pro, AppleClang 17).
+### Platform Split
+- **macOS**: Metal renderer via `main.cpp`. Platform bridge code in `Source/Platform/*.mm` (Objective-C++).
+- **Windows**: Vulkan 1.4 renderer via `main_vulkan.cpp`. Backend in `Source/RHI/Vulkan/`.
+- Platform ifdefs: `#if APPLE` / `#ifdef _WIN32`. Resource utils and shader utils use `#ifdef __APPLE__` / `#ifdef _WIN32` dual paths.
 
-**Rendering pipeline:** GLFW window → Objective-C++ bridge attaches CAMetalLayer → metal-cpp for GPU commands → Slang shaders compiled to Metal source at runtime.
+### RHI Layer (`Source/RHI/`)
+Abstract device/pipeline/buffer/texture/sampler interfaces in `rhi_backend.h`. Backend implementations:
+- `RHI/Metal/metal_frame_graph.cpp` — Metal command encoding
+- `RHI/Vulkan/vulkan_backend.cpp` — Vulkan device, swapchain
+- `RHI/Vulkan/vulkan_frame_graph.cpp` — VMA-backed resources, command buffers, encoders
+- `RHI/Vulkan/vulkan_descriptor_manager.cpp` — Bindless descriptors (set 0=storage buffers, set 1=sampled images, set 2=samplers)
+- `RHI/Vulkan/vulkan_resource_state_tracker.h` — Hazard-aware barrier system
 
-### Key source files
-
-- `Source/main.cpp` — Entry point, Metal device/queue setup, Slang shader compilation, render loop
-- `Source/Platform/metal_impl.cpp` — Sole translation unit for metal-cpp `*_PRIVATE_IMPLEMENTATION` macros (NS, MTL, CA). **These must only be defined once across all TUs** to avoid duplicate symbols. Do not add these defines to any other .cpp file.
-- `Source/Platform/glfw_metal_bridge.mm/h` — Objective-C++ bridge: attaches CAMetalLayer to GLFW's NSWindow
-- `Source/Platform/imgui_metal_bridge.h/mm` — ImGui Metal/GLFW integration bridge
-- `Source/Platform/tracy_metal.h/mm` — Tracy Metal GPU profiling bridge (ObjC++ with ARC)
-- `Source/Asset/mesh_loader.h/cpp` — glTF mesh loading via cgltf (positions, normals, UVs, primitive groups)
-- `Source/Asset/meshlet_builder.h/cpp` — Meshlet building with per-meshlet material IDs (uses meshoptimizer)
-- `Source/Asset/material_loader.h/cpp` — PBR material + texture loading from glTF (stb_image)
-- `Source/Scene/scene_graph.h/cpp` — Node hierarchy, transforms, components
-- `Source/Scene/scene_graph_ui.h/cpp` — ImGui scene inspector
-- `Source/Rendering/camera.h` — Header-only orbit camera (simd/simd.h)
-- `Source/Rendering/input.h/cpp` — GLFW mouse/scroll input callbacks
-- `Source/Rendering/frame_graph.h/cpp` — FrameGraph system for declarative render pass management with Graphviz DOT export
-- `Source/Rendering/render_pass.h/cpp` — Base `RenderPass` class with `RenderContext`, Tracy profiling zones, and per-pass ImGui UI
-- `Source/Rendering/render_uniforms.h` — Shared uniform structs (Uniforms, ShadowUniforms, LightingUniforms, AtmosphereUniforms, TonemapUniforms)
-- `Source/Rendering/visibility_constants.h` — Shared visibility buffer bit-packing constants (CPU + Slang)
-- `Source/Rendering/raytraced_shadows.h/cpp` — BLAS/TLAS building, per-frame TLAS update, shadow ray compute pipeline creation
-- `Source/Rendering/Passes/` — Modular render pass implementations:
-  - `forward_pass.h` — Vertex/mesh shader forward rendering
-  - `visibility_pass.h` — Visibility buffer mesh shader pass (R32Uint output)
-  - `shadow_ray_pass.h` — Raytraced shadow compute pass
-  - `sky_pass.h` — Atmospheric scattering sky rendering
-  - `deferred_lighting_pass.h` — Compute deferred lighting from visibility buffer
-  - `tonemap_pass.h` — Tonemapping post-process (Filmic, Uncharted2, ACES, AgX, Khronos PBR, Clip)
-  - `output_pass.h` — Debug passthrough (saturate-clamp, no tonemapping) for bypassing tonemap
-  - `blit_pass.h` — Blit compute output to drawable
-  - `imgui_overlay_pass.h` — ImGui overlay rendering
-  - `streamline_dlss_pass.h/cpp` — NVIDIA DLSS Super Resolution pass (Vulkan/Windows only, replaces TAA)
-- `Source/Rendering/streamline_context.h/cpp` — Streamline SDK lifecycle, DLSS feature management, Vulkan handle passing
-- `Source/Rendering/pass_registrations.cpp` — Pass factory + metadata registration for pipeline builder
-- `Source/PipelineEditor/` — Standalone library for data-driven pipeline editing:
-  - `pass_registry.h/cpp` — Factory pattern with `REGISTER_PASS_INFO` macro for pass metadata
-  - `pipeline_asset.h/cpp` — JSON pipeline schema, load/save, DAG validation
-  - `pipeline_builder.h/cpp` — Constructs FrameGraph from PipelineAsset
-  - `pipeline_editor.h/cpp` — ImGui node graph editor (using imnodes)
-
-### Dependencies
-
-| Dependency | Location | Type |
-|---|---|---|
-| metal-cpp | `External/metal-cpp/` | Header-only, CMake INTERFACE lib |
-| GLFW | `External/glfw/` | Git submodule |
-| Slang | `External/slang/` | Auto-downloaded binary, .gitignored |
-| Dear ImGui | `External/imgui/` | Static lib, Metal+GLFW backends |
-| Tracy | `External/tracy/` | Git submodule, on-demand profiler |
-| meshoptimizer | `External/meshoptimizer/` | Static lib, meshlet clustering |
-| cgltf | `External/cgltf/cgltf.h` | Single-header glTF parser |
-| stb_image | `External/stb/` | Single-header image loader |
-| MathLib | `External/MathLib/` | HLSL-style math library |
-| spdlog | `External/spdlog/` | Git submodule, header-only logging |
-| nlohmann/json | `External/nlohmann/` | Single-header JSON library |
-| imnodes | `External/imnodes/` | Node graph editor for ImGui |
-| Streamline | `External/streamline/` | Auto-downloaded binary (Windows), .gitignored |
-
-After cloning, run `git submodule update --init` to fetch GLFW, Tracy, and spdlog.
-
-### CMake structure
-
-- Root `CMakeLists.txt` — Project config, includes `cmake/DownloadSlang.cmake`, finds Slang package
-- `External/CMakeLists.txt` — metal-cpp INTERFACE lib (links Metal/Foundation/QuartzCore frameworks), GLFW, imnodes, nlohmann_json
-- `Source/CMakeLists.txt` — `Metallic` executable, links PipelineEditor + rendering libs. Post-build copies Slang dylibs, Shaders/, Pipelines/, and Asset/ to build dir.
-- `Source/PipelineEditor/CMakeLists.txt` — `PipelineEditor` static library for data-driven pipeline editing
-- `Tools/PipelineEditor/CMakeLists.txt` — `PipelineEditorTool` standalone executable (OpenGL-based, no Metal dependency). Uses `pass_registrations_editor.cpp` with `REGISTER_PASS_INFO` (metadata-only) so all pass types appear in the Add menu without linking the renderer.
-
-### Shaders
-
-Slang shaders are compiled to Metal source at runtime. Raytracing shaders are native Metal (Slang doesn't support Metal raytracing):
-- `Shaders/Vertex/triangle.slang` — Basic vertex/fragment triangle shader
-- `Shaders/Vertex/bunny.slang` — MVP + Blinn-Phong lit shader (vertex pipeline)
-- `Shaders/Mesh/meshlet.slang` — Mesh shader + fragment shader for meshlet rendering
-- `Shaders/Visibility/visibility.slang` — Visibility buffer mesh + fragment shader (R32Uint output)
-- `Shaders/Visibility/deferred_lighting.slang` — Compute shader for deferred lighting from visibility buffer (samples shadow map at texture 99)
-- `Shaders/Atmosphere/sky.slang` — Atmospheric scattering sky rendering (precomputed transmittance/scattering/irradiance textures)
-- `Shaders/Post/tonemap.slang` — Fullscreen tonemapping post-process (6 methods)
-- `Shaders/Post/passthrough.slang` — Fullscreen passthrough (saturate-clamp, for debug output)
-- `Shaders/Raytracing/raytraced_shadow.metal` — **Native Metal** compute shader: traces shadow rays against TLAS, writes R8Unorm shadow map
-
-## Conventions
-
-- Shaders are written in Slang (not MSL directly) and compiled to Metal source code at runtime via the Slang API
-- **Exception:** Raytracing shaders (`Shaders/Raytracing/raytraced_shadow.metal`) are native Metal Shading Language, compiled at runtime with `MTL::LanguageVersion3_1`. Slang does not support Metal raytracing.
-- Platform bridging (Cocoa/Metal layer) lives in `Source/Platform/*.mm` files with C-linkage headers
-- Metal objects use manual reference counting (retain/release)
-- Single-header libs use `#define *_IMPLEMENTATION` in exactly one TU: `CGLTF_IMPLEMENTATION` in `Asset/mesh_loader.cpp`, `STB_IMAGE_IMPLEMENTATION` in `Asset/material_loader.cpp`
-- ObjC++ files (`.mm`) that need ARC get `-fobjc-arc` via `set_source_files_properties` in CMake
-- Rendering has 3 modes: Vertex pipeline, Mesh shader, Visibility buffer (deferred lighting)
-- All render modes use the data-driven PipelineAsset/PipelineBuilder system (JSON pipeline definitions)
-- Visibility buffer pipeline: Visibility Pass → Shadow Ray Pass → Sky Pass → Deferred Lighting → Output/Tonemap → ImGui
-- Forward pipeline: Sky Pass → Forward Pass → Tonemap → ImGui
-- **`$backbuffer` ordering rule:** In pipeline JSON, passes writing to `$backbuffer` execute in declaration order. ImGuiOverlayPass must always be the LAST pass writing to `$backbuffer`, otherwise later passes overwrite the UI overlay.
-- Render passes are modular classes inheriting from `RenderPass` (see `Source/Rendering/Passes/`)
-- Shader hot-reload via F5 key
-- Pipeline hot-reload via F6 key (reloads JSON pipeline definition)
-- Use `spdlog` for all logging (`spdlog::info`, `spdlog::warn`, `spdlog::error`). Do not use `std::cout`/`std::cerr`.
+### Frame Graph (`Source/Rendering/frame_graph.h/cpp`)
+Templated pass-based DAG. Passes declare resource reads/writes via `FGBuilder`; the graph handles lifetime, aliasing, and history slots for temporal effects. Pass types: Render, Compute, Blit.
 
 ### Data-Driven Pipeline System
+Pipeline graphs are JSON files in `Pipelines/` (schema v2). `PipelineEditor/pipeline_asset.cpp` loads them; `pass_registry.cpp` maps pass type strings to factory functions. Passes register via `REGISTER_PASS` / `REGISTER_RENDER_PASS` / `REGISTER_COMPUTE_PASS` macros.
 
-The rendering pipeline can be defined in JSON files (inspired by EA's Gigi):
+### Render Passes (`Source/Rendering/Passes/`)
+Base class in `render_pass.h` with `setup()`, `executeRender/Compute/Blit()`, and `configure()`. Passes are platform-agnostic; the RHI layer handles backend differences.
 
-- `Pipelines/visibility_buffer.json` — Visibility buffer deferred rendering pipeline
-- `Pipelines/forward.json` — Forward rendering pipeline
+### Shader Compilation (`Source/Rendering/slang_compiler.cpp`)
+Slang SDK compiles shaders to MSL (Metal) or SPIR-V (Vulkan). Reflection extracts binding layouts. Mesh shader and visibility buffer sources get backend-specific patches. Exception: Metal ray-traced shadows use native MSL (`Shaders/Raytracing/raytraced_shadow.metal`).
 
-**Key components (in `Source/PipelineEditor/`):**
-- `pass_registry.h/cpp` — Factory pattern with registration macros
-- `pipeline_asset.h/cpp` — JSON schema, load/save, DAG validation
-- `pipeline_builder.h/cpp` — Constructs FrameGraph from PipelineAsset
-- `pipeline_editor.h/cpp` — ImGui node graph editor (using imnodes)
+### Asset Pipeline
+glTF loading via cgltf → meshlet generation via meshoptimizer → cluster LOD hierarchy → GPU buffer upload. Key files: `Source/Asset/mesh_loader.cpp`, `meshlet_builder.cpp`, `cluster_lod_builder.cpp`.
 
-**Pass Registration Macros:**
-Since C++ lacks static reflection, passes must be registered with metadata using macros in `pass_registrations.cpp`:
+## Coding Conventions
+- C++20. Objective-C++ only for `Platform/*.mm` files.
+- 4 spaces, no tabs.
+- Types: `PascalCase`. Functions/variables: `lowerCamelCase`. Constants: `kCamelCase`. Files: `lowercase_underscores`.
+- Keep shared logic in `Rendering/`, `RHI/`, or `PipelineEditor/`. Backend-specific code goes under `RHI/Metal/`, `RHI/Vulkan/`, or `Platform/`.
 
-```cpp
-// Register pass with factory + metadata (used by PipelineBuilder to instantiate from JSON)
-REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
-    (std::vector<std::string>{}),
-    (std::vector<std::string>{"visibility", "depth"}));
+## Key Implementation Details
+- VMA requires `VK_API_VERSION_1_3` (doesn't support 1.4 yet). `VMA_IMPLEMENTATION` defined only in `vulkan_frame_graph.cpp`.
+- Per-frame command pools (not shared) to avoid reset conflicts.
+- Mesh shader extension functions loaded dynamically via `vkGetDeviceProcAddr`.
+- Push constants: 256 bytes, all stages. Shared pipeline layout from descriptor manager used for all pipelines.
+- `VulkanOwnedTexture` is outside anonymous namespace to enable `dynamic_cast` in `beginRenderPass`.
+- Global setup functions `vulkanSetResourceContext()` and `vulkanSetShaderContext()` must be called at startup.
+- Slang SDK auto-downloaded by CMake if missing (`cmake/SetupSlang.cmake`).
+- meshoptimizer v1.0 built via isolated `External/meshoptimizer_build/CMakeLists.txt` to separate `/RTC1` flag removal.
 
-REGISTER_COMPUTE_PASS(ShadowRayPass, "Shadow Ray Pass", "Lighting",
-    (std::vector<std::string>{"depth"}),
-    (std::vector<std::string>{"shadowMap"}));
-
-// Metadata-only (no factory, for editor display only — used in Tools/PipelineEditor/)
-REGISTER_PASS_INFO(BlitPass, "Blit", "Utility",
-    (std::vector<std::string>{"source"}),
-    (std::vector<std::string>{"destination"}),
-    PassTypeInfo::PassType::Blit);
-```
-
-Categories: `Geometry`, `Lighting`, `Environment`, `Post-Process`, `Utility`, `UI`
-
-**Pipeline JSON schema:**
-```json
-{
-  "name": "PipelineName",
-  "resources": [
-    { "name": "visibility", "type": "texture", "format": "R32Uint", "size": "screen" }
-  ],
-  "passes": [
-    {
-      "name": "Pass Name",
-      "type": "VisibilityPass",
-      "inputs": ["depth"],
-      "outputs": ["visibility", "depth"],
-      "enabled": true,
-      "sideEffect": false,
-      "config": {}
-    }
-  ]
-}
-```
-
-**Special resources:** `$backbuffer` refers to the drawable texture.
-
-**View menu:** Pipeline Editor opens the visual node graph editor for modifying pipelines at runtime. Features include:
-- Blue nodes for resources, orange nodes for passes
-- Drag to pan, scroll to zoom, minimap in corner
-- Click nodes to edit properties in the side panel
-- Delete key removes selected nodes
-- Add menu shows passes grouped by category
-
-
-
-## Slang → Metal Gotchas
-
-- Slang `mul(M, v)` generates `v * M` in Metal. Since `simd_float4x4` is column-major but Slang expects row-major, `simd_transpose()` matrices before passing as uniforms.
-- Slang doesn't emit `[[user(...)]]` on mesh output struct members — must patch generated Metal source to add them.
-- Slang doesn't emit `[[texture(N)]]` on `array<texture2d<...>, N>` parameters — must patch generated source.
-- Slang wraps globals into a `KernelContext` struct passed to ALL entry points. Fragment shader expects all mesh-stage buffers bound even if unused.
-- Global `ConstantBuffer<T>` gets `[[buffer(0)]]` — vertex buffers must start at index 1+ to avoid conflicts.
-
-## Raytracing Shadows
-
-- **BLAS** (one per glTF mesh): built once at startup from `LoadedMesh::meshRanges` / `primitiveGroups`. Each primitive group becomes a triangle geometry descriptor.
-- **TLAS** (one instance per visible scene node with a mesh): rebuilt every frame via `updateTLAS()` to track scene graph transform changes. Instance descriptor buffer is `StorageModeShared` for CPU writes.
-- **Shadow ray shader** (`raytraced_shadow.metal`): native Metal compute, reads depth buffer, reconstructs world position via `invViewProj`, traces toward directional light using `intersector<triangle_data, instancing>` with `accept_any_intersection(true)`.
-- **Matrix convention:** Native Metal shader uses standard column-major multiplication — do NOT `transpose()` the `invViewProj` (unlike Slang shaders which need transposed matrices).
-- **Reversed-Z:** Shadow shader receives a `reversedZ` uniform to correctly detect sky pixels (depth == 0.0 for reversed-Z, depth == 1.0 for normal-Z).
-- **Texture binding:** Shadow map is `R8Unorm` at texture index 99 in `deferred_lighting.slang`. Slang correctly emits `[[texture(99)]]` for scalar `Texture2D<float>` — no patching needed (unlike texture arrays).
-- **CAMetalLayer:** `setFramebufferOnly(false)` is required because the visibility buffer path blits compute output to the drawable.
-
-## Streamline / DLSS Super Resolution (Windows Vulkan only)
-
-- **Build flag:** `METALLIC_ENABLE_STREAMLINE` CMake option (ON by default on Windows). Defines `METALLIC_HAS_STREAMLINE=1` when SDK is found.
-- **SDK download:** `cmake/SetupStreamline.cmake` auto-downloads Streamline v2.10.3 to `External/streamline/` (gitignored).
-- **Integration layer:** `Source/Rendering/streamline_context.h/cpp` — manages `slInit`/`slShutdown`, `slSetVulkanInfo`, DLSS feature queries, `slEvaluateFeature`, and history reset.
-- **DLSS pass:** `Source/Rendering/Passes/streamline_dlss_pass.h/cpp` — Vulkan-only compute pass registered as `StreamlineDlssPass`. Replaces `TAAPass` in the visibility pipeline when DLSS is enabled.
-- **Pipeline manipulation:** `enableVisibilityDLSS()` in `main_vulkan.cpp` rewrites the pipeline asset at runtime: removes TAAPass, inserts StreamlineDlssPass, redirects Tonemap/AutoExposure inputs to `dlssOutput`.
-- **Fallback:** When Streamline/DLSS is unavailable (non-NVIDIA, missing DLLs), the app falls back to the existing TAA path transparently.
-- **History reset:** Triggered on resize, F5 shader reload, F6 pipeline reload, DLSS preset change, and camera cuts.
-- **Motion vectors:** Reuses existing `deferred_lighting.slang` output (UV-space, `currentUV - prevUV`). Scaled to pixel-space for Streamline via `mvecScale`.
-- **MVP limitation:** Display-size output texture is created at `screen` size by the FrameGraph. True render/display split resolution is deferred to Phase 3.
-
-## Development
-- when I start debug, I will add the issue content(log/screenshot) in `Issue` directory.You can get bug information from it.
--
+## Commit Style
+Imperative, feature-focused: `Add ...`, `Fix ...`, `Refactor ...`, `Replace ...`. Scope commits to one subsystem.
