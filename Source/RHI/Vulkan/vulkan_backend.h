@@ -25,3 +25,11 @@ VkImage getVulkanCurrentBackbufferImage(RhiContext& context);
 VkImageView getVulkanCurrentBackbufferImageView(RhiContext& context);
 VkExtent2D getVulkanCurrentBackbufferExtent(RhiContext& context);
 VkImageLayout getVulkanCurrentBackbufferLayout(RhiContext& context);
+
+// Async compute queue support
+VkQueue getVulkanComputeQueue(RhiContext& context);             // nullptr if unavailable
+VkCommandBuffer getVulkanCurrentComputeCommandBuffer(RhiContext& context); // nullptr if unavailable
+
+// End async compute command buffer and submit to the dedicated compute queue.
+// Returns the timeline semaphore signal value (0 if no timeline semaphore or no compute queue).
+uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context);

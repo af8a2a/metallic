@@ -58,6 +58,7 @@ struct FGDepthAttachment {
 struct FGPassNode {
     std::string name;
     FGPassType type = FGPassType::Render;
+    RhiQueueHint queueHint = RhiQueueHint::Auto;
     uint32_t refCount = 0;
     bool hasSideEffect = false;
 
@@ -93,6 +94,10 @@ public:
     FGResource setDepthAttachment(FGResource resource,
                                   RhiLoadAction load, RhiStoreAction store,
                                   double clearDepth = 1.0);
+
+    // Declare preferred execution queue for this pass. Backends with a dedicated
+    // compute/transfer queue will route accordingly; others silently ignore.
+    void setQueueHint(RhiQueueHint hint);
 
 private:
     FrameGraph& m_fg;

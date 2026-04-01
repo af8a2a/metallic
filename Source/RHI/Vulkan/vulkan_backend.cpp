@@ -755,6 +755,9 @@ public:
         }
 
         for (auto& frame : m_frames) {
+            if (frame.computeCommandPool != VK_NULL_HANDLE) {
+                vkDestroyCommandPool(m_device, frame.computeCommandPool, nullptr);
+            }
             if (frame.commandPool != VK_NULL_HANDLE) {
                 vkDestroyCommandPool(m_device, frame.commandPool, nullptr);
             }
@@ -764,6 +767,13 @@ public:
             if (frame.inFlight != VK_NULL_HANDLE) {
                 vkDestroyFence(m_device, frame.inFlight, nullptr);
             }
+        }
+
+        if (m_computeTimelineSemaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(m_device, m_computeTimelineSemaphore, nullptr);
+        }
+        if (m_transferTimelineSemaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(m_device, m_transferTimelineSemaphore, nullptr);
         }
 
         if (m_allocator != nullptr) {
@@ -821,11 +831,19 @@ public:
 
         checkVk(vkResetFences(m_device, 1, &frame.inFlight), "Failed to reset frame fence");
         checkVk(vkResetCommandPool(m_device, frame.commandPool, 0), "Failed to reset command pool");
+        if (frame.computeCommandPool != VK_NULL_HANDLE) {
+            checkVk(vkResetCommandPool(m_device, frame.computeCommandPool, 0),
+                    "Failed to reset async compute command pool");
+        }
 
         VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         checkVk(vulkanBeginCommandBufferHooked(frame.commandBuffer, &beginInfo),
                 "Failed to begin command buffer");
+        if (frame.computeCommandBuffer != VK_NULL_HANDLE) {
+            checkVk(vkBeginCommandBuffer(frame.computeCommandBuffer, &beginInfo),
+                    "Failed to begin async compute command buffer");
+        }
 
         m_insideRendering = false;
         return true;
@@ -842,17 +860,28 @@ public:
 
         checkVk(vkEndCommandBuffer(frame.commandBuffer), "Failed to end command buffer");
 
-        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = &frame.imageAvailable;
-        submitInfo.pWaitDstStageMask = &waitStage;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &frame.commandBuffer;
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = &renderFinished;
+        // Upgraded to VkQueueSubmit2 for timeline semaphore compatibility.
+        VkCommandBufferSubmitInfo cmdSubmitInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+        cmdSubmitInfo.commandBuffer = frame.commandBuffer;
 
-        checkVk(vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, frame.inFlight), "Failed to submit graphics queue");
+        VkSemaphoreSubmitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        waitInfo.semaphore = frame.imageAvailable;
+        waitInfo.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+        VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        signalInfo.semaphore = renderFinished;
+        signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+        VkSubmitInfo2 submitInfo2{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+        submitInfo2.waitSemaphoreInfoCount = 1;
+        submitInfo2.pWaitSemaphoreInfos = &waitInfo;
+        submitInfo2.commandBufferInfoCount = 1;
+        submitInfo2.pCommandBufferInfos = &cmdSubmitInfo;
+        submitInfo2.signalSemaphoreInfoCount = 1;
+        submitInfo2.pSignalSemaphoreInfos = &signalInfo;
+
+        checkVk(vkQueueSubmit2(m_graphicsQueue, 1, &submitInfo2, frame.inFlight),
+                "Failed to submit graphics queue");
 
         VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         presentInfo.waitSemaphoreCount = 1;
@@ -1271,6 +1300,46 @@ public:
                    : VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
+    VkCommandBuffer currentComputeCommandBuffer() const {
+        return m_frames[m_frameIndex].computeCommandBuffer;
+    }
+
+    // End and submit the async compute command buffer to the dedicated compute queue.
+    // Uses a timeline semaphore signal if available; otherwise a simple submit.
+    // Returns the timeline value to wait on (0 if no timeline semaphore).
+    uint64_t scheduleAsyncComputeSubmit() {
+        const FrameResources& frame = m_frames[m_frameIndex];
+        if (frame.computeCommandBuffer == VK_NULL_HANDLE || m_computeQueue == VK_NULL_HANDLE) {
+            return 0;
+        }
+
+        checkVk(vkEndCommandBuffer(frame.computeCommandBuffer),
+                "Failed to end async compute command buffer");
+
+        VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+        cmdInfo.commandBuffer = frame.computeCommandBuffer;
+
+        VkSubmitInfo2 submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+        submitInfo.commandBufferInfoCount = 1;
+        submitInfo.pCommandBufferInfos = &cmdInfo;
+
+        uint64_t signalValue = 0;
+        VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        if (m_computeTimelineSemaphore != VK_NULL_HANDLE) {
+            ++m_computeTimelineValue;
+            signalValue = m_computeTimelineValue;
+            signalInfo.semaphore = m_computeTimelineSemaphore;
+            signalInfo.value = signalValue;
+            signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            submitInfo.signalSemaphoreInfoCount = 1;
+            submitInfo.pSignalSemaphoreInfos = &signalInfo;
+        }
+
+        checkVk(vkQueueSubmit2(m_computeQueue, 1, &submitInfo, VK_NULL_HANDLE),
+                "Failed to submit async compute queue");
+        return signalValue;
+    }
+
     bool hasEnabledExtension(const char* extensionName) const {
         return std::any_of(m_enabledExtensions.begin(), m_enabledExtensions.end(),
                            [extensionName](const std::string& ext) { return ext == extensionName; });
@@ -1484,6 +1553,8 @@ public:
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
         VkSemaphore imageAvailable = VK_NULL_HANDLE;
         VkFence inFlight = VK_NULL_HANDLE;
+        VkCommandPool computeCommandPool = VK_NULL_HANDLE;
+        VkCommandBuffer computeCommandBuffer = VK_NULL_HANDLE;
     };
 
     class CommandContext final : public RhiCommandContext {
@@ -1849,6 +1920,8 @@ public:
         const bool enableValidation = createInfo.enableValidation;
         float queuePriority = 1.0f;
         std::set<uint32_t> uniqueQueueFamilies = {m_queueFamilies.graphics.value(), m_queueFamilies.present.value()};
+        if (m_queueFamilies.compute.has_value())  uniqueQueueFamilies.insert(m_queueFamilies.compute.value());
+        if (m_queueFamilies.transfer.has_value()) uniqueQueueFamilies.insert(m_queueFamilies.transfer.value());
 
         std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
         for (uint32_t family : uniqueQueueFamilies) {
@@ -1992,6 +2065,14 @@ public:
 
         vkGetDeviceQueue(m_device, m_queueFamilies.graphics.value(), 0, &m_graphicsQueue);
         vkGetDeviceQueue(m_device, m_queueFamilies.present.value(), 0, &m_presentQueue);
+        if (m_queueFamilies.compute.has_value()) {
+            vkGetDeviceQueue(m_device, m_queueFamilies.compute.value(), 0, &m_computeQueue);
+            spdlog::info("Vulkan: dedicated async compute queue (family {})", m_queueFamilies.compute.value());
+        }
+        if (m_queueFamilies.transfer.has_value()) {
+            vkGetDeviceQueue(m_device, m_queueFamilies.transfer.value(), 0, &m_transferQueue);
+            spdlog::info("Vulkan: dedicated transfer queue (family {})", m_queueFamilies.transfer.value());
+        }
     }
 
     void createCommandObjects() {
@@ -2017,6 +2098,38 @@ public:
                     "Failed to create Vulkan image-available semaphore");
             checkVk(vkCreateFence(m_device, &fenceInfo, nullptr, &m_frames[i].inFlight),
                     "Failed to create Vulkan fence");
+
+            // Async compute command pool + buffer (only if dedicated compute queue is available)
+            if (m_computeQueue != VK_NULL_HANDLE) {
+                VkCommandPoolCreateInfo computePoolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+                computePoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+                computePoolInfo.queueFamilyIndex = m_queueFamilies.compute.value();
+                checkVk(vkCreateCommandPool(m_device, &computePoolInfo, nullptr, &m_frames[i].computeCommandPool),
+                        "Failed to create Vulkan async compute command pool");
+
+                VkCommandBufferAllocateInfo computeAllocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+                computeAllocInfo.commandPool = m_frames[i].computeCommandPool;
+                computeAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                computeAllocInfo.commandBufferCount = 1;
+                checkVk(vkAllocateCommandBuffers(m_device, &computeAllocInfo, &m_frames[i].computeCommandBuffer),
+                        "Failed to allocate Vulkan async compute command buffer");
+            }
+        }
+
+        // Create timeline semaphores for async compute/transfer synchronisation
+        VkSemaphoreTypeCreateInfo timelineTypeInfo{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+        timelineTypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        timelineTypeInfo.initialValue = 0;
+        VkSemaphoreCreateInfo timelineSemaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        timelineSemaphoreInfo.pNext = &timelineTypeInfo;
+
+        if (m_computeQueue != VK_NULL_HANDLE && m_features.timelineSemaphore) {
+            checkVk(vkCreateSemaphore(m_device, &timelineSemaphoreInfo, nullptr, &m_computeTimelineSemaphore),
+                    "Failed to create compute timeline semaphore");
+        }
+        if (m_transferQueue != VK_NULL_HANDLE && m_features.timelineSemaphore) {
+            checkVk(vkCreateSemaphore(m_device, &timelineSemaphoreInfo, nullptr, &m_transferTimelineSemaphore),
+                    "Failed to create transfer timeline semaphore");
         }
     }
 
@@ -2163,6 +2276,10 @@ public:
         m_nativeHandles.swapchainImageCount = static_cast<uint32_t>(m_swapchainImages.size());
         m_nativeHandles.colorFormat = static_cast<uint32_t>(m_swapchainFormat.format);
         m_nativeHandles.apiVersion = m_physicalDeviceProperties.apiVersion;
+        m_nativeHandles.computeQueue = m_computeQueue;
+        m_nativeHandles.transferQueue = m_transferQueue;
+        m_nativeHandles.computeTimelineSemaphore = m_computeTimelineSemaphore;
+        m_nativeHandles.transferTimelineSemaphore = m_transferTimelineSemaphore;
     }
 
     void createVmaAllocator() {
@@ -2219,6 +2336,12 @@ public:
     VmaAllocator m_allocator = nullptr;
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue = VK_NULL_HANDLE;
+    VkQueue m_computeQueue = VK_NULL_HANDLE;
+    VkQueue m_transferQueue = VK_NULL_HANDLE;
+    VkSemaphore m_computeTimelineSemaphore = VK_NULL_HANDLE;
+    VkSemaphore m_transferTimelineSemaphore = VK_NULL_HANDLE;
+    uint64_t m_computeTimelineValue = 0;
+    uint64_t m_transferTimelineValue = 0;
     QueueFamilyIndices m_queueFamilies;
     VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
     std::array<FrameResources, kMaxFramesInFlight> m_frames{};
@@ -2288,6 +2411,18 @@ VkExtent2D getVulkanCurrentBackbufferExtent(RhiContext& context) {
 
 VkImageLayout getVulkanCurrentBackbufferLayout(RhiContext& context) {
     return static_cast<VulkanContext&>(context).currentSwapchainLayout();
+}
+
+VkQueue getVulkanComputeQueue(RhiContext& context) {
+    return static_cast<VkQueue>(context.nativeHandles().computeQueue);
+}
+
+VkCommandBuffer getVulkanCurrentComputeCommandBuffer(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).currentComputeCommandBuffer();
+}
+
+uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).scheduleAsyncComputeSubmit();
 }
 
 bool vulkanHasExtension(RhiContext& context, const char* extensionName) {

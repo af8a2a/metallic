@@ -1211,6 +1211,8 @@ int main() {
     createInfo.applicationName = "Metallic";
     createInfo.enableValidation = true;
     createInfo.requireVulkan14 = true;
+    // Enable timeline semaphores for async compute / transfer queue synchronisation (Vulkan 1.2 core).
+    createInfo.enableTimelineSemaphore = true;
 
     // --- Streamline / DLSS initialization (before RHI so SL can intercept device creation) ---
     StreamlineContext streamlineCtx;
@@ -2109,7 +2111,8 @@ int main() {
         VulkanCommandBuffer commandBuffer(getVulkanCurrentCommandBuffer(*rhi),
                                           vkDevice,
                                           &descriptorManager,
-                                          &imageTracker);
+                                          &imageTracker,
+                                          getVulkanCurrentComputeCommandBuffer(*rhi));
 
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -2356,6 +2359,11 @@ int main() {
         prevCameraWorldPos = frameContext.cameraWorldPos;
         hasPrevMatrices = true;
         frameIndex++;
+
+        // If any pass routed work to the dedicated async compute queue, submit it now.
+        if (commandBuffer.hadAsyncComputeWork()) {
+            vulkanScheduleAsyncComputeSubmit(*rhi);
+        }
 
         rhi->endFrame();
         FrameMark;

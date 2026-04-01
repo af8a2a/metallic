@@ -751,8 +751,10 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
 
 VulkanCommandBuffer::VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
                                          VulkanDescriptorManager* descriptorManager,
-                                         VulkanResourceStateTracker* stateTracker)
-    : m_commandBuffer(commandBuffer), m_device(device),
+                                         VulkanResourceStateTracker* stateTracker,
+                                         VkCommandBuffer asyncComputeCommandBuffer)
+    : m_commandBuffer(commandBuffer), m_asyncComputeCommandBuffer(asyncComputeCommandBuffer),
+      m_device(device),
       m_descriptorManager(descriptorManager), m_stateTracker(stateTracker) {}
 
 void VulkanCommandBuffer::transitionTexture(const RhiTexture* texture, VkImageLayout layout) {
@@ -875,8 +877,20 @@ std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(co
 }
 
 std::unique_ptr<RhiComputeCommandEncoder> VulkanCommandBuffer::beginComputePass(const RhiComputePassDesc& /*desc*/) {
-    return std::make_unique<VulkanComputeCommandEncoder>(m_commandBuffer, m_device,
+    // Route to dedicated async compute queue if hint requests it and we have one
+    const bool wantAsync = (m_nextPassHint == RhiQueueHint::AsyncCompute);
+    VkCommandBuffer targetCmdBuf = m_commandBuffer;
+    if (wantAsync && m_asyncComputeCommandBuffer != VK_NULL_HANDLE) {
+        targetCmdBuf = m_asyncComputeCommandBuffer;
+        m_hadAsyncComputeWork = true;
+    }
+    m_nextPassHint = RhiQueueHint::Auto; // consume hint
+    return std::make_unique<VulkanComputeCommandEncoder>(targetCmdBuf, m_device,
                                                          m_descriptorManager, m_stateTracker);
+}
+
+void VulkanCommandBuffer::setNextPassQueueHint(RhiQueueHint hint) {
+    m_nextPassHint = hint;
 }
 
 std::unique_ptr<RhiBlitCommandEncoder> VulkanCommandBuffer::beginBlitPass(const RhiBlitPassDesc& /*desc*/) {

@@ -119,6 +119,16 @@ enum class RhiBarrierScope : uint32_t {
     RenderTargets = 1u << 2,
 };
 
+// Hints to the backend which physical queue a pass should execute on.
+// The backend uses this to route work to dedicated compute/transfer queues if available,
+// falling back to the graphics queue otherwise.
+enum class RhiQueueHint {
+    Auto,         // Backend decides based on pass type
+    Graphics,     // Requires graphics queue (rasterisation, mesh shaders, RT)
+    AsyncCompute, // Prefer dedicated async compute queue; falls back to graphics
+    Transfer,     // Prefer dedicated transfer queue; falls back to graphics
+};
+
 enum class RhiResourceUsage : uint32_t {
     Read = 1u << 0,
     Write = 1u << 1,
@@ -499,6 +509,10 @@ public:
     // Flush all accumulated pending barriers as a single batched pipeline barrier.
     // No-op on backends that insert barriers eagerly (e.g. Metal).
     virtual void flushBarriers() {}
+
+    // Hint to the backend which queue subsequent work should target.
+    // Called by FrameGraph before each pass. No-op on Metal.
+    virtual void setNextPassQueueHint(RhiQueueHint /*hint*/) {}
 };
 
 class RhiFrameGraphBackend {
@@ -734,6 +748,11 @@ struct RhiNativeHandles {
     uint32_t swapchainImageCount = 0;
     uint32_t colorFormat = 0;
     uint32_t apiVersion = 0;
+    // Multi-queue handles (null if queue not available)
+    void* computeQueue = nullptr;                 // VkQueue (dedicated compute, if present)
+    void* transferQueue = nullptr;                // VkQueue (dedicated transfer, if present)
+    void* computeTimelineSemaphore = nullptr;     // VkSemaphore (timeline, for async compute sync)
+    void* transferTimelineSemaphore = nullptr;    // VkSemaphore (timeline, for async transfer sync)
 };
 
 struct RhiRenderTargetInfo {

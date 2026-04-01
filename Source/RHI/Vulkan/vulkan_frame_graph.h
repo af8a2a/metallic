@@ -68,20 +68,28 @@ class VulkanCommandBuffer final : public RhiCommandBuffer {
 public:
     VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
                         VulkanDescriptorManager* descriptorManager,
-                        VulkanResourceStateTracker* stateTracker);
+                        VulkanResourceStateTracker* stateTracker,
+                        VkCommandBuffer asyncComputeCommandBuffer = VK_NULL_HANDLE);
 
     std::unique_ptr<RhiRenderCommandEncoder> beginRenderPass(const RhiRenderPassDesc& desc) override;
     std::unique_ptr<RhiComputeCommandEncoder> beginComputePass(const RhiComputePassDesc& desc) override;
     std::unique_ptr<RhiBlitCommandEncoder> beginBlitPass(const RhiBlitPassDesc& desc) override;
     void prepareTextureForSampling(const RhiTexture* texture) override;
     void flushBarriers() override;
+    void setNextPassQueueHint(RhiQueueHint hint) override;
     void transitionTexture(const RhiTexture* texture, VkImageLayout layout);
+
+    // Returns true if any work was submitted to the async compute command buffer this frame.
+    bool hadAsyncComputeWork() const { return m_hadAsyncComputeWork; }
 
 private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
+    VkCommandBuffer m_asyncComputeCommandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VulkanDescriptorManager* m_descriptorManager = nullptr;
     VulkanResourceStateTracker* m_stateTracker = nullptr;
+    RhiQueueHint m_nextPassHint = RhiQueueHint::Auto;
+    bool m_hadAsyncComputeWork = false;
 };
 
 // Load mesh shader extension functions (call once after device creation)

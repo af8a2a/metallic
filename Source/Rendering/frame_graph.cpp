@@ -220,6 +220,10 @@ FGResource FGBuilder::setDepthAttachment(FGResource resource,
     return writeResource;
 }
 
+void FGBuilder::setQueueHint(RhiQueueHint hint) {
+    m_fg.m_passes[m_passIndex].queueHint = hint;
+}
+
 // --- FrameGraph ---
 
 FGResource FrameGraph::import(const char* name, RhiTexture* texture) {
@@ -459,6 +463,9 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
         if (pass.refCount == 0) continue;
 
         MICROPROFILE_SCOPEI("FrameGraph", pass.name.c_str(), 0xff0088ff);
+
+        // Inform the backend which queue this pass prefers.
+        commandBuffer.setNextPassQueueHint(pass.queueHint);
 
         // Create transient textures at their producer pass
         for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
