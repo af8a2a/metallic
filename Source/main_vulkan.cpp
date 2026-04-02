@@ -1213,6 +1213,10 @@ int main() {
     createInfo.requireVulkan14 = true;
     // Enable timeline semaphores for async compute / transfer queue synchronisation (Vulkan 1.2 core).
     createInfo.enableTimelineSemaphore = true;
+    // On-disk caches: PSO binaries and compiled SPIR-V modules.
+    createInfo.pipelineCacheDir = "cache/pipelines";
+    createInfo.shaderCacheDir   = "cache/shaders";
+    setSlangShaderCacheDir(createInfo.shaderCacheDir);
 
     // --- Streamline / DLSS initialization (before RHI so SL can intercept device creation) ---
     StreamlineContext streamlineCtx;

@@ -5,8 +5,12 @@
 #include <spdlog/spdlog.h>
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <mutex>
 #include <regex>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -41,6 +45,11 @@ constexpr uint32_t kSpirvDecorationPerPrimitiveExt = 5271;
 std::mutex g_bindingLayoutCacheMutex;
 std::unordered_map<uint64_t, SlangShaderBindingLayout> g_bindingLayoutCache;
 
+// --- SPIR-V on-disk cache ---
+
+constexpr uint32_t kSpirvMagic = 0x07230203u;
+std::string g_shaderCacheDir; // empty = disabled
+
 uint64_t hashBinaryBlob(const void* data, size_t size) {
     constexpr uint64_t kOffsetBasis = 1469598103934665603ull;
     constexpr uint64_t kPrime = 1099511628211ull;
@@ -52,6 +61,219 @@ uint64_t hashBinaryBlob(const void* data, size_t size) {
         hash *= kPrime;
     }
     return hash;
+}
+
+// FNV-64 continuation: mix additional bytes into an existing hash.
+uint64_t hashMix(uint64_t seed, const void* data, size_t size) {
+    constexpr uint64_t kPrime = 1099511628211ull;
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        seed ^= bytes[i];
+        seed *= kPrime;
+    }
+    return seed;
+}
+
+// Build a stable 64-bit key from backend + shader file content + entry points.
+// Reading the file content ensures the key changes if the source file is edited.
+uint64_t computeSpirvCacheKey(RhiBackendType backend,
+                               const char* shaderPath,
+                               const std::vector<const char*>& entryPoints) {
+    constexpr uint64_t kOffsetBasis = 1469598103934665603ull;
+    uint64_t h = kOffsetBasis;
+
+    const auto bt = static_cast<uint32_t>(backend);
+    h = hashMix(h, &bt, sizeof(bt));
+
+    // Always include the path string so that different shaders with the same
+    // entry points get distinct keys even when the file read below fails.
+    if (shaderPath) {
+        h = hashMix(h, shaderPath, std::strlen(shaderPath));
+    }
+
+    // Hash file content so the cache is invalidated when the source changes.
+    // Slang's loadModule expects paths without extension — try .slang first.
+    {
+        std::ifstream file(std::string(shaderPath) + ".slang",
+                           std::ios::binary | std::ios::ate);
+        if (!file.is_open()) {
+            file.open(shaderPath, std::ios::binary | std::ios::ate);
+        }
+        if (file.is_open()) {
+            const std::streamsize sz = file.tellg();
+            if (sz > 0) {
+                std::vector<uint8_t> buf(static_cast<size_t>(sz));
+                file.seekg(0, std::ios::beg);
+                if (file.read(reinterpret_cast<char*>(buf.data()), sz)) {
+                    h = hashMix(h, buf.data(), buf.size());
+                }
+            }
+        }
+    }
+
+    for (const char* ep : entryPoints) {
+        if (ep) {
+            h = hashMix(h, ep, std::strlen(ep) + 1); // include null terminator as separator
+        }
+    }
+    return h;
+}
+
+// Returns empty vector if not cached or cache file is missing / invalid.
+std::vector<uint32_t> tryLoadSpirvCache(uint64_t key) {
+    if (g_shaderCacheDir.empty()) {
+        return {};
+    }
+    std::ostringstream oss;
+    oss << std::hex << std::setw(16) << std::setfill('0') << key << ".spirv.bin";
+    const std::filesystem::path cachePath =
+        std::filesystem::path(g_shaderCacheDir) / oss.str();
+
+    std::ifstream in(cachePath, std::ios::binary | std::ios::ate);
+    if (!in.is_open()) {
+        return {};
+    }
+    const std::streamsize byteSize = in.tellg();
+    if (byteSize <= 0 || (static_cast<size_t>(byteSize) % sizeof(uint32_t)) != 0) {
+        return {};
+    }
+
+    std::vector<uint32_t> words(static_cast<size_t>(byteSize) / sizeof(uint32_t));
+    in.seekg(0, std::ios::beg);
+    if (!in.read(reinterpret_cast<char*>(words.data()), byteSize)) {
+        return {};
+    }
+
+    // Validate SPIR-V magic number.
+    if (words.empty() || words[0] != kSpirvMagic) {
+        spdlog::warn("SlangShaderCache: invalid SPIR-V magic in '{}'", cachePath.string());
+        return {};
+    }
+    return words;
+}
+
+// Write SPIR-V words atomically: temp file then rename.
+void writeSpirvCache(uint64_t key, const std::vector<uint32_t>& words) {
+    if (g_shaderCacheDir.empty() || words.empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(g_shaderCacheDir, ec);
+    if (ec) {
+        spdlog::warn("SlangShaderCache: could not create cache dir '{}': {}",
+                     g_shaderCacheDir, ec.message());
+        return;
+    }
+
+    std::ostringstream oss;
+    oss << std::hex << std::setw(16) << std::setfill('0') << key << ".spirv.bin";
+    const std::filesystem::path cachePath =
+        std::filesystem::path(g_shaderCacheDir) / oss.str();
+    const std::string tmpPath = cachePath.string() + ".tmp";
+
+    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        spdlog::warn("SlangShaderCache: could not write '{}'", tmpPath);
+        return;
+    }
+    out.write(reinterpret_cast<const char*>(words.data()),
+              static_cast<std::streamsize>(words.size() * sizeof(uint32_t)));
+    out.close();
+
+    std::filesystem::rename(tmpPath, cachePath, ec);
+    if (ec) {
+        std::filesystem::copy_file(tmpPath, cachePath,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        std::filesystem::remove(tmpPath, ec);
+    }
+}
+
+// --- Binding-layout companion cache (persists Slang reflection alongside SPIR-V) ---
+
+std::filesystem::path bindingLayoutCachePath(uint64_t key) {
+    std::ostringstream oss;
+    oss << std::hex << std::setw(16) << std::setfill('0') << key << ".layout.bin";
+    return std::filesystem::path(g_shaderCacheDir) / oss.str();
+}
+
+void writeBindingLayoutCache(uint64_t key, const SlangShaderBindingLayout& layout) {
+    if (g_shaderCacheDir.empty()) {
+        return;
+    }
+    const auto path = bindingLayoutCachePath(key);
+    const std::string tmpPath = path.string() + ".tmp";
+
+    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        return;
+    }
+
+    const auto writeU32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+    const auto writeU8  = [&](uint8_t v)  { out.write(reinterpret_cast<const char*>(&v), 1); };
+
+    writeU32(static_cast<uint32_t>(layout.bindings.size()));
+    for (const auto& b : layout.bindings) {
+        writeU8(static_cast<uint8_t>(b.type));
+        writeU32(b.bindingIndex);
+        writeU32(b.bindingSpace);
+        writeU32(b.descriptorCount);
+        writeU32(static_cast<uint32_t>(b.name.size()));
+        if (!b.name.empty()) {
+            out.write(b.name.data(), static_cast<std::streamsize>(b.name.size()));
+        }
+    }
+    out.close();
+
+    std::error_code ec;
+    std::filesystem::rename(tmpPath, path, ec);
+    if (ec) {
+        std::filesystem::copy_file(tmpPath, path,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        std::filesystem::remove(tmpPath, ec);
+    }
+}
+
+bool tryLoadBindingLayoutCache(uint64_t key, SlangShaderBindingLayout& outLayout) {
+    if (g_shaderCacheDir.empty()) {
+        return false;
+    }
+    const auto path = bindingLayoutCachePath(key);
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) {
+        return false;
+    }
+
+    const auto readU32 = [&](uint32_t& v) -> bool {
+        return !!in.read(reinterpret_cast<char*>(&v), 4);
+    };
+    const auto readU8 = [&](uint8_t& v) -> bool {
+        return !!in.read(reinterpret_cast<char*>(&v), 1);
+    };
+
+    uint32_t count = 0;
+    if (!readU32(count) || count > 4096) {
+        return false;
+    }
+
+    outLayout.bindings.resize(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        auto& b = outLayout.bindings[i];
+        uint8_t t = 0;
+        uint32_t nameLen = 0;
+        if (!readU8(t) || !readU32(b.bindingIndex) || !readU32(b.bindingSpace) ||
+            !readU32(b.descriptorCount) || !readU32(nameLen)) {
+            return false;
+        }
+        b.type = static_cast<SlangShaderBindingType>(t);
+        if (nameLen > 0) {
+            b.name.resize(nameLen);
+            if (!in.read(b.name.data(), nameLen)) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 uint32_t getDescriptorCount(slang::TypeLayoutReflection* typeLayout,
@@ -495,6 +717,22 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
                                                     const char* searchPath,
                                                     const std::vector<const char*>& entryPoints,
                                                     const char* label) {
+    // Check the on-disk SPIR-V cache before invoking Slang.
+    const uint64_t cacheKey = computeSpirvCacheKey(backend, shaderPath, entryPoints);
+    {
+        std::vector<uint32_t> cached = tryLoadSpirvCache(cacheKey);
+        if (!cached.empty()) {
+            spdlog::debug("SlangShaderCache: cache hit for '{}' ({} words)", shaderPath, cached.size());
+            // Restore the binding layout into the in-memory cache so that
+            // findSlangBindingLayoutForBinary() succeeds for callers.
+            SlangShaderBindingLayout layout;
+            if (tryLoadBindingLayoutCache(cacheKey, layout)) {
+                cacheBindingLayout(cached.data(), cached.size() * sizeof(uint32_t), layout);
+            }
+            return cached;
+        }
+    }
+
     SlangTargetConfig targetConfig;
     if (!resolveSlangTarget(backend, SlangOutputKind::SpirvBinary, targetConfig)) {
         return {};
@@ -537,7 +775,13 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
     SlangShaderBindingLayout bindingLayout;
     if (buildBindingLayout(linkedProgram, bindingLayout)) {
         cacheBindingLayout(words.data(), words.size() * sizeof(uint32_t), bindingLayout);
+        writeBindingLayoutCache(cacheKey, bindingLayout);
     }
+
+    // Persist to disk so subsequent runs skip Slang compilation.
+    writeSpirvCache(cacheKey, words);
+    spdlog::debug("SlangShaderCache: cached '{}' ({} words)", shaderPath, words.size());
+
     return words;
 }
 
@@ -596,6 +840,10 @@ std::string patchComputeMetalSource(const std::string& source) {
 }
 
 } // namespace
+
+void setSlangShaderCacheDir(const std::string& dir) {
+    g_shaderCacheDir = dir;
+}
 
 std::string compileSlangGraphicsSource(RhiBackendType backend,
                                        const char* shaderPath,

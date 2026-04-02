@@ -63,3 +63,7 @@ bool findSlangBindingLayoutForBinary(const void* data,
 std::string patchMeshShaderSource(RhiBackendType backend, const std::string& source);
 std::string patchVisibilityShaderSource(RhiBackendType backend, const std::string& source);
 std::string patchComputeShaderSource(RhiBackendType backend, const std::string& source);
+
+// Set the directory used to cache compiled SPIR-V binaries between runs.
+// Must be called before any compileSlang*Binary calls. Empty string disables the cache.
+void setSlangShaderCacheDir(const std::string& dir);

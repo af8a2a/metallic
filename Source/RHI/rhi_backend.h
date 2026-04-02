@@ -609,6 +609,10 @@ struct RhiCreateInfo {
 
     // Optional Vulkan proxy lookup used by integrations such as Streamline manual hooking.
     void* vkGetDeviceProcAddrProxy = nullptr;
+
+    // Directory for on-disk pipeline / shader caches (created if absent).
+    std::string pipelineCacheDir = "cache/pipelines";
+    std::string shaderCacheDir   = "cache/shaders";
 };
 
 struct RhiBufferDesc {

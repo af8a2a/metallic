@@ -2,6 +2,7 @@
 #include "rhi_resource_utils.h"
 #include "slang_compiler.h"
 #include "vulkan_resource_handles.h"
+#include "vulkan_pipeline_cache.h"
 
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <optional>
 #include <set>
@@ -727,6 +729,7 @@ public:
         pickPhysicalDevice(createInfo.requireVulkan14);
         populateLimits();
         createLogicalDevice(createInfo);
+        m_pipelineCache.load(m_device, m_physicalDevice, createInfo.pipelineCacheDir);
         resolveStreamlinePresentHooks();
         createVmaAllocator();
         createCommandObjects();
@@ -779,6 +782,9 @@ public:
         if (m_allocator != nullptr) {
             vmaDestroyAllocator(m_allocator);
         }
+
+        m_pipelineCache.save();
+        m_pipelineCache.destroy();
 
         if (m_device != VK_NULL_HANDLE) {
             vkDestroyDevice(m_device, nullptr);
@@ -1211,12 +1217,15 @@ public:
         pipelineInfo.renderPass = VK_NULL_HANDLE;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
+        const auto t0gfx1 = std::chrono::high_resolution_clock::now();
         const VkResult result = vkCreateGraphicsPipelines(m_device,
-                                                          VK_NULL_HANDLE,
+                                                          m_pipelineCache.handle(),
                                                           1,
                                                           &pipelineInfo,
                                                           nullptr,
                                                           &pipeline);
+        const double msGfx1 = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - t0gfx1).count();
         vkDestroyShaderModule(m_device, shaderModule, nullptr);
         if (result != VK_SUCCESS) {
             errorMessage = "Failed to create Vulkan graphics pipeline (VkResult: " +
@@ -1225,6 +1234,8 @@ public:
             delete resource;
             return {};
         }
+        m_pipelineCache.recordCompile(msGfx1, /*isGraphics=*/true);
+        spdlog::debug("VulkanPipeline: graphics pipeline compiled in {:.1f} ms", msGfx1);
 
         resource->pipeline = pipeline;
         return RhiGraphicsPipelineHandle(resource);
@@ -1268,12 +1279,15 @@ public:
         pipelineInfo.layout = resource->layout;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
+        const auto t0cmp = std::chrono::high_resolution_clock::now();
         const VkResult result = vkCreateComputePipelines(m_device,
-                                                         VK_NULL_HANDLE,
+                                                         m_pipelineCache.handle(),
                                                          1,
                                                          &pipelineInfo,
                                                          nullptr,
                                                          &pipeline);
+        const double msCmp = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - t0cmp).count();
         vkDestroyShaderModule(m_device, shaderModule, nullptr);
         if (result != VK_SUCCESS) {
             errorMessage = "Failed to create Vulkan compute pipeline (VkResult: " +
@@ -1282,6 +1296,8 @@ public:
             delete resource;
             return {};
         }
+        m_pipelineCache.recordCompile(msCmp, /*isGraphics=*/false);
+        spdlog::debug("VulkanPipeline: compute pipeline compiled in {:.1f} ms", msCmp);
 
         resource->pipeline = pipeline;
         return RhiComputePipelineHandle(resource);
@@ -1290,6 +1306,7 @@ public:
     VkImage currentSwapchainImage() const {
         return m_imageIndex < m_swapchainImages.size() ? m_swapchainImages[m_imageIndex] : VK_NULL_HANDLE;
     }
+    VkPipelineCache pipelineCacheHandle() const { return m_pipelineCache.handle(); }
     VkImageView currentSwapchainImageView() const {
         return m_imageIndex < m_swapchainImageViews.size() ? m_swapchainImageViews[m_imageIndex] : VK_NULL_HANDLE;
     }
@@ -1508,11 +1525,16 @@ public:
         pipelineInfo.pDepthStencilState = desc.enableDepth ? &depthStencil : nullptr;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        const VkResult pipelineResult = vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+        const auto t0gfx2 = std::chrono::high_resolution_clock::now();
+        const VkResult pipelineResult = vkCreateGraphicsPipelines(m_device, m_pipelineCache.handle(), 1, &pipelineInfo, nullptr, &pipeline);
+        const double msGfx2 = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - t0gfx2).count();
         if (pipelineResult != VK_SUCCESS) {
             vkDestroyPipelineLayout(m_device, layout, nullptr);
             throw std::runtime_error("Failed to create Vulkan graphics pipeline.");
         }
+        m_pipelineCache.recordCompile(msGfx2, /*isGraphics=*/true);
+        spdlog::debug("VulkanPipeline: graphics pipeline compiled in {:.1f} ms", msGfx2);
 
         return std::make_unique<VulkanGraphicsPipeline>(m_device, layout, pipeline);
     }
@@ -2367,6 +2389,7 @@ public:
     RhiDeviceInfo m_deviceInfo{};
     RhiNativeHandles m_nativeHandles{};
     std::vector<std::string> m_enabledExtensions;
+    VulkanPipelineCacheManager m_pipelineCache;
     CommandContext m_commandContext;
 };
 
@@ -2423,6 +2446,10 @@ VkCommandBuffer getVulkanCurrentComputeCommandBuffer(RhiContext& context) {
 
 uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context) {
     return static_cast<VulkanContext&>(context).scheduleAsyncComputeSubmit();
+}
+
+VkPipelineCache getVulkanPipelineCache(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).pipelineCacheHandle();
 }
 
 bool vulkanHasExtension(RhiContext& context, const char* extensionName) {
