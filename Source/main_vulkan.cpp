@@ -40,6 +40,7 @@
 #include "cluster_lod_builder.h"
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
+#include "vulkan_transient_allocator.h"
 #include "streamline_context.h"
 
 #include <spdlog/spdlog.h>
@@ -1669,6 +1670,7 @@ int main() {
     logVisibilityMode();
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
+    frameGraphBackend.setTransientPool(&getVulkanTransientPool(*rhi));
     VulkanDescriptorManager descriptorManager;
     {
         const auto& limits = rhi->limits();

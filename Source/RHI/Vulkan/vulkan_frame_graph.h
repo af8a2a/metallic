@@ -49,10 +49,14 @@ private:
     VulkanTextureResource m_resource{};
 };
 
+class VulkanTransientPool;
+
 // Frame graph backend for Vulkan
 class VulkanFrameGraphBackend final : public RhiFrameGraphBackend {
 public:
     VulkanFrameGraphBackend(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator);
+
+    void setTransientPool(VulkanTransientPool* pool) { m_transientPool = pool; }
 
     std::unique_ptr<RhiTexture> createTexture(const RhiTextureDesc& desc) override;
     std::unique_ptr<RhiBuffer> createBuffer(const RhiBufferDesc& desc) override;
@@ -61,6 +65,7 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VmaAllocator m_allocator = nullptr;
+    VulkanTransientPool* m_transientPool = nullptr;
 };
 
 // Command buffer abstraction

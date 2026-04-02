@@ -1,4 +1,5 @@
 #include "vulkan_frame_graph.h"
+#include "vulkan_transient_allocator.h"
 
 #ifdef _WIN32
 
@@ -681,6 +682,14 @@ VulkanFrameGraphBackend::VulkanFrameGraphBackend(VkDevice device, VkPhysicalDevi
     : m_device(device), m_physicalDevice(physicalDevice), m_allocator(allocator) {}
 
 std::unique_ptr<RhiTexture> VulkanFrameGraphBackend::createTexture(const RhiTextureDesc& desc) {
+    // Try the transient pool first (avoids VMA allocation if a matching resource is cached).
+    if (m_transientPool) {
+        auto pooled = m_transientPool->acquireTexture(desc);
+        if (pooled) {
+            return pooled;
+        }
+    }
+
     VkFormat vkFormat = toVkFormat(desc.format);
     bool depth = isDepthFormat(desc.format);
 
@@ -717,6 +726,14 @@ std::unique_ptr<RhiTexture> VulkanFrameGraphBackend::createTexture(const RhiText
 }
 
 std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBufferDesc& desc) {
+    // Try the transient pool first.
+    if (m_transientPool) {
+        auto pooled = m_transientPool->acquireBuffer(desc);
+        if (pooled) {
+            return pooled;
+        }
+    }
+
     const VulkanResourceContextInfo& resourceContext = vulkanGetResourceContext();
     VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |

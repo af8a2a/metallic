@@ -36,3 +36,12 @@ uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context);
 
 // Returns the VkPipelineCache used for all pipeline compilations (VK_NULL_HANDLE if not loaded).
 VkPipelineCache getVulkanPipelineCache(RhiContext& context);
+
+// Transient memory subsystems (Phase 0.6)
+class VulkanUploadRing;
+class VulkanTransientPool;
+class VulkanReadbackHeap;
+
+VulkanUploadRing&    getVulkanUploadRing(RhiContext& context);
+VulkanTransientPool& getVulkanTransientPool(RhiContext& context);
+VulkanReadbackHeap&  getVulkanReadbackHeap(RhiContext& context);

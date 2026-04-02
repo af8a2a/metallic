@@ -3,6 +3,7 @@
 #include "slang_compiler.h"
 #include "vulkan_resource_handles.h"
 #include "vulkan_pipeline_cache.h"
+#include "vulkan_transient_allocator.h"
 
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
@@ -736,6 +737,14 @@ public:
         createDescriptorPool();
         recreateSwapchain();
         populateNativeHandles();
+
+        // Transient memory subsystems (after VMA is ready)
+        constexpr VkDeviceSize kUploadRingSize  = 64 * 1024 * 1024; // 64 MB per frame
+        constexpr VkDeviceSize kReadbackHeapSize = 16 * 1024 * 1024; // 16 MB per frame
+        m_uploadRing.init(m_device, m_allocator, kUploadRingSize, kMaxFramesInFlight);
+        m_transientPool.init(128, 64);
+        m_readbackHeap.init(m_device, m_allocator, kReadbackHeapSize, kMaxFramesInFlight);
+
         vulkanSetResourceContext(m_device,
                                  m_physicalDevice,
                                  m_allocator,
@@ -778,6 +787,10 @@ public:
         if (m_transferTimelineSemaphore != VK_NULL_HANDLE) {
             vkDestroySemaphore(m_device, m_transferTimelineSemaphore, nullptr);
         }
+
+        m_uploadRing.destroy();
+        m_transientPool.destroy();
+        m_readbackHeap.destroy();
 
         if (m_allocator != nullptr) {
             vmaDestroyAllocator(m_allocator);
@@ -853,6 +866,12 @@ public:
         }
 
         m_insideRendering = false;
+
+        // Notify transient subsystems that this frame's resources are safe to reuse.
+        m_uploadRing.beginFrame(m_frameIndex);
+        m_transientPool.beginFrame();
+        m_readbackHeap.beginFrame(m_frameIndex);
+
         return true;
     }
 
@@ -1308,6 +1327,9 @@ public:
         return m_imageIndex < m_swapchainImages.size() ? m_swapchainImages[m_imageIndex] : VK_NULL_HANDLE;
     }
     VkPipelineCache pipelineCacheHandle() const { return m_pipelineCache.handle(); }
+    VulkanUploadRing& uploadRing() { return m_uploadRing; }
+    VulkanTransientPool& transientPool() { return m_transientPool; }
+    VulkanReadbackHeap& readbackHeap() { return m_readbackHeap; }
     VkImageView currentSwapchainImageView() const {
         return m_imageIndex < m_swapchainImageViews.size() ? m_swapchainImageViews[m_imageIndex] : VK_NULL_HANDLE;
     }
@@ -2431,6 +2453,9 @@ public:
     RhiNativeHandles m_nativeHandles{};
     std::vector<std::string> m_enabledExtensions;
     VulkanPipelineCacheManager m_pipelineCache;
+    VulkanUploadRing m_uploadRing;
+    VulkanTransientPool m_transientPool;
+    VulkanReadbackHeap m_readbackHeap;
     CommandContext m_commandContext;
 };
 
@@ -2491,6 +2516,18 @@ uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context) {
 
 VkPipelineCache getVulkanPipelineCache(RhiContext& context) {
     return static_cast<VulkanContext&>(context).pipelineCacheHandle();
+}
+
+VulkanUploadRing& getVulkanUploadRing(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).uploadRing();
+}
+
+VulkanTransientPool& getVulkanTransientPool(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).transientPool();
+}
+
+VulkanReadbackHeap& getVulkanReadbackHeap(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).readbackHeap();
 }
 
 bool vulkanHasExtension(RhiContext& context, const char* extensionName) {
