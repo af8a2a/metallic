@@ -526,7 +526,8 @@ struct RhiFeatures {
     bool dynamicRendering = false;
     bool bufferDeviceAddress = false;
     bool meshShaders = false;
-    bool rayTracing = false;
+    bool rayTracing = false;          // ray query + acceleration structure
+    bool rayTracingPipeline = false;  // VK_KHR_ray_tracing_pipeline (raygen/miss/hit shaders + SBT)
     bool validation = false;
     bool synchronization2 = false;
     bool shaderDrawParameters = false;
@@ -534,6 +535,15 @@ struct RhiFeatures {
     bool descriptorIndexing = false;
     bool timelineSemaphore = false;
     bool externalHostMemory = false;
+};
+
+// Properties of the ray tracing pipeline implementation (populated when rayTracingPipeline == true).
+struct RhiRayTracingPipelineProperties {
+    uint32_t shaderGroupHandleSize      = 0;
+    uint32_t shaderGroupHandleAlignment = 0;
+    uint32_t shaderGroupBaseAlignment   = 0;
+    uint32_t maxRayRecursionDepth       = 0;
+    uint32_t maxRayDispatchInvocationCount = 0;
 };
 
 struct RhiLimits {
@@ -788,6 +798,10 @@ public:
     virtual const RhiLimits& limits() const = 0;
     virtual const RhiDeviceInfo& deviceInfo() const = 0;
     virtual const RhiNativeHandles& nativeHandles() const = 0;
+    virtual const RhiRayTracingPipelineProperties& rayTracingPipelineProperties() const {
+        static const RhiRayTracingPipelineProperties kEmpty{};
+        return kEmpty;
+    }
     virtual const IRhiInteropProvider* interopProvider() const { return nullptr; }
     virtual bool beginFrame() = 0;
     virtual void endFrame() = 0;

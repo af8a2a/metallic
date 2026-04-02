@@ -801,6 +801,7 @@ public:
     const RhiFeatures& features() const override { return m_features; }
     const RhiLimits& limits() const override { return m_limits; }
     const RhiDeviceInfo& deviceInfo() const override { return m_deviceInfo; }
+    const RhiRayTracingPipelineProperties& rayTracingPipelineProperties() const override { return m_rtPipelineProperties; }
     const RhiNativeHandles& nativeHandles() const override { return m_nativeHandles; }
 
     bool beginFrame() override {
@@ -1879,6 +1880,8 @@ public:
         const bool accelerationStructureAvailable =
             hasExtension(extensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         const bool rayQueryAvailable = hasExtension(extensions, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        const bool rayTracingPipelineAvailable =
+            hasExtension(extensions, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
         const bool deferredHostOperationsAvailable =
             hasExtension(extensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         const bool externalMemoryHostAvailable =
@@ -1897,6 +1900,8 @@ public:
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
         VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
         VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
         VkPhysicalDeviceSynchronization2Features sync2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
@@ -1909,7 +1914,8 @@ public:
         sync2Features.pNext = &meshShaderFeatures;
         meshShaderFeatures.pNext = &bufferDeviceAddressFeatures;
         bufferDeviceAddressFeatures.pNext = &rayQueryFeatures;
-        rayQueryFeatures.pNext = &accelerationStructureFeatures;
+        rayQueryFeatures.pNext = &rayTracingPipelineFeatures;
+        rayTracingPipelineFeatures.pNext = &accelerationStructureFeatures;
         vkGetPhysicalDeviceFeatures2(device, &features2);
 
         if (dynamicRenderingFeatures.dynamicRendering != VK_TRUE ||
@@ -1934,7 +1940,26 @@ public:
             deferredHostOperationsAvailable &&
             accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
             rayQueryFeatures.rayQuery == VK_TRUE;
+        m_features.rayTracingPipeline =
+            m_features.rayTracing &&
+            rayTracingPipelineAvailable &&
+            rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
         m_features.externalHostMemory = externalMemoryHostAvailable;
+
+        // Query RT pipeline properties when supported.
+        if (m_features.rayTracingPipeline) {
+            VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProps{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+            VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            props2.pNext = &rtPipelineProps;
+            vkGetPhysicalDeviceProperties2(device, &props2);
+            m_rtPipelineProperties.shaderGroupHandleSize      = rtPipelineProps.shaderGroupHandleSize;
+            m_rtPipelineProperties.shaderGroupHandleAlignment  = rtPipelineProps.shaderGroupHandleAlignment;
+            m_rtPipelineProperties.shaderGroupBaseAlignment    = rtPipelineProps.shaderGroupBaseAlignment;
+            m_rtPipelineProperties.maxRayRecursionDepth        = rtPipelineProps.maxRayRecursionDepth;
+            m_rtPipelineProperties.maxRayDispatchInvocationCount = rtPipelineProps.maxRayDispatchInvocationCount;
+        }
+
         return true;
     }
 
@@ -1970,6 +1995,9 @@ public:
             deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
             deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
             deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        }
+        if (m_features.rayTracingPipeline) {
+            deviceExtensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
         }
         if (m_features.externalHostMemory) {
             deviceExtensions.push_back(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
@@ -2022,10 +2050,15 @@ public:
         rayQueryFeatures.rayQuery = m_features.rayTracing ? VK_TRUE : VK_FALSE;
         rayQueryFeatures.pNext = &bufferDeviceAddressFeatures;
 
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+        rayTracingPipelineFeatures.rayTracingPipeline = m_features.rayTracingPipeline ? VK_TRUE : VK_FALSE;
+        rayTracingPipelineFeatures.pNext = &rayQueryFeatures;
+
         VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
         accelerationStructureFeatures.accelerationStructure = m_features.rayTracing ? VK_TRUE : VK_FALSE;
-        accelerationStructureFeatures.pNext = &rayQueryFeatures;
+        accelerationStructureFeatures.pNext = &rayTracingPipelineFeatures;
 
         VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
         descriptorIndexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
@@ -2094,6 +2127,13 @@ public:
         if (m_queueFamilies.transfer.has_value()) {
             vkGetDeviceQueue(m_device, m_queueFamilies.transfer.value(), 0, &m_transferQueue);
             spdlog::info("Vulkan: dedicated transfer queue (family {})", m_queueFamilies.transfer.value());
+        }
+
+        if (m_features.rayTracingPipeline) {
+            spdlog::info("Vulkan: ray tracing pipeline enabled (handleSize={}, baseAlign={}, maxRecursion={})",
+                         m_rtPipelineProperties.shaderGroupHandleSize,
+                         m_rtPipelineProperties.shaderGroupBaseAlignment,
+                         m_rtPipelineProperties.maxRayRecursionDepth);
         }
     }
 
@@ -2387,6 +2427,7 @@ public:
     RhiFeatures m_features{};
     RhiLimits m_limits{};
     RhiDeviceInfo m_deviceInfo{};
+    RhiRayTracingPipelineProperties m_rtPipelineProperties{};
     RhiNativeHandles m_nativeHandles{};
     std::vector<std::string> m_enabledExtensions;
     VulkanPipelineCacheManager m_pipelineCache;
