@@ -535,6 +535,7 @@ struct RhiFeatures {
     bool descriptorIndexing = false;
     bool timelineSemaphore = false;
     bool externalHostMemory = false;
+    bool descriptorBuffer = false;   // VK_EXT_descriptor_buffer
 };
 
 // Properties of the ray tracing pipeline implementation (populated when rayTracingPipeline == true).
@@ -596,6 +597,15 @@ struct RhiLimits {
 
     // Timing
     float timestampPeriod = 0.0f;
+
+    // Descriptor buffer (VK_EXT_descriptor_buffer) — zero when unsupported
+    uint64_t descriptorBufferOffsetAlignment = 0;
+    uint64_t sampledImageDescriptorSize = 0;
+    uint64_t samplerDescriptorSize = 0;
+    uint64_t storageImageDescriptorSize = 0;
+    uint64_t storageBufferDescriptorSize = 0;
+    uint64_t uniformBufferDescriptorSize = 0;
+    uint64_t accelerationStructureDescriptorSize = 0;
 };
 
 struct RhiDeviceInfo {

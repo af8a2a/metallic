@@ -238,7 +238,8 @@ bool buildPipelineResourceLayout(VkDevice device,
                                  const void* data,
                                  size_t size,
                                  VulkanPipelineResource& outResource,
-                                 std::string& errorMessage) {
+                                 std::string& errorMessage,
+                                 bool useDescriptorBuffer = false) {
     SlangShaderBindingLayout shaderLayout;
     if (!findSlangBindingLayoutForBinary(data, size, shaderLayout)) {
         errorMessage = "Missing cached Slang reflection for SPIR-V shader";
@@ -350,7 +351,7 @@ bool buildPipelineResourceLayout(VkDevice device,
     for (size_t setIndex = 0; setIndex < perSetBindings.size(); ++setIndex) {
         if (bindlessSetPresent && vulkanIsBindlessSetIndex(static_cast<uint32_t>(setIndex))) {
             VkDescriptorSetLayout bindlessSetLayout = VK_NULL_HANDLE;
-            if (!vulkanRetainBindlessSetLayout(device, bindlessSetLayout, &errorMessage)) {
+            if (!vulkanRetainBindlessSetLayout(device, bindlessSetLayout, &errorMessage, useDescriptorBuffer)) {
                 if (errorMessage.empty()) {
                     errorMessage = "Failed to acquire shared bindless descriptor set layout";
                 }
@@ -395,6 +396,9 @@ bool buildPipelineResourceLayout(VkDevice device,
             layoutInfo.pNext = &flagsInfo;
             layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
             layoutInfo.pBindings = bindings.data();
+        }
+        if (useDescriptorBuffer) {
+            layoutInfo.flags |= VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         }
 
         const VkResult result = vkCreateDescriptorSetLayout(device,
@@ -1124,7 +1128,7 @@ public:
 
         auto* resource = new VulkanPipelineResource{};
         resource->device = m_device;
-        if (!buildPipelineResourceLayout(m_device, source.data(), source.size(), *resource, errorMessage)) {
+        if (!buildPipelineResourceLayout(m_device, source.data(), source.size(), *resource, errorMessage, m_features.descriptorBuffer)) {
             vkDestroyShaderModule(m_device, shaderModule, nullptr);
             delete resource;
             return {};
@@ -1233,6 +1237,9 @@ public:
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState;
         pipelineInfo.pDepthStencilState = hasDepth ? &depthStencil : nullptr;
+        if (m_features.descriptorBuffer) {
+            pipelineInfo.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
         pipelineInfo.layout = resource->layout;
         pipelineInfo.renderPass = VK_NULL_HANDLE;
 
@@ -1285,7 +1292,7 @@ public:
 
         auto* resource = new VulkanPipelineResource{};
         resource->device = m_device;
-        if (!buildPipelineResourceLayout(m_device, source.data(), source.size(), *resource, errorMessage)) {
+        if (!buildPipelineResourceLayout(m_device, source.data(), source.size(), *resource, errorMessage, m_features.descriptorBuffer)) {
             vkDestroyShaderModule(m_device, shaderModule, nullptr);
             delete resource;
             return {};
@@ -1297,6 +1304,9 @@ public:
         pipelineInfo.stage.module = shaderModule;
         pipelineInfo.stage.pName = "main";
         pipelineInfo.layout = resource->layout;
+        if (m_features.descriptorBuffer) {
+            pipelineInfo.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
 
         VkPipeline pipeline = VK_NULL_HANDLE;
         const auto t0cmp = std::chrono::high_resolution_clock::now();
@@ -1327,6 +1337,9 @@ public:
         return m_imageIndex < m_swapchainImages.size() ? m_swapchainImages[m_imageIndex] : VK_NULL_HANDLE;
     }
     VkPipelineCache pipelineCacheHandle() const { return m_pipelineCache.handle(); }
+    const VkPhysicalDeviceDescriptorBufferPropertiesEXT& descriptorBufferProperties() const {
+        return m_descriptorBufferProperties;
+    }
     VulkanUploadRing& uploadRing() { return m_uploadRing; }
     VulkanTransientPool& transientPool() { return m_transientPool; }
     VulkanReadbackHeap& readbackHeap() { return m_readbackHeap; }
@@ -1546,6 +1559,9 @@ public:
         pipelineInfo.renderPass = VK_NULL_HANDLE;
         pipelineInfo.subpass = 0;
         pipelineInfo.pDepthStencilState = desc.enableDepth ? &depthStencil : nullptr;
+        if (m_features.descriptorBuffer) {
+            pipelineInfo.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
 
         VkPipeline pipeline = VK_NULL_HANDLE;
         const auto t0gfx2 = std::chrono::high_resolution_clock::now();
@@ -1842,6 +1858,40 @@ public:
         // Timing
         m_limits.timestampPeriod = vkLimits.timestampPeriod;
 
+        // Descriptor buffer properties (VK_EXT_descriptor_buffer)
+        if (m_features.descriptorBuffer) {
+            m_descriptorBufferProperties = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
+            VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            props2.pNext = &m_descriptorBufferProperties;
+            vkGetPhysicalDeviceProperties2(m_physicalDevice, &props2);
+
+            m_limits.descriptorBufferOffsetAlignment =
+                m_descriptorBufferProperties.descriptorBufferOffsetAlignment;
+            m_limits.sampledImageDescriptorSize =
+                m_descriptorBufferProperties.sampledImageDescriptorSize;
+            m_limits.samplerDescriptorSize =
+                m_descriptorBufferProperties.samplerDescriptorSize;
+            m_limits.storageImageDescriptorSize =
+                m_descriptorBufferProperties.storageImageDescriptorSize;
+            m_limits.storageBufferDescriptorSize =
+                m_descriptorBufferProperties.storageBufferDescriptorSize;
+            m_limits.uniformBufferDescriptorSize =
+                m_descriptorBufferProperties.uniformBufferDescriptorSize;
+            m_limits.accelerationStructureDescriptorSize =
+                m_descriptorBufferProperties.accelerationStructureDescriptorSize;
+
+            spdlog::info("Vulkan: descriptor buffer enabled "
+                         "(offsetAlign={}, sampledImg={}, sampler={}, storageImg={}, storageBuf={}, ubo={}, as={})",
+                         m_limits.descriptorBufferOffsetAlignment,
+                         m_limits.sampledImageDescriptorSize,
+                         m_limits.samplerDescriptorSize,
+                         m_limits.storageImageDescriptorSize,
+                         m_limits.storageBufferDescriptorSize,
+                         m_limits.uniformBufferDescriptorSize,
+                         m_limits.accelerationStructureDescriptorSize);
+        }
+
         // Validate push constant size
         if (m_limits.maxPushConstantSize < kPushConstantSize) {
             spdlog::warn("Device maxPushConstantsSize ({}) < required kPushConstantSize ({})",
@@ -1908,6 +1958,8 @@ public:
             hasExtension(extensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         const bool externalMemoryHostAvailable =
             hasExtension(extensions, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+        const bool descriptorBufferAvailable =
+            hasExtension(extensions, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
         if (!dynamicRenderingAvailable || !sync2Available) {
             return false;
         }
@@ -1929,6 +1981,8 @@ public:
         VkPhysicalDeviceSynchronization2Features sync2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
         VkPhysicalDeviceVulkan11Features vulkan11Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+        VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.pNext = &vulkan11Features;
         vulkan11Features.pNext = &dynamicRenderingFeatures;
@@ -1938,6 +1992,7 @@ public:
         bufferDeviceAddressFeatures.pNext = &rayQueryFeatures;
         rayQueryFeatures.pNext = &rayTracingPipelineFeatures;
         rayTracingPipelineFeatures.pNext = &accelerationStructureFeatures;
+        accelerationStructureFeatures.pNext = &descriptorBufferFeatures;
         vkGetPhysicalDeviceFeatures2(device, &features2);
 
         if (dynamicRenderingFeatures.dynamicRendering != VK_TRUE ||
@@ -1967,6 +2022,9 @@ public:
             rayTracingPipelineAvailable &&
             rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
         m_features.externalHostMemory = externalMemoryHostAvailable;
+        m_features.descriptorBuffer =
+            descriptorBufferAvailable &&
+            descriptorBufferFeatures.descriptorBuffer == VK_TRUE;
 
         // Query RT pipeline properties when supported.
         if (m_features.rayTracingPipeline) {
@@ -2023,6 +2081,9 @@ public:
         }
         if (m_features.externalHostMemory) {
             deviceExtensions.push_back(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+        }
+        if (m_features.descriptorBuffer) {
+            deviceExtensions.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
         }
         for (auto ext : createInfo.extraDeviceExtensions) {
             deviceExtensions.push_back(ext);
@@ -2082,6 +2143,10 @@ public:
         accelerationStructureFeatures.accelerationStructure = m_features.rayTracing ? VK_TRUE : VK_FALSE;
         accelerationStructureFeatures.pNext = &rayTracingPipelineFeatures;
 
+        VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferEnableFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+        descriptorBufferEnableFeatures.descriptorBuffer = m_features.descriptorBuffer ? VK_TRUE : VK_FALSE;
+
         VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
         descriptorIndexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
         descriptorIndexingFeatures.runtimeDescriptorArray = VK_TRUE;
@@ -2099,6 +2164,12 @@ public:
         VkPhysicalDeviceSynchronization2Features sync2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
         sync2Features.synchronization2 = VK_TRUE;
         sync2Features.pNext = &descriptorIndexingFeatures;
+
+        // Descriptor buffer (VK_EXT_descriptor_buffer) — chain only when enabled
+        if (m_features.descriptorBuffer) {
+            descriptorBufferEnableFeatures.pNext = sync2Features.pNext;
+            sync2Features.pNext = &descriptorBufferEnableFeatures;
+        }
 
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
         dynamicRenderingFeatures.dynamicRendering = VK_TRUE;
@@ -2450,6 +2521,8 @@ public:
     RhiLimits m_limits{};
     RhiDeviceInfo m_deviceInfo{};
     RhiRayTracingPipelineProperties m_rtPipelineProperties{};
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT m_descriptorBufferProperties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
     RhiNativeHandles m_nativeHandles{};
     std::vector<std::string> m_enabledExtensions;
     VulkanPipelineCacheManager m_pipelineCache;
@@ -2516,6 +2589,11 @@ uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context) {
 
 VkPipelineCache getVulkanPipelineCache(RhiContext& context) {
     return static_cast<VulkanContext&>(context).pipelineCacheHandle();
+}
+
+const VkPhysicalDeviceDescriptorBufferPropertiesEXT& getVulkanDescriptorBufferProperties(
+    RhiContext& context) {
+    return static_cast<VulkanContext&>(context).descriptorBufferProperties();
 }
 
 VulkanUploadRing& getVulkanUploadRing(RhiContext& context) {

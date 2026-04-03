@@ -94,7 +94,8 @@ private:
                                            uint32_t shaderGroupHandleSize,
                                            uint32_t shaderGroupHandleAlignment,
                                            uint32_t shaderGroupBaseAlignment,
-                                           std::string& errorMessage);
+                                           std::string& errorMessage,
+                                           bool useDescriptorBuffer);
 
     VkDevice     m_device    = VK_NULL_HANDLE;
     VkPipeline   m_pipeline  = VK_NULL_HANDLE;

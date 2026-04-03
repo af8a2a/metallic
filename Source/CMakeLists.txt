@@ -87,6 +87,7 @@ elseif(WIN32)
         RHI/Vulkan/vulkan_backend.cpp
         RHI/Vulkan/vulkan_frame_graph.cpp
         RHI/Vulkan/vulkan_descriptor_manager.cpp
+        RHI/Vulkan/vulkan_descriptor_buffer.cpp
         RHI/Vulkan/vulkan_pipeline_cache.cpp
         RHI/Vulkan/vulkan_rt_pipeline.cpp
         RHI/Vulkan/vulkan_transient_allocator.cpp

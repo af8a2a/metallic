@@ -37,6 +37,10 @@ uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context);
 // Returns the VkPipelineCache used for all pipeline compilations (VK_NULL_HANDLE if not loaded).
 VkPipelineCache getVulkanPipelineCache(RhiContext& context);
 
+// Returns VK_EXT_descriptor_buffer properties (zeroed if extension not enabled).
+const VkPhysicalDeviceDescriptorBufferPropertiesEXT& getVulkanDescriptorBufferProperties(
+    RhiContext& context);
+
 // Transient memory subsystems (Phase 0.6)
 class VulkanUploadRing;
 class VulkanTransientPool;

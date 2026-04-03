@@ -131,7 +131,8 @@ createVulkanRayTracingPipelineImpl(VkDevice device,
                                    uint32_t handleSize,
                                    uint32_t handleAlignment,
                                    uint32_t baseAlignment,
-                                   std::string& errorMessage) {
+                                   std::string& errorMessage,
+                                   bool useDescriptorBuffer = false) {
     const auto& rtFn = ensureRTFunctions(device);
     if (!rtFn.valid()) {
         errorMessage = "Failed to load RT pipeline function pointers";
@@ -146,7 +147,7 @@ createVulkanRayTracingPipelineImpl(VkDevice device,
     // --- 0. Build pipeline layout (bindless set + push constants) ---
 
     VkDescriptorSetLayout bindlessLayout = VK_NULL_HANDLE;
-    if (!vulkanRetainBindlessSetLayout(device, bindlessLayout, &errorMessage)) {
+    if (!vulkanRetainBindlessSetLayout(device, bindlessLayout, &errorMessage, useDescriptorBuffer)) {
         return nullptr;
     }
 
@@ -286,6 +287,9 @@ createVulkanRayTracingPipelineImpl(VkDevice device,
     pipelineInfo.pGroups = groups.data();
     pipelineInfo.maxPipelineRayRecursionDepth = desc.maxRecursionDepth;
     pipelineInfo.layout = pipelineLayout;
+    if (useDescriptorBuffer) {
+        pipelineInfo.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    }
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     const auto t0 = std::chrono::high_resolution_clock::now();
@@ -458,7 +462,7 @@ std::unique_ptr<VulkanRayTracingPipeline> createVulkanRayTracingPipeline(
     return createVulkanRayTracingPipelineImpl(
         device, physicalDevice, allocator, pipelineCache,
         desc, rtProps.shaderGroupHandleSize, rtProps.shaderGroupHandleAlignment,
-        rtProps.shaderGroupBaseAlignment, errorMessage);
+        rtProps.shaderGroupBaseAlignment, errorMessage, context.features().descriptorBuffer);
 }
 
 void vulkanTraceRays(RhiContext& context,

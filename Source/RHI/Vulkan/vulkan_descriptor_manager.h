@@ -69,7 +69,39 @@ struct PendingAccelerationStructureBinding {
     bool dirty = false;
 };
 
-class VulkanDescriptorManager {
+struct VulkanPipelineResource;
+
+// Abstract base for descriptor backends (pool-based or descriptor-buffer-based).
+class IVulkanDescriptorBackend {
+public:
+    virtual ~IVulkanDescriptorBackend() = default;
+    virtual void resetFrame() = 0;
+    virtual PendingBufferBinding uploadInlineUniformData(const void* data, size_t size) = 0;
+    virtual void updateBindlessSampledTextures(const RhiTexture* const* textures,
+                                                uint32_t startIndex,
+                                                uint32_t count) = 0;
+    virtual bool updateBindlessSampledTexture(uint32_t index, const RhiTexture* texture) = 0;
+    virtual bool updateBindlessSampler(uint32_t index, const RhiSampler* sampler) = 0;
+    virtual bool updateBindlessStorageImage(uint32_t index, const RhiTexture* texture) = 0;
+    virtual bool updateBindlessStorageBuffer(uint32_t index,
+                                              const RhiBuffer* buffer,
+                                              VkDeviceSize offset = 0,
+                                              VkDeviceSize range = VK_WHOLE_SIZE) = 0;
+    virtual bool updateBindlessAccelerationStructure(
+        uint32_t index,
+        const RhiAccelerationStructure* accelerationStructure) = 0;
+    virtual void flushAndBind(
+        VkCommandBuffer cmd,
+        VkPipelineBindPoint bindPoint,
+        const VulkanPipelineResource& pipeline,
+        const std::array<PendingBufferBinding, kMaxBufferBindings>& buffers,
+        const std::array<PendingTextureBinding, kMaxTextureBindings>& textures,
+        const std::array<PendingSamplerBinding, kMaxSamplerBindings>& samplers,
+        const std::array<PendingAccelerationStructureBinding,
+                         kMaxAccelerationStructureBindings>& accelerationStructures) = 0;
+};
+
+class VulkanDescriptorManager : public IVulkanDescriptorBackend {
 public:
     void init(VkDevice device,
               VkPhysicalDevice physicalDevice,
@@ -78,21 +110,21 @@ public:
               VkDeviceSize nonCoherentAtomSize,
               VkDeviceSize maxUniformBufferRange);
     void destroy();
-    void resetFrame();
+    void resetFrame() override;
 
-    PendingBufferBinding uploadInlineUniformData(const void* data, size_t size);
+    PendingBufferBinding uploadInlineUniformData(const void* data, size_t size) override;
     void updateBindlessSampledTextures(const RhiTexture* const* textures,
                                        uint32_t startIndex,
-                                       uint32_t count);
-    bool updateBindlessSampledTexture(uint32_t index, const RhiTexture* texture);
-    bool updateBindlessSampler(uint32_t index, const RhiSampler* sampler);
-    bool updateBindlessStorageImage(uint32_t index, const RhiTexture* texture);
+                                       uint32_t count) override;
+    bool updateBindlessSampledTexture(uint32_t index, const RhiTexture* texture) override;
+    bool updateBindlessSampler(uint32_t index, const RhiSampler* sampler) override;
+    bool updateBindlessStorageImage(uint32_t index, const RhiTexture* texture) override;
     bool updateBindlessStorageBuffer(uint32_t index,
                                      const RhiBuffer* buffer,
                                      VkDeviceSize offset = 0,
-                                     VkDeviceSize range = VK_WHOLE_SIZE);
+                                     VkDeviceSize range = VK_WHOLE_SIZE) override;
     bool updateBindlessAccelerationStructure(uint32_t index,
-                                             const RhiAccelerationStructure* accelerationStructure);
+                                             const RhiAccelerationStructure* accelerationStructure) override;
 
     void flushAndBind(VkCommandBuffer cmd,
                       VkPipelineBindPoint bindPoint,
@@ -101,7 +133,7 @@ public:
                       const std::array<PendingTextureBinding, kMaxTextureBindings>& textures,
                       const std::array<PendingSamplerBinding, kMaxSamplerBindings>& samplers,
                       const std::array<PendingAccelerationStructureBinding,
-                                       kMaxAccelerationStructureBindings>& accelerationStructures);
+                                       kMaxAccelerationStructureBindings>& accelerationStructures) override;
 
 private:
     struct FrameUniformUpload {
@@ -137,7 +169,8 @@ private:
 
 bool vulkanRetainBindlessSetLayout(VkDevice device,
                                    VkDescriptorSetLayout& outLayout,
-                                   std::string* errorMessage = nullptr);
+                                   std::string* errorMessage = nullptr,
+                                   bool useDescriptorBuffer = false);
 void vulkanReleaseBindlessSetLayout(VkDevice device);
 bool vulkanIsBindlessSetIndex(uint32_t setIndex);
 

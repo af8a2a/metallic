@@ -110,7 +110,7 @@ private:
 class VulkanRenderCommandEncoder final : public RhiRenderCommandEncoder {
 public:
     VulkanRenderCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
-                               VulkanDescriptorManager* descriptorManager,
+                               IVulkanDescriptorBackend* descriptorManager,
                                VulkanResourceStateTracker* stateTracker)
         : m_commandBuffer(commandBuffer), m_device(device),
           m_descriptorManager(descriptorManager), m_stateTracker(stateTracker) {
@@ -332,7 +332,7 @@ private:
 
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
-    VulkanDescriptorManager* m_descriptorManager = nullptr;
+    IVulkanDescriptorBackend* m_descriptorManager = nullptr;
     VulkanResourceStateTracker* m_stateTracker = nullptr;
     const VulkanPipelineResource* m_boundPipeline = nullptr;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
@@ -346,7 +346,7 @@ private:
 class VulkanComputeCommandEncoder final : public RhiComputeCommandEncoder {
 public:
     VulkanComputeCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
-                                VulkanDescriptorManager* descriptorManager,
+                                IVulkanDescriptorBackend* descriptorManager,
                                 VulkanResourceStateTracker* stateTracker)
         : m_commandBuffer(commandBuffer), m_device(device),
           m_descriptorManager(descriptorManager), m_stateTracker(stateTracker) {
@@ -540,7 +540,7 @@ private:
 
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
-    VulkanDescriptorManager* m_descriptorManager = nullptr;
+    IVulkanDescriptorBackend* m_descriptorManager = nullptr;
     VulkanResourceStateTracker* m_stateTracker = nullptr;
     const VulkanPipelineResource* m_boundPipeline = nullptr;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
@@ -767,7 +767,7 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
 // --- VulkanCommandBuffer ---
 
 VulkanCommandBuffer::VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
-                                         VulkanDescriptorManager* descriptorManager,
+                                         IVulkanDescriptorBackend* descriptorManager,
                                          VulkanResourceStateTracker* stateTracker,
                                          VkCommandBuffer asyncComputeCommandBuffer)
     : m_commandBuffer(commandBuffer), m_asyncComputeCommandBuffer(asyncComputeCommandBuffer),

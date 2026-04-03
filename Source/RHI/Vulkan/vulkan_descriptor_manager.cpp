@@ -76,7 +76,7 @@ VkDescriptorPool createBindlessDescriptorPool(VkDevice device) {
     return pool;
 }
 
-VkDescriptorSetLayout createBindlessSetLayout(VkDevice device) {
+VkDescriptorSetLayout createBindlessSetLayout(VkDevice device, bool useDescriptorBuffer) {
     std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
     bindings[0].binding = kVulkanBindlessSampledImageBinding;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -116,6 +116,9 @@ VkDescriptorSetLayout createBindlessSetLayout(VkDevice device) {
     layoutInfo.pNext = &flagsInfo;
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
     layoutInfo.pBindings = bindings.data();
+    if (useDescriptorBuffer) {
+        layoutInfo.flags |= VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    }
 
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     checkVk(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &layout),
@@ -690,7 +693,8 @@ VulkanDescriptorManager::FrameState& VulkanDescriptorManager::currentFrame() {
 
 bool vulkanRetainBindlessSetLayout(VkDevice device,
                                    VkDescriptorSetLayout& outLayout,
-                                   std::string* errorMessage) {
+                                   std::string* errorMessage,
+                                   bool useDescriptorBuffer) {
     if (device == VK_NULL_HANDLE) {
         if (errorMessage) {
             *errorMessage = "Cannot create bindless layout without a valid Vulkan device";
@@ -703,7 +707,7 @@ bool vulkanRetainBindlessSetLayout(VkDevice device,
     SharedBindlessLayoutState& state = g_bindlessLayouts[bindlessLayoutKey(device)];
     if (state.layout == VK_NULL_HANDLE) {
         try {
-            state.layout = createBindlessSetLayout(device);
+            state.layout = createBindlessSetLayout(device, useDescriptorBuffer);
         } catch (const std::exception& e) {
             g_bindlessLayouts.erase(bindlessLayoutKey(device));
             if (errorMessage) {

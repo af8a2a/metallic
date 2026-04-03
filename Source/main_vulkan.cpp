@@ -40,6 +40,7 @@
 #include "cluster_lod_builder.h"
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
+#include "vulkan_descriptor_buffer.h"
 #include "vulkan_transient_allocator.h"
 #include "streamline_context.h"
 
@@ -1671,21 +1672,34 @@ int main() {
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
     frameGraphBackend.setTransientPool(&getVulkanTransientPool(*rhi));
-    VulkanDescriptorManager descriptorManager;
+    VulkanDescriptorManager legacyDescriptorManager;
+    VulkanDescriptorBufferManager descriptorBufferManager;
+    IVulkanDescriptorBackend* descriptorBackend = nullptr;
     {
         const auto& limits = rhi->limits();
-        descriptorManager.init(vkDevice, vkPhysicalDevice, vmaAllocator,
-                               limits.minUniformBufferOffsetAlignment,
-                               limits.nonCoherentAtomSize,
-                               limits.maxUniformBufferRange);
+        if (rhi->features().descriptorBuffer) {
+            const auto& dbProps = getVulkanDescriptorBufferProperties(*rhi);
+            descriptorBufferManager.init(vkDevice, vkPhysicalDevice, vmaAllocator, dbProps,
+                                         limits.minUniformBufferOffsetAlignment,
+                                         limits.nonCoherentAtomSize,
+                                         limits.maxUniformBufferRange);
+            descriptorBackend = &descriptorBufferManager;
+            spdlog::info("Vulkan: using VK_EXT_descriptor_buffer path");
+        } else {
+            legacyDescriptorManager.init(vkDevice, vkPhysicalDevice, vmaAllocator,
+                                         limits.minUniformBufferOffsetAlignment,
+                                         limits.nonCoherentAtomSize,
+                                         limits.maxUniformBufferRange);
+            descriptorBackend = &legacyDescriptorManager;
+        }
     }
     if (previewSceneReady) {
         if (!previewMaterials.textureViews.empty()) {
-            descriptorManager.updateBindlessSampledTextures(previewMaterials.textureViews.data(),
+            descriptorBackend->updateBindlessSampledTextures(previewMaterials.textureViews.data(),
                                                             0,
                                                             static_cast<uint32_t>(previewMaterials.textureViews.size()));
         }
-        descriptorManager.updateBindlessSampler(METALLIC_BINDLESS_SCENE_SAMPLER_INDEX,
+        descriptorBackend->updateBindlessSampler(METALLIC_BINDLESS_SCENE_SAMPLER_INDEX,
                                                 &previewMaterials.sampler);
         runtimeContext.useBindlessSceneTextures = true;
     }
@@ -1715,7 +1729,8 @@ int main() {
     if (!recreateSceneColorTexture(createInfo.width, createInfo.height)) {
         spdlog::error("Failed to create offscreen scene color texture");
         rhi->waitIdle();
-        descriptorManager.destroy();
+        descriptorBufferManager.destroy();
+        legacyDescriptorManager.destroy();
         atmosphereTextures.release();
         shadowResources.release();
         rhiReleaseHandle(shadowDummyTexture);
@@ -1810,7 +1825,8 @@ int main() {
         ImGui::DestroyContext();
         postBuilder.frameGraph().reset();
         sceneGraph.reset();
-        descriptorManager.destroy();
+        descriptorBufferManager.destroy();
+        legacyDescriptorManager.destroy();
         atmosphereTextures.release();
         shadowResources.release();
         rhiReleaseHandle(shadowDummyTexture);
@@ -2104,7 +2120,7 @@ int main() {
                               static_cast<VkFormat>(native.colorFormat),
                               RhiTextureUsage::RenderTarget);
 
-        descriptorManager.resetFrame();
+        descriptorBackend->resetFrame();
         const auto barrierStats = imageTracker.stats();  // capture before clear
         imageTracker.clear();
         if (backbufferImage != VK_NULL_HANDLE) {
@@ -2116,7 +2132,7 @@ int main() {
 
         VulkanCommandBuffer commandBuffer(getVulkanCurrentCommandBuffer(*rhi),
                                           vkDevice,
-                                          &descriptorManager,
+                                          descriptorBackend,
                                           &imageTracker,
                                           getVulkanCurrentComputeCommandBuffer(*rhi));
 

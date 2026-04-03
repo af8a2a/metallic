@@ -72,7 +72,7 @@ private:
 class VulkanCommandBuffer final : public RhiCommandBuffer {
 public:
     VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
-                        VulkanDescriptorManager* descriptorManager,
+                        IVulkanDescriptorBackend* descriptorManager,
                         VulkanResourceStateTracker* stateTracker,
                         VkCommandBuffer asyncComputeCommandBuffer = VK_NULL_HANDLE);
 
@@ -91,7 +91,7 @@ private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkCommandBuffer m_asyncComputeCommandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
-    VulkanDescriptorManager* m_descriptorManager = nullptr;
+    IVulkanDescriptorBackend* m_descriptorManager = nullptr;
     VulkanResourceStateTracker* m_stateTracker = nullptr;
     RhiQueueHint m_nextPassHint = RhiQueueHint::Auto;
     bool m_hadAsyncComputeWork = false;
