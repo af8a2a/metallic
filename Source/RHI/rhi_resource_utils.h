@@ -87,6 +87,10 @@ void vulkanSetResourceContext(VkDevice device,
 const VulkanResourceContextInfo& vulkanGetResourceContext();
 void vulkanClearResourceContext();
 void vulkanSetStreamlineHookedCommandsEnabled(bool enabled);
+
+class VulkanUploadService;
+void vulkanSetUploadService(VulkanUploadService* service);
+
 VkResult vulkanBeginCommandBufferHooked(VkCommandBuffer commandBuffer,
                                         const VkCommandBufferBeginInfo* beginInfo);
 void vulkanCmdBindPipelineHooked(VkCommandBuffer commandBuffer,

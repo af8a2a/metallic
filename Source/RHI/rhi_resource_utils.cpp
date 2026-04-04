@@ -156,6 +156,7 @@ void rhiReleaseNativeHandle(void* handle) {
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
 #include "vulkan_resource_handles.h"
+#include "vulkan_upload_service.h"
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
@@ -168,6 +169,7 @@ namespace {
 
 // Stored Vulkan context handles for resource creation (set during first call)
 VulkanResourceContextInfo g_vkResCtx;
+VulkanUploadService* g_uploadService = nullptr;
 
 template <typename Fn>
 Fn loadHookedDeviceProc(PFN_vkGetDeviceProcAddr deviceProcAddrProxy,
@@ -333,6 +335,10 @@ void vulkanSetStreamlineHookedCommandsEnabled(bool enabled) {
     g_vkResCtx.streamlineHooksEnabled = enabled;
 }
 
+void vulkanSetUploadService(VulkanUploadService* service) {
+    g_uploadService = service;
+}
+
 VkResult vulkanBeginCommandBufferHooked(VkCommandBuffer commandBuffer,
                                         const VkCommandBufferBeginInfo* beginInfo) {
     if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.vkBeginCommandBufferProxy) {
@@ -385,6 +391,7 @@ void vulkanClearResourceContext() {
         vkDestroyCommandPool(g_vkResCtx.device, g_uploadPool, nullptr);
         g_uploadPool = VK_NULL_HANDLE;
     }
+    g_uploadService = nullptr;
     g_vkResCtx = {};
 }
 
@@ -449,7 +456,14 @@ void rhiUploadTexture2D(const RhiTexture& texture,
     const bool deferShaderReadTransition = res->mipLevels > 1 && mipLevel == 0;
     size_t imageSize = bytesPerRow * height;
 
-    // Create staging buffer
+    if (g_uploadService) {
+        g_uploadService->immediateUploadTexture2D(res->image, width, height,
+                                                   data, imageSize, mipLevel,
+                                                   deferShaderReadTransition);
+        return;
+    }
+
+    // Fallback: legacy one-shot staging path
     VmaBufferCreateInfo stagingVmaInfo{};
     stagingVmaInfo.device = g_vkResCtx.device;
     stagingVmaInfo.allocator = g_vkResCtx.allocator;
@@ -530,6 +544,13 @@ void rhiUploadTexture3D(const RhiTexture& texture,
 
     size_t imageSize = bytesPerImage * depth;
 
+    if (g_uploadService) {
+        g_uploadService->immediateUploadTexture3D(res->image, width, height, depth,
+                                                   data, imageSize, mipLevel);
+        return;
+    }
+
+    // Fallback: legacy one-shot staging path
     VmaBufferCreateInfo stagingVmaInfo{};
     stagingVmaInfo.device = g_vkResCtx.device;
     stagingVmaInfo.allocator = g_vkResCtx.allocator;

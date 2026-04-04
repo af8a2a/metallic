@@ -42,6 +42,7 @@
 #include "vulkan_frame_graph.h"
 #include "vulkan_descriptor_buffer.h"
 #include "vulkan_transient_allocator.h"
+#include "vulkan_upload_service.h"
 #include "streamline_context.h"
 
 #include <spdlog/spdlog.h>
@@ -1693,6 +1694,22 @@ int main() {
             descriptorBackend = &legacyDescriptorManager;
         }
     }
+    // --- Upload / readback service layer ---
+    VulkanUploadService uploadService;
+    {
+        VkQueue gfxQueue = nativeToVkHandle<VkQueue>(native.queue);
+        VkQueue xferQueue = nativeToVkHandle<VkQueue>(native.transferQueue);
+        uint32_t xferFamily = native.transferQueueFamily;
+        VkSemaphore xferSemaphore = nativeToVkHandle<VkSemaphore>(native.transferTimelineSemaphore);
+        uploadService.init(vkDevice, vmaAllocator,
+                           gfxQueue, native.graphicsQueueFamily,
+                           xferQueue, xferFamily, xferSemaphore,
+                           &getVulkanUploadRing(*rhi));
+        vulkanSetUploadService(&uploadService);
+    }
+    VulkanReadbackService readbackService;
+    readbackService.init(vkDevice, &getVulkanReadbackHeap(*rhi), 2);
+
     if (previewSceneReady) {
         if (!previewMaterials.textureViews.empty()) {
             descriptorBackend->updateBindlessSampledTextures(previewMaterials.textureViews.data(),
@@ -1729,6 +1746,9 @@ int main() {
     if (!recreateSceneColorTexture(createInfo.width, createInfo.height)) {
         spdlog::error("Failed to create offscreen scene color texture");
         rhi->waitIdle();
+        uploadService.destroy();
+        vulkanSetUploadService(nullptr);
+        readbackService.destroy();
         descriptorBufferManager.destroy();
         legacyDescriptorManager.destroy();
         atmosphereTextures.release();
@@ -1819,6 +1839,9 @@ int main() {
 
     auto cleanupRuntimeResources = [&]() {
         rhi->waitIdle();
+        vulkanSetUploadService(nullptr);
+        uploadService.destroy();
+        readbackService.destroy();
         streamlineCtx.shutdown();
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
@@ -1986,6 +2009,7 @@ int main() {
         return 1;
     }
 
+    uint32_t uploadFrameCounter = 0;
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("VulkanRenderGraphFrame");
 
@@ -2121,6 +2145,8 @@ int main() {
                               RhiTextureUsage::RenderTarget);
 
         descriptorBackend->resetFrame();
+        readbackService.beginFrame(uploadFrameCounter);
+        ++uploadFrameCounter;
         const auto barrierStats = imageTracker.stats();  // capture before clear
         imageTracker.clear();
         if (backbufferImage != VK_NULL_HANDLE) {
@@ -2135,6 +2161,13 @@ int main() {
                                           descriptorBackend,
                                           &imageTracker,
                                           getVulkanCurrentComputeCommandBuffer(*rhi));
+
+        // Record any deferred uploads staged since last frame
+        VkCommandBuffer nativeCmd = getVulkanCurrentCommandBuffer(*rhi);
+        if (uploadService.hasPendingUploads()) {
+            uploadService.recordPendingUploads(nativeCmd);
+        }
+        readbackService.recordPendingReadbacks(nativeCmd);
 
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
