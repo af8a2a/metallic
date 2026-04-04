@@ -12,6 +12,7 @@
 // Forward declarations
 class VulkanContext;
 class VulkanOwnedTexture;
+class VulkanGpuProfiler;
 
 // Imported texture (wraps swapchain image, non-owning)
 class VulkanImportedTexture final : public RhiTexture {
@@ -74,6 +75,7 @@ public:
     VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
                         IVulkanDescriptorBackend* descriptorManager,
                         VulkanResourceStateTracker* stateTracker,
+                        VulkanGpuProfiler* gpuProfiler = nullptr,
                         VkCommandBuffer asyncComputeCommandBuffer = VK_NULL_HANDLE);
 
     std::unique_ptr<RhiRenderCommandEncoder> beginRenderPass(const RhiRenderPassDesc& desc) override;
@@ -93,6 +95,7 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     IVulkanDescriptorBackend* m_descriptorManager = nullptr;
     VulkanResourceStateTracker* m_stateTracker = nullptr;
+    VulkanGpuProfiler* m_gpuProfiler = nullptr;
     RhiQueueHint m_nextPassHint = RhiQueueHint::Auto;
     bool m_hadAsyncComputeWork = false;
 };

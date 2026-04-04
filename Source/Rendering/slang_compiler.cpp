@@ -28,7 +28,7 @@ struct SlangTargetConfig {
     const char* backendLabel = nullptr;
 };
 
-void logDiagnostics(const char* prefix, slang::IBlob* diagnostics);
+void logDiagnostics(const char* prefix, const char* shaderPath, slang::IBlob* diagnostics);
 
 constexpr uint32_t kSpirvHeaderWordCount = 5;
 constexpr uint16_t kSpirvOpEntryPoint = 15;
@@ -44,6 +44,24 @@ constexpr uint32_t kSpirvDecorationPerPrimitiveExt = 5271;
 
 std::mutex g_bindingLayoutCacheMutex;
 std::unordered_map<uint64_t, SlangShaderBindingLayout> g_bindingLayoutCache;
+std::mutex g_recentDiagnosticsMutex;
+std::vector<SlangDiagnosticRecord> g_recentDiagnostics;
+constexpr size_t kMaxRecentDiagnostics = 12;
+
+void recordDiagnostic(const char* stage, const char* shaderPath, std::string message) {
+    std::scoped_lock lock(g_recentDiagnosticsMutex);
+    SlangDiagnosticRecord record;
+    record.stage = stage ? stage : "Slang";
+    record.shaderPath = shaderPath ? shaderPath : "";
+    record.message = std::move(message);
+    g_recentDiagnostics.push_back(std::move(record));
+    if (g_recentDiagnostics.size() > kMaxRecentDiagnostics) {
+        g_recentDiagnostics.erase(
+            g_recentDiagnostics.begin(),
+            g_recentDiagnostics.begin() +
+                static_cast<std::ptrdiff_t>(g_recentDiagnostics.size() - kMaxRecentDiagnostics));
+    }
+}
 
 // --- SPIR-V on-disk cache ---
 
@@ -356,7 +374,7 @@ bool buildBindingLayout(slang::IComponentType* linkedProgram,
     Slang::ComPtr<slang::IBlob> diagnostics;
     slang::ProgramLayout* reflection = linkedProgram->getLayout(0, diagnostics.writeRef());
     if (!reflection) {
-        logDiagnostics("Slang reflection error", diagnostics);
+        logDiagnostics("Slang reflection error", nullptr, diagnostics);
         return false;
     }
 
@@ -572,14 +590,18 @@ bool patchSpirvPerPrimitiveFragmentInputs(std::vector<uint32_t>& words,
     return true;
 }
 
-void logDiagnostics(const char* prefix, slang::IBlob* diagnostics) {
+void logDiagnostics(const char* prefix, const char* shaderPath, slang::IBlob* diagnostics) {
     if (!diagnostics) {
         return;
     }
 
-    spdlog::error("{}: {}",
-                  prefix,
-                  static_cast<const char*>(diagnostics->getBufferPointer()));
+    const char* message = static_cast<const char*>(diagnostics->getBufferPointer());
+    if (shaderPath && shaderPath[0] != '\0') {
+        spdlog::error("{} [{}]: {}", prefix, shaderPath, message);
+    } else {
+        spdlog::error("{}: {}", prefix, message);
+    }
+    recordDiagnostic(prefix, shaderPath, message ? message : "");
 }
 
 bool createSession(const SlangTargetConfig& targetConfig,
@@ -589,6 +611,9 @@ bool createSession(const SlangTargetConfig& targetConfig,
                    Slang::ComPtr<slang::ISession>& outSession) {
     if (SLANG_FAILED(slang::createGlobalSession(outGlobalSession.writeRef()))) {
         spdlog::error("Slang: failed to create global session for {}", shaderPath);
+        recordDiagnostic("Slang global session error",
+                         shaderPath,
+                         "Failed to create Slang global session");
         return false;
     }
 
@@ -607,6 +632,9 @@ bool createSession(const SlangTargetConfig& targetConfig,
         spdlog::error("Slang: failed to create {} session for {}",
                       targetConfig.backendLabel,
                       shaderPath);
+        recordDiagnostic("Slang session creation error",
+                         shaderPath,
+                         std::string("Failed to create ") + targetConfig.backendLabel + " session");
         return false;
     }
 
@@ -625,7 +653,7 @@ slang::IModule* loadModule(slang::ISession* session,
 
     slang::IModule* module = session->loadModule(shaderPath, ioDiagnostics.writeRef());
     if (!module) {
-        logDiagnostics("Slang load error", ioDiagnostics);
+        logDiagnostics("Slang load error", shaderPath, ioDiagnostics);
         return nullptr;
     }
 
@@ -663,12 +691,12 @@ bool buildLinkedProgram(slang::ISession* session,
             components.size(),
             program.writeRef(),
             ioDiagnostics.writeRef()))) {
-        logDiagnostics("Slang program creation error", ioDiagnostics);
+        logDiagnostics("Slang program creation error", shaderPath, ioDiagnostics);
         return false;
     }
 
     if (SLANG_FAILED(program->link(outLinkedProgram.writeRef(), ioDiagnostics.writeRef()))) {
-        logDiagnostics("Slang link error", ioDiagnostics);
+        logDiagnostics("Slang link error", shaderPath, ioDiagnostics);
         return false;
     }
 
@@ -704,7 +732,7 @@ std::string compileSlangComponentToSource(RhiBackendType backend,
 
     Slang::ComPtr<slang::IBlob> sourceCode;
     if (SLANG_FAILED(linkedProgram->getTargetCode(0, sourceCode.writeRef(), diagnostics.writeRef())) || !sourceCode) {
-        logDiagnostics("Slang source compile error", diagnostics);
+        logDiagnostics("Slang source compile error", shaderPath, diagnostics);
         return {};
     }
 
@@ -757,7 +785,7 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
 
     Slang::ComPtr<slang::IBlob> binaryCode;
     if (SLANG_FAILED(linkedProgram->getTargetCode(0, binaryCode.writeRef(), diagnostics.writeRef())) || !binaryCode) {
-        logDiagnostics("Slang binary compile error", diagnostics);
+        logDiagnostics("Slang binary compile error", shaderPath, diagnostics);
         return {};
     }
 
@@ -934,4 +962,14 @@ std::string patchVisibilityShaderSource(RhiBackendType backend, const std::strin
 
 std::string patchComputeShaderSource(RhiBackendType backend, const std::string& source) {
     return backend == RhiBackendType::Metal ? patchComputeMetalSource(source) : source;
+}
+
+std::vector<SlangDiagnosticRecord> getRecentSlangDiagnostics() {
+    std::scoped_lock lock(g_recentDiagnosticsMutex);
+    return g_recentDiagnostics;
+}
+
+void clearRecentSlangDiagnostics() {
+    std::scoped_lock lock(g_recentDiagnosticsMutex);
+    g_recentDiagnostics.clear();
 }

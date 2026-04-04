@@ -21,6 +21,7 @@
 #include "camera.h"
 #include "frame_context.h"
 #include "frame_graph.h"
+#include "nsight_markers.h"
 #include "input.h"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -82,6 +83,12 @@ VkHandle nativeToVkHandle(void* handle) {
     } else {
         return static_cast<VkHandle>(reinterpret_cast<uint64_t>(handle));
     }
+}
+
+std::string formatVulkanVersion(uint32_t version) {
+    return std::to_string(VK_API_VERSION_MAJOR(version)) + "." +
+           std::to_string(VK_API_VERSION_MINOR(version)) + "." +
+           std::to_string(VK_API_VERSION_PATCH(version));
 }
 
 struct AtmosphereTextures {
@@ -2131,6 +2138,11 @@ int main() {
         }
 
         if (!rhi->beginFrame()) {
+            if (vulkanIsDeviceLost(*rhi)) {
+                spdlog::critical("Ending Vulkan main loop after device loss: {}",
+                                 vulkanDeviceLostMessage(*rhi));
+                break;
+            }
             continue;
         }
 
@@ -2160,6 +2172,7 @@ int main() {
                                           vkDevice,
                                           descriptorBackend,
                                           &imageTracker,
+                                          getVulkanGpuProfiler(*rhi),
                                           getVulkanCurrentComputeCommandBuffer(*rhi));
 
         // Record any deferred uploads staged since last frame
@@ -2177,6 +2190,11 @@ int main() {
 
         ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
         ImGui::Begin("Vulkan Sponza");
+        const RhiDeviceInfo& deviceInfo = rhi->deviceInfo();
+        const VulkanToolingInfo& toolingInfo = getVulkanToolingInfo(*rhi);
+        const VulkanGpuFrameDiagnostics& gpuFrameDiagnostics = getVulkanLatestFrameDiagnostics(*rhi);
+        const VulkanPipelineCacheTelemetry pipelineTelemetry = getVulkanPipelineCacheTelemetry(*rhi);
+        const std::vector<SlangDiagnosticRecord> slangDiagnostics = getRecentSlangDiagnostics();
         const bool autoExposureEnabled =
             useVisibilityRenderGraph &&
             findFirstEnabledPassByType(visibilityPipelineAsset, "AutoExposurePass") != nullptr;
@@ -2185,6 +2203,93 @@ int main() {
         ImGui::Text("Upscaler: %s", visibilityUpscalerModeName(visibilityUpscalerMode));
         ImGui::TextUnformatted(autoExposureEnabled ? "Exposure: Auto" : "Exposure: Manual");
         ImGui::TextUnformatted(visibilityGpuCullingAvailable ? "Visibility Dispatch: GPU" : "Visibility Dispatch: CPU");
+        if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Adapter: %s", deviceInfo.adapterName.c_str());
+            ImGui::Text("Driver: %s", deviceInfo.driverName.c_str());
+            ImGui::Text("API: %s", formatVulkanVersion(deviceInfo.apiVersion).c_str());
+            ImGui::Separator();
+            ImGui::Text("Debug Utils: %s", toolingInfo.debugUtils ? "Enabled" : "Unavailable");
+            ImGui::Text("Nsight NVTX: %s", metallic::nsightMarkersAvailable() ? "Enabled" : "Unavailable");
+            ImGui::Text("Validation Messenger: %s",
+                        toolingInfo.validationMessenger ? "Active" : "Inactive");
+            ImGui::Text("RenderDoc Layer: %s",
+                        toolingInfo.renderDocLayerAvailable ? "Available" : "Not detected");
+            ImGui::Text("Pipeline Statistics: %s",
+                        toolingInfo.pipelineStatistics ? "Enabled" : "Disabled");
+            ImGui::Text("Diagnostic Checkpoints: %s",
+                        toolingInfo.diagnosticCheckpoints ? "Enabled" : "Disabled");
+            ImGui::Text("Device Fault Extension: %s",
+                        toolingInfo.deviceFault ? "Enabled" : "Disabled");
+            if (vulkanIsDeviceLost(*rhi)) {
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                                   "Device Lost: %s",
+                                   vulkanDeviceLostMessage(*rhi).c_str());
+            }
+        }
+        if (ImGui::CollapsingHeader("Pipeline Telemetry", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Graphics PSOs compiled: %u", pipelineTelemetry.graphicsPipelinesCompiled);
+            ImGui::Text("Compute PSOs compiled:  %u", pipelineTelemetry.computePipelinesCompiled);
+            ImGui::Text("Total compile time:     %.2f ms", pipelineTelemetry.totalCompileMs);
+        }
+        if (ImGui::CollapsingHeader("GPU Timings", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Last completed frame: #%llu",
+                        static_cast<unsigned long long>(gpuFrameDiagnostics.frameIndex));
+            ImGui::Text("Total GPU time: %.3f ms", gpuFrameDiagnostics.totalGpuMs);
+            if (gpuFrameDiagnostics.scopes.empty()) {
+                ImGui::TextDisabled("No pass timings captured yet.");
+            } else if (ImGui::BeginTable("GpuTimings", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                ImGui::TableSetupColumn("Pass");
+                ImGui::TableSetupColumn("Time (ms)");
+                ImGui::TableSetupColumn("Graphics Stats");
+                ImGui::TableSetupColumn("Compute Stats");
+                ImGui::TableHeadersRow();
+                for (const VulkanGpuScopeTiming& scope : gpuFrameDiagnostics.scopes) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextUnformatted(scope.label.c_str());
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::Text("%.3f", scope.durationMs);
+                    ImGui::TableSetColumnIndex(2);
+                    if (scope.pipelineStats.valid) {
+                        ImGui::Text("VS %llu / FS %llu",
+                                    static_cast<unsigned long long>(scope.pipelineStats.vertexShaderInvocations),
+                                    static_cast<unsigned long long>(scope.pipelineStats.fragmentShaderInvocations));
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                    ImGui::TableSetColumnIndex(3);
+                    if (scope.pipelineStats.valid &&
+                        (scope.pipelineStats.computeShaderInvocations != 0 ||
+                         scope.pipelineStats.taskShaderInvocations != 0 ||
+                         scope.pipelineStats.meshShaderInvocations != 0)) {
+                        ImGui::Text("CS %llu / TS %llu / MS %llu",
+                                    static_cast<unsigned long long>(scope.pipelineStats.computeShaderInvocations),
+                                    static_cast<unsigned long long>(scope.pipelineStats.taskShaderInvocations),
+                                    static_cast<unsigned long long>(scope.pipelineStats.meshShaderInvocations));
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                }
+                ImGui::EndTable();
+            }
+        }
+        if (ImGui::CollapsingHeader("Shader Diagnostics")) {
+            if (slangDiagnostics.empty()) {
+                ImGui::TextDisabled("No recent Slang diagnostics.");
+            } else {
+                for (auto it = slangDiagnostics.rbegin(); it != slangDiagnostics.rend(); ++it) {
+                    ImGui::Separator();
+                    ImGui::Text("%s", it->stage.c_str());
+                    if (!it->shaderPath.empty()) {
+                        ImGui::TextDisabled("%s", it->shaderPath.c_str());
+                    }
+                    ImGui::PushTextWrapPos();
+                    ImGui::TextUnformatted(it->message.c_str());
+                    ImGui::PopTextWrapPos();
+                }
+            }
+        }
 
         if (ImGui::CollapsingHeader("Barrier Stats (prev frame)")) {
             ImGui::Text("Image barriers:   %u", barrierStats.imageBarriers);
@@ -2418,9 +2523,19 @@ int main() {
         // If any pass routed work to the dedicated async compute queue, submit it now.
         if (commandBuffer.hadAsyncComputeWork()) {
             vulkanScheduleAsyncComputeSubmit(*rhi);
+            if (vulkanIsDeviceLost(*rhi)) {
+                spdlog::critical("Async compute submit reported device loss: {}",
+                                 vulkanDeviceLostMessage(*rhi));
+                break;
+            }
         }
 
         rhi->endFrame();
+        if (vulkanIsDeviceLost(*rhi)) {
+            spdlog::critical("Graphics submit/present reported device loss: {}",
+                             vulkanDeviceLostMessage(*rhi));
+            break;
+        }
         FrameMark;
     }
 

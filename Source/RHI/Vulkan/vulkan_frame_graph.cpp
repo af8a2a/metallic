@@ -1,4 +1,5 @@
 #include "vulkan_frame_graph.h"
+#include "vulkan_diagnostics.h"
 #include "vulkan_transient_allocator.h"
 
 #ifdef _WIN32
@@ -111,19 +112,30 @@ class VulkanRenderCommandEncoder final : public RhiRenderCommandEncoder {
 public:
     VulkanRenderCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
                                IVulkanDescriptorBackend* descriptorManager,
-                               VulkanResourceStateTracker* stateTracker)
+                               VulkanResourceStateTracker* stateTracker,
+                               VulkanGpuProfiler* gpuProfiler,
+                               const char* label)
         : m_commandBuffer(commandBuffer), m_device(device),
-          m_descriptorManager(descriptorManager), m_stateTracker(stateTracker) {
+          m_descriptorManager(descriptorManager), m_stateTracker(stateTracker),
+          m_gpuProfiler(gpuProfiler) {
         m_pendingBuffers.fill({});
         m_pendingTextures.fill({});
         m_pendingSamplers.fill({});
         m_pendingAccelerationStructures.fill({});
+        vulkanBeginDebugLabel(m_commandBuffer, label);
+        if (m_gpuProfiler) {
+            m_gpuProfiler->beginScope(m_commandBuffer, label, m_gpuScope, true);
+        }
     }
 
     ~VulkanRenderCommandEncoder() override {
+        if (m_gpuProfiler) {
+            m_gpuProfiler->endScope(m_commandBuffer, m_gpuScope);
+        }
         if (m_commandBuffer != VK_NULL_HANDLE) {
             vkCmdEndRendering(m_commandBuffer);
         }
+        vulkanEndDebugLabel(m_commandBuffer);
     }
 
     void* nativeHandle() const override { return m_commandBuffer; }
@@ -334,6 +346,8 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     IVulkanDescriptorBackend* m_descriptorManager = nullptr;
     VulkanResourceStateTracker* m_stateTracker = nullptr;
+    VulkanGpuProfiler* m_gpuProfiler = nullptr;
+    VulkanGpuProfiler::ScopeHandle m_gpuScope{};
     const VulkanPipelineResource* m_boundPipeline = nullptr;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
@@ -347,16 +361,28 @@ class VulkanComputeCommandEncoder final : public RhiComputeCommandEncoder {
 public:
     VulkanComputeCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
                                 IVulkanDescriptorBackend* descriptorManager,
-                                VulkanResourceStateTracker* stateTracker)
+                                VulkanResourceStateTracker* stateTracker,
+                                VulkanGpuProfiler* gpuProfiler,
+                                const char* label)
         : m_commandBuffer(commandBuffer), m_device(device),
-          m_descriptorManager(descriptorManager), m_stateTracker(stateTracker) {
+          m_descriptorManager(descriptorManager), m_stateTracker(stateTracker),
+          m_gpuProfiler(gpuProfiler) {
         m_pendingBuffers.fill({});
         m_pendingTextures.fill({});
         m_pendingSamplers.fill({});
         m_pendingAccelerationStructures.fill({});
+        vulkanBeginDebugLabel(m_commandBuffer, label);
+        if (m_gpuProfiler) {
+            m_gpuProfiler->beginScope(m_commandBuffer, label, m_gpuScope, false);
+        }
     }
 
-    ~VulkanComputeCommandEncoder() override = default;
+    ~VulkanComputeCommandEncoder() override {
+        if (m_gpuProfiler) {
+            m_gpuProfiler->endScope(m_commandBuffer, m_gpuScope);
+        }
+        vulkanEndDebugLabel(m_commandBuffer);
+    }
 
     void* nativeHandle() const override { return m_commandBuffer; }
 
@@ -542,6 +568,8 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     IVulkanDescriptorBackend* m_descriptorManager = nullptr;
     VulkanResourceStateTracker* m_stateTracker = nullptr;
+    VulkanGpuProfiler* m_gpuProfiler = nullptr;
+    VulkanGpuProfiler::ScopeHandle m_gpuScope{};
     const VulkanPipelineResource* m_boundPipeline = nullptr;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
@@ -554,10 +582,23 @@ private:
 class VulkanBlitCommandEncoder final : public RhiBlitCommandEncoder {
 public:
     VulkanBlitCommandEncoder(VkCommandBuffer commandBuffer, VkDevice device,
-                             VulkanResourceStateTracker* stateTracker = nullptr)
-        : m_commandBuffer(commandBuffer), m_device(device), m_stateTracker(stateTracker) {}
+                             VulkanResourceStateTracker* stateTracker = nullptr,
+                             VulkanGpuProfiler* gpuProfiler = nullptr,
+                             const char* label = nullptr)
+        : m_commandBuffer(commandBuffer), m_device(device), m_stateTracker(stateTracker),
+          m_gpuProfiler(gpuProfiler) {
+        vulkanBeginDebugLabel(m_commandBuffer, label);
+        if (m_gpuProfiler) {
+            m_gpuProfiler->beginScope(m_commandBuffer, label, m_gpuScope, false);
+        }
+    }
 
-    ~VulkanBlitCommandEncoder() override = default;
+    ~VulkanBlitCommandEncoder() override {
+        if (m_gpuProfiler) {
+            m_gpuProfiler->endScope(m_commandBuffer, m_gpuScope);
+        }
+        vulkanEndDebugLabel(m_commandBuffer);
+    }
 
     void* nativeHandle() const override { return m_commandBuffer; }
 
@@ -608,6 +649,8 @@ private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VulkanResourceStateTracker* m_stateTracker = nullptr;
+    VulkanGpuProfiler* m_gpuProfiler = nullptr;
+    VulkanGpuProfiler::ScopeHandle m_gpuScope{};
 };
 
 bool isDepthFormat(RhiFormat format) {
@@ -769,10 +812,12 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
 VulkanCommandBuffer::VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
                                          IVulkanDescriptorBackend* descriptorManager,
                                          VulkanResourceStateTracker* stateTracker,
+                                         VulkanGpuProfiler* gpuProfiler,
                                          VkCommandBuffer asyncComputeCommandBuffer)
     : m_commandBuffer(commandBuffer), m_asyncComputeCommandBuffer(asyncComputeCommandBuffer),
       m_device(device),
-      m_descriptorManager(descriptorManager), m_stateTracker(stateTracker) {}
+      m_descriptorManager(descriptorManager), m_stateTracker(stateTracker),
+      m_gpuProfiler(gpuProfiler) {}
 
 void VulkanCommandBuffer::transitionTexture(const RhiTexture* texture, VkImageLayout layout) {
     if (!texture || !m_stateTracker) {
@@ -889,29 +934,45 @@ std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(co
     vkCmdSetCullMode(m_commandBuffer, VK_CULL_MODE_BACK_BIT);
     vkCmdSetFrontFace(m_commandBuffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
 
-    return std::make_unique<VulkanRenderCommandEncoder>(m_commandBuffer, m_device,
-                                                        m_descriptorManager, m_stateTracker);
+    return std::make_unique<VulkanRenderCommandEncoder>(m_commandBuffer,
+                                                        m_device,
+                                                        m_descriptorManager,
+                                                        m_stateTracker,
+                                                        m_gpuProfiler,
+                                                        desc.label);
 }
 
-std::unique_ptr<RhiComputeCommandEncoder> VulkanCommandBuffer::beginComputePass(const RhiComputePassDesc& /*desc*/) {
+std::unique_ptr<RhiComputeCommandEncoder> VulkanCommandBuffer::beginComputePass(const RhiComputePassDesc& desc) {
     // Route to dedicated async compute queue if hint requests it and we have one
     const bool wantAsync = (m_nextPassHint == RhiQueueHint::AsyncCompute);
     VkCommandBuffer targetCmdBuf = m_commandBuffer;
+    VulkanGpuProfiler* profiler = m_gpuProfiler;
     if (wantAsync && m_asyncComputeCommandBuffer != VK_NULL_HANDLE) {
         targetCmdBuf = m_asyncComputeCommandBuffer;
         m_hadAsyncComputeWork = true;
+        // Async compute completion is not tracked by the graphics frame fence yet,
+        // so only profile compute work recorded on the graphics command buffer.
+        profiler = nullptr;
     }
     m_nextPassHint = RhiQueueHint::Auto; // consume hint
-    return std::make_unique<VulkanComputeCommandEncoder>(targetCmdBuf, m_device,
-                                                         m_descriptorManager, m_stateTracker);
+    return std::make_unique<VulkanComputeCommandEncoder>(targetCmdBuf,
+                                                         m_device,
+                                                         m_descriptorManager,
+                                                         m_stateTracker,
+                                                         profiler,
+                                                         desc.label);
 }
 
 void VulkanCommandBuffer::setNextPassQueueHint(RhiQueueHint hint) {
     m_nextPassHint = hint;
 }
 
-std::unique_ptr<RhiBlitCommandEncoder> VulkanCommandBuffer::beginBlitPass(const RhiBlitPassDesc& /*desc*/) {
-    return std::make_unique<VulkanBlitCommandEncoder>(m_commandBuffer, m_device, m_stateTracker);
+std::unique_ptr<RhiBlitCommandEncoder> VulkanCommandBuffer::beginBlitPass(const RhiBlitPassDesc& desc) {
+    return std::make_unique<VulkanBlitCommandEncoder>(m_commandBuffer,
+                                                      m_device,
+                                                      m_stateTracker,
+                                                      m_gpuProfiler,
+                                                      desc.label);
 }
 
 #endif // _WIN32

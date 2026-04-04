@@ -88,6 +88,7 @@ elseif(WIN32)
         RHI/Vulkan/vulkan_frame_graph.cpp
         RHI/Vulkan/vulkan_descriptor_manager.cpp
         RHI/Vulkan/vulkan_descriptor_buffer.cpp
+        RHI/Vulkan/vulkan_diagnostics.cpp
         RHI/Vulkan/vulkan_pipeline_cache.cpp
         RHI/Vulkan/vulkan_rt_pipeline.cpp
         RHI/Vulkan/vulkan_transient_allocator.cpp
@@ -132,6 +133,12 @@ endif()
 target_compile_definitions(Metallic PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+target_link_libraries(Metallic PRIVATE metallic::nvtx3)
+
+if(WIN32)
+    target_compile_definitions(Metallic PRIVATE NOMINMAX)
+endif()
 
 foreach(SLANG_RUNTIME_LIB ${METALLIC_SLANG_RUNTIME_LIBS})
     add_custom_command(TARGET Metallic POST_BUILD

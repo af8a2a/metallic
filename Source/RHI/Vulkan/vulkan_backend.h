@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../rhi_backend.h"
+#include "vulkan_diagnostics.h"
 
 #include <vulkan/vulkan.h>
 
@@ -36,6 +37,19 @@ uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context);
 
 // Returns the VkPipelineCache used for all pipeline compilations (VK_NULL_HANDLE if not loaded).
 VkPipelineCache getVulkanPipelineCache(RhiContext& context);
+
+struct VulkanPipelineCacheTelemetry {
+    uint32_t graphicsPipelinesCompiled = 0;
+    uint32_t computePipelinesCompiled = 0;
+    double totalCompileMs = 0.0;
+};
+
+const VulkanGpuFrameDiagnostics& getVulkanLatestFrameDiagnostics(RhiContext& context);
+const VulkanToolingInfo& getVulkanToolingInfo(RhiContext& context);
+VulkanPipelineCacheTelemetry getVulkanPipelineCacheTelemetry(RhiContext& context);
+bool vulkanIsDeviceLost(RhiContext& context);
+const std::string& vulkanDeviceLostMessage(RhiContext& context);
+VulkanGpuProfiler* getVulkanGpuProfiler(RhiContext& context);
 
 // Returns VK_EXT_descriptor_buffer properties (zeroed if extension not enabled).
 const VkPhysicalDeviceDescriptorBufferPropertiesEXT& getVulkanDescriptorBufferProperties(

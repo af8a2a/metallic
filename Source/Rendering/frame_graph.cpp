@@ -1,4 +1,5 @@
 #include "frame_graph.h"
+#include "nsight_markers.h"
 #include "render_pass.h"
 #include <algorithm>
 #include <cassert>
@@ -38,6 +39,15 @@ bool textureDescMatches(const FGTextureDesc& lhs, const FGTextureDesc& rhs) {
            lhs.format == rhs.format &&
            lhs.usage == rhs.usage &&
            lhs.storageMode == rhs.storageMode;
+}
+
+uint32_t nsightPassColor(FGPassType type) {
+    switch (type) {
+        case FGPassType::Render:  return 0xFF5480C4u;
+        case FGPassType::Compute: return 0xFF50A078u;
+        case FGPassType::Blit:    return 0xFFC0844Eu;
+    }
+    return 0xFF5C5C5Cu;
 }
 
 } // namespace
@@ -455,6 +465,7 @@ RhiTexture* FrameGraph::resolveTexture(uint32_t resourceId) const {
 
 void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& backend) {
     MICROPROFILE_SCOPEI("FrameGraph", "Execute", 0xff00ff00);
+    metallic::ScopedNsightRange nsightFrameGraphRange("FrameGraph::Execute", 0xFF4AA66Eu);
 
     ensureHistoryResources(backend);
 
@@ -463,6 +474,7 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
         if (pass.refCount == 0) continue;
 
         MICROPROFILE_SCOPEI("FrameGraph", pass.name.c_str(), 0xff0088ff);
+        metallic::ScopedNsightRange nsightPassRange(pass.name.c_str(), nsightPassColor(pass.type));
 
         // Inform the backend which queue this pass prefers.
         commandBuffer.setNextPassQueueHint(pass.queueHint);

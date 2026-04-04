@@ -56,8 +56,18 @@ inline void rhiReleaseHandle(Handle& handle) {
 
 #ifdef _WIN32
 #include <vulkan/vulkan.h>
+#include <type_traits>
 struct VmaAllocator_T;
 typedef VmaAllocator_T* VmaAllocator;
+
+template <typename VkHandle>
+inline uint64_t vulkanObjectHandle(VkHandle handle) {
+    if constexpr (std::is_pointer_v<VkHandle>) {
+        return reinterpret_cast<uint64_t>(handle);
+    } else {
+        return static_cast<uint64_t>(handle);
+    }
+}
 
 struct VulkanResourceContextInfo {
     VkDevice device = VK_NULL_HANDLE;
@@ -70,9 +80,13 @@ struct VulkanResourceContextInfo {
     bool rayTracingEnabled = false;
     bool initialized = false;
     bool streamlineHooksEnabled = false;
+    bool debugUtilsEnabled = false;
     PFN_vkBeginCommandBuffer vkBeginCommandBufferProxy = nullptr;
     PFN_vkCmdBindPipeline vkCmdBindPipelineProxy = nullptr;
     PFN_vkCmdBindDescriptorSets vkCmdBindDescriptorSetsProxy = nullptr;
+    PFN_vkSetDebugUtilsObjectNameEXT vkSetDebugUtilsObjectName = nullptr;
+    PFN_vkCmdBeginDebugUtilsLabelEXT vkCmdBeginDebugUtilsLabel = nullptr;
+    PFN_vkCmdEndDebugUtilsLabelEXT vkCmdEndDebugUtilsLabel = nullptr;
 };
 
 void vulkanSetResourceContext(VkDevice device,
@@ -83,10 +97,18 @@ void vulkanSetResourceContext(VkDevice device,
                               bool bufferDeviceAddressEnabled,
                               bool externalHostMemoryEnabled,
                               bool rayTracingEnabled,
+                              bool debugUtilsEnabled,
                               void* vkGetDeviceProcAddrProxy = nullptr);
 const VulkanResourceContextInfo& vulkanGetResourceContext();
 void vulkanClearResourceContext();
 void vulkanSetStreamlineHookedCommandsEnabled(bool enabled);
+
+void vulkanSetObjectDebugName(VkDevice device,
+                              VkObjectType objectType,
+                              uint64_t handle,
+                              const char* name);
+void vulkanBeginDebugLabel(VkCommandBuffer commandBuffer, const char* label);
+void vulkanEndDebugLabel(VkCommandBuffer commandBuffer);
 
 class VulkanUploadService;
 void vulkanSetUploadService(VulkanUploadService* service);

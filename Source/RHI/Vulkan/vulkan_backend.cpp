@@ -3,6 +3,7 @@
 #include "slang_compiler.h"
 #include "vulkan_resource_handles.h"
 #include "vulkan_pipeline_cache.h"
+#include "vulkan_diagnostics.h"
 #include "vulkan_transient_allocator.h"
 
 #include <vulkan/vulkan.h>
@@ -15,6 +16,14 @@
 
 #ifndef VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME
 #define VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME "VK_EXT_external_memory_host"
+#endif
+
+#ifndef VK_EXT_DEVICE_FAULT_EXTENSION_NAME
+#define VK_EXT_DEVICE_FAULT_EXTENSION_NAME "VK_EXT_device_fault"
+#endif
+
+#ifndef VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME
+#define VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME "VK_NV_device_diagnostic_checkpoints"
 #endif
 
 #include <algorithm>
@@ -37,6 +46,45 @@ namespace {
 constexpr uint32_t kMaxFramesInFlight = 2;
 constexpr uint32_t kPushConstantSize = 256;
 const char* kValidationLayerName = "VK_LAYER_KHRONOS_validation";
+const char* kRenderDocLayerName = "VK_LAYER_RENDERDOC_Capture";
+
+template <typename VkHandle>
+uint64_t vkObjectHandle(VkHandle handle) {
+    if constexpr (std::is_pointer_v<VkHandle>) {
+        return reinterpret_cast<uint64_t>(handle);
+    } else {
+        return static_cast<uint64_t>(handle);
+    }
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL vulkanDebugUtilsCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT /*messageTypes*/,
+    const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
+    void* /*userData*/) {
+    const char* message = (callbackData && callbackData->pMessage) ? callbackData->pMessage : "Unknown Vulkan message";
+    if ((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+        spdlog::error("VulkanValidation: {}", message);
+    } else if ((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
+        spdlog::warn("VulkanValidation: {}", message);
+    } else {
+        spdlog::info("VulkanValidation: {}", message);
+    }
+    return VK_FALSE;
+}
+
+VkDebugUtilsMessengerCreateInfoEXT makeDebugMessengerCreateInfo() {
+    VkDebugUtilsMessengerCreateInfoEXT createInfo{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    createInfo.messageSeverity =
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    createInfo.messageType =
+        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    createInfo.pfnUserCallback = vulkanDebugUtilsCallback;
+    return createInfo;
+}
 
 VkFormat toVkFormat(RhiFormat format) {
     switch (format) {
@@ -736,6 +784,7 @@ public:
         createLogicalDevice(createInfo);
         m_pipelineCache.load(m_device, m_physicalDevice, createInfo.pipelineCacheDir);
         resolveStreamlinePresentHooks();
+        m_gpuProfiler.init(m_physicalDevice, m_device, kMaxFramesInFlight, m_features.meshShaders);
         createVmaAllocator();
         createCommandObjects();
         createDescriptorPool();
@@ -757,8 +806,10 @@ public:
                                  m_features.bufferDeviceAddress,
                                  m_features.externalHostMemory,
                                  m_features.rayTracing,
+                                 m_toolingInfo.debugUtils,
                                  createInfo.vkGetDeviceProcAddrProxy);
         vulkanLoadMeshShaderFunctions(m_device);
+        applyDebugObjectNames();
     }
 
     ~VulkanContext() override {
@@ -795,6 +846,7 @@ public:
         m_uploadRing.destroy();
         m_transientPool.destroy();
         m_readbackHeap.destroy();
+        m_gpuProfiler.destroy();
 
         if (m_allocator != nullptr) {
             vmaDestroyAllocator(m_allocator);
@@ -805,6 +857,12 @@ public:
 
         if (m_device != VK_NULL_HANDLE) {
             vkDestroyDevice(m_device, nullptr);
+        }
+        if (m_debugMessenger != VK_NULL_HANDLE &&
+            m_vkDestroyDebugUtilsMessengerEXT &&
+            m_instance != VK_NULL_HANDLE) {
+            m_vkDestroyDebugUtilsMessengerEXT(m_instance, m_debugMessenger, nullptr);
+            m_debugMessenger = VK_NULL_HANDLE;
         }
         if (m_surface != VK_NULL_HANDLE) {
             vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
@@ -820,16 +878,33 @@ public:
     const RhiDeviceInfo& deviceInfo() const override { return m_deviceInfo; }
     const RhiRayTracingPipelineProperties& rayTracingPipelineProperties() const override { return m_rtPipelineProperties; }
     const RhiNativeHandles& nativeHandles() const override { return m_nativeHandles; }
+    const VulkanGpuFrameDiagnostics& latestFrameDiagnostics() const { return m_gpuProfiler.latestFrame(); }
+    const VulkanToolingInfo& toolingInfo() const { return m_toolingInfo; }
+    VulkanPipelineCacheTelemetry pipelineCacheTelemetry() const {
+        VulkanPipelineCacheTelemetry telemetry;
+        telemetry.graphicsPipelinesCompiled = m_pipelineCache.graphicsPipelinesCompiled();
+        telemetry.computePipelinesCompiled = m_pipelineCache.computePipelinesCompiled();
+        telemetry.totalCompileMs = m_pipelineCache.totalCompileMs();
+        return telemetry;
+    }
+    bool isDeviceLost() const { return m_deviceLost; }
+    const std::string& deviceLostMessage() const { return m_deviceLostMessage; }
+    VulkanGpuProfiler* gpuProfiler() { return &m_gpuProfiler; }
 
     bool beginFrame() override {
+        if (m_deviceLost) {
+            return false;
+        }
         if (m_pendingResize) {
             recreateSwapchain();
             m_pendingResize = false;
         }
 
         FrameResources& frame = m_frames[m_frameIndex];
-        checkVk(vkWaitForFences(m_device, 1, &frame.inFlight, VK_TRUE, UINT64_MAX),
-                "Failed to wait for in-flight frame fence");
+        if (!handleRuntimeResult(vkWaitForFences(m_device, 1, &frame.inFlight, VK_TRUE, UINT64_MAX),
+                                 "Failed to wait for in-flight frame fence")) {
+            return false;
+        }
 
         VkResult acquireResult = acquireNextImageKHR(
             m_device,
@@ -843,30 +918,48 @@ public:
             recreateSwapchain();
             return false;
         }
+        if (acquireResult == VK_ERROR_DEVICE_LOST) {
+            markDeviceLost("Failed to acquire Vulkan swapchain image");
+            return false;
+        }
         if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
             throw std::runtime_error("Failed to acquire Vulkan swapchain image.");
         }
 
         if (m_imagesInFlight[m_imageIndex] != VK_NULL_HANDLE) {
-            checkVk(vkWaitForFences(m_device, 1, &m_imagesInFlight[m_imageIndex], VK_TRUE, UINT64_MAX),
-                    "Failed to wait for a busy swapchain image fence");
+            if (!handleRuntimeResult(vkWaitForFences(m_device, 1, &m_imagesInFlight[m_imageIndex], VK_TRUE, UINT64_MAX),
+                                     "Failed to wait for a busy swapchain image fence")) {
+                return false;
+            }
         }
         m_imagesInFlight[m_imageIndex] = frame.inFlight;
 
-        checkVk(vkResetFences(m_device, 1, &frame.inFlight), "Failed to reset frame fence");
-        checkVk(vkResetCommandPool(m_device, frame.commandPool, 0), "Failed to reset command pool");
+        if (!handleRuntimeResult(vkResetFences(m_device, 1, &frame.inFlight), "Failed to reset frame fence")) {
+            return false;
+        }
+        if (!handleRuntimeResult(vkResetCommandPool(m_device, frame.commandPool, 0), "Failed to reset command pool")) {
+            return false;
+        }
         if (frame.computeCommandPool != VK_NULL_HANDLE) {
-            checkVk(vkResetCommandPool(m_device, frame.computeCommandPool, 0),
-                    "Failed to reset async compute command pool");
+            if (!handleRuntimeResult(vkResetCommandPool(m_device, frame.computeCommandPool, 0),
+                                     "Failed to reset async compute command pool")) {
+                return false;
+            }
         }
 
         VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        checkVk(vulkanBeginCommandBufferHooked(frame.commandBuffer, &beginInfo),
-                "Failed to begin command buffer");
+        if (!handleRuntimeResult(vulkanBeginCommandBufferHooked(frame.commandBuffer, &beginInfo),
+                                 "Failed to begin command buffer")) {
+            return false;
+        }
+        m_gpuProfiler.beginFrame(m_frameIndex, m_submittedFrameCounter);
+        m_gpuProfiler.resetActiveFrameQueries(frame.commandBuffer);
         if (frame.computeCommandBuffer != VK_NULL_HANDLE) {
-            checkVk(vkBeginCommandBuffer(frame.computeCommandBuffer, &beginInfo),
-                    "Failed to begin async compute command buffer");
+            if (!handleRuntimeResult(vkBeginCommandBuffer(frame.computeCommandBuffer, &beginInfo),
+                                     "Failed to begin async compute command buffer")) {
+                return false;
+            }
         }
 
         m_insideRendering = false;
@@ -880,6 +973,9 @@ public:
     }
 
     void endFrame() override {
+        if (m_deviceLost) {
+            return;
+        }
         FrameResources& frame = m_frames[m_frameIndex];
         VkSemaphore renderFinished = m_swapchainRenderFinished[m_imageIndex];
         transitionCurrentImage(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -888,7 +984,9 @@ public:
                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                VK_ACCESS_2_NONE);
 
-        checkVk(vkEndCommandBuffer(frame.commandBuffer), "Failed to end command buffer");
+        if (!handleRuntimeResult(vkEndCommandBuffer(frame.commandBuffer), "Failed to end command buffer")) {
+            return;
+        }
 
         // Upgraded to VkQueueSubmit2 for timeline semaphore compatibility.
         VkCommandBufferSubmitInfo cmdSubmitInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
@@ -910,8 +1008,11 @@ public:
         submitInfo2.signalSemaphoreInfoCount = 1;
         submitInfo2.pSignalSemaphoreInfos = &signalInfo;
 
-        checkVk(vkQueueSubmit2(m_graphicsQueue, 1, &submitInfo2, frame.inFlight),
-                "Failed to submit graphics queue");
+        if (!handleRuntimeResult(vkQueueSubmit2(m_graphicsQueue, 1, &submitInfo2, frame.inFlight),
+                                 "Failed to submit graphics queue")) {
+            return;
+        }
+        ++m_submittedFrameCounter;
 
         VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         presentInfo.waitSemaphoreCount = 1;
@@ -924,6 +1025,8 @@ public:
         if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || m_pendingResize) {
             recreateSwapchain();
             m_pendingResize = false;
+        } else if (presentResult == VK_ERROR_DEVICE_LOST) {
+            markDeviceLost("Failed to present Vulkan swapchain image");
         } else if (presentResult != VK_SUCCESS) {
             throw std::runtime_error("Failed to present Vulkan swapchain image.");
         }
@@ -940,8 +1043,11 @@ public:
     }
 
     void waitIdle() override {
-        if (m_device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(m_device);
+        if (m_device != VK_NULL_HANDLE && !m_deviceLost) {
+            const VkResult result = vkDeviceWaitIdle(m_device);
+            if (result == VK_ERROR_DEVICE_LOST) {
+                markDeviceLost("vkDeviceWaitIdle reported device lost");
+            }
         }
     }
 
@@ -1081,6 +1187,10 @@ public:
             delete sampler;
             return {};
         }
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_SAMPLER,
+                                 vkObjectHandle(sampler->sampler),
+                                 "Metallic Sampler");
         return RhiSamplerHandle(sampler);
     }
 
@@ -1265,6 +1375,24 @@ public:
         spdlog::debug("VulkanPipeline: graphics pipeline compiled in {:.1f} ms", msGfx1);
 
         resource->pipeline = pipeline;
+        if (resource->layout != VK_NULL_HANDLE) {
+            std::string layoutName = "Graphics Pipeline Layout";
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                                     vkObjectHandle(resource->layout),
+                                     layoutName.c_str());
+        }
+        std::string pipelineName =
+            std::string("Graphics PSO [") +
+            (isMeshShader ? (desc.meshEntry ? desc.meshEntry : "meshMain")
+                          : (desc.vertexEntry ? desc.vertexEntry : "vertexMain")) +
+            " -> " +
+            (desc.fragmentEntry ? desc.fragmentEntry : "<none>") +
+            "]";
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_PIPELINE,
+                                 vkObjectHandle(pipeline),
+                                 pipelineName.c_str());
         return RhiGraphicsPipelineHandle(resource);
     }
 
@@ -1330,6 +1458,16 @@ public:
         spdlog::debug("VulkanPipeline: compute pipeline compiled in {:.1f} ms", msCmp);
 
         resource->pipeline = pipeline;
+        if (resource->layout != VK_NULL_HANDLE) {
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                                     vkObjectHandle(resource->layout),
+                                     "Compute Pipeline Layout");
+        }
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_PIPELINE,
+                                 vkObjectHandle(pipeline),
+                                 "Compute PSO [main]");
         return RhiComputePipelineHandle(resource);
     }
 
@@ -1361,13 +1499,18 @@ public:
     // Uses a timeline semaphore signal if available; otherwise a simple submit.
     // Returns the timeline value to wait on (0 if no timeline semaphore).
     uint64_t scheduleAsyncComputeSubmit() {
+        if (m_deviceLost) {
+            return 0;
+        }
         const FrameResources& frame = m_frames[m_frameIndex];
         if (frame.computeCommandBuffer == VK_NULL_HANDLE || m_computeQueue == VK_NULL_HANDLE) {
             return 0;
         }
 
-        checkVk(vkEndCommandBuffer(frame.computeCommandBuffer),
-                "Failed to end async compute command buffer");
+        if (!handleRuntimeResult(vkEndCommandBuffer(frame.computeCommandBuffer),
+                                 "Failed to end async compute command buffer")) {
+            return 0;
+        }
 
         VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
         cmdInfo.commandBuffer = frame.computeCommandBuffer;
@@ -1388,8 +1531,10 @@ public:
             submitInfo.pSignalSemaphoreInfos = &signalInfo;
         }
 
-        checkVk(vkQueueSubmit2(m_computeQueue, 1, &submitInfo, VK_NULL_HANDLE),
-                "Failed to submit async compute queue");
+        if (!handleRuntimeResult(vkQueueSubmit2(m_computeQueue, 1, &submitInfo, VK_NULL_HANDLE),
+                                 "Failed to submit async compute queue")) {
+            return 0;
+        }
         return signalValue;
     }
 
@@ -1410,6 +1555,10 @@ public:
         VkShaderModule shaderModule = VK_NULL_HANDLE;
         checkVk(vkCreateShaderModule(m_device, &createInfo, nullptr, &shaderModule),
                 "Failed to create Vulkan shader module");
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_SHADER_MODULE,
+                                 vkObjectHandle(shaderModule),
+                                 desc.debugName ? desc.debugName : "Shader Module");
         return std::make_unique<VulkanShaderModule>(m_device, shaderModule);
     }
 
@@ -1575,6 +1724,15 @@ public:
         m_pipelineCache.recordCompile(msGfx2, /*isGraphics=*/true);
         spdlog::debug("VulkanPipeline: graphics pipeline compiled in {:.1f} ms", msGfx2);
 
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                                 vkObjectHandle(layout),
+                                 "Legacy Graphics Pipeline Layout");
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_PIPELINE,
+                                 vkObjectHandle(pipeline),
+                                 "Legacy Graphics Pipeline");
+
         return std::make_unique<VulkanGraphicsPipeline>(m_device, layout, pipeline);
     }
 
@@ -1720,6 +1878,157 @@ public:
         VulkanContext& m_parent;
     };
 
+    bool handleRuntimeResult(VkResult result, const char* message) {
+        if (result == VK_SUCCESS) {
+            return true;
+        }
+        if (result == VK_ERROR_DEVICE_LOST) {
+            markDeviceLost(message);
+            return false;
+        }
+        throw std::runtime_error(std::string(message) + " (VkResult: " + std::to_string(result) + ")");
+    }
+
+    void markDeviceLost(const char* message) {
+        if (m_deviceLost) {
+            return;
+        }
+
+        m_deviceLost = true;
+        m_deviceLostMessage = message ? message : "Vulkan device lost";
+        spdlog::critical("Vulkan device lost: {}", m_deviceLostMessage);
+        if (m_toolingInfo.debugUtils) {
+            spdlog::critical("Vulkan diagnostics: debug utils markers were enabled for this session.");
+        }
+        if (m_toolingInfo.pipelineStatistics) {
+            spdlog::critical("Vulkan diagnostics: GPU timestamp/pipeline statistics capture was enabled.");
+        }
+    }
+
+    void applyDebugObjectNames() {
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_DEVICE,
+                                 vkObjectHandle(m_device),
+                                 "Metallic Device");
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_QUEUE,
+                                 vkObjectHandle(m_graphicsQueue),
+                                 "Metallic Graphics Queue");
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_QUEUE,
+                                 vkObjectHandle(m_presentQueue),
+                                 "Metallic Present Queue");
+        if (m_computeQueue != VK_NULL_HANDLE) {
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_QUEUE,
+                                     vkObjectHandle(m_computeQueue),
+                                     "Metallic Async Compute Queue");
+        }
+        if (m_transferQueue != VK_NULL_HANDLE) {
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_QUEUE,
+                                     vkObjectHandle(m_transferQueue),
+                                     "Metallic Transfer Queue");
+        }
+        if (m_descriptorPool != VK_NULL_HANDLE) {
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_DESCRIPTOR_POOL,
+                                     vkObjectHandle(m_descriptorPool),
+                                     "Metallic Descriptor Pool");
+        }
+        if (m_pipelineCache.handle() != VK_NULL_HANDLE) {
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_PIPELINE_CACHE,
+                                     vkObjectHandle(m_pipelineCache.handle()),
+                                     "Metallic Pipeline Cache");
+        }
+        for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
+            const std::string poolName = "Frame " + std::to_string(i) + " Graphics Command Pool";
+            const std::string cmdName = "Frame " + std::to_string(i) + " Graphics Command Buffer";
+            const std::string imageAvailableName = "Frame " + std::to_string(i) + " Image Available";
+            const std::string frameFenceName = "Frame " + std::to_string(i) + " In Flight Fence";
+            if (m_frames[i].commandPool != VK_NULL_HANDLE) {
+                vulkanSetObjectDebugName(m_device,
+                                         VK_OBJECT_TYPE_COMMAND_POOL,
+                                         vkObjectHandle(m_frames[i].commandPool),
+                                         poolName.c_str());
+            }
+            if (m_frames[i].commandBuffer != VK_NULL_HANDLE) {
+                vulkanSetObjectDebugName(m_device,
+                                         VK_OBJECT_TYPE_COMMAND_BUFFER,
+                                         vkObjectHandle(m_frames[i].commandBuffer),
+                                         cmdName.c_str());
+            }
+            if (m_frames[i].imageAvailable != VK_NULL_HANDLE) {
+                vulkanSetObjectDebugName(m_device,
+                                         VK_OBJECT_TYPE_SEMAPHORE,
+                                         vkObjectHandle(m_frames[i].imageAvailable),
+                                         imageAvailableName.c_str());
+            }
+            if (m_frames[i].inFlight != VK_NULL_HANDLE) {
+                vulkanSetObjectDebugName(m_device,
+                                         VK_OBJECT_TYPE_FENCE,
+                                         vkObjectHandle(m_frames[i].inFlight),
+                                         frameFenceName.c_str());
+            }
+            if (m_frames[i].computeCommandPool != VK_NULL_HANDLE) {
+                const std::string computePoolName =
+                    "Frame " + std::to_string(i) + " Compute Command Pool";
+                vulkanSetObjectDebugName(m_device,
+                                         VK_OBJECT_TYPE_COMMAND_POOL,
+                                         vkObjectHandle(m_frames[i].computeCommandPool),
+                                         computePoolName.c_str());
+            }
+            if (m_frames[i].computeCommandBuffer != VK_NULL_HANDLE) {
+                const std::string computeCmdName =
+                    "Frame " + std::to_string(i) + " Compute Command Buffer";
+                vulkanSetObjectDebugName(m_device,
+                                         VK_OBJECT_TYPE_COMMAND_BUFFER,
+                                         vkObjectHandle(m_frames[i].computeCommandBuffer),
+                                         computeCmdName.c_str());
+            }
+        }
+        if (m_swapchain != VK_NULL_HANDLE) {
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_SWAPCHAIN_KHR,
+                                     vkObjectHandle(m_swapchain),
+                                     "Metallic Swapchain");
+        }
+        for (size_t i = 0; i < m_swapchainImages.size(); ++i) {
+            const std::string imageName = "Swapchain Image " + std::to_string(i);
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_IMAGE,
+                                     vkObjectHandle(m_swapchainImages[i]),
+                                     imageName.c_str());
+            if (i < m_swapchainImageViews.size() && m_swapchainImageViews[i] != VK_NULL_HANDLE) {
+                const std::string viewName = imageName + " View";
+                vulkanSetObjectDebugName(m_device,
+                                         VK_OBJECT_TYPE_IMAGE_VIEW,
+                                         vkObjectHandle(m_swapchainImageViews[i]),
+                                         viewName.c_str());
+            }
+            if (i < m_swapchainRenderFinished.size() && m_swapchainRenderFinished[i] != VK_NULL_HANDLE) {
+                const std::string semaphoreName = imageName + " Render Finished";
+                vulkanSetObjectDebugName(m_device,
+                                         VK_OBJECT_TYPE_SEMAPHORE,
+                                         vkObjectHandle(m_swapchainRenderFinished[i]),
+                                         semaphoreName.c_str());
+            }
+        }
+        if (m_computeTimelineSemaphore != VK_NULL_HANDLE) {
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_SEMAPHORE,
+                                     vkObjectHandle(m_computeTimelineSemaphore),
+                                     "Async Compute Timeline");
+        }
+        if (m_transferTimelineSemaphore != VK_NULL_HANDLE) {
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_SEMAPHORE,
+                                     vkObjectHandle(m_transferTimelineSemaphore),
+                                     "Transfer Timeline");
+        }
+    }
+
     void createInstance(const RhiCreateInfo& createInfo) {
         uint32_t glfwExtensionCount = 0;
         const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
@@ -1730,6 +2039,15 @@ public:
         std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
         for (auto ext : createInfo.extraInstanceExtensions) {
             extensions.push_back(ext);
+        }
+
+        uint32_t availableExtensionCount = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &availableExtensionCount, nullptr);
+        std::vector<VkExtensionProperties> availableExtensions(availableExtensionCount);
+        vkEnumerateInstanceExtensionProperties(nullptr, &availableExtensionCount, availableExtensions.data());
+        m_toolingInfo.debugUtils = hasExtension(availableExtensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        if (m_toolingInfo.debugUtils) {
+            extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
         // Deduplicate instance extensions
         std::sort(extensions.begin(), extensions.end(),
@@ -1746,6 +2064,7 @@ public:
 
         std::vector<const char*> layers;
         const bool validationAvailable = hasLayer(availableLayers, kValidationLayerName);
+        m_toolingInfo.renderDocLayerAvailable = hasLayer(availableLayers, kRenderDocLayerName);
         if (createInfo.enableValidation && validationAvailable) {
             layers.push_back(kValidationLayerName);
             m_features.validation = true;
@@ -1764,8 +2083,29 @@ public:
         createInfoVk.ppEnabledExtensionNames = extensions.data();
         createInfoVk.enabledLayerCount = static_cast<uint32_t>(layers.size());
         createInfoVk.ppEnabledLayerNames = layers.empty() ? nullptr : layers.data();
+        VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = makeDebugMessengerCreateInfo();
+        if (m_features.validation && m_toolingInfo.debugUtils) {
+            createInfoVk.pNext = &debugCreateInfo;
+        }
 
         checkVk(vkCreateInstance(&createInfoVk, nullptr, &m_instance), "Failed to create Vulkan instance");
+
+        if (m_toolingInfo.debugUtils) {
+            m_vkCreateDebugUtilsMessengerEXT =
+                reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+                    vkGetInstanceProcAddr(m_instance, "vkCreateDebugUtilsMessengerEXT"));
+            m_vkDestroyDebugUtilsMessengerEXT =
+                reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+                    vkGetInstanceProcAddr(m_instance, "vkDestroyDebugUtilsMessengerEXT"));
+            if (m_features.validation &&
+                m_vkCreateDebugUtilsMessengerEXT &&
+                m_vkCreateDebugUtilsMessengerEXT(m_instance,
+                                                 &debugCreateInfo,
+                                                 nullptr,
+                                                 &m_debugMessenger) == VK_SUCCESS) {
+                m_toolingInfo.validationMessenger = true;
+            }
+        }
     }
 
     void createSurface(GLFWwindow* window) {
@@ -1960,6 +2300,9 @@ public:
             hasExtension(extensions, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         const bool descriptorBufferAvailable =
             hasExtension(extensions, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+        m_deviceFaultAvailable = hasExtension(extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+        m_diagnosticCheckpointsAvailable =
+            hasExtension(extensions, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         if (!dynamicRenderingAvailable || !sync2Available) {
             return false;
         }
@@ -2000,6 +2343,10 @@ public:
             vulkan11Features.shaderDrawParameters != VK_TRUE) {
             return false;
         }
+
+        m_toolingInfo.pipelineStatistics = features2.features.pipelineStatisticsQuery == VK_TRUE;
+        m_toolingInfo.deviceFault = m_deviceFaultAvailable;
+        m_toolingInfo.diagnosticCheckpoints = m_diagnosticCheckpointsAvailable;
 
         m_features.dynamicRendering = true;
         m_features.synchronization2 = true;
@@ -2084,6 +2431,12 @@ public:
         }
         if (m_features.descriptorBuffer) {
             deviceExtensions.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+        }
+        if (m_deviceFaultAvailable) {
+            deviceExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+        }
+        if (m_diagnosticCheckpointsAvailable) {
+            deviceExtensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         }
         for (auto ext : createInfo.extraDeviceExtensions) {
             deviceExtensions.push_back(ext);
@@ -2185,6 +2538,7 @@ public:
         timelineSemaphoreFeatures.timelineSemaphore = VK_TRUE;
 
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        features2.features.pipelineStatisticsQuery = m_toolingInfo.pipelineStatistics ? VK_TRUE : VK_FALSE;
         if (createInfo.enableTimelineSemaphore) {
             m_features.timelineSemaphore = true;
             vulkan11Features.pNext = &timelineSemaphoreFeatures;
@@ -2220,6 +2574,31 @@ public:
         if (m_queueFamilies.transfer.has_value()) {
             vkGetDeviceQueue(m_device, m_queueFamilies.transfer.value(), 0, &m_transferQueue);
             spdlog::info("Vulkan: dedicated transfer queue (family {})", m_queueFamilies.transfer.value());
+        }
+
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_DEVICE,
+                                 vkObjectHandle(m_device),
+                                 "Metallic Device");
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_QUEUE,
+                                 vkObjectHandle(m_graphicsQueue),
+                                 "Metallic Graphics Queue");
+        vulkanSetObjectDebugName(m_device,
+                                 VK_OBJECT_TYPE_QUEUE,
+                                 vkObjectHandle(m_presentQueue),
+                                 "Metallic Present Queue");
+        if (m_computeQueue != VK_NULL_HANDLE) {
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_QUEUE,
+                                     vkObjectHandle(m_computeQueue),
+                                     "Metallic Async Compute Queue");
+        }
+        if (m_transferQueue != VK_NULL_HANDLE) {
+            vulkanSetObjectDebugName(m_device,
+                                     VK_OBJECT_TYPE_QUEUE,
+                                     vkObjectHandle(m_transferQueue),
+                                     "Metallic Transfer Queue");
         }
 
         if (m_features.rayTracingPipeline) {
@@ -2393,6 +2772,7 @@ public:
         }
 
         populateNativeHandles();
+        applyDebugObjectNames();
     }
 
     void cleanupSwapchain() {
@@ -2481,10 +2861,13 @@ public:
     }
 
     VkInstance m_instance = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT m_debugMessenger = VK_NULL_HANDLE;
     VkSurfaceKHR m_surface = VK_NULL_HANDLE;
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties m_physicalDeviceProperties{};
     VkDevice m_device = VK_NULL_HANDLE;
+    PFN_vkCreateDebugUtilsMessengerEXT m_vkCreateDebugUtilsMessengerEXT = nullptr;
+    PFN_vkDestroyDebugUtilsMessengerEXT m_vkDestroyDebugUtilsMessengerEXT = nullptr;
     PFN_vkGetDeviceProcAddr m_vkGetDeviceProcAddrProxy = nullptr;
     PFN_vkAcquireNextImageKHR m_vkAcquireNextImageKHRProxy = nullptr;
     PFN_vkQueuePresentKHR m_vkQueuePresentKHRProxy = nullptr;
@@ -2512,10 +2895,15 @@ public:
 
     uint32_t m_frameIndex = 0;
     uint32_t m_imageIndex = 0;
+    uint64_t m_submittedFrameCounter = 0;
     uint32_t m_requestedWidth = 0;
     uint32_t m_requestedHeight = 0;
     bool m_pendingResize = false;
     bool m_insideRendering = false;
+    bool m_deviceLost = false;
+    bool m_deviceFaultAvailable = false;
+    bool m_diagnosticCheckpointsAvailable = false;
+    std::string m_deviceLostMessage;
 
     RhiFeatures m_features{};
     RhiLimits m_limits{};
@@ -2524,8 +2912,10 @@ public:
     VkPhysicalDeviceDescriptorBufferPropertiesEXT m_descriptorBufferProperties{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
     RhiNativeHandles m_nativeHandles{};
+    VulkanToolingInfo m_toolingInfo{};
     std::vector<std::string> m_enabledExtensions;
     VulkanPipelineCacheManager m_pipelineCache;
+    VulkanGpuProfiler m_gpuProfiler;
     VulkanUploadRing m_uploadRing;
     VulkanTransientPool m_transientPool;
     VulkanReadbackHeap m_readbackHeap;
@@ -2589,6 +2979,30 @@ uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context) {
 
 VkPipelineCache getVulkanPipelineCache(RhiContext& context) {
     return static_cast<VulkanContext&>(context).pipelineCacheHandle();
+}
+
+const VulkanGpuFrameDiagnostics& getVulkanLatestFrameDiagnostics(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).latestFrameDiagnostics();
+}
+
+const VulkanToolingInfo& getVulkanToolingInfo(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).toolingInfo();
+}
+
+VulkanPipelineCacheTelemetry getVulkanPipelineCacheTelemetry(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).pipelineCacheTelemetry();
+}
+
+bool vulkanIsDeviceLost(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).isDeviceLost();
+}
+
+const std::string& vulkanDeviceLostMessage(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).deviceLostMessage();
+}
+
+VulkanGpuProfiler* getVulkanGpuProfiler(RhiContext& context) {
+    return static_cast<VulkanContext&>(context).gpuProfiler();
 }
 
 const VkPhysicalDeviceDescriptorBufferPropertiesEXT& getVulkanDescriptorBufferProperties(

@@ -5,6 +5,7 @@
 #include "vulkan_backend.h"
 #include "vulkan_descriptor_manager.h"
 #include "rhi_backend.h"
+#include "../rhi_resource_utils.h"
 
 #include <vk_mem_alloc.h>
 #include <spdlog/spdlog.h>
@@ -309,6 +310,14 @@ createVulkanRayTracingPipelineImpl(VkDevice device,
 
     spdlog::debug("VulkanRTPipeline: compiled in {:.1f} ms ({} stages, {} groups)",
                   compileMs, stages.size(), groups.size());
+    vulkanSetObjectDebugName(device,
+                             VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                             vulkanObjectHandle(pipelineLayout),
+                             "RT Pipeline Layout");
+    vulkanSetObjectDebugName(device,
+                             VK_OBJECT_TYPE_PIPELINE,
+                             vulkanObjectHandle(pipeline),
+                             "RT Pipeline");
 
     // --- 4. Retrieve shader group handles ---
 
@@ -359,6 +368,10 @@ createVulkanRayTracingPipelineImpl(VkDevice device,
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         return nullptr;
     }
+    vulkanSetObjectDebugName(device,
+                             VK_OBJECT_TYPE_BUFFER,
+                             vulkanObjectHandle(sbtBuffer),
+                             "RT Shader Binding Table");
 
     // --- 6. Fill SBT ---
 

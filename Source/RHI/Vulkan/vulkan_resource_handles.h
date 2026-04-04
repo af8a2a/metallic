@@ -2,6 +2,7 @@
 
 #ifdef _WIN32
 
+#include "../rhi_resource_utils.h"
 #include "../rhi_backend.h"
 #include "../bindless_scene_constants.h"
 #include "vulkan_descriptor_manager.h"
@@ -10,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -348,6 +350,10 @@ inline std::optional<VulkanBufferResource> vmaCreateBufferResource(const VmaBuff
 
     if (info.debugName && info.debugName[0] != '\0') {
         vmaSetAllocationName(info.allocator, res.allocation, info.debugName);
+        vulkanSetObjectDebugName(info.device,
+                                 VK_OBJECT_TYPE_BUFFER,
+                                 vulkanObjectHandle(res.buffer),
+                                 info.debugName);
     }
 
     return res;
@@ -413,6 +419,15 @@ inline std::optional<VulkanTextureResource> vmaCreateImageResource(const VmaImag
 
     if (info.debugName && info.debugName[0] != '\0') {
         vmaSetAllocationName(info.allocator, res.allocation, info.debugName);
+        vulkanSetObjectDebugName(info.device,
+                                 VK_OBJECT_TYPE_IMAGE,
+                                 vulkanObjectHandle(res.image),
+                                 info.debugName);
+        std::string imageViewName = std::string(info.debugName) + " View";
+        vulkanSetObjectDebugName(info.device,
+                                 VK_OBJECT_TYPE_IMAGE_VIEW,
+                                 vulkanObjectHandle(res.imageView),
+                                 imageViewName.c_str());
     }
 
     return res;

@@ -185,6 +185,7 @@ void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAll
                         VkQueue queue, uint32_t queueFamily, bool bufferDeviceAddressEnabled,
                         bool externalHostMemoryEnabled,
                         bool rayTracingEnabled,
+                        bool debugUtilsEnabled,
                         void* vkGetDeviceProcAddrProxy) {
     PFN_vkGetDeviceProcAddr deviceProcAddrProxy =
         reinterpret_cast<PFN_vkGetDeviceProcAddr>(vkGetDeviceProcAddrProxy);
@@ -198,6 +199,7 @@ void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAll
     g_vkResCtx.externalHostMemoryEnabled = externalHostMemoryEnabled;
     g_vkResCtx.rayTracingEnabled = rayTracingEnabled;
     g_vkResCtx.streamlineHooksEnabled = false;
+    g_vkResCtx.debugUtilsEnabled = debugUtilsEnabled;
     g_vkResCtx.vkBeginCommandBufferProxy =
         loadHookedDeviceProc<PFN_vkBeginCommandBuffer>(deviceProcAddrProxy,
                                                        device,
@@ -210,6 +212,21 @@ void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAll
         loadHookedDeviceProc<PFN_vkCmdBindDescriptorSets>(deviceProcAddrProxy,
                                                           device,
                                                           "vkCmdBindDescriptorSets");
+    if (debugUtilsEnabled) {
+        g_vkResCtx.vkSetDebugUtilsObjectName =
+            reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+                vkGetDeviceProcAddr(device, "vkSetDebugUtilsObjectNameEXT"));
+        g_vkResCtx.vkCmdBeginDebugUtilsLabel =
+            reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
+                vkGetDeviceProcAddr(device, "vkCmdBeginDebugUtilsLabelEXT"));
+        g_vkResCtx.vkCmdEndDebugUtilsLabel =
+            reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
+                vkGetDeviceProcAddr(device, "vkCmdEndDebugUtilsLabelEXT"));
+    } else {
+        g_vkResCtx.vkSetDebugUtilsObjectName = nullptr;
+        g_vkResCtx.vkCmdBeginDebugUtilsLabel = nullptr;
+        g_vkResCtx.vkCmdEndDebugUtilsLabel = nullptr;
+    }
     g_vkResCtx.initialized = true;
 }
 
@@ -315,6 +332,7 @@ void vulkanSetResourceContext(VkDevice device,
                               bool bufferDeviceAddressEnabled,
                               bool externalHostMemoryEnabled,
                               bool rayTracingEnabled,
+                              bool debugUtilsEnabled,
                               void* vkGetDeviceProcAddrProxy) {
     setResourceContext(device,
                        physicalDevice,
@@ -324,6 +342,7 @@ void vulkanSetResourceContext(VkDevice device,
                        bufferDeviceAddressEnabled,
                        externalHostMemoryEnabled,
                        rayTracingEnabled,
+                       debugUtilsEnabled,
                        vkGetDeviceProcAddrProxy);
 }
 
@@ -333,6 +352,54 @@ const VulkanResourceContextInfo& vulkanGetResourceContext() {
 
 void vulkanSetStreamlineHookedCommandsEnabled(bool enabled) {
     g_vkResCtx.streamlineHooksEnabled = enabled;
+}
+
+void vulkanSetObjectDebugName(VkDevice device,
+                              VkObjectType objectType,
+                              uint64_t handle,
+                              const char* name) {
+    if (!g_vkResCtx.debugUtilsEnabled ||
+        !g_vkResCtx.vkSetDebugUtilsObjectName ||
+        device == VK_NULL_HANDLE ||
+        handle == 0 ||
+        !name ||
+        name[0] == '\0') {
+        return;
+    }
+
+    VkDebugUtilsObjectNameInfoEXT nameInfo{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+    nameInfo.objectType = objectType;
+    nameInfo.objectHandle = handle;
+    nameInfo.pObjectName = name;
+    g_vkResCtx.vkSetDebugUtilsObjectName(device, &nameInfo);
+}
+
+void vulkanBeginDebugLabel(VkCommandBuffer commandBuffer, const char* label) {
+    if (!g_vkResCtx.debugUtilsEnabled ||
+        !g_vkResCtx.vkCmdBeginDebugUtilsLabel ||
+        commandBuffer == VK_NULL_HANDLE ||
+        !label ||
+        label[0] == '\0') {
+        return;
+    }
+
+    VkDebugUtilsLabelEXT debugLabel{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+    debugLabel.pLabelName = label;
+    debugLabel.color[0] = 0.18f;
+    debugLabel.color[1] = 0.62f;
+    debugLabel.color[2] = 0.95f;
+    debugLabel.color[3] = 1.0f;
+    g_vkResCtx.vkCmdBeginDebugUtilsLabel(commandBuffer, &debugLabel);
+}
+
+void vulkanEndDebugLabel(VkCommandBuffer commandBuffer) {
+    if (!g_vkResCtx.debugUtilsEnabled ||
+        !g_vkResCtx.vkCmdEndDebugUtilsLabel ||
+        commandBuffer == VK_NULL_HANDLE) {
+        return;
+    }
+
+    g_vkResCtx.vkCmdEndDebugUtilsLabel(commandBuffer);
 }
 
 void vulkanSetUploadService(VulkanUploadService* service) {

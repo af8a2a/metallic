@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 
 include(cmake/SetupSlang.cmake)
 include(cmake/SetupStreamline.cmake)
+include(cmake/SetupNsight.cmake)
 
 find_package(Git QUIET)
 

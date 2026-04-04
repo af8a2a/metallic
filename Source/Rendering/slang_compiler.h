@@ -33,6 +33,15 @@ std::vector<uint32_t> compileSlangComputeBinary(RhiBackendType backend,
                                                 const char* searchPath = nullptr,
                                                 const char* entryPoint = "computeMain");
 
+struct SlangDiagnosticRecord {
+    std::string stage;
+    std::string shaderPath;
+    std::string message;
+};
+
+std::vector<SlangDiagnosticRecord> getRecentSlangDiagnostics();
+void clearRecentSlangDiagnostics();
+
 enum class SlangShaderBindingType : uint8_t {
     UniformBuffer,
     StorageBuffer,
