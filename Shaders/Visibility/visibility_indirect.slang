@@ -3,26 +3,12 @@
 // (populated by meshlet_cull.slang). No per-node CPU dispatch needed.
 
 #include "../../Source/Rendering/visibility_constants.h"
+#include "../Shared/gpu_driven_helpers.slang"
 #include "../Shared/bindless_scene.slang"
 
 struct GlobalUniforms {
     float4   lightDir;
     float4   lightColorIntensity;
-};
-
-struct InstanceData {
-    float4x4 mvp;
-    float4x4 modelView;
-    float4x4 worldMatrix;
-    uint     meshletStart;
-    uint     meshletCount;
-    uint     instanceID;
-    uint     pad;
-};
-
-struct MeshletDrawInfo {
-    uint instanceID;
-    uint globalMeshletID;
 };
 
 struct GPUMeshlet {
@@ -55,8 +41,8 @@ StructuredBuffer<float>             _boundsPlaceholder;// buffer(6) — keeps in
 StructuredBuffer<float>             uvs;               // buffer(7)
 StructuredBuffer<uint>              meshletMaterialIDs;// buffer(8)
 StructuredBuffer<GPUMaterial>       materials;         // buffer(9)
-StructuredBuffer<MeshletDrawInfo>   visibleMeshlets;   // buffer(10)
-StructuredBuffer<InstanceData>      instanceData;      // buffer(11)
+StructuredBuffer<MeshletDrawInfo>   visibleMeshlets;   // buffer(GPU_DRIVEN_VISIBILITY_VISIBLE_MESHLETS_BINDING)
+StructuredBuffer<InstanceData>      instanceData;      // buffer(GPU_DRIVEN_VISIBILITY_INSTANCE_DATA_BINDING)
 
 struct VisVertex {
     float4 clipPos : SV_Position;

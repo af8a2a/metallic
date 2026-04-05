@@ -3,8 +3,7 @@
 #include <ml.h>
 #include <cstdint>
 
-// Shared structs for GPU-driven meshlet culling pipeline.
-// Used by both CPU (MeshletCullPass) and GPU (meshlet_cull.slang, visibility_indirect.slang).
+// CPU-side payload structs for GPU-driven meshlet culling.
 
 struct MeshletDrawInfo {
     uint32_t instanceID;
@@ -38,9 +37,3 @@ struct CullUniforms {
     float    occlusionDepthBias;
     float    occlusionBoundsScale;
 };
-
-// Counter buffer layout (16 bytes, MTL::ResourceStorageModePrivate):
-//   offset 0:  atomic counter (uint32)
-//   offset 4:  MTLDispatchThreadgroupsIndirectArguments { x, y, z } (3 x uint32)
-static constexpr uint32_t kCounterBufferSize = 16;
-static constexpr uint32_t kIndirectArgsOffset = 4;

@@ -3,6 +3,7 @@
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "frame_context.h"
+#include "gpu_driven_helpers.h"
 #include "gpu_cull_resources.h"
 #include "pass_registry.h"
 #include "imgui.h"
@@ -139,30 +140,30 @@ public:
         if (useGPUPath) {
 
             // Bind shared geometry buffers (same indices as visibility.slang)
-            encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
-            encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
-            encoder.setMeshBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
-            encoder.setMeshBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
-            encoder.setMeshBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
-            encoder.setMeshBuffer(&m_ctx.meshletData.boundsBuffer, 0, 6);
-            encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
-            encoder.setMeshBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
-            encoder.setMeshBuffer(&m_ctx.materials.materialBuffer, 0, 9);
-            encoder.setMeshBuffer(visibleMeshletBuffer, 0, 10);
-            encoder.setMeshBuffer(instanceDataBuffer, 0, 11);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBuffer, 0, GpuDriven::MeshletVisibilityBindings::kPositions);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBuffer, 0, GpuDriven::MeshletVisibilityBindings::kNormals);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMeshlets);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletVertices, 0, GpuDriven::MeshletVisibilityBindings::kMeshletVertices);
+            encoder.setMeshBuffer(&m_ctx.meshletData.meshletTriangles, 0, GpuDriven::MeshletVisibilityBindings::kMeshletTriangles);
+            encoder.setMeshBuffer(&m_ctx.meshletData.boundsBuffer, 0, GpuDriven::MeshletVisibilityBindings::kBounds);
+            encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBuffer, 0, GpuDriven::MeshletVisibilityBindings::kUvs);
+            encoder.setMeshBuffer(&m_ctx.meshletData.materialIDs, 0, GpuDriven::MeshletVisibilityBindings::kMaterialIds);
+            encoder.setMeshBuffer(&m_ctx.materials.materialBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMaterials);
+            encoder.setMeshBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kVisibleMeshlets);
+            encoder.setMeshBuffer(instanceDataBuffer, 0, GpuDriven::MeshletVisibilityBindings::kInstanceData);
 
             // Fragment stage needs all buffers too (Slang KernelContext)
-            encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
-            encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBuffer, 0, 6);
-            encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
-            encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
-            encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, 9);
-            encoder.setFragmentBuffer(visibleMeshletBuffer, 0, 10);
-            encoder.setFragmentBuffer(instanceDataBuffer, 0, 11);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBuffer, 0, GpuDriven::MeshletVisibilityBindings::kPositions);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBuffer, 0, GpuDriven::MeshletVisibilityBindings::kNormals);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMeshlets);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVertices, 0, GpuDriven::MeshletVisibilityBindings::kMeshletVertices);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTriangles, 0, GpuDriven::MeshletVisibilityBindings::kMeshletTriangles);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBuffer, 0, GpuDriven::MeshletVisibilityBindings::kBounds);
+            encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBuffer, 0, GpuDriven::MeshletVisibilityBindings::kUvs);
+            encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, GpuDriven::MeshletVisibilityBindings::kMaterialIds);
+            encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMaterials);
+            encoder.setFragmentBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kVisibleMeshlets);
+            encoder.setFragmentBuffer(instanceDataBuffer, 0, GpuDriven::MeshletVisibilityBindings::kInstanceData);
 
             if (!useBindlessSceneTextures && !materialTextures.empty()) {
                 encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
@@ -175,12 +176,16 @@ public:
             struct { float4 lightDir; float4 lightColorIntensity; } globalUni;
             globalUni.lightDir = m_frameContext->viewLightDir;
             globalUni.lightColorIntensity = m_frameContext->lightColorIntensity;
-            encoder.setMeshBytes(&globalUni, sizeof(globalUni), 0);
-            encoder.setFragmentBytes(&globalUni, sizeof(globalUni), 0);
+            encoder.setMeshBytes(&globalUni,
+                                 sizeof(globalUni),
+                                 GpuDriven::MeshletVisibilityBindings::kGlobalUniforms);
+            encoder.setFragmentBytes(&globalUni,
+                                     sizeof(globalUni),
+                                     GpuDriven::MeshletVisibilityBindings::kGlobalUniforms);
 
             // Single indirect draw call
             encoder.drawMeshThreadgroupsIndirect(*counterBuffer,
-                                                 kIndirectArgsOffset,
+                                                 GpuDriven::DispatchCounterLayout::kIndirectArgsOffset,
                                                  {1, 1, 1},
                                                  {128, 1, 1});
 
@@ -196,24 +201,24 @@ public:
         encoder.setRenderPipeline(pipeIt->second);
 
         // Bind shared buffers once
-        encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
-        encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
-        encoder.setMeshBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
-        encoder.setMeshBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
-        encoder.setMeshBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
-        encoder.setMeshBuffer(&m_ctx.meshletData.boundsBuffer, 0, 6);
-        encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
-        encoder.setMeshBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
-        encoder.setMeshBuffer(&m_ctx.materials.materialBuffer, 0, 9);
-        encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
-        encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
-        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
-        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
-        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
-        encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBuffer, 0, 6);
-        encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
-        encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
-        encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, 9);
+        encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBuffer, 0, GpuDriven::MeshletVisibilityBindings::kPositions);
+        encoder.setMeshBuffer(&m_ctx.sceneMesh.normalBuffer, 0, GpuDriven::MeshletVisibilityBindings::kNormals);
+        encoder.setMeshBuffer(&m_ctx.meshletData.meshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMeshlets);
+        encoder.setMeshBuffer(&m_ctx.meshletData.meshletVertices, 0, GpuDriven::MeshletVisibilityBindings::kMeshletVertices);
+        encoder.setMeshBuffer(&m_ctx.meshletData.meshletTriangles, 0, GpuDriven::MeshletVisibilityBindings::kMeshletTriangles);
+        encoder.setMeshBuffer(&m_ctx.meshletData.boundsBuffer, 0, GpuDriven::MeshletVisibilityBindings::kBounds);
+        encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBuffer, 0, GpuDriven::MeshletVisibilityBindings::kUvs);
+        encoder.setMeshBuffer(&m_ctx.meshletData.materialIDs, 0, GpuDriven::MeshletVisibilityBindings::kMaterialIds);
+        encoder.setMeshBuffer(&m_ctx.materials.materialBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMaterials);
+        encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBuffer, 0, GpuDriven::MeshletVisibilityBindings::kPositions);
+        encoder.setFragmentBuffer(&m_ctx.sceneMesh.normalBuffer, 0, GpuDriven::MeshletVisibilityBindings::kNormals);
+        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMeshlets);
+        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletVertices, 0, GpuDriven::MeshletVisibilityBindings::kMeshletVertices);
+        encoder.setFragmentBuffer(&m_ctx.meshletData.meshletTriangles, 0, GpuDriven::MeshletVisibilityBindings::kMeshletTriangles);
+        encoder.setFragmentBuffer(&m_ctx.meshletData.boundsBuffer, 0, GpuDriven::MeshletVisibilityBindings::kBounds);
+        encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBuffer, 0, GpuDriven::MeshletVisibilityBindings::kUvs);
+        encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, GpuDriven::MeshletVisibilityBindings::kMaterialIds);
+        encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMaterials);
         if (!useBindlessSceneTextures && !materialTextures.empty()) {
             encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
             encoder.setMeshTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
@@ -251,8 +256,12 @@ public:
             nodeUniforms.cameraPos = invModel * m_frameContext->cameraWorldPos;
             nodeUniforms.meshletBaseOffset = node.meshletStart;
             nodeUniforms.instanceID = instanceID;
-            encoder.setMeshBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
-            encoder.setFragmentBytes(&nodeUniforms, sizeof(nodeUniforms), 0);
+            encoder.setMeshBytes(&nodeUniforms,
+                                 sizeof(nodeUniforms),
+                                 GpuDriven::MeshletVisibilityBindings::kGlobalUniforms);
+            encoder.setFragmentBytes(&nodeUniforms,
+                                     sizeof(nodeUniforms),
+                                     GpuDriven::MeshletVisibilityBindings::kGlobalUniforms);
             encoder.drawMeshThreadgroups({node.meshletCount, 1, 1},
                                          {1, 1, 1},
                                          {128, 1, 1});

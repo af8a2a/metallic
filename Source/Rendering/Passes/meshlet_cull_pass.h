@@ -3,6 +3,7 @@
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "frame_context.h"
+#include "gpu_driven_helpers.h"
 #include "gpu_cull_resources.h"
 #include "hzb_constants.h"
 #include "pass_registry.h"
@@ -51,22 +52,20 @@ public:
         m_maxMeshlets = std::max<uint32_t>(1u, computeMaxMeshletCapacity());
         m_maxInstances = std::max<uint32_t>(1u, computeMaxInstanceCapacity());
 
-        FGBufferDesc visibleMeshletDesc;
-        visibleMeshletDesc.size = static_cast<size_t>(m_maxMeshlets) * sizeof(MeshletDrawInfo);
-        visibleMeshletDesc.hostVisible = false;
-        visibleMeshletDesc.debugName = "VisibleMeshletBuffer";
+        FGBufferDesc visibleMeshletDesc =
+            GpuDriven::makeStructuredBufferDesc<MeshletDrawInfo>(m_maxMeshlets,
+                                                                 "VisibleMeshletBuffer",
+                                                                 false);
         visibleMeshlets = builder.create("visibleMeshlets", visibleMeshletDesc);
 
-        FGBufferDesc counterDesc;
-        counterDesc.size = kCounterBufferSize;
-        counterDesc.hostVisible = true;
-        counterDesc.debugName = "CullCounterBuffer";
+        FGBufferDesc counterDesc =
+            GpuDriven::makeDispatchCounterBufferDesc("CullCounterBuffer", true);
         cullCounter = builder.create("cullCounter", counterDesc);
 
-        FGBufferDesc instanceDataDesc;
-        instanceDataDesc.size = static_cast<size_t>(m_maxInstances) * sizeof(GPUInstanceData);
-        instanceDataDesc.hostVisible = true;
-        instanceDataDesc.debugName = "InstanceDataBuffer";
+        FGBufferDesc instanceDataDesc =
+            GpuDriven::makeStructuredBufferDesc<GPUInstanceData>(m_maxInstances,
+                                                                 "InstanceDataBuffer",
+                                                                 true);
         instanceData = builder.create("instanceData", instanceDataDesc);
 
         m_hzbHistoryRead.clear();
@@ -128,13 +127,12 @@ public:
         if (!visibleMeshletBuffer || !counterBuffer || !instanceDataBuffer) {
             return;
         }
-        initializeCounterBuffer(counterBuffer);
+        GpuDriven::ensureDispatchCounterBufferInitialized(counterBuffer, m_initializedCounterBuffer);
 
         // Read back previous frame's visible count (1-frame delayed).
-        // build_indirect writes count to offset 4 (indirect args x) then resets offset 0.
+        // build_indirect writes count into the indirect-dispatch X slot, then resets the counter.
         // By this point the previous frame's GPU work is complete.
-        auto* counterPtr = static_cast<uint32_t*>(counterBuffer->mappedData());
-        m_lastVisibleCount = counterPtr[1]; // indirect args x from previous frame
+        m_lastVisibleCount = GpuDriven::readBuiltDispatchCount(counterBuffer);
 
         // Upload instance data (CPU PU, StorageModeShared)
         auto* instPtr = static_cast<GPUInstanceData*>(instanceDataBuffer->mappedData());
@@ -200,13 +198,15 @@ public:
 
         // --- Dispatch 1: Meshlet cull ---
         encoder.setComputePipeline(cullIt->second);
-        encoder.setBytes(&cullUni, sizeof(cullUni), 0);
-        encoder.setBuffer(instanceDataBuffer, 0, 1);
-        encoder.setBuffer(&m_ctx.meshletData.boundsBuffer, 0, 2);
-        encoder.setBuffer(visibleMeshletBuffer, 0, 3);
-        encoder.setBuffer(counterBuffer, 0, 4);
+        encoder.setBytes(&cullUni, sizeof(cullUni), GpuDriven::MeshletCullBindings::kUniforms);
+        encoder.setBuffer(instanceDataBuffer, 0, GpuDriven::MeshletCullBindings::kInstanceData);
+        encoder.setBuffer(&m_ctx.meshletData.boundsBuffer, 0, GpuDriven::MeshletCullBindings::kBounds);
+        encoder.setBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletCullBindings::kCompactionOutput);
+        encoder.setBuffer(counterBuffer, 0, GpuDriven::MeshletCullBindings::kCounter);
         if (hzbTextureCount > 0) {
-            encoder.setTextures(hzbTextures.data(), 5, hzbTextureCount);
+            encoder.setTextures(hzbTextures.data(),
+                                GpuDriven::MeshletCullBindings::kHzbTextureBase,
+                                hzbTextureCount);
         }
 
         uint32_t threadgroupSize = 256;
@@ -216,7 +216,7 @@ public:
 
         // --- Dispatch 2: Build indirect args ---
         encoder.setComputePipeline(buildIt->second);
-        encoder.setBuffer(counterBuffer, 0, 0);
+        encoder.setBuffer(counterBuffer, 0, GpuDriven::BuildDispatchBindings::kCounter);
         encoder.dispatchThreadgroups({1, 1, 1}, {1, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
@@ -284,7 +284,7 @@ private:
     bool m_enableOcclusionCull = true;
     float m_occlusionDepthBias = 0.0015f;
     float m_occlusionBoundsScale = 1.1f;
-    bool m_counterInitialized = false;
+    const RhiBuffer* m_initializedCounterBuffer = nullptr;
     std::vector<FGResource> m_hzbHistoryRead;
 
     uint32_t computeMaxMeshletCapacity() const {
@@ -303,23 +303,6 @@ private:
             }
         }
         return std::max(1u, instanceCapacity);
-    }
-
-    void initializeCounterBuffer(RhiBuffer* counterBuffer) {
-        if (m_counterInitialized || !counterBuffer) {
-            return;
-        }
-
-        auto* ptr = static_cast<uint32_t*>(counterBuffer->mappedData());
-        if (!ptr) {
-            return;
-        }
-
-        ptr[0] = 0; // atomic counter
-        ptr[1] = 0; // indirect args x (will be filled by build_indirect)
-        ptr[2] = 1; // indirect args y
-        ptr[3] = 1; // indirect args z
-        m_counterInitialized = true;
     }
 };
 

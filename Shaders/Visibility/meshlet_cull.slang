@@ -3,6 +3,7 @@
 // Outputs a compact list of visible {instanceID, globalMeshletID} pairs.
 
 #include "../../Source/Rendering/hzb_constants.h"
+#include "../Shared/gpu_driven_helpers.slang"
 
 struct CullUniforms {
     float4x4 viewProj;
@@ -22,33 +23,18 @@ struct CullUniforms {
     float    occlusionBoundsScale;
 };
 
-struct InstanceData {
-    float4x4 mvp;
-    float4x4 modelView;
-    float4x4 worldMatrix;
-    uint     meshletStart;
-    uint     meshletCount;
-    uint     instanceID;
-    uint     pad;
-};
-
 struct GPUMeshletBounds {
     float4 center_radius;
     float4 cone_apex_pad;
     float4 cone_axis_cutoff;
 };
 
-struct MeshletDrawInfo {
-    uint instanceID;
-    uint globalMeshletID;
-};
-
 ConstantBuffer<CullUniforms>        cullUniforms;    // buffer(0)
-StructuredBuffer<InstanceData>      instances;       // buffer(1)
-StructuredBuffer<GPUMeshletBounds>  meshletBounds;   // buffer(2)
-RWStructuredBuffer<MeshletDrawInfo> visibleMeshlets; // buffer(3)
-RWByteAddressBuffer                 counters;        // buffer(4)
-Texture2D<float>                    hzbPyramid[HZB_MAX_LEVELS]; // texture(5+)
+StructuredBuffer<InstanceData>      instances;       // buffer(GPU_DRIVEN_CULL_INSTANCE_DATA_BINDING)
+StructuredBuffer<GPUMeshletBounds>  meshletBounds;   // buffer(GPU_DRIVEN_CULL_BOUNDS_BINDING)
+RWStructuredBuffer<MeshletDrawInfo> visibleMeshlets; // buffer(GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING)
+RWByteAddressBuffer                 counters;        // buffer(GPU_DRIVEN_CULL_COUNTER_BINDING)
+Texture2D<float>                    hzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE+)
 
 float sampleHzb(uint level, uint2 coord) {
     switch (level) {
@@ -226,8 +212,7 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
     }
 
     if (!culled) {
-        uint slot;
-        counters.InterlockedAdd(0, 1u, slot);
+        uint slot = gpuDrivenAppendCompactionSlot(counters);
         MeshletDrawInfo info;
         info.instanceID = inst.instanceID;
         info.globalMeshletID = globalMeshletID;
