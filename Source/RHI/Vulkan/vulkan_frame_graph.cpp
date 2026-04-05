@@ -57,6 +57,56 @@ VkImageAspectFlags imageAspectMask(const VulkanTextureResource* resource) {
     }
 }
 
+VkPipelineStageFlags2 shaderStageMaskForBindPoint(VkPipelineBindPoint bindPoint) {
+    switch (bindPoint) {
+    case VK_PIPELINE_BIND_POINT_GRAPHICS:
+        return VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+    case VK_PIPELINE_BIND_POINT_COMPUTE:
+        return VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    default:
+        return VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    }
+}
+
+VkAccessFlags2 bufferAccessMaskForDescriptorType(VkDescriptorType descriptorType) {
+    switch (descriptorType) {
+    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+        return VK_ACCESS_2_UNIFORM_READ_BIT;
+    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+        // Reflection does not expose read-only storage usage here, so be conservative.
+        return VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    default:
+        return VK_ACCESS_2_NONE;
+    }
+}
+
+VkAccessFlags2 bufferAccessMaskForUsage(RhiResourceUsage usage) {
+    const uint32_t usageMask = static_cast<uint32_t>(usage);
+    VkAccessFlags2 access = VK_ACCESS_2_NONE;
+    if ((usageMask & static_cast<uint32_t>(RhiResourceUsage::Read)) != 0) {
+        access |= VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    }
+    if ((usageMask & static_cast<uint32_t>(RhiResourceUsage::Write)) != 0) {
+        access |= VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    }
+    return access;
+}
+
+void requireTrackedBufferState(VulkanResourceStateTracker* tracker,
+                               VkBuffer buffer,
+                               VkDeviceSize offset,
+                               VkPipelineStageFlags2 dstStage,
+                               VkAccessFlags2 dstAccess) {
+    if (!tracker || buffer == VK_NULL_HANDLE || dstAccess == VK_ACCESS_2_NONE) {
+        return;
+    }
+
+    tracker->requireBufferState(buffer, offset, VK_WHOLE_SIZE, dstStage, dstAccess);
+}
+
 } // namespace
 
 // Owned texture with VMA allocation backed by a shared VulkanTextureResource wrapper.
@@ -118,6 +168,7 @@ public:
         : m_commandBuffer(commandBuffer), m_device(device),
           m_descriptorManager(descriptorManager), m_stateTracker(stateTracker),
           m_gpuProfiler(gpuProfiler) {
+        m_pendingVertexBuffers.fill({});
         m_pendingBuffers.fill({});
         m_pendingTextures.fill({});
         m_pendingSamplers.fill({});
@@ -181,6 +232,9 @@ public:
         if (!buffer) return;
         VkBuffer vkBuf = getVulkanBufferHandle(buffer);
         VkDeviceSize vkOffset = offset;
+        if (index < kMaxBufferBindings) {
+            m_pendingVertexBuffers[index] = {vkBuf, vkOffset, buffer->size()};
+        }
         vkCmdBindVertexBuffers(m_commandBuffer, index, 1, &vkBuf, &vkOffset);
     }
 
@@ -260,10 +314,17 @@ public:
                                RhiIndexType indexType,
                                const RhiBuffer& indexBuffer,
                                uint64_t indexBufferOffset) override {
+        requireTrackedBufferState(m_stateTracker,
+                                  getVulkanBufferHandle(&indexBuffer),
+                                  indexBufferOffset,
+                                  VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+                                  VK_ACCESS_2_INDEX_READ_BIT);
+
+        flushDescriptors(VK_PIPELINE_BIND_POINT_GRAPHICS);
+
         VkIndexType vkIndexType = (indexType == RhiIndexType::UInt16) ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
         vkCmdBindIndexBuffer(m_commandBuffer, getVulkanBufferHandle(&indexBuffer),
                              indexBufferOffset, vkIndexType);
-        flushDescriptors(VK_PIPELINE_BIND_POINT_GRAPHICS);
         vkCmdDrawIndexed(m_commandBuffer, indexCount, 1, 0, 0, 0);
     }
 
@@ -283,10 +344,16 @@ public:
                                       uint64_t indirectBufferOffset,
                                       RhiSize3D /*threadsPerObjectThreadgroup*/,
                                       RhiSize3D /*threadsPerMeshThreadgroup*/) override {
+        requireTrackedBufferState(m_stateTracker,
+                                  getVulkanBufferHandle(&indirectBuffer),
+                                  indirectBufferOffset,
+                                  VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                                  VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+
         flushDescriptors(VK_PIPELINE_BIND_POINT_GRAPHICS);
         if (pfnCmdDrawMeshTasksIndirectEXT) {
             pfnCmdDrawMeshTasksIndirectEXT(m_commandBuffer,
-                                           getVulkanBufferHandle(&indirectBuffer),
+                                          getVulkanBufferHandle(&indirectBuffer),
                                            indirectBufferOffset, 1, 0);
         }
     }
@@ -325,13 +392,51 @@ private:
         }
     }
 
-    void flushDescriptors(VkPipelineBindPoint bindPoint) {
-        if (m_descriptorManager && m_boundPipeline) {
-            transitionPendingTextures();
-            // Batch-flush all accumulated barriers before binding descriptors and drawing
-            if (m_stateTracker) {
-                m_stateTracker->flushBarriers(m_commandBuffer);
+    void transitionPendingBuffers(VkPipelineBindPoint bindPoint) {
+        if (!m_stateTracker) {
+            return;
+        }
+
+        if (m_boundPipeline) {
+            const VkPipelineStageFlags2 shaderStage = shaderStageMaskForBindPoint(bindPoint);
+            for (uint32_t logicalIndex = 0; logicalIndex < kMaxBufferBindings; ++logicalIndex) {
+                const auto& location = m_boundPipeline->bufferBindings[logicalIndex];
+                const auto& binding = m_pendingBuffers[logicalIndex];
+                if (!location.valid() || binding.buffer == VK_NULL_HANDLE) {
+                    continue;
+                }
+
+                requireTrackedBufferState(m_stateTracker,
+                                          binding.buffer,
+                                          binding.offset,
+                                          shaderStage,
+                                          bufferAccessMaskForDescriptorType(location.descriptorType));
             }
+        }
+
+        for (const auto& vertexBuffer : m_pendingVertexBuffers) {
+            if (vertexBuffer.buffer == VK_NULL_HANDLE) {
+                continue;
+            }
+
+            requireTrackedBufferState(m_stateTracker,
+                                      vertexBuffer.buffer,
+                                      vertexBuffer.offset,
+                                      VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
+                                      VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+        }
+    }
+
+    void flushDescriptors(VkPipelineBindPoint bindPoint) {
+        transitionPendingTextures();
+        transitionPendingBuffers(bindPoint);
+
+        // Batch-flush all accumulated barriers before binding descriptors and drawing.
+        if (m_stateTracker) {
+            m_stateTracker->flushBarriers(m_commandBuffer);
+        }
+
+        if (m_descriptorManager && m_boundPipeline) {
             m_descriptorManager->flushAndBind(m_commandBuffer,
                                               bindPoint,
                                               *m_boundPipeline,
@@ -349,6 +454,7 @@ private:
     VulkanGpuProfiler* m_gpuProfiler = nullptr;
     VulkanGpuProfiler::ScopeHandle m_gpuScope{};
     const VulkanPipelineResource* m_boundPipeline = nullptr;
+    std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingVertexBuffers{};
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
     std::array<PendingSamplerBinding, kMaxSamplerBindings> m_pendingSamplers{};
@@ -465,7 +571,17 @@ public:
         };
     }
 
-    void useResource(const RhiBuffer& /*resource*/, RhiResourceUsage /*usage*/) override {}
+    void useResource(const RhiBuffer& resource, RhiResourceUsage usage) override {
+        if (!resource.nativeHandle() || !m_stateTracker) {
+            return;
+        }
+
+        requireTrackedBufferState(m_stateTracker,
+                                  getVulkanBufferHandle(&resource),
+                                  0,
+                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                  bufferAccessMaskForUsage(usage));
+    }
     void useResource(const RhiAccelerationStructure& resource, RhiResourceUsage usage) override {
         if ((static_cast<uint32_t>(usage) & static_cast<uint32_t>(RhiResourceUsage::Read)) == 0 ||
             !resource.nativeHandle()) {
@@ -531,13 +647,36 @@ private:
         }
     }
 
-    void flushDescriptors() {
-        if (m_descriptorManager && m_boundPipeline) {
-            transitionPendingTextures();
-            // Batch-flush all accumulated barriers before dispatch
-            if (m_stateTracker) {
-                m_stateTracker->flushBarriers(m_commandBuffer);
+    void transitionPendingBuffers() {
+        if (!m_stateTracker || !m_boundPipeline) {
+            return;
+        }
+
+        for (uint32_t logicalIndex = 0; logicalIndex < kMaxBufferBindings; ++logicalIndex) {
+            const auto& location = m_boundPipeline->bufferBindings[logicalIndex];
+            const auto& binding = m_pendingBuffers[logicalIndex];
+            if (!location.valid() || binding.buffer == VK_NULL_HANDLE) {
+                continue;
             }
+
+            requireTrackedBufferState(m_stateTracker,
+                                      binding.buffer,
+                                      binding.offset,
+                                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                      bufferAccessMaskForDescriptorType(location.descriptorType));
+        }
+    }
+
+    void flushDescriptors() {
+        transitionPendingTextures();
+        transitionPendingBuffers();
+
+        // Batch-flush all accumulated barriers before dispatch.
+        if (m_stateTracker) {
+            m_stateTracker->flushBarriers(m_commandBuffer);
+        }
+
+        if (m_descriptorManager && m_boundPipeline) {
             m_descriptorManager->flushAndBind(m_commandBuffer,
                                               VK_PIPELINE_BIND_POINT_COMPUTE,
                                               *m_boundPipeline,
