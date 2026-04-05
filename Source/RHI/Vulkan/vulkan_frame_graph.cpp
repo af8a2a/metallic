@@ -1020,7 +1020,7 @@ void VulkanCommandBuffer::prepareBufferForStorageRead(const RhiBuffer* buffer) {
     requireTrackedBufferState(m_stateTracker,
                               getVulkanBufferHandle(buffer),
                               0,
-                              VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+                              VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                               VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 }
 
@@ -1032,7 +1032,7 @@ void VulkanCommandBuffer::prepareBufferForStorageWrite(const RhiBuffer* buffer) 
     requireTrackedBufferState(m_stateTracker,
                               getVulkanBufferHandle(buffer),
                               0,
-                              VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+                              VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                               VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
                                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 }

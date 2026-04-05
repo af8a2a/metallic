@@ -33,14 +33,41 @@ public:
     }
 
     FGResource cullResult;
+    FGResource visibleMeshlets;
+    FGResource cullCounter;
+    FGResource instanceData;
 
     FGResource getOutput(const std::string& name) const override {
         if (name == "cullResult") return cullResult;
+        if (name == "visibleMeshlets") return visibleMeshlets;
+        if (name == "cullCounter") return cullCounter;
+        if (name == "instanceData") return instanceData;
         return FGResource{};
     }
 
     void setup(FGBuilder& builder) override {
         cullResult = builder.createToken("cullResult");
+
+        m_maxMeshlets = std::max<uint32_t>(1u, computeMaxMeshletCapacity());
+        m_maxInstances = std::max<uint32_t>(1u, computeMaxInstanceCapacity());
+
+        FGBufferDesc visibleMeshletDesc;
+        visibleMeshletDesc.size = static_cast<size_t>(m_maxMeshlets) * sizeof(MeshletDrawInfo);
+        visibleMeshletDesc.hostVisible = false;
+        visibleMeshletDesc.debugName = "VisibleMeshletBuffer";
+        visibleMeshlets = builder.create("visibleMeshlets", visibleMeshletDesc);
+
+        FGBufferDesc counterDesc;
+        counterDesc.size = kCounterBufferSize;
+        counterDesc.hostVisible = true;
+        counterDesc.debugName = "CullCounterBuffer";
+        cullCounter = builder.create("cullCounter", counterDesc);
+
+        FGBufferDesc instanceDataDesc;
+        instanceDataDesc.size = static_cast<size_t>(m_maxInstances) * sizeof(GPUInstanceData);
+        instanceDataDesc.hostVisible = true;
+        instanceDataDesc.debugName = "InstanceDataBuffer";
+        instanceData = builder.create("instanceData", instanceDataDesc);
 
         m_hzbHistoryRead.clear();
         m_hzbLevelCount = computeHzbLevelCount(static_cast<uint32_t>(m_width),
@@ -94,17 +121,23 @@ public:
 
         m_totalMeshlets = totalMeshlets;
 
-        // Ensure GPU buffers are large enough
-        ensureBuffers(totalMeshlets, instanceCount);
+        if (!m_frameGraph) return;
+        RhiBuffer* visibleMeshletBuffer = m_frameGraph->getBuffer(visibleMeshlets);
+        RhiBuffer* counterBuffer = m_frameGraph->getBuffer(cullCounter);
+        RhiBuffer* instanceDataBuffer = m_frameGraph->getBuffer(instanceData);
+        if (!visibleMeshletBuffer || !counterBuffer || !instanceDataBuffer) {
+            return;
+        }
+        initializeCounterBuffer(counterBuffer);
 
         // Read back previous frame's visible count (1-frame delayed).
         // build_indirect writes count to offset 4 (indirect args x) then resets offset 0.
         // By this point the previous frame's GPU work is complete.
-        auto* counterPtr = static_cast<uint32_t*>(m_counterBuffer->mappedData());
+        auto* counterPtr = static_cast<uint32_t*>(counterBuffer->mappedData());
         m_lastVisibleCount = counterPtr[1]; // indirect args x from previous frame
 
         // Upload instance data (CPU PU, StorageModeShared)
-        auto* instPtr = static_cast<GPUInstanceData*>(m_instanceDataBuffer->mappedData());
+        auto* instPtr = static_cast<GPUInstanceData*>(instanceDataBuffer->mappedData());
         for (uint32_t i = 0; i < instanceCount; i++) {
             const auto& node = m_ctx.sceneGraph.nodes[validVisibleNodes[i]];
             float4x4 nodeModelView = m_frameContext->view * node.transform.worldMatrix;
@@ -168,10 +201,10 @@ public:
         // --- Dispatch 1: Meshlet cull ---
         encoder.setComputePipeline(cullIt->second);
         encoder.setBytes(&cullUni, sizeof(cullUni), 0);
-        encoder.setBuffer(m_instanceDataBuffer.get(), 0, 1);
+        encoder.setBuffer(instanceDataBuffer, 0, 1);
         encoder.setBuffer(&m_ctx.meshletData.boundsBuffer, 0, 2);
-        encoder.setBuffer(m_visibleMeshletBuffer.get(), 0, 3);
-        encoder.setBuffer(m_counterBuffer.get(), 0, 4);
+        encoder.setBuffer(visibleMeshletBuffer, 0, 3);
+        encoder.setBuffer(counterBuffer, 0, 4);
         if (hzbTextureCount > 0) {
             encoder.setTextures(hzbTextures.data(), 5, hzbTextureCount);
         }
@@ -183,26 +216,19 @@ public:
 
         // --- Dispatch 2: Build indirect args ---
         encoder.setComputePipeline(buildIt->second);
-        encoder.setBuffer(m_counterBuffer.get(), 0, 0);
+        encoder.setBuffer(counterBuffer, 0, 0);
         encoder.dispatchThreadgroups({1, 1, 1}, {1, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
-
-        // Publish results to FrameContext for VisibilityPass
-        // (const_cast is safe here 鈥?we own the data and VisibilityPass reads it later in the same frame)
-        auto* mutableCtx = const_cast<FrameContext*>(m_frameContext);
-        mutableCtx->gpuVisibleMeshletBufferRhi = m_visibleMeshletBuffer.get();
-        mutableCtx->gpuCounterBufferRhi = m_counterBuffer.get();
-        mutableCtx->gpuInstanceDataBufferRhi = m_instanceDataBuffer.get();
 
         static bool sLoggedGpuPublish = false;
         if (!sLoggedGpuPublish) {
             spdlog::info(
-                "MeshletCullPass published GPU cull buffers: instances={} meshlets={} visibleBuf={} counterBuf={} instanceBuf={}",
+                "MeshletCullPass produced FG cull buffers: instances={} meshlets={} visibleBuf={} counterBuf={} instanceBuf={}",
                 instanceCount,
                 totalMeshlets,
-                fmt::ptr(mutableCtx->gpuVisibleMeshletBufferRhi),
-                fmt::ptr(mutableCtx->gpuCounterBufferRhi),
-                fmt::ptr(mutableCtx->gpuInstanceDataBufferRhi));
+                fmt::ptr(visibleMeshletBuffer),
+                fmt::ptr(counterBuffer),
+                fmt::ptr(instanceDataBuffer));
             sLoggedGpuPublish = true;
         }
 
@@ -248,10 +274,6 @@ private:
     int m_width, m_height;
     std::string m_name = "Meshlet Cull";
 
-    std::unique_ptr<RhiBuffer> m_visibleMeshletBuffer;
-    std::unique_ptr<RhiBuffer> m_counterBuffer;
-    std::unique_ptr<RhiBuffer> m_instanceDataBuffer;
-
     uint32_t m_maxMeshlets = 0;
     uint32_t m_maxInstances = 0;
     uint32_t m_totalMeshlets = 0;
@@ -262,43 +284,42 @@ private:
     bool m_enableOcclusionCull = true;
     float m_occlusionDepthBias = 0.0015f;
     float m_occlusionBoundsScale = 1.1f;
+    bool m_counterInitialized = false;
     std::vector<FGResource> m_hzbHistoryRead;
 
-    void ensureBuffers(uint32_t totalMeshlets, uint32_t instanceCount) {
-        auto* factory = m_runtimeContext->resourceFactory;
-        if (!factory) return;
+    uint32_t computeMaxMeshletCapacity() const {
+        uint64_t totalMeshlets = 0;
+        for (const auto& node : m_ctx.sceneGraph.nodes) {
+            totalMeshlets += node.meshletCount;
+        }
+        return static_cast<uint32_t>(std::max<uint64_t>(1u, totalMeshlets));
+    }
 
-        if (!m_counterBuffer) {
-            RhiBufferDesc desc;
-            desc.size = kCounterBufferSize;
-            desc.hostVisible = true;
-            desc.debugName = "CullCounterBuffer";
-            m_counterBuffer = factory->createBuffer(desc);
-            // Zero-initialize: atomic counter = 0, indirect args = {0, 1, 1}
-            auto* ptr = static_cast<uint32_t*>(m_counterBuffer->mappedData());
-            ptr[0] = 0; // atomic counter
-            ptr[1] = 0; // indirect args x (will be filled by build_indirect)
-            ptr[2] = 1; // indirect args y
-            ptr[3] = 1; // indirect args z
+    uint32_t computeMaxInstanceCapacity() const {
+        uint32_t instanceCapacity = 0;
+        for (const auto& node : m_ctx.sceneGraph.nodes) {
+            if (node.meshletCount > 0) {
+                ++instanceCapacity;
+            }
+        }
+        return std::max(1u, instanceCapacity);
+    }
+
+    void initializeCounterBuffer(RhiBuffer* counterBuffer) {
+        if (m_counterInitialized || !counterBuffer) {
+            return;
         }
 
-        if (totalMeshlets > m_maxMeshlets) {
-            m_maxMeshlets = totalMeshlets;
-            RhiBufferDesc desc;
-            desc.size = m_maxMeshlets * sizeof(MeshletDrawInfo);
-            desc.hostVisible = false;
-            desc.debugName = "VisibleMeshletBuffer";
-            m_visibleMeshletBuffer = factory->createBuffer(desc);
+        auto* ptr = static_cast<uint32_t*>(counterBuffer->mappedData());
+        if (!ptr) {
+            return;
         }
 
-        if (instanceCount > m_maxInstances) {
-            m_maxInstances = instanceCount;
-            RhiBufferDesc desc;
-            desc.size = m_maxInstances * sizeof(GPUInstanceData);
-            desc.hostVisible = true;
-            desc.debugName = "InstanceDataBuffer";
-            m_instanceDataBuffer = factory->createBuffer(desc);
-        }
+        ptr[0] = 0; // atomic counter
+        ptr[1] = 0; // indirect args x (will be filled by build_indirect)
+        ptr[2] = 1; // indirect args y
+        ptr[3] = 1; // indirect args z
+        m_counterInitialized = true;
     }
 };
 

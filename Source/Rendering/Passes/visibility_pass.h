@@ -42,10 +42,22 @@ public:
     }
 
     void setup(FGBuilder& builder) override {
-        // Read cullResult input if present (dependency edge from MeshletCullPass)
+        // Legacy dependency-only edge kept for older pipeline assets.
         FGResource cullInput = getInput("cullResult");
         if (cullInput.isValid()) {
             builder.read(cullInput);
+        }
+        FGResource visibleMeshletsInput = getInput("visibleMeshlets");
+        if (visibleMeshletsInput.isValid()) {
+            m_visibleMeshletsRead = builder.read(visibleMeshletsInput, FGResourceUsage::StorageRead);
+        }
+        FGResource cullCounterInput = getInput("cullCounter");
+        if (cullCounterInput.isValid()) {
+            m_cullCounterRead = builder.read(cullCounterInput, FGResourceUsage::Indirect);
+        }
+        FGResource instanceDataInput = getInput("instanceData");
+        if (instanceDataInput.isValid()) {
+            m_instanceDataRead = builder.read(instanceDataInput, FGResourceUsage::StorageRead);
         }
         visibility = builder.create("visibility",
             FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::R32Uint));
@@ -62,46 +74,6 @@ public:
                                            m_ctx.depthClearValue);
     }
 
-    void prepareResources(RhiCommandBuffer& commandBuffer) override {
-        auto prepareSharedBuffers = [&](const RhiBuffer* visibleMeshletBuffer,
-                                        const RhiBuffer* instanceDataBuffer) {
-            commandBuffer.prepareBufferForStorageRead(&m_ctx.sceneMesh.positionBuffer);
-            commandBuffer.prepareBufferForStorageRead(&m_ctx.sceneMesh.normalBuffer);
-            commandBuffer.prepareBufferForStorageRead(&m_ctx.meshletData.meshletBuffer);
-            commandBuffer.prepareBufferForStorageRead(&m_ctx.meshletData.meshletVertices);
-            commandBuffer.prepareBufferForStorageRead(&m_ctx.meshletData.meshletTriangles);
-            commandBuffer.prepareBufferForStorageRead(&m_ctx.meshletData.boundsBuffer);
-            commandBuffer.prepareBufferForStorageRead(&m_ctx.sceneMesh.uvBuffer);
-            commandBuffer.prepareBufferForStorageRead(&m_ctx.meshletData.materialIDs);
-            commandBuffer.prepareBufferForStorageRead(&m_ctx.materials.materialBuffer);
-
-            if (visibleMeshletBuffer) {
-                commandBuffer.prepareBufferForStorageRead(visibleMeshletBuffer);
-            }
-            if (instanceDataBuffer) {
-                commandBuffer.prepareBufferForStorageRead(instanceDataBuffer);
-            }
-        };
-
-        if (!m_frameContext) {
-            prepareSharedBuffers(nullptr, nullptr);
-            return;
-        }
-
-        const bool useGPUPath =
-            m_frameContext->gpuDrivenCulling &&
-            m_frameContext->gpuVisibleMeshletBufferRhi &&
-            m_frameContext->gpuCounterBufferRhi &&
-            m_frameContext->gpuInstanceDataBufferRhi;
-
-        prepareSharedBuffers(useGPUPath ? m_frameContext->gpuVisibleMeshletBufferRhi : nullptr,
-                             useGPUPath ? m_frameContext->gpuInstanceDataBufferRhi : nullptr);
-
-        if (useGPUPath) {
-            commandBuffer.prepareBufferForIndirect(m_frameContext->gpuCounterBufferRhi);
-        }
-    }
-
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("VisibilityPass");
         MICROPROFILE_SCOPEI("RenderPass", "VisibilityPass", 0xffff8800);
@@ -112,10 +84,23 @@ public:
         encoder.setCullMode(RhiCullMode::Back);
 
         // GPU-driven indirect path
+        const RhiBuffer* visibleMeshletBuffer =
+            (m_frameGraph && m_visibleMeshletsRead.isValid())
+                ? m_frameGraph->getBuffer(m_visibleMeshletsRead)
+                : nullptr;
+        const RhiBuffer* counterBuffer =
+            (m_frameGraph && m_cullCounterRead.isValid())
+                ? m_frameGraph->getBuffer(m_cullCounterRead)
+                : nullptr;
+        const RhiBuffer* instanceDataBuffer =
+            (m_frameGraph && m_instanceDataRead.isValid())
+                ? m_frameGraph->getBuffer(m_instanceDataRead)
+                : nullptr;
+
         bool useGPUPath = m_frameContext->gpuDrivenCulling &&
-            m_frameContext->gpuVisibleMeshletBufferRhi &&
-            m_frameContext->gpuCounterBufferRhi &&
-            m_frameContext->gpuInstanceDataBufferRhi;
+            visibleMeshletBuffer &&
+            counterBuffer &&
+            instanceDataBuffer;
 
         if (useGPUPath) {
             auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("VisibilityIndirectPass");
@@ -134,9 +119,9 @@ public:
                 fmt::ptr(m_frameContext),
                 useGPUPath,
                 m_frameContext->gpuDrivenCulling,
-                fmt::ptr(m_frameContext->gpuVisibleMeshletBufferRhi),
-                fmt::ptr(m_frameContext->gpuCounterBufferRhi),
-                fmt::ptr(m_frameContext->gpuInstanceDataBufferRhi),
+                fmt::ptr(visibleMeshletBuffer),
+                fmt::ptr(counterBuffer),
+                fmt::ptr(instanceDataBuffer),
                 visIt != m_runtimeContext->renderPipelinesRhi.end() ? fmt::ptr(visIt->second.nativeHandle()) : fmt::ptr(static_cast<void*>(nullptr)),
                 visIndirectIt != m_runtimeContext->renderPipelinesRhi.end() ? fmt::ptr(visIndirectIt->second.nativeHandle()) : fmt::ptr(static_cast<void*>(nullptr)));
             sLoggedPath = true;
@@ -163,8 +148,8 @@ public:
             encoder.setMeshBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
             encoder.setMeshBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
             encoder.setMeshBuffer(&m_ctx.materials.materialBuffer, 0, 9);
-            encoder.setMeshBuffer(m_frameContext->gpuVisibleMeshletBufferRhi, 0, 10);
-            encoder.setMeshBuffer(m_frameContext->gpuInstanceDataBufferRhi, 0, 11);
+            encoder.setMeshBuffer(visibleMeshletBuffer, 0, 10);
+            encoder.setMeshBuffer(instanceDataBuffer, 0, 11);
 
             // Fragment stage needs all buffers too (Slang KernelContext)
             encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
@@ -176,8 +161,8 @@ public:
             encoder.setFragmentBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 7);
             encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, 8);
             encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, 9);
-            encoder.setFragmentBuffer(m_frameContext->gpuVisibleMeshletBufferRhi, 0, 10);
-            encoder.setFragmentBuffer(m_frameContext->gpuInstanceDataBufferRhi, 0, 11);
+            encoder.setFragmentBuffer(visibleMeshletBuffer, 0, 10);
+            encoder.setFragmentBuffer(instanceDataBuffer, 0, 11);
 
             if (!useBindlessSceneTextures && !materialTextures.empty()) {
                 encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
@@ -194,7 +179,7 @@ public:
             encoder.setFragmentBytes(&globalUni, sizeof(globalUni), 0);
 
             // Single indirect draw call
-            encoder.drawMeshThreadgroupsIndirect(*m_frameContext->gpuCounterBufferRhi,
+            encoder.drawMeshThreadgroupsIndirect(*counterBuffer,
                                                  kIndirectArgsOffset,
                                                  {1, 1, 1},
                                                  {128, 1, 1});
@@ -290,6 +275,9 @@ private:
     std::string m_name = "Visibility Pass";
     RhiClearColor m_clearColor = RhiClearColor(0xFFFFFFFF, 0, 0, 0);
     bool m_gpuDrivenLastFrame = false;
+    FGResource m_visibleMeshletsRead;
+    FGResource m_cullCounterRead;
+    FGResource m_instanceDataRead;
 };
 
 

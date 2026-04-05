@@ -32,10 +32,20 @@ REGISTER_RENDER_PASS(ForwardPass, "Forward Pass", "Geometry",
 
 REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
     (std::vector<PassSlotInfo>{}),
-    (std::vector<PassSlotInfo>{makeOutputSlot("cullResult", "Cull Result")}));
+    (std::vector<PassSlotInfo>{
+        makeOutputSlot("cullResult", "Cull Result", true),
+        makeOutputSlot("visibleMeshlets", "Visible Meshlets", true),
+        makeOutputSlot("cullCounter", "Cull Counter", true),
+        makeOutputSlot("instanceData", "Instance Data", true)
+    }));
 
 REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
-    (std::vector<PassSlotInfo>{makeInputSlot("cullResult", "Cull Result")}),
+    (std::vector<PassSlotInfo>{
+        makeInputSlot("cullResult", "Cull Result", true),
+        makeInputSlot("visibleMeshlets", "Visible Meshlets", true),
+        makeInputSlot("cullCounter", "Cull Counter", true),
+        makeInputSlot("instanceData", "Instance Data", true)
+    }),
     (std::vector<PassSlotInfo>{
         makeOutputSlot("visibility", "Visibility"),
         makeOutputSlot("depth", "Depth")

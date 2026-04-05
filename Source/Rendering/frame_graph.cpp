@@ -76,6 +76,22 @@ FGResource FGBuilder::create(const char* name, const FGTextureDesc& desc) {
     return res;
 }
 
+FGResource FGBuilder::create(const char* name, const FGBufferDesc& desc) {
+    FGResource res;
+    res.id = static_cast<uint32_t>(m_fg.m_resources.size());
+    FGResourceNode node;
+    node.name = name;
+    node.kind = FGResourceKind::Buffer;
+    node.bufferDesc = desc;
+    node.imported = false;
+    node.producer = m_passIndex;
+    node.physicalResource = res.id;
+    m_fg.m_resources.push_back(std::move(node));
+    // Creating a resource implicitly writes it
+    appendUniqueResource(m_fg.m_passes[m_passIndex].writes, res, FGResourceUsage::StorageWrite);
+    return res;
+}
+
 FGResource FGBuilder::createToken(const char* name) {
     FGResource res;
     res.id = static_cast<uint32_t>(m_fg.m_resources.size());
@@ -110,8 +126,9 @@ FGResource FGBuilder::write(FGResource resource, FGResourceUsage usage) {
     resource.id = findLatestVersion(m_fg.m_resources, resource.id);
 
     auto& pass = m_fg.m_passes[m_passIndex];
-    auto& node = m_fg.m_resources[resource.id];
-    if (node.producer == m_passIndex) {
+    const uint32_t sourceId = resource.id;
+
+    if (m_fg.m_resources[sourceId].producer == m_passIndex) {
         appendUniqueResource(pass.writes, resource, usage);
         return resource;
     }
@@ -126,18 +143,22 @@ FGResource FGBuilder::write(FGResource resource, FGResourceUsage usage) {
     FGResource versionedResource;
     versionedResource.id = static_cast<uint32_t>(m_fg.m_resources.size());
 
+    // Copy fields from source node before push_back, which may reallocate m_resources.
     FGResourceNode versionedNode;
-    versionedNode.name = node.name;
-    versionedNode.kind = node.kind;
-    versionedNode.desc = node.desc;
+    versionedNode.name = m_fg.m_resources[sourceId].name;
+    versionedNode.kind = m_fg.m_resources[sourceId].kind;
+    versionedNode.desc = m_fg.m_resources[sourceId].desc;
+    versionedNode.bufferDesc = m_fg.m_resources[sourceId].bufferDesc;
     versionedNode.imported = false;
     versionedNode.producer = m_passIndex;
     versionedNode.physicalResource =
-        node.physicalResource != UINT32_MAX ? node.physicalResource : resource.id;
-    versionedNode.previousVersion = resource.id;
-    if (node.exported) {
+        m_fg.m_resources[sourceId].physicalResource != UINT32_MAX
+            ? m_fg.m_resources[sourceId].physicalResource
+            : sourceId;
+    versionedNode.previousVersion = sourceId;
+    if (m_fg.m_resources[sourceId].exported) {
         versionedNode.exported = true;
-        node.exported = false;
+        m_fg.m_resources[sourceId].exported = false;
     }
     m_fg.m_resources.push_back(std::move(versionedNode));
     appendUniqueResource(pass.writes, versionedResource, usage);
@@ -259,6 +280,22 @@ FGResource FrameGraph::import(const char* name, RhiTexture* texture) {
     return res;
 }
 
+FGResource FrameGraph::import(const char* name, RhiBuffer* buffer) {
+    FGResource res;
+    res.id = static_cast<uint32_t>(m_resources.size());
+    FGResourceNode node;
+    node.name = name;
+    node.kind = FGResourceKind::Buffer;
+    node.buffer = buffer;
+    if (buffer) {
+        node.bufferDesc.size = buffer->size();
+    }
+    node.imported = true;
+    node.physicalResource = res.id;
+    m_resources.push_back(std::move(node));
+    return res;
+}
+
 void FrameGraph::exportResource(FGResource resource) {
     assert(resource.isValid() && resource.id < m_resources.size());
     const uint32_t latestVersion = findLatestVersion(m_resources, resource.id);
@@ -269,18 +306,33 @@ void FrameGraph::exportResource(FGResource resource) {
 void FrameGraph::updateImport(FGResource res, RhiTexture* texture) {
     assert(res.isValid() && res.id < m_resources.size());
     assert(m_resources[res.id].imported);
+    assert(m_resources[res.id].kind == FGResourceKind::Texture);
     m_resources[res.id].texture = texture;
+}
+
+void FrameGraph::updateImport(FGResource res, RhiBuffer* buffer) {
+    assert(res.isValid() && res.id < m_resources.size());
+    assert(m_resources[res.id].imported);
+    assert(m_resources[res.id].kind == FGResourceKind::Buffer);
+    m_resources[res.id].buffer = buffer;
+    if (buffer) {
+        m_resources[res.id].bufferDesc.size = buffer->size();
+    }
 }
 
 void FrameGraph::resetTransients() {
     for (uint32_t ri = 0; ri < m_resources.size(); ++ri) {
         auto& res = m_resources[ri];
-        if (res.kind == FGResourceKind::Texture &&
-            res.historySlot == UINT32_MAX &&
-            !res.imported &&
-            res.physicalResource == ri) {
+        if (res.historySlot != UINT32_MAX || res.imported || res.physicalResource != ri) {
+            continue;
+        }
+
+        if (res.kind == FGResourceKind::Texture) {
             res.ownedTexture.reset();
             res.texture = nullptr;
+        } else if (res.kind == FGResourceKind::Buffer) {
+            res.ownedBuffer.reset();
+            res.buffer = nullptr;
         }
     }
 }
@@ -432,6 +484,11 @@ RhiTexture* FrameGraph::getTexture(FGResource res) const {
     return resolveTexture(res.id);
 }
 
+RhiBuffer* FrameGraph::getBuffer(FGResource res) const {
+    assert(res.isValid() && res.id < m_resources.size());
+    return resolveBuffer(res.id);
+}
+
 bool FrameGraph::isHistoryValid(FGResource res) const {
     if (!res.isValid() || res.id >= m_resources.size()) {
         return false;
@@ -476,6 +533,18 @@ RhiTexture* FrameGraph::resolveTexture(uint32_t resourceId) const {
     return m_resources[physicalResource].texture;
 }
 
+RhiBuffer* FrameGraph::resolveBuffer(uint32_t resourceId) const {
+    assert(resourceId < m_resources.size());
+    const auto& resource = m_resources[resourceId];
+    assert(resource.kind == FGResourceKind::Buffer);
+
+    const uint32_t physicalResource =
+        resource.physicalResource != UINT32_MAX ? resource.physicalResource : resourceId;
+    assert(physicalResource < m_resources.size());
+    assert(m_resources[physicalResource].kind == FGResourceKind::Buffer);
+    return m_resources[physicalResource].buffer;
+}
+
 void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& backend) {
     MICROPROFILE_SCOPEI("FrameGraph", "Execute", 0xff00ff00);
     metallic::ScopedNsightRange nsightFrameGraphRange("FrameGraph::Execute", 0xFF4AA66Eu);
@@ -492,56 +561,87 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
         // Inform the backend which queue this pass prefers.
         commandBuffer.setNextPassQueueHint(pass.queueHint);
 
-        // Create transient textures at their producer pass
+        // Create transient resources at their producer pass
         for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
             auto& res = m_resources[ri];
-            if (res.kind == FGResourceKind::Texture &&
-                res.historySlot == UINT32_MAX &&
-                !res.imported &&
-                res.producer == pi &&
-                res.physicalResource == ri &&
-                res.texture == nullptr) {
+            if (res.historySlot != UINT32_MAX ||
+                res.imported ||
+                res.producer != pi ||
+                res.physicalResource != ri) {
+                continue;
+            }
+
+            if (res.kind == FGResourceKind::Texture && res.texture == nullptr) {
                 res.ownedTexture = backend.createTexture(res.desc);
                 res.texture = res.ownedTexture.get();
+            } else if (res.kind == FGResourceKind::Buffer && res.buffer == nullptr) {
+                res.ownedBuffer = backend.createBuffer(res.bufferDesc);
+                res.buffer = res.ownedBuffer.get();
             }
         }
 
         // Derive pre-pass resource transitions from declared usage.
         // Accumulate all transitions, then flush once before the pass begins.
         for (const auto& read : pass.reads) {
-            if (m_resources[read.resource.id].kind != FGResourceKind::Texture) {
-                continue;
-            }
-            RhiTexture* texture = resolveTexture(read.resource.id);
-            if (!texture) continue;
+            const auto& resource = m_resources[read.resource.id];
+            if (resource.kind == FGResourceKind::Texture) {
+                RhiTexture* texture = resolveTexture(read.resource.id);
+                if (!texture) continue;
 
-            if (hasUsage(read.usage, FGResourceUsage::Sampled)) {
-                commandBuffer.prepareTextureForSampling(texture);
+                if (hasUsage(read.usage, FGResourceUsage::Sampled)) {
+                    commandBuffer.prepareTextureForSampling(texture);
+                }
+                if (hasUsage(read.usage, FGResourceUsage::StorageRead)) {
+                    commandBuffer.prepareTextureForStorage(texture);
+                }
+                if (hasUsage(read.usage, FGResourceUsage::TransferSrc)) {
+                    commandBuffer.prepareTextureForTransferSrc(texture);
+                }
+                // ColorAttachment/DepthAttachment reads are handled by beginRenderPass below
+            } else if (resource.kind == FGResourceKind::Buffer) {
+                RhiBuffer* buffer = resolveBuffer(read.resource.id);
+                if (!buffer) continue;
+
+                if (hasUsage(read.usage, FGResourceUsage::StorageWrite)) {
+                    commandBuffer.prepareBufferForStorageWrite(buffer);
+                } else if (hasUsage(read.usage, FGResourceUsage::StorageRead)) {
+                    commandBuffer.prepareBufferForStorageRead(buffer);
+                }
+                if (hasUsage(read.usage, FGResourceUsage::Indirect)) {
+                    commandBuffer.prepareBufferForIndirect(buffer);
+                }
+                if (hasUsage(read.usage, FGResourceUsage::VertexInput)) {
+                    commandBuffer.prepareBufferForVertexInput(buffer);
+                }
+                if (hasUsage(read.usage, FGResourceUsage::IndexInput)) {
+                    commandBuffer.prepareBufferForIndexInput(buffer);
+                }
             }
-            if (hasUsage(read.usage, FGResourceUsage::StorageRead)) {
-                commandBuffer.prepareTextureForStorage(texture);
-            }
-            if (hasUsage(read.usage, FGResourceUsage::TransferSrc)) {
-                commandBuffer.prepareTextureForTransferSrc(texture);
-            }
-            // ColorAttachment/DepthAttachment reads are handled by beginRenderPass below
         }
 
         for (const auto& write : pass.writes) {
-            if (m_resources[write.resource.id].kind != FGResourceKind::Texture) {
-                continue;
-            }
-            RhiTexture* texture = resolveTexture(write.resource.id);
-            if (!texture) continue;
+            const auto& resource = m_resources[write.resource.id];
+            if (resource.kind == FGResourceKind::Texture) {
+                RhiTexture* texture = resolveTexture(write.resource.id);
+                if (!texture) continue;
 
-            if (hasUsage(write.usage, FGResourceUsage::StorageWrite) ||
-                hasUsage(write.usage, FGResourceUsage::StorageRead)) {
-                commandBuffer.prepareTextureForStorage(texture);
+                if (hasUsage(write.usage, FGResourceUsage::StorageWrite) ||
+                    hasUsage(write.usage, FGResourceUsage::StorageRead)) {
+                    commandBuffer.prepareTextureForStorage(texture);
+                }
+                if (hasUsage(write.usage, FGResourceUsage::TransferDst)) {
+                    commandBuffer.prepareTextureForTransferDst(texture);
+                }
+                // ColorAttachment/DepthAttachment writes are handled by beginRenderPass below
+            } else if (resource.kind == FGResourceKind::Buffer) {
+                RhiBuffer* buffer = resolveBuffer(write.resource.id);
+                if (!buffer) continue;
+
+                if (hasUsage(write.usage, FGResourceUsage::StorageWrite) ||
+                    hasUsage(write.usage, FGResourceUsage::StorageRead)) {
+                    commandBuffer.prepareBufferForStorageWrite(buffer);
+                }
             }
-            if (hasUsage(write.usage, FGResourceUsage::TransferDst)) {
-                commandBuffer.prepareTextureForTransferDst(texture);
-            }
-            // ColorAttachment/DepthAttachment writes are handled by beginRenderPass below
         }
 
         if (pass.prepareResources) {
@@ -672,6 +772,7 @@ const char* passTypeName(FGPassType type) {
 const char* resourceKindName(FGResourceKind kind) {
     switch (kind) {
         case FGResourceKind::Texture: return "Texture";
+        case FGResourceKind::Buffer:  return "Buffer";
         case FGResourceKind::Token:   return "Token";
     }
     return "Unknown";
@@ -731,6 +832,16 @@ uint32_t resourceHeight(const FGResourceNode& resource) {
     }
     if (resource.texture != nullptr) {
         return resource.texture->height();
+    }
+    return 0;
+}
+
+size_t resourceByteSize(const FGResourceNode& resource) {
+    if (resource.bufferDesc.size != 0) {
+        return resource.bufferDesc.size;
+    }
+    if (resource.buffer != nullptr) {
+        return resource.buffer->size();
     }
     return 0;
 }
@@ -821,6 +932,14 @@ std::string resourceMetaLabel(const FGResourceNode& resource, uint32_t aliasGrou
             }
         } else {
             label += "Texture";
+        }
+    } else if (resource.kind == FGResourceKind::Buffer) {
+        const size_t byteSize = resourceByteSize(resource);
+        if (byteSize > 0) {
+            label += std::to_string(byteSize);
+            label += " B";
+        } else {
+            label += "Buffer";
         }
     } else {
         label += "Token";
@@ -1155,6 +1274,13 @@ void drawResourceTimelineImGui(const std::vector<FGResourceNode>& resources,
                     ImGui::Text("Usage: -");
                     ImGui::Text("Storage: -");
                 }
+            } else if (resource.kind == FGResourceKind::Buffer) {
+                const size_t byteSize = resourceByteSize(resource);
+                if (byteSize > 0) {
+                    ImGui::Text("Size: %zu B", byteSize);
+                } else {
+                    ImGui::Text("Size: -");
+                }
             }
 
             if (passCount > 0) {
@@ -1247,6 +1373,8 @@ void FrameGraph::exportGraphviz(std::ostream& os) const {
                 if (res.kind == FGResourceKind::Texture) {
                     os << " | " << res.desc.width << "x" << res.desc.height
                        << " " << pixelFormatName(res.desc.format);
+                } else if (res.kind == FGResourceKind::Buffer) {
+                    os << " | " << resourceByteSize(res) << " B";
                 } else {
                     os << " | " << resourceKindName(res.kind);
                 }
@@ -1404,6 +1532,8 @@ void FrameGraph::debugImGui() const {
                 ImGui::TableSetColumnIndex(3);
                 if (res.kind == FGResourceKind::Texture && (resourceWidth(res) > 0 || resourceHeight(res) > 0))
                     ImGui::Text("%ux%u", resourceWidth(res), resourceHeight(res));
+                else if (res.kind == FGResourceKind::Buffer && resourceByteSize(res) > 0)
+                    ImGui::Text("%zu B", resourceByteSize(res));
                 else
                     ImGui::TextUnformatted("-");
                 ImGui::TableSetColumnIndex(4);

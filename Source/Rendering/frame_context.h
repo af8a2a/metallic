@@ -106,10 +106,6 @@ struct FrameContext {
     bool gpuDrivenCulling = false;
     int renderMode = 2; // 0=Vertex, 1=Mesh, 2=Visibility, 3=Meshlet Debug
 
-    // GPU-driven cull results (set by MeshletCullPass, consumed by VisibilityPass)
-    RhiBuffer* gpuVisibleMeshletBufferRhi = nullptr;
-    RhiBuffer* gpuCounterBufferRhi = nullptr;
-    RhiBuffer* gpuInstanceDataBufferRhi = nullptr;
 };
 
 // Runtime context for pipeline building (pipelines, textures, samplers)

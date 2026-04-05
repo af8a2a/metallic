@@ -17,8 +17,9 @@ struct FGResource {
 };
 
 using FGTextureDesc = RhiTextureDesc;
+using FGBufferDesc = RhiBufferDesc;
 
-enum class FGResourceKind { Texture, Token };
+enum class FGResourceKind { Texture, Buffer, Token };
 
 // Describes how a pass accesses a resource. Used by the frame graph to derive
 // backend-specific barriers (e.g. Vulkan image layout transitions) between passes.
@@ -32,6 +33,8 @@ enum class FGResourceUsage : uint32_t {
     TransferSrc     = 1u << 5,   // Source of a copy/blit (TRANSFER_SRC_OPTIMAL)
     TransferDst     = 1u << 6,   // Destination of a copy/blit (TRANSFER_DST_OPTIMAL)
     Indirect        = 1u << 7,   // Indirect argument buffer
+    VertexInput     = 1u << 8,   // Vertex attribute buffer
+    IndexInput      = 1u << 9,   // Index buffer
 };
 
 inline FGResourceUsage operator|(FGResourceUsage lhs, FGResourceUsage rhs) {
@@ -54,8 +57,11 @@ struct FGResourceNode {
     std::string name;
     FGResourceKind kind = FGResourceKind::Texture;
     FGTextureDesc desc;
+    FGBufferDesc bufferDesc;
     RhiTexture* texture = nullptr;
+    RhiBuffer* buffer = nullptr;
     std::unique_ptr<RhiTexture> ownedTexture;
+    std::unique_ptr<RhiBuffer> ownedBuffer;
     bool imported = false;
     uint32_t refCount = 0;
     uint32_t producer = UINT32_MAX;
@@ -66,6 +72,7 @@ struct FGResourceNode {
     bool exported = false;
     bool historyRead = false;
     bool historyWrite = false;
+
 };
 
 enum class FGPassType { Render, Compute, Blit };
@@ -113,6 +120,7 @@ public:
     FGBuilder(FrameGraph& fg, uint32_t passIndex);
 
     FGResource create(const char* name, const FGTextureDesc& desc);
+    FGResource create(const char* name, const FGBufferDesc& desc);
     FGResource createToken(const char* name);
     FGResource read(FGResource resource, FGResourceUsage usage = FGResourceUsage::Sampled);
     FGResource write(FGResource resource, FGResourceUsage usage = FGResourceUsage::StorageWrite);
@@ -141,8 +149,10 @@ class FrameGraph {
     friend class FGBuilder;
 public:
     FGResource import(const char* name, RhiTexture* texture);
+    FGResource import(const char* name, RhiBuffer* buffer);
     void exportResource(FGResource resource);
     void updateImport(FGResource res, RhiTexture* texture);
+    void updateImport(FGResource res, RhiBuffer* buffer);
     void resetTransients();
 
     void addPass(std::unique_ptr<RenderPass> pass);
@@ -165,6 +175,7 @@ public:
     void renderPassUI();
 
     RhiTexture* getTexture(FGResource res) const;
+    RhiBuffer* getBuffer(FGResource res) const;
     bool isHistoryValid(FGResource res) const;
     void commitHistory(FGResource res);
 
@@ -183,6 +194,7 @@ private:
     uint32_t findOrCreateHistorySlot(const char* name, const FGTextureDesc& desc);
     void ensureHistoryResources(RhiFrameGraphBackend& backend);
     RhiTexture* resolveTexture(uint32_t resourceId) const;
+    RhiBuffer* resolveBuffer(uint32_t resourceId) const;
 
     std::vector<FGResourceNode> m_resources;
     std::vector<FGPassNode> m_passes;

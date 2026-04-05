@@ -85,6 +85,54 @@ std::string makeDefaultResourceName(const PipelineAsset& asset, const std::strin
     return "Resource " + std::to_string(count + 1);
 }
 
+std::string makeUniqueResourceName(const PipelineAsset& asset, const std::string& baseName) {
+    auto isUsed = [&](const std::string& candidate) {
+        return std::any_of(asset.resources.begin(),
+                           asset.resources.end(),
+                           [&](const ResourceDecl& resource) { return resource.name == candidate; });
+    };
+
+    if (!baseName.empty() && !isUsed(baseName)) {
+        return baseName;
+    }
+
+    const std::string fallbackBase = baseName.empty() ? "Resource" : baseName;
+    for (int suffix = 2;; ++suffix) {
+        const std::string candidate = fallbackBase + " " + std::to_string(suffix);
+        if (!isUsed(candidate)) {
+            return candidate;
+        }
+    }
+}
+
+ResourceDecl makeTransientConnectionResource(const PipelineAsset& asset,
+                                            const PassDecl& srcPass,
+                                            const PassSlotInfo& srcSlot,
+                                            const PassDecl& dstPass) {
+    ResourceDecl resource;
+    resource.id = generatePipelineAssetGuid();
+    resource.name = makeUniqueResourceName(
+        asset,
+        srcPass.name + " " + (srcSlot.displayName.empty() ? srcSlot.key : srcSlot.displayName));
+    resource.kind = "transient";
+    resource.type = "texture";
+    resource.format = "RGBA16Float";
+    resource.size = "screen";
+
+    const bool hasSrcPos = hasStoredPosition(srcPass.editorPos);
+    const bool hasDstPos = hasStoredPosition(dstPass.editorPos);
+    if (hasSrcPos || hasDstPos) {
+        const auto& srcPos = hasSrcPos ? srcPass.editorPos : dstPass.editorPos;
+        const auto& dstPos = hasDstPos ? dstPass.editorPos : srcPass.editorPos;
+        resource.editorPos = {
+            (srcPos[0] + dstPos[0]) * 0.5f,
+            (srcPos[1] + dstPos[1]) * 0.5f
+        };
+    }
+
+    return resource;
+}
+
 std::string resourceLabel(const ResourceDecl& resource) {
     return resource.name + " (" + resource.kind + ")";
 }
@@ -958,26 +1006,42 @@ void PipelineEditor::handleNewLinks(PipelineAsset& asset) {
             const ResourceDecl* outputResource = outputEdge ? asset.findResourceById(outputEdge->resourceId) : nullptr;
             const ResourceDecl* inputResource = inputEdge ? asset.findResourceById(inputEdge->resourceId) : nullptr;
 
-            const ResourceDecl* bindingResource = nullptr;
+            std::string bindingResourceId;
+            bool createTransientResource = false;
+            ResourceDecl transientResource;
+
             if (outputResource && outputResource->kind == "transient" && slotAllowsKind(*dstSlot, "transient")) {
-                bindingResource = outputResource;
-            } else if (!outputResource &&
-                       inputResource &&
+                bindingResourceId = outputResource->id;
+            } else if (inputResource &&
                        inputResource->kind == "transient" &&
                        slotAllowsKind(*srcSlot, "transient")) {
-                bindingResource = inputResource;
+                bindingResourceId = inputResource->id;
+            } else if (slotAllowsKind(*srcSlot, "transient") && slotAllowsKind(*dstSlot, "transient")) {
+                collectNodePositions(asset);
+                transientResource = makeTransientConnectionResource(asset, *srcPass, *srcSlot, *dstPass);
+                bindingResourceId = transientResource.id;
+                createTransientResource = true;
             } else {
                 return false;
             }
 
-            pushUndo(asset);
-            bool changed = false;
-            if ((!outputResource || outputResource->id != bindingResource->id) &&
-                slotAllowsKind(*srcSlot, bindingResource->kind)) {
-                changed |= setSlotBinding(asset, srcPass->id, "output", src.slotKey, bindingResource->id);
+            const bool needsOutputChange = !outputResource || outputResource->id != bindingResourceId;
+            const bool needsInputChange = !inputResource || inputResource->id != bindingResourceId;
+            if (!createTransientResource && !needsOutputChange && !needsInputChange) {
+                return false;
             }
-            if (!inputResource || inputResource->id != bindingResource->id) {
-                changed |= setSlotBinding(asset, dstPass->id, "input", dst.slotKey, bindingResource->id);
+
+            pushUndo(asset);
+            if (createTransientResource) {
+                asset.resources.push_back(std::move(transientResource));
+            }
+
+            bool changed = false;
+            if (needsOutputChange) {
+                changed |= setSlotBinding(asset, srcPass->id, "output", src.slotKey, bindingResourceId);
+            }
+            if (needsInputChange) {
+                changed |= setSlotBinding(asset, dstPass->id, "input", dst.slotKey, bindingResourceId);
             }
             if (changed) {
                 m_dirty = true;
