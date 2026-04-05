@@ -239,43 +239,155 @@ Recommended split:
 
 ## Phase 2 — GPU-driven rendering scale-up
 
-After Phase 0 is stable, Metallic is well-positioned to strengthen its GPU-driven path.
+After Phase 0 is stable, Phase 2 should stop being framed as “add more GPU-driven techniques” and instead become a concrete migration path from Metallic’s current flat meshlet-cull pipeline toward a `vk_lod_clusters`-style GPU scene traversal model.
 
-### 2.1 Generalize indirect and argument-buffer workflows
+### Current delta vs `vk_lod_clusters`
 
-Expand current meshlet culling / visibility logic into reusable systems:
+Metallic already has useful groundwork:
 
-- generic indirect argument generation
-- compaction pipelines
-- visibility result buffers
-- reusable counter and prefix-sum patterns
-- draw/dispatch generation helpers
+- GPU meshlet cull -> indirect visibility draw path
+- HZB build + previous-frame occlusion sampling
+- offline meshlet generation and offline `ClusterLODData` build/cache
+- FrameGraph integration for visibility/depth/HZB passes
 
-### 2.2 Strengthen HZB / visibility pipeline integration
+But compared with `vk_lod_clusters`, Metallic is still missing the runtime pieces that make the path scale:
 
-Build on current HZB and meshlet culling by adding:
+- no explicit GPU scene tables for instances / geometries / LOD nodes / LOD groups
+- no GPU-side instance classification stage before meshlet work expansion
+- no traversal pass that consumes `ClusterLODData` and emits group/cluster worklists
+- no resident-address / scene patching model for future streaming
+- visibility still begins from a CPU-provided `visibleMeshletNodes` list rather than a GPU-owned scene traversal result
 
-- stronger graph integration for HZB resources
-- async HZB build path where profitable
-- reusable occlusion input/output contracts
-- better stats/debug views for culling effectiveness
+This means Phase 2 should be executed in the following milestones and not skipped ahead.
 
-### 2.3 Scene resource model for large-scale GPU traversal
+### 2.1 Milestone A — Freeze a GPU scene ABI
 
-Add a more explicit GPU scene data layer:
+**Target:** establish the runtime data model that all later culling, traversal, shading, and RT-facing systems consume.
 
-- bindless scene textures/buffers
-- scene/instance/material tables
-- stable indices for culling and shading
-- scalable buffer layouts for indirect rendering and RT
+Add:
 
-### 2.4 Future-facing optional features
+- GPU instance table with stable instance IDs, transforms, geometry/material indirection, and visibility flags
+- GPU geometry table with meshlet ranges, primitive-group ranges, bounds, and `lodRootNode` handles
+- GPU LOD hierarchy tables backed by the existing `ClusterLODData` payload (`nodes`, `groups`, `groupMeshletIndices`, `levels`)
+- stable material/texture/resource indices shared across culling and shading
+- explicit CPU->GPU upload/update ownership rules
+
+**Why:** `vk_lod_clusters` works because traversal, culling, rasterization, and streaming all speak the same GPU scene schema. Metallic already has much of the data, but not the runtime ABI.
+
+**Done when:** visibility and rendering passes can consume shared scene tables without pass-local CPU packing.
+
+### 2.2 Milestone B — Generalize indirect and worklist building
+
+**Target:** promote the current counter/compaction/indirect-args path into a reusable subsystem.
+
+Generalize:
+
+- append/consume worklists
+- counter + prefix-sum patterns
+- draw/dispatch argument writers
+- typed indirect buffers for mesh/task/compute work
+- reusable clear/reset/seed helpers
+- stats buffers for produced and consumed work items
+
+**Why:** Metallic already has the seed of this in meshlet culling and indirect argument generation, but it is still pass-specific. `vk_lod_clusters` shows that traversal, LOD selection, raster setup, and streaming all need the same primitives.
+
+**Done when:** new compute passes can produce draw/dispatch work without adding one-off counter layouts or CPU-side fixups.
+
+### 2.3 Milestone C — Add an instance/object classification front-end
+
+**Target:** stop expanding meshlet work from a CPU-assembled visible-node list.
+
+Add:
+
+- GPU instance classification pass sourced from scene tables
+- instance frustum culling
+- optional coarse HZB/occlusion test at instance bounds level
+- optional distance/error classification inputs for later LOD selection
+- visible-instance worklist as the only input to downstream meshlet/cluster stages
+
+**Why:** `vk_lod_clusters` performs instance classification and traversal seeding before cluster traversal. Metallic currently jumps from CPU `visibleMeshletNodes` to per-meshlet GPU culling, which limits scale and keeps the CPU in the visibility loop.
+
+**Done when:** `visibleMeshletNodes` is no longer the primary visibility source for the GPU-driven path.
+
+### 2.4 Milestone D — Make `ClusterLODData` executable at runtime
+
+**Target:** convert the existing offline cluster LOD builder from “data exists” into “renderer traverses it”.
+
+Add:
+
+- GPU traversal over `lodRootNode -> nodes -> groups -> meshlets`
+- a stable screen-space or error-over-distance metric for LOD selection
+- output worklists for selected groups or selected meshlets
+- fallback path for nodes without LOD data
+- debug views for chosen LOD level, selected group counts, and meshlet expansion
+
+**Why:** Metallic already builds and caches cluster LOD data, but it is not yet used by runtime visibility. `vk_lod_clusters` demonstrates the missing piece: hierarchical traversal that emits renderable cluster/group work entirely on the GPU.
+
+**Done when:** far and near objects select different cluster LOD levels without CPU-side per-object LOD decisions.
+
+### 2.5 Milestone E — Integrate HZB with traversal, not just flat meshlet culling
+
+**Target:** move HZB from an add-on to a first-class contract in the GPU-driven pipeline.
+
+Add:
+
+- explicit HZB input contract for instance and group traversal stages
+- previous-frame reprojection rules shared by traversal/culling shaders
+- optional two-stage culling where instance/group coarse reject runs before meshlet fine reject
+- debug/stat outputs for instance -> group -> meshlet reduction ratios
+- async compute evaluation only after correctness and diagnostics are stable
+
+**Why:** current Metallic HZB usage is already useful, but it is attached to the flat meshlet pass. `vk_lod_clusters` uses culling to steer traversal itself, which is the scalable direction.
+
+**Done when:** HZB reduces traversal/render work before the final meshlet expansion stage, and the reduction is visible in pass stats.
+
+### 2.6 Milestone F — Finish the fully resident raster path before streaming
+
+**Target:** reach a clean “fully resident GPU-driven cluster LOD rasterizer” before introducing residency complexity.
+
+Finish:
+
+- draw-indirect path sourced only from GPU-produced traversal results
+- no CPU per-node dispatch fallback on the main path
+- stable debug/readback counters for selected instances, groups, meshlets, and rendered work
+- performance baselines on representative scenes
+
+**Why:** `vk_lod_clusters` includes streaming and RT-specific complexity, but Metallic should first lock the resident-data raster path. Otherwise debugging LOD traversal, HZB, and residency at the same time will be too expensive.
+
+**Done when:** a fully resident scene can render through GPU traversal + indirect draw with predictable counters and without CPU visibility orchestration.
+
+### 2.7 Milestone G — Optional residency / streaming layer
+
+**Target:** only after Milestone F, add group-level residency inspired by `vk_lod_clusters`.
+
+Add:
+
+- lowest-detail-always-resident policy
+- invalid-address / request-state encoding for non-resident groups
+- host/device request queue for load/unload decisions
+- scene patch/update pass that makes loaded groups visible without re-uploading the whole scene
+- memory budget and eviction rules
+- optional async transfer queue integration
+
+**Why:** the reference sample proves this is the correct scaling model for very large scenes, but it should be a late Phase 2 milestone for Metallic, not the entry point.
+
+**Done when:** Metallic can cap VRAM usage and progressively refine cluster groups without breaking traversal correctness.
+
+### 2.8 Future-facing optional features
 
 Only after the above is stable, evaluate:
 
 - more advanced descriptor models
 - device-generated command paths
 - work-graph-style execution models when relevant extensions/toolchains mature
+
+### Implementation rules for Phase 2
+
+- do not skip directly from flat meshlet culling to streaming; land resident traversal first
+- do not keep adding pass-local CPU packing once the GPU scene ABI exists; migrate passes onto shared scene tables
+- do not require per-frame host readbacks to determine the next render workload; statistics readbacks are acceptable, control-path readbacks are not
+- reuse the existing offline `ClusterLODData` build/cache pipeline before inventing new geometry preprocessing formats
+- keep Vulkan-first GPU-driven execution portable enough that a later Metal fallback can either use the same scene ABI or cleanly opt out at the pass level
 
 ---
 
@@ -410,11 +522,14 @@ Must have:
 Must have:
 
 - stable bindless model
+- GPU scene ABI with stable instance / geometry / material / LOD tables
 - generalized indirect workflow
+- runtime traversal of `ClusterLODData` or equivalent hierarchy
 - strong barrier/state tracking
 - transient buffer allocator
 - async compute support
 - integrated HZB/visibility pipeline
+- fully resident traversal + indirect raster path validated before streaming
 
 ---
 
