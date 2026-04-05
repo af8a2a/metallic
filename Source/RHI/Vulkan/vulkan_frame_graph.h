@@ -82,6 +82,9 @@ public:
     std::unique_ptr<RhiComputeCommandEncoder> beginComputePass(const RhiComputePassDesc& desc) override;
     std::unique_ptr<RhiBlitCommandEncoder> beginBlitPass(const RhiBlitPassDesc& desc) override;
     void prepareTextureForSampling(const RhiTexture* texture) override;
+    void prepareTextureForStorage(const RhiTexture* texture) override;
+    void prepareTextureForTransferSrc(const RhiTexture* texture) override;
+    void prepareTextureForTransferDst(const RhiTexture* texture) override;
     void flushBarriers() override;
     void setNextPassQueueHint(RhiQueueHint hint) override;
     void transitionTexture(const RhiTexture* texture, VkImageLayout layout);

@@ -555,6 +555,15 @@ public:
     // Backend implementations handle any necessary state transitions (e.g. Vulkan layout transitions).
     virtual void prepareTextureForSampling(const RhiTexture* /*texture*/) {}
 
+    // Prepare a texture for use as a storage image (read/write via imageLoad/imageStore).
+    virtual void prepareTextureForStorage(const RhiTexture* /*texture*/) {}
+
+    // Prepare a texture for use as a transfer source.
+    virtual void prepareTextureForTransferSrc(const RhiTexture* /*texture*/) {}
+
+    // Prepare a texture for use as a transfer destination.
+    virtual void prepareTextureForTransferDst(const RhiTexture* /*texture*/) {}
+
     // Flush all accumulated pending barriers as a single batched pipeline barrier.
     // No-op on backends that insert barriers eagerly (e.g. Metal).
     virtual void flushBarriers() {}

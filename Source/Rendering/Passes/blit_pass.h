@@ -17,8 +17,8 @@ public:
     }
 
     void setup(FGBuilder& builder) override {
-        m_sourceRead = builder.read(m_source);
-        m_destWrite = builder.write(m_dest);
+        m_sourceRead = builder.read(m_source, FGResourceUsage::TransferSrc);
+        m_destWrite = builder.write(m_dest, FGResourceUsage::TransferDst);
     }
 
     void executeBlit(RhiBlitCommandEncoder& encoder) override {

@@ -20,6 +20,36 @@ using FGTextureDesc = RhiTextureDesc;
 
 enum class FGResourceKind { Texture, Token };
 
+// Describes how a pass accesses a resource. Used by the frame graph to derive
+// backend-specific barriers (e.g. Vulkan image layout transitions) between passes.
+enum class FGResourceUsage : uint32_t {
+    None            = 0,
+    Sampled         = 1u << 0,   // Read as a sampled texture (SHADER_READ_ONLY_OPTIMAL)
+    StorageRead     = 1u << 1,   // Read as a storage image/buffer (GENERAL)
+    StorageWrite    = 1u << 2,   // Write as a storage image/buffer (GENERAL)
+    ColorAttachment = 1u << 3,   // Color attachment output (COLOR_ATTACHMENT_OPTIMAL)
+    DepthAttachment = 1u << 4,   // Depth/stencil attachment (DEPTH_ATTACHMENT_OPTIMAL)
+    TransferSrc     = 1u << 5,   // Source of a copy/blit (TRANSFER_SRC_OPTIMAL)
+    TransferDst     = 1u << 6,   // Destination of a copy/blit (TRANSFER_DST_OPTIMAL)
+    Indirect        = 1u << 7,   // Indirect argument buffer
+};
+
+inline FGResourceUsage operator|(FGResourceUsage lhs, FGResourceUsage rhs) {
+    return static_cast<FGResourceUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+inline FGResourceUsage operator&(FGResourceUsage lhs, FGResourceUsage rhs) {
+    return static_cast<FGResourceUsage>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
+}
+inline bool hasUsage(FGResourceUsage mask, FGResourceUsage flag) {
+    return (static_cast<uint32_t>(mask) & static_cast<uint32_t>(flag)) != 0;
+}
+
+// A resource access entry in a pass, combining the resource handle with its usage.
+struct FGAccessEntry {
+    FGResource resource;
+    FGResourceUsage usage = FGResourceUsage::None;
+};
+
 struct FGResourceNode {
     std::string name;
     FGResourceKind kind = FGResourceKind::Texture;
@@ -62,8 +92,8 @@ struct FGPassNode {
     uint32_t refCount = 0;
     bool hasSideEffect = false;
 
-    std::vector<FGResource> reads;
-    std::vector<FGResource> writes;
+    std::vector<FGAccessEntry> reads;
+    std::vector<FGAccessEntry> writes;
 
     FGColorAttachment colorAttachments[8];
     uint32_t colorAttachmentCount = 0;
@@ -83,10 +113,12 @@ public:
 
     FGResource create(const char* name, const FGTextureDesc& desc);
     FGResource createToken(const char* name);
-    FGResource read(FGResource resource);
-    FGResource write(FGResource resource);
-    FGResource readHistory(const char* name, const FGTextureDesc& desc);
-    FGResource writeHistory(const char* name, const FGTextureDesc& desc);
+    FGResource read(FGResource resource, FGResourceUsage usage = FGResourceUsage::Sampled);
+    FGResource write(FGResource resource, FGResourceUsage usage = FGResourceUsage::StorageWrite);
+    FGResource readHistory(const char* name, const FGTextureDesc& desc,
+                           FGResourceUsage usage = FGResourceUsage::Sampled);
+    FGResource writeHistory(const char* name, const FGTextureDesc& desc,
+                            FGResourceUsage usage = FGResourceUsage::StorageWrite);
 
     FGResource setColorAttachment(uint32_t index, FGResource resource,
                                   RhiLoadAction load, RhiStoreAction store,

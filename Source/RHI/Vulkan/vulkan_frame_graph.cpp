@@ -982,6 +982,33 @@ void VulkanCommandBuffer::prepareTextureForSampling(const RhiTexture* texture) {
                                       imageAspectMask(resource));
 }
 
+void VulkanCommandBuffer::prepareTextureForStorage(const RhiTexture* texture) {
+    if (!texture || !m_stateTracker) return;
+    auto* resource = getVulkanTextureResource(texture);
+    if (!resource || resource->image == VK_NULL_HANDLE) return;
+    m_stateTracker->requireImageState(resource->image,
+                                      VK_IMAGE_LAYOUT_GENERAL,
+                                      imageAspectMask(resource));
+}
+
+void VulkanCommandBuffer::prepareTextureForTransferSrc(const RhiTexture* texture) {
+    if (!texture || !m_stateTracker) return;
+    auto* resource = getVulkanTextureResource(texture);
+    if (!resource || resource->image == VK_NULL_HANDLE) return;
+    m_stateTracker->requireImageState(resource->image,
+                                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                      imageAspectMask(resource));
+}
+
+void VulkanCommandBuffer::prepareTextureForTransferDst(const RhiTexture* texture) {
+    if (!texture || !m_stateTracker) return;
+    auto* resource = getVulkanTextureResource(texture);
+    if (!resource || resource->image == VK_NULL_HANDLE) return;
+    m_stateTracker->requireImageState(resource->image,
+                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                      imageAspectMask(resource));
+}
+
 void VulkanCommandBuffer::flushBarriers() {
     if (m_stateTracker) {
         m_stateTracker->flushBarriers(m_commandBuffer);
