@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <optional>
 #include <set>
@@ -62,7 +63,45 @@ VKAPI_ATTR VkBool32 VKAPI_CALL vulkanDebugUtilsCallback(
     VkDebugUtilsMessageTypeFlagsEXT /*messageTypes*/,
     const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
     void* /*userData*/) {
-    const char* message = (callbackData && callbackData->pMessage) ? callbackData->pMessage : "Unknown Vulkan message";
+    std::string message =
+        (callbackData && callbackData->pMessage) ? callbackData->pMessage : "Unknown Vulkan message";
+    if (callbackData) {
+        if (callbackData->cmdBufLabelCount > 0 && callbackData->pCmdBufLabels) {
+            const auto& label = callbackData->pCmdBufLabels[callbackData->cmdBufLabelCount - 1];
+            if (label.pLabelName && label.pLabelName[0] != '\0') {
+                message += " [cmdLabel=";
+                message += label.pLabelName;
+                message += "]";
+            }
+        }
+
+        if (callbackData->objectCount > 0 && callbackData->pObjects) {
+            constexpr uint32_t kMaxReportedObjects = 3;
+            const uint32_t objectCount = std::min(callbackData->objectCount, kMaxReportedObjects);
+            for (uint32_t i = 0; i < objectCount; ++i) {
+                const auto& object = callbackData->pObjects[i];
+                message += " [obj";
+                message += std::to_string(i);
+                message += "=";
+                if (object.pObjectName && object.pObjectName[0] != '\0') {
+                    message += object.pObjectName;
+                } else {
+                    message += std::to_string(static_cast<uint32_t>(object.objectType));
+                    message += ":0x";
+                    char handleBuffer[17]{};
+                    std::snprintf(handleBuffer, sizeof(handleBuffer), "%llx",
+                                  static_cast<unsigned long long>(object.objectHandle));
+                    message += handleBuffer;
+                }
+                message += "]";
+            }
+            if (callbackData->objectCount > objectCount) {
+                message += " [objects=";
+                message += std::to_string(callbackData->objectCount);
+                message += "]";
+            }
+        }
+    }
     if ((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
         spdlog::error("VulkanValidation: {}", message);
     } else if ((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
@@ -2300,6 +2339,8 @@ public:
             hasExtension(extensions, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         const bool descriptorBufferAvailable =
             hasExtension(extensions, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+        const bool robustness2Available =
+            hasExtension(extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
         m_deviceFaultAvailable = hasExtension(extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
         m_diagnosticCheckpointsAvailable =
             hasExtension(extensions, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
@@ -2313,8 +2354,6 @@ public:
         }
 
         VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
-        VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
         VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
         VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
@@ -2324,23 +2363,29 @@ public:
         VkPhysicalDeviceSynchronization2Features sync2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
         VkPhysicalDeviceVulkan11Features vulkan11Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+        VkPhysicalDeviceVulkan12Features vulkan12Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+        VkPhysicalDeviceRobustness2FeaturesEXT robustness2Features{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.pNext = &vulkan11Features;
-        vulkan11Features.pNext = &dynamicRenderingFeatures;
+        vulkan11Features.pNext = &vulkan12Features;
+        vulkan12Features.pNext = &dynamicRenderingFeatures;
         dynamicRenderingFeatures.pNext = &sync2Features;
         sync2Features.pNext = &meshShaderFeatures;
-        meshShaderFeatures.pNext = &bufferDeviceAddressFeatures;
-        bufferDeviceAddressFeatures.pNext = &rayQueryFeatures;
+        meshShaderFeatures.pNext = &rayQueryFeatures;
         rayQueryFeatures.pNext = &rayTracingPipelineFeatures;
         rayTracingPipelineFeatures.pNext = &accelerationStructureFeatures;
         accelerationStructureFeatures.pNext = &descriptorBufferFeatures;
+        descriptorBufferFeatures.pNext = robustness2Available ? &robustness2Features : nullptr;
         vkGetPhysicalDeviceFeatures2(device, &features2);
 
         if (dynamicRenderingFeatures.dynamicRendering != VK_TRUE ||
             sync2Features.synchronization2 != VK_TRUE ||
-            vulkan11Features.shaderDrawParameters != VK_TRUE) {
+            vulkan11Features.shaderDrawParameters != VK_TRUE ||
+            vulkan12Features.descriptorBindingPartiallyBound != VK_TRUE ||
+            vulkan12Features.runtimeDescriptorArray != VK_TRUE) {
             return false;
         }
 
@@ -2354,7 +2399,7 @@ public:
         m_features.descriptorIndexing = true;
         m_features.bufferDeviceAddress =
             bufferDeviceAddressAvailable &&
-            bufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE;
+            vulkan12Features.bufferDeviceAddress == VK_TRUE;
         m_features.meshShaders = meshShaderAvailable && meshShaderFeatures.meshShader == VK_TRUE;
         m_features.taskShaders = meshShaderAvailable && meshShaderFeatures.taskShader == VK_TRUE;
         m_features.rayTracing =
@@ -2372,6 +2417,15 @@ public:
         m_features.descriptorBuffer =
             descriptorBufferAvailable &&
             descriptorBufferFeatures.descriptorBuffer == VK_TRUE;
+        m_storageBuffer16BitAccessEnabled = vulkan11Features.storageBuffer16BitAccess == VK_TRUE;
+        m_uniformAndStorageBuffer8BitAccessEnabled =
+            vulkan12Features.uniformAndStorageBuffer8BitAccess == VK_TRUE;
+        m_uniformAndStorageBuffer16BitAccessEnabled =
+            vulkan11Features.uniformAndStorageBuffer16BitAccess == VK_TRUE;
+        m_timelineSemaphoreSupported = vulkan12Features.timelineSemaphore == VK_TRUE;
+        m_nullDescriptorEnabled =
+            robustness2Available &&
+            robustness2Features.nullDescriptor == VK_TRUE;
 
         // Query RT pipeline properties when supported.
         if (m_features.rayTracingPipeline) {
@@ -2432,6 +2486,9 @@ public:
         if (m_features.descriptorBuffer) {
             deviceExtensions.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
         }
+        if (m_nullDescriptorEnabled) {
+            deviceExtensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+        }
         if (m_deviceFaultAvailable) {
             deviceExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
         }
@@ -2475,16 +2532,12 @@ public:
 
         VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
         meshShaderFeatures.meshShader = m_features.meshShaders ? VK_TRUE : VK_FALSE;
-        meshShaderFeatures.taskShader = m_features.meshShaders ? VK_TRUE : VK_FALSE;
-
-        VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
-        bufferDeviceAddressFeatures.bufferDeviceAddress = m_features.bufferDeviceAddress ? VK_TRUE : VK_FALSE;
+        meshShaderFeatures.taskShader = m_features.taskShaders ? VK_TRUE : VK_FALSE;
 
         VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
         rayQueryFeatures.rayQuery = m_features.rayTracing ? VK_TRUE : VK_FALSE;
-        rayQueryFeatures.pNext = &bufferDeviceAddressFeatures;
+        rayQueryFeatures.pNext = nullptr;
 
         VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
@@ -2500,28 +2553,31 @@ public:
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
         descriptorBufferEnableFeatures.descriptorBuffer = m_features.descriptorBuffer ? VK_TRUE : VK_FALSE;
 
-        VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
-        descriptorIndexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
-        descriptorIndexingFeatures.runtimeDescriptorArray = VK_TRUE;
-        descriptorIndexingFeatures.pNext = m_features.meshShaders ? &meshShaderFeatures : nullptr;
-        if (!m_features.meshShaders && m_features.rayTracing) {
-            descriptorIndexingFeatures.pNext = &accelerationStructureFeatures;
-        } else if (m_features.meshShaders && m_features.rayTracing) {
-            meshShaderFeatures.pNext = &accelerationStructureFeatures;
-        } else if (!m_features.meshShaders && m_features.bufferDeviceAddress) {
-            descriptorIndexingFeatures.pNext = &bufferDeviceAddressFeatures;
-        } else if (m_features.meshShaders && m_features.bufferDeviceAddress) {
-            meshShaderFeatures.pNext = &bufferDeviceAddressFeatures;
+        VkPhysicalDeviceRobustness2FeaturesEXT robustness2Features{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+        robustness2Features.nullDescriptor = m_nullDescriptorEnabled ? VK_TRUE : VK_FALSE;
+
+        void* optionalFeatureChain = nullptr;
+        if (m_features.rayTracing) {
+            optionalFeatureChain = &accelerationStructureFeatures;
+        }
+        if (m_features.meshShaders) {
+            meshShaderFeatures.pNext = optionalFeatureChain;
+            optionalFeatureChain = &meshShaderFeatures;
         }
 
         VkPhysicalDeviceSynchronization2Features sync2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
         sync2Features.synchronization2 = VK_TRUE;
-        sync2Features.pNext = &descriptorIndexingFeatures;
+        sync2Features.pNext = optionalFeatureChain;
 
         // Descriptor buffer (VK_EXT_descriptor_buffer) — chain only when enabled
         if (m_features.descriptorBuffer) {
             descriptorBufferEnableFeatures.pNext = sync2Features.pNext;
             sync2Features.pNext = &descriptorBufferEnableFeatures;
+        }
+        if (m_nullDescriptorEnabled) {
+            robustness2Features.pNext = sync2Features.pNext;
+            sync2Features.pNext = &robustness2Features;
         }
 
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
@@ -2530,23 +2586,32 @@ public:
 
         VkPhysicalDeviceVulkan11Features vulkan11Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
         vulkan11Features.shaderDrawParameters = VK_TRUE;
-        vulkan11Features.pNext = &dynamicRenderingFeatures;
+        vulkan11Features.storageBuffer16BitAccess = m_storageBuffer16BitAccessEnabled ? VK_TRUE : VK_FALSE;
+        vulkan11Features.uniformAndStorageBuffer16BitAccess =
+            m_uniformAndStorageBuffer16BitAccessEnabled ? VK_TRUE : VK_FALSE;
 
-        // Timeline semaphore (Vulkan 1.2 core) — needed by Streamline/DLSS
-        VkPhysicalDeviceTimelineSemaphoreFeatures timelineSemaphoreFeatures{
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
-        timelineSemaphoreFeatures.timelineSemaphore = VK_TRUE;
+        VkPhysicalDeviceVulkan12Features vulkan12Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        vulkan12Features.descriptorBindingPartiallyBound = VK_TRUE;
+        vulkan12Features.runtimeDescriptorArray = VK_TRUE;
+        vulkan12Features.bufferDeviceAddress = m_features.bufferDeviceAddress ? VK_TRUE : VK_FALSE;
+        vulkan12Features.uniformAndStorageBuffer8BitAccess =
+            m_uniformAndStorageBuffer8BitAccessEnabled ? VK_TRUE : VK_FALSE;
+        vulkan12Features.timelineSemaphore =
+            (createInfo.enableTimelineSemaphore && m_timelineSemaphoreSupported) ? VK_TRUE : VK_FALSE;
+        vulkan11Features.pNext = &vulkan12Features;
 
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.features.pipelineStatisticsQuery = m_toolingInfo.pipelineStatistics ? VK_TRUE : VK_FALSE;
-        if (createInfo.enableTimelineSemaphore) {
+        if (createInfo.enableTimelineSemaphore && m_timelineSemaphoreSupported) {
             m_features.timelineSemaphore = true;
-            vulkan11Features.pNext = &timelineSemaphoreFeatures;
-            timelineSemaphoreFeatures.pNext = &dynamicRenderingFeatures;
-            features2.pNext = &vulkan11Features;
         } else {
-            features2.pNext = &vulkan11Features;
+            m_features.timelineSemaphore = false;
+            if (createInfo.enableTimelineSemaphore) {
+                spdlog::warn("Vulkan: timeline semaphores were requested but are not supported by the selected device");
+            }
         }
+        vulkan12Features.pNext = &dynamicRenderingFeatures;
+        features2.pNext = &vulkan11Features;
 
         std::vector<const char*> layers;
         if (enableValidation && m_features.validation) {
@@ -2606,6 +2671,9 @@ public:
                          m_rtPipelineProperties.shaderGroupHandleSize,
                          m_rtPipelineProperties.shaderGroupBaseAlignment,
                          m_rtPipelineProperties.maxRayRecursionDepth);
+        }
+        if (m_nullDescriptorEnabled) {
+            spdlog::info("Vulkan: null descriptors enabled via VK_EXT_robustness2");
         }
     }
 
@@ -2903,6 +2971,11 @@ public:
     bool m_deviceLost = false;
     bool m_deviceFaultAvailable = false;
     bool m_diagnosticCheckpointsAvailable = false;
+    bool m_storageBuffer16BitAccessEnabled = false;
+    bool m_uniformAndStorageBuffer8BitAccessEnabled = false;
+    bool m_uniformAndStorageBuffer16BitAccessEnabled = false;
+    bool m_timelineSemaphoreSupported = false;
+    bool m_nullDescriptorEnabled = false;
     std::string m_deviceLostMessage;
 
     RhiFeatures m_features{};

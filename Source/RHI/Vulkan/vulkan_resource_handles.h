@@ -196,9 +196,13 @@ inline bool vulkanBufferUsesDeviceAddress(VkBufferUsageFlags usage) {
 inline VkExternalMemoryHandleTypeFlags vulkanHostVisibleExternalMemoryHandleTypes(
     bool hostVisible,
     bool externalHostMemoryEnabled) {
-    return (hostVisible && externalHostMemoryEnabled)
-        ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT
-        : 0;
+    (void)hostVisible;
+    (void)externalHostMemoryEnabled;
+    // VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT is for importing an
+    // existing host allocation. Routing normal VMA host-visible buffers through
+    // that path makes VMA attach VkImportMemoryHostPointerInfoEXT, which clashes
+    // with its dedicated-allocation flow and trips validation.
+    return 0;
 }
 
 inline VulkanSamplerResource* getVulkanSamplerResource(const RhiSampler* sampler) {

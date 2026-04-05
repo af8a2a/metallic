@@ -163,13 +163,19 @@ static StreamlineDlssFrameData::VulkanTextureInfo makeTextureInfo(const RhiTextu
     return info;
 }
 
-static HMODULE findStreamlineInterposerModule() {
-    HMODULE module = GetModuleHandleW(L"sl.interposer.dll");
+static HMODULE findStreamlineModule(const wchar_t* moduleName) {
+    if (!moduleName || moduleName[0] == L'\0') {
+        return nullptr;
+    }
+
+    HMODULE module = GetModuleHandleW(moduleName);
     if (!module) {
-        module = LoadLibraryW(L"sl.interposer.dll");
+        module = LoadLibraryW(moduleName);
     }
     return module;
 }
+
+using SlGetPluginFunction = void* (*)(const char*);
 
 #endif // METALLIC_HAS_STREAMLINE (SDK includes and helpers)
 
@@ -224,12 +230,33 @@ bool StreamlineContext::init(const char* projectRoot, uint32_t applicationId) {
     }
 
     m_initialized = true;
-    if (HMODULE interposerModule = findStreamlineInterposerModule()) {
+    if (HMODULE interposerModule = findStreamlineModule(L"sl.interposer.dll")) {
         m_vkGetDeviceProcAddrProxy =
             reinterpret_cast<void*>(GetProcAddress(interposerModule, "vkGetDeviceProcAddr"));
     }
     if (!m_vkGetDeviceProcAddrProxy) {
         spdlog::warn("Streamline Vulkan proxy lookup is unavailable; manual present hooks will fall back to native Vulkan");
+    }
+    if (HMODULE commonModule = findStreamlineModule(L"sl.common.dll")) {
+        auto getPluginFunction =
+            reinterpret_cast<SlGetPluginFunction>(GetProcAddress(commonModule, "slGetPluginFunction"));
+        if (getPluginFunction) {
+            m_vkBeginCommandBufferHook = getPluginFunction("slHookVkBeginCommandBuffer");
+            m_vkCmdBindPipelineHook = getPluginFunction("slHookVkCmdBindPipeline");
+            m_vkCmdBindDescriptorSetsHook = getPluginFunction("slHookVkCmdBindDescriptorSets");
+        } else {
+            m_vkBeginCommandBufferHook =
+                reinterpret_cast<void*>(GetProcAddress(commonModule, "slHookVkBeginCommandBuffer"));
+            m_vkCmdBindPipelineHook =
+                reinterpret_cast<void*>(GetProcAddress(commonModule, "slHookVkCmdBindPipeline"));
+            m_vkCmdBindDescriptorSetsHook =
+                reinterpret_cast<void*>(GetProcAddress(commonModule, "slHookVkCmdBindDescriptorSets"));
+        }
+    }
+    if (!m_vkBeginCommandBufferHook ||
+        !m_vkCmdBindPipelineHook ||
+        !m_vkCmdBindDescriptorSetsHook) {
+        spdlog::warn("Streamline Vulkan command hooks are unavailable; SL command state tracking may be incomplete");
     }
     spdlog::info("Streamline SDK initialized");
     return true;
@@ -556,6 +583,9 @@ void StreamlineContext::shutdown() {
     m_vulkanSet = false;
     m_dlssAvailable = false;
     m_vkGetDeviceProcAddrProxy = nullptr;
+    m_vkBeginCommandBufferHook = nullptr;
+    m_vkCmdBindPipelineHook = nullptr;
+    m_vkCmdBindDescriptorSetsHook = nullptr;
     spdlog::info("Streamline shutdown");
 }
 

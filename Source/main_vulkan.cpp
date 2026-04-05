@@ -1481,6 +1481,9 @@ int main() {
         if (streamlineCtx.setVulkanDevice(vkInstance, vkPhysicalDevice, vkDevice,
                                            nativeToVkHandle<VkQueue>(native.queue),
                                             native.graphicsQueueFamily, 0)) {
+            vulkanSetStreamlineCommandHooks(streamlineCtx.vulkanBeginCommandBufferHook(),
+                                           streamlineCtx.vulkanCmdBindPipelineHook(),
+                                           streamlineCtx.vulkanCmdBindDescriptorSetsHook());
             vulkanSetStreamlineHookedCommandsEnabled(true);
             dlssAvailable = streamlineCtx.isDlssAvailable();
         }

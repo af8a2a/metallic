@@ -81,9 +81,9 @@ struct VulkanResourceContextInfo {
     bool initialized = false;
     bool streamlineHooksEnabled = false;
     bool debugUtilsEnabled = false;
-    PFN_vkBeginCommandBuffer vkBeginCommandBufferProxy = nullptr;
-    PFN_vkCmdBindPipeline vkCmdBindPipelineProxy = nullptr;
-    PFN_vkCmdBindDescriptorSets vkCmdBindDescriptorSetsProxy = nullptr;
+    void* streamlineBeginCommandBufferHook = nullptr;
+    void* streamlineCmdBindPipelineHook = nullptr;
+    void* streamlineCmdBindDescriptorSetsHook = nullptr;
     PFN_vkSetDebugUtilsObjectNameEXT vkSetDebugUtilsObjectName = nullptr;
     PFN_vkCmdBeginDebugUtilsLabelEXT vkCmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT vkCmdEndDebugUtilsLabel = nullptr;
@@ -102,6 +102,9 @@ void vulkanSetResourceContext(VkDevice device,
 const VulkanResourceContextInfo& vulkanGetResourceContext();
 void vulkanClearResourceContext();
 void vulkanSetStreamlineHookedCommandsEnabled(bool enabled);
+void vulkanSetStreamlineCommandHooks(void* beginCommandBufferHook,
+                                     void* cmdBindPipelineHook,
+                                     void* cmdBindDescriptorSetsHook);
 
 void vulkanSetObjectDebugName(VkDevice device,
                               VkObjectType objectType,

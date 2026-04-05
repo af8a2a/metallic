@@ -171,25 +171,13 @@ namespace {
 VulkanResourceContextInfo g_vkResCtx;
 VulkanUploadService* g_uploadService = nullptr;
 
-template <typename Fn>
-Fn loadHookedDeviceProc(PFN_vkGetDeviceProcAddr deviceProcAddrProxy,
-                        VkDevice device,
-                        const char* name) {
-    if (!deviceProcAddrProxy || device == VK_NULL_HANDLE || !name) {
-        return nullptr;
-    }
-    return reinterpret_cast<Fn>(deviceProcAddrProxy(device, name));
-}
-
 void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
                         VkQueue queue, uint32_t queueFamily, bool bufferDeviceAddressEnabled,
                         bool externalHostMemoryEnabled,
                         bool rayTracingEnabled,
                         bool debugUtilsEnabled,
                         void* vkGetDeviceProcAddrProxy) {
-    PFN_vkGetDeviceProcAddr deviceProcAddrProxy =
-        reinterpret_cast<PFN_vkGetDeviceProcAddr>(vkGetDeviceProcAddrProxy);
-
+    (void)vkGetDeviceProcAddrProxy;
     g_vkResCtx.device = device;
     g_vkResCtx.physicalDevice = physicalDevice;
     g_vkResCtx.allocator = allocator;
@@ -200,18 +188,9 @@ void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAll
     g_vkResCtx.rayTracingEnabled = rayTracingEnabled;
     g_vkResCtx.streamlineHooksEnabled = false;
     g_vkResCtx.debugUtilsEnabled = debugUtilsEnabled;
-    g_vkResCtx.vkBeginCommandBufferProxy =
-        loadHookedDeviceProc<PFN_vkBeginCommandBuffer>(deviceProcAddrProxy,
-                                                       device,
-                                                       "vkBeginCommandBuffer");
-    g_vkResCtx.vkCmdBindPipelineProxy =
-        loadHookedDeviceProc<PFN_vkCmdBindPipeline>(deviceProcAddrProxy,
-                                                    device,
-                                                    "vkCmdBindPipeline");
-    g_vkResCtx.vkCmdBindDescriptorSetsProxy =
-        loadHookedDeviceProc<PFN_vkCmdBindDescriptorSets>(deviceProcAddrProxy,
-                                                          device,
-                                                          "vkCmdBindDescriptorSets");
+    g_vkResCtx.streamlineBeginCommandBufferHook = nullptr;
+    g_vkResCtx.streamlineCmdBindPipelineHook = nullptr;
+    g_vkResCtx.streamlineCmdBindDescriptorSetsHook = nullptr;
     if (debugUtilsEnabled) {
         g_vkResCtx.vkSetDebugUtilsObjectName =
             reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
@@ -354,6 +333,14 @@ void vulkanSetStreamlineHookedCommandsEnabled(bool enabled) {
     g_vkResCtx.streamlineHooksEnabled = enabled;
 }
 
+void vulkanSetStreamlineCommandHooks(void* beginCommandBufferHook,
+                                     void* cmdBindPipelineHook,
+                                     void* cmdBindDescriptorSetsHook) {
+    g_vkResCtx.streamlineBeginCommandBufferHook = beginCommandBufferHook;
+    g_vkResCtx.streamlineCmdBindPipelineHook = cmdBindPipelineHook;
+    g_vkResCtx.streamlineCmdBindDescriptorSetsHook = cmdBindDescriptorSetsHook;
+}
+
 void vulkanSetObjectDebugName(VkDevice device,
                               VkObjectType objectType,
                               uint64_t handle,
@@ -408,20 +395,27 @@ void vulkanSetUploadService(VulkanUploadService* service) {
 
 VkResult vulkanBeginCommandBufferHooked(VkCommandBuffer commandBuffer,
                                         const VkCommandBufferBeginInfo* beginInfo) {
-    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.vkBeginCommandBufferProxy) {
-        return g_vkResCtx.vkBeginCommandBufferProxy(commandBuffer, beginInfo);
+    VkResult result = vkBeginCommandBuffer(commandBuffer, beginInfo);
+    if (result != VK_SUCCESS) {
+        return result;
     }
-    return vkBeginCommandBuffer(commandBuffer, beginInfo);
+    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.streamlineBeginCommandBufferHook) {
+        using HookFn = void (*)(VkCommandBuffer, const VkCommandBufferBeginInfo*);
+        auto* hook = reinterpret_cast<HookFn>(g_vkResCtx.streamlineBeginCommandBufferHook);
+        hook(commandBuffer, beginInfo);
+    }
+    return result;
 }
 
 void vulkanCmdBindPipelineHooked(VkCommandBuffer commandBuffer,
                                  VkPipelineBindPoint pipelineBindPoint,
                                  VkPipeline pipeline) {
-    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.vkCmdBindPipelineProxy) {
-        g_vkResCtx.vkCmdBindPipelineProxy(commandBuffer, pipelineBindPoint, pipeline);
-        return;
-    }
     vkCmdBindPipeline(commandBuffer, pipelineBindPoint, pipeline);
+    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.streamlineCmdBindPipelineHook) {
+        using HookFn = void (*)(VkCommandBuffer, VkPipelineBindPoint, VkPipeline);
+        auto* hook = reinterpret_cast<HookFn>(g_vkResCtx.streamlineCmdBindPipelineHook);
+        hook(commandBuffer, pipelineBindPoint, pipeline);
+    }
 }
 
 void vulkanCmdBindDescriptorSetsHooked(VkCommandBuffer commandBuffer,
@@ -432,17 +426,6 @@ void vulkanCmdBindDescriptorSetsHooked(VkCommandBuffer commandBuffer,
                                        const VkDescriptorSet* descriptorSets,
                                        uint32_t dynamicOffsetCount,
                                        const uint32_t* dynamicOffsets) {
-    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.vkCmdBindDescriptorSetsProxy) {
-        g_vkResCtx.vkCmdBindDescriptorSetsProxy(commandBuffer,
-                                                pipelineBindPoint,
-                                                layout,
-                                                firstSet,
-                                                descriptorSetCount,
-                                                descriptorSets,
-                                                dynamicOffsetCount,
-                                                dynamicOffsets);
-        return;
-    }
     vkCmdBindDescriptorSets(commandBuffer,
                             pipelineBindPoint,
                             layout,
@@ -451,6 +434,25 @@ void vulkanCmdBindDescriptorSetsHooked(VkCommandBuffer commandBuffer,
                             descriptorSets,
                             dynamicOffsetCount,
                             dynamicOffsets);
+    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.streamlineCmdBindDescriptorSetsHook) {
+        using HookFn = void (*)(VkCommandBuffer,
+                                VkPipelineBindPoint,
+                                VkPipelineLayout,
+                                uint32_t,
+                                uint32_t,
+                                const VkDescriptorSet*,
+                                uint32_t,
+                                const uint32_t*);
+        auto* hook = reinterpret_cast<HookFn>(g_vkResCtx.streamlineCmdBindDescriptorSetsHook);
+        hook(commandBuffer,
+             pipelineBindPoint,
+             layout,
+             firstSet,
+             descriptorSetCount,
+             descriptorSets,
+             dynamicOffsetCount,
+             dynamicOffsets);
+    }
 }
 
 void vulkanClearResourceContext() {
@@ -538,9 +540,8 @@ void rhiUploadTexture2D(const RhiTexture& texture,
     stagingVmaInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     stagingVmaInfo.hostVisible = true;
     stagingVmaInfo.externalMemoryHandleTypes =
-        g_vkResCtx.externalHostMemoryEnabled
-            ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT
-            : 0;
+        vulkanHostVisibleExternalMemoryHandleTypes(stagingVmaInfo.hostVisible,
+                                                   g_vkResCtx.externalHostMemoryEnabled);
 
     auto stagingResource = vmaCreateBufferResource(stagingVmaInfo);
     if (!stagingResource) {
@@ -625,9 +626,8 @@ void rhiUploadTexture3D(const RhiTexture& texture,
     stagingVmaInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     stagingVmaInfo.hostVisible = true;
     stagingVmaInfo.externalMemoryHandleTypes =
-        g_vkResCtx.externalHostMemoryEnabled
-            ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT
-            : 0;
+        vulkanHostVisibleExternalMemoryHandleTypes(stagingVmaInfo.hostVisible,
+                                                   g_vkResCtx.externalHostMemoryEnabled);
 
     auto stagingResource = vmaCreateBufferResource(stagingVmaInfo);
     if (!stagingResource) {
