@@ -4,12 +4,15 @@
 #include <slang-com-ptr.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <mutex>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -68,6 +71,88 @@ void recordDiagnostic(const char* stage, const char* shaderPath, std::string mes
 constexpr uint32_t kSpirvMagic = 0x07230203u;
 std::string g_shaderCacheDir; // empty = disabled
 
+std::mutex g_compileStatsMutex;
+SlangCompileStats g_compileStats;
+
+// --- Include dependency scanning ---
+
+// Resolve a shader file path, trying with .slang extension first.
+std::string resolveShaderFilePath(const std::string& basePath) {
+    std::string withExt = basePath + ".slang";
+    if (std::filesystem::exists(withExt)) {
+        return withExt;
+    }
+    if (std::filesystem::exists(basePath)) {
+        return basePath;
+    }
+    return {};
+}
+
+// Scan a shader file for #include "..." directives and recursively collect
+// all transitive dependencies. Returns sorted, deduplicated absolute paths.
+void collectDependenciesRecursive(const std::string& filePath,
+                                  const std::string& searchPath,
+                                  std::set<std::string>& visited) {
+    std::string absPath;
+    try {
+        absPath = std::filesystem::canonical(filePath).string();
+    } catch (...) {
+        return;
+    }
+    if (visited.count(absPath)) {
+        return;
+    }
+    visited.insert(absPath);
+
+    std::ifstream file(filePath);
+    if (!file.is_open()) {
+        return;
+    }
+
+    // Match #include "relative/path" (not angle-bracket system includes).
+    static const std::regex includeRegex(R"RE(^\s*#\s*include\s+"([^"]+)")RE");
+    std::string line;
+    std::filesystem::path parentDir = std::filesystem::path(filePath).parent_path();
+
+    while (std::getline(file, line)) {
+        std::smatch match;
+        if (std::regex_search(line, match, includeRegex)) {
+            std::string includePath = match[1].str();
+            // Resolve relative to the including file's directory first.
+            std::filesystem::path resolved = parentDir / includePath;
+            if (!std::filesystem::exists(resolved) && !searchPath.empty()) {
+                // Fall back to the search path.
+                resolved = std::filesystem::path(searchPath) / includePath;
+            }
+            if (std::filesystem::exists(resolved)) {
+                collectDependenciesRecursive(resolved.string(), searchPath, visited);
+            }
+        }
+    }
+}
+
+std::vector<std::string> collectShaderDependencies(const char* shaderPath,
+                                                    const char* searchPath) {
+    std::set<std::string> visited;
+
+    // Try .slang extension first, then bare path.
+    std::string rootFile = resolveShaderFilePath(shaderPath);
+    if (rootFile.empty()) {
+        return {};
+    }
+
+    std::string search = searchPath ? searchPath : "";
+    collectDependenciesRecursive(rootFile, search, visited);
+
+    // Remove the root file itself — its content is already hashed separately.
+    try {
+        std::string rootAbs = std::filesystem::canonical(rootFile).string();
+        visited.erase(rootAbs);
+    } catch (...) {}
+
+    return {visited.begin(), visited.end()};
+}
+
 uint64_t hashBinaryBlob(const void* data, size_t size) {
     constexpr uint64_t kOffsetBasis = 1469598103934665603ull;
     constexpr uint64_t kPrime = 1099511628211ull;
@@ -92,11 +177,13 @@ uint64_t hashMix(uint64_t seed, const void* data, size_t size) {
     return seed;
 }
 
-// Build a stable 64-bit key from backend + shader file content + entry points.
-// Reading the file content ensures the key changes if the source file is edited.
+// Build a stable 64-bit key from backend + shader file content + entry points +
+// compile options + transitive include dependencies.
 uint64_t computeSpirvCacheKey(RhiBackendType backend,
                                const char* shaderPath,
-                               const std::vector<const char*>& entryPoints) {
+                               const char* searchPath,
+                               const std::vector<const char*>& entryPoints,
+                               const SlangCompileOptions* options) {
     constexpr uint64_t kOffsetBasis = 1469598103934665603ull;
     uint64_t h = kOffsetBasis;
 
@@ -134,6 +221,42 @@ uint64_t computeSpirvCacheKey(RhiBackendType backend,
             h = hashMix(h, ep, std::strlen(ep) + 1); // include null terminator as separator
         }
     }
+
+    // Hash transitive #include dependencies so edits to shared headers
+    // (e.g. bindless_scene.slang, visibility_constants.h) invalidate the cache.
+    {
+        auto deps = collectShaderDependencies(shaderPath, searchPath);
+        for (const auto& depPath : deps) {
+            std::ifstream depFile(depPath, std::ios::binary | std::ios::ate);
+            if (depFile.is_open()) {
+                const std::streamsize sz = depFile.tellg();
+                if (sz > 0) {
+                    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+                    depFile.seekg(0, std::ios::beg);
+                    if (depFile.read(reinterpret_cast<char*>(buf.data()), sz)) {
+                        h = hashMix(h, buf.data(), buf.size());
+                    }
+                }
+            }
+        }
+    }
+
+    // Hash compile options so that debug/release or different defines produce
+    // separate cache entries.
+    if (options) {
+        const uint8_t optFlags = (options->optimized ? 1u : 0u) |
+                                 (options->generateDebugInfo ? 2u : 0u);
+        h = hashMix(h, &optFlags, sizeof(optFlags));
+        for (const auto& [key, value] : options->defines) {
+            h = hashMix(h, key.data(), key.size());
+            const uint8_t sep = '=';
+            h = hashMix(h, &sep, 1);
+            h = hashMix(h, value.data(), value.size());
+            const uint8_t nul = 0;
+            h = hashMix(h, &nul, 1);
+        }
+    }
+
     return h;
 }
 
@@ -607,6 +730,7 @@ void logDiagnostics(const char* prefix, const char* shaderPath, slang::IBlob* di
 bool createSession(const SlangTargetConfig& targetConfig,
                    const char* shaderPath,
                    const char* searchPath,
+                   const SlangCompileOptions* options,
                    Slang::ComPtr<slang::IGlobalSession>& outGlobalSession,
                    Slang::ComPtr<slang::ISession>& outSession) {
     if (SLANG_FAILED(slang::createGlobalSession(outGlobalSession.writeRef()))) {
@@ -621,11 +745,50 @@ bool createSession(const SlangTargetConfig& targetConfig,
     slang::TargetDesc targetDesc = {};
     targetDesc.format = targetConfig.format;
     targetDesc.profile = outGlobalSession->findProfile(targetConfig.profile);
+
+    // Apply optimization level.
+    std::vector<slang::CompilerOptionEntry> compilerOptions;
+    if (options) {
+        slang::CompilerOptionEntry optLevel;
+        optLevel.name = slang::CompilerOptionName::Optimization;
+        optLevel.value.kind = slang::CompilerOptionValueKind::Int;
+        optLevel.value.intValue0 = options->optimized ? 3 : 0; // -O3 or -O0
+        compilerOptions.push_back(optLevel);
+
+        if (options->generateDebugInfo) {
+            slang::CompilerOptionEntry debugInfo;
+            debugInfo.name = slang::CompilerOptionName::DebugInformation;
+            debugInfo.value.kind = slang::CompilerOptionValueKind::Int;
+            debugInfo.value.intValue0 = static_cast<int>(SLANG_DEBUG_INFO_LEVEL_STANDARD);
+            compilerOptions.push_back(debugInfo);
+        }
+    }
+    if (!compilerOptions.empty()) {
+        targetDesc.compilerOptionEntries = compilerOptions.data();
+        targetDesc.compilerOptionEntryCount = static_cast<uint32_t>(compilerOptions.size());
+    }
+
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
     if (searchPath) {
         sessionDesc.searchPaths = &searchPath;
         sessionDesc.searchPathCount = 1;
+    }
+
+    // Apply preprocessor defines.
+    std::vector<slang::PreprocessorMacroDesc> macros;
+    if (options) {
+        macros.reserve(options->defines.size());
+        for (const auto& [key, value] : options->defines) {
+            slang::PreprocessorMacroDesc macro;
+            macro.name = key.c_str();
+            macro.value = value.c_str();
+            macros.push_back(macro);
+        }
+    }
+    if (!macros.empty()) {
+        sessionDesc.preprocessorMacros = macros.data();
+        sessionDesc.preprocessorMacroCount = static_cast<SlangInt>(macros.size());
     }
 
     if (SLANG_FAILED(outGlobalSession->createSession(sessionDesc, outSession.writeRef()))) {
@@ -707,7 +870,8 @@ std::string compileSlangComponentToSource(RhiBackendType backend,
                                           const char* shaderPath,
                                           const char* searchPath,
                                           const std::vector<const char*>& entryPoints,
-                                          const char* label) {
+                                          const char* label,
+                                          const SlangCompileOptions* options) {
     SlangTargetConfig targetConfig;
     if (!resolveSlangTarget(backend, SlangOutputKind::SourceText, targetConfig)) {
         return {};
@@ -715,7 +879,7 @@ std::string compileSlangComponentToSource(RhiBackendType backend,
 
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     Slang::ComPtr<slang::ISession> session;
-    if (!createSession(targetConfig, shaderPath, searchPath, globalSession, session)) {
+    if (!createSession(targetConfig, shaderPath, searchPath, options, globalSession, session)) {
         return {};
     }
 
@@ -744,9 +908,10 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
                                                     const char* shaderPath,
                                                     const char* searchPath,
                                                     const std::vector<const char*>& entryPoints,
-                                                    const char* label) {
+                                                    const char* label,
+                                                    const SlangCompileOptions* options) {
     // Check the on-disk SPIR-V cache before invoking Slang.
-    const uint64_t cacheKey = computeSpirvCacheKey(backend, shaderPath, entryPoints);
+    const uint64_t cacheKey = computeSpirvCacheKey(backend, shaderPath, searchPath, entryPoints, options);
     {
         std::vector<uint32_t> cached = tryLoadSpirvCache(cacheKey);
         if (!cached.empty()) {
@@ -757,9 +922,20 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
             if (tryLoadBindingLayoutCache(cacheKey, layout)) {
                 cacheBindingLayout(cached.data(), cached.size() * sizeof(uint32_t), layout);
             }
+            {
+                std::lock_guard<std::mutex> lock(g_compileStatsMutex);
+                g_compileStats.cacheHits++;
+            }
             return cached;
         }
     }
+
+    {
+        std::lock_guard<std::mutex> lock(g_compileStatsMutex);
+        g_compileStats.cacheMisses++;
+    }
+
+    const auto compileStart = std::chrono::steady_clock::now();
 
     SlangTargetConfig targetConfig;
     if (!resolveSlangTarget(backend, SlangOutputKind::SpirvBinary, targetConfig)) {
@@ -768,7 +944,7 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
 
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     Slang::ComPtr<slang::ISession> session;
-    if (!createSession(targetConfig, shaderPath, searchPath, globalSession, session)) {
+    if (!createSession(targetConfig, shaderPath, searchPath, options, globalSession, session)) {
         return {};
     }
 
@@ -808,7 +984,16 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
 
     // Persist to disk so subsequent runs skip Slang compilation.
     writeSpirvCache(cacheKey, words);
-    spdlog::debug("SlangShaderCache: cached '{}' ({} words)", shaderPath, words.size());
+
+    const auto compileEnd = std::chrono::steady_clock::now();
+    const float compileMs = std::chrono::duration<float, std::milli>(compileEnd - compileStart).count();
+    {
+        std::lock_guard<std::mutex> lock(g_compileStatsMutex);
+        g_compileStats.compileCount++;
+        g_compileStats.totalCompileTimeMs += compileMs;
+    }
+    spdlog::debug("SlangShaderCache: compiled and cached '{}' ({} words, {:.1f} ms)",
+                  shaderPath, words.size(), compileMs);
 
     return words;
 }
@@ -875,64 +1060,76 @@ void setSlangShaderCacheDir(const std::string& dir) {
 
 std::string compileSlangGraphicsSource(RhiBackendType backend,
                                        const char* shaderPath,
-                                       const char* searchPath) {
+                                       const char* searchPath,
+                                       const SlangCompileOptions* options) {
     return compileSlangComponentToSource(backend,
                                          shaderPath,
                                          searchPath,
                                          {"vertexMain", "fragmentMain"},
-                                         "graphics");
+                                         "graphics",
+                                         options);
 }
 
 std::string compileSlangMeshSource(RhiBackendType backend,
                                    const char* shaderPath,
-                                   const char* searchPath) {
+                                   const char* searchPath,
+                                   const SlangCompileOptions* options) {
     return compileSlangComponentToSource(backend,
                                          shaderPath,
                                          searchPath,
                                          {"meshMain", "fragmentMain"},
-                                         "mesh");
+                                         "mesh",
+                                         options);
 }
 
 std::string compileSlangComputeSource(RhiBackendType backend,
                                       const char* shaderPath,
                                       const char* searchPath,
-                                      const char* entryPoint) {
+                                      const char* entryPoint,
+                                      const SlangCompileOptions* options) {
     return compileSlangComponentToSource(backend,
                                          shaderPath,
                                          searchPath,
                                          {entryPoint},
-                                         "compute");
+                                         "compute",
+                                         options);
 }
 
 std::vector<uint32_t> compileSlangGraphicsBinary(RhiBackendType backend,
                                                  const char* shaderPath,
-                                                 const char* searchPath) {
+                                                 const char* searchPath,
+                                                 const SlangCompileOptions* options) {
     return compileSlangComponentToBinary(backend,
                                          shaderPath,
                                          searchPath,
                                          {"vertexMain", "fragmentMain"},
-                                         "graphics");
+                                         "graphics",
+                                         options);
 }
 
 std::vector<uint32_t> compileSlangMeshBinary(RhiBackendType backend,
                                              const char* shaderPath,
-                                             const char* searchPath) {
+                                             const char* searchPath,
+                                             const SlangCompileOptions* options) {
     return compileSlangComponentToBinary(backend,
                                          shaderPath,
                                          searchPath,
                                          {"meshMain", "fragmentMain"},
-                                         "mesh");
+                                         "mesh",
+                                         options);
 }
 
 std::vector<uint32_t> compileSlangComputeBinary(RhiBackendType backend,
                                                 const char* shaderPath,
                                                 const char* searchPath,
-                                                const char* entryPoint) {
+                                                const char* entryPoint,
+                                                const SlangCompileOptions* options) {
     return compileSlangComponentToBinary(backend,
                                          shaderPath,
                                          searchPath,
                                          {entryPoint},
-                                         "compute");
+                                         "compute",
+                                         options);
 }
 
 bool findSlangBindingLayoutForBinary(const void* data,
@@ -972,4 +1169,14 @@ std::vector<SlangDiagnosticRecord> getRecentSlangDiagnostics() {
 void clearRecentSlangDiagnostics() {
     std::scoped_lock lock(g_recentDiagnosticsMutex);
     g_recentDiagnostics.clear();
+}
+
+SlangCompileStats getSlangCompileStats() {
+    std::lock_guard<std::mutex> lock(g_compileStatsMutex);
+    return g_compileStats;
+}
+
+void resetSlangCompileStats() {
+    std::lock_guard<std::mutex> lock(g_compileStatsMutex);
+    g_compileStats = {};
 }

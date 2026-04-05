@@ -1327,11 +1327,13 @@ int main() {
 
     const RhiFeatures& features = rhi->features();
     ShaderManagerProfile shaderProfile = ShaderManagerProfile::vulkanVisibility();
+    ShaderCompileMode shaderCompileMode = ShaderCompileMode::Release;
     ShaderManager shaderManager(deviceHandle,
                                 PROJECT_SOURCE_DIR,
                                 features.meshShaders,
                                 features.meshShaders,
-                                shaderProfile);
+                                shaderProfile,
+                                shaderCompileMode);
     if (!shaderManager.buildAll()) {
         spdlog::error("Failed to build Vulkan visibility shader set");
         ImGui_ImplVulkan_Shutdown();
@@ -2301,6 +2303,19 @@ int main() {
             ImGui::Text("Redundant skips:  %u", barrierStats.redundantSkips);
             ImGui::Text("Flush calls:      %u", barrierStats.flushCalls);
             ImGui::Text("Empty flushes:    %u", barrierStats.emptyFlushCalls);
+        }
+        if (ImGui::CollapsingHeader("Shader Cache")) {
+            SlangCompileStats shaderStats = getSlangCompileStats();
+            ImGui::Text("Cache hits:       %u", shaderStats.cacheHits);
+            ImGui::Text("Cache misses:     %u", shaderStats.cacheMisses);
+            ImGui::Text("Compiles:         %u", shaderStats.compileCount);
+            ImGui::Text("Total compile:    %.1f ms", shaderStats.totalCompileTimeMs);
+            const char* modeLabel = (shaderCompileMode == ShaderCompileMode::Release)
+                                    ? "Release" : "Debug";
+            ImGui::Text("Compile mode:     %s", modeLabel);
+            if (ImGui::Button("Reset Stats")) {
+                resetSlangCompileStats();
+            }
         }
         if (useVisibilityRenderGraph) {
             ImGui::Text("Render Base: %d x %d", kRenderResolutionBaseWidth, kRenderResolutionBaseHeight);

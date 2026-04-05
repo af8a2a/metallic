@@ -21,31 +21,34 @@ constexpr const char* kSlangVisibilityPerPrimitiveIssueUrl =
 
 // On Vulkan, compile to SPIR-V binary and pack into a string for rhiCreatePipelineFromSource.
 // On Metal, compile to MSL source string directly.
-std::string compileGraphics(const char* shaderPath, const char* projectRoot) {
+std::string compileGraphics(const char* shaderPath, const char* projectRoot,
+                            const SlangCompileOptions* options) {
 #ifdef __APPLE__
-    return compileSlangGraphicsSource(kShaderBackend, shaderPath, projectRoot);
+    return compileSlangGraphicsSource(kShaderBackend, shaderPath, projectRoot, options);
 #else
-    auto spirv = compileSlangGraphicsBinary(kShaderBackend, shaderPath, projectRoot);
+    auto spirv = compileSlangGraphicsBinary(kShaderBackend, shaderPath, projectRoot, options);
     if (spirv.empty()) return {};
     return std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t));
 #endif
 }
 
-std::string compileMesh(const char* shaderPath, const char* projectRoot) {
+std::string compileMesh(const char* shaderPath, const char* projectRoot,
+                        const SlangCompileOptions* options) {
 #ifdef __APPLE__
-    return compileSlangMeshSource(kShaderBackend, shaderPath, projectRoot);
+    return compileSlangMeshSource(kShaderBackend, shaderPath, projectRoot, options);
 #else
-    auto spirv = compileSlangMeshBinary(kShaderBackend, shaderPath, projectRoot);
+    auto spirv = compileSlangMeshBinary(kShaderBackend, shaderPath, projectRoot, options);
     if (spirv.empty()) return {};
     return std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t));
 #endif
 }
 
-std::string compileCompute(const char* shaderPath, const char* projectRoot, const char* entryPoint) {
+std::string compileCompute(const char* shaderPath, const char* projectRoot,
+                           const char* entryPoint, const SlangCompileOptions* options) {
 #ifdef __APPLE__
-    return compileSlangComputeSource(kShaderBackend, shaderPath, projectRoot, entryPoint);
+    return compileSlangComputeSource(kShaderBackend, shaderPath, projectRoot, entryPoint, options);
 #else
-    auto spirv = compileSlangComputeBinary(kShaderBackend, shaderPath, projectRoot, entryPoint);
+    auto spirv = compileSlangComputeBinary(kShaderBackend, shaderPath, projectRoot, entryPoint, options);
     if (spirv.empty()) return {};
     return std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t));
 #endif
@@ -73,12 +76,14 @@ ShaderManager::ShaderManager(RhiDeviceHandle device,
                              const char* projectRoot,
                              bool supportsMeshShaders,
                              bool validateVisibilityPipelines,
-                             ShaderManagerProfile profile)
+                             ShaderManagerProfile profile,
+                             ShaderCompileMode compileMode)
     : m_device(device)
     , m_projectRoot(projectRoot)
     , m_supportsMeshShaders(supportsMeshShaders)
     , m_validateVisibilityPipelines(validateVisibilityPipelines)
     , m_profile(profile)
+    , m_compileMode(compileMode)
     , m_rtCtx(new PipelineRuntimeContext{})
 {}
 
@@ -105,6 +110,18 @@ ShaderManager::~ShaderManager() {
 
 PipelineRuntimeContext& ShaderManager::runtimeContext() { return *m_rtCtx; }
 bool ShaderManager::hasSkyPipeline() const { return m_skyPipeline.nativeHandle() != nullptr; }
+
+void ShaderManager::setGlobalDefines(const std::vector<std::pair<std::string, std::string>>& defines) {
+    m_globalDefines = defines;
+}
+
+void ShaderManager::setCompileMode(ShaderCompileMode mode) {
+    m_compileMode = mode;
+}
+
+ShaderCompileMode ShaderManager::compileMode() const {
+    return m_compileMode;
+}
 
 void ShaderManager::importTexture(const std::string& name, const RhiTexture& texture) {
     m_rtCtx->importedTexturesRhi[name].setNativeHandle(
@@ -424,7 +441,12 @@ bool ShaderManager::buildAll() {
 }
 
 RhiGraphicsPipelineHandle ShaderManager::reloadVertexShader(const char* shaderPath, std::string* errorMessage) {
-    std::string source = compileGraphics(shaderPath, m_projectRoot.c_str());
+    SlangCompileOptions opts;
+    opts.optimized = (m_compileMode == ShaderCompileMode::Release);
+    opts.generateDebugInfo = (m_compileMode == ShaderCompileMode::Debug);
+    opts.defines = m_globalDefines;
+
+    std::string source = compileGraphics(shaderPath, m_projectRoot.c_str(), &opts);
     if (source.empty()) {
         if (errorMessage) {
             *errorMessage = "Slang vertex shader compilation returned empty source";
@@ -450,7 +472,12 @@ RhiGraphicsPipelineHandle ShaderManager::reloadVertexShader(const char* shaderPa
 RhiGraphicsPipelineHandle ShaderManager::reloadFullscreenShader(const char* shaderPath,
                                                                 RhiFormat colorFormat,
                                                                 std::string* errorMessage) {
-    std::string source = compileGraphics(shaderPath, m_projectRoot.c_str());
+    SlangCompileOptions opts;
+    opts.optimized = (m_compileMode == ShaderCompileMode::Release);
+    opts.generateDebugInfo = (m_compileMode == ShaderCompileMode::Debug);
+    opts.defines = m_globalDefines;
+
+    std::string source = compileGraphics(shaderPath, m_projectRoot.c_str(), &opts);
     if (source.empty()) {
         if (errorMessage) {
             *errorMessage = "Slang fullscreen shader compilation returned empty source";
@@ -476,7 +503,12 @@ RhiGraphicsPipelineHandle ShaderManager::reloadMeshShader(const char* shaderPath
                                                           RhiFormat colorFormat,
                                                           RhiFormat depthFormat,
                                                           std::string* errorMessage) {
-    std::string source = compileMesh(shaderPath, m_projectRoot.c_str());
+    SlangCompileOptions opts;
+    opts.optimized = (m_compileMode == ShaderCompileMode::Release);
+    opts.generateDebugInfo = (m_compileMode == ShaderCompileMode::Debug);
+    opts.defines = m_globalDefines;
+
+    std::string source = compileMesh(shaderPath, m_projectRoot.c_str(), &opts);
     if (source.empty()) {
         if (errorMessage) {
             *errorMessage = "Slang mesh shader compilation returned empty source";
@@ -506,7 +538,12 @@ RhiComputePipelineHandle ShaderManager::reloadComputeShader(const char* shaderPa
                                                             const char* entryPoint,
                                                             std::string (*patchFn)(RhiBackendType, const std::string&),
                                                             std::string* errorMessage) {
-    std::string source = compileCompute(shaderPath, m_projectRoot.c_str(), entryPoint);
+    SlangCompileOptions opts;
+    opts.optimized = (m_compileMode == ShaderCompileMode::Release);
+    opts.generateDebugInfo = (m_compileMode == ShaderCompileMode::Debug);
+    opts.defines = m_globalDefines;
+
+    std::string source = compileCompute(shaderPath, m_projectRoot.c_str(), entryPoint, &opts);
     if (source.empty()) {
         if (errorMessage) {
             *errorMessage = "Slang compute shader compilation returned empty source";

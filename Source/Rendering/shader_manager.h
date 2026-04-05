@@ -2,10 +2,17 @@
 
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "rhi_backend.h"
 
 struct PipelineRuntimeContext;
+struct SlangCompileOptions;
+
+enum class ShaderCompileMode {
+    Release,  // optimized=true,  generateDebugInfo=false
+    Debug,    // optimized=false, generateDebugInfo=true
+};
 
 struct ShaderManagerProfile {
     bool forwardVertex = true;
@@ -67,7 +74,8 @@ public:
                   const char* projectRoot,
                   bool supportsMeshShaders = true,
                   bool validateVisibilityPipelines = true,
-                  ShaderManagerProfile profile = ShaderManagerProfile::full());
+                  ShaderManagerProfile profile = ShaderManagerProfile::full(),
+                  ShaderCompileMode compileMode = ShaderCompileMode::Release);
     ~ShaderManager();
 
     // Initial creation of all pipelines + samplers. Returns false on fatal failure.
@@ -80,6 +88,13 @@ public:
     void importTexture(const std::string& name, const RhiTexture& texture);
     void importSampler(const std::string& name, const RhiSampler& sampler);
 
+    // Engine-wide preprocessor defines applied to all shader compilations.
+    void setGlobalDefines(const std::vector<std::pair<std::string, std::string>>& defines);
+
+    // Change compile mode (takes effect on next buildAll/reloadAll).
+    void setCompileMode(ShaderCompileMode mode);
+    ShaderCompileMode compileMode() const;
+
     PipelineRuntimeContext& runtimeContext();
     bool hasSkyPipeline() const;
 
@@ -89,6 +104,8 @@ private:
     bool m_supportsMeshShaders = true;
     bool m_validateVisibilityPipelines = true;
     ShaderManagerProfile m_profile;
+    ShaderCompileMode m_compileMode = ShaderCompileMode::Release;
+    std::vector<std::pair<std::string, std::string>> m_globalDefines;
     PipelineRuntimeContext* m_rtCtx;
     RhiVertexDescriptorHandle m_vertexDesc;
 
