@@ -85,6 +85,11 @@ public:
     void prepareTextureForStorage(const RhiTexture* texture) override;
     void prepareTextureForTransferSrc(const RhiTexture* texture) override;
     void prepareTextureForTransferDst(const RhiTexture* texture) override;
+    void prepareBufferForStorageRead(const RhiBuffer* buffer) override;
+    void prepareBufferForStorageWrite(const RhiBuffer* buffer) override;
+    void prepareBufferForIndirect(const RhiBuffer* buffer) override;
+    void prepareBufferForIndexInput(const RhiBuffer* buffer) override;
+    void prepareBufferForVertexInput(const RhiBuffer* buffer) override;
     void flushBarriers() override;
     void setNextPassQueueHint(RhiQueueHint hint) override;
     void transitionTexture(const RhiTexture* texture, VkImageLayout layout);

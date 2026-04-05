@@ -68,16 +68,19 @@ VkPipelineStageFlags2 shaderStageMaskForBindPoint(VkPipelineBindPoint bindPoint)
     }
 }
 
-VkAccessFlags2 bufferAccessMaskForDescriptorType(VkDescriptorType descriptorType) {
+VkAccessFlags2 bufferAccessMaskForDescriptorType(VkDescriptorType descriptorType,
+                                                 bool preferReadOnlyStorage = false) {
     switch (descriptorType) {
     case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
     case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
         return VK_ACCESS_2_UNIFORM_READ_BIT;
     case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
     case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-        // Reflection does not expose read-only storage usage here, so be conservative.
-        return VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        if (preferReadOnlyStorage) {
+            return VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        }
+        // Reflection does not expose read-only storage usage here, so compute remains conservative.
+        return VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
     default:
         return VK_ACCESS_2_NONE;
     }
@@ -410,7 +413,7 @@ private:
                                           binding.buffer,
                                           binding.offset,
                                           shaderStage,
-                                          bufferAccessMaskForDescriptorType(location.descriptorType));
+                                          bufferAccessMaskForDescriptorType(location.descriptorType, true));
             }
         }
 
@@ -431,9 +434,9 @@ private:
         transitionPendingTextures();
         transitionPendingBuffers(bindPoint);
 
-        // Batch-flush all accumulated barriers before binding descriptors and drawing.
+        // Dynamic rendering only permits memory barriers in-pass.
         if (m_stateTracker) {
-            m_stateTracker->flushBarriers(m_commandBuffer);
+            m_stateTracker->flushRenderPassBarriers(m_commandBuffer);
         }
 
         if (m_descriptorManager && m_boundPipeline) {
@@ -1007,6 +1010,67 @@ void VulkanCommandBuffer::prepareTextureForTransferDst(const RhiTexture* texture
     m_stateTracker->requireImageState(resource->image,
                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                       imageAspectMask(resource));
+}
+
+void VulkanCommandBuffer::prepareBufferForStorageRead(const RhiBuffer* buffer) {
+    if (!buffer || !m_stateTracker) {
+        return;
+    }
+
+    requireTrackedBufferState(m_stateTracker,
+                              getVulkanBufferHandle(buffer),
+                              0,
+                              VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+                              VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+}
+
+void VulkanCommandBuffer::prepareBufferForStorageWrite(const RhiBuffer* buffer) {
+    if (!buffer || !m_stateTracker) {
+        return;
+    }
+
+    requireTrackedBufferState(m_stateTracker,
+                              getVulkanBufferHandle(buffer),
+                              0,
+                              VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+                              VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+}
+
+void VulkanCommandBuffer::prepareBufferForIndirect(const RhiBuffer* buffer) {
+    if (!buffer || !m_stateTracker) {
+        return;
+    }
+
+    requireTrackedBufferState(m_stateTracker,
+                              getVulkanBufferHandle(buffer),
+                              0,
+                              VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                              VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+}
+
+void VulkanCommandBuffer::prepareBufferForIndexInput(const RhiBuffer* buffer) {
+    if (!buffer || !m_stateTracker) {
+        return;
+    }
+
+    requireTrackedBufferState(m_stateTracker,
+                              getVulkanBufferHandle(buffer),
+                              0,
+                              VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+                              VK_ACCESS_2_INDEX_READ_BIT);
+}
+
+void VulkanCommandBuffer::prepareBufferForVertexInput(const RhiBuffer* buffer) {
+    if (!buffer || !m_stateTracker) {
+        return;
+    }
+
+    requireTrackedBufferState(m_stateTracker,
+                              getVulkanBufferHandle(buffer),
+                              0,
+                              VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
+                              VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
 }
 
 void VulkanCommandBuffer::flushBarriers() {

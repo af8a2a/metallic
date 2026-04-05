@@ -279,8 +279,15 @@ public:
 
         BufferState current;
         auto it = m_bufferStates.find(buffer);
-        if (it != m_bufferStates.end()) {
+        const bool hasTrackedState = it != m_bufferStates.end();
+        if (hasTrackedState) {
             current = it->second;
+        } else {
+            // The tracker is cleared at frame start. Treat the first observed use of an
+            // externally managed buffer as already synchronized and just seed its state.
+            m_bufferStates[buffer] = {dstStage, dstAccess, dstQueueFamily};
+            ++m_stats.redundantSkips;
+            return;
         }
 
         const bool queueOwnershipTransfer =
@@ -338,6 +345,84 @@ public:
         barrier.dstAccessMask = dstAccess;
         m_pendingMemoryBarriers.push_back(barrier);
         ++m_stats.memoryBarriers;
+    }
+
+    // Dynamic rendering only permits memory barriers. Collapse any pending same-queue
+    // buffer barriers into one conservative memory barrier and emit it in-place.
+    void flushRenderPassBarriers(VkCommandBuffer cmd) {
+        const bool hasImages = !m_pendingImageBarriers.empty();
+        const bool hasBuffers = !m_pendingBufferBarriers.empty();
+        const bool hasMemory = !m_pendingMemoryBarriers.empty();
+        const bool hasWork = hasImages || hasBuffers || hasMemory;
+
+        if (!hasWork) {
+            ++m_stats.emptyFlushCalls;
+            return;
+        }
+
+        if (hasImages) {
+            // Render passes must declare image transitions before vkCmdBeginRendering.
+            flushBarriers(cmd);
+            return;
+        }
+
+        VkMemoryBarrier2 mergedBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        bool mergedBarrierValid = false;
+
+        auto mergeBarrier = [&](VkPipelineStageFlags2 srcStage,
+                                VkAccessFlags2 srcAccess,
+                                VkPipelineStageFlags2 dstStage,
+                                VkAccessFlags2 dstAccess) {
+            if (!mergedBarrierValid) {
+                mergedBarrier.srcStageMask = srcStage;
+                mergedBarrier.srcAccessMask = srcAccess;
+                mergedBarrier.dstStageMask = dstStage;
+                mergedBarrier.dstAccessMask = dstAccess;
+                mergedBarrierValid = true;
+                return;
+            }
+
+            mergedBarrier.srcStageMask |= srcStage;
+            mergedBarrier.srcAccessMask |= srcAccess;
+            mergedBarrier.dstStageMask |= dstStage;
+            mergedBarrier.dstAccessMask |= dstAccess;
+        };
+
+        for (const auto& barrier : m_pendingMemoryBarriers) {
+            mergeBarrier(barrier.srcStageMask,
+                         barrier.srcAccessMask,
+                         barrier.dstStageMask,
+                         barrier.dstAccessMask);
+        }
+
+        for (const auto& barrier : m_pendingBufferBarriers) {
+            if (barrier.srcQueueFamilyIndex != VK_QUEUE_FAMILY_IGNORED ||
+                barrier.dstQueueFamilyIndex != VK_QUEUE_FAMILY_IGNORED) {
+                flushBarriers(cmd);
+                return;
+            }
+
+            mergeBarrier(barrier.srcStageMask,
+                         barrier.srcAccessMask,
+                         barrier.dstStageMask,
+                         barrier.dstAccessMask);
+        }
+
+        if (!mergedBarrierValid) {
+            ++m_stats.emptyFlushCalls;
+            return;
+        }
+
+        VkDependencyInfo depInfo{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        depInfo.memoryBarrierCount = 1;
+        depInfo.pMemoryBarriers = &mergedBarrier;
+
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+
+        m_pendingBufferBarriers.clear();
+        m_pendingMemoryBarriers.clear();
+
+        ++m_stats.flushCalls;
     }
 
     // -----------------------------------------------------------------------

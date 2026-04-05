@@ -34,6 +34,7 @@ public:
     virtual FGPassType passType() const = 0;
     virtual const char* name() const = 0;
     virtual void setup(FGBuilder& builder) = 0;
+    virtual void prepareResources(RhiCommandBuffer&) {}
     virtual void executeRender(RhiRenderCommandEncoder&) {}
     virtual void executeCompute(RhiComputeCommandEncoder&) {}
     virtual void executeBlit(RhiBlitCommandEncoder&) {}

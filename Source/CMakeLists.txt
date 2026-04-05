@@ -22,8 +22,8 @@ if(APPLE)
         Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
         Rendering/pass_registrations.cpp
-        Rendering/Helpers/slang_compiler.cpp
-        Rendering/shader_manager.cpp
+        Helpers/slang_compiler.cpp
+        Helpers/shader_manager.cpp
         Rendering/scene_context.cpp
         RHI/Helpers/rhi_resource_utils.cpp
         RHI/Helpers/rhi_shader_utils.cpp
@@ -35,6 +35,7 @@ if(APPLE)
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Metal"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
         "${CMAKE_CURRENT_SOURCE_DIR}/Asset"
         "${CMAKE_CURRENT_SOURCE_DIR}/Scene"
@@ -79,9 +80,9 @@ elseif(WIN32)
         Rendering/pass_registrations_vulkan.cpp
         Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
-        Rendering/Helpers/slang_compiler.cpp
-        Rendering/shader_manager.cpp
-        Rendering/streamline_context.cpp
+        Helpers/slang_compiler.cpp
+        Helpers/shader_manager.cpp
+        Helpers/streamline_context.cpp
         RHI/rhi_backend.cpp
         RHI/Helpers/rhi_raytracing_utils.cpp
         RHI/Helpers/rhi_resource_utils.cpp
@@ -101,6 +102,7 @@ elseif(WIN32)
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Vulkan"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Vulkan/Helpers"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Asset"
         "${CMAKE_CURRENT_SOURCE_DIR}/PipelineEditor"
         "${CMAKE_CURRENT_SOURCE_DIR}/Scene"

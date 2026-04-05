@@ -564,6 +564,21 @@ public:
     // Prepare a texture for use as a transfer destination.
     virtual void prepareTextureForTransferDst(const RhiTexture* /*texture*/) {}
 
+    // Prepare a buffer for read-only storage access in a subsequent pass.
+    virtual void prepareBufferForStorageRead(const RhiBuffer* /*buffer*/) {}
+
+    // Prepare a buffer for writable storage access in a subsequent pass.
+    virtual void prepareBufferForStorageWrite(const RhiBuffer* /*buffer*/) {}
+
+    // Prepare a buffer for indirect draw/dispatch argument reads.
+    virtual void prepareBufferForIndirect(const RhiBuffer* /*buffer*/) {}
+
+    // Prepare a buffer for index reads.
+    virtual void prepareBufferForIndexInput(const RhiBuffer* /*buffer*/) {}
+
+    // Prepare a buffer for vertex attribute reads.
+    virtual void prepareBufferForVertexInput(const RhiBuffer* /*buffer*/) {}
+
     // Flush all accumulated pending barriers as a single batched pipeline barrier.
     // No-op on backends that insert barriers eagerly (e.g. Metal).
     virtual void flushBarriers() {}

@@ -62,6 +62,46 @@ public:
                                            m_ctx.depthClearValue);
     }
 
+    void prepareResources(RhiCommandBuffer& commandBuffer) override {
+        auto prepareSharedBuffers = [&](const RhiBuffer* visibleMeshletBuffer,
+                                        const RhiBuffer* instanceDataBuffer) {
+            commandBuffer.prepareBufferForStorageRead(&m_ctx.sceneMesh.positionBuffer);
+            commandBuffer.prepareBufferForStorageRead(&m_ctx.sceneMesh.normalBuffer);
+            commandBuffer.prepareBufferForStorageRead(&m_ctx.meshletData.meshletBuffer);
+            commandBuffer.prepareBufferForStorageRead(&m_ctx.meshletData.meshletVertices);
+            commandBuffer.prepareBufferForStorageRead(&m_ctx.meshletData.meshletTriangles);
+            commandBuffer.prepareBufferForStorageRead(&m_ctx.meshletData.boundsBuffer);
+            commandBuffer.prepareBufferForStorageRead(&m_ctx.sceneMesh.uvBuffer);
+            commandBuffer.prepareBufferForStorageRead(&m_ctx.meshletData.materialIDs);
+            commandBuffer.prepareBufferForStorageRead(&m_ctx.materials.materialBuffer);
+
+            if (visibleMeshletBuffer) {
+                commandBuffer.prepareBufferForStorageRead(visibleMeshletBuffer);
+            }
+            if (instanceDataBuffer) {
+                commandBuffer.prepareBufferForStorageRead(instanceDataBuffer);
+            }
+        };
+
+        if (!m_frameContext) {
+            prepareSharedBuffers(nullptr, nullptr);
+            return;
+        }
+
+        const bool useGPUPath =
+            m_frameContext->gpuDrivenCulling &&
+            m_frameContext->gpuVisibleMeshletBufferRhi &&
+            m_frameContext->gpuCounterBufferRhi &&
+            m_frameContext->gpuInstanceDataBufferRhi;
+
+        prepareSharedBuffers(useGPUPath ? m_frameContext->gpuVisibleMeshletBufferRhi : nullptr,
+                             useGPUPath ? m_frameContext->gpuInstanceDataBufferRhi : nullptr);
+
+        if (useGPUPath) {
+            commandBuffer.prepareBufferForIndirect(m_frameContext->gpuCounterBufferRhi);
+        }
+    }
+
     void executeRender(RhiRenderCommandEncoder& encoder) override {
         ZoneScopedN("VisibilityPass");
         MICROPROFILE_SCOPEI("RenderPass", "VisibilityPass", 0xffff8800);

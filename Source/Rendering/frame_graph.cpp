@@ -353,6 +353,9 @@ void FrameGraph::addPass(std::unique_ptr<RenderPass> pass) {
             node.executeBlit = [passPtr](RhiBlitCommandEncoder& encoder) { passPtr->executeBlit(encoder); };
             break;
     }
+    node.prepareResources = [passPtr](RhiCommandBuffer& commandBuffer) {
+        passPtr->prepareResources(commandBuffer);
+    };
 }
 
 void FrameGraph::compile() {
@@ -539,6 +542,10 @@ void FrameGraph::execute(RhiCommandBuffer& commandBuffer, RhiFrameGraphBackend& 
                 commandBuffer.prepareTextureForTransferDst(texture);
             }
             // ColorAttachment/DepthAttachment writes are handled by beginRenderPass below
+        }
+
+        if (pass.prepareResources) {
+            pass.prepareResources(commandBuffer);
         }
 
         commandBuffer.flushBarriers();

@@ -102,6 +102,7 @@ struct FGPassNode {
     std::function<void(RhiRenderCommandEncoder&)> executeRender;
     std::function<void(RhiComputeCommandEncoder&)> executeCompute;
     std::function<void(RhiBlitCommandEncoder&)> executeBlit;
+    std::function<void(RhiCommandBuffer&)> prepareResources;
 };
 
 class FrameGraph;
