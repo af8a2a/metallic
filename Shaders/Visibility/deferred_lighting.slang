@@ -1,10 +1,12 @@
 // Shared visibility bit packing constants
 #include "../../Source/Rendering/visibility_constants.h"
+#include "../Shared/gpu_driven_helpers.slang"
 #include "../Shared/bindless_scene.slang"
 
 struct LightingUniforms {
-    float4x4 mvp;
-    float4x4 modelView;
+    float4x4 viewProj;
+    float4x4 prevViewProj;
+    float4x4 viewMatrix;
     float4   lightDir;
     float4   lightColorIntensity;
     float4x4 invProj;
@@ -37,12 +39,6 @@ struct GPUMaterial {
     float  roughnessFactor;
     float  alphaCutoff;
     float  _pad;
-};
-
-struct SceneInstanceTransform {
-    float4x4 mvp;
-    float4x4 modelView;
-    float4x4 prevMvp;
 };
 
 static const uint INVALID_TEX = 0xFFFFFFFF;
@@ -96,7 +92,7 @@ StructuredBuffer<uint>           meshletTriangles;        // buffer(5)
 StructuredBuffer<float>          uvs;                     // buffer(6)
 StructuredBuffer<uint>           meshletMaterialIDs;      // buffer(7)
 StructuredBuffer<GPUMaterial>    materials;                // buffer(8)
-StructuredBuffer<SceneInstanceTransform> instanceTransforms; // buffer(9)
+StructuredBuffer<InstanceData>   instanceData;            // buffer(9)
 // Texture bindings
 Texture2D<uint>              visibilityBuffer;            // texture(0)
 Texture2D<float>             depthBuffer;                 // texture(1)
@@ -105,8 +101,9 @@ Texture2D<float>             shadowMap;                  // texture(3)
 Texture2D<float4>            skyTexture;                 // texture(4)
 RWTexture2D<float2>          motionVectors;              // texture(5)
 
-float3 projectVertex(float4x4 mvp, float3 pos) {
-    float4 clip = mul(mvp, float4(pos, 1.0));
+float3 projectVertex(float4x4 viewProj, float4x4 worldMatrix, float3 pos) {
+    float4 worldPos = mul(worldMatrix, float4(pos, 1.0));
+    float4 clip = mul(viewProj, worldPos);
     float3 ndc = clip.xyz / clip.w;
     float2 screen;
     screen.x = (ndc.x * 0.5 + 0.5) * float(lightUniforms.screenWidth);
@@ -164,7 +161,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    SceneInstanceTransform instance = instanceTransforms[instanceID];
+    InstanceData instance = instanceData[instanceID];
 
     // Fetch triangle vertex indices
     GPUMeshlet meshlet = meshlets[meshletID];
@@ -188,9 +185,9 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint globalV1 = meshletVertices[meshlet.vertex_offset + localV1];
     uint globalV2 = meshletVertices[meshlet.vertex_offset + localV2];
     // Project vertices to screen space
-    float3 s0 = projectVertex(instance.mvp, loadPosition(globalV0));
-    float3 s1 = projectVertex(instance.mvp, loadPosition(globalV1));
-    float3 s2 = projectVertex(instance.mvp, loadPosition(globalV2));
+    float3 s0 = projectVertex(lightUniforms.viewProj, instance.worldMatrix, loadPosition(globalV0));
+    float3 s1 = projectVertex(lightUniforms.viewProj, instance.worldMatrix, loadPosition(globalV1));
+    float3 s2 = projectVertex(lightUniforms.viewProj, instance.worldMatrix, loadPosition(globalV2));
 
     // Compute screen-space barycentrics
     float2 p = float2(pixel) + 0.5;
@@ -245,12 +242,9 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float3 n2 = loadNormal(globalV2);
     float3 objNormal = normalize((b0 * w0 * n0 + b1 * w1 * n1 + b2 * w2 * n2) * W);
 
-    // Transform normal to view space
-    float3 viewNormal;
-    viewNormal.x = dot(instance.modelView[0].xyz, objNormal);
-    viewNormal.y = dot(instance.modelView[1].xyz, objNormal);
-    viewNormal.z = dot(instance.modelView[2].xyz, objNormal);
-    viewNormal = normalize(viewNormal);
+    // Match the existing model-view normal path by applying the same matrix chain.
+    float3 worldNormal = normalize(mul((float3x3)instance.worldMatrix, objNormal));
+    float3 viewNormal = normalize(mul((float3x3)lightUniforms.viewMatrix, worldNormal));
     // Reconstruct view-space position from depth
     float depth = depthBuffer[pixel];
     float2 ndc;
@@ -325,7 +319,8 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         float2 pixelCenter = float2(pixel) + 0.5;
         float2 currentUV = pixelCenter / float2(lightUniforms.screenWidth, lightUniforms.screenHeight);
 
-        float4 prevClip = mul(instance.prevMvp, float4(objPos, 1.0));
+        float4 prevWorldPos = mul(instance.prevWorldMatrix, float4(objPos, 1.0));
+        float4 prevClip = mul(lightUniforms.prevViewProj, prevWorldPos);
         if (abs(prevClip.w) > 1e-6) {
             float2 prevNDC = prevClip.xy / prevClip.w;
             float2 prevUV = float2(prevNDC.x * 0.5 + 0.5, 0.5 - prevNDC.y * 0.5);

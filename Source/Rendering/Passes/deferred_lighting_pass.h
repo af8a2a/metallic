@@ -56,16 +56,17 @@ public:
 
         auto pipeIt = m_runtimeContext->computePipelinesRhi.find("DeferredLightingPass");
         if (pipeIt == m_runtimeContext->computePipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
+        if (!m_ctx.gpuScene.instanceBuffer.nativeHandle()) return;
 
-        // Build LightingUniforms from FrameContext raw data
-        float4x4 modelView = m_frameContext->view; // model is identity
-        float4x4 mvp = m_frameContext->proj * modelView;
+        // Build LightingUniforms from shared frame and scene state.
         float4x4 invProj = m_frameContext->proj;
         invProj.Invert();
 
         LightingUniforms lightUniforms;
-        lightUniforms.mvp = transpose(mvp);
-        lightUniforms.modelView = transpose(modelView);
+        lightUniforms.viewProj = transpose(m_frameContext->proj * m_frameContext->view);
+        lightUniforms.prevViewProj =
+            transpose(m_frameContext->prevProj * m_frameContext->prevView);
+        lightUniforms.viewMatrix = transpose(m_frameContext->view);
         lightUniforms.lightDir = m_frameContext->viewLightDir;
         lightUniforms.lightColorIntensity = m_frameContext->lightColorIntensity;
         lightUniforms.invProj = transpose(invProj);
@@ -74,7 +75,7 @@ public:
         lightUniforms.meshletCount = m_frameContext->meshletCount;
         lightUniforms.materialCount = m_frameContext->materialCount;
         lightUniforms.textureCount = m_frameContext->textureCount;
-        lightUniforms.instanceCount = m_frameContext->visibilityInstanceCount;
+        lightUniforms.instanceCount = m_ctx.gpuScene.instanceCount;
         lightUniforms.shadowEnabled = m_frameContext->enableRTShadows ? 1 : 0;
         lightUniforms.motionVectorIntensity = m_motionVectorIntensity;
         lightUniforms.pad2 = 0;
@@ -89,8 +90,8 @@ public:
         encoder.setBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 6);
         encoder.setBuffer(&m_ctx.meshletData.materialIDs, 0, 7);
         encoder.setBuffer(&m_ctx.materials.materialBuffer, 0, 8);
-        if (m_frameContext->instanceTransformBufferRhi) {
-            encoder.setBuffer(m_frameContext->instanceTransformBufferRhi, 0, 9);
+        if (m_ctx.gpuScene.instanceBuffer.nativeHandle()) {
+            encoder.setBuffer(&m_ctx.gpuScene.instanceBuffer, 0, 9);
         }
         encoder.setTexture(m_frameGraph->getTexture(m_visRead), 0);
         encoder.setTexture(m_frameGraph->getTexture(m_depthRead), 1);

@@ -2,7 +2,13 @@
 
 #include <cstdint>
 
-#if defined(METALLIC_HAS_NVTX) && METALLIC_HAS_NVTX
+#if defined(METALLIC_HAS_NVTX) && METALLIC_HAS_NVTX && __has_include(<nvtx3/nvToolsExt.h>)
+#define METALLIC_ENABLE_NVTX 1
+#else
+#define METALLIC_ENABLE_NVTX 0
+#endif
+
+#if METALLIC_ENABLE_NVTX
 #include <mutex>
 #include <nvtx3/nvToolsExt.h>
 #endif
@@ -10,7 +16,7 @@
 namespace metallic {
 
 inline constexpr bool kNsightMarkersAvailable =
-#if defined(METALLIC_HAS_NVTX) && METALLIC_HAS_NVTX
+#if METALLIC_ENABLE_NVTX
     true;
 #else
     false;
@@ -20,7 +26,7 @@ inline bool nsightMarkersAvailable() {
     return kNsightMarkersAvailable;
 }
 
-#if defined(METALLIC_HAS_NVTX) && METALLIC_HAS_NVTX
+#if METALLIC_ENABLE_NVTX
 
 inline void initializeNsightMarkers() {
     static std::once_flag once;
@@ -70,3 +76,5 @@ public:
 #endif
 
 } // namespace metallic
+
+#undef METALLIC_ENABLE_NVTX

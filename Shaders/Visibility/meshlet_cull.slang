@@ -31,6 +31,7 @@ struct GPUMeshletBounds {
 
 ConstantBuffer<CullUniforms>        cullUniforms;    // buffer(0)
 StructuredBuffer<InstanceData>      instances;       // buffer(GPU_DRIVEN_CULL_INSTANCE_DATA_BINDING)
+StructuredBuffer<GeometryData>      geometries;      // buffer(GPU_DRIVEN_CULL_GEOMETRY_DATA_BINDING)
 StructuredBuffer<GPUMeshletBounds>  meshletBounds;   // buffer(GPU_DRIVEN_CULL_BOUNDS_BINDING)
 RWStructuredBuffer<MeshletDrawInfo> visibleMeshlets; // buffer(GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING)
 RWByteAddressBuffer                 counters;        // buffer(GPU_DRIVEN_CULL_COUNTER_BINDING)
@@ -62,8 +63,16 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
                                                               cullUniforms.instanceCount,
                                                               flatID);
     InstanceData inst = instances[instIdx];
+    if ((inst.visibilityFlags & kGpuSceneInstanceVisible) == 0u) {
+        return;
+    }
+
+    GeometryData geometry = geometries[inst.geometryIndex];
     uint localMeshletIdx = flatID - inst.dispatchStart;
-    uint globalMeshletID = inst.meshletStart + localMeshletIdx;
+    if (localMeshletIdx >= geometry.meshletCount) {
+        return;
+    }
+    uint globalMeshletID = geometry.meshletStart + localMeshletIdx;
 
     GPUMeshletBounds b = meshletBounds[globalMeshletID];
     float3 centerOS = b.center_radius.xyz;
@@ -205,7 +214,7 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
     if (!culled) {
         uint slot = gpuDrivenAppendWorkItemSlot(counters);
         MeshletDrawInfo info;
-        info.instanceID = inst.instanceID;
+        info.instanceID = instIdx;
         info.globalMeshletID = globalMeshletID;
         visibleMeshlets[slot] = info;
     }

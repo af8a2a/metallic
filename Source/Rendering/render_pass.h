@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frame_graph.h"
+#include "gpu_scene.h"
 #include "mesh_loader.h"
 #include "meshlet_builder.h"
 #include "material_loader.h"
@@ -21,6 +22,8 @@ struct RenderContext {
     const MeshletData& meshletData;
     const LoadedMaterials& materials;
     const SceneGraph& sceneGraph;
+    const GpuSceneTables& gpuScene;
+    const ClusterLODData& clusterLodData;
     const RaytracedShadowResources& shadowResources;
     RhiDepthStencilStateHandle depthState;
     RhiTextureHandle shadowDummyTex;

@@ -86,9 +86,6 @@ struct FrameContext {
     std::vector<uint32_t> visibleIndexNodes;
     uint32_t visibilityInstanceCount = 0;
 
-    // Instance transform buffer (for visibility buffer mode)
-    RhiBuffer* instanceTransformBufferRhi = nullptr;
-
     // Depth clear value
     double depthClearValue = 1.0;
 

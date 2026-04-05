@@ -19,6 +19,7 @@ if(APPLE)
         Scene/scene_graph_ui.cpp
         Rendering/input.cpp
         Rendering/frame_graph.cpp
+        Rendering/gpu_scene.cpp
         Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
         Rendering/pass_registrations.cpp
@@ -76,6 +77,7 @@ elseif(WIN32)
         PipelineEditor/pipeline_builder.cpp
         Scene/scene_graph.cpp
         Rendering/frame_graph.cpp
+        Rendering/gpu_scene.cpp
         Rendering/input.cpp
         Rendering/pass_registrations_vulkan.cpp
         Rendering/raytraced_shadows.cpp

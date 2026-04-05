@@ -157,6 +157,7 @@ SceneContext::~SceneContext() {
     rhiReleaseHandle(m_shadowDummyTex);
     rhiReleaseHandle(m_skyFallbackTex);
     m_atmosphereTextures.release();
+    releaseGpuSceneTables(m_gpuScene);
     releaseClusterLOD(m_clusterLod);
     rhiReleaseHandle(m_meshlets.meshletBuffer);
     rhiReleaseHandle(m_meshlets.meshletVertices);
@@ -181,6 +182,8 @@ bool SceneContext::loadAll(const char* gltfPath) {
 
     releaseClusterLOD(m_clusterLod);
     m_clusterLod = ClusterLODData{};
+    releaseGpuSceneTables(m_gpuScene);
+    m_gpuScene = GpuSceneTables{};
 
     if (!loadGLTFMesh(m_device, gltfPath, m_mesh)) {
         spdlog::error("Failed to load scene mesh");
@@ -213,6 +216,11 @@ bool SceneContext::loadAll(const char* gltfPath) {
         return false;
     }
     m_sceneGraph.updateTransforms();
+    if (!buildGpuSceneTables(m_device, m_mesh, m_meshlets, &m_clusterLod, m_sceneGraph, m_gpuScene)) {
+        spdlog::warn("Failed to build shared GPU scene tables; visibility passes will fall back");
+        releaseGpuSceneTables(m_gpuScene);
+        m_gpuScene = GpuSceneTables{};
+    }
 
     // Raytracing acceleration structures (non-fatal)
     if (rhiSupportsRaytracing(m_device)) {
@@ -276,9 +284,14 @@ bool SceneContext::loadAll(const char* gltfPath) {
     return true;
 }
 
+void SceneContext::updateGpuScene() {
+    updateGpuSceneTables(m_sceneGraph, m_gpuScene);
+}
+
 RenderContext SceneContext::renderContext() const {
     RenderContext ctx{
         m_mesh, m_meshlets, m_materials, m_sceneGraph,
+        m_gpuScene, m_clusterLod,
         m_shadowResources,
         m_depthState,
         m_shadowDummyTex,

@@ -7,6 +7,7 @@
 #include "../Shared/bindless_scene.slang"
 
 struct GlobalUniforms {
+    float4x4 viewProj;
     float4   lightDir;
     float4   lightColorIntensity;
 };
@@ -111,7 +112,8 @@ void meshMain(
             uvs[vertexIndex * 2 + 1]);
 
         VisVertex v;
-        v.clipPos = mul(inst.mvp, float4(pos, 1.0));
+        float4 worldPos = mul(inst.worldMatrix, float4(pos, 1.0));
+        v.clipPos = mul(globalUniforms.viewProj, worldPos);
         v.uv = texcoord;
         outVerts[groupThreadID] = v;
     }

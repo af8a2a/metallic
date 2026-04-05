@@ -142,17 +142,20 @@ bool loadSponzaScene(const RhiDevice& device,
                      MeshletData& outMeshlets,
                      LoadedMaterials& outMaterials,
                      SceneGraph& outScene,
-                     ClusterLODData& outLOD) {
+                     ClusterLODData& outLOD,
+                     GpuSceneTables& outGpuScene) {
     const std::string gltfPath = std::string(projectRoot) + "/Asset/Sponza/glTF/Sponza.gltf";
     const std::string meshletCacheDir = std::string(projectRoot) + "/Asset/MeshletCache";
 
     releaseMaterialResources(outMaterials);
     releaseMeshletBuffers(outMeshlets);
     releaseClusterLOD(outLOD);
+    releaseGpuSceneTables(outGpuScene);
     releaseMeshBuffers(outMesh);
     outMesh = LoadedMesh{};
     outMeshlets = MeshletData{};
     outLOD = ClusterLODData{};
+    outGpuScene = GpuSceneTables{};
     outMaterials = LoadedMaterials{};
     outScene = SceneGraph{};
 
@@ -211,6 +214,11 @@ bool loadSponzaScene(const RhiDevice& device,
     }
 
     outScene.updateTransforms();
+    if (!buildGpuSceneTables(device, outMesh, outMeshlets, &outLOD, outScene, outGpuScene)) {
+        spdlog::warn("Failed to build Vulkan GPU scene tables: {}", gltfPath);
+        releaseGpuSceneTables(outGpuScene);
+        outGpuScene = GpuSceneTables{};
+    }
 
     spdlog::info("Loaded Vulkan scene: {}", gltfPath);
     return true;
@@ -1440,6 +1448,7 @@ int main() {
     LoadedMaterials previewMaterials;
     SceneGraph previewScene;
     ClusterLODData previewLOD;
+    GpuSceneTables previewGpuScene;
     RhiTextureHandle shadowDummyTexture;
     RhiTextureHandle skyFallbackTexture;
     bool previewSceneReady = loadSponzaScene(deviceHandle,
@@ -1449,7 +1458,8 @@ int main() {
                                              previewMeshlets,
                                              previewMaterials,
                                              previewScene,
-                                             previewLOD);
+                                             previewLOD,
+                                             previewGpuScene);
     if (previewSceneReady) {
         previewSceneReady =
             createSceneFallbackTextures(deviceHandle, shadowDummyTexture, skyFallbackTexture);
@@ -1778,6 +1788,7 @@ int main() {
         releaseMeshletBuffers(previewMeshlets);
         releaseMeshBuffers(previewMesh);
         releaseClusterLOD(previewLOD);
+        releaseGpuSceneTables(previewGpuScene);
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(vertexDescriptor);
@@ -1825,6 +1836,8 @@ int main() {
         previewMeshlets,
         previewMaterials,
         previewScene,
+        previewGpuScene,
+        previewLOD,
         shadowResources,
         depthState,
         shadowDummyTexture,
@@ -1870,8 +1883,8 @@ int main() {
         releaseMaterialResources(previewMaterials);
         releaseMeshletBuffers(previewMeshlets);
         releaseMeshBuffers(previewMesh);
-        // Release cluster LOD buffers
         releaseClusterLOD(previewLOD);
+        releaseGpuSceneTables(previewGpuScene);
         rhiReleaseHandle(depthState);
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);
@@ -1906,6 +1919,7 @@ int main() {
         }
 
         previewScene.updateTransforms();
+        updateGpuSceneTables(previewScene, previewGpuScene);
         sunLight = previewScene.getSunDirectionalLight();
 
         previewVisibleMeshletNodes.clear();
@@ -1981,11 +1995,6 @@ int main() {
         };
         runtimeContext.uiControls = &pipelineUiControls;
     };
-
-    // Ring buffer to keep instance transform buffers alive for 2 frames (kMaxFramesInFlight).
-    // Without this, the GPU may still be reading a buffer that the CPU has already freed.
-    static constexpr uint32_t kBufferRingSize = 2;
-    std::unique_ptr<RhiBuffer> instanceTransformRing[kBufferRingSize];
 
     auto rebuildActivePipeline = [&](int targetWidth, int targetHeight) {
         rhi->waitIdle();
@@ -2402,40 +2411,20 @@ int main() {
                                                          static_cast<uint32_t>(renderHeight));
         }
 
-        auto& instanceTransformBuffer = instanceTransformRing[frameIndex % kBufferRingSize];
-        instanceTransformBuffer.reset();
         uint32_t visibilityInstanceCount = 0;
-        if (useVisibilityRenderGraph && !previewVisibleMeshletNodes.empty()) {
+        if (useVisibilityRenderGraph) {
+            static bool warnedInstanceOverflow = false;
+            if (!warnedInstanceOverflow &&
+                previewGpuScene.instanceCount > (kVisibilityInstanceMask + 1u)) {
+                spdlog::warn("GPU scene instance limit exceeded for visibility encoding ({} > {}), overflowing instances will be dropped in GPU visibility mode",
+                             previewGpuScene.instanceCount,
+                             kVisibilityInstanceMask + 1);
+                warnedInstanceOverflow = true;
+            }
+
             visibilityInstanceCount = static_cast<uint32_t>(
                 std::min<size_t>(previewVisibleMeshletNodes.size(),
                                  static_cast<size_t>(kVisibilityInstanceMask + 1u)));
-            std::vector<SceneInstanceTransform> instanceTransforms;
-            instanceTransforms.reserve(visibilityInstanceCount);
-            const float4x4 prevViewForMotion = hasPrevMatrices ? prevView : view;
-            const float4x4 prevProjForMotion = hasPrevMatrices ? prevProj : unjitteredProj;
-            for (uint32_t instanceId = 0; instanceId < visibilityInstanceCount; ++instanceId) {
-                const SceneNode& node = previewScene.nodes[previewVisibleMeshletNodes[instanceId]];
-                const float4x4 nodeModelView = view * node.transform.worldMatrix;
-                const float4x4 nodeMvp = proj * nodeModelView;
-                const float4x4 prevNodeModelView = prevViewForMotion * node.transform.worldMatrix;
-                const float4x4 prevNodeMvp = prevProjForMotion * prevNodeModelView;
-
-                SceneInstanceTransform transform{};
-                transform.mvp = transpose(nodeMvp);
-                transform.modelView = transpose(nodeModelView);
-                transform.prevMvp = transpose(prevNodeMvp);
-                instanceTransforms.push_back(transform);
-            }
-
-            RhiBufferDesc instanceBufferDesc;
-            instanceBufferDesc.size = instanceTransforms.size() * sizeof(SceneInstanceTransform);
-            instanceBufferDesc.initialData = instanceTransforms.data();
-            instanceBufferDesc.hostVisible = true;
-            instanceBufferDesc.debugName = "Vulkan Visibility Instance Transforms";
-            instanceTransformBuffer = frameGraphBackend.createBuffer(instanceBufferDesc);
-            if (!instanceTransformBuffer) {
-                visibilityInstanceCount = 0;
-            }
         }
 
         RhiNativeCommandBufferHandle nativeCommandBuffer(getVulkanCurrentCommandBuffer(*rhi));
@@ -2479,7 +2468,6 @@ int main() {
         }
         frameContext.visibleIndexNodes = previewVisibleIndexNodes;
         frameContext.visibilityInstanceCount = visibilityInstanceCount;
-        frameContext.instanceTransformBufferRhi = instanceTransformBuffer.get();
         frameContext.depthClearValue = depthClearValue;
         frameContext.cameraFarZ = previewCamera.farZ;
         {

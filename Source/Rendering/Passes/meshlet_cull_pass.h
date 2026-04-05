@@ -53,7 +53,6 @@ public:
         cullResult = builder.createToken("cullResult");
 
         m_maxMeshlets = std::max<uint32_t>(1u, computeMaxMeshletCapacity());
-        m_maxInstances = std::max<uint32_t>(1u, computeMaxInstanceCapacity());
 
         const auto visibleWorklist =
             GpuDriven::createIndirectWorklist<MeshletDrawInfo>(builder,
@@ -66,11 +65,8 @@ public:
         visibleMeshlets = visibleWorklist.payload;
         cullCounter = visibleWorklist.state;
 
-        FGBufferDesc instanceDataDesc =
-            GpuDriven::makeStructuredBufferDesc<GPUInstanceData>(m_maxInstances,
-                                                                 "InstanceDataBuffer",
-                                                                 true);
-        instanceData = builder.create("instanceData", instanceDataDesc);
+        // Keep the legacy output slot alive for authored pipeline compatibility.
+        instanceData = builder.createToken("instanceData");
 
         m_hzbHistoryRead.clear();
         m_hzbLevelCount = computeHzbLevelCount(static_cast<uint32_t>(m_width),
@@ -97,38 +93,20 @@ public:
         if (cullIt == m_runtimeContext->computePipelinesRhi.end() || !cullIt->second.nativeHandle()) return;
         if (buildIt == m_runtimeContext->computePipelinesRhi.end() || !buildIt->second.nativeHandle()) return;
 
-        const auto& visibleNodes = m_frameContext->visibleMeshletNodes;
-        uint32_t instanceCount = std::min<uint32_t>(
-            m_frameContext->visibilityInstanceCount,
-            static_cast<uint32_t>(visibleNodes.size()));
-        if (instanceCount == 0) return;
-
-        std::vector<uint32_t> validVisibleNodes;
-        validVisibleNodes.reserve(instanceCount);
-        for (uint32_t i = 0; i < instanceCount; ++i) {
-            const uint32_t nodeID = visibleNodes[i];
-            if (nodeID < m_ctx.sceneGraph.nodes.size()) {
-                validVisibleNodes.push_back(nodeID);
-            }
+        const GpuSceneTables& gpuScene = m_ctx.gpuScene;
+        if (!gpuScene.instanceBuffer.nativeHandle() ||
+            !gpuScene.geometryBuffer.nativeHandle() ||
+            gpuScene.instanceCount == 0 ||
+            gpuScene.totalMeshletDispatchCount == 0) {
+            return;
         }
-        if (validVisibleNodes.empty()) return;
-        instanceCount = static_cast<uint32_t>(validVisibleNodes.size());
 
-        // Compute total meshlet count across all visible instances
-        uint32_t totalMeshlets = 0;
-        for (uint32_t i = 0; i < instanceCount; i++) {
-            const auto& node = m_ctx.sceneGraph.nodes[validVisibleNodes[i]];
-            totalMeshlets += node.meshletCount;
-        }
-        if (totalMeshlets == 0) return;
-
-        m_totalMeshlets = totalMeshlets;
+        m_totalMeshlets = gpuScene.totalMeshletDispatchCount;
 
         if (!m_frameGraph) return;
         RhiBuffer* visibleMeshletBuffer = m_frameGraph->getBuffer(visibleMeshlets);
         RhiBuffer* counterBuffer = m_frameGraph->getBuffer(cullCounter);
-        RhiBuffer* instanceDataBuffer = m_frameGraph->getBuffer(instanceData);
-        if (!visibleMeshletBuffer || !counterBuffer || !instanceDataBuffer) {
+        if (!visibleMeshletBuffer || !counterBuffer) {
             return;
         }
         GpuDriven::ensureIndirectGridCommandBufferInitialized(counterBuffer, m_initializedCounterBuffer);
@@ -137,25 +115,6 @@ public:
         // build_indirect writes count into the indirect-dispatch X slot, then resets the counter.
         // By this point the previous frame's GPU work is complete.
         m_lastVisibleCount = GpuDriven::readBuiltIndirectGridCount(counterBuffer);
-
-        // Upload instance data (CPU PU, StorageModeShared)
-        auto* instPtr = static_cast<GPUInstanceData*>(instanceDataBuffer->mappedData());
-        uint32_t dispatchStart = 0u;
-        for (uint32_t i = 0; i < instanceCount; i++) {
-            const auto& node = m_ctx.sceneGraph.nodes[validVisibleNodes[i]];
-            float4x4 nodeModelView = m_frameContext->view * node.transform.worldMatrix;
-            float4x4 nodeMVP = m_frameContext->proj * nodeModelView;
-
-            GPUInstanceData& inst = instPtr[i];
-            inst.mvp = transpose(nodeMVP);
-            inst.modelView = transpose(nodeModelView);
-            inst.worldMatrix = transpose(node.transform.worldMatrix);
-            inst.meshletStart = node.meshletStart;
-            inst.meshletCount = node.meshletCount;
-            inst.dispatchStart = dispatchStart;
-            inst.instanceID = i;
-            dispatchStart += node.meshletCount;
-        }
 
         // Build CullUniforms
         float4x4 viewProj = m_frameContext->proj * m_frameContext->view;
@@ -168,8 +127,8 @@ public:
         cullUni.prevCameraWorldPos = m_frameContext->prevCameraWorldPos;
         cullUni.prevProjScale = float2(std::abs(m_frameContext->prevCullProj[0].x),
                                        std::abs(m_frameContext->prevCullProj[1].y));
-        cullUni.totalDispatchCount = totalMeshlets;
-        cullUni.instanceCount = instanceCount;
+        cullUni.totalDispatchCount = gpuScene.totalMeshletDispatchCount;
+        cullUni.instanceCount = gpuScene.instanceCount;
         cullUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1 : 0;
         cullUni.enableConeCull = m_frameContext->enableConeCull ? 1 : 0;
 
@@ -205,7 +164,8 @@ public:
         // --- Dispatch 1: Meshlet cull ---
         encoder.setComputePipeline(cullIt->second);
         encoder.setBytes(&cullUni, sizeof(cullUni), GpuDriven::MeshletCullBindings::kUniforms);
-        encoder.setBuffer(instanceDataBuffer, 0, GpuDriven::MeshletCullBindings::kInstanceData);
+        encoder.setBuffer(&gpuScene.instanceBuffer, 0, GpuDriven::MeshletCullBindings::kInstances);
+        encoder.setBuffer(&gpuScene.geometryBuffer, 0, GpuDriven::MeshletCullBindings::kGeometries);
         encoder.setBuffer(&m_ctx.meshletData.boundsBuffer, 0, GpuDriven::MeshletCullBindings::kBounds);
         encoder.setBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletCullBindings::kCompactionOutput);
         encoder.setBuffer(counterBuffer, 0, GpuDriven::MeshletCullBindings::kCounter);
@@ -216,7 +176,7 @@ public:
         }
 
         uint32_t threadgroupSize = 256;
-        uint32_t threadgroups = (totalMeshlets + threadgroupSize - 1) / threadgroupSize;
+        uint32_t threadgroups = (gpuScene.totalMeshletDispatchCount + threadgroupSize - 1) / threadgroupSize;
         encoder.dispatchThreadgroups({threadgroups, 1, 1}, {threadgroupSize, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
@@ -229,12 +189,13 @@ public:
         static bool sLoggedGpuPublish = false;
         if (!sLoggedGpuPublish) {
             spdlog::info(
-                "MeshletCullPass produced FG cull buffers: instances={} meshlets={} visibleBuf={} counterBuf={} instanceBuf={}",
-                instanceCount,
-                totalMeshlets,
+                "MeshletCullPass produced FG cull buffers: sceneInstances={} visibleInstances={} meshlets={} visibleBuf={} counterBuf={} sceneInstanceBuf={}",
+                gpuScene.instanceCount,
+                gpuScene.visibleInstanceCount,
+                gpuScene.totalMeshletDispatchCount,
                 fmt::ptr(visibleMeshletBuffer),
                 fmt::ptr(counterBuffer),
-                fmt::ptr(instanceDataBuffer));
+                fmt::ptr(gpuScene.instanceBuffer.nativeHandle()));
             sLoggedGpuPublish = true;
         }
 
@@ -258,7 +219,8 @@ public:
         ImGui::SliderFloat("HZB Depth Bias", &m_occlusionDepthBias, 0.0f, 0.05f, "%.4f");
         ImGui::SliderFloat("HZB Bounds Scale", &m_occlusionBoundsScale, 1.0f, 1.5f, "%.2f");
         if (m_frameContext) {
-            ImGui::Text("Instances: %u", m_frameContext->visibilityInstanceCount);
+            ImGui::Text("Scene Instances: %u", m_ctx.gpuScene.instanceCount);
+            ImGui::Text("Visible Scene Instances: %u", m_ctx.gpuScene.visibleInstanceCount);
             ImGui::Text("GPU Culling: %s", m_frameContext->gpuDrivenCulling ? "On" : "Off");
         }
         const bool historyValid =
@@ -281,7 +243,6 @@ private:
     std::string m_name = "Meshlet Cull";
 
     uint32_t m_maxMeshlets = 0;
-    uint32_t m_maxInstances = 0;
     uint32_t m_totalMeshlets = 0;
     uint32_t m_lastVisibleCount = 0;
     uint32_t m_hzbLevelCount = 0;
@@ -294,21 +255,7 @@ private:
     std::vector<FGResource> m_hzbHistoryRead;
 
     uint32_t computeMaxMeshletCapacity() const {
-        uint64_t totalMeshlets = 0;
-        for (const auto& node : m_ctx.sceneGraph.nodes) {
-            totalMeshlets += node.meshletCount;
-        }
-        return static_cast<uint32_t>(std::max<uint64_t>(1u, totalMeshlets));
-    }
-
-    uint32_t computeMaxInstanceCapacity() const {
-        uint32_t instanceCapacity = 0;
-        for (const auto& node : m_ctx.sceneGraph.nodes) {
-            if (node.meshletCount > 0) {
-                ++instanceCapacity;
-            }
-        }
-        return std::max(1u, instanceCapacity);
+        return std::max(1u, m_ctx.gpuScene.totalMeshletDispatchCount);
     }
 };
 

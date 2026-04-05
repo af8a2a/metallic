@@ -62,13 +62,6 @@ public:
         if (cullCounterInput.isValid()) {
             m_cullCounterRead = builder.read(cullCounterInput, FGResourceUsage::Indirect);
         }
-        FGResource instanceDataInput = getInput("instanceData");
-        if (!instanceDataInput.isValid()) {
-            instanceDataInput = getInput("visibilityInstances");
-        }
-        if (instanceDataInput.isValid()) {
-            m_instanceDataRead = builder.read(instanceDataInput, FGResourceUsage::StorageRead);
-        }
         visibility = builder.create("visibility",
             FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::R32Uint));
         depth = builder.create("depth",
@@ -102,15 +95,13 @@ public:
             (m_frameGraph && m_cullCounterRead.isValid())
                 ? m_frameGraph->getBuffer(m_cullCounterRead)
                 : nullptr;
-        const RhiBuffer* instanceDataBuffer =
-            (m_frameGraph && m_instanceDataRead.isValid())
-                ? m_frameGraph->getBuffer(m_instanceDataRead)
-                : nullptr;
+        const RhiBuffer* sceneInstanceBuffer =
+            m_ctx.gpuScene.instanceBuffer.nativeHandle() ? &m_ctx.gpuScene.instanceBuffer : nullptr;
 
         bool useGPUPath = m_frameContext->gpuDrivenCulling &&
             visibleMeshletBuffer &&
             counterBuffer &&
-            instanceDataBuffer;
+            sceneInstanceBuffer;
 
         if (useGPUPath) {
             auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("VisibilityIndirectPass");
@@ -131,7 +122,7 @@ public:
                 m_frameContext->gpuDrivenCulling,
                 fmt::ptr(visibleMeshletBuffer),
                 fmt::ptr(counterBuffer),
-                fmt::ptr(instanceDataBuffer),
+                fmt::ptr(sceneInstanceBuffer),
                 visIt != m_runtimeContext->renderPipelinesRhi.end() ? fmt::ptr(visIt->second.nativeHandle()) : fmt::ptr(static_cast<void*>(nullptr)),
                 visIndirectIt != m_runtimeContext->renderPipelinesRhi.end() ? fmt::ptr(visIndirectIt->second.nativeHandle()) : fmt::ptr(static_cast<void*>(nullptr)));
             sLoggedPath = true;
@@ -159,7 +150,7 @@ public:
             encoder.setMeshBuffer(&m_ctx.meshletData.materialIDs, 0, GpuDriven::MeshletVisibilityBindings::kMaterialIds);
             encoder.setMeshBuffer(&m_ctx.materials.materialBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMaterials);
             encoder.setMeshBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kVisibleMeshlets);
-            encoder.setMeshBuffer(instanceDataBuffer, 0, GpuDriven::MeshletVisibilityBindings::kInstanceData);
+            encoder.setMeshBuffer(sceneInstanceBuffer, 0, GpuDriven::MeshletVisibilityBindings::kSceneInstances);
 
             // Fragment stage needs all buffers too (Slang KernelContext)
             encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBuffer, 0, GpuDriven::MeshletVisibilityBindings::kPositions);
@@ -172,7 +163,7 @@ public:
             encoder.setFragmentBuffer(&m_ctx.meshletData.materialIDs, 0, GpuDriven::MeshletVisibilityBindings::kMaterialIds);
             encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMaterials);
             encoder.setFragmentBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kVisibleMeshlets);
-            encoder.setFragmentBuffer(instanceDataBuffer, 0, GpuDriven::MeshletVisibilityBindings::kInstanceData);
+            encoder.setFragmentBuffer(sceneInstanceBuffer, 0, GpuDriven::MeshletVisibilityBindings::kSceneInstances);
 
             if (!useBindlessSceneTextures && !materialTextures.empty()) {
                 encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));
@@ -182,7 +173,12 @@ public:
             }
 
             // GlobalUniforms at buffer(0) via setMeshBytes
-            struct { float4 lightDir; float4 lightColorIntensity; } globalUni;
+            struct {
+                float4x4 viewProj;
+                float4 lightDir;
+                float4 lightColorIntensity;
+            } globalUni;
+            globalUni.viewProj = transpose(m_frameContext->proj * m_frameContext->view);
             globalUni.lightDir = m_frameContext->viewLightDir;
             globalUni.lightColorIntensity = m_frameContext->lightColorIntensity;
             encoder.setMeshBytes(&globalUni,
@@ -295,7 +291,6 @@ private:
     bool m_gpuDrivenLastFrame = false;
     FGResource m_visibleMeshletsRead;
     FGResource m_cullCounterRead;
-    FGResource m_instanceDataRead;
 };
 
 

@@ -16,10 +16,11 @@
 // Shared bindings for the meshlet cull compaction pipeline.
 #define GPU_DRIVEN_CULL_UNIFORMS_BINDING 0u
 #define GPU_DRIVEN_CULL_INSTANCE_DATA_BINDING 1u
-#define GPU_DRIVEN_CULL_BOUNDS_BINDING 2u
-#define GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING 3u
-#define GPU_DRIVEN_CULL_COUNTER_BINDING 4u
-#define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 5u
+#define GPU_DRIVEN_CULL_GEOMETRY_DATA_BINDING 2u
+#define GPU_DRIVEN_CULL_BOUNDS_BINDING 3u
+#define GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING 4u
+#define GPU_DRIVEN_CULL_COUNTER_BINDING 5u
+#define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 6u
 
 // Shared bindings for meshlet visibility pipelines.
 #define GPU_DRIVEN_VISIBILITY_GLOBAL_UNIFORMS_BINDING 0u
@@ -62,11 +63,13 @@ using DispatchCounterLayout = IndirectGridCommandLayout;
 
 struct MeshletCullBindings {
     static constexpr uint32_t kUniforms = GPU_DRIVEN_CULL_UNIFORMS_BINDING;
-    static constexpr uint32_t kInstanceData = GPU_DRIVEN_CULL_INSTANCE_DATA_BINDING;
+    static constexpr uint32_t kInstances = GPU_DRIVEN_CULL_INSTANCE_DATA_BINDING;
+    static constexpr uint32_t kGeometries = GPU_DRIVEN_CULL_GEOMETRY_DATA_BINDING;
     static constexpr uint32_t kBounds = GPU_DRIVEN_CULL_BOUNDS_BINDING;
     static constexpr uint32_t kCompactionOutput = GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING;
     static constexpr uint32_t kCounter = GPU_DRIVEN_CULL_COUNTER_BINDING;
     static constexpr uint32_t kHzbTextureBase = GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE;
+    static constexpr uint32_t kInstanceData = kInstances;
 };
 
 struct MeshletVisibilityBindings {
@@ -81,7 +84,8 @@ struct MeshletVisibilityBindings {
     static constexpr uint32_t kMaterialIds = GPU_DRIVEN_VISIBILITY_MATERIAL_IDS_BINDING;
     static constexpr uint32_t kMaterials = GPU_DRIVEN_VISIBILITY_MATERIAL_BUFFER_BINDING;
     static constexpr uint32_t kVisibleMeshlets = GPU_DRIVEN_VISIBILITY_VISIBLE_MESHLETS_BINDING;
-    static constexpr uint32_t kInstanceData = GPU_DRIVEN_VISIBILITY_INSTANCE_DATA_BINDING;
+    static constexpr uint32_t kSceneInstances = GPU_DRIVEN_VISIBILITY_INSTANCE_DATA_BINDING;
+    static constexpr uint32_t kInstanceData = kSceneInstances;
 };
 
 struct BuildDispatchBindings {

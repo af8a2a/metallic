@@ -10,16 +10,6 @@ struct MeshletDrawInfo {
     uint32_t globalMeshletID;
 };
 
-struct GPUInstanceData {
-    float4x4 mvp;          // pre-transposed for Slang
-    float4x4 modelView;    // pre-transposed for Slang
-    float4x4 worldMatrix;  // pre-transposed for Slang (for cull shader)
-    uint32_t meshletStart;
-    uint32_t meshletCount;
-    uint32_t dispatchStart; // prefix-sum start for generic worklist traversal
-    uint32_t instanceID;
-};
-
 struct CullUniforms {
     float4x4 viewProj;         // transposed for Slang
     float4x4 prevViewProj;     // transposed for Slang

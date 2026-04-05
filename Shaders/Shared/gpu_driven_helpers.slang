@@ -1,19 +1,33 @@
 #include "../../Source/Rendering/gpu_driven_constants.h"
 
 struct InstanceData {
-    float4x4 mvp;
-    float4x4 modelView;
     float4x4 worldMatrix;
-    uint     meshletStart;
-    uint     meshletCount;
+    float4x4 prevWorldMatrix;
+    uint     geometryIndex;
     uint     dispatchStart;
-    uint     instanceID;
+    uint     sceneNodeIndex;
+    uint     visibilityFlags;
+};
+
+struct GeometryData {
+    uint   meshletStart;
+    uint   meshletCount;
+    uint   primitiveGroupStart;
+    uint   primitiveGroupCount;
+    uint   indexStart;
+    uint   indexCount;
+    uint   materialIndex;
+    uint   lodRootNode;
+    float4 boundsCenterRadius;
 };
 
 struct MeshletDrawInfo {
     uint instanceID;
     uint globalMeshletID;
 };
+
+static const uint kGpuSceneInstanceVisible = 1u << 0;
+static const uint kGpuSceneInstanceHasLod = 1u << 1;
 
 uint gpuDrivenLoadWorklistCount(RWByteAddressBuffer counterBuffer) {
     return counterBuffer.Load(GPU_DRIVEN_COUNT_OFFSET_BYTES);

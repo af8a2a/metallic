@@ -230,6 +230,7 @@ int main() {
                 1.0f);
 
             scene.sceneGraph().updateTransforms();
+            scene.updateGpuScene();
         }
 
         // Collect GPU timestamps from previous frames
@@ -364,21 +365,17 @@ int main() {
                 visibleIndexNodes.push_back(node.id);
         }
 
-        // --- Build FrameGraph (unified data-driven path) ---
-        std::unique_ptr<RhiBuffer> instanceTransformBuffer;
-
         FrameContext frameCtx;
 
-        // Visibility buffer mode needs instance transform buffer
         uint32_t visibilityInstanceCount = 0;
         if (renderMode == 2 || renderMode == 3) {
             ZoneScopedN("Visibility Instance Setup");
 
             static bool warnedInstanceOverflow = false;
             if (!warnedInstanceOverflow &&
-                visibleMeshletNodes.size() > static_cast<size_t>(kVisibilityInstanceMask + 1)) {
-                spdlog::warn("Visibility buffer instance limit exceeded ({} > {}), extra nodes will be skipped in this mode",
-                             visibleMeshletNodes.size(), kVisibilityInstanceMask + 1);
+                scene.gpuScene().instanceCount > (kVisibilityInstanceMask + 1u)) {
+                spdlog::warn("GPU scene instance limit exceeded for visibility encoding ({} > {}), overflowing instances will be dropped in GPU visibility mode",
+                             scene.gpuScene().instanceCount, kVisibilityInstanceMask + 1);
                 warnedInstanceOverflow = true;
             }
 
@@ -393,44 +390,6 @@ int main() {
             visibilityInstanceCount =
                 static_cast<uint32_t>(std::min<size_t>(visibleMeshletNodes.size(),
                                                        kVisibilityInstanceMask + 1));
-
-            std::vector<SceneInstanceTransform> visibilityInstanceTransforms;
-            visibilityInstanceTransforms.reserve(std::max<size_t>(visibilityInstanceCount, 1));
-            float4x4 prevViewForMotion = hasPrevMatrices ? prevView : view;
-            float4x4 prevProjForMotion = hasPrevMatrices ? prevProj : camera.projectionMatrix(aspect);
-            for (uint32_t instanceID = 0; instanceID < visibilityInstanceCount; instanceID++) {
-                const auto& node = scene.sceneGraph().nodes[visibleMeshletNodes[instanceID]];
-                float4x4 nodeModelView = view * node.transform.worldMatrix;
-                float4x4 nodeMVP = proj * nodeModelView;
-                float4x4 prevNodeModelView = prevViewForMotion * node.transform.worldMatrix;
-                float4x4 prevNodeMVP = prevProjForMotion * prevNodeModelView;
-                SceneInstanceTransform instanceTransform{};
-                instanceTransform.mvp = transpose(nodeMVP);
-                instanceTransform.modelView = transpose(nodeModelView);
-                instanceTransform.prevMvp = transpose(prevNodeMVP);
-                visibilityInstanceTransforms.push_back(instanceTransform);
-            }
-
-            if (visibilityInstanceTransforms.empty()) {
-                float4x4 identity = float4x4::Identity();
-                float4x4 fallbackMV = view * identity;
-                float4x4 fallbackMVP = proj * fallbackMV;
-                float4x4 prevFallbackMV = prevViewForMotion * identity;
-                float4x4 prevFallbackMVP = prevProjForMotion * prevFallbackMV;
-                SceneInstanceTransform fallbackTransform{};
-                fallbackTransform.mvp = transpose(fallbackMVP);
-                fallbackTransform.modelView = transpose(fallbackMV);
-                fallbackTransform.prevMvp = transpose(prevFallbackMVP);
-                visibilityInstanceTransforms.push_back(fallbackTransform);
-            }
-
-            RhiBufferDesc instanceBufferDesc;
-            instanceBufferDesc.size =
-                visibilityInstanceTransforms.size() * sizeof(SceneInstanceTransform);
-            instanceBufferDesc.initialData = visibilityInstanceTransforms.data();
-            instanceBufferDesc.hostVisible = true;
-            instanceBufferDesc.debugName = "Visibility Instance Transforms";
-            instanceTransformBuffer = frameGraphBackend->createBuffer(instanceBufferDesc);
         }
 
         // Populate frame context (shared across all modes)
@@ -448,7 +407,6 @@ int main() {
         frameCtx.visibleMeshletNodes = visibleMeshletNodes;
         frameCtx.visibleIndexNodes = visibleIndexNodes;
         frameCtx.visibilityInstanceCount = visibilityInstanceCount;
-        frameCtx.instanceTransformBufferRhi = instanceTransformBuffer.get();
         frameCtx.depthClearValue = scene.depthClearValue();
         frameCtx.cameraFarZ = camera.farZ;
         {
