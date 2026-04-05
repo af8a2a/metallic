@@ -22,22 +22,24 @@ if(APPLE)
         Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
         Rendering/pass_registrations.cpp
-        Rendering/slang_compiler.cpp
+        Rendering/Helpers/slang_compiler.cpp
         Rendering/shader_manager.cpp
         Rendering/scene_context.cpp
-        RHI/rhi_resource_utils.cpp
-        RHI/rhi_shader_utils.cpp
-        RHI/rhi_raytracing_utils.cpp
+        RHI/Helpers/rhi_resource_utils.cpp
+        RHI/Helpers/rhi_shader_utils.cpp
+        RHI/Helpers/rhi_raytracing_utils.cpp
         RHI/Metal/metal_window_runtime.cpp
         RHI/Metal/metal_frame_graph.cpp
     )
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Metal"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
         "${CMAKE_CURRENT_SOURCE_DIR}/Asset"
         "${CMAKE_CURRENT_SOURCE_DIR}/Scene"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Passes"
         "${CMAKE_SOURCE_DIR}/External/cgltf"
         "${CMAKE_SOURCE_DIR}/External/stb"
@@ -77,30 +79,33 @@ elseif(WIN32)
         Rendering/pass_registrations_vulkan.cpp
         Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
-        Rendering/slang_compiler.cpp
+        Rendering/Helpers/slang_compiler.cpp
         Rendering/shader_manager.cpp
         Rendering/streamline_context.cpp
         RHI/rhi_backend.cpp
-        RHI/rhi_raytracing_utils.cpp
-        RHI/rhi_resource_utils.cpp
-        RHI/rhi_shader_utils.cpp
+        RHI/Helpers/rhi_raytracing_utils.cpp
+        RHI/Helpers/rhi_resource_utils.cpp
+        RHI/Helpers/rhi_shader_utils.cpp
         RHI/Vulkan/vulkan_backend.cpp
         RHI/Vulkan/vulkan_frame_graph.cpp
         RHI/Vulkan/vulkan_descriptor_manager.cpp
         RHI/Vulkan/vulkan_descriptor_buffer.cpp
-        RHI/Vulkan/vulkan_diagnostics.cpp
+        RHI/Vulkan/Helpers/vulkan_diagnostics.cpp
         RHI/Vulkan/vulkan_pipeline_cache.cpp
         RHI/Vulkan/vulkan_rt_pipeline.cpp
-        RHI/Vulkan/vulkan_transient_allocator.cpp
-        RHI/Vulkan/vulkan_upload_service.cpp
+        RHI/Vulkan/Helpers/vulkan_transient_allocator.cpp
+        RHI/Vulkan/Helpers/vulkan_upload_service.cpp
     )
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Vulkan"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Vulkan/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Asset"
         "${CMAKE_CURRENT_SOURCE_DIR}/PipelineEditor"
         "${CMAKE_CURRENT_SOURCE_DIR}/Scene"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Passes"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
         "${CMAKE_SOURCE_DIR}/External/cgltf"

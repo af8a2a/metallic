@@ -2,9 +2,9 @@
 
 #ifdef _WIN32
 
-#include "../rhi_resource_utils.h"
-#include "../rhi_backend.h"
-#include "../bindless_scene_constants.h"
+#include "rhi_resource_utils.h"
+#include "rhi_backend.h"
+#include "bindless_scene_constants.h"
 #include "vulkan_descriptor_manager.h"
 
 #include <array>

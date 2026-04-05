@@ -2,7 +2,7 @@
 
 #ifdef _WIN32
 
-#include "../rhi_resource_utils.h"
+#include "rhi_resource_utils.h"
 #include "vulkan_resource_handles.h"
 
 #include <vk_mem_alloc.h>

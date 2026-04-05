@@ -14,7 +14,7 @@
 #include <cstring>
 #include <stdexcept>
 
-#include "../rhi_resource_utils.h"
+#include "rhi_resource_utils.h"
 
 // Mesh shader extension function pointers (loaded dynamically)
 static PFN_vkCmdDrawMeshTasksEXT pfnCmdDrawMeshTasksEXT = nullptr;

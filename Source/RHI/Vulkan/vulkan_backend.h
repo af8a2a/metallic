@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../rhi_backend.h"
+#include "rhi_backend.h"
 #include "vulkan_diagnostics.h"
 
 #include <vulkan/vulkan.h>

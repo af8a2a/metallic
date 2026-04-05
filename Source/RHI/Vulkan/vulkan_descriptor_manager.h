@@ -4,7 +4,7 @@
 
 #include <vulkan/vulkan.h>
 
-#include "../bindless_scene_constants.h"
+#include "bindless_scene_constants.h"
 
 #include <array>
 #include <cstddef>

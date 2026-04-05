@@ -2,7 +2,7 @@
 
 #ifdef _WIN32
 
-#include "../rhi_backend.h"
+#include "rhi_backend.h"
 #include "vulkan_descriptor_manager.h"
 #include "vulkan_resource_state_tracker.h"
 #include "vulkan_resource_handles.h"

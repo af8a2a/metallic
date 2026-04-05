@@ -5,7 +5,7 @@
 #include "vulkan_backend.h"
 #include "vulkan_descriptor_manager.h"
 #include "rhi_backend.h"
-#include "../rhi_resource_utils.h"
+#include "rhi_resource_utils.h"
 
 #include <vk_mem_alloc.h>
 #include <spdlog/spdlog.h>
