@@ -7,6 +7,7 @@
 
 struct LoadedMesh;
 struct MeshletData;
+struct ClusterLODData;
 
 enum class LightType : uint8_t {
     Directional = 0
@@ -72,7 +73,8 @@ public:
 
     bool buildFromGLTF(const std::string& gltfPath,
                        const LoadedMesh& mesh,
-                       const MeshletData& meshletData);
+                       const MeshletData& meshletData,
+                       const ClusterLODData* clusterLODData = nullptr);
     bool applyBakedSingleRootScale(const LoadedMesh& mesh);
     void updateTransforms();
     void markDirty(uint32_t nodeId);

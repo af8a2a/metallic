@@ -157,6 +157,7 @@ SceneContext::~SceneContext() {
     rhiReleaseHandle(m_shadowDummyTex);
     rhiReleaseHandle(m_skyFallbackTex);
     m_atmosphereTextures.release();
+    releaseClusterLOD(m_clusterLod);
     rhiReleaseHandle(m_meshlets.meshletBuffer);
     rhiReleaseHandle(m_meshlets.meshletVertices);
     rhiReleaseHandle(m_meshlets.meshletTriangles);
@@ -178,6 +179,9 @@ bool SceneContext::loadAll(const char* gltfPath) {
     ZoneScopedN("SceneContext::loadAll");
     const std::string meshletCacheDir = m_projectRoot + "/Asset/MeshletCache";
 
+    releaseClusterLOD(m_clusterLod);
+    m_clusterLod = ClusterLODData{};
+
     if (!loadGLTFMesh(m_device, gltfPath, m_mesh)) {
         spdlog::error("Failed to load scene mesh");
         return false;
@@ -188,12 +192,19 @@ bool SceneContext::loadAll(const char* gltfPath) {
         return false;
     }
 
+    if (!loadOrBuildClusterLOD(m_device, m_mesh, m_meshlets, gltfPath, meshletCacheDir, m_clusterLod)) {
+        spdlog::warn("Failed to load or build meshlet LOD hierarchy; continuing without meshlet LODs");
+        releaseClusterLOD(m_clusterLod);
+        m_clusterLod = ClusterLODData{};
+    }
+
     if (!loadGLTFMaterials(m_device, m_queue, gltfPath, m_materials)) {
         spdlog::error("Failed to load materials");
         return false;
     }
 
-    if (!m_sceneGraph.buildFromGLTF(gltfPath, m_mesh, m_meshlets)) {
+    const ClusterLODData* clusterLodData = m_clusterLod.nodes.empty() ? nullptr : &m_clusterLod;
+    if (!m_sceneGraph.buildFromGLTF(gltfPath, m_mesh, m_meshlets, clusterLodData)) {
         spdlog::error("Failed to build scene graph");
         return false;
     }

@@ -148,9 +148,11 @@ bool loadSponzaScene(const RhiDevice& device,
 
     releaseMaterialResources(outMaterials);
     releaseMeshletBuffers(outMeshlets);
+    releaseClusterLOD(outLOD);
     releaseMeshBuffers(outMesh);
     outMesh = LoadedMesh{};
     outMeshlets = MeshletData{};
+    outLOD = ClusterLODData{};
     outMaterials = LoadedMaterials{};
     outScene = SceneGraph{};
 
@@ -166,8 +168,15 @@ bool loadSponzaScene(const RhiDevice& device,
         return false;
     }
 
+    if (!loadOrBuildClusterLOD(device, outMesh, outMeshlets, gltfPath, meshletCacheDir, outLOD)) {
+        spdlog::warn("Failed to load or build Vulkan meshlet LOD hierarchy: {}", gltfPath);
+        releaseClusterLOD(outLOD);
+        outLOD = ClusterLODData{};
+    }
+
     if (!loadGLTFMaterials(device, commandQueue, gltfPath, outMaterials)) {
         spdlog::error("Failed to load Vulkan scene materials: {}", gltfPath);
+        releaseClusterLOD(outLOD);
         releaseMeshletBuffers(outMeshlets);
         releaseMeshBuffers(outMesh);
         outMeshlets = MeshletData{};
@@ -175,9 +184,11 @@ bool loadSponzaScene(const RhiDevice& device,
         return false;
     }
 
-    if (!outScene.buildFromGLTF(gltfPath, outMesh, outMeshlets)) {
+    const ClusterLODData* clusterLodData = outLOD.nodes.empty() ? nullptr : &outLOD;
+    if (!outScene.buildFromGLTF(gltfPath, outMesh, outMeshlets, clusterLodData)) {
         spdlog::error("Failed to build Vulkan scene graph: {}", gltfPath);
         releaseMaterialResources(outMaterials);
+        releaseClusterLOD(outLOD);
         releaseMeshletBuffers(outMeshlets);
         releaseMeshBuffers(outMesh);
         outMaterials = LoadedMaterials{};
@@ -189,6 +200,7 @@ bool loadSponzaScene(const RhiDevice& device,
     if (!outScene.applyBakedSingleRootScale(outMesh)) {
         spdlog::error("Failed to apply baked Vulkan scene root scale: {}", gltfPath);
         releaseMaterialResources(outMaterials);
+        releaseClusterLOD(outLOD);
         releaseMeshletBuffers(outMeshlets);
         releaseMeshBuffers(outMesh);
         outMaterials = LoadedMaterials{};
@@ -199,12 +211,6 @@ bool loadSponzaScene(const RhiDevice& device,
     }
 
     outScene.updateTransforms();
-
-    // Build cluster LOD hierarchy
-    outLOD = ClusterLODData{};
-    if (!buildClusterLOD(device, outMesh, outMeshlets, outLOD)) {
-        spdlog::warn("Cluster LOD build failed; continuing without LOD hierarchy");
-    }
 
     spdlog::info("Loaded Vulkan scene: {}", gltfPath);
     return true;
@@ -1771,13 +1777,7 @@ int main() {
         releaseMaterialResources(previewMaterials);
         releaseMeshletBuffers(previewMeshlets);
         releaseMeshBuffers(previewMesh);
-        rhiReleaseHandle(previewLOD.meshletBuffer);
-        rhiReleaseHandle(previewLOD.meshletVerticesBuffer);
-        rhiReleaseHandle(previewLOD.meshletTrianglesBuffer);
-        rhiReleaseHandle(previewLOD.boundsBuffer);
-        rhiReleaseHandle(previewLOD.materialIDsBuffer);
-        rhiReleaseHandle(previewLOD.groupBuffer);
-        rhiReleaseHandle(previewLOD.nodeBuffer);
+        releaseClusterLOD(previewLOD);
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(vertexDescriptor);
@@ -1871,13 +1871,7 @@ int main() {
         releaseMeshletBuffers(previewMeshlets);
         releaseMeshBuffers(previewMesh);
         // Release cluster LOD buffers
-        rhiReleaseHandle(previewLOD.meshletBuffer);
-        rhiReleaseHandle(previewLOD.meshletVerticesBuffer);
-        rhiReleaseHandle(previewLOD.meshletTrianglesBuffer);
-        rhiReleaseHandle(previewLOD.boundsBuffer);
-        rhiReleaseHandle(previewLOD.materialIDsBuffer);
-        rhiReleaseHandle(previewLOD.groupBuffer);
-        rhiReleaseHandle(previewLOD.nodeBuffer);
+        releaseClusterLOD(previewLOD);
         rhiReleaseHandle(depthState);
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);

@@ -1,6 +1,7 @@
 #include <spdlog/spdlog.h>
 
 #include "scene_graph.h"
+#include "cluster_lod_builder.h"
 #include "mesh_loader.h"
 #include "meshlet_builder.h"
 #include <cgltf.h>
@@ -158,7 +159,8 @@ static void assignPrimitiveGroupRange(SceneNode& node,
                                       uint32_t firstGroup,
                                       uint32_t groupCount,
                                       const LoadedMesh& mesh,
-                                      const std::vector<uint32_t>& meshletGroupPrefix) {
+                                      const std::vector<uint32_t>& meshletGroupPrefix,
+                                      const ClusterLODData* clusterLODData) {
     node.meshIndex = meshIndex;
     node.primitiveGroupStart = firstGroup;
     node.primitiveGroupCount = groupCount;
@@ -179,13 +181,20 @@ static void assignPrimitiveGroupRange(SceneNode& node,
     const auto& lastPrim = mesh.primitiveGroups[clampedLastGroup - 1];
     const uint32_t indexEnd = lastPrim.indexOffset + lastPrim.indexCount;
     node.indexCount = indexEnd - node.indexStart;
+
+    if (clusterLODData &&
+        groupCount == 1 &&
+        clampedFirstGroup < clusterLODData->primitiveGroupLodRoots.size()) {
+        node.lodRootNode = clusterLODData->primitiveGroupLodRoots[clampedFirstGroup];
+    }
 }
 
 static void addNodeRecursive(const cgltf_data* data,
                              const cgltf_node* gltfNode,
                              int32_t parentIdx,
                              const LoadedMesh& mesh,
-                             const std::vector<uint32_t>& meshletGroupPrefix,
+                              const std::vector<uint32_t>& meshletGroupPrefix,
+                             const ClusterLODData* clusterLODData,
                              SceneGraph& sg) {
     uint32_t nodeIdx = static_cast<uint32_t>(sg.nodes.size());
     sg.nodes.emplace_back();
@@ -262,7 +271,8 @@ static void addNodeRecursive(const cgltf_data* data,
                                               groupIndex,
                                               1,
                                               mesh,
-                                              meshletGroupPrefix);
+                                              meshletGroupPrefix,
+                                              clusterLODData);
                     sg.nodes[nodeIdx].children.push_back(childIdx);
                     ++trianglePrimitiveIndex;
                 }
@@ -272,7 +282,8 @@ static void addNodeRecursive(const cgltf_data* data,
                                           range.firstGroup,
                                           range.groupCount,
                                           mesh,
-                                          meshletGroupPrefix);
+                                          meshletGroupPrefix,
+                                          clusterLODData);
             }
         }
     }
@@ -280,13 +291,14 @@ static void addNodeRecursive(const cgltf_data* data,
     // Recurse children
     for (cgltf_size ci = 0; ci < gltfNode->children_count; ci++) {
         addNodeRecursive(data, gltfNode->children[ci], static_cast<int32_t>(nodeIdx),
-                         mesh, meshletGroupPrefix, sg);
+                         mesh, meshletGroupPrefix, clusterLODData, sg);
     }
 }
 
 bool SceneGraph::buildFromGLTF(const std::string& gltfPath,
                                 const LoadedMesh& mesh,
-                                const MeshletData& meshletData) {
+                                const MeshletData& meshletData,
+                                const ClusterLODData* clusterLODData) {
     nodes.clear();
     rootNodes.clear();
     selectedNode = -1;
@@ -319,7 +331,7 @@ bool SceneGraph::buildFromGLTF(const std::string& gltfPath,
     for (cgltf_size ni = 0; ni < scene.nodes_count; ni++) {
         uint32_t rootIdx = static_cast<uint32_t>(nodes.size());
         addNodeRecursive(data, scene.nodes[ni], -1,
-                         mesh, meshletGroupPrefix, *this);
+                         mesh, meshletGroupPrefix, clusterLODData, *this);
         rootNodes.push_back(rootIdx);
     }
 
