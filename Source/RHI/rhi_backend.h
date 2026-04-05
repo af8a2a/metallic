@@ -134,12 +134,61 @@ enum class RhiResourceUsage : uint32_t {
     Write = 1u << 1,
 };
 
+enum class RhiSubgroupStage : uint32_t {
+    None = 0,
+    Vertex = 1u << 0,
+    TessControl = 1u << 1,
+    TessEvaluation = 1u << 2,
+    Geometry = 1u << 3,
+    Fragment = 1u << 4,
+    Compute = 1u << 5,
+    Task = 1u << 6,
+    Mesh = 1u << 7,
+    RayGen = 1u << 8,
+    AnyHit = 1u << 9,
+    ClosestHit = 1u << 10,
+    Miss = 1u << 11,
+    Intersection = 1u << 12,
+    Callable = 1u << 13,
+};
+
+enum class RhiSubgroupOperation : uint32_t {
+    None = 0,
+    Basic = 1u << 0,
+    Vote = 1u << 1,
+    Arithmetic = 1u << 2,
+    Ballot = 1u << 3,
+    Shuffle = 1u << 4,
+    ShuffleRelative = 1u << 5,
+    Clustered = 1u << 6,
+    Quad = 1u << 7,
+    Partitioned = 1u << 8,
+    Rotate = 1u << 9,
+    RotateClustered = 1u << 10,
+};
+
 constexpr RhiBarrierScope operator|(RhiBarrierScope lhs, RhiBarrierScope rhs) {
     return static_cast<RhiBarrierScope>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
 }
 
 constexpr RhiResourceUsage operator|(RhiResourceUsage lhs, RhiResourceUsage rhs) {
     return static_cast<RhiResourceUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr RhiSubgroupStage operator|(RhiSubgroupStage lhs, RhiSubgroupStage rhs) {
+    return static_cast<RhiSubgroupStage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr RhiSubgroupStage operator&(RhiSubgroupStage lhs, RhiSubgroupStage rhs) {
+    return static_cast<RhiSubgroupStage>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
+}
+
+constexpr RhiSubgroupOperation operator|(RhiSubgroupOperation lhs, RhiSubgroupOperation rhs) {
+    return static_cast<RhiSubgroupOperation>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr RhiSubgroupOperation operator&(RhiSubgroupOperation lhs, RhiSubgroupOperation rhs) {
+    return static_cast<RhiSubgroupOperation>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
 }
 
 struct RhiOrigin3D {
@@ -538,6 +587,20 @@ struct RhiFeatures {
     bool descriptorBuffer = false;   // VK_EXT_descriptor_buffer
 };
 
+struct RhiSubgroupProperties {
+    bool supported = false;
+    uint32_t subgroupSize = 0;
+    RhiSubgroupStage supportedStages = RhiSubgroupStage::None;
+    RhiSubgroupOperation supportedOperations = RhiSubgroupOperation::None;
+    bool quadOperationsInAllStages = false;
+    bool sizeControl = false;
+    bool computeFullSubgroups = false;
+    uint32_t minSubgroupSize = 0;
+    uint32_t maxSubgroupSize = 0;
+    uint32_t maxComputeWorkgroupSubgroups = 0;
+    RhiSubgroupStage requiredSubgroupSizeStages = RhiSubgroupStage::None;
+};
+
 // Properties of the ray tracing pipeline implementation (populated when rayTracingPipeline == true).
 struct RhiRayTracingPipelineProperties {
     uint32_t shaderGroupHandleSize      = 0;
@@ -808,6 +871,10 @@ public:
     virtual const RhiLimits& limits() const = 0;
     virtual const RhiDeviceInfo& deviceInfo() const = 0;
     virtual const RhiNativeHandles& nativeHandles() const = 0;
+    virtual const RhiSubgroupProperties& subgroupProperties() const {
+        static const RhiSubgroupProperties kEmpty{};
+        return kEmpty;
+    }
     virtual const RhiRayTracingPipelineProperties& rayTracingPipelineProperties() const {
         static const RhiRayTracingPipelineProperties kEmpty{};
         return kEmpty;

@@ -26,6 +26,32 @@
 #define VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME "VK_NV_device_diagnostic_checkpoints"
 #endif
 
+#ifndef VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME
+#define VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME "VK_EXT_subgroup_size_control"
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES \
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT
+using VkPhysicalDeviceSubgroupSizeControlFeatures =
+    VkPhysicalDeviceSubgroupSizeControlFeaturesEXT;
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES \
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES_EXT
+using VkPhysicalDeviceSubgroupSizeControlProperties =
+    VkPhysicalDeviceSubgroupSizeControlPropertiesEXT;
+#endif
+
+#ifndef VK_SUBGROUP_FEATURE_ROTATE_BIT
+#define VK_SUBGROUP_FEATURE_ROTATE_BIT VK_SUBGROUP_FEATURE_ROTATE_BIT_KHR
+#endif
+
+#ifndef VK_SUBGROUP_FEATURE_ROTATE_CLUSTERED_BIT
+#define VK_SUBGROUP_FEATURE_ROTATE_CLUSTERED_BIT VK_SUBGROUP_FEATURE_ROTATE_CLUSTERED_BIT_KHR
+#endif
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -38,6 +64,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 void vulkanLoadMeshShaderFunctions(VkDevice device);
@@ -737,6 +764,185 @@ bool hasLayer(std::span<const VkLayerProperties> layers, const char* name) {
     });
 }
 
+RhiSubgroupStage toRhiSubgroupStages(VkShaderStageFlags flags) {
+    RhiSubgroupStage result = RhiSubgroupStage::None;
+    if ((flags & VK_SHADER_STAGE_VERTEX_BIT) != 0) {
+        result = result | RhiSubgroupStage::Vertex;
+    }
+    if ((flags & VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT) != 0) {
+        result = result | RhiSubgroupStage::TessControl;
+    }
+    if ((flags & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT) != 0) {
+        result = result | RhiSubgroupStage::TessEvaluation;
+    }
+    if ((flags & VK_SHADER_STAGE_GEOMETRY_BIT) != 0) {
+        result = result | RhiSubgroupStage::Geometry;
+    }
+    if ((flags & VK_SHADER_STAGE_FRAGMENT_BIT) != 0) {
+        result = result | RhiSubgroupStage::Fragment;
+    }
+    if ((flags & VK_SHADER_STAGE_COMPUTE_BIT) != 0) {
+        result = result | RhiSubgroupStage::Compute;
+    }
+    if ((flags & VK_SHADER_STAGE_TASK_BIT_EXT) != 0) {
+        result = result | RhiSubgroupStage::Task;
+    }
+    if ((flags & VK_SHADER_STAGE_MESH_BIT_EXT) != 0) {
+        result = result | RhiSubgroupStage::Mesh;
+    }
+    if ((flags & VK_SHADER_STAGE_RAYGEN_BIT_KHR) != 0) {
+        result = result | RhiSubgroupStage::RayGen;
+    }
+    if ((flags & VK_SHADER_STAGE_ANY_HIT_BIT_KHR) != 0) {
+        result = result | RhiSubgroupStage::AnyHit;
+    }
+    if ((flags & VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR) != 0) {
+        result = result | RhiSubgroupStage::ClosestHit;
+    }
+    if ((flags & VK_SHADER_STAGE_MISS_BIT_KHR) != 0) {
+        result = result | RhiSubgroupStage::Miss;
+    }
+    if ((flags & VK_SHADER_STAGE_INTERSECTION_BIT_KHR) != 0) {
+        result = result | RhiSubgroupStage::Intersection;
+    }
+    if ((flags & VK_SHADER_STAGE_CALLABLE_BIT_KHR) != 0) {
+        result = result | RhiSubgroupStage::Callable;
+    }
+    return result;
+}
+
+RhiSubgroupOperation toRhiSubgroupOperations(VkSubgroupFeatureFlags flags) {
+    RhiSubgroupOperation result = RhiSubgroupOperation::None;
+    if ((flags & VK_SUBGROUP_FEATURE_BASIC_BIT) != 0) {
+        result = result | RhiSubgroupOperation::Basic;
+    }
+    if ((flags & VK_SUBGROUP_FEATURE_VOTE_BIT) != 0) {
+        result = result | RhiSubgroupOperation::Vote;
+    }
+    if ((flags & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0) {
+        result = result | RhiSubgroupOperation::Arithmetic;
+    }
+    if ((flags & VK_SUBGROUP_FEATURE_BALLOT_BIT) != 0) {
+        result = result | RhiSubgroupOperation::Ballot;
+    }
+    if ((flags & VK_SUBGROUP_FEATURE_SHUFFLE_BIT) != 0) {
+        result = result | RhiSubgroupOperation::Shuffle;
+    }
+    if ((flags & VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT) != 0) {
+        result = result | RhiSubgroupOperation::ShuffleRelative;
+    }
+    if ((flags & VK_SUBGROUP_FEATURE_CLUSTERED_BIT) != 0) {
+        result = result | RhiSubgroupOperation::Clustered;
+    }
+    if ((flags & VK_SUBGROUP_FEATURE_QUAD_BIT) != 0) {
+        result = result | RhiSubgroupOperation::Quad;
+    }
+    if ((flags & VK_SUBGROUP_FEATURE_PARTITIONED_BIT_NV) != 0) {
+        result = result | RhiSubgroupOperation::Partitioned;
+    }
+    if ((flags & VK_SUBGROUP_FEATURE_ROTATE_BIT) != 0) {
+        result = result | RhiSubgroupOperation::Rotate;
+    }
+    if ((flags & VK_SUBGROUP_FEATURE_ROTATE_CLUSTERED_BIT) != 0) {
+        result = result | RhiSubgroupOperation::RotateClustered;
+    }
+    return result;
+}
+
+std::string formatSubgroupStages(RhiSubgroupStage stages) {
+    if (stages == RhiSubgroupStage::None) {
+        return "None";
+    }
+
+    struct StageName {
+        RhiSubgroupStage stage;
+        const char* name;
+    };
+    constexpr StageName kStageNames[] = {
+        {RhiSubgroupStage::Vertex, "Vertex"},
+        {RhiSubgroupStage::TessControl, "TessControl"},
+        {RhiSubgroupStage::TessEvaluation, "TessEvaluation"},
+        {RhiSubgroupStage::Geometry, "Geometry"},
+        {RhiSubgroupStage::Fragment, "Fragment"},
+        {RhiSubgroupStage::Compute, "Compute"},
+        {RhiSubgroupStage::Task, "Task"},
+        {RhiSubgroupStage::Mesh, "Mesh"},
+        {RhiSubgroupStage::RayGen, "RayGen"},
+        {RhiSubgroupStage::AnyHit, "AnyHit"},
+        {RhiSubgroupStage::ClosestHit, "ClosestHit"},
+        {RhiSubgroupStage::Miss, "Miss"},
+        {RhiSubgroupStage::Intersection, "Intersection"},
+        {RhiSubgroupStage::Callable, "Callable"},
+    };
+
+    std::string result;
+    for (const auto& entry : kStageNames) {
+        if ((stages & entry.stage) == RhiSubgroupStage::None) {
+            continue;
+        }
+        if (!result.empty()) {
+            result += "|";
+        }
+        result += entry.name;
+    }
+    return result.empty() ? "None" : result;
+}
+
+std::string formatSubgroupOperations(RhiSubgroupOperation operations) {
+    if (operations == RhiSubgroupOperation::None) {
+        return "None";
+    }
+
+    struct OperationName {
+        RhiSubgroupOperation operation;
+        const char* name;
+    };
+    constexpr OperationName kOperationNames[] = {
+        {RhiSubgroupOperation::Basic, "Basic"},
+        {RhiSubgroupOperation::Vote, "Vote"},
+        {RhiSubgroupOperation::Arithmetic, "Arithmetic"},
+        {RhiSubgroupOperation::Ballot, "Ballot"},
+        {RhiSubgroupOperation::Shuffle, "Shuffle"},
+        {RhiSubgroupOperation::ShuffleRelative, "ShuffleRelative"},
+        {RhiSubgroupOperation::Clustered, "Clustered"},
+        {RhiSubgroupOperation::Quad, "Quad"},
+        {RhiSubgroupOperation::Partitioned, "Partitioned"},
+        {RhiSubgroupOperation::Rotate, "Rotate"},
+        {RhiSubgroupOperation::RotateClustered, "RotateClustered"},
+    };
+
+    std::string result;
+    for (const auto& entry : kOperationNames) {
+        if ((operations & entry.operation) == RhiSubgroupOperation::None) {
+            continue;
+        }
+        if (!result.empty()) {
+            result += "|";
+        }
+        result += entry.name;
+    }
+    return result.empty() ? "None" : result;
+}
+
+void logSubgroupProperties(const RhiSubgroupProperties& subgroupProperties) {
+    spdlog::info(
+        "Vulkan: subgroup properties "
+        "(supported={}, subgroupSize={}, supportedStages={}, supportedOperations={}, quadAllStages={}, "
+        "sizeControl={}, computeFullSubgroups={}, minSubgroupSize={}, maxSubgroupSize={}, "
+        "maxComputeWorkgroupSubgroups={}, requiredSubgroupSizeStages={})",
+        subgroupProperties.supported,
+        subgroupProperties.subgroupSize,
+        formatSubgroupStages(subgroupProperties.supportedStages),
+        formatSubgroupOperations(subgroupProperties.supportedOperations),
+        subgroupProperties.quadOperationsInAllStages,
+        subgroupProperties.sizeControl,
+        subgroupProperties.computeFullSubgroups,
+        subgroupProperties.minSubgroupSize,
+        subgroupProperties.maxSubgroupSize,
+        subgroupProperties.maxComputeWorkgroupSubgroups,
+        formatSubgroupStages(subgroupProperties.requiredSubgroupSizeStages));
+}
+
 class VulkanShaderModule final : public RhiShaderModule {
 public:
     VulkanShaderModule(VkDevice device, VkShaderModule module)
@@ -849,6 +1055,7 @@ public:
                                  createInfo.vkGetDeviceProcAddrProxy);
         vulkanLoadMeshShaderFunctions(m_device);
         applyDebugObjectNames();
+        logSubgroupProperties(m_subgroupProperties);
     }
 
     ~VulkanContext() override {
@@ -915,6 +1122,7 @@ public:
     const RhiFeatures& features() const override { return m_features; }
     const RhiLimits& limits() const override { return m_limits; }
     const RhiDeviceInfo& deviceInfo() const override { return m_deviceInfo; }
+    const RhiSubgroupProperties& subgroupProperties() const override { return m_subgroupProperties; }
     const RhiRayTracingPipelineProperties& rayTracingPipelineProperties() const override { return m_rtPipelineProperties; }
     const RhiNativeHandles& nativeHandles() const override { return m_nativeHandles; }
     const VulkanGpuFrameDiagnostics& latestFrameDiagnostics() const { return m_gpuProfiler.latestFrame(); }
@@ -2237,6 +2445,42 @@ public:
         // Timing
         m_limits.timestampPeriod = vkLimits.timestampPeriod;
 
+        // Subgroup / wave properties
+        m_subgroupProperties = {};
+        {
+            VkPhysicalDeviceSubgroupProperties subgroupProps{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+            VkPhysicalDeviceSubgroupSizeControlProperties subgroupSizeProps{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
+            VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            props2.pNext = &subgroupProps;
+            if (m_subgroupSizeControlSupported) {
+                subgroupProps.pNext = &subgroupSizeProps;
+            }
+            vkGetPhysicalDeviceProperties2(m_physicalDevice, &props2);
+
+            m_subgroupProperties.subgroupSize = subgroupProps.subgroupSize;
+            m_subgroupProperties.supportedStages =
+                toRhiSubgroupStages(subgroupProps.supportedStages);
+            m_subgroupProperties.supportedOperations =
+                toRhiSubgroupOperations(subgroupProps.supportedOperations);
+            m_subgroupProperties.quadOperationsInAllStages =
+                subgroupProps.quadOperationsInAllStages == VK_TRUE;
+            m_subgroupProperties.sizeControl = m_subgroupSizeControlSupported;
+            m_subgroupProperties.computeFullSubgroups = m_computeFullSubgroupsSupported;
+            if (m_subgroupSizeControlSupported) {
+                m_subgroupProperties.minSubgroupSize = subgroupSizeProps.minSubgroupSize;
+                m_subgroupProperties.maxSubgroupSize = subgroupSizeProps.maxSubgroupSize;
+                m_subgroupProperties.maxComputeWorkgroupSubgroups =
+                    subgroupSizeProps.maxComputeWorkgroupSubgroups;
+                m_subgroupProperties.requiredSubgroupSizeStages =
+                    toRhiSubgroupStages(subgroupSizeProps.requiredSubgroupSizeStages);
+            }
+            m_subgroupProperties.supported =
+                m_subgroupProperties.subgroupSize != 0 &&
+                m_subgroupProperties.supportedStages != RhiSubgroupStage::None;
+        }
+
         // Descriptor buffer properties (VK_EXT_descriptor_buffer)
         if (m_features.descriptorBuffer) {
             m_descriptorBufferProperties = {
@@ -2339,6 +2583,9 @@ public:
             hasExtension(extensions, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         const bool descriptorBufferAvailable =
             hasExtension(extensions, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+        const bool subgroupSizeControlAvailable =
+            hasExtension(extensions, VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME) ||
+            properties.apiVersion >= VK_API_VERSION_1_3;
         const bool robustness2Available =
             hasExtension(extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
         m_deviceFaultAvailable = hasExtension(extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
@@ -2364,6 +2611,8 @@ public:
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
         VkPhysicalDeviceVulkan11Features vulkan11Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
         VkPhysicalDeviceVulkan12Features vulkan12Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceSubgroupSizeControlFeatures subgroupSizeControlFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES};
         VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
         VkPhysicalDeviceRobustness2FeaturesEXT robustness2Features{
@@ -2371,7 +2620,12 @@ public:
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.pNext = &vulkan11Features;
         vulkan11Features.pNext = &vulkan12Features;
-        vulkan12Features.pNext = &dynamicRenderingFeatures;
+        if (subgroupSizeControlAvailable) {
+            vulkan12Features.pNext = &subgroupSizeControlFeatures;
+            subgroupSizeControlFeatures.pNext = &dynamicRenderingFeatures;
+        } else {
+            vulkan12Features.pNext = &dynamicRenderingFeatures;
+        }
         dynamicRenderingFeatures.pNext = &sync2Features;
         sync2Features.pNext = &meshShaderFeatures;
         meshShaderFeatures.pNext = &rayQueryFeatures;
@@ -2422,6 +2676,13 @@ public:
             vulkan12Features.uniformAndStorageBuffer8BitAccess == VK_TRUE;
         m_uniformAndStorageBuffer16BitAccessEnabled =
             vulkan11Features.uniformAndStorageBuffer16BitAccess == VK_TRUE;
+        m_subgroupSizeControlAvailable = subgroupSizeControlAvailable;
+        m_subgroupSizeControlSupported =
+            subgroupSizeControlAvailable &&
+            subgroupSizeControlFeatures.subgroupSizeControl == VK_TRUE;
+        m_computeFullSubgroupsSupported =
+            subgroupSizeControlAvailable &&
+            subgroupSizeControlFeatures.computeFullSubgroups == VK_TRUE;
         m_timelineSemaphoreSupported = vulkan12Features.timelineSemaphore == VK_TRUE;
         m_nullDescriptorEnabled =
             robustness2Available &&
@@ -2485,6 +2746,11 @@ public:
         }
         if (m_features.descriptorBuffer) {
             deviceExtensions.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+        }
+        if (m_subgroupSizeControlSupported &&
+            m_subgroupSizeControlAvailable &&
+            m_physicalDeviceProperties.apiVersion < VK_API_VERSION_1_3) {
+            deviceExtensions.push_back(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
         }
         if (m_nullDescriptorEnabled) {
             deviceExtensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
@@ -2553,6 +2819,13 @@ public:
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
         descriptorBufferEnableFeatures.descriptorBuffer = m_features.descriptorBuffer ? VK_TRUE : VK_FALSE;
 
+        VkPhysicalDeviceSubgroupSizeControlFeatures subgroupSizeControlFeatures{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES};
+        subgroupSizeControlFeatures.subgroupSizeControl =
+            m_subgroupSizeControlSupported ? VK_TRUE : VK_FALSE;
+        subgroupSizeControlFeatures.computeFullSubgroups =
+            m_computeFullSubgroupsSupported ? VK_TRUE : VK_FALSE;
+
         VkPhysicalDeviceRobustness2FeaturesEXT robustness2Features{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
         robustness2Features.nullDescriptor = m_nullDescriptorEnabled ? VK_TRUE : VK_FALSE;
@@ -2574,6 +2847,10 @@ public:
         if (m_features.descriptorBuffer) {
             descriptorBufferEnableFeatures.pNext = sync2Features.pNext;
             sync2Features.pNext = &descriptorBufferEnableFeatures;
+        }
+        if (m_subgroupSizeControlSupported) {
+            subgroupSizeControlFeatures.pNext = sync2Features.pNext;
+            sync2Features.pNext = &subgroupSizeControlFeatures;
         }
         if (m_nullDescriptorEnabled) {
             robustness2Features.pNext = sync2Features.pNext;
@@ -2974,6 +3251,9 @@ public:
     bool m_storageBuffer16BitAccessEnabled = false;
     bool m_uniformAndStorageBuffer8BitAccessEnabled = false;
     bool m_uniformAndStorageBuffer16BitAccessEnabled = false;
+    bool m_subgroupSizeControlAvailable = false;
+    bool m_subgroupSizeControlSupported = false;
+    bool m_computeFullSubgroupsSupported = false;
     bool m_timelineSemaphoreSupported = false;
     bool m_nullDescriptorEnabled = false;
     std::string m_deviceLostMessage;
@@ -2981,6 +3261,7 @@ public:
     RhiFeatures m_features{};
     RhiLimits m_limits{};
     RhiDeviceInfo m_deviceInfo{};
+    RhiSubgroupProperties m_subgroupProperties{};
     RhiRayTracingPipelineProperties m_rtPipelineProperties{};
     VkPhysicalDeviceDescriptorBufferPropertiesEXT m_descriptorBufferProperties{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
