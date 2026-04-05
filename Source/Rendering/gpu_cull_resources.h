@@ -16,8 +16,8 @@ struct GPUInstanceData {
     float4x4 worldMatrix;  // pre-transposed for Slang (for cull shader)
     uint32_t meshletStart;
     uint32_t meshletCount;
+    uint32_t dispatchStart; // prefix-sum start for generic worklist traversal
     uint32_t instanceID;
-    uint32_t pad;
 };
 
 struct CullUniforms {

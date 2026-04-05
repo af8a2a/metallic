@@ -290,6 +290,13 @@ public:
     void dispatchThreadgroups(RhiSize3D threadgroupsPerGrid, RhiSize3D threadsPerThreadgroup) override {
         m_encoder->dispatchThreadgroups(metalSize(threadgroupsPerGrid), metalSize(threadsPerThreadgroup));
     }
+    void dispatchThreadgroupsIndirect(const RhiBuffer& indirectBuffer,
+                                      uint64_t indirectBufferOffset,
+                                      RhiSize3D threadsPerThreadgroup) override {
+        m_encoder->dispatchThreadgroups(static_cast<MTL::Buffer*>(indirectBuffer.nativeHandle()),
+                                        indirectBufferOffset,
+                                        metalSize(threadsPerThreadgroup));
+    }
 
 private:
     MTL::ComputeCommandEncoder* m_encoder = nullptr;

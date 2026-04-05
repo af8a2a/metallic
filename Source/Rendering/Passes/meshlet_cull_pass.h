@@ -43,6 +43,9 @@ public:
         if (name == "visibleMeshlets") return visibleMeshlets;
         if (name == "cullCounter") return cullCounter;
         if (name == "instanceData") return instanceData;
+        if (name == "visibilityWorklist") return visibleMeshlets;
+        if (name == "visibilityIndirectArgs") return cullCounter;
+        if (name == "visibilityInstances") return instanceData;
         return FGResource{};
     }
 
@@ -52,15 +55,16 @@ public:
         m_maxMeshlets = std::max<uint32_t>(1u, computeMaxMeshletCapacity());
         m_maxInstances = std::max<uint32_t>(1u, computeMaxInstanceCapacity());
 
-        FGBufferDesc visibleMeshletDesc =
-            GpuDriven::makeStructuredBufferDesc<MeshletDrawInfo>(m_maxMeshlets,
-                                                                 "VisibleMeshletBuffer",
-                                                                 false);
-        visibleMeshlets = builder.create("visibleMeshlets", visibleMeshletDesc);
-
-        FGBufferDesc counterDesc =
-            GpuDriven::makeDispatchCounterBufferDesc("CullCounterBuffer", true);
-        cullCounter = builder.create("cullCounter", counterDesc);
+        const auto visibleWorklist =
+            GpuDriven::createIndirectWorklist<MeshletDrawInfo>(builder,
+                                                               "visibleMeshlets",
+                                                               "VisibleMeshletBuffer",
+                                                               m_maxMeshlets,
+                                                               "cullCounter",
+                                                               "CullCounterBuffer",
+                                                               true);
+        visibleMeshlets = visibleWorklist.payload;
+        cullCounter = visibleWorklist.state;
 
         FGBufferDesc instanceDataDesc =
             GpuDriven::makeStructuredBufferDesc<GPUInstanceData>(m_maxInstances,
@@ -127,15 +131,16 @@ public:
         if (!visibleMeshletBuffer || !counterBuffer || !instanceDataBuffer) {
             return;
         }
-        GpuDriven::ensureDispatchCounterBufferInitialized(counterBuffer, m_initializedCounterBuffer);
+        GpuDriven::ensureIndirectGridCommandBufferInitialized(counterBuffer, m_initializedCounterBuffer);
 
         // Read back previous frame's visible count (1-frame delayed).
         // build_indirect writes count into the indirect-dispatch X slot, then resets the counter.
         // By this point the previous frame's GPU work is complete.
-        m_lastVisibleCount = GpuDriven::readBuiltDispatchCount(counterBuffer);
+        m_lastVisibleCount = GpuDriven::readBuiltIndirectGridCount(counterBuffer);
 
         // Upload instance data (CPU PU, StorageModeShared)
         auto* instPtr = static_cast<GPUInstanceData*>(instanceDataBuffer->mappedData());
+        uint32_t dispatchStart = 0u;
         for (uint32_t i = 0; i < instanceCount; i++) {
             const auto& node = m_ctx.sceneGraph.nodes[validVisibleNodes[i]];
             float4x4 nodeModelView = m_frameContext->view * node.transform.worldMatrix;
@@ -147,8 +152,9 @@ public:
             inst.worldMatrix = transpose(node.transform.worldMatrix);
             inst.meshletStart = node.meshletStart;
             inst.meshletCount = node.meshletCount;
+            inst.dispatchStart = dispatchStart;
             inst.instanceID = i;
-            inst.pad = 0;
+            dispatchStart += node.meshletCount;
         }
 
         // Build CullUniforms

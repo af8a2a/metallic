@@ -2,7 +2,9 @@
 #define GPU_DRIVEN_CONSTANTS_H
 
 // Shared layout for append/compaction/prefix-sum stages that publish a uint32 count
-// plus a 1D indirect dispatch command into the same byte-address buffer.
+// plus a 1D indirect grid command into the same byte-address buffer.
+// The 3 uint grid payload is valid for both compute dispatch indirect and
+// mesh-shader draw indirect on the current backends.
 #define GPU_DRIVEN_COUNT_OFFSET_BYTES 0u
 #define GPU_DRIVEN_DISPATCH_ARGS_OFFSET_BYTES 4u
 #define GPU_DRIVEN_DISPATCH_X_OFFSET_BYTES 4u
@@ -42,7 +44,7 @@
 
 namespace GpuDriven {
 
-struct DispatchCounterLayout {
+struct IndirectGridCommandLayout {
     static constexpr uint32_t kCountOffset = GPU_DRIVEN_COUNT_OFFSET_BYTES;
     static constexpr uint32_t kIndirectArgsOffset = GPU_DRIVEN_DISPATCH_ARGS_OFFSET_BYTES;
     static constexpr uint32_t kDispatchXOffset = GPU_DRIVEN_DISPATCH_X_OFFSET_BYTES;
@@ -55,6 +57,8 @@ struct DispatchCounterLayout {
     static constexpr uint32_t kDispatchYWord = kDispatchYOffset / sizeof(uint32_t);
     static constexpr uint32_t kDispatchZWord = kDispatchZOffset / sizeof(uint32_t);
 };
+
+using DispatchCounterLayout = IndirectGridCommandLayout;
 
 struct MeshletCullBindings {
     static constexpr uint32_t kUniforms = GPU_DRIVEN_CULL_UNIFORMS_BINDING;
@@ -84,8 +88,8 @@ struct BuildDispatchBindings {
     static constexpr uint32_t kCounter = GPU_DRIVEN_BUILD_DISPATCH_COUNTER_BINDING;
 };
 
-static_assert(DispatchCounterLayout::kBufferSize ==
-              DispatchCounterLayout::kWordCount * sizeof(uint32_t));
+static_assert(IndirectGridCommandLayout::kBufferSize ==
+              IndirectGridCommandLayout::kWordCount * sizeof(uint32_t));
 
 } // namespace GpuDriven
 

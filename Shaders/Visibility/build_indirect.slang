@@ -8,5 +8,5 @@ RWByteAddressBuffer counters; // buffer(GPU_DRIVEN_BUILD_DISPATCH_COUNTER_BINDIN
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void computeMain() {
-    gpuDrivenBuildDispatchArgs1DFromCount(counters);
+    gpuDrivenBuildIndirectGridArgs1DFromCount(counters);
 }

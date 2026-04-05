@@ -49,14 +49,23 @@ public:
             builder.read(cullInput);
         }
         FGResource visibleMeshletsInput = getInput("visibleMeshlets");
+        if (!visibleMeshletsInput.isValid()) {
+            visibleMeshletsInput = getInput("visibilityWorklist");
+        }
         if (visibleMeshletsInput.isValid()) {
             m_visibleMeshletsRead = builder.read(visibleMeshletsInput, FGResourceUsage::StorageRead);
         }
         FGResource cullCounterInput = getInput("cullCounter");
+        if (!cullCounterInput.isValid()) {
+            cullCounterInput = getInput("visibilityIndirectArgs");
+        }
         if (cullCounterInput.isValid()) {
             m_cullCounterRead = builder.read(cullCounterInput, FGResourceUsage::Indirect);
         }
         FGResource instanceDataInput = getInput("instanceData");
+        if (!instanceDataInput.isValid()) {
+            instanceDataInput = getInput("visibilityInstances");
+        }
         if (instanceDataInput.isValid()) {
             m_instanceDataRead = builder.read(instanceDataInput, FGResourceUsage::StorageRead);
         }

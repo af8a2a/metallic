@@ -626,6 +626,21 @@ public:
                       threadgroupsPerGrid.depth);
     }
 
+    void dispatchThreadgroupsIndirect(const RhiBuffer& indirectBuffer,
+                                      uint64_t indirectBufferOffset,
+                                      RhiSize3D /*threadsPerThreadgroup*/) override {
+        requireTrackedBufferState(m_stateTracker,
+                                  getVulkanBufferHandle(&indirectBuffer),
+                                  indirectBufferOffset,
+                                  VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                                  VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+
+        flushDescriptors();
+        vkCmdDispatchIndirect(m_commandBuffer,
+                              getVulkanBufferHandle(&indirectBuffer),
+                              indirectBufferOffset);
+    }
+
 private:
     void transitionPendingTextures() {
         if (!m_stateTracker) {

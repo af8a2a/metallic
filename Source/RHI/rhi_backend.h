@@ -527,6 +527,9 @@ public:
     virtual void useResource(const RhiAccelerationStructure& resource, RhiResourceUsage usage) = 0;
     virtual void memoryBarrier(RhiBarrierScope scope) = 0;
     virtual void dispatchThreadgroups(RhiSize3D threadgroupsPerGrid, RhiSize3D threadsPerThreadgroup) = 0;
+    virtual void dispatchThreadgroupsIndirect(const RhiBuffer& indirectBuffer,
+                                              uint64_t indirectBufferOffset,
+                                              RhiSize3D threadsPerThreadgroup) = 0;
 };
 
 class RhiBlitCommandEncoder {

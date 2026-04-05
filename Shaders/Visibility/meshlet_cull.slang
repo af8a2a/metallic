@@ -58,20 +58,11 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
     if (flatID >= cullUniforms.totalDispatchCount)
         return;
 
-    // Find which instance this thread belongs to via linear scan
-    // (instance count is small, typically <100)
-    uint instIdx = 0;
-    uint remaining = flatID;
-    for (uint i = 0; i < cullUniforms.instanceCount; i++) {
-        if (remaining < instances[i].meshletCount) {
-            instIdx = i;
-            break;
-        }
-        remaining -= instances[i].meshletCount;
-    }
-
+    uint instIdx = gpuDrivenFindInstanceIndexByDispatchOffset(instances,
+                                                              cullUniforms.instanceCount,
+                                                              flatID);
     InstanceData inst = instances[instIdx];
-    uint localMeshletIdx = remaining;
+    uint localMeshletIdx = flatID - inst.dispatchStart;
     uint globalMeshletID = inst.meshletStart + localMeshletIdx;
 
     GPUMeshletBounds b = meshletBounds[globalMeshletID];
@@ -212,7 +203,7 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
     }
 
     if (!culled) {
-        uint slot = gpuDrivenAppendCompactionSlot(counters);
+        uint slot = gpuDrivenAppendWorkItemSlot(counters);
         MeshletDrawInfo info;
         info.instanceID = inst.instanceID;
         info.globalMeshletID = globalMeshletID;

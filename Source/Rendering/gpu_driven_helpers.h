@@ -20,40 +20,82 @@ inline FGBufferDesc makeStructuredBufferDesc(size_t elementCapacity,
     return desc;
 }
 
-inline FGBufferDesc makeDispatchCounterBufferDesc(const char* debugName,
-                                                  bool hostVisible = true) {
+inline FGBufferDesc makeIndirectGridCommandBufferDesc(const char* debugName,
+                                                      bool hostVisible = true) {
     FGBufferDesc desc;
-    desc.size = DispatchCounterLayout::kBufferSize;
+    desc.size = IndirectGridCommandLayout::kBufferSize;
     desc.hostVisible = hostVisible;
     desc.debugName = debugName;
     return desc;
 }
 
-inline uint32_t* dispatchCounterWords(RhiBuffer* buffer) {
-    if (!buffer || buffer->size() < DispatchCounterLayout::kBufferSize) {
+template <typename T>
+struct IndirectWorklistResources {
+    FGResource payload;
+    FGResource state;
+};
+
+template <typename T>
+inline IndirectWorklistResources<T> createIndirectWorklist(FGBuilder& builder,
+                                                           const char* payloadName,
+                                                           const char* payloadDebugName,
+                                                           size_t payloadCapacity,
+                                                           const char* stateName,
+                                                           const char* stateDebugName,
+                                                           bool hostVisibleState = true) {
+    IndirectWorklistResources<T> resources;
+    resources.payload = builder.create(payloadName,
+                                       makeStructuredBufferDesc<T>(payloadCapacity,
+                                                                   payloadDebugName,
+                                                                   false));
+    resources.state = builder.create(stateName,
+                                     makeIndirectGridCommandBufferDesc(stateDebugName,
+                                                                       hostVisibleState));
+    return resources;
+}
+
+inline FGBufferDesc makeDispatchCounterBufferDesc(const char* debugName,
+                                                  bool hostVisible = true) {
+    return makeIndirectGridCommandBufferDesc(debugName, hostVisible);
+}
+
+inline uint32_t* indirectGridCommandWords(RhiBuffer* buffer) {
+    if (!buffer || buffer->size() < IndirectGridCommandLayout::kBufferSize) {
         return nullptr;
     }
     return static_cast<uint32_t*>(buffer->mappedData());
 }
 
-inline const uint32_t* dispatchCounterWords(const RhiBuffer* buffer) {
-    return dispatchCounterWords(const_cast<RhiBuffer*>(buffer));
+inline const uint32_t* indirectGridCommandWords(const RhiBuffer* buffer) {
+    return indirectGridCommandWords(const_cast<RhiBuffer*>(buffer));
 }
 
-inline void seedDispatchCounterBuffer(RhiBuffer* buffer) {
-    uint32_t* words = dispatchCounterWords(buffer);
+inline uint32_t* dispatchCounterWords(RhiBuffer* buffer) {
+    return indirectGridCommandWords(buffer);
+}
+
+inline const uint32_t* dispatchCounterWords(const RhiBuffer* buffer) {
+    return indirectGridCommandWords(buffer);
+}
+
+inline void seedIndirectGridCommandBuffer(RhiBuffer* buffer) {
+    uint32_t* words = indirectGridCommandWords(buffer);
     if (!words) {
         return;
     }
 
-    words[DispatchCounterLayout::kCountWord] = 0u;
-    words[DispatchCounterLayout::kDispatchXWord] = 0u;
-    words[DispatchCounterLayout::kDispatchYWord] = 1u;
-    words[DispatchCounterLayout::kDispatchZWord] = 1u;
+    words[IndirectGridCommandLayout::kCountWord] = 0u;
+    words[IndirectGridCommandLayout::kDispatchXWord] = 0u;
+    words[IndirectGridCommandLayout::kDispatchYWord] = 1u;
+    words[IndirectGridCommandLayout::kDispatchZWord] = 1u;
 }
 
-inline void ensureDispatchCounterBufferInitialized(RhiBuffer* buffer,
-                                                   const RhiBuffer*& initializedBuffer) {
+inline void seedDispatchCounterBuffer(RhiBuffer* buffer) {
+    seedIndirectGridCommandBuffer(buffer);
+}
+
+inline void ensureIndirectGridCommandBufferInitialized(RhiBuffer* buffer,
+                                                       const RhiBuffer*& initializedBuffer) {
     if (!buffer) {
         initializedBuffer = nullptr;
         return;
@@ -63,19 +105,28 @@ inline void ensureDispatchCounterBufferInitialized(RhiBuffer* buffer,
         return;
     }
 
-    seedDispatchCounterBuffer(buffer);
-    if (dispatchCounterWords(buffer)) {
+    seedIndirectGridCommandBuffer(buffer);
+    if (indirectGridCommandWords(buffer)) {
         initializedBuffer = buffer;
     }
 }
 
-inline uint32_t readBuiltDispatchCount(const RhiBuffer* buffer) {
-    const uint32_t* words = dispatchCounterWords(buffer);
+inline void ensureDispatchCounterBufferInitialized(RhiBuffer* buffer,
+                                                   const RhiBuffer*& initializedBuffer) {
+    ensureIndirectGridCommandBufferInitialized(buffer, initializedBuffer);
+}
+
+inline uint32_t readBuiltIndirectGridCount(const RhiBuffer* buffer) {
+    const uint32_t* words = indirectGridCommandWords(buffer);
     if (!words) {
         return 0u;
     }
 
-    return words[DispatchCounterLayout::kDispatchXWord];
+    return words[IndirectGridCommandLayout::kDispatchXWord];
+}
+
+inline uint32_t readBuiltDispatchCount(const RhiBuffer* buffer) {
+    return readBuiltIndirectGridCount(buffer);
 }
 
 } // namespace GpuDriven
