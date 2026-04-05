@@ -167,7 +167,10 @@ public:
                                IVulkanDescriptorBackend* descriptorManager,
                                VulkanResourceStateTracker* stateTracker,
                                VulkanGpuProfiler* gpuProfiler,
-                               const char* label)
+                               const char* label,
+                               const VkRenderingInfo& renderingInfo,
+                               const std::array<VkRenderingAttachmentInfo, 8>& colorAttachments,
+                               const VkRenderingAttachmentInfo* depthAttachment)
         : m_commandBuffer(commandBuffer), m_device(device),
           m_descriptorManager(descriptorManager), m_stateTracker(stateTracker),
           m_gpuProfiler(gpuProfiler) {
@@ -176,17 +179,34 @@ public:
         m_pendingTextures.fill({});
         m_pendingSamplers.fill({});
         m_pendingAccelerationStructures.fill({});
-        vulkanBeginDebugLabel(m_commandBuffer, label);
-        if (m_gpuProfiler) {
-            m_gpuProfiler->beginScope(m_commandBuffer, label, m_gpuScope, true);
+        m_renderingInfo = renderingInfo;
+        m_colorAttachments = colorAttachments;
+        m_renderingInfo.pColorAttachments = m_colorAttachments.data();
+        if (depthAttachment) {
+            m_depthAttachment = *depthAttachment;
+            m_renderingInfo.pDepthAttachment = &m_depthAttachment;
+            m_hasDepthAttachment = true;
+        } else {
+            m_renderingInfo.pDepthAttachment = nullptr;
         }
+
+        m_viewport.x = 0.0f;
+        m_viewport.y = static_cast<float>(m_renderingInfo.renderArea.extent.height);
+        m_viewport.width = static_cast<float>(m_renderingInfo.renderArea.extent.width);
+        m_viewport.height = -static_cast<float>(m_renderingInfo.renderArea.extent.height);
+        m_viewport.minDepth = 0.0f;
+        m_viewport.maxDepth = 1.0f;
+        m_scissor = m_renderingInfo.renderArea;
+
+        vulkanBeginDebugLabel(m_commandBuffer, label);
+        m_gpuScopeLabel = label ? label : "Render Pass";
     }
 
     ~VulkanRenderCommandEncoder() override {
-        if (m_gpuProfiler) {
+        if (m_gpuProfiler && m_gpuScope.active) {
             m_gpuProfiler->endScope(m_commandBuffer, m_gpuScope);
         }
-        if (m_commandBuffer != VK_NULL_HANDLE) {
+        if (m_commandBuffer != VK_NULL_HANDLE && m_renderingBegun) {
             vkCmdEndRendering(m_commandBuffer);
         }
         vulkanEndDebugLabel(m_commandBuffer);
@@ -195,40 +215,51 @@ public:
     void* nativeHandle() const override { return m_commandBuffer; }
 
     void setViewport(float width, float height, bool flipY = true) override {
-        VkViewport viewport{};
-        viewport.x = 0.0f;
-        viewport.width = width;
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
+        m_viewport = {};
+        m_viewport.x = 0.0f;
+        m_viewport.width = width;
+        m_viewport.minDepth = 0.0f;
+        m_viewport.maxDepth = 1.0f;
         if (flipY) {
-            viewport.y = height;
-            viewport.height = -height;
+            m_viewport.y = height;
+            m_viewport.height = -height;
         } else {
-            viewport.y = 0.0f;
-            viewport.height = height;
+            m_viewport.y = 0.0f;
+            m_viewport.height = height;
         }
-        vkCmdSetViewport(m_commandBuffer, 0, 1, &viewport);
+
+        if (m_renderingBegun) {
+            vkCmdSetViewport(m_commandBuffer, 0, 1, &m_viewport);
+        }
     }
 
     void setDepthStencilState(const RhiDepthStencilState* /*state*/) override {}
 
     void setFrontFacingWinding(RhiWinding winding) override {
-        vkCmdSetFrontFace(m_commandBuffer,
-            winding == RhiWinding::Clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+        m_frontFace =
+            winding == RhiWinding::Clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        if (m_renderingBegun) {
+            vkCmdSetFrontFace(m_commandBuffer, m_frontFace);
+        }
     }
 
     void setCullMode(RhiCullMode cullMode) override {
-        VkCullModeFlags vkCull = VK_CULL_MODE_NONE;
-        if (cullMode == RhiCullMode::Front) vkCull = VK_CULL_MODE_FRONT_BIT;
-        else if (cullMode == RhiCullMode::Back) vkCull = VK_CULL_MODE_BACK_BIT;
-        vkCmdSetCullMode(m_commandBuffer, vkCull);
+        m_cullMode = VK_CULL_MODE_NONE;
+        if (cullMode == RhiCullMode::Front) m_cullMode = VK_CULL_MODE_FRONT_BIT;
+        else if (cullMode == RhiCullMode::Back) m_cullMode = VK_CULL_MODE_BACK_BIT;
+        if (m_renderingBegun) {
+            vkCmdSetCullMode(m_commandBuffer, m_cullMode);
+        }
     }
 
     void setRenderPipeline(const RhiGraphicsPipeline& pipeline) override {
         m_boundPipeline = getVulkanPipelineResource(pipeline);
-        vulkanCmdBindPipelineHooked(m_commandBuffer,
-                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    getVulkanPipelineHandle(pipeline));
+        m_boundPipelineHandle = getVulkanPipelineHandle(pipeline);
+        if (m_renderingBegun && m_boundPipelineHandle != VK_NULL_HANDLE) {
+            vulkanCmdBindPipelineHooked(m_commandBuffer,
+                                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        m_boundPipelineHandle);
+        }
     }
 
     void setVertexBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override {
@@ -367,11 +398,43 @@ public:
             return;
         }
         if (m_commandBuffer != VK_NULL_HANDLE) {
+            ensureRenderingStarted();
             ImGui_ImplVulkan_RenderDrawData(drawData, m_commandBuffer);
         }
     }
 
 private:
+    void ensureRenderingStarted() {
+        if (m_renderingBegun) {
+            return;
+        }
+
+        transitionPendingTextures();
+        transitionPendingBuffers(VK_PIPELINE_BIND_POINT_GRAPHICS);
+
+        if (m_stateTracker) {
+            m_stateTracker->flushBarriers(m_commandBuffer);
+        }
+
+        vkCmdBeginRendering(m_commandBuffer, &m_renderingInfo);
+        m_renderingBegun = true;
+
+        if (m_gpuProfiler && !m_gpuScope.active) {
+            m_gpuProfiler->beginScope(m_commandBuffer, m_gpuScopeLabel.c_str(), m_gpuScope, true);
+        }
+
+        vkCmdSetViewport(m_commandBuffer, 0, 1, &m_viewport);
+        vkCmdSetScissor(m_commandBuffer, 0, 1, &m_scissor);
+        vkCmdSetCullMode(m_commandBuffer, m_cullMode);
+        vkCmdSetFrontFace(m_commandBuffer, m_frontFace);
+
+        if (m_boundPipelineHandle != VK_NULL_HANDLE) {
+            vulkanCmdBindPipelineHooked(m_commandBuffer,
+                                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        m_boundPipelineHandle);
+        }
+    }
+
     void transitionPendingTextures() {
         if (!m_stateTracker) {
             return;
@@ -405,7 +468,7 @@ private:
             for (uint32_t logicalIndex = 0; logicalIndex < kMaxBufferBindings; ++logicalIndex) {
                 const auto& location = m_boundPipeline->bufferBindings[logicalIndex];
                 const auto& binding = m_pendingBuffers[logicalIndex];
-                if (!location.valid() || binding.buffer == VK_NULL_HANDLE) {
+                if (!location.valid() || binding.buffer == VK_NULL_HANDLE || !binding.trackState) {
                     continue;
                 }
 
@@ -431,13 +494,7 @@ private:
     }
 
     void flushDescriptors(VkPipelineBindPoint bindPoint) {
-        transitionPendingTextures();
-        transitionPendingBuffers(bindPoint);
-
-        // Dynamic rendering only permits memory barriers in-pass.
-        if (m_stateTracker) {
-            m_stateTracker->flushRenderPassBarriers(m_commandBuffer);
-        }
+        ensureRenderingStarted();
 
         if (m_descriptorManager && m_boundPipeline) {
             m_descriptorManager->flushAndBind(m_commandBuffer,
@@ -456,7 +513,18 @@ private:
     VulkanResourceStateTracker* m_stateTracker = nullptr;
     VulkanGpuProfiler* m_gpuProfiler = nullptr;
     VulkanGpuProfiler::ScopeHandle m_gpuScope{};
+    std::string m_gpuScopeLabel;
+    bool m_renderingBegun = false;
+    VkRenderingInfo m_renderingInfo{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    std::array<VkRenderingAttachmentInfo, 8> m_colorAttachments{};
+    VkRenderingAttachmentInfo m_depthAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    bool m_hasDepthAttachment = false;
+    VkViewport m_viewport{};
+    VkRect2D m_scissor{};
+    VkCullModeFlags m_cullMode = VK_CULL_MODE_BACK_BIT;
+    VkFrontFace m_frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     const VulkanPipelineResource* m_boundPipeline = nullptr;
+    VkPipeline m_boundPipelineHandle = VK_NULL_HANDLE;
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingVertexBuffers{};
     std::array<PendingBufferBinding, kMaxBufferBindings> m_pendingBuffers{};
     std::array<PendingTextureBinding, kMaxTextureBindings> m_pendingTextures{};
@@ -673,7 +741,7 @@ private:
         for (uint32_t logicalIndex = 0; logicalIndex < kMaxBufferBindings; ++logicalIndex) {
             const auto& location = m_boundPipeline->bufferBindings[logicalIndex];
             const auto& binding = m_pendingBuffers[logicalIndex];
-            if (!location.valid() || binding.buffer == VK_NULL_HANDLE) {
+            if (!location.valid() || binding.buffer == VK_NULL_HANDLE || !binding.trackState) {
                 continue;
             }
 
@@ -1161,30 +1229,17 @@ std::unique_ptr<RhiRenderCommandEncoder> VulkanCommandBuffer::beginRenderPass(co
         renderingInfo.pDepthAttachment = &depthAttachment;
     }
 
-    vkCmdBeginRendering(m_commandBuffer, &renderingInfo);
-
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = static_cast<float>(renderingInfo.renderArea.extent.height);
-    viewport.width = static_cast<float>(renderingInfo.renderArea.extent.width);
-    viewport.height = -static_cast<float>(renderingInfo.renderArea.extent.height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(m_commandBuffer, 0, 1, &viewport);
-
-    VkRect2D scissor{};
-    scissor.offset = renderingInfo.renderArea.offset;
-    scissor.extent = renderingInfo.renderArea.extent;
-    vkCmdSetScissor(m_commandBuffer, 0, 1, &scissor);
-    vkCmdSetCullMode(m_commandBuffer, VK_CULL_MODE_BACK_BIT);
-    vkCmdSetFrontFace(m_commandBuffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
-
     return std::make_unique<VulkanRenderCommandEncoder>(m_commandBuffer,
                                                         m_device,
                                                         m_descriptorManager,
                                                         m_stateTracker,
                                                         m_gpuProfiler,
-                                                        desc.label);
+                                                        desc.label,
+                                                        renderingInfo,
+                                                        colorAttachments,
+                                                        desc.depthAttachment.bound && desc.depthAttachment.texture
+                                                            ? &depthAttachment
+                                                            : nullptr);
 }
 
 std::unique_ptr<RhiComputeCommandEncoder> VulkanCommandBuffer::beginComputePass(const RhiComputePassDesc& desc) {

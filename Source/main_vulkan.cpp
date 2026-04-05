@@ -144,6 +144,7 @@ bool loadSponzaScene(const RhiDevice& device,
                      SceneGraph& outScene,
                      ClusterLODData& outLOD) {
     const std::string gltfPath = std::string(projectRoot) + "/Asset/Sponza/glTF/Sponza.gltf";
+    const std::string meshletCacheDir = std::string(projectRoot) + "/Asset/MeshletCache";
 
     releaseMaterialResources(outMaterials);
     releaseMeshletBuffers(outMeshlets);
@@ -158,8 +159,8 @@ bool loadSponzaScene(const RhiDevice& device,
         return false;
     }
 
-    if (!buildMeshlets(device, outMesh, outMeshlets)) {
-        spdlog::error("Failed to build Vulkan meshlets: {}", gltfPath);
+    if (!loadOrBuildMeshlets(device, outMesh, gltfPath, meshletCacheDir, outMeshlets)) {
+        spdlog::error("Failed to load or build Vulkan meshlets: {}", gltfPath);
         releaseMeshBuffers(outMesh);
         outMesh = LoadedMesh{};
         return false;
@@ -185,8 +186,8 @@ bool loadSponzaScene(const RhiDevice& device,
         return false;
     }
 
-    if (!outScene.normalizeSingleRootScale(device, outMesh, outMeshlets)) {
-        spdlog::error("Failed to normalize Vulkan scene root scale: {}", gltfPath);
+    if (!outScene.applyBakedSingleRootScale(outMesh)) {
+        spdlog::error("Failed to apply baked Vulkan scene root scale: {}", gltfPath);
         releaseMaterialResources(outMaterials);
         releaseMeshletBuffers(outMeshlets);
         releaseMeshBuffers(outMesh);

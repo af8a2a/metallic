@@ -7,7 +7,6 @@
 
 struct LoadedMesh;
 struct MeshletData;
-class RhiDevice;
 
 enum class LightType : uint8_t {
     Directional = 0
@@ -74,9 +73,7 @@ public:
     bool buildFromGLTF(const std::string& gltfPath,
                        const LoadedMesh& mesh,
                        const MeshletData& meshletData);
-    bool normalizeSingleRootScale(const RhiDevice& device,
-                                  LoadedMesh& mesh,
-                                  MeshletData& meshletData);
+    bool applyBakedSingleRootScale(const LoadedMesh& mesh);
     void updateTransforms();
     void markDirty(uint32_t nodeId);
     bool isNodeVisible(uint32_t nodeId) const;

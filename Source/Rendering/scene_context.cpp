@@ -176,14 +176,15 @@ SceneContext::~SceneContext() {
 
 bool SceneContext::loadAll(const char* gltfPath) {
     ZoneScopedN("SceneContext::loadAll");
+    const std::string meshletCacheDir = m_projectRoot + "/Asset/MeshletCache";
 
     if (!loadGLTFMesh(m_device, gltfPath, m_mesh)) {
         spdlog::error("Failed to load scene mesh");
         return false;
     }
 
-    if (!buildMeshlets(m_device, m_mesh, m_meshlets)) {
-        spdlog::error("Failed to build meshlets");
+    if (!loadOrBuildMeshlets(m_device, m_mesh, gltfPath, meshletCacheDir, m_meshlets)) {
+        spdlog::error("Failed to load or build meshlets");
         return false;
     }
 
@@ -196,8 +197,8 @@ bool SceneContext::loadAll(const char* gltfPath) {
         spdlog::error("Failed to build scene graph");
         return false;
     }
-    if (!m_sceneGraph.normalizeSingleRootScale(m_device, m_mesh, m_meshlets)) {
-        spdlog::error("Failed to normalize scene root scale");
+    if (!m_sceneGraph.applyBakedSingleRootScale(m_mesh)) {
+        spdlog::error("Failed to apply baked scene root scale");
         return false;
     }
     m_sceneGraph.updateTransforms();

@@ -25,6 +25,36 @@
       ]
     },
     {
+      "id": "0000000000000000000000000000000b",
+      "name": "Visible Meshlets",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        60.0,
+        120.0
+      ]
+    },
+    {
+      "id": "0000000000000000000000000000000c",
+      "name": "Cull Counter",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        60.0,
+        155.0
+      ]
+    },
+    {
+      "id": "0000000000000000000000000000000d",
+      "name": "Instance Data",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        60.0,
+        225.0
+      ]
+    },
+    {
       "id": "00000000000000000000000000000003",
       "name": "Visibility",
       "kind": "transient",
@@ -281,6 +311,48 @@
       "slotKey": "cullResult",
       "direction": "input",
       "resourceId": "00000000000000000000000000000002"
+    },
+    {
+      "id": "3e82e5faec4f42be9b2b924c2fe5c2f1",
+      "passId": "10000000000000000000000000000001",
+      "slotKey": "visibleMeshlets",
+      "direction": "output",
+      "resourceId": "0000000000000000000000000000000b"
+    },
+    {
+      "id": "7fa0fc57cbf948e0a0875df96cfbf257",
+      "passId": "10000000000000000000000000000001",
+      "slotKey": "cullCounter",
+      "direction": "output",
+      "resourceId": "0000000000000000000000000000000c"
+    },
+    {
+      "id": "91b690f522f4467084d55e17b44351df",
+      "passId": "10000000000000000000000000000001",
+      "slotKey": "instanceData",
+      "direction": "output",
+      "resourceId": "0000000000000000000000000000000d"
+    },
+    {
+      "id": "315aa48050fc43658b31c148e3aa1f92",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "visibleMeshlets",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000b"
+    },
+    {
+      "id": "1bf47c73ee1f4b998bba3bd083748198",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "cullCounter",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000c"
+    },
+    {
+      "id": "4d27a321fe6d4f6d9d9204fe2c8cb2c3",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "instanceData",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000d"
     },
     {
       "id": "20000000000000000000000000000003",

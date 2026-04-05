@@ -235,6 +235,7 @@ PendingBufferBinding VulkanDescriptorBufferManager::uploadInlineUniformData(cons
     binding.offset = alignedOffset;
     binding.range = size;
     binding.dirty = true;
+    binding.trackState = false;
     return binding;
 }
 

@@ -9,10 +9,112 @@
 #include <vector>
 #include <cfloat>
 #include <algorithm>
+#include <cmath>
+
+namespace {
+
+bool nearlyZero(double value, double epsilon = 1e-5) {
+    return std::fabs(value) <= epsilon;
+}
+
+bool nearlyOne(double value, double epsilon = 1e-5) {
+    return std::fabs(value - 1.0) <= epsilon;
+}
+
+bool isIdentityRotation(const cgltf_node& node, double epsilon = 1e-5) {
+    if (!node.has_rotation) {
+        return true;
+    }
+
+    return nearlyZero(node.rotation[0], epsilon) &&
+           nearlyZero(node.rotation[1], epsilon) &&
+           nearlyZero(node.rotation[2], epsilon) &&
+           nearlyOne(std::fabs(node.rotation[3]), epsilon);
+}
+
+bool hasIdentityTransform(const cgltf_node& node, double epsilon = 1e-5) {
+    if (node.has_matrix) {
+        return false;
+    }
+
+    const bool identityTranslation =
+        !node.has_translation ||
+        (nearlyZero(node.translation[0], epsilon) &&
+         nearlyZero(node.translation[1], epsilon) &&
+         nearlyZero(node.translation[2], epsilon));
+    const bool identityScale =
+        !node.has_scale ||
+        (nearlyOne(node.scale[0], epsilon) &&
+         nearlyOne(node.scale[1], epsilon) &&
+         nearlyOne(node.scale[2], epsilon));
+    return identityTranslation && isIdentityRotation(node, epsilon) && identityScale;
+}
+
+bool descendantsHaveIdentityTransforms(const cgltf_node& node) {
+    for (cgltf_size childIndex = 0; childIndex < node.children_count; ++childIndex) {
+        const cgltf_node& child = *node.children[childIndex];
+        if (!hasIdentityTransform(child) || !descendantsHaveIdentityTransforms(child)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool tryGetSingleRootBakeScale(const cgltf_data* data, float& outScale) {
+    outScale = 1.0f;
+
+    if (!data || data->scenes_count == 0) {
+        return false;
+    }
+
+    const cgltf_scene& scene = data->scene ? *data->scene : data->scenes[0];
+    if (scene.nodes_count != 1) {
+        return false;
+    }
+
+    const cgltf_node& root = *scene.nodes[0];
+    if (root.has_matrix) {
+        return false;
+    }
+
+    const bool hasIdentityTranslation =
+        !root.has_translation ||
+        (nearlyZero(root.translation[0]) &&
+         nearlyZero(root.translation[1]) &&
+         nearlyZero(root.translation[2]));
+    const bool hasIdentityRotation = isIdentityRotation(root);
+    const double scaleX = root.has_scale ? root.scale[0] : 1.0;
+    const double scaleY = root.has_scale ? root.scale[1] : 1.0;
+    const double scaleZ = root.has_scale ? root.scale[2] : 1.0;
+    const bool hasUniformPositiveScale =
+        scaleX > 1e-6 &&
+        std::fabs(scaleX - scaleY) <= 1e-5 &&
+        std::fabs(scaleX - scaleZ) <= 1e-5;
+
+    if (!hasIdentityTranslation ||
+        !hasIdentityRotation ||
+        !hasUniformPositiveScale ||
+        nearlyOne(scaleX) ||
+        !descendantsHaveIdentityTransforms(root)) {
+        return false;
+    }
+
+    outScale = static_cast<float>(scaleX);
+    return true;
+}
+
+} // namespace
 
 bool loadGLTFMesh(const RhiDevice& device, const std::string& gltfPath, LoadedMesh& out) {
     cgltf_options options = {};
     cgltf_data* data = nullptr;
+    out.cpuPositions.clear();
+    out.cpuIndices.clear();
+    out.primitiveGroups.clear();
+    out.meshRanges.clear();
+    out.hasBakedRootScale = false;
+    out.bakedRootScale = 1.0f;
 
     cgltf_result result = cgltf_parse_file(&options, gltfPath.c_str(), &data);
     if (result != cgltf_result_success) {
@@ -143,6 +245,22 @@ bool loadGLTFMesh(const RhiDevice& device, const std::string& gltfPath, LoadedMe
 
     out.cpuPositions = std::move(allPositions);
     out.cpuIndices = std::move(allIndices);
+
+    float bakeScale = 1.0f;
+    if (tryGetSingleRootBakeScale(data, bakeScale)) {
+        for (float& position : out.cpuPositions) {
+            position *= bakeScale;
+        }
+
+        for (int axis = 0; axis < 3; ++axis) {
+            bboxMin[axis] *= bakeScale;
+            bboxMax[axis] *= bakeScale;
+        }
+
+        out.hasBakedRootScale = true;
+        out.bakedRootScale = bakeScale;
+        spdlog::info("Baked single-root scale {} into mesh data for {}", bakeScale, gltfPath);
+    }
 
     out.positionBuffer = rhiCreateSharedBuffer(
         device, out.cpuPositions.data(), out.cpuPositions.size() * sizeof(float), "Mesh Positions");

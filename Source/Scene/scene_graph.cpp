@@ -3,7 +3,6 @@
 #include "scene_graph.h"
 #include "mesh_loader.h"
 #include "meshlet_builder.h"
-#include "rhi_resource_utils.h"
 #include <cgltf.h>
 #include <algorithm>
 #include <cfloat>
@@ -129,38 +128,6 @@ static bool descendantsHaveIdentityTransforms(const SceneGraph& scene, uint32_t 
     }
 
     return true;
-}
-
-static void recomputeMeshBounds(LoadedMesh& mesh) {
-    if (mesh.cpuPositions.empty()) {
-        return;
-    }
-
-    float bboxMin[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
-    float bboxMax[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-    for (size_t i = 0; i + 2 < mesh.cpuPositions.size(); i += 3) {
-        bboxMin[0] = std::min(bboxMin[0], mesh.cpuPositions[i + 0]);
-        bboxMin[1] = std::min(bboxMin[1], mesh.cpuPositions[i + 1]);
-        bboxMin[2] = std::min(bboxMin[2], mesh.cpuPositions[i + 2]);
-        bboxMax[0] = std::max(bboxMax[0], mesh.cpuPositions[i + 0]);
-        bboxMax[1] = std::max(bboxMax[1], mesh.cpuPositions[i + 1]);
-        bboxMax[2] = std::max(bboxMax[2], mesh.cpuPositions[i + 2]);
-    }
-
-    for (int axis = 0; axis < 3; ++axis) {
-        mesh.bboxMin[axis] = bboxMin[axis];
-        mesh.bboxMax[axis] = bboxMax[axis];
-    }
-}
-
-static void releaseMeshletHandles(MeshletData& meshletData) {
-    rhiReleaseHandle(meshletData.meshletBuffer);
-    rhiReleaseHandle(meshletData.meshletVertices);
-    rhiReleaseHandle(meshletData.meshletTriangles);
-    rhiReleaseHandle(meshletData.boundsBuffer);
-    rhiReleaseHandle(meshletData.materialIDs);
-    meshletData.meshletCount = 0;
-    meshletData.meshletsPerGroup.clear();
 }
 
 static std::string makeNodeName(const cgltf_node* gltfNode, uint32_t nodeIndex) {
@@ -368,10 +335,8 @@ bool SceneGraph::buildFromGLTF(const std::string& gltfPath,
     return true;
 }
 
-bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
-                                          LoadedMesh& mesh,
-                                          MeshletData& meshletData) {
-    if (mesh.cpuPositions.empty()) {
+bool SceneGraph::applyBakedSingleRootScale(const LoadedMesh& mesh) {
+    if (!mesh.hasBakedRootScale || nearlyOne(mesh.bakedRootScale)) {
         return true;
     }
 
@@ -384,12 +349,16 @@ bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
     }
 
     if (sceneRoots.size() != 1) {
-        return true;
+        spdlog::error("SceneGraph: Expected one scene root for baked root scale {}, found {}",
+                      mesh.bakedRootScale,
+                      sceneRoots.size());
+        return false;
     }
 
     const uint32_t rootId = sceneRoots.front();
     if (rootId >= nodes.size()) {
-        return true;
+        spdlog::error("SceneGraph: Invalid root node {} for baked root scale {}", rootId, mesh.bakedRootScale);
+        return false;
     }
 
     SceneNode& rootNode = nodes[rootId];
@@ -408,79 +377,13 @@ bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
         !hasIdentityTranslation ||
         !hasIdentityRotation ||
         !hasUniformPositiveScale ||
-        nearlyOne(transform.scale.x) ||
+        std::fabs(transform.scale.x - mesh.bakedRootScale) > 1e-5f ||
         !descendantsHaveIdentityTransforms(*this, rootId)) {
-        return true;
-    }
-
-    LoadedMesh scaledMesh;
-    scaledMesh.cpuPositions = mesh.cpuPositions;
-    scaledMesh.cpuIndices = mesh.cpuIndices;
-    scaledMesh.vertexCount = mesh.vertexCount;
-    scaledMesh.indexCount = mesh.indexCount;
-    scaledMesh.primitiveGroups = mesh.primitiveGroups;
-    scaledMesh.meshRanges = mesh.meshRanges;
-
-    const float scale = transform.scale.x;
-    for (float& value : scaledMesh.cpuPositions) {
-        value *= scale;
-    }
-    recomputeMeshBounds(scaledMesh);
-
-    MeshletData rebuiltMeshlets;
-    if (!buildMeshlets(device, scaledMesh, rebuiltMeshlets)) {
-        spdlog::error("SceneGraph: Failed to rebuild meshlets while normalizing root scale");
+        spdlog::error("SceneGraph: Baked root scale {} no longer matches scene root '{}'",
+                      mesh.bakedRootScale,
+                      rootNode.name);
         return false;
     }
-
-    RhiBufferHandle rebuiltPositionBuffer = rhiCreateSharedBuffer(
-        device,
-        scaledMesh.cpuPositions.data(),
-        scaledMesh.cpuPositions.size() * sizeof(float),
-        "Mesh Positions");
-    if (!rebuiltPositionBuffer.nativeHandle()) {
-        releaseMeshletHandles(rebuiltMeshlets);
-        spdlog::error("SceneGraph: Failed to rebuild position buffer while normalizing root scale");
-        return false;
-    }
-
-    if (!meshletData.meshletsPerGroup.empty() &&
-        meshletData.meshletsPerGroup != rebuiltMeshlets.meshletsPerGroup) {
-        spdlog::warn("SceneGraph: Root scale normalization changed meshlet group counts "
-                     "(old {} groups, new {} groups) — rebuilding node mappings",
-                     meshletData.meshletsPerGroup.size(),
-                     rebuiltMeshlets.meshletsPerGroup.size());
-
-        // Rebuild prefix sums from new meshlet counts
-        std::vector<uint32_t> newPrefix(mesh.primitiveGroups.size() + 1, 0);
-        for (size_t i = 0; i < mesh.primitiveGroups.size(); i++) {
-            uint32_t count = (i < rebuiltMeshlets.meshletsPerGroup.size())
-                ? rebuiltMeshlets.meshletsPerGroup[i] : 0;
-            newPrefix[i + 1] = newPrefix[i] + count;
-        }
-
-        // Update each node's meshletStart/meshletCount
-        for (auto& node : nodes) {
-            if (node.primitiveGroupCount == 0) continue;
-            uint32_t firstGroup = node.primitiveGroupStart;
-            uint32_t lastGroup = firstGroup + node.primitiveGroupCount;
-            if (firstGroup < newPrefix.size() && lastGroup < newPrefix.size()) {
-                node.meshletStart = newPrefix[firstGroup];
-                node.meshletCount = newPrefix[lastGroup] - newPrefix[firstGroup];
-            }
-        }
-    }
-
-    mesh.cpuPositions = std::move(scaledMesh.cpuPositions);
-    for (int axis = 0; axis < 3; ++axis) {
-        mesh.bboxMin[axis] = scaledMesh.bboxMin[axis];
-        mesh.bboxMax[axis] = scaledMesh.bboxMax[axis];
-    }
-
-    rhiReleaseHandle(mesh.positionBuffer);
-    mesh.positionBuffer = rebuiltPositionBuffer;
-    releaseMeshletHandles(meshletData);
-    meshletData = std::move(rebuiltMeshlets);
 
     transform.translation = float3(0.f, 0.f, 0.f);
     transform.rotation = float4(0.f, 0.f, 0.f, 1.f);
@@ -490,7 +393,9 @@ bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
     transform.useLocalMatrix = false;
 
     markDirty(rootId);
-    spdlog::info("SceneGraph: Baked root scale {} into mesh data for '{}'", scale, rootNode.name);
+    spdlog::info("SceneGraph: Applied baked root scale {} for '{}'",
+                 mesh.bakedRootScale,
+                 rootNode.name);
     return true;
 }
 

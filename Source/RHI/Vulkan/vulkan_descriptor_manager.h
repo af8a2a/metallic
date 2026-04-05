@@ -49,6 +49,7 @@ struct PendingBufferBinding {
     VkDeviceSize offset = 0;
     VkDeviceSize range = VK_WHOLE_SIZE;
     bool dirty = false;
+    bool trackState = true;
 };
 
 struct PendingTextureBinding {
