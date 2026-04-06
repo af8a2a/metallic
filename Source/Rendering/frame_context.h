@@ -12,6 +12,7 @@
 class RhiTexture;
 class RhiBuffer;
 class RhiFrameGraphBackend;
+class ClusterStreamingService;
 enum class DlssPreset : uint32_t;
 
 struct PipelineUiControls {
@@ -132,6 +133,9 @@ struct PipelineRuntimeContext {
 
     // Resource creation for pass-owned persistent resources
     RhiFrameGraphBackend* resourceFactory = nullptr;
+
+    // Shared streaming state used by authored update/request/render passes.
+    ClusterStreamingService* clusterStreamingService = nullptr;
 
     // Vulkan bindless/material indexing rollout toggle.
     bool useBindlessSceneTextures = false;

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "camera.h"
+#include "cluster_streaming_service.h"
 #include "frame_context.h"
 #include "frame_graph.h"
 #include "nsight_markers.h"
@@ -1361,6 +1362,8 @@ int main() {
     }
 
     PipelineRuntimeContext& runtimeContext = shaderManager.runtimeContext();
+    ClusterStreamingService clusterStreamingService;
+    runtimeContext.clusterStreamingService = &clusterStreamingService;
     auto hasRenderPipeline = [&](const char* name) {
         auto it = runtimeContext.renderPipelinesRhi.find(name);
         return it != runtimeContext.renderPipelinesRhi.end() && it->second.nativeHandle() != nullptr;
@@ -1600,7 +1603,8 @@ int main() {
 
     auto logVisibilityMode = [&]() {
         if (useVisibilityRenderGraph) {
-            std::string mode = "Vulkan RenderGraph mode: MeshletCullPass -> VisibilityPass -> SkyPass -> DeferredLightingPass";
+            std::string mode =
+                "Vulkan RenderGraph mode: ClusterStreamingUpdatePass -> MeshletCullPass -> VisibilityPass -> SkyPass -> DeferredLightingPass";
             if (visibilityUpscalerMode == VisibilityUpscalerMode::TAA) {
                 mode += " -> TAAPass";
             } else if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) {

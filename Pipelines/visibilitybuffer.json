@@ -25,6 +25,16 @@
       ]
     },
     {
+      "id": "0000000000000000000000000000000e",
+      "name": "Streaming Sync",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [
+        60.0,
+        12.0
+      ]
+    },
+    {
       "id": "0000000000000000000000000000000b",
       "name": "Visible Meshlets",
       "kind": "transient",
@@ -165,6 +175,18 @@
   ],
   "passes": [
     {
+      "id": "f05a7d327b7d4e72a8f20438a6c40101",
+      "name": "Cluster Streaming Update 1",
+      "type": "ClusterStreamingUpdatePass",
+      "enabled": true,
+      "sideEffect": true,
+      "config": null,
+      "editorPos": [
+        -283.0,
+        -108.0
+      ]
+    },
+    {
       "id": "10000000000000000000000000000001",
       "name": "Meshlet Cull 1",
       "type": "MeshletCullPass",
@@ -298,6 +320,20 @@
     }
   ],
   "edges": [
+    {
+      "id": "5cfec856945b4ebb9387f7f63126bf01",
+      "passId": "f05a7d327b7d4e72a8f20438a6c40101",
+      "slotKey": "streamingSync",
+      "direction": "output",
+      "resourceId": "0000000000000000000000000000000e"
+    },
+    {
+      "id": "3fd53e84a8704a709537a8feee14e001",
+      "passId": "10000000000000000000000000000001",
+      "slotKey": "streamingSync",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000e"
+    },
     {
       "id": "20000000000000000000000000000001",
       "passId": "10000000000000000000000000000001",

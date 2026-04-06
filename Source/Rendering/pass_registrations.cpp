@@ -14,6 +14,7 @@
 #include "forward_pass.h"
 #include "hzb_build_pass.h"
 #include "blit_pass.h"
+#include "cluster_streaming_update_pass.h"
 #include "output_pass.h"
 #include "meshlet_cull_pass.h"
 #include "meshlet_visualize_pass.h"
@@ -23,8 +24,16 @@
 // Register all passes with factories for data-driven pipeline building
 
 // Geometry passes
-REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
+REGISTER_COMPUTE_PASS(ClusterStreamingUpdatePass, "Cluster Streaming Update", "Geometry",
     (std::vector<PassSlotInfo>{}),
+    (std::vector<PassSlotInfo>{
+        makeOutputSlot("streamingSync", "Streaming Sync", true)
+    }));
+
+REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
+    (std::vector<PassSlotInfo>{
+        makeInputSlot("streamingSync", "Streaming Sync", true)
+    }),
     (std::vector<PassSlotInfo>{
         makeOutputSlot("cullResult", "Cull Result", true),
         makeOutputSlot("visibleMeshlets", "Visible Meshlets", true),

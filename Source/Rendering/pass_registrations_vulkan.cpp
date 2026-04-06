@@ -5,6 +5,7 @@
 #include "forward_pass.h"
 #include "imgui_overlay_pass.h"
 #include "hzb_build_pass.h"
+#include "cluster_streaming_update_pass.h"
 #include "meshlet_cull_pass.h"
 #include "output_pass.h"
 #include "pass_registry.h"
@@ -30,8 +31,16 @@ REGISTER_RENDER_PASS(ForwardPass, "Forward Pass", "Geometry",
         makeOutputSlot("depth", "Depth")
     }));
 
-REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
+REGISTER_COMPUTE_PASS(ClusterStreamingUpdatePass, "Cluster Streaming Update", "Geometry",
     (std::vector<PassSlotInfo>{}),
+    (std::vector<PassSlotInfo>{
+        makeOutputSlot("streamingSync", "Streaming Sync", true)
+    }));
+
+REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
+    (std::vector<PassSlotInfo>{
+        makeInputSlot("streamingSync", "Streaming Sync", true)
+    }),
     (std::vector<PassSlotInfo>{
         makeOutputSlot("cullResult", "Cull Result", true),
         makeOutputSlot("visibleMeshlets", "Visible Meshlets", true),
