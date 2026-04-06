@@ -1533,6 +1533,7 @@ int main() {
             hasComputePipeline("HistogramPass") && hasComputePipeline("AutoExposurePass");
         visibilityTaaAvailable = hasComputePipeline("TAAPass");
         visibilityGpuCullingAvailable =
+            hasComputePipeline("InstanceClassifyPass") &&
             hasComputePipeline("MeshletCullPass") &&
             hasComputePipeline("BuildIndirectPass") &&
             hasRenderPipeline("VisibilityIndirectPass");

@@ -915,18 +915,21 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
     {
         std::vector<uint32_t> cached = tryLoadSpirvCache(cacheKey);
         if (!cached.empty()) {
-            spdlog::debug("SlangShaderCache: cache hit for '{}' ({} words)", shaderPath, cached.size());
-            // Restore the binding layout into the in-memory cache so that
-            // findSlangBindingLayoutForBinary() succeeds for callers.
             SlangShaderBindingLayout layout;
             if (tryLoadBindingLayoutCache(cacheKey, layout)) {
+                spdlog::debug("SlangShaderCache: cache hit for '{}' ({} words)", shaderPath, cached.size());
+                // Restore the binding layout into the in-memory cache so that
+                // findSlangBindingLayoutForBinary() succeeds for callers.
                 cacheBindingLayout(cached.data(), cached.size() * sizeof(uint32_t), layout);
+                {
+                    std::lock_guard<std::mutex> lock(g_compileStatsMutex);
+                    g_compileStats.cacheHits++;
+                }
+                return cached;
             }
-            {
-                std::lock_guard<std::mutex> lock(g_compileStatsMutex);
-                g_compileStats.cacheHits++;
-            }
-            return cached;
+
+            spdlog::warn("SlangShaderCache: cache entry for '{}' is missing binding layout metadata; recompiling",
+                         shaderPath);
         }
     }
 

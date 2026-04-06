@@ -65,6 +65,13 @@ public:
         if (cullCounterInput.isValid()) {
             m_cullCounterRead = builder.read(cullCounterInput, FGResourceUsage::Indirect);
         }
+        FGResource instanceDataInput = getInput("instanceData");
+        if (!instanceDataInput.isValid()) {
+            instanceDataInput = getInput("visibilityInstances");
+        }
+        if (instanceDataInput.isValid()) {
+            m_instanceDataRead = builder.read(instanceDataInput, FGResourceUsage::StorageRead);
+        }
         visibility = builder.create("visibility",
             FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::R32Uint));
         depth = builder.create("depth",
@@ -294,6 +301,7 @@ private:
     bool m_gpuDrivenLastFrame = false;
     FGResource m_visibleMeshletsRead;
     FGResource m_cullCounterRead;
+    FGResource m_instanceDataRead;
 };
 
 

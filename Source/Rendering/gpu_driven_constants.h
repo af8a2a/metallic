@@ -30,14 +30,23 @@
 #define GPU_DRIVEN_DISPATCH_COUNTER_WORD_COUNT GPU_DRIVEN_WORKLIST_STATE_WORD_COUNT
 #define GPU_DRIVEN_DISPATCH_COUNTER_BUFFER_SIZE GPU_DRIVEN_WORKLIST_STATE_BUFFER_SIZE
 
+// Shared bindings for the instance classification front-end.
+#define GPU_DRIVEN_INSTANCE_CLASSIFY_UNIFORMS_BINDING 0u
+#define GPU_DRIVEN_INSTANCE_CLASSIFY_INSTANCE_DATA_BINDING 1u
+#define GPU_DRIVEN_INSTANCE_CLASSIFY_GEOMETRY_DATA_BINDING 2u
+#define GPU_DRIVEN_INSTANCE_CLASSIFY_OUTPUT_BINDING 3u
+#define GPU_DRIVEN_INSTANCE_CLASSIFY_STATE_BINDING 4u
+#define GPU_DRIVEN_INSTANCE_CLASSIFY_HZB_TEXTURE_BINDING_BASE 5u
+
 // Shared bindings for the meshlet cull compaction pipeline.
 #define GPU_DRIVEN_CULL_UNIFORMS_BINDING 0u
 #define GPU_DRIVEN_CULL_INSTANCE_DATA_BINDING 1u
 #define GPU_DRIVEN_CULL_GEOMETRY_DATA_BINDING 2u
 #define GPU_DRIVEN_CULL_BOUNDS_BINDING 3u
-#define GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING 4u
-#define GPU_DRIVEN_CULL_COUNTER_BINDING 5u
-#define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 6u
+#define GPU_DRIVEN_CULL_VISIBLE_INSTANCES_BINDING 4u
+#define GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING 5u
+#define GPU_DRIVEN_CULL_COUNTER_BINDING 6u
+#define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 7u
 
 // Shared bindings for meshlet visibility pipelines.
 #define GPU_DRIVEN_VISIBILITY_GLOBAL_UNIFORMS_BINDING 0u
@@ -112,11 +121,21 @@ struct MeshDispatchCommandLayout : WorklistStateHeaderLayout {
 using IndirectGridCommandLayout = ComputeDispatchCommandLayout;
 using DispatchCounterLayout = ComputeDispatchCommandLayout;
 
+struct InstanceClassifyBindings {
+    static constexpr uint32_t kUniforms = GPU_DRIVEN_INSTANCE_CLASSIFY_UNIFORMS_BINDING;
+    static constexpr uint32_t kInstances = GPU_DRIVEN_INSTANCE_CLASSIFY_INSTANCE_DATA_BINDING;
+    static constexpr uint32_t kGeometries = GPU_DRIVEN_INSTANCE_CLASSIFY_GEOMETRY_DATA_BINDING;
+    static constexpr uint32_t kOutput = GPU_DRIVEN_INSTANCE_CLASSIFY_OUTPUT_BINDING;
+    static constexpr uint32_t kState = GPU_DRIVEN_INSTANCE_CLASSIFY_STATE_BINDING;
+    static constexpr uint32_t kHzbTextureBase = GPU_DRIVEN_INSTANCE_CLASSIFY_HZB_TEXTURE_BINDING_BASE;
+};
+
 struct MeshletCullBindings {
     static constexpr uint32_t kUniforms = GPU_DRIVEN_CULL_UNIFORMS_BINDING;
     static constexpr uint32_t kInstances = GPU_DRIVEN_CULL_INSTANCE_DATA_BINDING;
     static constexpr uint32_t kGeometries = GPU_DRIVEN_CULL_GEOMETRY_DATA_BINDING;
     static constexpr uint32_t kBounds = GPU_DRIVEN_CULL_BOUNDS_BINDING;
+    static constexpr uint32_t kVisibleInstances = GPU_DRIVEN_CULL_VISIBLE_INSTANCES_BINDING;
     static constexpr uint32_t kCompactionOutput = GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING;
     static constexpr uint32_t kCounter = GPU_DRIVEN_CULL_COUNTER_BINDING;
     static constexpr uint32_t kHzbTextureBase = GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE;

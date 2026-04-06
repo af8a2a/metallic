@@ -26,8 +26,19 @@ struct MeshletDrawInfo {
     uint globalMeshletID;
 };
 
+struct VisibleInstanceInfo {
+    uint   sceneInstanceID;
+    uint   geometryIndex;
+    uint   lodRootNode;
+    uint   classificationFlags;
+    float4 boundsCenterRadius;
+    float4 lodMetric;
+};
+
 static const uint kGpuSceneInstanceVisible = 1u << 0;
 static const uint kGpuSceneInstanceHasLod = 1u << 1;
+static const uint kVisibleInstanceClassificationVisible = 1u << 0;
+static const uint kVisibleInstanceClassificationHasLod = 1u << 1;
 
 uint gpuDrivenLoadWorklistWriteCursor(RWByteAddressBuffer worklistStateBuffer) {
     return worklistStateBuffer.Load(GPU_DRIVEN_WORKLIST_WRITE_CURSOR_OFFSET_BYTES);

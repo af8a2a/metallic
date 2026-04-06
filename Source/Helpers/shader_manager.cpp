@@ -93,6 +93,7 @@ ShaderManager::~ShaderManager() {
     releaseOwnedHandle(m_visPipeline);
     releaseOwnedHandle(m_visIndirectPipeline);
     releaseOwnedHandle(m_computePipeline);
+    releaseOwnedHandle(m_instanceClassifyPipeline);
     releaseOwnedHandle(m_cullPipeline);
     releaseOwnedHandle(m_hzbBuildPipeline);
     releaseOwnedHandle(m_buildIndirectPipeline);
@@ -164,6 +165,8 @@ void ShaderManager::syncRuntimeContext() {
     m_rtCtx->computePipelinesRhi.clear();
     if (m_computePipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["DeferredLightingPass"] = m_computePipeline;
+    if (m_instanceClassifyPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["InstanceClassifyPass"] = m_instanceClassifyPipeline;
     if (m_cullPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["MeshletCullPass"] = m_cullPipeline;
     if (m_hzbBuildPipeline.nativeHandle())
@@ -268,6 +271,17 @@ bool ShaderManager::buildAll() {
 
     errorMessage.clear();
     if (m_profile.meshletCull) {
+        m_instanceClassifyPipeline = reloadComputeShader("Shaders/Visibility/instance_classify",
+                                                         "computeMain",
+                                                         nullptr,
+                                                         &errorMessage);
+        if (!m_instanceClassifyPipeline.nativeHandle()) {
+            spdlog::error("Failed to create instance classify pipeline: {}",
+                          formatError(&errorMessage, "Slang instance classify shader compilation failed"));
+            return false;
+        }
+
+        errorMessage.clear();
         m_cullPipeline = reloadComputeShader("Shaders/Visibility/meshlet_cull",
                                              "computeMain",
                                              nullptr,
@@ -278,6 +292,7 @@ bool ShaderManager::buildAll() {
             return false;
         }
     } else {
+        releaseOwnedHandle(m_instanceClassifyPipeline);
         releaseOwnedHandle(m_cullPipeline);
     }
 
@@ -660,6 +675,16 @@ std::pair<int, int> ShaderManager::reloadAll() {
     } else {
         releaseOwnedHandle(m_visIndirectPipeline);
     }
+
+    reloadPipeline(m_profile.meshletCull,
+                   m_instanceClassifyPipeline,
+                   "instance classify PSO",
+                   [&](std::string& localError) {
+                       return reloadComputeShader("Shaders/Visibility/instance_classify",
+                                                  "computeMain",
+                                                  nullptr,
+                                                  &localError);
+                   });
 
     reloadPipeline(m_profile.meshletCull,
                    m_cullPipeline,
