@@ -1,17 +1,34 @@
 #ifndef GPU_DRIVEN_CONSTANTS_H
 #define GPU_DRIVEN_CONSTANTS_H
 
-// Shared layout for append/compaction/prefix-sum stages that publish a uint32 count
-// plus a 1D indirect grid command into the same byte-address buffer.
-// The 3 uint grid payload is valid for both compute dispatch indirect and
-// mesh-shader draw indirect on the current backends.
-#define GPU_DRIVEN_COUNT_OFFSET_BYTES 0u
-#define GPU_DRIVEN_DISPATCH_ARGS_OFFSET_BYTES 4u
-#define GPU_DRIVEN_DISPATCH_X_OFFSET_BYTES 4u
-#define GPU_DRIVEN_DISPATCH_Y_OFFSET_BYTES 8u
-#define GPU_DRIVEN_DISPATCH_Z_OFFSET_BYTES 12u
-#define GPU_DRIVEN_DISPATCH_COUNTER_WORD_COUNT 4u
-#define GPU_DRIVEN_DISPATCH_COUNTER_BUFFER_SIZE 16u
+// Shared layout for append/consume stages that publish both stats and a typed
+// 1D indirect command into the same byte-address buffer.
+//
+// word 0: append/write cursor used by producers
+// word 1: published produced item count from the last build step
+// word 2: consumed item count (available for consumers or diagnostics)
+// words 3..5: 1D indirect command payload
+//
+// The current compute, task, and mesh indirect entry points all consume the
+// same 3 uint payload on Metallic's backends.
+#define GPU_DRIVEN_WORKLIST_WRITE_CURSOR_OFFSET_BYTES 0u
+#define GPU_DRIVEN_WORKLIST_PRODUCED_COUNT_OFFSET_BYTES 4u
+#define GPU_DRIVEN_WORKLIST_CONSUMED_COUNT_OFFSET_BYTES 8u
+#define GPU_DRIVEN_WORKLIST_INDIRECT_ARGS_OFFSET_BYTES 12u
+#define GPU_DRIVEN_WORKLIST_DISPATCH_X_OFFSET_BYTES 12u
+#define GPU_DRIVEN_WORKLIST_DISPATCH_Y_OFFSET_BYTES 16u
+#define GPU_DRIVEN_WORKLIST_DISPATCH_Z_OFFSET_BYTES 20u
+#define GPU_DRIVEN_WORKLIST_STATE_WORD_COUNT 6u
+#define GPU_DRIVEN_WORKLIST_STATE_BUFFER_SIZE 24u
+
+// Compatibility aliases for the original counter/indirect helpers.
+#define GPU_DRIVEN_COUNT_OFFSET_BYTES GPU_DRIVEN_WORKLIST_WRITE_CURSOR_OFFSET_BYTES
+#define GPU_DRIVEN_DISPATCH_ARGS_OFFSET_BYTES GPU_DRIVEN_WORKLIST_INDIRECT_ARGS_OFFSET_BYTES
+#define GPU_DRIVEN_DISPATCH_X_OFFSET_BYTES GPU_DRIVEN_WORKLIST_DISPATCH_X_OFFSET_BYTES
+#define GPU_DRIVEN_DISPATCH_Y_OFFSET_BYTES GPU_DRIVEN_WORKLIST_DISPATCH_Y_OFFSET_BYTES
+#define GPU_DRIVEN_DISPATCH_Z_OFFSET_BYTES GPU_DRIVEN_WORKLIST_DISPATCH_Z_OFFSET_BYTES
+#define GPU_DRIVEN_DISPATCH_COUNTER_WORD_COUNT GPU_DRIVEN_WORKLIST_STATE_WORD_COUNT
+#define GPU_DRIVEN_DISPATCH_COUNTER_BUFFER_SIZE GPU_DRIVEN_WORKLIST_STATE_BUFFER_SIZE
 
 // Shared bindings for the meshlet cull compaction pipeline.
 #define GPU_DRIVEN_CULL_UNIFORMS_BINDING 0u
@@ -45,21 +62,55 @@
 
 namespace GpuDriven {
 
-struct IndirectGridCommandLayout {
-    static constexpr uint32_t kCountOffset = GPU_DRIVEN_COUNT_OFFSET_BYTES;
-    static constexpr uint32_t kIndirectArgsOffset = GPU_DRIVEN_DISPATCH_ARGS_OFFSET_BYTES;
-    static constexpr uint32_t kDispatchXOffset = GPU_DRIVEN_DISPATCH_X_OFFSET_BYTES;
-    static constexpr uint32_t kDispatchYOffset = GPU_DRIVEN_DISPATCH_Y_OFFSET_BYTES;
-    static constexpr uint32_t kDispatchZOffset = GPU_DRIVEN_DISPATCH_Z_OFFSET_BYTES;
-    static constexpr uint32_t kWordCount = GPU_DRIVEN_DISPATCH_COUNTER_WORD_COUNT;
-    static constexpr uint32_t kBufferSize = GPU_DRIVEN_DISPATCH_COUNTER_BUFFER_SIZE;
-    static constexpr uint32_t kCountWord = kCountOffset / sizeof(uint32_t);
+struct WorklistStateHeaderLayout {
+    static constexpr uint32_t kWriteCursorOffset = GPU_DRIVEN_WORKLIST_WRITE_CURSOR_OFFSET_BYTES;
+    static constexpr uint32_t kProducedCountOffset = GPU_DRIVEN_WORKLIST_PRODUCED_COUNT_OFFSET_BYTES;
+    static constexpr uint32_t kConsumedCountOffset = GPU_DRIVEN_WORKLIST_CONSUMED_COUNT_OFFSET_BYTES;
+    static constexpr uint32_t kIndirectArgsOffset = GPU_DRIVEN_WORKLIST_INDIRECT_ARGS_OFFSET_BYTES;
+    static constexpr uint32_t kHeaderWordCount = kIndirectArgsOffset / sizeof(uint32_t);
+    static constexpr uint32_t kWriteCursorWord = kWriteCursorOffset / sizeof(uint32_t);
+    static constexpr uint32_t kProducedCountWord = kProducedCountOffset / sizeof(uint32_t);
+    static constexpr uint32_t kConsumedCountWord = kConsumedCountOffset / sizeof(uint32_t);
+};
+
+struct ComputeDispatchCommandLayout : WorklistStateHeaderLayout {
+    static constexpr uint32_t kDispatchXOffset = GPU_DRIVEN_WORKLIST_DISPATCH_X_OFFSET_BYTES;
+    static constexpr uint32_t kDispatchYOffset = GPU_DRIVEN_WORKLIST_DISPATCH_Y_OFFSET_BYTES;
+    static constexpr uint32_t kDispatchZOffset = GPU_DRIVEN_WORKLIST_DISPATCH_Z_OFFSET_BYTES;
     static constexpr uint32_t kDispatchXWord = kDispatchXOffset / sizeof(uint32_t);
     static constexpr uint32_t kDispatchYWord = kDispatchYOffset / sizeof(uint32_t);
     static constexpr uint32_t kDispatchZWord = kDispatchZOffset / sizeof(uint32_t);
+    static constexpr uint32_t kCommandWordCount = 3u;
+    static constexpr uint32_t kWordCount = GPU_DRIVEN_WORKLIST_STATE_WORD_COUNT;
+    static constexpr uint32_t kBufferSize = GPU_DRIVEN_WORKLIST_STATE_BUFFER_SIZE;
 };
 
-using DispatchCounterLayout = IndirectGridCommandLayout;
+struct TaskDispatchCommandLayout : WorklistStateHeaderLayout {
+    static constexpr uint32_t kDispatchXOffset = GPU_DRIVEN_WORKLIST_DISPATCH_X_OFFSET_BYTES;
+    static constexpr uint32_t kDispatchYOffset = GPU_DRIVEN_WORKLIST_DISPATCH_Y_OFFSET_BYTES;
+    static constexpr uint32_t kDispatchZOffset = GPU_DRIVEN_WORKLIST_DISPATCH_Z_OFFSET_BYTES;
+    static constexpr uint32_t kDispatchXWord = kDispatchXOffset / sizeof(uint32_t);
+    static constexpr uint32_t kDispatchYWord = kDispatchYOffset / sizeof(uint32_t);
+    static constexpr uint32_t kDispatchZWord = kDispatchZOffset / sizeof(uint32_t);
+    static constexpr uint32_t kCommandWordCount = 3u;
+    static constexpr uint32_t kWordCount = GPU_DRIVEN_WORKLIST_STATE_WORD_COUNT;
+    static constexpr uint32_t kBufferSize = GPU_DRIVEN_WORKLIST_STATE_BUFFER_SIZE;
+};
+
+struct MeshDispatchCommandLayout : WorklistStateHeaderLayout {
+    static constexpr uint32_t kDispatchXOffset = GPU_DRIVEN_WORKLIST_DISPATCH_X_OFFSET_BYTES;
+    static constexpr uint32_t kDispatchYOffset = GPU_DRIVEN_WORKLIST_DISPATCH_Y_OFFSET_BYTES;
+    static constexpr uint32_t kDispatchZOffset = GPU_DRIVEN_WORKLIST_DISPATCH_Z_OFFSET_BYTES;
+    static constexpr uint32_t kDispatchXWord = kDispatchXOffset / sizeof(uint32_t);
+    static constexpr uint32_t kDispatchYWord = kDispatchYOffset / sizeof(uint32_t);
+    static constexpr uint32_t kDispatchZWord = kDispatchZOffset / sizeof(uint32_t);
+    static constexpr uint32_t kCommandWordCount = 3u;
+    static constexpr uint32_t kWordCount = GPU_DRIVEN_WORKLIST_STATE_WORD_COUNT;
+    static constexpr uint32_t kBufferSize = GPU_DRIVEN_WORKLIST_STATE_BUFFER_SIZE;
+};
+
+using IndirectGridCommandLayout = ComputeDispatchCommandLayout;
+using DispatchCounterLayout = ComputeDispatchCommandLayout;
 
 struct MeshletCullBindings {
     static constexpr uint32_t kUniforms = GPU_DRIVEN_CULL_UNIFORMS_BINDING;
@@ -88,12 +139,18 @@ struct MeshletVisibilityBindings {
     static constexpr uint32_t kInstanceData = kSceneInstances;
 };
 
-struct BuildDispatchBindings {
-    static constexpr uint32_t kCounter = GPU_DRIVEN_BUILD_DISPATCH_COUNTER_BINDING;
+struct BuildWorklistBindings {
+    static constexpr uint32_t kState = GPU_DRIVEN_BUILD_DISPATCH_COUNTER_BINDING;
 };
 
-static_assert(IndirectGridCommandLayout::kBufferSize ==
-              IndirectGridCommandLayout::kWordCount * sizeof(uint32_t));
+using BuildDispatchBindings = BuildWorklistBindings;
+
+static_assert(ComputeDispatchCommandLayout::kBufferSize ==
+              ComputeDispatchCommandLayout::kWordCount * sizeof(uint32_t));
+static_assert(TaskDispatchCommandLayout::kBufferSize ==
+              TaskDispatchCommandLayout::kWordCount * sizeof(uint32_t));
+static_assert(MeshDispatchCommandLayout::kBufferSize ==
+              MeshDispatchCommandLayout::kWordCount * sizeof(uint32_t));
 
 } // namespace GpuDriven
 

@@ -322,7 +322,7 @@
     {
       "id": "7fa0fc57cbf948e0a0875df96cfbf257",
       "passId": "10000000000000000000000000000001",
-      "slotKey": "cullCounter",
+      "slotKey": "visibilityWorklistState",
       "direction": "output",
       "resourceId": "0000000000000000000000000000000c"
     },
@@ -343,7 +343,7 @@
     {
       "id": "1bf47c73ee1f4b998bba3bd083748198",
       "passId": "10000000000000000000000000000002",
-      "slotKey": "cullCounter",
+      "slotKey": "visibilityWorklistState",
       "direction": "input",
       "resourceId": "0000000000000000000000000000000c"
     },

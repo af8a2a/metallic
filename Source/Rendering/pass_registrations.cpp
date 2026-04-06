@@ -31,6 +31,7 @@ REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
         makeOutputSlot("cullCounter", "Cull Counter", true),
         makeOutputSlot("instanceData", "Instance Data", true),
         makeOutputSlot("visibilityWorklist", "Visibility Worklist", true),
+        makeOutputSlot("visibilityWorklistState", "Visibility Worklist State", true),
         makeOutputSlot("visibilityIndirectArgs", "Visibility Indirect Args", true),
         makeOutputSlot("visibilityInstances", "Visibility Instances", true)
     }));
@@ -42,6 +43,7 @@ REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
         makeInputSlot("cullCounter", "Cull Counter", true),
         makeInputSlot("instanceData", "Instance Data", true),
         makeInputSlot("visibilityWorklist", "Visibility Worklist", true),
+        makeInputSlot("visibilityWorklistState", "Visibility Worklist State", true),
         makeInputSlot("visibilityIndirectArgs", "Visibility Indirect Args", true),
         makeInputSlot("visibilityInstances", "Visibility Instances", true)
     }),

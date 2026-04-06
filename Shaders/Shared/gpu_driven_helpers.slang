@@ -29,30 +29,97 @@ struct MeshletDrawInfo {
 static const uint kGpuSceneInstanceVisible = 1u << 0;
 static const uint kGpuSceneInstanceHasLod = 1u << 1;
 
-uint gpuDrivenLoadWorklistCount(RWByteAddressBuffer counterBuffer) {
-    return counterBuffer.Load(GPU_DRIVEN_COUNT_OFFSET_BYTES);
+uint gpuDrivenLoadWorklistWriteCursor(RWByteAddressBuffer worklistStateBuffer) {
+    return worklistStateBuffer.Load(GPU_DRIVEN_WORKLIST_WRITE_CURSOR_OFFSET_BYTES);
 }
 
-uint gpuDrivenAppendWorkItemSlot(RWByteAddressBuffer counterBuffer) {
+uint gpuDrivenLoadWorklistProducedCount(RWByteAddressBuffer worklistStateBuffer) {
+    return worklistStateBuffer.Load(GPU_DRIVEN_WORKLIST_PRODUCED_COUNT_OFFSET_BYTES);
+}
+
+uint gpuDrivenLoadWorklistConsumedCount(RWByteAddressBuffer worklistStateBuffer) {
+    return worklistStateBuffer.Load(GPU_DRIVEN_WORKLIST_CONSUMED_COUNT_OFFSET_BYTES);
+}
+
+uint gpuDrivenAppendWorkItemSlot(RWByteAddressBuffer worklistStateBuffer) {
     uint slot = 0u;
-    counterBuffer.InterlockedAdd(GPU_DRIVEN_COUNT_OFFSET_BYTES, 1u, slot);
+    worklistStateBuffer.InterlockedAdd(GPU_DRIVEN_WORKLIST_WRITE_CURSOR_OFFSET_BYTES, 1u, slot);
     return slot;
 }
 
+uint gpuDrivenConsumeWorkItemSlot(RWByteAddressBuffer worklistStateBuffer) {
+    uint slot = 0u;
+    worklistStateBuffer.InterlockedAdd(GPU_DRIVEN_WORKLIST_CONSUMED_COUNT_OFFSET_BYTES, 1u, slot);
+    return slot;
+}
+
+void gpuDrivenStoreWorklistProducedCount(RWByteAddressBuffer worklistStateBuffer, uint count) {
+    worklistStateBuffer.Store(GPU_DRIVEN_WORKLIST_PRODUCED_COUNT_OFFSET_BYTES, count);
+}
+
+void gpuDrivenResetWorklistWriteCursor(RWByteAddressBuffer worklistStateBuffer) {
+    worklistStateBuffer.Store(GPU_DRIVEN_WORKLIST_WRITE_CURSOR_OFFSET_BYTES, 0u);
+}
+
+void gpuDrivenResetWorklistProducedCount(RWByteAddressBuffer worklistStateBuffer) {
+    worklistStateBuffer.Store(GPU_DRIVEN_WORKLIST_PRODUCED_COUNT_OFFSET_BYTES, 0u);
+}
+
+void gpuDrivenResetWorklistConsumedCount(RWByteAddressBuffer worklistStateBuffer) {
+    worklistStateBuffer.Store(GPU_DRIVEN_WORKLIST_CONSUMED_COUNT_OFFSET_BYTES, 0u);
+}
+
+void gpuDrivenStoreDispatchIndirectArgs1D(RWByteAddressBuffer worklistStateBuffer, uint dispatchX) {
+    worklistStateBuffer.Store(GPU_DRIVEN_WORKLIST_DISPATCH_X_OFFSET_BYTES, dispatchX);
+    worklistStateBuffer.Store(GPU_DRIVEN_WORKLIST_DISPATCH_Y_OFFSET_BYTES, 1u);
+    worklistStateBuffer.Store(GPU_DRIVEN_WORKLIST_DISPATCH_Z_OFFSET_BYTES, 1u);
+}
+
+void gpuDrivenStoreMeshDispatchIndirectArgs1D(RWByteAddressBuffer worklistStateBuffer, uint dispatchX) {
+    gpuDrivenStoreDispatchIndirectArgs1D(worklistStateBuffer, dispatchX);
+}
+
+void gpuDrivenResetDispatchIndirectArgs1D(RWByteAddressBuffer worklistStateBuffer) {
+    gpuDrivenStoreDispatchIndirectArgs1D(worklistStateBuffer, 0u);
+}
+
+void gpuDrivenResetMeshDispatchIndirectArgs1D(RWByteAddressBuffer worklistStateBuffer) {
+    gpuDrivenResetDispatchIndirectArgs1D(worklistStateBuffer);
+}
+
+void gpuDrivenResetWorklistState1D(RWByteAddressBuffer worklistStateBuffer) {
+    gpuDrivenResetWorklistWriteCursor(worklistStateBuffer);
+    gpuDrivenResetWorklistProducedCount(worklistStateBuffer);
+    gpuDrivenResetWorklistConsumedCount(worklistStateBuffer);
+    gpuDrivenResetDispatchIndirectArgs1D(worklistStateBuffer);
+}
+
+void gpuDrivenPublishDispatchIndirectArgs1DFromWriteCursor(RWByteAddressBuffer worklistStateBuffer) {
+    uint producedCount = gpuDrivenLoadWorklistWriteCursor(worklistStateBuffer);
+    gpuDrivenStoreWorklistProducedCount(worklistStateBuffer, producedCount);
+    gpuDrivenResetWorklistConsumedCount(worklistStateBuffer);
+    gpuDrivenStoreDispatchIndirectArgs1D(worklistStateBuffer, producedCount);
+    gpuDrivenResetWorklistWriteCursor(worklistStateBuffer);
+}
+
+void gpuDrivenPublishMeshDispatchIndirectArgs1DFromWriteCursor(RWByteAddressBuffer worklistStateBuffer) {
+    gpuDrivenPublishDispatchIndirectArgs1DFromWriteCursor(worklistStateBuffer);
+}
+
+uint gpuDrivenLoadWorklistCount(RWByteAddressBuffer counterBuffer) {
+    return gpuDrivenLoadWorklistWriteCursor(counterBuffer);
+}
+
 void gpuDrivenStoreIndirectGridArgs1D(RWByteAddressBuffer counterBuffer, uint dispatchX) {
-    counterBuffer.Store(GPU_DRIVEN_DISPATCH_X_OFFSET_BYTES, dispatchX);
-    counterBuffer.Store(GPU_DRIVEN_DISPATCH_Y_OFFSET_BYTES, 1u);
-    counterBuffer.Store(GPU_DRIVEN_DISPATCH_Z_OFFSET_BYTES, 1u);
+    gpuDrivenStoreDispatchIndirectArgs1D(counterBuffer, dispatchX);
 }
 
 void gpuDrivenResetWorklistCount(RWByteAddressBuffer counterBuffer) {
-    counterBuffer.Store(GPU_DRIVEN_COUNT_OFFSET_BYTES, 0u);
+    gpuDrivenResetWorklistWriteCursor(counterBuffer);
 }
 
 void gpuDrivenBuildIndirectGridArgs1DFromCount(RWByteAddressBuffer counterBuffer) {
-    uint count = gpuDrivenLoadWorklistCount(counterBuffer);
-    gpuDrivenStoreIndirectGridArgs1D(counterBuffer, count);
-    gpuDrivenResetWorklistCount(counterBuffer);
+    gpuDrivenPublishDispatchIndirectArgs1DFromWriteCursor(counterBuffer);
 }
 
 uint gpuDrivenLoadCompactionCount(RWByteAddressBuffer counterBuffer) {
@@ -64,7 +131,7 @@ uint gpuDrivenAppendCompactionSlot(RWByteAddressBuffer counterBuffer) {
 }
 
 void gpuDrivenStoreDispatchArgs1D(RWByteAddressBuffer counterBuffer, uint dispatchX) {
-    gpuDrivenStoreIndirectGridArgs1D(counterBuffer, dispatchX);
+    gpuDrivenStoreDispatchIndirectArgs1D(counterBuffer, dispatchX);
 }
 
 void gpuDrivenResetCompactionCount(RWByteAddressBuffer counterBuffer) {

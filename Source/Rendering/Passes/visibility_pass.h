@@ -57,6 +57,9 @@ public:
         }
         FGResource cullCounterInput = getInput("cullCounter");
         if (!cullCounterInput.isValid()) {
+            cullCounterInput = getInput("visibilityWorklistState");
+        }
+        if (!cullCounterInput.isValid()) {
             cullCounterInput = getInput("visibilityIndirectArgs");
         }
         if (cullCounterInput.isValid()) {
@@ -91,7 +94,7 @@ public:
             (m_frameGraph && m_visibleMeshletsRead.isValid())
                 ? m_frameGraph->getBuffer(m_visibleMeshletsRead)
                 : nullptr;
-        const RhiBuffer* counterBuffer =
+        const RhiBuffer* worklistStateBuffer =
             (m_frameGraph && m_cullCounterRead.isValid())
                 ? m_frameGraph->getBuffer(m_cullCounterRead)
                 : nullptr;
@@ -100,7 +103,7 @@ public:
 
         bool useGPUPath = m_frameContext->gpuDrivenCulling &&
             visibleMeshletBuffer &&
-            counterBuffer &&
+            worklistStateBuffer &&
             sceneInstanceBuffer;
 
         if (useGPUPath) {
@@ -121,7 +124,7 @@ public:
                 useGPUPath,
                 m_frameContext->gpuDrivenCulling,
                 fmt::ptr(visibleMeshletBuffer),
-                fmt::ptr(counterBuffer),
+                fmt::ptr(worklistStateBuffer),
                 fmt::ptr(sceneInstanceBuffer),
                 visIt != m_runtimeContext->renderPipelinesRhi.end() ? fmt::ptr(visIt->second.nativeHandle()) : fmt::ptr(static_cast<void*>(nullptr)),
                 visIndirectIt != m_runtimeContext->renderPipelinesRhi.end() ? fmt::ptr(visIndirectIt->second.nativeHandle()) : fmt::ptr(static_cast<void*>(nullptr)));
@@ -189,8 +192,8 @@ public:
                                      GpuDriven::MeshletVisibilityBindings::kGlobalUniforms);
 
             // Single indirect draw call
-            encoder.drawMeshThreadgroupsIndirect(*counterBuffer,
-                                                 GpuDriven::DispatchCounterLayout::kIndirectArgsOffset,
+            encoder.drawMeshThreadgroupsIndirect(*worklistStateBuffer,
+                                                 GpuDriven::MeshDispatchCommandLayout::kIndirectArgsOffset,
                                                  {1, 1, 1},
                                                  {128, 1, 1});
 

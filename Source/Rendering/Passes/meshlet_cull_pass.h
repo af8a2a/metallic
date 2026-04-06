@@ -44,6 +44,7 @@ public:
         if (name == "cullCounter") return cullCounter;
         if (name == "instanceData") return instanceData;
         if (name == "visibilityWorklist") return visibleMeshlets;
+        if (name == "visibilityWorklistState") return cullCounter;
         if (name == "visibilityIndirectArgs") return cullCounter;
         if (name == "visibilityInstances") return instanceData;
         return FGResource{};
@@ -55,13 +56,15 @@ public:
         m_maxMeshlets = std::max<uint32_t>(1u, computeMaxMeshletCapacity());
 
         const auto visibleWorklist =
-            GpuDriven::createIndirectWorklist<MeshletDrawInfo>(builder,
-                                                               "visibleMeshlets",
-                                                               "VisibleMeshletBuffer",
-                                                               m_maxMeshlets,
-                                                               "cullCounter",
-                                                               "CullCounterBuffer",
-                                                               true);
+            GpuDriven::createTypedIndirectWorklist<MeshletDrawInfo,
+                                                   GpuDriven::MeshDispatchCommandLayout>(
+                builder,
+                "visibleMeshlets",
+                "VisibleMeshletBuffer",
+                m_maxMeshlets,
+                "cullCounter",
+                "VisibilityWorklistStateBuffer",
+                true);
         visibleMeshlets = visibleWorklist.payload;
         cullCounter = visibleWorklist.state;
 
@@ -105,16 +108,19 @@ public:
 
         if (!m_frameGraph) return;
         RhiBuffer* visibleMeshletBuffer = m_frameGraph->getBuffer(visibleMeshlets);
-        RhiBuffer* counterBuffer = m_frameGraph->getBuffer(cullCounter);
-        if (!visibleMeshletBuffer || !counterBuffer) {
+        RhiBuffer* worklistStateBuffer = m_frameGraph->getBuffer(cullCounter);
+        if (!visibleMeshletBuffer || !worklistStateBuffer) {
             return;
         }
-        GpuDriven::ensureIndirectGridCommandBufferInitialized(counterBuffer, m_initializedCounterBuffer);
+        GpuDriven::ensureWorklistStateBufferInitialized<GpuDriven::MeshDispatchCommandLayout>(
+            worklistStateBuffer,
+            m_initializedCounterBuffer);
 
-        // Read back previous frame's visible count (1-frame delayed).
-        // build_indirect writes count into the indirect-dispatch X slot, then resets the counter.
-        // By this point the previous frame's GPU work is complete.
-        m_lastVisibleCount = GpuDriven::readBuiltIndirectGridCount(counterBuffer);
+        // Read back the previous frame's published worklist count. The build step copies the
+        // producer cursor into the persistent produced-count slot before resetting the cursor.
+        m_lastVisibleCount =
+            GpuDriven::readPublishedWorkItemCount<GpuDriven::MeshDispatchCommandLayout>(
+                worklistStateBuffer);
 
         // Build CullUniforms
         float4x4 viewProj = m_frameContext->proj * m_frameContext->view;
@@ -168,7 +174,7 @@ public:
         encoder.setBuffer(&gpuScene.geometryBuffer, 0, GpuDriven::MeshletCullBindings::kGeometries);
         encoder.setBuffer(&m_ctx.meshletData.boundsBuffer, 0, GpuDriven::MeshletCullBindings::kBounds);
         encoder.setBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletCullBindings::kCompactionOutput);
-        encoder.setBuffer(counterBuffer, 0, GpuDriven::MeshletCullBindings::kCounter);
+        encoder.setBuffer(worklistStateBuffer, 0, GpuDriven::MeshletCullBindings::kCounter);
         if (hzbTextureCount > 0) {
             encoder.setTextures(hzbTextures.data(),
                                 GpuDriven::MeshletCullBindings::kHzbTextureBase,
@@ -180,9 +186,9 @@ public:
         encoder.dispatchThreadgroups({threadgroups, 1, 1}, {threadgroupSize, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
-        // --- Dispatch 2: Build indirect args ---
+        // --- Dispatch 2: Publish mesh-dispatch args from the worklist cursor ---
         encoder.setComputePipeline(buildIt->second);
-        encoder.setBuffer(counterBuffer, 0, GpuDriven::BuildDispatchBindings::kCounter);
+        encoder.setBuffer(worklistStateBuffer, 0, GpuDriven::BuildWorklistBindings::kState);
         encoder.dispatchThreadgroups({1, 1, 1}, {1, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
@@ -194,7 +200,7 @@ public:
                 gpuScene.visibleInstanceCount,
                 gpuScene.totalMeshletDispatchCount,
                 fmt::ptr(visibleMeshletBuffer),
-                fmt::ptr(counterBuffer),
+                fmt::ptr(worklistStateBuffer),
                 fmt::ptr(gpuScene.instanceBuffer.nativeHandle()));
             sLoggedGpuPublish = true;
         }
