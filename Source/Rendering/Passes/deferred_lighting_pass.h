@@ -178,7 +178,7 @@ public:
         ImGui::Text("Resolution: %d x %d", m_width, m_height);
         ImGui::SliderFloat("Motion Vector Intensity", &m_motionVectorIntensity, 0.0f, 2.0f, "%.2f");
         if (m_frameContext) {
-            ImGui::Text("Instances: %u", m_frameContext->visibilityInstanceCount);
+            ImGui::Text("Scene Instances: %u", m_ctx.gpuScene.instanceCount);
             ImGui::Text("Meshlets: %u", m_frameContext->meshletCount);
             ImGui::Text("Materials: %u", m_frameContext->materialCount);
             ImGui::Text("Shadows: %s", m_frameContext->enableRTShadows ? "Enabled" : "Disabled");

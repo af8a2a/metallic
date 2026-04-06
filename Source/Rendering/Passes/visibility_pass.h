@@ -109,7 +109,17 @@ public:
         const RhiBuffer* sceneInstanceBuffer =
             m_ctx.gpuScene.instanceBuffer.nativeHandle() ? &m_ctx.gpuScene.instanceBuffer : nullptr;
 
-        bool useGPUPath = m_frameContext->gpuDrivenCulling &&
+        m_gpuPathRequiredLastFrame = m_frameContext->gpuDrivenCulling;
+        m_gpuPathReadyLastFrame = false;
+        m_lastLegacyVisibleNodeCount = 0;
+        m_lastVisibleMeshletWorkItems =
+            GpuDriven::readPublishedWorkItemCount<GpuDriven::MeshDispatchCommandLayout>(
+                worklistStateBuffer);
+        m_lastIndirectMeshGroupCount =
+            GpuDriven::readBuiltIndirectGroupCount<GpuDriven::MeshDispatchCommandLayout>(
+                worklistStateBuffer);
+
+        bool useGPUPath = m_gpuPathRequiredLastFrame &&
             visibleMeshletBuffer &&
             worklistStateBuffer &&
             sceneInstanceBuffer;
@@ -121,6 +131,8 @@ public:
             else
                 encoder.setRenderPipeline(pipeIt->second);
         }
+
+        m_gpuPathReadyLastFrame = useGPUPath;
 
         static bool sLoggedPath = false;
         if (!sLoggedPath) {
@@ -228,13 +240,21 @@ public:
                                                  GpuDriven::MeshDispatchCommandLayout::kIndirectArgsOffset,
                                                  {1, 1, 1},
                                                  {128, 1, 1});
-
-            m_gpuDrivenLastFrame = true;
+            m_missingGpuPathWarningLogged = false;
             return;
         }
 
-        // CPU per-node dispatch fallback
-        m_gpuDrivenLastFrame = false;
+        if (m_gpuPathRequiredLastFrame) {
+            if (!m_missingGpuPathWarningLogged) {
+                spdlog::warn(
+                    "VisibilityPass requires the GPU indirect raster path, but it is unavailable; skipping legacy CPU per-node fallback for this frame");
+                m_missingGpuPathWarningLogged = true;
+            }
+            return;
+        }
+
+        // CPU per-node dispatch fallback for legacy non-GPU visibility modes.
+        m_missingGpuPathWarningLogged = false;
 
         auto pipeIt = m_runtimeContext->renderPipelinesRhi.find("VisibilityPass");
         if (pipeIt == m_runtimeContext->renderPipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
@@ -271,6 +291,7 @@ public:
         uint32_t instanceCount = std::min<uint32_t>(
             m_frameContext->visibilityInstanceCount,
             static_cast<uint32_t>(visibleNodes.size()));
+        m_lastLegacyVisibleNodeCount = instanceCount;
         if (instanceCount == 0) return;
 
         Uniforms baseUni{};
@@ -311,10 +332,21 @@ public:
     void renderUI() override {
         ImGui::Text("Resolution: %d x %d", m_width, m_height);
         if (m_frameContext) {
-            ImGui::Text("Visible Nodes: %u", m_frameContext->visibilityInstanceCount);
             ImGui::Text("Frustum Cull: %s", m_frameContext->enableFrustumCull ? "On" : "Off");
             ImGui::Text("Cone Cull: %s", m_frameContext->enableConeCull ? "On" : "Off");
-            ImGui::Text("Dispatch: %s", m_gpuDrivenLastFrame ? "GPU Indirect" : "CPU Per-Node");
+            ImGui::Text("GPU Raster Requested: %s", m_frameContext->gpuDrivenCulling ? "Yes" : "No");
+            ImGui::Text("Last Raster Path: %s",
+                        m_gpuPathRequiredLastFrame
+                            ? (m_gpuPathReadyLastFrame
+                                   ? "GPU Indirect"
+                                   : "GPU Indirect Unavailable")
+                            : "CPU Per-Node (Legacy)");
+            if (m_gpuPathRequiredLastFrame || m_frameContext->gpuDrivenCulling) {
+                ImGui::Text("Last Meshlet Work Items: %u", m_lastVisibleMeshletWorkItems);
+                ImGui::Text("Last Indirect Mesh Groups: %u", m_lastIndirectMeshGroupCount);
+            } else {
+                ImGui::Text("Visible Nodes (Legacy): %u", m_lastLegacyVisibleNodeCount);
+            }
         }
     }
 
@@ -323,7 +355,12 @@ private:
     int m_width, m_height;
     std::string m_name = "Visibility Pass";
     RhiClearColor m_clearColor = RhiClearColor(0xFFFFFFFF, 0, 0, 0);
-    bool m_gpuDrivenLastFrame = false;
+    bool m_gpuPathRequiredLastFrame = false;
+    bool m_gpuPathReadyLastFrame = false;
+    bool m_missingGpuPathWarningLogged = false;
+    uint32_t m_lastVisibleMeshletWorkItems = 0;
+    uint32_t m_lastIndirectMeshGroupCount = 0;
+    uint32_t m_lastLegacyVisibleNodeCount = 0;
     FGResource m_visibleMeshletsRead;
     FGResource m_cullCounterRead;
     FGResource m_instanceDataRead;

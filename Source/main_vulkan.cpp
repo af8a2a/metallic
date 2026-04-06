@@ -1925,6 +1925,11 @@ int main() {
 
         previewVisibleMeshletNodes.clear();
         previewVisibleIndexNodes.clear();
+        const bool gpuDrivenVisibilityPath =
+            useVisibilityRenderGraph && visibilityGpuCullingAvailable;
+        if (gpuDrivenVisibilityPath) {
+            return;
+        }
         for (const auto& node : previewScene.nodes) {
             if (!previewScene.isNodeVisible(node.id)) {
                 continue;
@@ -2412,6 +2417,9 @@ int main() {
                                                          static_cast<uint32_t>(renderHeight));
         }
 
+        const bool gpuDrivenVisibilityPath =
+            useVisibilityRenderGraph && visibilityGpuCullingAvailable;
+
         uint32_t visibilityInstanceCount = 0;
         if (useVisibilityRenderGraph) {
             static bool warnedInstanceOverflow = false;
@@ -2423,9 +2431,11 @@ int main() {
                 warnedInstanceOverflow = true;
             }
 
-            visibilityInstanceCount = static_cast<uint32_t>(
-                std::min<size_t>(previewVisibleMeshletNodes.size(),
-                                 static_cast<size_t>(kVisibilityInstanceMask + 1u)));
+            if (!gpuDrivenVisibilityPath) {
+                visibilityInstanceCount = static_cast<uint32_t>(
+                    std::min<size_t>(previewVisibleMeshletNodes.size(),
+                                     static_cast<size_t>(kVisibilityInstanceMask + 1u)));
+            }
         }
 
         RhiNativeCommandBufferHandle nativeCommandBuffer(getVulkanCurrentCommandBuffer(*rhi));
@@ -2462,12 +2472,14 @@ int main() {
         frameContext.meshletCount = previewMeshlets.meshletCount;
         frameContext.materialCount = previewMaterials.materialCount;
         frameContext.textureCount = static_cast<uint32_t>(previewMaterials.textures.size());
-        frameContext.visibleMeshletNodes = previewVisibleMeshletNodes;
-        if (useVisibilityRenderGraph &&
-            frameContext.visibleMeshletNodes.size() > static_cast<size_t>(visibilityInstanceCount)) {
-            frameContext.visibleMeshletNodes.resize(visibilityInstanceCount);
+        if (!gpuDrivenVisibilityPath) {
+            frameContext.visibleMeshletNodes = previewVisibleMeshletNodes;
+            if (useVisibilityRenderGraph &&
+                frameContext.visibleMeshletNodes.size() > static_cast<size_t>(visibilityInstanceCount)) {
+                frameContext.visibleMeshletNodes.resize(visibilityInstanceCount);
+            }
+            frameContext.visibleIndexNodes = previewVisibleIndexNodes;
         }
-        frameContext.visibleIndexNodes = previewVisibleIndexNodes;
         frameContext.visibilityInstanceCount = visibilityInstanceCount;
         frameContext.depthClearValue = depthClearValue;
         frameContext.cameraFarZ = previewCamera.farZ;
@@ -2479,7 +2491,7 @@ int main() {
         frameContext.enableRTShadows =
             useVisibilityRenderGraph && rtShadowsAvailable && enableRTShadows;
         frameContext.enableAtmosphereSky = atmosphereSkyAvailable;
-        frameContext.gpuDrivenCulling = useVisibilityRenderGraph && visibilityGpuCullingAvailable;
+        frameContext.gpuDrivenCulling = gpuDrivenVisibilityPath;
         frameContext.renderMode = useVisibilityRenderGraph ? 2 : 0;
 
         postBuilder.updateFrame(&backbufferTexture, &frameContext);

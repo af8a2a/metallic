@@ -352,17 +352,29 @@ int main() {
         }
         pipelineReloadKeyDown = f6Down;
 
+        const bool gpuDrivenVisibilityPath =
+            enableGPUCulling && (renderMode == 2 || renderMode == 3);
+        const bool needsCpuMeshletVisibility =
+            renderMode == 1 || ((renderMode == 2 || renderMode == 3) && !gpuDrivenVisibilityPath);
+        const bool needsCpuIndexVisibility = renderMode == 0;
+
         std::vector<uint32_t> visibleMeshletNodes;
         std::vector<uint32_t> visibleIndexNodes;
-        visibleMeshletNodes.reserve(scene.sceneGraph().nodes.size());
-        visibleIndexNodes.reserve(scene.sceneGraph().nodes.size());
-        for (const auto& node : scene.sceneGraph().nodes) {
-            if (!scene.sceneGraph().isNodeVisible(node.id))
-                continue;
-            if (node.meshletCount > 0)
-                visibleMeshletNodes.push_back(node.id);
-            if (node.indexCount > 0)
-                visibleIndexNodes.push_back(node.id);
+        if (needsCpuMeshletVisibility) {
+            visibleMeshletNodes.reserve(scene.sceneGraph().nodes.size());
+        }
+        if (needsCpuIndexVisibility) {
+            visibleIndexNodes.reserve(scene.sceneGraph().nodes.size());
+        }
+        if (needsCpuMeshletVisibility || needsCpuIndexVisibility) {
+            for (const auto& node : scene.sceneGraph().nodes) {
+                if (!scene.sceneGraph().isNodeVisible(node.id))
+                    continue;
+                if (needsCpuMeshletVisibility && node.meshletCount > 0)
+                    visibleMeshletNodes.push_back(node.id);
+                if (needsCpuIndexVisibility && node.indexCount > 0)
+                    visibleIndexNodes.push_back(node.id);
+            }
         }
 
         FrameContext frameCtx;
@@ -387,9 +399,11 @@ int main() {
                 warnedMeshletOverflow = true;
             }
 
-            visibilityInstanceCount =
-                static_cast<uint32_t>(std::min<size_t>(visibleMeshletNodes.size(),
-                                                       kVisibilityInstanceMask + 1));
+            if (!gpuDrivenVisibilityPath) {
+                visibilityInstanceCount =
+                    static_cast<uint32_t>(std::min<size_t>(visibleMeshletNodes.size(),
+                                                           kVisibilityInstanceMask + 1));
+            }
         }
 
         // Populate frame context (shared across all modes)
@@ -419,7 +433,7 @@ int main() {
         frameCtx.enableConeCull = enableConeCull;
         frameCtx.enableRTShadows = scene.rtShadowsAvailable() && enableRTShadows;
         frameCtx.enableAtmosphereSky = skyAvailable && enableAtmosphereSky;
-        frameCtx.gpuDrivenCulling = enableGPUCulling && (renderMode == 2 || renderMode == 3);
+        frameCtx.gpuDrivenCulling = gpuDrivenVisibilityPath;
         frameCtx.renderMode = renderMode;
         frameCtx.prevView = hasPrevMatrices ? prevView : view;
         frameCtx.prevProj = hasPrevMatrices ? prevProj : camera.projectionMatrix(aspect);
