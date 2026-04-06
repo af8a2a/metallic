@@ -43,6 +43,7 @@ static const uint kVisibleInstanceClassificationVisible = 1u << 0;
 static const uint kVisibleInstanceClassificationHasLod = 1u << 1;
 static const uint kMeshletDrawSourceScene = 0u;
 static const uint kMeshletDrawSourceClusterLod = 1u;
+static const uint kClusterLodGroupPageInvalidAddress = 0xFFFFFFFFu;
 static const uint kClusterLodNodeResidencyResident = 1u << 0;
 static const uint kClusterLodNodeResidencyRequested = 1u << 1;
 static const uint kClusterLodNodeResidencyAlwaysResident = 1u << 2;

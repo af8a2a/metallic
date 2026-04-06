@@ -100,6 +100,10 @@ public:
         m_dummyLodNodeResidency =
             builder.create("DummyClusterLodNodeResidency",
                            makeSingleElementBufferDesc<uint32_t>("DummyClusterLodNodeResidency"));
+        m_dummyLodGroupPageTable =
+            builder.create("DummyClusterLodGroupPageTable",
+                           makeSingleValueBufferDesc<uint32_t>(kClusterLodGroupPageInvalidAddress,
+                                                               "DummyClusterLodGroupPageTable"));
         m_dummyResidencyRequests =
             builder.create("DummyClusterLodResidencyRequests",
                            makeSingleElementBufferDesc<ClusterResidencyRequest>(
@@ -192,6 +196,7 @@ public:
             m_frameGraph->getBuffer(m_dummyLodGroupMeshletIndices);
         RhiBuffer* dummyLodBoundsBuffer = m_frameGraph->getBuffer(m_dummyLodBounds);
         RhiBuffer* dummyLodNodeResidencyBuffer = m_frameGraph->getBuffer(m_dummyLodNodeResidency);
+        RhiBuffer* dummyLodGroupPageTableBuffer = m_frameGraph->getBuffer(m_dummyLodGroupPageTable);
         RhiBuffer* dummyResidencyRequestBuffer = m_frameGraph->getBuffer(m_dummyResidencyRequests);
         RhiBuffer* dummyResidencyRequestStateBuffer =
             m_frameGraph->getBuffer(m_dummyResidencyRequestState);
@@ -204,15 +209,20 @@ public:
                                 : dummyLodGroupMeshletIndicesBuffer;
         const RhiBuffer* lodBoundsBuffer =
             clusterLodAvailable ? &clusterLodData.boundsBuffer : dummyLodBoundsBuffer;
-        ensureResidencyResources(std::max<uint32_t>(1u, clusterLodData.totalNodeCount));
+        ensureResidencyResources(std::max<uint32_t>(1u, clusterLodData.totalNodeCount),
+                                 std::max<uint32_t>(1u, clusterLodData.totalGroupCount));
         processResidencyRequests(clusterLodData);
         const bool residencyStreamingResourcesReady =
             m_lodNodeResidencyBuffer &&
+            m_lodGroupPageTableBuffer &&
             m_residencyRequestBuffer &&
             m_residencyRequestStateBuffer;
         const RhiBuffer* lodNodeResidencyBuffer =
             residencyStreamingResourcesReady ? m_lodNodeResidencyBuffer.get()
                                              : dummyLodNodeResidencyBuffer;
+        const RhiBuffer* lodGroupPageTableBuffer =
+            residencyStreamingResourcesReady ? m_lodGroupPageTableBuffer.get()
+                                             : dummyLodGroupPageTableBuffer;
         const RhiBuffer* residencyRequestBuffer =
             residencyStreamingResourcesReady ? m_residencyRequestBuffer.get()
                                              : dummyResidencyRequestBuffer;
@@ -324,6 +334,7 @@ public:
         encoder.setBuffer(lodBoundsBuffer, 0, GpuDriven::MeshletCullBindings::kLodBounds);
         encoder.setBuffer(clusterTraversalStatsBuffer, 0, GpuDriven::MeshletCullBindings::kTraversalStats);
         encoder.setBuffer(lodNodeResidencyBuffer, 0, GpuDriven::MeshletCullBindings::kLodNodeResidency);
+        encoder.setBuffer(lodGroupPageTableBuffer, 0, GpuDriven::MeshletCullBindings::kLodGroupPageTable);
         encoder.setBuffer(residencyRequestBuffer, 0, GpuDriven::MeshletCullBindings::kResidencyRequests);
         encoder.setBuffer(residencyRequestStateBuffer, 0, GpuDriven::MeshletCullBindings::kResidencyRequestState);
         if (hzbTextureCount > 0) {
@@ -445,6 +456,10 @@ public:
                     m_activeResidencyNodeCount,
                     m_lastResidentNodeCount);
         ImGui::Text("Always Resident Nodes: %u", m_lastAlwaysResidentNodeCount);
+        ImGui::Text("Resident Groups: %u / %u",
+                    m_lastResidentGroupCount,
+                    m_activeResidencyGroupCount);
+        ImGui::Text("Always Resident Groups: %u", m_lastAlwaysResidentGroupCount);
         ImGui::Text("Dynamic Resident Nodes: %zu", m_dynamicResidentNodes.size());
         ImGui::Text("Pending Residency Requests: %zu", m_pendingResidencyNodes.size());
         ImGui::Text("GPU Residency Requests (last frame): %u", m_lastResidencyRequestCount);
@@ -477,17 +492,20 @@ private:
         frameContext->historyReset = true;
     }
 
-    void ensureResidencyResources(uint32_t nodeCapacity) {
+    void ensureResidencyResources(uint32_t nodeCapacity, uint32_t groupCapacity) {
         if (!m_runtimeContext || !m_runtimeContext->resourceFactory) {
             return;
         }
 
         nodeCapacity = std::max(1u, nodeCapacity);
+        groupCapacity = std::max(1u, groupCapacity);
         const bool needsRecreate =
             !m_lodNodeResidencyBuffer ||
+            !m_lodGroupPageTableBuffer ||
             !m_residencyRequestBuffer ||
             !m_residencyRequestStateBuffer ||
-            m_residencyNodeCapacity != nodeCapacity;
+            m_residencyNodeCapacity != nodeCapacity ||
+            m_residencyGroupCapacity != groupCapacity;
         if (!needsRecreate) {
             return;
         }
@@ -497,6 +515,12 @@ private:
         residencyDesc.hostVisible = true;
         residencyDesc.debugName = "ClusterLodNodeResidency";
         m_lodNodeResidencyBuffer = m_runtimeContext->resourceFactory->createBuffer(residencyDesc);
+
+        RhiBufferDesc groupPageTableDesc{};
+        groupPageTableDesc.size = size_t(groupCapacity) * sizeof(uint32_t);
+        groupPageTableDesc.hostVisible = true;
+        groupPageTableDesc.debugName = "ClusterLodGroupPageTable";
+        m_lodGroupPageTableBuffer = m_runtimeContext->resourceFactory->createBuffer(groupPageTableDesc);
 
         RhiBufferDesc requestDesc{};
         requestDesc.size = size_t(nodeCapacity) * sizeof(ClusterResidencyRequest);
@@ -511,19 +535,33 @@ private:
         m_residencyRequestStateBuffer = m_runtimeContext->resourceFactory->createBuffer(requestStateDesc);
 
         m_residencyNodeCapacity = nodeCapacity;
+        m_residencyGroupCapacity = groupCapacity;
         m_residencyStateDirty = true;
         m_dynamicResidentNodes.clear();
         m_pendingResidencyNodes.clear();
+        m_residencyNodeLeafGroups.clear();
         m_residencySourceNodeBufferHandle = nullptr;
 
         if (m_lodNodeResidencyBuffer && m_lodNodeResidencyBuffer->mappedData()) {
             std::memset(m_lodNodeResidencyBuffer->mappedData(), 0, m_lodNodeResidencyBuffer->size());
         }
+        invalidateGroupPageTable();
         if (m_residencyRequestBuffer && m_residencyRequestBuffer->mappedData()) {
             std::memset(m_residencyRequestBuffer->mappedData(), 0, m_residencyRequestBuffer->size());
         }
         seedResidencyRequestQueue();
         updateResidencyDebugCounts();
+    }
+
+    void invalidateGroupPageTable() {
+        uint32_t* pageTable = groupPageTableWords();
+        if (!pageTable) {
+            return;
+        }
+
+        std::fill(pageTable,
+                  pageTable + m_residencyGroupCapacity,
+                  kClusterLodGroupPageInvalidAddress);
     }
 
     void seedResidencyRequestQueue() {
@@ -543,6 +581,17 @@ private:
 
     const uint32_t* residencyStateWords() const {
         return const_cast<MeshletCullPass*>(this)->residencyStateWords();
+    }
+
+    uint32_t* groupPageTableWords() {
+        if (!m_lodGroupPageTableBuffer || !m_lodGroupPageTableBuffer->mappedData()) {
+            return nullptr;
+        }
+        return static_cast<uint32_t*>(m_lodGroupPageTableBuffer->mappedData());
+    }
+
+    const uint32_t* groupPageTableWords() const {
+        return const_cast<MeshletCullPass*>(this)->groupPageTableWords();
     }
 
     ClusterResidencyRequest* residencyRequests() {
@@ -566,6 +615,65 @@ private:
                (words[nodeIndex] & kClusterLodNodeResidencyAlwaysResident) != 0u;
     }
 
+    void buildResidencyNodeLeafGroupsRecursive(uint32_t nodeIndex,
+                                               const ClusterLODData& clusterLodData,
+                                               std::vector<uint8_t>& builtNodes) {
+        if (nodeIndex >= m_residencyNodeLeafGroups.size() || builtNodes[nodeIndex] != 0u) {
+            return;
+        }
+
+        builtNodes[nodeIndex] = 1u;
+        const GPULodNode& node = clusterLodData.nodes[nodeIndex];
+        auto& leafGroups = m_residencyNodeLeafGroups[nodeIndex];
+        if (node.isLeaf != 0u) {
+            leafGroups.reserve(node.childCount);
+            for (uint32_t childIndex = 0; childIndex < node.childCount; ++childIndex) {
+                leafGroups.push_back(node.childOffset + childIndex);
+            }
+            return;
+        }
+
+        for (uint32_t childIndex = 0; childIndex < node.childCount; ++childIndex) {
+            const uint32_t childNodeIndex = node.childOffset + childIndex;
+            if (childNodeIndex >= clusterLodData.nodes.size()) {
+                continue;
+            }
+
+            buildResidencyNodeLeafGroupsRecursive(childNodeIndex, clusterLodData, builtNodes);
+            const auto& childLeafGroups = m_residencyNodeLeafGroups[childNodeIndex];
+            leafGroups.insert(leafGroups.end(), childLeafGroups.begin(), childLeafGroups.end());
+        }
+    }
+
+    void rebuildResidencyNodeLeafGroups(const ClusterLODData& clusterLodData) {
+        m_residencyNodeLeafGroups.clear();
+        m_residencyNodeLeafGroups.resize(clusterLodData.totalNodeCount);
+        std::vector<uint8_t> builtNodes(clusterLodData.totalNodeCount, 0u);
+        for (uint32_t nodeIndex = 0; nodeIndex < clusterLodData.totalNodeCount; ++nodeIndex) {
+            buildResidencyNodeLeafGroupsRecursive(nodeIndex, clusterLodData, builtNodes);
+        }
+    }
+
+    void patchResidentGroupsForNode(uint32_t nodeIndex,
+                                    const ClusterLODData& clusterLodData,
+                                    bool resident) {
+        uint32_t* pageTable = groupPageTableWords();
+        if (!pageTable || nodeIndex >= m_residencyNodeLeafGroups.size()) {
+            return;
+        }
+
+        for (uint32_t groupIndex : m_residencyNodeLeafGroups[nodeIndex]) {
+            if (groupIndex >= m_residencyGroupCapacity ||
+                groupIndex >= clusterLodData.groups.size()) {
+                continue;
+            }
+
+            pageTable[groupIndex] = resident
+                ? clusterLodData.groups[groupIndex].clusterStart
+                : kClusterLodGroupPageInvalidAddress;
+        }
+    }
+
     void touchDynamicResidentNode(uint32_t nodeIndex) {
         auto it = std::find(m_dynamicResidentNodes.begin(), m_dynamicResidentNodes.end(), nodeIndex);
         if (it != m_dynamicResidentNodes.end()) {
@@ -581,7 +689,7 @@ private:
         }
     }
 
-    void evictOldestDynamicResidencyNode() {
+    void evictOldestDynamicResidencyNode(const ClusterLODData& clusterLodData) {
         if (m_dynamicResidentNodes.empty()) {
             return;
         }
@@ -598,10 +706,11 @@ private:
             words[nodeIndex] &= ~(kClusterLodNodeResidencyResident |
                                   kClusterLodNodeResidencyRequested);
         }
+        patchResidentGroupsForNode(nodeIndex, clusterLodData, false);
         ++m_lastResidencyEvictedCount;
     }
 
-    void promotePendingResidencyNodes() {
+    void promotePendingResidencyNodes(const ClusterLODData& clusterLodData) {
         uint32_t* words = residencyStateWords();
         if (!words) {
             return;
@@ -632,7 +741,7 @@ private:
 
             while (m_dynamicResidentNodes.size() >= size_t(m_streamingBudgetNodes) &&
                    !m_dynamicResidentNodes.empty()) {
-                evictOldestDynamicResidencyNode();
+                evictOldestDynamicResidencyNode(clusterLodData);
             }
             if (m_dynamicResidentNodes.size() >= size_t(m_streamingBudgetNodes)) {
                 break;
@@ -640,6 +749,7 @@ private:
 
             words[nodeIndex] |= kClusterLodNodeResidencyResident;
             words[nodeIndex] &= ~kClusterLodNodeResidencyRequested;
+            patchResidentGroupsForNode(nodeIndex, clusterLodData, true);
             touchDynamicResidentNode(nodeIndex);
             ++m_lastResidencyPromotedCount;
             m_pendingResidencyNodes.erase(m_pendingResidencyNodes.begin() +
@@ -654,6 +764,8 @@ private:
         }
 
         std::memset(words, 0, m_lodNodeResidencyBuffer->size());
+        invalidateGroupPageTable();
+        rebuildResidencyNodeLeafGroups(clusterLodData);
         m_dynamicResidentNodes.clear();
         m_pendingResidencyNodes.clear();
         m_lastResidencyPromotedCount = 0;
@@ -679,6 +791,7 @@ private:
 
             words[alwaysResidentNode] =
                 kClusterLodNodeResidencyResident | kClusterLodNodeResidencyAlwaysResident;
+            patchResidentGroupsForNode(alwaysResidentNode, clusterLodData, true);
         }
 
         seedResidencyRequestQueue();
@@ -689,10 +802,14 @@ private:
 
     void updateResidencyDebugCounts() {
         const uint32_t* words = residencyStateWords();
+        const uint32_t* pageTable = groupPageTableWords();
         m_lastResidentNodeCount = 0;
         m_lastAlwaysResidentNodeCount = 0;
+        m_lastResidentGroupCount = 0;
+        m_lastAlwaysResidentGroupCount = 0;
         if (!words) {
             m_activeResidencyNodeCount = 0;
+            m_activeResidencyGroupCount = 0;
             return;
         }
 
@@ -705,11 +822,35 @@ private:
                 ++m_lastAlwaysResidentNodeCount;
             }
         }
+
+        if (!pageTable) {
+            return;
+        }
+
+        for (uint32_t groupIndex = 0; groupIndex < m_activeResidencyGroupCount; ++groupIndex) {
+            if (pageTable[groupIndex] != kClusterLodGroupPageInvalidAddress) {
+                ++m_lastResidentGroupCount;
+            }
+        }
+
+        for (uint32_t nodeIndex = 0; nodeIndex < m_activeResidencyNodeCount; ++nodeIndex) {
+            if (!isResidencyNodeAlwaysResident(nodeIndex) ||
+                nodeIndex >= m_residencyNodeLeafGroups.size()) {
+                continue;
+            }
+
+            m_lastAlwaysResidentGroupCount +=
+                static_cast<uint32_t>(m_residencyNodeLeafGroups[nodeIndex].size());
+        }
     }
 
     void processResidencyRequests(const ClusterLODData& clusterLodData) {
         m_activeResidencyNodeCount = clusterLodData.totalNodeCount;
-        if (!m_lodNodeResidencyBuffer || !m_residencyRequestBuffer || !m_residencyRequestStateBuffer) {
+        m_activeResidencyGroupCount = clusterLodData.totalGroupCount;
+        if (!m_lodNodeResidencyBuffer ||
+            !m_lodGroupPageTableBuffer ||
+            !m_residencyRequestBuffer ||
+            !m_residencyRequestStateBuffer) {
             return;
         }
 
@@ -754,9 +895,9 @@ private:
 
         if (m_enableResidencyStreaming) {
             while (m_dynamicResidentNodes.size() > size_t(m_streamingBudgetNodes)) {
-                evictOldestDynamicResidencyNode();
+                evictOldestDynamicResidencyNode(clusterLodData);
             }
-            promotePendingResidencyNodes();
+            promotePendingResidencyNodes(clusterLodData);
         }
 
         updateResidencyDebugCounts();
@@ -784,12 +925,16 @@ private:
     float m_occlusionBoundsScale = 1.1f;
     uint32_t m_streamingBudgetNodes = 64u;
     uint32_t m_residencyNodeCapacity = 0;
+    uint32_t m_residencyGroupCapacity = 0;
     uint32_t m_activeResidencyNodeCount = 0;
+    uint32_t m_activeResidencyGroupCount = 0;
     uint32_t m_lastResidencyRequestCount = 0;
     uint32_t m_lastResidencyPromotedCount = 0;
     uint32_t m_lastResidencyEvictedCount = 0;
     uint32_t m_lastResidentNodeCount = 0;
     uint32_t m_lastAlwaysResidentNodeCount = 0;
+    uint32_t m_lastResidentGroupCount = 0;
+    uint32_t m_lastAlwaysResidentGroupCount = 0;
     FGResource m_visibleInstanceState;
     FGResource m_clusterTraversalStats;
     FGResource m_dummyLodNodes;
@@ -797,9 +942,11 @@ private:
     FGResource m_dummyLodGroupMeshletIndices;
     FGResource m_dummyLodBounds;
     FGResource m_dummyLodNodeResidency;
+    FGResource m_dummyLodGroupPageTable;
     FGResource m_dummyResidencyRequests;
     FGResource m_dummyResidencyRequestState;
     std::unique_ptr<RhiBuffer> m_lodNodeResidencyBuffer;
+    std::unique_ptr<RhiBuffer> m_lodGroupPageTableBuffer;
     std::unique_ptr<RhiBuffer> m_residencyRequestBuffer;
     std::unique_ptr<RhiBuffer> m_residencyRequestStateBuffer;
     const void* m_residencySourceNodeBufferHandle = nullptr;
@@ -808,6 +955,7 @@ private:
     std::vector<FGResource> m_hzbHistoryRead;
     std::vector<uint32_t> m_dynamicResidentNodes;
     std::vector<uint32_t> m_pendingResidencyNodes;
+    std::vector<std::vector<uint32_t>> m_residencyNodeLeafGroups;
 
     uint32_t computeMaxMeshletCapacity() const {
         return std::max(1u, m_ctx.gpuScene.totalMeshletDispatchCount);
@@ -819,6 +967,17 @@ private:
         FGBufferDesc desc;
         desc.size = sizeof(T);
         desc.initialData = &kZero;
+        desc.hostVisible = false;
+        desc.debugName = debugName;
+        return desc;
+    }
+
+    template <typename T>
+    FGBufferDesc makeSingleValueBufferDesc(T value, const char* debugName) const {
+        static const T kValue = value;
+        FGBufferDesc desc;
+        desc.size = sizeof(T);
+        desc.initialData = &kValue;
         desc.hostVisible = false;
         desc.debugName = debugName;
         return desc;

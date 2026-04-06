@@ -10,6 +10,7 @@ enum : uint32_t {
     kVisibleInstanceClassificationHasLod = 1u << 1,
     kMeshletDrawSourceScene = 0u,
     kMeshletDrawSourceClusterLod = 1u,
+    kClusterLodGroupPageInvalidAddress = UINT32_MAX,
     kClusterLodNodeResidencyResident = 1u << 0,
     kClusterLodNodeResidencyRequested = 1u << 1,
     kClusterLodNodeResidencyAlwaysResident = 1u << 2,

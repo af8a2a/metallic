@@ -64,6 +64,7 @@ StructuredBuffer<uint>                lodGroupMeshletIndices; // buffer(GPU_DRIV
 StructuredBuffer<GPUMeshletBounds>    lodMeshletBounds; // buffer(GPU_DRIVEN_CULL_LOD_BOUNDS_BINDING)
 RWStructuredBuffer<uint>              traversalStats;   // buffer(GPU_DRIVEN_CULL_TRAVERSAL_STATS_BINDING)
 RWByteAddressBuffer                   lodNodeResidency; // buffer(GPU_DRIVEN_CULL_LOD_NODE_RESIDENCY_BINDING)
+StructuredBuffer<uint>                lodGroupPageTable; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_PAGE_TABLE_BINDING)
 RWStructuredBuffer<ClusterResidencyRequest> residencyRequests; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_OUTPUT_BINDING)
 RWByteAddressBuffer                   residencyRequestState; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING)
 Texture2D<float>                      hzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE+)
@@ -217,6 +218,10 @@ uint loadLodNodeResidencyState(uint nodeIndex) {
     return lodNodeResidency.Load(nodeIndex * 4u);
 }
 
+uint loadLodGroupResidentClusterStart(uint groupIndex) {
+    return lodGroupPageTable[groupIndex];
+}
+
 void queueResidencyRequest(uint lodRootNode,
                            uint targetNodeIndex,
                            uint requestedLodLevel,
@@ -305,7 +310,8 @@ void computeMain(uint3 groupID : SV_GroupID,
 
             if (node.isLeaf != 0u) {
                 for (uint childIndex = 0u; childIndex < node.childCount; ++childIndex) {
-                    GPUClusterGroup group = lodGroups[node.childOffset + childIndex];
+                    uint groupIndex = node.childOffset + childIndex;
+                    GPUClusterGroup group = lodGroups[groupIndex];
                     InterlockedAdd(traversalStats[kTraversalStatCandidateGroups], 1u);
                     float3 groupCenterWS =
                         mul(inst.worldMatrix, float4(group.center[0], group.center[1], group.center[2], 1.0)).xyz;
@@ -320,10 +326,17 @@ void computeMain(uint3 groupID : SV_GroupID,
 
                     InterlockedAdd(traversalStats[kTraversalStatSelectedGroups], 1u);
                     InterlockedAdd(traversalStats[kTraversalStatCandidateClusterMeshlets], group.clusterCount);
+                    uint residentClusterStart = group.clusterStart;
+                    if (cullUniforms.enableResidencyStreaming != 0u) {
+                        residentClusterStart = loadLodGroupResidentClusterStart(groupIndex);
+                        if (residentClusterStart == kClusterLodGroupPageInvalidAddress) {
+                            continue;
+                        }
+                    }
 
                     for (uint meshletIndex = 0u; meshletIndex < group.clusterCount; ++meshletIndex) {
                         uint globalMeshletID =
-                            lodGroupMeshletIndices[group.clusterStart + meshletIndex];
+                            lodGroupMeshletIndices[residentClusterStart + meshletIndex];
                         if (fineCullMeshlet(inst, lodMeshletBounds[globalMeshletID], maxScale)) {
                             continue;
                         }
