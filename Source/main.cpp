@@ -397,6 +397,7 @@ int main() {
         frameCtx.height = height;
         frameCtx.view = view;
         frameCtx.proj = proj;
+        frameCtx.unjitteredProj = camera.projectionMatrix(aspect);
         frameCtx.cameraWorldPos = cameraWorldPos;
         frameCtx.worldLightDir = worldLightDir;
         frameCtx.viewLightDir = viewLightDir;

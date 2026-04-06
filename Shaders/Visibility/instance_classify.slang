@@ -28,20 +28,7 @@ RWStructuredBuffer<VisibleInstanceInfo>  visibleInstances; // buffer(GPU_DRIVEN_
 RWByteAddressBuffer                      worklistState;    // buffer(GPU_DRIVEN_INSTANCE_CLASSIFY_STATE_BINDING)
 Texture2D<float>                         hzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_INSTANCE_CLASSIFY_HZB_TEXTURE_BINDING_BASE+)
 
-float sampleHzb(uint level, uint2 coord) {
-    switch (level) {
-    case 0u: return hzbPyramid[0].Load(int3(coord, 0));
-    case 1u: return hzbPyramid[1].Load(int3(coord, 0));
-    case 2u: return hzbPyramid[2].Load(int3(coord, 0));
-    case 3u: return hzbPyramid[3].Load(int3(coord, 0));
-    case 4u: return hzbPyramid[4].Load(int3(coord, 0));
-    case 5u: return hzbPyramid[5].Load(int3(coord, 0));
-    case 6u: return hzbPyramid[6].Load(int3(coord, 0));
-    case 7u: return hzbPyramid[7].Load(int3(coord, 0));
-    case 8u: return hzbPyramid[8].Load(int3(coord, 0));
-    default: return hzbPyramid[9].Load(int3(coord, 0));
-    }
-}
+#include "hzb_cull_helpers.slang"
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -98,78 +85,17 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
 
     float4 centerClip = mul(classifyUniforms.viewProj, float4(centerWS, 1.0));
 
-    if (!culled &&
-        classifyUniforms.enableOcclusionCull != 0u &&
-        classifyUniforms.hzbLevelCount > 0u) {
-        float4 prevCenterClip = mul(classifyUniforms.prevViewProj, float4(centerWS, 1.0));
-        if (prevCenterClip.w > 1e-5) {
-            float3 centerVS = mul(classifyUniforms.prevView, float4(centerWS, 1.0)).xyz;
-            float viewDepth = max(abs(centerVS.z), 1e-4);
-            float2 ndcRadius = float2(classifyUniforms.prevProjScale.x * worldRadius / viewDepth,
-                                      classifyUniforms.prevProjScale.y * worldRadius / viewDepth) *
-                               classifyUniforms.occlusionBoundsScale;
-            float2 centerNdc = prevCenterClip.xy / prevCenterClip.w;
-
-            float2 ndcMin = centerNdc - ndcRadius;
-            float2 ndcMax = centerNdc + ndcRadius;
-            bool outsidePrevView = ndcMax.x < -1.0 || ndcMin.x > 1.0 ||
-                                   ndcMax.y < -1.0 || ndcMin.y > 1.0;
-
-            float2 minUv = float2(centerNdc.x - ndcRadius.x, centerNdc.y + ndcRadius.y) *
-                               float2(0.5, -0.5) +
-                           float2(0.5, 0.5);
-            float2 maxUv = float2(centerNdc.x + ndcRadius.x, centerNdc.y - ndcRadius.y) *
-                               float2(0.5, -0.5) +
-                           float2(0.5, 0.5);
-            minUv = clamp(minUv, float2(0.0, 0.0), float2(1.0, 1.0));
-            maxUv = clamp(maxUv, float2(0.0, 0.0), float2(1.0, 1.0));
-            float2 uvMin = min(minUv, maxUv);
-            float2 uvMax = max(minUv, maxUv);
-
-            if (!outsidePrevView) {
-                float2 rectSizePixels =
-                    max((uvMax - uvMin) * classifyUniforms.hzbTextureSize, float2(1.0, 1.0));
-                float maxExtent = max(rectSizePixels.x, rectSizePixels.y);
-                uint level = 0u;
-                if (maxExtent > 1.0) {
-                    level = min(classifyUniforms.hzbLevelCount - 1u, (uint)ceil(log2(maxExtent)));
-                }
-
-                uint2 mipSize =
-                    uint2((uint)classifyUniforms.hzbTextureSize.x, (uint)classifyUniforms.hzbTextureSize.y);
-                for (uint mip = 0u; mip < level; ++mip) {
-                    mipSize = uint2(max((mipSize.x + 1u) / 2u, 1u),
-                                    max((mipSize.y + 1u) / 2u, 1u));
-                }
-
-                float2 mipScale = float2((float)mipSize.x, (float)mipSize.y);
-                uint2 minTexel = uint2(floor(uvMin * mipScale));
-                uint2 maxTexel = uint2(floor(uvMax * mipScale));
-                uint2 mipMaxCoord = uint2(max(mipSize.x, 1u) - 1u,
-                                          max(mipSize.y, 1u) - 1u);
-                minTexel = min(minTexel, mipMaxCoord);
-                maxTexel = min(maxTexel, mipMaxCoord);
-
-                float sampledDepth = sampleHzb(level, minTexel);
-                sampledDepth = min(sampledDepth, sampleHzb(level, uint2(maxTexel.x, minTexel.y)));
-                sampledDepth = min(sampledDepth, sampleHzb(level, uint2(minTexel.x, maxTexel.y)));
-                sampledDepth = min(sampledDepth, sampleHzb(level, maxTexel));
-
-                float3 prevCameraToCenter = centerWS - classifyUniforms.prevCameraWorldPos.xyz;
-                float prevCameraDistanceSq = dot(prevCameraToCenter, prevCameraToCenter);
-                if (prevCameraDistanceSq > 1e-10) {
-                    float3 nearestPointWS =
-                        centerWS - normalize(prevCameraToCenter) * worldRadius;
-                    float4 nearestClip = mul(classifyUniforms.prevViewProj, float4(nearestPointWS, 1.0));
-                    if (nearestClip.w > 1e-5) {
-                        float nearestDepth = saturate(nearestClip.z / nearestClip.w);
-                        if (nearestDepth < sampledDepth - classifyUniforms.occlusionDepthBias) {
-                            culled = true;
-                        }
-                    }
-                }
-            }
-        }
+    if (!culled && classifyUniforms.enableOcclusionCull != 0u) {
+        culled = spherePreviousFrameOccluded(classifyUniforms.prevViewProj,
+                                             classifyUniforms.prevView,
+                                             classifyUniforms.prevCameraWorldPos,
+                                             classifyUniforms.prevProjScale,
+                                             classifyUniforms.hzbTextureSize,
+                                             classifyUniforms.hzbLevelCount,
+                                             classifyUniforms.occlusionBoundsScale,
+                                             classifyUniforms.occlusionDepthBias,
+                                             centerWS,
+                                             worldRadius);
     }
 
     if (culled) {

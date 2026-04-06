@@ -44,6 +44,10 @@ StructuredBuffer<uint>              meshletMaterialIDs;// buffer(8)
 StructuredBuffer<GPUMaterial>       materials;         // buffer(9)
 StructuredBuffer<MeshletDrawInfo>   visibleMeshlets;   // buffer(GPU_DRIVEN_VISIBILITY_VISIBLE_MESHLETS_BINDING)
 StructuredBuffer<InstanceData>      instanceData;      // buffer(GPU_DRIVEN_VISIBILITY_INSTANCE_DATA_BINDING)
+StructuredBuffer<GPUMeshlet>        lodMeshlets;       // buffer(GPU_DRIVEN_VISIBILITY_LOD_MESHLET_BINDING)
+StructuredBuffer<uint>              lodMeshletVertices;// buffer(GPU_DRIVEN_VISIBILITY_LOD_MESHLET_VERTICES_BINDING)
+StructuredBuffer<uint>              lodMeshletTriangles;// buffer(GPU_DRIVEN_VISIBILITY_LOD_MESHLET_TRIANGLES_BINDING)
+StructuredBuffer<uint>              lodMeshletMaterialIDs;// buffer(GPU_DRIVEN_VISIBILITY_LOD_MATERIAL_IDS_BINDING)
 
 struct VisVertex {
     float4 clipPos : SV_Position;
@@ -79,12 +83,13 @@ void meshMain(
     MeshletDrawInfo info = visibleMeshlets[groupID];
     InstanceData inst = instanceData[info.instanceID];
     uint globalMeshletID = info.globalMeshletID;
+    bool useLodMeshlet = info.meshletSource == kMeshletDrawSourceClusterLod;
 
-    GPUMeshlet m = meshlets[globalMeshletID];
+    GPUMeshlet m = useLodMeshlet ? lodMeshlets[globalMeshletID] : meshlets[globalMeshletID];
 
     // No culling here — already done in meshlet_cull.slang
 
-    bool visibilityOverflow = (globalMeshletID > kVisibilityMeshletMask) ||
+    bool visibilityOverflow = (groupID > kVisibilityMeshletMask) ||
                               (info.instanceID > kInstanceMask) ||
                               (m.triangle_count > (kVisibilityTriangleMask + 1u));
 
@@ -97,10 +102,13 @@ void meshMain(
     if (visibilityOverflow)
         return;
 
-    uint matID = meshletMaterialIDs[globalMeshletID];
+    uint matID = useLodMeshlet ? lodMeshletMaterialIDs[globalMeshletID]
+                               : meshletMaterialIDs[globalMeshletID];
 
     if (groupThreadID < m.vertex_count) {
-        uint vertexIndex = meshletVertices[m.vertex_offset + groupThreadID];
+        uint vertexIndex = useLodMeshlet
+            ? lodMeshletVertices[m.vertex_offset + groupThreadID]
+            : meshletVertices[m.vertex_offset + groupThreadID];
 
         float3 pos = float3(
             positions[vertexIndex * 3 + 0],
@@ -119,14 +127,16 @@ void meshMain(
     }
 
     if (groupThreadID < m.triangle_count) {
-        uint packed = meshletTriangles[m.triangle_offset + groupThreadID];
+        uint packed = useLodMeshlet
+            ? lodMeshletTriangles[m.triangle_offset + groupThreadID]
+            : meshletTriangles[m.triangle_offset + groupThreadID];
         uint v0 = (packed >>  0) & 0xFF;
         uint v1 = (packed >>  8) & 0xFF;
         uint v2 = (packed >> 16) & 0xFF;
         outTris[groupThreadID] = uint3(v0, v1, v2);
 
         VisPrimitive prim;
-        prim.visibility = (globalMeshletID << kVisibilityMeshletShift) |
+        prim.visibility = (groupID << kVisibilityMeshletShift) |
                           (groupThreadID << kInstanceBits) |
                           info.instanceID;
         prim.materialID = matID;

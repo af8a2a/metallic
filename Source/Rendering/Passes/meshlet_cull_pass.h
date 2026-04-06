@@ -5,6 +5,7 @@
 #include "frame_context.h"
 #include "gpu_driven_helpers.h"
 #include "gpu_cull_resources.h"
+#include "cluster_lod_builder.h"
 #include "hzb_constants.h"
 #include "pass_registry.h"
 #include "imgui.h"
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 class MeshletCullPass : public RenderPass {
@@ -82,6 +84,18 @@ public:
         visibleMeshlets = visibleMeshletWorklist.payload;
         cullCounter = visibleMeshletWorklist.state;
 
+        m_clusterTraversalStats = builder.create("ClusterTraversalStats",
+                                                 makeTraversalStatsBufferDesc());
+        m_dummyLodNodes = builder.create("DummyClusterLodNodes",
+                                         makeSingleElementBufferDesc<GPULodNode>("DummyClusterLodNodes"));
+        m_dummyLodGroups = builder.create("DummyClusterLodGroups",
+                                          makeSingleElementBufferDesc<GPUClusterGroup>("DummyClusterLodGroups"));
+        m_dummyLodGroupMeshletIndices =
+            builder.create("DummyClusterLodGroupMeshletIndices",
+                           makeSingleElementBufferDesc<uint32_t>("DummyClusterLodGroupMeshletIndices"));
+        m_dummyLodBounds = builder.create("DummyClusterLodBounds",
+                                          makeSingleElementBufferDesc<GPUMeshletBounds>("DummyClusterLodBounds"));
+
         m_hzbHistoryRead.clear();
         m_hzbLevelCount = computeHzbLevelCount(static_cast<uint32_t>(m_width),
                                                static_cast<uint32_t>(m_height));
@@ -127,9 +141,15 @@ public:
         RhiBuffer* visibleInstanceStateBuffer = m_frameGraph->getBuffer(m_visibleInstanceState);
         RhiBuffer* visibleMeshletBuffer = m_frameGraph->getBuffer(visibleMeshlets);
         RhiBuffer* worklistStateBuffer = m_frameGraph->getBuffer(cullCounter);
+        RhiBuffer* clusterTraversalStatsBuffer = m_frameGraph->getBuffer(m_clusterTraversalStats);
         if (!visibleInstanceBuffer || !visibleInstanceStateBuffer ||
-            !visibleMeshletBuffer || !worklistStateBuffer) {
+            !visibleMeshletBuffer || !worklistStateBuffer || !clusterTraversalStatsBuffer) {
             return;
+        }
+
+        m_lastTraversalStats = readTraversalStats(clusterTraversalStatsBuffer);
+        if (clusterTraversalStatsBuffer->mappedData()) {
+            std::memset(clusterTraversalStatsBuffer->mappedData(), 0, sizeof(ClusterTraversalStats));
         }
 
         GpuDriven::ensureWorklistStateBufferInitialized<GpuDriven::ComputeDispatchCommandLayout>(
@@ -145,6 +165,27 @@ public:
         m_lastVisibleCount =
             GpuDriven::readPublishedWorkItemCount<GpuDriven::MeshDispatchCommandLayout>(
                 worklistStateBuffer);
+
+        const ClusterLODData& clusterLodData = m_ctx.clusterLodData;
+        const bool clusterLodAvailable =
+            clusterLodData.nodeBuffer.nativeHandle() &&
+            clusterLodData.groupBuffer.nativeHandle() &&
+            clusterLodData.groupMeshletIndicesBuffer.nativeHandle() &&
+            clusterLodData.boundsBuffer.nativeHandle();
+        RhiBuffer* dummyLodNodesBuffer = m_frameGraph->getBuffer(m_dummyLodNodes);
+        RhiBuffer* dummyLodGroupsBuffer = m_frameGraph->getBuffer(m_dummyLodGroups);
+        RhiBuffer* dummyLodGroupMeshletIndicesBuffer =
+            m_frameGraph->getBuffer(m_dummyLodGroupMeshletIndices);
+        RhiBuffer* dummyLodBoundsBuffer = m_frameGraph->getBuffer(m_dummyLodBounds);
+        const RhiBuffer* lodNodeBuffer =
+            clusterLodAvailable ? &clusterLodData.nodeBuffer : dummyLodNodesBuffer;
+        const RhiBuffer* lodGroupBuffer =
+            clusterLodAvailable ? &clusterLodData.groupBuffer : dummyLodGroupsBuffer;
+        const RhiBuffer* lodGroupMeshletIndicesBuffer =
+            clusterLodAvailable ? &clusterLodData.groupMeshletIndicesBuffer
+                                : dummyLodGroupMeshletIndicesBuffer;
+        const RhiBuffer* lodBoundsBuffer =
+            clusterLodAvailable ? &clusterLodData.boundsBuffer : dummyLodBoundsBuffer;
 
         std::array<const RhiTexture*, kHzbMaxLevels> hzbTextures{};
         uint32_t hzbTextureCount = 0;
@@ -165,8 +206,10 @@ public:
             }
         }
 
+        const float4x4 currentCullProj = m_frameContext->unjitteredProj;
+
         InstanceClassifyUniforms classifyUni{};
-        classifyUni.viewProj = transpose(m_frameContext->proj * m_frameContext->view);
+        classifyUni.viewProj = transpose(currentCullProj * m_frameContext->view);
         classifyUni.prevViewProj = transpose(m_frameContext->prevCullProj * m_frameContext->prevCullView);
         classifyUni.prevView = transpose(m_frameContext->prevCullView);
         classifyUni.cameraWorldPos = m_frameContext->cameraWorldPos;
@@ -191,14 +234,19 @@ public:
         cullUni.prevView = classifyUni.prevView;
         cullUni.cameraWorldPos = classifyUni.cameraWorldPos;
         cullUni.prevCameraWorldPos = classifyUni.prevCameraWorldPos;
+        cullUni.projScale =
+            float2(std::abs(currentCullProj[0].x), std::abs(currentCullProj[1].y));
+        cullUni.renderTargetSize = float2(static_cast<float>(m_width), static_cast<float>(m_height));
         cullUni.prevProjScale = classifyUni.prevProjScale;
         cullUni.hzbTextureSize = classifyUni.hzbTextureSize;
         cullUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1u : 0u;
         cullUni.enableConeCull = m_frameContext->enableConeCull ? 1u : 0u;
         cullUni.enableOcclusionCull = classifyUni.enableOcclusionCull;
         cullUni.hzbLevelCount = classifyUni.hzbLevelCount;
+        cullUni.lodReferencePixels = m_lodReferencePixels;
         cullUni.occlusionDepthBias = m_occlusionDepthBias;
         cullUni.occlusionBoundsScale = m_occlusionBoundsScale;
+        cullUni.clusterLodEnabled = clusterLodAvailable ? 1u : 0u;
 
         // Dispatch 1: coarse instance classification from scene tables.
         encoder.setComputePipeline(classifyIt->second);
@@ -233,6 +281,11 @@ public:
         encoder.setBuffer(visibleInstanceBuffer, 0, GpuDriven::MeshletCullBindings::kVisibleInstances);
         encoder.setBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletCullBindings::kCompactionOutput);
         encoder.setBuffer(worklistStateBuffer, 0, GpuDriven::MeshletCullBindings::kCounter);
+        encoder.setBuffer(lodNodeBuffer, 0, GpuDriven::MeshletCullBindings::kLodNodes);
+        encoder.setBuffer(lodGroupBuffer, 0, GpuDriven::MeshletCullBindings::kLodGroups);
+        encoder.setBuffer(lodGroupMeshletIndicesBuffer, 0, GpuDriven::MeshletCullBindings::kLodGroupMeshletIndices);
+        encoder.setBuffer(lodBoundsBuffer, 0, GpuDriven::MeshletCullBindings::kLodBounds);
+        encoder.setBuffer(clusterTraversalStatsBuffer, 0, GpuDriven::MeshletCullBindings::kTraversalStats);
         if (hzbTextureCount > 0) {
             encoder.setTextures(hzbTextures.data(),
                                 GpuDriven::MeshletCullBindings::kHzbTextureBase,
@@ -268,6 +321,18 @@ public:
         ImGui::Text("Classified Instances: %u", m_lastVisibleInstanceCount);
         ImGui::Text("Total Meshlets: %u", m_totalMeshlets);
         ImGui::Text("Visible Meshlets: %u", m_lastVisibleCount);
+        ImGui::Text("LOD Traversal Instances: %u", m_lastTraversalStats.lodTraversalInstanceCount);
+        ImGui::Text("Fallback Instances: %u", m_lastTraversalStats.fallbackInstanceCount);
+        ImGui::Text("Traversed Nodes: %u", m_lastTraversalStats.traversedNodeCount);
+        ImGui::Text("HZB-Culled Nodes: %u", m_lastTraversalStats.occludedNodeCount);
+        ImGui::Text("Candidate Groups: %u", m_lastTraversalStats.candidateGroupCount);
+        ImGui::Text("Selected Groups: %u", m_lastTraversalStats.selectedGroupCount);
+        ImGui::Text("HZB-Culled Groups: %u", m_lastTraversalStats.occludedGroupCount);
+        ImGui::Text("Candidate LOD Meshlets: %u", m_lastTraversalStats.candidateClusterMeshletCount);
+        ImGui::Text("LOD Meshlets: %u", m_lastTraversalStats.emittedClusterMeshletCount);
+        ImGui::Text("Candidate Fallback Meshlets: %u", m_lastTraversalStats.candidateFallbackMeshletCount);
+        ImGui::Text("Fallback Meshlets: %u", m_lastTraversalStats.emittedFallbackMeshletCount);
+        ImGui::Text("Max Selected LOD: %u", m_lastTraversalStats.maxSelectedLodLevel);
         if (m_ctx.gpuScene.instanceCount > 0) {
             float coarseCullRate =
                 1.0f - float(m_lastVisibleInstanceCount) / float(m_ctx.gpuScene.instanceCount);
@@ -276,6 +341,30 @@ public:
         if (m_totalMeshlets > 0) {
             float cullRate = 1.0f - float(m_lastVisibleCount) / float(m_totalMeshlets);
             ImGui::Text("Meshlet Cull Rate: %.1f%%", cullRate * 100.0f);
+        }
+        if (m_lastTraversalStats.traversedNodeCount > 0) {
+            float nodeRejectRate =
+                float(m_lastTraversalStats.occludedNodeCount) /
+                float(m_lastTraversalStats.traversedNodeCount);
+            ImGui::Text("Node HZB Reject Rate: %.1f%%", nodeRejectRate * 100.0f);
+        }
+        if (m_lastTraversalStats.candidateGroupCount > 0) {
+            float groupKeepRate =
+                float(m_lastTraversalStats.selectedGroupCount) /
+                float(m_lastTraversalStats.candidateGroupCount);
+            ImGui::Text("Group Keep Rate: %.1f%%", groupKeepRate * 100.0f);
+        }
+        if (m_lastTraversalStats.candidateClusterMeshletCount > 0) {
+            float clusterMeshletKeepRate =
+                float(m_lastTraversalStats.emittedClusterMeshletCount) /
+                float(m_lastTraversalStats.candidateClusterMeshletCount);
+            ImGui::Text("LOD Meshlet Keep Rate: %.1f%%", clusterMeshletKeepRate * 100.0f);
+        }
+        if (m_lastTraversalStats.candidateFallbackMeshletCount > 0) {
+            float fallbackMeshletKeepRate =
+                float(m_lastTraversalStats.emittedFallbackMeshletCount) /
+                float(m_lastTraversalStats.candidateFallbackMeshletCount);
+            ImGui::Text("Fallback Meshlet Keep Rate: %.1f%%", fallbackMeshletKeepRate * 100.0f);
         }
         if (ImGui::Checkbox("Frustum Cull", &m_enableFrustumCull)) {
             syncFrameContextFlags();
@@ -286,6 +375,7 @@ public:
         ImGui::Checkbox("HZB Occlusion Cull", &m_enableOcclusionCull);
         ImGui::SliderFloat("HZB Depth Bias", &m_occlusionDepthBias, 0.0f, 0.05f, "%.4f");
         ImGui::SliderFloat("HZB Bounds Scale", &m_occlusionBoundsScale, 1.0f, 1.5f, "%.2f");
+        ImGui::SliderFloat("LOD Reference Pixels", &m_lodReferencePixels, 8.0f, 256.0f, "%.1f");
         if (m_frameContext) {
             ImGui::Text("Scene Instances: %u", m_ctx.gpuScene.instanceCount);
             ImGui::Text("Scene Visible Flags: %u", m_ctx.gpuScene.visibleInstanceCount);
@@ -294,6 +384,9 @@ public:
         const bool historyValid =
             m_frameGraph && !m_hzbHistoryRead.empty() && m_frameGraph->isHistoryValid(m_hzbHistoryRead[0]);
         ImGui::Text("HZB History: %s (%u levels)", historyValid ? "Ready" : "Warming Up", m_hzbLevelCount);
+        for (uint32_t level = 0; level < kClusterTraversalStatsHistogramSize; ++level) {
+            ImGui::Text("LOD %u Hits: %u", level, m_lastTraversalStats.selectedLodLevelHistogram[level]);
+        }
     }
 
 private:
@@ -315,18 +408,56 @@ private:
     uint32_t m_totalMeshlets = 0;
     uint32_t m_lastVisibleInstanceCount = 0;
     uint32_t m_lastVisibleCount = 0;
+    ClusterTraversalStats m_lastTraversalStats{};
     uint32_t m_hzbLevelCount = 0;
     bool m_enableFrustumCull = false;
     bool m_enableConeCull = false;
     bool m_enableOcclusionCull = true;
+    float m_lodReferencePixels = 96.0f;
     float m_occlusionDepthBias = 0.0015f;
     float m_occlusionBoundsScale = 1.1f;
     FGResource m_visibleInstanceState;
+    FGResource m_clusterTraversalStats;
+    FGResource m_dummyLodNodes;
+    FGResource m_dummyLodGroups;
+    FGResource m_dummyLodGroupMeshletIndices;
+    FGResource m_dummyLodBounds;
     const RhiBuffer* m_initializedInstanceStateBuffer = nullptr;
     const RhiBuffer* m_initializedMeshletStateBuffer = nullptr;
     std::vector<FGResource> m_hzbHistoryRead;
 
     uint32_t computeMaxMeshletCapacity() const {
         return std::max(1u, m_ctx.gpuScene.totalMeshletDispatchCount);
+    }
+
+    template <typename T>
+    FGBufferDesc makeSingleElementBufferDesc(const char* debugName) const {
+        static const T kZero{};
+        FGBufferDesc desc;
+        desc.size = sizeof(T);
+        desc.initialData = &kZero;
+        desc.hostVisible = false;
+        desc.debugName = debugName;
+        return desc;
+    }
+
+    FGBufferDesc makeTraversalStatsBufferDesc() const {
+        static const ClusterTraversalStats kZeroStats{};
+        FGBufferDesc desc;
+        desc.size = sizeof(ClusterTraversalStats);
+        desc.initialData = &kZeroStats;
+        desc.hostVisible = true;
+        desc.debugName = "ClusterTraversalStats";
+        return desc;
+    }
+
+    ClusterTraversalStats readTraversalStats(RhiBuffer* buffer) const {
+        ClusterTraversalStats stats{};
+        if (!buffer || !buffer->mappedData() || buffer->size() < sizeof(ClusterTraversalStats)) {
+            return stats;
+        }
+
+        std::memcpy(&stats, buffer->mappedData(), sizeof(stats));
+        return stats;
     }
 };

@@ -40,6 +40,7 @@ struct LightingUniforms {
     uint32_t textureCount;
     uint32_t instanceCount;
     uint32_t shadowEnabled;
+    uint32_t visibilityUsesWorklistIds;
     float    motionVectorIntensity;
     uint32_t pad2;
 };

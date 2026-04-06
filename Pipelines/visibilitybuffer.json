@@ -390,6 +390,20 @@
       "resourceId": "00000000000000000000000000000004"
     },
     {
+      "id": "0dbd00c2bbaa4de3a1d5f8392cb0a001",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "visibilityWorklist",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000b"
+    },
+    {
+      "id": "0dbd00c2bbaa4de3a1d5f8392cb0a002",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "visibilityWorklistState",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000c"
+    },
+    {
       "id": "2000000000000000000000000000000a",
       "passId": "10000000000000000000000000000005",
       "slotKey": "shadowMap",

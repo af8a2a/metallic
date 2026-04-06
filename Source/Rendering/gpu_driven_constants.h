@@ -46,7 +46,12 @@
 #define GPU_DRIVEN_CULL_VISIBLE_INSTANCES_BINDING 4u
 #define GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING 5u
 #define GPU_DRIVEN_CULL_COUNTER_BINDING 6u
-#define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 7u
+#define GPU_DRIVEN_CULL_LOD_NODE_BINDING 7u
+#define GPU_DRIVEN_CULL_LOD_GROUP_BINDING 8u
+#define GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_BINDING 9u
+#define GPU_DRIVEN_CULL_LOD_BOUNDS_BINDING 10u
+#define GPU_DRIVEN_CULL_TRAVERSAL_STATS_BINDING 11u
+#define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 12u
 
 // Shared bindings for meshlet visibility pipelines.
 #define GPU_DRIVEN_VISIBILITY_GLOBAL_UNIFORMS_BINDING 0u
@@ -61,6 +66,19 @@
 #define GPU_DRIVEN_VISIBILITY_MATERIAL_BUFFER_BINDING 9u
 #define GPU_DRIVEN_VISIBILITY_VISIBLE_MESHLETS_BINDING 10u
 #define GPU_DRIVEN_VISIBILITY_INSTANCE_DATA_BINDING 11u
+#define GPU_DRIVEN_VISIBILITY_LOD_MESHLET_BINDING 12u
+#define GPU_DRIVEN_VISIBILITY_LOD_MESHLET_VERTICES_BINDING 13u
+#define GPU_DRIVEN_VISIBILITY_LOD_MESHLET_TRIANGLES_BINDING 14u
+#define GPU_DRIVEN_VISIBILITY_LOD_MATERIAL_IDS_BINDING 15u
+
+// Shared bindings for deferred lighting when visibility encodes visible-worklist IDs.
+#define GPU_DRIVEN_DEFERRED_VISIBLE_MESHLETS_BINDING 9u
+#define GPU_DRIVEN_DEFERRED_VISIBLE_MESHLET_STATE_BINDING 10u
+#define GPU_DRIVEN_DEFERRED_LOD_MESHLET_BINDING 11u
+#define GPU_DRIVEN_DEFERRED_LOD_MESHLET_VERTICES_BINDING 12u
+#define GPU_DRIVEN_DEFERRED_LOD_MESHLET_TRIANGLES_BINDING 13u
+#define GPU_DRIVEN_DEFERRED_LOD_MATERIAL_IDS_BINDING 14u
+#define GPU_DRIVEN_DEFERRED_INSTANCE_DATA_BINDING 15u
 
 // Shared bindings for helper passes that convert counters into indirect args.
 #define GPU_DRIVEN_BUILD_DISPATCH_COUNTER_BINDING 0u
@@ -138,6 +156,11 @@ struct MeshletCullBindings {
     static constexpr uint32_t kVisibleInstances = GPU_DRIVEN_CULL_VISIBLE_INSTANCES_BINDING;
     static constexpr uint32_t kCompactionOutput = GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING;
     static constexpr uint32_t kCounter = GPU_DRIVEN_CULL_COUNTER_BINDING;
+    static constexpr uint32_t kLodNodes = GPU_DRIVEN_CULL_LOD_NODE_BINDING;
+    static constexpr uint32_t kLodGroups = GPU_DRIVEN_CULL_LOD_GROUP_BINDING;
+    static constexpr uint32_t kLodGroupMeshletIndices = GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_BINDING;
+    static constexpr uint32_t kLodBounds = GPU_DRIVEN_CULL_LOD_BOUNDS_BINDING;
+    static constexpr uint32_t kTraversalStats = GPU_DRIVEN_CULL_TRAVERSAL_STATS_BINDING;
     static constexpr uint32_t kHzbTextureBase = GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE;
     static constexpr uint32_t kInstanceData = kInstances;
 };
@@ -155,7 +178,29 @@ struct MeshletVisibilityBindings {
     static constexpr uint32_t kMaterials = GPU_DRIVEN_VISIBILITY_MATERIAL_BUFFER_BINDING;
     static constexpr uint32_t kVisibleMeshlets = GPU_DRIVEN_VISIBILITY_VISIBLE_MESHLETS_BINDING;
     static constexpr uint32_t kSceneInstances = GPU_DRIVEN_VISIBILITY_INSTANCE_DATA_BINDING;
+    static constexpr uint32_t kLodMeshlets = GPU_DRIVEN_VISIBILITY_LOD_MESHLET_BINDING;
+    static constexpr uint32_t kLodMeshletVertices = GPU_DRIVEN_VISIBILITY_LOD_MESHLET_VERTICES_BINDING;
+    static constexpr uint32_t kLodMeshletTriangles = GPU_DRIVEN_VISIBILITY_LOD_MESHLET_TRIANGLES_BINDING;
+    static constexpr uint32_t kLodMaterialIds = GPU_DRIVEN_VISIBILITY_LOD_MATERIAL_IDS_BINDING;
     static constexpr uint32_t kInstanceData = kSceneInstances;
+};
+
+struct DeferredLightingBindings {
+    static constexpr uint32_t kPositions = 1u;
+    static constexpr uint32_t kNormals = 2u;
+    static constexpr uint32_t kMeshlets = 3u;
+    static constexpr uint32_t kMeshletVertices = 4u;
+    static constexpr uint32_t kMeshletTriangles = 5u;
+    static constexpr uint32_t kUvs = 6u;
+    static constexpr uint32_t kMaterialIds = 7u;
+    static constexpr uint32_t kMaterials = 8u;
+    static constexpr uint32_t kVisibleMeshlets = GPU_DRIVEN_DEFERRED_VISIBLE_MESHLETS_BINDING;
+    static constexpr uint32_t kVisibleMeshletState = GPU_DRIVEN_DEFERRED_VISIBLE_MESHLET_STATE_BINDING;
+    static constexpr uint32_t kLodMeshlets = GPU_DRIVEN_DEFERRED_LOD_MESHLET_BINDING;
+    static constexpr uint32_t kLodMeshletVertices = GPU_DRIVEN_DEFERRED_LOD_MESHLET_VERTICES_BINDING;
+    static constexpr uint32_t kLodMeshletTriangles = GPU_DRIVEN_DEFERRED_LOD_MESHLET_TRIANGLES_BINDING;
+    static constexpr uint32_t kLodMaterialIds = GPU_DRIVEN_DEFERRED_LOD_MATERIAL_IDS_BINDING;
+    static constexpr uint32_t kInstanceData = GPU_DRIVEN_DEFERRED_INSTANCE_DATA_BINDING;
 };
 
 struct BuildWorklistBindings {

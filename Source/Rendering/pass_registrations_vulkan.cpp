@@ -71,6 +71,10 @@ REGISTER_COMPUTE_PASS(DeferredLightingPass, "Deferred Lighting", "Lighting",
     (std::vector<PassSlotInfo>{
         makeInputSlot("visibility", "Visibility"),
         makeInputSlot("depth", "Depth"),
+        makeInputSlot("visibleMeshlets", "Visible Meshlets", true),
+        makeInputSlot("cullCounter", "Cull Counter", true),
+        makeInputSlot("visibilityWorklist", "Visibility Worklist", true),
+        makeInputSlot("visibilityWorklistState", "Visibility Worklist State", true),
         makeInputSlot("shadowMap", "Shadow Map", true),
         makeInputSlot("skyOutput", "Sky", true)
     }),

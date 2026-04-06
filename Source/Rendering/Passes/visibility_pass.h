@@ -5,6 +5,7 @@
 #include "frame_context.h"
 #include "gpu_driven_helpers.h"
 #include "gpu_cull_resources.h"
+#include "cluster_lod_builder.h"
 #include "pass_registry.h"
 #include "imgui.h"
 #include <spdlog/spdlog.h>
@@ -148,6 +149,22 @@ public:
         }
 
         if (useGPUPath) {
+            const RhiBuffer* lodMeshletBuffer =
+                m_ctx.clusterLodData.meshletBuffer.nativeHandle()
+                    ? &m_ctx.clusterLodData.meshletBuffer
+                    : &m_ctx.meshletData.meshletBuffer;
+            const RhiBuffer* lodMeshletVerticesBuffer =
+                m_ctx.clusterLodData.meshletVerticesBuffer.nativeHandle()
+                    ? &m_ctx.clusterLodData.meshletVerticesBuffer
+                    : &m_ctx.meshletData.meshletVertices;
+            const RhiBuffer* lodMeshletTrianglesBuffer =
+                m_ctx.clusterLodData.meshletTrianglesBuffer.nativeHandle()
+                    ? &m_ctx.clusterLodData.meshletTrianglesBuffer
+                    : &m_ctx.meshletData.meshletTriangles;
+            const RhiBuffer* lodMaterialIdsBuffer =
+                m_ctx.clusterLodData.materialIDsBuffer.nativeHandle()
+                    ? &m_ctx.clusterLodData.materialIDsBuffer
+                    : &m_ctx.meshletData.materialIDs;
 
             // Bind shared geometry buffers (same indices as visibility.slang)
             encoder.setMeshBuffer(&m_ctx.sceneMesh.positionBuffer, 0, GpuDriven::MeshletVisibilityBindings::kPositions);
@@ -161,6 +178,10 @@ public:
             encoder.setMeshBuffer(&m_ctx.materials.materialBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMaterials);
             encoder.setMeshBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kVisibleMeshlets);
             encoder.setMeshBuffer(sceneInstanceBuffer, 0, GpuDriven::MeshletVisibilityBindings::kSceneInstances);
+            encoder.setMeshBuffer(lodMeshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kLodMeshlets);
+            encoder.setMeshBuffer(lodMeshletVerticesBuffer, 0, GpuDriven::MeshletVisibilityBindings::kLodMeshletVertices);
+            encoder.setMeshBuffer(lodMeshletTrianglesBuffer, 0, GpuDriven::MeshletVisibilityBindings::kLodMeshletTriangles);
+            encoder.setMeshBuffer(lodMaterialIdsBuffer, 0, GpuDriven::MeshletVisibilityBindings::kLodMaterialIds);
 
             // Fragment stage needs all buffers too (Slang KernelContext)
             encoder.setFragmentBuffer(&m_ctx.sceneMesh.positionBuffer, 0, GpuDriven::MeshletVisibilityBindings::kPositions);
@@ -174,6 +195,10 @@ public:
             encoder.setFragmentBuffer(&m_ctx.materials.materialBuffer, 0, GpuDriven::MeshletVisibilityBindings::kMaterials);
             encoder.setFragmentBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kVisibleMeshlets);
             encoder.setFragmentBuffer(sceneInstanceBuffer, 0, GpuDriven::MeshletVisibilityBindings::kSceneInstances);
+            encoder.setFragmentBuffer(lodMeshletBuffer, 0, GpuDriven::MeshletVisibilityBindings::kLodMeshlets);
+            encoder.setFragmentBuffer(lodMeshletVerticesBuffer, 0, GpuDriven::MeshletVisibilityBindings::kLodMeshletVertices);
+            encoder.setFragmentBuffer(lodMeshletTrianglesBuffer, 0, GpuDriven::MeshletVisibilityBindings::kLodMeshletTriangles);
+            encoder.setFragmentBuffer(lodMaterialIdsBuffer, 0, GpuDriven::MeshletVisibilityBindings::kLodMaterialIds);
 
             if (!useBindlessSceneTextures && !materialTextures.empty()) {
                 encoder.setFragmentTextures(materialTextures.data(), 0, static_cast<uint32_t>(materialTextures.size()));

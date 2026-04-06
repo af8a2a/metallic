@@ -17,6 +17,7 @@ struct LightingUniforms {
     uint     textureCount;
     uint     instanceCount;
     uint     shadowEnabled;
+    uint     visibilityUsesWorklistIds;
     float    motionVectorIntensity;
     uint     pad2;
 };
@@ -92,7 +93,13 @@ StructuredBuffer<uint>           meshletTriangles;        // buffer(5)
 StructuredBuffer<float>          uvs;                     // buffer(6)
 StructuredBuffer<uint>           meshletMaterialIDs;      // buffer(7)
 StructuredBuffer<GPUMaterial>    materials;                // buffer(8)
-StructuredBuffer<InstanceData>   instanceData;            // buffer(9)
+StructuredBuffer<MeshletDrawInfo> visibleMeshlets;        // buffer(9)
+RWByteAddressBuffer            visibleMeshletState;      // buffer(10)
+StructuredBuffer<GPUMeshlet>    lodMeshlets;             // buffer(11)
+StructuredBuffer<uint>          lodMeshletVertices;      // buffer(12)
+StructuredBuffer<uint>          lodMeshletTriangles;     // buffer(13)
+StructuredBuffer<uint>          lodMeshletMaterialIDs;   // buffer(14)
+StructuredBuffer<InstanceData>  instanceData;            // buffer(15)
 // Texture bindings
 Texture2D<uint>              visibilityBuffer;            // texture(0)
 Texture2D<float>             depthBuffer;                 // texture(1)
@@ -147,11 +154,24 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     // Decode visibility
-    uint meshletID  = (vis >> kVisibilityMeshletShift) & kVisibilityMeshletMask;
+    uint workItemID = (vis >> kVisibilityMeshletShift) & kVisibilityMeshletMask;
     uint triangleID = (vis >> kInstanceBits) & kVisibilityTriangleMask;
     uint instanceID = vis & kVisibilityInstanceMask;
+    uint meshletID = workItemID;
+    uint meshletSource = kMeshletDrawSourceScene;
 
-    if (meshletID >= lightUniforms.meshletCount) {
+    if (lightUniforms.visibilityUsesWorklistIds != 0u) {
+        uint visibleMeshletCount = gpuDrivenLoadWorklistProducedCount(visibleMeshletState);
+        if (workItemID >= visibleMeshletCount) {
+            outputTexture[pixel] = skyTexture[pixel];
+            return;
+        }
+
+        MeshletDrawInfo drawInfo = visibleMeshlets[workItemID];
+        meshletID = drawInfo.globalMeshletID;
+        meshletSource = drawInfo.meshletSource;
+        instanceID = drawInfo.instanceID;
+    } else if (meshletID >= lightUniforms.meshletCount) {
         outputTexture[pixel] = skyTexture[pixel];
         return;
     }
@@ -164,14 +184,18 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     InstanceData instance = instanceData[instanceID];
 
     // Fetch triangle vertex indices
-    GPUMeshlet meshlet = meshlets[meshletID];
+    GPUMeshlet meshlet =
+        (meshletSource == kMeshletDrawSourceClusterLod) ? lodMeshlets[meshletID] : meshlets[meshletID];
     if (triangleID >= meshlet.triangle_count) {
         outputTexture[pixel] = skyTexture[pixel];
         motionVectors[pixel] = float2(0.0);
         return;
     }
 
-    uint packedTri = meshletTriangles[meshlet.triangle_offset + triangleID];
+    uint packedTri =
+        (meshletSource == kMeshletDrawSourceClusterLod)
+            ? lodMeshletTriangles[meshlet.triangle_offset + triangleID]
+            : meshletTriangles[meshlet.triangle_offset + triangleID];
     uint localV0 = (packedTri >>  0) & 0xFF;
     uint localV1 = (packedTri >>  8) & 0xFF;
     uint localV2 = (packedTri >> 16) & 0xFF;
@@ -181,9 +205,18 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    uint globalV0 = meshletVertices[meshlet.vertex_offset + localV0];
-    uint globalV1 = meshletVertices[meshlet.vertex_offset + localV1];
-    uint globalV2 = meshletVertices[meshlet.vertex_offset + localV2];
+    uint globalV0 =
+        (meshletSource == kMeshletDrawSourceClusterLod)
+            ? lodMeshletVertices[meshlet.vertex_offset + localV0]
+            : meshletVertices[meshlet.vertex_offset + localV0];
+    uint globalV1 =
+        (meshletSource == kMeshletDrawSourceClusterLod)
+            ? lodMeshletVertices[meshlet.vertex_offset + localV1]
+            : meshletVertices[meshlet.vertex_offset + localV1];
+    uint globalV2 =
+        (meshletSource == kMeshletDrawSourceClusterLod)
+            ? lodMeshletVertices[meshlet.vertex_offset + localV2]
+            : meshletVertices[meshlet.vertex_offset + localV2];
     // Project vertices to screen space
     float3 s0 = projectVertex(lightUniforms.viewProj, instance.worldMatrix, loadPosition(globalV0));
     float3 s1 = projectVertex(lightUniforms.viewProj, instance.worldMatrix, loadPosition(globalV1));
@@ -255,7 +288,10 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float3 viewPos = viewPos4.xyz / viewPos4.w;
 
     // Material lookup
-    uint matID = meshletMaterialIDs[meshletID];
+    uint matID =
+        (meshletSource == kMeshletDrawSourceClusterLod)
+            ? lodMeshletMaterialIDs[meshletID]
+            : meshletMaterialIDs[meshletID];
     if (matID >= lightUniforms.materialCount) {
         outputTexture[pixel] = skyTexture[pixel];
         return;
