@@ -224,6 +224,8 @@ public:
         uint32_t hzbTextureCount = 0;
         const bool historyValid =
             m_enableOcclusionCull &&
+            m_frameContext &&
+            !m_frameContext->historyReset &&
             !m_hzbHistoryRead.empty() &&
             m_frameGraph &&
             m_frameGraph->isHistoryValid(m_hzbHistoryRead[0]);
@@ -416,6 +418,7 @@ public:
         ImGui::SliderFloat("LOD Reference Pixels", &m_lodReferencePixels, 8.0f, 256.0f, "%.1f");
         if (ImGui::Checkbox("Virtual Residency Streaming", &m_enableResidencyStreaming)) {
             m_residencyStateDirty = true;
+            requestVisibilityHistoryReset();
         }
         int streamingBudgetNodes = static_cast<int>(m_streamingBudgetNodes);
         const int maxStreamingBudget =
@@ -427,9 +430,11 @@ public:
                              maxStreamingBudget,
                              "%d")) {
             m_streamingBudgetNodes = static_cast<uint32_t>(std::max(streamingBudgetNodes, 0));
+            requestVisibilityHistoryReset();
         }
         if (ImGui::Button("Reset Residency State")) {
             m_residencyStateDirty = true;
+            requestVisibilityHistoryReset();
         }
         if (m_frameContext) {
             ImGui::Text("Scene Instances: %u", m_ctx.gpuScene.instanceCount);
@@ -462,6 +467,14 @@ private:
         auto* frameContext = const_cast<FrameContext*>(m_frameContext);
         frameContext->enableFrustumCull = m_enableFrustumCull;
         frameContext->enableConeCull = m_enableConeCull;
+    }
+
+    void requestVisibilityHistoryReset() {
+        if (!m_frameContext) {
+            return;
+        }
+        auto* frameContext = const_cast<FrameContext*>(m_frameContext);
+        frameContext->historyReset = true;
     }
 
     void ensureResidencyResources(uint32_t nodeCapacity) {
@@ -700,8 +713,13 @@ private:
             return;
         }
 
-        if (m_residencyStateDirty ||
-            m_residencySourceNodeBufferHandle != clusterLodData.nodeBuffer.nativeHandle()) {
+        const bool sourceBufferChanged =
+            m_residencySourceNodeBufferHandle != clusterLodData.nodeBuffer.nativeHandle();
+        if (m_residencyStateDirty || sourceBufferChanged) {
+            requestVisibilityHistoryReset();
+        }
+
+        if (m_residencyStateDirty || sourceBufferChanged) {
             rebuildResidencyState(clusterLodData);
         }
 

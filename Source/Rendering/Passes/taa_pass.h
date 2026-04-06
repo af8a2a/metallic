@@ -74,6 +74,9 @@ public:
         }
 
         ensureHistory();
+        if (m_frameContext->historyReset) {
+            m_historyValid = false;
+        }
 
         RhiTexture* currentTex = m_sourceRead.isValid() ? m_frameGraph->getTexture(m_sourceRead) : nullptr;
         RhiTexture* depthTex = m_depthRead.isValid() ? m_frameGraph->getTexture(m_depthRead) : nullptr;
