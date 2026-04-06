@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 class MeshletCullPass : public RenderPass {
@@ -95,6 +97,18 @@ public:
                            makeSingleElementBufferDesc<uint32_t>("DummyClusterLodGroupMeshletIndices"));
         m_dummyLodBounds = builder.create("DummyClusterLodBounds",
                                           makeSingleElementBufferDesc<GPUMeshletBounds>("DummyClusterLodBounds"));
+        m_dummyLodNodeResidency =
+            builder.create("DummyClusterLodNodeResidency",
+                           makeSingleElementBufferDesc<uint32_t>("DummyClusterLodNodeResidency"));
+        m_dummyResidencyRequests =
+            builder.create("DummyClusterLodResidencyRequests",
+                           makeSingleElementBufferDesc<ClusterResidencyRequest>(
+                               "DummyClusterLodResidencyRequests"));
+        m_dummyResidencyRequestState =
+            builder.create("DummyClusterLodResidencyRequestState",
+                           GpuDriven::makeWorklistStateBufferDesc<GpuDriven::ComputeDispatchCommandLayout>(
+                               "DummyClusterLodResidencyRequestState",
+                               false));
 
         m_hzbHistoryRead.clear();
         m_hzbLevelCount = computeHzbLevelCount(static_cast<uint32_t>(m_width),
@@ -177,6 +191,10 @@ public:
         RhiBuffer* dummyLodGroupMeshletIndicesBuffer =
             m_frameGraph->getBuffer(m_dummyLodGroupMeshletIndices);
         RhiBuffer* dummyLodBoundsBuffer = m_frameGraph->getBuffer(m_dummyLodBounds);
+        RhiBuffer* dummyLodNodeResidencyBuffer = m_frameGraph->getBuffer(m_dummyLodNodeResidency);
+        RhiBuffer* dummyResidencyRequestBuffer = m_frameGraph->getBuffer(m_dummyResidencyRequests);
+        RhiBuffer* dummyResidencyRequestStateBuffer =
+            m_frameGraph->getBuffer(m_dummyResidencyRequestState);
         const RhiBuffer* lodNodeBuffer =
             clusterLodAvailable ? &clusterLodData.nodeBuffer : dummyLodNodesBuffer;
         const RhiBuffer* lodGroupBuffer =
@@ -186,6 +204,21 @@ public:
                                 : dummyLodGroupMeshletIndicesBuffer;
         const RhiBuffer* lodBoundsBuffer =
             clusterLodAvailable ? &clusterLodData.boundsBuffer : dummyLodBoundsBuffer;
+        ensureResidencyResources(std::max<uint32_t>(1u, clusterLodData.totalNodeCount));
+        processResidencyRequests(clusterLodData);
+        const bool residencyStreamingResourcesReady =
+            m_lodNodeResidencyBuffer &&
+            m_residencyRequestBuffer &&
+            m_residencyRequestStateBuffer;
+        const RhiBuffer* lodNodeResidencyBuffer =
+            residencyStreamingResourcesReady ? m_lodNodeResidencyBuffer.get()
+                                             : dummyLodNodeResidencyBuffer;
+        const RhiBuffer* residencyRequestBuffer =
+            residencyStreamingResourcesReady ? m_residencyRequestBuffer.get()
+                                             : dummyResidencyRequestBuffer;
+        const RhiBuffer* residencyRequestStateBuffer =
+            residencyStreamingResourcesReady ? m_residencyRequestStateBuffer.get()
+                                             : dummyResidencyRequestStateBuffer;
 
         std::array<const RhiTexture*, kHzbMaxLevels> hzbTextures{};
         uint32_t hzbTextureCount = 0;
@@ -247,6 +280,8 @@ public:
         cullUni.occlusionDepthBias = m_occlusionDepthBias;
         cullUni.occlusionBoundsScale = m_occlusionBoundsScale;
         cullUni.clusterLodEnabled = clusterLodAvailable ? 1u : 0u;
+        cullUni.enableResidencyStreaming =
+            (clusterLodAvailable && residencyStreamingResourcesReady && m_enableResidencyStreaming) ? 1u : 0u;
 
         // Dispatch 1: coarse instance classification from scene tables.
         encoder.setComputePipeline(classifyIt->second);
@@ -286,6 +321,9 @@ public:
         encoder.setBuffer(lodGroupMeshletIndicesBuffer, 0, GpuDriven::MeshletCullBindings::kLodGroupMeshletIndices);
         encoder.setBuffer(lodBoundsBuffer, 0, GpuDriven::MeshletCullBindings::kLodBounds);
         encoder.setBuffer(clusterTraversalStatsBuffer, 0, GpuDriven::MeshletCullBindings::kTraversalStats);
+        encoder.setBuffer(lodNodeResidencyBuffer, 0, GpuDriven::MeshletCullBindings::kLodNodeResidency);
+        encoder.setBuffer(residencyRequestBuffer, 0, GpuDriven::MeshletCullBindings::kResidencyRequests);
+        encoder.setBuffer(residencyRequestStateBuffer, 0, GpuDriven::MeshletCullBindings::kResidencyRequestState);
         if (hzbTextureCount > 0) {
             encoder.setTextures(hzbTextures.data(),
                                 GpuDriven::MeshletCullBindings::kHzbTextureBase,
@@ -376,11 +414,38 @@ public:
         ImGui::SliderFloat("HZB Depth Bias", &m_occlusionDepthBias, 0.0f, 0.05f, "%.4f");
         ImGui::SliderFloat("HZB Bounds Scale", &m_occlusionBoundsScale, 1.0f, 1.5f, "%.2f");
         ImGui::SliderFloat("LOD Reference Pixels", &m_lodReferencePixels, 8.0f, 256.0f, "%.1f");
+        if (ImGui::Checkbox("Virtual Residency Streaming", &m_enableResidencyStreaming)) {
+            m_residencyStateDirty = true;
+        }
+        int streamingBudgetNodes = static_cast<int>(m_streamingBudgetNodes);
+        const int maxStreamingBudget =
+            static_cast<int>(std::max<uint32_t>(m_lastAlwaysResidentNodeCount + 1u,
+                                                std::max<uint32_t>(m_activeResidencyNodeCount, 1u)));
+        if (ImGui::SliderInt("Streaming Budget (LOD Nodes)",
+                             &streamingBudgetNodes,
+                             0,
+                             maxStreamingBudget,
+                             "%d")) {
+            m_streamingBudgetNodes = static_cast<uint32_t>(std::max(streamingBudgetNodes, 0));
+        }
+        if (ImGui::Button("Reset Residency State")) {
+            m_residencyStateDirty = true;
+        }
         if (m_frameContext) {
             ImGui::Text("Scene Instances: %u", m_ctx.gpuScene.instanceCount);
             ImGui::Text("Scene Visible Flags: %u", m_ctx.gpuScene.visibleInstanceCount);
             ImGui::Text("GPU Culling: %s", m_frameContext->gpuDrivenCulling ? "On" : "Off");
         }
+        ImGui::Text("Residency Nodes: %u active / %u resident",
+                    m_activeResidencyNodeCount,
+                    m_lastResidentNodeCount);
+        ImGui::Text("Always Resident Nodes: %u", m_lastAlwaysResidentNodeCount);
+        ImGui::Text("Dynamic Resident Nodes: %zu", m_dynamicResidentNodes.size());
+        ImGui::Text("Pending Residency Requests: %zu", m_pendingResidencyNodes.size());
+        ImGui::Text("GPU Residency Requests (last frame): %u", m_lastResidencyRequestCount);
+        ImGui::Text("Promoted / Evicted (last frame): %u / %u",
+                    m_lastResidencyPromotedCount,
+                    m_lastResidencyEvictedCount);
         const bool historyValid =
             m_frameGraph && !m_hzbHistoryRead.empty() && m_frameGraph->isHistoryValid(m_hzbHistoryRead[0]);
         ImGui::Text("HZB History: %s (%u levels)", historyValid ? "Ready" : "Warming Up", m_hzbLevelCount);
@@ -399,6 +464,287 @@ private:
         frameContext->enableConeCull = m_enableConeCull;
     }
 
+    void ensureResidencyResources(uint32_t nodeCapacity) {
+        if (!m_runtimeContext || !m_runtimeContext->resourceFactory) {
+            return;
+        }
+
+        nodeCapacity = std::max(1u, nodeCapacity);
+        const bool needsRecreate =
+            !m_lodNodeResidencyBuffer ||
+            !m_residencyRequestBuffer ||
+            !m_residencyRequestStateBuffer ||
+            m_residencyNodeCapacity != nodeCapacity;
+        if (!needsRecreate) {
+            return;
+        }
+
+        RhiBufferDesc residencyDesc{};
+        residencyDesc.size = size_t(nodeCapacity) * sizeof(uint32_t);
+        residencyDesc.hostVisible = true;
+        residencyDesc.debugName = "ClusterLodNodeResidency";
+        m_lodNodeResidencyBuffer = m_runtimeContext->resourceFactory->createBuffer(residencyDesc);
+
+        RhiBufferDesc requestDesc{};
+        requestDesc.size = size_t(nodeCapacity) * sizeof(ClusterResidencyRequest);
+        requestDesc.hostVisible = true;
+        requestDesc.debugName = "ClusterLodResidencyRequests";
+        m_residencyRequestBuffer = m_runtimeContext->resourceFactory->createBuffer(requestDesc);
+
+        RhiBufferDesc requestStateDesc{};
+        requestStateDesc.size = GpuDriven::ComputeDispatchCommandLayout::kBufferSize;
+        requestStateDesc.hostVisible = true;
+        requestStateDesc.debugName = "ClusterLodResidencyRequestState";
+        m_residencyRequestStateBuffer = m_runtimeContext->resourceFactory->createBuffer(requestStateDesc);
+
+        m_residencyNodeCapacity = nodeCapacity;
+        m_residencyStateDirty = true;
+        m_dynamicResidentNodes.clear();
+        m_pendingResidencyNodes.clear();
+        m_residencySourceNodeBufferHandle = nullptr;
+
+        if (m_lodNodeResidencyBuffer && m_lodNodeResidencyBuffer->mappedData()) {
+            std::memset(m_lodNodeResidencyBuffer->mappedData(), 0, m_lodNodeResidencyBuffer->size());
+        }
+        if (m_residencyRequestBuffer && m_residencyRequestBuffer->mappedData()) {
+            std::memset(m_residencyRequestBuffer->mappedData(), 0, m_residencyRequestBuffer->size());
+        }
+        seedResidencyRequestQueue();
+        updateResidencyDebugCounts();
+    }
+
+    void seedResidencyRequestQueue() {
+        if (!m_residencyRequestStateBuffer) {
+            return;
+        }
+        GpuDriven::seedWorklistStateBuffer<GpuDriven::ComputeDispatchCommandLayout>(
+            m_residencyRequestStateBuffer.get());
+    }
+
+    uint32_t* residencyStateWords() {
+        if (!m_lodNodeResidencyBuffer || !m_lodNodeResidencyBuffer->mappedData()) {
+            return nullptr;
+        }
+        return static_cast<uint32_t*>(m_lodNodeResidencyBuffer->mappedData());
+    }
+
+    const uint32_t* residencyStateWords() const {
+        return const_cast<MeshletCullPass*>(this)->residencyStateWords();
+    }
+
+    ClusterResidencyRequest* residencyRequests() {
+        if (!m_residencyRequestBuffer || !m_residencyRequestBuffer->mappedData()) {
+            return nullptr;
+        }
+        return static_cast<ClusterResidencyRequest*>(m_residencyRequestBuffer->mappedData());
+    }
+
+    bool isResidencyNodeResident(uint32_t nodeIndex) const {
+        const uint32_t* words = residencyStateWords();
+        return words &&
+               nodeIndex < m_residencyNodeCapacity &&
+               (words[nodeIndex] & kClusterLodNodeResidencyResident) != 0u;
+    }
+
+    bool isResidencyNodeAlwaysResident(uint32_t nodeIndex) const {
+        const uint32_t* words = residencyStateWords();
+        return words &&
+               nodeIndex < m_residencyNodeCapacity &&
+               (words[nodeIndex] & kClusterLodNodeResidencyAlwaysResident) != 0u;
+    }
+
+    void touchDynamicResidentNode(uint32_t nodeIndex) {
+        auto it = std::find(m_dynamicResidentNodes.begin(), m_dynamicResidentNodes.end(), nodeIndex);
+        if (it != m_dynamicResidentNodes.end()) {
+            m_dynamicResidentNodes.erase(it);
+        }
+        m_dynamicResidentNodes.push_back(nodeIndex);
+    }
+
+    void enqueuePendingResidencyNode(uint32_t nodeIndex) {
+        if (std::find(m_pendingResidencyNodes.begin(), m_pendingResidencyNodes.end(), nodeIndex) ==
+            m_pendingResidencyNodes.end()) {
+            m_pendingResidencyNodes.push_back(nodeIndex);
+        }
+    }
+
+    void evictOldestDynamicResidencyNode() {
+        if (m_dynamicResidentNodes.empty()) {
+            return;
+        }
+
+        uint32_t* words = residencyStateWords();
+        if (!words) {
+            m_dynamicResidentNodes.clear();
+            return;
+        }
+
+        const uint32_t nodeIndex = m_dynamicResidentNodes.front();
+        m_dynamicResidentNodes.erase(m_dynamicResidentNodes.begin());
+        if (nodeIndex < m_residencyNodeCapacity) {
+            words[nodeIndex] &= ~(kClusterLodNodeResidencyResident |
+                                  kClusterLodNodeResidencyRequested);
+        }
+        ++m_lastResidencyEvictedCount;
+    }
+
+    void promotePendingResidencyNodes() {
+        uint32_t* words = residencyStateWords();
+        if (!words) {
+            return;
+        }
+
+        size_t pendingIndex = 0;
+        while (pendingIndex < m_pendingResidencyNodes.size()) {
+            const uint32_t nodeIndex = m_pendingResidencyNodes[pendingIndex];
+            if (nodeIndex >= m_residencyNodeCapacity) {
+                m_pendingResidencyNodes.erase(m_pendingResidencyNodes.begin() +
+                                              static_cast<std::vector<uint32_t>::difference_type>(pendingIndex));
+                continue;
+            }
+
+            if ((words[nodeIndex] & kClusterLodNodeResidencyResident) != 0u) {
+                words[nodeIndex] &= ~kClusterLodNodeResidencyRequested;
+                if ((words[nodeIndex] & kClusterLodNodeResidencyAlwaysResident) == 0u) {
+                    touchDynamicResidentNode(nodeIndex);
+                }
+                m_pendingResidencyNodes.erase(m_pendingResidencyNodes.begin() +
+                                              static_cast<std::vector<uint32_t>::difference_type>(pendingIndex));
+                continue;
+            }
+
+            if (m_streamingBudgetNodes == 0u) {
+                break;
+            }
+
+            while (m_dynamicResidentNodes.size() >= size_t(m_streamingBudgetNodes) &&
+                   !m_dynamicResidentNodes.empty()) {
+                evictOldestDynamicResidencyNode();
+            }
+            if (m_dynamicResidentNodes.size() >= size_t(m_streamingBudgetNodes)) {
+                break;
+            }
+
+            words[nodeIndex] |= kClusterLodNodeResidencyResident;
+            words[nodeIndex] &= ~kClusterLodNodeResidencyRequested;
+            touchDynamicResidentNode(nodeIndex);
+            ++m_lastResidencyPromotedCount;
+            m_pendingResidencyNodes.erase(m_pendingResidencyNodes.begin() +
+                                          static_cast<std::vector<uint32_t>::difference_type>(pendingIndex));
+        }
+    }
+
+    void rebuildResidencyState(const ClusterLODData& clusterLodData) {
+        uint32_t* words = residencyStateWords();
+        if (!words) {
+            return;
+        }
+
+        std::memset(words, 0, m_lodNodeResidencyBuffer->size());
+        m_dynamicResidentNodes.clear();
+        m_pendingResidencyNodes.clear();
+        m_lastResidencyPromotedCount = 0;
+        m_lastResidencyEvictedCount = 0;
+
+        for (uint32_t lodRootNode : clusterLodData.primitiveGroupLodRoots) {
+            if (lodRootNode == UINT32_MAX || lodRootNode >= clusterLodData.nodes.size()) {
+                continue;
+            }
+
+            const GPULodNode& lodRoot = clusterLodData.nodes[lodRootNode];
+            if (lodRoot.childCount == 0u) {
+                continue;
+            }
+
+            uint32_t alwaysResidentNode = lodRootNode;
+            if (lodRoot.isLeaf == 0u) {
+                alwaysResidentNode = lodRoot.childOffset + lodRoot.childCount - 1u;
+            }
+            if (alwaysResidentNode >= m_residencyNodeCapacity) {
+                continue;
+            }
+
+            words[alwaysResidentNode] =
+                kClusterLodNodeResidencyResident | kClusterLodNodeResidencyAlwaysResident;
+        }
+
+        seedResidencyRequestQueue();
+        m_residencySourceNodeBufferHandle = clusterLodData.nodeBuffer.nativeHandle();
+        m_residencyStateDirty = false;
+        updateResidencyDebugCounts();
+    }
+
+    void updateResidencyDebugCounts() {
+        const uint32_t* words = residencyStateWords();
+        m_lastResidentNodeCount = 0;
+        m_lastAlwaysResidentNodeCount = 0;
+        if (!words) {
+            m_activeResidencyNodeCount = 0;
+            return;
+        }
+
+        for (uint32_t nodeIndex = 0; nodeIndex < m_activeResidencyNodeCount; ++nodeIndex) {
+            const uint32_t state = words[nodeIndex];
+            if ((state & kClusterLodNodeResidencyResident) != 0u) {
+                ++m_lastResidentNodeCount;
+            }
+            if ((state & kClusterLodNodeResidencyAlwaysResident) != 0u) {
+                ++m_lastAlwaysResidentNodeCount;
+            }
+        }
+    }
+
+    void processResidencyRequests(const ClusterLODData& clusterLodData) {
+        m_activeResidencyNodeCount = clusterLodData.totalNodeCount;
+        if (!m_lodNodeResidencyBuffer || !m_residencyRequestBuffer || !m_residencyRequestStateBuffer) {
+            return;
+        }
+
+        if (m_residencyStateDirty ||
+            m_residencySourceNodeBufferHandle != clusterLodData.nodeBuffer.nativeHandle()) {
+            rebuildResidencyState(clusterLodData);
+        }
+
+        m_lastResidencyRequestCount = 0;
+        m_lastResidencyPromotedCount = 0;
+        m_lastResidencyEvictedCount = 0;
+
+        const uint32_t requestCapacity = static_cast<uint32_t>(
+            m_residencyRequestBuffer->size() / sizeof(ClusterResidencyRequest));
+        m_lastResidencyRequestCount = std::min<uint32_t>(
+            GpuDriven::readWorklistWriteCursor<GpuDriven::ComputeDispatchCommandLayout>(
+                m_residencyRequestStateBuffer.get()),
+            requestCapacity);
+
+        ClusterResidencyRequest* requests = residencyRequests();
+        if (requests) {
+            for (uint32_t requestIndex = 0; requestIndex < m_lastResidencyRequestCount; ++requestIndex) {
+                const ClusterResidencyRequest& request = requests[requestIndex];
+                if (request.targetNodeIndex >= m_activeResidencyNodeCount) {
+                    continue;
+                }
+                if (isResidencyNodeAlwaysResident(request.targetNodeIndex)) {
+                    continue;
+                }
+                if (isResidencyNodeResident(request.targetNodeIndex)) {
+                    touchDynamicResidentNode(request.targetNodeIndex);
+                    continue;
+                }
+                enqueuePendingResidencyNode(request.targetNodeIndex);
+            }
+        }
+
+        if (m_enableResidencyStreaming) {
+            while (m_dynamicResidentNodes.size() > size_t(m_streamingBudgetNodes)) {
+                evictOldestDynamicResidencyNode();
+            }
+            promotePendingResidencyNodes();
+        }
+
+        updateResidencyDebugCounts();
+        seedResidencyRequestQueue();
+    }
+
     const RenderContext& m_ctx;
     int m_width, m_height;
     std::string m_name = "Meshlet Cull";
@@ -413,18 +759,37 @@ private:
     bool m_enableFrustumCull = false;
     bool m_enableConeCull = false;
     bool m_enableOcclusionCull = true;
+    bool m_enableResidencyStreaming = false;
+    bool m_residencyStateDirty = true;
     float m_lodReferencePixels = 96.0f;
     float m_occlusionDepthBias = 0.0015f;
     float m_occlusionBoundsScale = 1.1f;
+    uint32_t m_streamingBudgetNodes = 64u;
+    uint32_t m_residencyNodeCapacity = 0;
+    uint32_t m_activeResidencyNodeCount = 0;
+    uint32_t m_lastResidencyRequestCount = 0;
+    uint32_t m_lastResidencyPromotedCount = 0;
+    uint32_t m_lastResidencyEvictedCount = 0;
+    uint32_t m_lastResidentNodeCount = 0;
+    uint32_t m_lastAlwaysResidentNodeCount = 0;
     FGResource m_visibleInstanceState;
     FGResource m_clusterTraversalStats;
     FGResource m_dummyLodNodes;
     FGResource m_dummyLodGroups;
     FGResource m_dummyLodGroupMeshletIndices;
     FGResource m_dummyLodBounds;
+    FGResource m_dummyLodNodeResidency;
+    FGResource m_dummyResidencyRequests;
+    FGResource m_dummyResidencyRequestState;
+    std::unique_ptr<RhiBuffer> m_lodNodeResidencyBuffer;
+    std::unique_ptr<RhiBuffer> m_residencyRequestBuffer;
+    std::unique_ptr<RhiBuffer> m_residencyRequestStateBuffer;
+    const void* m_residencySourceNodeBufferHandle = nullptr;
     const RhiBuffer* m_initializedInstanceStateBuffer = nullptr;
     const RhiBuffer* m_initializedMeshletStateBuffer = nullptr;
     std::vector<FGResource> m_hzbHistoryRead;
+    std::vector<uint32_t> m_dynamicResidentNodes;
+    std::vector<uint32_t> m_pendingResidencyNodes;
 
     uint32_t computeMaxMeshletCapacity() const {
         return std::max(1u, m_ctx.gpuScene.totalMeshletDispatchCount);

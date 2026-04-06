@@ -24,7 +24,7 @@ struct CullUniforms {
     float    occlusionDepthBias;
     float    occlusionBoundsScale;
     uint     clusterLodEnabled;
-    uint     _pad0;
+    uint     enableResidencyStreaming;
 };
 
 struct GPUMeshletBounds {
@@ -63,6 +63,9 @@ StructuredBuffer<GPUClusterGroup>     lodGroups;        // buffer(GPU_DRIVEN_CUL
 StructuredBuffer<uint>                lodGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_BINDING)
 StructuredBuffer<GPUMeshletBounds>    lodMeshletBounds; // buffer(GPU_DRIVEN_CULL_LOD_BOUNDS_BINDING)
 RWStructuredBuffer<uint>              traversalStats;   // buffer(GPU_DRIVEN_CULL_TRAVERSAL_STATS_BINDING)
+RWByteAddressBuffer                   lodNodeResidency; // buffer(GPU_DRIVEN_CULL_LOD_NODE_RESIDENCY_BINDING)
+RWStructuredBuffer<ClusterResidencyRequest> residencyRequests; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_OUTPUT_BINDING)
+RWByteAddressBuffer                   residencyRequestState; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING)
 Texture2D<float>                      hzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE+)
 
 static const uint kTraversalStatLodInstances = 0u;
@@ -210,6 +213,31 @@ uint selectLodLevel(VisibleInstanceInfo visibleInfo, GPULodNode lodRoot) {
     return min(lodLevel, lodRoot.childCount - 1u);
 }
 
+uint loadLodNodeResidencyState(uint nodeIndex) {
+    return lodNodeResidency.Load(nodeIndex * 4u);
+}
+
+void queueResidencyRequest(uint lodRootNode,
+                           uint targetNodeIndex,
+                           uint requestedLodLevel,
+                           uint sceneInstanceID) {
+    uint previousState = 0u;
+    lodNodeResidency.InterlockedOr(targetNodeIndex * 4u,
+                                   kClusterLodNodeResidencyRequested,
+                                   previousState);
+    if ((previousState & (kClusterLodNodeResidencyResident | kClusterLodNodeResidencyRequested)) != 0u) {
+        return;
+    }
+
+    uint slot = gpuDrivenAppendWorkItemSlot(residencyRequestState);
+    ClusterResidencyRequest request;
+    request.lodRootNode = lodRootNode;
+    request.targetNodeIndex = targetNodeIndex;
+    request.requestedLodLevel = requestedLodLevel;
+    request.sceneInstanceID = sceneInstanceID;
+    residencyRequests[slot] = request;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void computeMain(uint3 groupID : SV_GroupID,
@@ -239,7 +267,21 @@ void computeMain(uint3 groupID : SV_GroupID,
 
         uint selectedRootNode = visibleInfo.lodRootNode;
         if (lodRoot.isLeaf == 0u && lodRoot.childCount > 0u) {
-            selectedRootNode = lodRoot.childOffset + selectedLodLevel;
+            uint requestedRootNode = lodRoot.childOffset + selectedLodLevel;
+            const uint fallbackLodLevel = lodRoot.childCount - 1u;
+            if (cullUniforms.enableResidencyStreaming != 0u &&
+                selectedLodLevel != fallbackLodLevel) {
+                const uint requestedResidency = loadLodNodeResidencyState(requestedRootNode);
+                if ((requestedResidency & kClusterLodNodeResidencyResident) == 0u) {
+                    queueResidencyRequest(visibleInfo.lodRootNode,
+                                          requestedRootNode,
+                                          selectedLodLevel,
+                                          sceneInstanceID);
+                    selectedLodLevel = fallbackLodLevel;
+                    requestedRootNode = lodRoot.childOffset + selectedLodLevel;
+                }
+            }
+            selectedRootNode = requestedRootNode;
         }
 
         uint nodeStack[kTraversalNodeStackCapacity];

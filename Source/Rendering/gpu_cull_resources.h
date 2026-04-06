@@ -10,6 +10,9 @@ enum : uint32_t {
     kVisibleInstanceClassificationHasLod = 1u << 1,
     kMeshletDrawSourceScene = 0u,
     kMeshletDrawSourceClusterLod = 1u,
+    kClusterLodNodeResidencyResident = 1u << 0,
+    kClusterLodNodeResidencyRequested = 1u << 1,
+    kClusterLodNodeResidencyAlwaysResident = 1u << 2,
     kClusterTraversalStatsHistogramSize = 8u,
 };
 
@@ -31,6 +34,15 @@ struct MeshletDrawInfo {
     uint32_t lodLevel = 0;
 };
 static_assert(sizeof(MeshletDrawInfo) == 16, "MeshletDrawInfo must match shader layout");
+
+struct ClusterResidencyRequest {
+    uint32_t lodRootNode = UINT32_MAX;
+    uint32_t targetNodeIndex = UINT32_MAX;
+    uint32_t requestedLodLevel = 0;
+    uint32_t sceneInstanceID = UINT32_MAX;
+};
+static_assert(sizeof(ClusterResidencyRequest) == 16,
+              "ClusterResidencyRequest must match shader layout");
 
 struct ClusterTraversalStats {
     uint32_t lodTraversalInstanceCount = 0;
@@ -85,5 +97,5 @@ struct CullUniforms {
     float    occlusionDepthBias;
     float    occlusionBoundsScale;
     uint32_t clusterLodEnabled;
-    uint32_t _pad0 = 0;
+    uint32_t enableResidencyStreaming = 0;
 };

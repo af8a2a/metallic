@@ -43,7 +43,17 @@ static const uint kVisibleInstanceClassificationVisible = 1u << 0;
 static const uint kVisibleInstanceClassificationHasLod = 1u << 1;
 static const uint kMeshletDrawSourceScene = 0u;
 static const uint kMeshletDrawSourceClusterLod = 1u;
+static const uint kClusterLodNodeResidencyResident = 1u << 0;
+static const uint kClusterLodNodeResidencyRequested = 1u << 1;
+static const uint kClusterLodNodeResidencyAlwaysResident = 1u << 2;
 static const uint kClusterTraversalStatsHistogramSize = 8u;
+
+struct ClusterResidencyRequest {
+    uint lodRootNode;
+    uint targetNodeIndex;
+    uint requestedLodLevel;
+    uint sceneInstanceID;
+};
 
 uint gpuDrivenLoadWorklistWriteCursor(RWByteAddressBuffer worklistStateBuffer) {
     return worklistStateBuffer.Load(GPU_DRIVEN_WORKLIST_WRITE_CURSOR_OFFSET_BYTES);

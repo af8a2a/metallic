@@ -51,7 +51,10 @@
 #define GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_BINDING 9u
 #define GPU_DRIVEN_CULL_LOD_BOUNDS_BINDING 10u
 #define GPU_DRIVEN_CULL_TRAVERSAL_STATS_BINDING 11u
-#define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 12u
+#define GPU_DRIVEN_CULL_LOD_NODE_RESIDENCY_BINDING 12u
+#define GPU_DRIVEN_CULL_RESIDENCY_REQUEST_OUTPUT_BINDING 13u
+#define GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING 14u
+#define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 15u
 
 // Shared bindings for meshlet visibility pipelines.
 #define GPU_DRIVEN_VISIBILITY_GLOBAL_UNIFORMS_BINDING 0u
@@ -161,6 +164,9 @@ struct MeshletCullBindings {
     static constexpr uint32_t kLodGroupMeshletIndices = GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_BINDING;
     static constexpr uint32_t kLodBounds = GPU_DRIVEN_CULL_LOD_BOUNDS_BINDING;
     static constexpr uint32_t kTraversalStats = GPU_DRIVEN_CULL_TRAVERSAL_STATS_BINDING;
+    static constexpr uint32_t kLodNodeResidency = GPU_DRIVEN_CULL_LOD_NODE_RESIDENCY_BINDING;
+    static constexpr uint32_t kResidencyRequests = GPU_DRIVEN_CULL_RESIDENCY_REQUEST_OUTPUT_BINDING;
+    static constexpr uint32_t kResidencyRequestState = GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING;
     static constexpr uint32_t kHzbTextureBase = GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE;
     static constexpr uint32_t kInstanceData = kInstances;
 };
