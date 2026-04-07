@@ -11,9 +11,9 @@ enum : uint32_t {
     kMeshletDrawSourceScene = 0u,
     kMeshletDrawSourceClusterLod = 1u,
     kClusterLodGroupPageInvalidAddress = UINT32_MAX,
-    kClusterLodNodeResidencyResident = 1u << 0,
-    kClusterLodNodeResidencyRequested = 1u << 1,
-    kClusterLodNodeResidencyAlwaysResident = 1u << 2,
+    kClusterLodGroupResidencyResident = 1u << 0,
+    kClusterLodGroupResidencyRequested = 1u << 1,
+    kClusterLodGroupResidencyAlwaysResident = 1u << 2,
     kClusterTraversalStatsHistogramSize = 8u,
 };
 
@@ -38,8 +38,8 @@ static_assert(sizeof(MeshletDrawInfo) == 16, "MeshletDrawInfo must match shader 
 
 struct ClusterResidencyRequest {
     uint32_t lodRootNode = UINT32_MAX;
-    uint32_t targetNodeIndex = UINT32_MAX;
-    uint32_t requestedLodLevel = 0;
+    uint32_t targetGroupIndex = UINT32_MAX;
+    uint32_t lodLevel = 0;
     uint32_t sceneInstanceID = UINT32_MAX;
 };
 static_assert(sizeof(ClusterResidencyRequest) == 16,

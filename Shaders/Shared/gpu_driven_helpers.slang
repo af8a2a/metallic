@@ -44,15 +44,15 @@ static const uint kVisibleInstanceClassificationHasLod = 1u << 1;
 static const uint kMeshletDrawSourceScene = 0u;
 static const uint kMeshletDrawSourceClusterLod = 1u;
 static const uint kClusterLodGroupPageInvalidAddress = 0xFFFFFFFFu;
-static const uint kClusterLodNodeResidencyResident = 1u << 0;
-static const uint kClusterLodNodeResidencyRequested = 1u << 1;
-static const uint kClusterLodNodeResidencyAlwaysResident = 1u << 2;
+static const uint kClusterLodGroupResidencyResident = 1u << 0;
+static const uint kClusterLodGroupResidencyRequested = 1u << 1;
+static const uint kClusterLodGroupResidencyAlwaysResident = 1u << 2;
 static const uint kClusterTraversalStatsHistogramSize = 8u;
 
 struct ClusterResidencyRequest {
     uint lodRootNode;
-    uint targetNodeIndex;
-    uint requestedLodLevel;
+    uint targetGroupIndex;
+    uint lodLevel;
     uint sceneInstanceID;
 };
 

@@ -98,9 +98,9 @@ public:
                            makeSingleElementBufferDesc<uint32_t>("DummyClusterLodGroupMeshletIndices"));
         m_dummyLodBounds = builder.create("DummyClusterLodBounds",
                                           makeSingleElementBufferDesc<GPUMeshletBounds>("DummyClusterLodBounds"));
-        m_dummyLodNodeResidency =
-            builder.create("DummyClusterLodNodeResidency",
-                           makeSingleElementBufferDesc<uint32_t>("DummyClusterLodNodeResidency"));
+        m_dummyGroupResidency =
+            builder.create("DummyClusterLodGroupResidency",
+                           makeSingleElementBufferDesc<uint32_t>("DummyClusterLodGroupResidency"));
         m_dummyLodGroupPageTable =
             builder.create("DummyClusterLodGroupPageTable",
                            makeSingleValueBufferDesc<uint32_t>(kClusterLodGroupPageInvalidAddress,
@@ -198,7 +198,7 @@ public:
         RhiBuffer* dummyLodGroupMeshletIndicesBuffer =
             m_frameGraph->getBuffer(m_dummyLodGroupMeshletIndices);
         RhiBuffer* dummyLodBoundsBuffer = m_frameGraph->getBuffer(m_dummyLodBounds);
-        RhiBuffer* dummyLodNodeResidencyBuffer = m_frameGraph->getBuffer(m_dummyLodNodeResidency);
+        RhiBuffer* dummyGroupResidencyBuffer = m_frameGraph->getBuffer(m_dummyGroupResidency);
         RhiBuffer* dummyLodGroupPageTableBuffer = m_frameGraph->getBuffer(m_dummyLodGroupPageTable);
         RhiBuffer* dummyResidencyRequestBuffer = m_frameGraph->getBuffer(m_dummyResidencyRequests);
         RhiBuffer* dummyResidencyRequestStateBuffer =
@@ -209,6 +209,9 @@ public:
             clusterLodAvailable ? &clusterLodData.groupBuffer : dummyLodGroupsBuffer;
         const RhiBuffer* lodBoundsBuffer =
             clusterLodAvailable ? &clusterLodData.boundsBuffer : dummyLodBoundsBuffer;
+        const RhiBuffer* sourceLodGroupMeshletIndicesBuffer =
+            clusterLodAvailable ? &clusterLodData.groupMeshletIndicesBuffer
+                                : dummyLodGroupMeshletIndicesBuffer;
         const bool residencyStreamingResourcesReady =
             clusterLodAvailable &&
             streamingService &&
@@ -223,9 +226,9 @@ public:
                        ? streamingService->residentGroupMeshletIndicesBuffer()
                        : &clusterLodData.groupMeshletIndicesBuffer)
                 : dummyLodGroupMeshletIndicesBuffer;
-        const RhiBuffer* lodNodeResidencyBuffer =
-            residencyStreamingResourcesReady ? streamingService->lodNodeResidencyBuffer()
-                                             : dummyLodNodeResidencyBuffer;
+        const RhiBuffer* groupResidencyBuffer =
+            residencyStreamingResourcesReady ? streamingService->groupResidencyBuffer()
+                                             : dummyGroupResidencyBuffer;
         const RhiBuffer* lodGroupPageTableBuffer =
             residencyStreamingResourcesReady ? streamingService->lodGroupPageTableBuffer()
                                              : dummyLodGroupPageTableBuffer;
@@ -338,10 +341,13 @@ public:
         encoder.setBuffer(lodGroupMeshletIndicesBuffer, 0, GpuDriven::MeshletCullBindings::kLodGroupMeshletIndices);
         encoder.setBuffer(lodBoundsBuffer, 0, GpuDriven::MeshletCullBindings::kLodBounds);
         encoder.setBuffer(clusterTraversalStatsBuffer, 0, GpuDriven::MeshletCullBindings::kTraversalStats);
-        encoder.setBuffer(lodNodeResidencyBuffer, 0, GpuDriven::MeshletCullBindings::kLodNodeResidency);
+        encoder.setBuffer(groupResidencyBuffer, 0, GpuDriven::MeshletCullBindings::kGroupResidency);
         encoder.setBuffer(lodGroupPageTableBuffer, 0, GpuDriven::MeshletCullBindings::kLodGroupPageTable);
         encoder.setBuffer(residencyRequestBuffer, 0, GpuDriven::MeshletCullBindings::kResidencyRequests);
         encoder.setBuffer(residencyRequestStateBuffer, 0, GpuDriven::MeshletCullBindings::kResidencyRequestState);
+        encoder.setBuffer(sourceLodGroupMeshletIndicesBuffer,
+                          0,
+                          GpuDriven::MeshletCullBindings::kLodGroupMeshletIndicesSource);
         if (hzbTextureCount > 0) {
             encoder.setTextures(hzbTextures.data(),
                                 GpuDriven::MeshletCullBindings::kHzbTextureBase,
@@ -443,24 +449,47 @@ public:
             streamingService->setStreamingEnabled(enableResidencyStreaming);
             requestVisibilityHistoryReset();
         }
-        int streamingBudgetNodes =
-            streamingService ? static_cast<int>(streamingService->streamingBudgetNodes()) : 0;
-        const uint32_t activeResidencyNodeCount =
-            streamingStats ? streamingStats->activeResidencyNodeCount : 0u;
-        const uint32_t alwaysResidentNodeCount =
-            streamingStats ? streamingStats->lastAlwaysResidentNodeCount : 0u;
-        const int maxStreamingBudget =
-            static_cast<int>(std::max<uint32_t>(alwaysResidentNodeCount + 1u,
-                                                std::max<uint32_t>(activeResidencyNodeCount, 1u)));
-        if (ImGui::SliderInt("Streaming Budget (LOD Nodes)",
-                             &streamingBudgetNodes,
+        int streamingBudgetGroups =
+            streamingService ? static_cast<int>(streamingService->streamingBudgetGroups()) : 0;
+        const uint32_t activeResidencyGroupCount =
+            streamingStats ? streamingStats->activeResidencyGroupCount : 0u;
+        const uint32_t alwaysResidentGroupCount =
+            streamingStats ? streamingStats->lastAlwaysResidentGroupCount : 0u;
+        const uint32_t maxDynamicGroupBudget =
+            activeResidencyGroupCount > alwaysResidentGroupCount
+                ? activeResidencyGroupCount - alwaysResidentGroupCount
+                : 1u;
+        if (ImGui::SliderInt("Streaming Target (Dynamic Groups)",
+                             &streamingBudgetGroups,
                              0,
-                             maxStreamingBudget,
+                             static_cast<int>(std::max(1u, maxDynamicGroupBudget)),
                              "%d") &&
             streamingService) {
-            streamingService->setStreamingBudgetNodes(
-                static_cast<uint32_t>(std::max(streamingBudgetNodes, 0)));
+            streamingService->setStreamingBudgetGroups(
+                static_cast<uint32_t>(std::max(streamingBudgetGroups, 0)));
             requestVisibilityHistoryReset();
+        }
+        int maxLoadsPerFrame =
+            streamingService ? static_cast<int>(streamingService->maxLoadsPerFrame()) : 1;
+        if (ImGui::SliderInt("Streaming Load Cap",
+                             &maxLoadsPerFrame,
+                             1,
+                             static_cast<int>(std::max(1u, activeResidencyGroupCount)),
+                             "%d") &&
+            streamingService) {
+            streamingService->setMaxLoadsPerFrame(
+                static_cast<uint32_t>(std::max(maxLoadsPerFrame, 1)));
+        }
+        int maxUnloadsPerFrame =
+            streamingService ? static_cast<int>(streamingService->maxUnloadsPerFrame()) : 1;
+        if (ImGui::SliderInt("Streaming Unload Cap",
+                             &maxUnloadsPerFrame,
+                             1,
+                             static_cast<int>(std::max(1u, activeResidencyGroupCount)),
+                             "%d") &&
+            streamingService) {
+            streamingService->setMaxUnloadsPerFrame(
+                static_cast<uint32_t>(std::max(maxUnloadsPerFrame, 1)));
         }
         if (ImGui::Button("Reset Residency State") && streamingService) {
             streamingService->markStateDirty();
@@ -471,28 +500,28 @@ public:
             ImGui::Text("Scene Visible Flags: %u", m_ctx.gpuScene.visibleInstanceCount);
             ImGui::Text("GPU Culling: %s", m_frameContext->gpuDrivenCulling ? "On" : "Off");
         }
-        ImGui::Text("Residency Nodes: %u active / %u resident",
-                    streamingStats ? streamingStats->activeResidencyNodeCount : 0u,
-                    streamingStats ? streamingStats->lastResidentNodeCount : 0u);
-        ImGui::Text("Always Resident Nodes: %u",
-                    streamingStats ? streamingStats->lastAlwaysResidentNodeCount : 0u);
+        ImGui::Text("LOD Nodes: %u active",
+                    streamingStats ? streamingStats->activeResidencyNodeCount : 0u);
         ImGui::Text("Resident Groups: %u / %u",
                     streamingStats ? streamingStats->lastResidentGroupCount : 0u,
-                    streamingStats ? streamingStats->activeResidencyGroupCount : 0u);
+                    activeResidencyGroupCount);
         ImGui::Text("Always Resident Groups: %u",
-                    streamingStats ? streamingStats->lastAlwaysResidentGroupCount : 0u);
+                    alwaysResidentGroupCount);
         ImGui::Text("Resident Heap: %u / %u indices",
                     streamingStats ? streamingStats->residentHeapUsed : 0u,
                     streamingStats ? streamingStats->residentHeapCapacity : 0u);
-        ImGui::Text("Dynamic Resident Nodes: %u",
-                    streamingStats ? streamingStats->dynamicResidentNodeCount : 0u);
-        ImGui::Text("Pending Residency Requests: %u",
-                    streamingStats ? streamingStats->pendingResidencyNodeCount : 0u);
+        ImGui::Text("Dynamic Resident Groups: %u",
+                    streamingStats ? streamingStats->dynamicResidentGroupCount : 0u);
+        ImGui::Text("Pending Residency Groups: %u",
+                    streamingStats ? streamingStats->pendingResidencyGroupCount : 0u);
         ImGui::Text("GPU Residency Requests (last frame): %u",
                     streamingStats ? streamingStats->lastResidencyRequestCount : 0u);
         ImGui::Text("Promoted / Evicted (last frame): %u / %u",
                     streamingStats ? streamingStats->lastResidencyPromotedCount : 0u,
                     streamingStats ? streamingStats->lastResidencyEvictedCount : 0u);
+        ImGui::Text("Load / Unload Cap: %u / %u",
+                    streamingStats ? streamingStats->maxLoadsPerFrame : 0u,
+                    streamingStats ? streamingStats->maxUnloadsPerFrame : 0u);
         const bool historyValid =
             m_frameGraph && !m_hzbHistoryRead.empty() && m_frameGraph->isHistoryValid(m_hzbHistoryRead[0]);
         ImGui::Text("HZB History: %s (%u levels)", historyValid ? "Ready" : "Warming Up", m_hzbLevelCount);
@@ -542,7 +571,7 @@ private:
     FGResource m_dummyLodGroups;
     FGResource m_dummyLodGroupMeshletIndices;
     FGResource m_dummyLodBounds;
-    FGResource m_dummyLodNodeResidency;
+    FGResource m_dummyGroupResidency;
     FGResource m_dummyLodGroupPageTable;
     FGResource m_dummyResidencyRequests;
     FGResource m_dummyResidencyRequestState;

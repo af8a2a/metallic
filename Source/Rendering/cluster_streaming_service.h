@@ -7,10 +7,12 @@
 #include "rhi_backend.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 class ClusterStreamingService {
@@ -21,14 +23,14 @@ public:
         uint32_t lastResidencyRequestCount = 0;
         uint32_t lastResidencyPromotedCount = 0;
         uint32_t lastResidencyEvictedCount = 0;
-        uint32_t lastResidentNodeCount = 0;
-        uint32_t lastAlwaysResidentNodeCount = 0;
         uint32_t lastResidentGroupCount = 0;
         uint32_t lastAlwaysResidentGroupCount = 0;
         uint32_t residentHeapCapacity = 0;
         uint32_t residentHeapUsed = 0;
-        uint32_t dynamicResidentNodeCount = 0;
-        uint32_t pendingResidencyNodeCount = 0;
+        uint32_t dynamicResidentGroupCount = 0;
+        uint32_t pendingResidencyGroupCount = 0;
+        uint32_t maxLoadsPerFrame = 0;
+        uint32_t maxUnloadsPerFrame = 0;
         bool resourcesReady = false;
     };
 
@@ -43,41 +45,67 @@ public:
 
     bool streamingEnabled() const { return m_enableStreaming; }
 
-    void setStreamingBudgetNodes(uint32_t budgetNodes) {
-        m_streamingBudgetNodes = budgetNodes;
+    void setStreamingBudgetGroups(uint32_t budgetGroups) {
+        m_streamingBudgetGroups = budgetGroups;
     }
 
-    uint32_t streamingBudgetNodes() const { return m_streamingBudgetNodes; }
+    uint32_t streamingBudgetGroups() const { return m_streamingBudgetGroups; }
+
+    void setMaxLoadsPerFrame(uint32_t maxLoadsPerFrame) {
+        m_maxLoadsPerFrame = std::max(1u, maxLoadsPerFrame);
+    }
+
+    uint32_t maxLoadsPerFrame() const { return m_maxLoadsPerFrame; }
+
+    void setMaxUnloadsPerFrame(uint32_t maxUnloadsPerFrame) {
+        m_maxUnloadsPerFrame = std::max(1u, maxUnloadsPerFrame);
+    }
+
+    uint32_t maxUnloadsPerFrame() const { return m_maxUnloadsPerFrame; }
 
     void markStateDirty() { m_stateDirty = true; }
 
     const DebugStats& debugStats() const { return m_debugStats; }
 
     bool ready() const {
-        return m_lodNodeResidencyBuffer &&
-               m_lodGroupPageTableBuffer &&
-               m_residentGroupMeshletIndicesBuffer &&
-               m_residencyRequestBuffer &&
-               m_residencyRequestStateBuffer;
+        for (const FrameBuffers& frameBuffers : m_frameBuffers) {
+            if (!frameBuffers.groupResidencyBuffer ||
+                !frameBuffers.lodGroupPageTableBuffer ||
+                !frameBuffers.residentGroupMeshletIndicesBuffer ||
+                !frameBuffers.residencyRequestBuffer ||
+                !frameBuffers.residencyRequestStateBuffer) {
+                return false;
+            }
+        }
+        return true;
     }
 
     bool useResidentHeap() const {
         return ready() && m_enableStreaming;
     }
 
-    const RhiBuffer* lodNodeResidencyBuffer() const { return m_lodNodeResidencyBuffer.get(); }
-    const RhiBuffer* lodGroupPageTableBuffer() const { return m_lodGroupPageTableBuffer.get(); }
-    const RhiBuffer* residentGroupMeshletIndicesBuffer() const {
-        return m_residentGroupMeshletIndicesBuffer.get();
+    const RhiBuffer* groupResidencyBuffer() const {
+        return activeFrameBuffers().groupResidencyBuffer.get();
     }
-    const RhiBuffer* residencyRequestBuffer() const { return m_residencyRequestBuffer.get(); }
-    const RhiBuffer* residencyRequestStateBuffer() const { return m_residencyRequestStateBuffer.get(); }
+    const RhiBuffer* lodGroupPageTableBuffer() const {
+        return activeFrameBuffers().lodGroupPageTableBuffer.get();
+    }
+    const RhiBuffer* residentGroupMeshletIndicesBuffer() const {
+        return activeFrameBuffers().residentGroupMeshletIndicesBuffer.get();
+    }
+    const RhiBuffer* residencyRequestBuffer() const {
+        return activeFrameBuffers().residencyRequestBuffer.get();
+    }
+    const RhiBuffer* residencyRequestStateBuffer() const {
+        return activeFrameBuffers().residencyRequestStateBuffer.get();
+    }
 
     void runUpdateStage(const ClusterLODData& clusterLodData,
                         const PipelineRuntimeContext& runtimeContext,
                         const FrameContext* frameContext) {
         m_debugStats.activeResidencyNodeCount = clusterLodData.totalNodeCount;
         m_debugStats.activeResidencyGroupCount = clusterLodData.totalGroupCount;
+        m_activeFrameSlot = frameContext ? (frameContext->frameIndex % kBufferedFrameCount) : 0u;
 
         const bool clusterLodAvailable =
             clusterLodData.nodeBuffer.nativeHandle() &&
@@ -89,6 +117,8 @@ public:
             return;
         }
 
+        ++m_updateSerial;
+
         ensureStreamingResources(clusterLodData, runtimeContext);
         if (!ready()) {
             updateDebugStats();
@@ -97,44 +127,77 @@ public:
 
         const bool sourceBufferChanged =
             m_residencySourceNodeBufferHandle != clusterLodData.nodeBuffer.nativeHandle() ||
+            m_residencySourceGroupBufferHandle != clusterLodData.groupBuffer.nativeHandle() ||
             m_residencySourceGroupMeshletIndicesHandle !=
                 clusterLodData.groupMeshletIndicesBuffer.nativeHandle();
         if (m_stateDirty || sourceBufferChanged) {
             requestHistoryReset(frameContext);
             rebuildStreamingState(clusterLodData);
+        } else {
+            runRequestReadbackStage(clusterLodData);
+            runResidencyUpdateStage(clusterLodData);
         }
 
-        runRequestReadbackStage(clusterLodData);
-        runResidencyUpdateStage(clusterLodData);
-        finalizeRequestStage();
+        uploadCanonicalStateToActiveFrame();
         updateDebugStats();
     }
 
 private:
     static constexpr uint32_t kInvalidResidentHeapOffset = UINT32_MAX;
+    static constexpr uint32_t kBufferedFrameCount = 2u;
 
     struct ResidentHeapRange {
         uint32_t offset = 0;
         uint32_t count = 0;
     };
 
-    struct NodeResidentAllocation {
+    struct GroupResidentAllocation {
         uint32_t heapOffset = kInvalidResidentHeapOffset;
         uint32_t heapCount = 0;
     };
+
+    struct FrameBuffers {
+        std::unique_ptr<RhiBuffer> groupResidencyBuffer;
+        std::unique_ptr<RhiBuffer> lodGroupPageTableBuffer;
+        std::unique_ptr<RhiBuffer> residentGroupMeshletIndicesBuffer;
+        std::unique_ptr<RhiBuffer> residencyRequestBuffer;
+        std::unique_ptr<RhiBuffer> residencyRequestStateBuffer;
+    };
+
+    FrameBuffers& activeFrameBuffers() {
+        return m_frameBuffers[m_activeFrameSlot % kBufferedFrameCount];
+    }
+
+    const FrameBuffers& activeFrameBuffers() const {
+        return m_frameBuffers[m_activeFrameSlot % kBufferedFrameCount];
+    }
+
+    static uint32_t* mappedUint32(RhiBuffer* buffer) {
+        if (!buffer || !buffer->mappedData()) {
+            return nullptr;
+        }
+        return static_cast<uint32_t*>(buffer->mappedData());
+    }
+
+    static ClusterResidencyRequest* mappedRequests(RhiBuffer* buffer) {
+        if (!buffer || !buffer->mappedData()) {
+            return nullptr;
+        }
+        return static_cast<ClusterResidencyRequest*>(buffer->mappedData());
+    }
 
     void resetDebugStats() {
         m_debugStats.lastResidencyRequestCount = 0;
         m_debugStats.lastResidencyPromotedCount = 0;
         m_debugStats.lastResidencyEvictedCount = 0;
-        m_debugStats.lastResidentNodeCount = 0;
-        m_debugStats.lastAlwaysResidentNodeCount = 0;
         m_debugStats.lastResidentGroupCount = 0;
         m_debugStats.lastAlwaysResidentGroupCount = 0;
         m_debugStats.residentHeapCapacity = 0;
         m_debugStats.residentHeapUsed = 0;
-        m_debugStats.dynamicResidentNodeCount = 0;
-        m_debugStats.pendingResidencyNodeCount = 0;
+        m_debugStats.dynamicResidentGroupCount = 0;
+        m_debugStats.pendingResidencyGroupCount = 0;
+        m_debugStats.maxLoadsPerFrame = m_maxLoadsPerFrame;
+        m_debugStats.maxUnloadsPerFrame = m_maxUnloadsPerFrame;
         m_debugStats.resourcesReady = false;
     }
 
@@ -147,154 +210,140 @@ private:
         mutableFrameContext->historyReset = true;
     }
 
+    void createFrameBufferSet(FrameBuffers& frameBuffers,
+                              const PipelineRuntimeContext& runtimeContext,
+                              uint32_t frameSlot,
+                              uint32_t groupCapacity,
+                              uint32_t residentHeapCapacity) {
+        RhiBufferDesc residencyDesc{};
+        residencyDesc.size = size_t(groupCapacity) * sizeof(uint32_t);
+        residencyDesc.hostVisible = true;
+        const std::string residencyName = "ClusterLodGroupResidency[" + std::to_string(frameSlot) + "]";
+        residencyDesc.debugName = residencyName.c_str();
+        frameBuffers.groupResidencyBuffer = runtimeContext.resourceFactory->createBuffer(residencyDesc);
+
+        RhiBufferDesc groupPageTableDesc{};
+        groupPageTableDesc.size = size_t(groupCapacity) * sizeof(uint32_t);
+        groupPageTableDesc.hostVisible = true;
+        const std::string pageTableName = "ClusterLodGroupPageTable[" + std::to_string(frameSlot) + "]";
+        groupPageTableDesc.debugName = pageTableName.c_str();
+        frameBuffers.lodGroupPageTableBuffer =
+            runtimeContext.resourceFactory->createBuffer(groupPageTableDesc);
+
+        RhiBufferDesc residentHeapDesc{};
+        residentHeapDesc.size = size_t(residentHeapCapacity) * sizeof(uint32_t);
+        residentHeapDesc.hostVisible = true;
+        const std::string residentHeapName =
+            "ClusterLodResidentGroupMeshletHeap[" + std::to_string(frameSlot) + "]";
+        residentHeapDesc.debugName = residentHeapName.c_str();
+        frameBuffers.residentGroupMeshletIndicesBuffer =
+            runtimeContext.resourceFactory->createBuffer(residentHeapDesc);
+
+        RhiBufferDesc requestDesc{};
+        requestDesc.size = size_t(groupCapacity) * sizeof(ClusterResidencyRequest);
+        requestDesc.hostVisible = true;
+        const std::string requestName = "ClusterLodResidencyRequests[" + std::to_string(frameSlot) + "]";
+        requestDesc.debugName = requestName.c_str();
+        frameBuffers.residencyRequestBuffer = runtimeContext.resourceFactory->createBuffer(requestDesc);
+
+        RhiBufferDesc requestStateDesc{};
+        requestStateDesc.size = GpuDriven::ComputeDispatchCommandLayout::kBufferSize;
+        requestStateDesc.hostVisible = true;
+        const std::string requestStateName =
+            "ClusterLodResidencyRequestState[" + std::to_string(frameSlot) + "]";
+        requestStateDesc.debugName = requestStateName.c_str();
+        frameBuffers.residencyRequestStateBuffer =
+            runtimeContext.resourceFactory->createBuffer(requestStateDesc);
+    }
+
     void ensureStreamingResources(const ClusterLODData& clusterLodData,
                                   const PipelineRuntimeContext& runtimeContext) {
         if (!runtimeContext.resourceFactory) {
             return;
         }
 
-        const uint32_t nodeCapacity = std::max(1u, clusterLodData.totalNodeCount);
         const uint32_t groupCapacity = std::max(1u, clusterLodData.totalGroupCount);
         const uint32_t residentHeapCapacity =
             std::max<uint32_t>(1u, static_cast<uint32_t>(clusterLodData.groupMeshletIndices.size()));
         const bool needsRecreate =
-            !m_lodNodeResidencyBuffer ||
-            !m_lodGroupPageTableBuffer ||
-            !m_residentGroupMeshletIndicesBuffer ||
-            !m_residencyRequestBuffer ||
-            !m_residencyRequestStateBuffer ||
-            m_residencyNodeCapacity != nodeCapacity ||
+            !ready() ||
             m_residencyGroupCapacity != groupCapacity ||
             m_residentHeapCapacity != residentHeapCapacity;
         if (!needsRecreate) {
             return;
         }
 
-        RhiBufferDesc residencyDesc{};
-        residencyDesc.size = size_t(nodeCapacity) * sizeof(uint32_t);
-        residencyDesc.hostVisible = true;
-        residencyDesc.debugName = "ClusterLodNodeResidency";
-        m_lodNodeResidencyBuffer = runtimeContext.resourceFactory->createBuffer(residencyDesc);
+        for (uint32_t frameSlot = 0; frameSlot < kBufferedFrameCount; ++frameSlot) {
+            m_frameBuffers[frameSlot] = {};
+            createFrameBufferSet(m_frameBuffers[frameSlot],
+                                 runtimeContext,
+                                 frameSlot,
+                                 groupCapacity,
+                                 residentHeapCapacity);
+        }
 
-        RhiBufferDesc groupPageTableDesc{};
-        groupPageTableDesc.size = size_t(groupCapacity) * sizeof(uint32_t);
-        groupPageTableDesc.hostVisible = true;
-        groupPageTableDesc.debugName = "ClusterLodGroupPageTable";
-        m_lodGroupPageTableBuffer = runtimeContext.resourceFactory->createBuffer(groupPageTableDesc);
-
-        RhiBufferDesc residentHeapDesc{};
-        residentHeapDesc.size = size_t(residentHeapCapacity) * sizeof(uint32_t);
-        residentHeapDesc.hostVisible = true;
-        residentHeapDesc.debugName = "ClusterLodResidentGroupMeshletHeap";
-        m_residentGroupMeshletIndicesBuffer =
-            runtimeContext.resourceFactory->createBuffer(residentHeapDesc);
-
-        RhiBufferDesc requestDesc{};
-        requestDesc.size = size_t(nodeCapacity) * sizeof(ClusterResidencyRequest);
-        requestDesc.hostVisible = true;
-        requestDesc.debugName = "ClusterLodResidencyRequests";
-        m_residencyRequestBuffer = runtimeContext.resourceFactory->createBuffer(requestDesc);
-
-        RhiBufferDesc requestStateDesc{};
-        requestStateDesc.size = GpuDriven::ComputeDispatchCommandLayout::kBufferSize;
-        requestStateDesc.hostVisible = true;
-        requestStateDesc.debugName = "ClusterLodResidencyRequestState";
-        m_residencyRequestStateBuffer =
-            runtimeContext.resourceFactory->createBuffer(requestStateDesc);
-
-        m_residencyNodeCapacity = nodeCapacity;
         m_residencyGroupCapacity = groupCapacity;
         m_residentHeapCapacity = residentHeapCapacity;
+        m_groupResidencyState.assign(groupCapacity, 0u);
+        m_groupPageTableState.assign(groupCapacity, kClusterLodGroupPageInvalidAddress);
+        m_residentHeapState.assign(residentHeapCapacity, 0u);
+        m_groupLastTouchedUpdate.assign(groupCapacity, 0u);
         m_stateDirty = true;
-        m_dynamicResidentNodes.clear();
-        m_pendingResidencyNodes.clear();
+        m_dynamicResidentGroups.clear();
+        m_pendingResidencyGroups.clear();
         m_requestReadbackScratch.clear();
-        m_residencyNodeLeafGroups.clear();
         m_residencySourceNodeBufferHandle = nullptr;
+        m_residencySourceGroupBufferHandle = nullptr;
         m_residencySourceGroupMeshletIndicesHandle = nullptr;
-
-        if (m_lodNodeResidencyBuffer && m_lodNodeResidencyBuffer->mappedData()) {
-            std::memset(m_lodNodeResidencyBuffer->mappedData(), 0, m_lodNodeResidencyBuffer->size());
-        }
-        if (m_residentGroupMeshletIndicesBuffer &&
-            m_residentGroupMeshletIndicesBuffer->mappedData()) {
-            std::memset(m_residentGroupMeshletIndicesBuffer->mappedData(),
-                        0,
-                        m_residentGroupMeshletIndicesBuffer->size());
-        }
-        if (m_residencyRequestBuffer && m_residencyRequestBuffer->mappedData()) {
-            std::memset(m_residencyRequestBuffer->mappedData(), 0, m_residencyRequestBuffer->size());
-        }
-
-        invalidateGroupPageTable();
         resetResidentHeapAllocator();
-        seedResidencyRequestQueue();
+        uploadCanonicalStateToAllFrames();
         updateDebugStats();
     }
 
-    void seedResidencyRequestQueue() {
-        if (!m_residencyRequestStateBuffer) {
+    void seedResidencyRequestQueue(FrameBuffers& frameBuffers) {
+        if (!frameBuffers.residencyRequestStateBuffer) {
             return;
         }
 
         GpuDriven::seedWorklistStateBuffer<GpuDriven::ComputeDispatchCommandLayout>(
-            m_residencyRequestStateBuffer.get());
+            frameBuffers.residencyRequestStateBuffer.get());
     }
 
-    void finalizeRequestStage() {
-        seedResidencyRequestQueue();
-    }
-
-    uint32_t* residencyStateWords() {
-        if (!m_lodNodeResidencyBuffer || !m_lodNodeResidencyBuffer->mappedData()) {
-            return nullptr;
+    void uploadCanonicalStateToFrame(FrameBuffers& frameBuffers) {
+        if (uint32_t* words = mappedUint32(frameBuffers.groupResidencyBuffer.get())) {
+            std::memcpy(words,
+                        m_groupResidencyState.data(),
+                        size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
         }
-        return static_cast<uint32_t*>(m_lodNodeResidencyBuffer->mappedData());
-    }
-
-    const uint32_t* residencyStateWords() const {
-        return const_cast<ClusterStreamingService*>(this)->residencyStateWords();
-    }
-
-    uint32_t* groupPageTableWords() {
-        if (!m_lodGroupPageTableBuffer || !m_lodGroupPageTableBuffer->mappedData()) {
-            return nullptr;
+        if (uint32_t* pageTable = mappedUint32(frameBuffers.lodGroupPageTableBuffer.get())) {
+            std::memcpy(pageTable,
+                        m_groupPageTableState.data(),
+                        size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
         }
-        return static_cast<uint32_t*>(m_lodGroupPageTableBuffer->mappedData());
-    }
-
-    const uint32_t* groupPageTableWords() const {
-        return const_cast<ClusterStreamingService*>(this)->groupPageTableWords();
-    }
-
-    uint32_t* residentHeapWords() {
-        if (!m_residentGroupMeshletIndicesBuffer ||
-            !m_residentGroupMeshletIndicesBuffer->mappedData()) {
-            return nullptr;
+        if (uint32_t* residentHeap = mappedUint32(frameBuffers.residentGroupMeshletIndicesBuffer.get())) {
+            std::memcpy(residentHeap,
+                        m_residentHeapState.data(),
+                        size_t(m_residentHeapCapacity) * sizeof(uint32_t));
         }
-        return static_cast<uint32_t*>(m_residentGroupMeshletIndicesBuffer->mappedData());
-    }
-
-    const uint32_t* residentHeapWords() const {
-        return const_cast<ClusterStreamingService*>(this)->residentHeapWords();
-    }
-
-    ClusterResidencyRequest* residencyRequests() {
-        if (!m_residencyRequestBuffer || !m_residencyRequestBuffer->mappedData()) {
-            return nullptr;
+        if (frameBuffers.residencyRequestBuffer && frameBuffers.residencyRequestBuffer->mappedData()) {
+            std::memset(frameBuffers.residencyRequestBuffer->mappedData(),
+                        0,
+                        frameBuffers.residencyRequestBuffer->size());
         }
-        return static_cast<ClusterResidencyRequest*>(m_residencyRequestBuffer->mappedData());
+        seedResidencyRequestQueue(frameBuffers);
     }
 
-    void invalidateGroupPageTable() {
-        uint32_t* pageTable = groupPageTableWords();
-        if (!pageTable) {
-            return;
+    void uploadCanonicalStateToAllFrames() {
+        for (FrameBuffers& frameBuffers : m_frameBuffers) {
+            if (!frameBuffers.groupResidencyBuffer) {
+                continue;
+            }
+            uploadCanonicalStateToFrame(frameBuffers);
         }
+    }
 
-        std::fill(pageTable,
-                  pageTable + m_residencyGroupCapacity,
-                  kClusterLodGroupPageInvalidAddress);
+    void uploadCanonicalStateToActiveFrame() {
+        uploadCanonicalStateToFrame(activeFrameBuffers());
     }
 
     void resetResidentHeapAllocator() {
@@ -303,77 +352,65 @@ private:
             m_residentHeapFreeRanges.push_back({0u, m_residentHeapCapacity});
         }
 
-        m_nodeResidentAllocations.clear();
-        m_nodeResidentAllocations.resize(m_residencyNodeCapacity);
+        m_groupResidentAllocations.assign(m_residencyGroupCapacity, {});
     }
 
-    bool isResidencyNodeResident(uint32_t nodeIndex) const {
-        const uint32_t* words = residencyStateWords();
-        return words &&
-               nodeIndex < m_residencyNodeCapacity &&
-               (words[nodeIndex] & kClusterLodNodeResidencyResident) != 0u;
-    }
-
-    bool isResidencyNodeAlwaysResident(uint32_t nodeIndex) const {
-        const uint32_t* words = residencyStateWords();
-        return words &&
-               nodeIndex < m_residencyNodeCapacity &&
-               (words[nodeIndex] & kClusterLodNodeResidencyAlwaysResident) != 0u;
-    }
-
-    void buildResidencyNodeLeafGroupsRecursive(uint32_t nodeIndex,
-                                               const ClusterLODData& clusterLodData,
-                                               std::vector<uint8_t>& builtNodes) {
-        if (nodeIndex >= m_residencyNodeLeafGroups.size() || builtNodes[nodeIndex] != 0u) {
-            return;
-        }
-
-        builtNodes[nodeIndex] = 1u;
-        const GPULodNode& node = clusterLodData.nodes[nodeIndex];
-        auto& leafGroups = m_residencyNodeLeafGroups[nodeIndex];
-        if (node.isLeaf != 0u) {
-            leafGroups.reserve(node.childCount);
-            for (uint32_t childIndex = 0; childIndex < node.childCount; ++childIndex) {
-                leafGroups.push_back(node.childOffset + childIndex);
-            }
-            return;
-        }
-
-        for (uint32_t childIndex = 0; childIndex < node.childCount; ++childIndex) {
-            const uint32_t childNodeIndex = node.childOffset + childIndex;
-            if (childNodeIndex >= clusterLodData.nodes.size()) {
-                continue;
-            }
-
-            buildResidencyNodeLeafGroupsRecursive(childNodeIndex, clusterLodData, builtNodes);
-            const auto& childLeafGroups = m_residencyNodeLeafGroups[childNodeIndex];
-            leafGroups.insert(leafGroups.end(), childLeafGroups.begin(), childLeafGroups.end());
-        }
-    }
-
-    void rebuildResidencyNodeLeafGroups(const ClusterLODData& clusterLodData) {
-        m_residencyNodeLeafGroups.clear();
-        m_residencyNodeLeafGroups.resize(clusterLodData.totalNodeCount);
-        std::vector<uint8_t> builtNodes(clusterLodData.totalNodeCount, 0u);
-        for (uint32_t nodeIndex = 0; nodeIndex < clusterLodData.totalNodeCount; ++nodeIndex) {
-            buildResidencyNodeLeafGroupsRecursive(nodeIndex, clusterLodData, builtNodes);
-        }
-    }
-
-    uint32_t computeNodeResidentClusterCount(uint32_t nodeIndex,
-                                             const ClusterLODData& clusterLodData) const {
-        if (nodeIndex >= m_residencyNodeLeafGroups.size()) {
+    uint32_t dynamicResidentHardLimit() const {
+        if (m_streamingBudgetGroups == 0u) {
             return 0u;
         }
 
-        uint32_t totalClusterCount = 0u;
-        for (uint32_t groupIndex : m_residencyNodeLeafGroups[nodeIndex]) {
-            if (groupIndex >= clusterLodData.groups.size()) {
+        const uint32_t headroom = std::max(1u, m_maxLoadsPerFrame * kBufferedFrameCount);
+        return std::min(m_residencyGroupCapacity, m_streamingBudgetGroups + headroom);
+    }
+
+    bool canEvictDynamicResidentGroup(uint32_t groupIndex) const {
+        if (groupIndex >= m_groupLastTouchedUpdate.size()) {
+            return true;
+        }
+
+        const uint64_t lastTouchedUpdate = m_groupLastTouchedUpdate[groupIndex];
+        return m_updateSerial > (lastTouchedUpdate + kBufferedFrameCount);
+    }
+
+    bool isGroupResident(uint32_t groupIndex) const {
+        return groupIndex < m_groupResidencyState.size() &&
+               (m_groupResidencyState[groupIndex] & kClusterLodGroupResidencyResident) != 0u;
+    }
+
+    bool isGroupAlwaysResident(uint32_t groupIndex) const {
+        return groupIndex < m_groupResidencyState.size() &&
+               (m_groupResidencyState[groupIndex] & kClusterLodGroupResidencyAlwaysResident) != 0u;
+    }
+
+    void collectLeafGroupsForNode(uint32_t nodeIndex,
+                                  const ClusterLODData& clusterLodData,
+                                  std::vector<uint32_t>& outLeafGroups) const {
+        if (nodeIndex >= clusterLodData.nodes.size()) {
+            return;
+        }
+
+        std::vector<uint32_t> nodeStack;
+        nodeStack.push_back(nodeIndex);
+        while (!nodeStack.empty()) {
+            const uint32_t currentNodeIndex = nodeStack.back();
+            nodeStack.pop_back();
+            if (currentNodeIndex >= clusterLodData.nodes.size()) {
                 continue;
             }
-            totalClusterCount += clusterLodData.groups[groupIndex].clusterCount;
+
+            const GPULodNode& node = clusterLodData.nodes[currentNodeIndex];
+            if (node.isLeaf != 0u) {
+                for (uint32_t childIndex = 0u; childIndex < node.childCount; ++childIndex) {
+                    outLeafGroups.push_back(node.childOffset + childIndex);
+                }
+                continue;
+            }
+
+            for (uint32_t childIndex = 0u; childIndex < node.childCount; ++childIndex) {
+                nodeStack.push_back(node.childOffset + childIndex);
+            }
         }
-        return totalClusterCount;
     }
 
     bool allocateResidentHeapRange(uint32_t elementCount, uint32_t& outOffset) {
@@ -437,204 +474,180 @@ private:
         m_residentHeapFreeRanges = std::move(mergedRanges);
     }
 
-    bool uploadResidentGroupsForNode(uint32_t nodeIndex,
-                                     const ClusterLODData& clusterLodData,
-                                     uint32_t heapOffset) {
-        uint32_t* pageTable = groupPageTableWords();
-        uint32_t* residentHeap = residentHeapWords();
-        if (!pageTable || !residentHeap || nodeIndex >= m_residencyNodeLeafGroups.size() ||
-            nodeIndex >= m_nodeResidentAllocations.size()) {
+    bool ensureResidentHeapSliceForGroup(uint32_t groupIndex,
+                                         const ClusterLODData& clusterLodData) {
+        if (groupIndex >= m_groupResidentAllocations.size() ||
+            groupIndex >= clusterLodData.groups.size()) {
             return false;
         }
 
-        uint32_t cursor = heapOffset;
-        for (uint32_t groupIndex : m_residencyNodeLeafGroups[nodeIndex]) {
-            if (groupIndex >= m_residencyGroupCapacity ||
-                groupIndex >= clusterLodData.groups.size()) {
-                continue;
-            }
-
-            const GPUClusterGroup& group = clusterLodData.groups[groupIndex];
-            const size_t clusterStart = group.clusterStart;
-            const size_t clusterCount = group.clusterCount;
-            if (clusterStart + clusterCount > clusterLodData.groupMeshletIndices.size() ||
-                cursor + group.clusterCount > m_residentHeapCapacity) {
-                return false;
-            }
-
-            std::memcpy(residentHeap + cursor,
-                        clusterLodData.groupMeshletIndices.data() + clusterStart,
-                        clusterCount * sizeof(uint32_t));
-            pageTable[groupIndex] = cursor;
-            cursor += group.clusterCount;
-        }
-
-        m_nodeResidentAllocations[nodeIndex].heapOffset = heapOffset;
-        m_nodeResidentAllocations[nodeIndex].heapCount = cursor - heapOffset;
-        return true;
-    }
-
-    bool ensureResidentHeapSliceForNode(uint32_t nodeIndex,
-                                        const ClusterLODData& clusterLodData) {
-        if (nodeIndex >= m_nodeResidentAllocations.size()) {
-            return false;
-        }
-
-        NodeResidentAllocation& allocation = m_nodeResidentAllocations[nodeIndex];
+        GroupResidentAllocation& allocation = m_groupResidentAllocations[groupIndex];
         if (allocation.heapOffset != kInvalidResidentHeapOffset) {
             return true;
         }
 
-        const uint32_t clusterCount = computeNodeResidentClusterCount(nodeIndex, clusterLodData);
+        const GPUClusterGroup& group = clusterLodData.groups[groupIndex];
+        if (size_t(group.clusterStart) + group.clusterCount > clusterLodData.groupMeshletIndices.size()) {
+            return false;
+        }
+
         uint32_t heapOffset = 0u;
-        if (!allocateResidentHeapRange(clusterCount, heapOffset)) {
+        if (!allocateResidentHeapRange(group.clusterCount, heapOffset)) {
+            return false;
+        }
+        if (heapOffset + group.clusterCount > m_residentHeapCapacity) {
+            releaseResidentHeapRange(heapOffset, group.clusterCount);
             return false;
         }
 
-        if (!uploadResidentGroupsForNode(nodeIndex, clusterLodData, heapOffset)) {
-            releaseResidentHeapRange(heapOffset, clusterCount);
-            allocation = {};
-            return false;
-        }
-
+        std::memcpy(m_residentHeapState.data() + heapOffset,
+                    clusterLodData.groupMeshletIndices.data() + group.clusterStart,
+                    size_t(group.clusterCount) * sizeof(uint32_t));
+        m_groupPageTableState[groupIndex] = heapOffset;
+        allocation.heapOffset = heapOffset;
+        allocation.heapCount = group.clusterCount;
         return true;
     }
 
-    void invalidateResidentGroupsForNode(uint32_t nodeIndex,
-                                         const ClusterLODData& clusterLodData) {
-        uint32_t* pageTable = groupPageTableWords();
-        if (!pageTable || nodeIndex >= m_residencyNodeLeafGroups.size() ||
-            nodeIndex >= m_nodeResidentAllocations.size()) {
+    void invalidateResidentGroup(uint32_t groupIndex) {
+        if (groupIndex >= m_groupResidentAllocations.size()) {
             return;
         }
 
-        for (uint32_t groupIndex : m_residencyNodeLeafGroups[nodeIndex]) {
-            if (groupIndex >= m_residencyGroupCapacity ||
-                groupIndex >= clusterLodData.groups.size()) {
-                continue;
-            }
-
-            pageTable[groupIndex] = kClusterLodGroupPageInvalidAddress;
-        }
-
-        NodeResidentAllocation& allocation = m_nodeResidentAllocations[nodeIndex];
+        m_groupPageTableState[groupIndex] = kClusterLodGroupPageInvalidAddress;
+        GroupResidentAllocation& allocation = m_groupResidentAllocations[groupIndex];
         releaseResidentHeapRange(allocation.heapOffset, allocation.heapCount);
         allocation = {};
     }
 
-    void touchDynamicResidentNode(uint32_t nodeIndex) {
-        auto it = std::find(m_dynamicResidentNodes.begin(), m_dynamicResidentNodes.end(), nodeIndex);
-        if (it != m_dynamicResidentNodes.end()) {
-            m_dynamicResidentNodes.erase(it);
+    void touchDynamicResidentGroup(uint32_t groupIndex) {
+        auto it = std::find(m_dynamicResidentGroups.begin(), m_dynamicResidentGroups.end(), groupIndex);
+        if (it != m_dynamicResidentGroups.end()) {
+            m_dynamicResidentGroups.erase(it);
         }
-        m_dynamicResidentNodes.push_back(nodeIndex);
+        if (groupIndex < m_groupLastTouchedUpdate.size()) {
+            m_groupLastTouchedUpdate[groupIndex] = m_updateSerial;
+        }
+        m_dynamicResidentGroups.push_back(groupIndex);
     }
 
-    void enqueuePendingResidencyNode(uint32_t nodeIndex) {
-        if (std::find(m_pendingResidencyNodes.begin(), m_pendingResidencyNodes.end(), nodeIndex) ==
-            m_pendingResidencyNodes.end()) {
-            m_pendingResidencyNodes.push_back(nodeIndex);
+    void enqueuePendingResidencyGroup(uint32_t groupIndex) {
+        if (groupIndex < m_groupResidencyState.size()) {
+            m_groupResidencyState[groupIndex] |= kClusterLodGroupResidencyRequested;
+        }
+        if (std::find(m_pendingResidencyGroups.begin(), m_pendingResidencyGroups.end(), groupIndex) ==
+            m_pendingResidencyGroups.end()) {
+            m_pendingResidencyGroups.push_back(groupIndex);
         }
     }
 
-    void evictOldestDynamicResidencyNode(const ClusterLODData& clusterLodData) {
-        if (m_dynamicResidentNodes.empty()) {
-            return;
+    bool evictOldestDynamicResidentGroup() {
+        if (m_dynamicResidentGroups.empty()) {
+            return false;
         }
 
-        uint32_t* words = residencyStateWords();
-        if (!words) {
-            m_dynamicResidentNodes.clear();
-            return;
+        auto evictIt = m_dynamicResidentGroups.end();
+        for (auto it = m_dynamicResidentGroups.begin(); it != m_dynamicResidentGroups.end(); ++it) {
+            if (canEvictDynamicResidentGroup(*it)) {
+                evictIt = it;
+                break;
+            }
+        }
+        if (evictIt == m_dynamicResidentGroups.end()) {
+            return false;
         }
 
-        const uint32_t nodeIndex = m_dynamicResidentNodes.front();
-        m_dynamicResidentNodes.erase(m_dynamicResidentNodes.begin());
-        if (nodeIndex < m_residencyNodeCapacity) {
-            words[nodeIndex] &= ~(kClusterLodNodeResidencyResident |
-                                  kClusterLodNodeResidencyRequested);
+        const uint32_t groupIndex = *evictIt;
+        m_dynamicResidentGroups.erase(evictIt);
+        if (groupIndex < m_residencyGroupCapacity) {
+            m_groupResidencyState[groupIndex] &= ~(kClusterLodGroupResidencyResident |
+                                                   kClusterLodGroupResidencyRequested);
         }
-        invalidateResidentGroupsForNode(nodeIndex, clusterLodData);
+        invalidateResidentGroup(groupIndex);
         ++m_debugStats.lastResidencyEvictedCount;
+        return true;
     }
 
-    void promotePendingResidencyNodes(const ClusterLODData& clusterLodData) {
-        uint32_t* words = residencyStateWords();
-        if (!words) {
+    void promotePendingResidencyGroups(const ClusterLODData& clusterLodData,
+                                       uint32_t& remainingLoads,
+                                       uint32_t& remainingUnloads) {
+        if (remainingLoads == 0u) {
             return;
         }
 
+        const uint32_t dynamicResidentLimit = dynamicResidentHardLimit();
         size_t pendingIndex = 0;
-        while (pendingIndex < m_pendingResidencyNodes.size()) {
-            const uint32_t nodeIndex = m_pendingResidencyNodes[pendingIndex];
-            if (nodeIndex >= m_residencyNodeCapacity) {
-                m_pendingResidencyNodes.erase(
-                    m_pendingResidencyNodes.begin() +
+        while (pendingIndex < m_pendingResidencyGroups.size() && remainingLoads > 0u) {
+            const uint32_t groupIndex = m_pendingResidencyGroups[pendingIndex];
+            if (groupIndex >= m_residencyGroupCapacity ||
+                groupIndex >= clusterLodData.totalGroupCount) {
+                m_pendingResidencyGroups.erase(
+                    m_pendingResidencyGroups.begin() +
                     static_cast<std::vector<uint32_t>::difference_type>(pendingIndex));
                 continue;
             }
 
-            if ((words[nodeIndex] & kClusterLodNodeResidencyResident) != 0u) {
-                words[nodeIndex] &= ~kClusterLodNodeResidencyRequested;
-                if ((words[nodeIndex] & kClusterLodNodeResidencyAlwaysResident) == 0u) {
-                    touchDynamicResidentNode(nodeIndex);
+            if (isGroupResident(groupIndex)) {
+                m_groupResidencyState[groupIndex] &= ~kClusterLodGroupResidencyRequested;
+                if (!isGroupAlwaysResident(groupIndex)) {
+                    touchDynamicResidentGroup(groupIndex);
                 }
-                m_pendingResidencyNodes.erase(
-                    m_pendingResidencyNodes.begin() +
+                m_pendingResidencyGroups.erase(
+                    m_pendingResidencyGroups.begin() +
                     static_cast<std::vector<uint32_t>::difference_type>(pendingIndex));
                 continue;
             }
 
-            if (m_streamingBudgetNodes == 0u) {
+            if (m_streamingBudgetGroups == 0u) {
                 break;
             }
 
-            while (m_dynamicResidentNodes.size() >= size_t(m_streamingBudgetNodes) &&
-                   !m_dynamicResidentNodes.empty()) {
-                evictOldestDynamicResidencyNode(clusterLodData);
+            while (m_dynamicResidentGroups.size() >= size_t(dynamicResidentLimit) &&
+                   remainingUnloads > 0u &&
+                   !m_dynamicResidentGroups.empty()) {
+                if (!evictOldestDynamicResidentGroup()) {
+                    break;
+                }
+                --remainingUnloads;
             }
-            if (m_dynamicResidentNodes.size() >= size_t(m_streamingBudgetNodes)) {
+            if (m_dynamicResidentGroups.size() >= size_t(dynamicResidentLimit)) {
                 break;
             }
 
-            while (!ensureResidentHeapSliceForNode(nodeIndex, clusterLodData)) {
-                if (m_dynamicResidentNodes.empty()) {
+            while (!ensureResidentHeapSliceForGroup(groupIndex, clusterLodData)) {
+                if (remainingUnloads == 0u || m_dynamicResidentGroups.empty()) {
                     return;
                 }
-                evictOldestDynamicResidencyNode(clusterLodData);
+                if (!evictOldestDynamicResidentGroup()) {
+                    return;
+                }
+                --remainingUnloads;
             }
 
-            words[nodeIndex] |= kClusterLodNodeResidencyResident;
-            words[nodeIndex] &= ~kClusterLodNodeResidencyRequested;
-            touchDynamicResidentNode(nodeIndex);
+            m_groupResidencyState[groupIndex] |= kClusterLodGroupResidencyResident;
+            m_groupResidencyState[groupIndex] &= ~kClusterLodGroupResidencyRequested;
+            touchDynamicResidentGroup(groupIndex);
             ++m_debugStats.lastResidencyPromotedCount;
-            m_pendingResidencyNodes.erase(
-                m_pendingResidencyNodes.begin() +
+            --remainingLoads;
+            m_pendingResidencyGroups.erase(
+                m_pendingResidencyGroups.begin() +
                 static_cast<std::vector<uint32_t>::difference_type>(pendingIndex));
         }
     }
 
     void rebuildStreamingState(const ClusterLODData& clusterLodData) {
-        uint32_t* words = residencyStateWords();
-        if (!words) {
-            return;
-        }
-
-        std::memset(words, 0, m_lodNodeResidencyBuffer->size());
-        invalidateGroupPageTable();
-        if (m_residentGroupMeshletIndicesBuffer &&
-            m_residentGroupMeshletIndicesBuffer->mappedData()) {
-            std::memset(m_residentGroupMeshletIndicesBuffer->mappedData(),
-                        0,
-                        m_residentGroupMeshletIndicesBuffer->size());
-        }
+        std::fill(m_groupResidencyState.begin(), m_groupResidencyState.end(), 0u);
+        std::fill(m_groupPageTableState.begin(),
+                  m_groupPageTableState.end(),
+                  kClusterLodGroupPageInvalidAddress);
+        std::fill(m_residentHeapState.begin(), m_residentHeapState.end(), 0u);
         resetResidentHeapAllocator();
-        rebuildResidencyNodeLeafGroups(clusterLodData);
-        m_dynamicResidentNodes.clear();
-        m_pendingResidencyNodes.clear();
+        m_dynamicResidentGroups.clear();
+        m_pendingResidencyGroups.clear();
         m_requestReadbackScratch.clear();
         resetDebugStats();
 
+        std::vector<uint32_t> alwaysResidentGroups;
         for (uint32_t lodRootNode : clusterLodData.primitiveGroupLodRoots) {
             if (lodRootNode == UINT32_MAX || lodRootNode >= clusterLodData.nodes.size()) {
                 continue;
@@ -649,23 +662,47 @@ private:
             if (lodRoot.isLeaf == 0u) {
                 alwaysResidentNode = lodRoot.childOffset + lodRoot.childCount - 1u;
             }
-            if (alwaysResidentNode >= m_residencyNodeCapacity) {
-                continue;
-            }
 
-            if (!ensureResidentHeapSliceForNode(alwaysResidentNode, clusterLodData)) {
-                continue;
-            }
+            alwaysResidentGroups.clear();
+            collectLeafGroupsForNode(alwaysResidentNode, clusterLodData, alwaysResidentGroups);
+            for (uint32_t groupIndex : alwaysResidentGroups) {
+                if (groupIndex >= m_residencyGroupCapacity) {
+                    continue;
+                }
+                if (!ensureResidentHeapSliceForGroup(groupIndex, clusterLodData)) {
+                    continue;
+                }
 
-            words[alwaysResidentNode] =
-                kClusterLodNodeResidencyResident | kClusterLodNodeResidencyAlwaysResident;
+                m_groupResidencyState[groupIndex] =
+                    kClusterLodGroupResidencyResident | kClusterLodGroupResidencyAlwaysResident;
+            }
         }
 
-        seedResidencyRequestQueue();
         m_residencySourceNodeBufferHandle = clusterLodData.nodeBuffer.nativeHandle();
+        m_residencySourceGroupBufferHandle = clusterLodData.groupBuffer.nativeHandle();
         m_residencySourceGroupMeshletIndicesHandle =
             clusterLodData.groupMeshletIndicesBuffer.nativeHandle();
         m_stateDirty = false;
+    }
+
+    void consumeResidentGroupTouches(const uint32_t* slotResidencyWords) {
+        if (!slotResidencyWords) {
+            return;
+        }
+
+        for (uint32_t groupIndex = 0; groupIndex < m_residencyGroupCapacity; ++groupIndex) {
+            const uint32_t slotState = slotResidencyWords[groupIndex];
+            const bool resident = (slotState & kClusterLodGroupResidencyResident) != 0u;
+            const bool requested = (slotState & kClusterLodGroupResidencyRequested) != 0u;
+            if (!resident || !requested || !isGroupResident(groupIndex)) {
+                continue;
+            }
+
+            m_groupResidencyState[groupIndex] &= ~kClusterLodGroupResidencyRequested;
+            if (!isGroupAlwaysResident(groupIndex)) {
+                touchDynamicResidentGroup(groupIndex);
+            }
+        }
     }
 
     void runRequestReadbackStage(const ClusterLODData& clusterLodData) {
@@ -674,36 +711,39 @@ private:
         m_debugStats.lastResidencyEvictedCount = 0;
         m_requestReadbackScratch.clear();
 
-        if (!m_residencyRequestBuffer || !m_residencyRequestStateBuffer) {
+        FrameBuffers& frameBuffers = activeFrameBuffers();
+        consumeResidentGroupTouches(mappedUint32(frameBuffers.groupResidencyBuffer.get()));
+
+        if (!frameBuffers.residencyRequestBuffer || !frameBuffers.residencyRequestStateBuffer) {
             return;
         }
 
         const uint32_t requestCapacity = static_cast<uint32_t>(
-            m_residencyRequestBuffer->size() / sizeof(ClusterResidencyRequest));
+            frameBuffers.residencyRequestBuffer->size() / sizeof(ClusterResidencyRequest));
         const uint32_t requestCount = std::min<uint32_t>(
             GpuDriven::readWorklistWriteCursor<GpuDriven::ComputeDispatchCommandLayout>(
-                m_residencyRequestStateBuffer.get()),
+                frameBuffers.residencyRequestStateBuffer.get()),
             requestCapacity);
         m_debugStats.lastResidencyRequestCount = requestCount;
 
-        ClusterResidencyRequest* requests = residencyRequests();
+        ClusterResidencyRequest* requests = mappedRequests(frameBuffers.residencyRequestBuffer.get());
         if (!requests || requestCount == 0u) {
             return;
         }
 
         m_requestReadbackScratch.assign(requests, requests + requestCount);
         for (const ClusterResidencyRequest& request : m_requestReadbackScratch) {
-            if (request.targetNodeIndex >= clusterLodData.totalNodeCount) {
+            if (request.targetGroupIndex >= clusterLodData.totalGroupCount) {
                 continue;
             }
-            if (isResidencyNodeAlwaysResident(request.targetNodeIndex)) {
+            if (isGroupAlwaysResident(request.targetGroupIndex)) {
                 continue;
             }
-            if (isResidencyNodeResident(request.targetNodeIndex)) {
-                touchDynamicResidentNode(request.targetNodeIndex);
+            if (isGroupResident(request.targetGroupIndex)) {
+                touchDynamicResidentGroup(request.targetGroupIndex);
                 continue;
             }
-            enqueuePendingResidencyNode(request.targetNodeIndex);
+            enqueuePendingResidencyGroup(request.targetGroupIndex);
         }
     }
 
@@ -712,10 +752,19 @@ private:
             return;
         }
 
-        while (m_dynamicResidentNodes.size() > size_t(m_streamingBudgetNodes)) {
-            evictOldestDynamicResidencyNode(clusterLodData);
+        uint32_t remainingLoads = m_maxLoadsPerFrame;
+        uint32_t remainingUnloads = m_maxUnloadsPerFrame;
+        const uint32_t dynamicResidentLimit = dynamicResidentHardLimit();
+
+        while (m_dynamicResidentGroups.size() > size_t(dynamicResidentLimit) &&
+               remainingUnloads > 0u) {
+            if (!evictOldestDynamicResidentGroup()) {
+                break;
+            }
+            --remainingUnloads;
         }
-        promotePendingResidencyNodes(clusterLodData);
+
+        promotePendingResidencyGroups(clusterLodData, remainingLoads, remainingUnloads);
     }
 
     uint32_t computeResidentHeapUsed() const {
@@ -727,71 +776,50 @@ private:
     }
 
     void updateDebugStats() {
-        const uint32_t* words = residencyStateWords();
-        const uint32_t* pageTable = groupPageTableWords();
-        m_debugStats.lastResidentNodeCount = 0;
-        m_debugStats.lastAlwaysResidentNodeCount = 0;
         m_debugStats.lastResidentGroupCount = 0;
         m_debugStats.lastAlwaysResidentGroupCount = 0;
         m_debugStats.residentHeapCapacity = m_residentHeapCapacity;
         m_debugStats.residentHeapUsed = computeResidentHeapUsed();
-        m_debugStats.dynamicResidentNodeCount =
-            static_cast<uint32_t>(m_dynamicResidentNodes.size());
-        m_debugStats.pendingResidencyNodeCount =
-            static_cast<uint32_t>(m_pendingResidencyNodes.size());
+        m_debugStats.dynamicResidentGroupCount =
+            static_cast<uint32_t>(m_dynamicResidentGroups.size());
+        m_debugStats.pendingResidencyGroupCount =
+            static_cast<uint32_t>(m_pendingResidencyGroups.size());
+        m_debugStats.maxLoadsPerFrame = m_maxLoadsPerFrame;
+        m_debugStats.maxUnloadsPerFrame = m_maxUnloadsPerFrame;
         m_debugStats.resourcesReady = ready();
-        if (!words) {
-            return;
-        }
 
-        for (uint32_t nodeIndex = 0; nodeIndex < m_debugStats.activeResidencyNodeCount; ++nodeIndex) {
-            const uint32_t state = words[nodeIndex];
-            if ((state & kClusterLodNodeResidencyResident) != 0u) {
-                ++m_debugStats.lastResidentNodeCount;
+        for (uint32_t groupIndex = 0; groupIndex < m_debugStats.activeResidencyGroupCount; ++groupIndex) {
+            const uint32_t state = m_groupResidencyState[groupIndex];
+            if ((state & kClusterLodGroupResidencyResident) != 0u) {
+                ++m_debugStats.lastResidentGroupCount;
             }
-            if ((state & kClusterLodNodeResidencyAlwaysResident) != 0u) {
-                ++m_debugStats.lastAlwaysResidentNodeCount;
+            if ((state & kClusterLodGroupResidencyAlwaysResident) != 0u) {
+                ++m_debugStats.lastAlwaysResidentGroupCount;
             }
-        }
-
-        if (pageTable) {
-            for (uint32_t groupIndex = 0; groupIndex < m_debugStats.activeResidencyGroupCount;
-                 ++groupIndex) {
-                if (pageTable[groupIndex] != kClusterLodGroupPageInvalidAddress) {
-                    ++m_debugStats.lastResidentGroupCount;
-                }
-            }
-        }
-
-        for (uint32_t nodeIndex = 0; nodeIndex < m_debugStats.activeResidencyNodeCount; ++nodeIndex) {
-            if (!isResidencyNodeAlwaysResident(nodeIndex) ||
-                nodeIndex >= m_residencyNodeLeafGroups.size()) {
-                continue;
-            }
-
-            m_debugStats.lastAlwaysResidentGroupCount +=
-                static_cast<uint32_t>(m_residencyNodeLeafGroups[nodeIndex].size());
         }
     }
 
     bool m_enableStreaming = false;
     bool m_stateDirty = true;
-    uint32_t m_streamingBudgetNodes = 64u;
-    uint32_t m_residencyNodeCapacity = 0;
+    uint32_t m_activeFrameSlot = 0u;
+    uint32_t m_streamingBudgetGroups = 256u;
     uint32_t m_residencyGroupCapacity = 0;
     uint32_t m_residentHeapCapacity = 0;
+    uint32_t m_maxLoadsPerFrame = 128u;
+    uint32_t m_maxUnloadsPerFrame = 256u;
     const void* m_residencySourceNodeBufferHandle = nullptr;
+    const void* m_residencySourceGroupBufferHandle = nullptr;
     const void* m_residencySourceGroupMeshletIndicesHandle = nullptr;
-    std::unique_ptr<RhiBuffer> m_lodNodeResidencyBuffer;
-    std::unique_ptr<RhiBuffer> m_lodGroupPageTableBuffer;
-    std::unique_ptr<RhiBuffer> m_residentGroupMeshletIndicesBuffer;
-    std::unique_ptr<RhiBuffer> m_residencyRequestBuffer;
-    std::unique_ptr<RhiBuffer> m_residencyRequestStateBuffer;
-    std::vector<uint32_t> m_dynamicResidentNodes;
-    std::vector<uint32_t> m_pendingResidencyNodes;
+    uint64_t m_updateSerial = 0;
+    std::array<FrameBuffers, kBufferedFrameCount> m_frameBuffers;
+    std::vector<uint32_t> m_groupResidencyState;
+    std::vector<uint32_t> m_groupPageTableState;
+    std::vector<uint32_t> m_residentHeapState;
+    std::vector<uint64_t> m_groupLastTouchedUpdate;
+    std::vector<uint32_t> m_dynamicResidentGroups;
+    std::vector<uint32_t> m_pendingResidencyGroups;
     std::vector<ClusterResidencyRequest> m_requestReadbackScratch;
-    std::vector<std::vector<uint32_t>> m_residencyNodeLeafGroups;
     std::vector<ResidentHeapRange> m_residentHeapFreeRanges;
-    std::vector<NodeResidentAllocation> m_nodeResidentAllocations;
+    std::vector<GroupResidentAllocation> m_groupResidentAllocations;
     DebugStats m_debugStats;
 };

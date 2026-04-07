@@ -60,13 +60,14 @@ RWStructuredBuffer<MeshletDrawInfo>   visibleMeshlets;  // buffer(GPU_DRIVEN_CUL
 RWByteAddressBuffer                   counters;         // buffer(GPU_DRIVEN_CULL_COUNTER_BINDING)
 StructuredBuffer<GPULodNode>          lodNodes;         // buffer(GPU_DRIVEN_CULL_LOD_NODE_BINDING)
 StructuredBuffer<GPUClusterGroup>     lodGroups;        // buffer(GPU_DRIVEN_CULL_LOD_GROUP_BINDING)
-StructuredBuffer<uint>                lodGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_BINDING)
+StructuredBuffer<uint>                residentGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_BINDING)
 StructuredBuffer<GPUMeshletBounds>    lodMeshletBounds; // buffer(GPU_DRIVEN_CULL_LOD_BOUNDS_BINDING)
 RWStructuredBuffer<uint>              traversalStats;   // buffer(GPU_DRIVEN_CULL_TRAVERSAL_STATS_BINDING)
-RWByteAddressBuffer                   lodNodeResidency; // buffer(GPU_DRIVEN_CULL_LOD_NODE_RESIDENCY_BINDING)
+RWByteAddressBuffer                   groupResidency;   // buffer(GPU_DRIVEN_CULL_GROUP_RESIDENCY_BINDING)
 StructuredBuffer<uint>                lodGroupPageTable; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_PAGE_TABLE_BINDING)
 RWStructuredBuffer<ClusterResidencyRequest> residencyRequests; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_OUTPUT_BINDING)
 RWByteAddressBuffer                   residencyRequestState; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING)
+StructuredBuffer<uint>                sourceGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING)
 Texture2D<float>                      hzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE+)
 
 static const uint kTraversalStatLodInstances = 0u;
@@ -214,8 +215,8 @@ uint selectLodLevel(VisibleInstanceInfo visibleInfo, GPULodNode lodRoot) {
     return min(lodLevel, lodRoot.childCount - 1u);
 }
 
-uint loadLodNodeResidencyState(uint nodeIndex) {
-    return lodNodeResidency.Load(nodeIndex * 4u);
+uint loadGroupResidencyState(uint groupIndex) {
+    return groupResidency.Load(groupIndex * 4u);
 }
 
 uint loadLodGroupResidentClusterStart(uint groupIndex) {
@@ -223,24 +224,93 @@ uint loadLodGroupResidentClusterStart(uint groupIndex) {
 }
 
 void queueResidencyRequest(uint lodRootNode,
-                           uint targetNodeIndex,
-                           uint requestedLodLevel,
+                           uint targetGroupIndex,
+                           uint lodLevel,
                            uint sceneInstanceID) {
     uint previousState = 0u;
-    lodNodeResidency.InterlockedOr(targetNodeIndex * 4u,
-                                   kClusterLodNodeResidencyRequested,
-                                   previousState);
-    if ((previousState & (kClusterLodNodeResidencyResident | kClusterLodNodeResidencyRequested)) != 0u) {
+    groupResidency.InterlockedOr(targetGroupIndex * 4u,
+                                 kClusterLodGroupResidencyRequested,
+                                 previousState);
+    if ((previousState & (kClusterLodGroupResidencyResident |
+                          kClusterLodGroupResidencyRequested)) != 0u) {
         return;
     }
 
     uint slot = gpuDrivenAppendWorkItemSlot(residencyRequestState);
     ClusterResidencyRequest request;
     request.lodRootNode = lodRootNode;
-    request.targetNodeIndex = targetNodeIndex;
-    request.requestedLodLevel = requestedLodLevel;
+    request.targetGroupIndex = targetGroupIndex;
+    request.lodLevel = lodLevel;
     request.sceneInstanceID = sceneInstanceID;
     residencyRequests[slot] = request;
+}
+
+void touchResidentGroup(uint groupIndex) {
+    uint ignored = 0u;
+    groupResidency.InterlockedOr(groupIndex * 4u,
+                                 kClusterLodGroupResidencyRequested,
+                                 ignored);
+}
+
+bool visibleGroupsResidentForLodRoot(InstanceData inst,
+                                     float maxScale,
+                                     uint lodRootNode,
+                                     uint lodLevel,
+                                     uint sceneInstanceID,
+                                     uint rootNodeIndex,
+                                     bool queueMissingRequests) {
+    uint nodeStack[kTraversalNodeStackCapacity];
+    uint stackSize = 0u;
+    bool allVisibleGroupsResident = true;
+    nodeStack[stackSize++] = rootNodeIndex;
+
+    while (stackSize > 0u) {
+        uint nodeIndex = nodeStack[--stackSize];
+        GPULodNode node = lodNodes[nodeIndex];
+
+        float3 nodeCenterWS =
+            mul(inst.worldMatrix, float4(node.center[0], node.center[1], node.center[2], 1.0)).xyz;
+        float nodeWorldRadius = node.radius * maxScale;
+        bool nodeHzbRejected = false;
+        if (coarseCullTraversalSphere(nodeCenterWS, nodeWorldRadius, nodeHzbRejected)) {
+            continue;
+        }
+
+        if (node.isLeaf != 0u) {
+            for (uint childIndex = 0u; childIndex < node.childCount; ++childIndex) {
+                uint groupIndex = node.childOffset + childIndex;
+                GPUClusterGroup group = lodGroups[groupIndex];
+                float3 groupCenterWS =
+                    mul(inst.worldMatrix, float4(group.center[0], group.center[1], group.center[2], 1.0)).xyz;
+                float groupWorldRadius = group.radius * maxScale;
+                bool groupHzbRejected = false;
+                if (coarseCullTraversalSphere(groupCenterWS, groupWorldRadius, groupHzbRejected)) {
+                    continue;
+                }
+
+                const uint groupState = loadGroupResidencyState(groupIndex);
+                const uint residentClusterStart = loadLodGroupResidentClusterStart(groupIndex);
+                if ((groupState & kClusterLodGroupResidencyResident) == 0u ||
+                    residentClusterStart == kClusterLodGroupPageInvalidAddress) {
+                    if (queueMissingRequests) {
+                        queueResidencyRequest(lodRootNode,
+                                              groupIndex,
+                                              lodLevel,
+                                              sceneInstanceID);
+                    }
+                    allVisibleGroupsResident = false;
+                }
+            }
+        } else {
+            uint remainingCapacity = kTraversalNodeStackCapacity - stackSize;
+            uint pushCount = min(node.childCount, remainingCapacity);
+            for (uint childIndex = 0u; childIndex < pushCount; ++childIndex) {
+                nodeStack[stackSize++] = node.childOffset + childIndex;
+            }
+        }
+    }
+
+    return allVisibleGroupsResident;
 }
 
 [shader("compute")]
@@ -265,29 +335,17 @@ void computeMain(uint3 groupID : SV_GroupID,
 
         GPULodNode lodRoot = lodNodes[visibleInfo.lodRootNode];
         uint selectedLodLevel = selectLodLevel(visibleInfo, lodRoot);
+        uint selectedRootNode = visibleInfo.lodRootNode;
+        if (lodRoot.isLeaf == 0u && lodRoot.childCount > 0u) {
+            const uint maxLodLevel = lodRoot.childCount - 1u;
+            selectedLodLevel = min(selectedLodLevel, maxLodLevel);
+            selectedRootNode = lodRoot.childOffset + selectedLodLevel;
+        }
+
         uint histogramLevel = min(selectedLodLevel, kClusterTraversalStatsHistogramSize - 1u);
         InterlockedAdd(traversalStats[kTraversalStatLodInstances], 1u);
         InterlockedAdd(traversalStats[kTraversalStatHistogramBase + histogramLevel], 1u);
         InterlockedMax(traversalStats[kTraversalStatMaxSelectedLod], selectedLodLevel);
-
-        uint selectedRootNode = visibleInfo.lodRootNode;
-        if (lodRoot.isLeaf == 0u && lodRoot.childCount > 0u) {
-            uint requestedRootNode = lodRoot.childOffset + selectedLodLevel;
-            const uint fallbackLodLevel = lodRoot.childCount - 1u;
-            if (cullUniforms.enableResidencyStreaming != 0u &&
-                selectedLodLevel != fallbackLodLevel) {
-                const uint requestedResidency = loadLodNodeResidencyState(requestedRootNode);
-                if ((requestedResidency & kClusterLodNodeResidencyResident) == 0u) {
-                    queueResidencyRequest(visibleInfo.lodRootNode,
-                                          requestedRootNode,
-                                          selectedLodLevel,
-                                          sceneInstanceID);
-                    selectedLodLevel = fallbackLodLevel;
-                    requestedRootNode = lodRoot.childOffset + selectedLodLevel;
-                }
-            }
-            selectedRootNode = requestedRootNode;
-        }
 
         uint nodeStack[kTraversalNodeStackCapacity];
         uint stackSize = 0u;
@@ -326,17 +384,26 @@ void computeMain(uint3 groupID : SV_GroupID,
 
                     InterlockedAdd(traversalStats[kTraversalStatSelectedGroups], 1u);
                     InterlockedAdd(traversalStats[kTraversalStatCandidateClusterMeshlets], group.clusterCount);
-                    uint residentClusterStart = group.clusterStart;
+                    bool useResidentHeap = false;
+                    uint meshletIndexBase = group.clusterStart;
                     if (cullUniforms.enableResidencyStreaming != 0u) {
-                        residentClusterStart = loadLodGroupResidentClusterStart(groupIndex);
+                        const uint residentClusterStart = loadLodGroupResidentClusterStart(groupIndex);
                         if (residentClusterStart == kClusterLodGroupPageInvalidAddress) {
-                            continue;
+                            queueResidencyRequest(visibleInfo.lodRootNode,
+                                                  groupIndex,
+                                                  selectedLodLevel,
+                                                  sceneInstanceID);
+                        } else {
+                            meshletIndexBase = residentClusterStart;
+                            useResidentHeap = true;
+                            touchResidentGroup(groupIndex);
                         }
                     }
 
                     for (uint meshletIndex = 0u; meshletIndex < group.clusterCount; ++meshletIndex) {
-                        uint globalMeshletID =
-                            lodGroupMeshletIndices[residentClusterStart + meshletIndex];
+                        const uint globalMeshletID = useResidentHeap
+                                                         ? residentGroupMeshletIndices[meshletIndexBase + meshletIndex]
+                                                         : sourceGroupMeshletIndices[group.clusterStart + meshletIndex];
                         if (fineCullMeshlet(inst, lodMeshletBounds[globalMeshletID], maxScale)) {
                             continue;
                         }
