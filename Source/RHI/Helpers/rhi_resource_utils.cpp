@@ -393,6 +393,10 @@ void vulkanSetUploadService(VulkanUploadService* service) {
     g_uploadService = service;
 }
 
+VulkanUploadService* vulkanGetUploadService() {
+    return g_uploadService;
+}
+
 VkResult vulkanBeginCommandBufferHooked(VkCommandBuffer commandBuffer,
                                         const VkCommandBufferBeginInfo* beginInfo) {
     VkResult result = vkBeginCommandBuffer(commandBuffer, beginInfo);

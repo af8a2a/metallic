@@ -5,6 +5,12 @@
 #include "pass_registry.h"
 #include "render_pass.h"
 
+#ifdef _WIN32
+#include "rhi_resource_utils.h"
+#include "vulkan_upload_service.h"
+#include "vulkan_resource_handles.h"
+#endif
+
 class ClusterStreamingUpdatePass : public RenderPass {
 public:
     ClusterStreamingUpdatePass(const RenderContext& ctx, int w, int h)
@@ -76,6 +82,15 @@ public:
             return;
         }
 
+#ifdef _WIN32
+        if (rhiBufferContents(*patchBuffer) == nullptr) {
+            const StreamingPatch* patchData = streamingService->streamingPatchData();
+            if (!uploadStreamingPatches(encoder, patchBuffer, patchData, patchCount)) {
+                return;
+            }
+        }
+#endif
+
         StreamingUpdateUniforms uniforms{};
         uniforms.patchCount = patchCount;
 
@@ -104,4 +119,50 @@ private:
     int m_height = 0;
     std::string m_name = "Cluster Streaming Update";
     FGResource m_streamingSync;
+
+#ifdef _WIN32
+    static bool uploadStreamingPatches(RhiComputeCommandEncoder& encoder,
+                                       const RhiBuffer* patchBuffer,
+                                       const StreamingPatch* patchData,
+                                       uint32_t patchCount) {
+        if (!patchBuffer || !patchData || patchCount == 0u) {
+            return false;
+        }
+
+        VulkanUploadService* uploadService = vulkanGetUploadService();
+        if (!uploadService) {
+            return false;
+        }
+
+        const VkBuffer vkPatchBuffer = getVulkanBufferHandle(patchBuffer);
+        const VkCommandBuffer commandBuffer = static_cast<VkCommandBuffer>(encoder.nativeHandle());
+        if (vkPatchBuffer == VK_NULL_HANDLE || commandBuffer == VK_NULL_HANDLE) {
+            return false;
+        }
+
+        const VkDeviceSize uploadSize = VkDeviceSize(patchCount) * sizeof(StreamingPatch);
+        if (!uploadService->stageBuffer(vkPatchBuffer, 0u, patchData, uploadSize)) {
+            return false;
+        }
+
+        uploadService->recordPendingUploads(commandBuffer);
+
+        VkBufferMemoryBarrier2 patchUploadBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        patchUploadBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        patchUploadBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        patchUploadBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        patchUploadBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        patchUploadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        patchUploadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        patchUploadBarrier.buffer = vkPatchBuffer;
+        patchUploadBarrier.offset = 0u;
+        patchUploadBarrier.size = uploadSize;
+
+        VkDependencyInfo dependencyInfo{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependencyInfo.bufferMemoryBarrierCount = 1;
+        dependencyInfo.pBufferMemoryBarriers = &patchUploadBarrier;
+        vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+        return true;
+    }
+#endif
 };

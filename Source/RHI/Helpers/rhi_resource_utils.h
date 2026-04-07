@@ -115,6 +115,7 @@ void vulkanEndDebugLabel(VkCommandBuffer commandBuffer);
 
 class VulkanUploadService;
 void vulkanSetUploadService(VulkanUploadService* service);
+VulkanUploadService* vulkanGetUploadService();
 
 VkResult vulkanBeginCommandBufferHooked(VkCommandBuffer commandBuffer,
                                         const VkCommandBufferBeginInfo* beginInfo);

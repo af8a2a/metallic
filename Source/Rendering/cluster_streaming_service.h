@@ -5,6 +5,7 @@
 #include "gpu_cull_resources.h"
 #include "gpu_driven_helpers.h"
 #include "rhi_backend.h"
+#include "rhi_resource_utils.h"
 
 #include <algorithm>
 #include <array>
@@ -126,6 +127,11 @@ public:
     uint32_t streamingPatchCount() const {
         return m_framePatchCounts[m_activeFrameSlot % kBufferedFrameCount];
     }
+    const StreamingPatch* streamingPatchData() const {
+        const std::vector<StreamingPatch>& framePatches =
+            m_frameStreamingPatches[m_activeFrameSlot % kBufferedFrameCount];
+        return framePatches.empty() ? nullptr : framePatches.data();
+    }
 
     void runUpdateStage(const ClusterLODData& clusterLodData,
                         const PipelineRuntimeContext& runtimeContext,
@@ -200,24 +206,24 @@ private:
     }
 
     static uint32_t* mappedUint32(RhiBuffer* buffer) {
-        if (!buffer || !buffer->mappedData()) {
+        if (!buffer) {
             return nullptr;
         }
-        return static_cast<uint32_t*>(buffer->mappedData());
+        return static_cast<uint32_t*>(rhiBufferContents(*buffer));
     }
 
     static ClusterResidencyRequest* mappedRequests(RhiBuffer* buffer) {
-        if (!buffer || !buffer->mappedData()) {
+        if (!buffer) {
             return nullptr;
         }
-        return static_cast<ClusterResidencyRequest*>(buffer->mappedData());
+        return static_cast<ClusterResidencyRequest*>(rhiBufferContents(*buffer));
     }
 
     static StreamingPatch* mappedPatches(RhiBuffer* buffer) {
-        if (!buffer || !buffer->mappedData()) {
+        if (!buffer) {
             return nullptr;
         }
-        return static_cast<StreamingPatch*>(buffer->mappedData());
+        return static_cast<StreamingPatch*>(rhiBufferContents(*buffer));
     }
 
     void resetDebugStats() {
@@ -301,7 +307,11 @@ private:
 
         RhiBufferDesc patchDesc{};
         patchDesc.size = size_t(groupCapacity) * sizeof(StreamingPatch);
+#ifdef _WIN32
+        patchDesc.hostVisible = false;
+#else
         patchDesc.hostVisible = true;
+#endif
         const std::string patchName = "ClusterLodStreamingPatches[" + std::to_string(frameSlot) + "]";
         patchDesc.debugName = patchName.c_str();
         frameBuffers.streamingPatchBuffer = runtimeContext.resourceFactory->createBuffer(patchDesc);
@@ -362,6 +372,9 @@ private:
         m_confirmedUnloadGroups.clear();
         m_pendingStreamingPatches.clear();
         m_framePatchCounts.fill(0u);
+        for (std::vector<StreamingPatch>& framePatches : m_frameStreamingPatches) {
+            framePatches.clear();
+        }
         m_residencySourceNodeBufferHandle = nullptr;
         m_residencySourceGroupBufferHandle = nullptr;
         m_residencySourceGroupMeshletIndicesHandle = nullptr;
@@ -429,23 +442,26 @@ private:
 
     void uploadPatchesToActiveFrame() {
         FrameBuffers& frameBuffers = activeFrameBuffers();
+        std::vector<StreamingPatch>& framePatches =
+            m_frameStreamingPatches[m_activeFrameSlot % kBufferedFrameCount];
+        framePatches.clear();
         const uint32_t patchCount =
             std::min<uint32_t>(static_cast<uint32_t>(m_pendingStreamingPatches.size()),
                                m_residencyGroupCapacity);
         m_framePatchCounts[m_activeFrameSlot % kBufferedFrameCount] = patchCount;
         if (patchCount == 0u) {
+            m_pendingStreamingPatches.clear();
             return;
         }
 
+        framePatches.assign(m_pendingStreamingPatches.begin(),
+                            m_pendingStreamingPatches.begin() + patchCount);
         StreamingPatch* patches = mappedPatches(frameBuffers.streamingPatchBuffer.get());
-        if (!patches) {
-            m_framePatchCounts[m_activeFrameSlot % kBufferedFrameCount] = 0u;
-            return;
+        if (patches && !framePatches.empty()) {
+            std::memcpy(patches,
+                        framePatches.data(),
+                        size_t(patchCount) * sizeof(StreamingPatch));
         }
-
-        std::memcpy(patches,
-                    m_pendingStreamingPatches.data(),
-                    size_t(patchCount) * sizeof(StreamingPatch));
         m_pendingStreamingPatches.clear();
     }
 
@@ -794,6 +810,9 @@ private:
         m_confirmedUnloadGroups.clear();
         m_pendingStreamingPatches.clear();
         m_framePatchCounts.fill(0u);
+        for (std::vector<StreamingPatch>& framePatches : m_frameStreamingPatches) {
+            framePatches.clear();
+        }
         resetDebugStats();
         resetSharedSceneBuffers();
 
@@ -1069,6 +1088,7 @@ private:
     std::unique_ptr<RhiBuffer> m_lodGroupPageTableBuffer;
     std::unique_ptr<RhiBuffer> m_residentGroupMeshletIndicesBuffer;
     std::array<uint32_t, kBufferedFrameCount> m_framePatchCounts{};
+    std::array<std::vector<StreamingPatch>, kBufferedFrameCount> m_frameStreamingPatches;
     std::vector<uint32_t> m_groupResidencyState;
     std::vector<uint32_t> m_groupAgeState;
     std::vector<uint32_t> m_groupPageTableState;
