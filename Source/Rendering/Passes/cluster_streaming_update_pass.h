@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cluster_streaming_service.h"
+#include "gpu_cull_resources.h"
 #include "pass_registry.h"
 #include "render_pass.h"
 
@@ -37,6 +38,64 @@ public:
         m_runtimeContext->clusterStreamingService->runUpdateStage(m_ctx.clusterLodData,
                                                                   *m_runtimeContext,
                                                                   m_frameContext);
+    }
+
+    void executeCompute(RhiComputeCommandEncoder& encoder) override {
+        if (!m_runtimeContext || !m_runtimeContext->clusterStreamingService) {
+            return;
+        }
+
+        auto pipelineIt = m_runtimeContext->computePipelinesRhi.find("ClusterStreamingUpdatePass");
+        if (pipelineIt == m_runtimeContext->computePipelinesRhi.end() ||
+            !pipelineIt->second.nativeHandle()) {
+            return;
+        }
+
+        ClusterStreamingService* streamingService = m_runtimeContext->clusterStreamingService;
+        if (!streamingService->streamingEnabled() || !streamingService->ready()) {
+            return;
+        }
+
+        const uint32_t patchCount = streamingService->streamingPatchCount();
+        if (patchCount == 0u) {
+            return;
+        }
+
+        const RhiBuffer* sourceGroupMeshletIndicesBuffer =
+            m_ctx.clusterLodData.groupMeshletIndicesBuffer.nativeHandle()
+                ? &m_ctx.clusterLodData.groupMeshletIndicesBuffer
+                : nullptr;
+        const RhiBuffer* residentGroupMeshletIndicesBuffer =
+            streamingService->residentGroupMeshletIndicesBuffer();
+        const RhiBuffer* lodGroupPageTableBuffer = streamingService->lodGroupPageTableBuffer();
+        const RhiBuffer* patchBuffer = streamingService->streamingPatchBuffer();
+        if (!sourceGroupMeshletIndicesBuffer ||
+            !residentGroupMeshletIndicesBuffer ||
+            !lodGroupPageTableBuffer ||
+            !patchBuffer) {
+            return;
+        }
+
+        StreamingUpdateUniforms uniforms{};
+        uniforms.patchCount = patchCount;
+
+        encoder.setComputePipeline(pipelineIt->second);
+        encoder.setBytes(&uniforms, sizeof(uniforms), GpuDriven::StreamingUpdateBindings::kUniforms);
+        encoder.setBuffer(sourceGroupMeshletIndicesBuffer,
+                          0,
+                          GpuDriven::StreamingUpdateBindings::kSourceGroupMeshletIndices);
+        encoder.setBuffer(residentGroupMeshletIndicesBuffer,
+                          0,
+                          GpuDriven::StreamingUpdateBindings::kResidentGroupMeshletIndices);
+        encoder.setBuffer(lodGroupPageTableBuffer,
+                          0,
+                          GpuDriven::StreamingUpdateBindings::kGroupPageTable);
+        encoder.setBuffer(patchBuffer, 0, GpuDriven::StreamingUpdateBindings::kPatches);
+
+        constexpr uint32_t kThreadCount = 64u;
+        const uint32_t dispatchX = (patchCount + kThreadCount - 1u) / kThreadCount;
+        encoder.dispatchThreadgroups({dispatchX, 1, 1}, {kThreadCount, 1, 1});
+        encoder.memoryBarrier(RhiBarrierScope::Buffers);
     }
 
 private:

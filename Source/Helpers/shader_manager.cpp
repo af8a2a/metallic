@@ -93,6 +93,7 @@ ShaderManager::~ShaderManager() {
     releaseOwnedHandle(m_visPipeline);
     releaseOwnedHandle(m_visIndirectPipeline);
     releaseOwnedHandle(m_computePipeline);
+    releaseOwnedHandle(m_clusterStreamingUpdatePipeline);
     releaseOwnedHandle(m_instanceClassifyPipeline);
     releaseOwnedHandle(m_cullPipeline);
     releaseOwnedHandle(m_clusterStreamingAgeFilterPipeline);
@@ -166,6 +167,9 @@ void ShaderManager::syncRuntimeContext() {
     m_rtCtx->computePipelinesRhi.clear();
     if (m_computePipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["DeferredLightingPass"] = m_computePipeline;
+    if (m_clusterStreamingUpdatePipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["ClusterStreamingUpdatePass"] =
+            m_clusterStreamingUpdatePipeline;
     if (m_instanceClassifyPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["InstanceClassifyPass"] = m_instanceClassifyPipeline;
     if (m_cullPipeline.nativeHandle())
@@ -271,6 +275,23 @@ bool ShaderManager::buildAll() {
         releaseOwnedHandle(m_visIndirectPipeline);
     } else {
         releaseOwnedHandle(m_visIndirectPipeline);
+    }
+
+    errorMessage.clear();
+    if (m_profile.meshletCull) {
+        m_clusterStreamingUpdatePipeline =
+            reloadComputeShader("Shaders/Streaming/stream_update_scene",
+                                "computeMain",
+                                nullptr,
+                                &errorMessage);
+        if (!m_clusterStreamingUpdatePipeline.nativeHandle()) {
+            spdlog::error("Failed to create cluster streaming update pipeline: {}",
+                          formatError(&errorMessage,
+                                      "Slang cluster streaming update shader compilation failed"));
+            return false;
+        }
+    } else {
+        releaseOwnedHandle(m_clusterStreamingUpdatePipeline);
     }
 
     errorMessage.clear();
@@ -693,6 +714,16 @@ std::pair<int, int> ShaderManager::reloadAll() {
     } else {
         releaseOwnedHandle(m_visIndirectPipeline);
     }
+
+    reloadPipeline(m_profile.meshletCull,
+                   m_clusterStreamingUpdatePipeline,
+                   "cluster streaming update PSO",
+                   [&](std::string& localError) {
+                       return reloadComputeShader("Shaders/Streaming/stream_update_scene",
+                                                  "computeMain",
+                                                  nullptr,
+                                                  &localError);
+                   });
 
     reloadPipeline(m_profile.meshletCull,
                    m_instanceClassifyPipeline,

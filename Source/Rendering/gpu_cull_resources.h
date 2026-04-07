@@ -107,3 +107,19 @@ struct StreamingAgeFilterUniforms {
     uint32_t reserved0 = 0;
     uint32_t reserved1 = 0;
 };
+
+struct StreamingPatch {
+    uint32_t groupIndex = UINT32_MAX;
+    uint32_t residentHeapOffset = kClusterLodGroupPageInvalidAddress;
+    uint32_t clusterStart = 0;
+    uint32_t clusterCount = 0;
+};
+static_assert(sizeof(StreamingPatch) == sizeof(uint32_t) * 4u,
+              "StreamingPatch must match shader layout");
+
+struct StreamingUpdateUniforms {
+    uint32_t patchCount = 0;
+    uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
+    uint32_t reserved2 = 0;
+};

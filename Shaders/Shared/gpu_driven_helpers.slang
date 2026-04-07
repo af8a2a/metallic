@@ -56,6 +56,13 @@ struct ClusterResidencyRequest {
     uint sceneInstanceID;
 };
 
+struct StreamingPatch {
+    uint groupIndex;
+    uint residentHeapOffset;
+    uint clusterStart;
+    uint clusterCount;
+};
+
 uint gpuDrivenLoadWorklistWriteCursor(RWByteAddressBuffer worklistStateBuffer) {
     return worklistStateBuffer.Load(GPU_DRIVEN_WORKLIST_WRITE_CURSOR_OFFSET_BYTES);
 }

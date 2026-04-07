@@ -389,8 +389,10 @@ void computeMain(uint3 groupID : SV_GroupID,
                     bool useResidentHeap = false;
                     uint meshletIndexBase = group.clusterStart;
                     if (cullUniforms.enableResidencyStreaming != 0u) {
+                        const uint groupState = loadGroupResidencyState(groupIndex);
                         const uint residentClusterStart = loadLodGroupResidentClusterStart(groupIndex);
-                        if (residentClusterStart == kClusterLodGroupPageInvalidAddress) {
+                        if ((groupState & kClusterLodGroupResidencyResident) == 0u ||
+                            residentClusterStart == kClusterLodGroupPageInvalidAddress) {
                             queueResidencyRequest(visibleInfo.lodRootNode,
                                                   groupIndex,
                                                   selectedLodLevel,
