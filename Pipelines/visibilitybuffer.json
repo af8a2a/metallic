@@ -199,6 +199,18 @@
       ]
     },
     {
+      "id": "6fbf51e8284f4d45a90599d14f2d6701",
+      "name": "Cluster Streaming Age Filter 1",
+      "type": "ClusterStreamingAgeFilterPass",
+      "enabled": true,
+      "sideEffect": true,
+      "config": null,
+      "editorPos": [
+        193.0,
+        -108.0
+      ]
+    },
+    {
       "id": "10000000000000000000000000000002",
       "name": "Visibility Pass 1",
       "type": "VisibilityPass",
@@ -339,6 +351,13 @@
       "passId": "10000000000000000000000000000001",
       "slotKey": "cullResult",
       "direction": "output",
+      "resourceId": "00000000000000000000000000000002"
+    },
+    {
+      "id": "3f31b2cb452e4f54bd33c3c13d535401",
+      "passId": "6fbf51e8284f4d45a90599d14f2d6701",
+      "slotKey": "cullResult",
+      "direction": "input",
       "resourceId": "00000000000000000000000000000002"
     },
     {

@@ -100,3 +100,10 @@ struct CullUniforms {
     uint32_t clusterLodEnabled;
     uint32_t enableResidencyStreaming = 0;
 };
+
+struct StreamingAgeFilterUniforms {
+    uint32_t groupCount = 0;
+    uint32_t ageThreshold = 16;
+    uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
+};

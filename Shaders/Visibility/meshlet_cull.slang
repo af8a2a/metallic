@@ -68,6 +68,7 @@ StructuredBuffer<uint>                lodGroupPageTable; // buffer(GPU_DRIVEN_CU
 RWStructuredBuffer<ClusterResidencyRequest> residencyRequests; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_OUTPUT_BINDING)
 RWByteAddressBuffer                   residencyRequestState; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING)
 StructuredBuffer<uint>                sourceGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING)
+RWStructuredBuffer<uint>              groupAgeBuffer;   // buffer(GPU_DRIVEN_CULL_GROUP_AGE_BINDING)
 Texture2D<float>                      hzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE+)
 
 static const uint kTraversalStatLodInstances = 0u;
@@ -250,6 +251,7 @@ void touchResidentGroup(uint groupIndex) {
     groupResidency.InterlockedOr(groupIndex * 4u,
                                  kClusterLodGroupResidencyRequested,
                                  ignored);
+    groupAgeBuffer[groupIndex] = 0u;
 }
 
 bool visibleGroupsResidentForLodRoot(InstanceData inst,

@@ -56,6 +56,11 @@ public:
     }
 
     void setup(FGBuilder& builder) override {
+        FGResource streamingSyncInput = getInput("streamingSync");
+        if (streamingSyncInput.isValid()) {
+            builder.read(streamingSyncInput);
+        }
+
         cullResult = builder.createToken("cullResult");
 
         m_maxVisibleInstances = std::max<uint32_t>(1u, m_ctx.gpuScene.instanceCount);
@@ -114,6 +119,9 @@ public:
                            GpuDriven::makeWorklistStateBufferDesc<GpuDriven::ComputeDispatchCommandLayout>(
                                "DummyClusterLodResidencyRequestState",
                                false));
+        m_dummyGroupAge =
+            builder.create("DummyClusterLodGroupAge",
+                           makeSingleElementBufferDesc<uint32_t>("DummyClusterLodGroupAge"));
 
         m_hzbHistoryRead.clear();
         m_hzbLevelCount = computeHzbLevelCount(static_cast<uint32_t>(m_width),
@@ -203,6 +211,7 @@ public:
         RhiBuffer* dummyResidencyRequestBuffer = m_frameGraph->getBuffer(m_dummyResidencyRequests);
         RhiBuffer* dummyResidencyRequestStateBuffer =
             m_frameGraph->getBuffer(m_dummyResidencyRequestState);
+        RhiBuffer* dummyGroupAgeBuffer = m_frameGraph->getBuffer(m_dummyGroupAge);
         const RhiBuffer* lodNodeBuffer =
             clusterLodAvailable ? &clusterLodData.nodeBuffer : dummyLodNodesBuffer;
         const RhiBuffer* lodGroupBuffer =
@@ -238,6 +247,9 @@ public:
         const RhiBuffer* residencyRequestStateBuffer =
             residencyStreamingResourcesReady ? streamingService->residencyRequestStateBuffer()
                                              : dummyResidencyRequestStateBuffer;
+        const RhiBuffer* groupAgeBuffer =
+            residencyStreamingResourcesReady ? streamingService->groupAgeBuffer()
+                                             : dummyGroupAgeBuffer;
 
         std::array<const RhiTexture*, kHzbMaxLevels> hzbTextures{};
         uint32_t hzbTextureCount = 0;
@@ -348,6 +360,7 @@ public:
         encoder.setBuffer(sourceLodGroupMeshletIndicesBuffer,
                           0,
                           GpuDriven::MeshletCullBindings::kLodGroupMeshletIndicesSource);
+        encoder.setBuffer(groupAgeBuffer, 0, GpuDriven::MeshletCullBindings::kGroupAge);
         if (hzbTextureCount > 0) {
             encoder.setTextures(hzbTextures.data(),
                                 GpuDriven::MeshletCullBindings::kHzbTextureBase,
@@ -491,6 +504,17 @@ public:
             streamingService->setMaxUnloadsPerFrame(
                 static_cast<uint32_t>(std::max(maxUnloadsPerFrame, 1)));
         }
+        int ageThreshold =
+            streamingService ? static_cast<int>(streamingService->ageThreshold()) : 16;
+        if (ImGui::SliderInt("Streaming Unload Age",
+                             &ageThreshold,
+                             1,
+                             256,
+                             "%d") &&
+            streamingService) {
+            streamingService->setAgeThreshold(
+                static_cast<uint32_t>(std::max(ageThreshold, 1)));
+        }
         if (ImGui::Button("Reset Residency State") && streamingService) {
             streamingService->markStateDirty();
             requestVisibilityHistoryReset();
@@ -516,12 +540,19 @@ public:
                     streamingStats ? streamingStats->pendingResidencyGroupCount : 0u);
         ImGui::Text("GPU Residency Requests (last frame): %u",
                     streamingStats ? streamingStats->lastResidencyRequestCount : 0u);
+        ImGui::Text("GPU Unload Requests (last frame): %u",
+                    streamingStats ? streamingStats->lastUnloadRequestCount : 0u);
         ImGui::Text("Promoted / Evicted (last frame): %u / %u",
                     streamingStats ? streamingStats->lastResidencyPromotedCount : 0u,
                     streamingStats ? streamingStats->lastResidencyEvictedCount : 0u);
         ImGui::Text("Load / Unload Cap: %u / %u",
                     streamingStats ? streamingStats->maxLoadsPerFrame : 0u,
                     streamingStats ? streamingStats->maxUnloadsPerFrame : 0u);
+        ImGui::Text("Unload Pending / Confirmed: %u / %u",
+                    streamingStats ? streamingStats->pendingUnloadGroupCount : 0u,
+                    streamingStats ? streamingStats->confirmedUnloadGroupCount : 0u);
+        ImGui::Text("Unload Age Threshold: %u",
+                    streamingStats ? streamingStats->ageThreshold : 0u);
         const bool historyValid =
             m_frameGraph && !m_hzbHistoryRead.empty() && m_frameGraph->isHistoryValid(m_hzbHistoryRead[0]);
         ImGui::Text("HZB History: %s (%u levels)", historyValid ? "Ready" : "Warming Up", m_hzbLevelCount);
@@ -575,6 +606,7 @@ private:
     FGResource m_dummyLodGroupPageTable;
     FGResource m_dummyResidencyRequests;
     FGResource m_dummyResidencyRequestState;
+    FGResource m_dummyGroupAge;
     const RhiBuffer* m_initializedInstanceStateBuffer = nullptr;
     const RhiBuffer* m_initializedMeshletStateBuffer = nullptr;
     std::vector<FGResource> m_hzbHistoryRead;

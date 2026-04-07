@@ -57,7 +57,15 @@
 #define GPU_DRIVEN_CULL_RESIDENCY_REQUEST_OUTPUT_BINDING 14u
 #define GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING 15u
 #define GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING 16u
-#define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 16u
+#define GPU_DRIVEN_CULL_GROUP_AGE_BINDING 17u
+#define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 18u
+
+// Shared bindings for the streaming age filter pipeline.
+#define GPU_DRIVEN_STREAMING_AGE_UNIFORMS_BINDING 0u
+#define GPU_DRIVEN_STREAMING_AGE_GROUP_RESIDENCY_BINDING 1u
+#define GPU_DRIVEN_STREAMING_AGE_GROUP_AGE_BINDING 2u
+#define GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_OUTPUT_BINDING 3u
+#define GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_STATE_BINDING 4u
 
 // Shared bindings for meshlet visibility pipelines.
 #define GPU_DRIVEN_VISIBILITY_GLOBAL_UNIFORMS_BINDING 0u
@@ -174,8 +182,19 @@ struct MeshletCullBindings {
     static constexpr uint32_t kResidencyRequestState = GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING;
     static constexpr uint32_t kLodGroupMeshletIndicesSource =
         GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING;
+    static constexpr uint32_t kGroupAge = GPU_DRIVEN_CULL_GROUP_AGE_BINDING;
     static constexpr uint32_t kHzbTextureBase = GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE;
     static constexpr uint32_t kInstanceData = kInstances;
+};
+
+struct StreamingAgeFilterBindings {
+    static constexpr uint32_t kUniforms = GPU_DRIVEN_STREAMING_AGE_UNIFORMS_BINDING;
+    static constexpr uint32_t kGroupResidency = GPU_DRIVEN_STREAMING_AGE_GROUP_RESIDENCY_BINDING;
+    static constexpr uint32_t kGroupAge = GPU_DRIVEN_STREAMING_AGE_GROUP_AGE_BINDING;
+    static constexpr uint32_t kUnloadRequests =
+        GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_OUTPUT_BINDING;
+    static constexpr uint32_t kUnloadRequestState =
+        GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_STATE_BINDING;
 };
 
 struct MeshletVisibilityBindings {

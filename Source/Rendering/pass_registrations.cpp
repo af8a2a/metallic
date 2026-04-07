@@ -14,6 +14,7 @@
 #include "forward_pass.h"
 #include "hzb_build_pass.h"
 #include "blit_pass.h"
+#include "cluster_streaming_age_filter_pass.h"
 #include "cluster_streaming_update_pass.h"
 #include "output_pass.h"
 #include "meshlet_cull_pass.h"
@@ -44,6 +45,12 @@ REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
         makeOutputSlot("visibilityIndirectArgs", "Visibility Indirect Args", true),
         makeOutputSlot("visibilityInstances", "Visibility Instances", true)
     }));
+
+REGISTER_COMPUTE_PASS(ClusterStreamingAgeFilterPass, "Cluster Streaming Age Filter", "Geometry",
+    (std::vector<PassSlotInfo>{
+        makeInputSlot("cullResult", "Cull Result", true)
+    }),
+    (std::vector<PassSlotInfo>{}));
 
 REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
     (std::vector<PassSlotInfo>{

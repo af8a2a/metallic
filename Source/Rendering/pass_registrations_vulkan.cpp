@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "auto_exposure_pass.h"
+#include "cluster_streaming_age_filter_pass.h"
 #include "deferred_lighting_pass.h"
 #include "forward_pass.h"
 #include "imgui_overlay_pass.h"
@@ -51,6 +52,12 @@ REGISTER_COMPUTE_PASS(MeshletCullPass, "Meshlet Cull", "Geometry",
         makeOutputSlot("visibilityIndirectArgs", "Visibility Indirect Args", true),
         makeOutputSlot("visibilityInstances", "Visibility Instances", true)
     }));
+
+REGISTER_COMPUTE_PASS(ClusterStreamingAgeFilterPass, "Cluster Streaming Age Filter", "Geometry",
+    (std::vector<PassSlotInfo>{
+        makeInputSlot("cullResult", "Cull Result", true)
+    }),
+    (std::vector<PassSlotInfo>{}));
 
 REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
     (std::vector<PassSlotInfo>{

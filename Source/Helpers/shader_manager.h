@@ -117,6 +117,7 @@ private:
     RhiComputePipelineHandle m_computePipeline;
     RhiComputePipelineHandle m_instanceClassifyPipeline;
     RhiComputePipelineHandle m_cullPipeline;
+    RhiComputePipelineHandle m_clusterStreamingAgeFilterPipeline;
     RhiComputePipelineHandle m_hzbBuildPipeline;
     RhiComputePipelineHandle m_buildIndirectPipeline;
     RhiComputePipelineHandle m_meshletVisPipeline;

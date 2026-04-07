@@ -95,6 +95,7 @@ ShaderManager::~ShaderManager() {
     releaseOwnedHandle(m_computePipeline);
     releaseOwnedHandle(m_instanceClassifyPipeline);
     releaseOwnedHandle(m_cullPipeline);
+    releaseOwnedHandle(m_clusterStreamingAgeFilterPipeline);
     releaseOwnedHandle(m_hzbBuildPipeline);
     releaseOwnedHandle(m_buildIndirectPipeline);
     releaseOwnedHandle(m_meshletVisPipeline);
@@ -169,6 +170,9 @@ void ShaderManager::syncRuntimeContext() {
         m_rtCtx->computePipelinesRhi["InstanceClassifyPass"] = m_instanceClassifyPipeline;
     if (m_cullPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["MeshletCullPass"] = m_cullPipeline;
+    if (m_clusterStreamingAgeFilterPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["ClusterStreamingAgeFilterPass"] =
+            m_clusterStreamingAgeFilterPipeline;
     if (m_hzbBuildPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["HZBBuildPass"] = m_hzbBuildPipeline;
     if (m_buildIndirectPipeline.nativeHandle())
@@ -291,9 +295,23 @@ bool ShaderManager::buildAll() {
                           formatError(&errorMessage, "Slang meshlet cull shader compilation failed"));
             return false;
         }
+
+        errorMessage.clear();
+        m_clusterStreamingAgeFilterPipeline =
+            reloadComputeShader("Shaders/Streaming/stream_agefilter_groups",
+                                "computeMain",
+                                nullptr,
+                                &errorMessage);
+        if (!m_clusterStreamingAgeFilterPipeline.nativeHandle()) {
+            spdlog::error("Failed to create cluster streaming age filter pipeline: {}",
+                          formatError(&errorMessage,
+                                      "Slang cluster streaming age filter shader compilation failed"));
+            return false;
+        }
     } else {
         releaseOwnedHandle(m_instanceClassifyPipeline);
         releaseOwnedHandle(m_cullPipeline);
+        releaseOwnedHandle(m_clusterStreamingAgeFilterPipeline);
     }
 
     errorMessage.clear();
@@ -691,6 +709,16 @@ std::pair<int, int> ShaderManager::reloadAll() {
                    "meshlet cull PSO",
                    [&](std::string& localError) {
                        return reloadComputeShader("Shaders/Visibility/meshlet_cull",
+                                                  "computeMain",
+                                                  nullptr,
+                                                  &localError);
+                   });
+
+    reloadPipeline(m_profile.meshletCull,
+                   m_clusterStreamingAgeFilterPipeline,
+                   "cluster streaming age filter PSO",
+                   [&](std::string& localError) {
+                       return reloadComputeShader("Shaders/Streaming/stream_agefilter_groups",
                                                   "computeMain",
                                                   nullptr,
                                                   &localError);
