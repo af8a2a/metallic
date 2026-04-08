@@ -65,6 +65,7 @@ public:
         RhiBufferDesc desc{};
         desc.size = size_t(capacityElements) * sizeof(uint32_t);
         desc.hostVisible = false;
+        desc.sharedWithTransferQueue = true;
         desc.debugName = debugName;
 
         std::unique_ptr<RhiBuffer> buffer = resourceFactory.createBuffer(desc);
@@ -106,6 +107,7 @@ public:
             RhiBufferDesc desc{};
             desc.size = static_cast<size_t>(maxUploadBytesPerFrame);
             desc.hostVisible = true;
+            desc.sharedWithTransferQueue = true;
             const std::string debugName =
                 std::string(debugNamePrefix ? debugNamePrefix : "StreamingUpload") +
                 "[" + std::to_string(frameIndex) + "]";

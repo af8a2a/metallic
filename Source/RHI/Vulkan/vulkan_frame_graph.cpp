@@ -1014,6 +1014,9 @@ std::unique_ptr<RhiBuffer> VulkanFrameGraphBackend::createBuffer(const RhiBuffer
     vmaInfo.size = desc.size;
     vmaInfo.usage = usage;
     vmaInfo.hostVisible = desc.hostVisible;
+    vmaInfo.sharedWithTransferQueue = desc.sharedWithTransferQueue;
+    vmaInfo.graphicsQueueFamily = resourceContext.graphicsQueueFamily;
+    vmaInfo.transferQueueFamily = resourceContext.transferQueueFamily;
     vmaInfo.externalMemoryHandleTypes =
         vulkanHostVisibleExternalMemoryHandleTypes(vmaInfo.hostVisible,
                                                    resourceContext.externalHostMemoryEnabled);

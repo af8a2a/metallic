@@ -2176,6 +2176,7 @@ int main() {
                               RhiTextureUsage::RenderTarget);
 
         descriptorBackend->resetFrame();
+        uploadService.beginFrame(uploadFrameCounter);
         readbackService.beginFrame(uploadFrameCounter);
         ++uploadFrameCounter;
         const auto barrierStats = imageTracker.stats();  // capture before clear
@@ -2525,6 +2526,18 @@ int main() {
 
         postBuilder.execute(commandBuffer, frameGraphBackend);
         visibilityHistoryResetRequested = false;
+
+        if (native.transferTimelineSemaphore != nullptr) {
+            const uint64_t transferWaitValue =
+                clusterStreamingService.consumePendingTransferWaitValue();
+            if (transferWaitValue != 0u) {
+                vulkanEnqueueGraphicsTimelineWait(
+                    *rhi,
+                    nativeToVkHandle<VkSemaphore>(native.transferTimelineSemaphore),
+                    transferWaitValue,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+            }
+        }
 
         if (!useVisibilityRenderGraph) {
             sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

@@ -167,6 +167,15 @@ public:
             m_frameStreamingPatches[m_activeFrameSlot % kBufferedFrameCount];
         return framePatches.empty() ? nullptr : framePatches.data();
     }
+    void setPendingTransferWaitValue(uint64_t waitValue) {
+        m_pendingTransferWaitValues[m_activeFrameSlot % kBufferedFrameCount] = waitValue;
+    }
+    uint64_t consumePendingTransferWaitValue() {
+        uint64_t& waitValue = m_pendingTransferWaitValues[m_activeFrameSlot % kBufferedFrameCount];
+        const uint64_t consumed = waitValue;
+        waitValue = 0u;
+        return consumed;
+    }
 
     void runUpdateStage(const ClusterLODData& clusterLodData,
                         const PipelineRuntimeContext& runtimeContext,
@@ -174,6 +183,7 @@ public:
         m_debugStats.activeResidencyNodeCount = clusterLodData.totalNodeCount;
         m_debugStats.activeResidencyGroupCount = clusterLodData.totalGroupCount;
         m_activeFrameSlot = frameContext ? (frameContext->frameIndex % kBufferedFrameCount) : 0u;
+        m_pendingTransferWaitValues[m_activeFrameSlot % kBufferedFrameCount] = 0u;
 
         const bool clusterLodAvailable =
             clusterLodData.nodeBuffer.nativeHandle() &&
@@ -404,6 +414,7 @@ private:
         m_confirmedUnloadGroups.clear();
         m_pendingStreamingPatches.clear();
         m_framePatchCounts.fill(0u);
+        m_pendingTransferWaitValues.fill(0u);
         for (std::vector<StreamingPatch>& framePatches : m_frameStreamingPatches) {
             framePatches.clear();
         }
@@ -805,6 +816,7 @@ private:
         m_confirmedUnloadGroups.clear();
         m_pendingStreamingPatches.clear();
         m_framePatchCounts.fill(0u);
+        m_pendingTransferWaitValues.fill(0u);
         for (std::vector<StreamingPatch>& framePatches : m_frameStreamingPatches) {
             framePatches.clear();
         }
@@ -1137,6 +1149,7 @@ private:
     std::unique_ptr<RhiBuffer> m_lodGroupPageTableBuffer;
     StreamingStorage m_streamingStorage;
     std::array<uint32_t, kBufferedFrameCount> m_framePatchCounts{};
+    std::array<uint64_t, kBufferedFrameCount> m_pendingTransferWaitValues{};
     std::array<std::vector<StreamingPatch>, kBufferedFrameCount> m_frameStreamingPatches;
     std::vector<uint32_t> m_groupResidencyState;
     std::vector<uint32_t> m_groupAgeState;

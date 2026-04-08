@@ -729,6 +729,7 @@ struct RhiBufferDesc {
     size_t size = 0;
     const void* initialData = nullptr;
     bool hostVisible = true;
+    bool sharedWithTransferQueue = false;
     const char* debugName = nullptr;
 };
 

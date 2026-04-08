@@ -84,11 +84,21 @@ public:
         }
 
 #ifdef _WIN32
-        if (!recordStreamingDataCopies(encoder,
-                                      streamingService->streamingUploadStagingBuffer(),
-                                      residentGroupMeshletIndicesBuffer,
-                                      streamingService->streamingUploadCopyRegions())) {
-            return;
+        const std::vector<StreamingStorage::CopyRegion>& copyRegions =
+            streamingService->streamingUploadCopyRegions();
+        if (!copyRegions.empty()) {
+            const uint64_t transferWaitValue =
+                submitStreamingDataCopiesAsync(streamingService->streamingUploadStagingBuffer(),
+                                               residentGroupMeshletIndicesBuffer,
+                                               copyRegions);
+            if (transferWaitValue != 0u) {
+                streamingService->setPendingTransferWaitValue(transferWaitValue);
+            } else if (!recordStreamingDataCopies(encoder,
+                                                  streamingService->streamingUploadStagingBuffer(),
+                                                  residentGroupMeshletIndicesBuffer,
+                                                  copyRegions)) {
+                return;
+            }
         }
 
         if (rhiBufferContents(*patchBuffer) == nullptr) {
@@ -195,6 +205,48 @@ private:
         dependencyInfo.pBufferMemoryBarriers = &residentUploadBarrier;
         vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
         return true;
+    }
+
+    static uint64_t submitStreamingDataCopiesAsync(
+        const RhiBuffer* stagingBuffer,
+        const RhiBuffer* residentBuffer,
+        const std::vector<StreamingStorage::CopyRegion>& copyRegions) {
+        if (copyRegions.empty() || !stagingBuffer || !residentBuffer) {
+            return 0u;
+        }
+
+        VulkanUploadService* uploadService = vulkanGetUploadService();
+        if (!uploadService || !uploadService->hasTransferQueue()) {
+            return 0u;
+        }
+
+        const VkBuffer vkStagingBuffer = getVulkanBufferHandle(stagingBuffer);
+        const VkBuffer vkResidentBuffer = getVulkanBufferHandle(residentBuffer);
+        if (vkStagingBuffer == VK_NULL_HANDLE || vkResidentBuffer == VK_NULL_HANDLE) {
+            return 0u;
+        }
+
+        std::vector<VkBufferCopy> bufferCopies;
+        bufferCopies.reserve(copyRegions.size());
+        for (const StreamingStorage::CopyRegion& copyRegion : copyRegions) {
+            if (copyRegion.sizeBytes == 0u) {
+                continue;
+            }
+
+            VkBufferCopy region{};
+            region.srcOffset = copyRegion.srcOffsetBytes;
+            region.dstOffset = copyRegion.dstOffsetBytes;
+            region.size = copyRegion.sizeBytes;
+            bufferCopies.push_back(region);
+        }
+        if (bufferCopies.empty()) {
+            return 0u;
+        }
+
+        return uploadService->submitAsyncBufferCopies(vkStagingBuffer,
+                                                      vkResidentBuffer,
+                                                      bufferCopies.data(),
+                                                      static_cast<uint32_t>(bufferCopies.size()));
     }
 
     static bool uploadStreamingPatches(RhiComputeCommandEncoder& encoder,

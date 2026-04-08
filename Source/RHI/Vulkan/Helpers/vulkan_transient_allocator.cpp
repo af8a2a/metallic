@@ -135,7 +135,7 @@ std::unique_ptr<RhiTexture> VulkanTransientPool::acquireTexture(const RhiTexture
 }
 
 std::unique_ptr<RhiBuffer> VulkanTransientPool::acquireBuffer(const RhiBufferDesc& desc) {
-    BufferKey key{desc.size, desc.hostVisible};
+    BufferKey key{desc.size, desc.hostVisible, desc.sharedWithTransferQueue};
     auto it = m_bufferPool.find(key);
     if (it != m_bufferPool.end() && !it->second.empty()) {
         auto buffer = std::move(it->second.back());
@@ -169,7 +169,7 @@ void VulkanTransientPool::releaseBuffer(std::unique_ptr<RhiBuffer> buffer, const
         return;
     }
 
-    BufferKey key{desc.size, desc.hostVisible};
+    BufferKey key{desc.size, desc.hostVisible, desc.sharedWithTransferQueue};
     m_bufferPool[key].push_back(std::move(buffer));
     ++m_totalPooledBuffers;
 }

@@ -34,6 +34,10 @@ VkCommandBuffer getVulkanCurrentComputeCommandBuffer(RhiContext& context); // nu
 // End async compute command buffer and submit to the dedicated compute queue.
 // Returns the timeline semaphore signal value (0 if no timeline semaphore or no compute queue).
 uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context);
+void vulkanEnqueueGraphicsTimelineWait(RhiContext& context,
+                                       VkSemaphore semaphore,
+                                       uint64_t value,
+                                       VkPipelineStageFlags2 stageMask);
 
 // Returns the VkPipelineCache used for all pipeline compilations (VK_NULL_HANDLE if not loaded).
 VkPipelineCache getVulkanPipelineCache(RhiContext& context);

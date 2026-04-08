@@ -37,8 +37,10 @@ public:
               VkQueue transferQueue,                // VK_NULL_HANDLE if unavailable
               uint32_t transferQueueFamily,          // UINT32_MAX if unavailable
               VkSemaphore transferTimelineSemaphore, // VK_NULL_HANDLE if unavailable
-              VulkanUploadRing* uploadRing);
+              VulkanUploadRing* uploadRing,
+              uint32_t framesInFlight = 2u);
     void destroy();
+    void beginFrame(uint32_t frameIndex);
 
     // --- Deferred (per-frame) uploads ---
 
@@ -70,6 +72,10 @@ public:
     // Submit pending uploads to dedicated transfer queue.
     // Returns timeline semaphore value to wait on, or 0 if no transfer queue.
     uint64_t submitAsyncTransfer();
+    uint64_t submitAsyncBufferCopies(VkBuffer srcBuffer,
+                                     VkBuffer dstBuffer,
+                                     const VkBufferCopy* regions,
+                                     uint32_t regionCount);
 
     bool hasPendingUploads() const { return !m_pendingUploads.empty(); }
     bool hasTransferQueue() const { return m_transferQueue != VK_NULL_HANDLE; }
@@ -105,6 +111,8 @@ private:
     // One-shot command buffer helpers
     VkCommandBuffer beginOneTimeCommands(VkCommandPool pool);
     void endOneTimeCommands(VkCommandPool pool, VkQueue queue, VkCommandBuffer cmd);
+    VkCommandBuffer beginAsyncTransferCommands();
+    uint64_t submitAsyncTransferCommands(VkCommandBuffer cmd);
 
     // Record copy commands for a single upload
     static void recordTextureCopy(VkCommandBuffer cmd, const DeferredUpload& upload,
@@ -122,7 +130,11 @@ private:
     uint64_t m_transferTimelineValue = 0;
     VulkanUploadRing* m_uploadRing = nullptr;
     VkCommandPool m_immediateCommandPool = VK_NULL_HANDLE;
-    VkCommandPool m_transferCommandPool = VK_NULL_HANDLE;
+    uint32_t m_currentTransferFrame = 0;
+    struct TransferFrame {
+        VkCommandPool commandPool = VK_NULL_HANDLE;
+    };
+    std::vector<TransferFrame> m_transferFrames;
     std::vector<DeferredUpload> m_pendingUploads;
 
     // Standalone staging buffers that need cleanup after submit

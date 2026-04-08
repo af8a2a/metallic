@@ -301,6 +301,9 @@ struct VmaBufferCreateInfo {
     VkDeviceSize size = 0;
     VkBufferUsageFlags usage = 0;
     bool hostVisible = false;
+    bool sharedWithTransferQueue = false;
+    uint32_t graphicsQueueFamily = 0;
+    uint32_t transferQueueFamily = UINT32_MAX;
     VkExternalMemoryHandleTypeFlags externalMemoryHandleTypes = 0;
     const char* debugName = nullptr;
 };
@@ -310,7 +313,17 @@ inline std::optional<VulkanBufferResource> vmaCreateBufferResource(const VmaBuff
     VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bufferInfo.size = info.size;
     bufferInfo.usage = info.usage;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    std::array<uint32_t, 2> queueFamilyIndices{};
+    if (info.sharedWithTransferQueue &&
+        info.transferQueueFamily != UINT32_MAX &&
+        info.transferQueueFamily != info.graphicsQueueFamily) {
+        queueFamilyIndices = {info.graphicsQueueFamily, info.transferQueueFamily};
+        bufferInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        bufferInfo.queueFamilyIndexCount = 2;
+        bufferInfo.pQueueFamilyIndices = queueFamilyIndices.data();
+    } else {
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    }
 
     VkExternalMemoryBufferCreateInfo externalMemoryInfo{
         VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};

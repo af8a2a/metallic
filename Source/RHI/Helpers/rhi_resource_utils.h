@@ -75,6 +75,7 @@ struct VulkanResourceContextInfo {
     VmaAllocator allocator = nullptr;
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     uint32_t graphicsQueueFamily = 0;
+    uint32_t transferQueueFamily = UINT32_MAX;
     bool bufferDeviceAddressEnabled = false;
     bool externalHostMemoryEnabled = false;
     bool rayTracingEnabled = false;
@@ -94,6 +95,7 @@ void vulkanSetResourceContext(VkDevice device,
                               VmaAllocator allocator,
                               VkQueue queue,
                               uint32_t queueFamily,
+                              uint32_t transferQueueFamily,
                               bool bufferDeviceAddressEnabled,
                               bool externalHostMemoryEnabled,
                               bool rayTracingEnabled,

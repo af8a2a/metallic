@@ -172,7 +172,8 @@ VulkanResourceContextInfo g_vkResCtx;
 VulkanUploadService* g_uploadService = nullptr;
 
 void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
-                        VkQueue queue, uint32_t queueFamily, bool bufferDeviceAddressEnabled,
+                        VkQueue queue, uint32_t queueFamily, uint32_t transferQueueFamily,
+                        bool bufferDeviceAddressEnabled,
                         bool externalHostMemoryEnabled,
                         bool rayTracingEnabled,
                         bool debugUtilsEnabled,
@@ -183,6 +184,7 @@ void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAll
     g_vkResCtx.allocator = allocator;
     g_vkResCtx.graphicsQueue = queue;
     g_vkResCtx.graphicsQueueFamily = queueFamily;
+    g_vkResCtx.transferQueueFamily = transferQueueFamily;
     g_vkResCtx.bufferDeviceAddressEnabled = bufferDeviceAddressEnabled;
     g_vkResCtx.externalHostMemoryEnabled = externalHostMemoryEnabled;
     g_vkResCtx.rayTracingEnabled = rayTracingEnabled;
@@ -308,6 +310,7 @@ void vulkanSetResourceContext(VkDevice device,
                               VmaAllocator allocator,
                               VkQueue queue,
                               uint32_t queueFamily,
+                              uint32_t transferQueueFamily,
                               bool bufferDeviceAddressEnabled,
                               bool externalHostMemoryEnabled,
                               bool rayTracingEnabled,
@@ -318,6 +321,7 @@ void vulkanSetResourceContext(VkDevice device,
                        allocator,
                        queue,
                        queueFamily,
+                       transferQueueFamily,
                        bufferDeviceAddressEnabled,
                        externalHostMemoryEnabled,
                        rayTracingEnabled,

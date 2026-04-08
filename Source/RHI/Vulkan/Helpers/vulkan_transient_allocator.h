@@ -137,14 +137,18 @@ private:
     struct BufferKey {
         uint64_t size;
         bool hostVisible;
+        bool sharedWithTransferQueue;
         bool operator==(const BufferKey& other) const {
-            return size == other.size && hostVisible == other.hostVisible;
+            return size == other.size &&
+                   hostVisible == other.hostVisible &&
+                   sharedWithTransferQueue == other.sharedWithTransferQueue;
         }
     };
     struct BufferKeyHash {
         size_t operator()(const BufferKey& k) const {
             size_t h = std::hash<uint64_t>{}(k.size);
             h ^= std::hash<bool>{}(k.hostVisible) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= std::hash<bool>{}(k.sharedWithTransferQueue) + 0x9e3779b9 + (h << 6) + (h >> 2);
             return h;
         }
     };

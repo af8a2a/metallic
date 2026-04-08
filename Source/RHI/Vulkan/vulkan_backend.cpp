@@ -1048,6 +1048,7 @@ public:
                                  m_allocator,
                                  m_graphicsQueue,
                                  m_queueFamilies.graphics.value_or(0),
+                                 m_queueFamilies.transfer.value_or(UINT32_MAX),
                                  m_features.bufferDeviceAddress,
                                  m_features.externalHostMemory,
                                  m_features.rayTracing,
@@ -1210,6 +1211,7 @@ public:
         }
 
         m_insideRendering = false;
+        m_pendingGraphicsTimelineWaits.clear();
 
         // Notify transient subsystems that this frame's resources are safe to reuse.
         m_uploadRing.beginFrame(m_frameIndex);
@@ -1247,9 +1249,24 @@ public:
         signalInfo.semaphore = renderFinished;
         signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
+        std::vector<VkSemaphoreSubmitInfo> waitInfos;
+        waitInfos.reserve(1 + m_pendingGraphicsTimelineWaits.size());
+        waitInfos.push_back(waitInfo);
+        for (const QueuedSemaphoreWait& queuedWait : m_pendingGraphicsTimelineWaits) {
+            if (queuedWait.semaphore == VK_NULL_HANDLE) {
+                continue;
+            }
+
+            VkSemaphoreSubmitInfo queuedWaitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+            queuedWaitInfo.semaphore = queuedWait.semaphore;
+            queuedWaitInfo.value = queuedWait.value;
+            queuedWaitInfo.stageMask = queuedWait.stageMask;
+            waitInfos.push_back(queuedWaitInfo);
+        }
+
         VkSubmitInfo2 submitInfo2{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-        submitInfo2.waitSemaphoreInfoCount = 1;
-        submitInfo2.pWaitSemaphoreInfos = &waitInfo;
+        submitInfo2.waitSemaphoreInfoCount = static_cast<uint32_t>(waitInfos.size());
+        submitInfo2.pWaitSemaphoreInfos = waitInfos.data();
         submitInfo2.commandBufferInfoCount = 1;
         submitInfo2.pCommandBufferInfos = &cmdSubmitInfo;
         submitInfo2.signalSemaphoreInfoCount = 1;
@@ -1260,6 +1277,7 @@ public:
             return;
         }
         ++m_submittedFrameCounter;
+        m_pendingGraphicsTimelineWaits.clear();
 
         VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         presentInfo.waitSemaphoreCount = 1;
@@ -1790,6 +1808,20 @@ public:
                            [extensionName](const std::string& ext) { return ext == extensionName; });
     }
 
+    void enqueueGraphicsTimelineWait(VkSemaphore semaphore,
+                                     uint64_t value,
+                                     VkPipelineStageFlags2 stageMask) {
+        if (semaphore == VK_NULL_HANDLE) {
+            return;
+        }
+
+        QueuedSemaphoreWait wait{};
+        wait.semaphore = semaphore;
+        wait.value = value;
+        wait.stageMask = stageMask != 0 ? stageMask : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        m_pendingGraphicsTimelineWaits.push_back(wait);
+    }
+
     std::unique_ptr<RhiShaderModule> createShaderModule(const RhiShaderModuleDesc& desc) override {
         if (desc.spirv.empty()) {
             throw std::runtime_error("Cannot create Vulkan shader module from an empty SPIR-V blob.");
@@ -1821,6 +1853,9 @@ public:
         vmaInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         vmaInfo.usage = vulkanEnableBufferDeviceAddress(vmaInfo.usage, m_features.bufferDeviceAddress);
         vmaInfo.hostVisible = desc.hostVisible;
+        vmaInfo.sharedWithTransferQueue = desc.sharedWithTransferQueue;
+        vmaInfo.graphicsQueueFamily = m_queueFamilies.graphics.value_or(0);
+        vmaInfo.transferQueueFamily = m_queueFamilies.transfer.value_or(UINT32_MAX);
         vmaInfo.externalMemoryHandleTypes =
             vulkanHostVisibleExternalMemoryHandleTypes(vmaInfo.hostVisible,
                                                        m_features.externalHostMemory);
@@ -2021,6 +2056,12 @@ public:
         VkFence inFlight = VK_NULL_HANDLE;
         VkCommandPool computeCommandPool = VK_NULL_HANDLE;
         VkCommandBuffer computeCommandBuffer = VK_NULL_HANDLE;
+    };
+
+    struct QueuedSemaphoreWait {
+        VkSemaphore semaphore = VK_NULL_HANDLE;
+        uint64_t value = 0;
+        VkPipelineStageFlags2 stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     };
 
     class CommandContext final : public RhiCommandContext {
@@ -3273,6 +3314,7 @@ public:
     VulkanUploadRing m_uploadRing;
     VulkanTransientPool m_transientPool;
     VulkanReadbackHeap m_readbackHeap;
+    std::vector<QueuedSemaphoreWait> m_pendingGraphicsTimelineWaits;
     CommandContext m_commandContext;
 };
 
@@ -3329,6 +3371,13 @@ VkCommandBuffer getVulkanCurrentComputeCommandBuffer(RhiContext& context) {
 
 uint64_t vulkanScheduleAsyncComputeSubmit(RhiContext& context) {
     return static_cast<VulkanContext&>(context).scheduleAsyncComputeSubmit();
+}
+
+void vulkanEnqueueGraphicsTimelineWait(RhiContext& context,
+                                       VkSemaphore semaphore,
+                                       uint64_t value,
+                                       VkPipelineStageFlags2 stageMask) {
+    static_cast<VulkanContext&>(context).enqueueGraphicsTimelineWait(semaphore, value, stageMask);
 }
 
 VkPipelineCache getVulkanPipelineCache(RhiContext& context) {

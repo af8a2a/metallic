@@ -7,6 +7,7 @@
 #include <vk_mem_alloc.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cstring>
 
 // =========================================================================
@@ -20,7 +21,8 @@ void VulkanUploadService::init(VkDevice device,
                                VkQueue transferQueue,
                                uint32_t transferQueueFamily,
                                VkSemaphore transferTimelineSemaphore,
-                               VulkanUploadRing* uploadRing) {
+                               VulkanUploadRing* uploadRing,
+                               uint32_t framesInFlight) {
     m_device = device;
     m_allocator = allocator;
     m_graphicsQueue = graphicsQueue;
@@ -30,6 +32,7 @@ void VulkanUploadService::init(VkDevice device,
     m_transferTimelineSemaphore = transferTimelineSemaphore;
     m_transferTimelineValue = 0;
     m_uploadRing = uploadRing;
+    m_currentTransferFrame = 0;
 
     // Command pool for immediate (blocking) uploads on the graphics queue
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -37,12 +40,16 @@ void VulkanUploadService::init(VkDevice device,
     poolInfo.queueFamilyIndex = graphicsQueueFamily;
     vkCreateCommandPool(device, &poolInfo, nullptr, &m_immediateCommandPool);
 
-    // Command pool for async transfer queue (if available)
+    // Per-frame command pools for async transfer queue (if available)
     if (m_transferQueue != VK_NULL_HANDLE && transferQueueFamily != UINT32_MAX) {
-        VkCommandPoolCreateInfo transferPoolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-        transferPoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        transferPoolInfo.queueFamilyIndex = transferQueueFamily;
-        vkCreateCommandPool(device, &transferPoolInfo, nullptr, &m_transferCommandPool);
+        framesInFlight = std::max(1u, framesInFlight);
+        m_transferFrames.resize(framesInFlight);
+        for (TransferFrame& frame : m_transferFrames) {
+            VkCommandPoolCreateInfo transferPoolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+            transferPoolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+            transferPoolInfo.queueFamilyIndex = transferQueueFamily;
+            vkCreateCommandPool(device, &transferPoolInfo, nullptr, &frame.commandPool);
+        }
     }
 
     spdlog::info("VulkanUploadService: initialized (transferQueue={})",
@@ -57,11 +64,26 @@ void VulkanUploadService::destroy() {
         vkDestroyCommandPool(m_device, m_immediateCommandPool, nullptr);
         m_immediateCommandPool = VK_NULL_HANDLE;
     }
-    if (m_transferCommandPool != VK_NULL_HANDLE) {
-        vkDestroyCommandPool(m_device, m_transferCommandPool, nullptr);
-        m_transferCommandPool = VK_NULL_HANDLE;
+    for (TransferFrame& frame : m_transferFrames) {
+        if (frame.commandPool != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(m_device, frame.commandPool, nullptr);
+            frame.commandPool = VK_NULL_HANDLE;
+        }
     }
+    m_transferFrames.clear();
     m_device = VK_NULL_HANDLE;
+}
+
+void VulkanUploadService::beginFrame(uint32_t frameIndex) {
+    if (m_transferFrames.empty() || m_device == VK_NULL_HANDLE) {
+        return;
+    }
+
+    m_currentTransferFrame = frameIndex % static_cast<uint32_t>(m_transferFrames.size());
+    const VkCommandPool commandPool = m_transferFrames[m_currentTransferFrame].commandPool;
+    if (commandPool != VK_NULL_HANDLE) {
+        vkResetCommandPool(m_device, commandPool, 0);
+    }
 }
 
 // --- Staging allocation ---
@@ -281,6 +303,55 @@ void VulkanUploadService::endOneTimeCommands(VkCommandPool pool, VkQueue queue,
     vkFreeCommandBuffers(m_device, pool, 1, &cmd);
 }
 
+VkCommandBuffer VulkanUploadService::beginAsyncTransferCommands() {
+    if (m_transferFrames.empty()) {
+        return VK_NULL_HANDLE;
+    }
+
+    const VkCommandPool commandPool = m_transferFrames[m_currentTransferFrame].commandPool;
+    if (commandPool == VK_NULL_HANDLE) {
+        return VK_NULL_HANDLE;
+    }
+
+    return beginOneTimeCommands(commandPool);
+}
+
+uint64_t VulkanUploadService::submitAsyncTransferCommands(VkCommandBuffer cmd) {
+    if (cmd == VK_NULL_HANDLE ||
+        m_transferQueue == VK_NULL_HANDLE ||
+        m_transferTimelineSemaphore == VK_NULL_HANDLE) {
+        return 0;
+    }
+
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        spdlog::error("VulkanUploadService: failed to end async transfer command buffer");
+        return 0;
+    }
+
+    ++m_transferTimelineValue;
+
+    VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    signalInfo.semaphore = m_transferTimelineSemaphore;
+    signalInfo.value = m_transferTimelineValue;
+    signalInfo.stageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+
+    VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    cmdInfo.commandBuffer = cmd;
+
+    VkSubmitInfo2 submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &cmdInfo;
+    submitInfo.signalSemaphoreInfoCount = 1;
+    submitInfo.pSignalSemaphoreInfos = &signalInfo;
+
+    if (vkQueueSubmit2(m_transferQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+        spdlog::error("VulkanUploadService: failed to submit async transfer queue");
+        return 0;
+    }
+
+    return m_transferTimelineValue;
+}
+
 // --- Immediate uploads ---
 
 void VulkanUploadService::immediateUploadTexture2D(VkImage dstImage, uint32_t width,
@@ -369,12 +440,17 @@ void VulkanUploadService::immediateUploadBuffer(VkBuffer dstBuffer, VkDeviceSize
 // --- Async transfer queue ---
 
 uint64_t VulkanUploadService::submitAsyncTransfer() {
-    if (m_transferQueue == VK_NULL_HANDLE || m_transferCommandPool == VK_NULL_HANDLE ||
-        m_transferTimelineSemaphore == VK_NULL_HANDLE || m_pendingUploads.empty()) {
+    if (m_transferQueue == VK_NULL_HANDLE ||
+        m_transferTimelineSemaphore == VK_NULL_HANDLE ||
+        m_pendingUploads.empty()) {
         return 0;
     }
 
-    VkCommandBuffer cmd = beginOneTimeCommands(m_transferCommandPool);
+    VkCommandBuffer cmd = beginAsyncTransferCommands();
+    if (cmd == VK_NULL_HANDLE) {
+        return 0;
+    }
+
     for (const auto& upload : m_pendingUploads) {
         if (upload.isTexture) {
             recordTextureCopy(cmd, upload, upload.srcBuffer, upload.srcOffset);
@@ -382,31 +458,30 @@ uint64_t VulkanUploadService::submitAsyncTransfer() {
             recordBufferCopy(cmd, upload, upload.srcBuffer, upload.srcOffset);
         }
     }
-    vkEndCommandBuffer(cmd);
     m_pendingUploads.clear();
+    return submitAsyncTransferCommands(cmd);
+}
 
-    ++m_transferTimelineValue;
+uint64_t VulkanUploadService::submitAsyncBufferCopies(VkBuffer srcBuffer,
+                                                      VkBuffer dstBuffer,
+                                                      const VkBufferCopy* regions,
+                                                      uint32_t regionCount) {
+    if (srcBuffer == VK_NULL_HANDLE ||
+        dstBuffer == VK_NULL_HANDLE ||
+        regions == nullptr ||
+        regionCount == 0u ||
+        m_transferQueue == VK_NULL_HANDLE ||
+        m_transferTimelineSemaphore == VK_NULL_HANDLE) {
+        return 0;
+    }
 
-    VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    signalInfo.semaphore = m_transferTimelineSemaphore;
-    signalInfo.value = m_transferTimelineValue;
-    signalInfo.stageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    VkCommandBuffer cmd = beginAsyncTransferCommands();
+    if (cmd == VK_NULL_HANDLE) {
+        return 0;
+    }
 
-    VkCommandBufferSubmitInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-    cmdInfo.commandBuffer = cmd;
-
-    VkSubmitInfo2 submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-    submitInfo.commandBufferInfoCount = 1;
-    submitInfo.pCommandBufferInfos = &cmdInfo;
-    submitInfo.signalSemaphoreInfoCount = 1;
-    submitInfo.pSignalSemaphoreInfos = &signalInfo;
-
-    vkQueueSubmit2(m_transferQueue, 1, &submitInfo, VK_NULL_HANDLE);
-
-    // Note: command buffer freed on next submitAsyncTransfer or destroy
-    // (pool is TRANSIENT, reset implicit)
-
-    return m_transferTimelineValue;
+    vkCmdCopyBuffer(cmd, srcBuffer, dstBuffer, regionCount, regions);
+    return submitAsyncTransferCommands(cmd);
 }
 
 // =========================================================================
