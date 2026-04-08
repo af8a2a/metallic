@@ -136,6 +136,9 @@ public:
         const uint32_t dispatchX = (patchCount + kThreadCount - 1u) / kThreadCount;
         encoder.dispatchThreadgroups({dispatchX, 1, 1}, {kThreadCount, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
+        const uint64_t graphicsCompletionSerial =
+            m_runtimeContext->rhi ? m_runtimeContext->rhi->nextGraphicsSubmissionSerial() : 0u;
+        streamingService->setPendingUpdateGraphicsCompletionSerial(graphicsCompletionSerial);
         streamingService->markUpdateTaskQueued();
     }
 

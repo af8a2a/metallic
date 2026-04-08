@@ -912,6 +912,8 @@ public:
     virtual void endFrame() = 0;
     virtual void resize(uint32_t width, uint32_t height) = 0;
     virtual void waitIdle() = 0;
+    virtual uint64_t completedGraphicsSubmissionSerial() { return 0u; }
+    virtual uint64_t nextGraphicsSubmissionSerial() const { return 0u; }
     virtual RhiCommandContext& commandContext() = 0;
     virtual uint32_t drawableWidth() const = 0;
     virtual uint32_t drawableHeight() const = 0;

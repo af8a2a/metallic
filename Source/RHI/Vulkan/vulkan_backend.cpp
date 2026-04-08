@@ -1153,6 +1153,8 @@ public:
                                  "Failed to wait for in-flight frame fence")) {
             return false;
         }
+        m_completedGraphicsSubmissionSerial =
+            std::max(m_completedGraphicsSubmissionSerial, frame.lastSubmittedGraphicsSerial);
 
         VkResult acquireResult = acquireNextImageKHR(
             m_device,
@@ -1276,7 +1278,8 @@ public:
                                  "Failed to submit graphics queue")) {
             return;
         }
-        ++m_submittedFrameCounter;
+        frame.lastSubmittedGraphicsSerial = m_submittedFrameCounter + 1u;
+        m_submittedFrameCounter = frame.lastSubmittedGraphicsSerial;
         m_pendingGraphicsTimelineWaits.clear();
 
         VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
@@ -1315,6 +1318,13 @@ public:
             }
         }
     }
+
+    uint64_t completedGraphicsSubmissionSerial() override {
+        refreshCompletedGraphicsSubmissionSerial();
+        return m_completedGraphicsSubmissionSerial;
+    }
+
+    uint64_t nextGraphicsSubmissionSerial() const override { return m_submittedFrameCounter + 1u; }
 
     RhiCommandContext& commandContext() override { return m_commandContext; }
     uint32_t drawableWidth() const override { return m_swapchainExtent.width; }
@@ -2056,6 +2066,7 @@ public:
         VkFence inFlight = VK_NULL_HANDLE;
         VkCommandPool computeCommandPool = VK_NULL_HANDLE;
         VkCommandBuffer computeCommandBuffer = VK_NULL_HANDLE;
+        uint64_t lastSubmittedGraphicsSerial = 0u;
     };
 
     struct QueuedSemaphoreWait {
@@ -3184,6 +3195,28 @@ public:
         }
     }
 
+    void refreshCompletedGraphicsSubmissionSerial() {
+        if (m_device == VK_NULL_HANDLE || m_deviceLost) {
+            return;
+        }
+
+        for (const FrameResources& frame : m_frames) {
+            if (frame.inFlight == VK_NULL_HANDLE ||
+                frame.lastSubmittedGraphicsSerial <= m_completedGraphicsSubmissionSerial) {
+                continue;
+            }
+
+            const VkResult status = vkGetFenceStatus(m_device, frame.inFlight);
+            if (status == VK_SUCCESS) {
+                m_completedGraphicsSubmissionSerial =
+                    std::max(m_completedGraphicsSubmissionSerial, frame.lastSubmittedGraphicsSerial);
+            } else if (status == VK_ERROR_DEVICE_LOST) {
+                markDeviceLost("vkGetFenceStatus reported device lost while polling graphics submission completion");
+                return;
+            }
+        }
+    }
+
     void populateNativeHandles() {
         m_nativeHandles.instance = m_instance;
         m_nativeHandles.physicalDevice = m_physicalDevice;
@@ -3282,6 +3315,7 @@ public:
     uint32_t m_frameIndex = 0;
     uint32_t m_imageIndex = 0;
     uint64_t m_submittedFrameCounter = 0;
+    uint64_t m_completedGraphicsSubmissionSerial = 0;
     uint32_t m_requestedWidth = 0;
     uint32_t m_requestedHeight = 0;
     bool m_pendingResize = false;

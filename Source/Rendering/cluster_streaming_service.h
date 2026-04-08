@@ -203,13 +203,21 @@ public:
     }
     void markUpdateTaskQueued() {
         if (!validTaskIndex(m_updateTaskIndex)) {
+            m_pendingUpdateGraphicsCompletionSerial = 0u;
             return;
         }
 
         StreamingTask& task = m_streamingTasks[m_updateTaskIndex];
         task.state = StreamingTaskState::UpdateQueued;
         task.updateQueuedFrame = m_frameIndex;
+        if (m_pendingUpdateGraphicsCompletionSerial != 0u) {
+            task.graphicsCompletionSerial = m_pendingUpdateGraphicsCompletionSerial;
+            m_pendingUpdateGraphicsCompletionSerial = 0u;
+        }
         m_updateTaskIndex = kInvalidTaskIndex;
+    }
+    void setPendingUpdateGraphicsCompletionSerial(uint64_t completionSerial) {
+        m_pendingUpdateGraphicsCompletionSerial = completionSerial;
     }
     uint64_t consumePendingTransferWaitValue() {
         const uint64_t consumed = m_activeUpdateTransferWaitValue;
@@ -245,7 +253,7 @@ public:
             updateDebugStats();
             return;
         }
-        recycleCompletedTasks();
+        recycleCompletedTasks(runtimeContext);
 
         const bool sourceBufferChanged =
             m_residencySourceNodeBufferHandle != clusterLodData.nodeBuffer.nativeHandle() ||
@@ -304,6 +312,7 @@ private:
         uint32_t updateQueuedFrame = UINT32_MAX;
         uint64_t transferWaitValue = 0u;
         uint64_t serial = 0u;
+        uint64_t graphicsCompletionSerial = 0u;
         std::vector<StreamingPatch> patches;
     };
 
@@ -361,6 +370,7 @@ private:
         task.updateQueuedFrame = UINT32_MAX;
         task.transferWaitValue = 0u;
         task.serial = 0u;
+        task.graphicsCompletionSerial = 0u;
         task.patches.clear();
 
         if (m_prepareTaskIndex == taskIndex) {
@@ -383,14 +393,25 @@ private:
         m_updateTaskIndex = kInvalidTaskIndex;
         m_activeUpdatePatchCount = 0u;
         m_activeUpdateTransferWaitValue = 0u;
+        m_pendingUpdateGraphicsCompletionSerial = 0u;
     }
 
-    void recycleCompletedTasks() {
+    void recycleCompletedTasks(const PipelineRuntimeContext& runtimeContext) {
+        const uint64_t completedGraphicsSerial =
+            runtimeContext.rhi ? runtimeContext.rhi->completedGraphicsSubmissionSerial() : 0u;
         for (uint32_t taskIndex = 0u; taskIndex < kStreamingTaskCount; ++taskIndex) {
             const StreamingTask& task = m_streamingTasks[taskIndex];
-            if (task.state != StreamingTaskState::UpdateQueued ||
-                task.updateQueuedFrame == UINT32_MAX ||
-                m_frameIndex < task.updateQueuedFrame + kBufferedFrameCount) {
+            if (task.state != StreamingTaskState::UpdateQueued) {
+                continue;
+            }
+
+            const bool completedBySerial =
+                task.graphicsCompletionSerial != 0u &&
+                completedGraphicsSerial >= task.graphicsCompletionSerial;
+            const bool completedByFrameDelay =
+                task.updateQueuedFrame != UINT32_MAX &&
+                m_frameIndex >= task.updateQueuedFrame + kBufferedFrameCount;
+            if (!completedBySerial && !completedByFrameDelay) {
                 continue;
             }
 
@@ -412,6 +433,7 @@ private:
             task.updateQueuedFrame = UINT32_MAX;
             task.transferWaitValue = 0u;
             task.serial = 0u;
+            task.graphicsCompletionSerial = 0u;
             task.patches.clear();
             task.state = StreamingTaskState::Prepared;
             task.serial = m_nextTaskSerial++;
@@ -1442,6 +1464,7 @@ private:
     uint64_t m_streamingStorageCapacityBytes = kDefaultStreamingStorageCapacityBytes;
     uint64_t m_maxStreamingTransferBytes = kDefaultMaxStreamingTransferBytes;
     uint64_t m_activeUpdateTransferWaitValue = 0u;
+    uint64_t m_pendingUpdateGraphicsCompletionSerial = 0u;
     uint64_t m_nextTaskSerial = 1u;
     const void* m_residencySourceNodeBufferHandle = nullptr;
     const void* m_residencySourceGroupBufferHandle = nullptr;
