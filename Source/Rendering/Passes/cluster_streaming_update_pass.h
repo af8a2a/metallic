@@ -92,12 +92,14 @@ public:
                                                residentGroupMeshletIndicesBuffer,
                                                copyRegions);
             if (transferWaitValue != 0u) {
-                streamingService->setPendingTransferWaitValue(transferWaitValue);
+                streamingService->completeTransferTask(transferWaitValue);
             } else if (!recordStreamingDataCopies(encoder,
                                                   streamingService->streamingUploadStagingBuffer(),
                                                   residentGroupMeshletIndicesBuffer,
                                                   copyRegions)) {
                 return;
+            } else {
+                streamingService->completeTransferTask(0u);
             }
         }
 
@@ -134,6 +136,7 @@ public:
         const uint32_t dispatchX = (patchCount + kThreadCount - 1u) / kThreadCount;
         encoder.dispatchThreadgroups({dispatchX, 1, 1}, {kThreadCount, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
+        streamingService->markUpdateTaskQueued();
     }
 
 private:

@@ -57,6 +57,10 @@ void VulkanUploadService::init(VkDevice device,
 }
 
 void VulkanUploadService::destroy() {
+    if (m_transferQueue != VK_NULL_HANDLE) {
+        vkQueueWaitIdle(m_transferQueue);
+    }
+
     freeStandaloneStaging();
     m_pendingUploads.clear();
 
@@ -80,7 +84,30 @@ void VulkanUploadService::beginFrame(uint32_t frameIndex) {
     }
 
     m_currentTransferFrame = frameIndex % static_cast<uint32_t>(m_transferFrames.size());
-    const VkCommandPool commandPool = m_transferFrames[m_currentTransferFrame].commandPool;
+    TransferFrame& transferFrame = m_transferFrames[m_currentTransferFrame];
+    const VkCommandPool commandPool = transferFrame.commandPool;
+    if (transferFrame.lastSubmittedTimelineValue != 0u &&
+        m_transferTimelineSemaphore != VK_NULL_HANDLE) {
+        uint64_t completedValue = 0u;
+        const VkResult counterResult =
+            vkGetSemaphoreCounterValue(m_device, m_transferTimelineSemaphore, &completedValue);
+        if (counterResult != VK_SUCCESS) {
+            spdlog::warn("VulkanUploadService: failed to query transfer timeline value, falling back to queue idle");
+            vkQueueWaitIdle(m_transferQueue);
+        } else if (completedValue < transferFrame.lastSubmittedTimelineValue) {
+            VkSemaphoreWaitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+            waitInfo.semaphoreCount = 1;
+            waitInfo.pSemaphores = &m_transferTimelineSemaphore;
+            waitInfo.pValues = &transferFrame.lastSubmittedTimelineValue;
+            if (vkWaitSemaphores(m_device, &waitInfo, UINT64_MAX) != VK_SUCCESS) {
+                spdlog::warn("VulkanUploadService: waiting for transfer timeline value {} failed",
+                             transferFrame.lastSubmittedTimelineValue);
+                vkQueueWaitIdle(m_transferQueue);
+            }
+        }
+        transferFrame.lastSubmittedTimelineValue = 0u;
+    }
+
     if (commandPool != VK_NULL_HANDLE) {
         vkResetCommandPool(m_device, commandPool, 0);
     }
@@ -347,6 +374,10 @@ uint64_t VulkanUploadService::submitAsyncTransferCommands(VkCommandBuffer cmd) {
     if (vkQueueSubmit2(m_transferQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
         spdlog::error("VulkanUploadService: failed to submit async transfer queue");
         return 0;
+    }
+
+    if (m_currentTransferFrame < m_transferFrames.size()) {
+        m_transferFrames[m_currentTransferFrame].lastSubmittedTimelineValue = m_transferTimelineValue;
     }
 
     return m_transferTimelineValue;

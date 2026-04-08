@@ -471,26 +471,27 @@ public:
         const uint64_t sceneStorageBytes =
             uint64_t(std::max<size_t>(1u, m_ctx.clusterLodData.groupMeshletIndices.size())) *
             sizeof(uint32_t);
-        int streamingStorageCapacityMb =
+        const uint64_t sceneStorageKb =
+            std::max<uint64_t>(1ull, (sceneStorageBytes + 1023ull) / 1024ull);
+        int streamingStorageCapacityKb =
             streamingService
                 ? static_cast<int>(std::max<uint64_t>(
                       1ull,
-                      (streamingService->streamingStorageCapacityBytes() + (1024ull * 1024ull - 1ull)) /
-                          (1024ull * 1024ull)))
-                : 512;
-        int streamingTransferCapacityMb =
+                      (streamingService->effectiveStreamingStorageCapacityBytes() + 1023ull) / 1024ull))
+                : static_cast<int>(sceneStorageKb);
+        int streamingTransferCapacityKb =
             streamingService
                 ? static_cast<int>(std::max<uint64_t>(
                       1ull,
-                      (streamingService->maxStreamingTransferBytes() + (1024ull * 1024ull - 1ull)) /
-                          (1024ull * 1024ull)))
-                : 32;
-        const int maxStreamingStorageCapacityMb = static_cast<int>(std::max<uint64_t>(
-            1ull,
-            std::min<uint64_t>((sceneStorageBytes + (1024ull * 1024ull - 1ull)) /
-                                   (1024ull * 1024ull),
-                               4096ull)));
-        const int maxStreamingTransferCapacityMb = maxStreamingStorageCapacityMb;
+                      (streamingService->effectiveStreamingTransferCapacityBytes() + 1023ull) /
+                          1024ull))
+                : static_cast<int>(sceneStorageKb);
+        const int maxStreamingStorageCapacityKb =
+            static_cast<int>(std::max<uint64_t>(sceneStorageKb,
+                                                uint64_t(std::max(streamingStorageCapacityKb, 1))));
+        const int maxStreamingTransferCapacityKb =
+            static_cast<int>(std::max<uint64_t>(sceneStorageKb,
+                                                uint64_t(std::max(streamingTransferCapacityKb, 1))));
         const uint32_t maxDynamicGroupBudget =
             activeResidencyGroupCount > alwaysResidentGroupCount
                 ? activeResidencyGroupCount - alwaysResidentGroupCount
@@ -505,24 +506,24 @@ public:
                 static_cast<uint32_t>(std::max(streamingBudgetGroups, 0)));
             requestVisibilityHistoryReset();
         }
-        if (ImGui::SliderInt("Streaming Storage Pool (MB)",
-                             &streamingStorageCapacityMb,
+        if (ImGui::SliderInt("Streaming Storage Pool (KB)",
+                             &streamingStorageCapacityKb,
                              1,
-                             maxStreamingStorageCapacityMb,
+                             maxStreamingStorageCapacityKb,
                              "%d") &&
             streamingService) {
             streamingService->setStreamingStorageCapacityBytes(
-                uint64_t(std::max(streamingStorageCapacityMb, 1)) * 1024ull * 1024ull);
+                uint64_t(std::max(streamingStorageCapacityKb, 1)) * 1024ull);
             requestVisibilityHistoryReset();
         }
-        if (ImGui::SliderInt("Streaming Transfer Cap (MB)",
-                             &streamingTransferCapacityMb,
+        if (ImGui::SliderInt("Streaming Transfer Cap (KB)",
+                             &streamingTransferCapacityKb,
                              1,
-                             maxStreamingTransferCapacityMb,
+                             maxStreamingTransferCapacityKb,
                              "%d") &&
             streamingService) {
             streamingService->setMaxStreamingTransferBytes(
-                uint64_t(std::max(streamingTransferCapacityMb, 1)) * 1024ull * 1024ull);
+                uint64_t(std::max(streamingTransferCapacityKb, 1)) * 1024ull);
             requestVisibilityHistoryReset();
         }
         int maxLoadsPerFrame =
@@ -577,14 +578,13 @@ public:
         ImGui::Text("Resident Storage: %u / %u indices",
                     streamingStats ? streamingStats->residentHeapUsed : 0u,
                     streamingStats ? streamingStats->residentHeapCapacity : 0u);
-        ImGui::Text("Upload Staging (frame): %.2f / %.2f MB",
+        ImGui::Text("Upload Staging (frame): %.2f / %.2f KB",
                     streamingService
-                        ? float(double(streamingService->streamingUploadBytesUsed()) /
-                                (1024.0 * 1024.0))
+                        ? float(double(streamingService->streamingUploadBytesUsed()) / 1024.0)
                         : 0.0f,
                     streamingService
-                        ? float(double(streamingService->maxStreamingTransferBytes()) /
-                                (1024.0 * 1024.0))
+                        ? float(double(streamingService->effectiveStreamingTransferCapacityBytes()) /
+                                1024.0)
                         : 0.0f);
         ImGui::Text("Dynamic Resident Groups: %u",
                     streamingStats ? streamingStats->dynamicResidentGroupCount : 0u);

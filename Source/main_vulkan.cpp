@@ -2372,6 +2372,54 @@ int main() {
         ImGui::Checkbox("Scene Graph", &showSceneGraphWindow);
         ImGui::Checkbox("ImGui Demo", &showImGuiDemo);
 
+        if (ImGui::CollapsingHeader("Cluster Streaming")) {
+            const ClusterStreamingService::DebugStats& streamingStats =
+                clusterStreamingService.debugStats();
+            ImGui::Text("Streaming: %s",
+                        clusterStreamingService.streamingEnabled() ? "Enabled" : "Disabled");
+            ImGui::Text("Resources: %s",
+                        streamingStats.resourcesReady ? "Ready" : "Pending");
+            ImGui::Text("Resident groups: %u (%u always, %u dynamic)",
+                        streamingStats.lastResidentGroupCount,
+                        streamingStats.lastAlwaysResidentGroupCount,
+                        streamingStats.dynamicResidentGroupCount);
+            ImGui::Text("Pending load/unload: %u / %u (%u confirmed)",
+                        streamingStats.pendingResidencyGroupCount,
+                        streamingStats.pendingUnloadGroupCount,
+                        streamingStats.confirmedUnloadGroupCount);
+            ImGui::Text("Last frame requests: load %u -> %u, unload %u -> %u",
+                        streamingStats.lastResidencyRequestCount,
+                        streamingStats.lastResidencyPromotedCount,
+                        streamingStats.lastUnloadRequestCount,
+                        streamingStats.lastResidencyEvictedCount);
+            ImGui::Text("Resident heap: %u / %u clusters",
+                        streamingStats.residentHeapUsed,
+                        streamingStats.residentHeapCapacity);
+            ImGui::Separator();
+            ImGui::Text("Task ring: %u total, %u free, %u prepared, %u transferred, %u queued",
+                        streamingStats.streamingTaskCapacity,
+                        streamingStats.freeStreamingTaskCount,
+                        streamingStats.preparedStreamingTaskCount,
+                        streamingStats.transferSubmittedTaskCount,
+                        streamingStats.updateQueuedTaskCount);
+            if (streamingStats.selectedTransferTaskIndex != UINT32_MAX) {
+                ImGui::Text("Transfer task: slot %u, %llu bytes staged",
+                            streamingStats.selectedTransferTaskIndex,
+                            static_cast<unsigned long long>(streamingStats.selectedTransferBytes));
+            } else {
+                ImGui::TextDisabled("Transfer task: idle");
+            }
+            if (streamingStats.selectedUpdateTaskIndex != UINT32_MAX) {
+                ImGui::Text("Update task: slot %u, %u patches, wait %llu",
+                            streamingStats.selectedUpdateTaskIndex,
+                            streamingStats.selectedUpdatePatchCount,
+                            static_cast<unsigned long long>(
+                                streamingStats.selectedUpdateTransferWaitValue));
+            } else {
+                ImGui::TextDisabled("Update task: idle");
+            }
+        }
+
         // LOD stats panel
         if (previewSceneReady && previewLOD.lodLevelCount > 0) {
             drawClusterLODStats(previewLOD);

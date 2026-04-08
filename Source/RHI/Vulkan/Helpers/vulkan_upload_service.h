@@ -133,6 +133,7 @@ private:
     uint32_t m_currentTransferFrame = 0;
     struct TransferFrame {
         VkCommandPool commandPool = VK_NULL_HANDLE;
+        uint64_t lastSubmittedTimelineValue = 0;
     };
     std::vector<TransferFrame> m_transferFrames;
     std::vector<DeferredUpload> m_pendingUploads;

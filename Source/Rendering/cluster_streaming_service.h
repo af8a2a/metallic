@@ -37,6 +37,16 @@ public:
         uint32_t maxLoadsPerFrame = 0;
         uint32_t maxUnloadsPerFrame = 0;
         uint32_t ageThreshold = 0;
+        uint32_t streamingTaskCapacity = 0;
+        uint32_t freeStreamingTaskCount = 0;
+        uint32_t preparedStreamingTaskCount = 0;
+        uint32_t transferSubmittedTaskCount = 0;
+        uint32_t updateQueuedTaskCount = 0;
+        uint32_t selectedTransferTaskIndex = UINT32_MAX;
+        uint32_t selectedUpdateTaskIndex = UINT32_MAX;
+        uint32_t selectedUpdatePatchCount = 0;
+        uint64_t selectedTransferBytes = 0u;
+        uint64_t selectedUpdateTransferWaitValue = 0u;
         bool resourcesReady = false;
     };
 
@@ -86,6 +96,9 @@ public:
     }
 
     uint64_t streamingStorageCapacityBytes() const { return m_streamingStorageCapacityBytes; }
+    uint64_t effectiveStreamingStorageCapacityBytes() const {
+        return uint64_t(m_streamingStorage.capacityElements()) * sizeof(uint32_t);
+    }
 
     void setMaxStreamingTransferBytes(uint64_t maxTransferBytes) {
         maxTransferBytes = std::max<uint64_t>(maxTransferBytes, sizeof(uint32_t));
@@ -98,6 +111,9 @@ public:
     }
 
     uint64_t maxStreamingTransferBytes() const { return m_maxStreamingTransferBytes; }
+    uint64_t effectiveStreamingTransferCapacityBytes() const {
+        return m_streamingStorage.maxUploadBytesPerFrame();
+    }
 
     void markStateDirty() { m_stateDirty = true; }
 
@@ -136,13 +152,17 @@ public:
         return m_streamingStorage.buffer();
     }
     const RhiBuffer* streamingUploadStagingBuffer() const {
-        return m_streamingStorage.uploadBuffer(m_activeFrameSlot % kBufferedFrameCount);
+        return validTaskIndex(m_transferTaskIndex) ? m_streamingStorage.uploadBuffer(m_transferTaskIndex)
+                                                   : nullptr;
     }
     const std::vector<StreamingStorage::CopyRegion>& streamingUploadCopyRegions() const {
-        return m_streamingStorage.copyRegions(m_activeFrameSlot % kBufferedFrameCount);
+        static const std::vector<StreamingStorage::CopyRegion> kEmpty;
+        return validTaskIndex(m_transferTaskIndex) ? m_streamingStorage.copyRegions(m_transferTaskIndex)
+                                                   : kEmpty;
     }
     uint64_t streamingUploadBytesUsed() const {
-        return m_streamingStorage.uploadBytesUsed(m_activeFrameSlot % kBufferedFrameCount);
+        return validTaskIndex(m_transferTaskIndex) ? m_streamingStorage.uploadBytesUsed(m_transferTaskIndex)
+                                                   : 0u;
     }
     const RhiBuffer* residencyRequestBuffer() const {
         return activeFrameBuffers().residencyRequestBuffer.get();
@@ -160,20 +180,40 @@ public:
         return activeFrameBuffers().streamingPatchBuffer.get();
     }
     uint32_t streamingPatchCount() const {
-        return m_framePatchCounts[m_activeFrameSlot % kBufferedFrameCount];
+        return m_activeUpdatePatchCount;
     }
     const StreamingPatch* streamingPatchData() const {
-        const std::vector<StreamingPatch>& framePatches =
-            m_frameStreamingPatches[m_activeFrameSlot % kBufferedFrameCount];
-        return framePatches.empty() ? nullptr : framePatches.data();
+        if (!validTaskIndex(m_updateTaskIndex)) {
+            return nullptr;
+        }
+
+        const std::vector<StreamingPatch>& patches = m_streamingTasks[m_updateTaskIndex].patches;
+        return patches.empty() ? nullptr : patches.data();
     }
-    void setPendingTransferWaitValue(uint64_t waitValue) {
-        m_pendingTransferWaitValues[m_activeFrameSlot % kBufferedFrameCount] = waitValue;
+    void completeTransferTask(uint64_t waitValue) {
+        if (!validTaskIndex(m_transferTaskIndex)) {
+            return;
+        }
+
+        StreamingTask& task = m_streamingTasks[m_transferTaskIndex];
+        task.state = StreamingTaskState::TransferSubmitted;
+        task.transferWaitValue = waitValue;
+        task.transferSubmitFrame = m_frameIndex;
+        m_transferTaskIndex = kInvalidTaskIndex;
+    }
+    void markUpdateTaskQueued() {
+        if (!validTaskIndex(m_updateTaskIndex)) {
+            return;
+        }
+
+        StreamingTask& task = m_streamingTasks[m_updateTaskIndex];
+        task.state = StreamingTaskState::UpdateQueued;
+        task.updateQueuedFrame = m_frameIndex;
+        m_updateTaskIndex = kInvalidTaskIndex;
     }
     uint64_t consumePendingTransferWaitValue() {
-        uint64_t& waitValue = m_pendingTransferWaitValues[m_activeFrameSlot % kBufferedFrameCount];
-        const uint64_t consumed = waitValue;
-        waitValue = 0u;
+        const uint64_t consumed = m_activeUpdateTransferWaitValue;
+        m_activeUpdateTransferWaitValue = 0u;
         return consumed;
     }
 
@@ -183,7 +223,12 @@ public:
         m_debugStats.activeResidencyNodeCount = clusterLodData.totalNodeCount;
         m_debugStats.activeResidencyGroupCount = clusterLodData.totalGroupCount;
         m_activeFrameSlot = frameContext ? (frameContext->frameIndex % kBufferedFrameCount) : 0u;
-        m_pendingTransferWaitValues[m_activeFrameSlot % kBufferedFrameCount] = 0u;
+        m_frameIndex = frameContext ? frameContext->frameIndex : 0u;
+        m_prepareTaskIndex = kInvalidTaskIndex;
+        m_transferTaskIndex = kInvalidTaskIndex;
+        m_updateTaskIndex = kInvalidTaskIndex;
+        m_activeUpdatePatchCount = 0u;
+        m_activeUpdateTransferWaitValue = 0u;
 
         const bool clusterLodAvailable =
             clusterLodData.nodeBuffer.nativeHandle() &&
@@ -200,8 +245,7 @@ public:
             updateDebugStats();
             return;
         }
-
-        m_streamingStorage.resetUploadFrame(m_activeFrameSlot % kBufferedFrameCount);
+        recycleCompletedTasks();
 
         const bool sourceBufferChanged =
             m_residencySourceNodeBufferHandle != clusterLodData.nodeBuffer.nativeHandle() ||
@@ -210,21 +254,58 @@ public:
                 clusterLodData.groupMeshletIndicesBuffer.nativeHandle();
         if (m_stateDirty || sourceBufferChanged) {
             requestHistoryReset(frameContext);
-            rebuildStreamingState(clusterLodData);
+            resetStreamingTasks();
+            if (beginPrepareTask()) {
+                // The page table is device-local. Clear it immediately on rebuild so the
+                // cull shader never dereferences stale resident heap offsets for one frame.
+                queueInvalidateAllGroups();
+                finalizePrepareTask();
+            }
+            if (beginPrepareTask()) {
+                rebuildStreamingState(clusterLodData);
+                finalizePrepareTask();
+            } else {
+                rebuildStreamingState(clusterLodData);
+            }
         } else {
             runRequestReadbackStage(clusterLodData);
-            runResidencyUpdateStage(clusterLodData);
+            if (beginPrepareTask()) {
+                runResidencyUpdateStage(clusterLodData);
+                finalizePrepareTask();
+            }
         }
 
+        selectTransferTask();
+        // Intentionally update from an older transfer submission so the graphics queue
+        // never has to wait on uploads recorded earlier in the same frame.
+        selectUpdateTask();
         uploadCanonicalStateToActiveFrame();
         updateDebugStats();
     }
 
 private:
     static constexpr uint32_t kInvalidResidentHeapOffset = UINT32_MAX;
+    static constexpr uint32_t kInvalidTaskIndex = UINT32_MAX;
     static constexpr uint32_t kBufferedFrameCount = 2u;
+    static constexpr uint32_t kStreamingTaskCount = 3u;
     static constexpr uint64_t kDefaultStreamingStorageCapacityBytes = 512ull * 1024ull * 1024ull;
     static constexpr uint64_t kDefaultMaxStreamingTransferBytes = 32ull * 1024ull * 1024ull;
+
+    enum class StreamingTaskState : uint8_t {
+        Free,
+        Prepared,
+        TransferSubmitted,
+        UpdateQueued,
+    };
+
+    struct StreamingTask {
+        StreamingTaskState state = StreamingTaskState::Free;
+        uint32_t transferSubmitFrame = UINT32_MAX;
+        uint32_t updateQueuedFrame = UINT32_MAX;
+        uint64_t transferWaitValue = 0u;
+        uint64_t serial = 0u;
+        std::vector<StreamingPatch> patches;
+    };
 
     struct GroupResidentAllocation {
         uint32_t heapOffset = kInvalidResidentHeapOffset;
@@ -247,6 +328,79 @@ private:
 
     const FrameBuffers& activeFrameBuffers() const {
         return m_frameBuffers[m_activeFrameSlot % kBufferedFrameCount];
+    }
+
+    static bool validTaskIndex(uint32_t taskIndex) {
+        return taskIndex < kStreamingTaskCount;
+    }
+
+    bool taskHasTransferWork(uint32_t taskIndex) const {
+        return validTaskIndex(taskIndex) &&
+               !m_streamingStorage.copyRegions(taskIndex).empty();
+    }
+
+    void releaseTask(uint32_t taskIndex) {
+        if (!validTaskIndex(taskIndex)) {
+            return;
+        }
+
+        m_streamingStorage.resetUploadFrame(taskIndex);
+        StreamingTask& task = m_streamingTasks[taskIndex];
+        task = {};
+
+        if (m_prepareTaskIndex == taskIndex) {
+            m_prepareTaskIndex = kInvalidTaskIndex;
+        }
+        if (m_transferTaskIndex == taskIndex) {
+            m_transferTaskIndex = kInvalidTaskIndex;
+        }
+        if (m_updateTaskIndex == taskIndex) {
+            m_updateTaskIndex = kInvalidTaskIndex;
+        }
+    }
+
+    void resetStreamingTasks() {
+        for (uint32_t taskIndex = 0u; taskIndex < kStreamingTaskCount; ++taskIndex) {
+            releaseTask(taskIndex);
+        }
+        m_prepareTaskIndex = kInvalidTaskIndex;
+        m_transferTaskIndex = kInvalidTaskIndex;
+        m_updateTaskIndex = kInvalidTaskIndex;
+        m_activeUpdatePatchCount = 0u;
+        m_activeUpdateTransferWaitValue = 0u;
+    }
+
+    void recycleCompletedTasks() {
+        for (uint32_t taskIndex = 0u; taskIndex < kStreamingTaskCount; ++taskIndex) {
+            const StreamingTask& task = m_streamingTasks[taskIndex];
+            if (task.state != StreamingTaskState::UpdateQueued ||
+                task.updateQueuedFrame == UINT32_MAX ||
+                m_frameIndex < task.updateQueuedFrame + kBufferedFrameCount) {
+                continue;
+            }
+
+            releaseTask(taskIndex);
+        }
+    }
+
+    bool beginPrepareTask() {
+        for (uint32_t taskIndex = 0u; taskIndex < kStreamingTaskCount; ++taskIndex) {
+            if (m_streamingTasks[taskIndex].state != StreamingTaskState::Free) {
+                continue;
+            }
+
+            m_prepareTaskIndex = taskIndex;
+            m_streamingStorage.resetUploadFrame(taskIndex);
+
+            StreamingTask& task = m_streamingTasks[taskIndex];
+            task = {};
+            task.state = StreamingTaskState::Prepared;
+            task.serial = m_nextTaskSerial++;
+            return true;
+        }
+
+        m_prepareTaskIndex = kInvalidTaskIndex;
+        return false;
     }
 
     static uint32_t* mappedUint32(RhiBuffer* buffer) {
@@ -286,6 +440,16 @@ private:
         m_debugStats.maxLoadsPerFrame = m_maxLoadsPerFrame;
         m_debugStats.maxUnloadsPerFrame = m_maxUnloadsPerFrame;
         m_debugStats.ageThreshold = m_ageThreshold;
+        m_debugStats.streamingTaskCapacity = kStreamingTaskCount;
+        m_debugStats.freeStreamingTaskCount = kStreamingTaskCount;
+        m_debugStats.preparedStreamingTaskCount = 0;
+        m_debugStats.transferSubmittedTaskCount = 0;
+        m_debugStats.updateQueuedTaskCount = 0;
+        m_debugStats.selectedTransferTaskIndex = kInvalidTaskIndex;
+        m_debugStats.selectedUpdateTaskIndex = kInvalidTaskIndex;
+        m_debugStats.selectedUpdatePatchCount = 0;
+        m_debugStats.selectedTransferBytes = 0u;
+        m_debugStats.selectedUpdateTransferWaitValue = 0u;
         m_debugStats.resourcesReady = false;
     }
 
@@ -395,7 +559,7 @@ private:
                                         "ClusterLodResidentGroupMeshletStorage");
         const uint64_t transferCapacityBytes = computeStreamingTransferCapacityBytes(clusterLodData);
         m_streamingStorage.ensureUploadBuffers(*runtimeContext.resourceFactory,
-                                              kBufferedFrameCount,
+                                              kStreamingTaskCount,
                                               transferCapacityBytes,
                                               "ClusterLodStreamingUpload");
 
@@ -412,12 +576,7 @@ private:
         m_requestReadbackScratch.clear();
         m_unloadRequestReadbackScratch.clear();
         m_confirmedUnloadGroups.clear();
-        m_pendingStreamingPatches.clear();
-        m_framePatchCounts.fill(0u);
-        m_pendingTransferWaitValues.fill(0u);
-        for (std::vector<StreamingPatch>& framePatches : m_frameStreamingPatches) {
-            framePatches.clear();
-        }
+        resetStreamingTasks();
         m_residencySourceNodeBufferHandle = nullptr;
         m_residencySourceGroupBufferHandle = nullptr;
         m_residencySourceGroupMeshletIndicesHandle = nullptr;
@@ -469,63 +628,29 @@ private:
         seedUnloadRequestQueue(frameBuffers);
     }
 
-    void uploadPatchesToActiveFrame() {
-        FrameBuffers& frameBuffers = activeFrameBuffers();
-        std::vector<StreamingPatch>& framePatches =
-            m_frameStreamingPatches[m_activeFrameSlot % kBufferedFrameCount];
-        framePatches.clear();
+    void uploadSelectedUpdateTaskToActiveFrame() {
+        m_activeUpdatePatchCount = 0u;
+        m_activeUpdateTransferWaitValue = 0u;
 
-        if (m_patchLastWriteIndexScratch.size() != m_residencyGroupCapacity) {
-            m_patchLastWriteIndexScratch.assign(m_residencyGroupCapacity, UINT32_MAX);
-        }
-        m_patchTouchedGroupsScratch.clear();
-        if (!m_pendingStreamingPatches.empty() &&
-            m_patchLastWriteIndexScratch.size() == m_residencyGroupCapacity) {
-            for (uint32_t patchIndex = 0u;
-                 patchIndex < static_cast<uint32_t>(m_pendingStreamingPatches.size());
-                 ++patchIndex) {
-                const StreamingPatch& patch = m_pendingStreamingPatches[patchIndex];
-                if (patch.groupIndex >= m_residencyGroupCapacity) {
-                    continue;
-                }
-                if (m_patchLastWriteIndexScratch[patch.groupIndex] == UINT32_MAX) {
-                    m_patchTouchedGroupsScratch.push_back(patch.groupIndex);
-                }
-                m_patchLastWriteIndexScratch[patch.groupIndex] = patchIndex;
-            }
-
-            framePatches.reserve(m_patchTouchedGroupsScratch.size());
-            for (uint32_t patchIndex = 0u;
-                 patchIndex < static_cast<uint32_t>(m_pendingStreamingPatches.size());
-                 ++patchIndex) {
-                const StreamingPatch& patch = m_pendingStreamingPatches[patchIndex];
-                if (patch.groupIndex >= m_residencyGroupCapacity ||
-                    m_patchLastWriteIndexScratch[patch.groupIndex] != patchIndex) {
-                    continue;
-                }
-                framePatches.push_back(patch);
-            }
-
-            for (uint32_t groupIndex : m_patchTouchedGroupsScratch) {
-                m_patchLastWriteIndexScratch[groupIndex] = UINT32_MAX;
-            }
-        }
-
-        const uint32_t patchCount =
-            std::min<uint32_t>(static_cast<uint32_t>(framePatches.size()), m_residencyGroupCapacity);
-        m_framePatchCounts[m_activeFrameSlot % kBufferedFrameCount] = patchCount;
-        if (patchCount == 0u) {
-            m_pendingStreamingPatches.clear();
+        if (!validTaskIndex(m_updateTaskIndex)) {
             return;
         }
 
-        StreamingPatch* patches = mappedPatches(frameBuffers.streamingPatchBuffer.get());
-        if (patches && !framePatches.empty()) {
+        const StreamingTask& task = m_streamingTasks[m_updateTaskIndex];
+        const uint32_t patchCount =
+            std::min<uint32_t>(static_cast<uint32_t>(task.patches.size()), m_residencyGroupCapacity);
+        m_activeUpdatePatchCount = patchCount;
+        m_activeUpdateTransferWaitValue = task.transferWaitValue;
+        if (patchCount == 0u) {
+            return;
+        }
+
+        StreamingPatch* patches = mappedPatches(activeFrameBuffers().streamingPatchBuffer.get());
+        if (patches) {
             std::memcpy(patches,
-                        framePatches.data(),
+                        task.patches.data(),
                         size_t(patchCount) * sizeof(StreamingPatch));
         }
-        m_pendingStreamingPatches.clear();
     }
 
     void uploadCanonicalStateToAllFrames() {
@@ -539,7 +664,7 @@ private:
 
     void uploadCanonicalStateToActiveFrame() {
         uploadCanonicalStateToFrame(activeFrameBuffers());
-        uploadPatchesToActiveFrame();
+        uploadSelectedUpdateTaskToActiveFrame();
     }
 
     void resetResidentHeapAllocator() {
@@ -588,7 +713,127 @@ private:
     }
 
     void appendStreamingPatch(const StreamingPatch& patch) {
-        m_pendingStreamingPatches.push_back(patch);
+        if (!validTaskIndex(m_prepareTaskIndex)) {
+            return;
+        }
+
+        m_streamingTasks[m_prepareTaskIndex].patches.push_back(patch);
+    }
+
+    void finalizePrepareTask() {
+        if (!validTaskIndex(m_prepareTaskIndex)) {
+            return;
+        }
+
+        StreamingTask& task = m_streamingTasks[m_prepareTaskIndex];
+        if (m_patchLastWriteIndexScratch.size() != m_residencyGroupCapacity) {
+            m_patchLastWriteIndexScratch.assign(m_residencyGroupCapacity, UINT32_MAX);
+        }
+
+        m_patchTouchedGroupsScratch.clear();
+        for (uint32_t patchIndex = 0u;
+             patchIndex < static_cast<uint32_t>(task.patches.size());
+             ++patchIndex) {
+            const StreamingPatch& patch = task.patches[patchIndex];
+            if (patch.groupIndex >= m_residencyGroupCapacity) {
+                continue;
+            }
+            if (m_patchLastWriteIndexScratch[patch.groupIndex] == UINT32_MAX) {
+                m_patchTouchedGroupsScratch.push_back(patch.groupIndex);
+            }
+            m_patchLastWriteIndexScratch[patch.groupIndex] = patchIndex;
+        }
+
+        if (!m_patchTouchedGroupsScratch.empty()) {
+            std::vector<StreamingPatch> dedupedPatches;
+            dedupedPatches.reserve(m_patchTouchedGroupsScratch.size());
+            for (uint32_t patchIndex = 0u;
+                 patchIndex < static_cast<uint32_t>(task.patches.size());
+                 ++patchIndex) {
+                const StreamingPatch& patch = task.patches[patchIndex];
+                if (patch.groupIndex >= m_residencyGroupCapacity ||
+                    m_patchLastWriteIndexScratch[patch.groupIndex] != patchIndex) {
+                    continue;
+                }
+                dedupedPatches.push_back(patch);
+            }
+            task.patches.swap(dedupedPatches);
+        }
+
+        for (uint32_t groupIndex : m_patchTouchedGroupsScratch) {
+            m_patchLastWriteIndexScratch[groupIndex] = UINT32_MAX;
+        }
+        m_patchTouchedGroupsScratch.clear();
+
+        if (task.patches.empty() && !taskHasTransferWork(m_prepareTaskIndex)) {
+            releaseTask(m_prepareTaskIndex);
+            return;
+        }
+
+        if (!taskHasTransferWork(m_prepareTaskIndex)) {
+            task.state = StreamingTaskState::TransferSubmitted;
+            task.transferWaitValue = 0u;
+            task.transferSubmitFrame = m_frameIndex;
+        }
+
+        m_prepareTaskIndex = kInvalidTaskIndex;
+    }
+
+    void queueInvalidateAllGroups() {
+        for (uint32_t groupIndex = 0u; groupIndex < m_residencyGroupCapacity; ++groupIndex) {
+            queueUnloadPatch(groupIndex);
+        }
+    }
+
+    uint32_t findOldestTask(StreamingTaskState state, bool requirePriorFrame = false) const {
+        uint32_t bestTaskIndex = kInvalidTaskIndex;
+        uint64_t bestSerial = UINT64_MAX;
+        for (uint32_t taskIndex = 0u; taskIndex < kStreamingTaskCount; ++taskIndex) {
+            const StreamingTask& task = m_streamingTasks[taskIndex];
+            if (task.state != state) {
+                continue;
+            }
+            if (requirePriorFrame &&
+                (task.transferSubmitFrame == UINT32_MAX || task.transferSubmitFrame >= m_frameIndex)) {
+                continue;
+            }
+            if (task.serial < bestSerial) {
+                bestSerial = task.serial;
+                bestTaskIndex = taskIndex;
+            }
+        }
+        return bestTaskIndex;
+    }
+
+    void selectTransferTask() {
+        m_transferTaskIndex = findOldestTask(StreamingTaskState::Prepared);
+    }
+
+    bool taskReadyForUpdate(const StreamingTask& task) const {
+        if (task.state != StreamingTaskState::TransferSubmitted ||
+            task.transferSubmitFrame == UINT32_MAX) {
+            return false;
+        }
+
+        if (task.transferWaitValue == 0u) {
+            return true;
+        }
+
+        return task.transferSubmitFrame < m_frameIndex;
+    }
+
+    void selectUpdateTask() {
+        m_updateTaskIndex = kInvalidTaskIndex;
+        uint64_t bestSerial = UINT64_MAX;
+        for (uint32_t taskIndex = 0u; taskIndex < kStreamingTaskCount; ++taskIndex) {
+            const StreamingTask& task = m_streamingTasks[taskIndex];
+            if (!taskReadyForUpdate(task) || task.serial >= bestSerial) {
+                continue;
+            }
+
+            bestSerial = task.serial;
+            m_updateTaskIndex = taskIndex;
+        }
     }
 
     void queueLoadPatch(uint32_t groupIndex,
@@ -667,7 +912,8 @@ private:
             uint64_t(m_groupResidentAllocations[groupIndex].heapOffset) * sizeof(uint32_t);
         const uint64_t uploadSizeBytes = uint64_t(group.clusterCount) * sizeof(uint32_t);
         const uint32_t* srcData = clusterLodData.groupMeshletIndices.data() + group.clusterStart;
-        if (!m_streamingStorage.stageUpload(m_activeFrameSlot % kBufferedFrameCount,
+        if (!validTaskIndex(m_prepareTaskIndex) ||
+            !m_streamingStorage.stageUpload(m_prepareTaskIndex,
                                             srcData,
                                             uploadSizeBytes,
                                             dstOffsetBytes)) {
@@ -814,12 +1060,6 @@ private:
         m_requestReadbackScratch.clear();
         m_unloadRequestReadbackScratch.clear();
         m_confirmedUnloadGroups.clear();
-        m_pendingStreamingPatches.clear();
-        m_framePatchCounts.fill(0u);
-        m_pendingTransferWaitValues.fill(0u);
-        for (std::vector<StreamingPatch>& framePatches : m_frameStreamingPatches) {
-            framePatches.clear();
-        }
         resetDebugStats();
 
         std::vector<uint32_t> alwaysResidentGroups;
@@ -1117,7 +1357,34 @@ private:
         m_debugStats.maxLoadsPerFrame = m_maxLoadsPerFrame;
         m_debugStats.maxUnloadsPerFrame = m_maxUnloadsPerFrame;
         m_debugStats.ageThreshold = m_ageThreshold;
+        m_debugStats.streamingTaskCapacity = kStreamingTaskCount;
+        m_debugStats.freeStreamingTaskCount = 0;
+        m_debugStats.preparedStreamingTaskCount = 0;
+        m_debugStats.transferSubmittedTaskCount = 0;
+        m_debugStats.updateQueuedTaskCount = 0;
+        m_debugStats.selectedTransferTaskIndex = m_transferTaskIndex;
+        m_debugStats.selectedUpdateTaskIndex = m_updateTaskIndex;
+        m_debugStats.selectedUpdatePatchCount = m_activeUpdatePatchCount;
+        m_debugStats.selectedTransferBytes = streamingUploadBytesUsed();
+        m_debugStats.selectedUpdateTransferWaitValue = m_activeUpdateTransferWaitValue;
         m_debugStats.resourcesReady = ready();
+
+        for (const StreamingTask& task : m_streamingTasks) {
+            switch (task.state) {
+            case StreamingTaskState::Free:
+                ++m_debugStats.freeStreamingTaskCount;
+                break;
+            case StreamingTaskState::Prepared:
+                ++m_debugStats.preparedStreamingTaskCount;
+                break;
+            case StreamingTaskState::TransferSubmitted:
+                ++m_debugStats.transferSubmittedTaskCount;
+                break;
+            case StreamingTaskState::UpdateQueued:
+                ++m_debugStats.updateQueuedTaskCount;
+                break;
+            }
+        }
 
         const uint32_t groupCount =
             std::min(m_debugStats.activeResidencyGroupCount, m_residencyGroupCapacity);
@@ -1140,24 +1407,28 @@ private:
     uint32_t m_maxLoadsPerFrame = 128u;
     uint32_t m_maxUnloadsPerFrame = 256u;
     uint32_t m_ageThreshold = 16u;
+    uint32_t m_frameIndex = 0u;
+    uint32_t m_prepareTaskIndex = kInvalidTaskIndex;
+    uint32_t m_transferTaskIndex = kInvalidTaskIndex;
+    uint32_t m_updateTaskIndex = kInvalidTaskIndex;
+    uint32_t m_activeUpdatePatchCount = 0u;
     uint64_t m_streamingStorageCapacityBytes = kDefaultStreamingStorageCapacityBytes;
     uint64_t m_maxStreamingTransferBytes = kDefaultMaxStreamingTransferBytes;
+    uint64_t m_activeUpdateTransferWaitValue = 0u;
+    uint64_t m_nextTaskSerial = 1u;
     const void* m_residencySourceNodeBufferHandle = nullptr;
     const void* m_residencySourceGroupBufferHandle = nullptr;
     const void* m_residencySourceGroupMeshletIndicesHandle = nullptr;
     std::array<FrameBuffers, kBufferedFrameCount> m_frameBuffers;
     std::unique_ptr<RhiBuffer> m_lodGroupPageTableBuffer;
     StreamingStorage m_streamingStorage;
-    std::array<uint32_t, kBufferedFrameCount> m_framePatchCounts{};
-    std::array<uint64_t, kBufferedFrameCount> m_pendingTransferWaitValues{};
-    std::array<std::vector<StreamingPatch>, kBufferedFrameCount> m_frameStreamingPatches;
+    std::array<StreamingTask, kStreamingTaskCount> m_streamingTasks;
     std::vector<uint32_t> m_groupResidencyState;
     std::vector<uint32_t> m_groupAgeState;
     std::vector<uint8_t> m_groupPendingUnloadState;
     std::vector<uint8_t> m_unloadRequestSeenScratch;
     std::vector<uint32_t> m_dynamicResidentGroups;
     std::vector<uint32_t> m_pendingResidencyGroups;
-    std::vector<StreamingPatch> m_pendingStreamingPatches;
     std::vector<uint32_t> m_patchLastWriteIndexScratch;
     std::vector<uint32_t> m_patchTouchedGroupsScratch;
     std::vector<ClusterResidencyRequest> m_requestReadbackScratch;
