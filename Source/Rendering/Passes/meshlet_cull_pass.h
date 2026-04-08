@@ -468,6 +468,21 @@ public:
             streamingStats ? streamingStats->activeResidencyGroupCount : 0u;
         const uint32_t alwaysResidentGroupCount =
             streamingStats ? streamingStats->lastAlwaysResidentGroupCount : 0u;
+        const uint64_t sceneStorageBytes =
+            uint64_t(std::max<size_t>(1u, m_ctx.clusterLodData.groupMeshletIndices.size())) *
+            sizeof(uint32_t);
+        int streamingStorageCapacityMb =
+            streamingService
+                ? static_cast<int>(std::max<uint64_t>(
+                      1ull,
+                      (streamingService->streamingStorageCapacityBytes() + (1024ull * 1024ull - 1ull)) /
+                          (1024ull * 1024ull)))
+                : 512;
+        const int maxStreamingStorageCapacityMb = static_cast<int>(std::max<uint64_t>(
+            1ull,
+            std::min<uint64_t>((sceneStorageBytes + (1024ull * 1024ull - 1ull)) /
+                                   (1024ull * 1024ull),
+                               4096ull)));
         const uint32_t maxDynamicGroupBudget =
             activeResidencyGroupCount > alwaysResidentGroupCount
                 ? activeResidencyGroupCount - alwaysResidentGroupCount
@@ -480,6 +495,16 @@ public:
             streamingService) {
             streamingService->setStreamingBudgetGroups(
                 static_cast<uint32_t>(std::max(streamingBudgetGroups, 0)));
+            requestVisibilityHistoryReset();
+        }
+        if (ImGui::SliderInt("Streaming Storage Pool (MB)",
+                             &streamingStorageCapacityMb,
+                             1,
+                             maxStreamingStorageCapacityMb,
+                             "%d") &&
+            streamingService) {
+            streamingService->setStreamingStorageCapacityBytes(
+                uint64_t(std::max(streamingStorageCapacityMb, 1)) * 1024ull * 1024ull);
             requestVisibilityHistoryReset();
         }
         int maxLoadsPerFrame =
@@ -531,7 +556,7 @@ public:
                     activeResidencyGroupCount);
         ImGui::Text("Always Resident Groups: %u",
                     alwaysResidentGroupCount);
-        ImGui::Text("Resident Heap: %u / %u indices",
+        ImGui::Text("Resident Storage: %u / %u indices",
                     streamingStats ? streamingStats->residentHeapUsed : 0u,
                     streamingStats ? streamingStats->residentHeapCapacity : 0u);
         ImGui::Text("Dynamic Resident Groups: %u",

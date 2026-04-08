@@ -6,6 +6,7 @@
 #include "gpu_driven_helpers.h"
 #include "rhi_backend.h"
 #include "rhi_resource_utils.h"
+#include "streaming_storage.h"
 
 #include <algorithm>
 #include <array>
@@ -74,6 +75,18 @@ public:
 
     uint32_t ageThreshold() const { return m_ageThreshold; }
 
+    void setStreamingStorageCapacityBytes(uint64_t capacityBytes) {
+        capacityBytes = std::max<uint64_t>(capacityBytes, sizeof(uint32_t));
+        if (m_streamingStorageCapacityBytes == capacityBytes) {
+            return;
+        }
+
+        m_streamingStorageCapacityBytes = capacityBytes;
+        m_stateDirty = true;
+    }
+
+    uint64_t streamingStorageCapacityBytes() const { return m_streamingStorageCapacityBytes; }
+
     void markStateDirty() { m_stateDirty = true; }
 
     const DebugStats& debugStats() const { return m_debugStats; }
@@ -90,7 +103,7 @@ public:
                 return false;
             }
         }
-        return m_lodGroupPageTableBuffer && m_residentGroupMeshletIndicesBuffer;
+        return m_lodGroupPageTableBuffer && m_streamingStorage.ready();
     }
 
     bool useResidentHeap() const {
@@ -107,7 +120,7 @@ public:
         return m_lodGroupPageTableBuffer.get();
     }
     const RhiBuffer* residentGroupMeshletIndicesBuffer() const {
-        return m_residentGroupMeshletIndicesBuffer.get();
+        return m_streamingStorage.buffer();
     }
     const RhiBuffer* residencyRequestBuffer() const {
         return activeFrameBuffers().residencyRequestBuffer.get();
@@ -176,11 +189,7 @@ public:
 private:
     static constexpr uint32_t kInvalidResidentHeapOffset = UINT32_MAX;
     static constexpr uint32_t kBufferedFrameCount = 2u;
-
-    struct ResidentHeapRange {
-        uint32_t offset = 0;
-        uint32_t count = 0;
-    };
+    static constexpr uint64_t kDefaultStreamingStorageCapacityBytes = 512ull * 1024ull * 1024ull;
 
     struct GroupResidentAllocation {
         uint32_t heapOffset = kInvalidResidentHeapOffset;
@@ -257,8 +266,7 @@ private:
     void createFrameBufferSet(FrameBuffers& frameBuffers,
                               const PipelineRuntimeContext& runtimeContext,
                               uint32_t frameSlot,
-                              uint32_t groupCapacity,
-                              uint32_t residentHeapCapacity) {
+                              uint32_t groupCapacity) {
         RhiBufferDesc residencyDesc{};
         residencyDesc.size = size_t(groupCapacity) * sizeof(uint32_t);
         residencyDesc.hostVisible = true;
@@ -324,12 +332,11 @@ private:
         }
 
         const uint32_t groupCapacity = std::max(1u, clusterLodData.totalGroupCount);
-        const uint32_t residentHeapCapacity =
-            std::max<uint32_t>(1u, static_cast<uint32_t>(clusterLodData.groupMeshletIndices.size()));
+        const uint32_t storageCapacity = computeStreamingStorageCapacity(clusterLodData);
         const bool needsRecreate =
             !ready() ||
             m_residencyGroupCapacity != groupCapacity ||
-            m_residentHeapCapacity != residentHeapCapacity;
+            m_streamingStorage.capacityElements() != storageCapacity;
         if (!needsRecreate) {
             return;
         }
@@ -339,8 +346,7 @@ private:
             createFrameBufferSet(m_frameBuffers[frameSlot],
                                  runtimeContext,
                                  frameSlot,
-                                 groupCapacity,
-                                 residentHeapCapacity);
+                                 groupCapacity);
         }
 
         RhiBufferDesc groupPageTableDesc{};
@@ -349,15 +355,11 @@ private:
         groupPageTableDesc.debugName = "ClusterLodGroupPageTable";
         m_lodGroupPageTableBuffer = runtimeContext.resourceFactory->createBuffer(groupPageTableDesc);
 
-        RhiBufferDesc residentHeapDesc{};
-        residentHeapDesc.size = size_t(residentHeapCapacity) * sizeof(uint32_t);
-        residentHeapDesc.hostVisible = false;
-        residentHeapDesc.debugName = "ClusterLodResidentGroupMeshletHeap";
-        m_residentGroupMeshletIndicesBuffer =
-            runtimeContext.resourceFactory->createBuffer(residentHeapDesc);
+        m_streamingStorage.ensureBuffer(*runtimeContext.resourceFactory,
+                                        storageCapacity,
+                                        "ClusterLodResidentGroupMeshletStorage");
 
         m_residencyGroupCapacity = groupCapacity;
-        m_residentHeapCapacity = residentHeapCapacity;
         m_groupResidencyState.assign(groupCapacity, 0u);
         m_groupAgeState.assign(groupCapacity, 0u);
         m_groupPendingUnloadState.assign(groupCapacity, 0u);
@@ -500,11 +502,7 @@ private:
     }
 
     void resetResidentHeapAllocator() {
-        m_residentHeapFreeRanges.clear();
-        if (m_residentHeapCapacity > 0u) {
-            m_residentHeapFreeRanges.push_back({0u, m_residentHeapCapacity});
-        }
-
+        m_streamingStorage.resetAllocator();
         m_groupResidentAllocations.assign(m_residencyGroupCapacity, {});
     }
 
@@ -546,67 +544,6 @@ private:
                 nodeStack.push_back(node.childOffset + childIndex);
             }
         }
-    }
-
-    bool allocateResidentHeapRange(uint32_t elementCount, uint32_t& outOffset) {
-        if (elementCount == 0u) {
-            outOffset = 0u;
-            return true;
-        }
-
-        for (size_t rangeIndex = 0; rangeIndex < m_residentHeapFreeRanges.size(); ++rangeIndex) {
-            ResidentHeapRange& range = m_residentHeapFreeRanges[rangeIndex];
-            if (range.count < elementCount) {
-                continue;
-            }
-
-            outOffset = range.offset;
-            range.offset += elementCount;
-            range.count -= elementCount;
-            if (range.count == 0u) {
-                m_residentHeapFreeRanges.erase(
-                    m_residentHeapFreeRanges.begin() +
-                    static_cast<std::vector<ResidentHeapRange>::difference_type>(rangeIndex));
-            }
-            return true;
-        }
-
-        return false;
-    }
-
-    void releaseResidentHeapRange(uint32_t offset, uint32_t elementCount) {
-        if (elementCount == 0u || offset == kInvalidResidentHeapOffset) {
-            return;
-        }
-
-        ResidentHeapRange releasedRange{offset, elementCount};
-        auto insertIt = std::lower_bound(
-            m_residentHeapFreeRanges.begin(),
-            m_residentHeapFreeRanges.end(),
-            releasedRange.offset,
-            [](const ResidentHeapRange& range, uint32_t value) {
-                return range.offset < value;
-            });
-        m_residentHeapFreeRanges.insert(insertIt, releasedRange);
-
-        if (m_residentHeapFreeRanges.empty()) {
-            return;
-        }
-
-        std::vector<ResidentHeapRange> mergedRanges;
-        mergedRanges.reserve(m_residentHeapFreeRanges.size());
-        for (const ResidentHeapRange& range : m_residentHeapFreeRanges) {
-            if (!mergedRanges.empty()) {
-                ResidentHeapRange& previous = mergedRanges.back();
-                if (previous.offset + previous.count == range.offset) {
-                    previous.count += range.count;
-                    continue;
-                }
-            }
-            mergedRanges.push_back(range);
-        }
-
-        m_residentHeapFreeRanges = std::move(mergedRanges);
     }
 
     void appendStreamingPatch(const StreamingPatch& patch) {
@@ -676,11 +613,11 @@ private:
         }
 
         uint32_t heapOffset = 0u;
-        if (!allocateResidentHeapRange(group.clusterCount, heapOffset)) {
+        if (!m_streamingStorage.allocate(group.clusterCount, heapOffset)) {
             return false;
         }
-        if (heapOffset + group.clusterCount > m_residentHeapCapacity) {
-            releaseResidentHeapRange(heapOffset, group.clusterCount);
+        if (heapOffset + group.clusterCount > m_streamingStorage.capacityElements()) {
+            m_streamingStorage.release(heapOffset, group.clusterCount);
             return false;
         }
 
@@ -695,7 +632,7 @@ private:
         }
 
         GroupResidentAllocation& allocation = m_groupResidentAllocations[groupIndex];
-        releaseResidentHeapRange(allocation.heapOffset, allocation.heapCount);
+        m_streamingStorage.release(allocation.heapOffset, allocation.heapCount);
         allocation = {};
     }
 
@@ -1052,19 +989,64 @@ private:
         promotePendingResidencyGroups(clusterLodData, remainingLoads);
     }
 
-    uint32_t computeResidentHeapUsed() const {
-        uint32_t freeCount = 0u;
-        for (const ResidentHeapRange& range : m_residentHeapFreeRanges) {
-            freeCount += range.count;
+    uint32_t configuredStreamingStorageCapacityElements() const {
+        const uint64_t capacityElements =
+            std::max<uint64_t>(1ull, m_streamingStorageCapacityBytes / sizeof(uint32_t));
+        return static_cast<uint32_t>(std::min<uint64_t>(capacityElements, uint64_t(UINT32_MAX)));
+    }
+
+    uint32_t computeAlwaysResidentClusterCapacity(const ClusterLODData& clusterLodData) const {
+        const uint32_t totalGroupCount =
+            std::max<uint32_t>(1u, static_cast<uint32_t>(clusterLodData.groups.size()));
+        std::vector<uint8_t> alwaysResidentGroupSeen(totalGroupCount, 0u);
+        std::vector<uint32_t> alwaysResidentGroups;
+        uint64_t totalClusterCount = 0u;
+
+        for (uint32_t lodRootNode : clusterLodData.primitiveGroupLodRoots) {
+            if (lodRootNode == UINT32_MAX || lodRootNode >= clusterLodData.nodes.size()) {
+                continue;
+            }
+
+            const GPULodNode& lodRoot = clusterLodData.nodes[lodRootNode];
+            if (lodRoot.childCount == 0u) {
+                continue;
+            }
+
+            uint32_t alwaysResidentNode = lodRootNode;
+            if (lodRoot.isLeaf == 0u) {
+                alwaysResidentNode = lodRoot.childOffset + lodRoot.childCount - 1u;
+            }
+
+            alwaysResidentGroups.clear();
+            collectLeafGroupsForNode(alwaysResidentNode, clusterLodData, alwaysResidentGroups);
+            for (uint32_t groupIndex : alwaysResidentGroups) {
+                if (groupIndex >= clusterLodData.groups.size() ||
+                    alwaysResidentGroupSeen[groupIndex] != 0u) {
+                    continue;
+                }
+
+                alwaysResidentGroupSeen[groupIndex] = 1u;
+                totalClusterCount += clusterLodData.groups[groupIndex].clusterCount;
+            }
         }
-        return m_residentHeapCapacity - std::min(m_residentHeapCapacity, freeCount);
+
+        return static_cast<uint32_t>(std::min<uint64_t>(std::max<uint64_t>(1ull, totalClusterCount),
+                                                        uint64_t(UINT32_MAX)));
+    }
+
+    uint32_t computeStreamingStorageCapacity(const ClusterLODData& clusterLodData) const {
+        const uint32_t sceneClusterCapacity =
+            std::max<uint32_t>(1u, static_cast<uint32_t>(clusterLodData.groupMeshletIndices.size()));
+        const uint32_t configuredCapacity = configuredStreamingStorageCapacityElements();
+        const uint32_t alwaysResidentCapacity = computeAlwaysResidentClusterCapacity(clusterLodData);
+        return std::max(alwaysResidentCapacity, std::min(sceneClusterCapacity, configuredCapacity));
     }
 
     void updateDebugStats() {
         m_debugStats.lastResidentGroupCount = 0;
         m_debugStats.lastAlwaysResidentGroupCount = 0;
-        m_debugStats.residentHeapCapacity = m_residentHeapCapacity;
-        m_debugStats.residentHeapUsed = computeResidentHeapUsed();
+        m_debugStats.residentHeapCapacity = m_streamingStorage.capacityElements();
+        m_debugStats.residentHeapUsed = m_streamingStorage.usedElements();
         m_debugStats.dynamicResidentGroupCount =
             static_cast<uint32_t>(m_dynamicResidentGroups.size());
         m_debugStats.pendingResidencyGroupCount =
@@ -1098,16 +1080,16 @@ private:
     uint32_t m_activeFrameSlot = 0u;
     uint32_t m_streamingBudgetGroups = 256u;
     uint32_t m_residencyGroupCapacity = 0;
-    uint32_t m_residentHeapCapacity = 0;
     uint32_t m_maxLoadsPerFrame = 128u;
     uint32_t m_maxUnloadsPerFrame = 256u;
     uint32_t m_ageThreshold = 16u;
+    uint64_t m_streamingStorageCapacityBytes = kDefaultStreamingStorageCapacityBytes;
     const void* m_residencySourceNodeBufferHandle = nullptr;
     const void* m_residencySourceGroupBufferHandle = nullptr;
     const void* m_residencySourceGroupMeshletIndicesHandle = nullptr;
     std::array<FrameBuffers, kBufferedFrameCount> m_frameBuffers;
     std::unique_ptr<RhiBuffer> m_lodGroupPageTableBuffer;
-    std::unique_ptr<RhiBuffer> m_residentGroupMeshletIndicesBuffer;
+    StreamingStorage m_streamingStorage;
     std::array<uint32_t, kBufferedFrameCount> m_framePatchCounts{};
     std::array<std::vector<StreamingPatch>, kBufferedFrameCount> m_frameStreamingPatches;
     std::vector<uint32_t> m_groupResidencyState;
@@ -1122,7 +1104,6 @@ private:
     std::vector<ClusterResidencyRequest> m_requestReadbackScratch;
     std::vector<uint32_t> m_unloadRequestReadbackScratch;
     std::vector<uint32_t> m_confirmedUnloadGroups;
-    std::vector<ResidentHeapRange> m_residentHeapFreeRanges;
     std::vector<GroupResidentAllocation> m_groupResidentAllocations;
     DebugStats m_debugStats;
 };
