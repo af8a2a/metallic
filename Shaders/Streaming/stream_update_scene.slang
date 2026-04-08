@@ -2,7 +2,7 @@
 
 struct StreamingUpdateUniforms {
     uint patchCount;
-    uint reserved0;
+    uint copySourceData;
     uint reserved1;
     uint reserved2;
 };
@@ -31,9 +31,11 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    for (uint clusterIndex = 0u; clusterIndex < patch.clusterCount; ++clusterIndex) {
-        residentGroupMeshletIndices[patch.residentHeapOffset + clusterIndex] =
-            sourceGroupMeshletIndices[patch.clusterStart + clusterIndex];
+    if (updateUniforms.copySourceData != 0u) {
+        for (uint clusterIndex = 0u; clusterIndex < patch.clusterCount; ++clusterIndex) {
+            residentGroupMeshletIndices[patch.residentHeapOffset + clusterIndex] =
+                sourceGroupMeshletIndices[patch.clusterStart + clusterIndex];
+        }
     }
     lodGroupPageTable[patch.groupIndex] = patch.residentHeapOffset;
 }

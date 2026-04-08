@@ -119,7 +119,7 @@ static_assert(sizeof(StreamingPatch) == sizeof(uint32_t) * 4u,
 
 struct StreamingUpdateUniforms {
     uint32_t patchCount = 0;
-    uint32_t reserved0 = 0;
+    uint32_t copySourceData = 0;
     uint32_t reserved1 = 0;
     uint32_t reserved2 = 0;
 };

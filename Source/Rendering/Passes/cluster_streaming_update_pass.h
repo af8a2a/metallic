@@ -9,6 +9,7 @@
 #include "rhi_resource_utils.h"
 #include "vulkan_upload_service.h"
 #include "vulkan_resource_handles.h"
+#include <vector>
 #endif
 
 class ClusterStreamingUpdatePass : public RenderPass {
@@ -83,6 +84,13 @@ public:
         }
 
 #ifdef _WIN32
+        if (!recordStreamingDataCopies(encoder,
+                                      streamingService->streamingUploadStagingBuffer(),
+                                      residentGroupMeshletIndicesBuffer,
+                                      streamingService->streamingUploadCopyRegions())) {
+            return;
+        }
+
         if (rhiBufferContents(*patchBuffer) == nullptr) {
             const StreamingPatch* patchData = streamingService->streamingPatchData();
             if (!uploadStreamingPatches(encoder, patchBuffer, patchData, patchCount)) {
@@ -93,6 +101,11 @@ public:
 
         StreamingUpdateUniforms uniforms{};
         uniforms.patchCount = patchCount;
+#ifdef _WIN32
+        uniforms.copySourceData = 0u;
+#else
+        uniforms.copySourceData = 1u;
+#endif
 
         encoder.setComputePipeline(pipelineIt->second);
         encoder.setBytes(&uniforms, sizeof(uniforms), GpuDriven::StreamingUpdateBindings::kUniforms);
@@ -121,6 +134,69 @@ private:
     FGResource m_streamingSync;
 
 #ifdef _WIN32
+    static bool recordStreamingDataCopies(
+        RhiComputeCommandEncoder& encoder,
+        const RhiBuffer* stagingBuffer,
+        const RhiBuffer* residentBuffer,
+        const std::vector<StreamingStorage::CopyRegion>& copyRegions) {
+        if (copyRegions.empty()) {
+            return true;
+        }
+        if (!stagingBuffer || !residentBuffer) {
+            return false;
+        }
+
+        const VkBuffer vkStagingBuffer = getVulkanBufferHandle(stagingBuffer);
+        const VkBuffer vkResidentBuffer = getVulkanBufferHandle(residentBuffer);
+        const VkCommandBuffer commandBuffer = static_cast<VkCommandBuffer>(encoder.nativeHandle());
+        if (vkStagingBuffer == VK_NULL_HANDLE ||
+            vkResidentBuffer == VK_NULL_HANDLE ||
+            commandBuffer == VK_NULL_HANDLE) {
+            return false;
+        }
+
+        std::vector<VkBufferCopy> bufferCopies;
+        bufferCopies.reserve(copyRegions.size());
+        for (const StreamingStorage::CopyRegion& copyRegion : copyRegions) {
+            if (copyRegion.sizeBytes == 0u) {
+                continue;
+            }
+
+            VkBufferCopy region{};
+            region.srcOffset = copyRegion.srcOffsetBytes;
+            region.dstOffset = copyRegion.dstOffsetBytes;
+            region.size = copyRegion.sizeBytes;
+            bufferCopies.push_back(region);
+        }
+        if (bufferCopies.empty()) {
+            return true;
+        }
+
+        vkCmdCopyBuffer(commandBuffer,
+                        vkStagingBuffer,
+                        vkResidentBuffer,
+                        static_cast<uint32_t>(bufferCopies.size()),
+                        bufferCopies.data());
+
+        VkBufferMemoryBarrier2 residentUploadBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        residentUploadBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        residentUploadBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        residentUploadBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        residentUploadBarrier.dstAccessMask =
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        residentUploadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        residentUploadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        residentUploadBarrier.buffer = vkResidentBuffer;
+        residentUploadBarrier.offset = 0u;
+        residentUploadBarrier.size = VK_WHOLE_SIZE;
+
+        VkDependencyInfo dependencyInfo{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependencyInfo.bufferMemoryBarrierCount = 1;
+        dependencyInfo.pBufferMemoryBarriers = &residentUploadBarrier;
+        vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+        return true;
+    }
+
     static bool uploadStreamingPatches(RhiComputeCommandEncoder& encoder,
                                        const RhiBuffer* patchBuffer,
                                        const StreamingPatch* patchData,

@@ -87,6 +87,18 @@ public:
 
     uint64_t streamingStorageCapacityBytes() const { return m_streamingStorageCapacityBytes; }
 
+    void setMaxStreamingTransferBytes(uint64_t maxTransferBytes) {
+        maxTransferBytes = std::max<uint64_t>(maxTransferBytes, sizeof(uint32_t));
+        if (m_maxStreamingTransferBytes == maxTransferBytes) {
+            return;
+        }
+
+        m_maxStreamingTransferBytes = maxTransferBytes;
+        m_stateDirty = true;
+    }
+
+    uint64_t maxStreamingTransferBytes() const { return m_maxStreamingTransferBytes; }
+
     void markStateDirty() { m_stateDirty = true; }
 
     const DebugStats& debugStats() const { return m_debugStats; }
@@ -103,7 +115,8 @@ public:
                 return false;
             }
         }
-        return m_lodGroupPageTableBuffer && m_streamingStorage.ready();
+        return m_lodGroupPageTableBuffer && m_streamingStorage.ready() &&
+               m_streamingStorage.uploadReady();
     }
 
     bool useResidentHeap() const {
@@ -121,6 +134,15 @@ public:
     }
     const RhiBuffer* residentGroupMeshletIndicesBuffer() const {
         return m_streamingStorage.buffer();
+    }
+    const RhiBuffer* streamingUploadStagingBuffer() const {
+        return m_streamingStorage.uploadBuffer(m_activeFrameSlot % kBufferedFrameCount);
+    }
+    const std::vector<StreamingStorage::CopyRegion>& streamingUploadCopyRegions() const {
+        return m_streamingStorage.copyRegions(m_activeFrameSlot % kBufferedFrameCount);
+    }
+    uint64_t streamingUploadBytesUsed() const {
+        return m_streamingStorage.uploadBytesUsed(m_activeFrameSlot % kBufferedFrameCount);
     }
     const RhiBuffer* residencyRequestBuffer() const {
         return activeFrameBuffers().residencyRequestBuffer.get();
@@ -169,6 +191,8 @@ public:
             return;
         }
 
+        m_streamingStorage.resetUploadFrame(m_activeFrameSlot % kBufferedFrameCount);
+
         const bool sourceBufferChanged =
             m_residencySourceNodeBufferHandle != clusterLodData.nodeBuffer.nativeHandle() ||
             m_residencySourceGroupBufferHandle != clusterLodData.groupBuffer.nativeHandle() ||
@@ -190,6 +214,7 @@ private:
     static constexpr uint32_t kInvalidResidentHeapOffset = UINT32_MAX;
     static constexpr uint32_t kBufferedFrameCount = 2u;
     static constexpr uint64_t kDefaultStreamingStorageCapacityBytes = 512ull * 1024ull * 1024ull;
+    static constexpr uint64_t kDefaultMaxStreamingTransferBytes = 32ull * 1024ull * 1024ull;
 
     struct GroupResidentAllocation {
         uint32_t heapOffset = kInvalidResidentHeapOffset;
@@ -358,6 +383,11 @@ private:
         m_streamingStorage.ensureBuffer(*runtimeContext.resourceFactory,
                                         storageCapacity,
                                         "ClusterLodResidentGroupMeshletStorage");
+        const uint64_t transferCapacityBytes = computeStreamingTransferCapacityBytes(clusterLodData);
+        m_streamingStorage.ensureUploadBuffers(*runtimeContext.resourceFactory,
+                                              kBufferedFrameCount,
+                                              transferCapacityBytes,
+                                              "ClusterLodStreamingUpload");
 
         m_residencyGroupCapacity = groupCapacity;
         m_groupResidencyState.assign(groupCapacity, 0u);
@@ -571,30 +601,6 @@ private:
         appendStreamingPatch(patch);
     }
 
-    bool queueRefreshPatchForResidentGroup(uint32_t groupIndex,
-                                           const ClusterLODData& clusterLodData) {
-        if (groupIndex >= m_groupResidentAllocations.size() ||
-            groupIndex >= clusterLodData.groups.size()) {
-            return false;
-        }
-
-        if (!ensureResidentHeapSliceForGroup(groupIndex, clusterLodData)) {
-            return false;
-        }
-
-        const GroupResidentAllocation& allocation = m_groupResidentAllocations[groupIndex];
-        if (allocation.heapOffset == kInvalidResidentHeapOffset) {
-            return false;
-        }
-
-        const GPUClusterGroup& group = clusterLodData.groups[groupIndex];
-        queueLoadPatch(groupIndex,
-                       allocation.heapOffset,
-                       group.clusterStart,
-                       group.clusterCount);
-        return true;
-    }
-
     bool ensureResidentHeapSliceForGroup(uint32_t groupIndex,
                                          const ClusterLODData& clusterLodData) {
         if (groupIndex >= m_groupResidentAllocations.size() ||
@@ -623,6 +629,47 @@ private:
 
         allocation.heapOffset = heapOffset;
         allocation.heapCount = group.clusterCount;
+        return true;
+    }
+
+    bool queueLoadPatchForGroup(uint32_t groupIndex, const ClusterLODData& clusterLodData) {
+        if (groupIndex >= m_groupResidentAllocations.size() ||
+            groupIndex >= clusterLodData.groups.size()) {
+            return false;
+        }
+
+        GroupResidentAllocation& allocation = m_groupResidentAllocations[groupIndex];
+        const bool hadAllocation = allocation.heapOffset != kInvalidResidentHeapOffset;
+        if (!ensureResidentHeapSliceForGroup(groupIndex, clusterLodData)) {
+            return false;
+        }
+
+        const GPUClusterGroup& group = clusterLodData.groups[groupIndex];
+        if (size_t(group.clusterStart) + group.clusterCount > clusterLodData.groupMeshletIndices.size()) {
+            if (!hadAllocation) {
+                invalidateResidentGroup(groupIndex);
+            }
+            return false;
+        }
+
+        const uint64_t dstOffsetBytes =
+            uint64_t(m_groupResidentAllocations[groupIndex].heapOffset) * sizeof(uint32_t);
+        const uint64_t uploadSizeBytes = uint64_t(group.clusterCount) * sizeof(uint32_t);
+        const uint32_t* srcData = clusterLodData.groupMeshletIndices.data() + group.clusterStart;
+        if (!m_streamingStorage.stageUpload(m_activeFrameSlot % kBufferedFrameCount,
+                                            srcData,
+                                            uploadSizeBytes,
+                                            dstOffsetBytes)) {
+            if (!hadAllocation) {
+                invalidateResidentGroup(groupIndex);
+            }
+            return false;
+        }
+
+        queueLoadPatch(groupIndex,
+                       m_groupResidentAllocations[groupIndex].heapOffset,
+                       group.clusterStart,
+                       group.clusterCount);
         return true;
     }
 
@@ -727,18 +774,13 @@ private:
                 break;
             }
 
-            if (!ensureResidentHeapSliceForGroup(groupIndex, clusterLodData)) {
-                break;
-            }
-
             m_groupResidencyState[groupIndex] |= kClusterLodGroupResidencyResident;
             m_groupResidencyState[groupIndex] &= ~kClusterLodGroupResidencyRequested;
             m_groupAgeState[groupIndex] = 0u;
-            const GPUClusterGroup& group = clusterLodData.groups[groupIndex];
-            queueLoadPatch(groupIndex,
-                           m_groupResidentAllocations[groupIndex].heapOffset,
-                           group.clusterStart,
-                           group.clusterCount);
+            if (!queueLoadPatchForGroup(groupIndex, clusterLodData)) {
+                m_groupResidencyState[groupIndex] &= ~kClusterLodGroupResidencyResident;
+                break;
+            }
             touchDynamicResidentGroup(groupIndex);
             ++m_debugStats.lastResidencyPromotedCount;
             --remainingLoads;
@@ -790,17 +832,14 @@ private:
                 if (groupIndex >= m_residencyGroupCapacity) {
                     continue;
                 }
-                if (!ensureResidentHeapSliceForGroup(groupIndex, clusterLodData)) {
-                    continue;
-                }
-
                 m_groupResidencyState[groupIndex] =
                     kClusterLodGroupResidencyResident | kClusterLodGroupResidencyAlwaysResident;
                 m_groupAgeState[groupIndex] = 0u;
-                queueLoadPatch(groupIndex,
-                               m_groupResidentAllocations[groupIndex].heapOffset,
-                               clusterLodData.groups[groupIndex].clusterStart,
-                               clusterLodData.groups[groupIndex].clusterCount);
+                if (!queueLoadPatchForGroup(groupIndex, clusterLodData)) {
+                    m_groupResidencyState[groupIndex] = 0u;
+                    m_groupAgeState[groupIndex] = 0u;
+                    continue;
+                }
             }
         }
 
@@ -917,8 +956,6 @@ private:
                         m_groupResidencyState[request.targetGroupIndex] &=
                             ~kClusterLodGroupResidencyRequested;
                         m_groupAgeState[request.targetGroupIndex] = 0u;
-                        queueRefreshPatchForResidentGroup(request.targetGroupIndex,
-                                                          clusterLodData);
                         touchDynamicResidentGroup(request.targetGroupIndex);
                         continue;
                     }
@@ -993,6 +1030,14 @@ private:
         const uint64_t capacityElements =
             std::max<uint64_t>(1ull, m_streamingStorageCapacityBytes / sizeof(uint32_t));
         return static_cast<uint32_t>(std::min<uint64_t>(capacityElements, uint64_t(UINT32_MAX)));
+    }
+
+    uint64_t computeStreamingTransferCapacityBytes(const ClusterLODData& clusterLodData) const {
+        const uint64_t sceneBytes =
+            uint64_t(std::max<size_t>(1u, clusterLodData.groupMeshletIndices.size())) * sizeof(uint32_t);
+        const uint64_t alwaysResidentBytes =
+            uint64_t(computeAlwaysResidentClusterCapacity(clusterLodData)) * sizeof(uint32_t);
+        return std::max(alwaysResidentBytes, std::min(sceneBytes, m_maxStreamingTransferBytes));
     }
 
     uint32_t computeAlwaysResidentClusterCapacity(const ClusterLODData& clusterLodData) const {
@@ -1084,6 +1129,7 @@ private:
     uint32_t m_maxUnloadsPerFrame = 256u;
     uint32_t m_ageThreshold = 16u;
     uint64_t m_streamingStorageCapacityBytes = kDefaultStreamingStorageCapacityBytes;
+    uint64_t m_maxStreamingTransferBytes = kDefaultMaxStreamingTransferBytes;
     const void* m_residencySourceNodeBufferHandle = nullptr;
     const void* m_residencySourceGroupBufferHandle = nullptr;
     const void* m_residencySourceGroupMeshletIndicesHandle = nullptr;

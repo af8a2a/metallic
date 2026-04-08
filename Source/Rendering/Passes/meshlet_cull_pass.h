@@ -478,11 +478,19 @@ public:
                       (streamingService->streamingStorageCapacityBytes() + (1024ull * 1024ull - 1ull)) /
                           (1024ull * 1024ull)))
                 : 512;
+        int streamingTransferCapacityMb =
+            streamingService
+                ? static_cast<int>(std::max<uint64_t>(
+                      1ull,
+                      (streamingService->maxStreamingTransferBytes() + (1024ull * 1024ull - 1ull)) /
+                          (1024ull * 1024ull)))
+                : 32;
         const int maxStreamingStorageCapacityMb = static_cast<int>(std::max<uint64_t>(
             1ull,
             std::min<uint64_t>((sceneStorageBytes + (1024ull * 1024ull - 1ull)) /
                                    (1024ull * 1024ull),
                                4096ull)));
+        const int maxStreamingTransferCapacityMb = maxStreamingStorageCapacityMb;
         const uint32_t maxDynamicGroupBudget =
             activeResidencyGroupCount > alwaysResidentGroupCount
                 ? activeResidencyGroupCount - alwaysResidentGroupCount
@@ -505,6 +513,16 @@ public:
             streamingService) {
             streamingService->setStreamingStorageCapacityBytes(
                 uint64_t(std::max(streamingStorageCapacityMb, 1)) * 1024ull * 1024ull);
+            requestVisibilityHistoryReset();
+        }
+        if (ImGui::SliderInt("Streaming Transfer Cap (MB)",
+                             &streamingTransferCapacityMb,
+                             1,
+                             maxStreamingTransferCapacityMb,
+                             "%d") &&
+            streamingService) {
+            streamingService->setMaxStreamingTransferBytes(
+                uint64_t(std::max(streamingTransferCapacityMb, 1)) * 1024ull * 1024ull);
             requestVisibilityHistoryReset();
         }
         int maxLoadsPerFrame =
@@ -559,6 +577,15 @@ public:
         ImGui::Text("Resident Storage: %u / %u indices",
                     streamingStats ? streamingStats->residentHeapUsed : 0u,
                     streamingStats ? streamingStats->residentHeapCapacity : 0u);
+        ImGui::Text("Upload Staging (frame): %.2f / %.2f MB",
+                    streamingService
+                        ? float(double(streamingService->streamingUploadBytesUsed()) /
+                                (1024.0 * 1024.0))
+                        : 0.0f,
+                    streamingService
+                        ? float(double(streamingService->maxStreamingTransferBytes()) /
+                                (1024.0 * 1024.0))
+                        : 0.0f);
         ImGui::Text("Dynamic Resident Groups: %u",
                     streamingStats ? streamingStats->dynamicResidentGroupCount : 0u);
         ImGui::Text("Pending Residency Groups: %u",
