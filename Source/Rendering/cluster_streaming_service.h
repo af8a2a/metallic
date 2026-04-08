@@ -345,13 +345,13 @@ private:
 
         RhiBufferDesc groupPageTableDesc{};
         groupPageTableDesc.size = size_t(groupCapacity) * sizeof(uint32_t);
-        groupPageTableDesc.hostVisible = true;
+        groupPageTableDesc.hostVisible = false;
         groupPageTableDesc.debugName = "ClusterLodGroupPageTable";
         m_lodGroupPageTableBuffer = runtimeContext.resourceFactory->createBuffer(groupPageTableDesc);
 
         RhiBufferDesc residentHeapDesc{};
         residentHeapDesc.size = size_t(residentHeapCapacity) * sizeof(uint32_t);
-        residentHeapDesc.hostVisible = true;
+        residentHeapDesc.hostVisible = false;
         residentHeapDesc.debugName = "ClusterLodResidentGroupMeshletHeap";
         m_residentGroupMeshletIndicesBuffer =
             runtimeContext.resourceFactory->createBuffer(residentHeapDesc);
@@ -360,8 +360,6 @@ private:
         m_residentHeapCapacity = residentHeapCapacity;
         m_groupResidencyState.assign(groupCapacity, 0u);
         m_groupAgeState.assign(groupCapacity, 0u);
-        m_groupPageTableState.assign(groupCapacity, kClusterLodGroupPageInvalidAddress);
-        m_residentHeapState.assign(residentHeapCapacity, 0u);
         m_groupPendingUnloadState.assign(groupCapacity, 0u);
         m_unloadRequestSeenScratch.assign(groupCapacity, 0u);
         m_stateDirty = true;
@@ -379,22 +377,8 @@ private:
         m_residencySourceGroupBufferHandle = nullptr;
         m_residencySourceGroupMeshletIndicesHandle = nullptr;
         resetResidentHeapAllocator();
-        resetSharedSceneBuffers();
         uploadCanonicalStateToAllFrames();
         updateDebugStats();
-    }
-
-    void resetSharedSceneBuffers() {
-        if (uint32_t* pageTable = mappedUint32(m_lodGroupPageTableBuffer.get())) {
-            std::fill(pageTable,
-                      pageTable + m_residencyGroupCapacity,
-                      kClusterLodGroupPageInvalidAddress);
-        }
-        if (uint32_t* residentHeap = mappedUint32(m_residentGroupMeshletIndicesBuffer.get())) {
-            std::fill(residentHeap,
-                      residentHeap + m_residentHeapCapacity,
-                      0u);
-        }
     }
 
     void seedResidencyRequestQueue(FrameBuffers& frameBuffers) {
@@ -664,7 +648,6 @@ private:
             return false;
         }
 
-        m_groupPageTableState[groupIndex] = heapOffset;
         allocation.heapOffset = heapOffset;
         allocation.heapCount = group.clusterCount;
         return true;
@@ -675,7 +658,6 @@ private:
             return;
         }
 
-        m_groupPageTableState[groupIndex] = kClusterLodGroupPageInvalidAddress;
         GroupResidentAllocation& allocation = m_groupResidentAllocations[groupIndex];
         releaseResidentHeapRange(allocation.heapOffset, allocation.heapCount);
         allocation = {};
@@ -796,10 +778,6 @@ private:
     void rebuildStreamingState(const ClusterLODData& clusterLodData) {
         std::fill(m_groupResidencyState.begin(), m_groupResidencyState.end(), 0u);
         std::fill(m_groupAgeState.begin(), m_groupAgeState.end(), 0u);
-        std::fill(m_groupPageTableState.begin(),
-                  m_groupPageTableState.end(),
-                  kClusterLodGroupPageInvalidAddress);
-        std::fill(m_residentHeapState.begin(), m_residentHeapState.end(), 0u);
         std::fill(m_groupPendingUnloadState.begin(), m_groupPendingUnloadState.end(), 0u);
         std::fill(m_unloadRequestSeenScratch.begin(), m_unloadRequestSeenScratch.end(), 0u);
         resetResidentHeapAllocator();
@@ -814,7 +792,6 @@ private:
             framePatches.clear();
         }
         resetDebugStats();
-        resetSharedSceneBuffers();
 
         std::vector<uint32_t> alwaysResidentGroups;
         for (uint32_t lodRootNode : clusterLodData.primitiveGroupLodRoots) {
@@ -1091,8 +1068,6 @@ private:
     std::array<std::vector<StreamingPatch>, kBufferedFrameCount> m_frameStreamingPatches;
     std::vector<uint32_t> m_groupResidencyState;
     std::vector<uint32_t> m_groupAgeState;
-    std::vector<uint32_t> m_groupPageTableState;
-    std::vector<uint32_t> m_residentHeapState;
     std::vector<uint8_t> m_groupPendingUnloadState;
     std::vector<uint8_t> m_unloadRequestSeenScratch;
     std::vector<uint32_t> m_dynamicResidentGroups;
