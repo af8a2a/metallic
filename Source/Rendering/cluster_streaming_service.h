@@ -322,6 +322,16 @@ private:
         std::unique_ptr<RhiBuffer> streamingPatchBuffer;
     };
 
+    static void resetFrameBuffers(FrameBuffers& frameBuffers) {
+        frameBuffers.groupResidencyBuffer.reset();
+        frameBuffers.groupAgeBuffer.reset();
+        frameBuffers.residencyRequestBuffer.reset();
+        frameBuffers.residencyRequestStateBuffer.reset();
+        frameBuffers.unloadRequestBuffer.reset();
+        frameBuffers.unloadRequestStateBuffer.reset();
+        frameBuffers.streamingPatchBuffer.reset();
+    }
+
     FrameBuffers& activeFrameBuffers() {
         return m_frameBuffers[m_activeFrameSlot % kBufferedFrameCount];
     }
@@ -346,7 +356,12 @@ private:
 
         m_streamingStorage.resetUploadFrame(taskIndex);
         StreamingTask& task = m_streamingTasks[taskIndex];
-        task = {};
+        task.state = StreamingTaskState::Free;
+        task.transferSubmitFrame = UINT32_MAX;
+        task.updateQueuedFrame = UINT32_MAX;
+        task.transferWaitValue = 0u;
+        task.serial = 0u;
+        task.patches.clear();
 
         if (m_prepareTaskIndex == taskIndex) {
             m_prepareTaskIndex = kInvalidTaskIndex;
@@ -393,7 +408,11 @@ private:
             m_streamingStorage.resetUploadFrame(taskIndex);
 
             StreamingTask& task = m_streamingTasks[taskIndex];
-            task = {};
+            task.transferSubmitFrame = UINT32_MAX;
+            task.updateQueuedFrame = UINT32_MAX;
+            task.transferWaitValue = 0u;
+            task.serial = 0u;
+            task.patches.clear();
             task.state = StreamingTaskState::Prepared;
             task.serial = m_nextTaskSerial++;
             return true;
@@ -532,16 +551,25 @@ private:
 
         const uint32_t groupCapacity = std::max(1u, clusterLodData.totalGroupCount);
         const uint32_t storageCapacity = computeStreamingStorageCapacity(clusterLodData);
+        const uint64_t transferCapacityBytes = computeStreamingTransferCapacityBytes(clusterLodData);
+        const bool hasExistingResources =
+            m_residencyGroupCapacity != 0u || m_lodGroupPageTableBuffer || m_streamingStorage.ready() ||
+            m_streamingStorage.uploadReady();
         const bool needsRecreate =
             !ready() ||
             m_residencyGroupCapacity != groupCapacity ||
-            m_streamingStorage.capacityElements() != storageCapacity;
+            m_streamingStorage.capacityElements() != storageCapacity ||
+            m_streamingStorage.maxUploadBytesPerFrame() != transferCapacityBytes;
         if (!needsRecreate) {
             return;
         }
 
+        if (hasExistingResources && runtimeContext.rhi) {
+            runtimeContext.rhi->waitIdle();
+        }
+
         for (uint32_t frameSlot = 0; frameSlot < kBufferedFrameCount; ++frameSlot) {
-            m_frameBuffers[frameSlot] = {};
+            resetFrameBuffers(m_frameBuffers[frameSlot]);
             createFrameBufferSet(m_frameBuffers[frameSlot],
                                  runtimeContext,
                                  frameSlot,
@@ -557,7 +585,6 @@ private:
         m_streamingStorage.ensureBuffer(*runtimeContext.resourceFactory,
                                         storageCapacity,
                                         "ClusterLodResidentGroupMeshletStorage");
-        const uint64_t transferCapacityBytes = computeStreamingTransferCapacityBytes(clusterLodData);
         m_streamingStorage.ensureUploadBuffers(*runtimeContext.resourceFactory,
                                               kStreamingTaskCount,
                                               transferCapacityBytes,

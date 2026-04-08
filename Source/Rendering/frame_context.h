@@ -133,6 +133,7 @@ struct PipelineRuntimeContext {
 
     // Resource creation for pass-owned persistent resources
     RhiFrameGraphBackend* resourceFactory = nullptr;
+    RhiContext* rhi = nullptr;
 
     // Shared streaming state used by authored update/request/render passes.
     ClusterStreamingService* clusterStreamingService = nullptr;

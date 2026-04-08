@@ -1363,6 +1363,7 @@ int main() {
 
     PipelineRuntimeContext& runtimeContext = shaderManager.runtimeContext();
     ClusterStreamingService clusterStreamingService;
+    runtimeContext.rhi = rhi.get();
     runtimeContext.clusterStreamingService = &clusterStreamingService;
     auto hasRenderPipeline = [&](const char* name) {
         auto it = runtimeContext.renderPipelinesRhi.find(name);
