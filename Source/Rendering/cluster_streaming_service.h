@@ -19,6 +19,29 @@
 
 class ClusterStreamingService {
 public:
+    struct StreamingStats {
+        uint32_t residentGroupCount = 0;
+        uint32_t residentClusterCount = 0;
+        uint32_t alwaysResidentGroupCount = 0;
+        uint32_t dynamicResidentGroupCount = 0;
+
+        uint64_t storagePoolCapacityBytes = 0u;
+        uint64_t storagePoolUsedBytes = 0u;
+        uint32_t residentHeapCapacity = 0;
+        uint32_t residentHeapUsed = 0;
+
+        uint32_t loadRequestsThisFrame = 0;
+        uint32_t unloadRequestsThisFrame = 0;
+        uint32_t loadsExecutedThisFrame = 0;
+        uint32_t unloadsExecutedThisFrame = 0;
+        uint32_t loadsDeferredThisFrame = 0;
+
+        uint64_t transferBytesThisFrame = 0u;
+        float transferUtilization = 0.0f;
+
+        uint32_t failedAllocations = 0;
+    };
+
     struct DebugStats {
         uint32_t activeResidencyNodeCount = 0;
         uint32_t activeResidencyGroupCount = 0;
@@ -118,6 +141,7 @@ public:
     void markStateDirty() { m_stateDirty = true; }
 
     const DebugStats& debugStats() const { return m_debugStats; }
+    const StreamingStats& streamingStats() const { return m_streamingStats; }
 
     bool ready() const {
         for (const FrameBuffers& frameBuffers : m_frameBuffers) {
@@ -237,6 +261,10 @@ public:
         m_updateTaskIndex = kInvalidTaskIndex;
         m_activeUpdatePatchCount = 0u;
         m_activeUpdateTransferWaitValue = 0u;
+        m_loadRequestsThisFrame = 0u;
+        m_unloadRequestsThisFrame = 0u;
+        m_failedAllocationsThisFrame = 0u;
+        m_lastProcessedRequestFrameIndex = kInvalidFrameIndex;
 
         const bool clusterLodAvailable =
             clusterLodData.nodeBuffer.nativeHandle() &&
@@ -502,6 +530,11 @@ private:
         m_debugStats.selectedTransferBytes = 0u;
         m_debugStats.selectedUpdateTransferWaitValue = 0u;
         m_debugStats.resourcesReady = false;
+        m_streamingStats = {};
+        m_loadRequestsThisFrame = 0u;
+        m_unloadRequestsThisFrame = 0u;
+        m_failedAllocationsThisFrame = 0u;
+        m_lastProcessedRequestFrameIndex = kInvalidFrameIndex;
     }
 
     void requestHistoryReset(const FrameContext* frameContext) const {
@@ -627,6 +660,7 @@ private:
         m_groupAgeState.assign(groupCapacity, 0u);
         m_groupResidentSinceFrame.assign(groupCapacity, kInvalidFrameIndex);
         m_groupPendingUnloadState.assign(groupCapacity, 0u);
+        m_pendingResidencyRequestFrames.assign(groupCapacity, kInvalidFrameIndex);
         m_residentTouchSeenScratch.assign(groupCapacity, 0u);
         m_unloadRequestSeenScratch.assign(groupCapacity, 0u);
         m_patchLastWriteIndexScratch.assign(groupCapacity, UINT32_MAX);
@@ -942,9 +976,11 @@ private:
 
         uint32_t heapOffset = 0u;
         if (!m_streamingStorage.allocate(group.clusterCount, heapOffset)) {
+            ++m_failedAllocationsThisFrame;
             return false;
         }
         if (heapOffset + group.clusterCount > m_streamingStorage.capacityElements()) {
+            ++m_failedAllocationsThisFrame;
             m_streamingStorage.release(heapOffset, group.clusterCount);
             return false;
         }
@@ -1017,6 +1053,12 @@ private:
             m_confirmedUnloadGroups.end());
     }
 
+    void clearPendingResidencyRequestFrame(uint32_t groupIndex) {
+        if (groupIndex < m_pendingResidencyRequestFrames.size()) {
+            m_pendingResidencyRequestFrames[groupIndex] = kInvalidFrameIndex;
+        }
+    }
+
     void advanceResidentGroupAges(uint32_t sourceFrameIndex) {
         for (uint32_t groupIndex = 0u; groupIndex < m_residencyGroupCapacity; ++groupIndex) {
             if (!isGroupResident(groupIndex) || isGroupAlwaysResident(groupIndex)) {
@@ -1045,10 +1087,13 @@ private:
         m_dynamicResidentGroups.push_back(groupIndex);
     }
 
-    void enqueuePendingResidencyGroup(uint32_t groupIndex) {
+    void enqueuePendingResidencyGroup(uint32_t groupIndex, uint32_t requestFrameIndex) {
         clearPendingUnloadCandidate(groupIndex);
         if (groupIndex < m_groupResidencyState.size()) {
             m_groupResidencyState[groupIndex] |= kClusterLodGroupResidencyRequested;
+        }
+        if (groupIndex < m_pendingResidencyRequestFrames.size()) {
+            m_pendingResidencyRequestFrames[groupIndex] = requestFrameIndex;
         }
         if (std::find(m_pendingResidencyGroups.begin(), m_pendingResidencyGroups.end(), groupIndex) ==
             m_pendingResidencyGroups.end()) {
@@ -1091,6 +1136,7 @@ private:
             const uint32_t groupIndex = m_pendingResidencyGroups[pendingIndex];
             if (groupIndex >= m_residencyGroupCapacity ||
                 groupIndex >= clusterLodData.totalGroupCount) {
+                clearPendingResidencyRequestFrame(groupIndex);
                 m_pendingResidencyGroups.erase(
                     m_pendingResidencyGroups.begin() +
                     static_cast<std::vector<uint32_t>::difference_type>(pendingIndex));
@@ -1103,6 +1149,7 @@ private:
                 if (!isGroupAlwaysResident(groupIndex)) {
                     touchDynamicResidentGroup(groupIndex);
                 }
+                clearPendingResidencyRequestFrame(groupIndex);
                 m_pendingResidencyGroups.erase(
                     m_pendingResidencyGroups.begin() +
                     static_cast<std::vector<uint32_t>::difference_type>(pendingIndex));
@@ -1129,6 +1176,7 @@ private:
             touchDynamicResidentGroup(groupIndex);
             ++m_debugStats.lastResidencyPromotedCount;
             --remainingLoads;
+            clearPendingResidencyRequestFrame(groupIndex);
             m_pendingResidencyGroups.erase(
                 m_pendingResidencyGroups.begin() +
                 static_cast<std::vector<uint32_t>::difference_type>(pendingIndex));
@@ -1140,6 +1188,9 @@ private:
         std::fill(m_groupAgeState.begin(), m_groupAgeState.end(), 0u);
         std::fill(m_groupResidentSinceFrame.begin(), m_groupResidentSinceFrame.end(), kInvalidFrameIndex);
         std::fill(m_groupPendingUnloadState.begin(), m_groupPendingUnloadState.end(), 0u);
+        std::fill(m_pendingResidencyRequestFrames.begin(),
+                  m_pendingResidencyRequestFrames.end(),
+                  kInvalidFrameIndex);
         std::fill(m_residentTouchSeenScratch.begin(), m_residentTouchSeenScratch.end(), 0u);
         std::fill(m_unloadRequestSeenScratch.begin(), m_unloadRequestSeenScratch.end(), 0u);
         std::fill(m_patchLastWriteIndexScratch.begin(), m_patchLastWriteIndexScratch.end(), UINT32_MAX);
@@ -1267,6 +1318,7 @@ private:
 
             m_debugStats.lastResidencyRequestCount =
                 static_cast<uint32_t>(m_requestReadbackScratch.size());
+            m_lastProcessedRequestFrameIndex = expectedFrameIndex;
             for (const ClusterResidencyRequest& request : m_requestReadbackScratch) {
                 if (request.targetGroupIndex >= clusterLodData.totalGroupCount) {
                     continue;
@@ -1278,11 +1330,14 @@ private:
                     m_residentTouchSeenScratch[request.targetGroupIndex] = 1u;
                     continue;
                 }
-                enqueuePendingResidencyGroup(request.targetGroupIndex);
+                ++m_loadRequestsThisFrame;
+                enqueuePendingResidencyGroup(request.targetGroupIndex, request.requestFrameIndex);
             }
         }
 
         if (!requestReadbackValid) {
+            m_lastProcessedRequestFrameIndex = kInvalidFrameIndex;
+            m_loadRequestsThisFrame = 0u;
             return;
         }
 
@@ -1331,11 +1386,13 @@ private:
                     isGroupAlwaysResident(groupIndex)) {
                     continue;
                 }
+                ++m_unloadRequestsThisFrame;
                 m_unloadRequestSeenScratch[groupIndex] = 1u;
             }
         }
 
         if (!unloadReadbackValid) {
+            m_unloadRequestsThisFrame = 0u;
             return;
         }
 
@@ -1497,6 +1554,42 @@ private:
                 ++m_debugStats.lastAlwaysResidentGroupCount;
             }
         }
+
+        const uint32_t residentClusterCount = m_streamingStorage.usedElements();
+        const uint64_t storagePoolCapacityBytes =
+            uint64_t(m_streamingStorage.capacityElements()) * sizeof(uint32_t);
+        const uint64_t storagePoolUsedBytes =
+            uint64_t(residentClusterCount) * sizeof(uint32_t);
+        const uint64_t transferCapacityBytes = effectiveStreamingTransferCapacityBytes();
+
+        m_streamingStats.residentGroupCount = m_debugStats.lastResidentGroupCount;
+        m_streamingStats.residentClusterCount = residentClusterCount;
+        m_streamingStats.alwaysResidentGroupCount = m_debugStats.lastAlwaysResidentGroupCount;
+        m_streamingStats.dynamicResidentGroupCount = m_debugStats.dynamicResidentGroupCount;
+        m_streamingStats.storagePoolCapacityBytes = storagePoolCapacityBytes;
+        m_streamingStats.storagePoolUsedBytes = storagePoolUsedBytes;
+        m_streamingStats.residentHeapCapacity = m_debugStats.residentHeapCapacity;
+        m_streamingStats.residentHeapUsed = residentClusterCount;
+        m_streamingStats.loadRequestsThisFrame = m_loadRequestsThisFrame;
+        m_streamingStats.unloadRequestsThisFrame = m_unloadRequestsThisFrame;
+        m_streamingStats.loadsExecutedThisFrame = m_debugStats.lastResidencyPromotedCount;
+        m_streamingStats.unloadsExecutedThisFrame = m_debugStats.lastResidencyEvictedCount;
+        m_streamingStats.loadsDeferredThisFrame = 0u;
+        if (m_lastProcessedRequestFrameIndex != kInvalidFrameIndex) {
+            for (uint32_t groupIndex : m_pendingResidencyGroups) {
+                if (groupIndex < m_pendingResidencyRequestFrames.size() &&
+                    m_pendingResidencyRequestFrames[groupIndex] == m_lastProcessedRequestFrameIndex) {
+                    ++m_streamingStats.loadsDeferredThisFrame;
+                }
+            }
+        }
+        m_streamingStats.transferBytesThisFrame = m_debugStats.selectedTransferBytes;
+        m_streamingStats.transferUtilization =
+            transferCapacityBytes != 0u
+                ? float(double(m_streamingStats.transferBytesThisFrame) /
+                        double(transferCapacityBytes))
+                : 0.0f;
+        m_streamingStats.failedAllocations = m_failedAllocationsThisFrame;
     }
 
     bool m_enableStreaming = false;
@@ -1528,6 +1621,7 @@ private:
     std::vector<uint32_t> m_groupAgeState;
     std::vector<uint32_t> m_groupResidentSinceFrame;
     std::vector<uint8_t> m_groupPendingUnloadState;
+    std::vector<uint32_t> m_pendingResidencyRequestFrames;
     std::vector<uint8_t> m_residentTouchSeenScratch;
     std::vector<uint8_t> m_unloadRequestSeenScratch;
     std::vector<uint32_t> m_dynamicResidentGroups;
@@ -1538,5 +1632,10 @@ private:
     std::vector<ClusterUnloadRequest> m_unloadRequestReadbackScratch;
     std::vector<uint32_t> m_confirmedUnloadGroups;
     std::vector<GroupResidentAllocation> m_groupResidentAllocations;
+    StreamingStats m_streamingStats;
     DebugStats m_debugStats;
+    uint32_t m_loadRequestsThisFrame = 0u;
+    uint32_t m_unloadRequestsThisFrame = 0u;
+    uint32_t m_failedAllocationsThisFrame = 0u;
+    uint32_t m_lastProcessedRequestFrameIndex = kInvalidFrameIndex;
 };
