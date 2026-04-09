@@ -57,6 +57,7 @@ public:
         StreamingAgeFilterUniforms uniforms{};
         uniforms.groupCount = m_ctx.clusterLodData.totalGroupCount;
         uniforms.ageThreshold = streamingService->ageThreshold();
+        uniforms.requestFrameIndex = m_frameContext ? m_frameContext->frameIndex : 0u;
 
         encoder.setComputePipeline(pipelineIt->second);
         encoder.setBytes(&uniforms, sizeof(uniforms), GpuDriven::StreamingAgeFilterBindings::kUniforms);

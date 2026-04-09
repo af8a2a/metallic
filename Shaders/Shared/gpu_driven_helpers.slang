@@ -55,7 +55,12 @@ struct ClusterResidencyRequest {
     uint lodRootNode;
     uint targetGroupIndex;
     uint lodLevel;
-    uint sceneInstanceID;
+    uint requestFrameIndex;
+};
+
+struct ClusterUnloadRequest {
+    uint targetGroupIndex;
+    uint requestFrameIndex;
 };
 
 struct StreamingPatch {

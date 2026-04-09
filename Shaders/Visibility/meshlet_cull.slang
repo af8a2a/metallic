@@ -226,10 +226,21 @@ uint64_t loadLodGroupResidentClusterStart(uint groupIndex) {
     return lodGroupPageTable[groupIndex];
 }
 
+void appendResidencyRequest(uint lodRootNode,
+                            uint targetGroupIndex,
+                            uint lodLevel) {
+    uint slot = gpuDrivenAppendWorkItemSlot(residencyRequestState);
+    ClusterResidencyRequest request;
+    request.lodRootNode = lodRootNode;
+    request.targetGroupIndex = targetGroupIndex;
+    request.lodLevel = lodLevel;
+    request.requestFrameIndex = cullUniforms.residencyRequestFrameIndex;
+    residencyRequests[slot] = request;
+}
+
 void queueResidencyRequest(uint lodRootNode,
                            uint targetGroupIndex,
-                           uint lodLevel,
-                           uint sceneInstanceID) {
+                           uint lodLevel) {
     const uint64_t residentAddress = loadLodGroupResidentClusterStart(targetGroupIndex);
     if (!clusterLodGroupPageAddressIsValid(residentAddress)) {
         const uint64_t currentFrameTag =
@@ -250,21 +261,20 @@ void queueResidencyRequest(uint lodRootNode,
         }
     }
 
-    uint slot = gpuDrivenAppendWorkItemSlot(residencyRequestState);
-    ClusterResidencyRequest request;
-    request.lodRootNode = lodRootNode;
-    request.targetGroupIndex = targetGroupIndex;
-    request.lodLevel = lodLevel;
-    request.sceneInstanceID = sceneInstanceID;
-    residencyRequests[slot] = request;
+    appendResidencyRequest(lodRootNode, targetGroupIndex, lodLevel);
 }
 
 void touchResidentGroup(uint groupIndex) {
-    uint ignored = 0u;
+    uint previousState = 0u;
     groupResidency.InterlockedOr(groupIndex * 4u,
                                  kClusterLodGroupResidencyRequested,
-                                 ignored);
+                                 previousState);
     groupAgeBuffer[groupIndex] = 0u;
+    if ((previousState & kClusterLodGroupResidencyRequested) != 0u) {
+        return;
+    }
+
+    appendResidencyRequest(0xFFFFFFFFu, groupIndex, 0u);
 }
 
 bool visibleGroupsResidentForLodRoot(InstanceData inst,
@@ -310,8 +320,7 @@ bool visibleGroupsResidentForLodRoot(InstanceData inst,
                     if (queueMissingRequests) {
                         queueResidencyRequest(lodRootNode,
                                               groupIndex,
-                                              lodLevel,
-                                              sceneInstanceID);
+                                              lodLevel);
                     }
                     allVisibleGroupsResident = false;
                 }
@@ -409,8 +418,7 @@ void computeMain(uint3 groupID : SV_GroupID,
                             !clusterLodGroupPageAddressIsValid(residentClusterStart)) {
                             queueResidencyRequest(visibleInfo.lodRootNode,
                                                   groupIndex,
-                                                  selectedLodLevel,
-                                                  sceneInstanceID);
+                                                  selectedLodLevel);
                         } else {
                             meshletIndexBase = (uint)residentClusterStart;
                             useResidentHeap = true;

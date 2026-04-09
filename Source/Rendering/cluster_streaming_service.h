@@ -294,6 +294,7 @@ public:
 private:
     static constexpr uint32_t kInvalidResidentHeapOffset = UINT32_MAX;
     static constexpr uint32_t kInvalidTaskIndex = UINT32_MAX;
+    static constexpr uint32_t kInvalidFrameIndex = UINT32_MAX;
     static constexpr uint32_t kBufferedFrameCount = 2u;
     static constexpr uint32_t kStreamingTaskCount = 3u;
     static constexpr uint64_t kDefaultStreamingStorageCapacityBytes = 512ull * 1024ull * 1024ull;
@@ -329,6 +330,7 @@ private:
         std::unique_ptr<RhiBuffer> unloadRequestBuffer;
         std::unique_ptr<RhiBuffer> unloadRequestStateBuffer;
         std::unique_ptr<RhiBuffer> streamingPatchBuffer;
+        uint32_t submittedFrameIndex = kInvalidFrameIndex;
     };
 
     static void resetFrameBuffers(FrameBuffers& frameBuffers) {
@@ -339,6 +341,7 @@ private:
         frameBuffers.unloadRequestBuffer.reset();
         frameBuffers.unloadRequestStateBuffer.reset();
         frameBuffers.streamingPatchBuffer.reset();
+        frameBuffers.submittedFrameIndex = kInvalidFrameIndex;
     }
 
     FrameBuffers& activeFrameBuffers() {
@@ -458,6 +461,13 @@ private:
         return static_cast<ClusterResidencyRequest*>(rhiBufferContents(*buffer));
     }
 
+    static ClusterUnloadRequest* mappedUnloadRequests(RhiBuffer* buffer) {
+        if (!buffer) {
+            return nullptr;
+        }
+        return static_cast<ClusterUnloadRequest*>(rhiBufferContents(*buffer));
+    }
+
     static StreamingPatch* mappedPatches(RhiBuffer* buffer) {
         if (!buffer) {
             return nullptr;
@@ -538,7 +548,7 @@ private:
             runtimeContext.resourceFactory->createBuffer(requestStateDesc);
 
         RhiBufferDesc unloadDesc{};
-        unloadDesc.size = size_t(groupCapacity) * sizeof(uint32_t);
+        unloadDesc.size = size_t(groupCapacity) * sizeof(ClusterUnloadRequest);
         unloadDesc.hostVisible = true;
         const std::string unloadName = "ClusterLodUnloadRequests[" + std::to_string(frameSlot) + "]";
         unloadDesc.debugName = unloadName.c_str();
@@ -615,7 +625,9 @@ private:
         m_residencyGroupCapacity = groupCapacity;
         m_groupResidencyState.assign(groupCapacity, 0u);
         m_groupAgeState.assign(groupCapacity, 0u);
+        m_groupResidentSinceFrame.assign(groupCapacity, kInvalidFrameIndex);
         m_groupPendingUnloadState.assign(groupCapacity, 0u);
+        m_residentTouchSeenScratch.assign(groupCapacity, 0u);
         m_unloadRequestSeenScratch.assign(groupCapacity, 0u);
         m_patchLastWriteIndexScratch.assign(groupCapacity, UINT32_MAX);
         m_patchTouchedGroupsScratch.clear();
@@ -652,16 +664,20 @@ private:
             frameBuffers.unloadRequestStateBuffer.get());
     }
 
-    void uploadCanonicalStateToFrame(FrameBuffers& frameBuffers) {
+    void uploadCanonicalStateToFrame(FrameBuffers& frameBuffers,
+                                     bool uploadAgeState,
+                                     bool markSubmittedFrame) {
         if (uint32_t* words = mappedUint32(frameBuffers.groupResidencyBuffer.get())) {
             std::memcpy(words,
                         m_groupResidencyState.data(),
                         size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
         }
-        if (uint32_t* ages = mappedUint32(frameBuffers.groupAgeBuffer.get())) {
-            std::memcpy(ages,
-                        m_groupAgeState.data(),
-                        size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
+        if (uploadAgeState) {
+            if (uint32_t* ages = mappedUint32(frameBuffers.groupAgeBuffer.get())) {
+                std::memcpy(ages,
+                            m_groupAgeState.data(),
+                            size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
+            }
         }
         if (frameBuffers.residencyRequestBuffer) {
             if (void* requests = rhiBufferContents(*frameBuffers.residencyRequestBuffer)) {
@@ -675,6 +691,7 @@ private:
         }
         seedResidencyRequestQueue(frameBuffers);
         seedUnloadRequestQueue(frameBuffers);
+        frameBuffers.submittedFrameIndex = markSubmittedFrame ? m_frameIndex : kInvalidFrameIndex;
     }
 
     void uploadSelectedUpdateTaskToActiveFrame() {
@@ -707,12 +724,12 @@ private:
             if (!frameBuffers.groupResidencyBuffer) {
                 continue;
             }
-            uploadCanonicalStateToFrame(frameBuffers);
+            uploadCanonicalStateToFrame(frameBuffers, true, false);
         }
     }
 
     void uploadCanonicalStateToActiveFrame() {
-        uploadCanonicalStateToFrame(activeFrameBuffers());
+        uploadCanonicalStateToFrame(activeFrameBuffers(), true, true);
         uploadSelectedUpdateTaskToActiveFrame();
     }
 
@@ -1000,8 +1017,27 @@ private:
             m_confirmedUnloadGroups.end());
     }
 
+    void advanceResidentGroupAges(uint32_t sourceFrameIndex) {
+        for (uint32_t groupIndex = 0u; groupIndex < m_residencyGroupCapacity; ++groupIndex) {
+            if (!isGroupResident(groupIndex) || isGroupAlwaysResident(groupIndex)) {
+                m_groupAgeState[groupIndex] = 0u;
+                continue;
+            }
+            if (m_groupResidentSinceFrame[groupIndex] == kInvalidFrameIndex ||
+                m_groupResidentSinceFrame[groupIndex] > sourceFrameIndex ||
+                m_residentTouchSeenScratch[groupIndex] != 0u) {
+                continue;
+            }
+
+            m_groupAgeState[groupIndex] = std::min(m_groupAgeState[groupIndex] + 1u, 0xFFFFu);
+        }
+    }
+
     void touchDynamicResidentGroup(uint32_t groupIndex) {
         clearPendingUnloadCandidate(groupIndex);
+        if (groupIndex < m_groupAgeState.size()) {
+            m_groupAgeState[groupIndex] = 0u;
+        }
         auto it = std::find(m_dynamicResidentGroups.begin(), m_dynamicResidentGroups.end(), groupIndex);
         if (it != m_dynamicResidentGroups.end()) {
             m_dynamicResidentGroups.erase(it);
@@ -1033,6 +1069,7 @@ private:
             m_groupResidencyState[groupIndex] &= ~(kClusterLodGroupResidencyResident |
                                                    kClusterLodGroupResidencyRequested);
             m_groupAgeState[groupIndex] = 0u;
+            m_groupResidentSinceFrame[groupIndex] = kInvalidFrameIndex;
         }
         if (groupIndex < m_groupPendingUnloadState.size()) {
             m_groupPendingUnloadState[groupIndex] = 0u;
@@ -1083,8 +1120,10 @@ private:
             m_groupResidencyState[groupIndex] |= kClusterLodGroupResidencyResident;
             m_groupResidencyState[groupIndex] &= ~kClusterLodGroupResidencyRequested;
             m_groupAgeState[groupIndex] = 0u;
+            m_groupResidentSinceFrame[groupIndex] = m_frameIndex;
             if (!queueLoadPatchForGroup(groupIndex, clusterLodData)) {
                 m_groupResidencyState[groupIndex] &= ~kClusterLodGroupResidencyResident;
+                m_groupResidentSinceFrame[groupIndex] = kInvalidFrameIndex;
                 break;
             }
             touchDynamicResidentGroup(groupIndex);
@@ -1099,7 +1138,9 @@ private:
     void rebuildStreamingState(const ClusterLODData& clusterLodData) {
         std::fill(m_groupResidencyState.begin(), m_groupResidencyState.end(), 0u);
         std::fill(m_groupAgeState.begin(), m_groupAgeState.end(), 0u);
+        std::fill(m_groupResidentSinceFrame.begin(), m_groupResidentSinceFrame.end(), kInvalidFrameIndex);
         std::fill(m_groupPendingUnloadState.begin(), m_groupPendingUnloadState.end(), 0u);
+        std::fill(m_residentTouchSeenScratch.begin(), m_residentTouchSeenScratch.end(), 0u);
         std::fill(m_unloadRequestSeenScratch.begin(), m_unloadRequestSeenScratch.end(), 0u);
         std::fill(m_patchLastWriteIndexScratch.begin(), m_patchLastWriteIndexScratch.end(), UINT32_MAX);
         m_patchTouchedGroupsScratch.clear();
@@ -1136,9 +1177,11 @@ private:
                 m_groupResidencyState[groupIndex] =
                     kClusterLodGroupResidencyResident | kClusterLodGroupResidencyAlwaysResident;
                 m_groupAgeState[groupIndex] = 0u;
+                m_groupResidentSinceFrame[groupIndex] = 0u;
                 if (!queueLoadPatchForGroup(groupIndex, clusterLodData)) {
                     m_groupResidencyState[groupIndex] = 0u;
                     m_groupAgeState[groupIndex] = 0u;
+                    m_groupResidentSinceFrame[groupIndex] = kInvalidFrameIndex;
                     continue;
                 }
             }
@@ -1157,49 +1200,9 @@ private:
         m_stateDirty = false;
     }
 
-    void syncCanonicalAgeState(const uint32_t* slotAgeWords) {
-        if (!slotAgeWords) {
-            return;
-        }
-
-        for (uint32_t groupIndex = 0; groupIndex < m_residencyGroupCapacity; ++groupIndex) {
-            if (!isGroupResident(groupIndex) || isGroupAlwaysResident(groupIndex)) {
-                m_groupAgeState[groupIndex] = 0u;
-                continue;
-            }
-            m_groupAgeState[groupIndex] = slotAgeWords[groupIndex];
-        }
-    }
-
-    void consumeResidentGroupTouches(const uint32_t* slotResidencyWords) {
-        if (!slotResidencyWords) {
-            return;
-        }
-
-        for (uint32_t groupIndex = 0; groupIndex < m_residencyGroupCapacity; ++groupIndex) {
-            const uint32_t slotState = slotResidencyWords[groupIndex];
-            const bool resident = (slotState & kClusterLodGroupResidencyResident) != 0u;
-            const bool requested = (slotState & kClusterLodGroupResidencyRequested) != 0u;
-            if (!resident || !requested || !isGroupResident(groupIndex)) {
-                continue;
-            }
-
-            m_groupResidencyState[groupIndex] &= ~kClusterLodGroupResidencyRequested;
-            m_groupAgeState[groupIndex] = 0u;
-            if (!isGroupAlwaysResident(groupIndex)) {
-                touchDynamicResidentGroup(groupIndex);
-            }
-        }
-    }
-
     void collectUnloadRequestCandidates() {
         for (uint32_t groupIndex = 0; groupIndex < m_residencyGroupCapacity; ++groupIndex) {
             if (!isGroupResident(groupIndex) || isGroupAlwaysResident(groupIndex)) {
-                clearPendingUnloadCandidate(groupIndex);
-                continue;
-            }
-
-            if (m_groupAgeState[groupIndex] == 0u) {
                 clearPendingUnloadCandidate(groupIndex);
                 continue;
             }
@@ -1228,12 +1231,16 @@ private:
         m_debugStats.lastResidencyEvictedCount = 0;
         m_requestReadbackScratch.clear();
         m_unloadRequestReadbackScratch.clear();
+        std::fill(m_residentTouchSeenScratch.begin(), m_residentTouchSeenScratch.end(), 0u);
         std::fill(m_unloadRequestSeenScratch.begin(), m_unloadRequestSeenScratch.end(), 0u);
 
         FrameBuffers& frameBuffers = activeFrameBuffers();
-        syncCanonicalAgeState(mappedUint32(frameBuffers.groupAgeBuffer.get()));
-        consumeResidentGroupTouches(mappedUint32(frameBuffers.groupResidencyBuffer.get()));
+        const uint32_t expectedFrameIndex = frameBuffers.submittedFrameIndex;
+        if (expectedFrameIndex == kInvalidFrameIndex) {
+            return;
+        }
 
+        bool requestReadbackValid = true;
         if (frameBuffers.residencyRequestBuffer && frameBuffers.residencyRequestStateBuffer) {
             const uint32_t requestCapacity = static_cast<uint32_t>(
                 frameBuffers.residencyRequestBuffer->size() / sizeof(ClusterResidencyRequest));
@@ -1241,51 +1248,95 @@ private:
                 GpuDriven::readWorklistWriteCursor<GpuDriven::ComputeDispatchCommandLayout>(
                     frameBuffers.residencyRequestStateBuffer.get()),
                 requestCapacity);
-            m_debugStats.lastResidencyRequestCount = requestCount;
 
             ClusterResidencyRequest* requests = mappedRequests(frameBuffers.residencyRequestBuffer.get());
-            if (requests && requestCount > 0u) {
+            if (requestCount > 0u && !requests) {
+                requestReadbackValid = false;
+            } else if (requests && requestCount > 0u) {
                 m_requestReadbackScratch.assign(requests, requests + requestCount);
                 for (const ClusterResidencyRequest& request : m_requestReadbackScratch) {
-                    if (request.targetGroupIndex >= clusterLodData.totalGroupCount) {
-                        continue;
+                    if (request.requestFrameIndex != expectedFrameIndex) {
+                        requestReadbackValid = false;
+                        break;
                     }
-                    if (isGroupAlwaysResident(request.targetGroupIndex)) {
-                        continue;
-                    }
-                    if (isGroupResident(request.targetGroupIndex)) {
-                        m_groupResidencyState[request.targetGroupIndex] &=
-                            ~kClusterLodGroupResidencyRequested;
-                        m_groupAgeState[request.targetGroupIndex] = 0u;
-                        touchDynamicResidentGroup(request.targetGroupIndex);
-                        continue;
-                    }
-                    enqueuePendingResidencyGroup(request.targetGroupIndex);
                 }
+                if (!requestReadbackValid) {
+                    m_requestReadbackScratch.clear();
+                }
+            }
+
+            m_debugStats.lastResidencyRequestCount =
+                static_cast<uint32_t>(m_requestReadbackScratch.size());
+            for (const ClusterResidencyRequest& request : m_requestReadbackScratch) {
+                if (request.targetGroupIndex >= clusterLodData.totalGroupCount) {
+                    continue;
+                }
+                if (isGroupAlwaysResident(request.targetGroupIndex)) {
+                    continue;
+                }
+                if (isGroupResident(request.targetGroupIndex)) {
+                    m_residentTouchSeenScratch[request.targetGroupIndex] = 1u;
+                    continue;
+                }
+                enqueuePendingResidencyGroup(request.targetGroupIndex);
             }
         }
 
+        if (!requestReadbackValid) {
+            return;
+        }
+
+        advanceResidentGroupAges(expectedFrameIndex);
+        for (uint32_t groupIndex = 0u; groupIndex < m_residencyGroupCapacity; ++groupIndex) {
+            if (m_residentTouchSeenScratch[groupIndex] == 0u || !isGroupResident(groupIndex) ||
+                isGroupAlwaysResident(groupIndex)) {
+                continue;
+            }
+
+            m_groupResidencyState[groupIndex] &= ~kClusterLodGroupResidencyRequested;
+            touchDynamicResidentGroup(groupIndex);
+        }
+
+        bool unloadReadbackValid = true;
         if (frameBuffers.unloadRequestBuffer && frameBuffers.unloadRequestStateBuffer) {
-            const uint32_t unloadCapacity =
-                static_cast<uint32_t>(frameBuffers.unloadRequestBuffer->size() / sizeof(uint32_t));
+            const uint32_t unloadCapacity = static_cast<uint32_t>(
+                frameBuffers.unloadRequestBuffer->size() / sizeof(ClusterUnloadRequest));
             const uint32_t unloadCount = std::min<uint32_t>(
                 GpuDriven::readWorklistWriteCursor<GpuDriven::ComputeDispatchCommandLayout>(
                     frameBuffers.unloadRequestStateBuffer.get()),
                 unloadCapacity);
-            m_debugStats.lastUnloadRequestCount = unloadCount;
 
-            uint32_t* unloadRequests = mappedUint32(frameBuffers.unloadRequestBuffer.get());
-            if (unloadRequests && unloadCount > 0u) {
+            ClusterUnloadRequest* unloadRequests =
+                mappedUnloadRequests(frameBuffers.unloadRequestBuffer.get());
+            if (unloadCount > 0u && !unloadRequests) {
+                unloadReadbackValid = false;
+            } else if (unloadRequests && unloadCount > 0u) {
                 m_unloadRequestReadbackScratch.assign(unloadRequests, unloadRequests + unloadCount);
-                for (uint32_t groupIndex : m_unloadRequestReadbackScratch) {
-                    if (groupIndex >= clusterLodData.totalGroupCount ||
-                        !isGroupResident(groupIndex) ||
-                        isGroupAlwaysResident(groupIndex)) {
-                        continue;
+                for (const ClusterUnloadRequest& request : m_unloadRequestReadbackScratch) {
+                    if (request.requestFrameIndex != expectedFrameIndex) {
+                        unloadReadbackValid = false;
+                        break;
                     }
-                    m_unloadRequestSeenScratch[groupIndex] = 1u;
+                }
+                if (!unloadReadbackValid) {
+                    m_unloadRequestReadbackScratch.clear();
                 }
             }
+
+            m_debugStats.lastUnloadRequestCount =
+                static_cast<uint32_t>(m_unloadRequestReadbackScratch.size());
+            for (const ClusterUnloadRequest& request : m_unloadRequestReadbackScratch) {
+                const uint32_t groupIndex = request.targetGroupIndex;
+                if (groupIndex >= clusterLodData.totalGroupCount || !isGroupResident(groupIndex) ||
+                    isGroupAlwaysResident(groupIndex)) {
+                    continue;
+                }
+                m_unloadRequestSeenScratch[groupIndex] = 1u;
+            }
+        }
+
+        if (!unloadReadbackValid) {
+            return;
         }
 
         collectUnloadRequestCandidates();
@@ -1475,14 +1526,16 @@ private:
     std::array<StreamingTask, kStreamingTaskCount> m_streamingTasks;
     std::vector<uint32_t> m_groupResidencyState;
     std::vector<uint32_t> m_groupAgeState;
+    std::vector<uint32_t> m_groupResidentSinceFrame;
     std::vector<uint8_t> m_groupPendingUnloadState;
+    std::vector<uint8_t> m_residentTouchSeenScratch;
     std::vector<uint8_t> m_unloadRequestSeenScratch;
     std::vector<uint32_t> m_dynamicResidentGroups;
     std::vector<uint32_t> m_pendingResidencyGroups;
     std::vector<uint32_t> m_patchLastWriteIndexScratch;
     std::vector<uint32_t> m_patchTouchedGroupsScratch;
     std::vector<ClusterResidencyRequest> m_requestReadbackScratch;
-    std::vector<uint32_t> m_unloadRequestReadbackScratch;
+    std::vector<ClusterUnloadRequest> m_unloadRequestReadbackScratch;
     std::vector<uint32_t> m_confirmedUnloadGroups;
     std::vector<GroupResidentAllocation> m_groupResidentAllocations;
     DebugStats m_debugStats;

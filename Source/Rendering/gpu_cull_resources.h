@@ -55,10 +55,17 @@ struct ClusterResidencyRequest {
     uint32_t lodRootNode = UINT32_MAX;
     uint32_t targetGroupIndex = UINT32_MAX;
     uint32_t lodLevel = 0;
-    uint32_t sceneInstanceID = UINT32_MAX;
+    uint32_t requestFrameIndex = UINT32_MAX;
 };
 static_assert(sizeof(ClusterResidencyRequest) == 16,
               "ClusterResidencyRequest must match shader layout");
+
+struct ClusterUnloadRequest {
+    uint32_t targetGroupIndex = UINT32_MAX;
+    uint32_t requestFrameIndex = UINT32_MAX;
+};
+static_assert(sizeof(ClusterUnloadRequest) == 8,
+              "ClusterUnloadRequest must match shader layout");
 
 struct ClusterTraversalStats {
     uint32_t lodTraversalInstanceCount = 0;
@@ -121,7 +128,7 @@ struct CullUniforms {
 struct StreamingAgeFilterUniforms {
     uint32_t groupCount = 0;
     uint32_t ageThreshold = 16;
-    uint32_t reserved0 = 0;
+    uint32_t requestFrameIndex = 0;
     uint32_t reserved1 = 0;
 };
 
