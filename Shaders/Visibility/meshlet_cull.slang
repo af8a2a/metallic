@@ -267,10 +267,10 @@ void queueResidencyRequest(uint lodRootNode,
 void touchResidentGroup(uint groupIndex) {
     uint previousState = 0u;
     groupResidency.InterlockedOr(groupIndex * 4u,
-                                 kClusterLodGroupResidencyRequested,
+                                 kClusterLodGroupResidencyTouched,
                                  previousState);
     groupAgeBuffer[groupIndex] = 0u;
-    if ((previousState & kClusterLodGroupResidencyRequested) != 0u) {
+    if ((previousState & kClusterLodGroupResidencyTouched) != 0u) {
         return;
     }
 

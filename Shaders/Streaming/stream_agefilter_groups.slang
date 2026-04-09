@@ -24,7 +24,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     const uint residencyState = groupResidency.Load(groupIndex * 4u);
     const bool resident = (residencyState & kClusterLodGroupResidencyResident) != 0u;
     const bool alwaysResident = (residencyState & kClusterLodGroupResidencyAlwaysResident) != 0u;
-    const bool touchedThisFrame = (residencyState & kClusterLodGroupResidencyRequested) != 0u;
+    const bool touchedThisFrame = (residencyState & kClusterLodGroupResidencyTouched) != 0u;
 
     if (!resident || alwaysResident) {
         groupAgeBuffer[groupIndex] = 0u;

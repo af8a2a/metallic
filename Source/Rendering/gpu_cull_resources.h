@@ -13,6 +13,7 @@ enum : uint32_t {
     kClusterLodGroupResidencyResident = 1u << 0,
     kClusterLodGroupResidencyRequested = 1u << 1,
     kClusterLodGroupResidencyAlwaysResident = 1u << 2,
+    kClusterLodGroupResidencyTouched = 1u << 3,
     kClusterTraversalStatsHistogramSize = 8u,
 };
 

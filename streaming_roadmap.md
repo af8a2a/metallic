@@ -274,6 +274,15 @@ This replaces the current `InterlockedOr` flag-based approach and eliminates dup
 
 **Done when:** each group is requested at most once per frame regardless of how many instances reference it.
 
+### G.5.4 — Split resident-touch from pending-request state
+
+- Keep `Requested` as CPU-visible pending-load bookkeeping only
+- Add a transient `Touched` residency bit for already-resident groups referenced this frame
+- Use `Touched` for shader-side resident touch dedup and age-filter resets
+- Continue emitting tagged touch requests so CPU can reconstruct resident usage without per-group readback
+
+**Done when:** same-frame resident touches no longer depend on the pending-load request flag, and age-based unload logic keys off dedicated touch state.
+
 ---
 
 ## Phase G.6 — Comprehensive Statistics & Monitoring

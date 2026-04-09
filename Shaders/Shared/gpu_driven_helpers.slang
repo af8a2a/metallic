@@ -49,6 +49,7 @@ static const uint64_t kClusterLodGroupPageInvalidAddressStart =
 static const uint kClusterLodGroupResidencyResident = 1u << 0;
 static const uint kClusterLodGroupResidencyRequested = 1u << 1;
 static const uint kClusterLodGroupResidencyAlwaysResident = 1u << 2;
+static const uint kClusterLodGroupResidencyTouched = 1u << 3;
 static const uint kClusterTraversalStatsHistogramSize = 8u;
 
 struct ClusterResidencyRequest {
