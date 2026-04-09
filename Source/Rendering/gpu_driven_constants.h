@@ -66,6 +66,7 @@
 #define GPU_DRIVEN_STREAMING_AGE_GROUP_AGE_BINDING 2u
 #define GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_OUTPUT_BINDING 3u
 #define GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_STATE_BINDING 4u
+#define GPU_DRIVEN_STREAMING_AGE_STATS_BINDING 5u
 
 // Shared bindings for the streaming scene update pipeline.
 #define GPU_DRIVEN_STREAMING_UPDATE_UNIFORMS_BINDING 0u
@@ -73,6 +74,7 @@
 #define GPU_DRIVEN_STREAMING_UPDATE_RESIDENT_GROUP_MESHLET_INDICES_BINDING 2u
 #define GPU_DRIVEN_STREAMING_UPDATE_GROUP_PAGE_TABLE_BINDING 3u
 #define GPU_DRIVEN_STREAMING_UPDATE_PATCHES_BINDING 4u
+#define GPU_DRIVEN_STREAMING_UPDATE_STATS_BINDING 5u
 
 // Shared bindings for meshlet visibility pipelines.
 #define GPU_DRIVEN_VISIBILITY_GLOBAL_UNIFORMS_BINDING 0u
@@ -202,6 +204,7 @@ struct StreamingAgeFilterBindings {
         GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_OUTPUT_BINDING;
     static constexpr uint32_t kUnloadRequestState =
         GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_STATE_BINDING;
+    static constexpr uint32_t kStats = GPU_DRIVEN_STREAMING_AGE_STATS_BINDING;
 };
 
 struct StreamingUpdateBindings {
@@ -213,6 +216,7 @@ struct StreamingUpdateBindings {
     static constexpr uint32_t kGroupPageTable =
         GPU_DRIVEN_STREAMING_UPDATE_GROUP_PAGE_TABLE_BINDING;
     static constexpr uint32_t kPatches = GPU_DRIVEN_STREAMING_UPDATE_PATCHES_BINDING;
+    static constexpr uint32_t kStats = GPU_DRIVEN_STREAMING_UPDATE_STATS_BINDING;
 };
 
 struct MeshletVisibilityBindings {

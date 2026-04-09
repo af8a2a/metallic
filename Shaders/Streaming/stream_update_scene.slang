@@ -12,6 +12,7 @@ StructuredBuffer<uint>                  sourceGroupMeshletIndices; // buffer(GPU
 RWStructuredBuffer<uint>                residentGroupMeshletIndices; // buffer(GPU_DRIVEN_STREAMING_UPDATE_RESIDENT_GROUP_MESHLET_INDICES_BINDING)
 RWStructuredBuffer<uint64_t>            lodGroupPageTable; // buffer(GPU_DRIVEN_STREAMING_UPDATE_GROUP_PAGE_TABLE_BINDING)
 StructuredBuffer<StreamingPatch>        patches; // buffer(GPU_DRIVEN_STREAMING_UPDATE_PATCHES_BINDING)
+RWByteAddressBuffer                     streamingStats; // buffer(GPU_DRIVEN_STREAMING_UPDATE_STATS_BINDING)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -25,6 +26,8 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     if (patch.groupIndex == 0xFFFFFFFFu) {
         return;
     }
+
+    clusterStreamingIncrementAppliedPatchCount(streamingStats);
 
     if (!clusterLodGroupPageAddressIsValid(patch.residentHeapOffset)) {
         lodGroupPageTable[patch.groupIndex] = patch.residentHeapOffset;

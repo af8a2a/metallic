@@ -64,6 +64,53 @@ struct ClusterUnloadRequest {
     uint requestFrameIndex;
 };
 
+struct ClusterStreamingGpuStats {
+    uint frameIndex;
+    uint unloadRequestCount;
+    uint unloadAgeSum;
+    uint appliedPatchCount;
+    uint copiedBytesLow;
+    uint copiedBytesHigh;
+    uint reserved0;
+    uint reserved1;
+};
+
+static const uint kClusterStreamingGpuStatsFrameIndexOffsetBytes = 0u;
+static const uint kClusterStreamingGpuStatsUnloadRequestCountOffsetBytes = 4u;
+static const uint kClusterStreamingGpuStatsUnloadAgeSumOffsetBytes = 8u;
+static const uint kClusterStreamingGpuStatsAppliedPatchCountOffsetBytes = 12u;
+static const uint kClusterStreamingGpuStatsCopiedBytesLowOffsetBytes = 16u;
+static const uint kClusterStreamingGpuStatsCopiedBytesHighOffsetBytes = 20u;
+
+void clusterStreamingStoreGpuStats(RWByteAddressBuffer statsBuffer, ClusterStreamingGpuStats stats) {
+    statsBuffer.Store(kClusterStreamingGpuStatsFrameIndexOffsetBytes, stats.frameIndex);
+    statsBuffer.Store(kClusterStreamingGpuStatsUnloadRequestCountOffsetBytes,
+                      stats.unloadRequestCount);
+    statsBuffer.Store(kClusterStreamingGpuStatsUnloadAgeSumOffsetBytes, stats.unloadAgeSum);
+    statsBuffer.Store(kClusterStreamingGpuStatsAppliedPatchCountOffsetBytes,
+                      stats.appliedPatchCount);
+    statsBuffer.Store(kClusterStreamingGpuStatsCopiedBytesLowOffsetBytes, stats.copiedBytesLow);
+    statsBuffer.Store(kClusterStreamingGpuStatsCopiedBytesHighOffsetBytes, stats.copiedBytesHigh);
+}
+
+void clusterStreamingIncrementAppliedPatchCount(RWByteAddressBuffer statsBuffer) {
+    uint previousCount = 0u;
+    statsBuffer.InterlockedAdd(kClusterStreamingGpuStatsAppliedPatchCountOffsetBytes,
+                               1u,
+                               previousCount);
+}
+
+void clusterStreamingAccumulateUnloadStats(RWByteAddressBuffer statsBuffer, uint groupAge) {
+    uint previousCount = 0u;
+    uint previousAgeSum = 0u;
+    statsBuffer.InterlockedAdd(kClusterStreamingGpuStatsUnloadRequestCountOffsetBytes,
+                               1u,
+                               previousCount);
+    statsBuffer.InterlockedAdd(kClusterStreamingGpuStatsUnloadAgeSumOffsetBytes,
+                               groupAge,
+                               previousAgeSum);
+}
+
 struct StreamingPatch {
     uint groupIndex;
     uint64_t residentHeapOffset;

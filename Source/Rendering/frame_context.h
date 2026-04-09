@@ -14,6 +14,9 @@ class RhiBuffer;
 class RhiFrameGraphBackend;
 class ClusterStreamingService;
 enum class DlssPreset : uint32_t;
+#ifdef _WIN32
+class VulkanReadbackService;
+#endif
 
 struct PipelineUiControls {
     bool* enableRTShadows = nullptr;
@@ -137,6 +140,10 @@ struct PipelineRuntimeContext {
 
     // Shared streaming state used by authored update/request/render passes.
     ClusterStreamingService* clusterStreamingService = nullptr;
+
+#ifdef _WIN32
+    VulkanReadbackService* readbackService = nullptr;
+#endif
 
     // Vulkan bindless/material indexing rollout toggle.
     bool useBindlessSceneTextures = false;

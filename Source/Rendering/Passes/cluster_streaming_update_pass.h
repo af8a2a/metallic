@@ -4,9 +4,11 @@
 #include "gpu_cull_resources.h"
 #include "pass_registry.h"
 #include "render_pass.h"
+#include "rhi_resource_utils.h"
+
+#include <cstring>
 
 #ifdef _WIN32
-#include "rhi_resource_utils.h"
 #include "vulkan_upload_service.h"
 #include "vulkan_resource_handles.h"
 #include <vector>
@@ -52,14 +54,24 @@ public:
             return;
         }
 
-        auto pipelineIt = m_runtimeContext->computePipelinesRhi.find("ClusterStreamingUpdatePass");
-        if (pipelineIt == m_runtimeContext->computePipelinesRhi.end() ||
-            !pipelineIt->second.nativeHandle()) {
+        ClusterStreamingService* streamingService = m_runtimeContext->clusterStreamingService;
+        if (!streamingService->streamingEnabled() || !streamingService->ready()) {
             return;
         }
 
-        ClusterStreamingService* streamingService = m_runtimeContext->clusterStreamingService;
-        if (!streamingService->streamingEnabled() || !streamingService->ready()) {
+        const RhiBuffer* statsBuffer = streamingService->streamingStatsBuffer();
+        if (!statsBuffer) {
+            return;
+        }
+
+        initializeStreamingStatsBuffer(encoder,
+                                       statsBuffer,
+                                       m_frameContext ? m_frameContext->frameIndex : 0u,
+                                       streamingService->activeUpdateTransferBytes());
+
+        auto pipelineIt = m_runtimeContext->computePipelinesRhi.find("ClusterStreamingUpdatePass");
+        if (pipelineIt == m_runtimeContext->computePipelinesRhi.end() ||
+            !pipelineIt->second.nativeHandle()) {
             return;
         }
 
@@ -79,7 +91,8 @@ public:
         if (!sourceGroupMeshletIndicesBuffer ||
             !residentGroupMeshletIndicesBuffer ||
             !lodGroupPageTableBuffer ||
-            !patchBuffer) {
+            !patchBuffer ||
+            !statsBuffer) {
             return;
         }
 
@@ -131,6 +144,7 @@ public:
                           0,
                           GpuDriven::StreamingUpdateBindings::kGroupPageTable);
         encoder.setBuffer(patchBuffer, 0, GpuDriven::StreamingUpdateBindings::kPatches);
+        encoder.setBuffer(statsBuffer, 0, GpuDriven::StreamingUpdateBindings::kStats);
 
         constexpr uint32_t kThreadCount = 64u;
         const uint32_t dispatchX = (patchCount + kThreadCount - 1u) / kThreadCount;
@@ -148,6 +162,69 @@ private:
     int m_height = 0;
     std::string m_name = "Cluster Streaming Update";
     FGResource m_streamingSync;
+
+    static ClusterStreamingGpuStats makeInitialStreamingGpuStats(uint32_t frameIndex,
+                                                                 uint64_t copiedBytes) {
+        ClusterStreamingGpuStats stats{};
+        stats.frameIndex = frameIndex;
+        stats.copiedBytesLow = static_cast<uint32_t>(copiedBytes & 0xFFFFFFFFull);
+        stats.copiedBytesHigh = static_cast<uint32_t>(copiedBytes >> 32u);
+        return stats;
+    }
+
+    static bool initializeStreamingStatsBuffer(RhiComputeCommandEncoder& encoder,
+                                               const RhiBuffer* statsBuffer,
+                                               uint32_t frameIndex,
+                                               uint64_t copiedBytes) {
+        if (!statsBuffer) {
+            return false;
+        }
+
+        const ClusterStreamingGpuStats stats =
+            makeInitialStreamingGpuStats(frameIndex, copiedBytes);
+        if (void* mappedStats = rhiBufferContents(*statsBuffer)) {
+            std::memcpy(mappedStats, &stats, sizeof(stats));
+            return true;
+        }
+
+#ifdef _WIN32
+        VulkanUploadService* uploadService = vulkanGetUploadService();
+        const VkBuffer vkStatsBuffer = getVulkanBufferHandle(statsBuffer);
+        const VkCommandBuffer commandBuffer = static_cast<VkCommandBuffer>(encoder.nativeHandle());
+        if (!uploadService || vkStatsBuffer == VK_NULL_HANDLE || commandBuffer == VK_NULL_HANDLE) {
+            return false;
+        }
+
+        if (!uploadService->stageBuffer(vkStatsBuffer, 0u, &stats, sizeof(stats))) {
+            return false;
+        }
+
+        uploadService->recordPendingUploads(commandBuffer);
+
+        VkBufferMemoryBarrier2 statsUploadBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        statsUploadBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        statsUploadBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        statsUploadBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        statsUploadBarrier.dstAccessMask =
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        statsUploadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        statsUploadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        statsUploadBarrier.buffer = vkStatsBuffer;
+        statsUploadBarrier.offset = 0u;
+        statsUploadBarrier.size = sizeof(ClusterStreamingGpuStats);
+
+        VkDependencyInfo dependencyInfo{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependencyInfo.bufferMemoryBarrierCount = 1;
+        dependencyInfo.pBufferMemoryBarriers = &statsUploadBarrier;
+        vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+        return true;
+#else
+        (void)encoder;
+        (void)frameIndex;
+        (void)copiedBytes;
+        return false;
+#endif
+    }
 
 #ifdef _WIN32
     static bool recordStreamingDataCopies(

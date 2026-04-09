@@ -68,6 +68,23 @@ struct ClusterUnloadRequest {
 static_assert(sizeof(ClusterUnloadRequest) == 8,
               "ClusterUnloadRequest must match shader layout");
 
+struct ClusterStreamingGpuStats {
+    uint32_t frameIndex = UINT32_MAX;
+    uint32_t unloadRequestCount = 0;
+    uint32_t unloadAgeSum = 0;
+    uint32_t appliedPatchCount = 0;
+    uint32_t copiedBytesLow = 0;
+    uint32_t copiedBytesHigh = 0;
+    uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
+};
+static_assert(sizeof(ClusterStreamingGpuStats) == sizeof(uint32_t) * 8u,
+              "ClusterStreamingGpuStats must match shader layout");
+
+constexpr uint64_t clusterStreamingGpuStatsCopiedBytes(const ClusterStreamingGpuStats& stats) {
+    return uint64_t(stats.copiedBytesLow) | (uint64_t(stats.copiedBytesHigh) << 32u);
+}
+
 struct ClusterTraversalStats {
     uint32_t lodTraversalInstanceCount = 0;
     uint32_t fallbackInstanceCount = 0;

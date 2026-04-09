@@ -12,6 +12,7 @@ ByteAddressBuffer                          groupResidency;    // buffer(GPU_DRIV
 RWStructuredBuffer<uint>                   groupAgeBuffer;    // buffer(GPU_DRIVEN_STREAMING_AGE_GROUP_AGE_BINDING)
 RWStructuredBuffer<ClusterUnloadRequest>   unloadRequests;    // buffer(GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_OUTPUT_BINDING)
 RWByteAddressBuffer                        unloadRequestState; // buffer(GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_STATE_BINDING)
+RWByteAddressBuffer                        streamingStats;    // buffer(GPU_DRIVEN_STREAMING_AGE_STATS_BINDING)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -49,4 +50,5 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     request.targetGroupIndex = groupIndex;
     request.requestFrameIndex = streamingUniforms.requestFrameIndex;
     unloadRequests[slot] = request;
+    clusterStreamingAccumulateUnloadStats(streamingStats, age);
 }

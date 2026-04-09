@@ -1801,6 +1801,7 @@ int main() {
     }
     VulkanReadbackService readbackService;
     readbackService.init(vkDevice, &getVulkanReadbackHeap(*rhi), 2);
+    runtimeContext.readbackService = &readbackService;
 
     if (previewSceneReady) {
         if (!previewMaterials.textureViews.empty()) {
@@ -2491,6 +2492,19 @@ int main() {
                         streamingStats.confirmedUnloadGroupCount);
             ImGui::Text("Failed allocations this frame: %u",
                         streamingTelemetry.failedAllocations);
+            if (streamingTelemetry.gpuStatsValid) {
+                const std::string gpuCopiedBytesLabel =
+                    formatByteCountShort(streamingTelemetry.gpuCopiedBytes);
+                ImGui::Text("GPU stats: frame %u, patches %u, copied %s",
+                            streamingTelemetry.gpuStatsFrameIndex,
+                            streamingTelemetry.gpuAppliedPatchCount,
+                            gpuCopiedBytesLabel.c_str());
+                ImGui::Text("GPU unloads: %u, average age %.1f",
+                            streamingTelemetry.gpuUnloadRequestCount,
+                            streamingTelemetry.gpuAverageUnloadAge);
+            } else {
+                ImGui::TextDisabled("GPU stats: pending readback");
+            }
 
             const float requestHistoryMax = streamingHistory.maxRequestValue();
             ImGui::PlotLines("Load Requests / Frame",

@@ -42,6 +42,12 @@ public:
         float transferUtilization = 0.0f;
 
         uint32_t failedAllocations = 0;
+        bool gpuStatsValid = false;
+        uint32_t gpuStatsFrameIndex = UINT32_MAX;
+        uint32_t gpuUnloadRequestCount = 0;
+        float gpuAverageUnloadAge = 0.0f;
+        uint32_t gpuAppliedPatchCount = 0;
+        uint64_t gpuCopiedBytes = 0u;
         uint32_t ageHistogramBucketWidth = 1;
         uint32_t ageHistogramMaxAge = 0;
         std::array<uint32_t, kStreamingAgeHistogramBucketCount> ageHistogram = {};
@@ -149,6 +155,22 @@ public:
 
     const DebugStats& debugStats() const { return m_debugStats; }
     const StreamingStats& streamingStats() const { return m_streamingStats; }
+    void ingestGpuStreamingStats(const ClusterStreamingGpuStats& stats) {
+        if (stats.frameIndex == UINT32_MAX) {
+            m_lastGpuStreamingStats = {};
+            m_hasGpuStreamingStats = false;
+            applyGpuStreamingStatsToTelemetry();
+            return;
+        }
+
+        if (m_hasGpuStreamingStats && stats.frameIndex < m_lastGpuStreamingStats.frameIndex) {
+            return;
+        }
+
+        m_lastGpuStreamingStats = stats;
+        m_hasGpuStreamingStats = true;
+        applyGpuStreamingStatsToTelemetry();
+    }
 
     bool ready() const {
         for (const FrameBuffers& frameBuffers : m_frameBuffers) {
@@ -157,6 +179,7 @@ public:
                 !frameBuffers.residencyRequestBuffer ||
                 !frameBuffers.residencyRequestStateBuffer ||
                 !frameBuffers.unloadRequestBuffer ||
+                !frameBuffers.streamingStatsBuffer ||
                 !frameBuffers.streamingPatchBuffer ||
                 !frameBuffers.unloadRequestStateBuffer) {
                 return false;
@@ -176,6 +199,9 @@ public:
     const RhiBuffer* groupAgeBuffer() const {
         return activeFrameBuffers().groupAgeBuffer.get();
     }
+    const RhiBuffer* streamingStatsBuffer() const {
+        return activeFrameBuffers().streamingStatsBuffer.get();
+    }
     const RhiBuffer* lodGroupPageTableBuffer() const {
         return m_lodGroupPageTableBuffer.get();
     }
@@ -194,6 +220,10 @@ public:
     uint64_t streamingUploadBytesUsed() const {
         return validTaskIndex(m_transferTaskIndex) ? m_streamingStorage.uploadBytesUsed(m_transferTaskIndex)
                                                    : 0u;
+    }
+    uint64_t activeUpdateTransferBytes() const {
+        return validTaskIndex(m_updateTaskIndex) ? m_streamingStorage.uploadBytesUsed(m_updateTaskIndex)
+                                                 : 0u;
     }
     const RhiBuffer* residencyRequestBuffer() const {
         return activeFrameBuffers().residencyRequestBuffer.get();
@@ -364,6 +394,7 @@ private:
         std::unique_ptr<RhiBuffer> residencyRequestStateBuffer;
         std::unique_ptr<RhiBuffer> unloadRequestBuffer;
         std::unique_ptr<RhiBuffer> unloadRequestStateBuffer;
+        std::unique_ptr<RhiBuffer> streamingStatsBuffer;
         std::unique_ptr<RhiBuffer> streamingPatchBuffer;
         uint32_t submittedFrameIndex = kInvalidFrameIndex;
     };
@@ -375,6 +406,7 @@ private:
         frameBuffers.residencyRequestStateBuffer.reset();
         frameBuffers.unloadRequestBuffer.reset();
         frameBuffers.unloadRequestStateBuffer.reset();
+        frameBuffers.streamingStatsBuffer.reset();
         frameBuffers.streamingPatchBuffer.reset();
         frameBuffers.submittedFrameIndex = kInvalidFrameIndex;
     }
@@ -542,6 +574,8 @@ private:
         m_unloadRequestsThisFrame = 0u;
         m_failedAllocationsThisFrame = 0u;
         m_lastProcessedRequestFrameIndex = kInvalidFrameIndex;
+        m_lastGpuStreamingStats = {};
+        m_hasGpuStreamingStats = false;
     }
 
     void requestHistoryReset(const FrameContext* frameContext) const {
@@ -613,6 +647,17 @@ private:
         const std::string patchName = "ClusterLodStreamingPatches[" + std::to_string(frameSlot) + "]";
         patchDesc.debugName = patchName.c_str();
         frameBuffers.streamingPatchBuffer = runtimeContext.resourceFactory->createBuffer(patchDesc);
+
+        RhiBufferDesc statsDesc{};
+        statsDesc.size = sizeof(ClusterStreamingGpuStats);
+#ifdef _WIN32
+        statsDesc.hostVisible = false;
+#else
+        statsDesc.hostVisible = true;
+#endif
+        const std::string statsName = "ClusterLodStreamingStats[" + std::to_string(frameSlot) + "]";
+        statsDesc.debugName = statsName.c_str();
+        frameBuffers.streamingStatsBuffer = runtimeContext.resourceFactory->createBuffer(statsDesc);
     }
 
     void ensureStreamingResources(const ClusterLODData& clusterLodData,
@@ -1503,6 +1548,24 @@ private:
         return std::max(alwaysResidentCapacity, std::min(sceneClusterCapacity, configuredCapacity));
     }
 
+    void applyGpuStreamingStatsToTelemetry() {
+        m_streamingStats.gpuStatsValid = m_hasGpuStreamingStats;
+        m_streamingStats.gpuStatsFrameIndex =
+            m_hasGpuStreamingStats ? m_lastGpuStreamingStats.frameIndex : UINT32_MAX;
+        m_streamingStats.gpuUnloadRequestCount =
+            m_hasGpuStreamingStats ? m_lastGpuStreamingStats.unloadRequestCount : 0u;
+        m_streamingStats.gpuAverageUnloadAge =
+            (m_hasGpuStreamingStats && m_lastGpuStreamingStats.unloadRequestCount != 0u)
+                ? float(double(m_lastGpuStreamingStats.unloadAgeSum) /
+                        double(m_lastGpuStreamingStats.unloadRequestCount))
+                : 0.0f;
+        m_streamingStats.gpuAppliedPatchCount =
+            m_hasGpuStreamingStats ? m_lastGpuStreamingStats.appliedPatchCount : 0u;
+        m_streamingStats.gpuCopiedBytes =
+            m_hasGpuStreamingStats ? clusterStreamingGpuStatsCopiedBytes(m_lastGpuStreamingStats)
+                                   : 0u;
+    }
+
     void updateDebugStats(const ClusterLODData* clusterLodData = nullptr) {
         m_debugStats.lastResidentGroupCount = 0;
         m_debugStats.lastAlwaysResidentGroupCount = 0;
@@ -1601,6 +1664,7 @@ private:
                         double(transferCapacityBytes))
                 : 0.0f;
         m_streamingStats.failedAllocations = m_failedAllocationsThisFrame;
+        applyGpuStreamingStatsToTelemetry();
         m_streamingStats.ageHistogram.fill(0u);
         m_streamingStats.ageHistogramMaxAge = maxResidentAge;
         m_streamingStats.ageHistogramBucketWidth =
@@ -1687,6 +1751,8 @@ private:
     std::vector<ClusterUnloadRequest> m_unloadRequestReadbackScratch;
     std::vector<uint32_t> m_confirmedUnloadGroups;
     std::vector<GroupResidentAllocation> m_groupResidentAllocations;
+    ClusterStreamingGpuStats m_lastGpuStreamingStats{};
+    bool m_hasGpuStreamingStats = false;
     StreamingStats m_streamingStats;
     DebugStats m_debugStats;
     uint32_t m_loadRequestsThisFrame = 0u;
