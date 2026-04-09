@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cmath>
 #include <fstream>
 #include <memory>
@@ -69,6 +70,62 @@ static constexpr int kRenderResolutionBaseWidth = 1920;
 static constexpr int kRenderResolutionBaseHeight = 1080;
 static constexpr float kMinRenderScale = 0.25f;
 static constexpr float kMaxRenderScale = 2.0f;
+
+std::string formatByteCountShort(uint64_t byteCount) {
+    static constexpr const char* kUnits[] = {"B", "KB", "MB", "GB"};
+    static constexpr uint32_t kUnitCount = sizeof(kUnits) / sizeof(kUnits[0]);
+    double value = static_cast<double>(byteCount);
+    uint32_t unitIndex = 0u;
+    while (value >= 1024.0 && unitIndex + 1u < kUnitCount) {
+        value /= 1024.0;
+        ++unitIndex;
+    }
+
+    char buffer[64] = {};
+    if (unitIndex == 0u) {
+        std::snprintf(buffer, sizeof(buffer), "%llu %s",
+                      static_cast<unsigned long long>(byteCount),
+                      kUnits[unitIndex]);
+    } else {
+        std::snprintf(buffer, sizeof(buffer), "%.1f %s", value, kUnits[unitIndex]);
+    }
+    return buffer;
+}
+
+struct StreamingDashboardHistory {
+    static constexpr int kSampleCount = 120;
+
+    std::array<float, kSampleCount> loadRequestHistory = {};
+    std::array<float, kSampleCount> unloadRequestHistory = {};
+    uint32_t lastFrameIndex = UINT32_MAX;
+    int sampleCount = 0;
+    int nextSample = 0;
+
+    void push(uint32_t frameIndex, const ClusterStreamingService::StreamingStats& stats) {
+        if (lastFrameIndex == frameIndex) {
+            return;
+        }
+
+        lastFrameIndex = frameIndex;
+        loadRequestHistory[nextSample] = static_cast<float>(stats.loadRequestsThisFrame);
+        unloadRequestHistory[nextSample] = static_cast<float>(stats.unloadRequestsThisFrame);
+        nextSample = (nextSample + 1) % kSampleCount;
+        sampleCount = std::min(sampleCount + 1, kSampleCount);
+    }
+
+    int plotOffset() const {
+        return sampleCount < kSampleCount ? 0 : nextSample;
+    }
+
+    float maxRequestValue() const {
+        float maxValue = 1.0f;
+        for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
+            maxValue = std::max(maxValue, loadRequestHistory[sampleIndex]);
+            maxValue = std::max(maxValue, unloadRequestHistory[sampleIndex]);
+        }
+        return maxValue;
+    }
+};
 
 void checkImGuiVkResult(VkResult result) {
     if (result == VK_SUCCESS) {
@@ -2373,30 +2430,133 @@ int main() {
         ImGui::Checkbox("Scene Graph", &showSceneGraphWindow);
         ImGui::Checkbox("ImGui Demo", &showImGuiDemo);
 
+        const ClusterStreamingService::DebugStats& streamingStats =
+            clusterStreamingService.debugStats();
+        const ClusterStreamingService::StreamingStats& streamingTelemetry =
+            clusterStreamingService.streamingStats();
+        static StreamingDashboardHistory streamingHistory;
+        streamingHistory.push(frameIndex, streamingTelemetry);
+
         if (ImGui::CollapsingHeader("Cluster Streaming")) {
-            const ClusterStreamingService::DebugStats& streamingStats =
-                clusterStreamingService.debugStats();
             ImGui::Text("Streaming: %s",
                         clusterStreamingService.streamingEnabled() ? "Enabled" : "Disabled");
             ImGui::Text("Resources: %s",
                         streamingStats.resourcesReady ? "Ready" : "Pending");
-            ImGui::Text("Resident groups: %u (%u always, %u dynamic)",
-                        streamingStats.lastResidentGroupCount,
-                        streamingStats.lastAlwaysResidentGroupCount,
-                        streamingStats.dynamicResidentGroupCount);
+
+            const float residentGroupRatio =
+                streamingStats.activeResidencyGroupCount != 0u
+                    ? float(double(streamingTelemetry.residentGroupCount) /
+                            double(streamingStats.activeResidencyGroupCount))
+                    : 0.0f;
+            const std::string residentGroupLabel =
+                std::to_string(streamingTelemetry.residentGroupCount) + " / " +
+                std::to_string(streamingStats.activeResidencyGroupCount) +
+                " groups";
+            ImGui::Text("Resident groups");
+            ImGui::ProgressBar(residentGroupRatio, ImVec2(-1.0f, 0.0f), residentGroupLabel.c_str());
+            ImGui::Text("%u always-resident, %u dynamic",
+                        streamingTelemetry.alwaysResidentGroupCount,
+                        streamingTelemetry.dynamicResidentGroupCount);
+
+            const float storagePoolRatio =
+                streamingTelemetry.storagePoolCapacityBytes != 0u
+                    ? float(double(streamingTelemetry.storagePoolUsedBytes) /
+                            double(streamingTelemetry.storagePoolCapacityBytes))
+                    : 0.0f;
+            const std::string storagePoolLabel =
+                formatByteCountShort(streamingTelemetry.storagePoolUsedBytes) + " / " +
+                formatByteCountShort(streamingTelemetry.storagePoolCapacityBytes);
+            ImGui::Text("Storage pool usage");
+            ImGui::ProgressBar(storagePoolRatio, ImVec2(-1.0f, 0.0f), storagePoolLabel.c_str());
+
+            const float transferRatio =
+                std::clamp(streamingTelemetry.transferUtilization, 0.0f, 1.0f);
+            const std::string transferLabel =
+                formatByteCountShort(streamingTelemetry.transferBytesThisFrame) + " / " +
+                formatByteCountShort(clusterStreamingService.effectiveStreamingTransferCapacityBytes());
+            ImGui::Text("Transfer bandwidth");
+            ImGui::ProgressBar(transferRatio, ImVec2(-1.0f, 0.0f), transferLabel.c_str());
+            ImGui::Text("Transfer utilization: %.1f%%",
+                        streamingTelemetry.transferUtilization * 100.0f);
+
+            ImGui::Text("Requests: load %u (%u executed, %u deferred), unload %u (%u executed)",
+                        streamingTelemetry.loadRequestsThisFrame,
+                        streamingTelemetry.loadsExecutedThisFrame,
+                        streamingTelemetry.loadsDeferredThisFrame,
+                        streamingTelemetry.unloadRequestsThisFrame,
+                        streamingTelemetry.unloadsExecutedThisFrame);
             ImGui::Text("Pending load/unload: %u / %u (%u confirmed)",
                         streamingStats.pendingResidencyGroupCount,
                         streamingStats.pendingUnloadGroupCount,
                         streamingStats.confirmedUnloadGroupCount);
-            ImGui::Text("Last frame requests: load %u -> %u, unload %u -> %u",
-                        streamingStats.lastResidencyRequestCount,
-                        streamingStats.lastResidencyPromotedCount,
-                        streamingStats.lastUnloadRequestCount,
-                        streamingStats.lastResidencyEvictedCount);
+            ImGui::Text("Failed allocations this frame: %u",
+                        streamingTelemetry.failedAllocations);
+
+            const float requestHistoryMax = streamingHistory.maxRequestValue();
+            ImGui::PlotLines("Load Requests / Frame",
+                             streamingHistory.loadRequestHistory.data(),
+                             streamingHistory.sampleCount,
+                             streamingHistory.plotOffset(),
+                             nullptr,
+                             0.0f,
+                             requestHistoryMax,
+                             ImVec2(0.0f, 60.0f));
+            ImGui::PlotLines("Unload Requests / Frame",
+                             streamingHistory.unloadRequestHistory.data(),
+                             streamingHistory.sampleCount,
+                             streamingHistory.plotOffset(),
+                             nullptr,
+                             0.0f,
+                             requestHistoryMax,
+                             ImVec2(0.0f, 60.0f));
+
+            std::array<float, ClusterStreamingService::kStreamingAgeHistogramBucketCount>
+                ageHistogramValues = {};
+            float ageHistogramMax = 1.0f;
+            for (size_t bucketIndex = 0; bucketIndex < ageHistogramValues.size(); ++bucketIndex) {
+                ageHistogramValues[bucketIndex] =
+                    static_cast<float>(streamingTelemetry.ageHistogram[bucketIndex]);
+                ageHistogramMax = std::max(ageHistogramMax, ageHistogramValues[bucketIndex]);
+            }
+            const std::string ageHistogramOverlay =
+                "bucket width " + std::to_string(streamingTelemetry.ageHistogramBucketWidth) +
+                "f, max age " + std::to_string(streamingTelemetry.ageHistogramMaxAge) + "f";
+            ImGui::PlotHistogram("Resident Age Histogram",
+                                 ageHistogramValues.data(),
+                                 static_cast<int>(ageHistogramValues.size()),
+                                 0,
+                                 ageHistogramOverlay.c_str(),
+                                 0.0f,
+                                 ageHistogramMax,
+                                 ImVec2(0.0f, 80.0f));
+
+            if (!streamingTelemetry.totalGroupsPerLod.empty()) {
+                ImGui::Text("Per-LOD residency");
+                for (size_t lodIndex = 0; lodIndex < streamingTelemetry.totalGroupsPerLod.size();
+                     ++lodIndex) {
+                    const uint32_t totalGroups = streamingTelemetry.totalGroupsPerLod[lodIndex];
+                    const uint32_t residentGroups =
+                        lodIndex < streamingTelemetry.residentGroupsPerLod.size()
+                            ? streamingTelemetry.residentGroupsPerLod[lodIndex]
+                            : 0u;
+                    const float lodRatio =
+                        totalGroups != 0u
+                            ? float(double(residentGroups) / double(totalGroups))
+                            : 0.0f;
+                    const std::string lodLabel =
+                        "LOD " + std::to_string(lodIndex) + ": " +
+                        std::to_string(residentGroups) + " / " +
+                        std::to_string(totalGroups) + " groups";
+                    ImGui::ProgressBar(lodRatio, ImVec2(-1.0f, 0.0f), lodLabel.c_str());
+                }
+            } else {
+                ImGui::TextDisabled("Per-LOD residency: unavailable");
+            }
+
+            ImGui::Separator();
             ImGui::Text("Resident heap: %u / %u clusters",
                         streamingStats.residentHeapUsed,
                         streamingStats.residentHeapCapacity);
-            ImGui::Separator();
             ImGui::Text("Task ring: %u total, %u free, %u prepared, %u transferred, %u queued",
                         streamingStats.streamingTaskCapacity,
                         streamingStats.freeStreamingTaskCount,
@@ -2404,9 +2564,9 @@ int main() {
                         streamingStats.transferSubmittedTaskCount,
                         streamingStats.updateQueuedTaskCount);
             if (streamingStats.selectedTransferTaskIndex != UINT32_MAX) {
-                ImGui::Text("Transfer task: slot %u, %llu bytes staged",
+                ImGui::Text("Transfer task: slot %u, %s staged",
                             streamingStats.selectedTransferTaskIndex,
-                            static_cast<unsigned long long>(streamingStats.selectedTransferBytes));
+                            formatByteCountShort(streamingStats.selectedTransferBytes).c_str());
             } else {
                 ImGui::TextDisabled("Transfer task: idle");
             }

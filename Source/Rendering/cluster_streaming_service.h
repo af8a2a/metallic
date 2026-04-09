@@ -19,6 +19,8 @@
 
 class ClusterStreamingService {
 public:
+    static constexpr uint32_t kStreamingAgeHistogramBucketCount = 16u;
+
     struct StreamingStats {
         uint32_t residentGroupCount = 0;
         uint32_t residentClusterCount = 0;
@@ -40,6 +42,11 @@ public:
         float transferUtilization = 0.0f;
 
         uint32_t failedAllocations = 0;
+        uint32_t ageHistogramBucketWidth = 1;
+        uint32_t ageHistogramMaxAge = 0;
+        std::array<uint32_t, kStreamingAgeHistogramBucketCount> ageHistogram = {};
+        std::vector<uint32_t> residentGroupsPerLod;
+        std::vector<uint32_t> totalGroupsPerLod;
     };
 
     struct DebugStats {
@@ -278,7 +285,7 @@ public:
 
         ensureStreamingResources(clusterLodData, runtimeContext);
         if (!ready()) {
-            updateDebugStats();
+            updateDebugStats(&clusterLodData);
             return;
         }
         recycleCompletedTasks(runtimeContext);
@@ -316,7 +323,7 @@ public:
         // never has to wait on uploads recorded earlier in the same frame.
         selectUpdateTask();
         uploadCanonicalStateToActiveFrame();
-        updateDebugStats();
+        updateDebugStats(&clusterLodData);
     }
 
 private:
@@ -677,7 +684,7 @@ private:
         m_residencySourceGroupMeshletIndicesHandle = nullptr;
         resetResidentHeapAllocator();
         uploadCanonicalStateToAllFrames();
-        updateDebugStats();
+        updateDebugStats(&clusterLodData);
     }
 
     void seedResidencyRequestQueue(FrameBuffers& frameBuffers) {
@@ -1496,7 +1503,7 @@ private:
         return std::max(alwaysResidentCapacity, std::min(sceneClusterCapacity, configuredCapacity));
     }
 
-    void updateDebugStats() {
+    void updateDebugStats(const ClusterLODData* clusterLodData = nullptr) {
         m_debugStats.lastResidentGroupCount = 0;
         m_debugStats.lastAlwaysResidentGroupCount = 0;
         m_debugStats.residentHeapCapacity = m_streamingStorage.capacityElements();
@@ -1545,10 +1552,14 @@ private:
 
         const uint32_t groupCount =
             std::min(m_debugStats.activeResidencyGroupCount, m_residencyGroupCapacity);
+        uint32_t maxResidentAge = 0u;
         for (uint32_t groupIndex = 0; groupIndex < groupCount; ++groupIndex) {
             const uint32_t state = m_groupResidencyState[groupIndex];
             if ((state & kClusterLodGroupResidencyResident) != 0u) {
                 ++m_debugStats.lastResidentGroupCount;
+                if (groupIndex < m_groupAgeState.size()) {
+                    maxResidentAge = std::max(maxResidentAge, m_groupAgeState[groupIndex]);
+                }
             }
             if ((state & kClusterLodGroupResidencyAlwaysResident) != 0u) {
                 ++m_debugStats.lastAlwaysResidentGroupCount;
@@ -1590,6 +1601,50 @@ private:
                         double(transferCapacityBytes))
                 : 0.0f;
         m_streamingStats.failedAllocations = m_failedAllocationsThisFrame;
+        m_streamingStats.ageHistogram.fill(0u);
+        m_streamingStats.ageHistogramMaxAge = maxResidentAge;
+        m_streamingStats.ageHistogramBucketWidth =
+            std::max(1u,
+                     (maxResidentAge + kStreamingAgeHistogramBucketCount) /
+                         kStreamingAgeHistogramBucketCount);
+        for (uint32_t groupIndex = 0; groupIndex < groupCount; ++groupIndex) {
+            if (!isGroupResident(groupIndex) || groupIndex >= m_groupAgeState.size()) {
+                continue;
+            }
+
+            const uint32_t bucketIndex = std::min<uint32_t>(
+                m_groupAgeState[groupIndex] / m_streamingStats.ageHistogramBucketWidth,
+                kStreamingAgeHistogramBucketCount - 1u);
+            ++m_streamingStats.ageHistogram[bucketIndex];
+        }
+
+        m_streamingStats.residentGroupsPerLod.clear();
+        m_streamingStats.totalGroupsPerLod.clear();
+        if (clusterLodData && !clusterLodData->levels.empty()) {
+            uint32_t maxLodDepth = 0u;
+            for (const ClusterLODLevel& level : clusterLodData->levels) {
+                maxLodDepth = std::max(maxLodDepth, level.depth);
+            }
+
+            m_streamingStats.residentGroupsPerLod.assign(size_t(maxLodDepth) + 1u, 0u);
+            m_streamingStats.totalGroupsPerLod.assign(size_t(maxLodDepth) + 1u, 0u);
+            for (const ClusterLODLevel& level : clusterLodData->levels) {
+                if (level.depth >= m_streamingStats.totalGroupsPerLod.size()) {
+                    continue;
+                }
+
+                const uint32_t levelGroupBegin = std::min(level.groupStart, groupCount);
+                const uint32_t levelGroupEnd = static_cast<uint32_t>(
+                    std::min<uint64_t>(uint64_t(level.groupStart) + uint64_t(level.groupCount),
+                                       uint64_t(groupCount)));
+                for (uint32_t groupIndex = levelGroupBegin; groupIndex < levelGroupEnd; ++groupIndex) {
+                    ++m_streamingStats.totalGroupsPerLod[level.depth];
+                    if (isGroupResident(groupIndex)) {
+                        ++m_streamingStats.residentGroupsPerLod[level.depth];
+                    }
+                }
+            }
+        }
     }
 
     bool m_enableStreaming = false;
