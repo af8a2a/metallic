@@ -43,7 +43,9 @@ static const uint kVisibleInstanceClassificationVisible = 1u << 0;
 static const uint kVisibleInstanceClassificationHasLod = 1u << 1;
 static const uint kMeshletDrawSourceScene = 0u;
 static const uint kMeshletDrawSourceClusterLod = 1u;
-static const uint kClusterLodGroupPageInvalidAddress = 0xFFFFFFFFu;
+static const uint64_t kClusterLodGroupPageInvalidAddressBit = ((uint64_t)1 << 63u);
+static const uint64_t kClusterLodGroupPageInvalidAddressStart =
+    kClusterLodGroupPageInvalidAddressBit;
 static const uint kClusterLodGroupResidencyResident = 1u << 0;
 static const uint kClusterLodGroupResidencyRequested = 1u << 1;
 static const uint kClusterLodGroupResidencyAlwaysResident = 1u << 2;
@@ -58,10 +60,18 @@ struct ClusterResidencyRequest {
 
 struct StreamingPatch {
     uint groupIndex;
-    uint residentHeapOffset;
+    uint64_t residentHeapOffset;
     uint clusterStart;
     uint clusterCount;
 };
+
+bool clusterLodGroupPageAddressIsValid(uint64_t address) {
+    return (address & kClusterLodGroupPageInvalidAddressBit) == 0;
+}
+
+uint64_t clusterLodGroupPageInvalidAddress(uint frameIndex) {
+    return kClusterLodGroupPageInvalidAddressStart | (uint64_t)frameIndex;
+}
 
 uint gpuDrivenLoadWorklistWriteCursor(RWByteAddressBuffer worklistStateBuffer) {
     return worklistStateBuffer.Load(GPU_DRIVEN_WORKLIST_WRITE_CURSOR_OFFSET_BYTES);

@@ -2689,6 +2689,7 @@ public:
 
         if (dynamicRenderingFeatures.dynamicRendering != VK_TRUE ||
             sync2Features.synchronization2 != VK_TRUE ||
+            features2.features.shaderInt64 != VK_TRUE ||
             vulkan11Features.shaderDrawParameters != VK_TRUE ||
             vulkan12Features.descriptorBindingPartiallyBound != VK_TRUE ||
             vulkan12Features.runtimeDescriptorArray != VK_TRUE) {
@@ -2728,6 +2729,7 @@ public:
             vulkan12Features.uniformAndStorageBuffer8BitAccess == VK_TRUE;
         m_uniformAndStorageBuffer16BitAccessEnabled =
             vulkan11Features.uniformAndStorageBuffer16BitAccess == VK_TRUE;
+        m_shaderInt64Enabled = features2.features.shaderInt64 == VK_TRUE;
         m_subgroupSizeControlAvailable = subgroupSizeControlAvailable;
         m_subgroupSizeControlSupported =
             subgroupSizeControlAvailable &&
@@ -2931,6 +2933,7 @@ public:
 
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.features.pipelineStatisticsQuery = m_toolingInfo.pipelineStatistics ? VK_TRUE : VK_FALSE;
+        features2.features.shaderInt64 = m_shaderInt64Enabled ? VK_TRUE : VK_FALSE;
         if (createInfo.enableTimelineSemaphore && m_timelineSemaphoreSupported) {
             m_features.timelineSemaphore = true;
         } else {
@@ -3329,6 +3332,7 @@ public:
     bool m_subgroupSizeControlAvailable = false;
     bool m_subgroupSizeControlSupported = false;
     bool m_computeFullSubgroupsSupported = false;
+    bool m_shaderInt64Enabled = false;
     bool m_timelineSemaphoreSupported = false;
     bool m_nullDescriptorEnabled = false;
     std::string m_deviceLostMessage;

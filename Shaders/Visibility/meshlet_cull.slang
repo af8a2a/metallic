@@ -64,7 +64,7 @@ StructuredBuffer<uint>                residentGroupMeshletIndices; // buffer(GPU
 StructuredBuffer<GPUMeshletBounds>    lodMeshletBounds; // buffer(GPU_DRIVEN_CULL_LOD_BOUNDS_BINDING)
 RWStructuredBuffer<uint>              traversalStats;   // buffer(GPU_DRIVEN_CULL_TRAVERSAL_STATS_BINDING)
 RWByteAddressBuffer                   groupResidency;   // buffer(GPU_DRIVEN_CULL_GROUP_RESIDENCY_BINDING)
-StructuredBuffer<uint>                lodGroupPageTable; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_PAGE_TABLE_BINDING)
+StructuredBuffer<uint64_t>            lodGroupPageTable; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_PAGE_TABLE_BINDING)
 RWStructuredBuffer<ClusterResidencyRequest> residencyRequests; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_OUTPUT_BINDING)
 RWByteAddressBuffer                   residencyRequestState; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING)
 StructuredBuffer<uint>                sourceGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING)
@@ -220,7 +220,7 @@ uint loadGroupResidencyState(uint groupIndex) {
     return groupResidency.Load(groupIndex * 4u);
 }
 
-uint loadLodGroupResidentClusterStart(uint groupIndex) {
+uint64_t loadLodGroupResidentClusterStart(uint groupIndex) {
     return lodGroupPageTable[groupIndex];
 }
 
@@ -291,9 +291,9 @@ bool visibleGroupsResidentForLodRoot(InstanceData inst,
                 }
 
                 const uint groupState = loadGroupResidencyState(groupIndex);
-                const uint residentClusterStart = loadLodGroupResidentClusterStart(groupIndex);
+                const uint64_t residentClusterStart = loadLodGroupResidentClusterStart(groupIndex);
                 if ((groupState & kClusterLodGroupResidencyResident) == 0u ||
-                    residentClusterStart == kClusterLodGroupPageInvalidAddress) {
+                    !clusterLodGroupPageAddressIsValid(residentClusterStart)) {
                     if (queueMissingRequests) {
                         queueResidencyRequest(lodRootNode,
                                               groupIndex,
@@ -390,15 +390,16 @@ void computeMain(uint3 groupID : SV_GroupID,
                     uint meshletIndexBase = group.clusterStart;
                     if (cullUniforms.enableResidencyStreaming != 0u) {
                         const uint groupState = loadGroupResidencyState(groupIndex);
-                        const uint residentClusterStart = loadLodGroupResidentClusterStart(groupIndex);
+                        const uint64_t residentClusterStart =
+                            loadLodGroupResidentClusterStart(groupIndex);
                         if ((groupState & kClusterLodGroupResidencyResident) == 0u ||
-                            residentClusterStart == kClusterLodGroupPageInvalidAddress) {
+                            !clusterLodGroupPageAddressIsValid(residentClusterStart)) {
                             queueResidencyRequest(visibleInfo.lodRootNode,
                                                   groupIndex,
                                                   selectedLodLevel,
                                                   sceneInstanceID);
                         } else {
-                            meshletIndexBase = residentClusterStart;
+                            meshletIndexBase = (uint)residentClusterStart;
                             useResidentHeap = true;
                             touchResidentGroup(groupIndex);
                         }

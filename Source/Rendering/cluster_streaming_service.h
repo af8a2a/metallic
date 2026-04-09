@@ -599,7 +599,7 @@ private:
         }
 
         RhiBufferDesc groupPageTableDesc{};
-        groupPageTableDesc.size = size_t(groupCapacity) * sizeof(uint32_t);
+        groupPageTableDesc.size = size_t(groupCapacity) * sizeof(uint64_t);
         groupPageTableDesc.hostVisible = false;
         groupPageTableDesc.debugName = "ClusterLodGroupPageTable";
         m_lodGroupPageTableBuffer = runtimeContext.resourceFactory->createBuffer(groupPageTableDesc);
@@ -891,7 +891,7 @@ private:
                        uint32_t clusterCount) {
         StreamingPatch patch{};
         patch.groupIndex = groupIndex;
-        patch.residentHeapOffset = heapOffset;
+        patch.residentHeapOffset = makeClusterLodGroupPageResidentAddress(heapOffset);
         patch.clusterStart = clusterStart;
         patch.clusterCount = clusterCount;
         appendStreamingPatch(patch);
@@ -900,7 +900,7 @@ private:
     void queueUnloadPatch(uint32_t groupIndex) {
         StreamingPatch patch{};
         patch.groupIndex = groupIndex;
-        patch.residentHeapOffset = kClusterLodGroupPageInvalidAddress;
+        patch.residentHeapOffset = makeClusterLodGroupPageInvalidAddress(m_frameIndex);
         patch.clusterStart = 0u;
         patch.clusterCount = 0u;
         appendStreamingPatch(patch);

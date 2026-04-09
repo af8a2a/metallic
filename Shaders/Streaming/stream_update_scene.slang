@@ -10,7 +10,7 @@ struct StreamingUpdateUniforms {
 ConstantBuffer<StreamingUpdateUniforms> updateUniforms; // buffer(GPU_DRIVEN_STREAMING_UPDATE_UNIFORMS_BINDING)
 StructuredBuffer<uint>                  sourceGroupMeshletIndices; // buffer(GPU_DRIVEN_STREAMING_UPDATE_SOURCE_GROUP_MESHLET_INDICES_BINDING)
 RWStructuredBuffer<uint>                residentGroupMeshletIndices; // buffer(GPU_DRIVEN_STREAMING_UPDATE_RESIDENT_GROUP_MESHLET_INDICES_BINDING)
-RWStructuredBuffer<uint>                lodGroupPageTable; // buffer(GPU_DRIVEN_STREAMING_UPDATE_GROUP_PAGE_TABLE_BINDING)
+RWStructuredBuffer<uint64_t>            lodGroupPageTable; // buffer(GPU_DRIVEN_STREAMING_UPDATE_GROUP_PAGE_TABLE_BINDING)
 StructuredBuffer<StreamingPatch>        patches; // buffer(GPU_DRIVEN_STREAMING_UPDATE_PATCHES_BINDING)
 
 [shader("compute")]
@@ -26,14 +26,15 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    if (patch.residentHeapOffset == kClusterLodGroupPageInvalidAddress) {
-        lodGroupPageTable[patch.groupIndex] = kClusterLodGroupPageInvalidAddress;
+    if (!clusterLodGroupPageAddressIsValid(patch.residentHeapOffset)) {
+        lodGroupPageTable[patch.groupIndex] = patch.residentHeapOffset;
         return;
     }
 
+    const uint residentHeapOffset = (uint)patch.residentHeapOffset;
     if (updateUniforms.copySourceData != 0u) {
         for (uint clusterIndex = 0u; clusterIndex < patch.clusterCount; ++clusterIndex) {
-            residentGroupMeshletIndices[patch.residentHeapOffset + clusterIndex] =
+            residentGroupMeshletIndices[residentHeapOffset + clusterIndex] =
                 sourceGroupMeshletIndices[patch.clusterStart + clusterIndex];
         }
     }

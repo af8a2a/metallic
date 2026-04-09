@@ -10,12 +10,27 @@ enum : uint32_t {
     kVisibleInstanceClassificationHasLod = 1u << 1,
     kMeshletDrawSourceScene = 0u,
     kMeshletDrawSourceClusterLod = 1u,
-    kClusterLodGroupPageInvalidAddress = UINT32_MAX,
     kClusterLodGroupResidencyResident = 1u << 0,
     kClusterLodGroupResidencyRequested = 1u << 1,
     kClusterLodGroupResidencyAlwaysResident = 1u << 2,
     kClusterTraversalStatsHistogramSize = 8u,
 };
+
+constexpr uint64_t kClusterLodGroupPageInvalidAddressBit = 1ull << 63u;
+constexpr uint64_t kClusterLodGroupPageInvalidAddressStart =
+    kClusterLodGroupPageInvalidAddressBit;
+
+constexpr uint64_t makeClusterLodGroupPageResidentAddress(uint32_t residentHeapOffset) {
+    return uint64_t(residentHeapOffset);
+}
+
+constexpr uint64_t makeClusterLodGroupPageInvalidAddress(uint32_t frameIndex = 0u) {
+    return kClusterLodGroupPageInvalidAddressStart | uint64_t(frameIndex);
+}
+
+constexpr bool isClusterLodGroupPageAddressValid(uint64_t address) {
+    return (address & kClusterLodGroupPageInvalidAddressBit) == 0u;
+}
 
 struct VisibleInstanceInfo {
     uint32_t sceneInstanceID = UINT32_MAX;
@@ -110,11 +125,11 @@ struct StreamingAgeFilterUniforms {
 
 struct StreamingPatch {
     uint32_t groupIndex = UINT32_MAX;
-    uint32_t residentHeapOffset = kClusterLodGroupPageInvalidAddress;
+    uint64_t residentHeapOffset = makeClusterLodGroupPageInvalidAddress();
     uint32_t clusterStart = 0;
     uint32_t clusterCount = 0;
 };
-static_assert(sizeof(StreamingPatch) == sizeof(uint32_t) * 4u,
+static_assert(sizeof(StreamingPatch) == sizeof(uint64_t) + sizeof(uint32_t) * 4u,
               "StreamingPatch must match shader layout");
 
 struct StreamingUpdateUniforms {

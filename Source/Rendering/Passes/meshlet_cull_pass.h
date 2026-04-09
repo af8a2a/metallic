@@ -108,7 +108,7 @@ public:
                            makeSingleElementBufferDesc<uint32_t>("DummyClusterLodGroupResidency"));
         m_dummyLodGroupPageTable =
             builder.create("DummyClusterLodGroupPageTable",
-                           makeSingleValueBufferDesc<uint32_t>(kClusterLodGroupPageInvalidAddress,
+                           makeSingleValueBufferDesc<uint64_t>(makeClusterLodGroupPageInvalidAddress(),
                                                                "DummyClusterLodGroupPageTable"));
         m_dummyResidencyRequests =
             builder.create("DummyClusterLodResidencyRequests",
