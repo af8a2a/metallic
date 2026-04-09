@@ -25,6 +25,8 @@ struct CullUniforms {
     float    occlusionBoundsScale;
     uint     clusterLodEnabled;
     uint     enableResidencyStreaming;
+    uint     residencyRequestFrameIndex;
+    uint     reserved0;
 };
 
 struct GPUMeshletBounds {
@@ -64,7 +66,7 @@ StructuredBuffer<uint>                residentGroupMeshletIndices; // buffer(GPU
 StructuredBuffer<GPUMeshletBounds>    lodMeshletBounds; // buffer(GPU_DRIVEN_CULL_LOD_BOUNDS_BINDING)
 RWStructuredBuffer<uint>              traversalStats;   // buffer(GPU_DRIVEN_CULL_TRAVERSAL_STATS_BINDING)
 RWByteAddressBuffer                   groupResidency;   // buffer(GPU_DRIVEN_CULL_GROUP_RESIDENCY_BINDING)
-StructuredBuffer<uint64_t>            lodGroupPageTable; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_PAGE_TABLE_BINDING)
+RWStructuredBuffer<uint64_t>          lodGroupPageTable; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_PAGE_TABLE_BINDING)
 RWStructuredBuffer<ClusterResidencyRequest> residencyRequests; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_OUTPUT_BINDING)
 RWByteAddressBuffer                   residencyRequestState; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING)
 StructuredBuffer<uint>                sourceGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING)
@@ -228,13 +230,24 @@ void queueResidencyRequest(uint lodRootNode,
                            uint targetGroupIndex,
                            uint lodLevel,
                            uint sceneInstanceID) {
-    uint previousState = 0u;
-    groupResidency.InterlockedOr(targetGroupIndex * 4u,
-                                 kClusterLodGroupResidencyRequested,
-                                 previousState);
-    if ((previousState & (kClusterLodGroupResidencyResident |
-                          kClusterLodGroupResidencyRequested)) != 0u) {
-        return;
+    const uint64_t residentAddress = loadLodGroupResidentClusterStart(targetGroupIndex);
+    if (!clusterLodGroupPageAddressIsValid(residentAddress)) {
+        const uint64_t currentFrameTag =
+            clusterLodGroupPageInvalidAddress(cullUniforms.residencyRequestFrameIndex);
+        uint64_t previousAddress = 0;
+        InterlockedMax(lodGroupPageTable[targetGroupIndex], currentFrameTag, previousAddress);
+        if (previousAddress == currentFrameTag) {
+            return;
+        }
+    } else {
+        uint previousState = 0u;
+        groupResidency.InterlockedOr(targetGroupIndex * 4u,
+                                     kClusterLodGroupResidencyRequested,
+                                     previousState);
+        if ((previousState & (kClusterLodGroupResidencyResident |
+                              kClusterLodGroupResidencyRequested)) != 0u) {
+            return;
+        }
     }
 
     uint slot = gpuDrivenAppendWorkItemSlot(residencyRequestState);

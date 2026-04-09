@@ -314,6 +314,7 @@ public:
         cullUni.occlusionBoundsScale = m_occlusionBoundsScale;
         cullUni.clusterLodEnabled = clusterLodAvailable ? 1u : 0u;
         cullUni.enableResidencyStreaming = residencyStreamingEnabled ? 1u : 0u;
+        cullUni.residencyRequestFrameIndex = m_frameContext ? m_frameContext->frameIndex : 0u;
 
         // Dispatch 1: coarse instance classification from scene tables.
         encoder.setComputePipeline(classifyIt->second);

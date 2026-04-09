@@ -612,6 +612,7 @@ struct RhiFeatures {
     bool timelineSemaphore = false;
     bool externalHostMemory = false;
     bool descriptorBuffer = false;   // VK_EXT_descriptor_buffer
+    bool shaderBufferInt64Atomics = false; // VK_KHR_shader_atomic_int64 storage-buffer atomics
 };
 
 struct RhiSubgroupProperties {

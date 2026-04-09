@@ -2635,6 +2635,8 @@ public:
             hasExtension(extensions, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         const bool descriptorBufferAvailable =
             hasExtension(extensions, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+        const bool shaderAtomicInt64Available =
+            hasExtension(extensions, VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME);
         const bool subgroupSizeControlAvailable =
             hasExtension(extensions, VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME) ||
             properties.apiVersion >= VK_API_VERSION_1_3;
@@ -2667,6 +2669,8 @@ public:
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES};
         VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+        VkPhysicalDeviceShaderAtomicInt64Features shaderAtomicInt64Features{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES};
         VkPhysicalDeviceRobustness2FeaturesEXT robustness2Features{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
@@ -2684,12 +2688,19 @@ public:
         rayQueryFeatures.pNext = &rayTracingPipelineFeatures;
         rayTracingPipelineFeatures.pNext = &accelerationStructureFeatures;
         accelerationStructureFeatures.pNext = &descriptorBufferFeatures;
-        descriptorBufferFeatures.pNext = robustness2Available ? &robustness2Features : nullptr;
+        descriptorBufferFeatures.pNext =
+            shaderAtomicInt64Available
+                ? static_cast<void*>(&shaderAtomicInt64Features)
+                : (robustness2Available ? static_cast<void*>(&robustness2Features) : nullptr);
+        shaderAtomicInt64Features.pNext =
+            robustness2Available ? static_cast<void*>(&robustness2Features) : nullptr;
         vkGetPhysicalDeviceFeatures2(device, &features2);
 
         if (dynamicRenderingFeatures.dynamicRendering != VK_TRUE ||
             sync2Features.synchronization2 != VK_TRUE ||
             features2.features.shaderInt64 != VK_TRUE ||
+            shaderAtomicInt64Available == false ||
+            shaderAtomicInt64Features.shaderBufferInt64Atomics != VK_TRUE ||
             vulkan11Features.shaderDrawParameters != VK_TRUE ||
             vulkan12Features.descriptorBindingPartiallyBound != VK_TRUE ||
             vulkan12Features.runtimeDescriptorArray != VK_TRUE) {
@@ -2724,6 +2735,9 @@ public:
         m_features.descriptorBuffer =
             descriptorBufferAvailable &&
             descriptorBufferFeatures.descriptorBuffer == VK_TRUE;
+        m_features.shaderBufferInt64Atomics =
+            shaderAtomicInt64Available &&
+            shaderAtomicInt64Features.shaderBufferInt64Atomics == VK_TRUE;
         m_storageBuffer16BitAccessEnabled = vulkan11Features.storageBuffer16BitAccess == VK_TRUE;
         m_uniformAndStorageBuffer8BitAccessEnabled =
             vulkan12Features.uniformAndStorageBuffer8BitAccess == VK_TRUE;
@@ -2801,6 +2815,9 @@ public:
         if (m_features.descriptorBuffer) {
             deviceExtensions.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
         }
+        if (m_features.shaderBufferInt64Atomics) {
+            deviceExtensions.push_back(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME);
+        }
         if (m_subgroupSizeControlSupported &&
             m_subgroupSizeControlAvailable &&
             m_physicalDeviceProperties.apiVersion < VK_API_VERSION_1_3) {
@@ -2873,6 +2890,11 @@ public:
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
         descriptorBufferEnableFeatures.descriptorBuffer = m_features.descriptorBuffer ? VK_TRUE : VK_FALSE;
 
+        VkPhysicalDeviceShaderAtomicInt64Features shaderAtomicInt64Features{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES};
+        shaderAtomicInt64Features.shaderBufferInt64Atomics =
+            m_features.shaderBufferInt64Atomics ? VK_TRUE : VK_FALSE;
+
         VkPhysicalDeviceSubgroupSizeControlFeatures subgroupSizeControlFeatures{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES};
         subgroupSizeControlFeatures.subgroupSizeControl =
@@ -2901,6 +2923,10 @@ public:
         if (m_features.descriptorBuffer) {
             descriptorBufferEnableFeatures.pNext = sync2Features.pNext;
             sync2Features.pNext = &descriptorBufferEnableFeatures;
+        }
+        if (m_features.shaderBufferInt64Atomics) {
+            shaderAtomicInt64Features.pNext = sync2Features.pNext;
+            sync2Features.pNext = &shaderAtomicInt64Features;
         }
         if (m_subgroupSizeControlSupported) {
             subgroupSizeControlFeatures.pNext = sync2Features.pNext;

@@ -114,6 +114,8 @@ struct CullUniforms {
     float    occlusionBoundsScale;
     uint32_t clusterLodEnabled;
     uint32_t enableResidencyStreaming = 0;
+    uint32_t residencyRequestFrameIndex = 0;
+    uint32_t reserved0 = 0;
 };
 
 struct StreamingAgeFilterUniforms {
