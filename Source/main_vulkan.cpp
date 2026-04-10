@@ -2443,6 +2443,10 @@ int main() {
                         clusterStreamingService.streamingEnabled() ? "Enabled" : "Disabled");
             ImGui::Text("Resources: %s",
                         streamingStats.resourcesReady ? "Ready" : "Pending");
+            bool gpuStatsReadbackEnabled = clusterStreamingService.gpuStatsReadbackEnabled();
+            if (ImGui::Checkbox("GPU Stats Readback", &gpuStatsReadbackEnabled)) {
+                clusterStreamingService.setGpuStatsReadbackEnabled(gpuStatsReadbackEnabled);
+            }
 
             const float residentGroupRatio =
                 streamingStats.activeResidencyGroupCount != 0u
@@ -2492,7 +2496,9 @@ int main() {
                         streamingStats.confirmedUnloadGroupCount);
             ImGui::Text("Failed allocations this frame: %u",
                         streamingTelemetry.failedAllocations);
-            if (streamingTelemetry.gpuStatsValid) {
+            if (!clusterStreamingService.gpuStatsReadbackEnabled()) {
+                ImGui::TextDisabled("GPU stats: disabled");
+            } else if (streamingTelemetry.gpuStatsValid) {
                 const std::string gpuCopiedBytesLabel =
                     formatByteCountShort(streamingTelemetry.gpuCopiedBytes);
                 ImGui::Text("GPU stats: frame %u, patches %u, copied %s",

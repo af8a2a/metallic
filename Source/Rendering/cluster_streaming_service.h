@@ -92,10 +92,22 @@ public:
         }
 
         m_enableStreaming = enabled;
+        clearGpuStreamingStats();
         m_stateDirty = true;
     }
 
     bool streamingEnabled() const { return m_enableStreaming; }
+
+    void setGpuStatsReadbackEnabled(bool enabled) {
+        if (m_enableGpuStatsReadback == enabled) {
+            return;
+        }
+
+        m_enableGpuStatsReadback = enabled;
+        clearGpuStreamingStats();
+    }
+
+    bool gpuStatsReadbackEnabled() const { return m_enableGpuStatsReadback; }
 
     void setStreamingBudgetGroups(uint32_t budgetGroups) {
         m_streamingBudgetGroups = budgetGroups;
@@ -574,8 +586,7 @@ private:
         m_unloadRequestsThisFrame = 0u;
         m_failedAllocationsThisFrame = 0u;
         m_lastProcessedRequestFrameIndex = kInvalidFrameIndex;
-        m_lastGpuStreamingStats = {};
-        m_hasGpuStreamingStats = false;
+        clearGpuStreamingStats();
     }
 
     void requestHistoryReset(const FrameContext* frameContext) const {
@@ -1566,6 +1577,12 @@ private:
                                    : 0u;
     }
 
+    void clearGpuStreamingStats() {
+        m_lastGpuStreamingStats = {};
+        m_hasGpuStreamingStats = false;
+        applyGpuStreamingStatsToTelemetry();
+    }
+
     void updateDebugStats(const ClusterLODData* clusterLodData = nullptr) {
         m_debugStats.lastResidentGroupCount = 0;
         m_debugStats.lastAlwaysResidentGroupCount = 0;
@@ -1719,6 +1736,7 @@ private:
     uint32_t m_maxLoadsPerFrame = 128u;
     uint32_t m_maxUnloadsPerFrame = 256u;
     uint32_t m_ageThreshold = 16u;
+    bool m_enableGpuStatsReadback = true;
     uint32_t m_frameIndex = 0u;
     uint32_t m_prepareTaskIndex = kInvalidTaskIndex;
     uint32_t m_transferTaskIndex = kInvalidTaskIndex;

@@ -35,6 +35,11 @@ public:
 
     void prepareResources(RhiCommandBuffer&) override {
 #ifdef _WIN32
+        if (!m_runtimeContext || !m_runtimeContext->clusterStreamingService ||
+            !m_runtimeContext->clusterStreamingService->gpuStatsReadbackEnabled()) {
+            resetGpuStatsReadbacks();
+            return;
+        }
         consumeReadyGpuStatsReadbacks();
 #endif
     }
@@ -90,7 +95,9 @@ public:
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
 #ifdef _WIN32
-        scheduleGpuStatsReadback(encoder, statsBuffer);
+        if (streamingService->gpuStatsReadbackEnabled()) {
+            scheduleGpuStatsReadback(encoder, statsBuffer);
+        }
 #endif
     }
 
@@ -126,6 +133,12 @@ private:
     void consumeReadyGpuStatsReadbacks() {
         for (VulkanReadbackService::ReadbackRequest& request : m_gpuStatsReadbacks) {
             tryConsumeGpuStatsReadback(request);
+        }
+    }
+
+    void resetGpuStatsReadbacks() {
+        for (VulkanReadbackService::ReadbackRequest& request : m_gpuStatsReadbacks) {
+            request = {};
         }
     }
 
