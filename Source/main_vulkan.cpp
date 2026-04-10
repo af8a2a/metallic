@@ -2471,6 +2471,10 @@ int main() {
         if (ImGui::CollapsingHeader("Cluster Streaming")) {
             const ClusterStreamingService::MemoryBudgetInfo& memoryBudgetInfo =
                 clusterStreamingService.memoryBudgetInfo();
+            static constexpr uint64_t kMiB = 1024ull * 1024ull;
+            static constexpr int kMinStreamingStorageBudgetMB = 64;
+            static constexpr int kMaxStreamingStorageBudgetMB = 2048;
+            static constexpr int kStreamingStorageBudgetStepMB = 16;
             ImGui::Text("Streaming: %s",
                         clusterStreamingService.streamingEnabled() ? "Enabled" : "Disabled");
             ImGui::Text("Resources: %s",
@@ -2479,7 +2483,8 @@ int main() {
                                   ClusterStreamingService::budgetPresetLabel(
                                       clusterStreamingService.budgetPreset()))) {
                 for (uint32_t presetIndex = 0u;
-                     presetIndex < ClusterStreamingService::kBudgetPresetCount;
+                     presetIndex <
+                         static_cast<uint32_t>(ClusterStreamingService::BudgetPreset::Custom);
                      ++presetIndex) {
                     const auto preset =
                         static_cast<ClusterStreamingService::BudgetPreset>(presetIndex);
@@ -2501,6 +2506,42 @@ int main() {
             ImGui::Text("Budget target: %s, %u dynamic groups",
                         formatByteCountShort(clusterStreamingService.streamingStorageCapacityBytes()).c_str(),
                         clusterStreamingService.streamingBudgetGroups());
+            int storageBudgetMb = static_cast<int>(
+                std::max<uint64_t>(1ull, clusterStreamingService.streamingStorageCapacityBytes() / kMiB));
+            if (ImGui::SliderInt("Storage Pool Target (MB)",
+                                 &storageBudgetMb,
+                                 kMinStreamingStorageBudgetMB,
+                                 kMaxStreamingStorageBudgetMB)) {
+                storageBudgetMb = std::max(
+                    kMinStreamingStorageBudgetMB,
+                    ((storageBudgetMb + (kStreamingStorageBudgetStepMB / 2)) /
+                     kStreamingStorageBudgetStepMB) *
+                        kStreamingStorageBudgetStepMB);
+                clusterStreamingService.setStreamingStorageCapacityBytes(
+                    uint64_t(storageBudgetMb) * kMiB);
+                visibilityHistoryResetRequested = true;
+            }
+            const int maxDynamicGroupBudget = std::max(
+                1024,
+                std::max(static_cast<int>(streamingStats.activeResidencyGroupCount),
+                         static_cast<int>(clusterStreamingService.streamingBudgetGroups())));
+            int dynamicGroupBudget = static_cast<int>(clusterStreamingService.streamingBudgetGroups());
+            if (ImGui::SliderInt("Dynamic Group Budget",
+                                 &dynamicGroupBudget,
+                                 1,
+                                 maxDynamicGroupBudget)) {
+                clusterStreamingService.setStreamingBudgetGroups(
+                    static_cast<uint32_t>(std::max(1, dynamicGroupBudget)));
+                visibilityHistoryResetRequested = true;
+            }
+            ImGui::TextDisabled(
+                "Manual edits switch the current scene to Custom and are restored on scene switch.");
+            if (ImGui::Button("Reset Scene Budget to Auto")) {
+                clusterStreamingService.setBudgetPreset(ClusterStreamingService::BudgetPreset::Auto);
+                refreshClusterStreamingMemoryBudget();
+                visibilityHistoryResetRequested = true;
+            }
+            ImGui::SameLine();
             if (ImGui::Button("Refresh VRAM Budget")) {
                 refreshClusterStreamingMemoryBudget();
             }
