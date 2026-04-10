@@ -30,6 +30,10 @@
 #define VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME "VK_EXT_subgroup_size_control"
 #endif
 
+#ifndef VK_EXT_MEMORY_BUDGET_EXTENSION_NAME
+#define VK_EXT_MEMORY_BUDGET_EXTENSION_NAME "VK_EXT_memory_budget"
+#endif
+
 #ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES
 #define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES \
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT
@@ -2643,6 +2647,7 @@ public:
             properties.apiVersion >= VK_API_VERSION_1_3;
         const bool robustness2Available =
             hasExtension(extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+        m_memoryBudgetAvailable = hasExtension(extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         m_deviceFaultAvailable = hasExtension(extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
         m_diagnosticCheckpointsAvailable =
             hasExtension(extensions, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
@@ -2809,6 +2814,9 @@ public:
         }
         if (m_features.descriptorBuffer) {
             deviceExtensions.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+        }
+        if (m_memoryBudgetAvailable) {
+            deviceExtensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         }
         if (m_features.shaderBufferInt64Atomics &&
             m_physicalDeviceProperties.apiVersion < VK_API_VERSION_1_2) {
@@ -3341,6 +3349,7 @@ public:
     bool m_deviceLost = false;
     bool m_deviceFaultAvailable = false;
     bool m_diagnosticCheckpointsAvailable = false;
+    bool m_memoryBudgetAvailable = false;
     bool m_storageBuffer16BitAccessEnabled = false;
     bool m_uniformAndStorageBuffer8BitAccessEnabled = false;
     bool m_uniformAndStorageBuffer16BitAccessEnabled = false;
@@ -3447,6 +3456,47 @@ const VulkanToolingInfo& getVulkanToolingInfo(RhiContext& context) {
 
 VulkanPipelineCacheTelemetry getVulkanPipelineCacheTelemetry(RhiContext& context) {
     return static_cast<VulkanContext&>(context).pipelineCacheTelemetry();
+}
+
+VulkanMemoryBudgetInfo getVulkanMemoryBudgetInfo(RhiContext& context) {
+    VulkanMemoryBudgetInfo budgetInfo{};
+    if (!vulkanHasExtension(context, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
+        return budgetInfo;
+    }
+
+    const VkPhysicalDevice physicalDevice = getVulkanPhysicalDevice(context);
+    if (physicalDevice == VK_NULL_HANDLE) {
+        return budgetInfo;
+    }
+
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT memoryBudget{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 memoryProperties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+    memoryProperties.pNext = &memoryBudget;
+    vkGetPhysicalDeviceMemoryProperties2(physicalDevice, &memoryProperties);
+
+    budgetInfo.available = true;
+    budgetInfo.heapCount = memoryProperties.memoryProperties.memoryHeapCount;
+
+    for (uint32_t heapIndex = 0; heapIndex < budgetInfo.heapCount; ++heapIndex) {
+        const VkMemoryHeap& heap = memoryProperties.memoryProperties.memoryHeaps[heapIndex];
+        const uint64_t budgetBytes = memoryBudget.heapBudget[heapIndex];
+        const uint64_t usageBytes = memoryBudget.heapUsage[heapIndex];
+        const uint64_t headroomBytes = budgetBytes > usageBytes ? (budgetBytes - usageBytes) : 0u;
+
+        budgetInfo.totalBudgetBytes += budgetBytes;
+        budgetInfo.totalUsageBytes += usageBytes;
+        budgetInfo.totalHeadroomBytes += headroomBytes;
+
+        if ((heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+            budgetInfo.deviceLocalBudgetBytes += budgetBytes;
+            budgetInfo.deviceLocalUsageBytes += usageBytes;
+            budgetInfo.deviceLocalHeadroomBytes += headroomBytes;
+        }
+    }
+
+    return budgetInfo;
 }
 
 bool vulkanIsDeviceLost(RhiContext& context) {

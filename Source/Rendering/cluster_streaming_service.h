@@ -86,6 +86,18 @@ public:
         bool resourcesReady = false;
     };
 
+    struct MemoryBudgetInfo {
+        bool available = false;
+        uint32_t heapCount = 0;
+        uint64_t totalBudgetBytes = 0u;
+        uint64_t totalUsageBytes = 0u;
+        uint64_t totalHeadroomBytes = 0u;
+        uint64_t deviceLocalBudgetBytes = 0u;
+        uint64_t deviceLocalUsageBytes = 0u;
+        uint64_t deviceLocalHeadroomBytes = 0u;
+        uint64_t targetStorageBytes = 0u;
+    };
+
     void setStreamingEnabled(bool enabled) {
         if (m_enableStreaming == enabled) {
             return;
@@ -162,6 +174,22 @@ public:
     uint64_t effectiveStreamingTransferCapacityBytes() const {
         return m_streamingStorage.maxUploadBytesPerFrame();
     }
+
+    void applyAutoMemoryBudget(MemoryBudgetInfo memoryBudgetInfo) {
+        if (memoryBudgetInfo.available && memoryBudgetInfo.targetStorageBytes == 0u) {
+            memoryBudgetInfo.targetStorageBytes =
+                computeAutoStreamingStorageCapacityBytes(memoryBudgetInfo.deviceLocalHeadroomBytes);
+        }
+
+        m_memoryBudgetInfo = memoryBudgetInfo;
+        if (!m_memoryBudgetInfo.available) {
+            return;
+        }
+
+        setStreamingStorageCapacityBytes(m_memoryBudgetInfo.targetStorageBytes);
+    }
+
+    const MemoryBudgetInfo& memoryBudgetInfo() const { return m_memoryBudgetInfo; }
 
     void markStateDirty() { m_stateDirty = true; }
 
@@ -376,6 +404,8 @@ private:
     static constexpr uint32_t kStreamingTaskCount = 3u;
     static constexpr uint64_t kDefaultStreamingStorageCapacityBytes = 512ull * 1024ull * 1024ull;
     static constexpr uint64_t kDefaultMaxStreamingTransferBytes = 32ull * 1024ull * 1024ull;
+    static constexpr uint64_t kAutoStreamingStorageAlignmentBytes = 16ull * 1024ull * 1024ull;
+    static constexpr uint64_t kAutoStreamingStorageMaxBytes = 2ull * 1024ull * 1024ull * 1024ull;
 
     enum class StreamingTaskState : uint8_t {
         Free,
@@ -1504,6 +1534,16 @@ private:
         return static_cast<uint32_t>(std::min<uint64_t>(capacityElements, uint64_t(UINT32_MAX)));
     }
 
+    static uint64_t computeAutoStreamingStorageCapacityBytes(uint64_t deviceLocalHeadroomBytes) {
+        uint64_t targetBytes = std::min(deviceLocalHeadroomBytes / 2u, kAutoStreamingStorageMaxBytes);
+        if (targetBytes >= kAutoStreamingStorageAlignmentBytes) {
+            targetBytes =
+                (targetBytes / kAutoStreamingStorageAlignmentBytes) *
+                kAutoStreamingStorageAlignmentBytes;
+        }
+        return std::max<uint64_t>(targetBytes, sizeof(uint32_t));
+    }
+
     uint64_t computeStreamingTransferCapacityBytes(const ClusterLODData& clusterLodData) const {
         const uint64_t sceneBytes =
             uint64_t(std::max<size_t>(1u, clusterLodData.groupMeshletIndices.size())) * sizeof(uint32_t);
@@ -1773,6 +1813,7 @@ private:
     bool m_hasGpuStreamingStats = false;
     StreamingStats m_streamingStats;
     DebugStats m_debugStats;
+    MemoryBudgetInfo m_memoryBudgetInfo;
     uint32_t m_loadRequestsThisFrame = 0u;
     uint32_t m_unloadRequestsThisFrame = 0u;
     uint32_t m_failedAllocationsThisFrame = 0u;

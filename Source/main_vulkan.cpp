@@ -1422,6 +1422,36 @@ int main() {
     ClusterStreamingService clusterStreamingService;
     runtimeContext.rhi = rhi.get();
     runtimeContext.clusterStreamingService = &clusterStreamingService;
+    auto refreshClusterStreamingMemoryBudget = [&]() {
+        const VulkanMemoryBudgetInfo vulkanMemoryBudget = getVulkanMemoryBudgetInfo(*rhi);
+        ClusterStreamingService::MemoryBudgetInfo streamingMemoryBudget{};
+        streamingMemoryBudget.available = vulkanMemoryBudget.available;
+        streamingMemoryBudget.heapCount = vulkanMemoryBudget.heapCount;
+        streamingMemoryBudget.totalBudgetBytes = vulkanMemoryBudget.totalBudgetBytes;
+        streamingMemoryBudget.totalUsageBytes = vulkanMemoryBudget.totalUsageBytes;
+        streamingMemoryBudget.totalHeadroomBytes = vulkanMemoryBudget.totalHeadroomBytes;
+        streamingMemoryBudget.deviceLocalBudgetBytes = vulkanMemoryBudget.deviceLocalBudgetBytes;
+        streamingMemoryBudget.deviceLocalUsageBytes = vulkanMemoryBudget.deviceLocalUsageBytes;
+        streamingMemoryBudget.deviceLocalHeadroomBytes =
+            vulkanMemoryBudget.deviceLocalHeadroomBytes;
+        clusterStreamingService.applyAutoMemoryBudget(streamingMemoryBudget);
+
+        const ClusterStreamingService::MemoryBudgetInfo& appliedMemoryBudget =
+            clusterStreamingService.memoryBudgetInfo();
+        if (appliedMemoryBudget.available) {
+            spdlog::info(
+                "Cluster streaming: device-local VRAM headroom {} (budget {}, usage {}), auto pool target {}",
+                formatByteCountShort(appliedMemoryBudget.deviceLocalHeadroomBytes),
+                formatByteCountShort(appliedMemoryBudget.deviceLocalBudgetBytes),
+                formatByteCountShort(appliedMemoryBudget.deviceLocalUsageBytes),
+                formatByteCountShort(appliedMemoryBudget.targetStorageBytes));
+        } else {
+            spdlog::info(
+                "Cluster streaming: VK_EXT_memory_budget unavailable, keeping configured pool {}",
+                formatByteCountShort(clusterStreamingService.streamingStorageCapacityBytes()));
+        }
+    };
+    refreshClusterStreamingMemoryBudget();
     auto hasRenderPipeline = [&](const char* name) {
         auto it = runtimeContext.renderPipelinesRhi.find(name);
         return it != runtimeContext.renderPipelinesRhi.end() && it->second.nativeHandle() != nullptr;
@@ -2439,10 +2469,33 @@ int main() {
         streamingHistory.push(frameIndex, streamingTelemetry);
 
         if (ImGui::CollapsingHeader("Cluster Streaming")) {
+            const ClusterStreamingService::MemoryBudgetInfo& memoryBudgetInfo =
+                clusterStreamingService.memoryBudgetInfo();
             ImGui::Text("Streaming: %s",
                         clusterStreamingService.streamingEnabled() ? "Enabled" : "Disabled");
             ImGui::Text("Resources: %s",
                         streamingStats.resourcesReady ? "Ready" : "Pending");
+            if (ImGui::Button("Refresh VRAM Budget")) {
+                refreshClusterStreamingMemoryBudget();
+            }
+            if (memoryBudgetInfo.available) {
+                const std::string deviceLocalBudgetLabel =
+                    formatByteCountShort(memoryBudgetInfo.deviceLocalUsageBytes) + " / " +
+                    formatByteCountShort(memoryBudgetInfo.deviceLocalBudgetBytes);
+                const float deviceLocalBudgetRatio =
+                    memoryBudgetInfo.deviceLocalBudgetBytes != 0u
+                        ? float(double(memoryBudgetInfo.deviceLocalUsageBytes) /
+                                double(memoryBudgetInfo.deviceLocalBudgetBytes))
+                        : 0.0f;
+                ImGui::Text("Device-local VRAM");
+                ImGui::ProgressBar(
+                    deviceLocalBudgetRatio, ImVec2(-1.0f, 0.0f), deviceLocalBudgetLabel.c_str());
+                ImGui::Text("VRAM headroom: %s, auto pool target: %s",
+                            formatByteCountShort(memoryBudgetInfo.deviceLocalHeadroomBytes).c_str(),
+                            formatByteCountShort(memoryBudgetInfo.targetStorageBytes).c_str());
+            } else {
+                ImGui::TextDisabled("VRAM budget: VK_EXT_memory_budget unavailable");
+            }
             bool gpuStatsReadbackEnabled = clusterStreamingService.gpuStatsReadbackEnabled();
             if (ImGui::Checkbox("GPU Stats Readback", &gpuStatsReadbackEnabled)) {
                 clusterStreamingService.setGpuStatsReadbackEnabled(gpuStatsReadbackEnabled);

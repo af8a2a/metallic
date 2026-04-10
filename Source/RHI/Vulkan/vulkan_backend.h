@@ -48,9 +48,21 @@ struct VulkanPipelineCacheTelemetry {
     double totalCompileMs = 0.0;
 };
 
+struct VulkanMemoryBudgetInfo {
+    bool available = false;
+    uint32_t heapCount = 0;
+    uint64_t totalBudgetBytes = 0u;
+    uint64_t totalUsageBytes = 0u;
+    uint64_t totalHeadroomBytes = 0u;
+    uint64_t deviceLocalBudgetBytes = 0u;
+    uint64_t deviceLocalUsageBytes = 0u;
+    uint64_t deviceLocalHeadroomBytes = 0u;
+};
+
 const VulkanGpuFrameDiagnostics& getVulkanLatestFrameDiagnostics(RhiContext& context);
 const VulkanToolingInfo& getVulkanToolingInfo(RhiContext& context);
 VulkanPipelineCacheTelemetry getVulkanPipelineCacheTelemetry(RhiContext& context);
+VulkanMemoryBudgetInfo getVulkanMemoryBudgetInfo(RhiContext& context);
 bool vulkanIsDeviceLost(RhiContext& context);
 const std::string& vulkanDeviceLostMessage(RhiContext& context);
 VulkanGpuProfiler* getVulkanGpuProfiler(RhiContext& context);
