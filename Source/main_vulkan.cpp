@@ -2050,6 +2050,7 @@ int main() {
     bool pipelineReloadKeyDown = false;
     bool shaderReloadRequested = false;
     bool pipelineReloadRequested = false;
+    bool streamingPipelineResetRequested = false;
     bool postBuilderNeedsRebuild = false;
     bool visibilityHistoryResetRequested = false;
     double lastFrameTime = glfwGetTime();
@@ -2225,6 +2226,7 @@ int main() {
                     logVisibilityMode();
                 }
                 postBuilderNeedsRebuild = true;
+                streamingPipelineResetRequested = true;
             } else if (visibilityPipelineBaseLoaded) {
                 spdlog::warn("Keeping previous Vulkan visibility pipeline: {}",
                              visibilityPipelineBaseAsset.name);
@@ -2243,6 +2245,10 @@ int main() {
                 break;
             }
             postBuilderNeedsRebuild = false;
+            if (streamingPipelineResetRequested) {
+                clusterStreamingService.resetForPipelineReload();
+                streamingPipelineResetRequested = false;
+            }
         }
 
         if (!rhi->beginFrame()) {

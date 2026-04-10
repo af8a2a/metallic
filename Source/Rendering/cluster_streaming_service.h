@@ -253,6 +253,33 @@ public:
 
     void markStateDirty() { m_stateDirty = true; }
 
+    void resetForPipelineReload() {
+        resetStreamingTasks();
+        std::fill(m_groupPendingUnloadState.begin(), m_groupPendingUnloadState.end(), 0u);
+        std::fill(m_pendingResidencyRequestFrames.begin(),
+                  m_pendingResidencyRequestFrames.end(),
+                  kInvalidFrameIndex);
+        std::fill(m_residentTouchSeenScratch.begin(), m_residentTouchSeenScratch.end(), 0u);
+        std::fill(m_unloadRequestSeenScratch.begin(), m_unloadRequestSeenScratch.end(), 0u);
+        std::fill(m_patchLastWriteIndexScratch.begin(), m_patchLastWriteIndexScratch.end(), UINT32_MAX);
+        m_patchTouchedGroupsScratch.clear();
+        m_pendingResidencyGroups.clear();
+        m_requestReadbackScratch.clear();
+        m_unloadRequestReadbackScratch.clear();
+        m_confirmedUnloadGroups.clear();
+        m_loadRequestsThisFrame = 0u;
+        m_unloadRequestsThisFrame = 0u;
+        m_failedAllocationsThisFrame = 0u;
+        m_lastProcessedRequestFrameIndex = kInvalidFrameIndex;
+        m_residencySourceNodeBufferHandle = nullptr;
+        m_residencySourceGroupBufferHandle = nullptr;
+        m_residencySourceGroupMeshletIndicesHandle = nullptr;
+        uploadCanonicalStateToAllFrames();
+        clearGpuStreamingStats();
+        m_stateDirty = true;
+        updateDebugStats();
+    }
+
     const DebugStats& debugStats() const { return m_debugStats; }
     const StreamingStats& streamingStats() const { return m_streamingStats; }
     void ingestGpuStreamingStats(const ClusterStreamingGpuStats& stats) {
