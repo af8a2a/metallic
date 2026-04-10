@@ -19,6 +19,8 @@ StructuredBuffer<StreamingPatch>        patches; // buffer(GPU_DRIVEN_STREAMING_
 RWByteAddressBuffer                     streamingStats; // buffer(GPU_DRIVEN_STREAMING_UPDATE_STATS_BINDING)
 RWStructuredBuffer<uint>                activeResidentGroups; // buffer(GPU_DRIVEN_STREAMING_UPDATE_ACTIVE_RESIDENT_GROUPS_BINDING)
 StructuredBuffer<ActiveResidentGroupPatch> activeResidentPatches; // buffer(GPU_DRIVEN_STREAMING_UPDATE_ACTIVE_RESIDENT_PATCHES_BINDING)
+RWByteAddressBuffer                     groupResidency; // buffer(GPU_DRIVEN_STREAMING_UPDATE_GROUP_RESIDENCY_BINDING)
+RWStructuredBuffer<uint>                groupAgeBuffer; // buffer(GPU_DRIVEN_STREAMING_UPDATE_GROUP_AGE_BINDING)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -52,7 +54,13 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     if (!clusterLodGroupPageAddressIsValid(patch.residentHeapOffset)) {
         clusterStreamingIncrementAppliedPatchCount(streamingStats);
+        const uint residencyWordAddress = patch.groupIndex * 4u;
+        const uint previousResidencyState = groupResidency.Load(residencyWordAddress);
         lodGroupPageTable[patch.groupIndex] = patch.residentHeapOffset;
+        groupResidency.Store(
+            residencyWordAddress,
+            previousResidencyState & kClusterLodGroupResidencyAlwaysResident);
+        groupAgeBuffer[patch.groupIndex] = 0u;
         return;
     }
 
@@ -83,5 +91,11 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                 sourceGroupMeshletIndices[patch.clusterStart + clusterIndex];
         }
     }
+    const uint residencyWordAddress = patch.groupIndex * 4u;
+    const uint previousResidencyState = groupResidency.Load(residencyWordAddress);
     lodGroupPageTable[patch.groupIndex] = patch.residentHeapOffset;
+    groupResidency.Store(residencyWordAddress,
+                         (previousResidencyState & kClusterLodGroupResidencyAlwaysResident) |
+                             kClusterLodGroupResidencyResident);
+    groupAgeBuffer[patch.groupIndex] = 0u;
 }

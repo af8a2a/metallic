@@ -507,6 +507,7 @@ public:
             m_residencySourceGroupBufferHandle != clusterLodData.groupBuffer.nativeHandle() ||
             m_residencySourceGroupMeshletIndicesHandle !=
                 clusterLodData.groupMeshletIndicesBuffer.nativeHandle();
+        const bool forceCanonicalUpload = m_stateDirty || sourceBufferChanged;
         if (m_stateDirty || sourceBufferChanged) {
             requestHistoryReset(frameContext);
             resetStreamingTasks();
@@ -534,7 +535,7 @@ public:
         // Intentionally update from an older transfer submission so the graphics queue
         // never has to wait on uploads recorded earlier in the same frame.
         selectUpdateTask();
-        uploadCanonicalStateToActiveFrame();
+        uploadCanonicalStateToActiveFrame(forceCanonicalUpload);
         updateAdaptiveBudget();
         updateDebugStats(&clusterLodData);
     }
@@ -1079,14 +1080,42 @@ private:
             frameBuffers.unloadRequestStateBuffer.get());
     }
 
+    bool canReuseGpuSteadyState(const FrameBuffers& frameBuffers, uint32_t expectedFrameIndex) const {
+        return expectedFrameIndex != kInvalidFrameIndex &&
+               frameBuffers.gpuAgeFilterDispatchFrameIndex == expectedFrameIndex;
+    }
+
+    void ingestMappedGpuSteadyState(const FrameBuffers& frameBuffers) {
+        if (m_groupResidencyState.size() != size_t(m_residencyGroupCapacity) ||
+            m_groupAgeState.size() != size_t(m_residencyGroupCapacity)) {
+            return;
+        }
+
+        const uint32_t* residencyWords = mappedUint32(frameBuffers.groupResidencyBuffer.get());
+        const uint32_t* ageWords = mappedUint32(frameBuffers.groupAgeBuffer.get());
+        if (!residencyWords || !ageWords) {
+            return;
+        }
+
+        std::memcpy(m_groupResidencyState.data(),
+                    residencyWords,
+                    size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
+        std::memcpy(m_groupAgeState.data(),
+                    ageWords,
+                    size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
+    }
+
     void uploadCanonicalStateToFrame(FrameBuffers& frameBuffers,
+                                     bool uploadResidencyState,
                                      bool uploadAgeState,
                                      bool markSubmittedFrame,
                                      const std::vector<uint32_t>* activeResidentGroupsOverride = nullptr) {
-        if (uint32_t* words = mappedUint32(frameBuffers.groupResidencyBuffer.get())) {
-            std::memcpy(words,
-                        m_groupResidencyState.data(),
-                        size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
+        if (uploadResidencyState) {
+            if (uint32_t* words = mappedUint32(frameBuffers.groupResidencyBuffer.get())) {
+                std::memcpy(words,
+                            m_groupResidencyState.data(),
+                            size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
+            }
         }
         if (uploadAgeState) {
             if (uint32_t* ages = mappedUint32(frameBuffers.groupAgeBuffer.get())) {
@@ -1160,11 +1189,15 @@ private:
             if (!frameBuffers.groupResidencyBuffer) {
                 continue;
             }
-            uploadCanonicalStateToFrame(frameBuffers, true, false);
+            uploadCanonicalStateToFrame(frameBuffers, true, true, false);
         }
     }
 
-    void uploadCanonicalStateToActiveFrame() {
+    void uploadCanonicalStateToActiveFrame(bool forceCanonicalUpload) {
+        FrameBuffers& frameBuffers = activeFrameBuffers();
+        const bool reuseGpuSteadyState =
+            !forceCanonicalUpload &&
+            canReuseGpuSteadyState(frameBuffers, frameBuffers.submittedFrameIndex);
         const std::vector<uint32_t>* activeResidentGroupsOverride = nullptr;
         m_activeFrameResidentGroupCount = 0u;
         if (validTaskIndex(m_updateTaskIndex)) {
@@ -1176,15 +1209,17 @@ private:
             assignCurrentActiveResidentGroups(currentActiveResidentGroups);
             m_activeFrameResidentGroupCount = static_cast<uint32_t>(std::min<size_t>(
                 currentActiveResidentGroups.size(), size_t(m_residencyGroupCapacity)));
-            uploadCanonicalStateToFrame(activeFrameBuffers(),
-                                        true,
+            uploadCanonicalStateToFrame(frameBuffers,
+                                        !reuseGpuSteadyState,
+                                        !reuseGpuSteadyState,
                                         true,
                                         &currentActiveResidentGroups);
             uploadSelectedUpdateTaskToActiveFrame();
             return;
         }
-        uploadCanonicalStateToFrame(activeFrameBuffers(),
-                                    true,
+        uploadCanonicalStateToFrame(frameBuffers,
+                                    !reuseGpuSteadyState,
+                                    !reuseGpuSteadyState,
                                     true,
                                     activeResidentGroupsOverride);
         uploadSelectedUpdateTaskToActiveFrame();
@@ -1890,6 +1925,11 @@ private:
             return;
         }
 
+        const bool gpuSteadyStateValid = canReuseGpuSteadyState(frameBuffers, expectedFrameIndex);
+        if (gpuSteadyStateValid) {
+            ingestMappedGpuSteadyState(frameBuffers);
+        }
+
         ingestMappedGpuStreamingStats(frameBuffers, expectedFrameIndex);
 
         bool requestReadbackValid = true;
@@ -1942,7 +1982,9 @@ private:
             return;
         }
 
-        advanceResidentGroupAges(expectedFrameIndex);
+        if (!gpuSteadyStateValid) {
+            advanceResidentGroupAges(expectedFrameIndex);
+        }
         for (uint32_t groupIndex = 0u; groupIndex < m_residencyGroupCapacity; ++groupIndex) {
             if (m_residentTouchSeenScratch[groupIndex] == 0u || !isGroupResident(groupIndex) ||
                 isGroupAlwaysResident(groupIndex)) {

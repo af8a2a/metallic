@@ -12,7 +12,7 @@ struct StreamingAgeFilterUniforms {
 };
 
 ConstantBuffer<StreamingAgeFilterUniforms> streamingUniforms; // buffer(GPU_DRIVEN_STREAMING_AGE_UNIFORMS_BINDING)
-ByteAddressBuffer                          groupResidency;    // buffer(GPU_DRIVEN_STREAMING_AGE_GROUP_RESIDENCY_BINDING)
+RWByteAddressBuffer                        groupResidency;    // buffer(GPU_DRIVEN_STREAMING_AGE_GROUP_RESIDENCY_BINDING)
 RWStructuredBuffer<uint>                   groupAgeBuffer;    // buffer(GPU_DRIVEN_STREAMING_AGE_GROUP_AGE_BINDING)
 RWStructuredBuffer<ClusterUnloadRequest>   unloadRequests;    // buffer(GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_OUTPUT_BINDING)
 RWByteAddressBuffer                        unloadRequestState; // buffer(GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_STATE_BINDING)
@@ -41,7 +41,12 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    const uint residencyState = groupResidency.Load(groupIndex * 4u);
+    const uint residencyWordAddress = groupIndex * 4u;
+    uint residencyState = 0u;
+    groupResidency.InterlockedAnd(
+        residencyWordAddress,
+        ~(kClusterLodGroupResidencyTouched | kClusterLodGroupResidencyRequested),
+        residencyState);
     const bool resident = (residencyState & kClusterLodGroupResidencyResident) != 0u;
     const bool alwaysResident = (residencyState & kClusterLodGroupResidencyAlwaysResident) != 0u;
     const bool touchedThisFrame = (residencyState & kClusterLodGroupResidencyTouched) != 0u;

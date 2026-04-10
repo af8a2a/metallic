@@ -88,6 +88,8 @@ public:
         const RhiBuffer* residentGroupMeshletIndicesBuffer =
             streamingService->residentGroupMeshletIndicesBuffer();
         const RhiBuffer* lodGroupPageTableBuffer = streamingService->lodGroupPageTableBuffer();
+        const RhiBuffer* groupResidencyBuffer = streamingService->groupResidencyBuffer();
+        const RhiBuffer* groupAgeBuffer = streamingService->groupAgeBuffer();
         const RhiBuffer* activeResidentGroupsBuffer = streamingService->activeResidentGroupsBuffer();
         const RhiBuffer* activeResidentPatchBuffer = streamingService->activeResidentPatchBuffer();
         const RhiBuffer* patchBuffer = streamingService->streamingPatchBuffer();
@@ -98,7 +100,9 @@ public:
             (!sourceGroupMeshletIndicesBuffer ||
              !residentGroupMeshletIndicesBuffer ||
              !lodGroupPageTableBuffer ||
-             !patchBuffer)) {
+             !patchBuffer ||
+             !groupResidencyBuffer ||
+             !groupAgeBuffer)) {
             return;
         }
 
@@ -184,6 +188,14 @@ public:
             encoder.setBuffer(patchBuffer, 0, GpuDriven::StreamingUpdateBindings::kPatches);
         }
         encoder.setBuffer(statsBuffer, 0, GpuDriven::StreamingUpdateBindings::kStats);
+        if (groupResidencyBuffer) {
+            encoder.setBuffer(groupResidencyBuffer,
+                              0,
+                              GpuDriven::StreamingUpdateBindings::kGroupResidency);
+        }
+        if (groupAgeBuffer) {
+            encoder.setBuffer(groupAgeBuffer, 0, GpuDriven::StreamingUpdateBindings::kGroupAge);
+        }
         encoder.setBuffer(activeResidentGroupsBuffer,
                           0,
                           GpuDriven::StreamingUpdateBindings::kActiveResidentGroups);

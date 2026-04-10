@@ -209,6 +209,10 @@ is visually identical to the current implementation.
 - Transition `groupAgeBuffer` toward GPU-owned steady-state data
 - Keep CPU mirrors only for validation, fallback handling, and UI as needed
 
+Current status: steady-state frames now keep GPU-written residency/age state in
+place and reuse it on the next buffered frame; full CPU uploads remain only for
+rebuild/reset paths and for frames that missed the GPU age-filter pass.
+
 ### N.2.2 — Replace broad uploads with small deltas
 
 - Upload only the per-frame changes:
