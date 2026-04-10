@@ -99,6 +99,7 @@ public:
         const uint32_t dispatchX = (uniforms.groupCount + kThreadCount - 1u) / kThreadCount;
         encoder.dispatchThreadgroups({dispatchX, 1, 1}, {kThreadCount, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
+        streamingService->markGpuAgeFilterDispatched(uniforms.requestFrameIndex);
 
 #ifdef _WIN32
         if (streamingService->gpuStatsReadbackEnabled()) {

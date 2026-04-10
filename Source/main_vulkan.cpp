@@ -2620,6 +2620,23 @@ int main() {
             ImGui::ProgressBar(transferRatio, ImVec2(-1.0f, 0.0f), transferLabel.c_str());
             ImGui::Text("Transfer utilization: %.1f%%",
                         streamingTelemetry.transferUtilization * 100.0f);
+            if (streamingTelemetry.cpuUnloadFallbackActive ||
+                streamingTelemetry.graphicsTransferFallbackActive) {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                                   "Fallbacks: CPU FIFO unload %s%s",
+                                   streamingTelemetry.cpuUnloadFallbackActive ? "active" : "idle",
+                                   streamingTelemetry.graphicsTransferFallbackActive
+                                       ? ", graphics copy path"
+                                       : "");
+                if (streamingTelemetry.cpuUnloadFallbackActive) {
+                    ImGui::TextDisabled("CPU fallback frame %u, queued %u unloads",
+                                        streamingTelemetry.cpuUnloadFallbackFrameIndex,
+                                        streamingTelemetry.cpuUnloadFallbackGroupCount);
+                }
+            } else if (streamingTelemetry.gpuAgeFilterDispatchMissing) {
+                ImGui::TextDisabled("Fallbacks: age filter missing, CPU FIFO standby (frame %u)",
+                                    streamingTelemetry.gpuAgeFilterDispatchMissingFrameIndex);
+            }
 
             ImGui::Text("Requests: load %u (%u executed, %u deferred), unload %u (%u executed)",
                         streamingTelemetry.loadRequestsThisFrame,

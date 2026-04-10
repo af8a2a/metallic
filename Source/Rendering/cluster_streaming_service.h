@@ -70,6 +70,13 @@ public:
         uint32_t gpuErrorAgeFilterCount = 0u;
         uint32_t gpuErrorAllocationCount = 0u;
         uint32_t gpuErrorPageTableCount = 0u;
+        bool gpuAgeFilterDispatchMissing = false;
+        uint32_t gpuAgeFilterDispatchMissingFrameIndex = UINT32_MAX;
+        bool cpuUnloadFallbackActive = false;
+        uint32_t cpuUnloadFallbackGroupCount = 0u;
+        uint32_t cpuUnloadFallbackFrameIndex = UINT32_MAX;
+        bool graphicsTransferFallbackActive = false;
+        uint32_t graphicsTransferFallbackFrameIndex = UINT32_MAX;
         uint32_t ageHistogramBucketWidth = 1;
         uint32_t ageHistogramMaxAge = 0;
         std::array<uint32_t, kStreamingAgeHistogramBucketCount> ageHistogram = {};
@@ -318,6 +325,17 @@ public:
                m_streamingStorage.uploadReady();
     }
 
+    void markGpuAgeFilterDispatched(uint32_t frameIndex) {
+        activeFrameBuffers().gpuAgeFilterDispatchFrameIndex = frameIndex;
+    }
+
+    void markGraphicsTransferFallbackUsed(uint32_t frameIndex) {
+        m_graphicsTransferFallbackActive = true;
+        m_graphicsTransferFallbackFrameIndex = frameIndex;
+        m_streamingStats.graphicsTransferFallbackActive = true;
+        m_streamingStats.graphicsTransferFallbackFrameIndex = frameIndex;
+    }
+
     bool useResidentHeap() const {
         return ready() && m_enableStreaming;
     }
@@ -431,6 +449,7 @@ public:
         m_unloadRequestsThisFrame = 0u;
         m_failedAllocationsThisFrame = 0u;
         m_lastProcessedRequestFrameIndex = kInvalidFrameIndex;
+        resetDegradationTelemetryForFrame();
         switchSceneBudgetState(clusterLodData);
 
         const bool clusterLodAvailable =
@@ -550,6 +569,7 @@ private:
         std::unique_ptr<RhiBuffer> streamingStatsBuffer;
         std::unique_ptr<RhiBuffer> streamingPatchBuffer;
         uint32_t submittedFrameIndex = kInvalidFrameIndex;
+        uint32_t gpuAgeFilterDispatchFrameIndex = kInvalidFrameIndex;
     };
 
     static void resetFrameBuffers(FrameBuffers& frameBuffers) {
@@ -562,6 +582,7 @@ private:
         frameBuffers.streamingStatsBuffer.reset();
         frameBuffers.streamingPatchBuffer.reset();
         frameBuffers.submittedFrameIndex = kInvalidFrameIndex;
+        frameBuffers.gpuAgeFilterDispatchFrameIndex = kInvalidFrameIndex;
     }
 
     FrameBuffers& activeFrameBuffers() {
@@ -730,6 +751,8 @@ private:
         m_debugStats.selectedUpdateTransferWaitValue = 0u;
         m_debugStats.resourcesReady = false;
         m_streamingStats = {};
+        resetDegradationTelemetryForFrame();
+        m_cpuUnloadFallbackWasActive = false;
         applyAdaptiveBudgetTelemetry();
         m_loadRequestsThisFrame = 0u;
         m_unloadRequestsThisFrame = 0u;
@@ -938,6 +961,7 @@ private:
         seedResidencyRequestQueue(frameBuffers);
         seedUnloadRequestQueue(frameBuffers);
         frameBuffers.submittedFrameIndex = markSubmittedFrame ? m_frameIndex : kInvalidFrameIndex;
+        frameBuffers.gpuAgeFilterDispatchFrameIndex = kInvalidFrameIndex;
     }
 
     void uploadSelectedUpdateTaskToActiveFrame() {
@@ -1487,6 +1511,105 @@ private:
         }
     }
 
+    bool shouldUseCpuFifoUnloadFallback(const FrameBuffers& frameBuffers,
+                                        uint32_t expectedFrameIndex) const {
+        if (!m_enableStreaming ||
+            expectedFrameIndex == kInvalidFrameIndex ||
+            frameBuffers.gpuAgeFilterDispatchFrameIndex == expectedFrameIndex ||
+            m_dynamicResidentGroups.empty()) {
+            return false;
+        }
+
+        const bool overBudget =
+            m_streamingBudgetGroups != 0u &&
+            m_dynamicResidentGroups.size() > size_t(m_streamingBudgetGroups);
+        const bool atBudget =
+            m_streamingBudgetGroups != 0u &&
+            m_dynamicResidentGroups.size() >= size_t(m_streamingBudgetGroups);
+        const bool pendingLoadPressure = !m_pendingResidencyGroups.empty() && atBudget;
+        const bool storagePressure =
+            !m_pendingResidencyGroups.empty() &&
+            m_streamingStorage.capacityElements() != 0u &&
+            m_streamingStorage.usedElements() >= m_streamingStorage.capacityElements();
+        const bool recentAllocationPressure =
+            !m_pendingResidencyGroups.empty() &&
+            (m_failedAllocationsThisFrame != 0u || m_smoothedFailedAllocations > 0.0f);
+
+        return overBudget || pendingLoadPressure || storagePressure || recentAllocationPressure;
+    }
+
+    uint32_t collectCpuFifoUnloadFallbackCandidates(const FrameBuffers& frameBuffers,
+                                                   uint32_t expectedFrameIndex) {
+        m_gpuAgeFilterDispatchMissing =
+            frameBuffers.gpuAgeFilterDispatchFrameIndex != expectedFrameIndex;
+        m_gpuAgeFilterDispatchMissingFrameIndex =
+            m_gpuAgeFilterDispatchMissing ? expectedFrameIndex : kInvalidFrameIndex;
+        if (!m_gpuAgeFilterDispatchMissing) {
+            m_cpuUnloadFallbackWasActive = false;
+            return 0u;
+        }
+
+        if (!shouldUseCpuFifoUnloadFallback(frameBuffers, expectedFrameIndex)) {
+            return 0u;
+        }
+
+        const uint32_t pendingLoadCount =
+            static_cast<uint32_t>(std::min<size_t>(m_pendingResidencyGroups.size(), UINT32_MAX));
+        const uint32_t overBudgetCount =
+            m_dynamicResidentGroups.size() > size_t(m_streamingBudgetGroups)
+                ? static_cast<uint32_t>(std::min<size_t>(
+                      m_dynamicResidentGroups.size() - size_t(m_streamingBudgetGroups),
+                      UINT32_MAX))
+                : 0u;
+        const uint32_t desiredUnloadCount =
+            std::min(m_maxUnloadsPerFrame, std::max(1u, std::max(pendingLoadCount, overBudgetCount)));
+
+        uint32_t queuedUnloadCount = 0u;
+        for (uint32_t groupIndex : m_dynamicResidentGroups) {
+            if (queuedUnloadCount >= desiredUnloadCount) {
+                break;
+            }
+            if (groupIndex >= m_residencyGroupCapacity ||
+                !isGroupResident(groupIndex) ||
+                isGroupAlwaysResident(groupIndex)) {
+                continue;
+            }
+            if (groupIndex < m_residentTouchSeenScratch.size() &&
+                m_residentTouchSeenScratch[groupIndex] != 0u) {
+                continue;
+            }
+            if (std::find(m_confirmedUnloadGroups.begin(),
+                          m_confirmedUnloadGroups.end(),
+                          groupIndex) != m_confirmedUnloadGroups.end()) {
+                continue;
+            }
+
+            if (groupIndex < m_groupPendingUnloadState.size()) {
+                m_groupPendingUnloadState[groupIndex] = 1u;
+            }
+            m_confirmedUnloadGroups.push_back(groupIndex);
+            ++queuedUnloadCount;
+        }
+
+        if (queuedUnloadCount == 0u) {
+            return 0u;
+        }
+
+        m_cpuUnloadFallbackActive = true;
+        m_cpuUnloadFallbackFrameIndex = expectedFrameIndex;
+        m_cpuUnloadFallbackGroupCount = queuedUnloadCount;
+        m_unloadRequestsThisFrame += queuedUnloadCount;
+        m_debugStats.lastUnloadRequestCount += queuedUnloadCount;
+
+        if (!m_cpuUnloadFallbackWasActive) {
+            spdlog::warn(
+                "Cluster streaming age-filter dispatch missing for frame {}; using CPU FIFO unload fallback",
+                expectedFrameIndex);
+        }
+        m_cpuUnloadFallbackWasActive = true;
+        return queuedUnloadCount;
+    }
+
     void runRequestReadbackStage(const ClusterLODData& clusterLodData) {
         m_debugStats.lastResidencyRequestCount = 0;
         m_debugStats.lastUnloadRequestCount = 0;
@@ -1564,6 +1687,13 @@ private:
 
             m_groupResidencyState[groupIndex] &= ~kClusterLodGroupResidencyRequested;
             touchDynamicResidentGroup(groupIndex);
+        }
+
+        if (collectCpuFifoUnloadFallbackCandidates(frameBuffers, expectedFrameIndex) != 0u) {
+            return;
+        }
+        if (frameBuffers.gpuAgeFilterDispatchFrameIndex != expectedFrameIndex) {
+            return;
         }
 
         bool unloadReadbackValid = true;
@@ -1871,6 +2001,16 @@ private:
             m_hasGpuStreamingStats ? m_lastGpuStreamingStats.errorPageTable : 0u;
     }
 
+    void resetDegradationTelemetryForFrame() {
+        m_gpuAgeFilterDispatchMissing = false;
+        m_gpuAgeFilterDispatchMissingFrameIndex = kInvalidFrameIndex;
+        m_cpuUnloadFallbackActive = false;
+        m_cpuUnloadFallbackGroupCount = 0u;
+        m_cpuUnloadFallbackFrameIndex = kInvalidFrameIndex;
+        m_graphicsTransferFallbackActive = false;
+        m_graphicsTransferFallbackFrameIndex = kInvalidFrameIndex;
+    }
+
     void clearGpuStreamingStats() {
         m_lastGpuStreamingStats = {};
         m_lastLoggedGpuErrorStats = {};
@@ -2114,6 +2254,14 @@ private:
                         double(transferCapacityBytes))
                 : 0.0f;
         m_streamingStats.failedAllocations = m_failedAllocationsThisFrame;
+        m_streamingStats.gpuAgeFilterDispatchMissing = m_gpuAgeFilterDispatchMissing;
+        m_streamingStats.gpuAgeFilterDispatchMissingFrameIndex =
+            m_gpuAgeFilterDispatchMissingFrameIndex;
+        m_streamingStats.cpuUnloadFallbackActive = m_cpuUnloadFallbackActive;
+        m_streamingStats.cpuUnloadFallbackGroupCount = m_cpuUnloadFallbackGroupCount;
+        m_streamingStats.cpuUnloadFallbackFrameIndex = m_cpuUnloadFallbackFrameIndex;
+        m_streamingStats.graphicsTransferFallbackActive = m_graphicsTransferFallbackActive;
+        m_streamingStats.graphicsTransferFallbackFrameIndex = m_graphicsTransferFallbackFrameIndex;
         applyGpuStreamingStatsToTelemetry();
         applyAdaptiveBudgetTelemetry();
         m_streamingStats.ageHistogram.fill(0u);
@@ -2224,4 +2372,12 @@ private:
     uint32_t m_unloadRequestsThisFrame = 0u;
     uint32_t m_failedAllocationsThisFrame = 0u;
     uint32_t m_lastProcessedRequestFrameIndex = kInvalidFrameIndex;
+    bool m_gpuAgeFilterDispatchMissing = false;
+    uint32_t m_gpuAgeFilterDispatchMissingFrameIndex = kInvalidFrameIndex;
+    bool m_cpuUnloadFallbackActive = false;
+    bool m_cpuUnloadFallbackWasActive = false;
+    uint32_t m_cpuUnloadFallbackGroupCount = 0u;
+    uint32_t m_cpuUnloadFallbackFrameIndex = kInvalidFrameIndex;
+    bool m_graphicsTransferFallbackActive = false;
+    uint32_t m_graphicsTransferFallbackFrameIndex = kInvalidFrameIndex;
 };

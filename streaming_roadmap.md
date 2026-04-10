@@ -395,9 +395,10 @@ Add GPU-side error counters (inspired by vk_lod_clusters' 24 error fields):
 
 ### G.8.3 — Graceful degradation
 
-- If streaming storage exhausted: fall back to always-resident coarsest LOD (already the case)
-- If transfer queue unavailable: fall back to graphics queue copies
-- If age filter dispatch fails: fall back to CPU-side FIFO eviction
+- [x] If streaming storage exhausted: fall back to always-resident coarsest LOD (already the case)
+- [x] If transfer queue unavailable: fall back to graphics queue copies
+- [x] If age filter dispatch fails: fall back to CPU-side FIFO eviction
+- [x] Surface active fallback state in the streaming debug panel
 
 **Done when:** streaming recovers cleanly from all error conditions without visual corruption or crashes.
 

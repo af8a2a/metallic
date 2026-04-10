@@ -112,6 +112,8 @@ public:
                                                   copyRegions)) {
                 return;
             } else {
+                streamingService->markGraphicsTransferFallbackUsed(
+                    m_frameContext ? m_frameContext->frameIndex : 0u);
                 streamingService->completeTransferTask(0u);
             }
         }
