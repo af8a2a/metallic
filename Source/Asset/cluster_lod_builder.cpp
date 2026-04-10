@@ -1337,6 +1337,7 @@ bool loadClusterLODFromCache(const RhiDevice& device,
     }
 
     ClusterLODData cached;
+    cached.sourceSceneSignature = meshSignature;
     if (!readVector(file, header.meshletCount, cached.allMeshlets) ||
         !readVector(file, header.meshletVertexCount, cached.allMeshletVertices) ||
         !readVector(file, header.packedTriangleCount, cached.allPackedTriangles) ||
@@ -1386,6 +1387,7 @@ bool buildClusterLOD(const RhiDevice& device,
                      ClusterLODData& out) {
     releaseClusterLOD(out);
     out = ClusterLODData{};
+    out.sourceSceneSignature = computeMeshSignature(mesh);
 
     const auto buildStart = std::chrono::steady_clock::now();
 
@@ -1498,6 +1500,7 @@ void releaseClusterLOD(ClusterLODData& data) {
     data.totalGroupCount = 0;
     data.totalNodeCount = 0;
     data.lodLevelCount = 0;
+    data.sourceSceneSignature = 0u;
 }
 
 void drawClusterLODStats(const ClusterLODData& data) {

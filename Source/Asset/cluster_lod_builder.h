@@ -74,6 +74,7 @@ struct ClusterLODData {
     uint32_t totalGroupCount = 0;
     uint32_t totalNodeCount = 0;
     uint32_t lodLevelCount = 0;
+    uint64_t sourceSceneSignature = 0u;
 };
 
 struct LoadedMesh;

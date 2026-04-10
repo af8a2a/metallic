@@ -15,6 +15,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class ClusterStreamingService {
@@ -395,6 +396,7 @@ public:
         m_unloadRequestsThisFrame = 0u;
         m_failedAllocationsThisFrame = 0u;
         m_lastProcessedRequestFrameIndex = kInvalidFrameIndex;
+        switchSceneBudgetState(clusterLodData);
 
         const bool clusterLodAvailable =
             clusterLodData.nodeBuffer.nativeHandle() &&
@@ -474,6 +476,12 @@ private:
     static constexpr uint32_t kAdaptiveBudgetEvaluationIntervalFrames = 8u;
     static constexpr float kAdaptiveBudgetFailedAllocationThreshold = 0.10f;
     static constexpr float kAdaptiveBudgetRelaxUtilizationThreshold = 0.50f;
+
+    struct SceneBudgetSettings {
+        BudgetPreset preset = BudgetPreset::Auto;
+        uint32_t streamingBudgetGroups = kMediumPresetStreamingBudgetGroups;
+        uint64_t streamingStorageCapacityBytes = kDefaultStreamingStorageCapacityBytes;
+    };
 
     enum class StreamingTaskState : uint8_t {
         Free,
@@ -1603,6 +1611,58 @@ private:
         return static_cast<uint32_t>(std::min<uint64_t>(capacityElements, uint64_t(UINT32_MAX)));
     }
 
+    SceneBudgetSettings captureCurrentSceneBudgetSettings() const {
+        SceneBudgetSettings settings;
+        settings.preset = m_budgetPreset;
+        settings.streamingBudgetGroups = m_streamingBudgetGroups;
+        settings.streamingStorageCapacityBytes = m_streamingStorageCapacityBytes;
+        return settings;
+    }
+
+    static SceneBudgetSettings defaultSceneBudgetSettings() {
+        return {};
+    }
+
+    void applySceneBudgetSettings(const SceneBudgetSettings& settings) {
+        if (settings.preset == BudgetPreset::Custom) {
+            const bool wasApplyingBudgetPreset = m_applyingBudgetPreset;
+            m_applyingBudgetPreset = true;
+            setStreamingBudgetGroupsInternal(settings.streamingBudgetGroups, false);
+            setStreamingStorageCapacityBytesInternal(settings.streamingStorageCapacityBytes, false);
+            m_applyingBudgetPreset = wasApplyingBudgetPreset;
+            m_budgetPreset = BudgetPreset::Custom;
+            return;
+        }
+
+        m_budgetPreset = settings.preset;
+        applyBudgetPreset();
+    }
+
+    void restoreSceneBudgetSettings(uint64_t sceneSignature) {
+        SceneBudgetSettings settings = defaultSceneBudgetSettings();
+        if (sceneSignature != 0u) {
+            auto it = m_sceneBudgetSettings.find(sceneSignature);
+            if (it != m_sceneBudgetSettings.end()) {
+                settings = it->second;
+            }
+        }
+        applySceneBudgetSettings(settings);
+    }
+
+    void switchSceneBudgetState(const ClusterLODData& clusterLodData) {
+        const uint64_t sceneSignature = clusterLodData.sourceSceneSignature;
+        if (sceneSignature == m_activeSceneSignature) {
+            return;
+        }
+
+        if (m_activeSceneSignature != 0u) {
+            m_sceneBudgetSettings[m_activeSceneSignature] = captureCurrentSceneBudgetSettings();
+        }
+
+        m_activeSceneSignature = sceneSignature;
+        restoreSceneBudgetSettings(sceneSignature);
+    }
+
     void setStreamingBudgetGroupsInternal(uint32_t budgetGroups, bool markCustomPreset) {
         if (m_streamingBudgetGroups == budgetGroups) {
             return;
@@ -2029,6 +2089,7 @@ private:
     uint64_t m_activeUpdateTransferWaitValue = 0u;
     uint64_t m_pendingUpdateGraphicsCompletionSerial = 0u;
     uint64_t m_nextTaskSerial = 1u;
+    uint64_t m_activeSceneSignature = 0u;
     const void* m_residencySourceNodeBufferHandle = nullptr;
     const void* m_residencySourceGroupBufferHandle = nullptr;
     const void* m_residencySourceGroupMeshletIndicesHandle = nullptr;
@@ -2056,6 +2117,7 @@ private:
     StreamingStats m_streamingStats;
     DebugStats m_debugStats;
     MemoryBudgetInfo m_memoryBudgetInfo;
+    std::unordered_map<uint64_t, SceneBudgetSettings> m_sceneBudgetSettings;
     bool m_applyingBudgetPreset = false;
     bool m_adaptiveBudgetSmoothingInitialized = false;
     uint32_t m_adaptiveBudgetEvaluationFrameCount = 0u;
