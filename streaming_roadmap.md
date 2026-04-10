@@ -222,6 +222,12 @@ rebuild/reset paths and for frames that missed the GPU age-filter pass.
   - request-queue seeds
 - Avoid full memcpy of residency / age arrays once initialization is complete
 
+Current status: steady-state frames now reseed only the request/unload worklist
+headers instead of clearing the full payload buffers, and no-update steady-state
+frames keep reusing the previous active resident-group table contents. A full
+active-list upload still remains on rebuild/reset paths and before applying
+queued active-list patch batches.
+
 ### N.2.3 — Rebuild-only path
 
 - Keep the existing full canonical upload path only for:

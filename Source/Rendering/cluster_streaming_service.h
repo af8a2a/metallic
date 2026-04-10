@@ -606,6 +606,7 @@ private:
         std::unique_ptr<RhiBuffer> streamingStatsBuffer;
         std::unique_ptr<RhiBuffer> streamingPatchBuffer;
         uint32_t submittedFrameIndex = kInvalidFrameIndex;
+        uint32_t submittedActiveResidentGroupCount = 0u;
         uint32_t gpuAgeFilterDispatchFrameIndex = kInvalidFrameIndex;
     };
 
@@ -621,6 +622,7 @@ private:
         frameBuffers.streamingStatsBuffer.reset();
         frameBuffers.streamingPatchBuffer.reset();
         frameBuffers.submittedFrameIndex = kInvalidFrameIndex;
+        frameBuffers.submittedActiveResidentGroupCount = 0u;
         frameBuffers.gpuAgeFilterDispatchFrameIndex = kInvalidFrameIndex;
     }
 
@@ -1108,6 +1110,7 @@ private:
     void uploadCanonicalStateToFrame(FrameBuffers& frameBuffers,
                                      bool uploadResidencyState,
                                      bool uploadAgeState,
+                                     bool uploadActiveResidentGroups,
                                      bool markSubmittedFrame,
                                      const std::vector<uint32_t>* activeResidentGroupsOverride = nullptr) {
         if (uploadResidencyState) {
@@ -1124,22 +1127,14 @@ private:
                             size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
             }
         }
-        std::vector<uint32_t> activeResidentGroupsStorage;
-        const std::vector<uint32_t>* activeResidentGroups = activeResidentGroupsOverride;
-        if (!activeResidentGroups) {
-            assignCurrentActiveResidentGroups(activeResidentGroupsStorage);
-            activeResidentGroups = &activeResidentGroupsStorage;
-        }
-        uploadActiveResidentGroupsToFrame(frameBuffers, *activeResidentGroups);
-        if (frameBuffers.residencyRequestBuffer) {
-            if (void* requests = rhiBufferContents(*frameBuffers.residencyRequestBuffer)) {
-                std::memset(requests, 0, frameBuffers.residencyRequestBuffer->size());
+        if (uploadActiveResidentGroups) {
+            std::vector<uint32_t> activeResidentGroupsStorage;
+            const std::vector<uint32_t>* activeResidentGroups = activeResidentGroupsOverride;
+            if (!activeResidentGroups) {
+                assignCurrentActiveResidentGroups(activeResidentGroupsStorage);
+                activeResidentGroups = &activeResidentGroupsStorage;
             }
-        }
-        if (frameBuffers.unloadRequestBuffer) {
-            if (void* unloadRequests = rhiBufferContents(*frameBuffers.unloadRequestBuffer)) {
-                std::memset(unloadRequests, 0, frameBuffers.unloadRequestBuffer->size());
-            }
+            uploadActiveResidentGroupsToFrame(frameBuffers, *activeResidentGroups);
         }
         seedResidencyRequestQueue(frameBuffers);
         seedUnloadRequestQueue(frameBuffers);
@@ -1185,11 +1180,17 @@ private:
     }
 
     void uploadCanonicalStateToAllFrames() {
+        std::vector<uint32_t> currentActiveResidentGroups;
+        assignCurrentActiveResidentGroups(currentActiveResidentGroups);
+        const uint32_t currentActiveResidentGroupCount = static_cast<uint32_t>(std::min<size_t>(
+            currentActiveResidentGroups.size(), size_t(m_residencyGroupCapacity)));
         for (FrameBuffers& frameBuffers : m_frameBuffers) {
             if (!frameBuffers.groupResidencyBuffer) {
                 continue;
             }
-            uploadCanonicalStateToFrame(frameBuffers, true, true, false);
+            uploadCanonicalStateToFrame(
+                frameBuffers, true, true, true, false, &currentActiveResidentGroups);
+            frameBuffers.submittedActiveResidentGroupCount = currentActiveResidentGroupCount;
         }
     }
 
@@ -1199,11 +1200,15 @@ private:
             !forceCanonicalUpload &&
             canReuseGpuSteadyState(frameBuffers, frameBuffers.submittedFrameIndex);
         const std::vector<uint32_t>* activeResidentGroupsOverride = nullptr;
+        bool uploadActiveResidentGroups = !reuseGpuSteadyState;
         m_activeFrameResidentGroupCount = 0u;
         if (validTaskIndex(m_updateTaskIndex)) {
             const StreamingTask& task = m_streamingTasks[m_updateTaskIndex];
             activeResidentGroupsOverride = &task.activeResidentGroupsBefore;
             m_activeFrameResidentGroupCount = task.activeResidentGroupCountAfter;
+            uploadActiveResidentGroups = true;
+        } else if (reuseGpuSteadyState) {
+            m_activeFrameResidentGroupCount = frameBuffers.submittedActiveResidentGroupCount;
         } else {
             std::vector<uint32_t> currentActiveResidentGroups;
             assignCurrentActiveResidentGroups(currentActiveResidentGroups);
@@ -1213,15 +1218,19 @@ private:
                                         !reuseGpuSteadyState,
                                         !reuseGpuSteadyState,
                                         true,
+                                        true,
                                         &currentActiveResidentGroups);
+            frameBuffers.submittedActiveResidentGroupCount = m_activeFrameResidentGroupCount;
             uploadSelectedUpdateTaskToActiveFrame();
             return;
         }
         uploadCanonicalStateToFrame(frameBuffers,
                                     !reuseGpuSteadyState,
                                     !reuseGpuSteadyState,
+                                    uploadActiveResidentGroups,
                                     true,
                                     activeResidentGroupsOverride);
+        frameBuffers.submittedActiveResidentGroupCount = m_activeFrameResidentGroupCount;
         uploadSelectedUpdateTaskToActiveFrame();
     }
 
