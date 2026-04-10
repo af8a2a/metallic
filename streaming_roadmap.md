@@ -1,427 +1,308 @@
-# Streaming Roadmap — Milestone G Detailed Breakdown
+# Streaming Roadmap — Remaining Non-RT Work
 
 Sub-roadmap for **roadmap.md Section 2.7 — Optional residency / streaming layer**.
 
 Reference implementation: `vk_lod_clusters` (`E:\vk_lod_clusters`).
 
+This revision reflects the current Metallic codebase state as of the latest
+comparison pass. It intentionally tracks only the **non-RT / non-CLAS** work
+that is still worth doing next.
+
+---
+
+## Scope
+
+Included here:
+
+- Cluster/group residency for raster cluster LOD rendering
+- Load/touch/unload request generation and handling
+- GPU scene patching
+- Streaming storage and transfer queue integration
+- Telemetry, budgeting, fallback behavior, and reload robustness
+
+Explicitly out of scope for this document:
+
+- RT / CLAS streaming
+- BLAS caching
+- CLAS compaction
+- Persistent CLAS allocator
+- Any ray tracing acceleration structure residency work
+
 ---
 
 ## Current State Summary
 
-Metallic already has a working **CPU-managed node-level residency system** in `ClusterStreamingService` (cluster_streaming_service.h). What exists:
+Metallic already implements the majority of the original Milestone G plan:
 
-- **Always-resident coarsest LOD**: root/coarsest LOD nodes are pinned resident on rebuild
-- **GPU residency request generation**: meshlet_cull.slang emits `ClusterResidencyRequest` via atomic worklist when a node is not resident
-- **CPU readback + promote/evict loop**: `runUpdateStage()` reads requests from host-visible buffer, promotes pending nodes within budget, FIFO eviction of oldest dynamic nodes
-- **Group page table**: per-group `uint32_t` mapping group index to resident heap offset (UINT32_MAX = invalid)
-- **Resident heap allocator**: free-range list with first-fit allocation and coalescing merge on release
-- **Memory budget**: configurable `streamingBudgetNodes` (default 64)
-- **Debug stats**: resident/pending/evicted/promoted counts, heap usage
-
-What the reference (`vk_lod_clusters`) has that Metallic does **not**:
-
-| Feature | vk_lod_clusters | Metallic |
-|---------|----------------|----------|
-| Group-level (not node-level) residency | Yes — `StreamingGroup` per group | No — node granularity only |
-| Age-based GPU-side unload requests | `stream_agefilter_groups.comp.glsl` | No — CPU FIFO eviction only |
-| GPU scene patch shader | `stream_update_scene.comp.glsl` | No — CPU memcpy only |
-| Async transfer queue integration | `StreamingStorage` + async VkBufferCopy | No |
-| Per-frame load/unload caps | `maxLoads` / `maxUnloads` counters | Uncapped (all pending promoted per frame) |
-| Frame-index deduplication of requests | atomicMax with frame tag in 64-bit VA | atomicOr flag (no frame tag) |
-| GPU persistent CLAS allocator | 5-shader pipeline (gap scan + bin + alloc) | N/A (no RT CLAS streaming) |
-| Streaming statistics readback | `StreamingStats` + GPU memory accounting | Debug counters only |
-| Multi-task pipelining | 3 task slots with timeline semaphores | Single-frame synchronous |
-
----
-
-## Phase G.1 — Group-Level Residency Granularity
-
-**Goal:** Switch from node-level to group-level residency tracking, matching the vk_lod_clusters model where each `GPUClusterGroup` is independently loadable/unloadable.
-
-### G.1.1 — Group residency state buffer
-
-Replace the per-node `lodNodeResidencyBuffer` with a per-group residency state buffer.
-
-- New buffer: `groupResidencyBuffer` — one `uint32_t` per group
-- Bit flags: `kGroupResident` (bit 0), `kGroupRequested` (bit 1), `kGroupAlwaysResident` (bit 2)
-- Always-resident groups: the coarsest-LOD groups (leaf groups of the coarsest node in each primitive group)
-- Remove `m_residencyNodeLeafGroups` indirection — residency decisions are per-group
-
-**Files:** `cluster_streaming_service.h`, `gpu_cull_resources.h`
-
-### G.1.2 — GPU request generation at group level
-
-Modify `meshlet_cull.slang` to emit residency requests per-group instead of per-node.
-
-- During LOD traversal, when a group is reached but not resident, emit a `ClusterResidencyRequest` with the group index
-- Update `ClusterResidencyRequest` struct: replace `targetNodeIndex` with `targetGroupIndex`, add `lodLevel`
-- Atomic deduplication: `InterlockedOr` on `groupResidencyBuffer[groupIndex]` with `kGroupRequested`
-
-**Files:** `meshlet_cull.slang`, `gpu_cull_resources.h`
-
-### G.1.3 — CPU-side group promote/evict
-
-Rework `ClusterStreamingService` internals to operate per-group:
-
-- `m_dynamicResidentGroups` replaces `m_dynamicResidentNodes` (FIFO/LRU list of group indices)
-- Heap allocator unchanged (already operates at meshlet-index granularity)
-- `ensureResidentHeapSliceForGroup()` allocates heap range and memcpys cluster indices for one group
-- `invalidateResidentGroupsForGroup()` releases heap range and resets page table entry
-- Budget expressed in group count or total meshlet count (configurable)
-
-**Files:** `cluster_streaming_service.h`
-
-### G.1.4 — Per-frame load/unload caps
-
-Add configurable caps to prevent frame stalls:
-
-- `m_maxLoadsPerFrame` (default 128): max groups promoted per update
-- `m_maxUnloadsPerFrame` (default 256): max groups evicted per update
-- Excess requests deferred to next frame via `m_pendingResidencyGroups` queue
-
-**Files:** `cluster_streaming_service.h`
-
-**Done when:** streaming operates per-group, ImGui stats show group-level resident/pending/evicted counts, and the resident raster path is visually correct.
+- **Group-level residency** is in place
+  - `groupResidencyBuffer` uses `Resident`, `Requested`, `AlwaysResident`, and `Touched` bits
+  - coarsest groups are pinned resident
+- **64-bit page-table based request deduplication** is in place
+  - invalid addresses encode the request frame index
+  - shader-side `InterlockedMax` prevents duplicate missing-group requests within a frame
+- **GPU request generation** is in place
+  - `meshlet_cull.slang` emits load requests for missing groups
+  - resident touches are emitted separately from missing-load requests
+- **GPU age-filter driven unload requests** are in place
+  - `stream_agefilter_groups.slang` increments ages and appends unload requests
+  - CPU FIFO eviction remains as a fallback if the age-filter dispatch is missing
+- **GPU scene patching** is in place
+  - `stream_update_scene.slang` writes the page table
+  - dynamic group meshlet indices are copied via transfer/upload path
+- **Device-local streaming storage + async transfer** are in place
+  - `StreamingStorage` owns the device-local storage pool
+  - staging buffers and copy regions are prepared per task
+  - dedicated transfer queue + timeline semaphore wait path is integrated
+  - graphics-queue copy fallback exists when transfer is unavailable
+- **Multi-task pipelining** is in place
+  - three task slots cycle through prepared / transfer submitted / update queued
+- **Per-frame caps** are in place
+  - load and unload caps exist and are configurable
+- **Telemetry and budgeting** are in place
+  - ImGui exposes storage usage, request counts, transfer utilization, age histogram, and per-LOD residency
+  - VRAM budget query via `VK_EXT_memory_budget` is wired in
+  - budget presets and adaptive age-threshold tuning are implemented
+- **Reload and fallback robustness** are largely in place
+  - pipeline reload resets streaming task state
+  - streaming remains optional
+  - coarsest-LOD fallback remains valid when storage is exhausted
 
 ---
 
-## Phase G.2 — GPU-Side Age-Based Unload Requests
+## Status Matrix
 
-**Goal:** Move eviction decisions from CPU FIFO to GPU age-tracking, so the GPU tells the CPU which groups to unload based on actual usage.
-
-### G.2.1 — Per-group age counter
-
-Add a `uint16_t age` field per resident group, stored in a GPU-accessible buffer.
-
-- New buffer: `groupAgeBuffer` — one `uint16_t` per group (or pack into groupResidencyBuffer)
-- Age incremented each frame for all resident groups
-- Age reset to 0 when a group's meshlets are accessed during traversal
-
-**Files:** `cluster_streaming_service.h`, `gpu_cull_resources.h`, new shader
-
-### G.2.2 — Age filter compute shader
-
-New shader: `stream_agefilter_groups.slang`
-
-- One thread per active resident group
-- Increments age (saturates at 0xFFFF)
-- If age > `ageThreshold` (default 16): appends group to unload request worklist
-- Dispatched after meshlet cull pass (traversal resets ages of accessed groups)
-- Uses the existing worklist pattern (`gpuDrivenAppendWorkItemSlot`)
-
-**Files:** new `Shaders/Streaming/stream_agefilter_groups.slang`, `gpu_driven_constants.h`
-
-### G.2.3 — Unload request readback
-
-Extend readback to include unload requests:
-
-- New unload request buffer + worklist state buffer
-- CPU reads unload requests alongside load requests in `runRequestReadbackStage()`
-- Groups in unload list are evicted (heap released, page table invalidated, age reset)
-- Remove CPU-side FIFO eviction — GPU age tracking supersedes it
-
-**Files:** `cluster_streaming_service.h`
-
-### G.2.4 — Traversal age reset
-
-In `meshlet_cull.slang`, when a group's meshlets are emitted as visible, reset that group's age to 0 via atomic write/store to `groupAgeBuffer`.
-
-**Files:** `meshlet_cull.slang`
-
-**Done when:** eviction is driven by GPU age, groups unseen for N frames are automatically unloaded, and memory stays within budget without CPU-side FIFO.
+| Original Phase | Status in Metallic | Notes |
+|---|---|---|
+| G.1 Group-level residency granularity | Complete | Group bits, always-resident groups, group request flow all exist |
+| G.2 GPU-side age-based unload requests | Complete | GPU unload requests exist; CPU FIFO remains as fallback only |
+| G.3 GPU scene patch shader | Complete | Patch struct + shader + device-local page table are in use |
+| G.4 Streaming storage & async transfer | Complete | Storage pool, staging, async transfer queue, and task ring exist |
+| G.5 Frame-index request deduplication | Complete | 64-bit invalid-address tagging is in shader path |
+| G.6 Statistics & monitoring | Complete enough | Main telemetry exists; remaining work is mostly overhead reduction |
+| G.7 Memory budget automation | Complete | VRAM query, presets, auto sizing, adaptive age policy exist |
+| G.8 Robustness & edge cases | Partial | Core reload/fallback/error paths exist; stress hardening remains |
 
 ---
 
-## Phase G.3 — GPU Scene Patch Shader
+## Remaining Differences vs `vk_lod_clusters` (Non-RT)
 
-**Goal:** Replace CPU memcpy for page table + resident heap updates with a GPU compute shader that patches the scene, eliminating per-frame host writes on the critical path.
+The most important remaining differences are no longer functional gaps; they are
+mostly about **state ownership, scaling, and steady-state overhead**.
 
-### G.3.1 — StreamingPatch data structure
+### 1. No compact GPU resident-group list yet
 
-Define a patch descriptor uploaded from CPU to GPU:
+`vk_lod_clusters` keeps a compact `activeGroups` style resident list and runs
+its age filter over resident groups only.
 
-```cpp
-struct StreamingPatch {
-    uint32_t groupIndex;
-    uint32_t residentHeapOffset;   // kInvalidAddress for unload
-    uint32_t clusterStart;         // source offset in groupMeshletIndices
-    uint32_t clusterCount;
-};
-```
+Metallic currently:
 
-- CPU prepares patch list each frame (load patches + unload patches)
-- Upload via staging buffer or upload ring
+- tracks resident order primarily in CPU-side vectors such as `m_dynamicResidentGroups`
+- dispatches the age filter over `groupCount`, not over `residentGroupCount`
+- rebuilds debug/telemetry views by scanning broad group ranges
 
-**Files:** `gpu_cull_resources.h`, `cluster_streaming_service.h`
+Impact:
 
-### G.3.2 — Scene update compute shader
+- age-filter cost scales with total scene group count instead of active resident count
+- future GPU-only residency bookkeeping is harder to layer in cleanly
 
-New shader: `stream_update_scene.slang`
+### 2. CPU still owns the canonical residency / age mirror
 
-- One thread per patch operation
-- For load patches: copies meshlet indices from source buffer to resident heap, writes page table entry
-- For unload patches: writes `kInvalidAddress` to page table entry
-- Dispatched before meshlet cull pass in the frame graph
+Metallic currently keeps CPU-side arrays such as:
 
-**Files:** new `Shaders/Streaming/stream_update_scene.slang`
+- `m_groupResidencyState`
+- `m_groupAgeState`
+- `m_groupResidentSinceFrame`
 
-### G.3.3 — Upload service integration
+These are mirrored into per-frame buffers and also used for CPU-side request
+handling and telemetry reconstruction.
 
-Use `VulkanUploadService` or `VulkanUploadRing` to stage patch data:
+Impact:
 
-- `stageBuffer()` for patch list upload
-- `recordPendingUploads()` in the streaming update pass command buffer
-- Source meshlet indices buffer remains device-local (read by the update shader)
+- steady-state behavior still depends on full CPU-side canonical state
+- age progression is mirrored on CPU even though GPU age-filter logic exists
+- the render path is not yet fully GPU-owned for residency metadata
 
-**Files:** `cluster_streaming_update_pass.h`, `cluster_streaming_service.h`
+### 3. Full-buffer host writes still happen in the steady state
 
-### G.3.4 — Remove host-visible resident heap
+`uploadCanonicalStateToFrame()` still performs broad uploads / clears of:
 
-Once the GPU update shader handles all page table and heap writes:
+- group residency state
+- age state
+- request buffers
+- unload request buffers
 
-- Change `residentGroupMeshletIndicesBuffer` from host-visible to device-local
-- Change `lodGroupPageTableBuffer` from host-visible to device-local
-- Keep `groupResidencyBuffer` host-visible for readback (or use dedicated readback copy)
+Impact:
 
-**Files:** `cluster_streaming_service.h`
+- steady-state frames still pay broad host memcpy cost
+- the streaming control path is functionally correct, but not yet as lean as it can be
 
-**Done when:** page table and resident heap are updated entirely on GPU, no per-frame host-visible memcpy on the render path, and the result is visually identical.
+### 4. Request handling still relies on large host-visible request resources
 
----
+The current request and unload worklists are read back through host-visible
+buffers. This works and is simple, but it is not the cleanest long-term scaling
+model for large scenes.
 
-## Phase G.4 — Streaming Storage & Async Transfer
+Impact:
 
-**Goal:** Decouple geometry data upload from the graphics queue using the async transfer queue (Phase 0.3 infrastructure).
+- residency request buffers remain broad CPU-visible resources
+- the system is correct, but the readback model is more heavyweight than necessary
 
-### G.4.1 — StreamingStorage allocator
+### 5. Some debug and telemetry work scales with scene size
 
-Create a device-local storage pool for cluster group data:
+The current dashboard is useful, but parts of the bookkeeping still scan all
+groups to build:
 
-- `StreamingStorage` class: owns a large device-local buffer (configurable, default 512 MB)
-- Sub-allocator: offset-based allocation (similar to existing resident heap free-range allocator)
-- Each loaded group gets a contiguous region in the storage buffer
-- On unload, region returned to free list with coalescing
+- age histogram
+- resident-group totals
+- per-LOD residency breakdown
 
-**Files:** new `Source/Rendering/streaming_storage.h`
+Impact:
 
-### G.4.2 — Staging buffer and copy regions
-
-CPU-side upload preparation:
-
-- Per-frame staging buffer (host-visible, sized to `maxTransferBytes`, default 32 MB)
-- For each load request: memcpy cluster data into staging buffer, record `VkBufferCopy` region
-- Batch all copies into a single `vkCmdCopyBuffer` on the transfer command buffer
-
-**Files:** `streaming_storage.h`, `cluster_streaming_service.h`
-
-### G.4.3 — Async transfer queue submission
-
-Use the existing async transfer queue infrastructure (Phase 0.3):
-
-- Record copy commands on the transfer command buffer
-- Submit with timeline semaphore signal
-- Graphics queue waits on transfer semaphore before streaming update pass
-- Transfer and graphics work can overlap across frames
-
-**Files:** `cluster_streaming_service.h`, `cluster_streaming_update_pass.h`, `main_vulkan.cpp`
-
-### G.4.4 — Multi-task pipelining
-
-Allow N tasks in flight (default 2-3):
-
-- Each task has: staging allocation, copy regions, patch list, completion semaphore value
-- Tasks cycle through: prepare → transfer → update → recycle
-- CPU can prepare task N+1 while GPU executes task N
-
-**Files:** `cluster_streaming_service.h`
-
-**Done when:** geometry uploads happen on the transfer queue, graphics queue is not stalled by uploads, and pipeline telemetry shows overlap between transfer and render.
+- debug overhead can become noticeable on larger content
+- telemetry cost is less bounded than it could be
 
 ---
 
-## Phase G.5 — Frame-Index Request Deduplication
+## Next-Step Plan
 
-**Goal:** Prevent redundant load requests for the same group within a single frame by encoding the frame index into the group address.
+The next plan should focus on **scaling down CPU ownership and full-array work**
+without changing the existing feature set.
 
-### G.5.1 — 64-bit virtual address scheme
+## Phase N.1 — Compact Active Resident Group Table
 
-Adopt the vk_lod_clusters pattern:
+**Goal:** Introduce a compact GPU-visible active resident group list so streaming
+passes scale with resident groups instead of total groups.
 
-- Group addresses stored as `uint64_t` instead of `uint32_t` page table offsets
-- Valid address: actual device address or heap offset (bit 63 = 0)
-- Invalid address: `STREAMING_INVALID_ADDRESS_START | frameIndex` (bit 63 = 1)
-- When a group is requested, `atomicMax` writes the current frame index into the invalid address
-- If `atomicMax` returns the current frame index, the request was already made this frame — skip
+### N.1.1 — Resident group list resources
 
-### G.5.2 — Shader-side deduplication
+- Add a compact `activeResidentGroupsBuffer`
+- Add a matching count buffer or counter field
+- Keep the current page table and group residency bits as-is
 
-In `meshlet_cull.slang`:
+### N.1.2 — Update path integration
 
-```slang
-uint64_t prevAddr = atomicMax(groupAddresses[groupIndex], currentFrameTag);
-bool alreadyRequested = (prevAddr == currentFrameTag);
-if (!alreadyRequested) {
-    // append to load request worklist
-}
-```
+- Extend the streaming update path so load/unload patches also maintain the active list
+- Keep always-resident groups represented in the compact list
+- Preserve current CPU-side vectors during transition for validation
 
-This replaces the current `InterlockedOr` flag-based approach and eliminates duplicate requests without CPU intervention.
+### N.1.3 — Age-filter dispatch over resident groups
 
-### G.5.3 — CPU request handler update
+- Change the age filter to iterate the compact active list
+- Dispatch against `activeResidentGroupCount`, not `totalGroupCount`
+- Keep the current full-group path as a debug fallback until validated
 
-- Readback only the load/unload counters and geometry group arrays (not per-group state)
-- Frame index validated on CPU to ensure readback corresponds to correct frame
-
-**Done when:** each group is requested at most once per frame regardless of how many instances reference it.
-
-### G.5.4 — Split resident-touch from pending-request state
-
-- Keep `Requested` as CPU-visible pending-load bookkeeping only
-- Add a transient `Touched` residency bit for already-resident groups referenced this frame
-- Use `Touched` for shader-side resident touch dedup and age-filter resets
-- Continue emitting tagged touch requests so CPU can reconstruct resident usage without per-group readback
-
-**Done when:** same-frame resident touches no longer depend on the pending-load request flag, and age-based unload logic keys off dedicated touch state.
+**Done when:** age-filter cost scales with active resident groups and the result
+is visually identical to the current implementation.
 
 ---
 
-## Phase G.6 — Comprehensive Statistics & Monitoring
+## Phase N.2 — Remove Per-Frame Full Residency / Age Uploads
 
-**Goal:** Provide detailed streaming telemetry for performance analysis and budget tuning.
+**Goal:** Stop treating CPU-side full arrays as the render-path source of truth.
 
-### G.6.1 — StreamingStats structure
+### N.2.1 — Move steady-state residency ownership GPU-side
 
-```cpp
-struct StreamingStats {
-    uint32_t residentGroupCount;
-    uint32_t residentClusterCount;
-    uint32_t alwaysResidentGroupCount;
-    uint32_t dynamicResidentGroupCount;
+- Transition `groupResidencyBuffer` toward GPU-owned steady-state data
+- Transition `groupAgeBuffer` toward GPU-owned steady-state data
+- Keep CPU mirrors only for validation, fallback handling, and UI as needed
 
-    uint64_t storagePoolCapacityBytes;
-    uint64_t storagePoolUsedBytes;
-    uint32_t residentHeapCapacity;
-    uint32_t residentHeapUsed;
+### N.2.2 — Replace broad uploads with small deltas
 
-    uint32_t loadRequestsThisFrame;
-    uint32_t unloadRequestsThisFrame;
-    uint32_t loadsExecutedThisFrame;
-    uint32_t unloadsExecutedThisFrame;
-    uint32_t loadsDeferredThisFrame;
+- Upload only the per-frame changes:
+  - loads
+  - unloads
+  - touched-bit clears / resets
+  - request-queue seeds
+- Avoid full memcpy of residency / age arrays once initialization is complete
 
-    uint64_t transferBytesThisFrame;
-    float    transferUtilization;       // actual / budget
+### N.2.3 — Rebuild-only path
 
-    uint32_t failedAllocations;
-};
-```
+- Keep the existing full canonical upload path only for:
+  - scene rebuild
+  - pipeline reload reset
+  - source-buffer signature changes
 
-### G.6.2 — ImGui streaming dashboard
-
-Extend the existing "Vulkan Sponza" debug window:
-
-- "Streaming" collapsible section with:
-  - Resident groups / total groups (bar chart)
-  - Storage pool usage (bar chart)
-  - Load/unload requests per frame (rolling graph)
-  - Transfer bandwidth utilization
-  - Age histogram of resident groups
-  - Per-LOD level residency breakdown
-
-### G.6.3 — GPU-side statistics readback
-
-Add a small statistics buffer written by streaming shaders:
-
-- Age filter shader writes: unload count, average age
-- Update shader writes: patches applied, copy bytes
-- Readback via host-visible copy (statistics only, not control path)
-
-**Done when:** all streaming metrics visible in ImGui, no per-frame control-path readbacks, statistics readbacks are optional.
+**Done when:** steady-state frames no longer memcpy full residency and age arrays.
 
 ---
 
-## Phase G.7 — Memory Budget Automation
+## Phase N.3 — Tighten Request / Readback Resources
 
-**Goal:** Automatically tune streaming budget based on available VRAM and scene complexity.
+**Goal:** Keep the current host-handled load/unload model, but reduce reliance on
+large permanently host-visible control buffers.
 
-### G.7.1 — VRAM budget query
+### N.3.1 — Separate steady-state GPU buffers from readback staging
 
-Query available VRAM via `VK_EXT_memory_budget`:
+- Move request payload buffers to device-local where practical
+- Use explicit copy-to-readback resources for request download
+- Keep frame-tag validation exactly as it is today
 
-- `vkGetPhysicalDeviceMemoryProperties2` with `VkPhysicalDeviceMemoryBudgetPropertiesEXT`
-- Compute available headroom: `budget - usage` per heap
-- Set streaming pool size as fraction of available headroom (e.g., 50%)
+### N.3.2 — Preserve fallback behavior
 
-**Files:** `vulkan_backend.cpp`, `cluster_streaming_service.h`
+- Keep the current host-visible fallback path available when required by platform or backend limits
+- Preserve the CPU FIFO unload fallback if GPU age-filter execution is unavailable
 
-### G.7.2 — Adaptive budget
-
-- If failed allocations > 0 per frame: increase eviction aggressiveness (lower age threshold)
-- If storage pool utilization < 50%: decrease eviction aggressiveness
-- Smoothed over N frames to avoid oscillation
-
-### G.7.3 — Budget presets
-
-- "Low" (256 MB storage, 64 groups budget)
-- "Medium" (512 MB storage, 256 groups budget)
-- "High" (1 GB storage, 1024 groups budget)
-- "Auto" (VRAM-based)
-
-Expose in ImGui streaming settings.
-
-**Done when:** Metallic can run on GPUs with varying VRAM without manual budget tuning.
+**Done when:** request handling no longer depends on broad host-visible SSBOs in
+the common Vulkan path.
 
 ---
 
-## Phase G.8 — Robustness & Edge Cases
+## Phase N.4 — Reduce CPU-Side Full-Scene Scans
 
-**Goal:** Handle error conditions, device-lost recovery, and streaming correctness under stress.
+**Goal:** Make telemetry and debug accounting scale with active work instead of scene size.
 
-### G.8.1 — Error tracking
+### N.4.1 — Incremental streaming telemetry
 
-Add GPU-side error counters (inspired by vk_lod_clusters' 24 error fields):
+- Derive resident counts from the compact resident table
+- Update per-LOD residency incrementally on load/unload
+- Cache histogram inputs where possible
 
-- `errorUpdate`: scene patch failure
-- `errorAgeFilter`: age filter overflow
-- `errorAllocation`: heap allocation failed on GPU
-- `errorPageTable`: page table write out of bounds
-- Log errors via spdlog on CPU readback
+### N.4.2 — UI throttling / optional expensive views
 
-### G.8.2 — Streaming state reset on resize/reload
+- Only rebuild heavier graphs when the debug section is visible
+- Allow throttled refresh for age histogram and per-LOD bars on very large scenes
 
-- Pipeline reload (`F6`): flush all in-flight streaming tasks, rebuild state
-- Shader reload (`F5`): preserve streaming state (shaders are stateless)
-- Window resize: no streaming impact (screen-space LOD recalculated automatically)
+### N.4.3 — Validation mode
 
-### G.8.3 — Graceful degradation
+- Keep an optional developer-only slow validation pass that cross-checks CPU mirrors against GPU-derived counts
 
-- [x] If streaming storage exhausted: fall back to always-resident coarsest LOD (already the case)
-- [x] If transfer queue unavailable: fall back to graphics queue copies
-- [x] If age filter dispatch fails: fall back to CPU-side FIFO eviction
-- [x] Surface active fallback state in the streaming debug panel
-
-**Done when:** streaming recovers cleanly from all error conditions without visual corruption or crashes.
+**Done when:** streaming debug views do not require broad per-frame group scans in the common case.
 
 ---
 
-## Dependency Graph
+## Phase N.5 — Stress Validation & Hardening
 
-```
-G.1 (Group-Level Residency)
- └─> G.2 (Age-Based Unload)
-      └─> G.3 (GPU Scene Patch)
-           └─> G.4 (Async Transfer)
-                └─> G.5 (Frame-Index Dedup)
+**Goal:** Validate the optimized path under pressure before further feature work.
 
-G.6 (Statistics) — can proceed in parallel after G.1
-G.7 (Budget Automation) — requires G.4 + G.6
-G.8 (Robustness) — requires G.3, can proceed in parallel with G.4+
-```
+### N.5.1 — Functional validation
+
+- Build and run with streaming on/off
+- Verify coarsest-LOD fallback remains correct
+- Verify F5 shader reload preserves streaming correctness
+- Verify F6 pipeline reload resets tasks and recovers cleanly
+
+### N.5.2 — Pressure validation
+
+- Low storage budget
+- High camera motion
+- Streaming bursts with many pending groups
+- Transfer-queue unavailable fallback
+- GPU age-filter missing fallback
+
+### N.5.3 — Telemetry validation
+
+- Ensure resident counts, unload counts, transfer bytes, and age histogram remain sane during stress
+- Verify no visual corruption during repeated load/unload churn
+
+**Done when:** optimized non-RT streaming remains stable under low-budget and high-motion conditions.
+
+---
 
 ## Implementation Rules
 
-- **No control-path readbacks**: GPU requests and unload decisions flow through worklist buffers; only statistics are read back.
-- **Reuse existing infrastructure**: upload ring, transient allocator, worklist pattern, timeline semaphores.
-- **Keep streaming optional**: `enableResidencyStreaming` toggle must remain functional; non-streaming path always works.
-- **Validate after each phase**: build → launch → enable streaming → verify visual correctness and counters.
-- **CLAS/RT streaming out of scope**: RT acceleration structure streaming is a separate feature beyond Milestone G. The GPU persistent allocator from vk_lod_clusters is not needed until RT streaming is tackled.
+- Keep `enableResidencyStreaming` optional and regression-free
+- Do not regress the non-streaming path
+- Prefer incremental refactors around `ClusterStreamingService`
+- Keep the current fallback behavior until the replacement path is proven
+- Validate visually after each phase
+- RT / CLAS streaming remains out of scope until this roadmap is exhausted
