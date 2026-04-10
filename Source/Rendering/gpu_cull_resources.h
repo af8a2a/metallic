@@ -155,7 +155,7 @@ struct CullUniforms {
 };
 
 struct StreamingAgeFilterUniforms {
-    uint32_t groupCount = 0;
+    uint32_t activeResidentGroupCount = 0;
     uint32_t ageThreshold = 16;
     uint32_t requestFrameIndex = 0;
     uint32_t unloadRequestCapacity = 0;

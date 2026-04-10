@@ -66,16 +66,17 @@ public:
 
         const RhiBuffer* groupResidencyBuffer = streamingService->groupResidencyBuffer();
         const RhiBuffer* groupAgeBuffer = streamingService->groupAgeBuffer();
+        const RhiBuffer* activeResidentGroupsBuffer = streamingService->activeResidentGroupsBuffer();
         const RhiBuffer* unloadRequestBuffer = streamingService->unloadRequestBuffer();
         const RhiBuffer* unloadRequestStateBuffer = streamingService->unloadRequestStateBuffer();
         const RhiBuffer* statsBuffer = streamingService->streamingStatsBuffer();
-        if (!groupResidencyBuffer || !groupAgeBuffer || !unloadRequestBuffer ||
-            !unloadRequestStateBuffer || !statsBuffer) {
+        if (!groupResidencyBuffer || !groupAgeBuffer || !activeResidentGroupsBuffer ||
+            !unloadRequestBuffer || !unloadRequestStateBuffer || !statsBuffer) {
             return;
         }
 
         StreamingAgeFilterUniforms uniforms{};
-        uniforms.groupCount = m_ctx.clusterLodData.totalGroupCount;
+        uniforms.activeResidentGroupCount = streamingService->activeResidentGroupCount();
         uniforms.ageThreshold = streamingService->ageThreshold();
         uniforms.requestFrameIndex = m_frameContext ? m_frameContext->frameIndex : 0u;
         uniforms.unloadRequestCapacity = static_cast<uint32_t>(
@@ -84,6 +85,10 @@ public:
             groupResidencyBuffer->size() / sizeof(uint32_t));
         uniforms.groupAgeCount = static_cast<uint32_t>(
             groupAgeBuffer->size() / sizeof(uint32_t));
+        if (uniforms.activeResidentGroupCount == 0u) {
+            streamingService->markGpuAgeFilterDispatched(uniforms.requestFrameIndex);
+            return;
+        }
 
         encoder.setComputePipeline(pipelineIt->second);
         encoder.setBytes(&uniforms, sizeof(uniforms), GpuDriven::StreamingAgeFilterBindings::kUniforms);
@@ -94,9 +99,13 @@ public:
                           0,
                           GpuDriven::StreamingAgeFilterBindings::kUnloadRequestState);
         encoder.setBuffer(statsBuffer, 0, GpuDriven::StreamingAgeFilterBindings::kStats);
+        encoder.setBuffer(activeResidentGroupsBuffer,
+                          0,
+                          GpuDriven::StreamingAgeFilterBindings::kActiveResidentGroups);
 
         constexpr uint32_t kThreadCount = 64u;
-        const uint32_t dispatchX = (uniforms.groupCount + kThreadCount - 1u) / kThreadCount;
+        const uint32_t dispatchX =
+            (uniforms.activeResidentGroupCount + kThreadCount - 1u) / kThreadCount;
         encoder.dispatchThreadgroups({dispatchX, 1, 1}, {kThreadCount, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
         streamingService->markGpuAgeFilterDispatched(uniforms.requestFrameIndex);

@@ -312,6 +312,7 @@ public:
         for (const FrameBuffers& frameBuffers : m_frameBuffers) {
             if (!frameBuffers.groupResidencyBuffer ||
                 !frameBuffers.groupAgeBuffer ||
+                !frameBuffers.activeResidentGroupsBuffer ||
                 !frameBuffers.residencyRequestBuffer ||
                 !frameBuffers.residencyRequestStateBuffer ||
                 !frameBuffers.unloadRequestBuffer ||
@@ -345,6 +346,13 @@ public:
     }
     const RhiBuffer* groupAgeBuffer() const {
         return activeFrameBuffers().groupAgeBuffer.get();
+    }
+    const RhiBuffer* activeResidentGroupsBuffer() const {
+        return activeFrameBuffers().activeResidentGroupsBuffer.get();
+    }
+    uint32_t activeResidentGroupCount() const {
+        return static_cast<uint32_t>(std::min<size_t>(m_dynamicResidentGroups.size(),
+                                                      size_t(m_residencyGroupCapacity)));
     }
     const RhiBuffer* streamingStatsBuffer() const {
         return activeFrameBuffers().streamingStatsBuffer.get();
@@ -562,6 +570,7 @@ private:
     struct FrameBuffers {
         std::unique_ptr<RhiBuffer> groupResidencyBuffer;
         std::unique_ptr<RhiBuffer> groupAgeBuffer;
+        std::unique_ptr<RhiBuffer> activeResidentGroupsBuffer;
         std::unique_ptr<RhiBuffer> residencyRequestBuffer;
         std::unique_ptr<RhiBuffer> residencyRequestStateBuffer;
         std::unique_ptr<RhiBuffer> unloadRequestBuffer;
@@ -575,6 +584,7 @@ private:
     static void resetFrameBuffers(FrameBuffers& frameBuffers) {
         frameBuffers.groupResidencyBuffer.reset();
         frameBuffers.groupAgeBuffer.reset();
+        frameBuffers.activeResidentGroupsBuffer.reset();
         frameBuffers.residencyRequestBuffer.reset();
         frameBuffers.residencyRequestStateBuffer.reset();
         frameBuffers.unloadRequestBuffer.reset();
@@ -788,6 +798,15 @@ private:
         ageDesc.debugName = ageName.c_str();
         frameBuffers.groupAgeBuffer = runtimeContext.resourceFactory->createBuffer(ageDesc);
 
+        RhiBufferDesc activeResidentGroupsDesc{};
+        activeResidentGroupsDesc.size = size_t(groupCapacity) * sizeof(uint32_t);
+        activeResidentGroupsDesc.hostVisible = true;
+        const std::string activeResidentGroupsName =
+            "ClusterLodActiveResidentGroups[" + std::to_string(frameSlot) + "]";
+        activeResidentGroupsDesc.debugName = activeResidentGroupsName.c_str();
+        frameBuffers.activeResidentGroupsBuffer =
+            runtimeContext.resourceFactory->createBuffer(activeResidentGroupsDesc);
+
         RhiBufferDesc requestDesc{};
         requestDesc.size = size_t(groupCapacity) * sizeof(ClusterResidencyRequest);
         requestDesc.hostVisible = true;
@@ -946,6 +965,14 @@ private:
                 std::memcpy(ages,
                             m_groupAgeState.data(),
                             size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
+            }
+        }
+        if (uint32_t* activeResidentGroups = mappedUint32(frameBuffers.activeResidentGroupsBuffer.get())) {
+            const uint32_t activeResidentGroupCount = this->activeResidentGroupCount();
+            if (activeResidentGroupCount > 0u) {
+                std::memcpy(activeResidentGroups,
+                            m_dynamicResidentGroups.data(),
+                            size_t(activeResidentGroupCount) * sizeof(uint32_t));
             }
         }
         if (frameBuffers.residencyRequestBuffer) {

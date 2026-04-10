@@ -67,6 +67,7 @@
 #define GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_OUTPUT_BINDING 3u
 #define GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_STATE_BINDING 4u
 #define GPU_DRIVEN_STREAMING_AGE_STATS_BINDING 5u
+#define GPU_DRIVEN_STREAMING_AGE_ACTIVE_RESIDENT_GROUPS_BINDING 6u
 
 // Shared bindings for the streaming scene update pipeline.
 #define GPU_DRIVEN_STREAMING_UPDATE_UNIFORMS_BINDING 0u
@@ -205,6 +206,8 @@ struct StreamingAgeFilterBindings {
     static constexpr uint32_t kUnloadRequestState =
         GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_STATE_BINDING;
     static constexpr uint32_t kStats = GPU_DRIVEN_STREAMING_AGE_STATS_BINDING;
+    static constexpr uint32_t kActiveResidentGroups =
+        GPU_DRIVEN_STREAMING_AGE_ACTIVE_RESIDENT_GROUPS_BINDING;
 };
 
 struct StreamingUpdateBindings {

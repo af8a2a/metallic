@@ -1,7 +1,7 @@
 #include "../Shared/gpu_driven_helpers.slang"
 
 struct StreamingAgeFilterUniforms {
-    uint groupCount;
+    uint activeResidentGroupCount;
     uint ageThreshold;
     uint requestFrameIndex;
     uint unloadRequestCapacity;
@@ -17,14 +17,17 @@ RWStructuredBuffer<uint>                   groupAgeBuffer;    // buffer(GPU_DRIV
 RWStructuredBuffer<ClusterUnloadRequest>   unloadRequests;    // buffer(GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_OUTPUT_BINDING)
 RWByteAddressBuffer                        unloadRequestState; // buffer(GPU_DRIVEN_STREAMING_AGE_UNLOAD_REQUEST_STATE_BINDING)
 RWByteAddressBuffer                        streamingStats;    // buffer(GPU_DRIVEN_STREAMING_AGE_STATS_BINDING)
+StructuredBuffer<uint>                     activeResidentGroups; // buffer(GPU_DRIVEN_STREAMING_AGE_ACTIVE_RESIDENT_GROUPS_BINDING)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    const uint groupIndex = dispatchThreadID.x;
-    if (groupIndex >= streamingUniforms.groupCount) {
+    const uint activeResidentIndex = dispatchThreadID.x;
+    if (activeResidentIndex >= streamingUniforms.activeResidentGroupCount) {
         return;
     }
+
+    const uint groupIndex = activeResidentGroups[activeResidentIndex];
 
     if (groupIndex >= streamingUniforms.groupResidencyCount ||
         groupIndex >= streamingUniforms.groupAgeCount) {
