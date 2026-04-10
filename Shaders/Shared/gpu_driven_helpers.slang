@@ -160,6 +160,11 @@ struct StreamingPatch {
     uint clusterCount;
 };
 
+struct ActiveResidentGroupPatch {
+    uint activeResidentIndex;
+    uint groupIndex;
+};
+
 bool clusterLodGroupPageAddressIsValid(uint64_t address) {
     return (address & kClusterLodGroupPageInvalidAddressBit) == 0;
 }

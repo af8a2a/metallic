@@ -174,13 +174,20 @@ struct StreamingPatch {
 static_assert(sizeof(StreamingPatch) == sizeof(uint64_t) + sizeof(uint32_t) * 4u,
               "StreamingPatch must match shader layout");
 
+struct ActiveResidentGroupPatch {
+    uint32_t activeResidentIndex = UINT32_MAX;
+    uint32_t groupIndex = UINT32_MAX;
+};
+static_assert(sizeof(ActiveResidentGroupPatch) == sizeof(uint32_t) * 2u,
+              "ActiveResidentGroupPatch must match shader layout");
+
 struct StreamingUpdateUniforms {
     uint32_t patchCount = 0;
     uint32_t copySourceData = 0;
     uint32_t sourceGroupMeshletIndexCount = 0;
     uint32_t residentGroupMeshletIndexCount = 0;
     uint32_t groupPageTableCount = 0;
+    uint32_t activeResidentGroupCapacity = 0;
+    uint32_t patchMode = 0;
     uint32_t reserved1 = 0;
-    uint32_t reserved2 = 0;
-    uint32_t reserved3 = 0;
 };

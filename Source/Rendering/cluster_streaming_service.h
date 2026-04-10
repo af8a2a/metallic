@@ -313,6 +313,7 @@ public:
             if (!frameBuffers.groupResidencyBuffer ||
                 !frameBuffers.groupAgeBuffer ||
                 !frameBuffers.activeResidentGroupsBuffer ||
+                !frameBuffers.activeResidentPatchBuffer ||
                 !frameBuffers.residencyRequestBuffer ||
                 !frameBuffers.residencyRequestStateBuffer ||
                 !frameBuffers.unloadRequestBuffer ||
@@ -351,8 +352,10 @@ public:
         return activeFrameBuffers().activeResidentGroupsBuffer.get();
     }
     uint32_t activeResidentGroupCount() const {
-        return static_cast<uint32_t>(std::min<size_t>(m_dynamicResidentGroups.size(),
-                                                      size_t(m_residencyGroupCapacity)));
+        return m_activeFrameResidentGroupCount;
+    }
+    const RhiBuffer* activeResidentPatchBuffer() const {
+        return activeFrameBuffers().activeResidentPatchBuffer.get();
     }
     const RhiBuffer* streamingStatsBuffer() const {
         return activeFrameBuffers().streamingStatsBuffer.get();
@@ -398,12 +401,24 @@ public:
     uint32_t streamingPatchCount() const {
         return m_activeUpdatePatchCount;
     }
+    uint32_t activeResidentPatchCount() const {
+        return m_activeActiveResidentPatchCount;
+    }
     const StreamingPatch* streamingPatchData() const {
         if (!validTaskIndex(m_updateTaskIndex)) {
             return nullptr;
         }
 
         const std::vector<StreamingPatch>& patches = m_streamingTasks[m_updateTaskIndex].patches;
+        return patches.empty() ? nullptr : patches.data();
+    }
+    const ActiveResidentGroupPatch* activeResidentPatchData() const {
+        if (!validTaskIndex(m_updateTaskIndex)) {
+            return nullptr;
+        }
+
+        const std::vector<ActiveResidentGroupPatch>& patches =
+            m_streamingTasks[m_updateTaskIndex].activeResidentPatches;
         return patches.empty() ? nullptr : patches.data();
     }
     void completeTransferTask(uint64_t waitValue) {
@@ -452,7 +467,9 @@ public:
         m_transferTaskIndex = kInvalidTaskIndex;
         m_updateTaskIndex = kInvalidTaskIndex;
         m_activeUpdatePatchCount = 0u;
+        m_activeActiveResidentPatchCount = 0u;
         m_activeUpdateTransferWaitValue = 0u;
+        m_activeFrameResidentGroupCount = 0u;
         m_loadRequestsThisFrame = 0u;
         m_unloadRequestsThisFrame = 0u;
         m_failedAllocationsThisFrame = 0u;
@@ -559,7 +576,10 @@ private:
         uint64_t transferWaitValue = 0u;
         uint64_t serial = 0u;
         uint64_t graphicsCompletionSerial = 0u;
+        uint32_t activeResidentGroupCountAfter = 0u;
         std::vector<StreamingPatch> patches;
+        std::vector<ActiveResidentGroupPatch> activeResidentPatches;
+        std::vector<uint32_t> activeResidentGroupsBefore;
     };
 
     struct GroupResidentAllocation {
@@ -571,6 +591,7 @@ private:
         std::unique_ptr<RhiBuffer> groupResidencyBuffer;
         std::unique_ptr<RhiBuffer> groupAgeBuffer;
         std::unique_ptr<RhiBuffer> activeResidentGroupsBuffer;
+        std::unique_ptr<RhiBuffer> activeResidentPatchBuffer;
         std::unique_ptr<RhiBuffer> residencyRequestBuffer;
         std::unique_ptr<RhiBuffer> residencyRequestStateBuffer;
         std::unique_ptr<RhiBuffer> unloadRequestBuffer;
@@ -585,6 +606,7 @@ private:
         frameBuffers.groupResidencyBuffer.reset();
         frameBuffers.groupAgeBuffer.reset();
         frameBuffers.activeResidentGroupsBuffer.reset();
+        frameBuffers.activeResidentPatchBuffer.reset();
         frameBuffers.residencyRequestBuffer.reset();
         frameBuffers.residencyRequestStateBuffer.reset();
         frameBuffers.unloadRequestBuffer.reset();
@@ -625,7 +647,10 @@ private:
         task.transferWaitValue = 0u;
         task.serial = 0u;
         task.graphicsCompletionSerial = 0u;
+        task.activeResidentGroupCountAfter = 0u;
         task.patches.clear();
+        task.activeResidentPatches.clear();
+        task.activeResidentGroupsBefore.clear();
 
         if (m_prepareTaskIndex == taskIndex) {
             m_prepareTaskIndex = kInvalidTaskIndex;
@@ -646,8 +671,14 @@ private:
         m_transferTaskIndex = kInvalidTaskIndex;
         m_updateTaskIndex = kInvalidTaskIndex;
         m_activeUpdatePatchCount = 0u;
+        m_activeActiveResidentPatchCount = 0u;
         m_activeUpdateTransferWaitValue = 0u;
+        m_activeFrameResidentGroupCount = 0u;
         m_pendingUpdateGraphicsCompletionSerial = 0u;
+        m_prepareTaskActiveResidentGroupsScratch.clear();
+        std::fill(m_prepareTaskActiveResidentGroupIndexScratch.begin(),
+                  m_prepareTaskActiveResidentGroupIndexScratch.end(),
+                  UINT32_MAX);
     }
 
     void recycleCompletedTasks(const PipelineRuntimeContext& runtimeContext) {
@@ -688,7 +719,13 @@ private:
             task.transferWaitValue = 0u;
             task.serial = 0u;
             task.graphicsCompletionSerial = 0u;
+            assignCurrentActiveResidentGroups(task.activeResidentGroupsBefore);
+            task.activeResidentGroupCountAfter =
+                static_cast<uint32_t>(std::min<size_t>(task.activeResidentGroupsBefore.size(),
+                                                      size_t(m_residencyGroupCapacity)));
             task.patches.clear();
+            task.activeResidentPatches.clear();
+            initializePrepareTaskActiveResidentState(task.activeResidentGroupsBefore);
             task.state = StreamingTaskState::Prepared;
             task.serial = m_nextTaskSerial++;
             return true;
@@ -726,11 +763,82 @@ private:
         return static_cast<StreamingPatch*>(rhiBufferContents(*buffer));
     }
 
+    static ActiveResidentGroupPatch* mappedActiveResidentPatches(RhiBuffer* buffer) {
+        if (!buffer) {
+            return nullptr;
+        }
+        return static_cast<ActiveResidentGroupPatch*>(rhiBufferContents(*buffer));
+    }
+
     static ClusterStreamingGpuStats* mappedStreamingStats(RhiBuffer* buffer) {
         if (!buffer) {
             return nullptr;
         }
         return static_cast<ClusterStreamingGpuStats*>(rhiBufferContents(*buffer));
+    }
+
+    void assignCurrentActiveResidentGroups(std::vector<uint32_t>& outGroups) const {
+        outGroups.clear();
+        const size_t totalCount = std::min<size_t>(m_alwaysResidentGroups.size() +
+                                                       m_dynamicResidentGroups.size(),
+                                                   size_t(m_residencyGroupCapacity));
+        outGroups.reserve(totalCount);
+
+        for (uint32_t groupIndex : m_alwaysResidentGroups) {
+            if (outGroups.size() >= totalCount) {
+                break;
+            }
+            outGroups.push_back(groupIndex);
+        }
+        for (uint32_t groupIndex : m_dynamicResidentGroups) {
+            if (outGroups.size() >= totalCount) {
+                break;
+            }
+            outGroups.push_back(groupIndex);
+        }
+    }
+
+    void initializePrepareTaskActiveResidentState(const std::vector<uint32_t>& activeResidentGroups) {
+        m_prepareTaskActiveResidentGroupsScratch = activeResidentGroups;
+        if (m_prepareTaskActiveResidentGroupIndexScratch.size() != m_residencyGroupCapacity) {
+            m_prepareTaskActiveResidentGroupIndexScratch.assign(m_residencyGroupCapacity, UINT32_MAX);
+        } else {
+            std::fill(m_prepareTaskActiveResidentGroupIndexScratch.begin(),
+                      m_prepareTaskActiveResidentGroupIndexScratch.end(),
+                      UINT32_MAX);
+        }
+
+        const uint32_t activeResidentGroupCount = static_cast<uint32_t>(std::min<size_t>(
+            m_prepareTaskActiveResidentGroupsScratch.size(), size_t(m_residencyGroupCapacity)));
+        for (uint32_t activeResidentIndex = 0u; activeResidentIndex < activeResidentGroupCount;
+             ++activeResidentIndex) {
+            const uint32_t groupIndex = m_prepareTaskActiveResidentGroupsScratch[activeResidentIndex];
+            if (groupIndex >= m_prepareTaskActiveResidentGroupIndexScratch.size()) {
+                continue;
+            }
+            m_prepareTaskActiveResidentGroupIndexScratch[groupIndex] = activeResidentIndex;
+        }
+    }
+
+    void uploadActiveResidentGroupsToFrame(FrameBuffers& frameBuffers,
+                                           const std::vector<uint32_t>& activeResidentGroups) {
+        uint32_t* activeResidentWords = mappedUint32(frameBuffers.activeResidentGroupsBuffer.get());
+        if (!activeResidentWords) {
+            return;
+        }
+
+        std::memset(activeResidentWords,
+                    0xFF,
+                    size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
+        const uint32_t activeResidentGroupCount = static_cast<uint32_t>(std::min<size_t>(
+            activeResidentGroups.size(), size_t(m_residencyGroupCapacity)));
+        if (activeResidentGroupCount == 0u) {
+            return;
+        }
+
+        std::memcpy(activeResidentWords,
+                    activeResidentGroups.data(),
+                    size_t(activeResidentGroupCount) * sizeof(uint32_t));
     }
 
     void resetDebugStats() {
@@ -806,6 +914,15 @@ private:
         activeResidentGroupsDesc.debugName = activeResidentGroupsName.c_str();
         frameBuffers.activeResidentGroupsBuffer =
             runtimeContext.resourceFactory->createBuffer(activeResidentGroupsDesc);
+
+        RhiBufferDesc activeResidentPatchDesc{};
+        activeResidentPatchDesc.size = size_t(groupCapacity) * sizeof(ActiveResidentGroupPatch);
+        activeResidentPatchDesc.hostVisible = true;
+        const std::string activeResidentPatchName =
+            "ClusterLodActiveResidentPatches[" + std::to_string(frameSlot) + "]";
+        activeResidentPatchDesc.debugName = activeResidentPatchName.c_str();
+        frameBuffers.activeResidentPatchBuffer =
+            runtimeContext.resourceFactory->createBuffer(activeResidentPatchDesc);
 
         RhiBufferDesc requestDesc{};
         requestDesc.size = size_t(groupCapacity) * sizeof(ClusterResidencyRequest);
@@ -920,11 +1037,15 @@ private:
         m_patchLastWriteIndexScratch.assign(groupCapacity, UINT32_MAX);
         m_patchTouchedGroupsScratch.clear();
         m_stateDirty = true;
+        m_alwaysResidentGroups.clear();
         m_dynamicResidentGroups.clear();
         m_pendingResidencyGroups.clear();
         m_requestReadbackScratch.clear();
         m_unloadRequestReadbackScratch.clear();
         m_confirmedUnloadGroups.clear();
+        m_prepareTaskActiveResidentGroupsScratch.clear();
+        m_prepareTaskActiveResidentGroupIndexScratch.assign(groupCapacity, UINT32_MAX);
+        m_activeFrameResidentGroupCount = 0u;
         resetStreamingTasks();
         m_residencySourceNodeBufferHandle = nullptr;
         m_residencySourceGroupBufferHandle = nullptr;
@@ -954,7 +1075,8 @@ private:
 
     void uploadCanonicalStateToFrame(FrameBuffers& frameBuffers,
                                      bool uploadAgeState,
-                                     bool markSubmittedFrame) {
+                                     bool markSubmittedFrame,
+                                     const std::vector<uint32_t>* activeResidentGroupsOverride = nullptr) {
         if (uint32_t* words = mappedUint32(frameBuffers.groupResidencyBuffer.get())) {
             std::memcpy(words,
                         m_groupResidencyState.data(),
@@ -967,14 +1089,13 @@ private:
                             size_t(m_residencyGroupCapacity) * sizeof(uint32_t));
             }
         }
-        if (uint32_t* activeResidentGroups = mappedUint32(frameBuffers.activeResidentGroupsBuffer.get())) {
-            const uint32_t activeResidentGroupCount = this->activeResidentGroupCount();
-            if (activeResidentGroupCount > 0u) {
-                std::memcpy(activeResidentGroups,
-                            m_dynamicResidentGroups.data(),
-                            size_t(activeResidentGroupCount) * sizeof(uint32_t));
-            }
+        std::vector<uint32_t> activeResidentGroupsStorage;
+        const std::vector<uint32_t>* activeResidentGroups = activeResidentGroupsOverride;
+        if (!activeResidentGroups) {
+            assignCurrentActiveResidentGroups(activeResidentGroupsStorage);
+            activeResidentGroups = &activeResidentGroupsStorage;
         }
+        uploadActiveResidentGroupsToFrame(frameBuffers, *activeResidentGroups);
         if (frameBuffers.residencyRequestBuffer) {
             if (void* requests = rhiBufferContents(*frameBuffers.residencyRequestBuffer)) {
                 std::memset(requests, 0, frameBuffers.residencyRequestBuffer->size());
@@ -993,6 +1114,7 @@ private:
 
     void uploadSelectedUpdateTaskToActiveFrame() {
         m_activeUpdatePatchCount = 0u;
+        m_activeActiveResidentPatchCount = 0u;
         m_activeUpdateTransferWaitValue = 0u;
 
         if (!validTaskIndex(m_updateTaskIndex)) {
@@ -1002,17 +1124,28 @@ private:
         const StreamingTask& task = m_streamingTasks[m_updateTaskIndex];
         const uint32_t patchCount =
             std::min<uint32_t>(static_cast<uint32_t>(task.patches.size()), m_residencyGroupCapacity);
+        const uint32_t activeResidentPatchCount = std::min<uint32_t>(
+            static_cast<uint32_t>(task.activeResidentPatches.size()), m_residencyGroupCapacity);
         m_activeUpdatePatchCount = patchCount;
+        m_activeActiveResidentPatchCount = activeResidentPatchCount;
         m_activeUpdateTransferWaitValue = task.transferWaitValue;
-        if (patchCount == 0u) {
+        if (patchCount == 0u && activeResidentPatchCount == 0u) {
             return;
         }
 
         StreamingPatch* patches = mappedPatches(activeFrameBuffers().streamingPatchBuffer.get());
-        if (patches) {
+        if (patches && patchCount != 0u) {
             std::memcpy(patches,
                         task.patches.data(),
                         size_t(patchCount) * sizeof(StreamingPatch));
+        }
+
+        ActiveResidentGroupPatch* activeResidentPatches =
+            mappedActiveResidentPatches(activeFrameBuffers().activeResidentPatchBuffer.get());
+        if (activeResidentPatches && activeResidentPatchCount != 0u) {
+            std::memcpy(activeResidentPatches,
+                        task.activeResidentPatches.data(),
+                        size_t(activeResidentPatchCount) * sizeof(ActiveResidentGroupPatch));
         }
     }
 
@@ -1026,7 +1159,28 @@ private:
     }
 
     void uploadCanonicalStateToActiveFrame() {
-        uploadCanonicalStateToFrame(activeFrameBuffers(), true, true);
+        const std::vector<uint32_t>* activeResidentGroupsOverride = nullptr;
+        m_activeFrameResidentGroupCount = 0u;
+        if (validTaskIndex(m_updateTaskIndex)) {
+            const StreamingTask& task = m_streamingTasks[m_updateTaskIndex];
+            activeResidentGroupsOverride = &task.activeResidentGroupsBefore;
+            m_activeFrameResidentGroupCount = task.activeResidentGroupCountAfter;
+        } else {
+            std::vector<uint32_t> currentActiveResidentGroups;
+            assignCurrentActiveResidentGroups(currentActiveResidentGroups);
+            m_activeFrameResidentGroupCount = static_cast<uint32_t>(std::min<size_t>(
+                currentActiveResidentGroups.size(), size_t(m_residencyGroupCapacity)));
+            uploadCanonicalStateToFrame(activeFrameBuffers(),
+                                        true,
+                                        true,
+                                        &currentActiveResidentGroups);
+            uploadSelectedUpdateTaskToActiveFrame();
+            return;
+        }
+        uploadCanonicalStateToFrame(activeFrameBuffers(),
+                                    true,
+                                    true,
+                                    activeResidentGroupsOverride);
         uploadSelectedUpdateTaskToActiveFrame();
     }
 
@@ -1123,12 +1277,51 @@ private:
             task.patches.swap(dedupedPatches);
         }
 
+        std::stable_partition(
+            task.patches.begin(),
+            task.patches.end(),
+            [](const StreamingPatch& patch) {
+                return !isClusterLodGroupPageAddressValid(patch.residentHeapOffset);
+            });
+        task.activeResidentPatches.clear();
+        task.activeResidentGroupCountAfter = static_cast<uint32_t>(std::min<size_t>(
+            m_prepareTaskActiveResidentGroupsScratch.size(), size_t(m_residencyGroupCapacity)));
+        const uint32_t activeResidentGroupCountBefore = static_cast<uint32_t>(std::min<size_t>(
+            task.activeResidentGroupsBefore.size(), size_t(m_residencyGroupCapacity)));
+        const uint32_t diffCount =
+            std::max(activeResidentGroupCountBefore, task.activeResidentGroupCountAfter);
+        task.activeResidentPatches.reserve(diffCount);
+        for (uint32_t activeResidentIndex = 0u; activeResidentIndex < diffCount; ++activeResidentIndex) {
+            const uint32_t beforeGroupIndex =
+                activeResidentIndex < activeResidentGroupCountBefore
+                    ? task.activeResidentGroupsBefore[activeResidentIndex]
+                    : UINT32_MAX;
+            const uint32_t afterGroupIndex =
+                activeResidentIndex < task.activeResidentGroupCountAfter
+                    ? m_prepareTaskActiveResidentGroupsScratch[activeResidentIndex]
+                    : UINT32_MAX;
+            if (beforeGroupIndex == afterGroupIndex) {
+                continue;
+            }
+
+            ActiveResidentGroupPatch activeResidentPatch{};
+            activeResidentPatch.activeResidentIndex = activeResidentIndex;
+            activeResidentPatch.groupIndex = afterGroupIndex;
+            task.activeResidentPatches.push_back(activeResidentPatch);
+        }
+
         for (uint32_t groupIndex : m_patchTouchedGroupsScratch) {
             m_patchLastWriteIndexScratch[groupIndex] = UINT32_MAX;
         }
         m_patchTouchedGroupsScratch.clear();
+        m_prepareTaskActiveResidentGroupsScratch.clear();
+        std::fill(m_prepareTaskActiveResidentGroupIndexScratch.begin(),
+                  m_prepareTaskActiveResidentGroupIndexScratch.end(),
+                  UINT32_MAX);
 
-        if (task.patches.empty() && !taskHasTransferWork(m_prepareTaskIndex)) {
+        if (task.patches.empty() &&
+            task.activeResidentPatches.empty() &&
+            !taskHasTransferWork(m_prepareTaskIndex)) {
             releaseTask(m_prepareTaskIndex);
             return;
         }
@@ -1200,14 +1393,21 @@ private:
     }
 
     void queueLoadPatch(uint32_t groupIndex,
-                       uint32_t heapOffset,
-                       uint32_t clusterStart,
-                       uint32_t clusterCount) {
+                        uint32_t heapOffset,
+                        uint32_t clusterStart,
+                        uint32_t clusterCount) {
         StreamingPatch patch{};
         patch.groupIndex = groupIndex;
         patch.residentHeapOffset = makeClusterLodGroupPageResidentAddress(heapOffset);
         patch.clusterStart = clusterStart;
         patch.clusterCount = clusterCount;
+        if (groupIndex < m_prepareTaskActiveResidentGroupIndexScratch.size() &&
+            m_prepareTaskActiveResidentGroupIndexScratch[groupIndex] == UINT32_MAX &&
+            m_prepareTaskActiveResidentGroupsScratch.size() < size_t(m_residencyGroupCapacity)) {
+            m_prepareTaskActiveResidentGroupIndexScratch[groupIndex] =
+                static_cast<uint32_t>(m_prepareTaskActiveResidentGroupsScratch.size());
+            m_prepareTaskActiveResidentGroupsScratch.push_back(groupIndex);
+        }
         appendStreamingPatch(patch);
     }
 
@@ -1217,6 +1417,26 @@ private:
         patch.residentHeapOffset = makeClusterLodGroupPageInvalidAddress(m_frameIndex);
         patch.clusterStart = 0u;
         patch.clusterCount = 0u;
+        if (groupIndex < m_prepareTaskActiveResidentGroupIndexScratch.size()) {
+            const uint32_t activeResidentIndex =
+                m_prepareTaskActiveResidentGroupIndexScratch[groupIndex];
+            if (activeResidentIndex != UINT32_MAX &&
+                activeResidentIndex < m_prepareTaskActiveResidentGroupsScratch.size()) {
+                const uint32_t lastActiveResidentIndex = static_cast<uint32_t>(
+                    m_prepareTaskActiveResidentGroupsScratch.size() - 1u);
+                if (activeResidentIndex != lastActiveResidentIndex) {
+                    const uint32_t movedGroupIndex =
+                        m_prepareTaskActiveResidentGroupsScratch[lastActiveResidentIndex];
+                    if (movedGroupIndex < m_prepareTaskActiveResidentGroupIndexScratch.size()) {
+                        m_prepareTaskActiveResidentGroupIndexScratch[movedGroupIndex] =
+                            activeResidentIndex;
+                    }
+                    m_prepareTaskActiveResidentGroupsScratch[activeResidentIndex] = movedGroupIndex;
+                }
+                m_prepareTaskActiveResidentGroupIndexScratch[groupIndex] = UINT32_MAX;
+                m_prepareTaskActiveResidentGroupsScratch.pop_back();
+            }
+        }
         appendStreamingPatch(patch);
     }
 
@@ -1459,6 +1679,7 @@ private:
         std::fill(m_patchLastWriteIndexScratch.begin(), m_patchLastWriteIndexScratch.end(), UINT32_MAX);
         m_patchTouchedGroupsScratch.clear();
         resetResidentHeapAllocator();
+        m_alwaysResidentGroups.clear();
         m_dynamicResidentGroups.clear();
         m_pendingResidencyGroups.clear();
         m_requestReadbackScratch.clear();
@@ -1488,16 +1709,13 @@ private:
                 if (groupIndex >= m_residencyGroupCapacity) {
                     continue;
                 }
+                if ((m_groupResidencyState[groupIndex] & kClusterLodGroupResidencyAlwaysResident) != 0u) {
+                    continue;
+                }
                 m_groupResidencyState[groupIndex] =
                     kClusterLodGroupResidencyResident | kClusterLodGroupResidencyAlwaysResident;
                 m_groupAgeState[groupIndex] = 0u;
                 m_groupResidentSinceFrame[groupIndex] = 0u;
-                if (!queueLoadPatchForGroup(groupIndex, clusterLodData)) {
-                    m_groupResidencyState[groupIndex] = 0u;
-                    m_groupAgeState[groupIndex] = 0u;
-                    m_groupResidentSinceFrame[groupIndex] = kInvalidFrameIndex;
-                    continue;
-                }
             }
         }
 
@@ -1505,6 +1723,19 @@ private:
             if (!isGroupResident(groupIndex)) {
                 queueUnloadPatch(groupIndex);
             }
+        }
+
+        for (uint32_t groupIndex = 0u; groupIndex < m_residencyGroupCapacity; ++groupIndex) {
+            if (!isGroupAlwaysResident(groupIndex)) {
+                continue;
+            }
+            if (!queueLoadPatchForGroup(groupIndex, clusterLodData)) {
+                m_groupResidencyState[groupIndex] = 0u;
+                m_groupAgeState[groupIndex] = 0u;
+                m_groupResidentSinceFrame[groupIndex] = kInvalidFrameIndex;
+                continue;
+            }
+            m_alwaysResidentGroups.push_back(groupIndex);
         }
 
         m_residencySourceNodeBufferHandle = clusterLodData.nodeBuffer.nativeHandle();
@@ -2354,6 +2585,8 @@ private:
     uint32_t m_transferTaskIndex = kInvalidTaskIndex;
     uint32_t m_updateTaskIndex = kInvalidTaskIndex;
     uint32_t m_activeUpdatePatchCount = 0u;
+    uint32_t m_activeActiveResidentPatchCount = 0u;
+    uint32_t m_activeFrameResidentGroupCount = 0u;
     uint64_t m_streamingStorageCapacityBytes = kDefaultStreamingStorageCapacityBytes;
     uint64_t m_maxStreamingTransferBytes = kDefaultMaxStreamingTransferBytes;
     uint64_t m_activeUpdateTransferWaitValue = 0u;
@@ -2367,6 +2600,7 @@ private:
     std::unique_ptr<RhiBuffer> m_lodGroupPageTableBuffer;
     StreamingStorage m_streamingStorage;
     std::array<StreamingTask, kStreamingTaskCount> m_streamingTasks;
+    std::vector<uint32_t> m_alwaysResidentGroups;
     std::vector<uint32_t> m_groupResidencyState;
     std::vector<uint32_t> m_groupAgeState;
     std::vector<uint32_t> m_groupResidentSinceFrame;
@@ -2378,6 +2612,8 @@ private:
     std::vector<uint32_t> m_pendingResidencyGroups;
     std::vector<uint32_t> m_patchLastWriteIndexScratch;
     std::vector<uint32_t> m_patchTouchedGroupsScratch;
+    std::vector<uint32_t> m_prepareTaskActiveResidentGroupsScratch;
+    std::vector<uint32_t> m_prepareTaskActiveResidentGroupIndexScratch;
     std::vector<ClusterResidencyRequest> m_requestReadbackScratch;
     std::vector<ClusterUnloadRequest> m_unloadRequestReadbackScratch;
     std::vector<uint32_t> m_confirmedUnloadGroups;

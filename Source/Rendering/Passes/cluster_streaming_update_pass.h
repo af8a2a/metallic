@@ -76,7 +76,8 @@ public:
         }
 
         const uint32_t patchCount = streamingService->streamingPatchCount();
-        if (patchCount == 0u) {
+        const uint32_t activeResidentPatchCount = streamingService->activeResidentPatchCount();
+        if (patchCount == 0u && activeResidentPatchCount == 0u) {
             return;
         }
 
@@ -87,12 +88,17 @@ public:
         const RhiBuffer* residentGroupMeshletIndicesBuffer =
             streamingService->residentGroupMeshletIndicesBuffer();
         const RhiBuffer* lodGroupPageTableBuffer = streamingService->lodGroupPageTableBuffer();
+        const RhiBuffer* activeResidentGroupsBuffer = streamingService->activeResidentGroupsBuffer();
+        const RhiBuffer* activeResidentPatchBuffer = streamingService->activeResidentPatchBuffer();
         const RhiBuffer* patchBuffer = streamingService->streamingPatchBuffer();
-        if (!sourceGroupMeshletIndicesBuffer ||
-            !residentGroupMeshletIndicesBuffer ||
-            !lodGroupPageTableBuffer ||
-            !patchBuffer ||
-            !statsBuffer) {
+        if (!activeResidentGroupsBuffer || !activeResidentPatchBuffer || !statsBuffer) {
+            return;
+        }
+        if (patchCount != 0u &&
+            (!sourceGroupMeshletIndicesBuffer ||
+             !residentGroupMeshletIndicesBuffer ||
+             !lodGroupPageTableBuffer ||
+             !patchBuffer)) {
             return;
         }
 
@@ -118,45 +124,92 @@ public:
             }
         }
 
-        if (rhiBufferContents(*patchBuffer) == nullptr) {
+        if (patchCount != 0u && rhiBufferContents(*patchBuffer) == nullptr) {
             const StreamingPatch* patchData = streamingService->streamingPatchData();
             if (!uploadStreamingPatches(encoder, patchBuffer, patchData, patchCount)) {
+                return;
+            }
+        }
+        if (activeResidentPatchCount != 0u &&
+            rhiBufferContents(*activeResidentPatchBuffer) == nullptr) {
+            const ActiveResidentGroupPatch* activeResidentPatchData =
+                streamingService->activeResidentPatchData();
+            if (!uploadActiveResidentPatches(encoder,
+                                             activeResidentPatchBuffer,
+                                             activeResidentPatchData,
+                                             activeResidentPatchCount)) {
                 return;
             }
         }
 #endif
 
         StreamingUpdateUniforms uniforms{};
-        uniforms.patchCount = patchCount;
 #ifdef _WIN32
         uniforms.copySourceData = 0u;
 #else
         uniforms.copySourceData = 1u;
 #endif
-        uniforms.sourceGroupMeshletIndexCount = static_cast<uint32_t>(
-            sourceGroupMeshletIndicesBuffer->size() / sizeof(uint32_t));
-        uniforms.residentGroupMeshletIndexCount = static_cast<uint32_t>(
-            residentGroupMeshletIndicesBuffer->size() / sizeof(uint32_t));
-        uniforms.groupPageTableCount = static_cast<uint32_t>(
-            lodGroupPageTableBuffer->size() / sizeof(uint64_t));
+        uniforms.sourceGroupMeshletIndexCount =
+            sourceGroupMeshletIndicesBuffer
+                ? static_cast<uint32_t>(sourceGroupMeshletIndicesBuffer->size() / sizeof(uint32_t))
+                : 0u;
+        uniforms.residentGroupMeshletIndexCount =
+            residentGroupMeshletIndicesBuffer
+                ? static_cast<uint32_t>(residentGroupMeshletIndicesBuffer->size() / sizeof(uint32_t))
+                : 0u;
+        uniforms.groupPageTableCount =
+            lodGroupPageTableBuffer
+                ? static_cast<uint32_t>(lodGroupPageTableBuffer->size() / sizeof(uint64_t))
+                : 0u;
+        uniforms.activeResidentGroupCapacity = static_cast<uint32_t>(
+            activeResidentGroupsBuffer->size() / sizeof(uint32_t));
 
         encoder.setComputePipeline(pipelineIt->second);
-        encoder.setBytes(&uniforms, sizeof(uniforms), GpuDriven::StreamingUpdateBindings::kUniforms);
-        encoder.setBuffer(sourceGroupMeshletIndicesBuffer,
-                          0,
-                          GpuDriven::StreamingUpdateBindings::kSourceGroupMeshletIndices);
-        encoder.setBuffer(residentGroupMeshletIndicesBuffer,
-                          0,
-                          GpuDriven::StreamingUpdateBindings::kResidentGroupMeshletIndices);
-        encoder.setBuffer(lodGroupPageTableBuffer,
-                          0,
-                          GpuDriven::StreamingUpdateBindings::kGroupPageTable);
-        encoder.setBuffer(patchBuffer, 0, GpuDriven::StreamingUpdateBindings::kPatches);
+        if (sourceGroupMeshletIndicesBuffer) {
+            encoder.setBuffer(sourceGroupMeshletIndicesBuffer,
+                              0,
+                              GpuDriven::StreamingUpdateBindings::kSourceGroupMeshletIndices);
+        }
+        if (residentGroupMeshletIndicesBuffer) {
+            encoder.setBuffer(residentGroupMeshletIndicesBuffer,
+                              0,
+                              GpuDriven::StreamingUpdateBindings::kResidentGroupMeshletIndices);
+        }
+        if (lodGroupPageTableBuffer) {
+            encoder.setBuffer(lodGroupPageTableBuffer,
+                              0,
+                              GpuDriven::StreamingUpdateBindings::kGroupPageTable);
+        }
+        if (patchBuffer) {
+            encoder.setBuffer(patchBuffer, 0, GpuDriven::StreamingUpdateBindings::kPatches);
+        }
         encoder.setBuffer(statsBuffer, 0, GpuDriven::StreamingUpdateBindings::kStats);
+        encoder.setBuffer(activeResidentGroupsBuffer,
+                          0,
+                          GpuDriven::StreamingUpdateBindings::kActiveResidentGroups);
+        encoder.setBuffer(activeResidentPatchBuffer,
+                          0,
+                          GpuDriven::StreamingUpdateBindings::kActiveResidentPatches);
 
         constexpr uint32_t kThreadCount = 64u;
-        const uint32_t dispatchX = (patchCount + kThreadCount - 1u) / kThreadCount;
-        encoder.dispatchThreadgroups({dispatchX, 1, 1}, {kThreadCount, 1, 1});
+        if (patchCount != 0u) {
+            uniforms.patchMode = 0u;
+            uniforms.patchCount = patchCount;
+            encoder.setBytes(&uniforms, sizeof(uniforms), GpuDriven::StreamingUpdateBindings::kUniforms);
+            const uint32_t dispatchX = (patchCount + kThreadCount - 1u) / kThreadCount;
+            encoder.dispatchThreadgroups({dispatchX, 1, 1}, {kThreadCount, 1, 1});
+        }
+        if (activeResidentPatchCount != 0u) {
+            if (patchCount != 0u) {
+                encoder.memoryBarrier(RhiBarrierScope::Buffers);
+            }
+            uniforms.patchMode = 1u;
+            uniforms.patchCount = activeResidentPatchCount;
+            encoder.setBytes(&uniforms, sizeof(uniforms), GpuDriven::StreamingUpdateBindings::kUniforms);
+            const uint32_t activeResidentDispatchX =
+                (activeResidentPatchCount + kThreadCount - 1u) / kThreadCount;
+            encoder.dispatchThreadgroups({activeResidentDispatchX, 1, 1}, {kThreadCount, 1, 1});
+        }
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
         const uint64_t graphicsCompletionSerial =
             m_runtimeContext->rhi ? m_runtimeContext->rhi->nextGraphicsSubmissionSerial() : 0u;
@@ -340,10 +393,11 @@ private:
                                                       static_cast<uint32_t>(bufferCopies.size()));
     }
 
-    static bool uploadStreamingPatches(RhiComputeCommandEncoder& encoder,
-                                       const RhiBuffer* patchBuffer,
-                                       const StreamingPatch* patchData,
-                                       uint32_t patchCount) {
+    template<typename PatchType>
+    static bool uploadStructuredPatches(RhiComputeCommandEncoder& encoder,
+                                        const RhiBuffer* patchBuffer,
+                                        const PatchType* patchData,
+                                        uint32_t patchCount) {
         if (!patchBuffer || !patchData || patchCount == 0u) {
             return false;
         }
@@ -359,7 +413,7 @@ private:
             return false;
         }
 
-        const VkDeviceSize uploadSize = VkDeviceSize(patchCount) * sizeof(StreamingPatch);
+        const VkDeviceSize uploadSize = VkDeviceSize(patchCount) * sizeof(PatchType);
         if (!uploadService->stageBuffer(vkPatchBuffer, 0u, patchData, uploadSize)) {
             return false;
         }
@@ -382,6 +436,20 @@ private:
         dependencyInfo.pBufferMemoryBarriers = &patchUploadBarrier;
         vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
         return true;
+    }
+
+    static bool uploadStreamingPatches(RhiComputeCommandEncoder& encoder,
+                                       const RhiBuffer* patchBuffer,
+                                       const StreamingPatch* patchData,
+                                       uint32_t patchCount) {
+        return uploadStructuredPatches(encoder, patchBuffer, patchData, patchCount);
+    }
+
+    static bool uploadActiveResidentPatches(RhiComputeCommandEncoder& encoder,
+                                            const RhiBuffer* patchBuffer,
+                                            const ActiveResidentGroupPatch* patchData,
+                                            uint32_t patchCount) {
+        return uploadStructuredPatches(encoder, patchBuffer, patchData, patchCount);
     }
 #endif
 };

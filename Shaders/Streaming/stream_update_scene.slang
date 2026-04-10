@@ -6,9 +6,9 @@ struct StreamingUpdateUniforms {
     uint sourceGroupMeshletIndexCount;
     uint residentGroupMeshletIndexCount;
     uint groupPageTableCount;
+    uint activeResidentGroupCapacity;
+    uint patchMode;
     uint reserved1;
-    uint reserved2;
-    uint reserved3;
 };
 
 ConstantBuffer<StreamingUpdateUniforms> updateUniforms; // buffer(GPU_DRIVEN_STREAMING_UPDATE_UNIFORMS_BINDING)
@@ -17,15 +17,28 @@ RWStructuredBuffer<uint>                residentGroupMeshletIndices; // buffer(G
 RWStructuredBuffer<uint64_t>            lodGroupPageTable; // buffer(GPU_DRIVEN_STREAMING_UPDATE_GROUP_PAGE_TABLE_BINDING)
 StructuredBuffer<StreamingPatch>        patches; // buffer(GPU_DRIVEN_STREAMING_UPDATE_PATCHES_BINDING)
 RWByteAddressBuffer                     streamingStats; // buffer(GPU_DRIVEN_STREAMING_UPDATE_STATS_BINDING)
+RWStructuredBuffer<uint>                activeResidentGroups; // buffer(GPU_DRIVEN_STREAMING_UPDATE_ACTIVE_RESIDENT_GROUPS_BINDING)
+StructuredBuffer<ActiveResidentGroupPatch> activeResidentPatches; // buffer(GPU_DRIVEN_STREAMING_UPDATE_ACTIVE_RESIDENT_PATCHES_BINDING)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    const uint patchIndex = dispatchThreadID.x;
-    if (patchIndex >= updateUniforms.patchCount) {
+    const uint localPatchIndex = dispatchThreadID.x;
+    if (localPatchIndex >= updateUniforms.patchCount) {
         return;
     }
 
+    if (updateUniforms.patchMode != 0u) {
+        const ActiveResidentGroupPatch activeResidentPatch = activeResidentPatches[localPatchIndex];
+        if (activeResidentPatch.activeResidentIndex >= updateUniforms.activeResidentGroupCapacity) {
+            clusterStreamingIncrementErrorUpdate(streamingStats);
+            return;
+        }
+        activeResidentGroups[activeResidentPatch.activeResidentIndex] = activeResidentPatch.groupIndex;
+        return;
+    }
+
+    const uint patchIndex = localPatchIndex;
     const StreamingPatch patch = patches[patchIndex];
     if (patch.groupIndex == 0xFFFFFFFFu) {
         return;
