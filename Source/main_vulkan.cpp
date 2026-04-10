@@ -2639,6 +2639,17 @@ int main() {
                 ImGui::Text("GPU unloads: %u, average age %.1f",
                             streamingTelemetry.gpuUnloadRequestCount,
                             streamingTelemetry.gpuAverageUnloadAge);
+                if (streamingTelemetry.gpuErrorUpdateCount != 0u ||
+                    streamingTelemetry.gpuErrorAgeFilterCount != 0u ||
+                    streamingTelemetry.gpuErrorAllocationCount != 0u ||
+                    streamingTelemetry.gpuErrorPageTableCount != 0u) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.2f, 1.0f),
+                                       "GPU errors: update %u, age %u, alloc %u, page %u",
+                                       streamingTelemetry.gpuErrorUpdateCount,
+                                       streamingTelemetry.gpuErrorAgeFilterCount,
+                                       streamingTelemetry.gpuErrorAllocationCount,
+                                       streamingTelemetry.gpuErrorPageTableCount);
+                }
             } else {
                 ImGui::TextDisabled("GPU stats: pending readback");
             }

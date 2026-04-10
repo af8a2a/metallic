@@ -8,6 +8,8 @@
 #include "rhi_resource_utils.h"
 #include "streaming_storage.h"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -64,6 +66,10 @@ public:
         float gpuAverageUnloadAge = 0.0f;
         uint32_t gpuAppliedPatchCount = 0;
         uint64_t gpuCopiedBytes = 0u;
+        uint32_t gpuErrorUpdateCount = 0u;
+        uint32_t gpuErrorAgeFilterCount = 0u;
+        uint32_t gpuErrorAllocationCount = 0u;
+        uint32_t gpuErrorPageTableCount = 0u;
         uint32_t ageHistogramBucketWidth = 1;
         uint32_t ageHistogramMaxAge = 0;
         std::array<uint32_t, kStreamingAgeHistogramBucketCount> ageHistogram = {};
@@ -252,6 +258,7 @@ public:
     void ingestGpuStreamingStats(const ClusterStreamingGpuStats& stats) {
         if (stats.frameIndex == UINT32_MAX) {
             m_lastGpuStreamingStats = {};
+            m_lastLoggedGpuErrorStats = {};
             m_hasGpuStreamingStats = false;
             applyGpuStreamingStatsToTelemetry();
             return;
@@ -263,6 +270,7 @@ public:
 
         m_lastGpuStreamingStats = stats;
         m_hasGpuStreamingStats = true;
+        maybeLogGpuStreamingErrors(stats);
         applyGpuStreamingStatsToTelemetry();
     }
 
@@ -658,6 +666,13 @@ private:
             return nullptr;
         }
         return static_cast<StreamingPatch*>(rhiBufferContents(*buffer));
+    }
+
+    static ClusterStreamingGpuStats* mappedStreamingStats(RhiBuffer* buffer) {
+        if (!buffer) {
+            return nullptr;
+        }
+        return static_cast<ClusterStreamingGpuStats*>(rhiBufferContents(*buffer));
     }
 
     void resetDebugStats() {
@@ -1461,6 +1476,8 @@ private:
             return;
         }
 
+        ingestMappedGpuStreamingStats(frameBuffers, expectedFrameIndex);
+
         bool requestReadbackValid = true;
         if (frameBuffers.residencyRequestBuffer && frameBuffers.residencyRequestStateBuffer) {
             const uint32_t requestCapacity = static_cast<uint32_t>(
@@ -1817,12 +1834,63 @@ private:
         m_streamingStats.gpuCopiedBytes =
             m_hasGpuStreamingStats ? clusterStreamingGpuStatsCopiedBytes(m_lastGpuStreamingStats)
                                    : 0u;
+        m_streamingStats.gpuErrorUpdateCount =
+            m_hasGpuStreamingStats ? m_lastGpuStreamingStats.errorUpdate : 0u;
+        m_streamingStats.gpuErrorAgeFilterCount =
+            m_hasGpuStreamingStats ? m_lastGpuStreamingStats.errorAgeFilter : 0u;
+        m_streamingStats.gpuErrorAllocationCount =
+            m_hasGpuStreamingStats ? m_lastGpuStreamingStats.errorAllocation : 0u;
+        m_streamingStats.gpuErrorPageTableCount =
+            m_hasGpuStreamingStats ? m_lastGpuStreamingStats.errorPageTable : 0u;
     }
 
     void clearGpuStreamingStats() {
         m_lastGpuStreamingStats = {};
+        m_lastLoggedGpuErrorStats = {};
         m_hasGpuStreamingStats = false;
         applyGpuStreamingStatsToTelemetry();
+    }
+
+    static bool sameGpuStreamingErrorCounts(const ClusterStreamingGpuStats& lhs,
+                                            const ClusterStreamingGpuStats& rhs) {
+        return lhs.errorUpdate == rhs.errorUpdate &&
+               lhs.errorAgeFilter == rhs.errorAgeFilter &&
+               lhs.errorAllocation == rhs.errorAllocation &&
+               lhs.errorPageTable == rhs.errorPageTable;
+    }
+
+    void maybeLogGpuStreamingErrors(const ClusterStreamingGpuStats& stats) {
+        if (!clusterStreamingGpuStatsHasErrors(stats)) {
+            m_lastLoggedGpuErrorStats = {};
+            return;
+        }
+
+        if (sameGpuStreamingErrorCounts(stats, m_lastLoggedGpuErrorStats)) {
+            return;
+        }
+
+        spdlog::warn(
+            "Cluster streaming GPU errors at frame {}: update={}, ageFilter={}, allocation={}, pageTable={}",
+            stats.frameIndex,
+            stats.errorUpdate,
+            stats.errorAgeFilter,
+            stats.errorAllocation,
+            stats.errorPageTable);
+        m_lastLoggedGpuErrorStats = stats;
+    }
+
+    void ingestMappedGpuStreamingStats(FrameBuffers& frameBuffers, uint32_t expectedFrameIndex) {
+        if (!m_enableGpuStatsReadback || !frameBuffers.streamingStatsBuffer) {
+            return;
+        }
+
+        ClusterStreamingGpuStats* stats =
+            mappedStreamingStats(frameBuffers.streamingStatsBuffer.get());
+        if (!stats || stats->frameIndex != expectedFrameIndex) {
+            return;
+        }
+
+        ingestGpuStreamingStats(*stats);
     }
 
     uint32_t adaptiveMinAgeThreshold() const {
@@ -2113,6 +2181,7 @@ private:
     std::vector<uint32_t> m_confirmedUnloadGroups;
     std::vector<GroupResidentAllocation> m_groupResidentAllocations;
     ClusterStreamingGpuStats m_lastGpuStreamingStats{};
+    ClusterStreamingGpuStats m_lastLoggedGpuErrorStats{};
     bool m_hasGpuStreamingStats = false;
     StreamingStats m_streamingStats;
     DebugStats m_debugStats;

@@ -4,7 +4,11 @@ struct StreamingAgeFilterUniforms {
     uint groupCount;
     uint ageThreshold;
     uint requestFrameIndex;
+    uint unloadRequestCapacity;
+    uint groupResidencyCount;
+    uint groupAgeCount;
     uint reserved1;
+    uint reserved2;
 };
 
 ConstantBuffer<StreamingAgeFilterUniforms> streamingUniforms; // buffer(GPU_DRIVEN_STREAMING_AGE_UNIFORMS_BINDING)
@@ -19,6 +23,12 @@ RWByteAddressBuffer                        streamingStats;    // buffer(GPU_DRIV
 void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     const uint groupIndex = dispatchThreadID.x;
     if (groupIndex >= streamingUniforms.groupCount) {
+        return;
+    }
+
+    if (groupIndex >= streamingUniforms.groupResidencyCount ||
+        groupIndex >= streamingUniforms.groupAgeCount) {
+        clusterStreamingIncrementErrorAgeFilter(streamingStats);
         return;
     }
 
@@ -46,6 +56,11 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     const uint slot = gpuDrivenAppendWorkItemSlot(unloadRequestState);
+    if (slot >= streamingUniforms.unloadRequestCapacity) {
+        clusterStreamingIncrementErrorAgeFilter(streamingStats);
+        return;
+    }
+
     ClusterUnloadRequest request;
     request.targetGroupIndex = groupIndex;
     request.requestFrameIndex = streamingUniforms.requestFrameIndex;

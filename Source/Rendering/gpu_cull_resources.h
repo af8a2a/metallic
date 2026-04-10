@@ -75,14 +75,25 @@ struct ClusterStreamingGpuStats {
     uint32_t appliedPatchCount = 0;
     uint32_t copiedBytesLow = 0;
     uint32_t copiedBytesHigh = 0;
+    uint32_t errorUpdate = 0;
+    uint32_t errorAgeFilter = 0;
+    uint32_t errorAllocation = 0;
+    uint32_t errorPageTable = 0;
     uint32_t reserved0 = 0;
     uint32_t reserved1 = 0;
 };
-static_assert(sizeof(ClusterStreamingGpuStats) == sizeof(uint32_t) * 8u,
+static_assert(sizeof(ClusterStreamingGpuStats) == sizeof(uint32_t) * 12u,
               "ClusterStreamingGpuStats must match shader layout");
 
 constexpr uint64_t clusterStreamingGpuStatsCopiedBytes(const ClusterStreamingGpuStats& stats) {
     return uint64_t(stats.copiedBytesLow) | (uint64_t(stats.copiedBytesHigh) << 32u);
+}
+
+constexpr bool clusterStreamingGpuStatsHasErrors(const ClusterStreamingGpuStats& stats) {
+    return stats.errorUpdate != 0u ||
+           stats.errorAgeFilter != 0u ||
+           stats.errorAllocation != 0u ||
+           stats.errorPageTable != 0u;
 }
 
 struct ClusterTraversalStats {
@@ -147,7 +158,11 @@ struct StreamingAgeFilterUniforms {
     uint32_t groupCount = 0;
     uint32_t ageThreshold = 16;
     uint32_t requestFrameIndex = 0;
+    uint32_t unloadRequestCapacity = 0;
+    uint32_t groupResidencyCount = 0;
+    uint32_t groupAgeCount = 0;
     uint32_t reserved1 = 0;
+    uint32_t reserved2 = 0;
 };
 
 struct StreamingPatch {
@@ -162,6 +177,10 @@ static_assert(sizeof(StreamingPatch) == sizeof(uint64_t) + sizeof(uint32_t) * 4u
 struct StreamingUpdateUniforms {
     uint32_t patchCount = 0;
     uint32_t copySourceData = 0;
+    uint32_t sourceGroupMeshletIndexCount = 0;
+    uint32_t residentGroupMeshletIndexCount = 0;
+    uint32_t groupPageTableCount = 0;
     uint32_t reserved1 = 0;
     uint32_t reserved2 = 0;
+    uint32_t reserved3 = 0;
 };

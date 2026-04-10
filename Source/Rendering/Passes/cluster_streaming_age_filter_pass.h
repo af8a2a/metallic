@@ -78,6 +78,12 @@ public:
         uniforms.groupCount = m_ctx.clusterLodData.totalGroupCount;
         uniforms.ageThreshold = streamingService->ageThreshold();
         uniforms.requestFrameIndex = m_frameContext ? m_frameContext->frameIndex : 0u;
+        uniforms.unloadRequestCapacity = static_cast<uint32_t>(
+            unloadRequestBuffer->size() / sizeof(ClusterUnloadRequest));
+        uniforms.groupResidencyCount = static_cast<uint32_t>(
+            groupResidencyBuffer->size() / sizeof(uint32_t));
+        uniforms.groupAgeCount = static_cast<uint32_t>(
+            groupAgeBuffer->size() / sizeof(uint32_t));
 
         encoder.setComputePipeline(pipelineIt->second);
         encoder.setBytes(&uniforms, sizeof(uniforms), GpuDriven::StreamingAgeFilterBindings::kUniforms);

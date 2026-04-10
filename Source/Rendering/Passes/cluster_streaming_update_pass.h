@@ -131,6 +131,12 @@ public:
 #else
         uniforms.copySourceData = 1u;
 #endif
+        uniforms.sourceGroupMeshletIndexCount = static_cast<uint32_t>(
+            sourceGroupMeshletIndicesBuffer->size() / sizeof(uint32_t));
+        uniforms.residentGroupMeshletIndexCount = static_cast<uint32_t>(
+            residentGroupMeshletIndicesBuffer->size() / sizeof(uint32_t));
+        uniforms.groupPageTableCount = static_cast<uint32_t>(
+            lodGroupPageTableBuffer->size() / sizeof(uint64_t));
 
         encoder.setComputePipeline(pipelineIt->second);
         encoder.setBytes(&uniforms, sizeof(uniforms), GpuDriven::StreamingUpdateBindings::kUniforms);

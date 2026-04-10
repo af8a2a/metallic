@@ -71,6 +71,10 @@ struct ClusterStreamingGpuStats {
     uint appliedPatchCount;
     uint copiedBytesLow;
     uint copiedBytesHigh;
+    uint errorUpdate;
+    uint errorAgeFilter;
+    uint errorAllocation;
+    uint errorPageTable;
     uint reserved0;
     uint reserved1;
 };
@@ -81,6 +85,12 @@ static const uint kClusterStreamingGpuStatsUnloadAgeSumOffsetBytes = 8u;
 static const uint kClusterStreamingGpuStatsAppliedPatchCountOffsetBytes = 12u;
 static const uint kClusterStreamingGpuStatsCopiedBytesLowOffsetBytes = 16u;
 static const uint kClusterStreamingGpuStatsCopiedBytesHighOffsetBytes = 20u;
+static const uint kClusterStreamingGpuStatsErrorUpdateOffsetBytes = 24u;
+static const uint kClusterStreamingGpuStatsErrorAgeFilterOffsetBytes = 28u;
+static const uint kClusterStreamingGpuStatsErrorAllocationOffsetBytes = 32u;
+static const uint kClusterStreamingGpuStatsErrorPageTableOffsetBytes = 36u;
+static const uint kClusterStreamingGpuStatsReserved0OffsetBytes = 40u;
+static const uint kClusterStreamingGpuStatsReserved1OffsetBytes = 44u;
 
 void clusterStreamingStoreGpuStats(RWByteAddressBuffer statsBuffer, ClusterStreamingGpuStats stats) {
     statsBuffer.Store(kClusterStreamingGpuStatsFrameIndexOffsetBytes, stats.frameIndex);
@@ -91,6 +101,12 @@ void clusterStreamingStoreGpuStats(RWByteAddressBuffer statsBuffer, ClusterStrea
                       stats.appliedPatchCount);
     statsBuffer.Store(kClusterStreamingGpuStatsCopiedBytesLowOffsetBytes, stats.copiedBytesLow);
     statsBuffer.Store(kClusterStreamingGpuStatsCopiedBytesHighOffsetBytes, stats.copiedBytesHigh);
+    statsBuffer.Store(kClusterStreamingGpuStatsErrorUpdateOffsetBytes, stats.errorUpdate);
+    statsBuffer.Store(kClusterStreamingGpuStatsErrorAgeFilterOffsetBytes, stats.errorAgeFilter);
+    statsBuffer.Store(kClusterStreamingGpuStatsErrorAllocationOffsetBytes, stats.errorAllocation);
+    statsBuffer.Store(kClusterStreamingGpuStatsErrorPageTableOffsetBytes, stats.errorPageTable);
+    statsBuffer.Store(kClusterStreamingGpuStatsReserved0OffsetBytes, stats.reserved0);
+    statsBuffer.Store(kClusterStreamingGpuStatsReserved1OffsetBytes, stats.reserved1);
 }
 
 void clusterStreamingIncrementAppliedPatchCount(RWByteAddressBuffer statsBuffer) {
@@ -109,6 +125,32 @@ void clusterStreamingAccumulateUnloadStats(RWByteAddressBuffer statsBuffer, uint
     statsBuffer.InterlockedAdd(kClusterStreamingGpuStatsUnloadAgeSumOffsetBytes,
                                groupAge,
                                previousAgeSum);
+}
+
+void clusterStreamingIncrementErrorUpdate(RWByteAddressBuffer statsBuffer) {
+    uint previousCount = 0u;
+    statsBuffer.InterlockedAdd(kClusterStreamingGpuStatsErrorUpdateOffsetBytes, 1u, previousCount);
+}
+
+void clusterStreamingIncrementErrorAgeFilter(RWByteAddressBuffer statsBuffer) {
+    uint previousCount = 0u;
+    statsBuffer.InterlockedAdd(kClusterStreamingGpuStatsErrorAgeFilterOffsetBytes,
+                               1u,
+                               previousCount);
+}
+
+void clusterStreamingIncrementErrorAllocation(RWByteAddressBuffer statsBuffer) {
+    uint previousCount = 0u;
+    statsBuffer.InterlockedAdd(kClusterStreamingGpuStatsErrorAllocationOffsetBytes,
+                               1u,
+                               previousCount);
+}
+
+void clusterStreamingIncrementErrorPageTable(RWByteAddressBuffer statsBuffer) {
+    uint previousCount = 0u;
+    statsBuffer.InterlockedAdd(kClusterStreamingGpuStatsErrorPageTableOffsetBytes,
+                               1u,
+                               previousCount);
 }
 
 struct StreamingPatch {
