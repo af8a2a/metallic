@@ -2500,6 +2500,17 @@ int main() {
             if (ImGui::Checkbox("GPU Stats Readback", &gpuStatsReadbackEnabled)) {
                 clusterStreamingService.setGpuStatsReadbackEnabled(gpuStatsReadbackEnabled);
             }
+            bool adaptiveBudgetEnabled = clusterStreamingService.adaptiveBudgetEnabled();
+            if (ImGui::Checkbox("Adaptive Unload Age", &adaptiveBudgetEnabled)) {
+                clusterStreamingService.setAdaptiveBudgetEnabled(adaptiveBudgetEnabled);
+            }
+            ImGui::Text("Unload age: effective %u, base %u, adjustments %u",
+                        streamingTelemetry.effectiveAgeThreshold,
+                        streamingTelemetry.configuredAgeThreshold,
+                        streamingTelemetry.adaptiveBudgetAdjustmentCount);
+            ImGui::Text("Adaptive signals: failed %.2f, pool %.1f%%",
+                        streamingTelemetry.smoothedFailedAllocations,
+                        streamingTelemetry.smoothedStorageUtilization * 100.0f);
 
             const float residentGroupRatio =
                 streamingStats.activeResidencyGroupCount != 0u

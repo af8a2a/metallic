@@ -1,5 +1,6 @@
 #ifdef _WIN32
 
+#include "cluster_streaming_service.h"
 #include "auto_exposure_pass.h"
 #include "cluster_streaming_age_filter_pass.h"
 #include "deferred_lighting_pass.h"

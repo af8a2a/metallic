@@ -42,6 +42,12 @@ public:
         float transferUtilization = 0.0f;
 
         uint32_t failedAllocations = 0;
+        bool adaptiveBudgetEnabled = false;
+        uint32_t configuredAgeThreshold = 0;
+        uint32_t effectiveAgeThreshold = 0;
+        float smoothedFailedAllocations = 0.0f;
+        float smoothedStorageUtilization = 0.0f;
+        uint32_t adaptiveBudgetAdjustmentCount = 0;
         bool gpuStatsValid = false;
         uint32_t gpuStatsFrameIndex = UINT32_MAX;
         uint32_t gpuUnloadRequestCount = 0;
@@ -104,6 +110,7 @@ public:
         }
 
         m_enableStreaming = enabled;
+        resetAdaptiveBudgetState(true);
         clearGpuStreamingStats();
         m_stateDirty = true;
     }
@@ -140,10 +147,26 @@ public:
     uint32_t maxUnloadsPerFrame() const { return m_maxUnloadsPerFrame; }
 
     void setAgeThreshold(uint32_t ageThreshold) {
-        m_ageThreshold = ageThreshold;
+        const uint32_t clampedAgeThreshold =
+            std::clamp(ageThreshold, kMinStreamingAgeThreshold, kMaxStreamingAgeThreshold);
+        m_configuredAgeThreshold = clampedAgeThreshold;
+        m_ageThreshold = clampedAgeThreshold;
+        resetAdaptiveBudgetState(false);
     }
 
     uint32_t ageThreshold() const { return m_ageThreshold; }
+    uint32_t configuredAgeThreshold() const { return m_configuredAgeThreshold; }
+
+    void setAdaptiveBudgetEnabled(bool enabled) {
+        if (m_adaptiveBudgetEnabled == enabled) {
+            return;
+        }
+
+        m_adaptiveBudgetEnabled = enabled;
+        resetAdaptiveBudgetState(true);
+    }
+
+    bool adaptiveBudgetEnabled() const { return m_adaptiveBudgetEnabled; }
 
     void setStreamingStorageCapacityBytes(uint64_t capacityBytes) {
         capacityBytes = std::max<uint64_t>(capacityBytes, sizeof(uint32_t));
@@ -152,6 +175,7 @@ public:
         }
 
         m_streamingStorageCapacityBytes = capacityBytes;
+        resetAdaptiveBudgetState(false);
         m_stateDirty = true;
     }
 
@@ -349,12 +373,14 @@ public:
             clusterLodData.groupMeshletIndicesBuffer.nativeHandle() &&
             clusterLodData.boundsBuffer.nativeHandle();
         if (!clusterLodAvailable) {
+            resetAdaptiveBudgetState(true);
             resetDebugStats();
             return;
         }
 
         ensureStreamingResources(clusterLodData, runtimeContext);
         if (!ready()) {
+            resetAdaptiveBudgetState(true);
             updateDebugStats(&clusterLodData);
             return;
         }
@@ -393,6 +419,7 @@ public:
         // never has to wait on uploads recorded earlier in the same frame.
         selectUpdateTask();
         uploadCanonicalStateToActiveFrame();
+        updateAdaptiveBudget();
         updateDebugStats(&clusterLodData);
     }
 
@@ -406,6 +433,12 @@ private:
     static constexpr uint64_t kDefaultMaxStreamingTransferBytes = 32ull * 1024ull * 1024ull;
     static constexpr uint64_t kAutoStreamingStorageAlignmentBytes = 16ull * 1024ull * 1024ull;
     static constexpr uint64_t kAutoStreamingStorageMaxBytes = 2ull * 1024ull * 1024ull * 1024ull;
+    static constexpr uint32_t kMinStreamingAgeThreshold = 1u;
+    static constexpr uint32_t kMaxStreamingAgeThreshold = 256u;
+    static constexpr uint32_t kAdaptiveBudgetSmoothingWindowFrames = 24u;
+    static constexpr uint32_t kAdaptiveBudgetEvaluationIntervalFrames = 8u;
+    static constexpr float kAdaptiveBudgetFailedAllocationThreshold = 0.10f;
+    static constexpr float kAdaptiveBudgetRelaxUtilizationThreshold = 0.50f;
 
     enum class StreamingTaskState : uint8_t {
         Free,
@@ -612,6 +645,7 @@ private:
         m_debugStats.selectedUpdateTransferWaitValue = 0u;
         m_debugStats.resourcesReady = false;
         m_streamingStats = {};
+        applyAdaptiveBudgetTelemetry();
         m_loadRequestsThisFrame = 0u;
         m_unloadRequestsThisFrame = 0u;
         m_failedAllocationsThisFrame = 0u;
@@ -1623,6 +1657,102 @@ private:
         applyGpuStreamingStatsToTelemetry();
     }
 
+    uint32_t adaptiveMinAgeThreshold() const {
+        return std::max(kMinStreamingAgeThreshold, m_configuredAgeThreshold / 4u);
+    }
+
+    uint32_t adaptiveMaxAgeThreshold() const {
+        const uint64_t maxAgeThreshold =
+            std::max<uint64_t>(m_configuredAgeThreshold,
+                               uint64_t(m_configuredAgeThreshold) * 4ull);
+        return static_cast<uint32_t>(
+            std::min<uint64_t>(maxAgeThreshold, kMaxStreamingAgeThreshold));
+    }
+
+    void resetAdaptiveBudgetState(bool resetEffectiveAge) {
+        m_adaptiveBudgetSmoothingInitialized = false;
+        m_adaptiveBudgetEvaluationFrameCount = 0u;
+        m_smoothedFailedAllocations = 0.0f;
+        m_smoothedStorageUtilization = 0.0f;
+
+        if (resetEffectiveAge) {
+            m_ageThreshold = m_configuredAgeThreshold;
+        } else {
+            m_ageThreshold =
+                std::clamp(m_ageThreshold, adaptiveMinAgeThreshold(), adaptiveMaxAgeThreshold());
+        }
+
+        applyAdaptiveBudgetTelemetry();
+    }
+
+    void updateAdaptiveBudget() {
+        if (!m_adaptiveBudgetEnabled || !m_enableStreaming || !ready()) {
+            resetAdaptiveBudgetState(true);
+            return;
+        }
+
+        const uint32_t capacityElements = m_streamingStorage.capacityElements();
+        const float storageUtilization =
+            capacityElements != 0u
+                ? float(double(m_streamingStorage.usedElements()) / double(capacityElements))
+                : 0.0f;
+        const float failedAllocations = static_cast<float>(m_failedAllocationsThisFrame);
+
+        if (!m_adaptiveBudgetSmoothingInitialized) {
+            m_smoothedFailedAllocations = failedAllocations;
+            m_smoothedStorageUtilization = storageUtilization;
+            m_adaptiveBudgetSmoothingInitialized = true;
+        } else {
+            constexpr float kSmoothingAlpha =
+                1.0f / static_cast<float>(kAdaptiveBudgetSmoothingWindowFrames);
+            m_smoothedFailedAllocations +=
+                (failedAllocations - m_smoothedFailedAllocations) * kSmoothingAlpha;
+            m_smoothedStorageUtilization +=
+                (storageUtilization - m_smoothedStorageUtilization) * kSmoothingAlpha;
+        }
+
+        const uint32_t minAgeThreshold = adaptiveMinAgeThreshold();
+        const uint32_t maxAgeThreshold = adaptiveMaxAgeThreshold();
+        m_ageThreshold = std::clamp(m_ageThreshold, minAgeThreshold, maxAgeThreshold);
+
+        uint32_t nextAgeThreshold = m_ageThreshold;
+        if (m_failedAllocationsThisFrame != 0u) {
+            constexpr uint32_t kImmediateFailureStep = 2u;
+            nextAgeThreshold =
+                m_ageThreshold > minAgeThreshold + kImmediateFailureStep
+                    ? m_ageThreshold - kImmediateFailureStep
+                    : minAgeThreshold;
+            m_adaptiveBudgetEvaluationFrameCount = 0u;
+        } else {
+            ++m_adaptiveBudgetEvaluationFrameCount;
+            if (m_adaptiveBudgetEvaluationFrameCount < kAdaptiveBudgetEvaluationIntervalFrames) {
+                return;
+            }
+            m_adaptiveBudgetEvaluationFrameCount = 0u;
+
+            if (m_smoothedFailedAllocations > kAdaptiveBudgetFailedAllocationThreshold) {
+                nextAgeThreshold =
+                    m_ageThreshold > minAgeThreshold ? m_ageThreshold - 1u : minAgeThreshold;
+            } else if (m_smoothedStorageUtilization < kAdaptiveBudgetRelaxUtilizationThreshold) {
+                nextAgeThreshold = std::min(maxAgeThreshold, m_ageThreshold + 1u);
+            }
+        }
+
+        if (nextAgeThreshold != m_ageThreshold) {
+            m_ageThreshold = nextAgeThreshold;
+            ++m_adaptiveBudgetAdjustmentCount;
+        }
+    }
+
+    void applyAdaptiveBudgetTelemetry() {
+        m_streamingStats.adaptiveBudgetEnabled = m_adaptiveBudgetEnabled;
+        m_streamingStats.configuredAgeThreshold = m_configuredAgeThreshold;
+        m_streamingStats.effectiveAgeThreshold = m_ageThreshold;
+        m_streamingStats.smoothedFailedAllocations = m_smoothedFailedAllocations;
+        m_streamingStats.smoothedStorageUtilization = m_smoothedStorageUtilization;
+        m_streamingStats.adaptiveBudgetAdjustmentCount = m_adaptiveBudgetAdjustmentCount;
+    }
+
     void updateDebugStats(const ClusterLODData* clusterLodData = nullptr) {
         m_debugStats.lastResidentGroupCount = 0;
         m_debugStats.lastAlwaysResidentGroupCount = 0;
@@ -1722,6 +1852,7 @@ private:
                 : 0.0f;
         m_streamingStats.failedAllocations = m_failedAllocationsThisFrame;
         applyGpuStreamingStatsToTelemetry();
+        applyAdaptiveBudgetTelemetry();
         m_streamingStats.ageHistogram.fill(0u);
         m_streamingStats.ageHistogramMaxAge = maxResidentAge;
         m_streamingStats.ageHistogramBucketWidth =
@@ -1775,7 +1906,9 @@ private:
     uint32_t m_residencyGroupCapacity = 0;
     uint32_t m_maxLoadsPerFrame = 128u;
     uint32_t m_maxUnloadsPerFrame = 256u;
+    uint32_t m_configuredAgeThreshold = 16u;
     uint32_t m_ageThreshold = 16u;
+    bool m_adaptiveBudgetEnabled = true;
     bool m_enableGpuStatsReadback = true;
     uint32_t m_frameIndex = 0u;
     uint32_t m_prepareTaskIndex = kInvalidTaskIndex;
@@ -1814,6 +1947,11 @@ private:
     StreamingStats m_streamingStats;
     DebugStats m_debugStats;
     MemoryBudgetInfo m_memoryBudgetInfo;
+    bool m_adaptiveBudgetSmoothingInitialized = false;
+    uint32_t m_adaptiveBudgetEvaluationFrameCount = 0u;
+    uint32_t m_adaptiveBudgetAdjustmentCount = 0u;
+    float m_smoothedFailedAllocations = 0.0f;
+    float m_smoothedStorageUtilization = 0.0f;
     uint32_t m_loadRequestsThisFrame = 0u;
     uint32_t m_unloadRequestsThisFrame = 0u;
     uint32_t m_failedAllocationsThisFrame = 0u;

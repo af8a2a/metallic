@@ -549,8 +549,14 @@ public:
             streamingService->setMaxUnloadsPerFrame(
                 static_cast<uint32_t>(std::max(maxUnloadsPerFrame, 1)));
         }
+        bool adaptiveBudgetEnabled =
+            streamingService ? streamingService->adaptiveBudgetEnabled() : false;
+        if (ImGui::Checkbox("Adaptive Unload Age", &adaptiveBudgetEnabled) &&
+            streamingService) {
+            streamingService->setAdaptiveBudgetEnabled(adaptiveBudgetEnabled);
+        }
         int ageThreshold =
-            streamingService ? static_cast<int>(streamingService->ageThreshold()) : 16;
+            streamingService ? static_cast<int>(streamingService->configuredAgeThreshold()) : 16;
         if (ImGui::SliderInt("Streaming Unload Age",
                              &ageThreshold,
                              1,
@@ -559,6 +565,10 @@ public:
             streamingService) {
             streamingService->setAgeThreshold(
                 static_cast<uint32_t>(std::max(ageThreshold, 1)));
+        }
+        if (streamingService && streamingService->adaptiveBudgetEnabled()) {
+            ImGui::Text("Effective Streaming Unload Age: %u",
+                        streamingService->ageThreshold());
         }
         if (ImGui::Button("Reset Residency State") && streamingService) {
             streamingService->markStateDirty();

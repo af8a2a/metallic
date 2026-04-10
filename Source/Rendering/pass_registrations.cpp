@@ -3,6 +3,9 @@
 
 #include "pass_registry.h"
 #include "render_pass.h"
+// ClusterStreamingService is header-only and its inline methods/layout are consumed by pass headers.
+// Keep a direct dependency here so incremental builds rebuild this TU when the service changes.
+#include "cluster_streaming_service.h"
 
 // Include all pass headers
 #include "visibility_pass.h"
