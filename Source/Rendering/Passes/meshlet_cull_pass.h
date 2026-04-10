@@ -463,6 +463,27 @@ public:
             streamingService->setStreamingEnabled(enableResidencyStreaming);
             requestVisibilityHistoryReset();
         }
+        if (streamingService &&
+            ImGui::BeginCombo("Streaming Budget Preset",
+                              ClusterStreamingService::budgetPresetLabel(
+                                  streamingService->budgetPreset()))) {
+            for (uint32_t presetIndex = 0u;
+                 presetIndex < ClusterStreamingService::kBudgetPresetCount;
+                 ++presetIndex) {
+                const auto preset =
+                    static_cast<ClusterStreamingService::BudgetPreset>(presetIndex);
+                const bool selected = streamingService->budgetPreset() == preset;
+                if (ImGui::Selectable(ClusterStreamingService::budgetPresetLabel(preset),
+                                      selected)) {
+                    streamingService->setBudgetPreset(preset);
+                    requestVisibilityHistoryReset();
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
         int streamingBudgetGroups =
             streamingService ? static_cast<int>(streamingService->streamingBudgetGroups()) : 0;
         const uint32_t activeResidencyGroupCount =

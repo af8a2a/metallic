@@ -20,6 +20,15 @@
 class ClusterStreamingService {
 public:
     static constexpr uint32_t kStreamingAgeHistogramBucketCount = 16u;
+    static constexpr uint32_t kBudgetPresetCount = 5u;
+
+    enum class BudgetPreset : uint8_t {
+        Auto = 0,
+        Low,
+        Medium,
+        High,
+        Custom,
+    };
 
     struct StreamingStats {
         uint32_t residentGroupCount = 0;
@@ -129,10 +138,39 @@ public:
     bool gpuStatsReadbackEnabled() const { return m_enableGpuStatsReadback; }
 
     void setStreamingBudgetGroups(uint32_t budgetGroups) {
-        m_streamingBudgetGroups = budgetGroups;
+        setStreamingBudgetGroupsInternal(budgetGroups, true);
     }
 
     uint32_t streamingBudgetGroups() const { return m_streamingBudgetGroups; }
+
+    void setBudgetPreset(BudgetPreset preset) {
+        if (m_budgetPreset == preset && preset != BudgetPreset::Auto) {
+            return;
+        }
+
+        m_budgetPreset = preset;
+        if (preset != BudgetPreset::Custom) {
+            applyBudgetPreset();
+        }
+    }
+
+    BudgetPreset budgetPreset() const { return m_budgetPreset; }
+
+    static const char* budgetPresetLabel(BudgetPreset preset) {
+        switch (preset) {
+        case BudgetPreset::Auto:
+            return "Auto";
+        case BudgetPreset::Low:
+            return "Low";
+        case BudgetPreset::Medium:
+            return "Medium";
+        case BudgetPreset::High:
+            return "High";
+        case BudgetPreset::Custom:
+            return "Custom";
+        }
+        return "Custom";
+    }
 
     void setMaxLoadsPerFrame(uint32_t maxLoadsPerFrame) {
         m_maxLoadsPerFrame = std::max(1u, maxLoadsPerFrame);
@@ -169,14 +207,7 @@ public:
     bool adaptiveBudgetEnabled() const { return m_adaptiveBudgetEnabled; }
 
     void setStreamingStorageCapacityBytes(uint64_t capacityBytes) {
-        capacityBytes = std::max<uint64_t>(capacityBytes, sizeof(uint32_t));
-        if (m_streamingStorageCapacityBytes == capacityBytes) {
-            return;
-        }
-
-        m_streamingStorageCapacityBytes = capacityBytes;
-        resetAdaptiveBudgetState(false);
-        m_stateDirty = true;
+        setStreamingStorageCapacityBytesInternal(capacityBytes, true);
     }
 
     uint64_t streamingStorageCapacityBytes() const { return m_streamingStorageCapacityBytes; }
@@ -206,11 +237,9 @@ public:
         }
 
         m_memoryBudgetInfo = memoryBudgetInfo;
-        if (!m_memoryBudgetInfo.available) {
-            return;
+        if (m_budgetPreset == BudgetPreset::Auto) {
+            applyBudgetPreset();
         }
-
-        setStreamingStorageCapacityBytes(m_memoryBudgetInfo.targetStorageBytes);
     }
 
     const MemoryBudgetInfo& memoryBudgetInfo() const { return m_memoryBudgetInfo; }
@@ -433,6 +462,12 @@ private:
     static constexpr uint64_t kDefaultMaxStreamingTransferBytes = 32ull * 1024ull * 1024ull;
     static constexpr uint64_t kAutoStreamingStorageAlignmentBytes = 16ull * 1024ull * 1024ull;
     static constexpr uint64_t kAutoStreamingStorageMaxBytes = 2ull * 1024ull * 1024ull * 1024ull;
+    static constexpr uint64_t kLowPresetStreamingStorageCapacityBytes = 256ull * 1024ull * 1024ull;
+    static constexpr uint64_t kMediumPresetStreamingStorageCapacityBytes = 512ull * 1024ull * 1024ull;
+    static constexpr uint64_t kHighPresetStreamingStorageCapacityBytes = 1024ull * 1024ull * 1024ull;
+    static constexpr uint32_t kLowPresetStreamingBudgetGroups = 64u;
+    static constexpr uint32_t kMediumPresetStreamingBudgetGroups = 256u;
+    static constexpr uint32_t kHighPresetStreamingBudgetGroups = 1024u;
     static constexpr uint32_t kMinStreamingAgeThreshold = 1u;
     static constexpr uint32_t kMaxStreamingAgeThreshold = 256u;
     static constexpr uint32_t kAdaptiveBudgetSmoothingWindowFrames = 24u;
@@ -1568,6 +1603,79 @@ private:
         return static_cast<uint32_t>(std::min<uint64_t>(capacityElements, uint64_t(UINT32_MAX)));
     }
 
+    void setStreamingBudgetGroupsInternal(uint32_t budgetGroups, bool markCustomPreset) {
+        if (m_streamingBudgetGroups == budgetGroups) {
+            return;
+        }
+
+        m_streamingBudgetGroups = budgetGroups;
+        if (markCustomPreset && !m_applyingBudgetPreset) {
+            m_budgetPreset = BudgetPreset::Custom;
+        }
+    }
+
+    void setStreamingStorageCapacityBytesInternal(uint64_t capacityBytes, bool markCustomPreset) {
+        capacityBytes = std::max<uint64_t>(capacityBytes, sizeof(uint32_t));
+        if (m_streamingStorageCapacityBytes == capacityBytes) {
+            return;
+        }
+
+        m_streamingStorageCapacityBytes = capacityBytes;
+        if (markCustomPreset && !m_applyingBudgetPreset) {
+            m_budgetPreset = BudgetPreset::Custom;
+        }
+        resetAdaptiveBudgetState(false);
+        m_stateDirty = true;
+    }
+
+    static uint32_t computeAutoStreamingBudgetGroups(uint64_t targetStorageBytes) {
+        static constexpr uint64_t kLowToMediumThresholdBytes =
+            (kLowPresetStreamingStorageCapacityBytes + kMediumPresetStreamingStorageCapacityBytes) / 2ull;
+        static constexpr uint64_t kMediumToHighThresholdBytes =
+            (kMediumPresetStreamingStorageCapacityBytes + kHighPresetStreamingStorageCapacityBytes) / 2ull;
+        if (targetStorageBytes < kLowToMediumThresholdBytes) {
+            return kLowPresetStreamingBudgetGroups;
+        }
+        if (targetStorageBytes < kMediumToHighThresholdBytes) {
+            return kMediumPresetStreamingBudgetGroups;
+        }
+        return kHighPresetStreamingBudgetGroups;
+    }
+
+    void applyBudgetPreset() {
+        uint64_t targetStorageBytes = m_streamingStorageCapacityBytes;
+        uint32_t targetBudgetGroups = m_streamingBudgetGroups;
+
+        switch (m_budgetPreset) {
+        case BudgetPreset::Auto:
+            targetStorageBytes =
+                m_memoryBudgetInfo.targetStorageBytes != 0u
+                    ? m_memoryBudgetInfo.targetStorageBytes
+                    : kDefaultStreamingStorageCapacityBytes;
+            targetBudgetGroups = computeAutoStreamingBudgetGroups(targetStorageBytes);
+            break;
+        case BudgetPreset::Low:
+            targetStorageBytes = kLowPresetStreamingStorageCapacityBytes;
+            targetBudgetGroups = kLowPresetStreamingBudgetGroups;
+            break;
+        case BudgetPreset::Medium:
+            targetStorageBytes = kMediumPresetStreamingStorageCapacityBytes;
+            targetBudgetGroups = kMediumPresetStreamingBudgetGroups;
+            break;
+        case BudgetPreset::High:
+            targetStorageBytes = kHighPresetStreamingStorageCapacityBytes;
+            targetBudgetGroups = kHighPresetStreamingBudgetGroups;
+            break;
+        case BudgetPreset::Custom:
+            return;
+        }
+
+        m_applyingBudgetPreset = true;
+        setStreamingBudgetGroupsInternal(targetBudgetGroups, false);
+        setStreamingStorageCapacityBytesInternal(targetStorageBytes, false);
+        m_applyingBudgetPreset = false;
+    }
+
     static uint64_t computeAutoStreamingStorageCapacityBytes(uint64_t deviceLocalHeadroomBytes) {
         uint64_t targetBytes = std::min(deviceLocalHeadroomBytes / 2u, kAutoStreamingStorageMaxBytes);
         if (targetBytes >= kAutoStreamingStorageAlignmentBytes) {
@@ -1906,6 +2014,7 @@ private:
     uint32_t m_residencyGroupCapacity = 0;
     uint32_t m_maxLoadsPerFrame = 128u;
     uint32_t m_maxUnloadsPerFrame = 256u;
+    BudgetPreset m_budgetPreset = BudgetPreset::Auto;
     uint32_t m_configuredAgeThreshold = 16u;
     uint32_t m_ageThreshold = 16u;
     bool m_adaptiveBudgetEnabled = true;
@@ -1947,6 +2056,7 @@ private:
     StreamingStats m_streamingStats;
     DebugStats m_debugStats;
     MemoryBudgetInfo m_memoryBudgetInfo;
+    bool m_applyingBudgetPreset = false;
     bool m_adaptiveBudgetSmoothingInitialized = false;
     uint32_t m_adaptiveBudgetEvaluationFrameCount = 0u;
     uint32_t m_adaptiveBudgetAdjustmentCount = 0u;

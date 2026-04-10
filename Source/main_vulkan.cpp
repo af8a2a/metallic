@@ -2475,6 +2475,32 @@ int main() {
                         clusterStreamingService.streamingEnabled() ? "Enabled" : "Disabled");
             ImGui::Text("Resources: %s",
                         streamingStats.resourcesReady ? "Ready" : "Pending");
+            if (ImGui::BeginCombo("Budget Preset",
+                                  ClusterStreamingService::budgetPresetLabel(
+                                      clusterStreamingService.budgetPreset()))) {
+                for (uint32_t presetIndex = 0u;
+                     presetIndex < ClusterStreamingService::kBudgetPresetCount;
+                     ++presetIndex) {
+                    const auto preset =
+                        static_cast<ClusterStreamingService::BudgetPreset>(presetIndex);
+                    const bool selected = clusterStreamingService.budgetPreset() == preset;
+                    if (ImGui::Selectable(ClusterStreamingService::budgetPresetLabel(preset),
+                                          selected)) {
+                        clusterStreamingService.setBudgetPreset(preset);
+                        if (preset == ClusterStreamingService::BudgetPreset::Auto) {
+                            refreshClusterStreamingMemoryBudget();
+                        }
+                        visibilityHistoryResetRequested = true;
+                    }
+                    if (selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::Text("Budget target: %s, %u dynamic groups",
+                        formatByteCountShort(clusterStreamingService.streamingStorageCapacityBytes()).c_str(),
+                        clusterStreamingService.streamingBudgetGroups());
             if (ImGui::Button("Refresh VRAM Budget")) {
                 refreshClusterStreamingMemoryBudget();
             }
