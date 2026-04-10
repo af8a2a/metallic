@@ -209,6 +209,12 @@ public:
     uint32_t ageThreshold() const { return m_ageThreshold; }
     uint32_t configuredAgeThreshold() const { return m_configuredAgeThreshold; }
 
+    void setCompactAgeFilterDispatchEnabled(bool enabled) {
+        m_useCompactAgeFilterDispatch = enabled;
+    }
+
+    bool compactAgeFilterDispatchEnabled() const { return m_useCompactAgeFilterDispatch; }
+
     void setAdaptiveBudgetEnabled(bool enabled) {
         if (m_adaptiveBudgetEnabled == enabled) {
             return;
@@ -2578,6 +2584,7 @@ private:
     BudgetPreset m_budgetPreset = BudgetPreset::Auto;
     uint32_t m_configuredAgeThreshold = 16u;
     uint32_t m_ageThreshold = 16u;
+    bool m_useCompactAgeFilterDispatch = true;
     bool m_adaptiveBudgetEnabled = true;
     bool m_enableGpuStatsReadback = true;
     uint32_t m_frameIndex = 0u;

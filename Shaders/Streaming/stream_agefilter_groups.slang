@@ -7,8 +7,8 @@ struct StreamingAgeFilterUniforms {
     uint unloadRequestCapacity;
     uint groupResidencyCount;
     uint groupAgeCount;
+    uint compactDispatch;
     uint reserved1;
-    uint reserved2;
 };
 
 ConstantBuffer<StreamingAgeFilterUniforms> streamingUniforms; // buffer(GPU_DRIVEN_STREAMING_AGE_UNIFORMS_BINDING)
@@ -22,12 +22,18 @@ StructuredBuffer<uint>                     activeResidentGroups; // buffer(GPU_D
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    const uint activeResidentIndex = dispatchThreadID.x;
-    if (activeResidentIndex >= streamingUniforms.activeResidentGroupCount) {
+    const bool compactDispatch = streamingUniforms.compactDispatch != 0u;
+    const uint dispatchIndex = dispatchThreadID.x;
+    const uint dispatchCount = compactDispatch
+                                   ? streamingUniforms.activeResidentGroupCount
+                                   : min(streamingUniforms.groupResidencyCount,
+                                         streamingUniforms.groupAgeCount);
+    if (dispatchIndex >= dispatchCount) {
         return;
     }
 
-    const uint groupIndex = activeResidentGroups[activeResidentIndex];
+    const uint groupIndex =
+        compactDispatch ? activeResidentGroups[dispatchIndex] : dispatchIndex;
 
     if (groupIndex >= streamingUniforms.groupResidencyCount ||
         groupIndex >= streamingUniforms.groupAgeCount) {

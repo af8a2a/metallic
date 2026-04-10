@@ -191,6 +191,9 @@ passes scale with resident groups instead of total groups.
 - Dispatch against `activeResidentGroupCount`, not `totalGroupCount`
 - Keep the current full-group path as a debug fallback until validated
 
+Current status: compact dispatch is the default path; a debug toggle can still
+switch the GPU age filter back to full-group dispatch for validation.
+
 **Done when:** age-filter cost scales with active resident groups and the result
 is visually identical to the current implementation.
 

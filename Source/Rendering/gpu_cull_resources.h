@@ -161,8 +161,8 @@ struct StreamingAgeFilterUniforms {
     uint32_t unloadRequestCapacity = 0;
     uint32_t groupResidencyCount = 0;
     uint32_t groupAgeCount = 0;
+    uint32_t compactDispatch = 1;
     uint32_t reserved1 = 0;
-    uint32_t reserved2 = 0;
 };
 
 struct StreamingPatch {

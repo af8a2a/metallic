@@ -591,6 +591,12 @@ public:
             ImGui::Text("Effective Streaming Unload Age: %u",
                         streamingService->ageThreshold());
         }
+        bool compactAgeFilterDispatch =
+            streamingService ? streamingService->compactAgeFilterDispatchEnabled() : true;
+        if (ImGui::Checkbox("Compact GPU Age Filter", &compactAgeFilterDispatch) &&
+            streamingService) {
+            streamingService->setCompactAgeFilterDispatchEnabled(compactAgeFilterDispatch);
+        }
         if (ImGui::Button("Reset Residency State") && streamingService) {
             streamingService->markStateDirty();
             requestVisibilityHistoryReset();
