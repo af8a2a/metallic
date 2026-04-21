@@ -6,6 +6,7 @@
 #include <tracy/Tracy.hpp>
 #include <fstream>
 #include <vector>
+#include <filesystem>
 
 bool AtmosphereTextureSet::isValid() const {
     return transmittance.nativeHandle() &&
@@ -20,8 +21,6 @@ void AtmosphereTextureSet::release() {
     rhiReleaseHandle(irradiance);
     rhiReleaseHandle(sampler);
 }
-
-// --- Atmosphere texture helpers (moved from main.cpp) ---
 
 static std::vector<float> loadFloatData(const std::string& path, size_t expectedCount) {
     std::ifstream file(path, std::ios::binary);
@@ -78,54 +77,27 @@ static bool loadAtmosphereTextures(const RhiDevice& device, const char* projectR
     }
 
     out.transmittance = rhiCreateTexture2D(
-        device,
-        kTransmittanceWidth,
-        kTransmittanceHeight,
-        RhiFormat::RGBA32Float,
-        false,
-        1,
-        RhiTextureStorageMode::Shared,
-        RhiTextureUsage::ShaderRead);
-    out.scattering = rhiCreateTexture3D(
-        device,
-        kScatteringWidth,
-        kScatteringHeight,
-        kScatteringDepth,
-        RhiFormat::RGBA32Float,
-        RhiTextureStorageMode::Shared,
-        RhiTextureUsage::ShaderRead);
-    out.irradiance = rhiCreateTexture2D(
-        device,
-        kIrradianceWidth,
-        kIrradianceHeight,
-        RhiFormat::RGBA32Float,
-        false,
-        1,
-        RhiTextureStorageMode::Shared,
-        RhiTextureUsage::ShaderRead);
-
-    if (!out.transmittance.nativeHandle() ||
-        !out.scattering.nativeHandle() ||
-        !out.irradiance.nativeHandle()) {
-        out.release();
-        return false;
-    }
-
-    rhiUploadTexture2D(out.transmittance,
-                       kTransmittanceWidth,
-                       kTransmittanceHeight,
+        device, kTransmittanceWidth, kTransmittanceHeight,
+        RhiFormat::RGBA32Float, false, 1,
+        RhiTextureStorageMode::Shared, RhiTextureUsage::ShaderRead);
+    rhiUploadTexture2D(out.transmittance, kTransmittanceWidth, kTransmittanceHeight,
                        transmittance.data(),
                        static_cast<size_t>(kTransmittanceWidth) * 4 * sizeof(float));
-    rhiUploadTexture3D(out.scattering,
-                       kScatteringWidth,
-                       kScatteringHeight,
-                       kScatteringDepth,
-                       scattering.data(),
-                       static_cast<size_t>(kScatteringWidth) * 4 * sizeof(float),
-                       static_cast<size_t>(kScatteringWidth) * kScatteringHeight * 4 * sizeof(float));
-    rhiUploadTexture2D(out.irradiance,
-                       kIrradianceWidth,
-                       kIrradianceHeight,
+
+    out.scattering = rhiCreateTexture3D(
+        device, kScatteringWidth, kScatteringHeight, kScatteringDepth,
+        RhiFormat::RGBA32Float,
+        RhiTextureStorageMode::Shared, RhiTextureUsage::ShaderRead);
+    size_t scatterBytesPerRow = static_cast<size_t>(kScatteringWidth) * 4 * sizeof(float);
+    size_t scatterBytesPerImage = scatterBytesPerRow * kScatteringHeight;
+    rhiUploadTexture3D(out.scattering, kScatteringWidth, kScatteringHeight, kScatteringDepth,
+                       scattering.data(), scatterBytesPerRow, scatterBytesPerImage);
+
+    out.irradiance = rhiCreateTexture2D(
+        device, kIrradianceWidth, kIrradianceHeight,
+        RhiFormat::RGBA32Float, false, 1,
+        RhiTextureStorageMode::Shared, RhiTextureUsage::ShaderRead);
+    rhiUploadTexture2D(out.irradiance, kIrradianceWidth, kIrradianceHeight,
                        irradiance.data(),
                        static_cast<size_t>(kIrradianceWidth) * 4 * sizeof(float));
 
@@ -135,163 +107,104 @@ static bool loadAtmosphereTextures(const RhiDevice& device, const char* projectR
     samplerDesc.mipFilter = RhiSamplerMipFilterMode::None;
     samplerDesc.addressModeS = RhiSamplerAddressMode::ClampToEdge;
     samplerDesc.addressModeT = RhiSamplerAddressMode::ClampToEdge;
-    samplerDesc.addressModeR = RhiSamplerAddressMode::ClampToEdge;
     out.sampler = rhiCreateSampler(device, samplerDesc);
 
-    if (!out.sampler.nativeHandle()) {
-        out.release();
-        return false;
-    }
-
-    return true;
+    return out.isValid();
 }
-
-// --- SceneContext implementation ---
 
 SceneContext::SceneContext(RhiDeviceHandle device, RhiCommandQueueHandle queue, const char* projectRoot)
     : m_device(device), m_queue(queue), m_projectRoot(projectRoot) {}
 
 SceneContext::~SceneContext() {
-    m_shadowResources.release();
-    rhiReleaseHandle(m_imguiDepthDummy);
+    unloadScene();
+    m_atmosphereTextures.release();
+    rhiReleaseHandle(m_depthState);
     rhiReleaseHandle(m_shadowDummyTex);
     rhiReleaseHandle(m_skyFallbackTex);
-    m_atmosphereTextures.release();
-    releaseGpuSceneTables(m_gpuScene);
-    releaseClusterLOD(m_clusterLod);
-    rhiReleaseHandle(m_meshlets.meshletBuffer);
-    rhiReleaseHandle(m_meshlets.meshletVertices);
-    rhiReleaseHandle(m_meshlets.meshletTriangles);
-    rhiReleaseHandle(m_meshlets.boundsBuffer);
-    rhiReleaseHandle(m_meshlets.materialIDs);
-    for (auto& texture : m_materials.textures) {
-        rhiReleaseHandle(texture);
-    }
-    rhiReleaseHandle(m_materials.materialBuffer);
-    rhiReleaseHandle(m_materials.sampler);
-    rhiReleaseHandle(m_mesh.positionBuffer);
-    rhiReleaseHandle(m_mesh.normalBuffer);
-    rhiReleaseHandle(m_mesh.uvBuffer);
-    rhiReleaseHandle(m_mesh.indexBuffer);
-    rhiReleaseHandle(m_depthState);
+    rhiReleaseHandle(m_imguiDepthDummy);
 }
 
-bool SceneContext::loadAll(const char* gltfPath) {
-    ZoneScopedN("SceneContext::loadAll");
-    const std::string meshletCacheDir = m_projectRoot + "/Asset/MeshletCache";
+bool SceneContext::initFallbackResources() {
+    if (m_shadowDummyTex.nativeHandle()) return true;
 
-    releaseClusterLOD(m_clusterLod);
-    m_clusterLod = ClusterLODData{};
-    releaseGpuSceneTables(m_gpuScene);
-    m_gpuScene = GpuSceneTables{};
+    const RhiDevice& dev = m_device;
 
-    if (!loadGLTFMesh(m_device, gltfPath, m_mesh)) {
-        spdlog::error("Failed to load scene mesh");
-        return false;
-    }
-
-    if (!loadOrBuildMeshlets(m_device, m_mesh, gltfPath, meshletCacheDir, m_meshlets)) {
-        spdlog::error("Failed to load or build meshlets");
-        return false;
-    }
-
-    if (!loadOrBuildClusterLOD(m_device, m_mesh, m_meshlets, gltfPath, meshletCacheDir, m_clusterLod)) {
-        spdlog::warn("Failed to load or build meshlet LOD hierarchy; continuing without meshlet LODs");
-        releaseClusterLOD(m_clusterLod);
-        m_clusterLod = ClusterLODData{};
-    }
-
-    if (!loadGLTFMaterials(m_device, m_queue, gltfPath, m_materials)) {
-        spdlog::error("Failed to load materials");
-        return false;
-    }
-
-    const ClusterLODData* clusterLodData = m_clusterLod.nodes.empty() ? nullptr : &m_clusterLod;
-    if (!m_sceneGraph.buildFromGLTF(gltfPath, m_mesh, m_meshlets, clusterLodData)) {
-        spdlog::error("Failed to build scene graph");
-        return false;
-    }
-    if (!m_sceneGraph.applyBakedSingleRootScale(m_mesh)) {
-        spdlog::error("Failed to apply baked scene root scale");
-        return false;
-    }
-    m_sceneGraph.updateTransforms();
-    if (!buildGpuSceneTables(m_device, m_mesh, m_meshlets, &m_clusterLod, m_sceneGraph, m_gpuScene)) {
-        spdlog::warn("Failed to build shared GPU scene tables; visibility passes will fall back");
-        releaseGpuSceneTables(m_gpuScene);
-        m_gpuScene = GpuSceneTables{};
-    }
-
-    // Raytracing acceleration structures (non-fatal)
-    if (rhiSupportsRaytracing(m_device)) {
-        ZoneScopedN("Build Acceleration Structures");
-        if (buildAccelerationStructures(m_device, m_queue, m_mesh, m_sceneGraph, m_shadowResources) &&
-            createShadowPipeline(m_device, m_shadowResources, m_projectRoot.c_str())) {
-            m_rtShadowsAvailable = true;
-            spdlog::info("Raytraced shadows enabled");
-        } else {
-            spdlog::error("Failed to initialize raytraced shadows");
-            m_shadowResources.release();
-        }
-    } else {
-        spdlog::info("Raytracing not supported on this device");
-    }
-
-    // Atmosphere textures (non-fatal)
-    m_atmosphereLoaded = loadAtmosphereTextures(m_device, m_projectRoot.c_str(), m_atmosphereTextures);
-    if (!m_atmosphereLoaded) {
-        spdlog::warn("Atmosphere textures not found or invalid; sky pass will use fallback");
-    }
-
-    // Depth state (reversed-Z aware)
+    m_depthState = rhiCreateDepthStencilState(dev, true, ML_DEPTH_REVERSED);
     m_depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
-    m_depthState = rhiCreateDepthStencilState(m_device, true, ML_DEPTH_REVERSED);
 
-    // 1x1 depth texture for ImGui pipeline matching
-    m_imguiDepthDummy = rhiCreateTexture2D(m_device,
-                                           1,
-                                           1,
-                                           RhiFormat::D32Float,
-                                           false,
-                                           1,
+    m_imguiDepthDummy = rhiCreateTexture2D(dev, 1, 1, RhiFormat::D32Float, false, 1,
                                            RhiTextureStorageMode::Private,
                                            RhiTextureUsage::RenderTarget);
 
-    // 1x1 shadow texture for non-RT paths (white = fully lit)
-    m_shadowDummyTex = rhiCreateTexture2D(m_device,
-                                          1,
-                                          1,
-                                          RhiFormat::R8Unorm,
-                                          false,
-                                          1,
+    m_shadowDummyTex = rhiCreateTexture2D(dev, 1, 1, RhiFormat::R8Unorm, false, 1,
                                           RhiTextureStorageMode::Shared,
                                           RhiTextureUsage::ShaderRead);
     uint8_t shadowClear = 0xFF;
     rhiUploadTexture2D(m_shadowDummyTex, 1, 1, &shadowClear, 1);
 
-    // 1x1 sky fallback texture (BGRA8)
-    m_skyFallbackTex = rhiCreateTexture2D(m_device,
-                                          1,
-                                          1,
-                                          RhiFormat::BGRA8Unorm,
-                                          false,
-                                          1,
+    m_skyFallbackTex = rhiCreateTexture2D(dev, 1, 1, RhiFormat::BGRA8Unorm, false, 1,
                                           RhiTextureStorageMode::Shared,
                                           RhiTextureUsage::ShaderRead);
     uint8_t skyFallbackColor[4] = {77, 51, 26, 255};
     rhiUploadTexture2D(m_skyFallbackTex, 1, 1, skyFallbackColor, 4);
 
+    if (!m_atmosphereLoaded) {
+        m_atmosphereLoaded = loadAtmosphereTextures(dev, m_projectRoot.c_str(), m_atmosphereTextures);
+    }
+
     return true;
 }
 
+bool SceneContext::loadScene(const std::string& gltfPath) {
+    ZoneScoped;
+
+    unloadScene();
+    initFallbackResources();
+
+    if (!m_scene.load(gltfPath)) {
+        spdlog::error("Failed to load scene: {}", gltfPath);
+        return false;
+    }
+
+    std::string cacheDir = m_projectRoot + "/Asset/MeshletCache";
+    m_sceneGpu = std::make_unique<SceneGpu>(m_device, m_queue);
+    if (!m_sceneGpu->create(m_scene, cacheDir)) {
+        spdlog::error("Failed to create GPU resources for scene: {}", gltfPath);
+        m_sceneGpu.reset();
+        m_scene.clear();
+        return false;
+    }
+
+    spdlog::info("Scene loaded successfully: {}", gltfPath);
+    return true;
+}
+
+void SceneContext::unloadScene() {
+    m_sceneGpu.reset();
+    m_scene.clear();
+}
+
+bool SceneContext::isSceneLoaded() const {
+    return m_sceneGpu && m_sceneGpu->isValid();
+}
+
+bool SceneContext::loadAll(const char* gltfPath) {
+    return loadScene(gltfPath);
+}
+
 void SceneContext::updateGpuScene() {
-    updateGpuSceneTables(m_sceneGraph, m_gpuScene);
+    if (m_sceneGpu)
+        m_sceneGpu->updatePerFrame();
 }
 
 RenderContext SceneContext::renderContext() const {
     RenderContext ctx{
-        m_mesh, m_meshlets, m_materials, m_sceneGraph,
-        m_gpuScene, m_clusterLod,
+        m_sceneGpu->mesh(),
+        m_sceneGpu->meshlets(),
+        m_sceneGpu->materials(),
+        m_sceneGpu->sceneGraph(),
+        m_sceneGpu->gpuScene(),
+        m_sceneGpu->clusterLod(),
         m_shadowResources,
         m_depthState,
         m_shadowDummyTex,

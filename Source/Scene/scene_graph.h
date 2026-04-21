@@ -71,10 +71,6 @@ public:
     int32_t selectedNode = -1;
     int32_t sunLightNode = -1;
 
-    bool buildFromGLTF(const std::string& gltfPath,
-                       const LoadedMesh& mesh,
-                       const MeshletData& meshletData,
-                       const ClusterLODData* clusterLODData = nullptr);
     bool applyBakedSingleRootScale(const LoadedMesh& mesh);
     void updateTransforms();
     void markDirty(uint32_t nodeId);

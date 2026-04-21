@@ -30,6 +30,3 @@ struct LoadedMaterials {
     RhiSamplerHandle sampler;
     uint32_t materialCount = 0;
 };
-
-bool loadGLTFMaterials(const RhiDevice& device, const RhiCommandQueue& commandQueue,
-                       const std::string& gltfPath, LoadedMaterials& out);

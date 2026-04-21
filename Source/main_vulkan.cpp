@@ -40,6 +40,7 @@
 #include "shader_manager.h"
 #include "slang_compiler.h"
 #include "visibility_constants.h"
+#include "scene_context.h"
 #include "cluster_lod_builder.h"
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
@@ -166,156 +167,6 @@ struct AtmosphereTextures {
         rhiReleaseHandle(irradiance);
     }
 };
-
-void releaseMeshBuffers(LoadedMesh& mesh) {
-    rhiReleaseHandle(mesh.positionBuffer);
-    rhiReleaseHandle(mesh.normalBuffer);
-    rhiReleaseHandle(mesh.uvBuffer);
-    rhiReleaseHandle(mesh.indexBuffer);
-}
-
-void releaseMeshletBuffers(MeshletData& meshlets) {
-    rhiReleaseHandle(meshlets.meshletBuffer);
-    rhiReleaseHandle(meshlets.meshletVertices);
-    rhiReleaseHandle(meshlets.meshletTriangles);
-    rhiReleaseHandle(meshlets.boundsBuffer);
-    rhiReleaseHandle(meshlets.materialIDs);
-}
-
-void releaseMaterialResources(LoadedMaterials& materials) {
-    for (auto& texture : materials.textures) {
-        rhiReleaseHandle(texture);
-    }
-    materials.textures.clear();
-    materials.textureViews.clear();
-    rhiReleaseHandle(materials.materialBuffer);
-    rhiReleaseHandle(materials.sampler);
-    materials.materialCount = 0;
-}
-
-bool loadSponzaScene(const RhiDevice& device,
-                     const RhiCommandQueue& commandQueue,
-                     const char* projectRoot,
-                     LoadedMesh& outMesh,
-                     MeshletData& outMeshlets,
-                     LoadedMaterials& outMaterials,
-                     SceneGraph& outScene,
-                     ClusterLODData& outLOD,
-                     GpuSceneTables& outGpuScene) {
-    const std::string gltfPath = std::string(projectRoot) + "/Asset/Sponza/glTF/Sponza.gltf";
-    const std::string meshletCacheDir = std::string(projectRoot) + "/Asset/MeshletCache";
-
-    releaseMaterialResources(outMaterials);
-    releaseMeshletBuffers(outMeshlets);
-    releaseClusterLOD(outLOD);
-    releaseGpuSceneTables(outGpuScene);
-    releaseMeshBuffers(outMesh);
-    outMesh = LoadedMesh{};
-    outMeshlets = MeshletData{};
-    outLOD = ClusterLODData{};
-    outGpuScene = GpuSceneTables{};
-    outMaterials = LoadedMaterials{};
-    outScene = SceneGraph{};
-
-    if (!loadGLTFMesh(device, gltfPath, outMesh)) {
-        spdlog::error("Failed to load Vulkan scene mesh: {}", gltfPath);
-        return false;
-    }
-
-    if (!loadOrBuildMeshlets(device, outMesh, gltfPath, meshletCacheDir, outMeshlets)) {
-        spdlog::error("Failed to load or build Vulkan meshlets: {}", gltfPath);
-        releaseMeshBuffers(outMesh);
-        outMesh = LoadedMesh{};
-        return false;
-    }
-
-    if (!loadOrBuildClusterLOD(device, outMesh, outMeshlets, gltfPath, meshletCacheDir, outLOD)) {
-        spdlog::warn("Failed to load or build Vulkan meshlet LOD hierarchy: {}", gltfPath);
-        releaseClusterLOD(outLOD);
-        outLOD = ClusterLODData{};
-    }
-
-    if (!loadGLTFMaterials(device, commandQueue, gltfPath, outMaterials)) {
-        spdlog::error("Failed to load Vulkan scene materials: {}", gltfPath);
-        releaseClusterLOD(outLOD);
-        releaseMeshletBuffers(outMeshlets);
-        releaseMeshBuffers(outMesh);
-        outMeshlets = MeshletData{};
-        outMesh = LoadedMesh{};
-        return false;
-    }
-
-    const ClusterLODData* clusterLodData = outLOD.nodes.empty() ? nullptr : &outLOD;
-    if (!outScene.buildFromGLTF(gltfPath, outMesh, outMeshlets, clusterLodData)) {
-        spdlog::error("Failed to build Vulkan scene graph: {}", gltfPath);
-        releaseMaterialResources(outMaterials);
-        releaseClusterLOD(outLOD);
-        releaseMeshletBuffers(outMeshlets);
-        releaseMeshBuffers(outMesh);
-        outMaterials = LoadedMaterials{};
-        outMeshlets = MeshletData{};
-        outMesh = LoadedMesh{};
-        return false;
-    }
-
-    if (!outScene.applyBakedSingleRootScale(outMesh)) {
-        spdlog::error("Failed to apply baked Vulkan scene root scale: {}", gltfPath);
-        releaseMaterialResources(outMaterials);
-        releaseClusterLOD(outLOD);
-        releaseMeshletBuffers(outMeshlets);
-        releaseMeshBuffers(outMesh);
-        outMaterials = LoadedMaterials{};
-        outMeshlets = MeshletData{};
-        outMesh = LoadedMesh{};
-        outScene = SceneGraph{};
-        return false;
-    }
-
-    outScene.updateTransforms();
-    if (!buildGpuSceneTables(device, outMesh, outMeshlets, &outLOD, outScene, outGpuScene)) {
-        spdlog::warn("Failed to build Vulkan GPU scene tables: {}", gltfPath);
-        releaseGpuSceneTables(outGpuScene);
-        outGpuScene = GpuSceneTables{};
-    }
-
-    spdlog::info("Loaded Vulkan scene: {}", gltfPath);
-    return true;
-}
-
-bool createSceneFallbackTextures(const RhiDevice& device,
-                                 RhiTextureHandle& outShadowDummy,
-                                 RhiTextureHandle& outSkyFallback) {
-    rhiReleaseHandle(outShadowDummy);
-    rhiReleaseHandle(outSkyFallback);
-
-    outShadowDummy = rhiCreateTexture2D(device,
-                                        1,
-                                        1,
-                                        RhiFormat::R8Unorm,
-                                        false,
-                                        1,
-                                        RhiTextureStorageMode::Shared,
-                                        RhiTextureUsage::ShaderRead);
-    outSkyFallback = rhiCreateTexture2D(device,
-                                        1,
-                                        1,
-                                        RhiFormat::BGRA8Unorm,
-                                        false,
-                                        1,
-                                        RhiTextureStorageMode::Shared,
-                                        RhiTextureUsage::ShaderRead);
-    if (!outShadowDummy.nativeHandle() || !outSkyFallback.nativeHandle()) {
-        rhiReleaseHandle(outShadowDummy);
-        rhiReleaseHandle(outSkyFallback);
-        return false;
-    }
-
-    const uint8_t shadowValue = 0xFF;
-    const uint8_t skyValue[4] = {77, 51, 26, 255};
-    rhiUploadTexture2D(outShadowDummy, 1, 1, &shadowValue, 1);
-    rhiUploadTexture2D(outSkyFallback, 1, 1, skyValue, sizeof(skyValue));
-    return true;
-}
 
 void eraseResourceById(PipelineAsset& asset, const std::string& resourceId) {
     asset.removeEdgesForResource(resourceId);
@@ -1534,34 +1385,11 @@ int main() {
         importRuntimeTexture("irradiance", atmosphereTextures.irradiance);
     }
 
-    LoadedMesh previewMesh;
-    MeshletData previewMeshlets;
-    LoadedMaterials previewMaterials;
-    SceneGraph previewScene;
-    ClusterLODData previewLOD;
-    GpuSceneTables previewGpuScene;
-    RhiTextureHandle shadowDummyTexture;
-    RhiTextureHandle skyFallbackTexture;
-    bool previewSceneReady = loadSponzaScene(deviceHandle,
-                                             queueHandle,
-                                             PROJECT_SOURCE_DIR,
-                                             previewMesh,
-                                             previewMeshlets,
-                                             previewMaterials,
-                                             previewScene,
-                                             previewLOD,
-                                             previewGpuScene);
-    if (previewSceneReady) {
-        previewSceneReady =
-            createSceneFallbackTextures(deviceHandle, shadowDummyTexture, skyFallbackTexture);
-    }
+    SceneContext sceneCtx(deviceHandle, queueHandle, PROJECT_SOURCE_DIR);
+    const std::string defaultGltfPath = std::string(PROJECT_SOURCE_DIR) + "/Asset/Sponza/glTF/Sponza.gltf";
+    bool previewSceneReady = sceneCtx.loadScene(defaultGltfPath);
     if (!previewSceneReady) {
         spdlog::warn("Failed to load Vulkan Sponza scene; falling back to triangle path");
-        releaseMaterialResources(previewMaterials);
-        releaseMeshletBuffers(previewMeshlets);
-        releaseMeshBuffers(previewMesh);
-        rhiReleaseHandle(shadowDummyTexture);
-        rhiReleaseHandle(skyFallbackTexture);
     }
 
     RaytracedShadowResources shadowResources;
@@ -1570,8 +1398,8 @@ int main() {
     if (previewSceneReady && rhi->features().rayTracing) {
         if (buildAccelerationStructures(deviceHandle,
                                         queueHandle,
-                                        previewMesh,
-                                        previewScene,
+                                        sceneCtx.mesh(),
+                                        sceneCtx.sceneGraph(),
                                         shadowResources) &&
             createShadowPipeline(deviceHandle, shadowResources, PROJECT_SOURCE_DIR)) {
             rtShadowsAvailable = true;
@@ -1673,19 +1501,19 @@ int main() {
             hasRenderPipeline("VisibilityPass") &&
             hasComputePipeline("DeferredLightingPass") &&
             (hasRenderPipeline("TonemapPass") || hasRenderPipeline("OutputPass")) &&
-            previewMesh.positionBuffer.nativeHandle() &&
-            previewMesh.normalBuffer.nativeHandle() &&
-            previewMesh.uvBuffer.nativeHandle() &&
-            previewMesh.indexBuffer.nativeHandle() &&
-            previewMeshlets.meshletBuffer.nativeHandle() &&
-            previewMeshlets.meshletVertices.nativeHandle() &&
-            previewMeshlets.meshletTriangles.nativeHandle() &&
-            previewMeshlets.boundsBuffer.nativeHandle() &&
-            previewMeshlets.materialIDs.nativeHandle() &&
-            previewMaterials.materialBuffer.nativeHandle() &&
-            previewMaterials.sampler.nativeHandle() &&
-            shadowDummyTexture.nativeHandle() &&
-            skyFallbackTexture.nativeHandle();
+            sceneCtx.mesh().positionBuffer.nativeHandle() &&
+            sceneCtx.mesh().normalBuffer.nativeHandle() &&
+            sceneCtx.mesh().uvBuffer.nativeHandle() &&
+            sceneCtx.mesh().indexBuffer.nativeHandle() &&
+            sceneCtx.meshlets().meshletBuffer.nativeHandle() &&
+            sceneCtx.meshlets().meshletVertices.nativeHandle() &&
+            sceneCtx.meshlets().meshletTriangles.nativeHandle() &&
+            sceneCtx.meshlets().boundsBuffer.nativeHandle() &&
+            sceneCtx.meshlets().materialIDs.nativeHandle() &&
+            sceneCtx.materials().materialBuffer.nativeHandle() &&
+            sceneCtx.materials().sampler.nativeHandle() &&
+            sceneCtx.shadowDummyTex().nativeHandle() &&
+            sceneCtx.skyFallbackTex().nativeHandle();
         atmosphereSkyAvailable = hasRenderPipeline("SkyPass") && atmosphereTextures.isValid();
     };
 
@@ -1834,13 +1662,13 @@ int main() {
     runtimeContext.readbackService = &readbackService;
 
     if (previewSceneReady) {
-        if (!previewMaterials.textureViews.empty()) {
-            descriptorBackend->updateBindlessSampledTextures(previewMaterials.textureViews.data(),
+        if (!sceneCtx.materials().textureViews.empty()) {
+            descriptorBackend->updateBindlessSampledTextures(sceneCtx.materials().textureViews.data(),
                                                             0,
-                                                            static_cast<uint32_t>(previewMaterials.textureViews.size()));
+                                                            static_cast<uint32_t>(sceneCtx.materials().textureViews.size()));
         }
         descriptorBackend->updateBindlessSampler(METALLIC_BINDLESS_SCENE_SAMPLER_INDEX,
-                                                &previewMaterials.sampler);
+                                                &sceneCtx.materials().sampler);
         runtimeContext.useBindlessSceneTextures = true;
     }
     VulkanResourceStateTracker imageTracker;
@@ -1876,13 +1704,7 @@ int main() {
         legacyDescriptorManager.destroy();
         atmosphereTextures.release();
         shadowResources.release();
-        rhiReleaseHandle(shadowDummyTexture);
-        rhiReleaseHandle(skyFallbackTexture);
-        releaseMaterialResources(previewMaterials);
-        releaseMeshletBuffers(previewMeshlets);
-        releaseMeshBuffers(previewMesh);
-        releaseClusterLOD(previewLOD);
-        releaseGpuSceneTables(previewGpuScene);
+        sceneCtx.unloadScene();
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(vertexDescriptor);
@@ -1925,19 +1747,26 @@ int main() {
     const double depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
     RhiDepthStencilStateHandle depthState =
         rhiCreateDepthStencilState(deviceHandle, true, ML_DEPTH_REVERSED);
-    RenderContext renderContext{
-        previewMesh,
-        previewMeshlets,
-        previewMaterials,
-        previewScene,
-        previewGpuScene,
-        previewLOD,
-        shadowResources,
-        depthState,
-        shadowDummyTexture,
-        skyFallbackTexture,
-        depthClearValue,
+    auto makeRenderContext = [&]() -> RenderContext {
+        return RenderContext{
+            sceneCtx.mesh(),
+            sceneCtx.meshlets(),
+            sceneCtx.materials(),
+            sceneCtx.sceneGraph(),
+            sceneCtx.gpuScene(),
+            sceneCtx.clusterLod(),
+            shadowResources,
+            depthState,
+            sceneCtx.shadowDummyTex(),
+            sceneCtx.skyFallbackTex(),
+            depthClearValue,
+        };
     };
+    auto rebuildRenderContext = [&](RenderContext& ctx) {
+        ctx.~RenderContext();
+        new (&ctx) RenderContext(makeRenderContext());
+    };
+    RenderContext renderContext = makeRenderContext();
 
     runtimeContext.backbufferRhi = &backbufferTexture;
     runtimeContext.resourceFactory = &frameGraphBackend;
@@ -1972,13 +1801,7 @@ int main() {
         legacyDescriptorManager.destroy();
         atmosphereTextures.release();
         shadowResources.release();
-        rhiReleaseHandle(shadowDummyTexture);
-        rhiReleaseHandle(skyFallbackTexture);
-        releaseMaterialResources(previewMaterials);
-        releaseMeshletBuffers(previewMeshlets);
-        releaseMeshBuffers(previewMesh);
-        releaseClusterLOD(previewLOD);
-        releaseGpuSceneTables(previewGpuScene);
+        sceneCtx.unloadScene();
         rhiReleaseHandle(depthState);
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);
@@ -1989,7 +1812,7 @@ int main() {
 
     VkImageLayout sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     FrameContext frameContext;
-    previewCamera.initFromBounds(previewMesh.bboxMin, previewMesh.bboxMax);
+    previewCamera.initFromBounds(sceneCtx.mesh().bboxMin, sceneCtx.mesh().bboxMax);
     previewCamera.distance *= 0.8f;
     previewCamera.azimuth = 0.55f;
     previewCamera.elevation = 0.35f;
@@ -1999,7 +1822,7 @@ int main() {
     }
     DirectionalLight sunLight;
     if (previewSceneReady) {
-        sunLight = previewScene.getSunDirectionalLight();
+        sunLight = sceneCtx.sceneGraph().getSunDirectionalLight();
     } else {
         sunLight.direction = normalize(float3(0.35f, 0.85f, 0.25f));
         sunLight.color = float3(1.0f, 0.98f, 0.95f);
@@ -2012,9 +1835,8 @@ int main() {
             return;
         }
 
-        previewScene.updateTransforms();
-        updateGpuSceneTables(previewScene, previewGpuScene);
-        sunLight = previewScene.getSunDirectionalLight();
+        sceneCtx.updateGpuScene();
+        sunLight = sceneCtx.sceneGraph().getSunDirectionalLight();
 
         previewVisibleMeshletNodes.clear();
         previewVisibleIndexNodes.clear();
@@ -2023,8 +1845,8 @@ int main() {
         if (gpuDrivenVisibilityPath) {
             return;
         }
-        for (const auto& node : previewScene.nodes) {
-            if (!previewScene.isNodeVisible(node.id)) {
+        for (const auto& node : sceneCtx.sceneGraph().nodes) {
+            if (!sceneCtx.sceneGraph().isNodeVisible(node.id)) {
                 continue;
             }
             if (node.meshletCount > 0) {
@@ -2036,8 +1858,8 @@ int main() {
         }
     };
     if (previewSceneReady) {
-        previewVisibleMeshletNodes.reserve(previewScene.nodes.size());
-        previewVisibleIndexNodes.reserve(previewScene.nodes.size());
+        previewVisibleMeshletNodes.reserve(sceneCtx.sceneGraph().nodes.size());
+        previewVisibleIndexNodes.reserve(sceneCtx.sceneGraph().nodes.size());
         refreshPreviewSceneState();
     } else {
         previewVisibleIndexNodes = {0};
@@ -2767,15 +2589,64 @@ int main() {
         }
 
         // LOD stats panel
-        if (previewSceneReady && previewLOD.lodLevelCount > 0) {
-            drawClusterLODStats(previewLOD);
+        if (previewSceneReady && sceneCtx.clusterLod().lodLevelCount > 0) {
+            drawClusterLODStats(sceneCtx.clusterLod());
         }
 
         ImGui::End();
 
         if (previewSceneReady && showSceneGraphWindow) {
             ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
-            drawSceneGraphUI(previewScene);
+            drawSceneGraphUI(sceneCtx.sceneGraph());
+        }
+
+        // --- Runtime scene loading UI ---
+        {
+            static char scenePathBuf[512] = {};
+            if (ImGui::Begin("Scene Loader")) {
+                ImGui::Text("Current: %s", sceneCtx.isSceneLoaded() ? sceneCtx.scene().filePath().c_str() : "(none)");
+                ImGui::InputText("glTF Path", scenePathBuf, sizeof(scenePathBuf));
+                if (ImGui::Button("Load Scene") && scenePathBuf[0] != '\0') {
+                    rhi->waitIdle();
+                    shadowResources.release();
+                    rtShadowsAvailable = false;
+
+                    if (sceneCtx.loadScene(scenePathBuf)) {
+                        previewSceneReady = true;
+                        rebuildRenderContext(renderContext);
+
+                        if (!sceneCtx.materials().textureViews.empty()) {
+                            descriptorBackend->updateBindlessSampledTextures(
+                                sceneCtx.materials().textureViews.data(), 0,
+                                static_cast<uint32_t>(sceneCtx.materials().textureViews.size()));
+                        }
+                        descriptorBackend->updateBindlessSampler(
+                            METALLIC_BINDLESS_SCENE_SAMPLER_INDEX, &sceneCtx.materials().sampler);
+
+                        if (rhi->features().rayTracing && enableRTShadows) {
+                            if (buildAccelerationStructures(deviceHandle, queueHandle,
+                                                            sceneCtx.mesh(), sceneCtx.sceneGraph(),
+                                                            shadowResources) &&
+                                createShadowPipeline(deviceHandle, shadowResources, PROJECT_SOURCE_DIR)) {
+                                rtShadowsAvailable = true;
+                            } else {
+                                shadowResources.release();
+                            }
+                        }
+
+                        previewCamera.initFromBounds(sceneCtx.mesh().bboxMin, sceneCtx.mesh().bboxMax);
+                        previewCamera.distance *= 0.8f;
+                        sunLight = sceneCtx.sceneGraph().getSunDirectionalLight();
+                        refreshVisibilityPipelineState();
+                        postBuilderNeedsRebuild = true;
+                        visibilityHistoryResetRequested = true;
+                        hasPrevMatrices = false;
+                    } else {
+                        previewSceneReady = false;
+                    }
+                }
+            }
+            ImGui::End();
         }
 
         refreshPreviewSceneState();
@@ -2823,9 +2694,9 @@ int main() {
         if (useVisibilityRenderGraph) {
             static bool warnedInstanceOverflow = false;
             if (!warnedInstanceOverflow &&
-                previewGpuScene.instanceCount > (kVisibilityInstanceMask + 1u)) {
+                sceneCtx.gpuScene().instanceCount > (kVisibilityInstanceMask + 1u)) {
                 spdlog::warn("GPU scene instance limit exceeded for visibility encoding ({} > {}), overflowing instances will be dropped in GPU visibility mode",
-                             previewGpuScene.instanceCount,
+                             sceneCtx.gpuScene().instanceCount,
                              kVisibilityInstanceMask + 1);
                 warnedInstanceOverflow = true;
             }
@@ -2868,9 +2739,9 @@ int main() {
         frameContext.viewLightDir = view * frameContext.worldLightDir;
         frameContext.lightColorIntensity =
             float4(sunLight.color.x, sunLight.color.y, sunLight.color.z, sunLight.intensity);
-        frameContext.meshletCount = previewMeshlets.meshletCount;
-        frameContext.materialCount = previewMaterials.materialCount;
-        frameContext.textureCount = static_cast<uint32_t>(previewMaterials.textures.size());
+        frameContext.meshletCount = sceneCtx.meshlets().meshletCount;
+        frameContext.materialCount = sceneCtx.materials().materialCount;
+        frameContext.textureCount = static_cast<uint32_t>(sceneCtx.materials().textures.size());
         if (!gpuDrivenVisibilityPath) {
             frameContext.visibleMeshletNodes = previewVisibleMeshletNodes;
             if (useVisibilityRenderGraph &&
@@ -2915,7 +2786,7 @@ int main() {
         }
 
         if (useVisibilityRenderGraph && rtShadowsAvailable) {
-            updateTLAS(nativeCommandBuffer, previewScene, shadowResources);
+            updateTLAS(nativeCommandBuffer, sceneCtx.sceneGraph(), shadowResources);
         }
 
         postBuilder.execute(commandBuffer, frameGraphBackend);

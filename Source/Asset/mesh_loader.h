@@ -37,5 +37,3 @@ struct LoadedMesh {
     bool hasBakedRootScale = false;
     float bakedRootScale = 1.0f;
 };
-
-bool loadGLTFMesh(const RhiDevice& device, const std::string& gltfPath, LoadedMesh& out);

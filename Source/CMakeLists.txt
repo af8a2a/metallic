@@ -15,6 +15,7 @@ if(APPLE)
         Asset/meshlet_builder.cpp
         Asset/cluster_lod_builder.cpp
         Asset/material_loader.cpp
+        Scene/scene.cpp
         Scene/scene_graph.cpp
         Scene/scene_graph_ui.cpp
         Rendering/input.cpp
@@ -26,6 +27,7 @@ if(APPLE)
         Helpers/slang_compiler.cpp
         Helpers/shader_manager.cpp
         Rendering/scene_context.cpp
+        Rendering/scene_gpu.cpp
         RHI/Helpers/rhi_resource_utils.cpp
         RHI/Helpers/rhi_shader_utils.cpp
         RHI/Helpers/rhi_raytracing_utils.cpp
@@ -43,7 +45,6 @@ if(APPLE)
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Passes"
-        "${CMAKE_SOURCE_DIR}/External/cgltf"
         "${CMAKE_SOURCE_DIR}/External/stb"
     )
     target_link_libraries(Metallic PRIVATE
@@ -53,6 +54,7 @@ if(APPLE)
         imgui
         slang::slang
         MathLib
+        tinygltf
         Tracy::TracyClient
         spdlog::spdlog_header_only
         PipelineEditorLib
@@ -75,6 +77,7 @@ elseif(WIN32)
         PipelineEditor/pass_registry.cpp
         PipelineEditor/pipeline_asset.cpp
         PipelineEditor/pipeline_builder.cpp
+        Scene/scene.cpp
         Scene/scene_graph.cpp
         Rendering/frame_graph.cpp
         Rendering/gpu_scene.cpp
@@ -82,6 +85,8 @@ elseif(WIN32)
         Rendering/pass_registrations_vulkan.cpp
         Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
+        Rendering/scene_context.cpp
+        Rendering/scene_gpu.cpp
         Helpers/slang_compiler.cpp
         Helpers/shader_manager.cpp
         Helpers/streamline_context.cpp
@@ -112,7 +117,6 @@ elseif(WIN32)
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Passes"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
-        "${CMAKE_SOURCE_DIR}/External/cgltf"
         "${CMAKE_SOURCE_DIR}/External/MathLib"
         "${CMAKE_SOURCE_DIR}/External/meshoptimizer/src"
         "${CMAKE_SOURCE_DIR}/External/stb"
@@ -124,6 +128,7 @@ elseif(WIN32)
         imgui
         slang::slang
         nlohmann_json
+        tinygltf
         Tracy::TracyClient
         spdlog::spdlog_header_only
         microprofile
