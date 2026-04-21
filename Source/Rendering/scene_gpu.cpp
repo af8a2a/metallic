@@ -227,8 +227,41 @@ bool SceneGpu::createMaterials(const Scene& scene) {
 
 bool SceneGpu::createSceneGraph(const Scene& scene) {
     m_sceneGraph = SceneGraph{};
-    m_sceneGraph.nodes.resize(scene.nodes.size());
 
+    // Build meshlet prefix sums for offset computation
+    std::vector<uint32_t> meshletGroupPrefix(m_mesh.primitiveGroups.size() + 1, 0);
+    for (size_t i = 0; i < m_mesh.primitiveGroups.size(); ++i) {
+        uint32_t count = (i < m_meshlets.meshletsPerGroup.size())
+            ? m_meshlets.meshletsPerGroup[i] : 0;
+        meshletGroupPrefix[i + 1] = meshletGroupPrefix[i] + count;
+    }
+
+    auto assignPrimGroup = [&](SceneNode& gn, int32_t meshIdx, uint32_t firstGroup, uint32_t groupCount) {
+        gn.meshIndex = meshIdx;
+        gn.primitiveGroupStart = firstGroup;
+        gn.primitiveGroupCount = groupCount;
+
+        uint32_t totalGroups = static_cast<uint32_t>(m_mesh.primitiveGroups.size());
+        uint32_t cFirst = std::min(firstGroup, totalGroups);
+        uint32_t cLast = std::min(firstGroup + groupCount, totalGroups);
+        if (cFirst >= cLast) return;
+
+        if (cLast <= meshletGroupPrefix.size()) {
+            gn.meshletStart = meshletGroupPrefix[cFirst];
+            gn.meshletCount = meshletGroupPrefix[cLast] - gn.meshletStart;
+        }
+
+        gn.indexStart = m_mesh.primitiveGroups[cFirst].indexOffset;
+        const auto& lastPg = m_mesh.primitiveGroups[cLast - 1];
+        gn.indexCount = (lastPg.indexOffset + lastPg.indexCount) - gn.indexStart;
+
+        if (groupCount == 1 && cFirst < m_clusterLod.primitiveGroupLodRoots.size()) {
+            gn.lodRootNode = m_clusterLod.primitiveGroupLodRoots[cFirst];
+        }
+    };
+
+    // First pass: create nodes matching scene hierarchy
+    m_sceneGraph.nodes.resize(scene.nodes.size());
     for (size_t i = 0; i < scene.nodes.size(); ++i) {
         const auto& sn = scene.nodes[i];
         auto& gn = m_sceneGraph.nodes[i];
@@ -249,49 +282,6 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
         }
         gn.transform.dirty = true;
 
-        if (sn.mesh >= 0 && sn.mesh < static_cast<int>(scene.meshInfos.size())) {
-            gn.meshIndex = sn.mesh;
-            const auto& mi = scene.meshInfos[sn.mesh];
-            gn.primitiveGroupStart = mi.firstPrimitive;
-            gn.primitiveGroupCount = mi.primitiveCount;
-
-            uint32_t meshletStart = 0;
-            uint32_t meshletCount = 0;
-            for (uint32_t pg = mi.firstPrimitive; pg < mi.firstPrimitive + mi.primitiveCount; ++pg) {
-                if (pg < m_meshlets.meshletsPerGroup.size()) {
-                    if (meshletCount == 0) {
-                        uint32_t offset = 0;
-                        for (uint32_t k = 0; k < pg; ++k)
-                            offset += m_meshlets.meshletsPerGroup[k];
-                        meshletStart = offset;
-                    }
-                    meshletCount += m_meshlets.meshletsPerGroup[pg];
-                }
-            }
-            gn.meshletStart = meshletStart;
-            gn.meshletCount = meshletCount;
-
-            if (!m_clusterLod.primitiveGroupLodRoots.empty()) {
-                for (uint32_t pg = mi.firstPrimitive; pg < mi.firstPrimitive + mi.primitiveCount; ++pg) {
-                    if (pg < m_clusterLod.primitiveGroupLodRoots.size() &&
-                        m_clusterLod.primitiveGroupLodRoots[pg] != UINT32_MAX) {
-                        gn.lodRootNode = m_clusterLod.primitiveGroupLodRoots[pg];
-                        break;
-                    }
-                }
-            }
-
-            uint32_t idxStart = 0, idxCount = 0;
-            for (uint32_t pg = mi.firstPrimitive; pg < mi.firstPrimitive + mi.primitiveCount; ++pg) {
-                if (pg < m_mesh.primitiveGroups.size()) {
-                    if (idxCount == 0) idxStart = m_mesh.primitiveGroups[pg].indexOffset;
-                    idxCount += m_mesh.primitiveGroups[pg].indexCount;
-                }
-            }
-            gn.indexStart = idxStart;
-            gn.indexCount = idxCount;
-        }
-
         if (sn.light >= 0 && sn.light < static_cast<int>(scene.lights.size())) {
             gn.hasLight = true;
             gn.light.type = LightType::Directional;
@@ -304,8 +294,49 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
         }
     }
 
+    // Second pass: assign mesh data, splitting multi-primitive meshes into child nodes
+    for (size_t i = 0; i < scene.nodes.size(); ++i) {
+        const auto& sn = scene.nodes[i];
+        if (sn.mesh < 0 || sn.mesh >= static_cast<int>(scene.meshInfos.size()))
+            continue;
+
+        const auto& mi = scene.meshInfos[sn.mesh];
+
+        if (mi.primitiveCount <= 1) {
+            assignPrimGroup(m_sceneGraph.nodes[i], sn.mesh, mi.firstPrimitive, mi.primitiveCount);
+        } else {
+            // Multi-primitive mesh: create a child node per primitive group
+            m_sceneGraph.nodes[i].meshIndex = sn.mesh;
+            std::string parentName = m_sceneGraph.nodes[i].name;
+            for (uint32_t pg = 0; pg < mi.primitiveCount; ++pg) {
+                uint32_t groupIdx = mi.firstPrimitive + pg;
+                uint32_t childIdx = static_cast<uint32_t>(m_sceneGraph.nodes.size());
+
+                SceneNode child;
+                child.id = childIdx;
+                child.parent = static_cast<int32_t>(i);
+                child.visible = true;
+                child.transform.dirty = true;
+
+                if (groupIdx < m_mesh.primitiveGroups.size()) {
+                    child.name = parentName + "/Prim_" + std::to_string(pg)
+                        + " [Mat " + std::to_string(m_mesh.primitiveGroups[groupIdx].materialIndex) + "]";
+                } else {
+                    child.name = parentName + "/Prim_" + std::to_string(pg);
+                }
+
+                assignPrimGroup(child, sn.mesh, groupIdx, 1);
+                m_sceneGraph.nodes.push_back(std::move(child));
+                m_sceneGraph.nodes[i].children.push_back(childIdx);
+            }
+        }
+    }
+
     for (int ri : scene.rootNodes)
         m_sceneGraph.rootNodes.push_back(static_cast<uint32_t>(ri));
+
+    if (!m_sceneGraph.rootNodes.empty())
+        m_sceneGraph.selectedNode = static_cast<int32_t>(m_sceneGraph.rootNodes.front());
 
     if (scene.hasBakedRootScale)
         m_sceneGraph.applyBakedSingleRootScale(m_mesh);

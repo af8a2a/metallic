@@ -7,6 +7,12 @@
 
 #include <vulkan/vulkan.h>
 
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#include <shobjidl.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -53,6 +59,49 @@
 #include <tracy/Tracy.hpp>
 
 namespace {
+
+#ifdef _WIN32
+std::string openGltfFileDialog(GLFWwindow* window) {
+    std::string result;
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(hr)) return result;
+
+    IFileOpenDialog* pDialog = nullptr;
+    hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
+                          IID_IFileOpenDialog, reinterpret_cast<void**>(&pDialog));
+    if (SUCCEEDED(hr)) {
+        COMDLG_FILTERSPEC filters[] = {
+            { L"glTF Files", L"*.gltf;*.glb" },
+            { L"All Files",  L"*.*" },
+        };
+        pDialog->SetFileTypes(2, filters);
+        pDialog->SetTitle(L"Open glTF Scene");
+
+        HWND hwnd = glfwGetWin32Window(window);
+        hr = pDialog->Show(hwnd);
+        if (SUCCEEDED(hr)) {
+            IShellItem* pItem = nullptr;
+            hr = pDialog->GetResult(&pItem);
+            if (SUCCEEDED(hr)) {
+                PWSTR filePath = nullptr;
+                hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &filePath);
+                if (SUCCEEDED(hr) && filePath) {
+                    int len = WideCharToMultiByte(CP_UTF8, 0, filePath, -1, nullptr, 0, nullptr, nullptr);
+                    if (len > 0) {
+                        result.resize(len - 1);
+                        WideCharToMultiByte(CP_UTF8, 0, filePath, -1, result.data(), len, nullptr, nullptr);
+                    }
+                    CoTaskMemFree(filePath);
+                }
+                pItem->Release();
+            }
+        }
+        pDialog->Release();
+    }
+    CoUninitialize();
+    return result;
+}
+#endif
 
 struct Vertex {
     float position[3];
@@ -2606,6 +2655,15 @@ int main() {
             if (ImGui::Begin("Scene Loader")) {
                 ImGui::Text("Current: %s", sceneCtx.isSceneLoaded() ? sceneCtx.scene().filePath().c_str() : "(none)");
                 ImGui::InputText("glTF Path", scenePathBuf, sizeof(scenePathBuf));
+                ImGui::SameLine();
+                if (ImGui::Button("Browse...")) {
+#ifdef _WIN32
+                    std::string picked = openGltfFileDialog(window);
+                    if (!picked.empty()) {
+                        std::snprintf(scenePathBuf, sizeof(scenePathBuf), "%s", picked.c_str());
+                    }
+#endif
+                }
                 if (ImGui::Button("Load Scene") && scenePathBuf[0] != '\0') {
                     rhi->waitIdle();
                     shadowResources.release();
