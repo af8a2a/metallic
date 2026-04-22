@@ -56,6 +56,10 @@
 #include "vulkan_upload_service.h"
 #include "streamline_context.h"
 
+#if defined(METALLIC_HAS_AFTERMATH) && METALLIC_HAS_AFTERMATH
+#include "aftermath_tracker.h"
+#endif
+
 #include <spdlog/spdlog.h>
 #include <tracy/Tracy.hpp>
 
@@ -1333,6 +1337,10 @@ int main() {
     }
 #endif
 
+#if defined(METALLIC_HAS_AFTERMATH) && METALLIC_HAS_AFTERMATH
+    AftermathTracker::getInstance().initialize();
+#endif
+
     std::string backendError;
     auto rhi = createRhiContext(RhiBackendType::Vulkan, createInfo, backendError);
     if (!rhi) {
@@ -1341,6 +1349,13 @@ int main() {
         glfwTerminate();
         return 1;
     }
+
+#if defined(METALLIC_HAS_AFTERMATH) && METALLIC_HAS_AFTERMATH
+    setSlangCompileCallback([](const char* /*sourcePath*/, const uint32_t* spirvData, size_t spirvSizeBytes) {
+        std::span<const uint32_t> data(spirvData, spirvSizeBytes / sizeof(uint32_t));
+        AftermathTracker::getInstance().addShaderBinary(data);
+    });
+#endif
 
     const auto triangleSpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
                                                           "Shaders/Vertex/triangle",

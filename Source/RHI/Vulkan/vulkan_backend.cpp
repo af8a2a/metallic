@@ -26,6 +26,14 @@
 #define VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME "VK_NV_device_diagnostic_checkpoints"
 #endif
 
+#ifndef VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME
+#define VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME "VK_NV_device_diagnostics_config"
+#endif
+
+#if defined(METALLIC_HAS_AFTERMATH) && METALLIC_HAS_AFTERMATH
+#include "aftermath_tracker.h"
+#endif
+
 #ifndef VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME
 #define VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME "VK_EXT_subgroup_size_control"
 #endif
@@ -2200,6 +2208,9 @@ public:
         m_deviceLost = true;
         m_deviceLostMessage = message ? message : "Vulkan device lost";
         spdlog::critical("Vulkan device lost: {}", m_deviceLostMessage);
+#if defined(METALLIC_HAS_AFTERMATH) && METALLIC_HAS_AFTERMATH
+        AftermathTracker::getInstance().errorCallback(VK_ERROR_DEVICE_LOST);
+#endif
         if (m_toolingInfo.debugUtils) {
             spdlog::critical("Vulkan diagnostics: debug utils markers were enabled for this session.");
         }
@@ -2651,6 +2662,8 @@ public:
         m_deviceFaultAvailable = hasExtension(extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
         m_diagnosticCheckpointsAvailable =
             hasExtension(extensions, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+        m_diagnosticsConfigAvailable =
+            hasExtension(extensions, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
         if (!dynamicRenderingAvailable || !sync2Available) {
             return false;
         }
@@ -2836,6 +2849,11 @@ public:
         if (m_diagnosticCheckpointsAvailable) {
             deviceExtensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         }
+#if defined(METALLIC_HAS_AFTERMATH) && METALLIC_HAS_AFTERMATH
+        if (m_diagnosticsConfigAvailable) {
+            deviceExtensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+        }
+#endif
         for (auto ext : createInfo.extraDeviceExtensions) {
             deviceExtensions.push_back(ext);
         }
@@ -2981,6 +2999,14 @@ public:
         deviceCreateInfo.enabledLayerCount = static_cast<uint32_t>(layers.size());
         deviceCreateInfo.ppEnabledLayerNames = layers.empty() ? nullptr : layers.data();
         deviceCreateInfo.pNext = &features2;
+
+#if defined(METALLIC_HAS_AFTERMATH) && METALLIC_HAS_AFTERMATH
+        if (m_diagnosticsConfigAvailable) {
+            auto& aftermath = AftermathTracker::getInstance();
+            aftermath.diagnosticsConfigCreateInfo()->pNext = deviceCreateInfo.pNext;
+            deviceCreateInfo.pNext = aftermath.diagnosticsConfigCreateInfo();
+        }
+#endif
 
         checkVk(vkCreateDevice(m_physicalDevice, &deviceCreateInfo, nullptr, &m_device),
                 "Failed to create Vulkan logical device");
@@ -3349,6 +3375,7 @@ public:
     bool m_deviceLost = false;
     bool m_deviceFaultAvailable = false;
     bool m_diagnosticCheckpointsAvailable = false;
+    bool m_diagnosticsConfigAvailable = false;
     bool m_memoryBudgetAvailable = false;
     bool m_storageBuffer16BitAccessEnabled = false;
     bool m_uniformAndStorageBuffer8BitAccessEnabled = false;

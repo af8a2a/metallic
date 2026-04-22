@@ -74,6 +74,8 @@ std::string g_shaderCacheDir; // empty = disabled
 std::mutex g_compileStatsMutex;
 SlangCompileStats g_compileStats;
 
+SlangCompileCallback g_compileCallback;
+
 // --- Include dependency scanning ---
 
 // Resolve a shader file path, trying with .slang extension first.
@@ -925,6 +927,9 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
                     std::lock_guard<std::mutex> lock(g_compileStatsMutex);
                     g_compileStats.cacheHits++;
                 }
+                if (g_compileCallback) {
+                    g_compileCallback(shaderPath, cached.data(), cached.size() * sizeof(uint32_t));
+                }
                 return cached;
             }
 
@@ -998,6 +1003,10 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
     spdlog::debug("SlangShaderCache: compiled and cached '{}' ({} words, {:.1f} ms)",
                   shaderPath, words.size(), compileMs);
 
+    if (g_compileCallback) {
+        g_compileCallback(shaderPath, words.data(), words.size() * sizeof(uint32_t));
+    }
+
     return words;
 }
 
@@ -1059,6 +1068,10 @@ std::string patchComputeMetalSource(const std::string& source) {
 
 void setSlangShaderCacheDir(const std::string& dir) {
     g_shaderCacheDir = dir;
+}
+
+void setSlangCompileCallback(SlangCompileCallback callback) {
+    g_compileCallback = std::move(callback);
 }
 
 std::string compileSlangGraphicsSource(RhiBackendType backend,

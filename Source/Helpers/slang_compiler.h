@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -90,6 +91,11 @@ std::string patchComputeShaderSource(RhiBackendType backend, const std::string& 
 // Set the directory used to cache compiled SPIR-V binaries between runs.
 // Must be called before any compileSlang*Binary calls. Empty string disables the cache.
 void setSlangShaderCacheDir(const std::string& dir);
+
+// Callback invoked after every successful SPIR-V compilation (including cache hits).
+// Parameters: source file path, SPIR-V data pointer, SPIR-V size in bytes.
+using SlangCompileCallback = std::function<void(const char* sourcePath, const uint32_t* spirvData, size_t spirvSizeBytes)>;
+void setSlangCompileCallback(SlangCompileCallback callback);
 
 // Compile statistics for diagnostics / ImGui display.
 struct SlangCompileStats {

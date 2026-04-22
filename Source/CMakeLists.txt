@@ -142,6 +142,14 @@ elseif(WIN32)
             Rendering/Passes/streamline_dlss_pass.cpp
         )
     endif()
+
+    # Nsight Aftermath GPU crash tracking (optional)
+    if(METALLIC_HAS_AFTERMATH)
+        target_sources(Metallic PRIVATE
+            RHI/Vulkan/Helpers/aftermath_tracker.cpp
+            RHI/Vulkan/Helpers/aftermath_gpu_crash_tracker.cpp
+        )
+    endif()
 endif()
 
 target_compile_definitions(Metallic PRIVATE
@@ -149,6 +157,10 @@ target_compile_definitions(Metallic PRIVATE
 )
 
 target_link_libraries(Metallic PRIVATE metallic::nvtx3)
+
+if(TARGET metallic::aftermath)
+    target_link_libraries(Metallic PRIVATE metallic::aftermath)
+endif()
 
 if(WIN32)
     target_compile_definitions(Metallic PRIVATE NOMINMAX)
@@ -171,6 +183,15 @@ if(WIN32 AND METALLIC_ENABLE_STREAMLINE AND METALLIC_STREAMLINE_RUNTIME_DLLS)
                 "$<TARGET_FILE_DIR:Metallic>"
         )
     endforeach()
+endif()
+
+# Copy Nsight Aftermath runtime DLL (Windows only)
+if(WIN32 AND METALLIC_HAS_AFTERMATH AND METALLIC_AFTERMATH_DLL)
+    add_custom_command(TARGET Metallic POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${METALLIC_AFTERMATH_DLL}"
+            "$<TARGET_FILE_DIR:Metallic>"
+    )
 endif()
 
 add_custom_command(TARGET Metallic POST_BUILD
