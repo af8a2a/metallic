@@ -32,6 +32,7 @@
 #include "nsight_markers.h"
 #include "input.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "pipeline_asset.h"
@@ -1137,12 +1138,103 @@ void drawSceneGraphUI(SceneGraph& scene) {
     ImGui::End();
 }
 
+void setNvproStyle() {
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 0.0f;
+    style.FrameRounding = 2.0f;
+    style.GrabRounding = 4.0f;
+    style.IndentSpacing = 12.0f;
+    style.FrameBorderSize = 1.0f;
+    style.ScrollbarSize = 14.0f;
+    style.WindowPadding = ImVec2(8, 8);
+    style.FramePadding = ImVec2(4, 3);
+    style.ItemSpacing = ImVec2(8, 4);
+    style.ItemInnerSpacing = ImVec2(4, 4);
+
+    ImVec4* c = style.Colors;
+    ImVec4 bg(0.2f, 0.2f, 0.2f, 1.0f);
+    ImVec4 bgDark(0.135f, 0.135f, 0.135f, 1.0f);
+    ImVec4 frameBg(0.05f, 0.05f, 0.05f, 0.5f);
+    ImVec4 border(0.4f, 0.4f, 0.4f, 0.5f);
+    ImVec4 normal(0.465f, 0.465f, 0.525f, 1.0f);
+    ImVec4 active(0.365f, 0.365f, 0.425f, 1.0f);
+    ImVec4 hovered(0.565f, 0.565f, 0.625f, 1.0f);
+
+    c[ImGuiCol_WindowBg] = bg;
+    c[ImGuiCol_MenuBarBg] = bg;
+    c[ImGuiCol_ScrollbarBg] = bg;
+    c[ImGuiCol_PopupBg] = bgDark;
+    c[ImGuiCol_ChildBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    c[ImGuiCol_Border] = border;
+    c[ImGuiCol_FrameBg] = frameBg;
+    c[ImGuiCol_FrameBgHovered] = hovered;
+    c[ImGuiCol_FrameBgActive] = normal;
+
+    c[ImGuiCol_Header] = normal;
+    c[ImGuiCol_HeaderHovered] = hovered;
+    c[ImGuiCol_HeaderActive] = active;
+
+    c[ImGuiCol_Button] = normal;
+    c[ImGuiCol_ButtonHovered] = hovered;
+    c[ImGuiCol_ButtonActive] = active;
+
+    c[ImGuiCol_SliderGrab] = normal;
+    c[ImGuiCol_SliderGrabActive] = active;
+
+    c[ImGuiCol_CheckMark] = normal;
+    c[ImGuiCol_TextSelectedBg] = normal;
+
+    c[ImGuiCol_Separator] = normal;
+    c[ImGuiCol_SeparatorHovered] = hovered;
+    c[ImGuiCol_SeparatorActive] = active;
+
+    c[ImGuiCol_ResizeGrip] = normal;
+    c[ImGuiCol_ResizeGripHovered] = hovered;
+    c[ImGuiCol_ResizeGripActive] = active;
+
+    c[ImGuiCol_Tab] = ImVec4(0.05f, 0.05f, 0.05f, 0.5f);
+    c[ImGuiCol_TabHovered] = ImVec4(0.465f, 0.495f, 0.525f, 1.0f);
+    c[ImGuiCol_TabSelected] = ImVec4(0.282f, 0.290f, 0.302f, 1.0f);
+
+    c[ImGuiCol_TitleBg] = ImVec4(0.125f, 0.125f, 0.125f, 1.0f);
+    c[ImGuiCol_TitleBgActive] = ImVec4(0.465f, 0.465f, 0.465f, 1.0f);
+    c[ImGuiCol_TitleBgCollapsed] = ImVec4(0.125f, 0.125f, 0.125f, 0.5f);
+
+    c[ImGuiCol_DockingPreview] = ImVec4(0.465f, 0.465f, 0.525f, 0.7f);
+    c[ImGuiCol_DockingEmptyBg] = ImVec4(0.1f, 0.1f, 0.1f, 1.0f);
+
+    c[ImGuiCol_Text] = ImVec4(0.86f, 0.86f, 0.86f, 1.0f);
+    c[ImGuiCol_TextDisabled] = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+}
+
+static bool s_dockLayoutInitialized = false;
+
 ImGuiID beginDockspace(bool& showSceneGraphWindow,
                        bool& showGraphDebug,
                        bool& showRenderPassUI,
                        bool& showImGuiDemo) {
     const ImGuiID dockspaceId =
-        ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+        ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_None);
+
+    if (!s_dockLayoutInitialized) {
+        s_dockLayoutInitialized = true;
+        ImGui::DockBuilderRemoveNode(dockspaceId);
+        ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->Size);
+
+        ImGuiID centerId = dockspaceId;
+        ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.25f, nullptr, &centerId);
+        ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.22f, nullptr, &centerId);
+        ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.06f, nullptr, &centerId);
+
+        ImGui::DockBuilderDockWindow("Viewport", centerId);
+        ImGui::DockBuilderDockWindow("Render Passes", rightId);
+        ImGui::DockBuilderDockWindow("Vulkan Sponza", rightId);
+        ImGui::DockBuilderDockWindow("Scene Graph", leftId);
+        ImGui::DockBuilderDockWindow("Scene Loader", bottomId);
+
+        ImGui::DockBuilderFinish(dockspaceId);
+    }
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("View")) {
@@ -1159,6 +1251,8 @@ ImGuiID beginDockspace(bool& showSceneGraphWindow,
 }
 
 } // namespace
+
+bool s_viewportHovered = false;
 
 int main() {
     if (!glfwInit()) {
@@ -1265,6 +1359,7 @@ int main() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    setNvproStyle();
     ImGui_ImplGlfw_InitForOther(window, true);
 
     VkPipelineRenderingCreateInfoKHR imguiRenderingInfo{
@@ -1518,6 +1613,7 @@ int main() {
 
         if (visibilityPipelineAssetLoaded) {
             normalizePipelineFinalDisplayOutput(visibilityPipelineAsset);
+            erasePassByType(visibilityPipelineAsset, "ImGuiOverlayPass");
         }
 
         if (visibilityPipelineAssetLoaded && !validateVisibilityAsset("Invalid Vulkan visibility pipeline")) {
@@ -1725,8 +1821,45 @@ int main() {
     VulkanImportedTexture backbufferTexture;
 
     RhiTextureHandle sceneColorTexture;
+    RhiTextureHandle viewportDisplayTexture;
+    VkDescriptorSet viewportImguiDescriptor = VK_NULL_HANDLE;
+    VkSampler viewportImguiSampler = VK_NULL_HANDLE;
+
+    auto createViewportSampler = [&]() {
+        if (viewportImguiSampler != VK_NULL_HANDLE) return;
+        VkSamplerCreateInfo samplerCI{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        samplerCI.magFilter = VK_FILTER_LINEAR;
+        samplerCI.minFilter = VK_FILTER_LINEAR;
+        samplerCI.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerCI.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerCI.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        vkCreateSampler(vkDevice, &samplerCI, nullptr, &viewportImguiSampler);
+    };
+
+    auto recreateViewportDisplayTexture = [&](uint32_t w, uint32_t h) {
+        if (viewportImguiDescriptor != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(viewportImguiDescriptor);
+            viewportImguiDescriptor = VK_NULL_HANDLE;
+        }
+        rhiReleaseHandle(viewportDisplayTexture);
+        viewportDisplayTexture = rhiCreateTexture2D(deviceHandle, w, h,
+            RhiFormat::BGRA8Unorm, false, 1,
+            RhiTextureStorageMode::Private,
+            RhiTextureUsage::RenderTarget | RhiTextureUsage::ShaderRead);
+        if (!viewportDisplayTexture.nativeHandle()) return;
+
+        createViewportSampler();
+        VkImageView iv = getVulkanImageView(&viewportDisplayTexture);
+        if (iv != VK_NULL_HANDLE) {
+            viewportImguiDescriptor = ImGui_ImplVulkan_AddTexture(
+                viewportImguiSampler, iv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+    };
+
     auto recreateSceneColorTexture = [&](uint32_t targetWidth, uint32_t targetHeight) {
         rhiReleaseHandle(sceneColorTexture);
+        rhiReleaseHandle(viewportDisplayTexture);
         runtimeContext.importedTexturesRhi.erase("sceneColor");
         sceneColorTexture = rhiCreateTexture2D(deviceHandle,
                                                targetWidth,
@@ -1765,6 +1898,8 @@ int main() {
         glfwTerminate();
         return 1;
     }
+
+    recreateViewportDisplayTexture(createInfo.width, createInfo.height);
 
     struct TrianglePassData {
         FGResource colorTarget;
@@ -1837,6 +1972,14 @@ int main() {
 
     auto cleanupRuntimeResources = [&]() {
         rhi->waitIdle();
+        if (viewportImguiDescriptor != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(viewportImguiDescriptor);
+            viewportImguiDescriptor = VK_NULL_HANDLE;
+        }
+        if (viewportImguiSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(vkDevice, viewportImguiSampler, nullptr);
+            viewportImguiSampler = VK_NULL_HANDLE;
+        }
         vulkanSetUploadService(nullptr);
         uploadService.destroy();
         readbackService.destroy();
@@ -1855,6 +1998,7 @@ int main() {
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(sceneColorTexture);
+        rhiReleaseHandle(viewportDisplayTexture);
         rhiReleaseHandle(vertexDescriptor);
         rhiReleaseHandle(vertexBuffer);
     };
@@ -2018,8 +2162,10 @@ int main() {
         }
 
         if (appState.framebufferResized) {
+            rhi->waitIdle();
             rhi->resize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             ImGui_ImplVulkan_SetMinImageCount(std::max(2u, rhi->nativeHandles().swapchainImageCount));
+            recreateViewportDisplayTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             postBuilderNeedsRebuild = true;
             appState.framebufferResized = false;
             dlssStateDirty = true;
@@ -2150,7 +2296,7 @@ int main() {
         if (backbufferImage != VK_NULL_HANDLE) {
             imageTracker.setLayout(backbufferImage, getVulkanCurrentBackbufferLayout(*rhi));
         }
-        if (!useVisibilityRenderGraph && sceneColorTexture.nativeHandle()) {
+        if (sceneColorTexture.nativeHandle()) {
             imageTracker.setLayout(getVulkanImage(&sceneColorTexture), sceneColorLayout);
         }
 
@@ -2173,6 +2319,21 @@ int main() {
         ImGui::NewFrame();
         const ImGuiID dockspaceId =
             beginDockspace(showSceneGraphWindow, showGraphDebug, showRenderPassUI, showImGuiDemo);
+
+        // --- Viewport window: display scene render output ---
+        {
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
+            ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            s_viewportHovered = ImGui::IsWindowHovered();
+            ImVec2 viewportSize = ImGui::GetContentRegionAvail();
+            if (viewportSize.x > 0 && viewportSize.y > 0 &&
+                viewportImguiDescriptor != VK_NULL_HANDLE) {
+                ImGui::Image(reinterpret_cast<ImTextureID>(viewportImguiDescriptor), viewportSize);
+            }
+            ImGui::End();
+            ImGui::PopStyleVar();
+        }
 
         ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
         ImGui::Begin("Vulkan Sponza");
@@ -2847,7 +3008,138 @@ int main() {
             updateTLAS(nativeCommandBuffer, sceneCtx.sceneGraph(), shadowResources);
         }
 
+        // Ensure sceneColorTexture is in SHADER_READ_ONLY_OPTIMAL for ImGui::Image sampling
+        // The frame graph doesn't know about the ImGui descriptor reference, so we insert
+        // a manual barrier. On the first frame (UNDEFINED), this transitions to readable state.
+        if (sceneColorTexture.nativeHandle() && !useVisibilityRenderGraph) {
+            VkImage sceneColorImage = getVulkanImage(&sceneColorTexture);
+            if (sceneColorImage != VK_NULL_HANDLE) {
+                VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                                        VK_ACCESS_2_SHADER_WRITE_BIT;
+                barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                barrier.oldLayout = sceneColorLayout;
+                barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barrier.image = sceneColorImage;
+                barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                VkDependencyInfo depInfo{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                depInfo.imageMemoryBarrierCount = 1;
+                depInfo.pImageMemoryBarriers = &barrier;
+                vkCmdPipelineBarrier2(nativeCmd, &depInfo);
+
+                sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                imageTracker.setLayout(sceneColorImage, sceneColorLayout);
+            }
+        }
+
         postBuilder.execute(commandBuffer, frameGraphBackend);
+
+        // Blit backbuffer to viewport display texture for ImGui::Image
+        if (viewportDisplayTexture.nativeHandle() && backbufferImage != VK_NULL_HANDLE) {
+            VkImage vpImage = getVulkanImage(&viewportDisplayTexture);
+            if (vpImage != VK_NULL_HANDLE) {
+                uint32_t vpW = viewportDisplayTexture.width();
+                uint32_t vpH = viewportDisplayTexture.height();
+
+                VkImageMemoryBarrier2 barriers[2] = {};
+                barriers[0] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                barriers[0].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+                barriers[0].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+                barriers[0].oldLayout = imageTracker.getLayout(backbufferImage);
+                barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                barriers[0].image = backbufferImage;
+                barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                barriers[1] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                barriers[1].srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+                barriers[1].srcAccessMask = VK_ACCESS_2_NONE;
+                barriers[1].dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+                barriers[1].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                barriers[1].image = vpImage;
+                barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                dep.imageMemoryBarrierCount = 2;
+                dep.pImageMemoryBarriers = barriers;
+                vkCmdPipelineBarrier2(nativeCmd, &dep);
+
+                VkImageBlit2 blitRegion{VK_STRUCTURE_TYPE_IMAGE_BLIT_2};
+                blitRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                blitRegion.srcOffsets[1] = {static_cast<int32_t>(width), static_cast<int32_t>(height), 1};
+                blitRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                blitRegion.dstOffsets[1] = {static_cast<int32_t>(vpW), static_cast<int32_t>(vpH), 1};
+
+                VkBlitImageInfo2 blitInfo{VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2};
+                blitInfo.srcImage = backbufferImage;
+                blitInfo.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                blitInfo.dstImage = vpImage;
+                blitInfo.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                blitInfo.regionCount = 1;
+                blitInfo.pRegions = &blitRegion;
+                blitInfo.filter = VK_FILTER_LINEAR;
+                vkCmdBlitImage2(nativeCmd, &blitInfo);
+
+                VkImageMemoryBarrier2 postBarriers[2] = {};
+                postBarriers[0] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                postBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+                postBarriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+                postBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                postBarriers[0].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                postBarriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                postBarriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                postBarriers[0].image = backbufferImage;
+                postBarriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                postBarriers[1] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                postBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+                postBarriers[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                postBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                postBarriers[1].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                postBarriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                postBarriers[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                postBarriers[1].image = vpImage;
+                postBarriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                VkDependencyInfo postDep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                postDep.imageMemoryBarrierCount = 2;
+                postDep.pImageMemoryBarriers = postBarriers;
+                vkCmdPipelineBarrier2(nativeCmd, &postDep);
+
+                imageTracker.setLayout(backbufferImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            }
+        }
+
+        // Render ImGui directly to backbuffer (ImGuiOverlayPass removed from pipeline)
+        {
+            VkRenderingAttachmentInfo colorAttach{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            colorAttach.imageView = backbufferImageView;
+            colorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            colorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            VkRenderingInfo renderInfo{VK_STRUCTURE_TYPE_RENDERING_INFO};
+            renderInfo.renderArea = {{0, 0}, backbufferExtent};
+            renderInfo.layerCount = 1;
+            renderInfo.colorAttachmentCount = 1;
+            renderInfo.pColorAttachments = &colorAttach;
+
+            vkCmdBeginRendering(nativeCmd, &renderInfo);
+            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), nativeCmd);
+            vkCmdEndRendering(nativeCmd);
+        }
+
+        // After pipeline execution, sceneColorTexture is ready for ImGui sampling next frame
+        if (sceneColorTexture.nativeHandle()) {
+            sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
         visibilityHistoryResetRequested = false;
 
         if (native.transferTimelineSemaphore != nullptr) {
@@ -2860,10 +3152,6 @@ int main() {
                     transferWaitValue,
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
             }
-        }
-
-        if (!useVisibilityRenderGraph) {
-            sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
 
         prevView = view;

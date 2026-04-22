@@ -3145,7 +3145,7 @@ public:
         createInfo.imageColorSpace = m_swapchainFormat.colorSpace;
         createInfo.imageExtent = m_swapchainExtent;
         createInfo.imageArrayLayers = 1;
-        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
         const uint32_t queueFamilyIndices[] = {m_queueFamilies.graphics.value(), m_queueFamilies.present.value()};
         if (m_queueFamilies.graphics != m_queueFamilies.present) {
