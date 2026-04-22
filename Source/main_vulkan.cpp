@@ -1139,12 +1139,16 @@ void drawSceneGraphUI(SceneGraph& scene) {
 }
 
 void setNvproStyle() {
+    ImGui::StyleColorsDark();
+
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 0.0f;
+    style.WindowBorderSize = 0.0f;
+    style.ColorButtonPosition = ImGuiDir_Right;
     style.FrameRounding = 2.0f;
+    style.FrameBorderSize = 1.0f;
     style.GrabRounding = 4.0f;
     style.IndentSpacing = 12.0f;
-    style.FrameBorderSize = 1.0f;
     style.ScrollbarSize = 14.0f;
     style.WindowPadding = ImVec2(8, 8);
     style.FramePadding = ImVec2(4, 3);
@@ -1195,16 +1199,25 @@ void setNvproStyle() {
     c[ImGuiCol_Tab] = ImVec4(0.05f, 0.05f, 0.05f, 0.5f);
     c[ImGuiCol_TabHovered] = ImVec4(0.465f, 0.495f, 0.525f, 1.0f);
     c[ImGuiCol_TabSelected] = ImVec4(0.282f, 0.290f, 0.302f, 1.0f);
+    c[ImGuiCol_TabSelectedOverline] = normal;
+    c[ImGuiCol_TabDimmed] = ImVec4(0.05f, 0.05f, 0.05f, 0.35f);
+    c[ImGuiCol_TabDimmedSelected] = ImVec4(0.18f, 0.18f, 0.20f, 1.0f);
+    c[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(0.5f, 0.5f, 0.5f, 0.0f);
 
     c[ImGuiCol_TitleBg] = ImVec4(0.125f, 0.125f, 0.125f, 1.0f);
     c[ImGuiCol_TitleBgActive] = ImVec4(0.465f, 0.465f, 0.465f, 1.0f);
     c[ImGuiCol_TitleBgCollapsed] = ImVec4(0.125f, 0.125f, 0.125f, 0.5f);
+
+    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.465f, 0.465f, 0.465f, 0.350f);
 
     c[ImGuiCol_DockingPreview] = ImVec4(0.465f, 0.465f, 0.525f, 0.7f);
     c[ImGuiCol_DockingEmptyBg] = ImVec4(0.1f, 0.1f, 0.1f, 1.0f);
 
     c[ImGuiCol_Text] = ImVec4(0.86f, 0.86f, 0.86f, 1.0f);
     c[ImGuiCol_TextDisabled] = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+    c[ImGuiCol_NavCursor] = normal;
+
+    ImGui::SetColorEditOptions(ImGuiColorEditFlags_Float | ImGuiColorEditFlags_PickerHueWheel);
 }
 
 static bool s_dockLayoutInitialized = false;
