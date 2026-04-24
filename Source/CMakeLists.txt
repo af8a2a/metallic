@@ -79,6 +79,7 @@ elseif(WIN32)
         PipelineEditor/pipeline_builder.cpp
         Scene/scene.cpp
         Scene/scene_graph.cpp
+        Scene/scene_graph_ui.cpp
         Rendering/frame_graph.cpp
         Rendering/gpu_scene.cpp
         Rendering/input.cpp

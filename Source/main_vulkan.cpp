@@ -48,6 +48,7 @@
 #include "slang_compiler.h"
 #include "visibility_constants.h"
 #include "scene_context.h"
+#include "scene_graph_ui.h"
 #include "cluster_lod_builder.h"
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
@@ -935,213 +936,6 @@ float4 orbitCameraWorldPosition(const OrbitCamera& camera) {
                   1.0f);
 }
 
-float3 quaternionToEulerDeg(const float4& q) {
-    const float sinRoll = 2.0f * (q.w * q.x + q.y * q.z);
-    const float cosRoll = 1.0f - 2.0f * (q.x * q.x + q.y * q.y);
-    const float roll = std::atan2(sinRoll, cosRoll);
-
-    const float sinPitch = 2.0f * (q.w * q.y - q.z * q.x);
-    const float pitch = (std::fabs(sinPitch) >= 1.0f)
-        ? std::copysign(OrbitCamera::kPi * 0.5f, sinPitch)
-        : std::asin(sinPitch);
-
-    const float sinYaw = 2.0f * (q.w * q.z + q.x * q.y);
-    const float cosYaw = 1.0f - 2.0f * (q.y * q.y + q.z * q.z);
-    const float yaw = std::atan2(sinYaw, cosYaw);
-
-    const float toDegrees = 180.0f / OrbitCamera::kPi;
-    return float3(roll * toDegrees, pitch * toDegrees, yaw * toDegrees);
-}
-
-float4 eulerDegToQuaternion(const float3& eulerDeg) {
-    const float toRadians = OrbitCamera::kPi / 180.0f;
-    const float rx = eulerDeg.x * toRadians * 0.5f;
-    const float ry = eulerDeg.y * toRadians * 0.5f;
-    const float rz = eulerDeg.z * toRadians * 0.5f;
-
-    const float cx = std::cos(rx);
-    const float sx = std::sin(rx);
-    const float cy = std::cos(ry);
-    const float sy = std::sin(ry);
-    const float cz = std::cos(rz);
-    const float sz = std::sin(rz);
-
-    return float4(sx * cy * cz - cx * sy * sz,
-                  cx * sy * cz + sx * cy * sz,
-                  cx * cy * sz - sx * sy * cz,
-                  cx * cy * cz + sx * sy * sz);
-}
-
-void drawSceneGraphNodeTree(SceneGraph& scene, uint32_t nodeIndex) {
-    SceneNode& node = scene.nodes[nodeIndex];
-
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
-    if (node.children.empty()) {
-        flags |= ImGuiTreeNodeFlags_Leaf;
-    }
-    if (node.parent < 0) {
-        flags |= ImGuiTreeNodeFlags_DefaultOpen;
-    }
-    if (scene.selectedNode == static_cast<int32_t>(nodeIndex)) {
-        flags |= ImGuiTreeNodeFlags_Selected;
-    }
-
-    if (!node.visible) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-    }
-
-    const bool open =
-        ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIndex)),
-                         flags,
-                         "%s",
-                         node.name.c_str());
-
-    if (!node.visible) {
-        ImGui::PopStyleColor();
-    }
-
-    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-        scene.selectedNode = static_cast<int32_t>(nodeIndex);
-    }
-
-    if (!open) {
-        return;
-    }
-
-    for (uint32_t childIndex : node.children) {
-        drawSceneGraphNodeTree(scene, childIndex);
-    }
-    ImGui::TreePop();
-}
-
-void drawSceneGraphProperties(SceneGraph& scene) {
-    if (scene.selectedNode < 0 || scene.selectedNode >= static_cast<int32_t>(scene.nodes.size())) {
-        ImGui::TextDisabled("No node selected");
-        return;
-    }
-
-    SceneNode& node = scene.nodes[scene.selectedNode];
-    TransformComponent& transform = node.transform;
-
-    ImGui::Text("Name: %s", node.name.c_str());
-    ImGui::Text("ID: %u", node.id);
-    ImGui::Separator();
-
-    bool transformChanged = false;
-
-    ImGui::Checkbox("Visible", &node.visible);
-
-    ImGui::Separator();
-    ImGui::Text("Transform");
-
-    float translation[3] = {transform.translation.x, transform.translation.y, transform.translation.z};
-    if (ImGui::DragFloat3("Translation", translation, 0.01f)) {
-        transform.translation = float3(translation[0], translation[1], translation[2]);
-        transform.useLocalMatrix = false;
-        transformChanged = true;
-    }
-
-    const float3 euler = quaternionToEulerDeg(transform.rotation);
-    float rotation[3] = {euler.x, euler.y, euler.z};
-    if (ImGui::DragFloat3("Rotation", rotation, 0.1f)) {
-        transform.rotation = eulerDegToQuaternion(float3(rotation[0], rotation[1], rotation[2]));
-        transform.useLocalMatrix = false;
-        transformChanged = true;
-    }
-
-    float scale[3] = {transform.scale.x, transform.scale.y, transform.scale.z};
-    if (ImGui::DragFloat3("Scale", scale, 0.01f, 0.001f, 100.0f)) {
-        transform.scale = float3(scale[0], scale[1], scale[2]);
-        transform.useLocalMatrix = false;
-        transformChanged = true;
-    }
-
-    if (transformChanged) {
-        scene.markDirty(static_cast<uint32_t>(scene.selectedNode));
-    }
-
-    if (node.hasLight && node.light.type == LightType::Directional) {
-        ImGui::Separator();
-        ImGui::Text("Light");
-        ImGui::Text("Type: Directional");
-
-        float direction[3] = {
-            node.light.directional.direction.x,
-            node.light.directional.direction.y,
-            node.light.directional.direction.z,
-        };
-        if (ImGui::DragFloat3("Direction", direction, 0.01f, -1.0f, 1.0f)) {
-            const float3 dir(direction[0], direction[1], direction[2]);
-            const float dirLength = length(dir);
-            if (dirLength > 1e-6f) {
-                node.light.directional.direction = dir / dirLength;
-            }
-        }
-
-        float color[3] = {
-            node.light.directional.color.x,
-            node.light.directional.color.y,
-            node.light.directional.color.z,
-        };
-        if (ImGui::ColorEdit3("Color", color)) {
-            node.light.directional.color = float3(color[0], color[1], color[2]);
-        }
-
-        ImGui::DragFloat("Intensity", &node.light.directional.intensity, 0.01f, 0.0f, 100.0f);
-
-        if (scene.sunLightNode == scene.selectedNode) {
-            ImGui::TextDisabled("Scene Sun Source");
-        }
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Mesh Info");
-    if (node.meshIndex >= 0) {
-        ImGui::Text("Mesh Index: %d", node.meshIndex);
-        ImGui::Text("Primitive Group Start: %u", node.primitiveGroupStart);
-        ImGui::Text("Primitive Group Count: %u", node.primitiveGroupCount);
-        ImGui::Text("Meshlet Start: %u", node.meshletStart);
-        ImGui::Text("Meshlet Count: %u", node.meshletCount);
-        ImGui::Text("Index Start: %u", node.indexStart);
-        ImGui::Text("Index Count: %u", node.indexCount);
-    } else {
-        ImGui::TextDisabled("No mesh (transform node)");
-    }
-}
-
-void drawSceneGraphUI(SceneGraph& scene) {
-    ImGui::SetNextWindowSize(ImVec2(500.0f, 400.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Scene Graph")) {
-        ImGui::End();
-        return;
-    }
-
-    if (ImGui::BeginTable("SceneGraphLayout",
-                          2,
-                          ImGuiTableFlags_Resizable |
-                              ImGuiTableFlags_BordersInnerV |
-                              ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Tree", ImGuiTableColumnFlags_WidthStretch, 0.45f);
-        ImGui::TableSetupColumn("Properties", ImGuiTableColumnFlags_WidthStretch, 0.55f);
-
-        ImGui::TableNextColumn();
-        ImGui::BeginChild("TreePanel", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
-        for (uint32_t rootIndex : scene.rootNodes) {
-            drawSceneGraphNodeTree(scene, rootIndex);
-        }
-        ImGui::EndChild();
-
-        ImGui::TableNextColumn();
-        ImGui::BeginChild("PropertyPanel", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
-        drawSceneGraphProperties(scene);
-        ImGui::EndChild();
-
-        ImGui::EndTable();
-    }
-
-    ImGui::End();
-}
-
 void setNvproStyle() {
     ImGui::StyleColorsDark();
 
@@ -1241,13 +1035,14 @@ ImGuiID beginDockspace(bool& showSceneGraphWindow,
 
         ImGuiID centerId = dockspaceId;
         ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.25f, nullptr, &centerId);
-        ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.22f, nullptr, &centerId);
         ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.06f, nullptr, &centerId);
+        ImGuiID inspectorId = ImGui::DockBuilderSplitNode(rightId, ImGuiDir_Down, 0.35f, nullptr, &rightId);
 
         ImGui::DockBuilderDockWindow("Viewport", centerId);
         ImGui::DockBuilderDockWindow("Render Passes", rightId);
         ImGui::DockBuilderDockWindow("Vulkan Sponza", rightId);
-        ImGui::DockBuilderDockWindow("Scene Graph", leftId);
+        ImGui::DockBuilderDockWindow("Scene Browser", rightId);
+        ImGui::DockBuilderDockWindow("Inspector", inspectorId);
         ImGui::DockBuilderDockWindow("Scene Loader", bottomId);
 
         ImGui::DockBuilderFinish(dockspaceId);
@@ -1255,7 +1050,7 @@ ImGuiID beginDockspace(bool& showSceneGraphWindow,
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Scene Graph", nullptr, &showSceneGraphWindow);
+            ImGui::MenuItem("Scene Browser", nullptr, &showSceneGraphWindow);
             ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
             ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
             ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
@@ -2524,7 +2319,7 @@ int main() {
         }
         ImGui::Checkbox("FrameGraph Debug", &showGraphDebug);
         ImGui::Checkbox("Render Pass UI", &showRenderPassUI);
-        ImGui::Checkbox("Scene Graph", &showSceneGraphWindow);
+        ImGui::Checkbox("Scene Browser", &showSceneGraphWindow);
         ImGui::Checkbox("ImGui Demo", &showImGuiDemo);
 
         const ClusterStreamingService::DebugStats& streamingStats =
@@ -2834,8 +2629,7 @@ int main() {
         ImGui::End();
 
         if (previewSceneReady && showSceneGraphWindow) {
-            ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
-            drawSceneGraphUI(sceneCtx.sceneGraph());
+            ::drawSceneGraphUI(sceneCtx.sceneGraph());
         }
 
         // --- Runtime scene loading UI ---

@@ -236,10 +236,15 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
         meshletGroupPrefix[i + 1] = meshletGroupPrefix[i] + count;
     }
 
-    auto assignPrimGroup = [&](SceneNode& gn, int32_t meshIdx, uint32_t firstGroup, uint32_t groupCount) {
+    auto assignPrimGroup = [&](SceneNode& gn,
+                               int32_t meshIdx,
+                               uint32_t firstGroup,
+                               uint32_t groupCount,
+                               uint32_t firstPrimitiveInMesh) {
         gn.meshIndex = meshIdx;
         gn.primitiveGroupStart = firstGroup;
         gn.primitiveGroupCount = groupCount;
+        gn.primitiveIndexInMesh = firstPrimitiveInMesh;
 
         uint32_t totalGroups = static_cast<uint32_t>(m_mesh.primitiveGroups.size());
         uint32_t cFirst = std::min(firstGroup, totalGroups);
@@ -254,6 +259,9 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
         gn.indexStart = m_mesh.primitiveGroups[cFirst].indexOffset;
         const auto& lastPg = m_mesh.primitiveGroups[cLast - 1];
         gn.indexCount = (lastPg.indexOffset + lastPg.indexCount) - gn.indexStart;
+
+        if (groupCount == 1)
+            gn.materialIndex = m_mesh.primitiveGroups[cFirst].materialIndex;
 
         if (groupCount == 1 && cFirst < m_clusterLod.primitiveGroupLodRoots.size()) {
             gn.lodRootNode = m_clusterLod.primitiveGroupLodRoots[cFirst];
@@ -283,6 +291,7 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
         gn.transform.dirty = true;
 
         if (sn.light >= 0 && sn.light < static_cast<int>(scene.lights.size())) {
+            gn.lightIndex = sn.light;
             gn.hasLight = true;
             gn.light.type = LightType::Directional;
             const auto& sl = scene.lights[sn.light];
@@ -291,6 +300,18 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
             gn.light.directional.direction = normalize(float3(0.5f, 1.0f, 0.8f));
             if (m_sceneGraph.sunLightNode < 0 && sl.type == SceneLight::Directional)
                 m_sceneGraph.sunLightNode = static_cast<int32_t>(i);
+        }
+
+        if (sn.camera >= 0 && sn.camera < static_cast<int>(scene.cameras.size())) {
+            gn.cameraIndex = sn.camera;
+            const auto& sc = scene.cameras[sn.camera];
+            gn.camera.type = (sc.type == SceneCamera::Perspective)
+                ? CameraType::Perspective
+                : CameraType::Orthographic;
+            gn.camera.yfov = sc.yfov;
+            gn.camera.znear = sc.znear;
+            gn.camera.zfar = sc.zfar;
+            gn.camera.aspectRatio = sc.aspectRatio;
         }
     }
 
@@ -303,7 +324,7 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
         const auto& mi = scene.meshInfos[sn.mesh];
 
         if (mi.primitiveCount <= 1) {
-            assignPrimGroup(m_sceneGraph.nodes[i], sn.mesh, mi.firstPrimitive, mi.primitiveCount);
+            assignPrimGroup(m_sceneGraph.nodes[i], sn.mesh, mi.firstPrimitive, mi.primitiveCount, 0);
         } else {
             // Multi-primitive mesh: create a child node per primitive group
             m_sceneGraph.nodes[i].meshIndex = sn.mesh;
@@ -317,6 +338,7 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
                 child.parent = static_cast<int32_t>(i);
                 child.visible = true;
                 child.transform.dirty = true;
+                child.generatedPrimitive = true;
 
                 if (groupIdx < m_mesh.primitiveGroups.size()) {
                     child.name = parentName + "/Prim_" + std::to_string(pg)
@@ -325,7 +347,7 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
                     child.name = parentName + "/Prim_" + std::to_string(pg);
                 }
 
-                assignPrimGroup(child, sn.mesh, groupIdx, 1);
+                assignPrimGroup(child, sn.mesh, groupIdx, 1, pg);
                 m_sceneGraph.nodes.push_back(std::move(child));
                 m_sceneGraph.nodes[i].children.push_back(childIdx);
             }

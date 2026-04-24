@@ -248,7 +248,7 @@ int main() {
 
             if (ImGui::BeginMainMenuBar()) {
                 if (ImGui::BeginMenu("View")) {
-                    ImGui::MenuItem("Scene Graph", nullptr, &showSceneGraphWindow);
+                    ImGui::MenuItem("Scene Browser", nullptr, &showSceneGraphWindow);
                     ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
                     ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
                     ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
