@@ -59,8 +59,8 @@ struct MeshOutput {
     nointerpolation uint materialID : TEXCOORD2;
 };
 
-static const uint kMaxVertices  = 64;
-static const uint kMaxTriangles = 124;
+static const uint kMaxVertices  = 32;
+static const uint kMaxTriangles = 32;
 static const uint INVALID_TEX   = 0xFFFFFFFF;
 
 [shader("mesh")]

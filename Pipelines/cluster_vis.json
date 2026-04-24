@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 2,
+  "name": "Cluster Visualization",
+  "resources": [
+    {
+      "id": "00000000000000000000000000000001",
+      "name": "Backbuffer",
+      "kind": "backbuffer",
+      "type": "texture",
+      "format": "BGRA8Unorm",
+      "size": "screen",
+      "editorPos": [900.0, 62.0]
+    },
+    {
+      "id": "c0000000000000000000000000000010",
+      "name": "Cluster Color",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA8Unorm",
+      "size": "screen",
+      "editorPos": [60.0, 62.0]
+    },
+    {
+      "id": "c0000000000000000000000000000011",
+      "name": "Cluster Depth",
+      "kind": "transient",
+      "type": "texture",
+      "format": "Depth32Float",
+      "size": "screen",
+      "editorPos": [60.0, 200.0]
+    }
+  ],
+  "passes": [
+    {
+      "id": "c1000000000000000000000000000001",
+      "name": "Cluster Render 1",
+      "type": "ClusterRenderPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [100.0, -108.0]
+    },
+    {
+      "id": "c1000000000000000000000000000002",
+      "name": "ImGui Overlay 1",
+      "type": "ImGuiOverlayPass",
+      "enabled": true,
+      "sideEffect": true,
+      "config": null,
+      "editorPos": [400.0, -108.0]
+    },
+    {
+      "id": "c1000000000000000000000000000003",
+      "name": "Output 1",
+      "type": "OutputPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {},
+      "editorPos": [700.0, -108.0]
+    }
+  ],
+  "edges": [
+    {
+      "id": "c2000000000000000000000000000001",
+      "passId": "c1000000000000000000000000000001",
+      "slotKey": "color",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000010"
+    },
+    {
+      "id": "c2000000000000000000000000000002",
+      "passId": "c1000000000000000000000000000001",
+      "slotKey": "depth",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000011"
+    },
+    {
+      "id": "c2000000000000000000000000000003",
+      "passId": "c1000000000000000000000000000002",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000011"
+    },
+    {
+      "id": "c2000000000000000000000000000004",
+      "passId": "c1000000000000000000000000000002",
+      "slotKey": "target",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000001"
+    },
+    {
+      "id": "c2000000000000000000000000000005",
+      "passId": "c1000000000000000000000000000003",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000010"
+    },
+    {
+      "id": "c2000000000000000000000000000006",
+      "passId": "c1000000000000000000000000000003",
+      "slotKey": "target",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000001"
+    }
+  ]
+}

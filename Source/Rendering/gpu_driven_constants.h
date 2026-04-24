@@ -111,6 +111,14 @@
 // Shared bindings for helper passes that convert counters into indirect args.
 #define GPU_DRIVEN_BUILD_DISPATCH_COUNTER_BINDING 0u
 
+// Shared bindings for the cluster visualization render pass.
+#define GPU_DRIVEN_CLUSTER_VIS_UNIFORMS_BINDING 0u
+#define GPU_DRIVEN_CLUSTER_VIS_CLUSTER_INFOS_BINDING 1u
+#define GPU_DRIVEN_CLUSTER_VIS_PACKED_CLUSTERS_BINDING 2u
+#define GPU_DRIVEN_CLUSTER_VIS_VERTEX_DATA_BINDING 3u
+#define GPU_DRIVEN_CLUSTER_VIS_INDEX_DATA_BINDING 4u
+#define GPU_DRIVEN_CLUSTER_VIS_INSTANCE_DATA_BINDING 5u
+
 #ifdef __cplusplus
 
 #include <cstdint>
@@ -276,6 +284,15 @@ struct BuildWorklistBindings {
 };
 
 using BuildDispatchBindings = BuildWorklistBindings;
+
+struct ClusterRenderBindings {
+    static constexpr uint32_t kUniforms = GPU_DRIVEN_CLUSTER_VIS_UNIFORMS_BINDING;
+    static constexpr uint32_t kClusterInfos = GPU_DRIVEN_CLUSTER_VIS_CLUSTER_INFOS_BINDING;
+    static constexpr uint32_t kClusters = GPU_DRIVEN_CLUSTER_VIS_PACKED_CLUSTERS_BINDING;
+    static constexpr uint32_t kVertexData = GPU_DRIVEN_CLUSTER_VIS_VERTEX_DATA_BINDING;
+    static constexpr uint32_t kIndexData = GPU_DRIVEN_CLUSTER_VIS_INDEX_DATA_BINDING;
+    static constexpr uint32_t kInstances = GPU_DRIVEN_CLUSTER_VIS_INSTANCE_DATA_BINDING;
+};
 
 static_assert(ComputeDispatchCommandLayout::kBufferSize ==
               ComputeDispatchCommandLayout::kWordCount * sizeof(uint32_t));

@@ -29,6 +29,7 @@ struct ShaderManagerProfile {
     bool output = true;
     bool autoExposure = true;
     bool taa = true;
+    bool clusterRender = true;
 
     static ShaderManagerProfile full() { return {}; }
 
@@ -128,6 +129,7 @@ private:
     RhiComputePipelineHandle m_histogramPipeline;
     RhiComputePipelineHandle m_autoExposurePipeline;
     RhiComputePipelineHandle m_taaPipeline;
+    RhiGraphicsPipelineHandle m_clusterRenderPipeline;
     RhiSamplerHandle m_tonemapSampler;
 
     void createVertexDescriptor();

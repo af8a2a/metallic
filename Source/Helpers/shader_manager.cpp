@@ -157,6 +157,8 @@ void ShaderManager::syncRuntimeContext() {
         m_rtCtx->renderPipelinesRhi["VisibilityPass"] = m_visPipeline;
     if (m_visIndirectPipeline.nativeHandle())
         m_rtCtx->renderPipelinesRhi["VisibilityIndirectPass"] = m_visIndirectPipeline;
+    if (m_clusterRenderPipeline.nativeHandle())
+        m_rtCtx->renderPipelinesRhi["ClusterRenderPass"] = m_clusterRenderPipeline;
     if (m_skyPipeline.nativeHandle())
         m_rtCtx->renderPipelinesRhi["SkyPass"] = m_skyPipeline;
     if (m_tonemapPipeline.nativeHandle())
@@ -275,6 +277,21 @@ bool ShaderManager::buildAll() {
         releaseOwnedHandle(m_visIndirectPipeline);
     } else {
         releaseOwnedHandle(m_visIndirectPipeline);
+    }
+
+    errorMessage.clear();
+    if (m_profile.clusterRender && m_supportsMeshShaders) {
+        m_clusterRenderPipeline = reloadMeshShader("Shaders/Mesh/cluster_render",
+                                                    nullptr,
+                                                    RhiFormat::RGBA8Unorm,
+                                                    RhiFormat::D32Float,
+                                                    &errorMessage);
+        if (!m_clusterRenderPipeline.nativeHandle()) {
+            spdlog::warn("Failed to create cluster render pipeline: {}",
+                         formatError(&errorMessage, "Slang cluster render shader compilation failed"));
+        }
+    } else {
+        releaseOwnedHandle(m_clusterRenderPipeline);
     }
 
     errorMessage.clear();
@@ -713,6 +730,21 @@ std::pair<int, int> ShaderManager::reloadAll() {
         }
     } else {
         releaseOwnedHandle(m_visIndirectPipeline);
+    }
+
+    if (m_profile.clusterRender && m_supportsMeshShaders) {
+        reloadPipeline(true,
+                       m_clusterRenderPipeline,
+                       "cluster render PSO",
+                       [&](std::string& localError) {
+                           return reloadMeshShader("Shaders/Mesh/cluster_render",
+                                                   nullptr,
+                                                   RhiFormat::RGBA8Unorm,
+                                                   RhiFormat::D32Float,
+                                                   &localError);
+                       });
+    } else {
+        releaseOwnedHandle(m_clusterRenderPipeline);
     }
 
     reloadPipeline(m_profile.meshletCull,

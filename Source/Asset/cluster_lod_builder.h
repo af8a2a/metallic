@@ -7,6 +7,7 @@
 
 #include "rhi_backend.h"
 #include "meshlet_builder.h"
+#include "cluster_types.h"
 
 // GPU cluster group (32 bytes, alignment-friendly)
 struct GPUClusterGroup {
@@ -69,6 +70,14 @@ struct ClusterLODData {
     RhiBufferHandle groupBuffer;
     RhiBufferHandle nodeBuffer;
     RhiBufferHandle levelBuffer;
+
+    // Packed cluster data (vk_lod_clusters-compatible)
+    std::vector<PackedCluster>  packedClusters;
+    std::vector<uint8_t>        clusterVertexData;
+    std::vector<uint8_t>        clusterIndexData;
+    RhiBufferHandle packedClusterBuffer;
+    RhiBufferHandle clusterVertexDataBuffer;
+    RhiBufferHandle clusterIndexDataBuffer;
 
     uint32_t totalMeshletCount = 0;
     uint32_t totalGroupCount = 0;

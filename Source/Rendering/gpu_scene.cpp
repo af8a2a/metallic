@@ -151,7 +151,7 @@ void uploadInstanceTable(GpuSceneTables& tables) {
 bool buildGpuSceneTables(const RhiDevice& device,
                          const LoadedMesh& mesh,
                          const MeshletData& meshletData,
-                         const ClusterLODData*,
+                         const ClusterLODData* clusterLodData,
                          const SceneGraph& sceneGraph,
                          GpuSceneTables& out) {
     releaseGpuSceneTables(out);
@@ -222,6 +222,28 @@ bool buildGpuSceneTables(const RhiDevice& device,
     out.instanceCount = static_cast<uint32_t>(out.instances.size());
     out.totalMeshletDispatchCount = dispatchStart;
 
+    // Fill packedClusterStart/Count from ClusterLODData
+    if (clusterLodData && !clusterLodData->packedClusters.empty()) {
+        for (auto& geom : out.geometries) {
+            geom.packedClusterStart = geom.meshletStart;
+            geom.packedClusterCount = geom.meshletCount;
+        }
+
+        // Build CPU worklist: all LOD 0 clusters for all instances
+        out.clusterVisWorklist.clear();
+        out.clusterVisWorklist.reserve(out.totalMeshletDispatchCount);
+        for (uint32_t instIdx = 0; instIdx < out.instanceCount; instIdx++) {
+            const auto& inst = out.instances[instIdx];
+            if (inst.geometryIndex >= out.geometryCount) continue;
+            const auto& geom = out.geometries[inst.geometryIndex];
+            for (uint32_t c = 0; c < geom.packedClusterCount; c++) {
+                out.clusterVisWorklist.push_back(
+                    ClusterInfo{instIdx, geom.packedClusterStart + c});
+            }
+        }
+        out.clusterVisWorklistCount = static_cast<uint32_t>(out.clusterVisWorklist.size());
+    }
+
     if (out.instances.empty() || out.geometries.empty()) {
         spdlog::warn("GpuScene: no renderable meshlet instances were collected from the scene graph");
         releaseGpuSceneTables(out);
@@ -240,6 +262,15 @@ bool buildGpuSceneTables(const RhiDevice& device,
         spdlog::error("GpuScene: failed to create scene table buffers");
         releaseGpuSceneTables(out);
         return false;
+    }
+
+    // Upload cluster vis worklist
+    if (!out.clusterVisWorklist.empty()) {
+        out.clusterVisWorklistBuffer = rhiCreateSharedBuffer(
+            device,
+            out.clusterVisWorklist.data(),
+            out.clusterVisWorklist.size() * sizeof(ClusterInfo),
+            "Cluster Vis Worklist");
     }
 
     spdlog::info("GpuScene: built {} instances, {} geometries, {} meshlet dispatches",

@@ -1397,10 +1397,16 @@ int main() {
 
     const std::string visibilityPipelinePath =
         std::string(PROJECT_SOURCE_DIR) + "/Pipelines/visibilitybuffer.json";
+    const std::string clusterVisPipelinePath =
+        std::string(PROJECT_SOURCE_DIR) + "/Pipelines/cluster_vis.json";
     PipelineAsset visibilityPipelineBaseAsset;
     PipelineAsset visibilityPipelineAsset;
+    PipelineAsset clusterVisPipelineAsset;
     bool visibilityPipelineBaseLoaded =
         loadPipelineAssetChecked(visibilityPipelinePath, "Vulkan visibility", visibilityPipelineBaseAsset);
+    bool clusterVisPipelineLoaded =
+        loadPipelineAssetChecked(clusterVisPipelinePath, "Cluster visualization", clusterVisPipelineAsset);
+    bool useClusterVisMode = false;
     bool visibilityPipelineAssetLoaded = false;
     bool visibilityAutoExposureAvailable = false;
     bool visibilityTaaAvailable = false;
@@ -1784,6 +1790,7 @@ int main() {
     PipelineBuilder postBuilder(renderContext);
     auto rebuildPostBuilder = [&](int targetWidth, int targetHeight) {
         const PipelineAsset& activePostAsset =
+            (useClusterVisMode && clusterVisPipelineLoaded) ? clusterVisPipelineAsset :
             useVisibilityRenderGraph ? visibilityPipelineAsset : sceneColorPostAsset;
         if (!postBuilder.build(activePostAsset, runtimeContext, targetWidth, targetHeight)) {
             spdlog::error("Failed to build Vulkan post pipeline: {}", postBuilder.lastError());
@@ -2170,6 +2177,13 @@ int main() {
             findFirstEnabledPassByType(visibilityPipelineAsset, "AutoExposurePass") != nullptr;
         ImGui::Text("Resolution: %d x %d", width, height);
         ImGui::TextUnformatted(useVisibilityRenderGraph ? "Pipeline: Visibility Buffer" : "Pipeline: Triangle Fallback");
+        if (clusterVisPipelineLoaded && hasRenderPipeline("ClusterRenderPass")) {
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Cluster Vis", &useClusterVisMode)) {
+                spdlog::info("Cluster visualization mode: {}", useClusterVisMode ? "ON" : "OFF");
+                postBuilderNeedsRebuild = true;
+            }
+        }
         ImGui::Text("Upscaler: %s", visibilityUpscalerModeName(visibilityUpscalerMode));
         ImGui::TextUnformatted(autoExposureEnabled ? "Exposure: Auto" : "Exposure: Manual");
         ImGui::TextUnformatted(visibilityGpuCullingAvailable ? "Visibility Dispatch: GPU" : "Visibility Dispatch: CPU");

@@ -2,6 +2,7 @@
 
 #include "cluster_streaming_service.h"
 #include "auto_exposure_pass.h"
+#include "cluster_render_pass.h"
 #include "cluster_streaming_age_filter_pass.h"
 #include "deferred_lighting_pass.h"
 #include "forward_pass.h"
@@ -79,6 +80,13 @@ REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
 REGISTER_COMPUTE_PASS(HZBBuildPass, "HZB Build", "Geometry",
     (std::vector<PassSlotInfo>{makeInputSlot("depth", "Depth")}),
     (std::vector<PassSlotInfo>{}));
+
+REGISTER_RENDER_PASS(ClusterRenderPass, "Cluster Render", "Geometry",
+    (std::vector<PassSlotInfo>{}),
+    (std::vector<PassSlotInfo>{
+        makeOutputSlot("color", "Color"),
+        makeOutputSlot("depth", "Depth")
+    }));
 
 REGISTER_COMPUTE_PASS(ShadowRayPass, "Shadow Ray Pass", "Lighting",
     (std::vector<PassSlotInfo>{makeInputSlot("depth", "Depth")}),
