@@ -81,8 +81,7 @@ public:
 
         encoder.setRenderPipeline(pipeIt->second);
         encoder.setCullMode(RhiCullMode::None);
-        encoder.setVertexBytes(&uniforms, sizeof(uniforms), 0);
-        encoder.setFragmentBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.setFragmentTexture(&transmittanceIt->second, 0);
         encoder.setFragmentTexture(&scatteringIt->second, 1);
         encoder.setFragmentTexture(&irradianceIt->second, 2);

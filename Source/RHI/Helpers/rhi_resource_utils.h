@@ -1,33 +1,6 @@
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
-
 #include "rhi_backend.h"
-
-enum class RhiSamplerFilterMode {
-    Nearest,
-    Linear,
-};
-
-enum class RhiSamplerMipFilterMode {
-    None,
-    Linear,
-};
-
-enum class RhiSamplerAddressMode {
-    Repeat,
-    ClampToEdge,
-};
-
-struct RhiSamplerDesc {
-    RhiSamplerFilterMode minFilter = RhiSamplerFilterMode::Linear;
-    RhiSamplerFilterMode magFilter = RhiSamplerFilterMode::Linear;
-    RhiSamplerMipFilterMode mipFilter = RhiSamplerMipFilterMode::None;
-    RhiSamplerAddressMode addressModeS = RhiSamplerAddressMode::Repeat;
-    RhiSamplerAddressMode addressModeT = RhiSamplerAddressMode::Repeat;
-    RhiSamplerAddressMode addressModeR = RhiSamplerAddressMode::Repeat;
-};
 
 RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& device,
                                       const void* initialData,
@@ -83,8 +56,18 @@ inline void rhiReleaseHandle(Handle& handle) {
 
 #ifdef _WIN32
 #include <vulkan/vulkan.h>
+#include <type_traits>
 struct VmaAllocator_T;
 typedef VmaAllocator_T* VmaAllocator;
+
+template <typename VkHandle>
+inline uint64_t vulkanObjectHandle(VkHandle handle) {
+    if constexpr (std::is_pointer_v<VkHandle>) {
+        return reinterpret_cast<uint64_t>(handle);
+    } else {
+        return static_cast<uint64_t>(handle);
+    }
+}
 
 struct VulkanResourceContextInfo {
     VkDevice device = VK_NULL_HANDLE;
@@ -92,12 +75,19 @@ struct VulkanResourceContextInfo {
     VmaAllocator allocator = nullptr;
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     uint32_t graphicsQueueFamily = 0;
+    uint32_t transferQueueFamily = UINT32_MAX;
+    bool bufferDeviceAddressEnabled = false;
+    bool externalHostMemoryEnabled = false;
     bool rayTracingEnabled = false;
     bool initialized = false;
     bool streamlineHooksEnabled = false;
-    PFN_vkBeginCommandBuffer vkBeginCommandBufferProxy = nullptr;
-    PFN_vkCmdBindPipeline vkCmdBindPipelineProxy = nullptr;
-    PFN_vkCmdBindDescriptorSets vkCmdBindDescriptorSetsProxy = nullptr;
+    bool debugUtilsEnabled = false;
+    void* streamlineBeginCommandBufferHook = nullptr;
+    void* streamlineCmdBindPipelineHook = nullptr;
+    void* streamlineCmdBindDescriptorSetsHook = nullptr;
+    PFN_vkSetDebugUtilsObjectNameEXT vkSetDebugUtilsObjectName = nullptr;
+    PFN_vkCmdBeginDebugUtilsLabelEXT vkCmdBeginDebugUtilsLabel = nullptr;
+    PFN_vkCmdEndDebugUtilsLabelEXT vkCmdEndDebugUtilsLabel = nullptr;
 };
 
 void vulkanSetResourceContext(VkDevice device,
@@ -105,11 +95,30 @@ void vulkanSetResourceContext(VkDevice device,
                               VmaAllocator allocator,
                               VkQueue queue,
                               uint32_t queueFamily,
+                              uint32_t transferQueueFamily,
+                              bool bufferDeviceAddressEnabled,
+                              bool externalHostMemoryEnabled,
                               bool rayTracingEnabled,
+                              bool debugUtilsEnabled,
                               void* vkGetDeviceProcAddrProxy = nullptr);
 const VulkanResourceContextInfo& vulkanGetResourceContext();
 void vulkanClearResourceContext();
 void vulkanSetStreamlineHookedCommandsEnabled(bool enabled);
+void vulkanSetStreamlineCommandHooks(void* beginCommandBufferHook,
+                                     void* cmdBindPipelineHook,
+                                     void* cmdBindDescriptorSetsHook);
+
+void vulkanSetObjectDebugName(VkDevice device,
+                              VkObjectType objectType,
+                              uint64_t handle,
+                              const char* name);
+void vulkanBeginDebugLabel(VkCommandBuffer commandBuffer, const char* label);
+void vulkanEndDebugLabel(VkCommandBuffer commandBuffer);
+
+class VulkanUploadService;
+void vulkanSetUploadService(VulkanUploadService* service);
+VulkanUploadService* vulkanGetUploadService();
+
 VkResult vulkanBeginCommandBufferHooked(VkCommandBuffer commandBuffer,
                                         const VkCommandBufferBeginInfo* beginInfo);
 void vulkanCmdBindPipelineHooked(VkCommandBuffer commandBuffer,

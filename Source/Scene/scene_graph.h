@@ -1,16 +1,30 @@
 #pragma once
 
-#include <ml.h>
 #include <string>
 #include <vector>
 #include <cstdint>
 
+#include <ml.h>
+
 struct LoadedMesh;
 struct MeshletData;
-class RhiDevice;
+struct ClusterLODData;
 
 enum class LightType : uint8_t {
     Directional = 0
+};
+
+enum class CameraType : uint8_t {
+    Perspective = 0,
+    Orthographic
+};
+
+struct CameraComponent {
+    CameraType type = CameraType::Perspective;
+    float yfov = 0.0f;
+    float znear = 0.01f;
+    float zfar = 1000.0f;
+    float aspectRatio = 0.0f;
 };
 
 struct DirectionalLight {
@@ -48,19 +62,26 @@ struct SceneNode {
     int32_t meshIndex = -1;
     uint32_t primitiveGroupStart = 0;
     uint32_t primitiveGroupCount = 0;
+    uint32_t primitiveIndexInMesh = 0;
     uint32_t meshletStart = 0;
     uint32_t meshletCount = 0;
     // For vertex pipeline
     uint32_t indexStart = 0;
     uint32_t indexCount = 0;
+    uint32_t materialIndex = UINT32_MAX;
 
     // LOD hierarchy (UINT32_MAX = no LOD data, use flat meshlets)
     uint32_t lodRootNode = UINT32_MAX;
 
     // Optional single light component.
+    int32_t lightIndex = -1;
     bool hasLight = false;
     LightComponent light;
 
+    int32_t cameraIndex = -1;
+    CameraComponent camera;
+
+    bool generatedPrimitive = false;
     bool visible = true;
 };
 
@@ -71,12 +92,7 @@ public:
     int32_t selectedNode = -1;
     int32_t sunLightNode = -1;
 
-    bool buildFromGLTF(const std::string& gltfPath,
-                       const LoadedMesh& mesh,
-                       const MeshletData& meshletData);
-    bool normalizeSingleRootScale(const RhiDevice& device,
-                                  LoadedMesh& mesh,
-                                  MeshletData& meshletData);
+    bool applyBakedSingleRootScale(const LoadedMesh& mesh);
     void updateTransforms();
     void markDirty(uint32_t nodeId);
     bool isNodeVisible(uint32_t nodeId) const;

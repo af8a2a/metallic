@@ -6,7 +6,7 @@ Metallic is a rendering playground for modern GPU-driven rendering experiments.
 - Windows uses the newer backend-agnostic RHI path with a Vulkan 1.4 preview renderer and shared pipeline asset system.
 - A standalone `PipelineEditorTool` lets you inspect and edit pipeline JSON graphs outside the renderer.
 
-Most of the codebase is authored with heavy assistance from `Claude Opus 4.6` and `OpenAI GPT-5.3 Codex`.
+Most of the codebase is authored with heavy assistance from `Claude Opus 4.6` and `OpenAI GPT-5.4`.
 
 ## Backend Status
 

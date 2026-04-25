@@ -2,12 +2,14 @@
 #include "camera.h"
 #include "imgui.h"
 
+extern bool s_viewportHovered;
+
 static void mouseButtonCallback(GLFWwindow* window, int button, int action, int /*mods*/) {
-    if (ImGui::GetIO().WantCaptureMouse)
+    if (ImGui::GetIO().WantCaptureMouse && !s_viewportHovered)
         return;
     auto* state = static_cast<InputState*>(glfwGetWindowUserPointer(window));
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
-        state->mouseDown = (action == GLFW_PRESS);
+        state->mouseDown = (action == GLFW_PRESS) && s_viewportHovered;
         if (state->mouseDown) {
             glfwGetCursorPos(window, &state->lastMouseX, &state->lastMouseY);
         }
@@ -15,8 +17,6 @@ static void mouseButtonCallback(GLFWwindow* window, int button, int action, int 
 }
 
 static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
-    if (ImGui::GetIO().WantCaptureMouse)
-        return;
     auto* state = static_cast<InputState*>(glfwGetWindowUserPointer(window));
     if (state->mouseDown && state->camera) {
         double dx = xpos - state->lastMouseX;
@@ -28,7 +28,7 @@ static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
 }
 
 static void scrollCallback(GLFWwindow* window, double /*xoffset*/, double yoffset) {
-    if (ImGui::GetIO().WantCaptureMouse)
+    if (!s_viewportHovered)
         return;
     auto* state = static_cast<InputState*>(glfwGetWindowUserPointer(window));
     if (state->camera) {

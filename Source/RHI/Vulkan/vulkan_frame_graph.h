@@ -2,9 +2,9 @@
 
 #ifdef _WIN32
 
-#include "../rhi_backend.h"
+#include "rhi_backend.h"
 #include "vulkan_descriptor_manager.h"
-#include "vulkan_image_tracker.h"
+#include "vulkan_resource_state_tracker.h"
 #include "vulkan_resource_handles.h"
 
 #include <vulkan/vulkan.h>
@@ -12,6 +12,7 @@
 // Forward declarations
 class VulkanContext;
 class VulkanOwnedTexture;
+class VulkanGpuProfiler;
 
 // Imported texture (wraps swapchain image, non-owning)
 class VulkanImportedTexture final : public RhiTexture {
@@ -49,10 +50,14 @@ private:
     VulkanTextureResource m_resource{};
 };
 
+class VulkanTransientPool;
+
 // Frame graph backend for Vulkan
 class VulkanFrameGraphBackend final : public RhiFrameGraphBackend {
 public:
     VulkanFrameGraphBackend(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator);
+
+    void setTransientPool(VulkanTransientPool* pool) { m_transientPool = pool; }
 
     std::unique_ptr<RhiTexture> createTexture(const RhiTextureDesc& desc) override;
     std::unique_ptr<RhiBuffer> createBuffer(const RhiBufferDesc& desc) override;
@@ -61,25 +66,46 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VmaAllocator m_allocator = nullptr;
+    VulkanTransientPool* m_transientPool = nullptr;
 };
 
 // Command buffer abstraction
 class VulkanCommandBuffer final : public RhiCommandBuffer {
 public:
     VulkanCommandBuffer(VkCommandBuffer commandBuffer, VkDevice device,
-                        VulkanDescriptorManager* descriptorManager,
-                        VulkanImageLayoutTracker* imageTracker);
+                        IVulkanDescriptorBackend* descriptorManager,
+                        VulkanResourceStateTracker* stateTracker,
+                        VulkanGpuProfiler* gpuProfiler = nullptr,
+                        VkCommandBuffer asyncComputeCommandBuffer = VK_NULL_HANDLE);
 
     std::unique_ptr<RhiRenderCommandEncoder> beginRenderPass(const RhiRenderPassDesc& desc) override;
     std::unique_ptr<RhiComputeCommandEncoder> beginComputePass(const RhiComputePassDesc& desc) override;
     std::unique_ptr<RhiBlitCommandEncoder> beginBlitPass(const RhiBlitPassDesc& desc) override;
+    void prepareTextureForSampling(const RhiTexture* texture) override;
+    void prepareTextureForStorage(const RhiTexture* texture) override;
+    void prepareTextureForTransferSrc(const RhiTexture* texture) override;
+    void prepareTextureForTransferDst(const RhiTexture* texture) override;
+    void prepareBufferForStorageRead(const RhiBuffer* buffer) override;
+    void prepareBufferForStorageWrite(const RhiBuffer* buffer) override;
+    void prepareBufferForIndirect(const RhiBuffer* buffer) override;
+    void prepareBufferForIndexInput(const RhiBuffer* buffer) override;
+    void prepareBufferForVertexInput(const RhiBuffer* buffer) override;
+    void flushBarriers() override;
+    void setNextPassQueueHint(RhiQueueHint hint) override;
     void transitionTexture(const RhiTexture* texture, VkImageLayout layout);
+
+    // Returns true if any work was submitted to the async compute command buffer this frame.
+    bool hadAsyncComputeWork() const { return m_hadAsyncComputeWork; }
 
 private:
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
+    VkCommandBuffer m_asyncComputeCommandBuffer = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
-    VulkanDescriptorManager* m_descriptorManager = nullptr;
-    VulkanImageLayoutTracker* m_imageTracker = nullptr;
+    IVulkanDescriptorBackend* m_descriptorManager = nullptr;
+    VulkanResourceStateTracker* m_stateTracker = nullptr;
+    VulkanGpuProfiler* m_gpuProfiler = nullptr;
+    RhiQueueHint m_nextPassHint = RhiQueueHint::Auto;
+    bool m_hadAsyncComputeWork = false;
 };
 
 // Load mesh shader extension functions (call once after device creation)

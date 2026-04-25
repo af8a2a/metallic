@@ -1,9 +1,12 @@
-﻿#pragma once
+#pragma once
 
 #include "render_pass.h"
 #include "render_uniforms.h"
+#include "cluster_streaming_service.h"
 #include "frame_context.h"
+#include "gpu_driven_helpers.h"
 #include "gpu_cull_resources.h"
+#include "cluster_lod_builder.h"
 #include "hzb_constants.h"
 #include "pass_registry.h"
 #include "imgui.h"
@@ -11,6 +14,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
+#include <memory>
 #include <vector>
 
 class MeshletCullPass : public RenderPass {
@@ -33,14 +39,89 @@ public:
     }
 
     FGResource cullResult;
+    FGResource visibleMeshlets;
+    FGResource cullCounter;
+    FGResource instanceData;
 
     FGResource getOutput(const std::string& name) const override {
         if (name == "cullResult") return cullResult;
+        if (name == "visibleMeshlets") return visibleMeshlets;
+        if (name == "cullCounter") return cullCounter;
+        if (name == "instanceData") return instanceData;
+        if (name == "visibilityWorklist") return visibleMeshlets;
+        if (name == "visibilityWorklistState") return cullCounter;
+        if (name == "visibilityIndirectArgs") return cullCounter;
+        if (name == "visibilityInstances") return instanceData;
         return FGResource{};
     }
 
     void setup(FGBuilder& builder) override {
+        FGResource streamingSyncInput = getInput("streamingSync");
+        if (streamingSyncInput.isValid()) {
+            builder.read(streamingSyncInput);
+        }
+
         cullResult = builder.createToken("cullResult");
+
+        m_maxVisibleInstances = std::max<uint32_t>(1u, m_ctx.gpuScene.instanceCount);
+        m_maxMeshlets = std::max<uint32_t>(1u, computeMaxMeshletCapacity());
+
+        const auto visibleInstanceWorklist =
+            GpuDriven::createTypedIndirectWorklist<VisibleInstanceInfo,
+                                                   GpuDriven::ComputeDispatchCommandLayout>(
+                builder,
+                "instanceData",
+                "VisibleInstanceBuffer",
+                m_maxVisibleInstances,
+                "VisibleInstanceState",
+                "VisibleInstanceStateBuffer",
+                true);
+        instanceData = visibleInstanceWorklist.payload;
+        m_visibleInstanceState = visibleInstanceWorklist.state;
+
+        const auto visibleMeshletWorklist =
+            GpuDriven::createTypedIndirectWorklist<MeshletDrawInfo,
+                                                   GpuDriven::MeshDispatchCommandLayout>(
+                builder,
+                "visibleMeshlets",
+                "VisibleMeshletBuffer",
+                m_maxMeshlets,
+                "cullCounter",
+                "VisibilityWorklistStateBuffer",
+                true);
+        visibleMeshlets = visibleMeshletWorklist.payload;
+        cullCounter = visibleMeshletWorklist.state;
+
+        m_clusterTraversalStats = builder.create("ClusterTraversalStats",
+                                                 makeTraversalStatsBufferDesc());
+        m_dummyLodNodes = builder.create("DummyClusterLodNodes",
+                                         makeSingleElementBufferDesc<GPULodNode>("DummyClusterLodNodes"));
+        m_dummyLodGroups = builder.create("DummyClusterLodGroups",
+                                          makeSingleElementBufferDesc<GPUClusterGroup>("DummyClusterLodGroups"));
+        m_dummyLodGroupMeshletIndices =
+            builder.create("DummyClusterLodGroupMeshletIndices",
+                           makeSingleElementBufferDesc<uint32_t>("DummyClusterLodGroupMeshletIndices"));
+        m_dummyLodBounds = builder.create("DummyClusterLodBounds",
+                                          makeSingleElementBufferDesc<GPUMeshletBounds>("DummyClusterLodBounds"));
+        m_dummyGroupResidency =
+            builder.create("DummyClusterLodGroupResidency",
+                           makeSingleElementBufferDesc<uint32_t>("DummyClusterLodGroupResidency"));
+        m_dummyLodGroupPageTable =
+            builder.create("DummyClusterLodGroupPageTable",
+                           makeSingleValueBufferDesc<uint64_t>(makeClusterLodGroupPageInvalidAddress(),
+                                                               "DummyClusterLodGroupPageTable"));
+        m_dummyResidencyRequests =
+            builder.create("DummyClusterLodResidencyRequests",
+                           makeSingleElementBufferDesc<ClusterResidencyRequest>(
+                               "DummyClusterLodResidencyRequests"));
+        m_dummyResidencyRequestState =
+            builder.create("DummyClusterLodResidencyRequestState",
+                           GpuDriven::makeWorklistStateBufferDesc<GpuDriven::ComputeDispatchCommandLayout>(
+                               "DummyClusterLodResidencyRequestState",
+                               false));
+        m_dummyGroupAge =
+            builder.create("DummyClusterLodGroupAge",
+                           makeSingleElementBufferDesc<uint32_t>("DummyClusterLodGroupAge"));
 
         m_hzbHistoryRead.clear();
         m_hzbLevelCount = computeHzbLevelCount(static_cast<uint32_t>(m_width),
@@ -62,84 +143,120 @@ public:
         if (!m_frameContext || !m_runtimeContext) return;
         if (!m_frameContext->gpuDrivenCulling) return;
 
+        auto classifyIt = m_runtimeContext->computePipelinesRhi.find("InstanceClassifyPass");
         auto cullIt = m_runtimeContext->computePipelinesRhi.find("MeshletCullPass");
         auto buildIt = m_runtimeContext->computePipelinesRhi.find("BuildIndirectPass");
+        if (classifyIt == m_runtimeContext->computePipelinesRhi.end() ||
+            !classifyIt->second.nativeHandle()) {
+            return;
+        }
         if (cullIt == m_runtimeContext->computePipelinesRhi.end() || !cullIt->second.nativeHandle()) return;
         if (buildIt == m_runtimeContext->computePipelinesRhi.end() || !buildIt->second.nativeHandle()) return;
 
-        const auto& visibleNodes = m_frameContext->visibleMeshletNodes;
-        uint32_t instanceCount = std::min<uint32_t>(
-            m_frameContext->visibilityInstanceCount,
-            static_cast<uint32_t>(visibleNodes.size()));
-        if (instanceCount == 0) return;
-
-        std::vector<uint32_t> validVisibleNodes;
-        validVisibleNodes.reserve(instanceCount);
-        for (uint32_t i = 0; i < instanceCount; ++i) {
-            const uint32_t nodeID = visibleNodes[i];
-            if (nodeID < m_ctx.sceneGraph.nodes.size()) {
-                validVisibleNodes.push_back(nodeID);
-            }
-        }
-        if (validVisibleNodes.empty()) return;
-        instanceCount = static_cast<uint32_t>(validVisibleNodes.size());
-
-        // Compute total meshlet count across all visible instances
-        uint32_t totalMeshlets = 0;
-        for (uint32_t i = 0; i < instanceCount; i++) {
-            const auto& node = m_ctx.sceneGraph.nodes[validVisibleNodes[i]];
-            totalMeshlets += node.meshletCount;
-        }
-        if (totalMeshlets == 0) return;
-
-        m_totalMeshlets = totalMeshlets;
-
-        // Ensure GPU buffers are large enough
-        ensureBuffers(totalMeshlets, instanceCount);
-
-        // Read back previous frame's visible count (1-frame delayed).
-        // build_indirect writes count to offset 4 (indirect args x) then resets offset 0.
-        // By this point the previous frame's GPU work is complete.
-        auto* counterPtr = static_cast<uint32_t*>(m_counterBuffer->mappedData());
-        m_lastVisibleCount = counterPtr[1]; // indirect args x from previous frame
-
-        // Upload instance data (CPU PU, StorageModeShared)
-        auto* instPtr = static_cast<GPUInstanceData*>(m_instanceDataBuffer->mappedData());
-        for (uint32_t i = 0; i < instanceCount; i++) {
-            const auto& node = m_ctx.sceneGraph.nodes[validVisibleNodes[i]];
-            float4x4 nodeModelView = m_frameContext->view * node.transform.worldMatrix;
-            float4x4 nodeMVP = m_frameContext->proj * nodeModelView;
-
-            GPUInstanceData& inst = instPtr[i];
-            inst.mvp = transpose(nodeMVP);
-            inst.modelView = transpose(nodeModelView);
-            inst.worldMatrix = transpose(node.transform.worldMatrix);
-            inst.meshletStart = node.meshletStart;
-            inst.meshletCount = node.meshletCount;
-            inst.instanceID = i;
-            inst.pad = 0;
+        const GpuSceneTables& gpuScene = m_ctx.gpuScene;
+        if (!gpuScene.instanceBuffer.nativeHandle() ||
+            !gpuScene.geometryBuffer.nativeHandle() ||
+            gpuScene.instanceCount == 0 ||
+            gpuScene.totalMeshletDispatchCount == 0) {
+            return;
         }
 
-        // Build CullUniforms
-        float4x4 viewProj = m_frameContext->proj * m_frameContext->view;
-        float4x4 prevViewProj = m_frameContext->prevCullProj * m_frameContext->prevCullView;
-        CullUniforms cullUni{};
-        cullUni.viewProj = transpose(viewProj);
-        cullUni.prevViewProj = transpose(prevViewProj);
-        cullUni.prevView = transpose(m_frameContext->prevCullView);
-        cullUni.cameraWorldPos = m_frameContext->cameraWorldPos;
-        cullUni.prevCameraWorldPos = m_frameContext->prevCameraWorldPos;
-        cullUni.prevProjScale = float2(std::abs(m_frameContext->prevCullProj[0].x),
-                                       std::abs(m_frameContext->prevCullProj[1].y));
-        cullUni.totalDispatchCount = totalMeshlets;
-        cullUni.instanceCount = instanceCount;
-        cullUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1 : 0;
-        cullUni.enableConeCull = m_frameContext->enableConeCull ? 1 : 0;
+        m_totalMeshlets = gpuScene.totalMeshletDispatchCount;
+
+        if (!m_frameGraph) return;
+        RhiBuffer* visibleInstanceBuffer = m_frameGraph->getBuffer(instanceData);
+        RhiBuffer* visibleInstanceStateBuffer = m_frameGraph->getBuffer(m_visibleInstanceState);
+        RhiBuffer* visibleMeshletBuffer = m_frameGraph->getBuffer(visibleMeshlets);
+        RhiBuffer* worklistStateBuffer = m_frameGraph->getBuffer(cullCounter);
+        RhiBuffer* clusterTraversalStatsBuffer = m_frameGraph->getBuffer(m_clusterTraversalStats);
+        if (!visibleInstanceBuffer || !visibleInstanceStateBuffer ||
+            !visibleMeshletBuffer || !worklistStateBuffer || !clusterTraversalStatsBuffer) {
+            return;
+        }
+
+        m_lastTraversalStats = readTraversalStats(clusterTraversalStatsBuffer);
+        if (clusterTraversalStatsBuffer->mappedData()) {
+            std::memset(clusterTraversalStatsBuffer->mappedData(), 0, sizeof(ClusterTraversalStats));
+        }
+
+        GpuDriven::ensureWorklistStateBufferInitialized<GpuDriven::ComputeDispatchCommandLayout>(
+            visibleInstanceStateBuffer,
+            m_initializedInstanceStateBuffer);
+        GpuDriven::ensureWorklistStateBufferInitialized<GpuDriven::MeshDispatchCommandLayout>(
+            worklistStateBuffer,
+            m_initializedMeshletStateBuffer);
+
+        m_lastVisibleInstanceCount =
+            GpuDriven::readPublishedWorkItemCount<GpuDriven::ComputeDispatchCommandLayout>(
+                visibleInstanceStateBuffer);
+        m_lastVisibleCount =
+            GpuDriven::readPublishedWorkItemCount<GpuDriven::MeshDispatchCommandLayout>(
+                worklistStateBuffer);
+
+        const ClusterLODData& clusterLodData = m_ctx.clusterLodData;
+        ClusterStreamingService* streamingService =
+            m_runtimeContext ? m_runtimeContext->clusterStreamingService : nullptr;
+        const bool clusterLodAvailable =
+            clusterLodData.nodeBuffer.nativeHandle() &&
+            clusterLodData.groupBuffer.nativeHandle() &&
+            clusterLodData.groupMeshletIndicesBuffer.nativeHandle() &&
+            clusterLodData.boundsBuffer.nativeHandle();
+        RhiBuffer* dummyLodNodesBuffer = m_frameGraph->getBuffer(m_dummyLodNodes);
+        RhiBuffer* dummyLodGroupsBuffer = m_frameGraph->getBuffer(m_dummyLodGroups);
+        RhiBuffer* dummyLodGroupMeshletIndicesBuffer =
+            m_frameGraph->getBuffer(m_dummyLodGroupMeshletIndices);
+        RhiBuffer* dummyLodBoundsBuffer = m_frameGraph->getBuffer(m_dummyLodBounds);
+        RhiBuffer* dummyGroupResidencyBuffer = m_frameGraph->getBuffer(m_dummyGroupResidency);
+        RhiBuffer* dummyLodGroupPageTableBuffer = m_frameGraph->getBuffer(m_dummyLodGroupPageTable);
+        RhiBuffer* dummyResidencyRequestBuffer = m_frameGraph->getBuffer(m_dummyResidencyRequests);
+        RhiBuffer* dummyResidencyRequestStateBuffer =
+            m_frameGraph->getBuffer(m_dummyResidencyRequestState);
+        RhiBuffer* dummyGroupAgeBuffer = m_frameGraph->getBuffer(m_dummyGroupAge);
+        const RhiBuffer* lodNodeBuffer =
+            clusterLodAvailable ? &clusterLodData.nodeBuffer : dummyLodNodesBuffer;
+        const RhiBuffer* lodGroupBuffer =
+            clusterLodAvailable ? &clusterLodData.groupBuffer : dummyLodGroupsBuffer;
+        const RhiBuffer* lodBoundsBuffer =
+            clusterLodAvailable ? &clusterLodData.boundsBuffer : dummyLodBoundsBuffer;
+        const RhiBuffer* sourceLodGroupMeshletIndicesBuffer =
+            clusterLodAvailable ? &clusterLodData.groupMeshletIndicesBuffer
+                                : dummyLodGroupMeshletIndicesBuffer;
+        const bool residencyStreamingResourcesReady =
+            clusterLodAvailable &&
+            streamingService &&
+            streamingService->ready();
+        const bool residencyStreamingEnabled =
+            residencyStreamingResourcesReady &&
+            streamingService &&
+            streamingService->streamingEnabled();
+        const RhiBuffer* lodGroupMeshletIndicesBuffer =
+            clusterLodAvailable
+                ? (residencyStreamingEnabled && streamingService->residentGroupMeshletIndicesBuffer()
+                       ? streamingService->residentGroupMeshletIndicesBuffer()
+                       : &clusterLodData.groupMeshletIndicesBuffer)
+                : dummyLodGroupMeshletIndicesBuffer;
+        const RhiBuffer* groupResidencyBuffer =
+            residencyStreamingResourcesReady ? streamingService->groupResidencyBuffer()
+                                             : dummyGroupResidencyBuffer;
+        const RhiBuffer* lodGroupPageTableBuffer =
+            residencyStreamingResourcesReady ? streamingService->lodGroupPageTableBuffer()
+                                             : dummyLodGroupPageTableBuffer;
+        const RhiBuffer* residencyRequestBuffer =
+            residencyStreamingResourcesReady ? streamingService->residencyRequestBuffer()
+                                             : dummyResidencyRequestBuffer;
+        const RhiBuffer* residencyRequestStateBuffer =
+            residencyStreamingResourcesReady ? streamingService->residencyRequestStateBuffer()
+                                             : dummyResidencyRequestStateBuffer;
+        const RhiBuffer* groupAgeBuffer =
+            residencyStreamingResourcesReady ? streamingService->groupAgeBuffer()
+                                             : dummyGroupAgeBuffer;
 
         std::array<const RhiTexture*, kHzbMaxLevels> hzbTextures{};
         uint32_t hzbTextureCount = 0;
         const bool historyValid =
             m_enableOcclusionCull &&
+            m_frameContext &&
+            !m_frameContext->historyReset &&
             !m_hzbHistoryRead.empty() &&
             m_frameGraph &&
             m_frameGraph->isHistoryValid(m_hzbHistoryRead[0]);
@@ -155,66 +272,175 @@ public:
             }
         }
 
-        cullUni.enableOcclusionCull = hzbTextureCount > 0 ? 1u : 0u;
-        cullUni.hzbLevelCount = hzbTextureCount;
+        const float4x4 currentCullProj = m_frameContext->unjitteredProj;
+
+        InstanceClassifyUniforms classifyUni{};
+        classifyUni.viewProj = transpose(currentCullProj * m_frameContext->view);
+        classifyUni.prevViewProj = transpose(m_frameContext->prevCullProj * m_frameContext->prevCullView);
+        classifyUni.prevView = transpose(m_frameContext->prevCullView);
+        classifyUni.cameraWorldPos = m_frameContext->cameraWorldPos;
+        classifyUni.prevCameraWorldPos = m_frameContext->prevCameraWorldPos;
+        classifyUni.prevProjScale = float2(std::abs(m_frameContext->prevCullProj[0].x),
+                                           std::abs(m_frameContext->prevCullProj[1].y));
+        classifyUni.instanceCount = gpuScene.instanceCount;
+        classifyUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1u : 0u;
+        classifyUni.enableOcclusionCull = hzbTextureCount > 0 ? 1u : 0u;
+        classifyUni.hzbLevelCount = hzbTextureCount;
         if (hzbTextureCount > 0) {
-            cullUni.hzbTextureSize =
+            classifyUni.hzbTextureSize =
                 float2(static_cast<float>(hzbTextures[0]->width()),
                        static_cast<float>(hzbTextures[0]->height()));
         }
+        classifyUni.occlusionDepthBias = m_occlusionDepthBias;
+        classifyUni.occlusionBoundsScale = m_occlusionBoundsScale;
+
+        CullUniforms cullUni{};
+        cullUni.viewProj = classifyUni.viewProj;
+        cullUni.prevViewProj = classifyUni.prevViewProj;
+        cullUni.prevView = classifyUni.prevView;
+        cullUni.cameraWorldPos = classifyUni.cameraWorldPos;
+        cullUni.prevCameraWorldPos = classifyUni.prevCameraWorldPos;
+        cullUni.projScale =
+            float2(std::abs(currentCullProj[0].x), std::abs(currentCullProj[1].y));
+        cullUni.renderTargetSize = float2(static_cast<float>(m_width), static_cast<float>(m_height));
+        cullUni.prevProjScale = classifyUni.prevProjScale;
+        cullUni.hzbTextureSize = classifyUni.hzbTextureSize;
+        cullUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1u : 0u;
+        cullUni.enableConeCull = m_frameContext->enableConeCull ? 1u : 0u;
+        cullUni.enableOcclusionCull = classifyUni.enableOcclusionCull;
+        cullUni.hzbLevelCount = classifyUni.hzbLevelCount;
+        cullUni.lodReferencePixels = m_lodReferencePixels;
         cullUni.occlusionDepthBias = m_occlusionDepthBias;
         cullUni.occlusionBoundsScale = m_occlusionBoundsScale;
+        cullUni.clusterLodEnabled = clusterLodAvailable ? 1u : 0u;
+        cullUni.enableResidencyStreaming = residencyStreamingEnabled ? 1u : 0u;
+        cullUni.residencyRequestFrameIndex = m_frameContext ? m_frameContext->frameIndex : 0u;
 
-        // --- Dispatch 1: Meshlet cull ---
-        encoder.setComputePipeline(cullIt->second);
-        encoder.setBytes(&cullUni, sizeof(cullUni), 0);
-        encoder.setBuffer(m_instanceDataBuffer.get(), 0, 1);
-        encoder.setBuffer(&m_ctx.meshletData.boundsBuffer, 0, 2);
-        encoder.setBuffer(m_visibleMeshletBuffer.get(), 0, 3);
-        encoder.setBuffer(m_counterBuffer.get(), 0, 4);
+        // Dispatch 1: coarse instance classification from scene tables.
+        encoder.setComputePipeline(classifyIt->second);
+        encoder.setBytes(&classifyUni, sizeof(classifyUni), GpuDriven::InstanceClassifyBindings::kUniforms);
+        encoder.setBuffer(&gpuScene.instanceBuffer, 0, GpuDriven::InstanceClassifyBindings::kInstances);
+        encoder.setBuffer(&gpuScene.geometryBuffer, 0, GpuDriven::InstanceClassifyBindings::kGeometries);
+        encoder.setBuffer(visibleInstanceBuffer, 0, GpuDriven::InstanceClassifyBindings::kOutput);
+        encoder.setBuffer(visibleInstanceStateBuffer, 0, GpuDriven::InstanceClassifyBindings::kState);
         if (hzbTextureCount > 0) {
-            encoder.setTextures(hzbTextures.data(), 5, hzbTextureCount);
+            encoder.setTextures(hzbTextures.data(),
+                                GpuDriven::InstanceClassifyBindings::kHzbTextureBase,
+                                hzbTextureCount);
         }
-
-        uint32_t threadgroupSize = 256;
-        uint32_t threadgroups = (totalMeshlets + threadgroupSize - 1) / threadgroupSize;
-        encoder.dispatchThreadgroups({threadgroups, 1, 1}, {threadgroupSize, 1, 1});
+        constexpr uint32_t kClassifyThreadgroupSize = 64u;
+        const uint32_t classifyThreadgroups =
+            (gpuScene.instanceCount + kClassifyThreadgroupSize - 1u) / kClassifyThreadgroupSize;
+        encoder.dispatchThreadgroups({classifyThreadgroups, 1, 1}, {kClassifyThreadgroupSize, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
-        // --- Dispatch 2: Build indirect args ---
+        // Dispatch 2: publish indirect compute args from visible-instance count.
         encoder.setComputePipeline(buildIt->second);
-        encoder.setBuffer(m_counterBuffer.get(), 0, 0);
+        encoder.setBuffer(visibleInstanceStateBuffer, 0, GpuDriven::BuildWorklistBindings::kState);
         encoder.dispatchThreadgroups({1, 1, 1}, {1, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
-        // Publish results to FrameContext for VisibilityPass
-        // (const_cast is safe here 鈥?we own the data and VisibilityPass reads it later in the same frame)
-        auto* mutableCtx = const_cast<FrameContext*>(m_frameContext);
-        mutableCtx->gpuVisibleMeshletBufferRhi = m_visibleMeshletBuffer.get();
-        mutableCtx->gpuCounterBufferRhi = m_counterBuffer.get();
-        mutableCtx->gpuInstanceDataBufferRhi = m_instanceDataBuffer.get();
+        // Dispatch 3: expand visible instances into visible meshlets.
+        encoder.setComputePipeline(cullIt->second);
+        encoder.setBytes(&cullUni, sizeof(cullUni), GpuDriven::MeshletCullBindings::kUniforms);
+        encoder.setBuffer(&gpuScene.instanceBuffer, 0, GpuDriven::MeshletCullBindings::kInstances);
+        encoder.setBuffer(&gpuScene.geometryBuffer, 0, GpuDriven::MeshletCullBindings::kGeometries);
+        encoder.setBuffer(&m_ctx.meshletData.boundsBuffer, 0, GpuDriven::MeshletCullBindings::kBounds);
+        encoder.setBuffer(visibleInstanceBuffer, 0, GpuDriven::MeshletCullBindings::kVisibleInstances);
+        encoder.setBuffer(visibleMeshletBuffer, 0, GpuDriven::MeshletCullBindings::kCompactionOutput);
+        encoder.setBuffer(worklistStateBuffer, 0, GpuDriven::MeshletCullBindings::kCounter);
+        encoder.setBuffer(lodNodeBuffer, 0, GpuDriven::MeshletCullBindings::kLodNodes);
+        encoder.setBuffer(lodGroupBuffer, 0, GpuDriven::MeshletCullBindings::kLodGroups);
+        encoder.setBuffer(lodGroupMeshletIndicesBuffer, 0, GpuDriven::MeshletCullBindings::kLodGroupMeshletIndices);
+        encoder.setBuffer(lodBoundsBuffer, 0, GpuDriven::MeshletCullBindings::kLodBounds);
+        encoder.setBuffer(clusterTraversalStatsBuffer, 0, GpuDriven::MeshletCullBindings::kTraversalStats);
+        encoder.setBuffer(groupResidencyBuffer, 0, GpuDriven::MeshletCullBindings::kGroupResidency);
+        encoder.setBuffer(lodGroupPageTableBuffer, 0, GpuDriven::MeshletCullBindings::kLodGroupPageTable);
+        encoder.setBuffer(residencyRequestBuffer, 0, GpuDriven::MeshletCullBindings::kResidencyRequests);
+        encoder.setBuffer(residencyRequestStateBuffer, 0, GpuDriven::MeshletCullBindings::kResidencyRequestState);
+        encoder.setBuffer(sourceLodGroupMeshletIndicesBuffer,
+                          0,
+                          GpuDriven::MeshletCullBindings::kLodGroupMeshletIndicesSource);
+        encoder.setBuffer(groupAgeBuffer, 0, GpuDriven::MeshletCullBindings::kGroupAge);
+        if (hzbTextureCount > 0) {
+            encoder.setTextures(hzbTextures.data(),
+                                GpuDriven::MeshletCullBindings::kHzbTextureBase,
+                                hzbTextureCount);
+        }
+        encoder.dispatchThreadgroupsIndirect(*visibleInstanceStateBuffer,
+                                             GpuDriven::ComputeDispatchCommandLayout::kIndirectArgsOffset,
+                                             {64, 1, 1});
+        encoder.memoryBarrier(RhiBarrierScope::Buffers);
+
+        // Dispatch 4: publish mesh-dispatch args from the visible meshlet cursor.
+        encoder.setComputePipeline(buildIt->second);
+        encoder.setBuffer(worklistStateBuffer, 0, GpuDriven::BuildWorklistBindings::kState);
+        encoder.dispatchThreadgroups({1, 1, 1}, {1, 1, 1});
+        encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
         static bool sLoggedGpuPublish = false;
         if (!sLoggedGpuPublish) {
             spdlog::info(
-                "MeshletCullPass published GPU cull buffers: instances={} meshlets={} visibleBuf={} counterBuf={} instanceBuf={}",
-                instanceCount,
-                totalMeshlets,
-                fmt::ptr(mutableCtx->gpuVisibleMeshletBufferRhi),
-                fmt::ptr(mutableCtx->gpuCounterBufferRhi),
-                fmt::ptr(mutableCtx->gpuInstanceDataBufferRhi));
+                "MeshletCullPass front-end ready: sceneInstances={} sceneVisibleFlags={} maxMeshlets={} visibleInstanceBuf={} visibleInstanceState={} visibleMeshletBuf={} meshletState={}",
+                gpuScene.instanceCount,
+                gpuScene.visibleInstanceCount,
+                gpuScene.totalMeshletDispatchCount,
+                fmt::ptr(visibleInstanceBuffer),
+                fmt::ptr(visibleInstanceStateBuffer),
+                fmt::ptr(visibleMeshletBuffer),
+                fmt::ptr(worklistStateBuffer));
             sLoggedGpuPublish = true;
         }
-
-        // m_lastVisibleCount is set at the top of this function via 1-frame-delayed readback
     }
 
     void renderUI() override {
+        ImGui::Text("Classified Instances: %u", m_lastVisibleInstanceCount);
         ImGui::Text("Total Meshlets: %u", m_totalMeshlets);
         ImGui::Text("Visible Meshlets: %u", m_lastVisibleCount);
+        ImGui::Text("LOD Traversal Instances: %u", m_lastTraversalStats.lodTraversalInstanceCount);
+        ImGui::Text("Fallback Instances: %u", m_lastTraversalStats.fallbackInstanceCount);
+        ImGui::Text("Traversed Nodes: %u", m_lastTraversalStats.traversedNodeCount);
+        ImGui::Text("HZB-Culled Nodes: %u", m_lastTraversalStats.occludedNodeCount);
+        ImGui::Text("Candidate Groups: %u", m_lastTraversalStats.candidateGroupCount);
+        ImGui::Text("Selected Groups: %u", m_lastTraversalStats.selectedGroupCount);
+        ImGui::Text("HZB-Culled Groups: %u", m_lastTraversalStats.occludedGroupCount);
+        ImGui::Text("Candidate LOD Meshlets: %u", m_lastTraversalStats.candidateClusterMeshletCount);
+        ImGui::Text("LOD Meshlets: %u", m_lastTraversalStats.emittedClusterMeshletCount);
+        ImGui::Text("Candidate Fallback Meshlets: %u", m_lastTraversalStats.candidateFallbackMeshletCount);
+        ImGui::Text("Fallback Meshlets: %u", m_lastTraversalStats.emittedFallbackMeshletCount);
+        ImGui::Text("Max Selected LOD: %u", m_lastTraversalStats.maxSelectedLodLevel);
+        if (m_ctx.gpuScene.instanceCount > 0) {
+            float coarseCullRate =
+                1.0f - float(m_lastVisibleInstanceCount) / float(m_ctx.gpuScene.instanceCount);
+            ImGui::Text("Instance Cull Rate: %.1f%%", coarseCullRate * 100.0f);
+        }
         if (m_totalMeshlets > 0) {
             float cullRate = 1.0f - float(m_lastVisibleCount) / float(m_totalMeshlets);
-            ImGui::Text("Cull Rate: %.1f%%", cullRate * 100.0f);
+            ImGui::Text("Meshlet Cull Rate: %.1f%%", cullRate * 100.0f);
+        }
+        if (m_lastTraversalStats.traversedNodeCount > 0) {
+            float nodeRejectRate =
+                float(m_lastTraversalStats.occludedNodeCount) /
+                float(m_lastTraversalStats.traversedNodeCount);
+            ImGui::Text("Node HZB Reject Rate: %.1f%%", nodeRejectRate * 100.0f);
+        }
+        if (m_lastTraversalStats.candidateGroupCount > 0) {
+            float groupKeepRate =
+                float(m_lastTraversalStats.selectedGroupCount) /
+                float(m_lastTraversalStats.candidateGroupCount);
+            ImGui::Text("Group Keep Rate: %.1f%%", groupKeepRate * 100.0f);
+        }
+        if (m_lastTraversalStats.candidateClusterMeshletCount > 0) {
+            float clusterMeshletKeepRate =
+                float(m_lastTraversalStats.emittedClusterMeshletCount) /
+                float(m_lastTraversalStats.candidateClusterMeshletCount);
+            ImGui::Text("LOD Meshlet Keep Rate: %.1f%%", clusterMeshletKeepRate * 100.0f);
+        }
+        if (m_lastTraversalStats.candidateFallbackMeshletCount > 0) {
+            float fallbackMeshletKeepRate =
+                float(m_lastTraversalStats.emittedFallbackMeshletCount) /
+                float(m_lastTraversalStats.candidateFallbackMeshletCount);
+            ImGui::Text("Fallback Meshlet Keep Rate: %.1f%%", fallbackMeshletKeepRate * 100.0f);
         }
         if (ImGui::Checkbox("Frustum Cull", &m_enableFrustumCull)) {
             syncFrameContextFlags();
@@ -225,13 +451,204 @@ public:
         ImGui::Checkbox("HZB Occlusion Cull", &m_enableOcclusionCull);
         ImGui::SliderFloat("HZB Depth Bias", &m_occlusionDepthBias, 0.0f, 0.05f, "%.4f");
         ImGui::SliderFloat("HZB Bounds Scale", &m_occlusionBoundsScale, 1.0f, 1.5f, "%.2f");
+        ImGui::SliderFloat("LOD Reference Pixels", &m_lodReferencePixels, 8.0f, 256.0f, "%.1f");
+        ClusterStreamingService* streamingService =
+            m_runtimeContext ? m_runtimeContext->clusterStreamingService : nullptr;
+        const ClusterStreamingService::DebugStats* streamingStats =
+            streamingService ? &streamingService->debugStats() : nullptr;
+        bool enableResidencyStreaming =
+            streamingService ? streamingService->streamingEnabled() : false;
+        if (ImGui::Checkbox("Virtual Residency Streaming", &enableResidencyStreaming) &&
+            streamingService) {
+            streamingService->setStreamingEnabled(enableResidencyStreaming);
+            requestVisibilityHistoryReset();
+        }
+        if (streamingService &&
+            ImGui::BeginCombo("Streaming Budget Preset",
+                              ClusterStreamingService::budgetPresetLabel(
+                                  streamingService->budgetPreset()))) {
+            for (uint32_t presetIndex = 0u;
+                 presetIndex < ClusterStreamingService::kBudgetPresetCount;
+                 ++presetIndex) {
+                const auto preset =
+                    static_cast<ClusterStreamingService::BudgetPreset>(presetIndex);
+                const bool selected = streamingService->budgetPreset() == preset;
+                if (ImGui::Selectable(ClusterStreamingService::budgetPresetLabel(preset),
+                                      selected)) {
+                    streamingService->setBudgetPreset(preset);
+                    requestVisibilityHistoryReset();
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        int streamingBudgetGroups =
+            streamingService ? static_cast<int>(streamingService->streamingBudgetGroups()) : 0;
+        const uint32_t activeResidencyGroupCount =
+            streamingStats ? streamingStats->activeResidencyGroupCount : 0u;
+        const uint32_t alwaysResidentGroupCount =
+            streamingStats ? streamingStats->lastAlwaysResidentGroupCount : 0u;
+        const uint64_t sceneStorageBytes =
+            uint64_t(std::max<size_t>(1u, m_ctx.clusterLodData.groupMeshletIndices.size())) *
+            sizeof(uint32_t);
+        const uint64_t sceneStorageKb =
+            std::max<uint64_t>(1ull, (sceneStorageBytes + 1023ull) / 1024ull);
+        int streamingStorageCapacityKb =
+            streamingService
+                ? static_cast<int>(std::max<uint64_t>(
+                      1ull,
+                      (streamingService->effectiveStreamingStorageCapacityBytes() + 1023ull) / 1024ull))
+                : static_cast<int>(sceneStorageKb);
+        int streamingTransferCapacityKb =
+            streamingService
+                ? static_cast<int>(std::max<uint64_t>(
+                      1ull,
+                      (streamingService->effectiveStreamingTransferCapacityBytes() + 1023ull) /
+                          1024ull))
+                : static_cast<int>(sceneStorageKb);
+        const int maxStreamingStorageCapacityKb =
+            static_cast<int>(std::max<uint64_t>(sceneStorageKb,
+                                                uint64_t(std::max(streamingStorageCapacityKb, 1))));
+        const int maxStreamingTransferCapacityKb =
+            static_cast<int>(std::max<uint64_t>(sceneStorageKb,
+                                                uint64_t(std::max(streamingTransferCapacityKb, 1))));
+        const uint32_t maxDynamicGroupBudget =
+            activeResidencyGroupCount > alwaysResidentGroupCount
+                ? activeResidencyGroupCount - alwaysResidentGroupCount
+                : 1u;
+        if (ImGui::SliderInt("Streaming Target (Dynamic Groups)",
+                             &streamingBudgetGroups,
+                             0,
+                             static_cast<int>(std::max(1u, maxDynamicGroupBudget)),
+                             "%d") &&
+            streamingService) {
+            streamingService->setStreamingBudgetGroups(
+                static_cast<uint32_t>(std::max(streamingBudgetGroups, 0)));
+            requestVisibilityHistoryReset();
+        }
+        if (ImGui::SliderInt("Streaming Storage Pool (KB)",
+                             &streamingStorageCapacityKb,
+                             1,
+                             maxStreamingStorageCapacityKb,
+                             "%d") &&
+            streamingService) {
+            streamingService->setStreamingStorageCapacityBytes(
+                uint64_t(std::max(streamingStorageCapacityKb, 1)) * 1024ull);
+            requestVisibilityHistoryReset();
+        }
+        if (ImGui::SliderInt("Streaming Transfer Cap (KB)",
+                             &streamingTransferCapacityKb,
+                             1,
+                             maxStreamingTransferCapacityKb,
+                             "%d") &&
+            streamingService) {
+            streamingService->setMaxStreamingTransferBytes(
+                uint64_t(std::max(streamingTransferCapacityKb, 1)) * 1024ull);
+            requestVisibilityHistoryReset();
+        }
+        int maxLoadsPerFrame =
+            streamingService ? static_cast<int>(streamingService->maxLoadsPerFrame()) : 1;
+        if (ImGui::SliderInt("Streaming Load Cap",
+                             &maxLoadsPerFrame,
+                             1,
+                             static_cast<int>(std::max(1u, activeResidencyGroupCount)),
+                             "%d") &&
+            streamingService) {
+            streamingService->setMaxLoadsPerFrame(
+                static_cast<uint32_t>(std::max(maxLoadsPerFrame, 1)));
+        }
+        int maxUnloadsPerFrame =
+            streamingService ? static_cast<int>(streamingService->maxUnloadsPerFrame()) : 1;
+        if (ImGui::SliderInt("Streaming Unload Cap",
+                             &maxUnloadsPerFrame,
+                             1,
+                             static_cast<int>(std::max(1u, activeResidencyGroupCount)),
+                             "%d") &&
+            streamingService) {
+            streamingService->setMaxUnloadsPerFrame(
+                static_cast<uint32_t>(std::max(maxUnloadsPerFrame, 1)));
+        }
+        bool adaptiveBudgetEnabled =
+            streamingService ? streamingService->adaptiveBudgetEnabled() : false;
+        if (ImGui::Checkbox("Adaptive Unload Age", &adaptiveBudgetEnabled) &&
+            streamingService) {
+            streamingService->setAdaptiveBudgetEnabled(adaptiveBudgetEnabled);
+        }
+        int ageThreshold =
+            streamingService ? static_cast<int>(streamingService->configuredAgeThreshold()) : 16;
+        if (ImGui::SliderInt("Streaming Unload Age",
+                             &ageThreshold,
+                             1,
+                             256,
+                             "%d") &&
+            streamingService) {
+            streamingService->setAgeThreshold(
+                static_cast<uint32_t>(std::max(ageThreshold, 1)));
+        }
+        if (streamingService && streamingService->adaptiveBudgetEnabled()) {
+            ImGui::Text("Effective Streaming Unload Age: %u",
+                        streamingService->ageThreshold());
+        }
+        bool compactAgeFilterDispatch =
+            streamingService ? streamingService->compactAgeFilterDispatchEnabled() : true;
+        if (ImGui::Checkbox("Compact GPU Age Filter", &compactAgeFilterDispatch) &&
+            streamingService) {
+            streamingService->setCompactAgeFilterDispatchEnabled(compactAgeFilterDispatch);
+        }
+        if (ImGui::Button("Reset Residency State") && streamingService) {
+            streamingService->markStateDirty();
+            requestVisibilityHistoryReset();
+        }
         if (m_frameContext) {
-            ImGui::Text("Instances: %u", m_frameContext->visibilityInstanceCount);
+            ImGui::Text("Scene Instances: %u", m_ctx.gpuScene.instanceCount);
+            ImGui::Text("Scene Visible Flags: %u", m_ctx.gpuScene.visibleInstanceCount);
             ImGui::Text("GPU Culling: %s", m_frameContext->gpuDrivenCulling ? "On" : "Off");
         }
+        ImGui::Text("LOD Nodes: %u active",
+                    streamingStats ? streamingStats->activeResidencyNodeCount : 0u);
+        ImGui::Text("Resident Groups: %u / %u",
+                    streamingStats ? streamingStats->lastResidentGroupCount : 0u,
+                    activeResidencyGroupCount);
+        ImGui::Text("Always Resident Groups: %u",
+                    alwaysResidentGroupCount);
+        ImGui::Text("Resident Storage: %u / %u indices",
+                    streamingStats ? streamingStats->residentHeapUsed : 0u,
+                    streamingStats ? streamingStats->residentHeapCapacity : 0u);
+        ImGui::Text("Upload Staging (frame): %.2f / %.2f KB",
+                    streamingService
+                        ? float(double(streamingService->streamingUploadBytesUsed()) / 1024.0)
+                        : 0.0f,
+                    streamingService
+                        ? float(double(streamingService->effectiveStreamingTransferCapacityBytes()) /
+                                1024.0)
+                        : 0.0f);
+        ImGui::Text("Dynamic Resident Groups: %u",
+                    streamingStats ? streamingStats->dynamicResidentGroupCount : 0u);
+        ImGui::Text("Pending Residency Groups: %u",
+                    streamingStats ? streamingStats->pendingResidencyGroupCount : 0u);
+        ImGui::Text("GPU Residency Requests (last frame): %u",
+                    streamingStats ? streamingStats->lastResidencyRequestCount : 0u);
+        ImGui::Text("GPU Unload Requests (last frame): %u",
+                    streamingStats ? streamingStats->lastUnloadRequestCount : 0u);
+        ImGui::Text("Promoted / Evicted (last frame): %u / %u",
+                    streamingStats ? streamingStats->lastResidencyPromotedCount : 0u,
+                    streamingStats ? streamingStats->lastResidencyEvictedCount : 0u);
+        ImGui::Text("Load / Unload Cap: %u / %u",
+                    streamingStats ? streamingStats->maxLoadsPerFrame : 0u,
+                    streamingStats ? streamingStats->maxUnloadsPerFrame : 0u);
+        ImGui::Text("Unload Pending / Confirmed: %u / %u",
+                    streamingStats ? streamingStats->pendingUnloadGroupCount : 0u,
+                    streamingStats ? streamingStats->confirmedUnloadGroupCount : 0u);
+        ImGui::Text("Unload Age Threshold: %u",
+                    streamingStats ? streamingStats->ageThreshold : 0u);
         const bool historyValid =
             m_frameGraph && !m_hzbHistoryRead.empty() && m_frameGraph->isHistoryValid(m_hzbHistoryRead[0]);
         ImGui::Text("HZB History: %s (%u levels)", historyValid ? "Ready" : "Warming Up", m_hzbLevelCount);
+        for (uint32_t level = 0; level < kClusterTraversalStatsHistogramSize; ++level) {
+            ImGui::Text("LOD %u Hits: %u", level, m_lastTraversalStats.selectedLodLevelHistogram[level]);
+        }
     }
 
 private:
@@ -244,63 +661,89 @@ private:
         frameContext->enableConeCull = m_enableConeCull;
     }
 
+    void requestVisibilityHistoryReset() {
+        if (!m_frameContext) {
+            return;
+        }
+        auto* frameContext = const_cast<FrameContext*>(m_frameContext);
+        frameContext->historyReset = true;
+    }
+
     const RenderContext& m_ctx;
     int m_width, m_height;
     std::string m_name = "Meshlet Cull";
 
-    std::unique_ptr<RhiBuffer> m_visibleMeshletBuffer;
-    std::unique_ptr<RhiBuffer> m_counterBuffer;
-    std::unique_ptr<RhiBuffer> m_instanceDataBuffer;
-
+    uint32_t m_maxVisibleInstances = 0;
     uint32_t m_maxMeshlets = 0;
-    uint32_t m_maxInstances = 0;
     uint32_t m_totalMeshlets = 0;
+    uint32_t m_lastVisibleInstanceCount = 0;
     uint32_t m_lastVisibleCount = 0;
+    ClusterTraversalStats m_lastTraversalStats{};
     uint32_t m_hzbLevelCount = 0;
     bool m_enableFrustumCull = false;
     bool m_enableConeCull = false;
     bool m_enableOcclusionCull = true;
+    float m_lodReferencePixels = 96.0f;
     float m_occlusionDepthBias = 0.0015f;
     float m_occlusionBoundsScale = 1.1f;
+    FGResource m_visibleInstanceState;
+    FGResource m_clusterTraversalStats;
+    FGResource m_dummyLodNodes;
+    FGResource m_dummyLodGroups;
+    FGResource m_dummyLodGroupMeshletIndices;
+    FGResource m_dummyLodBounds;
+    FGResource m_dummyGroupResidency;
+    FGResource m_dummyLodGroupPageTable;
+    FGResource m_dummyResidencyRequests;
+    FGResource m_dummyResidencyRequestState;
+    FGResource m_dummyGroupAge;
+    const RhiBuffer* m_initializedInstanceStateBuffer = nullptr;
+    const RhiBuffer* m_initializedMeshletStateBuffer = nullptr;
     std::vector<FGResource> m_hzbHistoryRead;
 
-    void ensureBuffers(uint32_t totalMeshlets, uint32_t instanceCount) {
-        auto* factory = m_runtimeContext->resourceFactory;
-        if (!factory) return;
+    uint32_t computeMaxMeshletCapacity() const {
+        return std::max(1u, m_ctx.gpuScene.totalMeshletDispatchCount);
+    }
 
-        if (!m_counterBuffer) {
-            RhiBufferDesc desc;
-            desc.size = kCounterBufferSize;
-            desc.hostVisible = true;
-            desc.debugName = "CullCounterBuffer";
-            m_counterBuffer = factory->createBuffer(desc);
-            // Zero-initialize: atomic counter = 0, indirect args = {0, 1, 1}
-            auto* ptr = static_cast<uint32_t*>(m_counterBuffer->mappedData());
-            ptr[0] = 0; // atomic counter
-            ptr[1] = 0; // indirect args x (will be filled by build_indirect)
-            ptr[2] = 1; // indirect args y
-            ptr[3] = 1; // indirect args z
+    template <typename T>
+    FGBufferDesc makeSingleElementBufferDesc(const char* debugName) const {
+        static const T kZero{};
+        FGBufferDesc desc;
+        desc.size = sizeof(T);
+        desc.initialData = &kZero;
+        desc.hostVisible = false;
+        desc.debugName = debugName;
+        return desc;
+    }
+
+    template <typename T>
+    FGBufferDesc makeSingleValueBufferDesc(T value, const char* debugName) const {
+        static const T kValue = value;
+        FGBufferDesc desc;
+        desc.size = sizeof(T);
+        desc.initialData = &kValue;
+        desc.hostVisible = false;
+        desc.debugName = debugName;
+        return desc;
+    }
+
+    FGBufferDesc makeTraversalStatsBufferDesc() const {
+        static const ClusterTraversalStats kZeroStats{};
+        FGBufferDesc desc;
+        desc.size = sizeof(ClusterTraversalStats);
+        desc.initialData = &kZeroStats;
+        desc.hostVisible = true;
+        desc.debugName = "ClusterTraversalStats";
+        return desc;
+    }
+
+    ClusterTraversalStats readTraversalStats(RhiBuffer* buffer) const {
+        ClusterTraversalStats stats{};
+        if (!buffer || !buffer->mappedData() || buffer->size() < sizeof(ClusterTraversalStats)) {
+            return stats;
         }
 
-        if (totalMeshlets > m_maxMeshlets) {
-            m_maxMeshlets = totalMeshlets;
-            RhiBufferDesc desc;
-            desc.size = m_maxMeshlets * sizeof(MeshletDrawInfo);
-            desc.hostVisible = false;
-            desc.debugName = "VisibleMeshletBuffer";
-            m_visibleMeshletBuffer = factory->createBuffer(desc);
-        }
-
-        if (instanceCount > m_maxInstances) {
-            m_maxInstances = instanceCount;
-            RhiBufferDesc desc;
-            desc.size = m_maxInstances * sizeof(GPUInstanceData);
-            desc.hostVisible = true;
-            desc.debugName = "InstanceDataBuffer";
-            m_instanceDataBuffer = factory->createBuffer(desc);
-        }
+        std::memcpy(&stats, buffer->mappedData(), sizeof(stats));
+        return stats;
     }
 };
-
-
-

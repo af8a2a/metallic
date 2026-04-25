@@ -1,16 +1,12 @@
-// Build indirect dispatch arguments from atomic counter.
+// Publish a mesh-dispatch command from the worklist write cursor.
 // Dispatched as a single thread after meshlet culling.
 
-RWByteAddressBuffer counters; // buffer(0): [atomicCounter(4B), indirectArgs(12B)]
+#include "../Shared/gpu_driven_helpers.slang"
+
+RWByteAddressBuffer worklistState; // buffer(GPU_DRIVEN_BUILD_DISPATCH_COUNTER_BINDING)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void computeMain() {
-    uint count = counters.Load(0);
-    // Write MTLDispatchThreadgroupsIndirectArguments at offset 4
-    counters.Store(4, count);   // threadgroupsPerGrid.x = visible meshlet count
-    counters.Store(8, 1u);      // threadgroupsPerGrid.y = 1
-    counters.Store(12, 1u);     // threadgroupsPerGrid.z = 1
-    // Reset atomic counter for next frame
-    counters.Store(0, 0u);
+    gpuDrivenPublishMeshDispatchIndirectArgs1DFromWriteCursor(worklistState);
 }

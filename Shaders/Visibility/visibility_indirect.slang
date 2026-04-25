@@ -3,25 +3,13 @@
 // (populated by meshlet_cull.slang). No per-node CPU dispatch needed.
 
 #include "../../Source/Rendering/visibility_constants.h"
+#include "../Shared/gpu_driven_helpers.slang"
+#include "../Shared/bindless_scene.slang"
 
 struct GlobalUniforms {
+    float4x4 viewProj;
     float4   lightDir;
     float4   lightColorIntensity;
-};
-
-struct InstanceData {
-    float4x4 mvp;
-    float4x4 modelView;
-    float4x4 worldMatrix;
-    uint     meshletStart;
-    uint     meshletCount;
-    uint     instanceID;
-    uint     pad;
-};
-
-struct MeshletDrawInfo {
-    uint instanceID;
-    uint globalMeshletID;
 };
 
 struct GPUMeshlet {
@@ -54,8 +42,12 @@ StructuredBuffer<float>             _boundsPlaceholder;// buffer(6) — keeps in
 StructuredBuffer<float>             uvs;               // buffer(7)
 StructuredBuffer<uint>              meshletMaterialIDs;// buffer(8)
 StructuredBuffer<GPUMaterial>       materials;         // buffer(9)
-StructuredBuffer<MeshletDrawInfo>   visibleMeshlets;   // buffer(10)
-StructuredBuffer<InstanceData>      instanceData;      // buffer(11)
+StructuredBuffer<MeshletDrawInfo>   visibleMeshlets;   // buffer(GPU_DRIVEN_VISIBILITY_VISIBLE_MESHLETS_BINDING)
+StructuredBuffer<InstanceData>      instanceData;      // buffer(GPU_DRIVEN_VISIBILITY_INSTANCE_DATA_BINDING)
+StructuredBuffer<GPUMeshlet>        lodMeshlets;       // buffer(GPU_DRIVEN_VISIBILITY_LOD_MESHLET_BINDING)
+StructuredBuffer<uint>              lodMeshletVertices;// buffer(GPU_DRIVEN_VISIBILITY_LOD_MESHLET_VERTICES_BINDING)
+StructuredBuffer<uint>              lodMeshletTriangles;// buffer(GPU_DRIVEN_VISIBILITY_LOD_MESHLET_TRIANGLES_BINDING)
+StructuredBuffer<uint>              lodMeshletMaterialIDs;// buffer(GPU_DRIVEN_VISIBILITY_LOD_MATERIAL_IDS_BINDING)
 
 struct VisVertex {
     float4 clipPos : SV_Position;
@@ -70,7 +62,6 @@ struct VisPrimitive {
 static const uint kMaxVertices  = 64;
 static const uint kMaxTriangles = 124;
 static const uint INVALID_TEX   = 0xFFFFFFFF;
-static const uint kTextureArraySize = 96;
 static const uint kInstanceBits = VISIBILITY_INSTANCE_BITS;
 static const uint kInstanceMask = VISIBILITY_INSTANCE_MASK;
 static const uint kVisibilityTriangleBits = VISIBILITY_TRIANGLE_BITS;
@@ -92,12 +83,13 @@ void meshMain(
     MeshletDrawInfo info = visibleMeshlets[groupID];
     InstanceData inst = instanceData[info.instanceID];
     uint globalMeshletID = info.globalMeshletID;
+    bool useLodMeshlet = info.meshletSource == kMeshletDrawSourceClusterLod;
 
-    GPUMeshlet m = meshlets[globalMeshletID];
+    GPUMeshlet m = useLodMeshlet ? lodMeshlets[globalMeshletID] : meshlets[globalMeshletID];
 
     // No culling here — already done in meshlet_cull.slang
 
-    bool visibilityOverflow = (globalMeshletID > kVisibilityMeshletMask) ||
+    bool visibilityOverflow = (groupID > kVisibilityMeshletMask) ||
                               (info.instanceID > kInstanceMask) ||
                               (m.triangle_count > (kVisibilityTriangleMask + 1u));
 
@@ -110,10 +102,13 @@ void meshMain(
     if (visibilityOverflow)
         return;
 
-    uint matID = meshletMaterialIDs[globalMeshletID];
+    uint matID = useLodMeshlet ? lodMeshletMaterialIDs[globalMeshletID]
+                               : meshletMaterialIDs[globalMeshletID];
 
     if (groupThreadID < m.vertex_count) {
-        uint vertexIndex = meshletVertices[m.vertex_offset + groupThreadID];
+        uint vertexIndex = useLodMeshlet
+            ? lodMeshletVertices[m.vertex_offset + groupThreadID]
+            : meshletVertices[m.vertex_offset + groupThreadID];
 
         float3 pos = float3(
             positions[vertexIndex * 3 + 0],
@@ -125,20 +120,23 @@ void meshMain(
             uvs[vertexIndex * 2 + 1]);
 
         VisVertex v;
-        v.clipPos = mul(inst.mvp, float4(pos, 1.0));
+        float4 worldPos = mul(inst.worldMatrix, float4(pos, 1.0));
+        v.clipPos = mul(globalUniforms.viewProj, worldPos);
         v.uv = texcoord;
         outVerts[groupThreadID] = v;
     }
 
     if (groupThreadID < m.triangle_count) {
-        uint packed = meshletTriangles[m.triangle_offset + groupThreadID];
+        uint packed = useLodMeshlet
+            ? lodMeshletTriangles[m.triangle_offset + groupThreadID]
+            : meshletTriangles[m.triangle_offset + groupThreadID];
         uint v0 = (packed >>  0) & 0xFF;
         uint v1 = (packed >>  8) & 0xFF;
         uint v2 = (packed >> 16) & 0xFF;
         outTris[groupThreadID] = uint3(v0, v1, v2);
 
         VisPrimitive prim;
-        prim.visibility = (globalMeshletID << kVisibilityMeshletShift) |
+        prim.visibility = (groupID << kVisibilityMeshletShift) |
                           (groupThreadID << kInstanceBits) |
                           info.instanceID;
         prim.materialID = matID;
@@ -147,9 +145,6 @@ void meshMain(
 }
 
 // Fragment-only buffer bindings
-Texture2D sceneTextures[kTextureArraySize];
-SamplerState sceneSampler;
-
 [shader("fragment")]
 uint fragmentMain(VisVertex vertIn, VisPrimitive primIn) : SV_Target {
     GPUMaterial mat = materials[primIn.materialID];
@@ -158,7 +153,7 @@ uint fragmentMain(VisVertex vertIn, VisPrimitive primIn) : SV_Target {
     if (mat.alphaMode == 1) {
         float4 baseColor = mat.baseColorFactor;
         if (mat.baseColorTexIndex != INVALID_TEX)
-            baseColor *= sceneTextures[mat.baseColorTexIndex].Sample(sceneSampler, vertIn.uv);
+            baseColor *= sampleBindlessSceneTexture(mat.baseColorTexIndex, vertIn.uv);
         if (baseColor.a < mat.alphaCutoff)
             discard;
     }

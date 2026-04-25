@@ -3,6 +3,8 @@
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "frame_context.h"
+#include "gpu_driven_constants.h"
+#include "cluster_lod_builder.h"
 #include "pass_registry.h"
 #include "imgui.h"
 #include <vector>
@@ -17,6 +19,9 @@ public:
 
     void configure(const PassConfig& config) override {
         m_name = config.name;
+        if (config.config.contains("motionVectorIntensity")) {
+            m_motionVectorIntensity = config.config["motionVectorIntensity"].get<float>();
+        }
     }
 
     FGResource output;
@@ -34,11 +39,25 @@ public:
         FGResource depthInput = getInput("depth");
         FGResource shadowInput = getInput("shadowMap");
         FGResource skyInput = getInput("skyOutput");
+        FGResource visibleMeshletsInput = getInput("visibleMeshlets");
+        if (!visibleMeshletsInput.isValid()) {
+            visibleMeshletsInput = getInput("visibilityWorklist");
+        }
+        FGResource visibleMeshletStateInput = getInput("cullCounter");
+        if (!visibleMeshletStateInput.isValid()) {
+            visibleMeshletStateInput = getInput("visibilityWorklistState");
+        }
 
         if (visInput.isValid()) m_visRead = builder.read(visInput);
         if (depthInput.isValid()) m_depthRead = builder.read(depthInput);
         if (shadowInput.isValid()) m_shadowRead = builder.read(shadowInput);
         if (skyInput.isValid()) m_skyRead = builder.read(skyInput);
+        if (visibleMeshletsInput.isValid()) {
+            m_visibleMeshletsRead = builder.read(visibleMeshletsInput, FGResourceUsage::StorageRead);
+        }
+        if (visibleMeshletStateInput.isValid()) {
+            m_visibleMeshletStateRead = builder.read(visibleMeshletStateInput, FGResourceUsage::StorageRead);
+        }
 
         output = builder.create("output",
             FGTextureDesc::storageTexture(m_width, m_height, RhiFormat::RGBA16Float));
@@ -53,16 +72,17 @@ public:
 
         auto pipeIt = m_runtimeContext->computePipelinesRhi.find("DeferredLightingPass");
         if (pipeIt == m_runtimeContext->computePipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
+        if (!m_ctx.gpuScene.instanceBuffer.nativeHandle()) return;
 
-        // Build LightingUniforms from FrameContext raw data
-        float4x4 modelView = m_frameContext->view; // model is identity
-        float4x4 mvp = m_frameContext->proj * modelView;
+        // Build LightingUniforms from shared frame and scene state.
         float4x4 invProj = m_frameContext->proj;
         invProj.Invert();
 
         LightingUniforms lightUniforms;
-        lightUniforms.mvp = transpose(mvp);
-        lightUniforms.modelView = transpose(modelView);
+        lightUniforms.viewProj = transpose(m_frameContext->proj * m_frameContext->view);
+        lightUniforms.prevViewProj =
+            transpose(m_frameContext->prevProj * m_frameContext->prevView);
+        lightUniforms.viewMatrix = transpose(m_frameContext->view);
         lightUniforms.lightDir = m_frameContext->viewLightDir;
         lightUniforms.lightColorIntensity = m_frameContext->lightColorIntensity;
         lightUniforms.invProj = transpose(invProj);
@@ -71,53 +91,94 @@ public:
         lightUniforms.meshletCount = m_frameContext->meshletCount;
         lightUniforms.materialCount = m_frameContext->materialCount;
         lightUniforms.textureCount = m_frameContext->textureCount;
-        lightUniforms.instanceCount = m_frameContext->visibilityInstanceCount;
+        lightUniforms.instanceCount = m_ctx.gpuScene.instanceCount;
         lightUniforms.shadowEnabled = m_frameContext->enableRTShadows ? 1 : 0;
+        lightUniforms.visibilityUsesWorklistIds =
+            (m_frameContext->gpuDrivenCulling &&
+             m_visibleMeshletsRead.isValid() &&
+             m_visibleMeshletStateRead.isValid())
+                ? 1u
+                : 0u;
+        lightUniforms.motionVectorIntensity = m_motionVectorIntensity;
         lightUniforms.pad2 = 0;
+
+        const RhiBuffer* visibleMeshletsBuffer =
+            (m_frameGraph && m_visibleMeshletsRead.isValid())
+                ? m_frameGraph->getBuffer(m_visibleMeshletsRead)
+                : nullptr;
+        const RhiBuffer* visibleMeshletStateBuffer =
+            (m_frameGraph && m_visibleMeshletStateRead.isValid())
+                ? m_frameGraph->getBuffer(m_visibleMeshletStateRead)
+                : nullptr;
+        const RhiBuffer* lodMeshletBuffer =
+            m_ctx.clusterLodData.meshletBuffer.nativeHandle()
+                ? &m_ctx.clusterLodData.meshletBuffer
+                : &m_ctx.meshletData.meshletBuffer;
+        const RhiBuffer* lodMeshletVerticesBuffer =
+            m_ctx.clusterLodData.meshletVerticesBuffer.nativeHandle()
+                ? &m_ctx.clusterLodData.meshletVerticesBuffer
+                : &m_ctx.meshletData.meshletVertices;
+        const RhiBuffer* lodMeshletTrianglesBuffer =
+            m_ctx.clusterLodData.meshletTrianglesBuffer.nativeHandle()
+                ? &m_ctx.clusterLodData.meshletTrianglesBuffer
+                : &m_ctx.meshletData.meshletTriangles;
+        const RhiBuffer* lodMaterialIdsBuffer =
+            m_ctx.clusterLodData.materialIDsBuffer.nativeHandle()
+                ? &m_ctx.clusterLodData.materialIDsBuffer
+                : &m_ctx.meshletData.materialIDs;
 
         encoder.setComputePipeline(pipeIt->second);
         encoder.setBytes(&lightUniforms, sizeof(lightUniforms), 0);
-        encoder.setBuffer(&m_ctx.sceneMesh.positionBuffer, 0, 1);
-        encoder.setBuffer(&m_ctx.sceneMesh.normalBuffer, 0, 2);
-        encoder.setBuffer(&m_ctx.meshletData.meshletBuffer, 0, 3);
-        encoder.setBuffer(&m_ctx.meshletData.meshletVertices, 0, 4);
-        encoder.setBuffer(&m_ctx.meshletData.meshletTriangles, 0, 5);
-        encoder.setBuffer(&m_ctx.sceneMesh.uvBuffer, 0, 6);
-        encoder.setBuffer(&m_ctx.meshletData.materialIDs, 0, 7);
-        encoder.setBuffer(&m_ctx.materials.materialBuffer, 0, 8);
-        if (m_frameContext->instanceTransformBufferRhi) {
-            encoder.setBuffer(m_frameContext->instanceTransformBufferRhi, 0, 9);
+        encoder.setBuffer(&m_ctx.sceneMesh.positionBuffer, 0, GpuDriven::DeferredLightingBindings::kPositions);
+        encoder.setBuffer(&m_ctx.sceneMesh.normalBuffer, 0, GpuDriven::DeferredLightingBindings::kNormals);
+        encoder.setBuffer(&m_ctx.meshletData.meshletBuffer, 0, GpuDriven::DeferredLightingBindings::kMeshlets);
+        encoder.setBuffer(&m_ctx.meshletData.meshletVertices, 0, GpuDriven::DeferredLightingBindings::kMeshletVertices);
+        encoder.setBuffer(&m_ctx.meshletData.meshletTriangles, 0, GpuDriven::DeferredLightingBindings::kMeshletTriangles);
+        encoder.setBuffer(&m_ctx.sceneMesh.uvBuffer, 0, GpuDriven::DeferredLightingBindings::kUvs);
+        encoder.setBuffer(&m_ctx.meshletData.materialIDs, 0, GpuDriven::DeferredLightingBindings::kMaterialIds);
+        encoder.setBuffer(&m_ctx.materials.materialBuffer, 0, GpuDriven::DeferredLightingBindings::kMaterials);
+        if (visibleMeshletsBuffer) {
+            encoder.setBuffer(visibleMeshletsBuffer, 0, GpuDriven::DeferredLightingBindings::kVisibleMeshlets);
+        }
+        if (visibleMeshletStateBuffer) {
+            encoder.setBuffer(visibleMeshletStateBuffer, 0, GpuDriven::DeferredLightingBindings::kVisibleMeshletState);
+        }
+        encoder.setBuffer(lodMeshletBuffer, 0, GpuDriven::DeferredLightingBindings::kLodMeshlets);
+        encoder.setBuffer(lodMeshletVerticesBuffer, 0, GpuDriven::DeferredLightingBindings::kLodMeshletVertices);
+        encoder.setBuffer(lodMeshletTrianglesBuffer, 0, GpuDriven::DeferredLightingBindings::kLodMeshletTriangles);
+        encoder.setBuffer(lodMaterialIdsBuffer, 0, GpuDriven::DeferredLightingBindings::kLodMaterialIds);
+        if (m_ctx.gpuScene.instanceBuffer.nativeHandle()) {
+            encoder.setBuffer(&m_ctx.gpuScene.instanceBuffer,
+                              0,
+                              GpuDriven::DeferredLightingBindings::kInstanceData);
         }
         encoder.setTexture(m_frameGraph->getTexture(m_visRead), 0);
         encoder.setTexture(m_frameGraph->getTexture(m_depthRead), 1);
         encoder.setStorageTexture(m_frameGraph->getTexture(output), 2);
-        std::vector<const RhiTexture*> materialTextures;
-        materialTextures.reserve(m_ctx.materials.textureViews.size());
-        for (auto* texture : m_ctx.materials.textureViews) {
-            materialTextures.push_back(texture);
-        }
-        if (!materialTextures.empty()) {
-            encoder.setTextures(materialTextures.data(), 3,
-                                static_cast<uint32_t>(materialTextures.size()));
-        }
+        // Vulkan reflection compacts resource bindings into dense logical slots.
+        // Keep CPU-side binding indices aligned with shader declaration order.
+        constexpr uint32_t kShadowTextureBinding = 3;
+        constexpr uint32_t kSkyTextureBinding = 4;
+        constexpr uint32_t kMotionVectorsBinding = 5;
         const RhiTexture* shadowTex = m_shadowRead.isValid()
             ? m_frameGraph->getTexture(m_shadowRead)
             : &m_ctx.shadowDummyTex;
-        encoder.setTexture(shadowTex, 99);
+        encoder.setTexture(shadowTex, kShadowTextureBinding);
         const RhiTexture* skyTex = m_skyRead.isValid()
             ? m_frameGraph->getTexture(m_skyRead)
             : &m_ctx.skyFallbackTex;
-        encoder.setTexture(skyTex, 100);
-        encoder.setStorageTexture(m_frameGraph->getTexture(motionVectorsOutput), 101);
-        encoder.setSampler(&m_ctx.materials.sampler, 0);
+        encoder.setTexture(skyTex, kSkyTextureBinding);
+        encoder.setStorageTexture(m_frameGraph->getTexture(motionVectorsOutput),
+                                  kMotionVectorsBinding);
         encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
                                      {8, 8, 1});
     }
 
     void renderUI() override {
         ImGui::Text("Resolution: %d x %d", m_width, m_height);
+        ImGui::SliderFloat("Motion Vector Intensity", &m_motionVectorIntensity, 0.0f, 2.0f, "%.2f");
         if (m_frameContext) {
-            ImGui::Text("Instances: %u", m_frameContext->visibilityInstanceCount);
+            ImGui::Text("Scene Instances: %u", m_ctx.gpuScene.instanceCount);
             ImGui::Text("Meshlets: %u", m_frameContext->meshletCount);
             ImGui::Text("Materials: %u", m_frameContext->materialCount);
             ImGui::Text("Shadows: %s", m_frameContext->enableRTShadows ? "Enabled" : "Disabled");
@@ -127,8 +188,11 @@ public:
 private:
     const RenderContext& m_ctx;
     FGResource m_visRead, m_depthRead, m_shadowRead, m_skyRead;
+    FGResource m_visibleMeshletsRead;
+    FGResource m_visibleMeshletStateRead;
     int m_width, m_height;
     std::string m_name = "Deferred Lighting";
+    float m_motionVectorIntensity = 1.0f;
 };
 
 

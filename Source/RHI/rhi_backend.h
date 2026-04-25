@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "rhi_interop.h"
+
 struct GLFWwindow;
 struct RhiBufferDesc;
 
@@ -21,6 +23,7 @@ class RhiCommandQueue;
 class RhiNativeCommandBuffer;
 class RhiShaderLibrary;
 class RhiVertexDescriptor;
+class RhiContext;
 
 enum class RhiBackendType {
     Metal,
@@ -63,6 +66,21 @@ enum class RhiTextureStorageMode {
     Shared,
 };
 
+enum class RhiSamplerFilterMode {
+    Nearest,
+    Linear,
+};
+
+enum class RhiSamplerMipFilterMode {
+    None,
+    Linear,
+};
+
+enum class RhiSamplerAddressMode {
+    Repeat,
+    ClampToEdge,
+};
+
 enum class RhiLoadAction {
     DontCare,
     Load,
@@ -101,9 +119,52 @@ enum class RhiBarrierScope : uint32_t {
     RenderTargets = 1u << 2,
 };
 
+// Hints to the backend which physical queue a pass should execute on.
+// The backend uses this to route work to dedicated compute/transfer queues if available,
+// falling back to the graphics queue otherwise.
+enum class RhiQueueHint {
+    Auto,         // Backend decides based on pass type
+    Graphics,     // Requires graphics queue (rasterisation, mesh shaders, RT)
+    AsyncCompute, // Prefer dedicated async compute queue; falls back to graphics
+    Transfer,     // Prefer dedicated transfer queue; falls back to graphics
+};
+
 enum class RhiResourceUsage : uint32_t {
     Read = 1u << 0,
     Write = 1u << 1,
+};
+
+enum class RhiSubgroupStage : uint32_t {
+    None = 0,
+    Vertex = 1u << 0,
+    TessControl = 1u << 1,
+    TessEvaluation = 1u << 2,
+    Geometry = 1u << 3,
+    Fragment = 1u << 4,
+    Compute = 1u << 5,
+    Task = 1u << 6,
+    Mesh = 1u << 7,
+    RayGen = 1u << 8,
+    AnyHit = 1u << 9,
+    ClosestHit = 1u << 10,
+    Miss = 1u << 11,
+    Intersection = 1u << 12,
+    Callable = 1u << 13,
+};
+
+enum class RhiSubgroupOperation : uint32_t {
+    None = 0,
+    Basic = 1u << 0,
+    Vote = 1u << 1,
+    Arithmetic = 1u << 2,
+    Ballot = 1u << 3,
+    Shuffle = 1u << 4,
+    ShuffleRelative = 1u << 5,
+    Clustered = 1u << 6,
+    Quad = 1u << 7,
+    Partitioned = 1u << 8,
+    Rotate = 1u << 9,
+    RotateClustered = 1u << 10,
 };
 
 constexpr RhiBarrierScope operator|(RhiBarrierScope lhs, RhiBarrierScope rhs) {
@@ -112,6 +173,22 @@ constexpr RhiBarrierScope operator|(RhiBarrierScope lhs, RhiBarrierScope rhs) {
 
 constexpr RhiResourceUsage operator|(RhiResourceUsage lhs, RhiResourceUsage rhs) {
     return static_cast<RhiResourceUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr RhiSubgroupStage operator|(RhiSubgroupStage lhs, RhiSubgroupStage rhs) {
+    return static_cast<RhiSubgroupStage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr RhiSubgroupStage operator&(RhiSubgroupStage lhs, RhiSubgroupStage rhs) {
+    return static_cast<RhiSubgroupStage>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
+}
+
+constexpr RhiSubgroupOperation operator|(RhiSubgroupOperation lhs, RhiSubgroupOperation rhs) {
+    return static_cast<RhiSubgroupOperation>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr RhiSubgroupOperation operator&(RhiSubgroupOperation lhs, RhiSubgroupOperation rhs) {
+    return static_cast<RhiSubgroupOperation>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
 }
 
 struct RhiOrigin3D {
@@ -205,6 +282,7 @@ public:
 class RhiDevice {
 public:
     virtual ~RhiDevice() = default;
+    virtual RhiContext* ownerContext() const { return nullptr; }
     virtual void* nativeHandle() const = 0;
 };
 
@@ -235,14 +313,21 @@ public:
 class RhiDeviceHandle final : public RhiDevice {
 public:
     constexpr RhiDeviceHandle() = default;
-    explicit constexpr RhiDeviceHandle(void* native)
-        : m_native(native) {}
+    explicit constexpr RhiDeviceHandle(void* native, RhiContext* ownerContext = nullptr)
+        : m_native(native)
+        , m_ownerContext(ownerContext) {}
 
-    void setNativeHandle(void* native) { m_native = native; }
+    void setNativeHandle(void* native, RhiContext* ownerContext = nullptr) {
+        m_native = native;
+        m_ownerContext = ownerContext;
+    }
+
+    RhiContext* ownerContext() const override { return m_ownerContext; }
     void* nativeHandle() const override { return m_native; }
 
 private:
     void* m_native = nullptr;
+    RhiContext* m_ownerContext = nullptr;
 };
 
 class RhiCommandQueueHandle final : public RhiCommandQueue {
@@ -403,6 +488,7 @@ public:
     virtual void setVertexBytes(const void* data, size_t size, uint32_t index) = 0;
     virtual void setFragmentBytes(const void* data, size_t size, uint32_t index) = 0;
     virtual void setMeshBytes(const void* data, size_t size, uint32_t index) = 0;
+    virtual void setPushConstants(const void* data, size_t size) = 0;
     virtual void setFragmentTexture(const RhiTexture* texture, uint32_t index) = 0;
     virtual void setFragmentTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) = 0;
     virtual void setMeshTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) = 0;
@@ -421,7 +507,7 @@ public:
                                               uint64_t indirectBufferOffset,
                                               RhiSize3D threadsPerObjectThreadgroup,
                                               RhiSize3D threadsPerMeshThreadgroup) = 0;
-    virtual void renderImGuiDrawData(const RhiNativeCommandBuffer& commandBuffer) = 0;
+    virtual void renderImGuiDrawData() = 0;
 };
 
 class RhiComputeCommandEncoder {
@@ -431,6 +517,7 @@ public:
     virtual void setComputePipeline(const RhiComputePipeline& pipeline) = 0;
     virtual void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) = 0;
     virtual void setBytes(const void* data, size_t size, uint32_t index) = 0;
+    virtual void setPushConstants(const void* data, size_t size) = 0;
     virtual void setTexture(const RhiTexture* texture, uint32_t index) = 0;
     virtual void setStorageTexture(const RhiTexture* texture, uint32_t index) = 0;
     virtual void setTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) = 0;
@@ -440,6 +527,9 @@ public:
     virtual void useResource(const RhiAccelerationStructure& resource, RhiResourceUsage usage) = 0;
     virtual void memoryBarrier(RhiBarrierScope scope) = 0;
     virtual void dispatchThreadgroups(RhiSize3D threadgroupsPerGrid, RhiSize3D threadsPerThreadgroup) = 0;
+    virtual void dispatchThreadgroupsIndirect(const RhiBuffer& indirectBuffer,
+                                              uint64_t indirectBufferOffset,
+                                              RhiSize3D threadsPerThreadgroup) = 0;
 };
 
 class RhiBlitCommandEncoder {
@@ -463,6 +553,42 @@ public:
     virtual std::unique_ptr<RhiRenderCommandEncoder> beginRenderPass(const RhiRenderPassDesc& desc) = 0;
     virtual std::unique_ptr<RhiComputeCommandEncoder> beginComputePass(const RhiComputePassDesc& desc) = 0;
     virtual std::unique_ptr<RhiBlitCommandEncoder> beginBlitPass(const RhiBlitPassDesc& desc) = 0;
+
+    // Prepare a texture for sampling in the next pass.
+    // Backend implementations handle any necessary state transitions (e.g. Vulkan layout transitions).
+    virtual void prepareTextureForSampling(const RhiTexture* /*texture*/) {}
+
+    // Prepare a texture for use as a storage image (read/write via imageLoad/imageStore).
+    virtual void prepareTextureForStorage(const RhiTexture* /*texture*/) {}
+
+    // Prepare a texture for use as a transfer source.
+    virtual void prepareTextureForTransferSrc(const RhiTexture* /*texture*/) {}
+
+    // Prepare a texture for use as a transfer destination.
+    virtual void prepareTextureForTransferDst(const RhiTexture* /*texture*/) {}
+
+    // Prepare a buffer for read-only storage access in a subsequent pass.
+    virtual void prepareBufferForStorageRead(const RhiBuffer* /*buffer*/) {}
+
+    // Prepare a buffer for writable storage access in a subsequent pass.
+    virtual void prepareBufferForStorageWrite(const RhiBuffer* /*buffer*/) {}
+
+    // Prepare a buffer for indirect draw/dispatch argument reads.
+    virtual void prepareBufferForIndirect(const RhiBuffer* /*buffer*/) {}
+
+    // Prepare a buffer for index reads.
+    virtual void prepareBufferForIndexInput(const RhiBuffer* /*buffer*/) {}
+
+    // Prepare a buffer for vertex attribute reads.
+    virtual void prepareBufferForVertexInput(const RhiBuffer* /*buffer*/) {}
+
+    // Flush all accumulated pending barriers as a single batched pipeline barrier.
+    // No-op on backends that insert barriers eagerly (e.g. Metal).
+    virtual void flushBarriers() {}
+
+    // Hint to the backend which queue subsequent work should target.
+    // Called by FrameGraph before each pass. No-op on Metal.
+    virtual void setNextPassQueueHint(RhiQueueHint /*hint*/) {}
 };
 
 class RhiFrameGraphBackend {
@@ -474,9 +600,103 @@ public:
 
 struct RhiFeatures {
     bool dynamicRendering = false;
+    bool bufferDeviceAddress = false;
     bool meshShaders = false;
-    bool rayTracing = false;
+    bool rayTracing = false;          // ray query + acceleration structure
+    bool rayTracingPipeline = false;  // VK_KHR_ray_tracing_pipeline (raygen/miss/hit shaders + SBT)
     bool validation = false;
+    bool synchronization2 = false;
+    bool shaderDrawParameters = false;
+    bool taskShaders = false;
+    bool descriptorIndexing = false;
+    bool timelineSemaphore = false;
+    bool externalHostMemory = false;
+    bool descriptorBuffer = false;   // VK_EXT_descriptor_buffer
+    bool shaderBufferInt64Atomics = false; // VK_KHR_shader_atomic_int64 storage-buffer atomics
+};
+
+struct RhiSubgroupProperties {
+    bool supported = false;
+    uint32_t subgroupSize = 0;
+    RhiSubgroupStage supportedStages = RhiSubgroupStage::None;
+    RhiSubgroupOperation supportedOperations = RhiSubgroupOperation::None;
+    bool quadOperationsInAllStages = false;
+    bool sizeControl = false;
+    bool computeFullSubgroups = false;
+    uint32_t minSubgroupSize = 0;
+    uint32_t maxSubgroupSize = 0;
+    uint32_t maxComputeWorkgroupSubgroups = 0;
+    RhiSubgroupStage requiredSubgroupSizeStages = RhiSubgroupStage::None;
+};
+
+// Properties of the ray tracing pipeline implementation (populated when rayTracingPipeline == true).
+struct RhiRayTracingPipelineProperties {
+    uint32_t shaderGroupHandleSize      = 0;
+    uint32_t shaderGroupHandleAlignment = 0;
+    uint32_t shaderGroupBaseAlignment   = 0;
+    uint32_t maxRayRecursionDepth       = 0;
+    uint32_t maxRayDispatchInvocationCount = 0;
+};
+
+struct RhiLimits {
+    // Push constants
+    uint32_t maxPushConstantSize = 128;
+
+    // Uniform buffers
+    uint64_t minUniformBufferOffsetAlignment = 256;
+    uint32_t maxUniformBufferRange = 65536;
+
+    // Storage buffers
+    uint32_t maxStorageBufferRange = 0;
+
+    // Compute
+    uint32_t maxComputeWorkGroupCountX = 65535;
+    uint32_t maxComputeWorkGroupCountY = 65535;
+    uint32_t maxComputeWorkGroupCountZ = 65535;
+    uint32_t maxComputeWorkGroupInvocations = 1024;
+    uint32_t maxComputeWorkGroupSizeX = 1024;
+    uint32_t maxComputeWorkGroupSizeY = 1024;
+    uint32_t maxComputeWorkGroupSizeZ = 64;
+
+    // Mesh shaders
+    uint32_t maxMeshOutputVertices = 0;
+    uint32_t maxMeshOutputPrimitives = 0;
+    uint32_t maxMeshWorkGroupInvocations = 0;
+    uint32_t maxTaskWorkGroupInvocations = 0;
+
+    // Descriptors
+    uint32_t maxBoundDescriptorSets = 4;
+    uint32_t maxPerStageDescriptorSamplers = 16;
+    uint32_t maxPerStageDescriptorUniformBuffers = 12;
+    uint32_t maxPerStageDescriptorStorageBuffers = 8;
+    uint32_t maxPerStageDescriptorSampledImages = 16;
+    uint32_t maxPerStageDescriptorStorageImages = 4;
+    uint32_t maxDescriptorSetSamplers = 0;
+    uint32_t maxDescriptorSetUniformBuffers = 0;
+    uint32_t maxDescriptorSetStorageBuffers = 0;
+    uint32_t maxDescriptorSetSampledImages = 0;
+    uint32_t maxDescriptorSetStorageImages = 0;
+
+    // Memory
+    uint64_t nonCoherentAtomSize = 256;
+
+    // Textures / framebuffer
+    uint32_t maxImageDimension2D = 4096;
+    uint32_t maxFramebufferWidth = 4096;
+    uint32_t maxFramebufferHeight = 4096;
+    uint32_t maxColorAttachments = 4;
+
+    // Timing
+    float timestampPeriod = 0.0f;
+
+    // Descriptor buffer (VK_EXT_descriptor_buffer) — zero when unsupported
+    uint64_t descriptorBufferOffsetAlignment = 0;
+    uint64_t sampledImageDescriptorSize = 0;
+    uint64_t samplerDescriptorSize = 0;
+    uint64_t storageImageDescriptorSize = 0;
+    uint64_t storageBufferDescriptorSize = 0;
+    uint64_t uniformBufferDescriptorSize = 0;
+    uint64_t accelerationStructureDescriptorSize = 0;
 };
 
 struct RhiDeviceInfo {
@@ -500,12 +720,17 @@ struct RhiCreateInfo {
 
     // Optional Vulkan proxy lookup used by integrations such as Streamline manual hooking.
     void* vkGetDeviceProcAddrProxy = nullptr;
+
+    // Directory for on-disk pipeline / shader caches (created if absent).
+    std::string pipelineCacheDir = "cache/pipelines";
+    std::string shaderCacheDir   = "cache/shaders";
 };
 
 struct RhiBufferDesc {
     size_t size = 0;
     const void* initialData = nullptr;
     bool hostVisible = true;
+    bool sharedWithTransferQueue = false;
     const char* debugName = nullptr;
 };
 
@@ -524,6 +749,15 @@ struct RhiVertexAttributeDesc {
     uint32_t binding = 0;
     RhiVertexFormat format = RhiVertexFormat::Float3;
     uint32_t offset = 0;
+};
+
+struct RhiSamplerDesc {
+    RhiSamplerFilterMode minFilter = RhiSamplerFilterMode::Linear;
+    RhiSamplerFilterMode magFilter = RhiSamplerFilterMode::Linear;
+    RhiSamplerMipFilterMode mipFilter = RhiSamplerMipFilterMode::None;
+    RhiSamplerAddressMode addressModeS = RhiSamplerAddressMode::Repeat;
+    RhiSamplerAddressMode addressModeT = RhiSamplerAddressMode::Repeat;
+    RhiSamplerAddressMode addressModeR = RhiSamplerAddressMode::Repeat;
 };
 
 class RhiShaderModule {
@@ -604,6 +838,19 @@ struct RhiGraphicsPipelineDesc {
     bool enableMeshShaders = false;
 };
 
+struct RhiRenderPipelineSourceDesc {
+    const char* vertexEntry = nullptr;
+    const char* meshEntry = nullptr;
+    const char* fragmentEntry = nullptr;
+    RhiFormat colorFormat = RhiFormat::BGRA8Unorm;
+    RhiFormat depthFormat = RhiFormat::Undefined;
+    const RhiVertexDescriptor* vertexDescriptor = nullptr;
+};
+
+struct RhiShaderLibrarySourceDesc {
+    uint32_t languageVersion = 0;
+};
+
 struct RhiNativeHandles {
     void* instance = nullptr;
     void* physicalDevice = nullptr;
@@ -612,9 +859,16 @@ struct RhiNativeHandles {
     void* descriptorPool = nullptr;
     void* allocator = nullptr;  // VmaAllocator for Vulkan, unused for Metal
     uint32_t graphicsQueueFamily = 0;
+    uint32_t computeQueueFamily = UINT32_MAX;   // UINT32_MAX = unavailable
+    uint32_t transferQueueFamily = UINT32_MAX;  // UINT32_MAX = unavailable
     uint32_t swapchainImageCount = 0;
     uint32_t colorFormat = 0;
     uint32_t apiVersion = 0;
+    // Multi-queue handles (null if queue not available)
+    void* computeQueue = nullptr;                 // VkQueue (dedicated compute, if present)
+    void* transferQueue = nullptr;                // VkQueue (dedicated transfer, if present)
+    void* computeTimelineSemaphore = nullptr;     // VkSemaphore (timeline, for async compute sync)
+    void* transferTimelineSemaphore = nullptr;    // VkSemaphore (timeline, for async transfer sync)
 };
 
 struct RhiRenderTargetInfo {
@@ -643,16 +897,59 @@ public:
     virtual ~RhiContext() = default;
     virtual RhiBackendType backendType() const = 0;
     virtual const RhiFeatures& features() const = 0;
+    virtual const RhiLimits& limits() const = 0;
     virtual const RhiDeviceInfo& deviceInfo() const = 0;
     virtual const RhiNativeHandles& nativeHandles() const = 0;
+    virtual const RhiSubgroupProperties& subgroupProperties() const {
+        static const RhiSubgroupProperties kEmpty{};
+        return kEmpty;
+    }
+    virtual const RhiRayTracingPipelineProperties& rayTracingPipelineProperties() const {
+        static const RhiRayTracingPipelineProperties kEmpty{};
+        return kEmpty;
+    }
+    virtual const IRhiInteropProvider* interopProvider() const { return nullptr; }
     virtual bool beginFrame() = 0;
     virtual void endFrame() = 0;
     virtual void resize(uint32_t width, uint32_t height) = 0;
     virtual void waitIdle() = 0;
+    virtual uint64_t completedGraphicsSubmissionSerial() { return 0u; }
+    virtual uint64_t nextGraphicsSubmissionSerial() const { return 0u; }
     virtual RhiCommandContext& commandContext() = 0;
     virtual uint32_t drawableWidth() const = 0;
     virtual uint32_t drawableHeight() const = 0;
     virtual RhiFormat colorFormat() const = 0;
+    virtual RhiBufferHandle createSharedBuffer(const void* initialData,
+                                               size_t size,
+                                               const char* debugName = nullptr) = 0;
+    virtual RhiTextureHandle createTexture2D(uint32_t width,
+                                             uint32_t height,
+                                             RhiFormat format,
+                                             bool mipmapped,
+                                             uint32_t mipLevelCount,
+                                             RhiTextureStorageMode storageMode,
+                                             RhiTextureUsage usage) = 0;
+    virtual RhiTextureHandle createTexture3D(uint32_t width,
+                                             uint32_t height,
+                                             uint32_t depth,
+                                             RhiFormat format,
+                                             RhiTextureStorageMode storageMode,
+                                             RhiTextureUsage usage) = 0;
+    virtual RhiSamplerHandle createSampler(const RhiSamplerDesc& desc) = 0;
+    virtual RhiDepthStencilStateHandle createDepthStencilState(bool depthWriteEnabled,
+                                                               bool reversedZ) = 0;
+    virtual RhiShaderLibraryHandle createShaderLibraryFromSource(const std::string& source,
+                                                                 const RhiShaderLibrarySourceDesc& desc,
+                                                                 std::string& errorMessage) = 0;
+    virtual RhiComputePipelineHandle createComputePipelineFromLibrary(const RhiShaderLibrary& library,
+                                                                      const char* entryPoint,
+                                                                      std::string& errorMessage) = 0;
+    virtual RhiGraphicsPipelineHandle createRenderPipelineFromSource(const std::string& source,
+                                                                     const RhiRenderPipelineSourceDesc& desc,
+                                                                     std::string& errorMessage) = 0;
+    virtual RhiComputePipelineHandle createComputePipelineFromSource(const std::string& source,
+                                                                     const char* entryPoint,
+                                                                     std::string& errorMessage) = 0;
     virtual std::unique_ptr<RhiShaderModule> createShaderModule(const RhiShaderModuleDesc& desc) = 0;
     virtual std::unique_ptr<RhiBuffer> createVertexBuffer(const RhiBufferDesc& desc) = 0;
     virtual std::unique_ptr<RhiGraphicsPipeline> createGraphicsPipeline(const RhiGraphicsPipelineDesc& desc) = 0;

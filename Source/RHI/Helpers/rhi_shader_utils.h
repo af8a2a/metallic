@@ -15,19 +15,6 @@ void rhiVertexDescriptorSetLayout(const RhiVertexDescriptor& vertexDescriptor,
                                   uint32_t bufferIndex,
                                   uint32_t stride);
 
-struct RhiRenderPipelineSourceDesc {
-    const char* vertexEntry = nullptr;
-    const char* meshEntry = nullptr;
-    const char* fragmentEntry = nullptr;
-    RhiFormat colorFormat = RhiFormat::BGRA8Unorm;
-    RhiFormat depthFormat = RhiFormat::Undefined;
-    const RhiVertexDescriptor* vertexDescriptor = nullptr;
-};
-
-struct RhiShaderLibrarySourceDesc {
-    uint32_t languageVersion = 0;
-};
-
 RhiShaderLibraryHandle rhiCreateShaderLibraryFromSource(const RhiDevice& device,
                                                         const std::string& source,
                                                         const RhiShaderLibrarySourceDesc& desc,
@@ -47,5 +34,4 @@ RhiComputePipelineHandle rhiCreateComputePipelineFromSource(const RhiDevice& dev
 
 #ifdef _WIN32
 #include <vulkan/vulkan.h>
-void vulkanSetShaderContext(VkDevice device);
 #endif

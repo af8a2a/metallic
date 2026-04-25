@@ -7,10 +7,17 @@
 
 #include <vulkan/vulkan.h>
 
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#include <shobjidl.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cmath>
 #include <fstream>
 #include <memory>
@@ -19,10 +26,13 @@
 #include <vector>
 
 #include "camera.h"
+#include "cluster_streaming_service.h"
 #include "frame_context.h"
 #include "frame_graph.h"
+#include "nsight_markers.h"
 #include "input.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "pipeline_asset.h"
@@ -30,21 +40,74 @@
 #include "render_pass.h"
 #include "render_uniforms.h"
 #include "rhi_backend.h"
+#include "bindless_scene_constants.h"
 #include "raytraced_shadows.h"
 #include "rhi_resource_utils.h"
 #include "rhi_shader_utils.h"
 #include "shader_manager.h"
 #include "slang_compiler.h"
 #include "visibility_constants.h"
+#include "scene_context.h"
+#include "scene_graph_ui.h"
 #include "cluster_lod_builder.h"
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
+#include "vulkan_descriptor_buffer.h"
+#include "vulkan_transient_allocator.h"
+#include "vulkan_upload_service.h"
 #include "streamline_context.h"
+
+#if defined(METALLIC_HAS_AFTERMATH) && METALLIC_HAS_AFTERMATH
+#include "aftermath_tracker.h"
+#endif
 
 #include <spdlog/spdlog.h>
 #include <tracy/Tracy.hpp>
 
 namespace {
+
+#ifdef _WIN32
+std::string openGltfFileDialog(GLFWwindow* window) {
+    std::string result;
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(hr)) return result;
+
+    IFileOpenDialog* pDialog = nullptr;
+    hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
+                          IID_IFileOpenDialog, reinterpret_cast<void**>(&pDialog));
+    if (SUCCEEDED(hr)) {
+        COMDLG_FILTERSPEC filters[] = {
+            { L"glTF Files", L"*.gltf;*.glb" },
+            { L"All Files",  L"*.*" },
+        };
+        pDialog->SetFileTypes(2, filters);
+        pDialog->SetTitle(L"Open glTF Scene");
+
+        HWND hwnd = glfwGetWin32Window(window);
+        hr = pDialog->Show(hwnd);
+        if (SUCCEEDED(hr)) {
+            IShellItem* pItem = nullptr;
+            hr = pDialog->GetResult(&pItem);
+            if (SUCCEEDED(hr)) {
+                PWSTR filePath = nullptr;
+                hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &filePath);
+                if (SUCCEEDED(hr) && filePath) {
+                    int len = WideCharToMultiByte(CP_UTF8, 0, filePath, -1, nullptr, 0, nullptr, nullptr);
+                    if (len > 0) {
+                        result.resize(len - 1);
+                        WideCharToMultiByte(CP_UTF8, 0, filePath, -1, result.data(), len, nullptr, nullptr);
+                    }
+                    CoTaskMemFree(filePath);
+                }
+                pItem->Release();
+            }
+        }
+        pDialog->Release();
+    }
+    CoUninitialize();
+    return result;
+}
+#endif
 
 struct Vertex {
     float position[3];
@@ -64,6 +127,62 @@ static constexpr int kRenderResolutionBaseHeight = 1080;
 static constexpr float kMinRenderScale = 0.25f;
 static constexpr float kMaxRenderScale = 2.0f;
 
+std::string formatByteCountShort(uint64_t byteCount) {
+    static constexpr const char* kUnits[] = {"B", "KB", "MB", "GB"};
+    static constexpr uint32_t kUnitCount = sizeof(kUnits) / sizeof(kUnits[0]);
+    double value = static_cast<double>(byteCount);
+    uint32_t unitIndex = 0u;
+    while (value >= 1024.0 && unitIndex + 1u < kUnitCount) {
+        value /= 1024.0;
+        ++unitIndex;
+    }
+
+    char buffer[64] = {};
+    if (unitIndex == 0u) {
+        std::snprintf(buffer, sizeof(buffer), "%llu %s",
+                      static_cast<unsigned long long>(byteCount),
+                      kUnits[unitIndex]);
+    } else {
+        std::snprintf(buffer, sizeof(buffer), "%.1f %s", value, kUnits[unitIndex]);
+    }
+    return buffer;
+}
+
+struct StreamingDashboardHistory {
+    static constexpr int kSampleCount = 120;
+
+    std::array<float, kSampleCount> loadRequestHistory = {};
+    std::array<float, kSampleCount> unloadRequestHistory = {};
+    uint32_t lastFrameIndex = UINT32_MAX;
+    int sampleCount = 0;
+    int nextSample = 0;
+
+    void push(uint32_t frameIndex, const ClusterStreamingService::StreamingStats& stats) {
+        if (lastFrameIndex == frameIndex) {
+            return;
+        }
+
+        lastFrameIndex = frameIndex;
+        loadRequestHistory[nextSample] = static_cast<float>(stats.loadRequestsThisFrame);
+        unloadRequestHistory[nextSample] = static_cast<float>(stats.unloadRequestsThisFrame);
+        nextSample = (nextSample + 1) % kSampleCount;
+        sampleCount = std::min(sampleCount + 1, kSampleCount);
+    }
+
+    int plotOffset() const {
+        return sampleCount < kSampleCount ? 0 : nextSample;
+    }
+
+    float maxRequestValue() const {
+        float maxValue = 1.0f;
+        for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
+            maxValue = std::max(maxValue, loadRequestHistory[sampleIndex]);
+            maxValue = std::max(maxValue, unloadRequestHistory[sampleIndex]);
+        }
+        return maxValue;
+    }
+};
+
 void checkImGuiVkResult(VkResult result) {
     if (result == VK_SUCCESS) {
         return;
@@ -78,6 +197,12 @@ VkHandle nativeToVkHandle(void* handle) {
     } else {
         return static_cast<VkHandle>(reinterpret_cast<uint64_t>(handle));
     }
+}
+
+std::string formatVulkanVersion(uint32_t version) {
+    return std::to_string(VK_API_VERSION_MAJOR(version)) + "." +
+           std::to_string(VK_API_VERSION_MINOR(version)) + "." +
+           std::to_string(VK_API_VERSION_PATCH(version));
 }
 
 struct AtmosphereTextures {
@@ -98,152 +223,29 @@ struct AtmosphereTextures {
     }
 };
 
-void releaseMeshBuffers(LoadedMesh& mesh) {
-    rhiReleaseHandle(mesh.positionBuffer);
-    rhiReleaseHandle(mesh.normalBuffer);
-    rhiReleaseHandle(mesh.uvBuffer);
-    rhiReleaseHandle(mesh.indexBuffer);
-}
-
-void releaseMeshletBuffers(MeshletData& meshlets) {
-    rhiReleaseHandle(meshlets.meshletBuffer);
-    rhiReleaseHandle(meshlets.meshletVertices);
-    rhiReleaseHandle(meshlets.meshletTriangles);
-    rhiReleaseHandle(meshlets.boundsBuffer);
-    rhiReleaseHandle(meshlets.materialIDs);
-}
-
-void releaseMaterialResources(LoadedMaterials& materials) {
-    for (auto& texture : materials.textures) {
-        rhiReleaseHandle(texture);
-    }
-    materials.textures.clear();
-    materials.textureViews.clear();
-    rhiReleaseHandle(materials.materialBuffer);
-    rhiReleaseHandle(materials.sampler);
-    materials.materialCount = 0;
-}
-
-bool loadSponzaScene(const RhiDevice& device,
-                     const RhiCommandQueue& commandQueue,
-                     const char* projectRoot,
-                     LoadedMesh& outMesh,
-                     MeshletData& outMeshlets,
-                     LoadedMaterials& outMaterials,
-                     SceneGraph& outScene,
-                     ClusterLODData& outLOD) {
-    const std::string gltfPath = std::string(projectRoot) + "/Asset/Sponza/glTF/Sponza.gltf";
-
-    releaseMaterialResources(outMaterials);
-    releaseMeshletBuffers(outMeshlets);
-    releaseMeshBuffers(outMesh);
-    outMesh = LoadedMesh{};
-    outMeshlets = MeshletData{};
-    outMaterials = LoadedMaterials{};
-    outScene = SceneGraph{};
-
-    if (!loadGLTFMesh(device, gltfPath, outMesh)) {
-        spdlog::error("Failed to load Vulkan scene mesh: {}", gltfPath);
-        return false;
-    }
-
-    if (!buildMeshlets(device, outMesh, outMeshlets)) {
-        spdlog::error("Failed to build Vulkan meshlets: {}", gltfPath);
-        releaseMeshBuffers(outMesh);
-        outMesh = LoadedMesh{};
-        return false;
-    }
-
-    if (!loadGLTFMaterials(device, commandQueue, gltfPath, outMaterials)) {
-        spdlog::error("Failed to load Vulkan scene materials: {}", gltfPath);
-        releaseMeshletBuffers(outMeshlets);
-        releaseMeshBuffers(outMesh);
-        outMeshlets = MeshletData{};
-        outMesh = LoadedMesh{};
-        return false;
-    }
-
-    if (!outScene.buildFromGLTF(gltfPath, outMesh, outMeshlets)) {
-        spdlog::error("Failed to build Vulkan scene graph: {}", gltfPath);
-        releaseMaterialResources(outMaterials);
-        releaseMeshletBuffers(outMeshlets);
-        releaseMeshBuffers(outMesh);
-        outMaterials = LoadedMaterials{};
-        outMeshlets = MeshletData{};
-        outMesh = LoadedMesh{};
-        return false;
-    }
-
-    if (!outScene.normalizeSingleRootScale(device, outMesh, outMeshlets)) {
-        spdlog::error("Failed to normalize Vulkan scene root scale: {}", gltfPath);
-        releaseMaterialResources(outMaterials);
-        releaseMeshletBuffers(outMeshlets);
-        releaseMeshBuffers(outMesh);
-        outMaterials = LoadedMaterials{};
-        outMeshlets = MeshletData{};
-        outMesh = LoadedMesh{};
-        outScene = SceneGraph{};
-        return false;
-    }
-
-    outScene.updateTransforms();
-
-    // Build cluster LOD hierarchy
-    outLOD = ClusterLODData{};
-    if (!buildClusterLOD(device, outMesh, outMeshlets, outLOD)) {
-        spdlog::warn("Cluster LOD build failed; continuing without LOD hierarchy");
-    }
-
-    spdlog::info("Loaded Vulkan scene: {}", gltfPath);
-    return true;
-}
-
-bool createSceneFallbackTextures(const RhiDevice& device,
-                                 RhiTextureHandle& outShadowDummy,
-                                 RhiTextureHandle& outSkyFallback) {
-    rhiReleaseHandle(outShadowDummy);
-    rhiReleaseHandle(outSkyFallback);
-
-    outShadowDummy = rhiCreateTexture2D(device,
-                                        1,
-                                        1,
-                                        RhiFormat::R8Unorm,
-                                        false,
-                                        1,
-                                        RhiTextureStorageMode::Shared,
-                                        RhiTextureUsage::ShaderRead);
-    outSkyFallback = rhiCreateTexture2D(device,
-                                        1,
-                                        1,
-                                        RhiFormat::BGRA8Unorm,
-                                        false,
-                                        1,
-                                        RhiTextureStorageMode::Shared,
-                                        RhiTextureUsage::ShaderRead);
-    if (!outShadowDummy.nativeHandle() || !outSkyFallback.nativeHandle()) {
-        rhiReleaseHandle(outShadowDummy);
-        rhiReleaseHandle(outSkyFallback);
-        return false;
-    }
-
-    const uint8_t shadowValue = 0xFF;
-    const uint8_t skyValue[4] = {77, 51, 26, 255};
-    rhiUploadTexture2D(outShadowDummy, 1, 1, &shadowValue, 1);
-    rhiUploadTexture2D(outSkyFallback, 1, 1, skyValue, sizeof(skyValue));
-    return true;
-}
-
-void eraseResourceByName(PipelineAsset& asset, const char* resourceName) {
+void eraseResourceById(PipelineAsset& asset, const std::string& resourceId) {
+    asset.removeEdgesForResource(resourceId);
     asset.resources.erase(
         std::remove_if(asset.resources.begin(),
                        asset.resources.end(),
-                       [resourceName](const ResourceDecl& resource) {
-                           return resource.name == resourceName;
+                       [&resourceId](const ResourceDecl& resource) {
+                           return resource.id == resourceId;
                        }),
         asset.resources.end());
 }
 
 void erasePassByType(PipelineAsset& asset, const char* passType) {
+    std::vector<std::string> passIds;
+    for (const auto& pass : asset.passes) {
+        if (pass.type == passType) {
+            passIds.push_back(pass.id);
+        }
+    }
+
+    for (const auto& passId : passIds) {
+        asset.removeEdgesForPass(passId);
+    }
+
     asset.passes.erase(
         std::remove_if(asset.passes.begin(),
                        asset.passes.end(),
@@ -253,16 +255,101 @@ void erasePassByType(PipelineAsset& asset, const char* passType) {
         asset.passes.end());
 }
 
-void replacePassInput(PassDecl& pass, const char* oldName, const char* newName) {
-    for (auto& input : pass.inputs) {
-        if (input == oldName) {
-            input = newName;
+ResourceDecl* findFirstResourceByKind(PipelineAsset& asset, const char* resourceKind) {
+    for (auto& resource : asset.resources) {
+        if (resource.kind == resourceKind) {
+            return &resource;
         }
     }
+    return nullptr;
 }
 
-bool passProducesResource(const PassDecl& pass, const char* resourceName) {
-    return std::find(pass.outputs.begin(), pass.outputs.end(), resourceName) != pass.outputs.end();
+const ResourceDecl* findFirstResourceByKind(const PipelineAsset& asset, const char* resourceKind) {
+    for (const auto& resource : asset.resources) {
+        if (resource.kind == resourceKind) {
+            return &resource;
+        }
+    }
+    return nullptr;
+}
+
+EdgeDecl* findPassSlotBinding(PipelineAsset& asset,
+                              const PassDecl* pass,
+                              const char* direction,
+                              const char* slotKey) {
+    if (!pass) {
+        return nullptr;
+    }
+    return asset.findEdge(pass->id, direction, slotKey);
+}
+
+const EdgeDecl* findPassSlotBinding(const PipelineAsset& asset,
+                                    const PassDecl* pass,
+                                    const char* direction,
+                                    const char* slotKey) {
+    if (!pass) {
+        return nullptr;
+    }
+    return asset.findEdge(pass->id, direction, slotKey);
+}
+
+const ResourceDecl* findPassBoundResource(const PipelineAsset& asset,
+                                          const PassDecl* pass,
+                                          const char* direction,
+                                          const char* slotKey) {
+    const EdgeDecl* edge = findPassSlotBinding(asset, pass, direction, slotKey);
+    return edge ? asset.findResourceById(edge->resourceId) : nullptr;
+}
+
+void ensurePassSlotBinding(PipelineAsset& asset,
+                           const PassDecl& pass,
+                           const char* direction,
+                           const char* slotKey,
+                           const std::string& resourceId) {
+    if (EdgeDecl* edge = asset.findEdge(pass.id, direction, slotKey)) {
+        edge->resourceId = resourceId;
+        return;
+    }
+
+    asset.edges.push_back({
+        generatePipelineAssetGuid(),
+        pass.id,
+        slotKey,
+        direction,
+        resourceId,
+    });
+}
+
+void erasePassSlotBinding(PipelineAsset& asset,
+                          const PassDecl& pass,
+                          const char* direction,
+                          const char* slotKey) {
+    asset.edges.erase(
+        std::remove_if(asset.edges.begin(),
+                       asset.edges.end(),
+                       [&](const EdgeDecl& edge) {
+                           return edge.passId == pass.id &&
+                                  edge.direction == direction &&
+                                  edge.slotKey == slotKey;
+                       }),
+        asset.edges.end());
+}
+
+bool passProducesResource(const PipelineAsset& asset,
+                          const PassDecl& pass,
+                          const std::string& resourceId) {
+    if (resourceId.empty()) {
+        return false;
+    }
+
+    for (const auto& edge : asset.edges) {
+        if (edge.passId == pass.id &&
+            edge.direction == "output" &&
+            edge.resourceId == resourceId) {
+            return true;
+        }
+    }
+    return false;
 }
 
 PassDecl* findFirstEnabledPassByType(PipelineAsset& asset, const char* passType) {
@@ -274,73 +361,155 @@ PassDecl* findFirstEnabledPassByType(PipelineAsset& asset, const char* passType)
     return nullptr;
 }
 
-void normalizePipelineFinalDisplayOutput(PipelineAsset& asset) {
-    PassDecl* tonemapPass = findFirstEnabledPassByType(asset, "TonemapPass");
+std::string ensureTonemapOutputResource(PipelineAsset& asset,
+                                        const std::string& tonemapPassId,
+                                        const std::string& backbufferId) {
+    if (PassDecl* outputPass = findFirstEnabledPassByType(asset, "OutputPass")) {
+        if (const ResourceDecl* outputSource =
+                findPassBoundResource(asset, outputPass, "input", "source")) {
+            if (outputSource->id != backbufferId && outputSource->kind != "backbuffer") {
+                if (PassDecl* tonemapPass = asset.findPassById(tonemapPassId)) {
+                    ensurePassSlotBinding(asset, *tonemapPass, "output", "output", outputSource->id);
+                }
+                return outputSource->id;
+            }
+        }
+    }
+
+    if (const PassDecl* tonemapPass = asset.findPassById(tonemapPassId)) {
+        if (const ResourceDecl* tonemapTarget =
+                findPassBoundResource(asset, tonemapPass, "output", "output")) {
+            if (tonemapTarget->id != backbufferId && tonemapTarget->kind != "backbuffer") {
+                return tonemapTarget->id;
+            }
+        }
+    }
+
+    const PassDecl* tonemapPass = asset.findPassById(tonemapPassId);
     if (!tonemapPass) {
+        return {};
+    }
+
+    ResourceDecl tonemapOutput;
+    tonemapOutput.id = generatePipelineAssetGuid();
+    tonemapOutput.name = "Tonemap Output";
+    tonemapOutput.kind = "transient";
+    tonemapOutput.type = "texture";
+    tonemapOutput.format = "RGBA8Srgb";
+    tonemapOutput.size = "screen";
+    tonemapOutput.editorPos = {
+        tonemapPass->editorPos[0] + 160.0f,
+        tonemapPass->editorPos[1] + 170.0f,
+    };
+
+    const std::string tonemapOutputId = tonemapOutput.id;
+    asset.resources.push_back(std::move(tonemapOutput));
+    if (PassDecl* tonemapPassMutable = asset.findPassById(tonemapPassId)) {
+        ensurePassSlotBinding(asset, *tonemapPassMutable, "output", "output", tonemapOutputId);
+    }
+    return tonemapOutputId;
+}
+
+PassDecl* ensureDisplayOutputPass(PipelineAsset& asset,
+                                  const std::string& sourceResourceId,
+                                  const std::string& backbufferId) {
+    if (PassDecl* outputPass = findFirstEnabledPassByType(asset, "OutputPass")) {
+        if (!sourceResourceId.empty()) {
+            const ResourceDecl* outputSource =
+                findPassBoundResource(asset, outputPass, "input", "source");
+            if (!outputSource || outputSource->id == backbufferId || outputSource->kind == "backbuffer") {
+                ensurePassSlotBinding(asset, *outputPass, "input", "source", sourceResourceId);
+            }
+        }
+        ensurePassSlotBinding(asset, *outputPass, "output", "target", backbufferId);
+        return outputPass;
+    }
+
+    PassDecl outputPass;
+    outputPass.id = generatePipelineAssetGuid();
+    outputPass.name = "Output";
+    outputPass.type = "OutputPass";
+    outputPass.enabled = true;
+    outputPass.sideEffect = false;
+    outputPass.config = nlohmann::json::object();
+
+    if (const PassDecl* tonemapPass = findFirstEnabledPassByType(asset, "TonemapPass")) {
+        outputPass.editorPos = {
+            tonemapPass->editorPos[0] + 320.0f,
+            tonemapPass->editorPos[1],
+        };
+    }
+
+    auto insertIt = std::find_if(asset.passes.begin(),
+                                 asset.passes.end(),
+                                 [](const PassDecl& pass) {
+                                     return pass.enabled && pass.type == "ImGuiOverlayPass";
+                                 });
+    auto insertedIt = asset.passes.insert(insertIt, std::move(outputPass));
+    if (!sourceResourceId.empty()) {
+        ensurePassSlotBinding(asset, *insertedIt, "input", "source", sourceResourceId);
+    }
+    ensurePassSlotBinding(asset, *insertedIt, "output", "target", backbufferId);
+    return &*insertedIt;
+}
+
+void normalizePipelineFinalDisplayOutput(PipelineAsset& asset) {
+    const ResourceDecl* backbuffer = findFirstResourceByKind(asset, "backbuffer");
+    if (!backbuffer) {
         return;
     }
-    const std::string tonemapPassName = tonemapPass->name;
 
-    bool tonemapHasOutput = false;
-    for (auto& output : tonemapPass->outputs) {
-        if (output == "$backbuffer") {
-            output = "tonemapOutput";
+    const std::string backbufferId = backbuffer->id;
+    bool reroutedTonemapBackbufferWrite = false;
+    bool createdOutputPass = false;
+
+    if (PassDecl* tonemapPass = findFirstEnabledPassByType(asset, "TonemapPass")) {
+        const bool hadOutputPass = findFirstEnabledPassByType(asset, "OutputPass") != nullptr;
+        const ResourceDecl* tonemapTarget =
+            findPassBoundResource(asset, tonemapPass, "output", "output");
+        const bool tonemapWritesBackbuffer =
+            tonemapTarget && tonemapTarget->id == backbufferId;
+
+        std::string tonemapOutputId;
+        if (!tonemapTarget || tonemapWritesBackbuffer || tonemapTarget->kind == "backbuffer") {
+            tonemapOutputId = ensureTonemapOutputResource(asset, tonemapPass->id, backbufferId);
+            reroutedTonemapBackbufferWrite = tonemapWritesBackbuffer;
+        } else {
+            tonemapOutputId = tonemapTarget->id;
         }
-        tonemapHasOutput = tonemapHasOutput || output == "tonemapOutput";
-    }
-    if (!tonemapHasOutput) {
-        tonemapPass->outputs.push_back("tonemapOutput");
-    }
 
-    PassDecl finalOutputPass;
-    bool hasExistingOutputPass = false;
-    size_t existingOutputPassIndex = 0;
-    for (size_t i = 0; i < asset.passes.size(); ++i) {
-        if (asset.passes[i].enabled && asset.passes[i].type == "OutputPass") {
-            finalOutputPass = asset.passes[i];
-            existingOutputPassIndex = i;
-            hasExistingOutputPass = true;
-            break;
+        if (!tonemapOutputId.empty()) {
+            ensureDisplayOutputPass(asset, tonemapOutputId, backbufferId);
+            createdOutputPass = !hadOutputPass && findFirstEnabledPassByType(asset, "OutputPass") != nullptr;
         }
+    } else if (PassDecl* outputPass = findFirstEnabledPassByType(asset, "OutputPass")) {
+        ensurePassSlotBinding(asset, *outputPass, "output", "target", backbufferId);
     }
 
-    if (hasExistingOutputPass) {
-        asset.passes.erase(asset.passes.begin() + static_cast<std::ptrdiff_t>(existingOutputPassIndex));
-    } else {
-        finalOutputPass.name = "OutputPass_Final";
-        finalOutputPass.type = "OutputPass";
-        finalOutputPass.enabled = true;
-        finalOutputPass.sideEffect = false;
-        finalOutputPass.config = nlohmann::json::object();
+    if (reroutedTonemapBackbufferWrite) {
+        spdlog::warn("Pipeline '{}' bound TonemapPass directly to the backbuffer; restoring Tonemap -> OutputPass display chain for Vulkan",
+                     asset.name);
+    } else if (createdOutputPass) {
+        spdlog::warn("Pipeline '{}' had TonemapPass without OutputPass; inserted OutputPass to present to the backbuffer",
+                     asset.name);
     }
 
-    finalOutputPass.inputs = {"tonemapOutput"};
-    finalOutputPass.outputs = {"$backbuffer"};
-
-    size_t insertIndex = asset.passes.size();
-    for (size_t i = 0; i < asset.passes.size(); ++i) {
-        if (!asset.passes[i].enabled) {
-            continue;
-        }
-        if (passProducesResource(asset.passes[i], "$backbuffer")) {
-            insertIndex = i;
-            break;
-        }
-    }
-    asset.passes.insert(asset.passes.begin() + static_cast<std::ptrdiff_t>(insertIndex), finalOutputPass);
-
-    const auto tonemapPosIt = asset.editorPositions.find(tonemapPassName);
-    if (tonemapPosIt != asset.editorPositions.end() &&
-        asset.editorPositions.find(finalOutputPass.name) == asset.editorPositions.end()) {
-        asset.editorPositions[finalOutputPass.name] = {
-            tonemapPosIt->second[0] + 240.0f,
-            tonemapPosIt->second[1]
-        };
+    if (PassDecl* imguiPass = findFirstEnabledPassByType(asset, "ImGuiOverlayPass")) {
+        ensurePassSlotBinding(asset, *imguiPass, "output", "target", backbufferId);
     }
 }
 
 void disablePipelineAutoExposure(PipelineAsset& asset) {
-    eraseResourceByName(asset, "exposureLut");
+    std::vector<std::string> producedResourceIds;
+    for (const auto& pass : asset.passes) {
+        if (pass.type != "AutoExposurePass") {
+            continue;
+        }
+        if (const EdgeDecl* edge = findPassSlotBinding(asset, &pass, "output", "exposureLut")) {
+            producedResourceIds.push_back(edge->resourceId);
+        }
+    }
+
     erasePassByType(asset, "AutoExposurePass");
 
     for (auto& pass : asset.passes) {
@@ -348,15 +517,26 @@ void disablePipelineAutoExposure(PipelineAsset& asset) {
             continue;
         }
 
-        pass.inputs.erase(
-            std::remove(pass.inputs.begin(), pass.inputs.end(), "exposureLut"),
-            pass.inputs.end());
+        erasePassSlotBinding(asset, pass, "input", "exposureLut");
         pass.config["autoExposure"] = false;
+    }
+
+    for (const auto& resourceId : producedResourceIds) {
+        eraseResourceById(asset, resourceId);
     }
 }
 
 void disableVisibilityRayTracing(PipelineAsset& asset) {
-    eraseResourceByName(asset, "shadowMap");
+    std::vector<std::string> producedResourceIds;
+    for (const auto& pass : asset.passes) {
+        if (pass.type != "ShadowRayPass") {
+            continue;
+        }
+        if (const EdgeDecl* edge = findPassSlotBinding(asset, &pass, "output", "shadowMap")) {
+            producedResourceIds.push_back(edge->resourceId);
+        }
+    }
+
     erasePassByType(asset, "ShadowRayPass");
 
     for (auto& pass : asset.passes) {
@@ -364,9 +544,11 @@ void disableVisibilityRayTracing(PipelineAsset& asset) {
             continue;
         }
 
-        pass.inputs.erase(
-            std::remove(pass.inputs.begin(), pass.inputs.end(), "shadowMap"),
-            pass.inputs.end());
+        erasePassSlotBinding(asset, pass, "input", "shadowMap");
+    }
+
+    for (const auto& resourceId : producedResourceIds) {
+        eraseResourceById(asset, resourceId);
     }
 }
 
@@ -401,41 +583,12 @@ const PassDecl* findEnabledProducerForResource(const PipelineAsset& asset, const
         if (!pass.enabled) {
             continue;
         }
-        if (std::find(pass.outputs.begin(), pass.outputs.end(), resourceName) != pass.outputs.end()) {
+
+        if (passProducesResource(asset, pass, resourceName)) {
             return &pass;
         }
     }
     return nullptr;
-}
-
-std::string findPrimaryInput(const PassDecl* pass, std::initializer_list<const char*> ignoredInputs = {}) {
-    if (!pass) {
-        return {};
-    }
-
-    for (const auto& input : pass->inputs) {
-        if (input.empty() || input[0] == '$') {
-            continue;
-        }
-        bool ignored = false;
-        for (const char* ignoredInput : ignoredInputs) {
-            if (input == ignoredInput) {
-                ignored = true;
-                break;
-            }
-        }
-        if (!ignored) {
-            return input;
-        }
-    }
-    return {};
-}
-
-bool passConsumesInput(const PassDecl* pass, const char* inputName) {
-    if (!pass || !inputName || inputName[0] == '\0') {
-        return false;
-    }
-    return std::find(pass->inputs.begin(), pass->inputs.end(), inputName) != pass->inputs.end();
 }
 
 VisibilityUpscalerSelection analyzeVisibilityUpscalerSelection(const PipelineAsset& asset) {
@@ -448,20 +601,26 @@ VisibilityUpscalerSelection analyzeVisibilityUpscalerSelection(const PipelineAss
     selection.hasTaaPass = findFirstEnabledPassByType(asset, "TAAPass") != nullptr;
     selection.hasDlssPass = findFirstEnabledPassByType(asset, "StreamlineDlssPass") != nullptr;
 
-    const std::string tonemapSource = findPrimaryInput(tonemapPass, {"exposureLut"});
-    const std::string outputSource = findPrimaryInput(outputPass);
-    const std::string autoExposureSource = findPrimaryInput(autoExposurePass);
+    const ResourceDecl* tonemapSource =
+        findPassBoundResource(asset, tonemapPass, "input", "source");
+    const ResourceDecl* outputSource =
+        findPassBoundResource(asset, outputPass, "input", "source");
+    const ResourceDecl* autoExposureSource =
+        findPassBoundResource(asset, autoExposurePass, "input", "source");
 
-    selection.activePostSource = !tonemapSource.empty() ? tonemapSource : outputSource;
+    const ResourceDecl* activePostSource = tonemapSource ? tonemapSource : outputSource;
+    selection.activePostSource = activePostSource ? activePostSource->name : std::string{};
 
-    if (!selection.activePostSource.empty()) {
-        const PassDecl* producer = findEnabledProducerForResource(asset, selection.activePostSource);
-        if (producer) {
-            if (producer->type == "TAAPass") {
-                selection.activeMode = VisibilityUpscalerMode::TAA;
-            } else if (producer->type == "StreamlineDlssPass") {
-                selection.activeMode = VisibilityUpscalerMode::DLSS;
-            }
+    const PassDecl* activePostProducer =
+        activePostSource ? findEnabledProducerForResource(asset, activePostSource->id) : nullptr;
+    const PassDecl* autoExposureProducer =
+        autoExposureSource ? findEnabledProducerForResource(asset, autoExposureSource->id) : nullptr;
+
+    if (activePostProducer) {
+        if (activePostProducer->type == "TAAPass") {
+            selection.activeMode = VisibilityUpscalerMode::TAA;
+        } else if (activePostProducer->type == "StreamlineDlssPass") {
+            selection.activeMode = VisibilityUpscalerMode::DLSS;
         }
     }
 
@@ -469,60 +628,62 @@ VisibilityUpscalerSelection analyzeVisibilityUpscalerSelection(const PipelineAss
         return selection;
     }
 
-    if (tonemapPass && tonemapSource.empty()) {
-        if (autoExposureSource == "dlssOutput") {
+    if (tonemapPass && !tonemapSource) {
+        if (autoExposureProducer && autoExposureProducer->type == "StreamlineDlssPass") {
             selection.diagnostic =
-                "TonemapPass has no color input. AutoExposurePass already reads dlssOutput; "
-                "connect TonemapPass to dlssOutput and keep exposureLut as a second input.";
-        } else if (autoExposureSource == "taaOutput") {
+                "TonemapPass.source is unbound. AutoExposurePass already reads "
+                "StreamlineDlssPass.dlssOutput; connect TonemapPass.source to the same output "
+                "and keep TonemapPass.exposureLut as the second input.";
+        } else if (autoExposureProducer && autoExposureProducer->type == "TAAPass") {
             selection.diagnostic =
-                "TonemapPass has no color input. AutoExposurePass already reads taaOutput; "
-                "connect TonemapPass to taaOutput and keep exposureLut as a second input.";
+                "TonemapPass.source is unbound. AutoExposurePass already reads "
+                "TAAPass.taaOutput; connect TonemapPass.source to the same output and keep "
+                "TonemapPass.exposureLut as the second input.";
         } else {
             selection.diagnostic =
-                "TonemapPass has no color input. Connect it to lightingOutput, taaOutput, or dlssOutput.";
+                "TonemapPass.source is unbound. Connect it to DeferredLightingPass.lightingOutput, "
+                "TAAPass.taaOutput, or StreamlineDlssPass.dlssOutput.";
         }
         return selection;
     }
 
-    if (!tonemapPass && outputPass && outputSource.empty()) {
+    if (!tonemapPass && outputPass && !outputSource) {
         selection.diagnostic =
-            "OutputPass has no source input. Connect it to lightingOutput, taaOutput, or dlssOutput.";
+            "OutputPass.source is unbound. Connect it to DeferredLightingPass.lightingOutput, "
+            "TAAPass.taaOutput, or StreamlineDlssPass.dlssOutput.";
         return selection;
     }
 
     if (selection.hasDlssPass) {
-        if (autoExposureSource == "dlssOutput") {
+        if (autoExposureProducer && autoExposureProducer->type == "StreamlineDlssPass") {
             selection.diagnostic =
-                "StreamlineDlssPass exists and AutoExposurePass reads dlssOutput, but the active post chain does not.";
+                "StreamlineDlssPass exists and AutoExposurePass.source already reads "
+                "StreamlineDlssPass.dlssOutput, but the active post chain does not.";
         } else if (!selection.activePostSource.empty()) {
             selection.diagnostic =
                 "StreamlineDlssPass exists, but the active post chain still uses '" +
                 selection.activePostSource + "'.";
-        } else if (passConsumesInput(tonemapPass, "dlssOutput") || passConsumesInput(outputPass, "dlssOutput")) {
-            selection.diagnostic =
-                "StreamlineDlssPass is wired into the graph, but the active post source could not be resolved.";
         } else {
             selection.diagnostic =
-                "StreamlineDlssPass is present, but TonemapPass/OutputPass is not consuming dlssOutput.";
+                "StreamlineDlssPass is present, but TonemapPass.source/OutputPass.source is not "
+                "bound to StreamlineDlssPass.dlssOutput.";
         }
         return selection;
     }
 
     if (selection.hasTaaPass) {
-        if (autoExposureSource == "taaOutput") {
+        if (autoExposureProducer && autoExposureProducer->type == "TAAPass") {
             selection.diagnostic =
-                "TAAPass exists and AutoExposurePass reads taaOutput, but the active post chain does not.";
+                "TAAPass exists and AutoExposurePass.source already reads TAAPass.taaOutput, "
+                "but the active post chain does not.";
         } else if (!selection.activePostSource.empty()) {
             selection.diagnostic =
                 "TAAPass exists, but the active post chain still uses '" +
                 selection.activePostSource + "'.";
-        } else if (passConsumesInput(tonemapPass, "taaOutput") || passConsumesInput(outputPass, "taaOutput")) {
-            selection.diagnostic =
-                "TAAPass is wired into the graph, but the active post source could not be resolved.";
         } else {
             selection.diagnostic =
-                "TAAPass is present, but TonemapPass/OutputPass is not consuming taaOutput.";
+                "TAAPass is present, but TonemapPass.source/OutputPass.source is not bound to "
+                "TAAPass.taaOutput.";
         }
     }
 
@@ -685,44 +846,81 @@ bool loadAtmosphereTextures(const RhiDevice& device,
 
 PipelineAsset makeSceneColorPostPipelineAsset() {
     PipelineAsset asset;
+    asset.schemaVersion = kPipelineAssetSchemaVersion;
     asset.name = "VulkanPostPipeline";
-    asset.resources.push_back({"sceneColor", "texture", "RGBA16Float", "screen"});
-    asset.passes.push_back({
-        "Tonemap",
-        "TonemapPass",
-        {"sceneColor"},
-        {"tonemapOutput"},
-        true,
-        false,
-        {
-            {"method", "Clip"},
-            {"exposure", 1.0},
-            {"contrast", 1.0},
-            {"brightness", 1.0},
-            {"saturation", 1.0},
-            {"vignette", 0.0},
-            {"dither", false},
-            {"autoExposure", false},
-        },
-    });
-    asset.passes.push_back({
-        "Output",
-        "OutputPass",
-        {"tonemapOutput"},
-        {"$backbuffer"},
-        true,
-        false,
-        {},
-    });
-    asset.passes.push_back({
-        "ImGui Overlay",
-        "ImGuiOverlayPass",
-        {},
-        {"$backbuffer"},
-        true,
-        false,
-        {},
-    });
+
+    ResourceDecl sceneColor;
+    sceneColor.id = generatePipelineAssetGuid();
+    sceneColor.name = "Scene Color";
+    sceneColor.kind = "imported";
+    sceneColor.type = "texture";
+    sceneColor.format = "RGBA16Float";
+    sceneColor.size = "screen";
+    sceneColor.importKey = "sceneColor";
+
+    ResourceDecl tonemapOutput;
+    tonemapOutput.id = generatePipelineAssetGuid();
+    tonemapOutput.name = "Tonemap Output";
+    tonemapOutput.kind = "transient";
+    tonemapOutput.type = "texture";
+    tonemapOutput.format = "RGBA8Srgb";
+    tonemapOutput.size = "screen";
+
+    ResourceDecl backbuffer;
+    backbuffer.id = generatePipelineAssetGuid();
+    backbuffer.name = "Backbuffer";
+    backbuffer.kind = "backbuffer";
+    backbuffer.type = "texture";
+    backbuffer.format = "BGRA8Unorm";
+    backbuffer.size = "screen";
+
+    asset.resources.push_back(sceneColor);
+    asset.resources.push_back(tonemapOutput);
+    asset.resources.push_back(backbuffer);
+
+    PassDecl tonemapPass;
+    tonemapPass.id = generatePipelineAssetGuid();
+    tonemapPass.name = "Tonemap";
+    tonemapPass.type = "TonemapPass";
+    tonemapPass.enabled = true;
+    tonemapPass.sideEffect = false;
+    tonemapPass.config = {
+        {"method", "Clip"},
+        {"exposure", 1.0},
+        {"contrast", 1.0},
+        {"brightness", 1.0},
+        {"saturation", 1.0},
+        {"vignette", 0.0},
+        {"dither", false},
+        {"autoExposure", false},
+    };
+
+    PassDecl outputPass;
+    outputPass.id = generatePipelineAssetGuid();
+    outputPass.name = "Output";
+    outputPass.type = "OutputPass";
+    outputPass.enabled = true;
+    outputPass.sideEffect = false;
+    outputPass.config = nlohmann::json::object();
+
+    PassDecl imguiOverlayPass;
+    imguiOverlayPass.id = generatePipelineAssetGuid();
+    imguiOverlayPass.name = "ImGui Overlay";
+    imguiOverlayPass.type = "ImGuiOverlayPass";
+    imguiOverlayPass.enabled = true;
+    imguiOverlayPass.sideEffect = false;
+    imguiOverlayPass.config = nlohmann::json::object();
+
+    asset.passes.push_back(tonemapPass);
+    asset.passes.push_back(outputPass);
+    asset.passes.push_back(imguiOverlayPass);
+
+    asset.edges.push_back({generatePipelineAssetGuid(), tonemapPass.id, "source", "input", sceneColor.id});
+    asset.edges.push_back({generatePipelineAssetGuid(), tonemapPass.id, "output", "output", tonemapOutput.id});
+    asset.edges.push_back({generatePipelineAssetGuid(), outputPass.id, "source", "input", tonemapOutput.id});
+    asset.edges.push_back({generatePipelineAssetGuid(), outputPass.id, "target", "output", backbuffer.id});
+    asset.edges.push_back({generatePipelineAssetGuid(), imguiOverlayPass.id, "target", "output", backbuffer.id});
+
     return asset;
 }
 
@@ -738,223 +936,121 @@ float4 orbitCameraWorldPosition(const OrbitCamera& camera) {
                   1.0f);
 }
 
-float3 quaternionToEulerDeg(const float4& q) {
-    const float sinRoll = 2.0f * (q.w * q.x + q.y * q.z);
-    const float cosRoll = 1.0f - 2.0f * (q.x * q.x + q.y * q.y);
-    const float roll = std::atan2(sinRoll, cosRoll);
+void setNvproStyle() {
+    ImGui::StyleColorsDark();
 
-    const float sinPitch = 2.0f * (q.w * q.y - q.z * q.x);
-    const float pitch = (std::fabs(sinPitch) >= 1.0f)
-        ? std::copysign(OrbitCamera::kPi * 0.5f, sinPitch)
-        : std::asin(sinPitch);
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 0.0f;
+    style.WindowBorderSize = 0.0f;
+    style.ColorButtonPosition = ImGuiDir_Right;
+    style.FrameRounding = 2.0f;
+    style.FrameBorderSize = 1.0f;
+    style.GrabRounding = 4.0f;
+    style.IndentSpacing = 12.0f;
+    style.ScrollbarSize = 14.0f;
+    style.WindowPadding = ImVec2(8, 8);
+    style.FramePadding = ImVec2(4, 3);
+    style.ItemSpacing = ImVec2(8, 4);
+    style.ItemInnerSpacing = ImVec2(4, 4);
 
-    const float sinYaw = 2.0f * (q.w * q.z + q.x * q.y);
-    const float cosYaw = 1.0f - 2.0f * (q.y * q.y + q.z * q.z);
-    const float yaw = std::atan2(sinYaw, cosYaw);
+    ImVec4* c = style.Colors;
+    ImVec4 bg(0.2f, 0.2f, 0.2f, 1.0f);
+    ImVec4 bgDark(0.135f, 0.135f, 0.135f, 1.0f);
+    ImVec4 frameBg(0.05f, 0.05f, 0.05f, 0.5f);
+    ImVec4 border(0.4f, 0.4f, 0.4f, 0.5f);
+    ImVec4 normal(0.465f, 0.465f, 0.525f, 1.0f);
+    ImVec4 active(0.365f, 0.365f, 0.425f, 1.0f);
+    ImVec4 hovered(0.565f, 0.565f, 0.625f, 1.0f);
 
-    const float toDegrees = 180.0f / OrbitCamera::kPi;
-    return float3(roll * toDegrees, pitch * toDegrees, yaw * toDegrees);
+    c[ImGuiCol_WindowBg] = bg;
+    c[ImGuiCol_MenuBarBg] = bg;
+    c[ImGuiCol_ScrollbarBg] = bg;
+    c[ImGuiCol_PopupBg] = bgDark;
+    c[ImGuiCol_ChildBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    c[ImGuiCol_Border] = border;
+    c[ImGuiCol_FrameBg] = frameBg;
+    c[ImGuiCol_FrameBgHovered] = hovered;
+    c[ImGuiCol_FrameBgActive] = normal;
+
+    c[ImGuiCol_Header] = normal;
+    c[ImGuiCol_HeaderHovered] = hovered;
+    c[ImGuiCol_HeaderActive] = active;
+
+    c[ImGuiCol_Button] = normal;
+    c[ImGuiCol_ButtonHovered] = hovered;
+    c[ImGuiCol_ButtonActive] = active;
+
+    c[ImGuiCol_SliderGrab] = normal;
+    c[ImGuiCol_SliderGrabActive] = active;
+
+    c[ImGuiCol_CheckMark] = normal;
+    c[ImGuiCol_TextSelectedBg] = normal;
+
+    c[ImGuiCol_Separator] = normal;
+    c[ImGuiCol_SeparatorHovered] = hovered;
+    c[ImGuiCol_SeparatorActive] = active;
+
+    c[ImGuiCol_ResizeGrip] = normal;
+    c[ImGuiCol_ResizeGripHovered] = hovered;
+    c[ImGuiCol_ResizeGripActive] = active;
+
+    c[ImGuiCol_Tab] = ImVec4(0.05f, 0.05f, 0.05f, 0.5f);
+    c[ImGuiCol_TabHovered] = ImVec4(0.465f, 0.495f, 0.525f, 1.0f);
+    c[ImGuiCol_TabSelected] = ImVec4(0.282f, 0.290f, 0.302f, 1.0f);
+    c[ImGuiCol_TabSelectedOverline] = normal;
+    c[ImGuiCol_TabDimmed] = ImVec4(0.05f, 0.05f, 0.05f, 0.35f);
+    c[ImGuiCol_TabDimmedSelected] = ImVec4(0.18f, 0.18f, 0.20f, 1.0f);
+    c[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(0.5f, 0.5f, 0.5f, 0.0f);
+
+    c[ImGuiCol_TitleBg] = ImVec4(0.125f, 0.125f, 0.125f, 1.0f);
+    c[ImGuiCol_TitleBgActive] = ImVec4(0.465f, 0.465f, 0.465f, 1.0f);
+    c[ImGuiCol_TitleBgCollapsed] = ImVec4(0.125f, 0.125f, 0.125f, 0.5f);
+
+    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.465f, 0.465f, 0.465f, 0.350f);
+
+    c[ImGuiCol_DockingPreview] = ImVec4(0.465f, 0.465f, 0.525f, 0.7f);
+    c[ImGuiCol_DockingEmptyBg] = ImVec4(0.1f, 0.1f, 0.1f, 1.0f);
+
+    c[ImGuiCol_Text] = ImVec4(0.86f, 0.86f, 0.86f, 1.0f);
+    c[ImGuiCol_TextDisabled] = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+    c[ImGuiCol_NavCursor] = normal;
+
+    ImGui::SetColorEditOptions(ImGuiColorEditFlags_Float | ImGuiColorEditFlags_PickerHueWheel);
 }
 
-float4 eulerDegToQuaternion(const float3& eulerDeg) {
-    const float toRadians = OrbitCamera::kPi / 180.0f;
-    const float rx = eulerDeg.x * toRadians * 0.5f;
-    const float ry = eulerDeg.y * toRadians * 0.5f;
-    const float rz = eulerDeg.z * toRadians * 0.5f;
-
-    const float cx = std::cos(rx);
-    const float sx = std::sin(rx);
-    const float cy = std::cos(ry);
-    const float sy = std::sin(ry);
-    const float cz = std::cos(rz);
-    const float sz = std::sin(rz);
-
-    return float4(sx * cy * cz - cx * sy * sz,
-                  cx * sy * cz + sx * cy * sz,
-                  cx * cy * sz - sx * sy * cz,
-                  cx * cy * cz + sx * sy * sz);
-}
-
-void drawSceneGraphNodeTree(SceneGraph& scene, uint32_t nodeIndex) {
-    SceneNode& node = scene.nodes[nodeIndex];
-
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
-    if (node.children.empty()) {
-        flags |= ImGuiTreeNodeFlags_Leaf;
-    }
-    if (node.parent < 0) {
-        flags |= ImGuiTreeNodeFlags_DefaultOpen;
-    }
-    if (scene.selectedNode == static_cast<int32_t>(nodeIndex)) {
-        flags |= ImGuiTreeNodeFlags_Selected;
-    }
-
-    if (!node.visible) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-    }
-
-    const bool open =
-        ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(nodeIndex)),
-                         flags,
-                         "%s",
-                         node.name.c_str());
-
-    if (!node.visible) {
-        ImGui::PopStyleColor();
-    }
-
-    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-        scene.selectedNode = static_cast<int32_t>(nodeIndex);
-    }
-
-    if (!open) {
-        return;
-    }
-
-    for (uint32_t childIndex : node.children) {
-        drawSceneGraphNodeTree(scene, childIndex);
-    }
-    ImGui::TreePop();
-}
-
-void drawSceneGraphProperties(SceneGraph& scene) {
-    if (scene.selectedNode < 0 || scene.selectedNode >= static_cast<int32_t>(scene.nodes.size())) {
-        ImGui::TextDisabled("No node selected");
-        return;
-    }
-
-    SceneNode& node = scene.nodes[scene.selectedNode];
-    TransformComponent& transform = node.transform;
-
-    ImGui::Text("Name: %s", node.name.c_str());
-    ImGui::Text("ID: %u", node.id);
-    ImGui::Separator();
-
-    bool transformChanged = false;
-
-    ImGui::Checkbox("Visible", &node.visible);
-
-    ImGui::Separator();
-    ImGui::Text("Transform");
-
-    float translation[3] = {transform.translation.x, transform.translation.y, transform.translation.z};
-    if (ImGui::DragFloat3("Translation", translation, 0.01f)) {
-        transform.translation = float3(translation[0], translation[1], translation[2]);
-        transform.useLocalMatrix = false;
-        transformChanged = true;
-    }
-
-    const float3 euler = quaternionToEulerDeg(transform.rotation);
-    float rotation[3] = {euler.x, euler.y, euler.z};
-    if (ImGui::DragFloat3("Rotation", rotation, 0.1f)) {
-        transform.rotation = eulerDegToQuaternion(float3(rotation[0], rotation[1], rotation[2]));
-        transform.useLocalMatrix = false;
-        transformChanged = true;
-    }
-
-    float scale[3] = {transform.scale.x, transform.scale.y, transform.scale.z};
-    if (ImGui::DragFloat3("Scale", scale, 0.01f, 0.001f, 100.0f)) {
-        transform.scale = float3(scale[0], scale[1], scale[2]);
-        transform.useLocalMatrix = false;
-        transformChanged = true;
-    }
-
-    if (transformChanged) {
-        scene.markDirty(static_cast<uint32_t>(scene.selectedNode));
-    }
-
-    if (node.hasLight && node.light.type == LightType::Directional) {
-        ImGui::Separator();
-        ImGui::Text("Light");
-        ImGui::Text("Type: Directional");
-
-        float direction[3] = {
-            node.light.directional.direction.x,
-            node.light.directional.direction.y,
-            node.light.directional.direction.z,
-        };
-        if (ImGui::DragFloat3("Direction", direction, 0.01f, -1.0f, 1.0f)) {
-            const float3 dir(direction[0], direction[1], direction[2]);
-            const float dirLength = length(dir);
-            if (dirLength > 1e-6f) {
-                node.light.directional.direction = dir / dirLength;
-            }
-        }
-
-        float color[3] = {
-            node.light.directional.color.x,
-            node.light.directional.color.y,
-            node.light.directional.color.z,
-        };
-        if (ImGui::ColorEdit3("Color", color)) {
-            node.light.directional.color = float3(color[0], color[1], color[2]);
-        }
-
-        ImGui::DragFloat("Intensity", &node.light.directional.intensity, 0.01f, 0.0f, 100.0f);
-
-        if (scene.sunLightNode == scene.selectedNode) {
-            ImGui::TextDisabled("Scene Sun Source");
-        }
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Mesh Info");
-    if (node.meshIndex >= 0) {
-        ImGui::Text("Mesh Index: %d", node.meshIndex);
-        ImGui::Text("Primitive Group Start: %u", node.primitiveGroupStart);
-        ImGui::Text("Primitive Group Count: %u", node.primitiveGroupCount);
-        ImGui::Text("Meshlet Start: %u", node.meshletStart);
-        ImGui::Text("Meshlet Count: %u", node.meshletCount);
-        ImGui::Text("Index Start: %u", node.indexStart);
-        ImGui::Text("Index Count: %u", node.indexCount);
-    } else {
-        ImGui::TextDisabled("No mesh (transform node)");
-    }
-}
-
-void drawSceneGraphUI(SceneGraph& scene) {
-    ImGui::SetNextWindowSize(ImVec2(500.0f, 400.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Scene Graph")) {
-        ImGui::End();
-        return;
-    }
-
-    if (ImGui::BeginTable("SceneGraphLayout",
-                          2,
-                          ImGuiTableFlags_Resizable |
-                              ImGuiTableFlags_BordersInnerV |
-                              ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Tree", ImGuiTableColumnFlags_WidthStretch, 0.45f);
-        ImGui::TableSetupColumn("Properties", ImGuiTableColumnFlags_WidthStretch, 0.55f);
-
-        ImGui::TableNextColumn();
-        ImGui::BeginChild("TreePanel", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
-        for (uint32_t rootIndex : scene.rootNodes) {
-            drawSceneGraphNodeTree(scene, rootIndex);
-        }
-        ImGui::EndChild();
-
-        ImGui::TableNextColumn();
-        ImGui::BeginChild("PropertyPanel", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
-        drawSceneGraphProperties(scene);
-        ImGui::EndChild();
-
-        ImGui::EndTable();
-    }
-
-    ImGui::End();
-}
+static bool s_dockLayoutInitialized = false;
 
 ImGuiID beginDockspace(bool& showSceneGraphWindow,
                        bool& showGraphDebug,
                        bool& showRenderPassUI,
                        bool& showImGuiDemo) {
     const ImGuiID dockspaceId =
-        ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+        ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_None);
+
+    if (!s_dockLayoutInitialized) {
+        s_dockLayoutInitialized = true;
+        ImGui::DockBuilderRemoveNode(dockspaceId);
+        ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->Size);
+
+        ImGuiID centerId = dockspaceId;
+        ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.25f, nullptr, &centerId);
+        ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.06f, nullptr, &centerId);
+        ImGuiID inspectorId = ImGui::DockBuilderSplitNode(rightId, ImGuiDir_Down, 0.35f, nullptr, &rightId);
+
+        ImGui::DockBuilderDockWindow("Viewport", centerId);
+        ImGui::DockBuilderDockWindow("Render Passes", rightId);
+        ImGui::DockBuilderDockWindow("Vulkan Sponza", rightId);
+        ImGui::DockBuilderDockWindow("Scene Browser", rightId);
+        ImGui::DockBuilderDockWindow("Inspector", inspectorId);
+        ImGui::DockBuilderDockWindow("Scene Loader", bottomId);
+
+        ImGui::DockBuilderFinish(dockspaceId);
+    }
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Scene Graph", nullptr, &showSceneGraphWindow);
+            ImGui::MenuItem("Scene Browser", nullptr, &showSceneGraphWindow);
             ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
             ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
             ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
@@ -967,6 +1063,8 @@ ImGuiID beginDockspace(bool& showSceneGraphWindow,
 }
 
 } // namespace
+
+bool s_viewportHovered = false;
 
 int main() {
     if (!glfwInit()) {
@@ -1002,6 +1100,12 @@ int main() {
     createInfo.applicationName = "Metallic";
     createInfo.enableValidation = true;
     createInfo.requireVulkan14 = true;
+    // Enable timeline semaphores for async compute / transfer queue synchronisation (Vulkan 1.2 core).
+    createInfo.enableTimelineSemaphore = true;
+    // On-disk caches: PSO binaries and compiled SPIR-V modules.
+    createInfo.pipelineCacheDir = "cache/pipelines";
+    createInfo.shaderCacheDir   = "cache/shaders";
+    setSlangShaderCacheDir(createInfo.shaderCacheDir);
 
     // --- Streamline / DLSS initialization (before RHI so SL can intercept device creation) ---
     StreamlineContext streamlineCtx;
@@ -1010,6 +1114,7 @@ int main() {
     uint32_t dlssRenderWidth = 0;
     uint32_t dlssRenderHeight = 0;
     float visibilityRenderScale = 1.0f;
+    PipelineUiControls pipelineUiControls{};
 
 #ifdef METALLIC_HAS_STREAMLINE
     if (streamlineCtx.init(PROJECT_SOURCE_DIR)) {
@@ -1027,6 +1132,10 @@ int main() {
     }
 #endif
 
+#if defined(METALLIC_HAS_AFTERMATH) && METALLIC_HAS_AFTERMATH
+    AftermathTracker::getInstance().initialize();
+#endif
+
     std::string backendError;
     auto rhi = createRhiContext(RhiBackendType::Vulkan, createInfo, backendError);
     if (!rhi) {
@@ -1035,6 +1144,13 @@ int main() {
         glfwTerminate();
         return 1;
     }
+
+#if defined(METALLIC_HAS_AFTERMATH) && METALLIC_HAS_AFTERMATH
+    setSlangCompileCallback([](const char* /*sourcePath*/, const uint32_t* spirvData, size_t spirvSizeBytes) {
+        std::span<const uint32_t> data(spirvData, spirvSizeBytes / sizeof(uint32_t));
+        AftermathTracker::getInstance().addShaderBinary(data);
+    });
+#endif
 
     const auto triangleSpirv = compileSlangGraphicsBinary(RhiBackendType::Vulkan,
                                                           "Shaders/Vertex/triangle",
@@ -1057,7 +1173,7 @@ int main() {
     VkDevice vkDevice = nativeToVkHandle<VkDevice>(native.device);
     VkPhysicalDevice vkPhysicalDevice = nativeToVkHandle<VkPhysicalDevice>(native.physicalDevice);
     VmaAllocator vmaAllocator = getVulkanAllocator(*rhi);
-    RhiDeviceHandle deviceHandle(native.device);
+    RhiDeviceHandle deviceHandle(native.device, rhi.get());
     RhiCommandQueueHandle queueHandle(native.queue);
     const uint32_t swapchainImageCount = std::max(2u, native.swapchainImageCount);
     const VkFormat swapchainFormat = static_cast<VkFormat>(native.colorFormat);
@@ -1066,6 +1182,7 @@ int main() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    setNvproStyle();
     ImGui_ImplGlfw_InitForOther(window, true);
 
     VkPipelineRenderingCreateInfoKHR imguiRenderingInfo{
@@ -1099,23 +1216,15 @@ int main() {
         return 1;
     }
 
-    vulkanSetResourceContext(vkDevice,
-                             vkPhysicalDevice,
-                             vmaAllocator,
-                             nativeToVkHandle<VkQueue>(native.queue),
-                             native.graphicsQueueFamily,
-                             rhi->features().rayTracing,
-                             createInfo.vkGetDeviceProcAddrProxy);
-    vulkanSetShaderContext(vkDevice);
-    vulkanLoadMeshShaderFunctions(vkDevice);
-
     const RhiFeatures& features = rhi->features();
     ShaderManagerProfile shaderProfile = ShaderManagerProfile::vulkanVisibility();
+    ShaderCompileMode shaderCompileMode = ShaderCompileMode::Release;
     ShaderManager shaderManager(deviceHandle,
                                 PROJECT_SOURCE_DIR,
                                 features.meshShaders,
                                 features.meshShaders,
-                                shaderProfile);
+                                shaderProfile,
+                                shaderCompileMode);
     if (!shaderManager.buildAll()) {
         spdlog::error("Failed to build Vulkan visibility shader set");
         ImGui_ImplVulkan_Shutdown();
@@ -1128,6 +1237,39 @@ int main() {
     }
 
     PipelineRuntimeContext& runtimeContext = shaderManager.runtimeContext();
+    ClusterStreamingService clusterStreamingService;
+    runtimeContext.rhi = rhi.get();
+    runtimeContext.clusterStreamingService = &clusterStreamingService;
+    auto refreshClusterStreamingMemoryBudget = [&]() {
+        const VulkanMemoryBudgetInfo vulkanMemoryBudget = getVulkanMemoryBudgetInfo(*rhi);
+        ClusterStreamingService::MemoryBudgetInfo streamingMemoryBudget{};
+        streamingMemoryBudget.available = vulkanMemoryBudget.available;
+        streamingMemoryBudget.heapCount = vulkanMemoryBudget.heapCount;
+        streamingMemoryBudget.totalBudgetBytes = vulkanMemoryBudget.totalBudgetBytes;
+        streamingMemoryBudget.totalUsageBytes = vulkanMemoryBudget.totalUsageBytes;
+        streamingMemoryBudget.totalHeadroomBytes = vulkanMemoryBudget.totalHeadroomBytes;
+        streamingMemoryBudget.deviceLocalBudgetBytes = vulkanMemoryBudget.deviceLocalBudgetBytes;
+        streamingMemoryBudget.deviceLocalUsageBytes = vulkanMemoryBudget.deviceLocalUsageBytes;
+        streamingMemoryBudget.deviceLocalHeadroomBytes =
+            vulkanMemoryBudget.deviceLocalHeadroomBytes;
+        clusterStreamingService.applyAutoMemoryBudget(streamingMemoryBudget);
+
+        const ClusterStreamingService::MemoryBudgetInfo& appliedMemoryBudget =
+            clusterStreamingService.memoryBudgetInfo();
+        if (appliedMemoryBudget.available) {
+            spdlog::info(
+                "Cluster streaming: device-local VRAM headroom {} (budget {}, usage {}), auto pool target {}",
+                formatByteCountShort(appliedMemoryBudget.deviceLocalHeadroomBytes),
+                formatByteCountShort(appliedMemoryBudget.deviceLocalBudgetBytes),
+                formatByteCountShort(appliedMemoryBudget.deviceLocalUsageBytes),
+                formatByteCountShort(appliedMemoryBudget.targetStorageBytes));
+        } else {
+            spdlog::info(
+                "Cluster streaming: VK_EXT_memory_budget unavailable, keeping configured pool {}",
+                formatByteCountShort(clusterStreamingService.streamingStorageCapacityBytes()));
+        }
+    };
+    refreshClusterStreamingMemoryBudget();
     auto hasRenderPipeline = [&](const char* name) {
         auto it = runtimeContext.renderPipelinesRhi.find(name);
         return it != runtimeContext.renderPipelinesRhi.end() && it->second.nativeHandle() != nullptr;
@@ -1210,32 +1352,11 @@ int main() {
         importRuntimeTexture("irradiance", atmosphereTextures.irradiance);
     }
 
-    LoadedMesh previewMesh;
-    MeshletData previewMeshlets;
-    LoadedMaterials previewMaterials;
-    SceneGraph previewScene;
-    ClusterLODData previewLOD;
-    RhiTextureHandle shadowDummyTexture;
-    RhiTextureHandle skyFallbackTexture;
-    bool previewSceneReady = loadSponzaScene(deviceHandle,
-                                             queueHandle,
-                                             PROJECT_SOURCE_DIR,
-                                             previewMesh,
-                                             previewMeshlets,
-                                             previewMaterials,
-                                             previewScene,
-                                             previewLOD);
-    if (previewSceneReady) {
-        previewSceneReady =
-            createSceneFallbackTextures(deviceHandle, shadowDummyTexture, skyFallbackTexture);
-    }
+    SceneContext sceneCtx(deviceHandle, queueHandle, PROJECT_SOURCE_DIR);
+    const std::string defaultGltfPath = std::string(PROJECT_SOURCE_DIR) + "/Asset/Sponza/glTF/Sponza.gltf";
+    bool previewSceneReady = sceneCtx.loadScene(defaultGltfPath);
     if (!previewSceneReady) {
         spdlog::warn("Failed to load Vulkan Sponza scene; falling back to triangle path");
-        releaseMaterialResources(previewMaterials);
-        releaseMeshletBuffers(previewMeshlets);
-        releaseMeshBuffers(previewMesh);
-        rhiReleaseHandle(shadowDummyTexture);
-        rhiReleaseHandle(skyFallbackTexture);
     }
 
     RaytracedShadowResources shadowResources;
@@ -1244,8 +1365,8 @@ int main() {
     if (previewSceneReady && rhi->features().rayTracing) {
         if (buildAccelerationStructures(deviceHandle,
                                         queueHandle,
-                                        previewMesh,
-                                        previewScene,
+                                        sceneCtx.mesh(),
+                                        sceneCtx.sceneGraph(),
                                         shadowResources) &&
             createShadowPipeline(deviceHandle, shadowResources, PROJECT_SOURCE_DIR)) {
             rtShadowsAvailable = true;
@@ -1265,6 +1386,9 @@ int main() {
         if (streamlineCtx.setVulkanDevice(vkInstance, vkPhysicalDevice, vkDevice,
                                            nativeToVkHandle<VkQueue>(native.queue),
                                             native.graphicsQueueFamily, 0)) {
+            vulkanSetStreamlineCommandHooks(streamlineCtx.vulkanBeginCommandBufferHook(),
+                                           streamlineCtx.vulkanCmdBindPipelineHook(),
+                                           streamlineCtx.vulkanCmdBindDescriptorSetsHook());
             vulkanSetStreamlineHookedCommandsEnabled(true);
             dlssAvailable = streamlineCtx.isDlssAvailable();
         }
@@ -1295,6 +1419,7 @@ int main() {
             hasComputePipeline("HistogramPass") && hasComputePipeline("AutoExposurePass");
         visibilityTaaAvailable = hasComputePipeline("TAAPass");
         visibilityGpuCullingAvailable =
+            hasComputePipeline("InstanceClassifyPass") &&
             hasComputePipeline("MeshletCullPass") &&
             hasComputePipeline("BuildIndirectPass") &&
             hasRenderPipeline("VisibilityIndirectPass");
@@ -1311,6 +1436,7 @@ int main() {
 
         if (visibilityPipelineAssetLoaded) {
             normalizePipelineFinalDisplayOutput(visibilityPipelineAsset);
+            erasePassByType(visibilityPipelineAsset, "ImGuiOverlayPass");
         }
 
         if (visibilityPipelineAssetLoaded && !validateVisibilityAsset("Invalid Vulkan visibility pipeline")) {
@@ -1343,25 +1469,26 @@ int main() {
             hasRenderPipeline("VisibilityPass") &&
             hasComputePipeline("DeferredLightingPass") &&
             (hasRenderPipeline("TonemapPass") || hasRenderPipeline("OutputPass")) &&
-            previewMesh.positionBuffer.nativeHandle() &&
-            previewMesh.normalBuffer.nativeHandle() &&
-            previewMesh.uvBuffer.nativeHandle() &&
-            previewMesh.indexBuffer.nativeHandle() &&
-            previewMeshlets.meshletBuffer.nativeHandle() &&
-            previewMeshlets.meshletVertices.nativeHandle() &&
-            previewMeshlets.meshletTriangles.nativeHandle() &&
-            previewMeshlets.boundsBuffer.nativeHandle() &&
-            previewMeshlets.materialIDs.nativeHandle() &&
-            previewMaterials.materialBuffer.nativeHandle() &&
-            previewMaterials.sampler.nativeHandle() &&
-            shadowDummyTexture.nativeHandle() &&
-            skyFallbackTexture.nativeHandle();
+            sceneCtx.mesh().positionBuffer.nativeHandle() &&
+            sceneCtx.mesh().normalBuffer.nativeHandle() &&
+            sceneCtx.mesh().uvBuffer.nativeHandle() &&
+            sceneCtx.mesh().indexBuffer.nativeHandle() &&
+            sceneCtx.meshlets().meshletBuffer.nativeHandle() &&
+            sceneCtx.meshlets().meshletVertices.nativeHandle() &&
+            sceneCtx.meshlets().meshletTriangles.nativeHandle() &&
+            sceneCtx.meshlets().boundsBuffer.nativeHandle() &&
+            sceneCtx.meshlets().materialIDs.nativeHandle() &&
+            sceneCtx.materials().materialBuffer.nativeHandle() &&
+            sceneCtx.materials().sampler.nativeHandle() &&
+            sceneCtx.shadowDummyTex().nativeHandle() &&
+            sceneCtx.skyFallbackTex().nativeHandle();
         atmosphereSkyAvailable = hasRenderPipeline("SkyPass") && atmosphereTextures.isValid();
     };
 
     auto logVisibilityMode = [&]() {
         if (useVisibilityRenderGraph) {
-            std::string mode = "Vulkan RenderGraph mode: MeshletCullPass -> VisibilityPass -> SkyPass -> DeferredLightingPass";
+            std::string mode =
+                "Vulkan RenderGraph mode: ClusterStreamingUpdatePass -> MeshletCullPass -> VisibilityPass -> SkyPass -> DeferredLightingPass";
             if (visibilityUpscalerMode == VisibilityUpscalerMode::TAA) {
                 mode += " -> TAAPass";
             } else if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) {
@@ -1382,7 +1509,8 @@ int main() {
             } else {
                 spdlog::info("Vulkan visibility dispatch: CPU meshlet path");
             }
-            if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS && runtimeContext.dlssEnabled) {
+            if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS &&
+                runtimeContext.upscaler && runtimeContext.upscaler->isEnabled()) {
                 spdlog::info("Vulkan render resolution: {} x {} -> {} x {} (DLSS)",
                              runtimeContext.renderWidth,
                              runtimeContext.renderHeight,
@@ -1448,9 +1576,7 @@ int main() {
         }
 #endif
 
-        runtimeContext.streamlineContext = streamlineCtx.isInitialized() ? &streamlineCtx : nullptr;
-        runtimeContext.dlssAvailable = dlssAvailable;
-        runtimeContext.dlssEnabled = enableDlssEvaluation;
+        runtimeContext.upscaler = streamlineCtx.isInitialized() ? static_cast<IUpscalerIntegration*>(&streamlineCtx) : nullptr;
         runtimeContext.displayWidth = displayWidth;
         runtimeContext.displayHeight = displayHeight;
         runtimeContext.renderWidth = renderWidth;
@@ -1464,14 +1590,99 @@ int main() {
     logVisibilityMode();
 
     VulkanFrameGraphBackend frameGraphBackend(vkDevice, vkPhysicalDevice, vmaAllocator);
-    VulkanDescriptorManager descriptorManager;
-    descriptorManager.init(vkDevice, vmaAllocator);
-    VulkanImageLayoutTracker imageTracker;
+    frameGraphBackend.setTransientPool(&getVulkanTransientPool(*rhi));
+    VulkanDescriptorManager legacyDescriptorManager;
+    VulkanDescriptorBufferManager descriptorBufferManager;
+    IVulkanDescriptorBackend* descriptorBackend = nullptr;
+    {
+        const auto& limits = rhi->limits();
+        if (rhi->features().descriptorBuffer) {
+            const auto& dbProps = getVulkanDescriptorBufferProperties(*rhi);
+            descriptorBufferManager.init(vkDevice, vkPhysicalDevice, vmaAllocator, dbProps,
+                                         limits.minUniformBufferOffsetAlignment,
+                                         limits.nonCoherentAtomSize,
+                                         limits.maxUniformBufferRange);
+            descriptorBackend = &descriptorBufferManager;
+            spdlog::info("Vulkan: using VK_EXT_descriptor_buffer path");
+        } else {
+            legacyDescriptorManager.init(vkDevice, vkPhysicalDevice, vmaAllocator,
+                                         limits.minUniformBufferOffsetAlignment,
+                                         limits.nonCoherentAtomSize,
+                                         limits.maxUniformBufferRange);
+            descriptorBackend = &legacyDescriptorManager;
+        }
+    }
+    // --- Upload / readback service layer ---
+    VulkanUploadService uploadService;
+    {
+        VkQueue gfxQueue = nativeToVkHandle<VkQueue>(native.queue);
+        VkQueue xferQueue = nativeToVkHandle<VkQueue>(native.transferQueue);
+        uint32_t xferFamily = native.transferQueueFamily;
+        VkSemaphore xferSemaphore = nativeToVkHandle<VkSemaphore>(native.transferTimelineSemaphore);
+        uploadService.init(vkDevice, vmaAllocator,
+                           gfxQueue, native.graphicsQueueFamily,
+                           xferQueue, xferFamily, xferSemaphore,
+                           &getVulkanUploadRing(*rhi));
+        vulkanSetUploadService(&uploadService);
+    }
+    VulkanReadbackService readbackService;
+    readbackService.init(vkDevice, &getVulkanReadbackHeap(*rhi), 2);
+    runtimeContext.readbackService = &readbackService;
+
+    if (previewSceneReady) {
+        if (!sceneCtx.materials().textureViews.empty()) {
+            descriptorBackend->updateBindlessSampledTextures(sceneCtx.materials().textureViews.data(),
+                                                            0,
+                                                            static_cast<uint32_t>(sceneCtx.materials().textureViews.size()));
+        }
+        descriptorBackend->updateBindlessSampler(METALLIC_BINDLESS_SCENE_SAMPLER_INDEX,
+                                                &sceneCtx.materials().sampler);
+        runtimeContext.useBindlessSceneTextures = true;
+    }
+    VulkanResourceStateTracker imageTracker;
+    streamlineCtx.setImageLayoutTracker(&imageTracker);
     VulkanImportedTexture backbufferTexture;
 
     RhiTextureHandle sceneColorTexture;
+    RhiTextureHandle viewportDisplayTexture;
+    VkDescriptorSet viewportImguiDescriptor = VK_NULL_HANDLE;
+    VkSampler viewportImguiSampler = VK_NULL_HANDLE;
+
+    auto createViewportSampler = [&]() {
+        if (viewportImguiSampler != VK_NULL_HANDLE) return;
+        VkSamplerCreateInfo samplerCI{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        samplerCI.magFilter = VK_FILTER_LINEAR;
+        samplerCI.minFilter = VK_FILTER_LINEAR;
+        samplerCI.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerCI.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerCI.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        vkCreateSampler(vkDevice, &samplerCI, nullptr, &viewportImguiSampler);
+    };
+
+    auto recreateViewportDisplayTexture = [&](uint32_t w, uint32_t h) {
+        if (viewportImguiDescriptor != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(viewportImguiDescriptor);
+            viewportImguiDescriptor = VK_NULL_HANDLE;
+        }
+        rhiReleaseHandle(viewportDisplayTexture);
+        viewportDisplayTexture = rhiCreateTexture2D(deviceHandle, w, h,
+            RhiFormat::BGRA8Unorm, false, 1,
+            RhiTextureStorageMode::Private,
+            RhiTextureUsage::RenderTarget | RhiTextureUsage::ShaderRead);
+        if (!viewportDisplayTexture.nativeHandle()) return;
+
+        createViewportSampler();
+        VkImageView iv = getVulkanImageView(&viewportDisplayTexture);
+        if (iv != VK_NULL_HANDLE) {
+            viewportImguiDescriptor = ImGui_ImplVulkan_AddTexture(
+                viewportImguiSampler, iv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+    };
+
     auto recreateSceneColorTexture = [&](uint32_t targetWidth, uint32_t targetHeight) {
         rhiReleaseHandle(sceneColorTexture);
+        rhiReleaseHandle(viewportDisplayTexture);
         runtimeContext.importedTexturesRhi.erase("sceneColor");
         sceneColorTexture = rhiCreateTexture2D(deviceHandle,
                                                targetWidth,
@@ -1491,21 +1702,14 @@ int main() {
     if (!recreateSceneColorTexture(createInfo.width, createInfo.height)) {
         spdlog::error("Failed to create offscreen scene color texture");
         rhi->waitIdle();
-        descriptorManager.destroy();
+        uploadService.destroy();
+        vulkanSetUploadService(nullptr);
+        readbackService.destroy();
+        descriptorBufferManager.destroy();
+        legacyDescriptorManager.destroy();
         atmosphereTextures.release();
         shadowResources.release();
-        rhiReleaseHandle(shadowDummyTexture);
-        rhiReleaseHandle(skyFallbackTexture);
-        releaseMaterialResources(previewMaterials);
-        releaseMeshletBuffers(previewMeshlets);
-        releaseMeshBuffers(previewMesh);
-        rhiReleaseHandle(previewLOD.meshletBuffer);
-        rhiReleaseHandle(previewLOD.meshletVerticesBuffer);
-        rhiReleaseHandle(previewLOD.meshletTrianglesBuffer);
-        rhiReleaseHandle(previewLOD.boundsBuffer);
-        rhiReleaseHandle(previewLOD.materialIDsBuffer);
-        rhiReleaseHandle(previewLOD.groupBuffer);
-        rhiReleaseHandle(previewLOD.nodeBuffer);
+        sceneCtx.unloadScene();
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(vertexDescriptor);
@@ -1517,6 +1721,8 @@ int main() {
         glfwTerminate();
         return 1;
     }
+
+    recreateViewportDisplayTexture(createInfo.width, createInfo.height);
 
     struct TrianglePassData {
         FGResource colorTarget;
@@ -1548,21 +1754,31 @@ int main() {
     const double depthClearValue = ML_DEPTH_REVERSED ? 0.0 : 1.0;
     RhiDepthStencilStateHandle depthState =
         rhiCreateDepthStencilState(deviceHandle, true, ML_DEPTH_REVERSED);
-    RenderContext renderContext{
-        previewMesh,
-        previewMeshlets,
-        previewMaterials,
-        previewScene,
-        shadowResources,
-        depthState,
-        shadowDummyTexture,
-        skyFallbackTexture,
-        depthClearValue,
+    auto makeRenderContext = [&]() -> RenderContext {
+        return RenderContext{
+            sceneCtx.mesh(),
+            sceneCtx.meshlets(),
+            sceneCtx.materials(),
+            sceneCtx.sceneGraph(),
+            sceneCtx.gpuScene(),
+            sceneCtx.clusterLod(),
+            shadowResources,
+            depthState,
+            sceneCtx.shadowDummyTex(),
+            sceneCtx.skyFallbackTex(),
+            depthClearValue,
+        };
     };
+    auto rebuildRenderContext = [&](RenderContext& ctx) {
+        ctx.~RenderContext();
+        new (&ctx) RenderContext(makeRenderContext());
+    };
+    RenderContext renderContext = makeRenderContext();
 
     runtimeContext.backbufferRhi = &backbufferTexture;
     runtimeContext.resourceFactory = &frameGraphBackend;
-    runtimeContext.streamlineContext = streamlineCtx.isInitialized() ? &streamlineCtx : nullptr;
+    runtimeContext.upscaler = streamlineCtx.isInitialized() ? static_cast<IUpscalerIntegration*>(&streamlineCtx) : nullptr;
+    runtimeContext.uiControls = &pipelineUiControls;
 
     const PipelineAsset sceneColorPostAsset = makeSceneColorPostPipelineAsset();
     PipelineBuilder postBuilder(renderContext);
@@ -1579,39 +1795,40 @@ int main() {
 
     auto cleanupRuntimeResources = [&]() {
         rhi->waitIdle();
+        if (viewportImguiDescriptor != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(viewportImguiDescriptor);
+            viewportImguiDescriptor = VK_NULL_HANDLE;
+        }
+        if (viewportImguiSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(vkDevice, viewportImguiSampler, nullptr);
+            viewportImguiSampler = VK_NULL_HANDLE;
+        }
+        vulkanSetUploadService(nullptr);
+        uploadService.destroy();
+        readbackService.destroy();
         streamlineCtx.shutdown();
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         postBuilder.frameGraph().reset();
         sceneGraph.reset();
-        descriptorManager.destroy();
+        descriptorBufferManager.destroy();
+        legacyDescriptorManager.destroy();
         atmosphereTextures.release();
         shadowResources.release();
-        rhiReleaseHandle(shadowDummyTexture);
-        rhiReleaseHandle(skyFallbackTexture);
-        releaseMaterialResources(previewMaterials);
-        releaseMeshletBuffers(previewMeshlets);
-        releaseMeshBuffers(previewMesh);
-        // Release cluster LOD buffers
-        rhiReleaseHandle(previewLOD.meshletBuffer);
-        rhiReleaseHandle(previewLOD.meshletVerticesBuffer);
-        rhiReleaseHandle(previewLOD.meshletTrianglesBuffer);
-        rhiReleaseHandle(previewLOD.boundsBuffer);
-        rhiReleaseHandle(previewLOD.materialIDsBuffer);
-        rhiReleaseHandle(previewLOD.groupBuffer);
-        rhiReleaseHandle(previewLOD.nodeBuffer);
+        sceneCtx.unloadScene();
         rhiReleaseHandle(depthState);
         rhiReleaseHandle(linearSampler);
         rhiReleaseHandle(trianglePipeline);
         rhiReleaseHandle(sceneColorTexture);
+        rhiReleaseHandle(viewportDisplayTexture);
         rhiReleaseHandle(vertexDescriptor);
         rhiReleaseHandle(vertexBuffer);
     };
 
     VkImageLayout sceneColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     FrameContext frameContext;
-    previewCamera.initFromBounds(previewMesh.bboxMin, previewMesh.bboxMax);
+    previewCamera.initFromBounds(sceneCtx.mesh().bboxMin, sceneCtx.mesh().bboxMax);
     previewCamera.distance *= 0.8f;
     previewCamera.azimuth = 0.55f;
     previewCamera.elevation = 0.35f;
@@ -1621,7 +1838,7 @@ int main() {
     }
     DirectionalLight sunLight;
     if (previewSceneReady) {
-        sunLight = previewScene.getSunDirectionalLight();
+        sunLight = sceneCtx.sceneGraph().getSunDirectionalLight();
     } else {
         sunLight.direction = normalize(float3(0.35f, 0.85f, 0.25f));
         sunLight.color = float3(1.0f, 0.98f, 0.95f);
@@ -1634,13 +1851,18 @@ int main() {
             return;
         }
 
-        previewScene.updateTransforms();
-        sunLight = previewScene.getSunDirectionalLight();
+        sceneCtx.updateGpuScene();
+        sunLight = sceneCtx.sceneGraph().getSunDirectionalLight();
 
         previewVisibleMeshletNodes.clear();
         previewVisibleIndexNodes.clear();
-        for (const auto& node : previewScene.nodes) {
-            if (!previewScene.isNodeVisible(node.id)) {
+        const bool gpuDrivenVisibilityPath =
+            useVisibilityRenderGraph && visibilityGpuCullingAvailable;
+        if (gpuDrivenVisibilityPath) {
+            return;
+        }
+        for (const auto& node : sceneCtx.sceneGraph().nodes) {
+            if (!sceneCtx.sceneGraph().isNodeVisible(node.id)) {
                 continue;
             }
             if (node.meshletCount > 0) {
@@ -1652,8 +1874,8 @@ int main() {
         }
     };
     if (previewSceneReady) {
-        previewVisibleMeshletNodes.reserve(previewScene.nodes.size());
-        previewVisibleIndexNodes.reserve(previewScene.nodes.size());
+        previewVisibleMeshletNodes.reserve(sceneCtx.sceneGraph().nodes.size());
+        previewVisibleIndexNodes.reserve(sceneCtx.sceneGraph().nodes.size());
         refreshPreviewSceneState();
     } else {
         previewVisibleIndexNodes = {0};
@@ -1666,6 +1888,7 @@ int main() {
     bool pipelineReloadKeyDown = false;
     bool shaderReloadRequested = false;
     bool pipelineReloadRequested = false;
+    bool streamingPipelineResetRequested = false;
     bool postBuilderNeedsRebuild = false;
     bool visibilityHistoryResetRequested = false;
     double lastFrameTime = glfwGetTime();
@@ -1677,10 +1900,39 @@ int main() {
     bool hasPrevMatrices = false;
     uint32_t frameIndex = 0;
 
-    // Ring buffer to keep instance transform buffers alive for 2 frames (kMaxFramesInFlight).
-    // Without this, the GPU may still be reading a buffer that the CPU has already freed.
-    static constexpr uint32_t kBufferRingSize = 2;
-    std::unique_ptr<RhiBuffer> instanceTransformRing[kBufferRingSize];
+    auto applyDlssPresetChange = [&](DlssPreset newPreset) {
+        if (newPreset == dlssPreset) {
+            return;
+        }
+        dlssPreset = newPreset;
+        dlssStateDirty = true;
+        visibilityHistoryResetRequested = true;
+        hasPrevMatrices = false;
+        streamlineCtx.resetHistory();
+        postBuilderNeedsRebuild = true;
+    };
+
+    auto refreshPipelineUiControls = [&]() {
+        pipelineUiControls.enableRTShadows = &enableRTShadows;
+        pipelineUiControls.rtShadowsAvailable = rtShadowsAvailable;
+        pipelineUiControls.useVisibilityRenderGraph = useVisibilityRenderGraph;
+        pipelineUiControls.hasDlssPass = visibilityUpscalerSelection.hasDlssPass;
+        pipelineUiControls.dlssAvailable = dlssAvailable;
+        pipelineUiControls.dlssEnabled = runtimeContext.upscaler && runtimeContext.upscaler->isEnabled();
+        pipelineUiControls.dlssIsActiveUpscaler =
+            visibilityUpscalerMode == VisibilityUpscalerMode::DLSS;
+        pipelineUiControls.currentPreset = dlssPreset;
+        pipelineUiControls.dlssRenderWidth = dlssRenderWidth;
+        pipelineUiControls.dlssRenderHeight = dlssRenderHeight;
+        pipelineUiControls.displayWidth = width;
+        pipelineUiControls.displayHeight = height;
+        pipelineUiControls.dlssDiagnostic = visibilityUpscalerSelection.diagnostic;
+        pipelineUiControls.onDlssPresetChanged = applyDlssPresetChange;
+        pipelineUiControls.onResetDlssHistory = [&]() {
+            streamlineCtx.resetHistory();
+        };
+        runtimeContext.uiControls = &pipelineUiControls;
+    };
 
     auto rebuildActivePipeline = [&](int targetWidth, int targetHeight) {
         rhi->waitIdle();
@@ -1711,6 +1963,7 @@ int main() {
         return 1;
     }
 
+    uint32_t uploadFrameCounter = 0;
     while (!glfwWindowShouldClose(window)) {
         ZoneScopedN("VulkanRenderGraphFrame");
 
@@ -1732,8 +1985,10 @@ int main() {
         }
 
         if (appState.framebufferResized) {
+            rhi->waitIdle();
             rhi->resize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             ImGui_ImplVulkan_SetMinImageCount(std::max(2u, rhi->nativeHandles().swapchainImageCount));
+            recreateViewportDisplayTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             postBuilderNeedsRebuild = true;
             appState.framebufferResized = false;
             dlssStateDirty = true;
@@ -1811,6 +2066,7 @@ int main() {
                     logVisibilityMode();
                 }
                 postBuilderNeedsRebuild = true;
+                streamingPipelineResetRequested = true;
             } else if (visibilityPipelineBaseLoaded) {
                 spdlog::warn("Keeping previous Vulkan visibility pipeline: {}",
                              visibilityPipelineBaseAsset.name);
@@ -1821,6 +2077,7 @@ int main() {
         }
 
         syncVisibilityUpscalerState(width, height);
+        refreshPipelineUiControls();
         const int activeBuildWidth = useVisibilityRenderGraph ? runtimeContext.renderWidth : width;
         const int activeBuildHeight = useVisibilityRenderGraph ? runtimeContext.renderHeight : height;
         if (postBuilderNeedsRebuild || postBuilder.needsRebuild(activeBuildWidth, activeBuildHeight)) {
@@ -1828,9 +2085,18 @@ int main() {
                 break;
             }
             postBuilderNeedsRebuild = false;
+            if (streamingPipelineResetRequested) {
+                clusterStreamingService.resetForPipelineReload();
+                streamingPipelineResetRequested = false;
+            }
         }
 
         if (!rhi->beginFrame()) {
+            if (vulkanIsDeviceLost(*rhi)) {
+                spdlog::critical("Ending Vulkan main loop after device loss: {}",
+                                 vulkanDeviceLostMessage(*rhi));
+                break;
+            }
             continue;
         }
 
@@ -1844,19 +2110,32 @@ int main() {
                               static_cast<VkFormat>(native.colorFormat),
                               RhiTextureUsage::RenderTarget);
 
-        descriptorManager.resetFrame();
+        descriptorBackend->resetFrame();
+        uploadService.beginFrame(uploadFrameCounter);
+        readbackService.beginFrame(uploadFrameCounter);
+        ++uploadFrameCounter;
+        const auto barrierStats = imageTracker.stats();  // capture before clear
         imageTracker.clear();
         if (backbufferImage != VK_NULL_HANDLE) {
             imageTracker.setLayout(backbufferImage, getVulkanCurrentBackbufferLayout(*rhi));
         }
-        if (!useVisibilityRenderGraph && sceneColorTexture.nativeHandle()) {
+        if (sceneColorTexture.nativeHandle()) {
             imageTracker.setLayout(getVulkanImage(&sceneColorTexture), sceneColorLayout);
         }
 
         VulkanCommandBuffer commandBuffer(getVulkanCurrentCommandBuffer(*rhi),
                                           vkDevice,
-                                          &descriptorManager,
-                                          &imageTracker);
+                                          descriptorBackend,
+                                          &imageTracker,
+                                          getVulkanGpuProfiler(*rhi),
+                                          getVulkanCurrentComputeCommandBuffer(*rhi));
+
+        // Record any deferred uploads staged since last frame
+        VkCommandBuffer nativeCmd = getVulkanCurrentCommandBuffer(*rhi);
+        if (uploadService.hasPendingUploads()) {
+            uploadService.recordPendingUploads(nativeCmd);
+        }
+        readbackService.recordPendingReadbacks(nativeCmd);
 
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -1864,8 +2143,28 @@ int main() {
         const ImGuiID dockspaceId =
             beginDockspace(showSceneGraphWindow, showGraphDebug, showRenderPassUI, showImGuiDemo);
 
+        // --- Viewport window: display scene render output ---
+        {
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
+            ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            s_viewportHovered = ImGui::IsWindowHovered();
+            ImVec2 viewportSize = ImGui::GetContentRegionAvail();
+            if (viewportSize.x > 0 && viewportSize.y > 0 &&
+                viewportImguiDescriptor != VK_NULL_HANDLE) {
+                ImGui::Image(reinterpret_cast<ImTextureID>(viewportImguiDescriptor), viewportSize);
+            }
+            ImGui::End();
+            ImGui::PopStyleVar();
+        }
+
         ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
         ImGui::Begin("Vulkan Sponza");
+        const RhiDeviceInfo& deviceInfo = rhi->deviceInfo();
+        const VulkanToolingInfo& toolingInfo = getVulkanToolingInfo(*rhi);
+        const VulkanGpuFrameDiagnostics& gpuFrameDiagnostics = getVulkanLatestFrameDiagnostics(*rhi);
+        const VulkanPipelineCacheTelemetry pipelineTelemetry = getVulkanPipelineCacheTelemetry(*rhi);
+        const std::vector<SlangDiagnosticRecord> slangDiagnostics = getRecentSlangDiagnostics();
         const bool autoExposureEnabled =
             useVisibilityRenderGraph &&
             findFirstEnabledPassByType(visibilityPipelineAsset, "AutoExposurePass") != nullptr;
@@ -1874,6 +2173,115 @@ int main() {
         ImGui::Text("Upscaler: %s", visibilityUpscalerModeName(visibilityUpscalerMode));
         ImGui::TextUnformatted(autoExposureEnabled ? "Exposure: Auto" : "Exposure: Manual");
         ImGui::TextUnformatted(visibilityGpuCullingAvailable ? "Visibility Dispatch: GPU" : "Visibility Dispatch: CPU");
+        if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Adapter: %s", deviceInfo.adapterName.c_str());
+            ImGui::Text("Driver: %s", deviceInfo.driverName.c_str());
+            ImGui::Text("API: %s", formatVulkanVersion(deviceInfo.apiVersion).c_str());
+            ImGui::Separator();
+            ImGui::Text("Debug Utils: %s", toolingInfo.debugUtils ? "Enabled" : "Unavailable");
+            ImGui::Text("Nsight NVTX: %s", metallic::nsightMarkersAvailable() ? "Enabled" : "Unavailable");
+            ImGui::Text("Validation Messenger: %s",
+                        toolingInfo.validationMessenger ? "Active" : "Inactive");
+            ImGui::Text("RenderDoc Layer: %s",
+                        toolingInfo.renderDocLayerAvailable ? "Available" : "Not detected");
+            ImGui::Text("Pipeline Statistics: %s",
+                        toolingInfo.pipelineStatistics ? "Enabled" : "Disabled");
+            ImGui::Text("Diagnostic Checkpoints: %s",
+                        toolingInfo.diagnosticCheckpoints ? "Enabled" : "Disabled");
+            ImGui::Text("Device Fault Extension: %s",
+                        toolingInfo.deviceFault ? "Enabled" : "Disabled");
+            if (vulkanIsDeviceLost(*rhi)) {
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                                   "Device Lost: %s",
+                                   vulkanDeviceLostMessage(*rhi).c_str());
+            }
+        }
+        if (ImGui::CollapsingHeader("Pipeline Telemetry", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Graphics PSOs compiled: %u", pipelineTelemetry.graphicsPipelinesCompiled);
+            ImGui::Text("Compute PSOs compiled:  %u", pipelineTelemetry.computePipelinesCompiled);
+            ImGui::Text("Total compile time:     %.2f ms", pipelineTelemetry.totalCompileMs);
+        }
+        if (ImGui::CollapsingHeader("GPU Timings", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Last completed frame: #%llu",
+                        static_cast<unsigned long long>(gpuFrameDiagnostics.frameIndex));
+            ImGui::Text("Total GPU time: %.3f ms", gpuFrameDiagnostics.totalGpuMs);
+            if (gpuFrameDiagnostics.scopes.empty()) {
+                ImGui::TextDisabled("No pass timings captured yet.");
+            } else if (ImGui::BeginTable("GpuTimings", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                ImGui::TableSetupColumn("Pass");
+                ImGui::TableSetupColumn("Time (ms)");
+                ImGui::TableSetupColumn("Graphics Stats");
+                ImGui::TableSetupColumn("Compute Stats");
+                ImGui::TableHeadersRow();
+                for (const VulkanGpuScopeTiming& scope : gpuFrameDiagnostics.scopes) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextUnformatted(scope.label.c_str());
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::Text("%.3f", scope.durationMs);
+                    ImGui::TableSetColumnIndex(2);
+                    if (scope.pipelineStats.valid) {
+                        ImGui::Text("VS %llu / FS %llu",
+                                    static_cast<unsigned long long>(scope.pipelineStats.vertexShaderInvocations),
+                                    static_cast<unsigned long long>(scope.pipelineStats.fragmentShaderInvocations));
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                    ImGui::TableSetColumnIndex(3);
+                    if (scope.pipelineStats.valid &&
+                        (scope.pipelineStats.computeShaderInvocations != 0 ||
+                         scope.pipelineStats.taskShaderInvocations != 0 ||
+                         scope.pipelineStats.meshShaderInvocations != 0)) {
+                        ImGui::Text("CS %llu / TS %llu / MS %llu",
+                                    static_cast<unsigned long long>(scope.pipelineStats.computeShaderInvocations),
+                                    static_cast<unsigned long long>(scope.pipelineStats.taskShaderInvocations),
+                                    static_cast<unsigned long long>(scope.pipelineStats.meshShaderInvocations));
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                }
+                ImGui::EndTable();
+            }
+        }
+        if (ImGui::CollapsingHeader("Shader Diagnostics")) {
+            if (slangDiagnostics.empty()) {
+                ImGui::TextDisabled("No recent Slang diagnostics.");
+            } else {
+                for (auto it = slangDiagnostics.rbegin(); it != slangDiagnostics.rend(); ++it) {
+                    ImGui::Separator();
+                    ImGui::Text("%s", it->stage.c_str());
+                    if (!it->shaderPath.empty()) {
+                        ImGui::TextDisabled("%s", it->shaderPath.c_str());
+                    }
+                    ImGui::PushTextWrapPos();
+                    ImGui::TextUnformatted(it->message.c_str());
+                    ImGui::PopTextWrapPos();
+                }
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Barrier Stats (prev frame)")) {
+            ImGui::Text("Image barriers:   %u", barrierStats.imageBarriers);
+            ImGui::Text("Buffer barriers:  %u", barrierStats.bufferBarriers);
+            ImGui::Text("Memory barriers:  %u", barrierStats.memoryBarriers);
+            ImGui::Text("Redundant skips:  %u", barrierStats.redundantSkips);
+            ImGui::Text("Flush calls:      %u", barrierStats.flushCalls);
+            ImGui::Text("Empty flushes:    %u", barrierStats.emptyFlushCalls);
+        }
+        if (ImGui::CollapsingHeader("Shader Cache")) {
+            SlangCompileStats shaderStats = getSlangCompileStats();
+            ImGui::Text("Cache hits:       %u", shaderStats.cacheHits);
+            ImGui::Text("Cache misses:     %u", shaderStats.cacheMisses);
+            ImGui::Text("Compiles:         %u", shaderStats.compileCount);
+            ImGui::Text("Total compile:    %.1f ms", shaderStats.totalCompileTimeMs);
+            const char* modeLabel = (shaderCompileMode == ShaderCompileMode::Release)
+                                    ? "Release" : "Debug";
+            ImGui::Text("Compile mode:     %s", modeLabel);
+            if (ImGui::Button("Reset Stats")) {
+                resetSlangCompileStats();
+            }
+        }
         if (useVisibilityRenderGraph) {
             ImGui::Text("Render Base: %d x %d", kRenderResolutionBaseWidth, kRenderResolutionBaseHeight);
             const bool allowManualRenderScale = visibilityUpscalerMode != VisibilityUpscalerMode::DLSS;
@@ -1902,59 +2310,6 @@ int main() {
                         runtimeContext.renderWidth,
                         runtimeContext.renderHeight);
         }
-        if (rtShadowsAvailable && useVisibilityRenderGraph) {
-            ImGui::Checkbox("RT Shadows", &enableRTShadows);
-        }
-
-        // DLSS UI
-        if (useVisibilityRenderGraph) {
-            ImGui::Separator();
-            if (visibilityUpscalerSelection.hasDlssPass) {
-                ImGui::TextUnformatted(dlssAvailable
-                    ? "Streamline: Available"
-                    : "Streamline: Unavailable (pass-through)");
-                const char* presetNames[] = {
-                    "Off", "Max Performance", "Balanced", "Max Quality",
-                    "Ultra Performance", "Ultra Quality", "DLAA"
-                };
-                int presetIdx = static_cast<int>(dlssPreset);
-                if (ImGui::Combo("DLSS Preset", &presetIdx, presetNames, IM_ARRAYSIZE(presetNames))) {
-                    DlssPreset newPreset = static_cast<DlssPreset>(presetIdx);
-                    if (newPreset != dlssPreset) {
-                        dlssPreset = newPreset;
-                        dlssStateDirty = true;
-                        visibilityHistoryResetRequested = true;
-                        hasPrevMatrices = false;
-                        streamlineCtx.resetHistory();
-                        postBuilderNeedsRebuild = true;
-                    }
-                }
-                ImGui::Text("Display: %d x %d", width, height);
-                if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) {
-                    ImGui::TextUnformatted("DLSS is the active upscaler in this graph.");
-                    ImGui::Text("Render: %u x %u", dlssRenderWidth, dlssRenderHeight);
-                } else {
-                    ImGui::TextUnformatted("DLSS pass is present but not driving the active post path.");
-                    if (!visibilityUpscalerSelection.diagnostic.empty()) {
-                        ImGui::TextWrapped("%s", visibilityUpscalerSelection.diagnostic.c_str());
-                    }
-                }
-                if (visibilityUpscalerMode != VisibilityUpscalerMode::DLSS) {
-                    ImGui::BeginDisabled();
-                }
-                if (ImGui::Button("Reset DLSS History")) {
-                    streamlineCtx.resetHistory();
-                }
-                if (visibilityUpscalerMode != VisibilityUpscalerMode::DLSS) {
-                    ImGui::EndDisabled();
-                }
-            } else {
-                ImGui::TextUnformatted(dlssAvailable
-                    ? "Active graph has no StreamlineDlssPass"
-                    : "Streamline: Unavailable");
-            }
-            ImGui::Separator();
-        }
         if (ImGui::Button("Reload Shaders (F5)")) {
             shaderReloadRequested = true;
         }
@@ -1964,19 +2319,375 @@ int main() {
         }
         ImGui::Checkbox("FrameGraph Debug", &showGraphDebug);
         ImGui::Checkbox("Render Pass UI", &showRenderPassUI);
-        ImGui::Checkbox("Scene Graph", &showSceneGraphWindow);
+        ImGui::Checkbox("Scene Browser", &showSceneGraphWindow);
         ImGui::Checkbox("ImGui Demo", &showImGuiDemo);
 
+        const ClusterStreamingService::DebugStats& streamingStats =
+            clusterStreamingService.debugStats();
+        const ClusterStreamingService::StreamingStats& streamingTelemetry =
+            clusterStreamingService.streamingStats();
+        static StreamingDashboardHistory streamingHistory;
+        streamingHistory.push(frameIndex, streamingTelemetry);
+
+        if (ImGui::CollapsingHeader("Cluster Streaming")) {
+            const ClusterStreamingService::MemoryBudgetInfo& memoryBudgetInfo =
+                clusterStreamingService.memoryBudgetInfo();
+            static constexpr uint64_t kMiB = 1024ull * 1024ull;
+            static constexpr int kMinStreamingStorageBudgetMB = 64;
+            static constexpr int kMaxStreamingStorageBudgetMB = 2048;
+            static constexpr int kStreamingStorageBudgetStepMB = 16;
+            ImGui::Text("Streaming: %s",
+                        clusterStreamingService.streamingEnabled() ? "Enabled" : "Disabled");
+            ImGui::Text("Resources: %s",
+                        streamingStats.resourcesReady ? "Ready" : "Pending");
+            if (ImGui::BeginCombo("Budget Preset",
+                                  ClusterStreamingService::budgetPresetLabel(
+                                      clusterStreamingService.budgetPreset()))) {
+                for (uint32_t presetIndex = 0u;
+                     presetIndex <
+                         static_cast<uint32_t>(ClusterStreamingService::BudgetPreset::Custom);
+                     ++presetIndex) {
+                    const auto preset =
+                        static_cast<ClusterStreamingService::BudgetPreset>(presetIndex);
+                    const bool selected = clusterStreamingService.budgetPreset() == preset;
+                    if (ImGui::Selectable(ClusterStreamingService::budgetPresetLabel(preset),
+                                          selected)) {
+                        clusterStreamingService.setBudgetPreset(preset);
+                        if (preset == ClusterStreamingService::BudgetPreset::Auto) {
+                            refreshClusterStreamingMemoryBudget();
+                        }
+                        visibilityHistoryResetRequested = true;
+                    }
+                    if (selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::Text("Budget target: %s, %u dynamic groups",
+                        formatByteCountShort(clusterStreamingService.streamingStorageCapacityBytes()).c_str(),
+                        clusterStreamingService.streamingBudgetGroups());
+            int storageBudgetMb = static_cast<int>(
+                std::max<uint64_t>(1ull, clusterStreamingService.streamingStorageCapacityBytes() / kMiB));
+            if (ImGui::SliderInt("Storage Pool Target (MB)",
+                                 &storageBudgetMb,
+                                 kMinStreamingStorageBudgetMB,
+                                 kMaxStreamingStorageBudgetMB)) {
+                storageBudgetMb = std::max(
+                    kMinStreamingStorageBudgetMB,
+                    ((storageBudgetMb + (kStreamingStorageBudgetStepMB / 2)) /
+                     kStreamingStorageBudgetStepMB) *
+                        kStreamingStorageBudgetStepMB);
+                clusterStreamingService.setStreamingStorageCapacityBytes(
+                    uint64_t(storageBudgetMb) * kMiB);
+                visibilityHistoryResetRequested = true;
+            }
+            const int maxDynamicGroupBudget = std::max(
+                1024,
+                std::max(static_cast<int>(streamingStats.activeResidencyGroupCount),
+                         static_cast<int>(clusterStreamingService.streamingBudgetGroups())));
+            int dynamicGroupBudget = static_cast<int>(clusterStreamingService.streamingBudgetGroups());
+            if (ImGui::SliderInt("Dynamic Group Budget",
+                                 &dynamicGroupBudget,
+                                 1,
+                                 maxDynamicGroupBudget)) {
+                clusterStreamingService.setStreamingBudgetGroups(
+                    static_cast<uint32_t>(std::max(1, dynamicGroupBudget)));
+                visibilityHistoryResetRequested = true;
+            }
+            ImGui::TextDisabled(
+                "Manual edits switch the current scene to Custom and are restored on scene switch.");
+            if (ImGui::Button("Reset Scene Budget to Auto")) {
+                clusterStreamingService.setBudgetPreset(ClusterStreamingService::BudgetPreset::Auto);
+                refreshClusterStreamingMemoryBudget();
+                visibilityHistoryResetRequested = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Refresh VRAM Budget")) {
+                refreshClusterStreamingMemoryBudget();
+            }
+            if (memoryBudgetInfo.available) {
+                const std::string deviceLocalBudgetLabel =
+                    formatByteCountShort(memoryBudgetInfo.deviceLocalUsageBytes) + " / " +
+                    formatByteCountShort(memoryBudgetInfo.deviceLocalBudgetBytes);
+                const float deviceLocalBudgetRatio =
+                    memoryBudgetInfo.deviceLocalBudgetBytes != 0u
+                        ? float(double(memoryBudgetInfo.deviceLocalUsageBytes) /
+                                double(memoryBudgetInfo.deviceLocalBudgetBytes))
+                        : 0.0f;
+                ImGui::Text("Device-local VRAM");
+                ImGui::ProgressBar(
+                    deviceLocalBudgetRatio, ImVec2(-1.0f, 0.0f), deviceLocalBudgetLabel.c_str());
+                ImGui::Text("VRAM headroom: %s, auto pool target: %s",
+                            formatByteCountShort(memoryBudgetInfo.deviceLocalHeadroomBytes).c_str(),
+                            formatByteCountShort(memoryBudgetInfo.targetStorageBytes).c_str());
+            } else {
+                ImGui::TextDisabled("VRAM budget: VK_EXT_memory_budget unavailable");
+            }
+            bool gpuStatsReadbackEnabled = clusterStreamingService.gpuStatsReadbackEnabled();
+            if (ImGui::Checkbox("GPU Stats Readback", &gpuStatsReadbackEnabled)) {
+                clusterStreamingService.setGpuStatsReadbackEnabled(gpuStatsReadbackEnabled);
+            }
+            bool adaptiveBudgetEnabled = clusterStreamingService.adaptiveBudgetEnabled();
+            if (ImGui::Checkbox("Adaptive Unload Age", &adaptiveBudgetEnabled)) {
+                clusterStreamingService.setAdaptiveBudgetEnabled(adaptiveBudgetEnabled);
+            }
+            ImGui::Text("Unload age: effective %u, base %u, adjustments %u",
+                        streamingTelemetry.effectiveAgeThreshold,
+                        streamingTelemetry.configuredAgeThreshold,
+                        streamingTelemetry.adaptiveBudgetAdjustmentCount);
+            ImGui::Text("Adaptive signals: failed %.2f, pool %.1f%%",
+                        streamingTelemetry.smoothedFailedAllocations,
+                        streamingTelemetry.smoothedStorageUtilization * 100.0f);
+
+            const float residentGroupRatio =
+                streamingStats.activeResidencyGroupCount != 0u
+                    ? float(double(streamingTelemetry.residentGroupCount) /
+                            double(streamingStats.activeResidencyGroupCount))
+                    : 0.0f;
+            const std::string residentGroupLabel =
+                std::to_string(streamingTelemetry.residentGroupCount) + " / " +
+                std::to_string(streamingStats.activeResidencyGroupCount) +
+                " groups";
+            ImGui::Text("Resident groups");
+            ImGui::ProgressBar(residentGroupRatio, ImVec2(-1.0f, 0.0f), residentGroupLabel.c_str());
+            ImGui::Text("%u always-resident, %u dynamic",
+                        streamingTelemetry.alwaysResidentGroupCount,
+                        streamingTelemetry.dynamicResidentGroupCount);
+
+            const float storagePoolRatio =
+                streamingTelemetry.storagePoolCapacityBytes != 0u
+                    ? float(double(streamingTelemetry.storagePoolUsedBytes) /
+                            double(streamingTelemetry.storagePoolCapacityBytes))
+                    : 0.0f;
+            const std::string storagePoolLabel =
+                formatByteCountShort(streamingTelemetry.storagePoolUsedBytes) + " / " +
+                formatByteCountShort(streamingTelemetry.storagePoolCapacityBytes);
+            ImGui::Text("Storage pool usage");
+            ImGui::ProgressBar(storagePoolRatio, ImVec2(-1.0f, 0.0f), storagePoolLabel.c_str());
+
+            const float transferRatio =
+                std::clamp(streamingTelemetry.transferUtilization, 0.0f, 1.0f);
+            const std::string transferLabel =
+                formatByteCountShort(streamingTelemetry.transferBytesThisFrame) + " / " +
+                formatByteCountShort(clusterStreamingService.effectiveStreamingTransferCapacityBytes());
+            ImGui::Text("Transfer bandwidth");
+            ImGui::ProgressBar(transferRatio, ImVec2(-1.0f, 0.0f), transferLabel.c_str());
+            ImGui::Text("Transfer utilization: %.1f%%",
+                        streamingTelemetry.transferUtilization * 100.0f);
+            if (streamingTelemetry.cpuUnloadFallbackActive ||
+                streamingTelemetry.graphicsTransferFallbackActive) {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                                   "Fallbacks: CPU FIFO unload %s%s",
+                                   streamingTelemetry.cpuUnloadFallbackActive ? "active" : "idle",
+                                   streamingTelemetry.graphicsTransferFallbackActive
+                                       ? ", graphics copy path"
+                                       : "");
+                if (streamingTelemetry.cpuUnloadFallbackActive) {
+                    ImGui::TextDisabled("CPU fallback frame %u, queued %u unloads",
+                                        streamingTelemetry.cpuUnloadFallbackFrameIndex,
+                                        streamingTelemetry.cpuUnloadFallbackGroupCount);
+                }
+            } else if (streamingTelemetry.gpuAgeFilterDispatchMissing) {
+                ImGui::TextDisabled("Fallbacks: age filter missing, CPU FIFO standby (frame %u)",
+                                    streamingTelemetry.gpuAgeFilterDispatchMissingFrameIndex);
+            }
+
+            ImGui::Text("Requests: load %u (%u executed, %u deferred), unload %u (%u executed)",
+                        streamingTelemetry.loadRequestsThisFrame,
+                        streamingTelemetry.loadsExecutedThisFrame,
+                        streamingTelemetry.loadsDeferredThisFrame,
+                        streamingTelemetry.unloadRequestsThisFrame,
+                        streamingTelemetry.unloadsExecutedThisFrame);
+            ImGui::Text("Pending load/unload: %u / %u (%u confirmed)",
+                        streamingStats.pendingResidencyGroupCount,
+                        streamingStats.pendingUnloadGroupCount,
+                        streamingStats.confirmedUnloadGroupCount);
+            ImGui::Text("Failed allocations this frame: %u",
+                        streamingTelemetry.failedAllocations);
+            if (!clusterStreamingService.gpuStatsReadbackEnabled()) {
+                ImGui::TextDisabled("GPU stats: disabled");
+            } else if (streamingTelemetry.gpuStatsValid) {
+                const std::string gpuCopiedBytesLabel =
+                    formatByteCountShort(streamingTelemetry.gpuCopiedBytes);
+                ImGui::Text("GPU stats: frame %u, patches %u, copied %s",
+                            streamingTelemetry.gpuStatsFrameIndex,
+                            streamingTelemetry.gpuAppliedPatchCount,
+                            gpuCopiedBytesLabel.c_str());
+                ImGui::Text("GPU unloads: %u, average age %.1f",
+                            streamingTelemetry.gpuUnloadRequestCount,
+                            streamingTelemetry.gpuAverageUnloadAge);
+                if (streamingTelemetry.gpuErrorUpdateCount != 0u ||
+                    streamingTelemetry.gpuErrorAgeFilterCount != 0u ||
+                    streamingTelemetry.gpuErrorAllocationCount != 0u ||
+                    streamingTelemetry.gpuErrorPageTableCount != 0u) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.2f, 1.0f),
+                                       "GPU errors: update %u, age %u, alloc %u, page %u",
+                                       streamingTelemetry.gpuErrorUpdateCount,
+                                       streamingTelemetry.gpuErrorAgeFilterCount,
+                                       streamingTelemetry.gpuErrorAllocationCount,
+                                       streamingTelemetry.gpuErrorPageTableCount);
+                }
+            } else {
+                ImGui::TextDisabled("GPU stats: pending readback");
+            }
+
+            const float requestHistoryMax = streamingHistory.maxRequestValue();
+            ImGui::PlotLines("Load Requests / Frame",
+                             streamingHistory.loadRequestHistory.data(),
+                             streamingHistory.sampleCount,
+                             streamingHistory.plotOffset(),
+                             nullptr,
+                             0.0f,
+                             requestHistoryMax,
+                             ImVec2(0.0f, 60.0f));
+            ImGui::PlotLines("Unload Requests / Frame",
+                             streamingHistory.unloadRequestHistory.data(),
+                             streamingHistory.sampleCount,
+                             streamingHistory.plotOffset(),
+                             nullptr,
+                             0.0f,
+                             requestHistoryMax,
+                             ImVec2(0.0f, 60.0f));
+
+            std::array<float, ClusterStreamingService::kStreamingAgeHistogramBucketCount>
+                ageHistogramValues = {};
+            float ageHistogramMax = 1.0f;
+            for (size_t bucketIndex = 0; bucketIndex < ageHistogramValues.size(); ++bucketIndex) {
+                ageHistogramValues[bucketIndex] =
+                    static_cast<float>(streamingTelemetry.ageHistogram[bucketIndex]);
+                ageHistogramMax = std::max(ageHistogramMax, ageHistogramValues[bucketIndex]);
+            }
+            const std::string ageHistogramOverlay =
+                "bucket width " + std::to_string(streamingTelemetry.ageHistogramBucketWidth) +
+                "f, max age " + std::to_string(streamingTelemetry.ageHistogramMaxAge) + "f";
+            ImGui::PlotHistogram("Resident Age Histogram",
+                                 ageHistogramValues.data(),
+                                 static_cast<int>(ageHistogramValues.size()),
+                                 0,
+                                 ageHistogramOverlay.c_str(),
+                                 0.0f,
+                                 ageHistogramMax,
+                                 ImVec2(0.0f, 80.0f));
+
+            if (!streamingTelemetry.totalGroupsPerLod.empty()) {
+                ImGui::Text("Per-LOD residency");
+                for (size_t lodIndex = 0; lodIndex < streamingTelemetry.totalGroupsPerLod.size();
+                     ++lodIndex) {
+                    const uint32_t totalGroups = streamingTelemetry.totalGroupsPerLod[lodIndex];
+                    const uint32_t residentGroups =
+                        lodIndex < streamingTelemetry.residentGroupsPerLod.size()
+                            ? streamingTelemetry.residentGroupsPerLod[lodIndex]
+                            : 0u;
+                    const float lodRatio =
+                        totalGroups != 0u
+                            ? float(double(residentGroups) / double(totalGroups))
+                            : 0.0f;
+                    const std::string lodLabel =
+                        "LOD " + std::to_string(lodIndex) + ": " +
+                        std::to_string(residentGroups) + " / " +
+                        std::to_string(totalGroups) + " groups";
+                    ImGui::ProgressBar(lodRatio, ImVec2(-1.0f, 0.0f), lodLabel.c_str());
+                }
+            } else {
+                ImGui::TextDisabled("Per-LOD residency: unavailable");
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Resident heap: %u / %u clusters",
+                        streamingStats.residentHeapUsed,
+                        streamingStats.residentHeapCapacity);
+            ImGui::Text("Task ring: %u total, %u free, %u prepared, %u transferred, %u queued",
+                        streamingStats.streamingTaskCapacity,
+                        streamingStats.freeStreamingTaskCount,
+                        streamingStats.preparedStreamingTaskCount,
+                        streamingStats.transferSubmittedTaskCount,
+                        streamingStats.updateQueuedTaskCount);
+            if (streamingStats.selectedTransferTaskIndex != UINT32_MAX) {
+                ImGui::Text("Transfer task: slot %u, %s staged",
+                            streamingStats.selectedTransferTaskIndex,
+                            formatByteCountShort(streamingStats.selectedTransferBytes).c_str());
+            } else {
+                ImGui::TextDisabled("Transfer task: idle");
+            }
+            if (streamingStats.selectedUpdateTaskIndex != UINT32_MAX) {
+                ImGui::Text("Update task: slot %u, %u patches, wait %llu",
+                            streamingStats.selectedUpdateTaskIndex,
+                            streamingStats.selectedUpdatePatchCount,
+                            static_cast<unsigned long long>(
+                                streamingStats.selectedUpdateTransferWaitValue));
+            } else {
+                ImGui::TextDisabled("Update task: idle");
+            }
+        }
+
         // LOD stats panel
-        if (previewSceneReady && previewLOD.lodLevelCount > 0) {
-            drawClusterLODStats(previewLOD);
+        if (previewSceneReady && sceneCtx.clusterLod().lodLevelCount > 0) {
+            drawClusterLODStats(sceneCtx.clusterLod());
         }
 
         ImGui::End();
 
         if (previewSceneReady && showSceneGraphWindow) {
-            ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
-            drawSceneGraphUI(previewScene);
+            ::drawSceneGraphUI(sceneCtx.sceneGraph());
+        }
+
+        // --- Runtime scene loading UI ---
+        {
+            static char scenePathBuf[512] = {};
+            if (ImGui::Begin("Scene Loader")) {
+                ImGui::Text("Current: %s", sceneCtx.isSceneLoaded() ? sceneCtx.scene().filePath().c_str() : "(none)");
+                ImGui::InputText("glTF Path", scenePathBuf, sizeof(scenePathBuf));
+                ImGui::SameLine();
+                if (ImGui::Button("Browse...")) {
+#ifdef _WIN32
+                    std::string picked = openGltfFileDialog(window);
+                    if (!picked.empty()) {
+                        std::snprintf(scenePathBuf, sizeof(scenePathBuf), "%s", picked.c_str());
+                    }
+#endif
+                }
+                if (ImGui::Button("Load Scene") && scenePathBuf[0] != '\0') {
+                    rhi->waitIdle();
+                    shadowResources.release();
+                    rtShadowsAvailable = false;
+
+                    if (sceneCtx.loadScene(scenePathBuf)) {
+                        previewSceneReady = true;
+                        rebuildRenderContext(renderContext);
+
+                        if (!sceneCtx.materials().textureViews.empty()) {
+                            descriptorBackend->updateBindlessSampledTextures(
+                                sceneCtx.materials().textureViews.data(), 0,
+                                static_cast<uint32_t>(sceneCtx.materials().textureViews.size()));
+                        }
+                        descriptorBackend->updateBindlessSampler(
+                            METALLIC_BINDLESS_SCENE_SAMPLER_INDEX, &sceneCtx.materials().sampler);
+
+                        if (rhi->features().rayTracing && enableRTShadows) {
+                            if (buildAccelerationStructures(deviceHandle, queueHandle,
+                                                            sceneCtx.mesh(), sceneCtx.sceneGraph(),
+                                                            shadowResources) &&
+                                createShadowPipeline(deviceHandle, shadowResources, PROJECT_SOURCE_DIR)) {
+                                rtShadowsAvailable = true;
+                            } else {
+                                shadowResources.release();
+                            }
+                        }
+
+                        previewCamera.initFromBounds(sceneCtx.mesh().bboxMin, sceneCtx.mesh().bboxMax);
+                        previewCamera.distance *= 0.8f;
+                        sunLight = sceneCtx.sceneGraph().getSunDirectionalLight();
+                        refreshVisibilityPipelineState();
+                        postBuilderNeedsRebuild = true;
+                        visibilityHistoryResetRequested = true;
+                        hasPrevMatrices = false;
+                    } else {
+                        previewSceneReady = false;
+                    }
+                }
+            }
+            ImGui::End();
         }
 
         refreshPreviewSceneState();
@@ -2003,7 +2714,7 @@ int main() {
         const bool enableVisibilityDlss =
             useVisibilityRenderGraph &&
             visibilityUpscalerMode == VisibilityUpscalerMode::DLSS &&
-            runtimeContext.dlssEnabled;
+            runtimeContext.upscaler && runtimeContext.upscaler->isEnabled();
         const bool needsJitter = enableVisibilityTAA || enableVisibilityDlss;
         if (needsJitter) {
             jitterOffset = OrbitCamera::haltonJitter(frameIndex);
@@ -2017,39 +2728,24 @@ int main() {
                                                          static_cast<uint32_t>(renderHeight));
         }
 
-        auto& instanceTransformBuffer = instanceTransformRing[frameIndex % kBufferRingSize];
-        instanceTransformBuffer.reset();
-        uint32_t visibilityInstanceCount = 0;
-        if (useVisibilityRenderGraph && !previewVisibleMeshletNodes.empty()) {
-            visibilityInstanceCount = static_cast<uint32_t>(
-                std::min<size_t>(previewVisibleMeshletNodes.size(),
-                                 static_cast<size_t>(kVisibilityInstanceMask + 1u)));
-            std::vector<SceneInstanceTransform> instanceTransforms;
-            instanceTransforms.reserve(visibilityInstanceCount);
-            const float4x4 prevViewForMotion = hasPrevMatrices ? prevView : view;
-            const float4x4 prevProjForMotion = hasPrevMatrices ? prevProj : unjitteredProj;
-            for (uint32_t instanceId = 0; instanceId < visibilityInstanceCount; ++instanceId) {
-                const SceneNode& node = previewScene.nodes[previewVisibleMeshletNodes[instanceId]];
-                const float4x4 nodeModelView = view * node.transform.worldMatrix;
-                const float4x4 nodeMvp = proj * nodeModelView;
-                const float4x4 prevNodeModelView = prevViewForMotion * node.transform.worldMatrix;
-                const float4x4 prevNodeMvp = prevProjForMotion * prevNodeModelView;
+        const bool gpuDrivenVisibilityPath =
+            useVisibilityRenderGraph && visibilityGpuCullingAvailable;
 
-                SceneInstanceTransform transform{};
-                transform.mvp = transpose(nodeMvp);
-                transform.modelView = transpose(nodeModelView);
-                transform.prevMvp = transpose(prevNodeMvp);
-                instanceTransforms.push_back(transform);
+        uint32_t visibilityInstanceCount = 0;
+        if (useVisibilityRenderGraph) {
+            static bool warnedInstanceOverflow = false;
+            if (!warnedInstanceOverflow &&
+                sceneCtx.gpuScene().instanceCount > (kVisibilityInstanceMask + 1u)) {
+                spdlog::warn("GPU scene instance limit exceeded for visibility encoding ({} > {}), overflowing instances will be dropped in GPU visibility mode",
+                             sceneCtx.gpuScene().instanceCount,
+                             kVisibilityInstanceMask + 1);
+                warnedInstanceOverflow = true;
             }
 
-            RhiBufferDesc instanceBufferDesc;
-            instanceBufferDesc.size = instanceTransforms.size() * sizeof(SceneInstanceTransform);
-            instanceBufferDesc.initialData = instanceTransforms.data();
-            instanceBufferDesc.hostVisible = true;
-            instanceBufferDesc.debugName = "Vulkan Visibility Instance Transforms";
-            instanceTransformBuffer = frameGraphBackend.createBuffer(instanceBufferDesc);
-            if (!instanceTransformBuffer) {
-                visibilityInstanceCount = 0;
+            if (!gpuDrivenVisibilityPath) {
+                visibilityInstanceCount = static_cast<uint32_t>(
+                    std::min<size_t>(previewVisibleMeshletNodes.size(),
+                                     static_cast<size_t>(kVisibilityInstanceMask + 1u)));
             }
         }
 
@@ -2084,19 +2780,18 @@ int main() {
         frameContext.viewLightDir = view * frameContext.worldLightDir;
         frameContext.lightColorIntensity =
             float4(sunLight.color.x, sunLight.color.y, sunLight.color.z, sunLight.intensity);
-        frameContext.meshletCount = previewMeshlets.meshletCount;
-        frameContext.materialCount = previewMaterials.materialCount;
-        frameContext.textureCount = static_cast<uint32_t>(previewMaterials.textures.size());
-        frameContext.visibleMeshletNodes = previewVisibleMeshletNodes;
-        if (useVisibilityRenderGraph &&
-            frameContext.visibleMeshletNodes.size() > static_cast<size_t>(visibilityInstanceCount)) {
-            frameContext.visibleMeshletNodes.resize(visibilityInstanceCount);
+        frameContext.meshletCount = sceneCtx.meshlets().meshletCount;
+        frameContext.materialCount = sceneCtx.materials().materialCount;
+        frameContext.textureCount = static_cast<uint32_t>(sceneCtx.materials().textures.size());
+        if (!gpuDrivenVisibilityPath) {
+            frameContext.visibleMeshletNodes = previewVisibleMeshletNodes;
+            if (useVisibilityRenderGraph &&
+                frameContext.visibleMeshletNodes.size() > static_cast<size_t>(visibilityInstanceCount)) {
+                frameContext.visibleMeshletNodes.resize(visibilityInstanceCount);
+            }
+            frameContext.visibleIndexNodes = previewVisibleIndexNodes;
         }
-        frameContext.visibleIndexNodes = previewVisibleIndexNodes;
         frameContext.visibilityInstanceCount = visibilityInstanceCount;
-        frameContext.instanceTransformBufferRhi = instanceTransformBuffer.get();
-        frameContext.commandBuffer = &nativeCommandBuffer;
-        frameContext.imageLayoutTracker = &imageTracker;
         frameContext.depthClearValue = depthClearValue;
         frameContext.cameraFarZ = previewCamera.farZ;
         {
@@ -2107,7 +2802,7 @@ int main() {
         frameContext.enableRTShadows =
             useVisibilityRenderGraph && rtShadowsAvailable && enableRTShadows;
         frameContext.enableAtmosphereSky = atmosphereSkyAvailable;
-        frameContext.gpuDrivenCulling = useVisibilityRenderGraph && visibilityGpuCullingAvailable;
+        frameContext.gpuDrivenCulling = gpuDrivenVisibilityPath;
         frameContext.renderMode = useVisibilityRenderGraph ? 2 : 0;
 
         postBuilder.updateFrame(&backbufferTexture, &frameContext);
@@ -2132,14 +2827,153 @@ int main() {
         }
 
         if (useVisibilityRenderGraph && rtShadowsAvailable) {
-            updateTLAS(nativeCommandBuffer, previewScene, shadowResources);
+            updateTLAS(nativeCommandBuffer, sceneCtx.sceneGraph(), shadowResources);
+        }
+
+        // Ensure sceneColorTexture is in SHADER_READ_ONLY_OPTIMAL for ImGui::Image sampling
+        // The frame graph doesn't know about the ImGui descriptor reference, so we insert
+        // a manual barrier. On the first frame (UNDEFINED), this transitions to readable state.
+        if (sceneColorTexture.nativeHandle() && !useVisibilityRenderGraph) {
+            VkImage sceneColorImage = getVulkanImage(&sceneColorTexture);
+            if (sceneColorImage != VK_NULL_HANDLE) {
+                VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                                        VK_ACCESS_2_SHADER_WRITE_BIT;
+                barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                barrier.oldLayout = sceneColorLayout;
+                barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barrier.image = sceneColorImage;
+                barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                VkDependencyInfo depInfo{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                depInfo.imageMemoryBarrierCount = 1;
+                depInfo.pImageMemoryBarriers = &barrier;
+                vkCmdPipelineBarrier2(nativeCmd, &depInfo);
+
+                sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                imageTracker.setLayout(sceneColorImage, sceneColorLayout);
+            }
         }
 
         postBuilder.execute(commandBuffer, frameGraphBackend);
+
+        // Blit backbuffer to viewport display texture for ImGui::Image
+        if (viewportDisplayTexture.nativeHandle() && backbufferImage != VK_NULL_HANDLE) {
+            VkImage vpImage = getVulkanImage(&viewportDisplayTexture);
+            if (vpImage != VK_NULL_HANDLE) {
+                uint32_t vpW = viewportDisplayTexture.width();
+                uint32_t vpH = viewportDisplayTexture.height();
+
+                VkImageMemoryBarrier2 barriers[2] = {};
+                barriers[0] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                barriers[0].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+                barriers[0].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+                barriers[0].oldLayout = imageTracker.getLayout(backbufferImage);
+                barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                barriers[0].image = backbufferImage;
+                barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                barriers[1] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                barriers[1].srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+                barriers[1].srcAccessMask = VK_ACCESS_2_NONE;
+                barriers[1].dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+                barriers[1].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                barriers[1].image = vpImage;
+                barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                dep.imageMemoryBarrierCount = 2;
+                dep.pImageMemoryBarriers = barriers;
+                vkCmdPipelineBarrier2(nativeCmd, &dep);
+
+                VkImageBlit2 blitRegion{VK_STRUCTURE_TYPE_IMAGE_BLIT_2};
+                blitRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                blitRegion.srcOffsets[1] = {static_cast<int32_t>(width), static_cast<int32_t>(height), 1};
+                blitRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                blitRegion.dstOffsets[1] = {static_cast<int32_t>(vpW), static_cast<int32_t>(vpH), 1};
+
+                VkBlitImageInfo2 blitInfo{VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2};
+                blitInfo.srcImage = backbufferImage;
+                blitInfo.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                blitInfo.dstImage = vpImage;
+                blitInfo.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                blitInfo.regionCount = 1;
+                blitInfo.pRegions = &blitRegion;
+                blitInfo.filter = VK_FILTER_LINEAR;
+                vkCmdBlitImage2(nativeCmd, &blitInfo);
+
+                VkImageMemoryBarrier2 postBarriers[2] = {};
+                postBarriers[0] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                postBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+                postBarriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+                postBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                postBarriers[0].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                postBarriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                postBarriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                postBarriers[0].image = backbufferImage;
+                postBarriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                postBarriers[1] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                postBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+                postBarriers[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                postBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                postBarriers[1].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                postBarriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                postBarriers[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                postBarriers[1].image = vpImage;
+                postBarriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                VkDependencyInfo postDep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                postDep.imageMemoryBarrierCount = 2;
+                postDep.pImageMemoryBarriers = postBarriers;
+                vkCmdPipelineBarrier2(nativeCmd, &postDep);
+
+                imageTracker.setLayout(backbufferImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            }
+        }
+
+        // Render ImGui directly to backbuffer (ImGuiOverlayPass removed from pipeline)
+        {
+            VkRenderingAttachmentInfo colorAttach{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            colorAttach.imageView = backbufferImageView;
+            colorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            colorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            VkRenderingInfo renderInfo{VK_STRUCTURE_TYPE_RENDERING_INFO};
+            renderInfo.renderArea = {{0, 0}, backbufferExtent};
+            renderInfo.layerCount = 1;
+            renderInfo.colorAttachmentCount = 1;
+            renderInfo.pColorAttachments = &colorAttach;
+
+            vkCmdBeginRendering(nativeCmd, &renderInfo);
+            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), nativeCmd);
+            vkCmdEndRendering(nativeCmd);
+        }
+
+        // After pipeline execution, sceneColorTexture is ready for ImGui sampling next frame
+        if (sceneColorTexture.nativeHandle()) {
+            sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
         visibilityHistoryResetRequested = false;
 
-        if (!useVisibilityRenderGraph) {
-            sceneColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        if (native.transferTimelineSemaphore != nullptr) {
+            const uint64_t transferWaitValue =
+                clusterStreamingService.consumePendingTransferWaitValue();
+            if (transferWaitValue != 0u) {
+                vulkanEnqueueGraphicsTimelineWait(
+                    *rhi,
+                    nativeToVkHandle<VkSemaphore>(native.transferTimelineSemaphore),
+                    transferWaitValue,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+            }
         }
 
         prevView = view;
@@ -2150,7 +2984,22 @@ int main() {
         hasPrevMatrices = true;
         frameIndex++;
 
+        // If any pass routed work to the dedicated async compute queue, submit it now.
+        if (commandBuffer.hadAsyncComputeWork()) {
+            vulkanScheduleAsyncComputeSubmit(*rhi);
+            if (vulkanIsDeviceLost(*rhi)) {
+                spdlog::critical("Async compute submit reported device loss: {}",
+                                 vulkanDeviceLostMessage(*rhi));
+                break;
+            }
+        }
+
         rhi->endFrame();
+        if (vulkanIsDeviceLost(*rhi)) {
+            spdlog::critical("Graphics submit/present reported device loss: {}",
+                             vulkanDeviceLostMessage(*rhi));
+            break;
+        }
         FrameMark;
     }
 

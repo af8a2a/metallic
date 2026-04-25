@@ -7,94 +7,124 @@
 
 // Geometry
 REGISTER_PASS_INFO(MeshletCullPass, "Meshlet Cull", "Geometry",
-    (std::vector<std::string>{}),
-    (std::vector<std::string>{"cullResult"}),
+    (std::vector<PassSlotInfo>{}),
+    (std::vector<PassSlotInfo>{makeOutputSlot("cullResult", "Cull Result")}),
     PassTypeInfo::PassType::Compute);
 
 #ifdef _WIN32
 REGISTER_PASS_INFO(VisibilityPass, "Visibility Pass", "Geometry",
-    (std::vector<std::string>{"cullResult"}),
-    (std::vector<std::string>{"visibility", "depth"}),
+    (std::vector<PassSlotInfo>{makeInputSlot("cullResult", "Cull Result")}),
+    (std::vector<PassSlotInfo>{
+        makeOutputSlot("visibility", "Visibility"),
+        makeOutputSlot("depth", "Depth")
+    }),
     PassTypeInfo::PassType::Render);
 #else
 REGISTER_PASS_INFO(VisibilityPass, "Visibility Pass", "Geometry",
-    (std::vector<std::string>{}),
-    (std::vector<std::string>{"visibility", "depth"}),
+    (std::vector<PassSlotInfo>{}),
+    (std::vector<PassSlotInfo>{
+        makeOutputSlot("visibility", "Visibility"),
+        makeOutputSlot("depth", "Depth")
+    }),
     PassTypeInfo::PassType::Render);
 #endif
 
 REGISTER_PASS_INFO(HZBBuildPass, "HZB Build", "Geometry",
-    (std::vector<std::string>{"depth"}),
-    (std::vector<std::string>{}),
+    (std::vector<PassSlotInfo>{makeInputSlot("depth", "Depth")}),
+    (std::vector<PassSlotInfo>{}),
     PassTypeInfo::PassType::Compute);
 
 REGISTER_PASS_INFO(ForwardPass, "Forward Pass", "Geometry",
-    (std::vector<std::string>{"skyOutput"}),
-    (std::vector<std::string>{"forwardColor", "depth"}),
+    (std::vector<PassSlotInfo>{makeInputSlot("skyOutput", "Sky", true)}),
+    (std::vector<PassSlotInfo>{
+        makeOutputSlot("forwardColor", "Forward Color"),
+        makeOutputSlot("depth", "Depth")
+    }),
     PassTypeInfo::PassType::Render);
 
 // Lighting
 REGISTER_PASS_INFO(ShadowRayPass, "Shadow Ray Pass", "Lighting",
-    (std::vector<std::string>{"depth"}),
-    (std::vector<std::string>{"shadowMap"}),
+    (std::vector<PassSlotInfo>{makeInputSlot("depth", "Depth")}),
+    (std::vector<PassSlotInfo>{makeOutputSlot("shadowMap", "Shadow Map")}),
     PassTypeInfo::PassType::Compute);
 
 REGISTER_PASS_INFO(DeferredLightingPass, "Deferred Lighting", "Lighting",
-    (std::vector<std::string>{"visibility", "depth", "shadowMap", "skyOutput"}),
-    (std::vector<std::string>{"lightingOutput", "motionVectors"}),
+    (std::vector<PassSlotInfo>{
+        makeInputSlot("visibility", "Visibility"),
+        makeInputSlot("depth", "Depth"),
+        makeInputSlot("shadowMap", "Shadow Map", true),
+        makeInputSlot("skyOutput", "Sky", true)
+    }),
+    (std::vector<PassSlotInfo>{
+        makeOutputSlot("lightingOutput", "Lighting"),
+        makeOutputSlot("motionVectors", "Motion Vectors")
+    }),
     PassTypeInfo::PassType::Compute);
 
 #ifndef _WIN32
 REGISTER_PASS_INFO(MeshletVisualizePass, "Meshlet Visualize", "Geometry",
-    (std::vector<std::string>{"visibility"}),
-    (std::vector<std::string>{"lightingOutput"}),
+    (std::vector<PassSlotInfo>{makeInputSlot("visibility", "Visibility")}),
+    (std::vector<PassSlotInfo>{makeOutputSlot("lightingOutput", "Lighting")}),
     PassTypeInfo::PassType::Compute);
 #endif
 
 // Environment
 REGISTER_PASS_INFO(SkyPass, "Sky Pass", "Environment",
-    (std::vector<std::string>{}),
-    (std::vector<std::string>{"skyOutput"}),
+    (std::vector<PassSlotInfo>{}),
+    (std::vector<PassSlotInfo>{makeOutputSlot("skyOutput", "Sky Output")}),
     PassTypeInfo::PassType::Render);
 
 // Post-process
 REGISTER_PASS_INFO(AutoExposurePass, "Auto Exposure", "Post-Process",
-    (std::vector<std::string>{"lightingOutput"}),
-    (std::vector<std::string>{"exposureLut"}),
+    (std::vector<PassSlotInfo>{makeInputSlot("source", "Source")}),
+    (std::vector<PassSlotInfo>{makeOutputSlot("exposureLut", "Exposure LUT")}),
     PassTypeInfo::PassType::Compute);
 
 REGISTER_PASS_INFO(TAAPass, "TAA", "Post-Process",
-    (std::vector<std::string>{"lightingOutput", "depth", "motionVectors"}),
-    (std::vector<std::string>{"taaOutput"}),
+    (std::vector<PassSlotInfo>{
+        makeInputSlot("source", "Source"),
+        makeInputSlot("depth", "Depth", true),
+        makeInputSlot("motionVectors", "Motion Vectors", true)
+    }),
+    (std::vector<PassSlotInfo>{makeOutputSlot("taaOutput", "TAA Output")}),
     PassTypeInfo::PassType::Compute);
 
 #ifdef _WIN32
 REGISTER_PASS_INFO(StreamlineDlssPass, "DLSS", "Post-Process",
-    (std::vector<std::string>{"lightingOutput", "depth", "motionVectors"}),
-    (std::vector<std::string>{"dlssOutput"}),
+    (std::vector<PassSlotInfo>{
+        makeInputSlot("source", "Source"),
+        makeInputSlot("depth", "Depth", true),
+        makeInputSlot("motionVectors", "Motion Vectors", true)
+    }),
+    (std::vector<PassSlotInfo>{makeOutputSlot("dlssOutput", "DLSS Output")}),
     PassTypeInfo::PassType::Compute);
 #endif
 
 REGISTER_PASS_INFO(TonemapPass, "Tonemap", "Post-Process",
-    (std::vector<std::string>{"lightingOutput", "exposureLut"}),
-    (std::vector<std::string>{"$backbuffer"}),
+    (std::vector<PassSlotInfo>{
+        makeInputSlot("source", "Source"),
+        makeInputSlot("exposureLut", "Exposure LUT", true)
+    }),
+    (std::vector<PassSlotInfo>{
+        makeOutputSlot("output", "Output", false, {"transient", "imported", "backbuffer"})
+    }),
     PassTypeInfo::PassType::Render);
 
 // Utility
 REGISTER_PASS_INFO(OutputPass, "Output", "Utility",
-    (std::vector<std::string>{"source"}),
-    (std::vector<std::string>{"$backbuffer"}),
+    (std::vector<PassSlotInfo>{makeInputSlot("source", "Source")}),
+    (std::vector<PassSlotInfo>{makeTargetSlot("target", "Target")}),
     PassTypeInfo::PassType::Render);
 
 REGISTER_PASS_INFO(BlitPass, "Blit", "Utility",
-    (std::vector<std::string>{"source"}),
-    (std::vector<std::string>{"destination"}),
+    (std::vector<PassSlotInfo>{makeInputSlot("source", "Source")}),
+    (std::vector<PassSlotInfo>{makeTargetSlot("destination", "Destination", false, {"transient", "imported", "backbuffer"})}),
     PassTypeInfo::PassType::Blit);
 
 // UI
 REGISTER_PASS_INFO(ImGuiOverlayPass, "ImGui Overlay", "UI",
-    (std::vector<std::string>{"depth"}),
-    (std::vector<std::string>{"$backbuffer"}),
+    (std::vector<PassSlotInfo>{makeInputSlot("depth", "Depth", true)}),
+    (std::vector<PassSlotInfo>{makeTargetSlot("target", "Target")}),
     PassTypeInfo::PassType::Render);
 
 void registerEditorPassTypes() {}

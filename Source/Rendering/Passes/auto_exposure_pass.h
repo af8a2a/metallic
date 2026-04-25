@@ -23,13 +23,6 @@ public:
         if (config.config.contains("adaptationSpeed")) m_adaptationSpeed = config.config["adaptationSpeed"].get<float>();
         if (config.config.contains("lowPercentile")) m_lowPercentile = config.config["lowPercentile"].get<float>();
         if (config.config.contains("highPercentile")) m_highPercentile = config.config["highPercentile"].get<float>();
-        m_sourceInputName.clear();
-        for (const auto& inputName : config.inputs) {
-            if (!inputName.empty() && inputName[0] != '$') {
-                m_sourceInputName = inputName;
-                break;
-            }
-        }
     }
 
     FGResource getOutput(const std::string& outputName) const override {
@@ -89,12 +82,12 @@ public:
         uniforms.screenWidth = sourceWidth > 0 ? sourceWidth : static_cast<uint32_t>(m_width);
         uniforms.screenHeight = sourceHeight > 0 ? sourceHeight : static_cast<uint32_t>(m_height);
 
-        // Slang wraps all globals into KernelContext 鈥?both kernels expect all bindings:
-        // buffer(0) = uniforms, texture(0) = hdrInput, buffer(1) = histogramBuffer, texture(1) = exposureLut
+        // Slang wraps all globals into KernelContext — both kernels expect all bindings:
+        // push_constant = uniforms, texture(0) = hdrInput, buffer(1) = histogramBuffer, texture(1) = exposureLut
 
         // Dispatch 1: Histogram
         encoder.setComputePipeline(histIt->second);
-        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.setTexture(hdrTex, 0);
         encoder.setStorageTexture(lutTex, 1);
         encoder.setBuffer(m_histogramBuffer.get(), 0, 1);
@@ -108,7 +101,7 @@ public:
 
         // Dispatch 2: Exposure
         encoder.setComputePipeline(expIt->second);
-        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.setTexture(hdrTex, 0);
         encoder.setStorageTexture(lutTex, 1);
         encoder.setBuffer(m_histogramBuffer.get(), 0, 1);
@@ -126,21 +119,12 @@ public:
 
 private:
     FGResource getSourceInput() const {
-        if (!m_sourceInputName.empty()) {
-            FGResource source = getInput(m_sourceInputName);
-            if (source.isValid()) return source;
-        }
-        for (const auto& [inputName, resource] : m_inputResources) {
-            if (!inputName.empty() && inputName[0] == '$') continue;
-            if (resource.isValid()) return resource;
-        }
-        return FGResource{};
+        return getInput("source");
     }
 
     const RenderContext& m_ctx;
     int m_width, m_height;
     std::string m_name = "Auto Exposure";
-    std::string m_sourceInputName;
 
     FGResource m_sourceRead;
     FGResource m_exposureLut;

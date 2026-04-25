@@ -1,7 +1,8 @@
 #pragma once
 
-#include <cstdint>
 #include <cfloat>
+#include <cstdint>
+#include <string>
 #include <vector>
 
 #include "rhi_backend.h"
@@ -11,10 +12,10 @@
 struct GPUClusterGroup {
     float    center[3];         // bounding sphere center (object space)
     float    radius;            // bounding sphere radius
-    float    error;             // max simplification error at this LOD
-    float    parentError;       // parent group's error (coarser LOD), FLT_MAX for roots
-    uint32_t clusterStart;      // first meshlet index in global array
-    uint32_t clusterCount;      // number of meshlets in this group
+    float    error;             // error at this LOD
+    float    parentError;       // coarser LOD transition threshold, FLT_MAX for terminal groups
+    uint32_t clusterStart;      // offset into groupMeshletIndices
+    uint32_t clusterCount;      // number of child meshlets in this group
 };
 
 static_assert(sizeof(GPUClusterGroup) == 32, "GPUClusterGroup must be 32 bytes");
@@ -33,10 +34,13 @@ static_assert(sizeof(GPULodNode) == 32, "GPULodNode must be 32 bytes");
 
 // CPU-side per-level bookkeeping
 struct ClusterLODLevel {
+    uint32_t primitiveGroupIndex;
+    uint32_t depth;
     uint32_t meshletStart;      // offset into allMeshlets
     uint32_t meshletCount;
     uint32_t groupStart;        // offset into allGroups
     uint32_t groupCount;
+    uint32_t rootNode;          // root node for this LOD level
 };
 
 // Complete LOD hierarchy output
@@ -49,9 +53,11 @@ struct ClusterLODData {
     std::vector<uint32_t>         allMaterialIDs;
 
     // LOD hierarchy
+    std::vector<uint32_t>         groupMeshletIndices;
     std::vector<GPUClusterGroup>  groups;
     std::vector<GPULodNode>       nodes;
     std::vector<ClusterLODLevel>  levels;
+    std::vector<uint32_t>         primitiveGroupLodRoots;
 
     // GPU buffers (filled after upload)
     RhiBufferHandle meshletBuffer;
@@ -59,13 +65,16 @@ struct ClusterLODData {
     RhiBufferHandle meshletTrianglesBuffer;
     RhiBufferHandle boundsBuffer;
     RhiBufferHandle materialIDsBuffer;
+    RhiBufferHandle groupMeshletIndicesBuffer;
     RhiBufferHandle groupBuffer;
     RhiBufferHandle nodeBuffer;
+    RhiBufferHandle levelBuffer;
 
     uint32_t totalMeshletCount = 0;
     uint32_t totalGroupCount = 0;
     uint32_t totalNodeCount = 0;
     uint32_t lodLevelCount = 0;
+    uint64_t sourceSceneSignature = 0u;
 };
 
 struct LoadedMesh;
@@ -78,6 +87,13 @@ bool buildClusterLOD(const RhiDevice& device,
                      const LoadedMesh& mesh,
                      const MeshletData& meshletData,
                      ClusterLODData& out);
+bool loadOrBuildClusterLOD(const RhiDevice& device,
+                           const LoadedMesh& mesh,
+                           const MeshletData& meshletData,
+                           const std::string& sourcePath,
+                           const std::string& cacheDirectory,
+                           ClusterLODData& out);
+void releaseClusterLOD(ClusterLODData& data);
 
 // Render LOD stats in ImGui
 void drawClusterLODStats(const ClusterLODData& data);

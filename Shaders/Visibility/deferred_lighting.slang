@@ -1,9 +1,12 @@
 // Shared visibility bit packing constants
 #include "../../Source/Rendering/visibility_constants.h"
+#include "../Shared/gpu_driven_helpers.slang"
+#include "../Shared/bindless_scene.slang"
 
 struct LightingUniforms {
-    float4x4 mvp;
-    float4x4 modelView;
+    float4x4 viewProj;
+    float4x4 prevViewProj;
+    float4x4 viewMatrix;
     float4   lightDir;
     float4   lightColorIntensity;
     float4x4 invProj;
@@ -14,6 +17,8 @@ struct LightingUniforms {
     uint     textureCount;
     uint     instanceCount;
     uint     shadowEnabled;
+    uint     visibilityUsesWorklistIds;
+    float    motionVectorIntensity;
     uint     pad2;
 };
 
@@ -37,15 +42,8 @@ struct GPUMaterial {
     float  _pad;
 };
 
-struct SceneInstanceTransform {
-    float4x4 mvp;
-    float4x4 modelView;
-    float4x4 prevMvp;
-};
-
 static const uint INVALID_TEX = 0xFFFFFFFF;
 static const uint INVALID_VIS = 0xFFFFFFFF;
-static const uint kTextureArraySize = 96;
 static const float kPi = 3.14159265359;
 static const float kMinPerceptualRoughness = 0.045;
 static const float kMinNoV = 1e-4;
@@ -95,19 +93,24 @@ StructuredBuffer<uint>           meshletTriangles;        // buffer(5)
 StructuredBuffer<float>          uvs;                     // buffer(6)
 StructuredBuffer<uint>           meshletMaterialIDs;      // buffer(7)
 StructuredBuffer<GPUMaterial>    materials;                // buffer(8)
-StructuredBuffer<SceneInstanceTransform> instanceTransforms; // buffer(9)
+StructuredBuffer<MeshletDrawInfo> visibleMeshlets;        // buffer(9)
+RWByteAddressBuffer            visibleMeshletState;      // buffer(10)
+StructuredBuffer<GPUMeshlet>    lodMeshlets;             // buffer(11)
+StructuredBuffer<uint>          lodMeshletVertices;      // buffer(12)
+StructuredBuffer<uint>          lodMeshletTriangles;     // buffer(13)
+StructuredBuffer<uint>          lodMeshletMaterialIDs;   // buffer(14)
+StructuredBuffer<InstanceData>  instanceData;            // buffer(15)
 // Texture bindings
 Texture2D<uint>              visibilityBuffer;            // texture(0)
 Texture2D<float>             depthBuffer;                 // texture(1)
 RWTexture2D<float4>          outputTexture;               // texture(2)
-Texture2D                    sceneTextures[kTextureArraySize]; // texture(3..98)
-Texture2D<float>             shadowMap;                       // texture(99)
-Texture2D<float4>            skyTexture;                      // texture(100)
-RWTexture2D<float2>          motionVectors;                   // texture(101)
-SamplerState                 sceneSampler;                // sampler(0)
+Texture2D<float>             shadowMap;                  // texture(3)
+Texture2D<float4>            skyTexture;                 // texture(4)
+RWTexture2D<float2>          motionVectors;              // texture(5)
 
-float3 projectVertex(float4x4 mvp, float3 pos) {
-    float4 clip = mul(mvp, float4(pos, 1.0));
+float3 projectVertex(float4x4 viewProj, float4x4 worldMatrix, float3 pos) {
+    float4 worldPos = mul(worldMatrix, float4(pos, 1.0));
+    float4 clip = mul(viewProj, worldPos);
     float3 ndc = clip.xyz / clip.w;
     float2 screen;
     screen.x = (ndc.x * 0.5 + 0.5) * float(lightUniforms.screenWidth);
@@ -151,11 +154,24 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     // Decode visibility
-    uint meshletID  = (vis >> kVisibilityMeshletShift) & kVisibilityMeshletMask;
+    uint workItemID = (vis >> kVisibilityMeshletShift) & kVisibilityMeshletMask;
     uint triangleID = (vis >> kInstanceBits) & kVisibilityTriangleMask;
     uint instanceID = vis & kVisibilityInstanceMask;
+    uint meshletID = workItemID;
+    uint meshletSource = kMeshletDrawSourceScene;
 
-    if (meshletID >= lightUniforms.meshletCount) {
+    if (lightUniforms.visibilityUsesWorklistIds != 0u) {
+        uint visibleMeshletCount = gpuDrivenLoadWorklistProducedCount(visibleMeshletState);
+        if (workItemID >= visibleMeshletCount) {
+            outputTexture[pixel] = skyTexture[pixel];
+            return;
+        }
+
+        MeshletDrawInfo drawInfo = visibleMeshlets[workItemID];
+        meshletID = drawInfo.globalMeshletID;
+        meshletSource = drawInfo.meshletSource;
+        instanceID = drawInfo.instanceID;
+    } else if (meshletID >= lightUniforms.meshletCount) {
         outputTexture[pixel] = skyTexture[pixel];
         return;
     }
@@ -165,17 +181,21 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    SceneInstanceTransform instance = instanceTransforms[instanceID];
+    InstanceData instance = instanceData[instanceID];
 
     // Fetch triangle vertex indices
-    GPUMeshlet meshlet = meshlets[meshletID];
+    GPUMeshlet meshlet =
+        (meshletSource == kMeshletDrawSourceClusterLod) ? lodMeshlets[meshletID] : meshlets[meshletID];
     if (triangleID >= meshlet.triangle_count) {
         outputTexture[pixel] = skyTexture[pixel];
         motionVectors[pixel] = float2(0.0);
         return;
     }
 
-    uint packedTri = meshletTriangles[meshlet.triangle_offset + triangleID];
+    uint packedTri =
+        (meshletSource == kMeshletDrawSourceClusterLod)
+            ? lodMeshletTriangles[meshlet.triangle_offset + triangleID]
+            : meshletTriangles[meshlet.triangle_offset + triangleID];
     uint localV0 = (packedTri >>  0) & 0xFF;
     uint localV1 = (packedTri >>  8) & 0xFF;
     uint localV2 = (packedTri >> 16) & 0xFF;
@@ -185,13 +205,22 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    uint globalV0 = meshletVertices[meshlet.vertex_offset + localV0];
-    uint globalV1 = meshletVertices[meshlet.vertex_offset + localV1];
-    uint globalV2 = meshletVertices[meshlet.vertex_offset + localV2];
+    uint globalV0 =
+        (meshletSource == kMeshletDrawSourceClusterLod)
+            ? lodMeshletVertices[meshlet.vertex_offset + localV0]
+            : meshletVertices[meshlet.vertex_offset + localV0];
+    uint globalV1 =
+        (meshletSource == kMeshletDrawSourceClusterLod)
+            ? lodMeshletVertices[meshlet.vertex_offset + localV1]
+            : meshletVertices[meshlet.vertex_offset + localV1];
+    uint globalV2 =
+        (meshletSource == kMeshletDrawSourceClusterLod)
+            ? lodMeshletVertices[meshlet.vertex_offset + localV2]
+            : meshletVertices[meshlet.vertex_offset + localV2];
     // Project vertices to screen space
-    float3 s0 = projectVertex(instance.mvp, loadPosition(globalV0));
-    float3 s1 = projectVertex(instance.mvp, loadPosition(globalV1));
-    float3 s2 = projectVertex(instance.mvp, loadPosition(globalV2));
+    float3 s0 = projectVertex(lightUniforms.viewProj, instance.worldMatrix, loadPosition(globalV0));
+    float3 s1 = projectVertex(lightUniforms.viewProj, instance.worldMatrix, loadPosition(globalV1));
+    float3 s2 = projectVertex(lightUniforms.viewProj, instance.worldMatrix, loadPosition(globalV2));
 
     // Compute screen-space barycentrics
     float2 p = float2(pixel) + 0.5;
@@ -246,12 +275,9 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float3 n2 = loadNormal(globalV2);
     float3 objNormal = normalize((b0 * w0 * n0 + b1 * w1 * n1 + b2 * w2 * n2) * W);
 
-    // Transform normal to view space
-    float3 viewNormal;
-    viewNormal.x = dot(instance.modelView[0].xyz, objNormal);
-    viewNormal.y = dot(instance.modelView[1].xyz, objNormal);
-    viewNormal.z = dot(instance.modelView[2].xyz, objNormal);
-    viewNormal = normalize(viewNormal);
+    // Match the existing model-view normal path by applying the same matrix chain.
+    float3 worldNormal = normalize(mul((float3x3)instance.worldMatrix, objNormal));
+    float3 viewNormal = normalize(mul((float3x3)lightUniforms.viewMatrix, worldNormal));
     // Reconstruct view-space position from depth
     float depth = depthBuffer[pixel];
     float2 ndc;
@@ -262,7 +288,10 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float3 viewPos = viewPos4.xyz / viewPos4.w;
 
     // Material lookup
-    uint matID = meshletMaterialIDs[meshletID];
+    uint matID =
+        (meshletSource == kMeshletDrawSourceClusterLod)
+            ? lodMeshletMaterialIDs[meshletID]
+            : meshletMaterialIDs[meshletID];
     if (matID >= lightUniforms.materialCount) {
         outputTexture[pixel] = skyTexture[pixel];
         return;
@@ -271,13 +300,13 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     float4 baseColor = mat.baseColorFactor;
     if (mat.baseColorTexIndex != INVALID_TEX && mat.baseColorTexIndex < lightUniforms.textureCount) {
-        baseColor *= sceneTextures[mat.baseColorTexIndex].SampleGrad(sceneSampler, uv, duvdx, duvdy);
+        baseColor *= sampleBindlessSceneTextureGrad(mat.baseColorTexIndex, uv, duvdx, duvdy);
     }
 
     float metallic = clamp(mat.metallicFactor, 0.0, 1.0);
     float perceptualRoughness = clamp(mat.roughnessFactor, 0.0, 1.0);
     if (mat.metallicRoughnessTexIndex != INVALID_TEX && mat.metallicRoughnessTexIndex < lightUniforms.textureCount) {
-        float4 mrSample = sceneTextures[mat.metallicRoughnessTexIndex].SampleGrad(sceneSampler, uv, duvdx, duvdy);
+        float4 mrSample = sampleBindlessSceneTextureGrad(mat.metallicRoughnessTexIndex, uv, duvdx, duvdy);
         // glTF metallic-roughness texture packing: G=roughness, B=metallic.
         perceptualRoughness *= mrSample.g;
         metallic *= mrSample.b;
@@ -326,11 +355,12 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         float2 pixelCenter = float2(pixel) + 0.5;
         float2 currentUV = pixelCenter / float2(lightUniforms.screenWidth, lightUniforms.screenHeight);
 
-        float4 prevClip = mul(instance.prevMvp, float4(objPos, 1.0));
+        float4 prevWorldPos = mul(instance.prevWorldMatrix, float4(objPos, 1.0));
+        float4 prevClip = mul(lightUniforms.prevViewProj, prevWorldPos);
         if (abs(prevClip.w) > 1e-6) {
             float2 prevNDC = prevClip.xy / prevClip.w;
             float2 prevUV = float2(prevNDC.x * 0.5 + 0.5, 0.5 - prevNDC.y * 0.5);
-            motionVectors[pixel] = currentUV - prevUV;
+            motionVectors[pixel] = (currentUV - prevUV) * lightUniforms.motionVectorIntensity;
         }
     }
 }

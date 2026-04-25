@@ -61,6 +61,16 @@ add_subdirectory(spdlog)
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/nlohmann)
 
+# tinygltf (header-only glTF loader, reuses nlohmann/json and stb_image)
+add_library(tinygltf INTERFACE)
+target_include_directories(tinygltf INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tinygltf)
+target_compile_definitions(tinygltf INTERFACE
+    TINYGLTF_NO_INCLUDE_JSON
+    TINYGLTF_NO_INCLUDE_STB_IMAGE
+    TINYGLTF_NO_INCLUDE_STB_IMAGE_WRITE
+    TINYGLTF_NO_STB_IMAGE_WRITE
+)
+
 # imnodes - node editor for ImGui
 add_library(imnodes STATIC
     imnodes/imnodes.cpp

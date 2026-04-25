@@ -15,31 +15,36 @@ if(APPLE)
         Asset/meshlet_builder.cpp
         Asset/cluster_lod_builder.cpp
         Asset/material_loader.cpp
+        Scene/scene.cpp
         Scene/scene_graph.cpp
         Scene/scene_graph_ui.cpp
         Rendering/input.cpp
         Rendering/frame_graph.cpp
+        Rendering/gpu_scene.cpp
         Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
         Rendering/pass_registrations.cpp
-        Rendering/slang_compiler.cpp
-        Rendering/shader_manager.cpp
+        Helpers/slang_compiler.cpp
+        Helpers/shader_manager.cpp
         Rendering/scene_context.cpp
-        RHI/rhi_resource_utils.cpp
-        RHI/rhi_shader_utils.cpp
-        RHI/rhi_raytracing_utils.cpp
+        Rendering/scene_gpu.cpp
+        RHI/Helpers/rhi_resource_utils.cpp
+        RHI/Helpers/rhi_shader_utils.cpp
+        RHI/Helpers/rhi_raytracing_utils.cpp
         RHI/Metal/metal_window_runtime.cpp
         RHI/Metal/metal_frame_graph.cpp
     )
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Metal"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
         "${CMAKE_CURRENT_SOURCE_DIR}/Asset"
         "${CMAKE_CURRENT_SOURCE_DIR}/Scene"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Passes"
-        "${CMAKE_SOURCE_DIR}/External/cgltf"
         "${CMAKE_SOURCE_DIR}/External/stb"
     )
     target_link_libraries(Metallic PRIVATE
@@ -49,6 +54,7 @@ if(APPLE)
         imgui
         slang::slang
         MathLib
+        tinygltf
         Tracy::TracyClient
         spdlog::spdlog_header_only
         PipelineEditorLib
@@ -71,33 +77,47 @@ elseif(WIN32)
         PipelineEditor/pass_registry.cpp
         PipelineEditor/pipeline_asset.cpp
         PipelineEditor/pipeline_builder.cpp
+        Scene/scene.cpp
         Scene/scene_graph.cpp
+        Scene/scene_graph_ui.cpp
         Rendering/frame_graph.cpp
+        Rendering/gpu_scene.cpp
         Rendering/input.cpp
         Rendering/pass_registrations_vulkan.cpp
         Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
-        Rendering/slang_compiler.cpp
-        Rendering/shader_manager.cpp
-        Rendering/streamline_context.cpp
+        Rendering/scene_context.cpp
+        Rendering/scene_gpu.cpp
+        Helpers/slang_compiler.cpp
+        Helpers/shader_manager.cpp
+        Helpers/streamline_context.cpp
         RHI/rhi_backend.cpp
-        RHI/rhi_raytracing_utils.cpp
-        RHI/rhi_resource_utils.cpp
-        RHI/rhi_shader_utils.cpp
+        RHI/Helpers/rhi_raytracing_utils.cpp
+        RHI/Helpers/rhi_resource_utils.cpp
+        RHI/Helpers/rhi_shader_utils.cpp
         RHI/Vulkan/vulkan_backend.cpp
         RHI/Vulkan/vulkan_frame_graph.cpp
         RHI/Vulkan/vulkan_descriptor_manager.cpp
+        RHI/Vulkan/vulkan_descriptor_buffer.cpp
+        RHI/Vulkan/Helpers/vulkan_diagnostics.cpp
+        RHI/Vulkan/vulkan_pipeline_cache.cpp
+        RHI/Vulkan/vulkan_rt_pipeline.cpp
+        RHI/Vulkan/Helpers/vulkan_transient_allocator.cpp
+        RHI/Vulkan/Helpers/vulkan_upload_service.cpp
     )
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Vulkan"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Vulkan/Helpers"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Asset"
         "${CMAKE_CURRENT_SOURCE_DIR}/PipelineEditor"
         "${CMAKE_CURRENT_SOURCE_DIR}/Scene"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Helpers"
         "${CMAKE_CURRENT_SOURCE_DIR}/Rendering/Passes"
         "${CMAKE_CURRENT_SOURCE_DIR}/Platform"
-        "${CMAKE_SOURCE_DIR}/External/cgltf"
         "${CMAKE_SOURCE_DIR}/External/MathLib"
         "${CMAKE_SOURCE_DIR}/External/meshoptimizer/src"
         "${CMAKE_SOURCE_DIR}/External/stb"
@@ -109,6 +129,7 @@ elseif(WIN32)
         imgui
         slang::slang
         nlohmann_json
+        tinygltf
         Tracy::TracyClient
         spdlog::spdlog_header_only
         microprofile
@@ -122,11 +143,29 @@ elseif(WIN32)
             Rendering/Passes/streamline_dlss_pass.cpp
         )
     endif()
+
+    # Nsight Aftermath GPU crash tracking (optional)
+    if(METALLIC_HAS_AFTERMATH)
+        target_sources(Metallic PRIVATE
+            RHI/Vulkan/Helpers/aftermath_tracker.cpp
+            RHI/Vulkan/Helpers/aftermath_gpu_crash_tracker.cpp
+        )
+    endif()
 endif()
 
 target_compile_definitions(Metallic PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+target_link_libraries(Metallic PRIVATE metallic::nvtx3)
+
+if(TARGET metallic::aftermath)
+    target_link_libraries(Metallic PRIVATE metallic::aftermath)
+endif()
+
+if(WIN32)
+    target_compile_definitions(Metallic PRIVATE NOMINMAX)
+endif()
 
 foreach(SLANG_RUNTIME_LIB ${METALLIC_SLANG_RUNTIME_LIBS})
     add_custom_command(TARGET Metallic POST_BUILD
@@ -147,6 +186,15 @@ if(WIN32 AND METALLIC_ENABLE_STREAMLINE AND METALLIC_STREAMLINE_RUNTIME_DLLS)
     endforeach()
 endif()
 
+# Copy Nsight Aftermath runtime DLL (Windows only)
+if(WIN32 AND METALLIC_HAS_AFTERMATH AND METALLIC_AFTERMATH_DLL)
+    add_custom_command(TARGET Metallic POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${METALLIC_AFTERMATH_DLL}"
+            "$<TARGET_FILE_DIR:Metallic>"
+    )
+endif()
+
 add_custom_command(TARGET Metallic POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/Shaders"
@@ -162,6 +210,9 @@ add_custom_command(TARGET Metallic POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/Source/Rendering/hzb_constants.h"
         "$<TARGET_FILE_DIR:Metallic>/Source/Rendering/hzb_constants.h"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/Source/Rendering/gpu_driven_constants.h"
+        "$<TARGET_FILE_DIR:Metallic>/Source/Rendering/gpu_driven_constants.h"
 )
 
 if(APPLE)

@@ -1,8 +1,10 @@
-// GPU meshlet culling compute shader.
-// One thread per meshlet across all instances.
-// Outputs a compact list of visible {instanceID, globalMeshletID} pairs.
+// GPU meshlet culling + ClusterLOD traversal compute shader.
+// One threadgroup per visible instance from the classification front-end.
+// Instances with `lodRootNode` traverse `nodes -> groups -> meshlets`;
+// instances without runtime LOD fall back to their authored meshlet range.
 
 #include "../../Source/Rendering/hzb_constants.h"
+#include "../Shared/gpu_driven_helpers.slang"
 
 struct CullUniforms {
     float4x4 viewProj;
@@ -10,26 +12,21 @@ struct CullUniforms {
     float4x4 prevView;
     float4   cameraWorldPos;
     float4   prevCameraWorldPos;
+    float2   projScale;
+    float2   renderTargetSize;
     float2   prevProjScale;
     float2   hzbTextureSize;
-    uint     totalDispatchCount;
-    uint     instanceCount;
     uint     enableFrustumCull;
     uint     enableConeCull;
     uint     enableOcclusionCull;
     uint     hzbLevelCount;
+    float    lodReferencePixels;
     float    occlusionDepthBias;
     float    occlusionBoundsScale;
-};
-
-struct InstanceData {
-    float4x4 mvp;
-    float4x4 modelView;
-    float4x4 worldMatrix;
-    uint     meshletStart;
-    uint     meshletCount;
-    uint     instanceID;
-    uint     pad;
+    uint     clusterLodEnabled;
+    uint     enableResidencyStreaming;
+    uint     residencyRequestFrameIndex;
+    uint     reserved0;
 };
 
 struct GPUMeshletBounds {
@@ -38,103 +35,109 @@ struct GPUMeshletBounds {
     float4 cone_axis_cutoff;
 };
 
-struct MeshletDrawInfo {
-    uint instanceID;
-    uint globalMeshletID;
+struct GPULodNode {
+    float center[3];
+    float radius;
+    float maxError;
+    uint  childOffset;
+    uint  childCount;
+    uint  isLeaf;
 };
 
-ConstantBuffer<CullUniforms>        cullUniforms;    // buffer(0)
-StructuredBuffer<InstanceData>      instances;       // buffer(1)
-StructuredBuffer<GPUMeshletBounds>  meshletBounds;   // buffer(2)
-RWStructuredBuffer<MeshletDrawInfo> visibleMeshlets; // buffer(3)
-RWByteAddressBuffer                 counters;        // buffer(4)
-Texture2D<float>                    hzbPyramid[HZB_MAX_LEVELS]; // texture(5+)
+struct GPUClusterGroup {
+    float center[3];
+    float radius;
+    float error;
+    float parentError;
+    uint  clusterStart;
+    uint  clusterCount;
+};
 
-float sampleHzb(uint level, uint2 coord) {
-    switch (level) {
-    case 0u: return hzbPyramid[0].Load(int3(coord, 0));
-    case 1u: return hzbPyramid[1].Load(int3(coord, 0));
-    case 2u: return hzbPyramid[2].Load(int3(coord, 0));
-    case 3u: return hzbPyramid[3].Load(int3(coord, 0));
-    case 4u: return hzbPyramid[4].Load(int3(coord, 0));
-    case 5u: return hzbPyramid[5].Load(int3(coord, 0));
-    case 6u: return hzbPyramid[6].Load(int3(coord, 0));
-    case 7u: return hzbPyramid[7].Load(int3(coord, 0));
-    case 8u: return hzbPyramid[8].Load(int3(coord, 0));
-    default: return hzbPyramid[9].Load(int3(coord, 0));
-    }
-}
+ConstantBuffer<CullUniforms>          cullUniforms;     // buffer(GPU_DRIVEN_CULL_UNIFORMS_BINDING)
+StructuredBuffer<InstanceData>        instances;        // buffer(GPU_DRIVEN_CULL_INSTANCE_DATA_BINDING)
+StructuredBuffer<GeometryData>        geometries;       // buffer(GPU_DRIVEN_CULL_GEOMETRY_DATA_BINDING)
+StructuredBuffer<GPUMeshletBounds>    meshletBounds;    // buffer(GPU_DRIVEN_CULL_BOUNDS_BINDING)
+StructuredBuffer<VisibleInstanceInfo> visibleInstances; // buffer(GPU_DRIVEN_CULL_VISIBLE_INSTANCES_BINDING)
+RWStructuredBuffer<MeshletDrawInfo>   visibleMeshlets;  // buffer(GPU_DRIVEN_CULL_COMPACTION_OUTPUT_BINDING)
+RWByteAddressBuffer                   counters;         // buffer(GPU_DRIVEN_CULL_COUNTER_BINDING)
+StructuredBuffer<GPULodNode>          lodNodes;         // buffer(GPU_DRIVEN_CULL_LOD_NODE_BINDING)
+StructuredBuffer<GPUClusterGroup>     lodGroups;        // buffer(GPU_DRIVEN_CULL_LOD_GROUP_BINDING)
+StructuredBuffer<uint>                residentGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_BINDING)
+StructuredBuffer<GPUMeshletBounds>    lodMeshletBounds; // buffer(GPU_DRIVEN_CULL_LOD_BOUNDS_BINDING)
+RWStructuredBuffer<uint>              traversalStats;   // buffer(GPU_DRIVEN_CULL_TRAVERSAL_STATS_BINDING)
+RWByteAddressBuffer                   groupResidency;   // buffer(GPU_DRIVEN_CULL_GROUP_RESIDENCY_BINDING)
+RWStructuredBuffer<uint64_t>          lodGroupPageTable; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_PAGE_TABLE_BINDING)
+RWStructuredBuffer<ClusterResidencyRequest> residencyRequests; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_OUTPUT_BINDING)
+RWByteAddressBuffer                   residencyRequestState; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING)
+StructuredBuffer<uint>                sourceGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING)
+RWStructuredBuffer<uint>              groupAgeBuffer;   // buffer(GPU_DRIVEN_CULL_GROUP_AGE_BINDING)
+Texture2D<float>                      hzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE+)
 
-[shader("compute")]
-[numthreads(256, 1, 1)]
-void computeMain(uint3 dtid : SV_DispatchThreadID) {
-    uint flatID = dtid.x;
-    if (flatID >= cullUniforms.totalDispatchCount)
-        return;
+static const uint kTraversalStatLodInstances = 0u;
+static const uint kTraversalStatFallbackInstances = 1u;
+static const uint kTraversalStatTraversedNodes = 2u;
+static const uint kTraversalStatOccludedNodes = 3u;
+static const uint kTraversalStatCandidateGroups = 4u;
+static const uint kTraversalStatSelectedGroups = 5u;
+static const uint kTraversalStatOccludedGroups = 6u;
+static const uint kTraversalStatCandidateClusterMeshlets = 7u;
+static const uint kTraversalStatClusterMeshlets = 8u;
+static const uint kTraversalStatCandidateFallbackMeshlets = 9u;
+static const uint kTraversalStatFallbackMeshlets = 10u;
+static const uint kTraversalStatMaxSelectedLod = 11u;
+static const uint kTraversalStatHistogramBase = 12u;
+static const uint kTraversalNodeStackCapacity = 64u;
 
-    // Find which instance this thread belongs to via linear scan
-    // (instance count is small, typically <100)
-    uint instIdx = 0;
-    uint remaining = flatID;
-    for (uint i = 0; i < cullUniforms.instanceCount; i++) {
-        if (remaining < instances[i].meshletCount) {
-            instIdx = i;
-            break;
-        }
-        remaining -= instances[i].meshletCount;
-    }
+#include "hzb_cull_helpers.slang"
 
-    InstanceData inst = instances[instIdx];
-    uint localMeshletIdx = remaining;
-    uint globalMeshletID = inst.meshletStart + localMeshletIdx;
-
-    GPUMeshletBounds b = meshletBounds[globalMeshletID];
-    float3 centerOS = b.center_radius.xyz;
-    float  radius   = b.center_radius.w;
-    float3 coneAxis = b.cone_axis_cutoff.xyz;
-    float  coneCutoff = b.cone_axis_cutoff.w;
-
-    // Transform bounds center to world space
-    float3 centerWS = mul(inst.worldMatrix, float4(centerOS, 1.0)).xyz;
+float instanceMaxScale(InstanceData inst) {
     float3 sx = inst.worldMatrix[0].xyz;
     float3 sy = inst.worldMatrix[1].xyz;
     float3 sz = inst.worldMatrix[2].xyz;
-    float maxScale = max(length(sx), max(length(sy), length(sz)));
-    float worldRadius = radius * maxScale;
+    return max(length(sx), max(length(sy), length(sz)));
+}
 
-    bool culled = false;
+bool sphereFrustumCulled(float3 centerWS, float worldRadius) {
+    if (cullUniforms.enableFrustumCull == 0u) {
+        return false;
+    }
 
-    // Frustum culling in clip space
-    if (cullUniforms.enableFrustumCull != 0) {
-        // Extract frustum planes from viewProj.
-        // viewProj is transposed for Slang, so vp[i] = row i of original MVP.
-        // This matches MvpToPlanes: mt = transpose(m), planes from mt[3] ± mt[0/1/2].
-        float4x4 vp = cullUniforms.viewProj;
-        float4 planes[6];
-        planes[0] = vp[3] + vp[0]; // Left
-        planes[1] = vp[3] - vp[0]; // Right
-        planes[2] = vp[3] + vp[1]; // Bottom
-        planes[3] = vp[3] - vp[1]; // Top
-        planes[4] = vp[2];         // Near
-        planes[5] = vp[3] - vp[2]; // Far
+    float4x4 vp = cullUniforms.viewProj;
+    float4 planes[6];
+    planes[0] = vp[3] + vp[0];
+    planes[1] = vp[3] - vp[0];
+    planes[2] = vp[3] + vp[1];
+    planes[3] = vp[3] - vp[1];
+    planes[4] = vp[2];
+    planes[5] = vp[3] - vp[2];
 
-        [unroll]
-        for (int i = 0; i < 6; i++) {
-            float len = length(planes[i].xyz);
-            if (len > 1e-6) {
-                float d = (dot(planes[i].xyz, centerWS) + planes[i].w) / len;
-                if (d < -worldRadius) {
-                    culled = true;
-                    break;
-                }
+    [unroll]
+    for (int i = 0; i < 6; ++i) {
+        float len = length(planes[i].xyz);
+        if (len > 1e-6) {
+            float d = (dot(planes[i].xyz, centerWS) + planes[i].w) / len;
+            if (d < -worldRadius) {
+                return true;
             }
         }
     }
 
-    // Cone/backface culling in world space
-    if (!culled && cullUniforms.enableConeCull != 0) {
+    return false;
+}
+
+bool fineCullMeshlet(InstanceData inst, GPUMeshletBounds b, float maxScale) {
+    float3 centerOS = b.center_radius.xyz;
+    float radius = b.center_radius.w;
+    float3 coneAxis = b.cone_axis_cutoff.xyz;
+    float coneCutoff = b.cone_axis_cutoff.w;
+
+    float3 centerWS = mul(inst.worldMatrix, float4(centerOS, 1.0)).xyz;
+    float worldRadius = radius * maxScale;
+
+    bool culled = sphereFrustumCulled(centerWS, worldRadius);
+
+    if (!culled && cullUniforms.enableConeCull != 0u) {
         float3 cameraPosWS = cullUniforms.cameraWorldPos.xyz;
-        // Rotate cone axis to world space (direction only)
         float3 coneAxisWS = normalize(mul((float3x3)inst.worldMatrix, coneAxis));
         float3 cameraToCenter = centerWS - cameraPosWS;
         float lenSq = dot(cameraToCenter, cameraToCenter);
@@ -142,95 +145,332 @@ void computeMain(uint3 dtid : SV_DispatchThreadID) {
             float lenV = sqrt(lenSq);
             float lhs = dot(cameraToCenter, coneAxisWS);
             float rhs = coneCutoff * lenV + worldRadius;
-            if (lhs >= rhs)
+            if (lhs >= rhs) {
                 culled = true;
-        }
-    }
-
-    if (!culled &&
-        cullUniforms.enableOcclusionCull != 0 &&
-        cullUniforms.hzbLevelCount > 0u) {
-        float4 centerClip = mul(cullUniforms.prevViewProj, float4(centerWS, 1.0));
-        if (centerClip.w > 1e-5) {
-            float3 centerVS = mul(cullUniforms.prevView, float4(centerWS, 1.0)).xyz;
-            float viewDepth = max(abs(centerVS.z), 1e-4);
-            float2 ndcRadius = float2(cullUniforms.prevProjScale.x * worldRadius / viewDepth,
-                                      cullUniforms.prevProjScale.y * worldRadius / viewDepth) *
-                               cullUniforms.occlusionBoundsScale;
-            float2 centerNdc = centerClip.xy / centerClip.w;
-
-            // Skip occlusion for meshlets whose reprojected bounds are outside
-            // the previous frame's viewport — we have no valid HZB data for them.
-            float2 ndcMin = centerNdc - ndcRadius;
-            float2 ndcMax = centerNdc + ndcRadius;
-            bool outsidePrevView = ndcMax.x < -1.0 || ndcMin.x > 1.0 ||
-                                   ndcMax.y < -1.0 || ndcMin.y > 1.0;
-
-            float2 minUv = float2(centerNdc.x - ndcRadius.x, centerNdc.y + ndcRadius.y) *
-                               float2(0.5, -0.5) +
-                           float2(0.5, 0.5);
-            float2 maxUv = float2(centerNdc.x + ndcRadius.x, centerNdc.y - ndcRadius.y) *
-                               float2(0.5, -0.5) +
-                           float2(0.5, 0.5);
-            minUv = clamp(minUv, float2(0.0, 0.0), float2(1.0, 1.0));
-            maxUv = clamp(maxUv, float2(0.0, 0.0), float2(1.0, 1.0));
-            float2 uvMin = min(minUv, maxUv);
-            float2 uvMax = max(minUv, maxUv);
-
-            // Only test occlusion if the meshlet was inside the previous frame's view.
-            // Meshlets outside have no valid HZB data — clamped UVs would sample wrong depths.
-            if (!outsidePrevView) {
-                float2 rectSizePixels = max((uvMax - uvMin) * cullUniforms.hzbTextureSize, float2(1.0, 1.0));
-                float maxExtent = max(rectSizePixels.x, rectSizePixels.y);
-                uint level = 0u;
-                if (maxExtent > 1.0) {
-                    level = min(cullUniforms.hzbLevelCount - 1u, (uint)ceil(log2(maxExtent)));
-                }
-
-                uint2 mipSize = uint2((uint)cullUniforms.hzbTextureSize.x, (uint)cullUniforms.hzbTextureSize.y);
-                for (uint mip = 0u; mip < level; ++mip) {
-                    mipSize = uint2(max((mipSize.x + 1u) / 2u, 1u),
-                                    max((mipSize.y + 1u) / 2u, 1u));
-                }
-
-                float2 mipScale = float2((float)mipSize.x, (float)mipSize.y);
-                uint2 minTexel = uint2(floor(uvMin * mipScale));
-                uint2 maxTexel = uint2(floor(uvMax * mipScale));
-                uint2 mipMaxCoord = uint2(max(mipSize.x, 1u) - 1u,
-                                          max(mipSize.y, 1u) - 1u);
-                minTexel = min(minTexel, mipMaxCoord);
-                maxTexel = min(maxTexel, mipMaxCoord);
-
-                // Reversed-Z: HZB stores min (farthest occluder). Take min of 4 corners.
-                float sampledDepth = sampleHzb(level, minTexel);
-                sampledDepth = min(sampledDepth, sampleHzb(level, uint2(maxTexel.x, minTexel.y)));
-                sampledDepth = min(sampledDepth, sampleHzb(level, uint2(minTexel.x, maxTexel.y)));
-                sampledDepth = min(sampledDepth, sampleHzb(level, maxTexel));
-
-                float3 prevCameraToCenter = centerWS - cullUniforms.prevCameraWorldPos.xyz;
-                float prevCameraDistanceSq = dot(prevCameraToCenter, prevCameraToCenter);
-                if (prevCameraDistanceSq > 1e-10) {
-                    float3 nearestPointWS = centerWS - normalize(prevCameraToCenter) * worldRadius;
-                    float4 nearestClip = mul(cullUniforms.prevViewProj, float4(nearestPointWS, 1.0));
-                    if (nearestClip.w > 1e-5) {
-                        float nearestDepth = saturate(nearestClip.z / nearestClip.w);
-                        // Reversed-Z: closer = larger depth. Occluded if meshlet's
-                        // nearest depth is less than the farthest occluder depth.
-                        if (nearestDepth < sampledDepth - cullUniforms.occlusionDepthBias) {
-                            culled = true;
-                        }
-                    }
-                }
             }
         }
     }
 
-    if (!culled) {
-        uint slot;
-        counters.InterlockedAdd(0, 1u, slot);
-        MeshletDrawInfo info;
-        info.instanceID = inst.instanceID;
-        info.globalMeshletID = globalMeshletID;
-        visibleMeshlets[slot] = info;
+    if (!culled &&
+        cullUniforms.enableOcclusionCull != 0u) {
+        culled = spherePreviousFrameOccluded(cullUniforms.prevViewProj,
+                                             cullUniforms.prevView,
+                                             cullUniforms.prevCameraWorldPos,
+                                             cullUniforms.prevProjScale,
+                                             cullUniforms.hzbTextureSize,
+                                             cullUniforms.hzbLevelCount,
+                                             cullUniforms.occlusionBoundsScale,
+                                             cullUniforms.occlusionDepthBias,
+                                             centerWS,
+                                             worldRadius);
+    }
+
+    return culled;
+}
+
+bool coarseCullTraversalSphere(float3 centerWS, float worldRadius, out bool hzbRejected) {
+    hzbRejected = false;
+    if (sphereFrustumCulled(centerWS, worldRadius)) {
+        return true;
+    }
+
+    if (cullUniforms.enableOcclusionCull == 0u) {
+        return false;
+    }
+
+    hzbRejected = spherePreviousFrameOccluded(cullUniforms.prevViewProj,
+                                              cullUniforms.prevView,
+                                              cullUniforms.prevCameraWorldPos,
+                                              cullUniforms.prevProjScale,
+                                              cullUniforms.hzbTextureSize,
+                                              cullUniforms.hzbLevelCount,
+                                              cullUniforms.occlusionBoundsScale,
+                                              cullUniforms.occlusionDepthBias,
+                                              centerWS,
+                                              worldRadius);
+    return hzbRejected;
+}
+
+void emitVisibleMeshlet(uint sceneInstanceID,
+                        uint globalMeshletID,
+                        uint meshletSource,
+                        uint lodLevel) {
+    uint slot = gpuDrivenAppendWorkItemSlot(counters);
+    MeshletDrawInfo info;
+    info.instanceID = sceneInstanceID;
+    info.globalMeshletID = globalMeshletID;
+    info.meshletSource = meshletSource;
+    info.lodLevel = lodLevel;
+    visibleMeshlets[slot] = info;
+}
+
+uint selectLodLevel(VisibleInstanceInfo visibleInfo, GPULodNode lodRoot) {
+    if (lodRoot.childCount <= 1u) {
+        return 0u;
+    }
+
+    float cameraDistance = max(visibleInfo.lodMetric.y, 1e-4);
+    float pixelRadius =
+        visibleInfo.boundsCenterRadius.w * cullUniforms.projScale.y *
+        (0.5 * cullUniforms.renderTargetSize.y) / cameraDistance;
+    float lodRatio = cullUniforms.lodReferencePixels / max(pixelRadius, 1.0);
+    uint lodLevel = (uint)floor(max(log2(lodRatio), 0.0));
+    return min(lodLevel, lodRoot.childCount - 1u);
+}
+
+uint loadGroupResidencyState(uint groupIndex) {
+    return groupResidency.Load(groupIndex * 4u);
+}
+
+uint64_t loadLodGroupResidentClusterStart(uint groupIndex) {
+    return lodGroupPageTable[groupIndex];
+}
+
+void appendResidencyRequest(uint lodRootNode,
+                            uint targetGroupIndex,
+                            uint lodLevel) {
+    uint slot = gpuDrivenAppendWorkItemSlot(residencyRequestState);
+    ClusterResidencyRequest request;
+    request.lodRootNode = lodRootNode;
+    request.targetGroupIndex = targetGroupIndex;
+    request.lodLevel = lodLevel;
+    request.requestFrameIndex = cullUniforms.residencyRequestFrameIndex;
+    residencyRequests[slot] = request;
+}
+
+void queueResidencyRequest(uint lodRootNode,
+                           uint targetGroupIndex,
+                           uint lodLevel) {
+    const uint64_t residentAddress = loadLodGroupResidentClusterStart(targetGroupIndex);
+    if (!clusterLodGroupPageAddressIsValid(residentAddress)) {
+        const uint64_t currentFrameTag =
+            clusterLodGroupPageInvalidAddress(cullUniforms.residencyRequestFrameIndex);
+        uint64_t previousAddress = 0;
+        InterlockedMax(lodGroupPageTable[targetGroupIndex], currentFrameTag, previousAddress);
+        if (previousAddress == currentFrameTag) {
+            return;
+        }
+    } else {
+        uint previousState = 0u;
+        groupResidency.InterlockedOr(targetGroupIndex * 4u,
+                                     kClusterLodGroupResidencyRequested,
+                                     previousState);
+        if ((previousState & (kClusterLodGroupResidencyResident |
+                              kClusterLodGroupResidencyRequested)) != 0u) {
+            return;
+        }
+    }
+
+    appendResidencyRequest(lodRootNode, targetGroupIndex, lodLevel);
+}
+
+void touchResidentGroup(uint groupIndex) {
+    uint previousState = 0u;
+    groupResidency.InterlockedOr(groupIndex * 4u,
+                                 kClusterLodGroupResidencyTouched,
+                                 previousState);
+    groupAgeBuffer[groupIndex] = 0u;
+    if ((previousState & kClusterLodGroupResidencyTouched) != 0u) {
+        return;
+    }
+
+    appendResidencyRequest(0xFFFFFFFFu, groupIndex, 0u);
+}
+
+bool visibleGroupsResidentForLodRoot(InstanceData inst,
+                                     float maxScale,
+                                     uint lodRootNode,
+                                     uint lodLevel,
+                                     uint sceneInstanceID,
+                                     uint rootNodeIndex,
+                                     bool queueMissingRequests) {
+    uint nodeStack[kTraversalNodeStackCapacity];
+    uint stackSize = 0u;
+    bool allVisibleGroupsResident = true;
+    nodeStack[stackSize++] = rootNodeIndex;
+
+    while (stackSize > 0u) {
+        uint nodeIndex = nodeStack[--stackSize];
+        GPULodNode node = lodNodes[nodeIndex];
+
+        float3 nodeCenterWS =
+            mul(inst.worldMatrix, float4(node.center[0], node.center[1], node.center[2], 1.0)).xyz;
+        float nodeWorldRadius = node.radius * maxScale;
+        bool nodeHzbRejected = false;
+        if (coarseCullTraversalSphere(nodeCenterWS, nodeWorldRadius, nodeHzbRejected)) {
+            continue;
+        }
+
+        if (node.isLeaf != 0u) {
+            for (uint childIndex = 0u; childIndex < node.childCount; ++childIndex) {
+                uint groupIndex = node.childOffset + childIndex;
+                GPUClusterGroup group = lodGroups[groupIndex];
+                float3 groupCenterWS =
+                    mul(inst.worldMatrix, float4(group.center[0], group.center[1], group.center[2], 1.0)).xyz;
+                float groupWorldRadius = group.radius * maxScale;
+                bool groupHzbRejected = false;
+                if (coarseCullTraversalSphere(groupCenterWS, groupWorldRadius, groupHzbRejected)) {
+                    continue;
+                }
+
+                const uint groupState = loadGroupResidencyState(groupIndex);
+                const uint64_t residentClusterStart = loadLodGroupResidentClusterStart(groupIndex);
+                if ((groupState & kClusterLodGroupResidencyResident) == 0u ||
+                    !clusterLodGroupPageAddressIsValid(residentClusterStart)) {
+                    if (queueMissingRequests) {
+                        queueResidencyRequest(lodRootNode,
+                                              groupIndex,
+                                              lodLevel);
+                    }
+                    allVisibleGroupsResident = false;
+                }
+            }
+        } else {
+            uint remainingCapacity = kTraversalNodeStackCapacity - stackSize;
+            uint pushCount = min(node.childCount, remainingCapacity);
+            for (uint childIndex = 0u; childIndex < pushCount; ++childIndex) {
+                nodeStack[stackSize++] = node.childOffset + childIndex;
+            }
+        }
+    }
+
+    return allVisibleGroupsResident;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void computeMain(uint3 groupID : SV_GroupID,
+                 uint3 groupThreadID : SV_GroupThreadID) {
+    VisibleInstanceInfo visibleInfo = visibleInstances[groupID.x];
+    uint sceneInstanceID = visibleInfo.sceneInstanceID;
+    InstanceData inst = instances[sceneInstanceID];
+    GeometryData geometry = geometries[inst.geometryIndex];
+    float maxScale = instanceMaxScale(inst);
+
+    bool canTraverseClusterLod =
+        cullUniforms.clusterLodEnabled != 0u &&
+        (visibleInfo.classificationFlags & kVisibleInstanceClassificationHasLod) != 0u &&
+        visibleInfo.lodRootNode != 0xFFFFFFFFu;
+
+    if (canTraverseClusterLod) {
+        if (groupThreadID.x != 0u) {
+            return;
+        }
+
+        GPULodNode lodRoot = lodNodes[visibleInfo.lodRootNode];
+        uint selectedLodLevel = selectLodLevel(visibleInfo, lodRoot);
+        uint selectedRootNode = visibleInfo.lodRootNode;
+        if (lodRoot.isLeaf == 0u && lodRoot.childCount > 0u) {
+            const uint maxLodLevel = lodRoot.childCount - 1u;
+            selectedLodLevel = min(selectedLodLevel, maxLodLevel);
+            selectedRootNode = lodRoot.childOffset + selectedLodLevel;
+        }
+
+        uint histogramLevel = min(selectedLodLevel, kClusterTraversalStatsHistogramSize - 1u);
+        InterlockedAdd(traversalStats[kTraversalStatLodInstances], 1u);
+        InterlockedAdd(traversalStats[kTraversalStatHistogramBase + histogramLevel], 1u);
+        InterlockedMax(traversalStats[kTraversalStatMaxSelectedLod], selectedLodLevel);
+
+        uint nodeStack[kTraversalNodeStackCapacity];
+        uint stackSize = 0u;
+        nodeStack[stackSize++] = selectedRootNode;
+
+        while (stackSize > 0u) {
+            uint nodeIndex = nodeStack[--stackSize];
+            GPULodNode node = lodNodes[nodeIndex];
+
+            InterlockedAdd(traversalStats[kTraversalStatTraversedNodes], 1u);
+            float3 nodeCenterWS = mul(inst.worldMatrix, float4(node.center[0], node.center[1], node.center[2], 1.0)).xyz;
+            float nodeWorldRadius = node.radius * maxScale;
+            bool nodeHzbRejected = false;
+            if (coarseCullTraversalSphere(nodeCenterWS, nodeWorldRadius, nodeHzbRejected)) {
+                if (nodeHzbRejected) {
+                    InterlockedAdd(traversalStats[kTraversalStatOccludedNodes], 1u);
+                }
+                continue;
+            }
+
+            if (node.isLeaf != 0u) {
+                for (uint childIndex = 0u; childIndex < node.childCount; ++childIndex) {
+                    uint groupIndex = node.childOffset + childIndex;
+                    GPUClusterGroup group = lodGroups[groupIndex];
+                    InterlockedAdd(traversalStats[kTraversalStatCandidateGroups], 1u);
+                    float3 groupCenterWS =
+                        mul(inst.worldMatrix, float4(group.center[0], group.center[1], group.center[2], 1.0)).xyz;
+                    float groupWorldRadius = group.radius * maxScale;
+                    bool groupHzbRejected = false;
+                    if (coarseCullTraversalSphere(groupCenterWS, groupWorldRadius, groupHzbRejected)) {
+                        if (groupHzbRejected) {
+                            InterlockedAdd(traversalStats[kTraversalStatOccludedGroups], 1u);
+                        }
+                        continue;
+                    }
+
+                    InterlockedAdd(traversalStats[kTraversalStatSelectedGroups], 1u);
+                    InterlockedAdd(traversalStats[kTraversalStatCandidateClusterMeshlets], group.clusterCount);
+                    bool useResidentHeap = false;
+                    uint meshletIndexBase = group.clusterStart;
+                    if (cullUniforms.enableResidencyStreaming != 0u) {
+                        const uint groupState = loadGroupResidencyState(groupIndex);
+                        const uint64_t residentClusterStart =
+                            loadLodGroupResidentClusterStart(groupIndex);
+                        if ((groupState & kClusterLodGroupResidencyResident) == 0u ||
+                            !clusterLodGroupPageAddressIsValid(residentClusterStart)) {
+                            queueResidencyRequest(visibleInfo.lodRootNode,
+                                                  groupIndex,
+                                                  selectedLodLevel);
+                        } else {
+                            meshletIndexBase = (uint)residentClusterStart;
+                            useResidentHeap = true;
+                            touchResidentGroup(groupIndex);
+                        }
+                    }
+
+                    for (uint meshletIndex = 0u; meshletIndex < group.clusterCount; ++meshletIndex) {
+                        const uint globalMeshletID = useResidentHeap
+                                                         ? residentGroupMeshletIndices[meshletIndexBase + meshletIndex]
+                                                         : sourceGroupMeshletIndices[group.clusterStart + meshletIndex];
+                        if (fineCullMeshlet(inst, lodMeshletBounds[globalMeshletID], maxScale)) {
+                            continue;
+                        }
+
+                        emitVisibleMeshlet(sceneInstanceID,
+                                           globalMeshletID,
+                                           kMeshletDrawSourceClusterLod,
+                                           selectedLodLevel);
+                        InterlockedAdd(traversalStats[kTraversalStatClusterMeshlets], 1u);
+                    }
+                }
+            } else {
+                uint remainingCapacity = kTraversalNodeStackCapacity - stackSize;
+                uint pushCount = min(node.childCount, remainingCapacity);
+                for (uint childIndex = 0u; childIndex < pushCount; ++childIndex) {
+                    nodeStack[stackSize++] = node.childOffset + childIndex;
+                }
+            }
+        }
+
+        return;
+    }
+
+    if (groupThreadID.x == 0u) {
+        InterlockedAdd(traversalStats[kTraversalStatFallbackInstances], 1u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint localMeshletIdx = groupThreadID.x;
+         localMeshletIdx < geometry.meshletCount;
+         localMeshletIdx += 64u) {
+        InterlockedAdd(traversalStats[kTraversalStatCandidateFallbackMeshlets], 1u);
+        uint globalMeshletID = geometry.meshletStart + localMeshletIdx;
+        if (fineCullMeshlet(inst, meshletBounds[globalMeshletID], maxScale)) {
+            continue;
+        }
+
+        emitVisibleMeshlet(sceneInstanceID,
+                           globalMeshletID,
+                           kMeshletDrawSourceScene,
+                           0u);
+        InterlockedAdd(traversalStats[kTraversalStatFallbackMeshlets], 1u);
     }
 }

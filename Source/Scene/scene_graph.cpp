@@ -1,10 +1,9 @@
 #include <spdlog/spdlog.h>
 
 #include "scene_graph.h"
+#include "cluster_lod_builder.h"
 #include "mesh_loader.h"
 #include "meshlet_builder.h"
-#include "rhi_resource_utils.h"
-#include <cgltf.h>
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -131,247 +130,8 @@ static bool descendantsHaveIdentityTransforms(const SceneGraph& scene, uint32_t 
     return true;
 }
 
-static void recomputeMeshBounds(LoadedMesh& mesh) {
-    if (mesh.cpuPositions.empty()) {
-        return;
-    }
-
-    float bboxMin[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
-    float bboxMax[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-    for (size_t i = 0; i + 2 < mesh.cpuPositions.size(); i += 3) {
-        bboxMin[0] = std::min(bboxMin[0], mesh.cpuPositions[i + 0]);
-        bboxMin[1] = std::min(bboxMin[1], mesh.cpuPositions[i + 1]);
-        bboxMin[2] = std::min(bboxMin[2], mesh.cpuPositions[i + 2]);
-        bboxMax[0] = std::max(bboxMax[0], mesh.cpuPositions[i + 0]);
-        bboxMax[1] = std::max(bboxMax[1], mesh.cpuPositions[i + 1]);
-        bboxMax[2] = std::max(bboxMax[2], mesh.cpuPositions[i + 2]);
-    }
-
-    for (int axis = 0; axis < 3; ++axis) {
-        mesh.bboxMin[axis] = bboxMin[axis];
-        mesh.bboxMax[axis] = bboxMax[axis];
-    }
-}
-
-static void releaseMeshletHandles(MeshletData& meshletData) {
-    rhiReleaseHandle(meshletData.meshletBuffer);
-    rhiReleaseHandle(meshletData.meshletVertices);
-    rhiReleaseHandle(meshletData.meshletTriangles);
-    rhiReleaseHandle(meshletData.boundsBuffer);
-    rhiReleaseHandle(meshletData.materialIDs);
-    meshletData.meshletCount = 0;
-    meshletData.meshletsPerGroup.clear();
-}
-
-static std::string makeNodeName(const cgltf_node* gltfNode, uint32_t nodeIndex) {
-    if (gltfNode->name && gltfNode->name[0] != '\0') {
-        return gltfNode->name;
-    }
-    if (gltfNode->mesh && gltfNode->mesh->name && gltfNode->mesh->name[0] != '\0') {
-        return gltfNode->mesh->name;
-    }
-    return "Node_" + std::to_string(nodeIndex);
-}
-
-static std::string makePrimitiveNodeName(const SceneNode& parentNode,
-                                         const cgltf_primitive& primitive,
-                                         uint32_t primitiveIndex,
-                                         uint32_t materialIndex) {
-    if (primitive.material && primitive.material->name && primitive.material->name[0] != '\0') {
-        return primitive.material->name;
-    }
-
-    std::string name = parentNode.name + "/Primitive_" + std::to_string(primitiveIndex);
-    name += " [Mat " + std::to_string(materialIndex) + "]";
-    return name;
-}
-
-static void assignPrimitiveGroupRange(SceneNode& node,
-                                      int32_t meshIndex,
-                                      uint32_t firstGroup,
-                                      uint32_t groupCount,
-                                      const LoadedMesh& mesh,
-                                      const std::vector<uint32_t>& meshletGroupPrefix) {
-    node.meshIndex = meshIndex;
-    node.primitiveGroupStart = firstGroup;
-    node.primitiveGroupCount = groupCount;
-
-    const uint32_t totalGroupCount = static_cast<uint32_t>(mesh.primitiveGroups.size());
-    const uint32_t clampedFirstGroup = std::min(firstGroup, totalGroupCount);
-    const uint32_t clampedLastGroup = std::min(firstGroup + groupCount, totalGroupCount);
-    if (clampedFirstGroup >= clampedLastGroup) {
-        return;
-    }
-
-    if (clampedLastGroup < meshletGroupPrefix.size()) {
-        node.meshletStart = meshletGroupPrefix[clampedFirstGroup];
-        node.meshletCount = meshletGroupPrefix[clampedLastGroup] - node.meshletStart;
-    }
-
-    node.indexStart = mesh.primitiveGroups[clampedFirstGroup].indexOffset;
-    const auto& lastPrim = mesh.primitiveGroups[clampedLastGroup - 1];
-    const uint32_t indexEnd = lastPrim.indexOffset + lastPrim.indexCount;
-    node.indexCount = indexEnd - node.indexStart;
-}
-
-static void addNodeRecursive(const cgltf_data* data,
-                             const cgltf_node* gltfNode,
-                             int32_t parentIdx,
-                             const LoadedMesh& mesh,
-                             const std::vector<uint32_t>& meshletGroupPrefix,
-                             SceneGraph& sg) {
-    uint32_t nodeIdx = static_cast<uint32_t>(sg.nodes.size());
-    sg.nodes.emplace_back();
-    sg.nodes[nodeIdx].id = nodeIdx;
-    sg.nodes[nodeIdx].parent = parentIdx;
-    sg.nodes[nodeIdx].name = makeNodeName(gltfNode, nodeIdx);
-
-    // Extract TRS
-    if (gltfNode->has_translation) {
-        sg.nodes[nodeIdx].transform.translation = float3(gltfNode->translation[0],
-                                                         gltfNode->translation[1],
-                                                         gltfNode->translation[2]);
-    }
-    if (gltfNode->has_rotation) {
-        sg.nodes[nodeIdx].transform.rotation = float4(gltfNode->rotation[0],
-                                                      gltfNode->rotation[1],
-                                                      gltfNode->rotation[2],
-                                                      gltfNode->rotation[3]);
-    }
-    if (gltfNode->has_scale) {
-        sg.nodes[nodeIdx].transform.scale = float3(gltfNode->scale[0],
-                                                   gltfNode->scale[1],
-                                                   gltfNode->scale[2]);
-    }
-
-    if (gltfNode->has_matrix) {
-        const float* m = gltfNode->matrix;
-        float4x4 mat;
-        // cgltf stores column-major
-        mat.Col(0) = float4(m[0], m[1], m[2], m[3]);
-        mat.Col(1) = float4(m[4], m[5], m[6], m[7]);
-        mat.Col(2) = float4(m[8], m[9], m[10], m[11]);
-        mat.Col(3) = float4(m[12], m[13], m[14], m[15]);
-        sg.nodes[nodeIdx].transform.localMatrix = mat;
-        sg.nodes[nodeIdx].transform.useLocalMatrix = true;
-        decomposeLocalMatrix(m, sg.nodes[nodeIdx].transform);
-    }
-
-    if (parentIdx >= 0) {
-        sg.nodes[parentIdx].children.push_back(nodeIdx);
-    }
-
-    // Map mesh reference
-    if (gltfNode->mesh) {
-        int32_t mi = static_cast<int32_t>(gltfNode->mesh - data->meshes);
-        if (mi >= 0 && mi < static_cast<int32_t>(mesh.meshRanges.size())) {
-            const auto& range = mesh.meshRanges[mi];
-            if (range.groupCount > 1) {
-                uint32_t trianglePrimitiveIndex = 0;
-                for (cgltf_size primitiveIndex = 0;
-                     primitiveIndex < gltfNode->mesh->primitives_count;
-                     ++primitiveIndex) {
-                    const cgltf_primitive& primitive = gltfNode->mesh->primitives[primitiveIndex];
-                    if (primitive.type != cgltf_primitive_type_triangles) {
-                        continue;
-                    }
-
-                    const uint32_t groupIndex = range.firstGroup + trianglePrimitiveIndex;
-                    if (groupIndex >= mesh.primitiveGroups.size()) {
-                        break;
-                    }
-
-                    const uint32_t childIdx = static_cast<uint32_t>(sg.nodes.size());
-                    sg.nodes.emplace_back();
-                    SceneNode& childNode = sg.nodes.back();
-                    childNode.id = childIdx;
-                    childNode.parent = static_cast<int32_t>(nodeIdx);
-                    childNode.name = makePrimitiveNodeName(sg.nodes[nodeIdx],
-                                                           primitive,
-                                                           trianglePrimitiveIndex,
-                                                           mesh.primitiveGroups[groupIndex].materialIndex);
-                    assignPrimitiveGroupRange(childNode,
-                                              mi,
-                                              groupIndex,
-                                              1,
-                                              mesh,
-                                              meshletGroupPrefix);
-                    sg.nodes[nodeIdx].children.push_back(childIdx);
-                    ++trianglePrimitiveIndex;
-                }
-            } else {
-                assignPrimitiveGroupRange(sg.nodes[nodeIdx],
-                                          mi,
-                                          range.firstGroup,
-                                          range.groupCount,
-                                          mesh,
-                                          meshletGroupPrefix);
-            }
-        }
-    }
-
-    // Recurse children
-    for (cgltf_size ci = 0; ci < gltfNode->children_count; ci++) {
-        addNodeRecursive(data, gltfNode->children[ci], static_cast<int32_t>(nodeIdx),
-                         mesh, meshletGroupPrefix, sg);
-    }
-}
-
-bool SceneGraph::buildFromGLTF(const std::string& gltfPath,
-                                const LoadedMesh& mesh,
-                                const MeshletData& meshletData) {
-    nodes.clear();
-    rootNodes.clear();
-    selectedNode = -1;
-    sunLightNode = -1;
-
-    cgltf_options options = {};
-    cgltf_data* data = nullptr;
-    cgltf_result result = cgltf_parse_file(&options, gltfPath.c_str(), &data);
-    if (result != cgltf_result_success) {
-        spdlog::error("SceneGraph: Failed to parse glTF: {}", gltfPath);
-        return false;
-    }
-
-    // Build prefix sums for meshlet offsets per primitive group.
-    std::vector<uint32_t> meshletGroupPrefix(mesh.primitiveGroups.size() + 1, 0);
-    for (size_t i = 0; i < mesh.primitiveGroups.size(); i++) {
-        uint32_t meshletsInGroup = (i < meshletData.meshletsPerGroup.size())
-            ? meshletData.meshletsPerGroup[i]
-            : 0;
-        meshletGroupPrefix[i + 1] = meshletGroupPrefix[i] + meshletsInGroup;
-    }
-
-    // Walk scene hierarchy
-    if (data->scenes_count == 0) {
-        cgltf_free(data);
-        return false;
-    }
-
-    const cgltf_scene& scene = data->scenes[data->scene ? (data->scene - data->scenes) : 0];
-    for (cgltf_size ni = 0; ni < scene.nodes_count; ni++) {
-        uint32_t rootIdx = static_cast<uint32_t>(nodes.size());
-        addNodeRecursive(data, scene.nodes[ni], -1,
-                         mesh, meshletGroupPrefix, *this);
-        rootNodes.push_back(rootIdx);
-    }
-
-    if (!rootNodes.empty()) {
-        selectedNode = static_cast<int32_t>(rootNodes.front());
-    }
-    addDirectionalLightNode("Sun", normalize(float3(0.5f, 1.0f, 0.8f)), true);
-
-    cgltf_free(data);
-
-    spdlog::info("SceneGraph: {} nodes, {} roots", nodes.size(), rootNodes.size());
-
-    return true;
-}
-
-bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
-                                          LoadedMesh& mesh,
-                                          MeshletData& meshletData) {
-    if (mesh.cpuPositions.empty()) {
+bool SceneGraph::applyBakedSingleRootScale(const LoadedMesh& mesh) {
+    if (!mesh.hasBakedRootScale || nearlyOne(mesh.bakedRootScale)) {
         return true;
     }
 
@@ -384,12 +144,16 @@ bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
     }
 
     if (sceneRoots.size() != 1) {
-        return true;
+        spdlog::error("SceneGraph: Expected one scene root for baked root scale {}, found {}",
+                      mesh.bakedRootScale,
+                      sceneRoots.size());
+        return false;
     }
 
     const uint32_t rootId = sceneRoots.front();
     if (rootId >= nodes.size()) {
-        return true;
+        spdlog::error("SceneGraph: Invalid root node {} for baked root scale {}", rootId, mesh.bakedRootScale);
+        return false;
     }
 
     SceneNode& rootNode = nodes[rootId];
@@ -398,7 +162,7 @@ bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
         nearlyZero(transform.translation.x) &&
         nearlyZero(transform.translation.y) &&
         nearlyZero(transform.translation.z);
-    const bool hasIdentityRotation = isIdentityRotation(transform.rotation);
+    const bool hasIdentityRot = isIdentityRotation(transform.rotation);
     const bool hasUniformPositiveScale =
         transform.scale.x > 1e-6f &&
         std::fabs(transform.scale.x - transform.scale.y) <= 1e-5f &&
@@ -406,81 +170,15 @@ bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
 
     if (transform.useLocalMatrix ||
         !hasIdentityTranslation ||
-        !hasIdentityRotation ||
+        !hasIdentityRot ||
         !hasUniformPositiveScale ||
-        nearlyOne(transform.scale.x) ||
+        std::fabs(transform.scale.x - mesh.bakedRootScale) > 1e-5f ||
         !descendantsHaveIdentityTransforms(*this, rootId)) {
-        return true;
-    }
-
-    LoadedMesh scaledMesh;
-    scaledMesh.cpuPositions = mesh.cpuPositions;
-    scaledMesh.cpuIndices = mesh.cpuIndices;
-    scaledMesh.vertexCount = mesh.vertexCount;
-    scaledMesh.indexCount = mesh.indexCount;
-    scaledMesh.primitiveGroups = mesh.primitiveGroups;
-    scaledMesh.meshRanges = mesh.meshRanges;
-
-    const float scale = transform.scale.x;
-    for (float& value : scaledMesh.cpuPositions) {
-        value *= scale;
-    }
-    recomputeMeshBounds(scaledMesh);
-
-    MeshletData rebuiltMeshlets;
-    if (!buildMeshlets(device, scaledMesh, rebuiltMeshlets)) {
-        spdlog::error("SceneGraph: Failed to rebuild meshlets while normalizing root scale");
+        spdlog::error("SceneGraph: Baked root scale {} no longer matches scene root '{}'",
+                      mesh.bakedRootScale,
+                      rootNode.name);
         return false;
     }
-
-    RhiBufferHandle rebuiltPositionBuffer = rhiCreateSharedBuffer(
-        device,
-        scaledMesh.cpuPositions.data(),
-        scaledMesh.cpuPositions.size() * sizeof(float),
-        "Mesh Positions");
-    if (!rebuiltPositionBuffer.nativeHandle()) {
-        releaseMeshletHandles(rebuiltMeshlets);
-        spdlog::error("SceneGraph: Failed to rebuild position buffer while normalizing root scale");
-        return false;
-    }
-
-    if (!meshletData.meshletsPerGroup.empty() &&
-        meshletData.meshletsPerGroup != rebuiltMeshlets.meshletsPerGroup) {
-        spdlog::warn("SceneGraph: Root scale normalization changed meshlet group counts "
-                     "(old {} groups, new {} groups) — rebuilding node mappings",
-                     meshletData.meshletsPerGroup.size(),
-                     rebuiltMeshlets.meshletsPerGroup.size());
-
-        // Rebuild prefix sums from new meshlet counts
-        std::vector<uint32_t> newPrefix(mesh.primitiveGroups.size() + 1, 0);
-        for (size_t i = 0; i < mesh.primitiveGroups.size(); i++) {
-            uint32_t count = (i < rebuiltMeshlets.meshletsPerGroup.size())
-                ? rebuiltMeshlets.meshletsPerGroup[i] : 0;
-            newPrefix[i + 1] = newPrefix[i] + count;
-        }
-
-        // Update each node's meshletStart/meshletCount
-        for (auto& node : nodes) {
-            if (node.primitiveGroupCount == 0) continue;
-            uint32_t firstGroup = node.primitiveGroupStart;
-            uint32_t lastGroup = firstGroup + node.primitiveGroupCount;
-            if (firstGroup < newPrefix.size() && lastGroup < newPrefix.size()) {
-                node.meshletStart = newPrefix[firstGroup];
-                node.meshletCount = newPrefix[lastGroup] - newPrefix[firstGroup];
-            }
-        }
-    }
-
-    mesh.cpuPositions = std::move(scaledMesh.cpuPositions);
-    for (int axis = 0; axis < 3; ++axis) {
-        mesh.bboxMin[axis] = scaledMesh.bboxMin[axis];
-        mesh.bboxMax[axis] = scaledMesh.bboxMax[axis];
-    }
-
-    rhiReleaseHandle(mesh.positionBuffer);
-    mesh.positionBuffer = rebuiltPositionBuffer;
-    releaseMeshletHandles(meshletData);
-    meshletData = std::move(rebuiltMeshlets);
 
     transform.translation = float3(0.f, 0.f, 0.f);
     transform.rotation = float4(0.f, 0.f, 0.f, 1.f);
@@ -490,7 +188,9 @@ bool SceneGraph::normalizeSingleRootScale(const RhiDevice& device,
     transform.useLocalMatrix = false;
 
     markDirty(rootId);
-    spdlog::info("SceneGraph: Baked root scale {} into mesh data for '{}'", scale, rootNode.name);
+    spdlog::info("SceneGraph: Applied baked root scale {} for '{}'",
+                 mesh.bakedRootScale,
+                 rootNode.name);
     return true;
 }
 
@@ -513,7 +213,6 @@ void SceneGraph::updateTransforms() {
 
         node.transform.dirty = false;
 
-        // Mark children dirty so they recompute
         for (uint32_t childId : node.children) {
             nodes[childId].transform.dirty = true;
         }

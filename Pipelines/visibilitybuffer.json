@@ -1,212 +1,602 @@
 {
-  "editorPositions": {
-    "AutoExposurePass_11": [
-      1300.0,
-      50.0
-    ],
-    "DeferredLightingPass_5": [
-      1050.0,
-      50.0
-    ],
-    "HZBBuildPass_3": [
-      800.0,
-      50.0
-    ],
-    "HZBBuildPass_7": [
-      800.0,
-      330.0
-    ],
-    "ImGuiOverlayPass_9": [
-      800.0,
-      470.0
-    ],
-    "MeshletCullPass_0": [
-      300.0,
-      50.0
-    ],
-    "OutputPass_10": [
-      1800.0,
-      50.0
-    ],
-    "ShadowRayPass_6": [
-      800.0,
-      190.0
-    ],
-    "SkyPass_8": [
-      300.0,
-      190.0
-    ],
-    "TAAPass_11": [
-      1300.0,
-      190.0
-    ],
-    "TonemapPass_10": [
-      1550.0,
-      50.0
-    ],
-    "VisibilityPass_1": [
-      550.0,
-      50.0
-    ]
-  },
-  "name": "NewPipeline",
-  "passes": [
+  "schemaVersion": 2,
+  "name": "Visibility Buffer",
+  "resources": [
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [],
-      "name": "MeshletCullPass_0",
-      "outputs": [
-        "cullResult"
-      ],
-      "sideEffect": false,
-      "type": "MeshletCullPass"
+      "id": "00000000000000000000000000000001",
+      "name": "Backbuffer",
+      "kind": "backbuffer",
+      "type": "texture",
+      "format": "BGRA8Unorm",
+      "size": "screen",
+      "editorPos": [
+        2273.0,
+        62.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "cullResult"
-      ],
-      "name": "VisibilityPass_1",
-      "outputs": [
-        "visibility",
-        "depth"
-      ],
-      "sideEffect": false,
-      "type": "VisibilityPass"
+      "id": "00000000000000000000000000000002",
+      "name": "Cull Result",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [
+        60.0,
+        50.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "depth"
-      ],
-      "name": "HZBBuildPass_3",
-      "outputs": [],
-      "sideEffect": false,
-      "type": "HZBBuildPass"
+      "id": "0000000000000000000000000000000e",
+      "name": "Streaming Sync",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [
+        60.0,
+        12.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "visibility",
-        "depth",
-        "shadowMap",
-        "skyOutput"
-      ],
-      "name": "DeferredLightingPass_5",
-      "outputs": [
-        "lightingOutput",
-        "motionVectors"
-      ],
-      "sideEffect": false,
-      "type": "DeferredLightingPass"
+      "id": "0000000000000000000000000000000b",
+      "name": "Visible Meshlets",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        60.0,
+        120.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "depth"
-      ],
-      "name": "ShadowRayPass_6",
-      "outputs": [
-        "shadowMap"
-      ],
-      "sideEffect": false,
-      "type": "ShadowRayPass"
+      "id": "0000000000000000000000000000000c",
+      "name": "Cull Counter",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        60.0,
+        155.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "depth"
-      ],
-      "name": "HZBBuildPass_7",
-      "outputs": [],
-      "sideEffect": false,
-      "type": "HZBBuildPass"
+      "id": "0000000000000000000000000000000d",
+      "name": "Instance Data",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        60.0,
+        225.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [],
-      "name": "SkyPass_8",
-      "outputs": [
-        "skyOutput"
-      ],
-      "sideEffect": false,
-      "type": "SkyPass"
+      "id": "00000000000000000000000000000003",
+      "name": "Visibility",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Uint",
+      "size": "screen",
+      "editorPos": [
+        60.0,
+        190.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "taaOutput",
-        "exposureLut"
-      ],
-      "name": "TonemapPass_10",
-      "outputs": [
-        "tonemapOutput"
-      ],
-      "sideEffect": false,
-      "type": "TonemapPass"
+      "id": "00000000000000000000000000000004",
+      "name": "Depth",
+      "kind": "transient",
+      "type": "texture",
+      "format": "Depth32Float",
+      "size": "screen",
+      "editorPos": [
+        60.0,
+        330.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "depth"
-      ],
-      "name": "ImGuiOverlayPass_9",
-      "outputs": [
-        "$backbuffer"
-      ],
-      "sideEffect": false,
-      "type": "ImGuiOverlayPass"
+      "id": "00000000000000000000000000000005",
+      "name": "Shadow Map",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R8Unorm",
+      "size": "screen",
+      "editorPos": [
+        60.0,
+        470.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "tonemapOutput"
-      ],
-      "name": "OutputPass_10",
-      "outputs": [
-        "$backbuffer"
-      ],
-      "sideEffect": false,
-      "type": "OutputPass"
+      "id": "00000000000000000000000000000006",
+      "name": "Sky Output",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen",
+      "editorPos": [
+        60.0,
+        610.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "lightingOutput"
-      ],
-      "name": "AutoExposurePass_11",
-      "outputs": [
-        "exposureLut"
-      ],
-      "sideEffect": false,
-      "type": "AutoExposurePass"
+      "id": "00000000000000000000000000000007",
+      "name": "Lighting Output",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen",
+      "editorPos": [
+        60.0,
+        750.0
+      ]
     },
     {
-      "config": null,
-      "enabled": true,
-      "inputs": [
-        "lightingOutput",
-        "depth",
-        "motionVectors"
-      ],
-      "name": "TAAPass_11",
-      "outputs": [
-        "taaOutput"
-      ],
-      "sideEffect": false,
-      "type": "TAAPass"
+      "id": "00000000000000000000000000000008",
+      "name": "Motion Vectors",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RG16Float",
+      "size": "screen",
+      "editorPos": [
+        60.0,
+        890.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000009",
+      "name": "Exposure LUT",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "1x1",
+      "editorPos": [
+        60.0,
+        1030.0
+      ]
+    },
+    {
+      "id": "0000000000000000000000000000000a",
+      "name": "Tonemap Output",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA8Srgb",
+      "size": "screen",
+      "editorPos": [
+        2064.0,
+        120.0
+      ]
+    },
+    {
+      "id": "bd9ec6175af294f05e9ee14ddf73a3c4",
+      "name": "TAA 1 TAA Output",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen",
+      "editorPos": [
+        1624.506591796875,
+        -114.04598999023438
+      ]
     }
   ],
-  "resources": []
+  "passes": [
+    {
+      "id": "f05a7d327b7d4e72a8f20438a6c40101",
+      "name": "Cluster Streaming Update 1",
+      "type": "ClusterStreamingUpdatePass",
+      "enabled": true,
+      "sideEffect": true,
+      "config": null,
+      "editorPos": [
+        -283.0,
+        -108.0
+      ]
+    },
+    {
+      "id": "10000000000000000000000000000001",
+      "name": "Meshlet Cull 1",
+      "type": "MeshletCullPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        33.0,
+        -108.0
+      ]
+    },
+    {
+      "id": "6fbf51e8284f4d45a90599d14f2d6701",
+      "name": "Cluster Streaming Age Filter 1",
+      "type": "ClusterStreamingAgeFilterPass",
+      "enabled": true,
+      "sideEffect": true,
+      "config": null,
+      "editorPos": [
+        193.0,
+        -108.0
+      ]
+    },
+    {
+      "id": "10000000000000000000000000000002",
+      "name": "Visibility Pass 1",
+      "type": "VisibilityPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        353.0,
+        -108.0
+      ]
+    },
+    {
+      "id": "10000000000000000000000000000003",
+      "name": "HZB Build 1",
+      "type": "HZBBuildPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        720.0,
+        -153.0
+      ]
+    },
+    {
+      "id": "10000000000000000000000000000005",
+      "name": "Deferred Lighting 1",
+      "type": "DeferredLightingPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        993.0,
+        -108.0
+      ]
+    },
+    {
+      "id": "10000000000000000000000000000006",
+      "name": "Shadow Ray Pass 1",
+      "type": "ShadowRayPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        673.0,
+        62.0
+      ]
+    },
+    {
+      "id": "10000000000000000000000000000007",
+      "name": "Auto Exposure 1",
+      "type": "AutoExposurePass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        1339.0,
+        -161.0
+      ]
+    },
+    {
+      "id": "10000000000000000000000000000009",
+      "name": "Sky Pass 1",
+      "type": "SkyPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        33.0,
+        62.0
+      ]
+    },
+    {
+      "id": "1000000000000000000000000000000a",
+      "name": "Output 1",
+      "type": "OutputPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {},
+      "editorPos": [
+        1953.0,
+        -108.0
+      ]
+    },
+    {
+      "id": "10000000000000000000000000000004",
+      "name": "ImGui Overlay 1",
+      "type": "ImGuiOverlayPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        673.0,
+        232.0
+      ]
+    },
+    {
+      "id": "388d0f1d038db5643fafd3e02087970d",
+      "name": "TAA 1",
+      "type": "TAAPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        1487.506591796875,
+        -2.045989990234375
+      ]
+    },
+    {
+      "id": "c20304dc663dab168d80272c6a62dd8f",
+      "name": "Tonemap 1",
+      "type": "TonemapPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        1701.506591796875,
+        -221.04598999023438
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "5cfec856945b4ebb9387f7f63126bf01",
+      "passId": "f05a7d327b7d4e72a8f20438a6c40101",
+      "slotKey": "streamingSync",
+      "direction": "output",
+      "resourceId": "0000000000000000000000000000000e"
+    },
+    {
+      "id": "3fd53e84a8704a709537a8feee14e001",
+      "passId": "10000000000000000000000000000001",
+      "slotKey": "streamingSync",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000e"
+    },
+    {
+      "id": "20000000000000000000000000000001",
+      "passId": "10000000000000000000000000000001",
+      "slotKey": "cullResult",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000002"
+    },
+    {
+      "id": "3f31b2cb452e4f54bd33c3c13d535401",
+      "passId": "6fbf51e8284f4d45a90599d14f2d6701",
+      "slotKey": "cullResult",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000002"
+    },
+    {
+      "id": "20000000000000000000000000000002",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "cullResult",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000002"
+    },
+    {
+      "id": "3e82e5faec4f42be9b2b924c2fe5c2f1",
+      "passId": "10000000000000000000000000000001",
+      "slotKey": "visibleMeshlets",
+      "direction": "output",
+      "resourceId": "0000000000000000000000000000000b"
+    },
+    {
+      "id": "7fa0fc57cbf948e0a0875df96cfbf257",
+      "passId": "10000000000000000000000000000001",
+      "slotKey": "visibilityWorklistState",
+      "direction": "output",
+      "resourceId": "0000000000000000000000000000000c"
+    },
+    {
+      "id": "91b690f522f4467084d55e17b44351df",
+      "passId": "10000000000000000000000000000001",
+      "slotKey": "instanceData",
+      "direction": "output",
+      "resourceId": "0000000000000000000000000000000d"
+    },
+    {
+      "id": "315aa48050fc43658b31c148e3aa1f92",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "visibleMeshlets",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000b"
+    },
+    {
+      "id": "1bf47c73ee1f4b998bba3bd083748198",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "visibilityWorklistState",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000c"
+    },
+    {
+      "id": "4d27a321fe6d4f6d9d9204fe2c8cb2c3",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "instanceData",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000d"
+    },
+    {
+      "id": "20000000000000000000000000000003",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "visibility",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000003"
+    },
+    {
+      "id": "20000000000000000000000000000004",
+      "passId": "10000000000000000000000000000002",
+      "slotKey": "depth",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "20000000000000000000000000000005",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "20000000000000000000000000000008",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "visibility",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000003"
+    },
+    {
+      "id": "20000000000000000000000000000009",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "0dbd00c2bbaa4de3a1d5f8392cb0a001",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "visibilityWorklist",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000b"
+    },
+    {
+      "id": "0dbd00c2bbaa4de3a1d5f8392cb0a002",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "visibilityWorklistState",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000c"
+    },
+    {
+      "id": "2000000000000000000000000000000a",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "shadowMap",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000005"
+    },
+    {
+      "id": "2000000000000000000000000000000b",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "skyOutput",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000006"
+    },
+    {
+      "id": "2000000000000000000000000000000c",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "lightingOutput",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000007"
+    },
+    {
+      "id": "2000000000000000000000000000000d",
+      "passId": "10000000000000000000000000000005",
+      "slotKey": "motionVectors",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000008"
+    },
+    {
+      "id": "2000000000000000000000000000000e",
+      "passId": "10000000000000000000000000000006",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "2000000000000000000000000000000f",
+      "passId": "10000000000000000000000000000006",
+      "slotKey": "shadowMap",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000005"
+    },
+    {
+      "id": "20000000000000000000000000000010",
+      "passId": "10000000000000000000000000000007",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000007"
+    },
+    {
+      "id": "20000000000000000000000000000011",
+      "passId": "10000000000000000000000000000007",
+      "slotKey": "exposureLut",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000009"
+    },
+    {
+      "id": "20000000000000000000000000000015",
+      "passId": "10000000000000000000000000000009",
+      "slotKey": "skyOutput",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000006"
+    },
+    {
+      "id": "20000000000000000000000000000016",
+      "passId": "1000000000000000000000000000000a",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000a"
+    },
+    {
+      "id": "20000000000000000000000000000017",
+      "passId": "1000000000000000000000000000000a",
+      "slotKey": "target",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000001"
+    },
+    {
+      "id": "20000000000000000000000000000006",
+      "passId": "10000000000000000000000000000004",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "20000000000000000000000000000007",
+      "passId": "10000000000000000000000000000004",
+      "slotKey": "target",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000001"
+    },
+    {
+      "id": "2b94f2d003bc00e82e23df7e2ade6341",
+      "passId": "388d0f1d038db5643fafd3e02087970d",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000007"
+    },
+    {
+      "id": "dcbf2257fa3bfd60ad9070699f164e0c",
+      "passId": "388d0f1d038db5643fafd3e02087970d",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "c56cce66fff981eb80486737f4031608",
+      "passId": "388d0f1d038db5643fafd3e02087970d",
+      "slotKey": "motionVectors",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000008"
+    },
+    {
+      "id": "32170d0da4211169ef269ea5c041a775",
+      "passId": "388d0f1d038db5643fafd3e02087970d",
+      "slotKey": "taaOutput",
+      "direction": "output",
+      "resourceId": "bd9ec6175af294f05e9ee14ddf73a3c4"
+    },
+    {
+      "id": "b373f7c948ab09cb283ed443c9535b32",
+      "passId": "c20304dc663dab168d80272c6a62dd8f",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "bd9ec6175af294f05e9ee14ddf73a3c4"
+    },
+    {
+      "id": "464c4d9cf78ca8aecaac301e37395614",
+      "passId": "c20304dc663dab168d80272c6a62dd8f",
+      "slotKey": "exposureLut",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000009"
+    },
+    {
+      "id": "59ab96fe3cad6554a1738990c7bd6727",
+      "passId": "c20304dc663dab168d80272c6a62dd8f",
+      "slotKey": "output",
+      "direction": "output",
+      "resourceId": "0000000000000000000000000000000a"
+    }
+  ]
 }

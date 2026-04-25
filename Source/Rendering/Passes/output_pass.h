@@ -18,7 +18,7 @@ public:
     }
 
     FGResource getOutput(const std::string& name) const override {
-        if (name == "$backbuffer") return m_dest;
+        if (name == "target") return m_dest;
         return FGResource{};
     }
 
@@ -26,15 +26,12 @@ public:
         m_sourceRead = FGResource{};
         m_dest = FGResource{};
 
-        // Read the first non-special input as source texture
-        for (const auto& [inputName, resource] : m_inputResources) {
-            if (!inputName.empty() && inputName[0] != '$' && resource.isValid()) {
-                m_sourceRead = builder.read(resource);
-                break;
-            }
+        FGResource sourceInput = getInput("source");
+        if (sourceInput.isValid()) {
+            m_sourceRead = builder.read(sourceInput);
         }
 
-        m_dest = getInput("$backbuffer");
+        m_dest = getOutputTarget("target");
         if (m_dest.isValid()) {
             m_dest = builder.setColorAttachment(0,
                                                 m_dest,

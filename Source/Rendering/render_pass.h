@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frame_graph.h"
+#include "gpu_scene.h"
 #include "mesh_loader.h"
 #include "meshlet_builder.h"
 #include "material_loader.h"
@@ -21,6 +22,8 @@ struct RenderContext {
     const MeshletData& meshletData;
     const LoadedMaterials& materials;
     const SceneGraph& sceneGraph;
+    const GpuSceneTables& gpuScene;
+    const ClusterLODData& clusterLodData;
     const RaytracedShadowResources& shadowResources;
     RhiDepthStencilStateHandle depthState;
     RhiTextureHandle shadowDummyTex;
@@ -34,6 +37,7 @@ public:
     virtual FGPassType passType() const = 0;
     virtual const char* name() const = 0;
     virtual void setup(FGBuilder& builder) = 0;
+    virtual void prepareResources(RhiCommandBuffer&) {}
     virtual void executeRender(RhiRenderCommandEncoder&) {}
     virtual void executeCompute(RhiComputeCommandEncoder&) {}
     virtual void executeBlit(RhiBlitCommandEncoder&) {}
@@ -58,10 +62,20 @@ public:
         m_inputResources[name] = resource;
     }
 
+    // Bind an authored output slot to an imported/backbuffer target resource.
+    virtual void setOutputTarget(const std::string& name, FGResource resource) {
+        m_outputTargets[name] = resource;
+    }
+
     // Get input resource by name
     FGResource getInput(const std::string& name) const {
         auto it = m_inputResources.find(name);
         return it != m_inputResources.end() ? it->second : FGResource{};
+    }
+
+    FGResource getOutputTarget(const std::string& name) const {
+        auto it = m_outputTargets.find(name);
+        return it != m_outputTargets.end() ? it->second : FGResource{};
     }
 
     FrameGraph* m_frameGraph = nullptr;
@@ -70,5 +84,6 @@ protected:
     const FrameContext* m_frameContext = nullptr;
     const PipelineRuntimeContext* m_runtimeContext = nullptr;
     std::unordered_map<std::string, FGResource> m_inputResources;
+    std::unordered_map<std::string, FGResource> m_outputTargets;
     bool m_hasSideEffect = false;
 };

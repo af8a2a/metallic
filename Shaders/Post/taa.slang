@@ -16,7 +16,7 @@ struct TAAUniforms {
     float2 pad;
 };
 
-ConstantBuffer<TAAUniforms> params;
+[[vk::push_constant]] ConstantBuffer<TAAUniforms> params;
 
 Texture2D<float4>   currentColor;    // texture(0)
 Texture2D<float>    depthBuffer;     // texture(1)

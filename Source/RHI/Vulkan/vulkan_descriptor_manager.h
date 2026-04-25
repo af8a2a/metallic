@@ -4,12 +4,22 @@
 
 #include <vulkan/vulkan.h>
 
+#include "bindless_scene_constants.h"
+
 #include <array>
 #include <cstddef>
+#include <string>
 #include <vector>
+
+class RhiAccelerationStructure;
+class RhiBuffer;
+class RhiSampler;
+class RhiTexture;
 
 struct VmaAllocator_T;
 typedef VmaAllocator_T* VmaAllocator;
+struct VmaAllocation_T;
+typedef VmaAllocation_T* VmaAllocation;
 
 struct VulkanPipelineResource;
 struct VulkanTextureResource;
@@ -19,11 +29,27 @@ constexpr uint32_t kMaxTextureBindings = 128;
 constexpr uint32_t kMaxSamplerBindings = 16;
 constexpr uint32_t kMaxAccelerationStructureBindings = 8;
 
+constexpr uint32_t kVulkanBindlessSetIndex = METALLIC_BINDLESS_SET;
+constexpr uint32_t kVulkanBindlessSampledImageBinding = METALLIC_BINDLESS_SAMPLED_IMAGE_BINDING;
+constexpr uint32_t kVulkanBindlessSamplerBinding = METALLIC_BINDLESS_SAMPLER_BINDING;
+constexpr uint32_t kVulkanBindlessStorageImageBinding = METALLIC_BINDLESS_STORAGE_IMAGE_BINDING;
+constexpr uint32_t kVulkanBindlessStorageBufferBinding = METALLIC_BINDLESS_STORAGE_BUFFER_BINDING;
+constexpr uint32_t kVulkanBindlessAccelerationStructureBinding =
+    METALLIC_BINDLESS_ACCELERATION_STRUCTURE_BINDING;
+
+constexpr uint32_t kVulkanBindlessMaxSampledImages = METALLIC_BINDLESS_MAX_SAMPLED_IMAGES;
+constexpr uint32_t kVulkanBindlessMaxSamplers = METALLIC_BINDLESS_MAX_SAMPLERS;
+constexpr uint32_t kVulkanBindlessMaxStorageImages = METALLIC_BINDLESS_MAX_STORAGE_IMAGES;
+constexpr uint32_t kVulkanBindlessMaxStorageBuffers = METALLIC_BINDLESS_MAX_STORAGE_BUFFERS;
+constexpr uint32_t kVulkanBindlessMaxAccelerationStructures =
+    METALLIC_BINDLESS_MAX_ACCELERATION_STRUCTURES;
+
 struct PendingBufferBinding {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceSize offset = 0;
     VkDeviceSize range = VK_WHOLE_SIZE;
     bool dirty = false;
+    bool trackState = true;
 };
 
 struct PendingTextureBinding {
@@ -44,13 +70,62 @@ struct PendingAccelerationStructureBinding {
     bool dirty = false;
 };
 
-class VulkanDescriptorManager {
-public:
-    void init(VkDevice device, VmaAllocator allocator);
-    void destroy();
-    void resetFrame();
+struct VulkanPipelineResource;
 
-    PendingBufferBinding createTransientUniformBuffer(const void* data, size_t size);
+// Abstract base for descriptor backends (pool-based or descriptor-buffer-based).
+class IVulkanDescriptorBackend {
+public:
+    virtual ~IVulkanDescriptorBackend() = default;
+    virtual void resetFrame() = 0;
+    virtual PendingBufferBinding uploadInlineUniformData(const void* data, size_t size) = 0;
+    virtual void updateBindlessSampledTextures(const RhiTexture* const* textures,
+                                                uint32_t startIndex,
+                                                uint32_t count) = 0;
+    virtual bool updateBindlessSampledTexture(uint32_t index, const RhiTexture* texture) = 0;
+    virtual bool updateBindlessSampler(uint32_t index, const RhiSampler* sampler) = 0;
+    virtual bool updateBindlessStorageImage(uint32_t index, const RhiTexture* texture) = 0;
+    virtual bool updateBindlessStorageBuffer(uint32_t index,
+                                              const RhiBuffer* buffer,
+                                              VkDeviceSize offset = 0,
+                                              VkDeviceSize range = VK_WHOLE_SIZE) = 0;
+    virtual bool updateBindlessAccelerationStructure(
+        uint32_t index,
+        const RhiAccelerationStructure* accelerationStructure) = 0;
+    virtual void flushAndBind(
+        VkCommandBuffer cmd,
+        VkPipelineBindPoint bindPoint,
+        const VulkanPipelineResource& pipeline,
+        const std::array<PendingBufferBinding, kMaxBufferBindings>& buffers,
+        const std::array<PendingTextureBinding, kMaxTextureBindings>& textures,
+        const std::array<PendingSamplerBinding, kMaxSamplerBindings>& samplers,
+        const std::array<PendingAccelerationStructureBinding,
+                         kMaxAccelerationStructureBindings>& accelerationStructures) = 0;
+};
+
+class VulkanDescriptorManager : public IVulkanDescriptorBackend {
+public:
+    void init(VkDevice device,
+              VkPhysicalDevice physicalDevice,
+              VmaAllocator allocator,
+              VkDeviceSize minUniformBufferOffsetAlignment,
+              VkDeviceSize nonCoherentAtomSize,
+              VkDeviceSize maxUniformBufferRange);
+    void destroy();
+    void resetFrame() override;
+
+    PendingBufferBinding uploadInlineUniformData(const void* data, size_t size) override;
+    void updateBindlessSampledTextures(const RhiTexture* const* textures,
+                                       uint32_t startIndex,
+                                       uint32_t count) override;
+    bool updateBindlessSampledTexture(uint32_t index, const RhiTexture* texture) override;
+    bool updateBindlessSampler(uint32_t index, const RhiSampler* sampler) override;
+    bool updateBindlessStorageImage(uint32_t index, const RhiTexture* texture) override;
+    bool updateBindlessStorageBuffer(uint32_t index,
+                                     const RhiBuffer* buffer,
+                                     VkDeviceSize offset = 0,
+                                     VkDeviceSize range = VK_WHOLE_SIZE) override;
+    bool updateBindlessAccelerationStructure(uint32_t index,
+                                             const RhiAccelerationStructure* accelerationStructure) override;
 
     void flushAndBind(VkCommandBuffer cmd,
                       VkPipelineBindPoint bindPoint,
@@ -59,27 +134,45 @@ public:
                       const std::array<PendingTextureBinding, kMaxTextureBindings>& textures,
                       const std::array<PendingSamplerBinding, kMaxSamplerBindings>& samplers,
                       const std::array<PendingAccelerationStructureBinding,
-                                       kMaxAccelerationStructureBindings>& accelerationStructures);
+                                       kMaxAccelerationStructureBindings>& accelerationStructures) override;
 
 private:
-    struct TransientBuffer {
+    struct FrameUniformUpload {
         VkBuffer buffer = VK_NULL_HANDLE;
-        void* allocation = nullptr;
+        VmaAllocation allocation = nullptr;
+        void* mappedData = nullptr;
+        VkDeviceSize capacity = 0;
+        VkDeviceSize head = 0;
     };
 
     struct FrameState {
         VkDescriptorPool pool = VK_NULL_HANDLE;
-        std::vector<TransientBuffer> transientBuffers;
+        FrameUniformUpload uniformUpload;
     };
 
     void createPools();
     void destroyFrameState(FrameState& frame);
+    bool ensureFrameUniformUploadCapacity(FrameState& frame, VkDeviceSize requiredSize);
     FrameState& currentFrame();
 
     VkDevice m_device = VK_NULL_HANDLE;
+    VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VmaAllocator m_allocator = nullptr;
+    VkDescriptorPool m_bindlessPool = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_bindlessSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet m_bindlessSet = VK_NULL_HANDLE;
     std::array<FrameState, 2> m_frames{};
     uint32_t m_frameIndex = 1;
+    VkDeviceSize m_uniformUploadAlignment = 16;
+    VkDeviceSize m_nonCoherentAtomSize = 1;
+    VkDeviceSize m_maxUniformBufferRange = 65536;
 };
+
+bool vulkanRetainBindlessSetLayout(VkDevice device,
+                                   VkDescriptorSetLayout& outLayout,
+                                   std::string* errorMessage = nullptr,
+                                   bool useDescriptorBuffer = false);
+void vulkanReleaseBindlessSetLayout(VkDevice device);
+bool vulkanIsBindlessSetIndex(uint32_t setIndex);
 
 #endif // _WIN32

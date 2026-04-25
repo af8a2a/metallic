@@ -27,8 +27,9 @@ struct ShadowUniforms {
 };
 
 struct LightingUniforms {
-    float4x4 mvp;
-    float4x4 modelView;
+    float4x4 viewProj;
+    float4x4 prevViewProj;
+    float4x4 viewMatrix;
     float4   lightDir;
     float4   lightColorIntensity;
     float4x4 invProj;
@@ -39,6 +40,8 @@ struct LightingUniforms {
     uint32_t textureCount;
     uint32_t instanceCount;
     uint32_t shadowEnabled;
+    uint32_t visibilityUsesWorklistIds;
+    float    motionVectorIntensity;
     uint32_t pad2;
 };
 

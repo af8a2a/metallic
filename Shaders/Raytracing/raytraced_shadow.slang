@@ -8,7 +8,7 @@ struct ShadowUniforms {
     uint reversedZ;
 };
 
-ConstantBuffer<ShadowUniforms> uniforms;
+[[vk::push_constant]] ConstantBuffer<ShadowUniforms> uniforms;
 RaytracingAccelerationStructure sceneTlas;
 Texture2D<float> depthTex;
 RWTexture2D<float> shadowMap;
@@ -120,10 +120,10 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = lightDir;
-    ray.TMin = 0.001;
+    ray.TMin = max(uniforms.normalBias, 0.001);
     ray.TMax = uniforms.maxRayDistance;
 
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
     query.TraceRayInline(sceneTlas, 0, 0xFF, ray);
     while (query.Proceed()) {
     }

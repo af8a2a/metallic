@@ -11,7 +11,7 @@ struct AutoExposureUniforms {
     float highPercentile;
 };
 
-ConstantBuffer<AutoExposureUniforms> params;
+[[vk::push_constant]] ConstantBuffer<AutoExposureUniforms> params;
 
 // --- Histogram kernel ---
 Texture2D<float4> hdrInput;

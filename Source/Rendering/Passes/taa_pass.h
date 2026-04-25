@@ -20,15 +20,6 @@ public:
 
     void configure(const PassConfig& config) override {
         m_name = config.name;
-        m_sourceInputName.clear();
-        for (const auto& inputName : config.inputs) {
-            if (!inputName.empty() && inputName[0] != '$') {
-                if (inputName == "depth" || inputName == "motionVectors")
-                    continue;
-                if (m_sourceInputName.empty())
-                    m_sourceInputName = inputName;
-            }
-        }
     }
 
     FGResource getOutput(const std::string& outputName) const override {
@@ -83,6 +74,9 @@ public:
         }
 
         ensureHistory();
+        if (m_frameContext->historyReset) {
+            m_historyValid = false;
+        }
 
         RhiTexture* currentTex = m_sourceRead.isValid() ? m_frameGraph->getTexture(m_sourceRead) : nullptr;
         RhiTexture* depthTex = m_depthRead.isValid() ? m_frameGraph->getTexture(m_depthRead) : nullptr;
@@ -110,7 +104,7 @@ public:
         RhiTexture* historyWriteTex = m_historyTextures[m_historyIndex].get();
 
         encoder.setComputePipeline(pipeIt->second);
-        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.setTexture(currentTex, 0);
         encoder.setTexture(depthTex, 1);
         encoder.setTexture(motionTex, 2);
@@ -137,16 +131,7 @@ public:
 
 private:
     FGResource getSourceInput() const {
-        if (!m_sourceInputName.empty()) {
-            FGResource source = getInput(m_sourceInputName);
-            if (source.isValid()) return source;
-        }
-        for (const auto& [inputName, resource] : m_inputResources) {
-            if (!inputName.empty() && inputName[0] == '$') continue;
-            if (inputName == "depth" || inputName == "motionVectors") continue;
-            if (resource.isValid()) return resource;
-        }
-        return FGResource{};
+        return getInput("source");
     }
 
     bool hasTAAPipeline() const {
@@ -217,7 +202,7 @@ private:
         uniforms.copyOnly = 1;
 
         encoder.setComputePipeline(pipeIt->second);
-        encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.setTexture(currentTex, 0);
         encoder.setTexture(depthTex, 1);
         encoder.setTexture(motionTex, 2);
@@ -236,7 +221,6 @@ private:
     const RenderContext& m_ctx;
     int m_width, m_height;
     std::string m_name = "TAA";
-    std::string m_sourceInputName;
 
     FGResource m_sourceRead, m_depthRead, m_motionRead, m_taaOutput;
     bool m_passthroughNoPipeline = false;

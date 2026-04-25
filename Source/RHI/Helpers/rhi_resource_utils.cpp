@@ -156,6 +156,7 @@ void rhiReleaseNativeHandle(void* handle) {
 #include "vulkan_backend.h"
 #include "vulkan_frame_graph.h"
 #include "vulkan_resource_handles.h"
+#include "vulkan_upload_service.h"
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
@@ -168,80 +169,51 @@ namespace {
 
 // Stored Vulkan context handles for resource creation (set during first call)
 VulkanResourceContextInfo g_vkResCtx;
-
-template <typename Fn>
-Fn loadHookedDeviceProc(PFN_vkGetDeviceProcAddr deviceProcAddrProxy,
-                        VkDevice device,
-                        const char* name) {
-    if (!deviceProcAddrProxy || device == VK_NULL_HANDLE || !name) {
-        return nullptr;
-    }
-    return reinterpret_cast<Fn>(deviceProcAddrProxy(device, name));
-}
-
-void ensureResourceContext(const RhiDevice& device) {
-    if (g_vkResCtx.initialized) return;
-    // The device handle stores VkDevice on Vulkan
-    g_vkResCtx.device = static_cast<VkDevice>(device.nativeHandle());
-    g_vkResCtx.initialized = true;
-}
+VulkanUploadService* g_uploadService = nullptr;
 
 void setResourceContext(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
-                        VkQueue queue, uint32_t queueFamily, bool rayTracingEnabled,
+                        VkQueue queue, uint32_t queueFamily, uint32_t transferQueueFamily,
+                        bool bufferDeviceAddressEnabled,
+                        bool externalHostMemoryEnabled,
+                        bool rayTracingEnabled,
+                        bool debugUtilsEnabled,
                         void* vkGetDeviceProcAddrProxy) {
-    PFN_vkGetDeviceProcAddr deviceProcAddrProxy =
-        reinterpret_cast<PFN_vkGetDeviceProcAddr>(vkGetDeviceProcAddrProxy);
-
+    (void)vkGetDeviceProcAddrProxy;
     g_vkResCtx.device = device;
     g_vkResCtx.physicalDevice = physicalDevice;
     g_vkResCtx.allocator = allocator;
     g_vkResCtx.graphicsQueue = queue;
     g_vkResCtx.graphicsQueueFamily = queueFamily;
+    g_vkResCtx.transferQueueFamily = transferQueueFamily;
+    g_vkResCtx.bufferDeviceAddressEnabled = bufferDeviceAddressEnabled;
+    g_vkResCtx.externalHostMemoryEnabled = externalHostMemoryEnabled;
     g_vkResCtx.rayTracingEnabled = rayTracingEnabled;
     g_vkResCtx.streamlineHooksEnabled = false;
-    g_vkResCtx.vkBeginCommandBufferProxy =
-        loadHookedDeviceProc<PFN_vkBeginCommandBuffer>(deviceProcAddrProxy,
-                                                       device,
-                                                       "vkBeginCommandBuffer");
-    g_vkResCtx.vkCmdBindPipelineProxy =
-        loadHookedDeviceProc<PFN_vkCmdBindPipeline>(deviceProcAddrProxy,
-                                                    device,
-                                                    "vkCmdBindPipeline");
-    g_vkResCtx.vkCmdBindDescriptorSetsProxy =
-        loadHookedDeviceProc<PFN_vkCmdBindDescriptorSets>(deviceProcAddrProxy,
-                                                          device,
-                                                          "vkCmdBindDescriptorSets");
-    g_vkResCtx.initialized = true;
-}
-
-PFN_vkGetBufferDeviceAddress loadGetBufferDeviceAddress(VkDevice device) {
-    auto fn = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
-        vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddress"));
-    if (!fn) {
-        fn = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
-            vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddressKHR"));
+    g_vkResCtx.debugUtilsEnabled = debugUtilsEnabled;
+    g_vkResCtx.streamlineBeginCommandBufferHook = nullptr;
+    g_vkResCtx.streamlineCmdBindPipelineHook = nullptr;
+    g_vkResCtx.streamlineCmdBindDescriptorSetsHook = nullptr;
+    if (debugUtilsEnabled) {
+        g_vkResCtx.vkSetDebugUtilsObjectName =
+            reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+                vkGetDeviceProcAddr(device, "vkSetDebugUtilsObjectNameEXT"));
+        g_vkResCtx.vkCmdBeginDebugUtilsLabel =
+            reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
+                vkGetDeviceProcAddr(device, "vkCmdBeginDebugUtilsLabelEXT"));
+        g_vkResCtx.vkCmdEndDebugUtilsLabel =
+            reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
+                vkGetDeviceProcAddr(device, "vkCmdEndDebugUtilsLabelEXT"));
+    } else {
+        g_vkResCtx.vkSetDebugUtilsObjectName = nullptr;
+        g_vkResCtx.vkCmdBeginDebugUtilsLabel = nullptr;
+        g_vkResCtx.vkCmdEndDebugUtilsLabel = nullptr;
     }
-    return fn;
+    g_vkResCtx.initialized = true;
 }
 
 PFN_vkDestroyAccelerationStructureKHR loadDestroyAccelerationStructure(VkDevice device) {
     return reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(
         vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureKHR"));
-}
-
-VkDeviceAddress queryBufferDeviceAddress(VkDevice device, VkBuffer buffer) {
-    if (device == VK_NULL_HANDLE || buffer == VK_NULL_HANDLE || !g_vkResCtx.rayTracingEnabled) {
-        return 0;
-    }
-
-    PFN_vkGetBufferDeviceAddress getBufferDeviceAddress = loadGetBufferDeviceAddress(device);
-    if (!getBufferDeviceAddress) {
-        return 0;
-    }
-
-    VkBufferDeviceAddressInfo addressInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-    addressInfo.buffer = buffer;
-    return getBufferDeviceAddress(device, &addressInfo);
 }
 
 VkFilter toVkFilter(RhiSamplerFilterMode filter) {
@@ -318,6 +290,19 @@ VkCommandPool getUploadPool() {
     return g_uploadPool;
 }
 
+RhiContext* resolveOwningContext(const RhiDevice& device, const char* functionName) {
+    RhiContext* context = device.ownerContext();
+    if (!context) {
+        spdlog::error("{} requires an owning RhiContext on Vulkan", functionName);
+        return nullptr;
+    }
+    if (context->backendType() != RhiBackendType::Vulkan) {
+        spdlog::error("{} received a non-Vulkan RhiContext", functionName);
+        return nullptr;
+    }
+    return context;
+}
+
 } // namespace
 
 void vulkanSetResourceContext(VkDevice device,
@@ -325,14 +310,22 @@ void vulkanSetResourceContext(VkDevice device,
                               VmaAllocator allocator,
                               VkQueue queue,
                               uint32_t queueFamily,
+                              uint32_t transferQueueFamily,
+                              bool bufferDeviceAddressEnabled,
+                              bool externalHostMemoryEnabled,
                               bool rayTracingEnabled,
+                              bool debugUtilsEnabled,
                               void* vkGetDeviceProcAddrProxy) {
     setResourceContext(device,
                        physicalDevice,
                        allocator,
                        queue,
                        queueFamily,
+                       transferQueueFamily,
+                       bufferDeviceAddressEnabled,
+                       externalHostMemoryEnabled,
                        rayTracingEnabled,
+                       debugUtilsEnabled,
                        vkGetDeviceProcAddrProxy);
 }
 
@@ -344,22 +337,93 @@ void vulkanSetStreamlineHookedCommandsEnabled(bool enabled) {
     g_vkResCtx.streamlineHooksEnabled = enabled;
 }
 
+void vulkanSetStreamlineCommandHooks(void* beginCommandBufferHook,
+                                     void* cmdBindPipelineHook,
+                                     void* cmdBindDescriptorSetsHook) {
+    g_vkResCtx.streamlineBeginCommandBufferHook = beginCommandBufferHook;
+    g_vkResCtx.streamlineCmdBindPipelineHook = cmdBindPipelineHook;
+    g_vkResCtx.streamlineCmdBindDescriptorSetsHook = cmdBindDescriptorSetsHook;
+}
+
+void vulkanSetObjectDebugName(VkDevice device,
+                              VkObjectType objectType,
+                              uint64_t handle,
+                              const char* name) {
+    if (!g_vkResCtx.debugUtilsEnabled ||
+        !g_vkResCtx.vkSetDebugUtilsObjectName ||
+        device == VK_NULL_HANDLE ||
+        handle == 0 ||
+        !name ||
+        name[0] == '\0') {
+        return;
+    }
+
+    VkDebugUtilsObjectNameInfoEXT nameInfo{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+    nameInfo.objectType = objectType;
+    nameInfo.objectHandle = handle;
+    nameInfo.pObjectName = name;
+    g_vkResCtx.vkSetDebugUtilsObjectName(device, &nameInfo);
+}
+
+void vulkanBeginDebugLabel(VkCommandBuffer commandBuffer, const char* label) {
+    if (!g_vkResCtx.debugUtilsEnabled ||
+        !g_vkResCtx.vkCmdBeginDebugUtilsLabel ||
+        commandBuffer == VK_NULL_HANDLE ||
+        !label ||
+        label[0] == '\0') {
+        return;
+    }
+
+    VkDebugUtilsLabelEXT debugLabel{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+    debugLabel.pLabelName = label;
+    debugLabel.color[0] = 0.18f;
+    debugLabel.color[1] = 0.62f;
+    debugLabel.color[2] = 0.95f;
+    debugLabel.color[3] = 1.0f;
+    g_vkResCtx.vkCmdBeginDebugUtilsLabel(commandBuffer, &debugLabel);
+}
+
+void vulkanEndDebugLabel(VkCommandBuffer commandBuffer) {
+    if (!g_vkResCtx.debugUtilsEnabled ||
+        !g_vkResCtx.vkCmdEndDebugUtilsLabel ||
+        commandBuffer == VK_NULL_HANDLE) {
+        return;
+    }
+
+    g_vkResCtx.vkCmdEndDebugUtilsLabel(commandBuffer);
+}
+
+void vulkanSetUploadService(VulkanUploadService* service) {
+    g_uploadService = service;
+}
+
+VulkanUploadService* vulkanGetUploadService() {
+    return g_uploadService;
+}
+
 VkResult vulkanBeginCommandBufferHooked(VkCommandBuffer commandBuffer,
                                         const VkCommandBufferBeginInfo* beginInfo) {
-    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.vkBeginCommandBufferProxy) {
-        return g_vkResCtx.vkBeginCommandBufferProxy(commandBuffer, beginInfo);
+    VkResult result = vkBeginCommandBuffer(commandBuffer, beginInfo);
+    if (result != VK_SUCCESS) {
+        return result;
     }
-    return vkBeginCommandBuffer(commandBuffer, beginInfo);
+    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.streamlineBeginCommandBufferHook) {
+        using HookFn = void (*)(VkCommandBuffer, const VkCommandBufferBeginInfo*);
+        auto* hook = reinterpret_cast<HookFn>(g_vkResCtx.streamlineBeginCommandBufferHook);
+        hook(commandBuffer, beginInfo);
+    }
+    return result;
 }
 
 void vulkanCmdBindPipelineHooked(VkCommandBuffer commandBuffer,
                                  VkPipelineBindPoint pipelineBindPoint,
                                  VkPipeline pipeline) {
-    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.vkCmdBindPipelineProxy) {
-        g_vkResCtx.vkCmdBindPipelineProxy(commandBuffer, pipelineBindPoint, pipeline);
-        return;
-    }
     vkCmdBindPipeline(commandBuffer, pipelineBindPoint, pipeline);
+    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.streamlineCmdBindPipelineHook) {
+        using HookFn = void (*)(VkCommandBuffer, VkPipelineBindPoint, VkPipeline);
+        auto* hook = reinterpret_cast<HookFn>(g_vkResCtx.streamlineCmdBindPipelineHook);
+        hook(commandBuffer, pipelineBindPoint, pipeline);
+    }
 }
 
 void vulkanCmdBindDescriptorSetsHooked(VkCommandBuffer commandBuffer,
@@ -370,17 +434,6 @@ void vulkanCmdBindDescriptorSetsHooked(VkCommandBuffer commandBuffer,
                                        const VkDescriptorSet* descriptorSets,
                                        uint32_t dynamicOffsetCount,
                                        const uint32_t* dynamicOffsets) {
-    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.vkCmdBindDescriptorSetsProxy) {
-        g_vkResCtx.vkCmdBindDescriptorSetsProxy(commandBuffer,
-                                                pipelineBindPoint,
-                                                layout,
-                                                firstSet,
-                                                descriptorSetCount,
-                                                descriptorSets,
-                                                dynamicOffsetCount,
-                                                dynamicOffsets);
-        return;
-    }
     vkCmdBindDescriptorSets(commandBuffer,
                             pipelineBindPoint,
                             layout,
@@ -389,6 +442,25 @@ void vulkanCmdBindDescriptorSetsHooked(VkCommandBuffer commandBuffer,
                             descriptorSets,
                             dynamicOffsetCount,
                             dynamicOffsets);
+    if (g_vkResCtx.streamlineHooksEnabled && g_vkResCtx.streamlineCmdBindDescriptorSetsHook) {
+        using HookFn = void (*)(VkCommandBuffer,
+                                VkPipelineBindPoint,
+                                VkPipelineLayout,
+                                uint32_t,
+                                uint32_t,
+                                const VkDescriptorSet*,
+                                uint32_t,
+                                const uint32_t*);
+        auto* hook = reinterpret_cast<HookFn>(g_vkResCtx.streamlineCmdBindDescriptorSetsHook);
+        hook(commandBuffer,
+             pipelineBindPoint,
+             layout,
+             firstSet,
+             descriptorSetCount,
+             descriptorSets,
+             dynamicOffsetCount,
+             dynamicOffsets);
+    }
 }
 
 void vulkanClearResourceContext() {
@@ -396,56 +468,16 @@ void vulkanClearResourceContext() {
         vkDestroyCommandPool(g_vkResCtx.device, g_uploadPool, nullptr);
         g_uploadPool = VK_NULL_HANDLE;
     }
+    g_uploadService = nullptr;
     g_vkResCtx = {};
 }
 
-RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& /*device*/,
+RhiBufferHandle rhiCreateSharedBuffer(const RhiDevice& device,
                                       const void* initialData,
                                       size_t size,
                                       const char* debugName) {
-    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufferInfo.size = size;
-    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-    if (g_vkResCtx.rayTracingEnabled) {
-        bufferInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-    }
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VmaAllocationCreateInfo allocCreateInfo{};
-    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                            VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-    auto* res = new VulkanBufferResource{};
-    res->device = g_vkResCtx.device;
-    res->allocator = g_vkResCtx.allocator;
-    res->size = size;
-    res->usageFlags = bufferInfo.usage;
-
-    VmaAllocationInfo allocInfo{};
-    VkResult result = vmaCreateBuffer(g_vkResCtx.allocator, &bufferInfo, &allocCreateInfo,
-                                       &res->buffer, &res->allocation, &allocInfo);
-    if (result != VK_SUCCESS) {
-        spdlog::error("Failed to create Vulkan shared buffer (VkResult: {})", static_cast<int>(result));
-        delete res;
-        return {};
-    }
-
-    res->mappedData = allocInfo.pMappedData;
-    res->deviceAddress = queryBufferDeviceAddress(g_vkResCtx.device, res->buffer);
-    if (initialData && res->mappedData) {
-        std::memcpy(res->mappedData, initialData, size);
-    }
-
-    if (debugName) {
-        vmaSetAllocationName(g_vkResCtx.allocator, res->allocation, debugName);
-    }
-
-    return RhiBufferHandle(res, size);
+    RhiContext* context = resolveOwningContext(device, "rhiCreateSharedBuffer");
+    return context ? context->createSharedBuffer(initialData, size, debugName) : RhiBufferHandle{};
 }
 
 void* rhiBufferContents(const RhiBuffer& buffer) {
@@ -453,104 +485,40 @@ void* rhiBufferContents(const RhiBuffer& buffer) {
     return res ? res->mappedData : nullptr;
 }
 
-RhiTextureHandle rhiCreateTexture2D(const RhiDevice& /*device*/,
+RhiTextureHandle rhiCreateTexture2D(const RhiDevice& device,
                                     uint32_t width,
                                     uint32_t height,
                                     RhiFormat format,
-                                    bool /*mipmapped*/,
+                                    bool mipmapped,
                                     uint32_t mipLevelCount,
-                                    RhiTextureStorageMode /*storageMode*/,
+                                    RhiTextureStorageMode storageMode,
                                     RhiTextureUsage usage) {
-    VkFormat vkFormat = toVkFormat(format);
-    VkImageUsageFlags vkUsage = toVkImageUsage(usage);
-    if (isVkDepthFormat(vkFormat)) {
-        vkUsage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        vkUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    }
-
-    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.format = vkFormat;
-    imageInfo.extent = {width, height, 1};
-    imageInfo.mipLevels = std::max(mipLevelCount, 1u);
-    imageInfo.arrayLayers = 1;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.usage = vkUsage;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VmaAllocationCreateInfo allocCreateInfo{};
-    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-
-    auto* res = new VulkanTextureResource{};
-    res->device = g_vkResCtx.device;
-    res->allocator = g_vkResCtx.allocator;
-    res->width = width;
-    res->height = height;
-    res->mipLevels = imageInfo.mipLevels;
-    res->format = vkFormat;
-    res->usage = usage;
-
-    VkResult result = vmaCreateImage(g_vkResCtx.allocator, &imageInfo, &allocCreateInfo,
-                                      &res->image, &res->allocation, nullptr);
-    if (result != VK_SUCCESS) {
-        spdlog::error("Failed to create Vulkan 2D texture (VkResult: {})", static_cast<int>(result));
-        delete res;
-        return {};
-    }
-
-    res->imageView = createImageView(g_vkResCtx.device, res->image, vkFormat,
-                                      VK_IMAGE_VIEW_TYPE_2D, imageInfo.mipLevels, 1);
-    return RhiTextureHandle(res, width, height);
+    RhiContext* context = resolveOwningContext(device, "rhiCreateTexture2D");
+    return context ? context->createTexture2D(width,
+                                              height,
+                                              format,
+                                              mipmapped,
+                                              mipLevelCount,
+                                              storageMode,
+                                              usage)
+                   : RhiTextureHandle{};
 }
 
-RhiTextureHandle rhiCreateTexture3D(const RhiDevice& /*device*/,
+RhiTextureHandle rhiCreateTexture3D(const RhiDevice& device,
                                     uint32_t width,
                                     uint32_t height,
                                     uint32_t depth,
                                     RhiFormat format,
-                                    RhiTextureStorageMode /*storageMode*/,
+                                    RhiTextureStorageMode storageMode,
                                     RhiTextureUsage usage) {
-    VkFormat vkFormat = toVkFormat(format);
-
-    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    imageInfo.imageType = VK_IMAGE_TYPE_3D;
-    imageInfo.format = vkFormat;
-    imageInfo.extent = {width, height, depth};
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.usage = toVkImageUsage(usage);
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VmaAllocationCreateInfo allocCreateInfo{};
-    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-
-    auto* res = new VulkanTextureResource{};
-    res->device = g_vkResCtx.device;
-    res->allocator = g_vkResCtx.allocator;
-    res->width = width;
-    res->height = height;
-    res->depth = depth;
-    res->format = vkFormat;
-    res->usage = usage;
-
-    VkResult result = vmaCreateImage(g_vkResCtx.allocator, &imageInfo, &allocCreateInfo,
-                                      &res->image, &res->allocation, nullptr);
-    if (result != VK_SUCCESS) {
-        spdlog::error("Failed to create Vulkan 3D texture (VkResult: {})", static_cast<int>(result));
-        delete res;
-        return {};
-    }
-
-    res->imageView = createImageView(g_vkResCtx.device, res->image, vkFormat,
-                                      VK_IMAGE_VIEW_TYPE_3D, 1, 1);
-    return RhiTextureHandle(res, width, height);
+    RhiContext* context = resolveOwningContext(device, "rhiCreateTexture3D");
+    return context ? context->createTexture3D(width,
+                                              height,
+                                              depth,
+                                              format,
+                                              storageMode,
+                                              usage)
+                   : RhiTextureHandle{};
 }
 
 void rhiUploadTexture2D(const RhiTexture& texture,
@@ -565,23 +533,33 @@ void rhiUploadTexture2D(const RhiTexture& texture,
     const bool deferShaderReadTransition = res->mipLevels > 1 && mipLevel == 0;
     size_t imageSize = bytesPerRow * height;
 
-    // Create staging buffer
-    VkBufferCreateInfo stagingInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    stagingInfo.size = imageSize;
-    stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (g_uploadService) {
+        g_uploadService->immediateUploadTexture2D(res->image, width, height,
+                                                   data, imageSize, mipLevel,
+                                                   deferShaderReadTransition);
+        return;
+    }
 
-    VmaAllocationCreateInfo stagingAllocInfo{};
-    stagingAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    // Fallback: legacy one-shot staging path
+    VmaBufferCreateInfo stagingVmaInfo{};
+    stagingVmaInfo.device = g_vkResCtx.device;
+    stagingVmaInfo.allocator = g_vkResCtx.allocator;
+    stagingVmaInfo.size = imageSize;
+    stagingVmaInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    stagingVmaInfo.hostVisible = true;
+    stagingVmaInfo.externalMemoryHandleTypes =
+        vulkanHostVisibleExternalMemoryHandleTypes(stagingVmaInfo.hostVisible,
+                                                   g_vkResCtx.externalHostMemoryEnabled);
 
-    VkBuffer stagingBuffer = VK_NULL_HANDLE;
-    VmaAllocation stagingAlloc = nullptr;
-    VmaAllocationInfo stagingData{};
-    vmaCreateBuffer(g_vkResCtx.allocator, &stagingInfo, &stagingAllocInfo,
-                    &stagingBuffer, &stagingAlloc, &stagingData);
+    auto stagingResource = vmaCreateBufferResource(stagingVmaInfo);
+    if (!stagingResource) {
+        spdlog::error("Failed to create staging buffer for 2D texture upload");
+        return;
+    }
+    VkBuffer stagingBuffer = stagingResource->buffer;
+    VmaAllocation stagingAlloc = stagingResource->allocation;
 
-    std::memcpy(stagingData.pMappedData, data, imageSize);
+    std::memcpy(stagingResource->mappedData, data, imageSize);
 
     VkCommandPool pool = getUploadPool();
     VkCommandBuffer cmd = beginOneTimeCommands(g_vkResCtx.device, pool);
@@ -642,21 +620,31 @@ void rhiUploadTexture3D(const RhiTexture& texture,
 
     size_t imageSize = bytesPerImage * depth;
 
-    VkBufferCreateInfo stagingInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    stagingInfo.size = imageSize;
-    stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (g_uploadService) {
+        g_uploadService->immediateUploadTexture3D(res->image, width, height, depth,
+                                                   data, imageSize, mipLevel);
+        return;
+    }
 
-    VmaAllocationCreateInfo stagingAllocInfo{};
-    stagingAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    // Fallback: legacy one-shot staging path
+    VmaBufferCreateInfo stagingVmaInfo{};
+    stagingVmaInfo.device = g_vkResCtx.device;
+    stagingVmaInfo.allocator = g_vkResCtx.allocator;
+    stagingVmaInfo.size = imageSize;
+    stagingVmaInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    stagingVmaInfo.hostVisible = true;
+    stagingVmaInfo.externalMemoryHandleTypes =
+        vulkanHostVisibleExternalMemoryHandleTypes(stagingVmaInfo.hostVisible,
+                                                   g_vkResCtx.externalHostMemoryEnabled);
 
-    VkBuffer stagingBuffer = VK_NULL_HANDLE;
-    VmaAllocation stagingAlloc = nullptr;
-    VmaAllocationInfo stagingData{};
-    vmaCreateBuffer(g_vkResCtx.allocator, &stagingInfo, &stagingAllocInfo,
-                    &stagingBuffer, &stagingAlloc, &stagingData);
-    std::memcpy(stagingData.pMappedData, data, imageSize);
+    auto stagingResource = vmaCreateBufferResource(stagingVmaInfo);
+    if (!stagingResource) {
+        spdlog::error("Failed to create staging buffer for 3D texture upload");
+        return;
+    }
+    VkBuffer stagingBuffer = stagingResource->buffer;
+    VmaAllocation stagingAlloc = stagingResource->allocation;
+    std::memcpy(stagingResource->mappedData, data, imageSize);
 
     VkCommandPool pool = getUploadPool();
     VkCommandBuffer cmd = beginOneTimeCommands(g_vkResCtx.device, pool);
@@ -789,34 +777,17 @@ void rhiGenerateMipmaps(const RhiCommandQueue& /*commandQueue*/, const RhiTextur
     endOneTimeCommands(g_vkResCtx.device, pool, g_vkResCtx.graphicsQueue, cmd);
 }
 
-RhiSamplerHandle rhiCreateSampler(const RhiDevice& /*device*/, const RhiSamplerDesc& desc) {
-    VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    samplerInfo.minFilter = toVkFilter(desc.minFilter);
-    samplerInfo.magFilter = toVkFilter(desc.magFilter);
-    samplerInfo.mipmapMode = toVkMipFilter(desc.mipFilter);
-    samplerInfo.addressModeU = toVkAddressMode(desc.addressModeS);
-    samplerInfo.addressModeV = toVkAddressMode(desc.addressModeT);
-    samplerInfo.addressModeW = toVkAddressMode(desc.addressModeR);
-    samplerInfo.maxLod = (desc.mipFilter != RhiSamplerMipFilterMode::None) ? VK_LOD_CLAMP_NONE : 0.0f;
-    samplerInfo.maxAnisotropy = 1.0f;
-
-    auto* res = new VulkanSamplerResource{};
-    res->device = g_vkResCtx.device;
-    VkResult result = vkCreateSampler(g_vkResCtx.device, &samplerInfo, nullptr, &res->sampler);
-    if (result != VK_SUCCESS) {
-        spdlog::error("Failed to create Vulkan sampler (VkResult: {})", static_cast<int>(result));
-        delete res;
-        return {};
-    }
-    return RhiSamplerHandle(res);
+RhiSamplerHandle rhiCreateSampler(const RhiDevice& device, const RhiSamplerDesc& desc) {
+    RhiContext* context = resolveOwningContext(device, "rhiCreateSampler");
+    return context ? context->createSampler(desc) : RhiSamplerHandle{};
 }
 
-RhiDepthStencilStateHandle rhiCreateDepthStencilState(const RhiDevice& /*device*/,
-                                                      bool /*depthWriteEnabled*/,
-                                                      bool /*reversedZ*/) {
-    // Vulkan handles depth/stencil state at pipeline creation time.
-    // Store params so we can query later if needed.
-    return RhiDepthStencilStateHandle(nullptr);
+RhiDepthStencilStateHandle rhiCreateDepthStencilState(const RhiDevice& device,
+                                                      bool depthWriteEnabled,
+                                                      bool reversedZ) {
+    RhiContext* context = resolveOwningContext(device, "rhiCreateDepthStencilState");
+    return context ? context->createDepthStencilState(depthWriteEnabled, reversedZ)
+                   : RhiDepthStencilStateHandle{};
 }
 
 bool rhiSupportsRaytracing(const RhiDevice& /*device*/) {
@@ -844,20 +815,13 @@ void rhiReleaseNativeHandle(void* handle) {
             texture->refCount--;
             return;
         }
-        if (texture->ownsImageView && texture->imageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(texture->device, texture->imageView, nullptr);
-        }
-        if (texture->ownsImage && texture->image != VK_NULL_HANDLE && texture->allocator != nullptr) {
-            vmaDestroyImage(texture->allocator, texture->image, texture->allocation);
-        }
+        vmaDestroyImageResource(*texture);
         delete texture;
         break;
     }
     case VulkanResourceType::Buffer: {
         auto* buffer = static_cast<VulkanBufferResource*>(handle);
-        if (buffer->ownsBuffer && buffer->buffer != VK_NULL_HANDLE && buffer->allocator != nullptr) {
-            vmaDestroyBuffer(buffer->allocator, buffer->buffer, buffer->allocation);
-        }
+        vmaDestroyBufferResource(*buffer);
         delete buffer;
         break;
     }
@@ -873,14 +837,28 @@ void rhiReleaseNativeHandle(void* handle) {
         auto* pipeline = static_cast<VulkanPipelineResource*>(handle);
         if (pipeline->pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(pipeline->device, pipeline->pipeline, nullptr);
+            pipeline->pipeline = VK_NULL_HANDLE;
         }
-        for (VkDescriptorSetLayout setLayout : pipeline->setLayouts) {
+        for (size_t setIndex = 0; setIndex < pipeline->setLayouts.size(); ++setIndex) {
+            VkDescriptorSetLayout setLayout = pipeline->setLayouts[setIndex];
             if (setLayout != VK_NULL_HANDLE) {
-                vkDestroyDescriptorSetLayout(pipeline->device, setLayout, nullptr);
+                const bool ownsSetLayout =
+                    setIndex >= pipeline->setLayoutOwnership.size() ||
+                    pipeline->setLayoutOwnership[setIndex] != 0;
+                if (ownsSetLayout) {
+                    vkDestroyDescriptorSetLayout(pipeline->device, setLayout, nullptr);
+                } else if (pipeline->device != VK_NULL_HANDLE &&
+                           pipeline->bindlessSetIndex == static_cast<uint32_t>(setIndex)) {
+                    vulkanReleaseBindlessSetLayout(pipeline->device);
+                }
             }
         }
+        pipeline->setLayouts.clear();
+        pipeline->setLayoutOwnership.clear();
+        pipeline->bindlessSetIndex = UINT32_MAX;
         if (pipeline->ownsLayout && pipeline->layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(pipeline->device, pipeline->layout, nullptr);
+            pipeline->layout = VK_NULL_HANDLE;
         }
         delete pipeline;
         break;
@@ -900,12 +878,11 @@ void rhiReleaseNativeHandle(void* handle) {
                                          accelerationStructure->accelerationStructure,
                                          nullptr);
         }
-        if (accelerationStructure->buffer != VK_NULL_HANDLE &&
-            accelerationStructure->allocator != nullptr) {
-            vmaDestroyBuffer(accelerationStructure->allocator,
-                             accelerationStructure->buffer,
-                             accelerationStructure->allocation);
-        }
+        VulkanBufferResource asBuffer{};
+        asBuffer.buffer = accelerationStructure->buffer;
+        asBuffer.allocation = accelerationStructure->allocation;
+        asBuffer.allocator = accelerationStructure->allocator;
+        vmaDestroyBufferResource(asBuffer);
         delete accelerationStructure;
         break;
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "rhi_backend.h"
@@ -40,3 +41,8 @@ struct MeshletData {
 };
 
 bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData& out);
+bool loadOrBuildMeshlets(const RhiDevice& device,
+                         const LoadedMesh& mesh,
+                         const std::string& sourcePath,
+                         const std::string& cacheDirectory,
+                         MeshletData& out);

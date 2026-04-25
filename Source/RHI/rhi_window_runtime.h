@@ -5,6 +5,7 @@
 #include <string>
 
 #include "rhi_backend.h"
+#include "rhi_interop.h"
 
 struct GLFWwindow;
 
@@ -26,6 +27,7 @@ public:
 
     virtual std::unique_ptr<RhiFrameGraphBackend> createFrameGraphBackend() const = 0;
     virtual std::unique_ptr<RhiCommandBuffer> createCommandBuffer() const = 0;
+    virtual const IRhiInteropProvider* interopProvider() const { return nullptr; }
 
     virtual void initImGui() = 0;
     virtual void beginImGuiFrame(const RhiTexture* depthTexture) = 0;

@@ -2,7 +2,9 @@
 
 #include <ml.h>
 #include "rhi_backend.h"
+#include "rhi_interop.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -10,10 +12,31 @@
 class RhiTexture;
 class RhiBuffer;
 class RhiFrameGraphBackend;
-class StreamlineContext;
+class ClusterStreamingService;
+enum class DlssPreset : uint32_t;
 #ifdef _WIN32
-class VulkanImageLayoutTracker;
+class VulkanReadbackService;
 #endif
+
+struct PipelineUiControls {
+    bool* enableRTShadows = nullptr;
+    bool rtShadowsAvailable = false;
+    bool useVisibilityRenderGraph = false;
+
+    bool hasDlssPass = false;
+    bool dlssAvailable = false;
+    bool dlssEnabled = false;
+    bool dlssIsActiveUpscaler = false;
+    DlssPreset currentPreset = static_cast<DlssPreset>(0);
+    uint32_t dlssRenderWidth = 0;
+    uint32_t dlssRenderHeight = 0;
+    int displayWidth = 0;
+    int displayHeight = 0;
+    std::string dlssDiagnostic;
+
+    std::function<void(DlssPreset)> onDlssPresetChanged;
+    std::function<void()> onResetDlssHistory;
+};
 
 // Per-frame runtime context for data-driven pipeline execution
 // This holds all the dynamic data that changes each frame
@@ -67,17 +90,6 @@ struct FrameContext {
     std::vector<uint32_t> visibleIndexNodes;
     uint32_t visibilityInstanceCount = 0;
 
-    // Instance transform buffer (for visibility buffer mode)
-    RhiBuffer* instanceTransformBufferRhi = nullptr;
-
-    // Active native command buffer for backend integrations that are not fully abstracted yet.
-    const RhiNativeCommandBuffer* commandBuffer = nullptr;
-
-#ifdef _WIN32
-    // Vulkan image layout tracker used by backend integrations such as Streamline.
-    VulkanImageLayoutTracker* imageLayoutTracker = nullptr;
-#endif
-
     // Depth clear value
     double depthClearValue = 1.0;
 
@@ -95,10 +107,6 @@ struct FrameContext {
     bool gpuDrivenCulling = false;
     int renderMode = 2; // 0=Vertex, 1=Mesh, 2=Visibility, 3=Meshlet Debug
 
-    // GPU-driven cull results (set by MeshletCullPass, consumed by VisibilityPass)
-    RhiBuffer* gpuVisibleMeshletBufferRhi = nullptr;
-    RhiBuffer* gpuCounterBufferRhi = nullptr;
-    RhiBuffer* gpuInstanceDataBufferRhi = nullptr;
 };
 
 // Runtime context for pipeline building (pipelines, textures, samplers)
@@ -122,11 +130,21 @@ struct PipelineRuntimeContext {
     int renderWidth = 0;
     int renderHeight = 0;
 
-    // Optional Streamline / DLSS state used by authored upscaler passes.
-    StreamlineContext* streamlineContext = nullptr;
-    bool dlssAvailable = false;
-    bool dlssEnabled = false;
+    // Optional upscaler state used by authored upscaler passes.
+    IUpscalerIntegration* upscaler = nullptr;
+    PipelineUiControls* uiControls = nullptr;
 
     // Resource creation for pass-owned persistent resources
     RhiFrameGraphBackend* resourceFactory = nullptr;
+    RhiContext* rhi = nullptr;
+
+    // Shared streaming state used by authored update/request/render passes.
+    ClusterStreamingService* clusterStreamingService = nullptr;
+
+#ifdef _WIN32
+    VulkanReadbackService* readbackService = nullptr;
+#endif
+
+    // Vulkan bindless/material indexing rollout toggle.
+    bool useBindlessSceneTextures = false;
 };

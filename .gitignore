@@ -79,3 +79,6 @@ Issue
 package-lock.json
 _builds
 .claude
+Asset/MeshletCache/
+cache/
+Asset/SuperSponza/

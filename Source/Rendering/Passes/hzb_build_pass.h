@@ -89,7 +89,7 @@ public:
             uniforms.dstHeight = destinationTexture->height();
             uniforms.sourceScale = (level == 0u) ? 1u : 2u;
 
-            encoder.setBytes(&uniforms, sizeof(uniforms), 0);
+            encoder.setPushConstants(&uniforms, sizeof(uniforms));
             encoder.setTexture(sourceTexture, 0);
             encoder.setStorageTexture(destinationTexture, 1);
             encoder.dispatchThreadgroups({(uniforms.dstWidth + 7u) / 8u,

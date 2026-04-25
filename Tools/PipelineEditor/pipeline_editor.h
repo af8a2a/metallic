@@ -2,88 +2,91 @@
 
 #include "pipeline_asset.h"
 #include <string>
-#include <vector>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "imgui.h"
-
-// Node graph pipeline editor using imnodes
-// Note: imnodes context must be created before using this class
 
 class PipelineEditor {
 public:
     PipelineEditor() = default;
     ~PipelineEditor() = default;
 
-    // Render the editor UI
     void render(PipelineAsset& asset);
 
-    // Check if pipeline was modified
     bool isDirty() const { return m_dirty; }
     void markClean() { m_dirty = false; }
 
-    // Show/hide the editor
     void setVisible(bool visible) { m_visible = visible; }
     bool isVisible() const { return m_visible; }
 
-    // Reset layout state (call when loading a new pipeline)
-    void resetLayout() { m_nodePositioned.clear(); m_firstFrame = true; }
+    void resetLayout();
 
-    // Snapshot current node positions into asset.editorPositions
     void collectNodePositions(PipelineAsset& asset);
-
-    // Auto-reorder nodes by topological depth
     void autoReorderNodes(PipelineAsset& asset);
 
-    // Undo/redo
     void undo(PipelineAsset& asset);
     void redo(PipelineAsset& asset);
     bool canUndo() const { return !m_undoStack.empty(); }
     bool canRedo() const { return !m_redoStack.empty(); }
 
-    // Public for main menu access
     bool m_visible = false;
 
 private:
+    enum class GraphViewMode {
+        PassFlow,
+        ResourceGraph
+    };
+
+    enum class PinKind {
+        ResourceInput,
+        ResourceOutput,
+        PassInput,
+        PassOutput
+    };
+
+    struct PinInfo {
+        PinKind kind;
+        std::string ownerId;
+        std::string slotKey;
+    };
+
+    void renderGraphToolbar(PipelineAsset& asset);
     void renderNodeGraph(PipelineAsset& asset);
     void renderPropertyPanel(PipelineAsset& asset);
     void renderCompilationPreview(const PipelineAsset& asset);
     void handleNewLinks(PipelineAsset& asset);
     void handleDeletedLinks(PipelineAsset& asset);
-
-    // Undo internals
     void pushUndo(const PipelineAsset& asset);
 
-    // Node/pin ID encoding
-    int getPassNodeId(int passIndex) const { return 1000 + passIndex; }
-    int getResourceNodeId(int resIndex) const { return 2000 + resIndex; }
-    int getPassInputPinId(int passIndex, int inputIndex) const { return 10000 + passIndex * 100 + inputIndex; }
-    int getPassOutputPinId(int passIndex, int outputIndex) const { return 20000 + passIndex * 100 + outputIndex; }
-    int getResourcePinId(int resIndex) const { return 30000 + resIndex; }
+    int ensureUiId(const std::string& key);
 
-    // Reverse lookups
-    int getPassIndexFromNodeId(int id) const;
-    int getResourceIndexFromNodeId(int id) const;
-    std::pair<int, int> getPassInputFromPinId(int pinId) const;
-    std::pair<int, int> getPassOutputFromPinId(int pinId) const;
-    int getResourceIndexFromPinId(int pinId) const;
+    bool setSlotBinding(PipelineAsset& asset,
+                        const std::string& passId,
+                        const std::string& direction,
+                        const std::string& slotKey,
+                        const std::string& resourceId);
 
     bool m_dirty = false;
-    int m_selectedPassIndex = -1;
-    int m_selectedResourceIndex = -1;
-    bool m_firstFrame = true;
+    GraphViewMode m_graphViewMode = GraphViewMode::PassFlow;
+    std::string m_selectedPassId;
+    std::string m_selectedResourceId;
 
-    // Track node positions for auto-layout
     std::unordered_map<int, bool> m_nodePositioned;
+    std::unordered_map<std::string, int> m_uiIds;
+    int m_nextUiId = 1;
 
-    // Undo/redo stacks
+    std::unordered_map<int, std::string> m_nodeIdToPassId;
+    std::unordered_map<int, std::string> m_nodeIdToResourceId;
+    std::unordered_map<int, PinInfo> m_pinInfos;
+    std::unordered_map<int, std::string> m_linkIdToEdgeId;
+    std::unordered_set<int> m_renderedNodeIds;
+
     std::vector<PipelineAsset> m_undoStack;
     std::vector<PipelineAsset> m_redoStack;
     static constexpr int kMaxUndoLevels = 50;
 
-    // For text input: snapshot on activation, not per-keystroke
     bool m_hasTextEditSnapshot = false;
-
-    // Right-click context menu spawn position
     ImVec2 m_contextMenuSpawnPos = {0, 0};
 };

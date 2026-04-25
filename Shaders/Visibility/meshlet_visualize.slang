@@ -26,7 +26,7 @@ float3 hashColor(uint id) {
     return float3(r, g, b);
 }
 
-ConstantBuffer<MeshletVisUniforms> uniforms;
+[[vk::push_constant]] ConstantBuffer<MeshletVisUniforms> uniforms;
 Texture2D<uint> visibilityBuffer;
 RWTexture2D<float4> outputTexture;
 

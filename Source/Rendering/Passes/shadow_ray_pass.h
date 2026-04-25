@@ -65,7 +65,7 @@ public:
         shadowUni.normalBias = m_normalBias;
         shadowUni.maxRayDistance = m_maxRayDistance > 0 ? m_maxRayDistance : m_frameContext->cameraFarZ;
         shadowUni.reversedZ = ML_DEPTH_REVERSED ? 1 : 0;
-        encoder.setBytes(&shadowUni, sizeof(shadowUni), 0);
+        encoder.setPushConstants(&shadowUni, sizeof(shadowUni));
         encoder.setAccelerationStructure(&m_ctx.shadowResources.tlas, 1);
         encoder.setTexture(m_frameGraph->getTexture(m_depthRead), 0);
         encoder.setStorageTexture(m_frameGraph->getTexture(shadowMap), 1);
@@ -83,7 +83,13 @@ public:
 
     void renderUI() override {
         ImGui::Text("Resolution: %d x %d", m_width, m_height);
-        if (m_frameContext) {
+        const PipelineUiControls* uiControls = m_runtimeContext ? m_runtimeContext->uiControls : nullptr;
+        if (uiControls &&
+            uiControls->useVisibilityRenderGraph &&
+            uiControls->rtShadowsAvailable &&
+            uiControls->enableRTShadows) {
+            ImGui::Checkbox("Enabled", uiControls->enableRTShadows);
+        } else if (m_frameContext) {
             ImGui::Text("Enabled: %s", m_frameContext->enableRTShadows ? "Yes" : "No");
         }
         ImGui::SliderFloat("Normal Bias", &m_normalBias, 0.0f, 0.5f, "%.3f");

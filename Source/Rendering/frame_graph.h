@@ -17,15 +17,51 @@ struct FGResource {
 };
 
 using FGTextureDesc = RhiTextureDesc;
+using FGBufferDesc = RhiBufferDesc;
 
-enum class FGResourceKind { Texture, Token };
+enum class FGResourceKind { Texture, Buffer, Token };
+
+// Describes how a pass accesses a resource. Used by the frame graph to derive
+// backend-specific barriers (e.g. Vulkan image layout transitions) between passes.
+enum class FGResourceUsage : uint32_t {
+    None            = 0,
+    Sampled         = 1u << 0,   // Read as a sampled texture (SHADER_READ_ONLY_OPTIMAL)
+    StorageRead     = 1u << 1,   // Read as a storage image/buffer (GENERAL)
+    StorageWrite    = 1u << 2,   // Write as a storage image/buffer (GENERAL)
+    ColorAttachment = 1u << 3,   // Color attachment output (COLOR_ATTACHMENT_OPTIMAL)
+    DepthAttachment = 1u << 4,   // Depth/stencil attachment (DEPTH_ATTACHMENT_OPTIMAL)
+    TransferSrc     = 1u << 5,   // Source of a copy/blit (TRANSFER_SRC_OPTIMAL)
+    TransferDst     = 1u << 6,   // Destination of a copy/blit (TRANSFER_DST_OPTIMAL)
+    Indirect        = 1u << 7,   // Indirect argument buffer
+    VertexInput     = 1u << 8,   // Vertex attribute buffer
+    IndexInput      = 1u << 9,   // Index buffer
+};
+
+inline FGResourceUsage operator|(FGResourceUsage lhs, FGResourceUsage rhs) {
+    return static_cast<FGResourceUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+inline FGResourceUsage operator&(FGResourceUsage lhs, FGResourceUsage rhs) {
+    return static_cast<FGResourceUsage>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
+}
+inline bool hasUsage(FGResourceUsage mask, FGResourceUsage flag) {
+    return (static_cast<uint32_t>(mask) & static_cast<uint32_t>(flag)) != 0;
+}
+
+// A resource access entry in a pass, combining the resource handle with its usage.
+struct FGAccessEntry {
+    FGResource resource;
+    FGResourceUsage usage = FGResourceUsage::None;
+};
 
 struct FGResourceNode {
     std::string name;
     FGResourceKind kind = FGResourceKind::Texture;
     FGTextureDesc desc;
+    FGBufferDesc bufferDesc;
     RhiTexture* texture = nullptr;
+    RhiBuffer* buffer = nullptr;
     std::unique_ptr<RhiTexture> ownedTexture;
+    std::unique_ptr<RhiBuffer> ownedBuffer;
     bool imported = false;
     uint32_t refCount = 0;
     uint32_t producer = UINT32_MAX;
@@ -36,6 +72,7 @@ struct FGResourceNode {
     bool exported = false;
     bool historyRead = false;
     bool historyWrite = false;
+
 };
 
 enum class FGPassType { Render, Compute, Blit };
@@ -58,11 +95,12 @@ struct FGDepthAttachment {
 struct FGPassNode {
     std::string name;
     FGPassType type = FGPassType::Render;
+    RhiQueueHint queueHint = RhiQueueHint::Auto;
     uint32_t refCount = 0;
     bool hasSideEffect = false;
 
-    std::vector<FGResource> reads;
-    std::vector<FGResource> writes;
+    std::vector<FGAccessEntry> reads;
+    std::vector<FGAccessEntry> writes;
 
     FGColorAttachment colorAttachments[8];
     uint32_t colorAttachmentCount = 0;
@@ -71,6 +109,7 @@ struct FGPassNode {
     std::function<void(RhiRenderCommandEncoder&)> executeRender;
     std::function<void(RhiComputeCommandEncoder&)> executeCompute;
     std::function<void(RhiBlitCommandEncoder&)> executeBlit;
+    std::function<void(RhiCommandBuffer&)> prepareResources;
 };
 
 class FrameGraph;
@@ -81,11 +120,14 @@ public:
     FGBuilder(FrameGraph& fg, uint32_t passIndex);
 
     FGResource create(const char* name, const FGTextureDesc& desc);
+    FGResource create(const char* name, const FGBufferDesc& desc);
     FGResource createToken(const char* name);
-    FGResource read(FGResource resource);
-    FGResource write(FGResource resource);
-    FGResource readHistory(const char* name, const FGTextureDesc& desc);
-    FGResource writeHistory(const char* name, const FGTextureDesc& desc);
+    FGResource read(FGResource resource, FGResourceUsage usage = FGResourceUsage::Sampled);
+    FGResource write(FGResource resource, FGResourceUsage usage = FGResourceUsage::StorageWrite);
+    FGResource readHistory(const char* name, const FGTextureDesc& desc,
+                           FGResourceUsage usage = FGResourceUsage::Sampled);
+    FGResource writeHistory(const char* name, const FGTextureDesc& desc,
+                            FGResourceUsage usage = FGResourceUsage::StorageWrite);
 
     FGResource setColorAttachment(uint32_t index, FGResource resource,
                                   RhiLoadAction load, RhiStoreAction store,
@@ -93,6 +135,10 @@ public:
     FGResource setDepthAttachment(FGResource resource,
                                   RhiLoadAction load, RhiStoreAction store,
                                   double clearDepth = 1.0);
+
+    // Declare preferred execution queue for this pass. Backends with a dedicated
+    // compute/transfer queue will route accordingly; others silently ignore.
+    void setQueueHint(RhiQueueHint hint);
 
 private:
     FrameGraph& m_fg;
@@ -103,8 +149,10 @@ class FrameGraph {
     friend class FGBuilder;
 public:
     FGResource import(const char* name, RhiTexture* texture);
+    FGResource import(const char* name, RhiBuffer* buffer);
     void exportResource(FGResource resource);
     void updateImport(FGResource res, RhiTexture* texture);
+    void updateImport(FGResource res, RhiBuffer* buffer);
     void resetTransients();
 
     void addPass(std::unique_ptr<RenderPass> pass);
@@ -127,6 +175,7 @@ public:
     void renderPassUI();
 
     RhiTexture* getTexture(FGResource res) const;
+    RhiBuffer* getBuffer(FGResource res) const;
     bool isHistoryValid(FGResource res) const;
     void commitHistory(FGResource res);
 
@@ -145,6 +194,7 @@ private:
     uint32_t findOrCreateHistorySlot(const char* name, const FGTextureDesc& desc);
     void ensureHistoryResources(RhiFrameGraphBackend& backend);
     RhiTexture* resolveTexture(uint32_t resourceId) const;
+    RhiBuffer* resolveBuffer(uint32_t resourceId) const;
 
     std::vector<FGResourceNode> m_resources;
     std::vector<FGPassNode> m_passes;
