@@ -9,6 +9,7 @@
 #include <Metal/Metal.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -128,9 +129,9 @@ struct Uniforms {
 };
 
 struct VertexIn {
-    float2 position;
-    float2 texCoords;
-    uchar4 color;
+    float2 position  [[attribute(0)]];
+    float2 texCoords [[attribute(1)]];
+    uchar4 color     [[attribute(2)]];
 };
 
 struct VertexOut {
@@ -139,10 +140,8 @@ struct VertexOut {
     float4 color;
 };
 
-vertex VertexOut vertex_main(uint vertexID [[vertex_id]],
-                             constant VertexIn* vertices [[buffer(0)]],
+vertex VertexOut vertex_main(VertexIn in [[stage_in]],
                              constant Uniforms& uniforms [[buffer(1)]]) {
-    const VertexIn in = vertices[vertexID];
     VertexOut out;
     out.position = uniforms.projectionMatrix * float4(in.position, 0.0, 1.0);
     out.texCoords = in.texCoords;
@@ -185,9 +184,24 @@ bool ensurePipeline() {
         return false;
     }
 
+    auto* vertexDescriptor = MTL::VertexDescriptor::alloc()->init();
+    vertexDescriptor->attributes()->object(0)->setOffset(offsetof(ImDrawVert, pos));
+    vertexDescriptor->attributes()->object(0)->setFormat(MTL::VertexFormatFloat2);
+    vertexDescriptor->attributes()->object(0)->setBufferIndex(0);
+    vertexDescriptor->attributes()->object(1)->setOffset(offsetof(ImDrawVert, uv));
+    vertexDescriptor->attributes()->object(1)->setFormat(MTL::VertexFormatFloat2);
+    vertexDescriptor->attributes()->object(1)->setBufferIndex(0);
+    vertexDescriptor->attributes()->object(2)->setOffset(offsetof(ImDrawVert, col));
+    vertexDescriptor->attributes()->object(2)->setFormat(MTL::VertexFormatUChar4);
+    vertexDescriptor->attributes()->object(2)->setBufferIndex(0);
+    vertexDescriptor->layouts()->object(0)->setStride(sizeof(ImDrawVert));
+    vertexDescriptor->layouts()->object(0)->setStepRate(1);
+    vertexDescriptor->layouts()->object(0)->setStepFunction(MTL::VertexStepFunctionPerVertex);
+
     auto* pipelineDesc = MTL::RenderPipelineDescriptor::alloc()->init();
     pipelineDesc->setVertexFunction(vertexFunction);
     pipelineDesc->setFragmentFunction(fragmentFunction);
+    pipelineDesc->setVertexDescriptor(vertexDescriptor);
     pipelineDesc->colorAttachments()->object(0)->setPixelFormat(g_imguiMetal4.colorFormat);
     pipelineDesc->colorAttachments()->object(0)->setBlendingEnabled(true);
     pipelineDesc->colorAttachments()->object(0)->setRgbBlendOperation(MTL::BlendOperationAdd);
@@ -204,6 +218,7 @@ bool ensurePipeline() {
     g_imguiMetal4.pipelineState = g_imguiMetal4.device->newRenderPipelineState(pipelineDesc, &error);
 
     pipelineDesc->release();
+    vertexDescriptor->release();
     vertexFunction->release();
     fragmentFunction->release();
     library->release();
@@ -425,19 +440,26 @@ extern "C" void imguiRenderDrawData(void* mtlCommandBuffer, void* mtlRenderComma
                 encoder->setArgumentTable(fragmentTable, MTL::RenderStageFragment);
             }
 
+            if (vertexTable) {
+                const uint64_t vertexOffset =
+                    (globalVertexOffset + drawCommand->VtxOffset) * sizeof(ImDrawVert);
+                vertexTable->setAddress(vertexAllocation.gpuAddress + vertexOffset,
+                                        sizeof(ImDrawVert),
+                                        0);
+                encoder->setArgumentTable(vertexTable, MTL::RenderStageVertex);
+            }
+
             const MTL::IndexType indexType = sizeof(ImDrawIdx) == 2 ? MTL::IndexTypeUInt16 : MTL::IndexTypeUInt32;
             const uint64_t indexOffset =
                 indexAllocation.gpuAddress +
                 (globalIndexOffset + drawCommand->IdxOffset) * sizeof(ImDrawIdx);
-            const int64_t baseVertex =
-                static_cast<int64_t>(globalVertexOffset + drawCommand->VtxOffset);
             encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle,
                                            drawCommand->ElemCount,
                                            indexType,
                                            indexOffset,
                                            drawCommand->ElemCount * sizeof(ImDrawIdx),
                                            1,
-                                           baseVertex,
+                                           0,
                                            0);
         }
         globalVertexOffset += static_cast<uint64_t>(drawList->VtxBuffer.Size);
