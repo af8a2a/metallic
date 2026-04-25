@@ -24,14 +24,16 @@ private:
 
 class MetalFrameGraphBackend final : public RhiFrameGraphBackend {
 public:
-    explicit MetalFrameGraphBackend(void* deviceHandle)
-        : m_device(static_cast<MTL::Device*>(deviceHandle)) {}
+    explicit MetalFrameGraphBackend(void* deviceHandle, void* commandQueueHandle = nullptr)
+        : m_device(static_cast<MTL::Device*>(deviceHandle)),
+          m_commandQueue(static_cast<MTL4::CommandQueue*>(commandQueueHandle)) {}
 
     std::unique_ptr<RhiTexture> createTexture(const RhiTextureDesc& desc) override;
     std::unique_ptr<RhiBuffer> createBuffer(const RhiBufferDesc& desc) override;
 
 private:
     MTL::Device* m_device = nullptr;
+    MTL4::CommandQueue* m_commandQueue = nullptr;
 };
 
 class MetalCommandBuffer final : public RhiCommandBuffer {
@@ -41,11 +43,27 @@ public:
     std::unique_ptr<RhiRenderCommandEncoder> beginRenderPass(const RhiRenderPassDesc& desc) override;
     std::unique_ptr<RhiComputeCommandEncoder> beginComputePass(const RhiComputePassDesc& desc) override;
     std::unique_ptr<RhiBlitCommandEncoder> beginBlitPass(const RhiBlitPassDesc& desc) override;
+    void prepareTextureForSampling(const RhiTexture* texture) override;
+    void prepareTextureForStorage(const RhiTexture* texture) override;
+    void prepareTextureForTransferSrc(const RhiTexture* texture) override;
+    void prepareTextureForTransferDst(const RhiTexture* texture) override;
+    void prepareBufferForStorageRead(const RhiBuffer* buffer) override;
+    void prepareBufferForStorageWrite(const RhiBuffer* buffer) override;
+    void prepareBufferForIndirect(const RhiBuffer* buffer) override;
+    void prepareBufferForIndexInput(const RhiBuffer* buffer) override;
+    void prepareBufferForVertexInput(const RhiBuffer* buffer) override;
+    void flushBarriers() override;
 
 private:
+    void queueBarrier(MTL::Stages afterStages, MTL::Stages beforeStages);
+    void emitPendingBarriers(MTL4::RenderCommandEncoder* encoder);
+    void emitPendingBarriers(MTL4::ComputeCommandEncoder* encoder);
+
     MTL4::CommandBuffer* m_commandBuffer = nullptr;
     TracyMetalCtxHandle m_tracyContext = nullptr;
     uint32_t m_zoneIndex = 0;
+    MTL::Stages m_pendingAfterStages = static_cast<MTL::Stages>(0);
+    MTL::Stages m_pendingBeforeStages = static_cast<MTL::Stages>(0);
 };
 
 MTL::Texture* metalTexture(RhiTexture* texture);

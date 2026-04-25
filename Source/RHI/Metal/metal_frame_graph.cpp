@@ -7,6 +7,7 @@
 #include "metal_runtime.h"
 
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -98,9 +99,112 @@ MTL::ResourceID nullResourceID() {
     return MTL::ResourceID{0};
 }
 
+MTL::Stages stageMask(MTL::Stages a, MTL::Stages b) {
+    return static_cast<MTL::Stages>(static_cast<NS::UInteger>(a) | static_cast<NS::UInteger>(b));
+}
+
+MTL::Stages stageMask(MTL::Stages a, MTL::Stages b, MTL::Stages c) {
+    return stageMask(stageMask(a, b), c);
+}
+
+MTL::Stages stageMask(MTL::Stages a, MTL::Stages b, MTL::Stages c, MTL::Stages d) {
+    return stageMask(stageMask(a, b, c), d);
+}
+
+MTL::Stages stageMask(MTL::Stages a, MTL::Stages b, MTL::Stages c, MTL::Stages d, MTL::Stages e) {
+    return stageMask(stageMask(a, b, c, d), e);
+}
+
+bool hasStages(MTL::Stages stages) {
+    return static_cast<NS::UInteger>(stages) != 0;
+}
+
+MTL::Stages metalShaderReadStages() {
+    return stageMask(MTL::StageVertex,
+                     MTL::StageFragment,
+                     MTL::StageObject,
+                     MTL::StageMesh,
+                     MTL::StageDispatch);
+}
+
+MTL::Stages metalProducerStages() {
+    return stageMask(MTL::StageFragment,
+                     MTL::StageDispatch,
+                     MTL::StageBlit,
+                     MTL::StageAccelerationStructure);
+}
+
+MTL::Stages metalRenderAttachmentStages() {
+    return MTL::StageFragment;
+}
+
+MTL::Stages metalIndirectConsumerStages() {
+    return stageMask(MTL::StageDispatch, MTL::StageObject, MTL::StageMesh, MTL::StageVertex);
+}
+
+void emitQueueBarrier(MTL4::RenderCommandEncoder* encoder,
+                      MTL::Stages afterStages,
+                      MTL::Stages beforeStages) {
+    if (encoder && hasStages(afterStages) && hasStages(beforeStages)) {
+        encoder->barrierAfterQueueStages(afterStages, beforeStages, MTL4::VisibilityOptionDevice);
+    }
+}
+
+void emitQueueBarrier(MTL4::ComputeCommandEncoder* encoder,
+                      MTL::Stages afterStages,
+                      MTL::Stages beforeStages) {
+    if (encoder && hasStages(afterStages) && hasStages(beforeStages)) {
+        encoder->barrierAfterQueueStages(afterStages, beforeStages, MTL4::VisibilityOptionDevice);
+    }
+}
+
 MTL::GPUAddress bufferAddress(const RhiBuffer& buffer, uint64_t offset) {
     auto* metal = static_cast<MTL::Buffer*>(buffer.nativeHandle());
     return metal ? metal->gpuAddress() + offset : 0;
+}
+
+bool uploadPrivateBufferInitialData(MTL::Device* device,
+                                    MTL4::CommandQueue* commandQueue,
+                                    MTL::Buffer* destination,
+                                    const void* data,
+                                    size_t size) {
+    if (!device || !commandQueue || !destination || !data || size == 0) {
+        return false;
+    }
+
+    auto* staging = device->newBuffer(data, size, MTL::ResourceStorageModeShared);
+    auto* allocator = device->newCommandAllocator();
+    auto* commandBuffer = device->newCommandBuffer();
+    auto* event = device->newSharedEvent();
+    if (!staging || !allocator || !commandBuffer || !event) {
+        if (staging) staging->release();
+        if (allocator) allocator->release();
+        if (commandBuffer) commandBuffer->release();
+        if (event) event->release();
+        return false;
+    }
+
+    staging->setLabel(NS::String::string("Metal4 Private Buffer Initial Upload", NS::UTF8StringEncoding));
+    metalTrackAllocation(device, staging);
+
+    allocator->reset();
+    commandBuffer->beginCommandBuffer(allocator);
+    auto* encoder = commandBuffer->computeCommandEncoder();
+    encoder->copyFromBuffer(staging, 0, destination, 0, size);
+    encoder->endEncoding();
+    commandBuffer->endCommandBuffer();
+
+    const MTL4::CommandBuffer* buffers[] = { commandBuffer };
+    commandQueue->commit(buffers, 1);
+    commandQueue->signalEvent(event, 1);
+    const bool completed = event->waitUntilSignaledValue(1, std::numeric_limits<uint64_t>::max());
+
+    metalUntrackAllocation(staging);
+    staging->release();
+    event->release();
+    commandBuffer->release();
+    allocator->release();
+    return completed;
 }
 
 class MetalArgumentTableBinder {
@@ -301,6 +405,7 @@ public:
                                       RhiSize3D threadsPerObjectThreadgroup,
                                       RhiSize3D threadsPerMeshThreadgroup) override {
         bindArgumentTables();
+        emitQueueBarrier(m_encoder, metalProducerStages(), metalIndirectConsumerStages());
         m_encoder->drawMeshThreadgroups(bufferAddress(indirectBuffer, indirectBufferOffset),
                                         metalSize(threadsPerObjectThreadgroup),
                                         metalSize(threadsPerMeshThreadgroup));
@@ -367,9 +472,29 @@ public:
     void setAccelerationStructure(const RhiAccelerationStructure* accelerationStructure, uint32_t index) override {
         m_computeTable.setAccelerationStructure(accelerationStructure, index);
     }
-    void useResource(const RhiBuffer& /*resource*/, RhiResourceUsage /*usage*/) override {}
-    void useResource(const RhiAccelerationStructure& /*resource*/, RhiResourceUsage /*usage*/) override {}
-    void memoryBarrier(RhiBarrierScope /*scope*/) override {
+    void useResource(const RhiBuffer& resource, RhiResourceUsage /*usage*/) override {
+        if (resource.nativeHandle()) {
+            emitQueueBarrier(m_encoder, metalProducerStages(), MTL::StageDispatch);
+        }
+    }
+    void useResource(const RhiAccelerationStructure& resource, RhiResourceUsage /*usage*/) override {
+        if (resource.nativeHandle()) {
+            emitQueueBarrier(m_encoder,
+                             stageMask(MTL::StageAccelerationStructure, MTL::StageDispatch, MTL::StageBlit),
+                             MTL::StageDispatch);
+        }
+    }
+    void memoryBarrier(RhiBarrierScope scope) override {
+        if (scope == RhiBarrierScope::None) {
+            return;
+        }
+        const uint32_t scopeMask = static_cast<uint32_t>(scope);
+        const bool includesTextures = (scopeMask & static_cast<uint32_t>(RhiBarrierScope::Textures)) != 0 ||
+                                      (scopeMask & static_cast<uint32_t>(RhiBarrierScope::RenderTargets)) != 0;
+        const bool includesBuffers = (scopeMask & static_cast<uint32_t>(RhiBarrierScope::Buffers)) != 0;
+        if (!includesTextures && !includesBuffers) {
+            return;
+        }
         m_encoder->barrierAfterEncoderStages(MTL::StageDispatch,
                                              MTL::StageDispatch,
                                              MTL4::VisibilityOptionDevice);
@@ -382,6 +507,7 @@ public:
                                       uint64_t indirectBufferOffset,
                                       RhiSize3D threadsPerThreadgroup) override {
         bindArgumentTable();
+        emitQueueBarrier(m_encoder, metalProducerStages(), MTL::StageDispatch);
         m_encoder->dispatchThreadgroups(bufferAddress(indirectBuffer, indirectBufferOffset),
                                         metalSize(threadsPerThreadgroup));
     }
@@ -420,8 +546,9 @@ public:
                      RhiSize3D sourceSize,
                      const RhiTexture& destination,
                      uint32_t destinationSlice,
-                     uint32_t destinationLevel,
-                     RhiOrigin3D destinationOrigin) override {
+	                     uint32_t destinationLevel,
+	                     RhiOrigin3D destinationOrigin) override {
+        emitQueueBarrier(m_encoder, metalProducerStages(), MTL::StageBlit);
         m_encoder->copyFromTexture(static_cast<MTL::Texture*>(source.nativeHandle()),
                                    sourceSlice,
                                    sourceLevel,
@@ -469,6 +596,16 @@ std::unique_ptr<RhiBuffer> MetalFrameGraphBackend::createBuffer(const RhiBufferD
         buffer->setLabel(NS::String::string(desc.debugName, NS::UTF8StringEncoding));
     }
     metalTrackAllocation(m_device, buffer);
+    if (buffer && desc.initialData && !desc.hostVisible && !buffer->contents()) {
+        if (!uploadPrivateBufferInitialData(m_device, m_commandQueue, buffer, desc.initialData, desc.size)) {
+            metalReleaseHandle(buffer);
+            buffer = m_device->newBuffer(desc.initialData, desc.size, MTL::ResourceStorageModeShared);
+            if (buffer && desc.debugName) {
+                buffer->setLabel(NS::String::string(desc.debugName, NS::UTF8StringEncoding));
+            }
+            metalTrackAllocation(m_device, buffer);
+        }
+    }
 
     return std::make_unique<MetalOwnedBuffer>(buffer, desc.size);
 }
@@ -490,6 +627,9 @@ std::unique_ptr<RhiRenderCommandEncoder> MetalCommandBuffer::beginRenderPass(con
         attachment->setLoadAction(metalLoadAction(colorAttachment.loadAction));
         attachment->setStoreAction(metalStoreAction(colorAttachment.storeAction));
         attachment->setClearColor(metalClearColor(colorAttachment.clearColor));
+        if (texture) {
+            queueBarrier(metalProducerStages(), metalRenderAttachmentStages());
+        }
         if (texture && renderTargetWidth == 0 && renderTargetHeight == 0) {
             renderTargetWidth = static_cast<uint32_t>(texture->width());
             renderTargetHeight = static_cast<uint32_t>(texture->height());
@@ -503,6 +643,9 @@ std::unique_ptr<RhiRenderCommandEncoder> MetalCommandBuffer::beginRenderPass(con
         depthAttachment->setLoadAction(metalLoadAction(desc.depthAttachment.loadAction));
         depthAttachment->setStoreAction(metalStoreAction(desc.depthAttachment.storeAction));
         depthAttachment->setClearDepth(desc.depthAttachment.clearDepth);
+        if (texture) {
+            queueBarrier(metalProducerStages(), metalRenderAttachmentStages());
+        }
         if (texture && renderTargetWidth == 0 && renderTargetHeight == 0) {
             renderTargetWidth = static_cast<uint32_t>(texture->width());
             renderTargetHeight = static_cast<uint32_t>(texture->height());
@@ -520,6 +663,7 @@ std::unique_ptr<RhiRenderCommandEncoder> MetalCommandBuffer::beginRenderPass(con
     TracyMetalGpuZone zone = nullptr;
     MTL4::RenderCommandEncoder* encoder = m_commandBuffer->renderCommandEncoder(renderPassDesc);
     renderPassDesc->release();
+    emitPendingBarriers(encoder);
     return std::make_unique<MetalRenderCommandEncoder>(m_commandBuffer, encoder, zone);
 }
 
@@ -529,6 +673,7 @@ std::unique_ptr<RhiComputeCommandEncoder> MetalCommandBuffer::beginComputePass(c
     (void)desc;
     TracyMetalGpuZone zone = nullptr;
     MTL4::ComputeCommandEncoder* encoder = m_commandBuffer->computeCommandEncoder();
+    emitPendingBarriers(encoder);
     return std::make_unique<MetalComputeCommandEncoder>(m_commandBuffer, encoder, zone);
 }
 
@@ -538,7 +683,84 @@ std::unique_ptr<RhiBlitCommandEncoder> MetalCommandBuffer::beginBlitPass(const R
     (void)desc;
     TracyMetalGpuZone zone = nullptr;
     MTL4::ComputeCommandEncoder* encoder = m_commandBuffer->computeCommandEncoder();
+    emitPendingBarriers(encoder);
     return std::make_unique<MetalBlitCommandEncoder>(encoder, zone);
+}
+
+void MetalCommandBuffer::prepareTextureForSampling(const RhiTexture* texture) {
+    if (texture && texture->nativeHandle()) {
+        queueBarrier(metalProducerStages(), metalShaderReadStages());
+    }
+}
+
+void MetalCommandBuffer::prepareTextureForStorage(const RhiTexture* texture) {
+    if (texture && texture->nativeHandle()) {
+        queueBarrier(metalProducerStages(), MTL::StageDispatch);
+    }
+}
+
+void MetalCommandBuffer::prepareTextureForTransferSrc(const RhiTexture* texture) {
+    if (texture && texture->nativeHandle()) {
+        queueBarrier(metalProducerStages(), MTL::StageBlit);
+    }
+}
+
+void MetalCommandBuffer::prepareTextureForTransferDst(const RhiTexture* texture) {
+    if (texture && texture->nativeHandle()) {
+        queueBarrier(metalProducerStages(), MTL::StageBlit);
+    }
+}
+
+void MetalCommandBuffer::prepareBufferForStorageRead(const RhiBuffer* buffer) {
+    if (buffer && buffer->nativeHandle()) {
+        queueBarrier(metalProducerStages(), metalShaderReadStages());
+    }
+}
+
+void MetalCommandBuffer::prepareBufferForStorageWrite(const RhiBuffer* buffer) {
+    if (buffer && buffer->nativeHandle()) {
+        queueBarrier(metalProducerStages(), MTL::StageDispatch);
+    }
+}
+
+void MetalCommandBuffer::prepareBufferForIndirect(const RhiBuffer* buffer) {
+    if (buffer && buffer->nativeHandle()) {
+        queueBarrier(metalProducerStages(), metalIndirectConsumerStages());
+    }
+}
+
+void MetalCommandBuffer::prepareBufferForIndexInput(const RhiBuffer* buffer) {
+    if (buffer && buffer->nativeHandle()) {
+        queueBarrier(metalProducerStages(), MTL::StageVertex);
+    }
+}
+
+void MetalCommandBuffer::prepareBufferForVertexInput(const RhiBuffer* buffer) {
+    if (buffer && buffer->nativeHandle()) {
+        queueBarrier(metalProducerStages(), stageMask(MTL::StageVertex, MTL::StageObject, MTL::StageMesh));
+    }
+}
+
+void MetalCommandBuffer::flushBarriers() {}
+
+void MetalCommandBuffer::queueBarrier(MTL::Stages afterStages, MTL::Stages beforeStages) {
+    if (!hasStages(afterStages) || !hasStages(beforeStages)) {
+        return;
+    }
+    m_pendingAfterStages = stageMask(m_pendingAfterStages, afterStages);
+    m_pendingBeforeStages = stageMask(m_pendingBeforeStages, beforeStages);
+}
+
+void MetalCommandBuffer::emitPendingBarriers(MTL4::RenderCommandEncoder* encoder) {
+    emitQueueBarrier(encoder, m_pendingAfterStages, m_pendingBeforeStages);
+    m_pendingAfterStages = static_cast<MTL::Stages>(0);
+    m_pendingBeforeStages = static_cast<MTL::Stages>(0);
+}
+
+void MetalCommandBuffer::emitPendingBarriers(MTL4::ComputeCommandEncoder* encoder) {
+    emitQueueBarrier(encoder, m_pendingAfterStages, m_pendingBeforeStages);
+    m_pendingAfterStages = static_cast<MTL::Stages>(0);
+    m_pendingBeforeStages = static_cast<MTL::Stages>(0);
 }
 
 MTL::Texture* metalTexture(RhiTexture* texture) {

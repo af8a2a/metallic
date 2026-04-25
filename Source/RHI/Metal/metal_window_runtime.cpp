@@ -75,7 +75,7 @@ public:
     }
 
     std::unique_ptr<RhiFrameGraphBackend> createFrameGraphBackend() const override {
-        return std::make_unique<MetalFrameGraphBackend>(m_device.nativeHandle());
+        return std::make_unique<MetalFrameGraphBackend>(m_device.nativeHandle(), m_commandQueue.nativeHandle());
     }
 
     std::unique_ptr<RhiCommandBuffer> createCommandBuffer() const override {

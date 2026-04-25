@@ -15,11 +15,21 @@ MTL::VertexDescriptor* metalVertexDescriptor(void* handle) {
 
 MTL::PixelFormat metalPixelFormat(RhiFormat format) {
     switch (format) {
+    case RhiFormat::R8Unorm: return MTL::PixelFormatR8Unorm;
+    case RhiFormat::R16Float: return MTL::PixelFormatR16Float;
+    case RhiFormat::R32Float: return MTL::PixelFormatR32Float;
     case RhiFormat::R32Uint: return MTL::PixelFormatR32Uint;
+    case RhiFormat::RG8Unorm: return MTL::PixelFormatRG8Unorm;
+    case RhiFormat::RG16Float: return MTL::PixelFormatRG16Float;
+    case RhiFormat::RG32Float: return MTL::PixelFormatRG32Float;
+    case RhiFormat::RGBA8Unorm: return MTL::PixelFormatRGBA8Unorm;
     case RhiFormat::RGBA8Srgb: return MTL::PixelFormatRGBA8Unorm_sRGB;
     case RhiFormat::RGBA16Float: return MTL::PixelFormatRGBA16Float;
+    case RhiFormat::RGBA32Float: return MTL::PixelFormatRGBA32Float;
     case RhiFormat::BGRA8Unorm: return MTL::PixelFormatBGRA8Unorm;
     case RhiFormat::D32Float: return MTL::PixelFormatDepth32Float;
+    case RhiFormat::D16Unorm: return MTL::PixelFormatDepth16Unorm;
+    case RhiFormat::Undefined:
     default: return MTL::PixelFormatInvalid;
     }
 }
