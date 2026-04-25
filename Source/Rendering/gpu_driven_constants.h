@@ -59,6 +59,9 @@
 #define GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING 16u
 #define GPU_DRIVEN_CULL_GROUP_AGE_BINDING 17u
 #define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 18u
+#define GPU_DRIVEN_HZB_TEXTURE_BINDING_COUNT 10u
+#define GPU_DRIVEN_CULL_CURRENT_HZB_TEXTURE_BINDING_BASE \
+    (GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE + GPU_DRIVEN_HZB_TEXTURE_BINDING_COUNT)
 
 // Shared bindings for the streaming age filter pipeline.
 #define GPU_DRIVEN_STREAMING_AGE_UNIFORMS_BINDING 0u
@@ -206,6 +209,8 @@ struct MeshletCullBindings {
         GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING;
     static constexpr uint32_t kGroupAge = GPU_DRIVEN_CULL_GROUP_AGE_BINDING;
     static constexpr uint32_t kHzbTextureBase = GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE;
+    static constexpr uint32_t kCurrentHzbTextureBase =
+        GPU_DRIVEN_CULL_CURRENT_HZB_TEXTURE_BINDING_BASE;
     static constexpr uint32_t kInstanceData = kInstances;
 };
 

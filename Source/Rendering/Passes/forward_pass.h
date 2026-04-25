@@ -12,6 +12,14 @@ public:
     ForwardPass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
+    METALLIC_PASS_TYPE_INFO(ForwardPass, "Forward Pass", "Geometry",
+        (std::vector<PassSlotInfo>{makeInputSlot("skyOutput", "Sky", true)}),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("forwardColor", "Forward Color"),
+            makeOutputSlot("depth", "Depth")
+        }),
+        PassTypeInfo::PassType::Render);
+
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -178,3 +186,4 @@ private:
     std::string m_name = "Forward Pass";
 };
 
+METALLIC_REGISTER_PASS(ForwardPass);

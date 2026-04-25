@@ -13,6 +13,11 @@ public:
 
     ~AutoExposurePass() override = default;
 
+    METALLIC_PASS_TYPE_INFO(AutoExposurePass, "Auto Exposure", "Post-Process",
+        (std::vector<PassSlotInfo>{makeInputSlot("source", "Source")}),
+        (std::vector<PassSlotInfo>{makeOutputSlot("exposureLut", "Exposure LUT")}),
+        PassTypeInfo::PassType::Compute);
+
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -137,5 +142,6 @@ private:
     float m_highPercentile = 0.9f;
 };
 
+METALLIC_REGISTER_PASS(AutoExposurePass);
 
 

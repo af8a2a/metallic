@@ -9,6 +9,11 @@ public:
     ImGuiOverlayPass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
+    METALLIC_PASS_TYPE_INFO(ImGuiOverlayPass, "ImGui Overlay", "UI",
+        (std::vector<PassSlotInfo>{makeInputSlot("depth", "Depth", true)}),
+        (std::vector<PassSlotInfo>{makeTargetSlot("target", "Target")}),
+        PassTypeInfo::PassType::Render);
+
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -44,6 +49,8 @@ private:
     int m_width, m_height;
     std::string m_name = "ImGui Overlay";
 };
+
+METALLIC_REGISTER_PASS(ImGuiOverlayPass);
 
 
 

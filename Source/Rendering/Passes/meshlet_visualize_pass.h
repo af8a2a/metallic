@@ -10,6 +10,11 @@ public:
     MeshletVisualizePass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
+    METALLIC_PASS_TYPE_INFO(MeshletVisualizePass, "Meshlet Visualize", "Geometry",
+        (std::vector<PassSlotInfo>{makeInputSlot("visibility", "Visibility")}),
+        (std::vector<PassSlotInfo>{makeOutputSlot("lightingOutput", "Lighting")}),
+        PassTypeInfo::PassType::Compute);
+
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -79,5 +84,8 @@ private:
     std::string m_name = "Meshlet Visualize";
 };
 
+#ifndef _WIN32
+METALLIC_REGISTER_PASS(MeshletVisualizePass);
+#endif
 
 

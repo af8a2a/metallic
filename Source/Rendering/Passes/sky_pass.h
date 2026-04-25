@@ -11,6 +11,11 @@ public:
     SkyPass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
+    METALLIC_PASS_TYPE_INFO(SkyPass, "Sky Pass", "Environment",
+        (std::vector<PassSlotInfo>{}),
+        (std::vector<PassSlotInfo>{makeOutputSlot("skyOutput", "Sky Output")}),
+        PassTypeInfo::PassType::Render);
+
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -100,6 +105,8 @@ private:
     std::string m_name = "Atmosphere Sky";
     float m_exposure = 10.0f;
 };
+
+METALLIC_REGISTER_PASS(SkyPass);
 
 
 

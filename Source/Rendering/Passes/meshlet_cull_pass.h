@@ -26,6 +26,66 @@ public:
 
     ~MeshletCullPass() override = default;
 
+    METALLIC_PASS_TYPE_INFO(MeshletCullPass, "Meshlet Cull", "Geometry",
+        (std::vector<PassSlotInfo>{
+            makeInputSlot("streamingSync", "Streaming Sync", true),
+            makeInputSlot("visibleMeshletsInput", "Visible Meshlets Input", true),
+            makeInputSlot("visibilityWorklistInput", "Visibility Worklist Input", true),
+            makeInputSlot("visibilityWorklistStateInput", "Visibility Worklist State Input", true),
+            makeInputSlot("cullCounterInput", "Cull Counter Input", true),
+            makeInputSlot("currentHzb0", "Current HZB 0", true),
+            makeInputSlot("currentHzb1", "Current HZB 1", true),
+            makeInputSlot("currentHzb2", "Current HZB 2", true),
+            makeInputSlot("currentHzb3", "Current HZB 3", true),
+            makeInputSlot("currentHzb4", "Current HZB 4", true),
+            makeInputSlot("currentHzb5", "Current HZB 5", true),
+            makeInputSlot("currentHzb6", "Current HZB 6", true),
+            makeInputSlot("currentHzb7", "Current HZB 7", true),
+            makeInputSlot("currentHzb8", "Current HZB 8", true),
+            makeInputSlot("currentHzb9", "Current HZB 9", true)
+        }),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("cullResult", "Cull Result", true),
+            makeOutputSlot("visibleMeshlets", "Visible Meshlets", true),
+            makeOutputSlot("cullCounter", "Cull Counter", true),
+            makeOutputSlot("instanceData", "Instance Data", true),
+            makeOutputSlot("visibilityWorklist", "Visibility Worklist", true),
+            makeOutputSlot("visibilityWorklistState", "Visibility Worklist State", true),
+            makeOutputSlot("visibilityIndirectArgs", "Visibility Indirect Args", true),
+            makeOutputSlot("visibilityInstances", "Visibility Instances", true)
+        }),
+        PassTypeInfo::PassType::Compute);
+
+    METALLIC_PASS_EDITOR_TYPE_INFO(MeshletCullPass, "Meshlet Cull", "Geometry",
+        (std::vector<PassSlotInfo>{
+            makeHiddenInputSlot("streamingSync", "Streaming Sync", true),
+            makeHiddenInputSlot("visibleMeshletsInput", "Visible Meshlets Input", true),
+            makeHiddenInputSlot("visibilityWorklistInput", "Visibility Worklist Input", true),
+            makeHiddenInputSlot("visibilityWorklistStateInput", "Visibility Worklist State Input", true),
+            makeHiddenInputSlot("cullCounterInput", "Cull Counter Input", true),
+            makeHiddenInputSlot("currentHzb0", "Current HZB 0", true),
+            makeHiddenInputSlot("currentHzb1", "Current HZB 1", true),
+            makeHiddenInputSlot("currentHzb2", "Current HZB 2", true),
+            makeHiddenInputSlot("currentHzb3", "Current HZB 3", true),
+            makeHiddenInputSlot("currentHzb4", "Current HZB 4", true),
+            makeHiddenInputSlot("currentHzb5", "Current HZB 5", true),
+            makeHiddenInputSlot("currentHzb6", "Current HZB 6", true),
+            makeHiddenInputSlot("currentHzb7", "Current HZB 7", true),
+            makeHiddenInputSlot("currentHzb8", "Current HZB 8", true),
+            makeHiddenInputSlot("currentHzb9", "Current HZB 9", true)
+        }),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("cullResult", "Cull Result"),
+            makeHiddenOutputSlot("visibleMeshlets", "Visible Meshlets", true),
+            makeHiddenOutputSlot("cullCounter", "Cull Counter", true),
+            makeHiddenOutputSlot("instanceData", "Instance Data", true),
+            makeHiddenOutputSlot("visibilityWorklist", "Visibility Worklist", true),
+            makeHiddenOutputSlot("visibilityWorklistState", "Visibility Worklist State", true),
+            makeHiddenOutputSlot("visibilityIndirectArgs", "Visibility Indirect Args", true),
+            makeHiddenOutputSlot("visibilityInstances", "Visibility Instances", true)
+        }),
+        PassTypeInfo::PassType::Compute);
+
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -36,6 +96,14 @@ public:
 
     void configure(const PassConfig& config) override {
         m_name = config.name;
+        if (config.config.is_object()) {
+            if (config.config.contains("cullPassIndex")) {
+                m_cullPassIndex = config.config["cullPassIndex"].get<uint32_t>();
+            } else if (config.config.contains("phase")) {
+                const std::string phase = config.config["phase"].get<std::string>();
+                m_cullPassIndex = (phase == "second" || phase == "late") ? 1u : 0u;
+            }
+        }
     }
 
     FGResource cullResult;
@@ -79,18 +147,36 @@ public:
         instanceData = visibleInstanceWorklist.payload;
         m_visibleInstanceState = visibleInstanceWorklist.state;
 
-        const auto visibleMeshletWorklist =
-            GpuDriven::createTypedIndirectWorklist<MeshletDrawInfo,
-                                                   GpuDriven::MeshDispatchCommandLayout>(
-                builder,
-                "visibleMeshlets",
-                "VisibleMeshletBuffer",
-                m_maxMeshlets,
-                "cullCounter",
-                "VisibilityWorklistStateBuffer",
-                true);
-        visibleMeshlets = visibleMeshletWorklist.payload;
-        cullCounter = visibleMeshletWorklist.state;
+        FGResource visibleMeshletsInput = getInput("visibleMeshletsInput");
+        if (!visibleMeshletsInput.isValid()) {
+            visibleMeshletsInput = getInput("visibilityWorklistInput");
+        }
+        FGResource cullCounterInput = getInput("visibilityWorklistStateInput");
+        if (!cullCounterInput.isValid()) {
+            cullCounterInput = getInput("cullCounterInput");
+        }
+        m_appendToExistingWorklist = visibleMeshletsInput.isValid() && cullCounterInput.isValid();
+        if (m_appendToExistingWorklist) {
+            visibleMeshlets = builder.write(visibleMeshletsInput,
+                                            FGResourceUsage::StorageRead |
+                                                FGResourceUsage::StorageWrite);
+            cullCounter = builder.write(cullCounterInput,
+                                        FGResourceUsage::StorageRead |
+                                            FGResourceUsage::StorageWrite);
+        } else {
+            const auto visibleMeshletWorklist =
+                GpuDriven::createTypedIndirectWorklist<MeshletDrawInfo,
+                                                       GpuDriven::MeshDispatchCommandLayout>(
+                    builder,
+                    "visibleMeshlets",
+                    "VisibleMeshletBuffer",
+                    m_maxMeshlets,
+                    "cullCounter",
+                    "VisibilityWorklistStateBuffer",
+                    true);
+            visibleMeshlets = visibleMeshletWorklist.payload;
+            cullCounter = visibleMeshletWorklist.state;
+        }
 
         m_clusterTraversalStats = builder.create("ClusterTraversalStats",
                                                  makeTraversalStatsBufferDesc());
@@ -124,8 +210,8 @@ public:
                            makeSingleElementBufferDesc<uint32_t>("DummyClusterLodGroupAge"));
 
         m_hzbHistoryRead.clear();
-        m_hzbLevelCount = computeHzbLevelCount(static_cast<uint32_t>(m_width),
-                                               static_cast<uint32_t>(m_height));
+        m_currentHzbRead.clear();
+        m_hzbLevelCount = kHzbMaxLevels;
         m_hzbHistoryRead.reserve(m_hzbLevelCount);
         for (uint32_t level = 0; level < m_hzbLevelCount; ++level) {
             const std::string resourceName = hzbHistoryResourceName(level);
@@ -134,6 +220,15 @@ public:
                                     makeHzbTextureDesc(static_cast<uint32_t>(m_width),
                                                        static_cast<uint32_t>(m_height),
                                                        level)));
+        }
+
+        m_currentHzbRead.reserve(kHzbMaxLevels);
+        for (uint32_t level = 0; level < kHzbMaxLevels; ++level) {
+            FGResource currentHzbInput = getInput(currentHzbInputSlotName(level));
+            if (!currentHzbInput.isValid()) {
+                break;
+            }
+            m_currentHzbRead.push_back(builder.read(currentHzbInput, FGResourceUsage::Sampled));
         }
     }
 
@@ -179,19 +274,19 @@ public:
             std::memset(clusterTraversalStatsBuffer->mappedData(), 0, sizeof(ClusterTraversalStats));
         }
 
-        GpuDriven::ensureWorklistStateBufferInitialized<GpuDriven::ComputeDispatchCommandLayout>(
-            visibleInstanceStateBuffer,
-            m_initializedInstanceStateBuffer);
-        GpuDriven::ensureWorklistStateBufferInitialized<GpuDriven::MeshDispatchCommandLayout>(
-            worklistStateBuffer,
-            m_initializedMeshletStateBuffer);
-
         m_lastVisibleInstanceCount =
             GpuDriven::readPublishedWorkItemCount<GpuDriven::ComputeDispatchCommandLayout>(
                 visibleInstanceStateBuffer);
         m_lastVisibleCount =
             GpuDriven::readPublishedWorkItemCount<GpuDriven::MeshDispatchCommandLayout>(
                 worklistStateBuffer);
+
+        GpuDriven::seedWorklistStateBuffer<GpuDriven::ComputeDispatchCommandLayout>(
+            visibleInstanceStateBuffer);
+        if (!m_appendToExistingWorklist) {
+            GpuDriven::seedWorklistStateBuffer<GpuDriven::MeshDispatchCommandLayout>(
+                worklistStateBuffer);
+        }
 
         const ClusterLODData& clusterLodData = m_ctx.clusterLodData;
         ClusterStreamingService* streamingService =
@@ -272,30 +367,60 @@ public:
             }
         }
 
+        std::array<const RhiTexture*, kHzbMaxLevels> currentHzbTextures{};
+        uint32_t currentHzbTextureCount = 0;
+        if (m_cullPassIndex > 0u && !m_currentHzbRead.empty()) {
+            const uint32_t maxLevels =
+                std::min<uint32_t>(static_cast<uint32_t>(m_currentHzbRead.size()), kHzbMaxLevels);
+            for (uint32_t level = 0; level < maxLevels; ++level) {
+                const RhiTexture* currentTexture = m_frameGraph->getTexture(m_currentHzbRead[level]);
+                if (!currentTexture) {
+                    break;
+                }
+                currentHzbTextures[currentHzbTextureCount++] = currentTexture;
+            }
+        }
+        m_currentHzbLevelCount = currentHzbTextureCount;
+
         const float4x4 currentCullProj = m_frameContext->unjitteredProj;
+        const bool classifyWithCurrentHzb =
+            m_cullPassIndex > 0u && currentHzbTextureCount > 0u;
+        const RhiTexture* const* classifyHzbTextures =
+            classifyWithCurrentHzb ? currentHzbTextures.data() : hzbTextures.data();
+        const uint32_t classifyHzbTextureCount =
+            classifyWithCurrentHzb ? currentHzbTextureCount : hzbTextureCount;
 
         InstanceClassifyUniforms classifyUni{};
         classifyUni.viewProj = transpose(currentCullProj * m_frameContext->view);
-        classifyUni.prevViewProj = transpose(m_frameContext->prevCullProj * m_frameContext->prevCullView);
-        classifyUni.prevView = transpose(m_frameContext->prevCullView);
+        classifyUni.prevViewProj = classifyWithCurrentHzb
+            ? classifyUni.viewProj
+            : transpose(m_frameContext->prevCullProj * m_frameContext->prevCullView);
+        classifyUni.prevView = classifyWithCurrentHzb
+            ? transpose(m_frameContext->view)
+            : transpose(m_frameContext->prevCullView);
         classifyUni.cameraWorldPos = m_frameContext->cameraWorldPos;
-        classifyUni.prevCameraWorldPos = m_frameContext->prevCameraWorldPos;
-        classifyUni.prevProjScale = float2(std::abs(m_frameContext->prevCullProj[0].x),
-                                           std::abs(m_frameContext->prevCullProj[1].y));
+        classifyUni.prevCameraWorldPos = classifyWithCurrentHzb
+            ? m_frameContext->cameraWorldPos
+            : m_frameContext->prevCameraWorldPos;
+        classifyUni.prevProjScale = classifyWithCurrentHzb
+            ? float2(std::abs(currentCullProj[0].x), std::abs(currentCullProj[1].y))
+            : float2(std::abs(m_frameContext->prevCullProj[0].x),
+                     std::abs(m_frameContext->prevCullProj[1].y));
         classifyUni.instanceCount = gpuScene.instanceCount;
         classifyUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1u : 0u;
-        classifyUni.enableOcclusionCull = hzbTextureCount > 0 ? 1u : 0u;
-        classifyUni.hzbLevelCount = hzbTextureCount;
-        if (hzbTextureCount > 0) {
+        classifyUni.enableOcclusionCull = classifyHzbTextureCount > 0 ? 1u : 0u;
+        classifyUni.hzbLevelCount = classifyHzbTextureCount;
+        if (classifyHzbTextureCount > 0) {
             classifyUni.hzbTextureSize =
-                float2(static_cast<float>(hzbTextures[0]->width()),
-                       static_cast<float>(hzbTextures[0]->height()));
+                float2(static_cast<float>(classifyHzbTextures[0]->width()),
+                       static_cast<float>(classifyHzbTextures[0]->height()));
         }
         classifyUni.occlusionDepthBias = m_occlusionDepthBias;
         classifyUni.occlusionBoundsScale = m_occlusionBoundsScale;
 
         CullUniforms cullUni{};
         cullUni.viewProj = classifyUni.viewProj;
+        cullUni.view = transpose(m_frameContext->view);
         cullUni.prevViewProj = classifyUni.prevViewProj;
         cullUni.prevView = classifyUni.prevView;
         cullUni.cameraWorldPos = classifyUni.cameraWorldPos;
@@ -305,16 +430,24 @@ public:
         cullUni.renderTargetSize = float2(static_cast<float>(m_width), static_cast<float>(m_height));
         cullUni.prevProjScale = classifyUni.prevProjScale;
         cullUni.hzbTextureSize = classifyUni.hzbTextureSize;
+        if (currentHzbTextureCount > 0) {
+            cullUni.currentHzbTextureSize =
+                float2(static_cast<float>(currentHzbTextures[0]->width()),
+                       static_cast<float>(currentHzbTextures[0]->height()));
+        }
         cullUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1u : 0u;
         cullUni.enableConeCull = m_frameContext->enableConeCull ? 1u : 0u;
-        cullUni.enableOcclusionCull = classifyUni.enableOcclusionCull;
-        cullUni.hzbLevelCount = classifyUni.hzbLevelCount;
+        cullUni.enableOcclusionCull =
+            (hzbTextureCount > 0u || currentHzbTextureCount > 0u) ? 1u : 0u;
+        cullUni.hzbLevelCount = hzbTextureCount;
         cullUni.lodReferencePixels = m_lodReferencePixels;
         cullUni.occlusionDepthBias = m_occlusionDepthBias;
         cullUni.occlusionBoundsScale = m_occlusionBoundsScale;
         cullUni.clusterLodEnabled = clusterLodAvailable ? 1u : 0u;
         cullUni.enableResidencyStreaming = residencyStreamingEnabled ? 1u : 0u;
         cullUni.residencyRequestFrameIndex = m_frameContext ? m_frameContext->frameIndex : 0u;
+        cullUni.cullPassIndex = m_cullPassIndex;
+        cullUni.currentHzbLevelCount = currentHzbTextureCount;
 
         // Dispatch 1: coarse instance classification from scene tables.
         encoder.setComputePipeline(classifyIt->second);
@@ -323,10 +456,10 @@ public:
         encoder.setBuffer(&gpuScene.geometryBuffer, 0, GpuDriven::InstanceClassifyBindings::kGeometries);
         encoder.setBuffer(visibleInstanceBuffer, 0, GpuDriven::InstanceClassifyBindings::kOutput);
         encoder.setBuffer(visibleInstanceStateBuffer, 0, GpuDriven::InstanceClassifyBindings::kState);
-        if (hzbTextureCount > 0) {
-            encoder.setTextures(hzbTextures.data(),
+        if (classifyHzbTextureCount > 0) {
+            encoder.setTextures(classifyHzbTextures,
                                 GpuDriven::InstanceClassifyBindings::kHzbTextureBase,
-                                hzbTextureCount);
+                                classifyHzbTextureCount);
         }
         constexpr uint32_t kClassifyThreadgroupSize = 64u;
         const uint32_t classifyThreadgroups =
@@ -367,6 +500,15 @@ public:
                                 GpuDriven::MeshletCullBindings::kHzbTextureBase,
                                 hzbTextureCount);
         }
+        if (currentHzbTextureCount > 0) {
+            encoder.setTextures(currentHzbTextures.data(),
+                                GpuDriven::MeshletCullBindings::kCurrentHzbTextureBase,
+                                currentHzbTextureCount);
+        } else if (hzbTextureCount > 0) {
+            encoder.setTextures(hzbTextures.data(),
+                                GpuDriven::MeshletCullBindings::kCurrentHzbTextureBase,
+                                hzbTextureCount);
+        }
         encoder.dispatchThreadgroupsIndirect(*visibleInstanceStateBuffer,
                                              GpuDriven::ComputeDispatchCommandLayout::kIndirectArgsOffset,
                                              {64, 1, 1});
@@ -397,6 +539,8 @@ public:
         ImGui::Text("Classified Instances: %u", m_lastVisibleInstanceCount);
         ImGui::Text("Total Meshlets: %u", m_totalMeshlets);
         ImGui::Text("Visible Meshlets: %u", m_lastVisibleCount);
+        ImGui::Text("Cull Pass: %u", m_cullPassIndex);
+        ImGui::Text("Append Worklist: %s", m_appendToExistingWorklist ? "Yes" : "No");
         ImGui::Text("LOD Traversal Instances: %u", m_lastTraversalStats.lodTraversalInstanceCount);
         ImGui::Text("Fallback Instances: %u", m_lastTraversalStats.fallbackInstanceCount);
         ImGui::Text("Traversed Nodes: %u", m_lastTraversalStats.traversedNodeCount);
@@ -646,6 +790,7 @@ public:
         const bool historyValid =
             m_frameGraph && !m_hzbHistoryRead.empty() && m_frameGraph->isHistoryValid(m_hzbHistoryRead[0]);
         ImGui::Text("HZB History: %s (%u levels)", historyValid ? "Ready" : "Warming Up", m_hzbLevelCount);
+        ImGui::Text("Current HZB Inputs: %u levels", m_currentHzbLevelCount);
         for (uint32_t level = 0; level < kClusterTraversalStatsHistogramSize; ++level) {
             ImGui::Text("LOD %u Hits: %u", level, m_lastTraversalStats.selectedLodLevelHistogram[level]);
         }
@@ -680,6 +825,9 @@ private:
     uint32_t m_lastVisibleCount = 0;
     ClusterTraversalStats m_lastTraversalStats{};
     uint32_t m_hzbLevelCount = 0;
+    uint32_t m_currentHzbLevelCount = 0;
+    uint32_t m_cullPassIndex = 0;
+    bool m_appendToExistingWorklist = false;
     bool m_enableFrustumCull = false;
     bool m_enableConeCull = false;
     bool m_enableOcclusionCull = true;
@@ -697,9 +845,8 @@ private:
     FGResource m_dummyResidencyRequests;
     FGResource m_dummyResidencyRequestState;
     FGResource m_dummyGroupAge;
-    const RhiBuffer* m_initializedInstanceStateBuffer = nullptr;
-    const RhiBuffer* m_initializedMeshletStateBuffer = nullptr;
     std::vector<FGResource> m_hzbHistoryRead;
+    std::vector<FGResource> m_currentHzbRead;
 
     uint32_t computeMaxMeshletCapacity() const {
         return std::max(1u, m_ctx.gpuScene.totalMeshletDispatchCount);
@@ -746,4 +893,10 @@ private:
         std::memcpy(&stats, buffer->mappedData(), sizeof(stats));
         return stats;
     }
+
+    static std::string currentHzbInputSlotName(uint32_t level) {
+        return "currentHzb" + std::to_string(level);
+    }
 };
+
+METALLIC_REGISTER_PASS(MeshletCullPass);

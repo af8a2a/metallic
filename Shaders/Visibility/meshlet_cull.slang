@@ -8,6 +8,7 @@
 
 struct CullUniforms {
     float4x4 viewProj;
+    float4x4 view;
     float4x4 prevViewProj;
     float4x4 prevView;
     float4   cameraWorldPos;
@@ -16,6 +17,7 @@ struct CullUniforms {
     float2   renderTargetSize;
     float2   prevProjScale;
     float2   hzbTextureSize;
+    float2   currentHzbTextureSize;
     uint     enableFrustumCull;
     uint     enableConeCull;
     uint     enableOcclusionCull;
@@ -26,7 +28,10 @@ struct CullUniforms {
     uint     clusterLodEnabled;
     uint     enableResidencyStreaming;
     uint     residencyRequestFrameIndex;
+    uint     cullPassIndex;
+    uint     currentHzbLevelCount;
     uint     reserved0;
+    uint     reserved1;
 };
 
 struct GPUMeshletBounds {
@@ -72,6 +77,7 @@ RWByteAddressBuffer                   residencyRequestState; // buffer(GPU_DRIVE
 StructuredBuffer<uint>                sourceGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING)
 RWStructuredBuffer<uint>              groupAgeBuffer;   // buffer(GPU_DRIVEN_CULL_GROUP_AGE_BINDING)
 Texture2D<float>                      hzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE+)
+Texture2D<float>                      currentHzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_CULL_CURRENT_HZB_TEXTURE_BINDING_BASE+)
 
 static const uint kTraversalStatLodInstances = 0u;
 static const uint kTraversalStatFallbackInstances = 1u;
@@ -88,6 +94,7 @@ static const uint kTraversalStatMaxSelectedLod = 11u;
 static const uint kTraversalStatHistogramBase = 12u;
 static const uint kTraversalNodeStackCapacity = 64u;
 
+#define HZB_CULL_ENABLE_CURRENT_PYRAMID 1
 #include "hzb_cull_helpers.slang"
 
 float instanceMaxScale(InstanceData inst) {
@@ -125,6 +132,114 @@ bool sphereFrustumCulled(float3 centerWS, float worldRadius) {
     return false;
 }
 
+bool sphereTraversalOcclusionCulledForPass(float3 centerWS, float worldRadius, out bool hzbRejected) {
+    hzbRejected = false;
+    if (cullUniforms.enableOcclusionCull == 0u) {
+        return false;
+    }
+
+    const bool previousHzbAvailable = cullUniforms.hzbLevelCount > 0u;
+    const bool currentHzbAvailable = cullUniforms.currentHzbLevelCount > 0u;
+
+    if (cullUniforms.cullPassIndex == 0u) {
+        if (!previousHzbAvailable) {
+            return false;
+        }
+
+        hzbRejected = spherePreviousFrameOccluded(cullUniforms.prevViewProj,
+                                                  cullUniforms.prevView,
+                                                  cullUniforms.prevCameraWorldPos,
+                                                  cullUniforms.prevProjScale,
+                                                  cullUniforms.hzbTextureSize,
+                                                  cullUniforms.hzbLevelCount,
+                                                  cullUniforms.occlusionBoundsScale,
+                                                  cullUniforms.occlusionDepthBias,
+                                                  centerWS,
+                                                  worldRadius);
+        return hzbRejected;
+    }
+
+    if (!currentHzbAvailable) {
+        return false;
+    }
+
+    hzbRejected = sphereCurrentFrameOccluded(cullUniforms.viewProj,
+                                             cullUniforms.view,
+                                             cullUniforms.cameraWorldPos,
+                                             cullUniforms.projScale,
+                                             cullUniforms.currentHzbTextureSize,
+                                             cullUniforms.currentHzbLevelCount,
+                                             cullUniforms.occlusionBoundsScale,
+                                             cullUniforms.occlusionDepthBias,
+                                             centerWS,
+                                             worldRadius);
+    return hzbRejected;
+}
+
+bool sphereRenderableOcclusionCulledForPass(float3 centerWS, float worldRadius, out bool hzbRejected) {
+    hzbRejected = false;
+    if (cullUniforms.enableOcclusionCull == 0u) {
+        return false;
+    }
+
+    const bool previousHzbAvailable = cullUniforms.hzbLevelCount > 0u;
+    const bool currentHzbAvailable = cullUniforms.currentHzbLevelCount > 0u;
+
+    if (cullUniforms.cullPassIndex == 0u) {
+        if (!previousHzbAvailable) {
+            return false;
+        }
+
+        hzbRejected = spherePreviousFrameOccluded(cullUniforms.prevViewProj,
+                                                  cullUniforms.prevView,
+                                                  cullUniforms.prevCameraWorldPos,
+                                                  cullUniforms.prevProjScale,
+                                                  cullUniforms.hzbTextureSize,
+                                                  cullUniforms.hzbLevelCount,
+                                                  cullUniforms.occlusionBoundsScale,
+                                                  cullUniforms.occlusionDepthBias,
+                                                  centerWS,
+                                                  worldRadius);
+        return hzbRejected;
+    }
+
+    if (!previousHzbAvailable) {
+        return true;
+    }
+
+    const bool wasOccludedByPreviousHzb =
+        spherePreviousFrameOccluded(cullUniforms.prevViewProj,
+                                    cullUniforms.prevView,
+                                    cullUniforms.prevCameraWorldPos,
+                                    cullUniforms.prevProjScale,
+                                    cullUniforms.hzbTextureSize,
+                                    cullUniforms.hzbLevelCount,
+                                    cullUniforms.occlusionBoundsScale,
+                                    cullUniforms.occlusionDepthBias,
+                                    centerWS,
+                                    worldRadius);
+    if (!wasOccludedByPreviousHzb) {
+        return true;
+    }
+
+    if (!currentHzbAvailable) {
+        hzbRejected = true;
+        return true;
+    }
+
+    hzbRejected = sphereCurrentFrameOccluded(cullUniforms.viewProj,
+                                             cullUniforms.view,
+                                             cullUniforms.cameraWorldPos,
+                                             cullUniforms.projScale,
+                                             cullUniforms.currentHzbTextureSize,
+                                             cullUniforms.currentHzbLevelCount,
+                                             cullUniforms.occlusionBoundsScale,
+                                             cullUniforms.occlusionDepthBias,
+                                             centerWS,
+                                             worldRadius);
+    return hzbRejected;
+}
+
 bool fineCullMeshlet(InstanceData inst, GPUMeshletBounds b, float maxScale) {
     float3 centerOS = b.center_radius.xyz;
     float radius = b.center_radius.w;
@@ -151,18 +266,9 @@ bool fineCullMeshlet(InstanceData inst, GPUMeshletBounds b, float maxScale) {
         }
     }
 
-    if (!culled &&
-        cullUniforms.enableOcclusionCull != 0u) {
-        culled = spherePreviousFrameOccluded(cullUniforms.prevViewProj,
-                                             cullUniforms.prevView,
-                                             cullUniforms.prevCameraWorldPos,
-                                             cullUniforms.prevProjScale,
-                                             cullUniforms.hzbTextureSize,
-                                             cullUniforms.hzbLevelCount,
-                                             cullUniforms.occlusionBoundsScale,
-                                             cullUniforms.occlusionDepthBias,
-                                             centerWS,
-                                             worldRadius);
+    if (!culled) {
+        bool hzbRejected = false;
+        culled = sphereRenderableOcclusionCulledForPass(centerWS, worldRadius, hzbRejected);
     }
 
     return culled;
@@ -174,21 +280,7 @@ bool coarseCullTraversalSphere(float3 centerWS, float worldRadius, out bool hzbR
         return true;
     }
 
-    if (cullUniforms.enableOcclusionCull == 0u) {
-        return false;
-    }
-
-    hzbRejected = spherePreviousFrameOccluded(cullUniforms.prevViewProj,
-                                              cullUniforms.prevView,
-                                              cullUniforms.prevCameraWorldPos,
-                                              cullUniforms.prevProjScale,
-                                              cullUniforms.hzbTextureSize,
-                                              cullUniforms.hzbLevelCount,
-                                              cullUniforms.occlusionBoundsScale,
-                                              cullUniforms.occlusionDepthBias,
-                                              centerWS,
-                                              worldRadius);
-    return hzbRejected;
+    return sphereTraversalOcclusionCulledForPass(centerWS, worldRadius, hzbRejected);
 }
 
 void emitVisibleMeshlet(uint sceneInstanceID,

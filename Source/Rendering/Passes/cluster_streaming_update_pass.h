@@ -21,6 +21,13 @@ public:
 
     ~ClusterStreamingUpdatePass() override = default;
 
+    METALLIC_PASS_TYPE_INFO(ClusterStreamingUpdatePass, "Cluster Streaming Update", "Geometry",
+        (std::vector<PassSlotInfo>{}),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("streamingSync", "Streaming Sync", true)
+        }),
+        PassTypeInfo::PassType::Compute);
+
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -465,3 +472,5 @@ private:
     }
 #endif
 };
+
+METALLIC_REGISTER_PASS(ClusterStreamingUpdatePass);

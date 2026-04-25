@@ -10,6 +10,11 @@ public:
     OutputPass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
+    METALLIC_PASS_TYPE_INFO(OutputPass, "Output", "Utility",
+        (std::vector<PassSlotInfo>{makeInputSlot("source", "Source")}),
+        (std::vector<PassSlotInfo>{makeTargetSlot("target", "Target")}),
+        PassTypeInfo::PassType::Render);
+
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -84,5 +89,6 @@ private:
     std::string m_name = "Output";
 };
 
+METALLIC_REGISTER_PASS(OutputPass);
 
 

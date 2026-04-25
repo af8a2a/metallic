@@ -2,6 +2,7 @@
 
 #include "render_pass.h"
 #include "frame_context.h"
+#include "cluster_lod_builder.h"
 #include "cluster_types.h"
 #include "gpu_driven_constants.h"
 #include "pass_registry.h"
@@ -12,6 +13,14 @@ class ClusterRenderPass : public RenderPass {
 public:
     ClusterRenderPass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
+
+    METALLIC_PASS_TYPE_INFO(ClusterRenderPass, "Cluster Render", "Geometry",
+        (std::vector<PassSlotInfo>{}),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("color", "Color"),
+            makeOutputSlot("depth", "Depth")
+        }),
+        PassTypeInfo::PassType::Render);
 
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return m_name.c_str(); }
@@ -125,3 +134,7 @@ private:
     uint32_t m_colorMode = 0;
     bool m_warnedMissingPipeline = false;
 };
+
+#ifdef _WIN32
+METALLIC_REGISTER_PASS(ClusterRenderPass);
+#endif

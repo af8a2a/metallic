@@ -14,6 +14,40 @@ public:
     DeferredLightingPass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
+    METALLIC_PASS_TYPE_INFO(DeferredLightingPass, "Deferred Lighting", "Lighting",
+        (std::vector<PassSlotInfo>{
+            makeInputSlot("visibility", "Visibility"),
+            makeInputSlot("depth", "Depth"),
+            makeInputSlot("visibleMeshlets", "Visible Meshlets", true),
+            makeInputSlot("cullCounter", "Cull Counter", true),
+            makeInputSlot("visibilityWorklist", "Visibility Worklist", true),
+            makeInputSlot("visibilityWorklistState", "Visibility Worklist State", true),
+            makeInputSlot("shadowMap", "Shadow Map", true),
+            makeInputSlot("skyOutput", "Sky", true)
+        }),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("lightingOutput", "Lighting"),
+            makeOutputSlot("motionVectors", "Motion Vectors")
+        }),
+        PassTypeInfo::PassType::Compute);
+
+    METALLIC_PASS_EDITOR_TYPE_INFO(DeferredLightingPass, "Deferred Lighting", "Lighting",
+        (std::vector<PassSlotInfo>{
+            makeInputSlot("visibility", "Visibility"),
+            makeInputSlot("depth", "Depth"),
+            makeHiddenInputSlot("visibleMeshlets", "Visible Meshlets", true),
+            makeHiddenInputSlot("cullCounter", "Cull Counter", true),
+            makeHiddenInputSlot("visibilityWorklist", "Visibility Worklist", true),
+            makeHiddenInputSlot("visibilityWorklistState", "Visibility Worklist State", true),
+            makeInputSlot("shadowMap", "Shadow Map", true),
+            makeInputSlot("skyOutput", "Sky", true)
+        }),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("lightingOutput", "Lighting"),
+            makeOutputSlot("motionVectors", "Motion Vectors")
+        }),
+        PassTypeInfo::PassType::Compute);
+
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -195,5 +229,4 @@ private:
     float m_motionVectorIntensity = 1.0f;
 };
 
-
-
+METALLIC_REGISTER_PASS(DeferredLightingPass);

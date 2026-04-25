@@ -171,6 +171,180 @@
         1624.506591796875,
         -114.04598999023438
       ]
+    },
+    {
+      "id": "00000000000000000000000000000010",
+      "name": "Cull Result Final",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [
+        513.0,
+        -286.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000011",
+      "name": "Visible Meshlets Final",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        513.0,
+        -246.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000012",
+      "name": "Cull Counter Final",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        513.0,
+        -211.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000013",
+      "name": "Visibility Final",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Uint",
+      "size": "screen",
+      "editorPos": [
+        865.0,
+        -246.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000014",
+      "name": "Depth Final",
+      "kind": "transient",
+      "type": "texture",
+      "format": "Depth32Float",
+      "size": "screen",
+      "editorPos": [
+        865.0,
+        -211.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000020",
+      "name": "Current HZB Mip 0",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "screen",
+      "editorPos": [
+        720.0,
+        -20.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000021",
+      "name": "Current HZB Mip 1",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "screen",
+      "editorPos": [
+        720.0,
+        6.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000022",
+      "name": "Current HZB Mip 2",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "screen",
+      "editorPos": [
+        720.0,
+        32.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000023",
+      "name": "Current HZB Mip 3",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "screen",
+      "editorPos": [
+        720.0,
+        58.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000024",
+      "name": "Current HZB Mip 4",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "screen",
+      "editorPos": [
+        720.0,
+        84.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000025",
+      "name": "Current HZB Mip 5",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "screen",
+      "editorPos": [
+        720.0,
+        110.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000026",
+      "name": "Current HZB Mip 6",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "screen",
+      "editorPos": [
+        720.0,
+        136.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000027",
+      "name": "Current HZB Mip 7",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "screen",
+      "editorPos": [
+        720.0,
+        162.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000028",
+      "name": "Current HZB Mip 8",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "screen",
+      "editorPos": [
+        720.0,
+        188.0
+      ]
+    },
+    {
+      "id": "00000000000000000000000000000029",
+      "name": "Current HZB Mip 9",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "screen",
+      "editorPos": [
+        720.0,
+        214.0
+      ]
     }
   ],
   "passes": [
@@ -192,7 +366,9 @@
       "type": "MeshletCullPass",
       "enabled": true,
       "sideEffect": false,
-      "config": null,
+      "config": {
+        "cullPassIndex": 0
+      },
       "editorPos": [
         33.0,
         -108.0
@@ -228,7 +404,10 @@
       "type": "HZBBuildPass",
       "enabled": true,
       "sideEffect": false,
-      "config": null,
+      "config": {
+        "publishOutputs": true,
+        "writeHistory": false
+      },
       "editorPos": [
         720.0,
         -153.0
@@ -329,6 +508,49 @@
         1701.506591796875,
         -221.04598999023438
       ]
+    },
+    {
+      "id": "10000000000000000000000000000018",
+      "name": "Meshlet Cull 2",
+      "type": "MeshletCullPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "cullPassIndex": 1
+      },
+      "editorPos": [
+        513.0,
+        -108.0
+      ]
+    },
+    {
+      "id": "10000000000000000000000000000019",
+      "name": "Visibility Pass 2",
+      "type": "VisibilityPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "loadExisting": true
+      },
+      "editorPos": [
+        833.0,
+        -108.0
+      ]
+    },
+    {
+      "id": "1000000000000000000000000000001a",
+      "name": "HZB Build Final",
+      "type": "HZBBuildPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "publishOutputs": false,
+        "writeHistory": true
+      },
+      "editorPos": [
+        1090.0,
+        -153.0
+      ]
     }
   ],
   "edges": [
@@ -358,7 +580,7 @@
       "passId": "6fbf51e8284f4d45a90599d14f2d6701",
       "slotKey": "cullResult",
       "direction": "input",
-      "resourceId": "00000000000000000000000000000002"
+      "resourceId": "00000000000000000000000000000010"
     },
     {
       "id": "20000000000000000000000000000002",
@@ -435,28 +657,28 @@
       "passId": "10000000000000000000000000000005",
       "slotKey": "visibility",
       "direction": "input",
-      "resourceId": "00000000000000000000000000000003"
+      "resourceId": "00000000000000000000000000000013"
     },
     {
       "id": "20000000000000000000000000000009",
       "passId": "10000000000000000000000000000005",
       "slotKey": "depth",
       "direction": "input",
-      "resourceId": "00000000000000000000000000000004"
+      "resourceId": "00000000000000000000000000000014"
     },
     {
       "id": "0dbd00c2bbaa4de3a1d5f8392cb0a001",
       "passId": "10000000000000000000000000000005",
       "slotKey": "visibilityWorklist",
       "direction": "input",
-      "resourceId": "0000000000000000000000000000000b"
+      "resourceId": "00000000000000000000000000000011"
     },
     {
       "id": "0dbd00c2bbaa4de3a1d5f8392cb0a002",
       "passId": "10000000000000000000000000000005",
       "slotKey": "visibilityWorklistState",
       "direction": "input",
-      "resourceId": "0000000000000000000000000000000c"
+      "resourceId": "00000000000000000000000000000012"
     },
     {
       "id": "2000000000000000000000000000000a",
@@ -491,7 +713,7 @@
       "passId": "10000000000000000000000000000006",
       "slotKey": "depth",
       "direction": "input",
-      "resourceId": "00000000000000000000000000000004"
+      "resourceId": "00000000000000000000000000000014"
     },
     {
       "id": "2000000000000000000000000000000f",
@@ -540,7 +762,7 @@
       "passId": "10000000000000000000000000000004",
       "slotKey": "depth",
       "direction": "input",
-      "resourceId": "00000000000000000000000000000004"
+      "resourceId": "00000000000000000000000000000014"
     },
     {
       "id": "20000000000000000000000000000007",
@@ -561,7 +783,7 @@
       "passId": "388d0f1d038db5643fafd3e02087970d",
       "slotKey": "depth",
       "direction": "input",
-      "resourceId": "00000000000000000000000000000004"
+      "resourceId": "00000000000000000000000000000014"
     },
     {
       "id": "c56cce66fff981eb80486737f4031608",
@@ -597,6 +819,237 @@
       "slotKey": "output",
       "direction": "output",
       "resourceId": "0000000000000000000000000000000a"
+    },
+    {
+      "id": "hzb-current-out-00",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "hzb0",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000020"
+    },
+    {
+      "id": "cull2-current-hzb-00",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "currentHzb0",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000020"
+    },
+    {
+      "id": "hzb-current-out-01",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "hzb1",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000021"
+    },
+    {
+      "id": "cull2-current-hzb-01",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "currentHzb1",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000021"
+    },
+    {
+      "id": "hzb-current-out-02",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "hzb2",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000022"
+    },
+    {
+      "id": "cull2-current-hzb-02",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "currentHzb2",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000022"
+    },
+    {
+      "id": "hzb-current-out-03",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "hzb3",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000023"
+    },
+    {
+      "id": "cull2-current-hzb-03",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "currentHzb3",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000023"
+    },
+    {
+      "id": "hzb-current-out-04",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "hzb4",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000024"
+    },
+    {
+      "id": "cull2-current-hzb-04",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "currentHzb4",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000024"
+    },
+    {
+      "id": "hzb-current-out-05",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "hzb5",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000025"
+    },
+    {
+      "id": "cull2-current-hzb-05",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "currentHzb5",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000025"
+    },
+    {
+      "id": "hzb-current-out-06",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "hzb6",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000026"
+    },
+    {
+      "id": "cull2-current-hzb-06",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "currentHzb6",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000026"
+    },
+    {
+      "id": "hzb-current-out-07",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "hzb7",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000027"
+    },
+    {
+      "id": "cull2-current-hzb-07",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "currentHzb7",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000027"
+    },
+    {
+      "id": "hzb-current-out-08",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "hzb8",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000028"
+    },
+    {
+      "id": "cull2-current-hzb-08",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "currentHzb8",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000028"
+    },
+    {
+      "id": "hzb-current-out-09",
+      "passId": "10000000000000000000000000000003",
+      "slotKey": "hzb9",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000029"
+    },
+    {
+      "id": "cull2-current-hzb-09",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "currentHzb9",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000029"
+    },
+    {
+      "id": "cull2-visible-input",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "visibleMeshletsInput",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000b"
+    },
+    {
+      "id": "cull2-state-input",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "visibilityWorklistStateInput",
+      "direction": "input",
+      "resourceId": "0000000000000000000000000000000c"
+    },
+    {
+      "id": "cull2-result-output",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "cullResult",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000010"
+    },
+    {
+      "id": "cull2-visible-output",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "visibleMeshlets",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000011"
+    },
+    {
+      "id": "cull2-state-output",
+      "passId": "10000000000000000000000000000018",
+      "slotKey": "visibilityWorklistState",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000012"
+    },
+    {
+      "id": "visibility2-cull-input",
+      "passId": "10000000000000000000000000000019",
+      "slotKey": "cullResult",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000010"
+    },
+    {
+      "id": "visibility2-worklist-input",
+      "passId": "10000000000000000000000000000019",
+      "slotKey": "visibilityWorklist",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000011"
+    },
+    {
+      "id": "visibility2-state-input",
+      "passId": "10000000000000000000000000000019",
+      "slotKey": "visibilityWorklistState",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000012"
+    },
+    {
+      "id": "visibility2-visibility-load-input",
+      "passId": "10000000000000000000000000000019",
+      "slotKey": "visibilityInput",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000003"
+    },
+    {
+      "id": "visibility2-depth-load-input",
+      "passId": "10000000000000000000000000000019",
+      "slotKey": "depthInput",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000004"
+    },
+    {
+      "id": "visibility2-visibility-output",
+      "passId": "10000000000000000000000000000019",
+      "slotKey": "visibility",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000013"
+    },
+    {
+      "id": "visibility2-depth-output",
+      "passId": "10000000000000000000000000000019",
+      "slotKey": "depth",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000014"
+    },
+    {
+      "id": "hzb-final-depth-input",
+      "passId": "1000000000000000000000000000001a",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "00000000000000000000000000000014"
     }
   ]
 }

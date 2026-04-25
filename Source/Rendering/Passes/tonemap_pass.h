@@ -11,6 +11,16 @@ public:
     TonemapPass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
+    METALLIC_PASS_TYPE_INFO(TonemapPass, "Tonemap", "Post-Process",
+        (std::vector<PassSlotInfo>{
+            makeInputSlot("source", "Source"),
+            makeInputSlot("exposureLut", "Exposure LUT", true)
+        }),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("output", "Output", false, {"transient", "imported", "backbuffer"})
+        }),
+        PassTypeInfo::PassType::Render);
+
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -215,5 +225,6 @@ private:
     }
 };
 
+METALLIC_REGISTER_PASS(TonemapPass);
 
 

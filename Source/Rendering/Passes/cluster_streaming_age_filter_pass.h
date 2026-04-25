@@ -21,6 +21,13 @@ public:
 
     ~ClusterStreamingAgeFilterPass() override = default;
 
+    METALLIC_PASS_TYPE_INFO(ClusterStreamingAgeFilterPass, "Cluster Streaming Age Filter", "Geometry",
+        (std::vector<PassSlotInfo>{
+            makeInputSlot("cullResult", "Cull Result", true)
+        }),
+        (std::vector<PassSlotInfo>{}),
+        PassTypeInfo::PassType::Compute);
+
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -217,3 +224,5 @@ private:
         m_gpuStatsReadbacks = {};
 #endif
 };
+
+METALLIC_REGISTER_PASS(ClusterStreamingAgeFilterPass);

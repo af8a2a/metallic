@@ -1,5 +1,6 @@
 // Publish a mesh-dispatch command from the worklist write cursor.
-// Dispatched as a single thread after meshlet culling.
+// The cursor is preserved so a second cull pass can append into the same
+// worklist after the first pass has already emitted indirect draw args.
 
 #include "../Shared/gpu_driven_helpers.slang"
 

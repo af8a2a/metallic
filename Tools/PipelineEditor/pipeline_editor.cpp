@@ -671,6 +671,9 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
         ImGui::TextDisabled("(%s | %s)", pass.type.c_str(), passTypeInfo.category.c_str());
 
         for (const auto& slot : passTypeInfo.inputSlots) {
+            if (slot.hidden) {
+                continue;
+            }
             const int pinId = ensureUiId("pin:pass:in:" + pass.id + ":" + slot.key);
             m_pinInfos[pinId] = PinInfo{PinKind::PassInput, pass.id, slot.key};
             ImNodes::BeginInputAttribute(pinId);
@@ -683,6 +686,9 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
         }
 
         for (const auto& slot : passTypeInfo.outputSlots) {
+            if (slot.hidden) {
+                continue;
+            }
             const int pinId = ensureUiId("pin:pass:out:" + pass.id + ":" + slot.key);
             m_pinInfos[pinId] = PinInfo{PinKind::PassOutput, pass.id, slot.key};
             ImNodes::BeginOutputAttribute(pinId);
@@ -792,8 +798,22 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
         ImNodes::PopColorStyle();
     };
 
+    auto edgeUsesHiddenSlot = [&](const EdgeDecl& edge) {
+        const PassDecl* pass = asset.findPassById(edge.passId);
+        const PassTypeInfo* typeInfo = pass ? PassRegistry::instance().getTypeInfo(pass->type) : nullptr;
+        if (!typeInfo) {
+            return false;
+        }
+        const auto& slots = edge.direction == "input" ? typeInfo->inputSlots : typeInfo->outputSlots;
+        const PassSlotInfo* slot = findSlotInfo(slots, edge.slotKey);
+        return slot && slot->hidden;
+    };
+
     if (m_graphViewMode == GraphViewMode::ResourceGraph) {
         for (const auto& edge : asset.edges) {
+            if (edgeUsesHiddenSlot(edge)) {
+                continue;
+            }
             const PassDecl* pass = asset.findPassById(edge.passId);
             const ResourceDecl* resource = asset.findResourceById(edge.resourceId);
             if (!pass || !resource) {
@@ -814,6 +834,9 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
         }
     } else {
         for (const auto& edge : asset.edges) {
+            if (edgeUsesHiddenSlot(edge)) {
+                continue;
+            }
             const PassDecl* consumerPass = asset.findPassById(edge.passId);
             const ResourceDecl* resource = asset.findResourceById(edge.resourceId);
             if (!consumerPass || !resource) {
@@ -1201,13 +1224,20 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
                 auto renderSlotEditor = [&](const char* title,
                                             const std::vector<PassSlotInfo>& slots,
                                             const char* direction) {
-                    if (slots.empty()) {
+                    const bool hasVisibleSlot = std::any_of(
+                        slots.begin(),
+                        slots.end(),
+                        [](const PassSlotInfo& slot) { return !slot.hidden; });
+                    if (!hasVisibleSlot) {
                         return;
                     }
 
                     ImGui::Separator();
                     ImGui::Text("%s", title);
                     for (const auto& slot : slots) {
+                        if (slot.hidden) {
+                            continue;
+                        }
                         const EdgeDecl* edge = asset.findEdge(pass->id, direction, slot.key);
                         const ResourceDecl* boundResource = edge ? asset.findResourceById(edge->resourceId) : nullptr;
                         const std::string preview = boundResource ? resourceLabel(*boundResource) : std::string{"<unbound>"};
@@ -1248,6 +1278,9 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
                     std::vector<PassBindingInfo> downstream;
 
                     for (const auto& slot : typeInfo->inputSlots) {
+                        if (slot.hidden) {
+                            continue;
+                        }
                         const EdgeDecl* edge = asset.findEdge(pass->id, "input", slot.key);
                         if (!edge) {
                             continue;
@@ -1259,6 +1292,9 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
                     }
 
                     for (const auto& slot : typeInfo->outputSlots) {
+                        if (slot.hidden) {
+                            continue;
+                        }
                         const EdgeDecl* edge = asset.findEdge(pass->id, "output", slot.key);
                         if (!edge) {
                             continue;
@@ -1501,18 +1537,25 @@ void PipelineEditor::renderCompilationPreview(const PipelineAsset& asset) {
             std::string summary;
             if (info) {
                 for (const auto& slot : info->inputSlots) {
+                    if (slot.hidden) {
+                        continue;
+                    }
                     if (!summary.empty()) {
                         summary += ", ";
                     }
                     summary += slot.displayName + "=" + slotBindingName(asset, pass.id, "input", slot);
                 }
                 summary += " -> ";
-                for (size_t slotIndex = 0; slotIndex < info->outputSlots.size(); ++slotIndex) {
-                    if (slotIndex > 0) {
+                bool hasOutputSummary = false;
+                for (const auto& slot : info->outputSlots) {
+                    if (slot.hidden) {
+                        continue;
+                    }
+                    if (hasOutputSummary) {
                         summary += ", ";
                     }
-                    const auto& slot = info->outputSlots[slotIndex];
                     summary += slot.displayName + "=" + slotBindingName(asset, pass.id, "output", slot);
+                    hasOutputSummary = true;
                 }
             }
             ImGui::TextDisabled("%s", summary.c_str());

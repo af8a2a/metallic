@@ -133,6 +133,7 @@ struct InstanceClassifyUniforms {
 
 struct CullUniforms {
     float4x4 viewProj;         // transposed for Slang
+    float4x4 view;             // transposed for Slang
     float4x4 prevViewProj;     // transposed for Slang
     float4x4 prevView;         // transposed for Slang
     float4   cameraWorldPos;
@@ -141,6 +142,7 @@ struct CullUniforms {
     float2   renderTargetSize;
     float2   prevProjScale;
     float2   hzbTextureSize;
+    float2   currentHzbTextureSize;
     uint32_t enableFrustumCull;
     uint32_t enableConeCull;
     uint32_t enableOcclusionCull;
@@ -151,7 +153,10 @@ struct CullUniforms {
     uint32_t clusterLodEnabled;
     uint32_t enableResidencyStreaming = 0;
     uint32_t residencyRequestFrameIndex = 0;
+    uint32_t cullPassIndex = 0;
+    uint32_t currentHzbLevelCount = 0;
     uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
 };
 
 struct StreamingAgeFilterUniforms {

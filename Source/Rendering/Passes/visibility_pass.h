@@ -18,6 +18,54 @@ public:
     VisibilityPass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
+    METALLIC_PASS_TYPE_INFO(VisibilityPass, "Visibility Pass", "Geometry",
+        (std::vector<PassSlotInfo>{
+            makeInputSlot("cullResult", "Cull Result", true),
+            makeInputSlot("visibleMeshlets", "Visible Meshlets", true),
+            makeInputSlot("cullCounter", "Cull Counter", true),
+            makeInputSlot("instanceData", "Instance Data", true),
+            makeInputSlot("visibilityWorklist", "Visibility Worklist", true),
+            makeInputSlot("visibilityWorklistState", "Visibility Worklist State", true),
+            makeInputSlot("visibilityIndirectArgs", "Visibility Indirect Args", true),
+            makeInputSlot("visibilityInstances", "Visibility Instances", true),
+            makeInputSlot("visibilityInput", "Visibility Input", true),
+            makeInputSlot("depthInput", "Depth Input", true)
+        }),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("visibility", "Visibility"),
+            makeOutputSlot("depth", "Depth")
+        }),
+        PassTypeInfo::PassType::Render);
+
+#ifdef _WIN32
+    METALLIC_PASS_EDITOR_TYPE_INFO(VisibilityPass, "Visibility Pass", "Geometry",
+        (std::vector<PassSlotInfo>{
+            makeInputSlot("cullResult", "Cull Result"),
+            makeHiddenInputSlot("visibleMeshlets", "Visible Meshlets", true),
+            makeHiddenInputSlot("cullCounter", "Cull Counter", true),
+            makeHiddenInputSlot("instanceData", "Instance Data", true),
+            makeHiddenInputSlot("visibilityWorklist", "Visibility Worklist", true),
+            makeHiddenInputSlot("visibilityWorklistState", "Visibility Worklist State", true),
+            makeHiddenInputSlot("visibilityIndirectArgs", "Visibility Indirect Args", true),
+            makeHiddenInputSlot("visibilityInstances", "Visibility Instances", true),
+            makeHiddenInputSlot("visibilityInput", "Visibility Input", true),
+            makeHiddenInputSlot("depthInput", "Depth Input", true)
+        }),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("visibility", "Visibility"),
+            makeOutputSlot("depth", "Depth")
+        }),
+        PassTypeInfo::PassType::Render);
+#else
+    METALLIC_PASS_EDITOR_TYPE_INFO(VisibilityPass, "Visibility Pass", "Geometry",
+        (std::vector<PassSlotInfo>{}),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("visibility", "Visibility"),
+            makeOutputSlot("depth", "Depth")
+        }),
+        PassTypeInfo::PassType::Render);
+#endif
+
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -30,6 +78,9 @@ public:
                     cc[0].get<double>(), cc[1].get<double>(),
                     cc[2].get<double>(), cc[3].get<double>());
             }
+        }
+        if (config.config.is_object() && config.config.contains("loadExisting")) {
+            m_loadExisting = config.config["loadExisting"].get<bool>();
         }
     }
 
@@ -73,17 +124,28 @@ public:
         if (instanceDataInput.isValid()) {
             m_instanceDataRead = builder.read(instanceDataInput, FGResourceUsage::StorageRead);
         }
-        visibility = builder.create("visibility",
-            FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::R32Uint));
-        depth = builder.create("depth",
-            FGTextureDesc::depthTarget(m_width, m_height));
+        FGResource visibilityInput = getInput("visibilityInput");
+        FGResource depthInput = getInput("depthInput");
+        const bool loadVisibility = m_loadExisting && visibilityInput.isValid();
+        const bool loadDepth = m_loadExisting && depthInput.isValid();
+
+        visibility = loadVisibility
+            ? visibilityInput
+            : builder.create("visibility",
+                             FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::R32Uint));
+        depth = loadDepth
+            ? depthInput
+            : builder.create("depth",
+                             FGTextureDesc::depthTarget(m_width, m_height));
         visibility = builder.setColorAttachment(0,
-                                                visibility,
-                                                RhiLoadAction::Clear,
-                                                RhiStoreAction::Store,
-                                                m_clearColor);
+                                                 visibility,
+                                                 loadVisibility ? RhiLoadAction::Load
+                                                                : RhiLoadAction::Clear,
+                                                 RhiStoreAction::Store,
+                                                 m_clearColor);
         depth = builder.setDepthAttachment(depth,
-                                           RhiLoadAction::Clear,
+                                           loadDepth ? RhiLoadAction::Load
+                                                     : RhiLoadAction::Clear,
                                            RhiStoreAction::Store,
                                            m_ctx.depthClearValue);
     }
@@ -335,6 +397,7 @@ public:
             ImGui::Text("Frustum Cull: %s", m_frameContext->enableFrustumCull ? "On" : "Off");
             ImGui::Text("Cone Cull: %s", m_frameContext->enableConeCull ? "On" : "Off");
             ImGui::Text("GPU Raster Requested: %s", m_frameContext->gpuDrivenCulling ? "Yes" : "No");
+            ImGui::Text("Load Existing Targets: %s", m_loadExisting ? "Yes" : "No");
             ImGui::Text("Last Raster Path: %s",
                         m_gpuPathRequiredLastFrame
                             ? (m_gpuPathReadyLastFrame
@@ -355,6 +418,7 @@ private:
     int m_width, m_height;
     std::string m_name = "Visibility Pass";
     RhiClearColor m_clearColor = RhiClearColor(0xFFFFFFFF, 0, 0, 0);
+    bool m_loadExisting = false;
     bool m_gpuPathRequiredLastFrame = false;
     bool m_gpuPathReadyLastFrame = false;
     bool m_missingGpuPathWarningLogged = false;
@@ -366,5 +430,4 @@ private:
     FGResource m_instanceDataRead;
 };
 
-
-
+METALLIC_REGISTER_PASS(VisibilityPass);

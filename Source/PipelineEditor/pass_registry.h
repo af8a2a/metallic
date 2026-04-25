@@ -54,17 +54,20 @@ struct PassSlotInfo {
     std::string displayName;
     bool optional = false;
     std::vector<std::string> allowedResourceKinds;
+    bool hidden = false;
 };
 
 inline PassSlotInfo makePassSlot(std::string key,
                                  std::string displayName,
                                  bool optional,
-                                 std::vector<std::string> allowedResourceKinds) {
+                                 std::vector<std::string> allowedResourceKinds,
+                                 bool hidden = false) {
     return PassSlotInfo{
         std::move(key),
         std::move(displayName),
         optional,
-        std::move(allowedResourceKinds)
+        std::move(allowedResourceKinds),
+        hidden
     };
 }
 
@@ -96,6 +99,28 @@ inline PassSlotInfo makeTargetSlot(std::string key,
                         std::move(displayName),
                         optional,
                         std::move(allowedResourceKinds));
+}
+
+inline PassSlotInfo makeHiddenInputSlot(std::string key,
+                                        std::string displayName,
+                                        bool optional = true,
+                                        std::vector<std::string> allowedResourceKinds = {"transient", "imported", "backbuffer"}) {
+    return makePassSlot(std::move(key),
+                        std::move(displayName),
+                        optional,
+                        std::move(allowedResourceKinds),
+                        true);
+}
+
+inline PassSlotInfo makeHiddenOutputSlot(std::string key,
+                                         std::string displayName,
+                                         bool optional = true,
+                                         std::vector<std::string> allowedResourceKinds = {"transient"}) {
+    return makePassSlot(std::move(key),
+                        std::move(displayName),
+                        optional,
+                        std::move(allowedResourceKinds),
+                        true);
 }
 
 // Metadata describing a pass type for the editor
@@ -166,9 +191,73 @@ public:
     }
 };
 
+namespace PassRegistrationDetail {
+
+template <typename Type>
+PassFactory makeFactory() {
+#ifdef METALLIC_PASS_REGISTRATION_METADATA_ONLY
+    return nullptr;
+#else
+    return [](const PassConfig&, const RenderContext& ctx, int w, int h)
+        -> std::unique_ptr<RenderPass> {
+        return std::make_unique<Type>(ctx, w, h);
+    };
+#endif
+}
+
+template <typename Type>
+PassTypeInfo makeTypeInfo() {
+#ifdef METALLIC_PASS_REGISTRATION_METADATA_ONLY
+    if constexpr (requires { Type::staticEditorTypeInfo(); }) {
+        return Type::staticEditorTypeInfo();
+    }
+#endif
+    return Type::staticTypeInfo();
+}
+
+} // namespace PassRegistrationDetail
+
 // ============================================================================
 // Registration Macros
 // ============================================================================
+
+// Place this in a RenderPass-derived class declaration.
+#define METALLIC_PASS_TYPE_INFO(Type, DisplayName, Category, Inputs, Outputs, PassTypeVal) \
+    static PassTypeInfo staticTypeInfo() { \
+        return PassTypeInfo{ \
+            #Type, DisplayName, Category, Inputs, Outputs, {}, PassTypeVal \
+        }; \
+    }
+
+// Optional editor-only metadata. Use this when the editor node should expose a
+// simpler authored interface than the renderer runtime accepts.
+#define METALLIC_PASS_EDITOR_TYPE_INFO(Type, DisplayName, Category, Inputs, Outputs, PassTypeVal) \
+    static PassTypeInfo staticEditorTypeInfo() { \
+        return PassTypeInfo{ \
+            #Type, DisplayName, Category, Inputs, Outputs, {}, PassTypeVal \
+        }; \
+    }
+
+// Place this once at namespace scope after the pass class definition.
+// The generated object has internal linkage so any TU that includes the pass header
+// contributes the registration without relying on a central registration list.
+#define METALLIC_REGISTER_PASS(Type) \
+    namespace { \
+        const PassRegistrar _metallicPassRegistrar_##Type( \
+            #Type, \
+            PassRegistrationDetail::makeFactory<Type>(), \
+            PassRegistrationDetail::makeTypeInfo<Type>()); \
+    }
+
+// Metadata-only registration for pass types that cannot be constructed by the
+// standard (RenderContext, width, height) factory.
+#define METALLIC_REGISTER_PASS_INFO(Type) \
+    namespace { \
+        const PassRegistrar _metallicPassInfoRegistrar_##Type( \
+            #Type, \
+            nullptr, \
+            PassRegistrationDetail::makeTypeInfo<Type>()); \
+    }
 
 // Basic registration macro (minimal metadata, for backward compatibility)
 #define REGISTER_PASS(Type) \

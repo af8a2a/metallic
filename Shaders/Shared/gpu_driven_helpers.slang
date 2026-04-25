@@ -243,7 +243,6 @@ void gpuDrivenPublishDispatchIndirectArgs1DFromWriteCursor(RWByteAddressBuffer w
     gpuDrivenStoreWorklistProducedCount(worklistStateBuffer, producedCount);
     gpuDrivenResetWorklistConsumedCount(worklistStateBuffer);
     gpuDrivenStoreDispatchIndirectArgs1D(worklistStateBuffer, producedCount);
-    gpuDrivenResetWorklistWriteCursor(worklistStateBuffer);
 }
 
 void gpuDrivenPublishMeshDispatchIndirectArgs1DFromWriteCursor(RWByteAddressBuffer worklistStateBuffer) {
