@@ -66,9 +66,9 @@ public:
 
     void present() override {
         if (m_commandBuffer.nativeHandle() && m_drawable) {
-            metalRuntimePresentDrawable(m_commandBuffer.nativeHandle(), m_drawable);
-            metalRuntimeCommit(m_commandBuffer.nativeHandle());
-            retireFrameState();
+            const uint64_t frameSerial =
+                metalRuntimeCommitAndPresent(m_runtime, m_commandBuffer.nativeHandle(), m_drawable);
+            retireFrameState(frameSerial);
             return;
         }
         cleanupFrameState();
@@ -108,25 +108,8 @@ private:
     struct RetiredFrameState {
         void* commandBuffer = nullptr;
         void* drawable = nullptr;
+        uint64_t frameSerial = 0;
     };
-
-    static bool isCommandBufferComplete(void* commandBufferHandle) {
-        auto* commandBuffer = static_cast<MTL::CommandBuffer*>(commandBufferHandle);
-        if (!commandBuffer) {
-            return true;
-        }
-
-        const MTL::CommandBufferStatus status = commandBuffer->status();
-        return status == MTL::CommandBufferStatusCompleted ||
-               status == MTL::CommandBufferStatusError;
-    }
-
-    static void waitForCommandBuffer(void* commandBufferHandle) {
-        auto* commandBuffer = static_cast<MTL::CommandBuffer*>(commandBufferHandle);
-        if (commandBuffer) {
-            commandBuffer->waitUntilCompleted();
-        }
-    }
 
     void releaseRetiredFrame(RetiredFrameState& frame) {
         if (frame.drawable) {
@@ -134,15 +117,17 @@ private:
             frame.drawable = nullptr;
         }
         if (frame.commandBuffer) {
-            metalReleaseHandle(frame.commandBuffer);
+            metalRuntimeReleaseCommandBuffer(frame.commandBuffer);
             frame.commandBuffer = nullptr;
         }
+        frame.frameSerial = 0;
     }
 
-    void retireFrameState() {
+    void retireFrameState(uint64_t frameSerial) {
         m_retiredFrames.push_back({
             m_commandBuffer.nativeHandle(),
             m_drawable,
+            frameSerial,
         });
         m_commandBuffer.setNativeHandle(nullptr);
         m_backbufferTexture.setNativeHandle(nullptr);
@@ -158,8 +143,8 @@ private:
         while (releaseCount < m_retiredFrames.size()) {
             auto& frame = m_retiredFrames[releaseCount];
             if (waitForCompletion) {
-                waitForCommandBuffer(frame.commandBuffer);
-            } else if (!isCommandBufferComplete(frame.commandBuffer)) {
+                metalRuntimeWaitForFrame(m_runtime, frame.frameSerial);
+            } else if (!metalRuntimeIsFrameComplete(m_runtime, frame.frameSerial)) {
                 break;
             }
 
@@ -179,7 +164,7 @@ private:
             m_drawable = nullptr;
         }
         if (m_commandBuffer.nativeHandle()) {
-            metalReleaseHandle(m_commandBuffer.nativeHandle());
+            metalRuntimeReleaseCommandBuffer(m_commandBuffer.nativeHandle());
         }
         m_commandBuffer.setNativeHandle(nullptr);
         m_backbufferTexture.setNativeHandle(nullptr);

@@ -3,8 +3,9 @@
 #ifdef __APPLE__
 
 #include "imgui_metal_bridge.h"
+#include "metal_resource_utils.h"
+#include "metal_runtime.h"
 
-#include <array>
 #include <cstring>
 #include <stdexcept>
 
@@ -12,6 +13,10 @@ namespace {
 
 MTL::Buffer* metalBuffer(const RhiBuffer* buffer) {
     return buffer ? static_cast<MTL::Buffer*>(buffer->nativeHandle()) : nullptr;
+}
+
+MTL::Texture* metalTextureHandle(const RhiTexture* texture) {
+    return texture ? static_cast<MTL::Texture*>(texture->nativeHandle()) : nullptr;
 }
 
 MTL::SamplerState* metalSampler(const RhiSampler* sampler) {
@@ -53,6 +58,15 @@ MTL::IndexType metalIndexType(RhiIndexType indexType) {
     }
 }
 
+size_t rhiIndexSize(RhiIndexType indexType) {
+    switch (indexType) {
+    case RhiIndexType::UInt16: return sizeof(uint16_t);
+    case RhiIndexType::UInt32:
+    default:
+        return sizeof(uint32_t);
+    }
+}
+
 MTL::Winding metalWinding(RhiWinding winding) {
     switch (winding) {
     case RhiWinding::Clockwise: return MTL::WindingClockwise;
@@ -72,34 +86,6 @@ MTL::CullMode metalCullMode(RhiCullMode cullMode) {
     }
 }
 
-MTL::ResourceUsage metalResourceUsage(RhiResourceUsage usage) {
-    MTL::ResourceUsage result = MTL::ResourceUsageRead;
-    if ((static_cast<uint32_t>(usage) & static_cast<uint32_t>(RhiResourceUsage::Write)) != 0) {
-        result = result | MTL::ResourceUsageWrite;
-    }
-    return result;
-}
-
-MTL::BarrierScope metalBarrierScope(RhiBarrierScope scope) {
-    MTL::BarrierScope result = MTL::BarrierScopeBuffers;
-    const uint32_t mask = static_cast<uint32_t>(scope);
-    if (mask == 0) {
-        return result;
-    }
-
-    result = static_cast<MTL::BarrierScope>(0);
-    if ((mask & static_cast<uint32_t>(RhiBarrierScope::Buffers)) != 0) {
-        result = result | MTL::BarrierScopeBuffers;
-    }
-    if ((mask & static_cast<uint32_t>(RhiBarrierScope::Textures)) != 0) {
-        result = result | MTL::BarrierScopeTextures;
-    }
-    if ((mask & static_cast<uint32_t>(RhiBarrierScope::RenderTargets)) != 0) {
-        result = result | MTL::BarrierScopeRenderTargets;
-    }
-    return result;
-}
-
 MTL::Origin metalOrigin(RhiOrigin3D origin) {
     return MTL::Origin(origin.x, origin.y, origin.z);
 }
@@ -108,14 +94,83 @@ MTL::Size metalSize(RhiSize3D size) {
     return MTL::Size(size.width, size.height, size.depth);
 }
 
-std::vector<MTL::Texture*> collectMetalTextures(const RhiTexture* const* textures, uint32_t count) {
-    std::vector<MTL::Texture*> result;
-    result.reserve(count);
-    for (uint32_t index = 0; index < count; ++index) {
-        result.push_back(textures[index] ? static_cast<MTL::Texture*>(textures[index]->nativeHandle()) : nullptr);
-    }
-    return result;
+MTL::ResourceID nullResourceID() {
+    return MTL::ResourceID{0};
 }
+
+MTL::GPUAddress bufferAddress(const RhiBuffer& buffer, uint64_t offset) {
+    auto* metal = static_cast<MTL::Buffer*>(buffer.nativeHandle());
+    return metal ? metal->gpuAddress() + offset : 0;
+}
+
+class MetalArgumentTableBinder {
+public:
+    MetalArgumentTableBinder(void* commandBufferHandle, MetalArgumentTableSlot slot)
+        : m_commandBufferHandle(commandBufferHandle),
+          m_table(static_cast<MTL4::ArgumentTable*>(
+              metalRuntimeArgumentTable(commandBufferHandle, slot))) {}
+
+    MTL4::ArgumentTable* table() const { return m_table; }
+
+    void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index, NS::UInteger stride = 0) {
+        if (!m_table) {
+            return;
+        }
+
+        MTL::GPUAddress address = 0;
+        if (auto* metal = metalBuffer(buffer)) {
+            address = metal->gpuAddress() + offset;
+        }
+
+        if (stride > 0) {
+            m_table->setAddress(address, stride, index);
+        } else {
+            m_table->setAddress(address, index);
+        }
+    }
+
+    void setBytes(const void* data, size_t size, uint32_t index) {
+        if (!m_table || !data || size == 0) {
+            return;
+        }
+
+        MetalUploadAllocation allocation;
+        if (metalRuntimeUploadBytes(m_commandBufferHandle, data, size, 256, allocation)) {
+            m_table->setAddress(allocation.gpuAddress, index);
+        }
+    }
+
+    void setTexture(const RhiTexture* texture, uint32_t index) {
+        if (!m_table) {
+            return;
+        }
+
+        auto* metalTexture = metalTextureHandle(texture);
+        m_table->setTexture(metalTexture ? metalTexture->gpuResourceID() : nullResourceID(), index);
+    }
+
+    void setSampler(const RhiSampler* sampler, uint32_t index) {
+        if (!m_table) {
+            return;
+        }
+
+        auto* metalSamplerState = metalSampler(sampler);
+        m_table->setSamplerState(metalSamplerState ? metalSamplerState->gpuResourceID() : nullResourceID(), index);
+    }
+
+    void setAccelerationStructure(const RhiAccelerationStructure* accelerationStructure, uint32_t index) {
+        if (!m_table) {
+            return;
+        }
+
+        auto* metalAs = metalAccelerationStructure(accelerationStructure);
+        m_table->setResource(metalAs ? metalAs->gpuResourceID() : nullResourceID(), index);
+    }
+
+private:
+    void* m_commandBufferHandle = nullptr;
+    MTL4::ArgumentTable* m_table = nullptr;
+};
 
 class MetalOwnedTexture final : public RhiTexture {
 public:
@@ -124,7 +179,7 @@ public:
 
     ~MetalOwnedTexture() override {
         if (m_texture) {
-            m_texture->release();
+            metalReleaseHandle(m_texture);
         }
     }
 
@@ -143,7 +198,7 @@ public:
 
     ~MetalOwnedBuffer() override {
         if (m_buffer) {
-            m_buffer->release();
+            metalReleaseHandle(m_buffer);
         }
     }
 
@@ -158,8 +213,17 @@ private:
 
 class MetalRenderCommandEncoder final : public RhiRenderCommandEncoder {
 public:
-    MetalRenderCommandEncoder(MTL::RenderCommandEncoder* encoder, TracyMetalGpuZone zone)
-        : m_encoder(encoder), m_zone(zone) {}
+    MetalRenderCommandEncoder(void* commandBufferHandle,
+                              MTL4::RenderCommandEncoder* encoder,
+                              TracyMetalGpuZone zone)
+        : m_commandBufferHandle(commandBufferHandle),
+          m_encoder(encoder),
+          m_vertexTable(commandBufferHandle, MetalArgumentTableSlot::Vertex),
+          m_fragmentTable(commandBufferHandle, MetalArgumentTableSlot::Fragment),
+          m_meshTable(commandBufferHandle, MetalArgumentTableSlot::Mesh),
+          m_zone(zone) {
+        bindArgumentTables();
+    }
 
     ~MetalRenderCommandEncoder() override {
         if (m_encoder) {
@@ -185,32 +249,31 @@ public:
     void setFrontFacingWinding(RhiWinding winding) override { m_encoder->setFrontFacingWinding(metalWinding(winding)); }
     void setCullMode(RhiCullMode cullMode) override { m_encoder->setCullMode(metalCullMode(cullMode)); }
     void setRenderPipeline(const RhiGraphicsPipeline& pipeline) override { m_encoder->setRenderPipelineState(metalRenderPipeline(pipeline)); }
-    void setVertexBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override { m_encoder->setVertexBuffer(metalBuffer(buffer), offset, index); }
-    void setFragmentBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override { m_encoder->setFragmentBuffer(metalBuffer(buffer), offset, index); }
-    void setMeshBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override { m_encoder->setMeshBuffer(metalBuffer(buffer), offset, index); }
-    void setVertexBytes(const void* data, size_t size, uint32_t index) override { m_encoder->setVertexBytes(data, size, index); }
-    void setFragmentBytes(const void* data, size_t size, uint32_t index) override { m_encoder->setFragmentBytes(data, size, index); }
-    void setMeshBytes(const void* data, size_t size, uint32_t index) override { m_encoder->setMeshBytes(data, size, index); }
+    void setVertexBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override { m_vertexTable.setBuffer(buffer, offset, index); }
+    void setFragmentBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override { m_fragmentTable.setBuffer(buffer, offset, index); }
+    void setMeshBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override { m_meshTable.setBuffer(buffer, offset, index); }
+    void setVertexBytes(const void* data, size_t size, uint32_t index) override { m_vertexTable.setBytes(data, size, index); }
+    void setFragmentBytes(const void* data, size_t size, uint32_t index) override { m_fragmentTable.setBytes(data, size, index); }
+    void setMeshBytes(const void* data, size_t size, uint32_t index) override { m_meshTable.setBytes(data, size, index); }
     void setPushConstants(const void* data, size_t size) override {
-        m_encoder->setVertexBytes(data, size, 0);
-        m_encoder->setFragmentBytes(data, size, 0);
+        m_vertexTable.setBytes(data, size, 0);
+        m_fragmentTable.setBytes(data, size, 0);
     }
-    void setFragmentTexture(const RhiTexture* texture, uint32_t index) override { m_encoder->setFragmentTexture(texture ? static_cast<MTL::Texture*>(texture->nativeHandle()) : nullptr, index); }
+    void setFragmentTexture(const RhiTexture* texture, uint32_t index) override { m_fragmentTable.setTexture(texture, index); }
     void setFragmentTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {
-        auto metalTextures = collectMetalTextures(textures, count);
-        if (count > 0) {
-            m_encoder->setFragmentTextures(metalTextures.data(), NS::Range(startIndex, count));
+        for (uint32_t index = 0; index < count; ++index) {
+            m_fragmentTable.setTexture(textures ? textures[index] : nullptr, startIndex + index);
         }
     }
     void setMeshTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {
-        auto metalTextures = collectMetalTextures(textures, count);
-        if (count > 0) {
-            m_encoder->setMeshTextures(metalTextures.data(), NS::Range(startIndex, count));
+        for (uint32_t index = 0; index < count; ++index) {
+            m_meshTable.setTexture(textures ? textures[index] : nullptr, startIndex + index);
         }
     }
-    void setFragmentSampler(const RhiSampler* sampler, uint32_t index) override { m_encoder->setFragmentSamplerState(metalSampler(sampler), index); }
-    void setMeshSampler(const RhiSampler* sampler, uint32_t index) override { m_encoder->setMeshSamplerState(metalSampler(sampler), index); }
+    void setFragmentSampler(const RhiSampler* sampler, uint32_t index) override { m_fragmentTable.setSampler(sampler, index); }
+    void setMeshSampler(const RhiSampler* sampler, uint32_t index) override { m_meshTable.setSampler(sampler, index); }
     void drawPrimitives(RhiPrimitiveType primitiveType, uint32_t vertexStart, uint32_t vertexCount) override {
+        bindArgumentTables();
         m_encoder->drawPrimitives(metalPrimitiveType(primitiveType), vertexStart, vertexCount);
     }
     void drawIndexedPrimitives(RhiPrimitiveType primitiveType,
@@ -218,15 +281,17 @@ public:
                                RhiIndexType indexType,
                                const RhiBuffer& indexBuffer,
                                uint64_t indexBufferOffset) override {
+        bindArgumentTables();
         m_encoder->drawIndexedPrimitives(metalPrimitiveType(primitiveType),
                                          indexCount,
                                          metalIndexType(indexType),
-                                         metalBuffer(&indexBuffer),
-                                         indexBufferOffset);
+                                         bufferAddress(indexBuffer, indexBufferOffset),
+                                         indexCount * rhiIndexSize(indexType));
     }
     void drawMeshThreadgroups(RhiSize3D threadgroupsPerGrid,
                               RhiSize3D threadsPerObjectThreadgroup,
                               RhiSize3D threadsPerMeshThreadgroup) override {
+        bindArgumentTables();
         m_encoder->drawMeshThreadgroups(metalSize(threadgroupsPerGrid),
                                         metalSize(threadsPerObjectThreadgroup),
                                         metalSize(threadsPerMeshThreadgroup));
@@ -235,24 +300,47 @@ public:
                                       uint64_t indirectBufferOffset,
                                       RhiSize3D threadsPerObjectThreadgroup,
                                       RhiSize3D threadsPerMeshThreadgroup) override {
-        m_encoder->drawMeshThreadgroups(static_cast<MTL::Buffer*>(indirectBuffer.nativeHandle()),
-                                        indirectBufferOffset,
+        bindArgumentTables();
+        m_encoder->drawMeshThreadgroups(bufferAddress(indirectBuffer, indirectBufferOffset),
                                         metalSize(threadsPerObjectThreadgroup),
                                         metalSize(threadsPerMeshThreadgroup));
     }
     void renderImGuiDrawData() override {
-        imguiRenderDrawData(m_encoder->commandBuffer(), m_encoder);
+        bindArgumentTables();
+        imguiRenderDrawData(m_commandBufferHandle, m_encoder);
     }
 
 private:
-    MTL::RenderCommandEncoder* m_encoder = nullptr;
+    void bindArgumentTables() {
+        if (m_vertexTable.table()) {
+            m_encoder->setArgumentTable(m_vertexTable.table(), MTL::RenderStageVertex);
+        }
+        if (m_fragmentTable.table()) {
+            m_encoder->setArgumentTable(m_fragmentTable.table(), MTL::RenderStageFragment);
+        }
+        if (m_meshTable.table()) {
+            m_encoder->setArgumentTable(m_meshTable.table(), MTL::RenderStageMesh);
+        }
+    }
+
+    void* m_commandBufferHandle = nullptr;
+    MTL4::RenderCommandEncoder* m_encoder = nullptr;
+    MetalArgumentTableBinder m_vertexTable;
+    MetalArgumentTableBinder m_fragmentTable;
+    MetalArgumentTableBinder m_meshTable;
     TracyMetalGpuZone m_zone = nullptr;
 };
 
 class MetalComputeCommandEncoder final : public RhiComputeCommandEncoder {
 public:
-    MetalComputeCommandEncoder(MTL::ComputeCommandEncoder* encoder, TracyMetalGpuZone zone)
-        : m_encoder(encoder), m_zone(zone) {}
+    MetalComputeCommandEncoder(void* commandBufferHandle,
+                               MTL4::ComputeCommandEncoder* encoder,
+                               TracyMetalGpuZone zone)
+        : m_encoder(encoder),
+          m_computeTable(commandBufferHandle, MetalArgumentTableSlot::Compute),
+          m_zone(zone) {
+        bindArgumentTable();
+    }
 
     ~MetalComputeCommandEncoder() override {
         if (m_encoder) {
@@ -265,47 +353,54 @@ public:
 
     void* nativeHandle() const override { return m_encoder; }
     void setComputePipeline(const RhiComputePipeline& pipeline) override { m_encoder->setComputePipelineState(metalComputePipeline(pipeline)); }
-    void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override { m_encoder->setBuffer(metalBuffer(buffer), offset, index); }
-    void setBytes(const void* data, size_t size, uint32_t index) override { m_encoder->setBytes(data, size, index); }
-    void setPushConstants(const void* data, size_t size) override { m_encoder->setBytes(data, size, 0); }
-    void setTexture(const RhiTexture* texture, uint32_t index) override { m_encoder->setTexture(texture ? static_cast<MTL::Texture*>(texture->nativeHandle()) : nullptr, index); }
+    void setBuffer(const RhiBuffer* buffer, uint64_t offset, uint32_t index) override { m_computeTable.setBuffer(buffer, offset, index); }
+    void setBytes(const void* data, size_t size, uint32_t index) override { m_computeTable.setBytes(data, size, index); }
+    void setPushConstants(const void* data, size_t size) override { m_computeTable.setBytes(data, size, 0); }
+    void setTexture(const RhiTexture* texture, uint32_t index) override { m_computeTable.setTexture(texture, index); }
     void setStorageTexture(const RhiTexture* texture, uint32_t index) override { setTexture(texture, index); }
     void setTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {
-        auto metalTextures = collectMetalTextures(textures, count);
-        if (count > 0) {
-            m_encoder->setTextures(metalTextures.data(), NS::Range(startIndex, count));
+        for (uint32_t index = 0; index < count; ++index) {
+            m_computeTable.setTexture(textures ? textures[index] : nullptr, startIndex + index);
         }
     }
-    void setSampler(const RhiSampler* sampler, uint32_t index) override { m_encoder->setSamplerState(metalSampler(sampler), index); }
+    void setSampler(const RhiSampler* sampler, uint32_t index) override { m_computeTable.setSampler(sampler, index); }
     void setAccelerationStructure(const RhiAccelerationStructure* accelerationStructure, uint32_t index) override {
-        m_encoder->setAccelerationStructure(metalAccelerationStructure(accelerationStructure), index);
+        m_computeTable.setAccelerationStructure(accelerationStructure, index);
     }
-    void useResource(const RhiBuffer& resource, RhiResourceUsage usage) override {
-        m_encoder->useResource(static_cast<MTL::Resource*>(resource.nativeHandle()), metalResourceUsage(usage));
+    void useResource(const RhiBuffer& /*resource*/, RhiResourceUsage /*usage*/) override {}
+    void useResource(const RhiAccelerationStructure& /*resource*/, RhiResourceUsage /*usage*/) override {}
+    void memoryBarrier(RhiBarrierScope /*scope*/) override {
+        m_encoder->barrierAfterEncoderStages(MTL::StageDispatch,
+                                             MTL::StageDispatch,
+                                             MTL4::VisibilityOptionDevice);
     }
-    void useResource(const RhiAccelerationStructure& resource, RhiResourceUsage usage) override {
-        m_encoder->useResource(static_cast<MTL::Resource*>(resource.nativeHandle()), metalResourceUsage(usage));
-    }
-    void memoryBarrier(RhiBarrierScope scope) override { m_encoder->memoryBarrier(metalBarrierScope(scope)); }
     void dispatchThreadgroups(RhiSize3D threadgroupsPerGrid, RhiSize3D threadsPerThreadgroup) override {
+        bindArgumentTable();
         m_encoder->dispatchThreadgroups(metalSize(threadgroupsPerGrid), metalSize(threadsPerThreadgroup));
     }
     void dispatchThreadgroupsIndirect(const RhiBuffer& indirectBuffer,
                                       uint64_t indirectBufferOffset,
                                       RhiSize3D threadsPerThreadgroup) override {
-        m_encoder->dispatchThreadgroups(static_cast<MTL::Buffer*>(indirectBuffer.nativeHandle()),
-                                        indirectBufferOffset,
+        bindArgumentTable();
+        m_encoder->dispatchThreadgroups(bufferAddress(indirectBuffer, indirectBufferOffset),
                                         metalSize(threadsPerThreadgroup));
     }
 
 private:
-    MTL::ComputeCommandEncoder* m_encoder = nullptr;
+    void bindArgumentTable() {
+        if (m_computeTable.table()) {
+            m_encoder->setArgumentTable(m_computeTable.table());
+        }
+    }
+
+    MTL4::ComputeCommandEncoder* m_encoder = nullptr;
+    MetalArgumentTableBinder m_computeTable;
     TracyMetalGpuZone m_zone = nullptr;
 };
 
 class MetalBlitCommandEncoder final : public RhiBlitCommandEncoder {
 public:
-    MetalBlitCommandEncoder(MTL::BlitCommandEncoder* encoder, TracyMetalGpuZone zone)
+    MetalBlitCommandEncoder(MTL4::ComputeCommandEncoder* encoder, TracyMetalGpuZone zone)
         : m_encoder(encoder), m_zone(zone) {}
 
     ~MetalBlitCommandEncoder() override {
@@ -339,48 +434,9 @@ public:
     }
 
 private:
-    MTL::BlitCommandEncoder* m_encoder = nullptr;
+    MTL4::ComputeCommandEncoder* m_encoder = nullptr;
     TracyMetalGpuZone m_zone = nullptr;
 };
-
-TracyMetalGpuZone beginRenderZone(TracyMetalCtxHandle tracyContext,
-                                  MTL::RenderPassDescriptor* descriptor,
-                                  const char* label,
-                                  uint32_t slot) {
-    if (!tracyContext) {
-        return nullptr;
-    }
-
-    static std::array<TracyMetalSrcLoc, 128> srcLocs{};
-    srcLocs[slot] = {label, "FrameGraph::execute", __FILE__, __LINE__, 0};
-    return tracyMetalZoneBeginRender(tracyContext, descriptor, &srcLocs[slot]);
-}
-
-TracyMetalGpuZone beginComputeZone(TracyMetalCtxHandle tracyContext,
-                                   MTL::ComputePassDescriptor* descriptor,
-                                   const char* label,
-                                   uint32_t slot) {
-    if (!tracyContext) {
-        return nullptr;
-    }
-
-    static std::array<TracyMetalSrcLoc, 128> srcLocs{};
-    srcLocs[slot] = {label, "FrameGraph::execute", __FILE__, __LINE__, 0};
-    return tracyMetalZoneBeginCompute(tracyContext, descriptor, &srcLocs[slot]);
-}
-
-TracyMetalGpuZone beginBlitZone(TracyMetalCtxHandle tracyContext,
-                                MTL::BlitPassDescriptor* descriptor,
-                                const char* label,
-                                uint32_t slot) {
-    if (!tracyContext) {
-        return nullptr;
-    }
-
-    static std::array<TracyMetalSrcLoc, 128> srcLocs{};
-    srcLocs[slot] = {label, "FrameGraph::execute", __FILE__, __LINE__, 0};
-    return tracyMetalZoneBeginBlit(tracyContext, descriptor, &srcLocs[slot]);
-}
 
 } // namespace
 
@@ -390,6 +446,7 @@ std::unique_ptr<RhiTexture> MetalFrameGraphBackend::createTexture(const RhiTextu
     textureDesc->setStorageMode(metalStorageMode(desc.storageMode));
     textureDesc->setUsage(metalTextureUsage(desc.usage));
     MTL::Texture* texture = m_device->newTexture(textureDesc);
+    metalTrackAllocation(m_device, texture);
     return std::make_unique<MetalOwnedTexture>(texture);
 }
 
@@ -411,56 +468,76 @@ std::unique_ptr<RhiBuffer> MetalFrameGraphBackend::createBuffer(const RhiBufferD
     if (buffer && desc.debugName) {
         buffer->setLabel(NS::String::string(desc.debugName, NS::UTF8StringEncoding));
     }
+    metalTrackAllocation(m_device, buffer);
 
     return std::make_unique<MetalOwnedBuffer>(buffer, desc.size);
 }
 
 MetalCommandBuffer::MetalCommandBuffer(void* commandBufferHandle, TracyMetalCtxHandle tracyContext)
-    : m_commandBuffer(static_cast<MTL::CommandBuffer*>(commandBufferHandle)),
+    : m_commandBuffer(static_cast<MTL4::CommandBuffer*>(commandBufferHandle)),
       m_tracyContext(tracyContext) {}
 
 std::unique_ptr<RhiRenderCommandEncoder> MetalCommandBuffer::beginRenderPass(const RhiRenderPassDesc& desc) {
-    auto* renderPassDesc = MTL::RenderPassDescriptor::alloc()->init();
+    auto* renderPassDesc = MTL4::RenderPassDescriptor::alloc()->init();
+    uint32_t renderTargetWidth = 0;
+    uint32_t renderTargetHeight = 0;
 
     for (uint32_t index = 0; index < desc.colorAttachmentCount; ++index) {
         const auto& colorAttachment = desc.colorAttachments[index];
         auto* attachment = renderPassDesc->colorAttachments()->object(index);
-        attachment->setTexture(metalTexture(colorAttachment.texture));
+        auto* texture = metalTexture(colorAttachment.texture);
+        attachment->setTexture(texture);
         attachment->setLoadAction(metalLoadAction(colorAttachment.loadAction));
         attachment->setStoreAction(metalStoreAction(colorAttachment.storeAction));
         attachment->setClearColor(metalClearColor(colorAttachment.clearColor));
+        if (texture && renderTargetWidth == 0 && renderTargetHeight == 0) {
+            renderTargetWidth = static_cast<uint32_t>(texture->width());
+            renderTargetHeight = static_cast<uint32_t>(texture->height());
+        }
     }
 
     if (desc.depthAttachment.bound) {
         auto* depthAttachment = renderPassDesc->depthAttachment();
-        depthAttachment->setTexture(metalTexture(desc.depthAttachment.texture));
+        auto* texture = metalTexture(desc.depthAttachment.texture);
+        depthAttachment->setTexture(texture);
         depthAttachment->setLoadAction(metalLoadAction(desc.depthAttachment.loadAction));
         depthAttachment->setStoreAction(metalStoreAction(desc.depthAttachment.storeAction));
         depthAttachment->setClearDepth(desc.depthAttachment.clearDepth);
+        if (texture && renderTargetWidth == 0 && renderTargetHeight == 0) {
+            renderTargetWidth = static_cast<uint32_t>(texture->width());
+            renderTargetHeight = static_cast<uint32_t>(texture->height());
+        }
+    }
+
+    if (renderTargetWidth > 0 && renderTargetHeight > 0) {
+        renderPassDesc->setRenderTargetWidth(renderTargetWidth);
+        renderPassDesc->setRenderTargetHeight(renderTargetHeight);
+        renderPassDesc->setRenderTargetArrayLength(1);
     }
 
     const uint32_t slot = m_zoneIndex++ % 128u;
-    TracyMetalGpuZone zone = beginRenderZone(m_tracyContext, renderPassDesc, desc.label ? desc.label : "Render Pass", slot);
-    MTL::RenderCommandEncoder* encoder = m_commandBuffer->renderCommandEncoder(renderPassDesc);
+    (void)slot;
+    TracyMetalGpuZone zone = nullptr;
+    MTL4::RenderCommandEncoder* encoder = m_commandBuffer->renderCommandEncoder(renderPassDesc);
     renderPassDesc->release();
-    return std::make_unique<MetalRenderCommandEncoder>(encoder, zone);
+    return std::make_unique<MetalRenderCommandEncoder>(m_commandBuffer, encoder, zone);
 }
 
 std::unique_ptr<RhiComputeCommandEncoder> MetalCommandBuffer::beginComputePass(const RhiComputePassDesc& desc) {
-    auto* computePassDesc = MTL::ComputePassDescriptor::alloc()->init();
     const uint32_t slot = m_zoneIndex++ % 128u;
-    TracyMetalGpuZone zone = beginComputeZone(m_tracyContext, computePassDesc, desc.label ? desc.label : "Compute Pass", slot);
-    MTL::ComputeCommandEncoder* encoder = m_commandBuffer->computeCommandEncoder(computePassDesc);
-    computePassDesc->release();
-    return std::make_unique<MetalComputeCommandEncoder>(encoder, zone);
+    (void)slot;
+    (void)desc;
+    TracyMetalGpuZone zone = nullptr;
+    MTL4::ComputeCommandEncoder* encoder = m_commandBuffer->computeCommandEncoder();
+    return std::make_unique<MetalComputeCommandEncoder>(m_commandBuffer, encoder, zone);
 }
 
 std::unique_ptr<RhiBlitCommandEncoder> MetalCommandBuffer::beginBlitPass(const RhiBlitPassDesc& desc) {
-    auto* blitPassDesc = MTL::BlitPassDescriptor::alloc()->init();
     const uint32_t slot = m_zoneIndex++ % 128u;
-    TracyMetalGpuZone zone = beginBlitZone(m_tracyContext, blitPassDesc, desc.label ? desc.label : "Blit Pass", slot);
-    MTL::BlitCommandEncoder* encoder = m_commandBuffer->blitCommandEncoder(blitPassDesc);
-    blitPassDesc->release();
+    (void)slot;
+    (void)desc;
+    TracyMetalGpuZone zone = nullptr;
+    MTL4::ComputeCommandEncoder* encoder = m_commandBuffer->computeCommandEncoder();
     return std::make_unique<MetalBlitCommandEncoder>(encoder, zone);
 }
 
@@ -472,16 +549,16 @@ const MTL::Texture* metalTexture(const RhiTexture* texture) {
     return texture ? static_cast<const MTL::Texture*>(texture->nativeHandle()) : nullptr;
 }
 
-MTL::RenderCommandEncoder* metalEncoder(RhiRenderCommandEncoder& encoder) {
-    return static_cast<MTL::RenderCommandEncoder*>(encoder.nativeHandle());
+MTL4::RenderCommandEncoder* metalEncoder(RhiRenderCommandEncoder& encoder) {
+    return static_cast<MTL4::RenderCommandEncoder*>(encoder.nativeHandle());
 }
 
-MTL::ComputeCommandEncoder* metalEncoder(RhiComputeCommandEncoder& encoder) {
-    return static_cast<MTL::ComputeCommandEncoder*>(encoder.nativeHandle());
+MTL4::ComputeCommandEncoder* metalEncoder(RhiComputeCommandEncoder& encoder) {
+    return static_cast<MTL4::ComputeCommandEncoder*>(encoder.nativeHandle());
 }
 
-MTL::BlitCommandEncoder* metalEncoder(RhiBlitCommandEncoder& encoder) {
-    return static_cast<MTL::BlitCommandEncoder*>(encoder.nativeHandle());
+MTL4::ComputeCommandEncoder* metalEncoder(RhiBlitCommandEncoder& encoder) {
+    return static_cast<MTL4::ComputeCommandEncoder*>(encoder.nativeHandle());
 }
 
 MTL::PixelFormat metalPixelFormat(RhiFormat format) {

@@ -4,6 +4,7 @@
 #include "render_uniforms.h"
 #include "frame_context.h"
 #include "gpu_driven_constants.h"
+#include "bindless_scene_constants.h"
 #include "cluster_lod_builder.h"
 #include "pass_registry.h"
 #include "imgui.h"
@@ -73,6 +74,7 @@ public:
         auto pipeIt = m_runtimeContext->computePipelinesRhi.find("DeferredLightingPass");
         if (pipeIt == m_runtimeContext->computePipelinesRhi.end() || !pipeIt->second.nativeHandle()) return;
         if (!m_ctx.gpuScene.instanceBuffer.nativeHandle()) return;
+        const bool useBindlessSceneTextures = m_runtimeContext->useBindlessSceneTextures;
 
         // Build LightingUniforms from shared frame and scene state.
         float4x4 invProj = m_frameContext->proj;
@@ -170,6 +172,13 @@ public:
         encoder.setTexture(skyTex, kSkyTextureBinding);
         encoder.setStorageTexture(m_frameGraph->getTexture(motionVectorsOutput),
                                   kMotionVectorsBinding);
+        if (!useBindlessSceneTextures && !m_ctx.materials.textureViews.empty()) {
+            encoder.setTextures(m_ctx.materials.textureViews.data(),
+                                METALLIC_METAL_DIRECT_BINDLESS_TEXTURE_BASE,
+                                static_cast<uint32_t>(m_ctx.materials.textureViews.size()));
+            encoder.setSampler(&m_ctx.materials.sampler,
+                               METALLIC_METAL_DIRECT_BINDLESS_SAMPLER_BASE);
+        }
         encoder.dispatchThreadgroups({static_cast<uint32_t>((m_width + 7) / 8), static_cast<uint32_t>((m_height + 7) / 8), 1},
                                      {8, 8, 1});
     }
@@ -194,6 +203,5 @@ private:
     std::string m_name = "Deferred Lighting";
     float m_motionVectorIntensity = 1.0f;
 };
-
 
 

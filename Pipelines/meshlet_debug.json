@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 2,
+  "name": "Meshlet Debug",
+  "resources": [
+    {
+      "id": "dbg000000000000000000000000000001",
+      "name": "Backbuffer",
+      "kind": "backbuffer",
+      "type": "texture",
+      "format": "BGRA8Unorm",
+      "size": "screen",
+      "editorPos": [1000.0, 0.0]
+    },
+    {
+      "id": "dbg000000000000000000000000000002",
+      "name": "Visibility",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Uint",
+      "size": "screen",
+      "editorPos": [0.0, 0.0]
+    },
+    {
+      "id": "dbg000000000000000000000000000003",
+      "name": "Depth",
+      "kind": "transient",
+      "type": "texture",
+      "format": "Depth32Float",
+      "size": "screen",
+      "editorPos": [0.0, 110.0]
+    },
+    {
+      "id": "dbg000000000000000000000000000004",
+      "name": "Lighting Output",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen",
+      "editorPos": [350.0, 0.0]
+    }
+  ],
+  "passes": [
+    {
+      "id": "dbgpass00000000000000000000000001",
+      "name": "Visibility Pass",
+      "type": "VisibilityPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "clearColor": [4294967295, 0, 0, 0]
+      },
+      "editorPos": [0.0, 0.0]
+    },
+    {
+      "id": "dbgpass00000000000000000000000002",
+      "name": "Meshlet Visualize",
+      "type": "MeshletVisualizePass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {},
+      "editorPos": [350.0, 0.0]
+    },
+    {
+      "id": "dbgpass00000000000000000000000003",
+      "name": "Tonemap",
+      "type": "TonemapPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "method": "Clip",
+        "exposure": 1.0
+      },
+      "editorPos": [700.0, 0.0]
+    },
+    {
+      "id": "dbgpass00000000000000000000000004",
+      "name": "ImGui Overlay",
+      "type": "ImGuiOverlayPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {},
+      "editorPos": [700.0, 120.0]
+    }
+  ],
+  "edges": [
+    {
+      "id": "dbgedge00000000000000000000000001",
+      "passId": "dbgpass00000000000000000000000001",
+      "slotKey": "visibility",
+      "direction": "output",
+      "resourceId": "dbg000000000000000000000000000002"
+    },
+    {
+      "id": "dbgedge00000000000000000000000002",
+      "passId": "dbgpass00000000000000000000000001",
+      "slotKey": "depth",
+      "direction": "output",
+      "resourceId": "dbg000000000000000000000000000003"
+    },
+    {
+      "id": "dbgedge00000000000000000000000003",
+      "passId": "dbgpass00000000000000000000000002",
+      "slotKey": "visibility",
+      "direction": "input",
+      "resourceId": "dbg000000000000000000000000000002"
+    },
+    {
+      "id": "dbgedge00000000000000000000000004",
+      "passId": "dbgpass00000000000000000000000002",
+      "slotKey": "lightingOutput",
+      "direction": "output",
+      "resourceId": "dbg000000000000000000000000000004"
+    },
+    {
+      "id": "dbgedge00000000000000000000000005",
+      "passId": "dbgpass00000000000000000000000003",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "dbg000000000000000000000000000004"
+    },
+    {
+      "id": "dbgedge00000000000000000000000006",
+      "passId": "dbgpass00000000000000000000000003",
+      "slotKey": "output",
+      "direction": "output",
+      "resourceId": "dbg000000000000000000000000000001"
+    },
+    {
+      "id": "dbgedge00000000000000000000000007",
+      "passId": "dbgpass00000000000000000000000004",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "dbg000000000000000000000000000003"
+    },
+    {
+      "id": "dbgedge00000000000000000000000008",
+      "passId": "dbgpass00000000000000000000000004",
+      "slotKey": "target",
+      "direction": "output",
+      "resourceId": "dbg000000000000000000000000000001"
+    }
+  ]
+}

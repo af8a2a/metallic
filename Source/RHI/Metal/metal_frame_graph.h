@@ -43,16 +43,16 @@ public:
     std::unique_ptr<RhiBlitCommandEncoder> beginBlitPass(const RhiBlitPassDesc& desc) override;
 
 private:
-    MTL::CommandBuffer* m_commandBuffer = nullptr;
+    MTL4::CommandBuffer* m_commandBuffer = nullptr;
     TracyMetalCtxHandle m_tracyContext = nullptr;
     uint32_t m_zoneIndex = 0;
 };
 
 MTL::Texture* metalTexture(RhiTexture* texture);
 const MTL::Texture* metalTexture(const RhiTexture* texture);
-MTL::RenderCommandEncoder* metalEncoder(RhiRenderCommandEncoder& encoder);
-MTL::ComputeCommandEncoder* metalEncoder(RhiComputeCommandEncoder& encoder);
-MTL::BlitCommandEncoder* metalEncoder(RhiBlitCommandEncoder& encoder);
+MTL4::RenderCommandEncoder* metalEncoder(RhiRenderCommandEncoder& encoder);
+MTL4::ComputeCommandEncoder* metalEncoder(RhiComputeCommandEncoder& encoder);
+MTL4::ComputeCommandEncoder* metalEncoder(RhiBlitCommandEncoder& encoder);
 
 MTL::PixelFormat metalPixelFormat(RhiFormat format);
 RhiFormat metalToRhiFormat(MTL::PixelFormat format);

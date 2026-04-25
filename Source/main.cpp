@@ -39,6 +39,7 @@
 #include "frame_context.h"
 #include "rhi_window_runtime.h"
 
+bool s_viewportHovered = true;
 
 static bool loadPipelineAssetChecked(const std::string& path,
                                      const char* label,
@@ -86,8 +87,8 @@ int main() {
         return 1;
     }
     spdlog::info("RHI device: {}", runtime->deviceName());
-    const RhiDevice& device = runtime->device();
-    const RhiCommandQueue& commandQueue = runtime->commandQueue();
+    RhiDeviceHandle device(runtime->device().nativeHandle());
+    RhiCommandQueueHandle commandQueue(runtime->commandQueue().nativeHandle());
 
     const char* projectRoot = PROJECT_SOURCE_DIR;
 
@@ -114,6 +115,11 @@ int main() {
 
     // Build all shader pipelines
     ShaderManager shaderManager(device, projectRoot);
+    shaderManager.setGlobalDefines({
+        {"METALLIC_BINDLESS_MAX_SAMPLED_IMAGES", "96"},
+        {"METALLIC_BINDLESS_MAX_SAMPLERS", "1"},
+        {"METALLIC_METAL_DIRECT_BINDING", "1"},
+    });
     if (!shaderManager.buildAll()) return 1;
 
     PipelineRuntimeContext& rtCtx = shaderManager.runtimeContext();
@@ -152,7 +158,7 @@ int main() {
     PipelineAsset visPipelineAsset;
     PipelineAsset fwdPipelineAsset;
     PipelineAsset meshletDbgPipelineAsset;
-    std::string visPipelinePath = std::string(projectRoot) + "/Pipelines/visibility_buffer.json";
+    std::string visPipelinePath = std::string(projectRoot) + "/Pipelines/visibilitybuffer.json";
     std::string fwdPipelinePath = std::string(projectRoot) + "/Pipelines/forward.json";
     std::string meshletDbgPipelinePath = std::string(projectRoot) + "/Pipelines/meshlet_debug.json";
 

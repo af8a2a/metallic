@@ -1,4 +1,5 @@
 #include "slang_compiler.h"
+#include "bindless_scene_constants.h"
 
 #include <slang.h>
 #include <slang-com-ptr.h>
@@ -44,6 +45,8 @@ constexpr uint32_t kSpirvExecutionModelFragment = 4;
 constexpr uint32_t kSpirvExecutionModelMeshExt = 5365;
 constexpr uint32_t kSpirvDecorationLocation = 30;
 constexpr uint32_t kSpirvDecorationPerPrimitiveExt = 5271;
+constexpr uint32_t kMetalDirectBindlessTextureBase = METALLIC_METAL_DIRECT_BINDLESS_TEXTURE_BASE;
+constexpr uint32_t kMetalDirectBindlessSamplerBase = METALLIC_METAL_DIRECT_BINDLESS_SAMPLER_BASE;
 
 std::mutex g_bindingLayoutCacheMutex;
 std::unordered_map<uint64_t, SlangShaderBindingLayout> g_bindingLayoutCache;
@@ -1029,6 +1032,9 @@ std::string patchMeshMetalSource(const std::string& source) {
     patched = std::regex_replace(patched,
         std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w+))"),
         "$1 [[texture(0)]]");
+    patched = std::regex_replace(patched,
+        std::regex(R"((array<sampler,\s*int\(\d+\)>\s+\w+))"),
+        "$1 [[sampler(0)]]");
 
     return patched;
 }
@@ -1050,16 +1056,39 @@ std::string patchVisibilityMetalSource(const std::string& source) {
     patched = std::regex_replace(patched,
         std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w+))"),
         "$1 [[texture(0)]]");
+    patched = std::regex_replace(patched,
+        std::regex(R"((array<sampler,\s*int\(\d+\)>\s+\w+))"),
+        "$1 [[sampler(0)]]");
 
     return patched;
 }
 
 std::string patchComputeMetalSource(const std::string& source) {
     std::string patched = source;
+    std::smatch bindlessTextureMatch;
+    uint32_t bindlessTextureCount = 0;
+    const std::regex bindlessTextureRegex(
+        R"(array<texture2d<float,\s*access::sample>,\s*int\((\d+)\)>\s+\w+)");
+    if (std::regex_search(source, bindlessTextureMatch, bindlessTextureRegex) &&
+        bindlessTextureMatch.size() > 1) {
+        bindlessTextureCount = static_cast<uint32_t>(std::stoul(bindlessTextureMatch[1].str()));
+    }
 
     patched = std::regex_replace(patched,
         std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w+)(\s*,))"),
-        "$1 [[texture(3)]]$2");
+        "$1 [[texture(" + std::to_string(kMetalDirectBindlessTextureBase) + ")]]$2");
+    patched = std::regex_replace(patched,
+        std::regex(R"((array<sampler,\s*int\(\d+\)>\s+\w+)(\s*,))"),
+        "$1 [[sampler(" + std::to_string(kMetalDirectBindlessSamplerBase) + ")]]$2");
+
+    if (bindlessTextureCount > 0) {
+        for (uint32_t localIndex = 0; localIndex < kMetalDirectBindlessTextureBase; ++localIndex) {
+            patched = std::regex_replace(
+                patched,
+                std::regex(R"(\[\[texture\()" + std::to_string(bindlessTextureCount + localIndex) + R"(\)\]\])"),
+                "[[texture(" + std::to_string(localIndex) + ")]]");
+        }
+    }
 
     return patched;
 }

@@ -34,6 +34,10 @@ void* metalCreateSharedBuffer(void* deviceHandle,
                               size_t size,
                               const char* debugName = nullptr);
 void* metalBufferContents(void* bufferHandle);
+void metalRegisterResidencySet(void* deviceHandle, void* residencySetHandle);
+void metalUnregisterResidencySet(void* deviceHandle);
+void metalTrackAllocation(void* deviceHandle, void* allocationHandle);
+void metalUntrackAllocation(void* allocationHandle);
 
 void* metalCreateTexture2D(void* deviceHandle,
                            uint32_t width,

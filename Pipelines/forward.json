@@ -1,0 +1,183 @@
+{
+  "schemaVersion": 2,
+  "name": "Forward",
+  "resources": [
+    {
+      "id": "fwd000000000000000000000000000001",
+      "name": "Backbuffer",
+      "kind": "backbuffer",
+      "type": "texture",
+      "format": "BGRA8Unorm",
+      "size": "screen",
+      "editorPos": [1000.0, 0.0]
+    },
+    {
+      "id": "fwd000000000000000000000000000002",
+      "name": "Sky Output",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen",
+      "editorPos": [0.0, 0.0]
+    },
+    {
+      "id": "fwd000000000000000000000000000003",
+      "name": "Forward Color",
+      "kind": "transient",
+      "type": "texture",
+      "format": "RGBA16Float",
+      "size": "screen",
+      "editorPos": [250.0, 0.0]
+    },
+    {
+      "id": "fwd000000000000000000000000000004",
+      "name": "Depth",
+      "kind": "transient",
+      "type": "texture",
+      "format": "Depth32Float",
+      "size": "screen",
+      "editorPos": [250.0, 110.0]
+    },
+    {
+      "id": "fwd000000000000000000000000000005",
+      "name": "Exposure LUT",
+      "kind": "transient",
+      "type": "texture",
+      "format": "R32Float",
+      "size": "1x1",
+      "editorPos": [500.0, 0.0]
+    }
+  ],
+  "passes": [
+    {
+      "id": "fwdpass00000000000000000000000001",
+      "name": "Sky Pass",
+      "type": "SkyPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "exposure": 10.0
+      },
+      "editorPos": [0.0, 0.0]
+    },
+    {
+      "id": "fwdpass00000000000000000000000002",
+      "name": "Forward Pass",
+      "type": "ForwardPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {},
+      "editorPos": [250.0, 0.0]
+    },
+    {
+      "id": "fwdpass00000000000000000000000003",
+      "name": "Auto Exposure",
+      "type": "AutoExposurePass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {},
+      "editorPos": [500.0, 0.0]
+    },
+    {
+      "id": "fwdpass00000000000000000000000004",
+      "name": "Tonemap",
+      "type": "TonemapPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "method": "ACES",
+        "exposure": 1.0,
+        "autoExposure": true
+      },
+      "editorPos": [750.0, 0.0]
+    },
+    {
+      "id": "fwdpass00000000000000000000000005",
+      "name": "ImGui Overlay",
+      "type": "ImGuiOverlayPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {},
+      "editorPos": [750.0, 120.0]
+    }
+  ],
+  "edges": [
+    {
+      "id": "fwdedge00000000000000000000000001",
+      "passId": "fwdpass00000000000000000000000001",
+      "slotKey": "skyOutput",
+      "direction": "output",
+      "resourceId": "fwd000000000000000000000000000002"
+    },
+    {
+      "id": "fwdedge00000000000000000000000002",
+      "passId": "fwdpass00000000000000000000000002",
+      "slotKey": "skyOutput",
+      "direction": "input",
+      "resourceId": "fwd000000000000000000000000000002"
+    },
+    {
+      "id": "fwdedge00000000000000000000000003",
+      "passId": "fwdpass00000000000000000000000002",
+      "slotKey": "forwardColor",
+      "direction": "output",
+      "resourceId": "fwd000000000000000000000000000003"
+    },
+    {
+      "id": "fwdedge00000000000000000000000004",
+      "passId": "fwdpass00000000000000000000000002",
+      "slotKey": "depth",
+      "direction": "output",
+      "resourceId": "fwd000000000000000000000000000004"
+    },
+    {
+      "id": "fwdedge00000000000000000000000005",
+      "passId": "fwdpass00000000000000000000000003",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "fwd000000000000000000000000000003"
+    },
+    {
+      "id": "fwdedge00000000000000000000000006",
+      "passId": "fwdpass00000000000000000000000003",
+      "slotKey": "exposureLut",
+      "direction": "output",
+      "resourceId": "fwd000000000000000000000000000005"
+    },
+    {
+      "id": "fwdedge00000000000000000000000007",
+      "passId": "fwdpass00000000000000000000000004",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "fwd000000000000000000000000000003"
+    },
+    {
+      "id": "fwdedge00000000000000000000000008",
+      "passId": "fwdpass00000000000000000000000004",
+      "slotKey": "exposureLut",
+      "direction": "input",
+      "resourceId": "fwd000000000000000000000000000005"
+    },
+    {
+      "id": "fwdedge00000000000000000000000009",
+      "passId": "fwdpass00000000000000000000000004",
+      "slotKey": "output",
+      "direction": "output",
+      "resourceId": "fwd000000000000000000000000000001"
+    },
+    {
+      "id": "fwdedge0000000000000000000000000a",
+      "passId": "fwdpass00000000000000000000000005",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "fwd000000000000000000000000000004"
+    },
+    {
+      "id": "fwdedge0000000000000000000000000b",
+      "passId": "fwdpass00000000000000000000000005",
+      "slotKey": "target",
+      "direction": "output",
+      "resourceId": "fwd000000000000000000000000000001"
+    }
+  ]
+}

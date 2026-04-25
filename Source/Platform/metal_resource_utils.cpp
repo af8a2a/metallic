@@ -3,14 +3,18 @@
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
 
+#include <limits>
+#include <mutex>
+#include <unordered_map>
+
 namespace {
 
 MTL::Device* metalDevice(void* handle) {
     return static_cast<MTL::Device*>(handle);
 }
 
-MTL::CommandQueue* metalCommandQueue(void* handle) {
-    return static_cast<MTL::CommandQueue*>(handle);
+MTL4::CommandQueue* metalCommandQueue(void* handle) {
+    return static_cast<MTL4::CommandQueue*>(handle);
 }
 
 MTL::Buffer* metalBuffer(void* handle) {
@@ -23,6 +27,23 @@ MTL::Texture* metalTexture(void* handle) {
 
 NS::Object* metalObject(void* handle) {
     return static_cast<NS::Object*>(handle);
+}
+
+MTL::ResidencySet* metalResidencySet(void* handle) {
+    return static_cast<MTL::ResidencySet*>(handle);
+}
+
+MTL::Allocation* metalAllocation(void* handle) {
+    return static_cast<MTL::Allocation*>(handle);
+}
+
+std::mutex g_residencyMutex;
+std::unordered_map<void*, MTL::ResidencySet*> g_deviceResidencySets;
+std::unordered_map<void*, MTL::ResidencySet*> g_allocationResidencySets;
+
+MTL::ResidencySet* residencySetForDeviceLocked(void* deviceHandle) {
+    const auto it = g_deviceResidencySets.find(deviceHandle);
+    return it != g_deviceResidencySets.end() ? it->second : nullptr;
 }
 
 MTL::PixelFormat metalPixelFormat(RhiFormat format) {
@@ -92,6 +113,55 @@ MTL::SamplerAddressMode metalSamplerAddressMode(MetalSamplerAddressMode mode) {
 
 } // namespace
 
+void metalRegisterResidencySet(void* deviceHandle, void* residencySetHandle) {
+    auto* residencySet = metalResidencySet(residencySetHandle);
+    if (!deviceHandle || !residencySet) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_residencyMutex);
+    g_deviceResidencySets[deviceHandle] = residencySet;
+}
+
+void metalUnregisterResidencySet(void* deviceHandle) {
+    std::lock_guard<std::mutex> lock(g_residencyMutex);
+    g_deviceResidencySets.erase(deviceHandle);
+}
+
+void metalTrackAllocation(void* deviceHandle, void* allocationHandle) {
+    auto* allocation = metalAllocation(allocationHandle);
+    if (!deviceHandle || !allocation) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_residencyMutex);
+    auto* residencySet = residencySetForDeviceLocked(deviceHandle);
+    if (!residencySet) {
+        return;
+    }
+
+    residencySet->addAllocation(allocation);
+    residencySet->commit();
+    g_allocationResidencySets[allocationHandle] = residencySet;
+}
+
+void metalUntrackAllocation(void* allocationHandle) {
+    auto* allocation = metalAllocation(allocationHandle);
+    if (!allocation) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_residencyMutex);
+    const auto it = g_allocationResidencySets.find(allocationHandle);
+    if (it == g_allocationResidencySets.end()) {
+        return;
+    }
+
+    it->second->removeAllocation(allocation);
+    it->second->commit();
+    g_allocationResidencySets.erase(it);
+}
+
 void* metalCreateSharedBuffer(void* deviceHandle,
                               const void* initialData,
                               size_t size,
@@ -107,6 +177,7 @@ void* metalCreateSharedBuffer(void* deviceHandle,
     if (buffer && debugName) {
         buffer->setLabel(NS::String::string(debugName, NS::UTF8StringEncoding));
     }
+    metalTrackAllocation(deviceHandle, buffer);
     return buffer;
 }
 
@@ -137,6 +208,7 @@ void* metalCreateTexture2D(void* deviceHandle,
     }
 
     auto* texture = device->newTexture(desc);
+    metalTrackAllocation(deviceHandle, texture);
     return texture;
 }
 
@@ -164,6 +236,7 @@ void* metalCreateTexture3D(void* deviceHandle,
 
     auto* texture = device->newTexture(desc);
     desc->release();
+    metalTrackAllocation(deviceHandle, texture);
     return texture;
 }
 
@@ -212,12 +285,36 @@ void metalGenerateMipmaps(void* commandQueueHandle, void* textureHandle) {
         return;
     }
 
-    auto* commandBuffer = commandQueue->commandBuffer();
-    auto* blitEncoder = commandBuffer->blitCommandEncoder();
-    blitEncoder->generateMipmaps(texture);
-    blitEncoder->endEncoding();
-    commandBuffer->commit();
-    commandBuffer->waitUntilCompleted();
+    auto* device = commandQueue->device();
+    if (!device) {
+        return;
+    }
+
+    auto* allocator = device->newCommandAllocator();
+    auto* commandBuffer = device->newCommandBuffer();
+    auto* event = device->newSharedEvent();
+    if (!allocator || !commandBuffer || !event) {
+        if (allocator) allocator->release();
+        if (commandBuffer) commandBuffer->release();
+        if (event) event->release();
+        return;
+    }
+
+    allocator->reset();
+    commandBuffer->beginCommandBuffer(allocator);
+    auto* encoder = commandBuffer->computeCommandEncoder();
+    encoder->generateMipmaps(texture);
+    encoder->endEncoding();
+    commandBuffer->endCommandBuffer();
+
+    const MTL4::CommandBuffer* buffers[] = { commandBuffer };
+    commandQueue->commit(buffers, 1);
+    commandQueue->signalEvent(event, 1);
+    event->waitUntilSignaledValue(1, std::numeric_limits<uint64_t>::max());
+
+    event->release();
+    commandBuffer->release();
+    allocator->release();
 }
 
 void* metalCreateSampler(void* deviceHandle, const MetalSamplerDesc& desc) {
@@ -278,6 +375,7 @@ void* metalRetainHandle(void* handle) {
 void metalReleaseHandle(void* handle) {
     auto* object = metalObject(handle);
     if (object) {
+        metalUntrackAllocation(handle);
         object->release();
     }
 }

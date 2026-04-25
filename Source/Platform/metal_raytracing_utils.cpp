@@ -1,7 +1,12 @@
 #include "metal_raytracing_utils.h"
 
+#include "metal_resource_utils.h"
+
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
+#include <Metal/MTL4AccelerationStructure.hpp>
+
+#include <limits>
 #include <vector>
 
 namespace {
@@ -10,12 +15,12 @@ MTL::Device* metalDevice(void* handle) {
     return static_cast<MTL::Device*>(handle);
 }
 
-MTL::CommandQueue* metalCommandQueue(void* handle) {
-    return static_cast<MTL::CommandQueue*>(handle);
+MTL4::CommandQueue* metalCommandQueue(void* handle) {
+    return static_cast<MTL4::CommandQueue*>(handle);
 }
 
-MTL::CommandBuffer* metalCommandBuffer(void* handle) {
-    return static_cast<MTL::CommandBuffer*>(handle);
+MTL4::CommandBuffer* metalCommandBuffer(void* handle) {
+    return static_cast<MTL4::CommandBuffer*>(handle);
 }
 
 MTL::Buffer* metalBuffer(void* handle) {
@@ -33,21 +38,17 @@ std::string metalErrorMessage(NS::Error* error, const char* fallback) {
     return fallback ? fallback : "Unknown Metal error";
 }
 
-void fillInstanceDescriptor(MTL::AccelerationStructureInstanceDescriptor& destination,
-                            const MetalRayTracingInstanceDesc& source) {
-    destination = {};
-    destination.transformationMatrix.columns[0] = {source.transform[0], source.transform[1], source.transform[2]};
-    destination.transformationMatrix.columns[1] = {source.transform[3], source.transform[4], source.transform[5]};
-    destination.transformationMatrix.columns[2] = {source.transform[6], source.transform[7], source.transform[8]};
-    destination.transformationMatrix.columns[3] = {source.transform[9], source.transform[10], source.transform[11]};
-    destination.options = source.opaque ? MTL::AccelerationStructureInstanceOptionOpaque
-                                        : static_cast<MTL::AccelerationStructureInstanceOptions>(0);
-    destination.mask = static_cast<uint8_t>(source.mask);
-    destination.intersectionFunctionTableOffset = 0;
-    destination.accelerationStructureIndex = source.accelerationStructureIndex;
+void fillTransform(MTL::PackedFloat4x3& destination,
+                   const MetalRayTracingInstanceDesc& source) {
+    destination.columns[0] = {source.transform[0], source.transform[1], source.transform[2]};
+    destination.columns[1] = {source.transform[3], source.transform[4], source.transform[5]};
+    destination.columns[2] = {source.transform[6], source.transform[7], source.transform[8]};
+    destination.columns[3] = {source.transform[9], source.transform[10], source.transform[11]};
 }
 
-bool writeInstanceDescriptors(void* instanceDescriptorBufferHandle,
+bool writeInstanceDescriptors(const void* const* referencedAccelerationStructures,
+                              uint32_t referencedAccelerationStructureCount,
+                              void* instanceDescriptorBufferHandle,
                               const MetalRayTracingInstanceDesc* instances,
                               uint32_t instanceCount,
                               std::string& errorMessage) {
@@ -57,22 +58,67 @@ bool writeInstanceDescriptors(void* instanceDescriptorBufferHandle,
         return false;
     }
 
-    auto* destination = static_cast<MTL::AccelerationStructureInstanceDescriptor*>(descriptorBuffer->contents());
+    auto* destination = static_cast<MTL::IndirectAccelerationStructureInstanceDescriptor*>(descriptorBuffer->contents());
     if (!destination && instanceCount > 0) {
         errorMessage = "Failed to map instance descriptor buffer";
         return false;
     }
 
     for (uint32_t index = 0; index < instanceCount; ++index) {
-        fillInstanceDescriptor(destination[index], instances[index]);
+        const auto& source = instances[index];
+        if (source.accelerationStructureIndex >= referencedAccelerationStructureCount ||
+            !referencedAccelerationStructures[source.accelerationStructureIndex]) {
+            errorMessage = "Invalid TLAS instance acceleration structure index";
+            return false;
+        }
+
+        auto* referencedAs = metalAccelerationStructure(
+            const_cast<void*>(referencedAccelerationStructures[source.accelerationStructureIndex]));
+
+        auto& instance = destination[index];
+        instance = {};
+        fillTransform(instance.transformationMatrix, source);
+        instance.options = source.opaque ? MTL::AccelerationStructureInstanceOptionOpaque
+                                         : MTL::AccelerationStructureInstanceOptionNone;
+        instance.mask = source.mask;
+        instance.intersectionFunctionTableOffset = 0;
+        instance.userID = index;
+        instance.accelerationStructureID = referencedAs->gpuResourceID();
     }
     return true;
 }
 
-NS::Array* accelerationStructureArray(const void* const* handles, uint32_t count) {
-    return NS::Array::array(
-        reinterpret_cast<const NS::Object* const*>(handles),
-        count);
+bool submitAndWait(MTL::Device* device,
+                   MTL4::CommandQueue* commandQueue,
+                   MTL4::CommandBuffer* commandBuffer,
+                   std::string& errorMessage) {
+    auto* event = device->newSharedEvent();
+    if (!event) {
+        errorMessage = "Failed to allocate Metal4 shared event";
+        return false;
+    }
+
+    commandBuffer->endCommandBuffer();
+    const MTL4::CommandBuffer* buffers[] = { commandBuffer };
+    commandQueue->commit(buffers, 1);
+    commandQueue->signalEvent(event, 1);
+    const bool signaled = event->waitUntilSignaledValue(1, std::numeric_limits<uint64_t>::max());
+    event->release();
+    if (!signaled) {
+        errorMessage = "Timed out waiting for Metal4 acceleration structure build";
+    }
+    return signaled;
+}
+
+MTL4::InstanceAccelerationStructureDescriptor* createTlasDescriptor(MTL::Buffer* instanceDescriptorBuffer,
+                                                                    uint32_t instanceCount) {
+    auto* accelerationDescriptor = MTL4::InstanceAccelerationStructureDescriptor::alloc()->init();
+    accelerationDescriptor->setInstanceCount(instanceCount);
+    accelerationDescriptor->setInstanceDescriptorBuffer(
+        MTL4::BufferRange(instanceDescriptorBuffer->gpuAddress(), instanceDescriptorBuffer->length()));
+    accelerationDescriptor->setInstanceDescriptorType(MTL::AccelerationStructureInstanceDescriptorTypeIndirect);
+    accelerationDescriptor->setInstanceDescriptorStride(sizeof(MTL::IndirectAccelerationStructureInstanceDescriptor));
+    return accelerationDescriptor;
 }
 
 } // namespace
@@ -100,18 +146,18 @@ bool metalBuildBottomLevelAccelerationStructure(void* deviceHandle,
         return false;
     }
 
-    std::vector<MTL::AccelerationStructureTriangleGeometryDescriptor*> geometryDescriptors;
+    std::vector<MTL4::AccelerationStructureTriangleGeometryDescriptor*> geometryDescriptors;
     geometryDescriptors.reserve(geometryCount);
 
     for (uint32_t index = 0; index < geometryCount; ++index) {
         const auto& geometryRange = geometryRanges[index];
-        auto* descriptor = MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
-        descriptor->setVertexBuffer(positionBuffer);
-        descriptor->setVertexBufferOffset(0);
+        const uint64_t indexOffset = static_cast<uint64_t>(geometryRange.indexOffset) * sizeof(uint32_t);
+        auto* descriptor = MTL4::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
+        descriptor->setVertexBuffer(MTL4::BufferRange(positionBuffer->gpuAddress(), positionBuffer->length()));
         descriptor->setVertexStride(positionStride);
         descriptor->setVertexFormat(MTL::AttributeFormatFloat3);
-        descriptor->setIndexBuffer(indexBuffer);
-        descriptor->setIndexBufferOffset(static_cast<uint64_t>(geometryRange.indexOffset) * sizeof(uint32_t));
+        descriptor->setIndexBuffer(MTL4::BufferRange(indexBuffer->gpuAddress() + indexOffset,
+                                                     indexBuffer->length() - indexOffset));
         descriptor->setIndexType(MTL::IndexTypeUInt32);
         descriptor->setTriangleCount(geometryRange.indexCount / 3);
         descriptor->setOpaque(true);
@@ -122,7 +168,7 @@ bool metalBuildBottomLevelAccelerationStructure(void* deviceHandle,
         reinterpret_cast<const NS::Object* const*>(geometryDescriptors.data()),
         geometryDescriptors.size());
 
-    auto* accelerationDescriptor = MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
+    auto* accelerationDescriptor = MTL4::PrimitiveAccelerationStructureDescriptor::alloc()->init();
     accelerationDescriptor->setGeometryDescriptors(descriptorArray);
 
     auto sizes = device->accelerationStructureSizes(accelerationDescriptor);
@@ -138,18 +184,48 @@ bool metalBuildBottomLevelAccelerationStructure(void* deviceHandle,
         }
         return false;
     }
+    metalTrackAllocation(device, accelerationStructure);
+    metalTrackAllocation(device, scratchBuffer);
 
-    auto* commandBuffer = commandQueue->commandBuffer();
-    auto* encoder = commandBuffer->accelerationStructureCommandEncoder();
-    encoder->buildAccelerationStructure(accelerationStructure, accelerationDescriptor, scratchBuffer, 0);
+    auto* allocator = device->newCommandAllocator();
+    auto* commandBuffer = device->newCommandBuffer();
+    if (!allocator || !commandBuffer) {
+        errorMessage = "Failed to allocate BLAS command buffer";
+        if (allocator) allocator->release();
+        if (commandBuffer) commandBuffer->release();
+        metalReleaseHandle(scratchBuffer);
+        metalReleaseHandle(accelerationStructure);
+        accelerationDescriptor->release();
+        for (auto* descriptor : geometryDescriptors) {
+            descriptor->release();
+        }
+        return false;
+    }
+
+    allocator->reset();
+    commandBuffer->beginCommandBuffer(allocator);
+    auto* encoder = commandBuffer->computeCommandEncoder();
+    encoder->buildAccelerationStructure(accelerationStructure,
+                                        accelerationDescriptor,
+                                        MTL4::BufferRange(scratchBuffer->gpuAddress(), scratchBuffer->length()));
+    encoder->barrierAfterEncoderStages(MTL::StageAccelerationStructure,
+                                       MTL::StageDispatch,
+                                       MTL4::VisibilityOptionDevice);
     encoder->endEncoding();
-    commandBuffer->commit();
-    commandBuffer->waitUntilCompleted();
 
-    scratchBuffer->release();
+    const bool submitted = submitAndWait(device, commandQueue, commandBuffer, errorMessage);
+
+    commandBuffer->release();
+    allocator->release();
+    metalReleaseHandle(scratchBuffer);
     accelerationDescriptor->release();
     for (auto* descriptor : geometryDescriptors) {
         descriptor->release();
+    }
+
+    if (!submitted) {
+        metalReleaseHandle(accelerationStructure);
+        return false;
     }
 
     outAccelerationStructure = accelerationStructure;
@@ -182,24 +258,26 @@ bool metalBuildTopLevelAccelerationStructure(void* deviceHandle,
     }
 
     outInstanceDescriptorBuffer = device->newBuffer(
-        static_cast<uint64_t>(instanceCount) * sizeof(MTL::AccelerationStructureInstanceDescriptor),
+        static_cast<uint64_t>(instanceCount) * sizeof(MTL::IndirectAccelerationStructureInstanceDescriptor),
         MTL::ResourceStorageModeShared);
     if (!outInstanceDescriptorBuffer) {
         errorMessage = "Failed to allocate TLAS instance descriptor buffer";
         return false;
     }
-    if (!writeInstanceDescriptors(outInstanceDescriptorBuffer, instances, instanceCount, errorMessage)) {
-        static_cast<MTL::Buffer*>(outInstanceDescriptorBuffer)->release();
+    metalTrackAllocation(device, outInstanceDescriptorBuffer);
+
+    if (!writeInstanceDescriptors(referencedAccelerationStructures,
+                                  referencedAccelerationStructureCount,
+                                  outInstanceDescriptorBuffer,
+                                  instances,
+                                  instanceCount,
+                                  errorMessage)) {
+        metalReleaseHandle(outInstanceDescriptorBuffer);
         outInstanceDescriptorBuffer = nullptr;
         return false;
     }
 
-    auto* accelerationDescriptor = MTL::InstanceAccelerationStructureDescriptor::alloc()->init();
-    accelerationDescriptor->setInstanceCount(instanceCount);
-    accelerationDescriptor->setInstanceDescriptorBuffer(metalBuffer(outInstanceDescriptorBuffer));
-    accelerationDescriptor->setInstanceDescriptorType(MTL::AccelerationStructureInstanceDescriptorTypeDefault);
-    accelerationDescriptor->setInstancedAccelerationStructures(
-        accelerationStructureArray(referencedAccelerationStructures, referencedAccelerationStructureCount));
+    auto* accelerationDescriptor = createTlasDescriptor(metalBuffer(outInstanceDescriptorBuffer), instanceCount);
 
     auto sizes = device->accelerationStructureSizes(accelerationDescriptor);
     outAccelerationStructure = device->newAccelerationStructure(sizes.accelerationStructureSize);
@@ -207,30 +285,64 @@ bool metalBuildTopLevelAccelerationStructure(void* deviceHandle,
     if (!outAccelerationStructure || !outScratchBuffer) {
         errorMessage = "Failed to allocate TLAS resources";
         if (outAccelerationStructure) {
-            metalAccelerationStructure(outAccelerationStructure)->release();
+            metalReleaseHandle(outAccelerationStructure);
             outAccelerationStructure = nullptr;
         }
         if (outScratchBuffer) {
-            metalBuffer(outScratchBuffer)->release();
+            metalReleaseHandle(outScratchBuffer);
             outScratchBuffer = nullptr;
         }
-        metalBuffer(outInstanceDescriptorBuffer)->release();
+        metalReleaseHandle(outInstanceDescriptorBuffer);
+        outInstanceDescriptorBuffer = nullptr;
+        accelerationDescriptor->release();
+        return false;
+    }
+    metalTrackAllocation(device, outAccelerationStructure);
+    metalTrackAllocation(device, outScratchBuffer);
+
+    auto* allocator = device->newCommandAllocator();
+    auto* commandBuffer = device->newCommandBuffer();
+    if (!allocator || !commandBuffer) {
+        errorMessage = "Failed to allocate TLAS command buffer";
+        if (allocator) allocator->release();
+        if (commandBuffer) commandBuffer->release();
+        metalReleaseHandle(outAccelerationStructure);
+        metalReleaseHandle(outScratchBuffer);
+        metalReleaseHandle(outInstanceDescriptorBuffer);
+        outAccelerationStructure = nullptr;
+        outScratchBuffer = nullptr;
         outInstanceDescriptorBuffer = nullptr;
         accelerationDescriptor->release();
         return false;
     }
 
-    auto* commandBuffer = commandQueue->commandBuffer();
-    auto* encoder = commandBuffer->accelerationStructureCommandEncoder();
+    allocator->reset();
+    commandBuffer->beginCommandBuffer(allocator);
+    auto* encoder = commandBuffer->computeCommandEncoder();
     encoder->buildAccelerationStructure(metalAccelerationStructure(outAccelerationStructure),
                                         accelerationDescriptor,
-                                        metalBuffer(outScratchBuffer),
-                                        0);
+                                        MTL4::BufferRange(metalBuffer(outScratchBuffer)->gpuAddress(),
+                                                          metalBuffer(outScratchBuffer)->length()));
+    encoder->barrierAfterEncoderStages(MTL::StageAccelerationStructure,
+                                       MTL::StageDispatch,
+                                       MTL4::VisibilityOptionDevice);
     encoder->endEncoding();
-    commandBuffer->commit();
-    commandBuffer->waitUntilCompleted();
 
+    const bool submitted = submitAndWait(device, commandQueue, commandBuffer, errorMessage);
+    commandBuffer->release();
+    allocator->release();
     accelerationDescriptor->release();
+
+    if (!submitted) {
+        metalReleaseHandle(outAccelerationStructure);
+        metalReleaseHandle(outScratchBuffer);
+        metalReleaseHandle(outInstanceDescriptorBuffer);
+        outAccelerationStructure = nullptr;
+        outScratchBuffer = nullptr;
+        outInstanceDescriptorBuffer = nullptr;
+        return false;
+    }
+
     return true;
 }
 
@@ -257,22 +369,25 @@ bool metalUpdateTopLevelAccelerationStructure(void* commandBufferHandle,
         return false;
     }
 
-    if (!writeInstanceDescriptors(instanceDescriptorBufferHandle, instances, instanceCount, errorMessage)) {
+    if (!writeInstanceDescriptors(referencedAccelerationStructures,
+                                  referencedAccelerationStructureCount,
+                                  instanceDescriptorBufferHandle,
+                                  instances,
+                                  instanceCount,
+                                  errorMessage)) {
         return false;
     }
 
-    auto* accelerationDescriptor = MTL::InstanceAccelerationStructureDescriptor::alloc()->init();
-    accelerationDescriptor->setInstanceCount(instanceCount);
-    accelerationDescriptor->setInstanceDescriptorBuffer(metalBuffer(instanceDescriptorBufferHandle));
-    accelerationDescriptor->setInstanceDescriptorType(MTL::AccelerationStructureInstanceDescriptorTypeDefault);
-    accelerationDescriptor->setInstancedAccelerationStructures(
-        accelerationStructureArray(referencedAccelerationStructures, referencedAccelerationStructureCount));
+    auto* accelerationDescriptor = createTlasDescriptor(metalBuffer(instanceDescriptorBufferHandle), instanceCount);
 
-    auto* encoder = commandBuffer->accelerationStructureCommandEncoder();
+    auto* encoder = commandBuffer->computeCommandEncoder();
     encoder->buildAccelerationStructure(metalAccelerationStructure(accelerationStructureHandle),
                                         accelerationDescriptor,
-                                        metalBuffer(scratchBufferHandle),
-                                        0);
+                                        MTL4::BufferRange(metalBuffer(scratchBufferHandle)->gpuAddress(),
+                                                          metalBuffer(scratchBufferHandle)->length()));
+    encoder->barrierAfterEncoderStages(MTL::StageAccelerationStructure,
+                                       MTL::StageDispatch,
+                                       MTL4::VisibilityOptionDevice);
     encoder->endEncoding();
     accelerationDescriptor->release();
     return true;

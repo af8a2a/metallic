@@ -243,6 +243,15 @@ void queueResidencyRequest(uint lodRootNode,
                            uint lodLevel) {
     const uint64_t residentAddress = loadLodGroupResidentClusterStart(targetGroupIndex);
     if (!clusterLodGroupPageAddressIsValid(residentAddress)) {
+#if defined(METALLIC_METAL_DIRECT_BINDING)
+        uint previousState = 0u;
+        groupResidency.InterlockedOr(targetGroupIndex * 4u,
+                                     kClusterLodGroupResidencyRequested,
+                                     previousState);
+        if ((previousState & kClusterLodGroupResidencyRequested) != 0u) {
+            return;
+        }
+#else
         const uint64_t currentFrameTag =
             clusterLodGroupPageInvalidAddress(cullUniforms.residencyRequestFrameIndex);
         uint64_t previousAddress = 0;
@@ -250,6 +259,7 @@ void queueResidencyRequest(uint lodRootNode,
         if (previousAddress == currentFrameTag) {
             return;
         }
+#endif
     } else {
         uint previousState = 0u;
         groupResidency.InterlockedOr(targetGroupIndex * 4u,
