@@ -224,9 +224,22 @@ bool buildGpuSceneTables(const RhiDevice& device,
 
     // Fill packedClusterStart/Count from ClusterLODData
     if (clusterLodData && !clusterLodData->packedClusters.empty()) {
+        // Build a map from primitiveGroupIndex to the LOD 0 level entry.
+        // clusterLodData->allMeshlets interleaves all LOD levels for all groups,
+        // so geom.meshletStart (which indexes the original LOD-0-only meshlet array)
+        // cannot be used directly as packedClusterStart.
+        std::unordered_map<uint32_t, const ClusterLODLevel*> lod0Map;
+        for (const auto& level : clusterLodData->levels) {
+            if (level.depth == 0) {
+                lod0Map[level.primitiveGroupIndex] = &level;
+            }
+        }
         for (auto& geom : out.geometries) {
-            geom.packedClusterStart = geom.meshletStart;
-            geom.packedClusterCount = geom.meshletCount;
+            auto it = lod0Map.find(geom.primitiveGroupStart);
+            if (it != lod0Map.end()) {
+                geom.packedClusterStart = it->second->meshletStart;
+                geom.packedClusterCount = it->second->meshletCount;
+            }
         }
 
         // Build CPU worklist: all LOD 0 clusters for all instances
@@ -311,6 +324,7 @@ void updateGpuSceneTables(const SceneGraph& sceneGraph, GpuSceneTables& tables) 
 void releaseGpuSceneTables(GpuSceneTables& tables) {
     rhiReleaseHandle(tables.geometryBuffer);
     rhiReleaseHandle(tables.instanceBuffer);
+    rhiReleaseHandle(tables.clusterVisWorklistBuffer);
     tables.geometries.clear();
     tables.instances.clear();
     tables.nodeToInstance.clear();

@@ -79,17 +79,14 @@ void meshMain(
     // Triangle processing: 1 thread per triangle (32 threads, max 32 tris)
     if (groupThreadID < triCount) {
         uint byteAddr = cluster.indexByteOffset + groupThreadID * 3;
-        // Load 4 bytes (covers 3 uint8 indices + 1 extra byte)
-        uint packed = indexData.Load(byteAddr & ~3u);
-        uint shift = (byteAddr & 3u) * 8u;
-        uint v0 = (packed >> shift) & 0xFFu;
-        uint v1 = (packed >> (shift + 8u)) & 0xFFu;
-
-        // v2 might cross a 4-byte boundary
+        uint byteAddr1 = byteAddr + 1;
         uint byteAddr2 = byteAddr + 2;
+        uint packed0 = indexData.Load(byteAddr  & ~3u);
+        uint packed1 = indexData.Load(byteAddr1 & ~3u);
         uint packed2 = indexData.Load(byteAddr2 & ~3u);
-        uint shift2 = (byteAddr2 & 3u) * 8u;
-        uint v2 = (packed2 >> shift2) & 0xFFu;
+        uint v0 = (packed0 >> ((byteAddr  & 3u) * 8u)) & 0xFFu;
+        uint v1 = (packed1 >> ((byteAddr1 & 3u) * 8u)) & 0xFFu;
+        uint v2 = (packed2 >> ((byteAddr2 & 3u) * 8u)) & 0xFFu;
 
         outTris[groupThreadID] = uint3(v0, v1, v2);
 

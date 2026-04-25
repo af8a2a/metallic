@@ -99,6 +99,9 @@ void releaseClusterLODHandles(ClusterLODData& data) {
     rhiReleaseHandle(data.groupBuffer);
     rhiReleaseHandle(data.nodeBuffer);
     rhiReleaseHandle(data.levelBuffer);
+    rhiReleaseHandle(data.packedClusterBuffer);
+    rhiReleaseHandle(data.clusterVertexDataBuffer);
+    rhiReleaseHandle(data.clusterIndexDataBuffer);
 }
 
 void hashBytes(uint64_t& hash, const void* data, size_t size) {

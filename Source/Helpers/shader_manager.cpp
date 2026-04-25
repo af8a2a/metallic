@@ -106,6 +106,7 @@ ShaderManager::~ShaderManager() {
     releaseOwnedHandle(m_histogramPipeline);
     releaseOwnedHandle(m_autoExposurePipeline);
     releaseOwnedHandle(m_taaPipeline);
+    releaseOwnedHandle(m_clusterRenderPipeline);
     releaseOwnedHandle(m_tonemapSampler);
     releaseOwnedHandle(m_vertexDesc);
     delete m_rtCtx;

@@ -82,10 +82,7 @@ public:
         pushData.lightDir[2] = m_frameContext->viewLightDir.z;
         pushData.colorMode = m_colorMode;
 
-        encoder.setMeshBytes(&pushData, sizeof(pushData),
-                             GpuDriven::ClusterRenderBindings::kUniforms);
-        encoder.setFragmentBytes(&pushData, sizeof(pushData),
-                                 GpuDriven::ClusterRenderBindings::kUniforms);
+        encoder.setPushConstants(&pushData, sizeof(pushData));
 
         encoder.setMeshBuffer(&m_ctx.gpuScene.clusterVisWorklistBuffer, 0,
                               GpuDriven::ClusterRenderBindings::kClusterInfos);
