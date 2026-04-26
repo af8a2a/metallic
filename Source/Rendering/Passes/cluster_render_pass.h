@@ -38,6 +38,21 @@ public:
         }),
         PassTypeInfo::PassType::Render);
 
+    METALLIC_PASS_EDITOR_TYPE_INFO(ClusterRenderPass, "Cluster Render", "Geometry",
+        (std::vector<PassSlotInfo>{
+            makeHiddenInputSlot("cullResult", "Cull Result", true),
+            makeHiddenInputSlot("visibleMeshlets", "Visible Meshlets", true),
+            makeHiddenInputSlot("cullCounter", "Cull Counter", true),
+            makeHiddenInputSlot("visibilityWorklist", "Visibility Worklist", true),
+            makeHiddenInputSlot("visibilityWorklistState", "Visibility Worklist State", true),
+            makeHiddenInputSlot("visibilityIndirectArgs", "Visibility Indirect Args", true)
+        }),
+        (std::vector<PassSlotInfo>{
+            makeOutputSlot("color", "Color"),
+            makeOutputSlot("depth", "Depth")
+        }),
+        PassTypeInfo::PassType::Render);
+
     FGPassType passType() const override { return FGPassType::Render; }
     const char* name() const override { return m_name.c_str(); }
 
