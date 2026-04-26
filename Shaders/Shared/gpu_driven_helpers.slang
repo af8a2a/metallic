@@ -19,6 +19,8 @@ struct GeometryData {
     uint   materialIndex;
     uint   lodRootNode;
     float4 boundsCenterRadius;
+    uint   packedClusterStart;
+    uint   packedClusterCount;
 };
 
 struct MeshletDrawInfo {

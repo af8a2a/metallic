@@ -7,115 +7,811 @@
       "name": "Backbuffer",
       "kind": "backbuffer",
       "type": "texture",
-      "format": "BGRA8Unorm",
       "size": "screen",
+      "format": "BGRA8Unorm",
       "editorPos": [
-        796.0,
-        -462.5
+        1600,
+        -220
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000001",
+      "name": "Streaming Sync",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [
+        -480,
+        -420
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000002",
+      "name": "No HZB Cull Result",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [
+        -220,
+        -500
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000003",
+      "name": "No HZB Visible Meshlets",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        -220,
+        -460
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000004",
+      "name": "No HZB Cull Counter",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        -220,
+        -420
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000005",
+      "name": "No HZB Cluster Color",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "RGBA8Unorm",
+      "editorPos": [
+        80,
+        -500
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000006",
+      "name": "No HZB Cluster Depth",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "Depth32Float",
+      "editorPos": [
+        80,
+        -460
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000007",
+      "name": "HZB Seed Cull Result",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [
+        -220,
+        -280
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000008",
+      "name": "HZB Seed Visible Meshlets",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        -220,
+        -240
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000009",
+      "name": "HZB Seed Cull Counter",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        -220,
+        -200
+      ]
+    },
+    {
+      "id": "c000000000000000000000000000000a",
+      "name": "HZB Seed Cluster Color",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "RGBA8Unorm",
+      "editorPos": [
+        80,
+        -280
+      ]
+    },
+    {
+      "id": "c000000000000000000000000000000b",
+      "name": "HZB Seed Cluster Depth",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "Depth32Float",
+      "editorPos": [
+        80,
+        -240
       ]
     },
     {
       "id": "c0000000000000000000000000000010",
-      "name": "Cluster Color",
+      "name": "HZB Cluster Color",
       "kind": "transient",
       "type": "texture",
-      "format": "RGBA8Unorm",
       "size": "screen",
+      "format": "RGBA8Unorm",
       "editorPos": [
-        60.0,
-        62.0
+        1160,
+        -280
       ]
     },
     {
       "id": "c0000000000000000000000000000011",
-      "name": "Cluster Depth",
+      "name": "HZB Cluster Depth",
       "kind": "transient",
       "type": "texture",
-      "format": "Depth32Float",
       "size": "screen",
+      "format": "Depth32Float",
       "editorPos": [
-        60.0,
-        200.0
+        1160,
+        -240
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000012",
+      "name": "HZB Final Cull Result",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [
+        760,
+        -280
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000013",
+      "name": "HZB Final Visible Meshlets",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        760,
+        -240
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000014",
+      "name": "HZB Final Cull Counter",
+      "kind": "transient",
+      "type": "buffer",
+      "editorPos": [
+        760,
+        -200
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000020",
+      "name": "Current HZB Mip 0",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "R32Float",
+      "editorPos": [
+        500,
+        -170
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000021",
+      "name": "Current HZB Mip 1",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "R32Float",
+      "editorPos": [
+        500,
+        -144
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000022",
+      "name": "Current HZB Mip 2",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "R32Float",
+      "editorPos": [
+        500,
+        -118
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000023",
+      "name": "Current HZB Mip 3",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "R32Float",
+      "editorPos": [
+        500,
+        -92
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000024",
+      "name": "Current HZB Mip 4",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "R32Float",
+      "editorPos": [
+        500,
+        -66
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000025",
+      "name": "Current HZB Mip 5",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "R32Float",
+      "editorPos": [
+        500,
+        -40
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000026",
+      "name": "Current HZB Mip 6",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "R32Float",
+      "editorPos": [
+        500,
+        -14
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000027",
+      "name": "Current HZB Mip 7",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "R32Float",
+      "editorPos": [
+        500,
+        12
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000028",
+      "name": "Current HZB Mip 8",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "R32Float",
+      "editorPos": [
+        500,
+        38
+      ]
+    },
+    {
+      "id": "c0000000000000000000000000000029",
+      "name": "Current HZB Mip 9",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "R32Float",
+      "editorPos": [
+        500,
+        64
       ]
     }
   ],
   "passes": [
     {
-      "id": "c1000000000000000000000000000001",
-      "name": "Cluster Render 1",
-      "type": "ClusterRenderPass",
-      "enabled": true,
-      "sideEffect": false,
-      "config": null,
-      "editorPos": [
-        156.0,
-        -505.0
-      ]
-    },
-    {
-      "id": "c1000000000000000000000000000002",
-      "name": "ImGui Overlay 1",
-      "type": "ImGuiOverlayPass",
+      "id": "c1000000000000000000000000000000",
+      "name": "Cluster Streaming Update 1",
+      "type": "ClusterStreamingUpdatePass",
       "enabled": true,
       "sideEffect": true,
       "config": null,
       "editorPos": [
-        476.0,
-        -505.0
+        -600,
+        -505
+      ]
+    },
+    {
+      "id": "c1000000000000000000000000000001",
+      "name": "Meshlet Cull No HZB",
+      "type": "MeshletCullPass",
+      "enabled": false,
+      "sideEffect": false,
+      "config": {
+        "cullPassIndex": 0,
+        "enableOcclusionCull": false
+      },
+      "editorPos": [
+        -360,
+        -505
+      ]
+    },
+    {
+      "id": "c1000000000000000000000000000002",
+      "name": "Cluster Render No HZB",
+      "type": "ClusterRenderPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "debugLabel": "Full Scene / No Cull",
+        "worklistMode": "full",
+        "debugTint": [
+          0.1,
+          0.45,
+          1
+        ],
+        "debugTintStrength": 0.45
+      },
+      "editorPos": [
+        -80,
+        -505
       ]
     },
     {
       "id": "c1000000000000000000000000000003",
-      "name": "Output 1",
+      "name": "Meshlet Cull HZB Seed",
+      "type": "MeshletCullPass",
+      "enabled": false,
+      "sideEffect": false,
+      "config": {
+        "cullPassIndex": 0,
+        "enableOcclusionCull": true
+      },
+      "editorPos": [
+        -360,
+        -285
+      ]
+    },
+    {
+      "id": "c1000000000000000000000000000004",
+      "name": "Cluster Render HZB Seed",
+      "type": "ClusterRenderPass",
+      "enabled": false,
+      "sideEffect": false,
+      "config": {
+        "debugLabel": "HZB Seed Cull",
+        "debugTint": [
+          1,
+          0.68,
+          0.15
+        ],
+        "debugTintStrength": 0.35
+      },
+      "editorPos": [
+        -80,
+        -285
+      ]
+    },
+    {
+      "id": "c1000000000000000000000000000005",
+      "name": "HZB Build From No HZB",
+      "type": "HZBBuildPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "publishOutputs": true,
+        "writeHistory": false
+      },
+      "editorPos": [
+        220,
+        -285
+      ]
+    },
+    {
+      "id": "c1000000000000000000000000000006",
+      "name": "Meshlet Cull HZB Final",
+      "type": "MeshletCullPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "cullPassIndex": 1,
+        "enableOcclusionCull": true,
+        "occlusionMode": "currentDirect"
+      },
+      "editorPos": [
+        760,
+        -505
+      ]
+    },
+    {
+      "id": "c1000000000000000000000000000007",
+      "name": "Cluster Render HZB Final",
+      "type": "ClusterRenderPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "debugLabel": "HZB Cull Final",
+        "debugTint": [
+          1,
+          0.45,
+          0.08
+        ],
+        "debugTintStrength": 0.45
+      },
+      "editorPos": [
+        1040,
+        -505
+      ]
+    },
+    {
+      "id": "c1000000000000000000000000000008",
+      "name": "HZB Build Final",
+      "type": "HZBBuildPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "publishOutputs": false,
+        "writeHistory": true
+      },
+      "editorPos": [
+        1280,
+        -505
+      ]
+    },
+    {
+      "id": "c1000000000000000000000000000009",
+      "name": "Output Cluster Debug Compare",
       "type": "OutputPass",
       "enabled": true,
       "sideEffect": false,
-      "config": {},
+      "config": {
+        "compareMode": "split"
+      },
       "editorPos": [
-        476.0,
-        -335.0
+        1480,
+        -505
       ]
     }
   ],
   "edges": [
     {
       "id": "c2000000000000000000000000000001",
+      "passId": "c1000000000000000000000000000000",
+      "slotKey": "streamingSync",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000001"
+    },
+    {
+      "id": "c2000000000000000000000000000002",
       "passId": "c1000000000000000000000000000001",
+      "slotKey": "streamingSync",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000001"
+    },
+    {
+      "id": "c2000000000000000000000000000003",
+      "passId": "c1000000000000000000000000000001",
+      "slotKey": "cullResult",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000002"
+    },
+    {
+      "id": "c2000000000000000000000000000004",
+      "passId": "c1000000000000000000000000000001",
+      "slotKey": "visibleMeshlets",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000003"
+    },
+    {
+      "id": "c2000000000000000000000000000005",
+      "passId": "c1000000000000000000000000000001",
+      "slotKey": "visibilityWorklistState",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000004"
+    },
+    {
+      "id": "c2000000000000000000000000000009",
+      "passId": "c1000000000000000000000000000002",
+      "slotKey": "color",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000005"
+    },
+    {
+      "id": "c200000000000000000000000000000a",
+      "passId": "c1000000000000000000000000000002",
+      "slotKey": "depth",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000006"
+    },
+    {
+      "id": "c200000000000000000000000000000b",
+      "passId": "c1000000000000000000000000000003",
+      "slotKey": "streamingSync",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000001"
+    },
+    {
+      "id": "c200000000000000000000000000000c",
+      "passId": "c1000000000000000000000000000003",
+      "slotKey": "cullResult",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000007"
+    },
+    {
+      "id": "c200000000000000000000000000000d",
+      "passId": "c1000000000000000000000000000003",
+      "slotKey": "visibleMeshlets",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000008"
+    },
+    {
+      "id": "c200000000000000000000000000000e",
+      "passId": "c1000000000000000000000000000003",
+      "slotKey": "visibilityWorklistState",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000009"
+    },
+    {
+      "id": "c200000000000000000000000000000f",
+      "passId": "c1000000000000000000000000000004",
+      "slotKey": "cullResult",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000007"
+    },
+    {
+      "id": "c2000000000000000000000000000010",
+      "passId": "c1000000000000000000000000000004",
+      "slotKey": "visibilityWorklist",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000008"
+    },
+    {
+      "id": "c2000000000000000000000000000011",
+      "passId": "c1000000000000000000000000000004",
+      "slotKey": "visibilityWorklistState",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000009"
+    },
+    {
+      "id": "c2000000000000000000000000000012",
+      "passId": "c1000000000000000000000000000004",
+      "slotKey": "color",
+      "direction": "output",
+      "resourceId": "c000000000000000000000000000000a"
+    },
+    {
+      "id": "c2000000000000000000000000000013",
+      "passId": "c1000000000000000000000000000004",
+      "slotKey": "depth",
+      "direction": "output",
+      "resourceId": "c000000000000000000000000000000b"
+    },
+    {
+      "id": "c2000000000000000000000000000014",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000006"
+    },
+    {
+      "id": "c2000000000000000000000000000015",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "hzb0",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000020"
+    },
+    {
+      "id": "c2000000000000000000000000000016",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "hzb1",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000021"
+    },
+    {
+      "id": "c2000000000000000000000000000017",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "hzb2",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000022"
+    },
+    {
+      "id": "c2000000000000000000000000000018",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "hzb3",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000023"
+    },
+    {
+      "id": "c2000000000000000000000000000019",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "hzb4",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000024"
+    },
+    {
+      "id": "c200000000000000000000000000001a",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "hzb5",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000025"
+    },
+    {
+      "id": "c200000000000000000000000000001b",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "hzb6",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000026"
+    },
+    {
+      "id": "c200000000000000000000000000001c",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "hzb7",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000027"
+    },
+    {
+      "id": "c200000000000000000000000000001d",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "hzb8",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000028"
+    },
+    {
+      "id": "c200000000000000000000000000001e",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "hzb9",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000029"
+    },
+    {
+      "id": "c2000000000000000000000000000021",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "currentHzb0",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000020"
+    },
+    {
+      "id": "c2000000000000000000000000000022",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "currentHzb1",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000021"
+    },
+    {
+      "id": "c2000000000000000000000000000023",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "currentHzb2",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000022"
+    },
+    {
+      "id": "c2000000000000000000000000000024",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "currentHzb3",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000023"
+    },
+    {
+      "id": "c2000000000000000000000000000025",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "currentHzb4",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000024"
+    },
+    {
+      "id": "c2000000000000000000000000000026",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "currentHzb5",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000025"
+    },
+    {
+      "id": "c2000000000000000000000000000027",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "currentHzb6",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000026"
+    },
+    {
+      "id": "c2000000000000000000000000000028",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "currentHzb7",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000027"
+    },
+    {
+      "id": "c2000000000000000000000000000029",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "currentHzb8",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000028"
+    },
+    {
+      "id": "c200000000000000000000000000002a",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "currentHzb9",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000029"
+    },
+    {
+      "id": "c200000000000000000000000000002b",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "cullResult",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000012"
+    },
+    {
+      "id": "c200000000000000000000000000002c",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "visibleMeshlets",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000013"
+    },
+    {
+      "id": "c200000000000000000000000000002d",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "visibilityWorklistState",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000014"
+    },
+    {
+      "id": "c200000000000000000000000000002e",
+      "passId": "c1000000000000000000000000000007",
+      "slotKey": "cullResult",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000012"
+    },
+    {
+      "id": "c200000000000000000000000000002f",
+      "passId": "c1000000000000000000000000000007",
+      "slotKey": "visibilityWorklist",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000013"
+    },
+    {
+      "id": "c2000000000000000000000000000030",
+      "passId": "c1000000000000000000000000000007",
+      "slotKey": "visibilityWorklistState",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000014"
+    },
+    {
+      "id": "c2000000000000000000000000000031",
+      "passId": "c1000000000000000000000000000007",
       "slotKey": "color",
       "direction": "output",
       "resourceId": "c0000000000000000000000000000010"
     },
     {
-      "id": "c2000000000000000000000000000002",
-      "passId": "c1000000000000000000000000000001",
+      "id": "c2000000000000000000000000000032",
+      "passId": "c1000000000000000000000000000007",
       "slotKey": "depth",
       "direction": "output",
       "resourceId": "c0000000000000000000000000000011"
     },
     {
-      "id": "c2000000000000000000000000000003",
-      "passId": "c1000000000000000000000000000002",
+      "id": "c2000000000000000000000000000033",
+      "passId": "c1000000000000000000000000000008",
       "slotKey": "depth",
       "direction": "input",
       "resourceId": "c0000000000000000000000000000011"
     },
     {
-      "id": "c2000000000000000000000000000004",
-      "passId": "c1000000000000000000000000000002",
-      "slotKey": "target",
-      "direction": "output",
-      "resourceId": "00000000000000000000000000000001"
+      "id": "c2000000000000000000000000000034",
+      "passId": "c1000000000000000000000000000009",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000005"
     },
     {
-      "id": "c2000000000000000000000000000005",
-      "passId": "c1000000000000000000000000000003",
-      "slotKey": "source",
+      "id": "c2000000000000000000000000000035",
+      "passId": "c1000000000000000000000000000009",
+      "slotKey": "compareSource",
       "direction": "input",
       "resourceId": "c0000000000000000000000000000010"
     },
     {
-      "id": "c2000000000000000000000000000006",
-      "passId": "c1000000000000000000000000000003",
+      "id": "c2000000000000000000000000000036",
+      "passId": "c1000000000000000000000000000009",
       "slotKey": "target",
       "direction": "output",
       "resourceId": "00000000000000000000000000000001"

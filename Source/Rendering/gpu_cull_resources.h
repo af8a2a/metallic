@@ -155,7 +155,7 @@ struct CullUniforms {
     uint32_t residencyRequestFrameIndex = 0;
     uint32_t cullPassIndex = 0;
     uint32_t currentHzbLevelCount = 0;
-    uint32_t reserved0 = 0;
+    uint32_t occlusionCullMode = 0;
     uint32_t reserved1 = 0;
 };
 

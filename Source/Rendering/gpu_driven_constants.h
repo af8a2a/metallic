@@ -121,6 +121,7 @@
 #define GPU_DRIVEN_CLUSTER_VIS_VERTEX_DATA_BINDING 3u
 #define GPU_DRIVEN_CLUSTER_VIS_INDEX_DATA_BINDING 4u
 #define GPU_DRIVEN_CLUSTER_VIS_INSTANCE_DATA_BINDING 5u
+#define GPU_DRIVEN_CLUSTER_VIS_GEOMETRY_DATA_BINDING 6u
 
 #ifdef __cplusplus
 
@@ -297,6 +298,7 @@ struct ClusterRenderBindings {
     static constexpr uint32_t kVertexData = GPU_DRIVEN_CLUSTER_VIS_VERTEX_DATA_BINDING;
     static constexpr uint32_t kIndexData = GPU_DRIVEN_CLUSTER_VIS_INDEX_DATA_BINDING;
     static constexpr uint32_t kInstances = GPU_DRIVEN_CLUSTER_VIS_INSTANCE_DATA_BINDING;
+    static constexpr uint32_t kGeometries = GPU_DRIVEN_CLUSTER_VIS_GEOMETRY_DATA_BINDING;
 };
 
 static_assert(ComputeDispatchCommandLayout::kBufferSize ==

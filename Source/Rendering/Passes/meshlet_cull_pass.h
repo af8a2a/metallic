@@ -103,6 +103,27 @@ public:
                 const std::string phase = config.config["phase"].get<std::string>();
                 m_cullPassIndex = (phase == "second" || phase == "late") ? 1u : 0u;
             }
+            if (config.config.contains("enableOcclusionCull")) {
+                m_enableOcclusionCull = config.config["enableOcclusionCull"].get<bool>();
+            }
+            if (config.config.contains("directCurrentHzbCull")) {
+                m_occlusionCullMode =
+                    config.config["directCurrentHzbCull"].get<bool>() ? 1u : 0u;
+            }
+            if (config.config.contains("occlusionMode")) {
+                const std::string mode = config.config["occlusionMode"].get<std::string>();
+                if (mode == "current" || mode == "currentDirect" || mode == "directCurrent") {
+                    m_occlusionCullMode = 1u;
+                } else {
+                    m_occlusionCullMode = 0u;
+                }
+            }
+            if (config.config.contains("occlusionDepthBias")) {
+                m_occlusionDepthBias = config.config["occlusionDepthBias"].get<float>();
+            }
+            if (config.config.contains("occlusionBoundsScale")) {
+                m_occlusionBoundsScale = config.config["occlusionBoundsScale"].get<float>();
+            }
         }
     }
 
@@ -369,7 +390,7 @@ public:
 
         std::array<const RhiTexture*, kHzbMaxLevels> currentHzbTextures{};
         uint32_t currentHzbTextureCount = 0;
-        if (m_cullPassIndex > 0u && !m_currentHzbRead.empty()) {
+        if (m_enableOcclusionCull && m_cullPassIndex > 0u && !m_currentHzbRead.empty()) {
             const uint32_t maxLevels =
                 std::min<uint32_t>(static_cast<uint32_t>(m_currentHzbRead.size()), kHzbMaxLevels);
             for (uint32_t level = 0; level < maxLevels; ++level) {
@@ -384,7 +405,7 @@ public:
 
         const float4x4 currentCullProj = m_frameContext->unjitteredProj;
         const bool classifyWithCurrentHzb =
-            m_cullPassIndex > 0u && currentHzbTextureCount > 0u;
+            m_enableOcclusionCull && m_cullPassIndex > 0u && currentHzbTextureCount > 0u;
         const RhiTexture* const* classifyHzbTextures =
             classifyWithCurrentHzb ? currentHzbTextures.data() : hzbTextures.data();
         const uint32_t classifyHzbTextureCount =
@@ -408,7 +429,8 @@ public:
                      std::abs(m_frameContext->prevCullProj[1].y));
         classifyUni.instanceCount = gpuScene.instanceCount;
         classifyUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1u : 0u;
-        classifyUni.enableOcclusionCull = classifyHzbTextureCount > 0 ? 1u : 0u;
+        classifyUni.enableOcclusionCull =
+            (m_enableOcclusionCull && classifyHzbTextureCount > 0) ? 1u : 0u;
         classifyUni.hzbLevelCount = classifyHzbTextureCount;
         if (classifyHzbTextureCount > 0) {
             classifyUni.hzbTextureSize =
@@ -438,7 +460,9 @@ public:
         cullUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1u : 0u;
         cullUni.enableConeCull = m_frameContext->enableConeCull ? 1u : 0u;
         cullUni.enableOcclusionCull =
-            (hzbTextureCount > 0u || currentHzbTextureCount > 0u) ? 1u : 0u;
+            (m_enableOcclusionCull && (hzbTextureCount > 0u || currentHzbTextureCount > 0u))
+                ? 1u
+                : 0u;
         cullUni.hzbLevelCount = hzbTextureCount;
         cullUni.lodReferencePixels = m_lodReferencePixels;
         cullUni.occlusionDepthBias = m_occlusionDepthBias;
@@ -448,6 +472,7 @@ public:
         cullUni.residencyRequestFrameIndex = m_frameContext ? m_frameContext->frameIndex : 0u;
         cullUni.cullPassIndex = m_cullPassIndex;
         cullUni.currentHzbLevelCount = currentHzbTextureCount;
+        cullUni.occlusionCullMode = m_occlusionCullMode;
 
         // Dispatch 1: coarse instance classification from scene tables.
         encoder.setComputePipeline(classifyIt->second);
@@ -541,6 +566,8 @@ public:
         ImGui::Text("Visible Meshlets: %u", m_lastVisibleCount);
         ImGui::Text("Cull Pass: %u", m_cullPassIndex);
         ImGui::Text("Append Worklist: %s", m_appendToExistingWorklist ? "Yes" : "No");
+        ImGui::Text("HZB Occlusion: %s", m_enableOcclusionCull ? "Enabled" : "Disabled");
+        ImGui::Text("HZB Mode: %s", m_occlusionCullMode == 1u ? "Current Direct" : "Two Phase");
         ImGui::Text("LOD Traversal Instances: %u", m_lastTraversalStats.lodTraversalInstanceCount);
         ImGui::Text("Fallback Instances: %u", m_lastTraversalStats.fallbackInstanceCount);
         ImGui::Text("Traversed Nodes: %u", m_lastTraversalStats.traversedNodeCount);
@@ -831,6 +858,7 @@ private:
     bool m_enableFrustumCull = false;
     bool m_enableConeCull = false;
     bool m_enableOcclusionCull = true;
+    uint32_t m_occlusionCullMode = 0;
     float m_lodReferencePixels = 96.0f;
     float m_occlusionDepthBias = 0.0015f;
     float m_occlusionBoundsScale = 1.1f;

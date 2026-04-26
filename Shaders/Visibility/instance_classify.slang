@@ -26,7 +26,8 @@ StructuredBuffer<InstanceData>           instances;        // buffer(GPU_DRIVEN_
 StructuredBuffer<GeometryData>           geometries;       // buffer(GPU_DRIVEN_INSTANCE_CLASSIFY_GEOMETRY_DATA_BINDING)
 RWStructuredBuffer<VisibleInstanceInfo>  visibleInstances; // buffer(GPU_DRIVEN_INSTANCE_CLASSIFY_OUTPUT_BINDING)
 RWByteAddressBuffer                      worklistState;    // buffer(GPU_DRIVEN_INSTANCE_CLASSIFY_STATE_BINDING)
-Texture2D<float>                         hzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_INSTANCE_CLASSIFY_HZB_TEXTURE_BINDING_BASE+)
+[[vk::binding(GPU_DRIVEN_INSTANCE_CLASSIFY_HZB_TEXTURE_BINDING_BASE)]]
+Texture2D<float>                         hzbPyramid[HZB_MAX_LEVELS];
 
 #include "hzb_cull_helpers.slang"
 

@@ -1406,6 +1406,9 @@ int main() {
         loadPipelineAssetChecked(visibilityPipelinePath, "Vulkan visibility", visibilityPipelineBaseAsset);
     bool clusterVisPipelineLoaded =
         loadPipelineAssetChecked(clusterVisPipelinePath, "Cluster visualization", clusterVisPipelineAsset);
+    if (clusterVisPipelineLoaded) {
+        erasePassByType(clusterVisPipelineAsset, "ImGuiOverlayPass");
+    }
     bool useClusterVisMode = false;
     bool visibilityPipelineAssetLoaded = false;
     bool visibilityAutoExposureAvailable = false;

@@ -1,33 +1,78 @@
-// Cluster visualization mesh shader — vk_lod_clusters-compatible.
-// Each threadgroup renders one cluster from the ClusterInfo worklist.
+// Cluster visualization mesh shader. Each threadgroup renders one cluster from
+// either the CPU ClusterInfo list or the GPU cull visible-meshlet worklist.
 
 #include "../Shared/cluster_scene.slang"
+#include "../Shared/gpu_driven_helpers.slang"
 
 struct ClusterVisUniforms {
     float4x4 viewProj;
     float3   lightDir;
     uint     colorMode;   // 0=Cluster, 1=Instance, 2=LOD, 3=Triangle
-};
-
-struct InstanceData {
-    float4x4 worldMatrix;
-    float4x4 prevWorldMatrix;
-    uint geometryIndex;
-    uint dispatchStart;
-    uint sceneNodeIndex;
-    uint visibilityFlags;
+    float3   debugTint;
+    float    debugTintStrength;
+    uint     worklistMode; // 0=ClusterInfo, 1=MeshletDrawInfo
+    uint3    _pad0;
 };
 
 [[vk::push_constant]] ConstantBuffer<ClusterVisUniforms> uniforms;
 
-[[vk::binding(1)]] StructuredBuffer<ClusterInfo>    clusterInfos;
+[[vk::binding(1)]] ByteAddressBuffer                clusterWorklist;
 [[vk::binding(2)]] StructuredBuffer<PackedCluster>  clusters;
 [[vk::binding(3)]] ByteAddressBuffer                vertexData;
 [[vk::binding(4)]] ByteAddressBuffer                indexData;
 [[vk::binding(5)]] StructuredBuffer<InstanceData>   instanceData;
+[[vk::binding(6)]] StructuredBuffer<GeometryData>   geometries;
 
 static const uint kMaxVertices  = 32;
 static const uint kMaxTriangles = 32;
+static const uint kClusterWorklistModeClusterInfo = 0u;
+static const uint kClusterWorklistModeVisibleMeshlet = 1u;
+
+struct ClusterWorkItem {
+    uint instanceID;
+    uint clusterID;
+    uint valid;
+};
+
+ClusterWorkItem loadClusterWorkItem(uint groupID) {
+    ClusterWorkItem item;
+    item.instanceID = 0u;
+    item.clusterID = 0u;
+    item.valid = 1u;
+
+    if (uniforms.worklistMode == kClusterWorklistModeVisibleMeshlet) {
+        MeshletDrawInfo drawInfo;
+        uint4 raw = clusterWorklist.Load4(groupID * 16u);
+        drawInfo.instanceID = raw.x;
+        drawInfo.globalMeshletID = raw.y;
+        drawInfo.meshletSource = raw.z;
+        drawInfo.lodLevel = raw.w;
+
+        item.instanceID = drawInfo.instanceID;
+        item.clusterID = drawInfo.globalMeshletID;
+
+        if (drawInfo.meshletSource == kMeshletDrawSourceScene) {
+            InstanceData inst = instanceData[drawInfo.instanceID];
+            GeometryData geometry = geometries[inst.geometryIndex];
+            const uint localMeshletID = drawInfo.globalMeshletID - geometry.meshletStart;
+            if (drawInfo.globalMeshletID < geometry.meshletStart ||
+                localMeshletID >= geometry.packedClusterCount) {
+                item.valid = 0u;
+            } else {
+                item.clusterID = geometry.packedClusterStart + localMeshletID;
+            }
+        } else if (drawInfo.meshletSource != kMeshletDrawSourceClusterLod) {
+            item.valid = 0u;
+        }
+
+        return item;
+    }
+
+    uint2 rawClusterInfo = clusterWorklist.Load2(groupID * 8u);
+    item.instanceID = rawClusterInfo.x;
+    item.clusterID = rawClusterInfo.y;
+    return item;
+}
 
 struct ClusterVertex {
     float4 clipPos : SV_Position;
@@ -50,9 +95,16 @@ void meshMain(
     OutputIndices<uint3, kMaxTriangles>               outTris,
     OutputPrimitives<ClusterPrimitive, kMaxTriangles> outPrims)
 {
-    ClusterInfo info = clusterInfos[groupID];
-    PackedCluster cluster = clusters[info.clusterID];
-    InstanceData inst = instanceData[info.instanceID];
+    ClusterWorkItem item = loadClusterWorkItem(groupID);
+    if (item.valid == 0u) {
+        if (groupThreadID == 0u) {
+            SetMeshOutputCounts(0u, 0u);
+        }
+        return;
+    }
+
+    PackedCluster cluster = clusters[item.clusterID];
+    InstanceData inst = instanceData[item.instanceID];
 
     uint vtxCount = clusterVtxCount(cluster);
     uint triCount = clusterTriCount(cluster);
@@ -91,8 +143,8 @@ void meshMain(
         outTris[groupThreadID] = uint3(v0, v1, v2);
 
         ClusterPrimitive prim;
-        prim.clusterID = info.clusterID;
-        prim.instanceID = info.instanceID;
+        prim.clusterID = item.clusterID;
+        prim.instanceID = item.instanceID;
         prim.lodLevel = clusterLodLevel(cluster);
         outPrims[groupThreadID] = prim;
     }
@@ -119,6 +171,9 @@ float4 fragmentMain(ClusterVertex vertIn, ClusterPrimitive primIn,
         visID = primIn.clusterID;
 
     float3 color = hashColor(visID);
+    float tintStrength = saturate(uniforms.debugTintStrength);
+    float3 debugTint = saturate(uniforms.debugTint);
+    color = lerp(color, saturate(color * 0.6 + debugTint * 0.4), tintStrength);
 
     // Simple diffuse + ambient
     float NdotL = max(dot(faceNormal, normalize(uniforms.lightDir)), 0.0);

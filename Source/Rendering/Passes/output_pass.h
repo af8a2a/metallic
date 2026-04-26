@@ -11,7 +11,10 @@ public:
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
     METALLIC_PASS_TYPE_INFO(OutputPass, "Output", "Utility",
-        (std::vector<PassSlotInfo>{makeInputSlot("source", "Source")}),
+        (std::vector<PassSlotInfo>{
+            makeInputSlot("source", "Source"),
+            makeInputSlot("compareSource", "Compare Source", true)
+        }),
         (std::vector<PassSlotInfo>{makeTargetSlot("target", "Target")}),
         PassTypeInfo::PassType::Render);
 
@@ -20,6 +23,17 @@ public:
 
     void configure(const PassConfig& config) override {
         m_name = config.name;
+        if (config.config.is_object()) {
+            if (config.config.contains("compareMode")) {
+                const auto& mode = config.config["compareMode"];
+                if (mode.is_boolean()) {
+                    m_compareMode = mode.get<bool>();
+                } else if (mode.is_string()) {
+                    const std::string modeName = mode.get<std::string>();
+                    m_compareMode = modeName == "split" || modeName == "Split";
+                }
+            }
+        }
     }
 
     FGResource getOutput(const std::string& name) const override {
@@ -29,11 +43,16 @@ public:
 
     void setup(FGBuilder& builder) override {
         m_sourceRead = FGResource{};
+        m_compareSourceRead = FGResource{};
         m_dest = FGResource{};
 
         FGResource sourceInput = getInput("source");
         if (sourceInput.isValid()) {
             m_sourceRead = builder.read(sourceInput);
+        }
+        FGResource compareSourceInput = getInput("compareSource");
+        if (compareSourceInput.isValid()) {
+            m_compareSourceRead = builder.read(compareSourceInput);
         }
 
         m_dest = getOutputTarget("target");
@@ -72,7 +91,20 @@ public:
         encoder.setCullMode(RhiCullMode::None);
         RhiTexture* sourceTex = m_frameGraph->getTexture(m_sourceRead);
         if (!sourceTex) return;
+        RhiTexture* compareTex = m_compareSourceRead.isValid()
+            ? m_frameGraph->getTexture(m_compareSourceRead)
+            : sourceTex;
+        if (!compareTex) {
+            compareTex = sourceTex;
+        }
+        struct PushData {
+            uint32_t compareMode;
+            uint32_t pad[3];
+        } pushData{};
+        pushData.compareMode = (m_compareMode && m_compareSourceRead.isValid()) ? 1u : 0u;
+        encoder.setPushConstants(&pushData, sizeof(pushData));
         encoder.setFragmentTexture(sourceTex, 0);
+        encoder.setFragmentTexture(compareTex, 1);
         encoder.setFragmentSampler(&samplerIt->second, 0);
         encoder.drawPrimitives(RhiPrimitiveType::Triangle, 0, 3);
     }
@@ -84,11 +116,12 @@ public:
 private:
     const RenderContext& m_ctx;
     FGResource m_sourceRead;
+    FGResource m_compareSourceRead;
     FGResource m_dest;
     int m_width, m_height;
     std::string m_name = "Output";
+    bool m_compareMode = false;
 };
 
 METALLIC_REGISTER_PASS(OutputPass);
-
 

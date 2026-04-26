@@ -30,7 +30,7 @@ struct CullUniforms {
     uint     residencyRequestFrameIndex;
     uint     cullPassIndex;
     uint     currentHzbLevelCount;
-    uint     reserved0;
+    uint     occlusionCullMode;
     uint     reserved1;
 };
 
@@ -76,8 +76,10 @@ RWStructuredBuffer<ClusterResidencyRequest> residencyRequests; // buffer(GPU_DRI
 RWByteAddressBuffer                   residencyRequestState; // buffer(GPU_DRIVEN_CULL_RESIDENCY_REQUEST_STATE_BINDING)
 StructuredBuffer<uint>                sourceGroupMeshletIndices; // buffer(GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING)
 RWStructuredBuffer<uint>              groupAgeBuffer;   // buffer(GPU_DRIVEN_CULL_GROUP_AGE_BINDING)
-Texture2D<float>                      hzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE+)
-Texture2D<float>                      currentHzbPyramid[HZB_MAX_LEVELS]; // texture(GPU_DRIVEN_CULL_CURRENT_HZB_TEXTURE_BINDING_BASE+)
+[[vk::binding(GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE)]]
+Texture2D<float>                      hzbPyramid[HZB_MAX_LEVELS];
+[[vk::binding(GPU_DRIVEN_CULL_CURRENT_HZB_TEXTURE_BINDING_BASE)]]
+Texture2D<float>                      currentHzbPyramid[HZB_MAX_LEVELS];
 
 static const uint kTraversalStatLodInstances = 0u;
 static const uint kTraversalStatFallbackInstances = 1u;
@@ -93,6 +95,8 @@ static const uint kTraversalStatFallbackMeshlets = 10u;
 static const uint kTraversalStatMaxSelectedLod = 11u;
 static const uint kTraversalStatHistogramBase = 12u;
 static const uint kTraversalNodeStackCapacity = 64u;
+static const uint kOcclusionCullModeTwoPhase = 0u;
+static const uint kOcclusionCullModeCurrentDirect = 1u;
 
 #define HZB_CULL_ENABLE_CURRENT_PYRAMID 1
 #include "hzb_cull_helpers.slang"
@@ -200,6 +204,24 @@ bool sphereRenderableOcclusionCulledForPass(float3 centerWS, float worldRadius, 
                                                   cullUniforms.occlusionDepthBias,
                                                   centerWS,
                                                   worldRadius);
+        return hzbRejected;
+    }
+
+    if (cullUniforms.occlusionCullMode == kOcclusionCullModeCurrentDirect) {
+        if (!currentHzbAvailable) {
+            return false;
+        }
+
+        hzbRejected = sphereCurrentFrameOccluded(cullUniforms.viewProj,
+                                                 cullUniforms.view,
+                                                 cullUniforms.cameraWorldPos,
+                                                 cullUniforms.projScale,
+                                                 cullUniforms.currentHzbTextureSize,
+                                                 cullUniforms.currentHzbLevelCount,
+                                                 cullUniforms.occlusionBoundsScale,
+                                                 cullUniforms.occlusionDepthBias,
+                                                 centerWS,
+                                                 worldRadius);
         return hzbRejected;
     }
 
