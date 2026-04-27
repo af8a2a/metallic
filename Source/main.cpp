@@ -21,6 +21,7 @@
 #include <memory>
 
 #include <tracy/Tracy.hpp>
+#include "cluster_occlusion_state.h"
 #include "frame_graph.h"
 #include "visibility_constants.h"
 #include "render_uniforms.h"
@@ -29,10 +30,7 @@
 #include "blit_pass.h"
 #include "tonemap_pass.h"
 #include "imgui_overlay_pass.h"
-#include "visibility_pass.h"
 #include "shadow_ray_pass.h"
-#include "deferred_lighting_pass.h"
-#include "forward_pass.h"
 #include "sky_pass.h"
 #include "pipeline_asset.h"
 #include "pipeline_builder.h"
@@ -137,11 +135,11 @@ int main() {
     }
     bool skyAvailable = scene.atmosphereLoaded() && shaderManager.hasSkyPipeline();
 
-    int renderMode = 0; // 0=Vertex, 1=Mesh, 2=Visibility Buffer, 3=Meshlet Debug
+    int renderMode = 3; // 0=Vertex, 1=Mesh, 2=Visibility Buffer, 3=Cluster Visualization
     bool enableFrustumCull = false;
     bool enableConeCull = false;
     bool enableRTShadows = true;
-    bool enableGPUCulling = true;
+    bool enableGPUCulling = false;
     bool enableAtmosphereSky = skyAvailable;
     bool enableTAA = true;
     uint32_t frameIndex = 0;
@@ -149,31 +147,36 @@ int main() {
     bool showGraphDebug = false;
     bool showSceneGraphWindow = true;
     bool showRenderPassUI = true;
+    bool showTextureViewer = false;
     bool showImGuiDemo = false;
     bool exportGraphKeyDown = false;
     bool reloadKeyDown = false;
     bool pipelineReloadKeyDown = false;
 
     // Load pipeline assets
-    PipelineAsset visPipelineAsset;
-    PipelineAsset fwdPipelineAsset;
-    PipelineAsset meshletDbgPipelineAsset;
-    std::string visPipelinePath = std::string(projectRoot) + "/Pipelines/visibilitybuffer.json";
-    std::string fwdPipelinePath = std::string(projectRoot) + "/Pipelines/forward.json";
-    std::string meshletDbgPipelinePath = std::string(projectRoot) + "/Pipelines/meshlet_debug.json";
+    PipelineAsset baselinePipelineAsset;
+    PipelineAsset clusterVisPipelineAsset;
+    std::string baselinePipelinePath = std::string(projectRoot) + "/Pipelines/visibilitybuffer.json";
+    std::string clusterVisPipelinePath = std::string(projectRoot) + "/Pipelines/cluster_vis.json";
 
-    if (!loadPipelineAssetChecked(visPipelinePath, "visibility buffer", visPipelineAsset) ||
-        !loadPipelineAssetChecked(fwdPipelinePath, "forward", fwdPipelineAsset) ||
-        !loadPipelineAssetChecked(meshletDbgPipelinePath, "meshlet debug", meshletDbgPipelineAsset)) {
+    bool baselinePipelineLoaded =
+        loadPipelineAssetChecked(baselinePipelinePath, "Metal baseline", baselinePipelineAsset);
+    bool clusterVisPipelineLoaded =
+        loadPipelineAssetChecked(clusterVisPipelinePath, "Cluster visualization", clusterVisPipelineAsset);
+    if (!baselinePipelineLoaded && !clusterVisPipelineLoaded) {
         return 1;
     }
+    bool useClusterVisMode = clusterVisPipelineLoaded;
 
     // Persistent render context and pipeline builder
     RenderContext ctx = scene.renderContext();
     PipelineBuilder pipelineBuilder(ctx);
     auto frameGraphBackend = runtime->createFrameGraphBackend();
     rtCtx.resourceFactory = frameGraphBackend.get();
+    ClusterOcclusionState clusterOcclusionState;
+    rtCtx.clusterOcclusionState = &clusterOcclusionState;
     bool pipelineNeedsRebuild = true;
+    bool historyResetRequested = true;
     int lastRenderMode = -1;
     double lastFrameTime = glfwGetTime();
     float4x4 prevView, prevProj;
@@ -257,6 +260,7 @@ int main() {
                     ImGui::MenuItem("Scene Browser", nullptr, &showSceneGraphWindow);
                     ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
                     ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
+                    ImGui::MenuItem("Texture Viewer", nullptr, &showTextureViewer);
                     ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
                     ImGui::EndMenu();
                 }
@@ -267,23 +271,24 @@ int main() {
             ImGui::Begin("Renderer");
             ImGui::Text("%.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
             ImGui::Separator();
-            ImGui::RadioButton("Vertex Shader", &renderMode, 0);
-            ImGui::RadioButton("Mesh Shader", &renderMode, 1);
-            ImGui::RadioButton("Visibility Buffer", &renderMode, 2);
-            ImGui::RadioButton("Meshlet Debug", &renderMode, 3);
-            if (renderMode >= 1) {
-                ImGui::Text("Meshlets: %u", scene.meshlets().meshletCount);
-                ImGui::Checkbox("Frustum Culling", &enableFrustumCull);
-                ImGui::Checkbox("Backface Culling", &enableConeCull);
+            ImGui::TextUnformatted(useClusterVisMode ? "Pipeline: Cluster Visualization" :
+                                                       "Pipeline: Metal Baseline");
+            if (clusterVisPipelineLoaded && baselinePipelineLoaded) {
+                if (ImGui::Checkbox("Cluster Vis", &useClusterVisMode)) {
+                    spdlog::info("Cluster visualization mode: {}", useClusterVisMode ? "ON" : "OFF");
+                    pipelineNeedsRebuild = true;
+                    historyResetRequested = true;
+                }
             }
-            if (renderMode == 2 && scene.rtShadowsAvailable()) {
+            ImGui::Text("Meshlets: %u", scene.meshlets().meshletCount);
+            ImGui::Text("Clusters: %u", scene.gpuScene().clusterVisWorklistCount);
+            ImGui::Checkbox("Frustum Culling", &enableFrustumCull);
+            ImGui::Checkbox("Backface Culling", &enableConeCull);
+            if (!useClusterVisMode && scene.rtShadowsAvailable()) {
                 ImGui::Checkbox("RT Shadows", &enableRTShadows);
             }
-            if (renderMode == 2) {
+            if (!useClusterVisMode) {
                 ImGui::Checkbox("TAA", &enableTAA);
-            }
-            if (renderMode == 2 || renderMode == 3) {
-                ImGui::Checkbox("GPU-Driven Culling", &enableGPUCulling);
             }
             if (skyAvailable) {
                 ImGui::Checkbox("Atmosphere Sky", &enableAtmosphereSky);
@@ -292,6 +297,8 @@ int main() {
                 ImGui::TextDisabled("Atmosphere Sky (missing textures)");
             }
             ImGui::Checkbox("Show Graph", &showGraphDebug);
+            ImGui::Checkbox("Render Pass UI", &showRenderPassUI);
+            ImGui::Checkbox("Texture Viewer", &showTextureViewer);
             ImGui::Separator();
             bool f5Down = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
             bool triggerReload = ImGui::Button("Reload Shaders (F5)") || (f5Down && !reloadKeyDown);
@@ -315,6 +322,7 @@ int main() {
                     spdlog::warn("{} shaders reloaded, {} failed (keeping old pipelines)", reloaded, failed);
 
                 pipelineNeedsRebuild = true;
+                historyResetRequested = true;
             }
             ImGui::End();
         } // end ImGui Frame zone
@@ -330,34 +338,32 @@ int main() {
         if (f6Down && !pipelineReloadKeyDown) {
             bool reloadedAnyPipeline = false;
 
-            PipelineAsset reloadedVis;
-            if (loadPipelineAssetChecked(visPipelinePath, "visibility buffer", reloadedVis)) {
-                visPipelineAsset = std::move(reloadedVis);
+            PipelineAsset reloadedBaseline;
+            if (loadPipelineAssetChecked(baselinePipelinePath, "Metal baseline", reloadedBaseline)) {
+                baselinePipelineAsset = std::move(reloadedBaseline);
+                baselinePipelineLoaded = true;
                 reloadedAnyPipeline = true;
             } else {
-                spdlog::warn("Keeping previous visibility buffer pipeline: {}", visPipelineAsset.name);
+                spdlog::warn("Keeping previous Metal baseline pipeline: {}", baselinePipelineAsset.name);
             }
 
-            PipelineAsset reloadedFwd;
-            if (loadPipelineAssetChecked(fwdPipelinePath, "forward", reloadedFwd)) {
-                fwdPipelineAsset = std::move(reloadedFwd);
+            PipelineAsset reloadedClusterVis;
+            if (loadPipelineAssetChecked(clusterVisPipelinePath, "Cluster visualization", reloadedClusterVis)) {
+                clusterVisPipelineAsset = std::move(reloadedClusterVis);
+                clusterVisPipelineLoaded = true;
                 reloadedAnyPipeline = true;
             } else {
-                spdlog::warn("Keeping previous forward pipeline: {}", fwdPipelineAsset.name);
-            }
-
-            PipelineAsset reloadedDbg;
-            if (loadPipelineAssetChecked(meshletDbgPipelinePath, "meshlet debug", reloadedDbg)) {
-                meshletDbgPipelineAsset = std::move(reloadedDbg);
-                reloadedAnyPipeline = true;
-            } else {
-                spdlog::warn("Keeping previous meshlet debug pipeline: {}", meshletDbgPipelineAsset.name);
+                spdlog::warn("Keeping previous cluster visualization pipeline: {}", clusterVisPipelineAsset.name);
             }
 
             pipelineNeedsRebuild = reloadedAnyPipeline;
+            if (reloadedAnyPipeline) {
+                historyResetRequested = true;
+            }
         }
         pipelineReloadKeyDown = f6Down;
 
+        renderMode = (useClusterVisMode && clusterVisPipelineLoaded) ? 3 : 2;
         const bool gpuDrivenVisibilityPath =
             enableGPUCulling && (renderMode == 2 || renderMode == 3);
         const bool needsCpuMeshletVisibility =
@@ -419,6 +425,17 @@ int main() {
         frameCtx.proj = proj;
         frameCtx.unjitteredProj = camera.projectionMatrix(aspect);
         frameCtx.cameraWorldPos = cameraWorldPos;
+        {
+            float3 eye(cameraWorldPos.x, cameraWorldPos.y, cameraWorldPos.z);
+            float3 cameraForward = normalize(camera.target - eye);
+            float3 cameraRight = normalize(cross(cameraForward, float3(0.f, 1.f, 0.f)));
+            float3 cameraUp = cross(cameraRight, cameraForward);
+            frameCtx.cameraRight = float4(cameraRight.x, cameraRight.y, cameraRight.z, 0.f);
+            frameCtx.cameraUp = float4(cameraUp.x, cameraUp.y, cameraUp.z, 0.f);
+            frameCtx.cameraForward = float4(cameraForward.x, cameraForward.y, cameraForward.z, 0.f);
+        }
+        frameCtx.cameraNearZ = camera.nearZ;
+        frameCtx.cameraFovY = camera.fovY;
         frameCtx.worldLightDir = worldLightDir;
         frameCtx.viewLightDir = viewLightDir;
         frameCtx.lightColorIntensity = lightColorIntensity;
@@ -430,6 +447,11 @@ int main() {
         frameCtx.visibilityInstanceCount = visibilityInstanceCount;
         frameCtx.depthClearValue = scene.depthClearValue();
         frameCtx.cameraFarZ = camera.farZ;
+        frameCtx.displayWidth = width;
+        frameCtx.displayHeight = height;
+        frameCtx.renderWidth = width;
+        frameCtx.renderHeight = height;
+        frameCtx.historyReset = historyResetRequested;
         {
             double now = glfwGetTime();
             frameCtx.deltaTime = static_cast<float>(now - lastFrameTime);
@@ -452,8 +474,9 @@ int main() {
 
         // Select active pipeline asset based on render mode
         const PipelineAsset& activePipelineAsset =
-            (renderMode == 3) ? meshletDbgPipelineAsset :
-            (renderMode == 2) ? visPipelineAsset : fwdPipelineAsset;
+            (useClusterVisMode && clusterVisPipelineLoaded) || !baselinePipelineLoaded
+                ? clusterVisPipelineAsset
+                : baselinePipelineAsset;
 
         // Detect mode switch
         if (renderMode != lastRenderMode) {
@@ -485,6 +508,9 @@ int main() {
         if (showRenderPassUI)
             activeFg.renderPassUI();
 
+        if (showTextureViewer)
+            activeFg.textureViewerImGui();
+
         ImGui::Render();
 
         bool gKeyDown = glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS;
@@ -506,6 +532,9 @@ int main() {
         auto fgCommandBuffer = runtime->createCommandBuffer();
         pipelineBuilder.execute(*fgCommandBuffer, *frameGraphBackend);
 
+        if (showTextureViewer)
+            activeFg.captureTextureViewerState();
+
         runtime->present();
 
         // Store unjittered matrices for next frame's motion vectors
@@ -516,6 +545,7 @@ int main() {
         prevCameraWorldPos = cameraWorldPos;
         hasPrevMatrices = true;
         frameIndex++;
+        historyResetRequested = false;
 
         FrameMark;
     }

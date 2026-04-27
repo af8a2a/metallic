@@ -16,14 +16,14 @@
 #include <type_traits>
 #include <vector>
 
-static constexpr size_t MAX_VERTICES  = 64;
-static constexpr size_t MAX_TRIANGLES = 124;
+static constexpr size_t MAX_VERTICES  = 32;
+static constexpr size_t MAX_TRIANGLES = 32;
 static constexpr float  CONE_WEIGHT   = 0.5f;
 
 namespace {
 
 constexpr char kMeshletCacheMagic[8] = {'M', 'L', 'M', 'S', 'H', 'L', 'T', '1'};
-constexpr uint32_t kMeshletCacheVersion = 1;
+constexpr uint32_t kMeshletCacheVersion = 2;
 constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 

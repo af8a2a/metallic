@@ -433,16 +433,37 @@ bool buildPipelineResourceLayout(VkDevice device,
 
         auto assignExpandedBinding = [&](auto& locations, uint32_t& logicalIndex) -> bool {
             for (uint32_t arrayElement = 0; arrayElement < binding.descriptorCount; ++arrayElement) {
-                if (logicalIndex >= locations.size()) {
-                    errorMessage = "Slang reflection exceeded Metallic's Vulkan binding slot limits";
+                const uint32_t locationIndex = binding.bindingIndex + arrayElement;
+                if (locationIndex >= locations.size()) {
+                    errorMessage =
+                        "Shader binding " + std::to_string(binding.bindingIndex) +
+                        " exceeds Metallic's Vulkan binding slot limits";
                     return false;
                 }
-                assignBindingLocation(locations[logicalIndex],
+
+                auto& location = locations[locationIndex];
+                if (location.valid()) {
+                    const bool sameDescriptor =
+                        location.set == binding.bindingSpace &&
+                        location.binding == binding.bindingIndex &&
+                        location.arrayElement == arrayElement &&
+                        location.descriptorType == descriptorType;
+                    if (!sameDescriptor) {
+                        errorMessage =
+                            "Conflicting Vulkan descriptor binding at set " +
+                            std::to_string(binding.bindingSpace) + ", binding " +
+                            std::to_string(binding.bindingIndex);
+                        return false;
+                    }
+                    continue;
+                }
+
+                assignBindingLocation(location,
                                       binding.bindingSpace,
                                       binding.bindingIndex,
                                       arrayElement,
                                       descriptorType);
-                ++logicalIndex;
+                logicalIndex = std::max(logicalIndex, locationIndex + 1u);
             }
             return true;
         };

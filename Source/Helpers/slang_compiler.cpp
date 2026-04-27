@@ -35,12 +35,15 @@ struct SlangTargetConfig {
 void logDiagnostics(const char* prefix, const char* shaderPath, slang::IBlob* diagnostics);
 
 constexpr uint32_t kSpirvHeaderWordCount = 5;
+constexpr uint16_t kSpirvOpCapability = 17;
 constexpr uint16_t kSpirvOpEntryPoint = 15;
+constexpr uint32_t kSpirvCapabilityGeometry = 2;
 constexpr uint16_t kSpirvOpDecorate = 71;
 constexpr uint16_t kSpirvOpMemberDecorate = 72;
 constexpr uint16_t kSpirvOpGroupDecorate = 73;
 constexpr uint16_t kSpirvOpGroupMemberDecorate = 74;
 constexpr uint16_t kSpirvOpDecorateId = 332;
+constexpr uint32_t kSpirvExecutionModelGeometry = 3;
 constexpr uint32_t kSpirvExecutionModelFragment = 4;
 constexpr uint32_t kSpirvExecutionModelMeshExt = 5365;
 constexpr uint32_t kSpirvDecorationLocation = 30;
@@ -614,6 +617,65 @@ bool isSpirvAnnotationOp(uint16_t opcode) {
     }
 }
 
+// Slang sometimes emits OpCapability Geometry for linked mesh/fragment modules even
+// when no geometry entry point is present. Strip only that spurious declaration so
+// Vulkan validation does not require enabling geometryShader for pipelines that do
+// not use a geometry stage.
+bool stripSpuriousGeometryCapability(std::vector<uint32_t>& words, const char* shaderPath) {
+    if (words.size() <= kSpirvHeaderWordCount) {
+        return false;
+    }
+
+    bool hasGeometryEntryPoint = false;
+    for (size_t i = kSpirvHeaderWordCount; i < words.size();) {
+        const uint16_t wc = static_cast<uint16_t>(words[i] >> 16);
+        const uint16_t op = static_cast<uint16_t>(words[i] & 0xFFFFu);
+        if (wc == 0 || (i + wc) > words.size()) {
+            spdlog::warn("Skipping SPIR-V geometry capability patch for {}: malformed module",
+                         shaderPath);
+            return false;
+        }
+        if (op == kSpirvOpEntryPoint && wc >= 2 && words[i + 1] == kSpirvExecutionModelGeometry) {
+            hasGeometryEntryPoint = true;
+            break;
+        }
+        i += wc;
+    }
+
+    if (hasGeometryEntryPoint) {
+        return false;
+    }
+
+    std::vector<uint32_t> out;
+    out.reserve(words.size());
+    out.insert(out.end(), words.begin(), words.begin() + kSpirvHeaderWordCount);
+    bool removed = false;
+    for (size_t i = kSpirvHeaderWordCount; i < words.size();) {
+        const uint16_t wc = static_cast<uint16_t>(words[i] >> 16);
+        const uint16_t op = static_cast<uint16_t>(words[i] & 0xFFFFu);
+        if (wc == 0 || (i + wc) > words.size()) {
+            spdlog::warn("Skipping SPIR-V geometry capability patch for {}: malformed module",
+                         shaderPath);
+            return false;
+        }
+        if (op == kSpirvOpCapability && wc == 2 && words[i + 1] == kSpirvCapabilityGeometry) {
+            removed = true;
+            i += wc;
+            continue;
+        }
+        out.insert(out.end(), words.begin() + i, words.begin() + i + wc);
+        i += wc;
+    }
+
+    if (!removed) {
+        return false;
+    }
+
+    words = std::move(out);
+    spdlog::info("Removed spurious SPIR-V Geometry capability from {}", shaderPath);
+    return true;
+}
+
 bool patchSpirvPerPrimitiveFragmentInputs(std::vector<uint32_t>& words,
                                           const char* shaderPath) {
     if (words.size() <= kSpirvHeaderWordCount) {
@@ -922,6 +984,9 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
         if (!cached.empty()) {
             SlangShaderBindingLayout layout;
             if (tryLoadBindingLayoutCache(cacheKey, layout)) {
+                if (stripSpuriousGeometryCapability(cached, shaderPath)) {
+                    writeSpirvCache(cacheKey, cached);
+                }
                 spdlog::debug("SlangShaderCache: cache hit for '{}' ({} words)", shaderPath, cached.size());
                 // Restore the binding layout into the in-memory cache so that
                 // findSlangBindingLayoutForBinary() succeeds for callers.
@@ -986,6 +1051,7 @@ std::vector<uint32_t> compileSlangComponentToBinary(RhiBackendType backend,
     std::memcpy(words.data(), binaryCode->getBufferPointer(), byteSize);
 
     patchSpirvPerPrimitiveFragmentInputs(words, shaderPath);
+    stripSpuriousGeometryCapability(words, shaderPath);
 
     SlangShaderBindingLayout bindingLayout;
     if (buildBindingLayout(linkedProgram, bindingLayout)) {
@@ -1028,6 +1094,18 @@ std::string patchMeshMetalSource(const std::string& source) {
     patched = std::regex_replace(patched,
         std::regex(R"((\[\[flat\]\]\s+uint\s+\w*materialID\w*)\s*;)"),
         "$1 [[user(TEXCOORD_2)]];");
+    patched = std::regex_replace(patched,
+        std::regex(R"((float3\s+\w*wPos\w*)\s*;)"),
+        "$1 [[user(TEXCOORD)]];");
+    patched = std::regex_replace(patched,
+        std::regex(R"((uint\s+\w*clusterID\w*)\s*;)"),
+        "$1 [[user(TEXCOORD_1)]];");
+    patched = std::regex_replace(patched,
+        std::regex(R"((uint\s+\w*instanceID\w*)\s*;)"),
+        "$1 [[user(TEXCOORD_2)]];");
+    patched = std::regex_replace(patched,
+        std::regex(R"((uint\s+\w*lodLevel\w*)\s*;)"),
+        "$1 [[user(TEXCOORD_3)]];");
 
     patched = std::regex_replace(patched,
         std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w+))"),

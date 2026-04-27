@@ -24,9 +24,9 @@
 
 namespace {
 
-static constexpr size_t kLodMaxVertices = 64;
-static constexpr size_t kLodMinTriangles = 20;
-static constexpr size_t kLodMaxTriangles = 124;
+static constexpr size_t kLodMaxVertices = 32;
+static constexpr size_t kLodMinTriangles = 8;
+static constexpr size_t kLodMaxTriangles = 32;
 static constexpr size_t kPartitionSize = 8;
 static constexpr size_t kHierarchyNodeWidth = 8;
 static constexpr float kSimplifyRatio = 0.5f;
@@ -34,7 +34,7 @@ static constexpr float kSimplifyThreshold = 0.85f;
 static constexpr float kClusterSplit = 2.0f;
 
 constexpr char kClusterLodCacheMagic[8] = {'M', 'L', 'C', 'L', 'O', 'D', '0', '1'};
-constexpr uint32_t kClusterLodCacheVersion = 1;
+constexpr uint32_t kClusterLodCacheVersion = 2;
 constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 constexpr uint32_t kInvalidIndex = UINT32_MAX;
@@ -99,6 +99,9 @@ void releaseClusterLODHandles(ClusterLODData& data) {
     rhiReleaseHandle(data.groupBuffer);
     rhiReleaseHandle(data.nodeBuffer);
     rhiReleaseHandle(data.levelBuffer);
+    rhiReleaseHandle(data.packedClusterBuffer);
+    rhiReleaseHandle(data.clusterVertexDataBuffer);
+    rhiReleaseHandle(data.clusterIndexDataBuffer);
 }
 
 void hashBytes(uint64_t& hash, const void* data, size_t size) {
@@ -1125,6 +1128,65 @@ bool validateClusterLodPayload(const ClusterLODData& data,
     return true;
 }
 
+void buildPackedClusterData(const LoadedMesh& mesh, ClusterLODData& data) {
+    const size_t meshletCount = data.allMeshlets.size();
+    data.packedClusters.resize(meshletCount);
+    data.clusterVertexData.clear();
+    data.clusterIndexData.clear();
+
+    // Reserve approximate space
+    data.clusterVertexData.reserve(meshletCount * 32 * 12);
+    data.clusterIndexData.reserve(meshletCount * 32 * 3);
+
+    // Build a LOD level lookup: meshlet index → LOD level
+    std::vector<uint8_t> meshletLodLevel(meshletCount, 0);
+    for (size_t li = 0; li < data.levels.size(); li++) {
+        const auto& level = data.levels[li];
+        for (uint32_t mi = 0; mi < level.meshletCount; mi++) {
+            uint32_t idx = level.meshletStart + mi;
+            if (idx < meshletCount)
+                meshletLodLevel[idx] = static_cast<uint8_t>(li);
+        }
+    }
+
+    for (size_t i = 0; i < meshletCount; i++) {
+        const GPUMeshlet& m = data.allMeshlets[i];
+        PackedCluster& pc = data.packedClusters[i];
+
+        pc.triCountM1 = static_cast<uint8_t>(m.triangle_count > 0 ? m.triangle_count - 1 : 0);
+        pc.vtxCountM1 = static_cast<uint8_t>(m.vertex_count > 0 ? m.vertex_count - 1 : 0);
+        pc.lodLevel = meshletLodLevel[i];
+        pc.groupChildIndex = 0;
+        pc.attributeBits = 0;
+        pc.localMaterialID = (i < data.allMaterialIDs.size())
+            ? static_cast<uint8_t>(data.allMaterialIDs[i] & 0xFF) : 0;
+        pc.reserved = 0;
+
+        // Vertex data: copy positions as contiguous float3 array
+        pc.vertexByteOffset = static_cast<uint32_t>(data.clusterVertexData.size());
+        for (uint32_t v = 0; v < m.vertex_count; v++) {
+            uint32_t globalVertexIndex = data.allMeshletVertices[m.vertex_offset + v];
+            const float* pos = &mesh.cpuPositions[globalVertexIndex * 3];
+            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(pos);
+            data.clusterVertexData.insert(data.clusterVertexData.end(), bytes, bytes + 12);
+        }
+
+        // Index data: copy raw uint8 local triangle indices
+        pc.indexByteOffset = static_cast<uint32_t>(data.clusterIndexData.size());
+        for (uint32_t t = 0; t < m.triangle_count; t++) {
+            uint32_t packed = data.allPackedTriangles[m.triangle_offset + t];
+            data.clusterIndexData.push_back(static_cast<uint8_t>(packed & 0xFF));
+            data.clusterIndexData.push_back(static_cast<uint8_t>((packed >> 8) & 0xFF));
+            data.clusterIndexData.push_back(static_cast<uint8_t>((packed >> 16) & 0xFF));
+        }
+    }
+
+    spdlog::info("Packed {} clusters: vertex data {:.1f} KB, index data {:.1f} KB",
+                 meshletCount,
+                 data.clusterVertexData.size() / 1024.0,
+                 data.clusterIndexData.size() / 1024.0);
+}
+
 bool uploadClusterLodBuffers(const RhiDevice& device, ClusterLODData& data) {
     if (data.allMeshlets.empty()) {
         return false;
@@ -1190,6 +1252,29 @@ bool uploadClusterLodBuffers(const RhiDevice& device, ClusterLODData& data) {
             data.levels.data(),
             data.levels.size() * sizeof(ClusterLODLevel),
             "LOD Levels");
+    }
+
+    // Upload packed cluster buffers
+    if (!data.packedClusters.empty()) {
+        data.packedClusterBuffer = rhiCreateSharedBuffer(
+            device,
+            data.packedClusters.data(),
+            data.packedClusters.size() * sizeof(PackedCluster),
+            "Packed Clusters");
+    }
+    if (!data.clusterVertexData.empty()) {
+        data.clusterVertexDataBuffer = rhiCreateSharedBuffer(
+            device,
+            data.clusterVertexData.data(),
+            data.clusterVertexData.size(),
+            "Cluster Vertex Data");
+    }
+    if (!data.clusterIndexData.empty()) {
+        data.clusterIndexDataBuffer = rhiCreateSharedBuffer(
+            device,
+            data.clusterIndexData.data(),
+            data.clusterIndexData.size(),
+            "Cluster Index Data");
     }
 
     if (!data.meshletBuffer.nativeHandle() ||
@@ -1365,6 +1450,8 @@ bool loadClusterLODFromCache(const RhiDevice& device,
         return false;
     }
 
+    buildPackedClusterData(mesh, cached);
+
     if (!uploadClusterLodBuffers(device, cached)) {
         spdlog::warn("Failed to create GPU ClusterLOD buffers from cache {}", cachePath.string());
         return false;
@@ -1442,6 +1529,8 @@ bool buildClusterLOD(const RhiDevice& device,
         return false;
     }
 
+    buildPackedClusterData(mesh, out);
+
     if (!uploadClusterLodBuffers(device, out)) {
         return false;
     }
@@ -1496,6 +1585,9 @@ void releaseClusterLOD(ClusterLODData& data) {
     data.nodes.clear();
     data.levels.clear();
     data.primitiveGroupLodRoots.clear();
+    data.packedClusters.clear();
+    data.clusterVertexData.clear();
+    data.clusterIndexData.clear();
     data.totalMeshletCount = 0;
     data.totalGroupCount = 0;
     data.totalNodeCount = 0;

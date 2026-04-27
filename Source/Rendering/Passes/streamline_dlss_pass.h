@@ -21,6 +21,15 @@ public:
 
     ~StreamlineDlssPass() override = default;
 
+    METALLIC_PASS_TYPE_INFO(StreamlineDlssPass, "DLSS", "Post-Process",
+        (std::vector<PassSlotInfo>{
+            makeInputSlot("source", "Source"),
+            makeInputSlot("depth", "Depth", true),
+            makeInputSlot("motionVectors", "Motion Vectors", true)
+        }),
+        (std::vector<PassSlotInfo>{makeOutputSlot("dlssOutput", "DLSS Output")}),
+        PassTypeInfo::PassType::Compute);
+
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -191,5 +200,7 @@ private:
 
     FGResource m_sourceRead, m_depthRead, m_motionRead, m_dlssOutput;
 };
+
+METALLIC_REGISTER_PASS(StreamlineDlssPass);
 
 #endif // _WIN32

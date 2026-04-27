@@ -183,23 +183,33 @@ PipelineAsset PipelineAsset::load(const std::string& path) {
         asset.schemaVersion = schemaVersion;
         asset.name = getOrDefault<std::string>(j, "name", {});
 
-        if (j.contains("resources")) {
-            for (const auto& resourceJson : j.at("resources")) {
-                asset.resources.push_back(parseResourceDecl(resourceJson));
+        const auto loadArray = [&](const char* key, auto&& parseFn, auto& output) {
+            if (!j.contains(key)) {
+                return;
             }
-        }
 
-        if (j.contains("passes")) {
-            for (const auto& passJson : j.at("passes")) {
-                asset.passes.push_back(parsePassDecl(passJson));
+            const auto& entries = j.at(key);
+            if (!entries.is_array()) {
+                spdlog::warn("PipelineAsset: '{}': '{}' is not an array, skipping", path, key);
+                return;
             }
-        }
 
-        if (j.contains("edges")) {
-            for (const auto& edgeJson : j.at("edges")) {
-                asset.edges.push_back(parseEdgeDecl(edgeJson));
+            for (std::size_t index = 0; index < entries.size(); ++index) {
+                try {
+                    output.push_back(parseFn(entries[index]));
+                } catch (const std::exception& e) {
+                    spdlog::warn("PipelineAsset: '{}': skipping invalid {}[{}]: {}",
+                                 path,
+                                 key,
+                                 index,
+                                 e.what());
+                }
             }
-        }
+        };
+
+        loadArray("resources", parseResourceDecl, asset.resources);
+        loadArray("passes", parsePassDecl, asset.passes);
+        loadArray("edges", parseEdgeDecl, asset.edges);
 
         return asset;
     } catch (const std::exception& e) {

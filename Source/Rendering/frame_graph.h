@@ -172,6 +172,8 @@ public:
 
     void exportGraphviz(std::ostream& os) const;
     void debugImGui() const;
+    void captureTextureViewerState();
+    void textureViewerImGui();
     void renderPassUI();
 
     RhiTexture* getTexture(FGResource res) const;

@@ -11,6 +11,11 @@ public:
     ShadowRayPass(const RenderContext& ctx, int w, int h)
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
+    METALLIC_PASS_TYPE_INFO(ShadowRayPass, "Shadow Ray Pass", "Lighting",
+        (std::vector<PassSlotInfo>{makeInputSlot("depth", "Depth")}),
+        (std::vector<PassSlotInfo>{makeOutputSlot("shadowMap", "Shadow Map")}),
+        PassTypeInfo::PassType::Compute);
+
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -105,4 +110,5 @@ private:
     float m_maxRayDistance = 1000.0f;
 };
 
+METALLIC_REGISTER_PASS(ShadowRayPass);
 

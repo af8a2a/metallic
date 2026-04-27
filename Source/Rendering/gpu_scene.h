@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "rhi_backend.h"
+#include "cluster_types.h"
 
 struct LoadedMesh;
 struct MeshletData;
@@ -25,8 +26,10 @@ struct GPUSceneGeometry {
     uint32_t materialIndex = UINT32_MAX;
     uint32_t lodRootNode = UINT32_MAX;
     float boundsCenterRadius[4] = {};
+    uint32_t packedClusterStart = 0;
+    uint32_t packedClusterCount = 0;
 };
-static_assert(sizeof(GPUSceneGeometry) == 48, "GPUSceneGeometry must match shader layout");
+static_assert(sizeof(GPUSceneGeometry) == 56, "GPUSceneGeometry must match shader layout");
 
 struct GPUSceneInstance {
     float worldMatrix[16] = {};
@@ -50,6 +53,11 @@ struct GpuSceneTables {
     uint32_t instanceCount = 0;
     uint32_t totalMeshletDispatchCount = 0;
     uint32_t visibleInstanceCount = 0;
+
+    // Cluster visualization CPU worklist (Phase 1)
+    std::vector<ClusterInfo> clusterVisWorklist;
+    RhiBufferHandle clusterVisWorklistBuffer;
+    uint32_t clusterVisWorklistCount = 0;
 };
 
 bool buildGpuSceneTables(const RhiDevice& device,

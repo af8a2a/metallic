@@ -10,6 +10,9 @@
 #include <cstdio>
 #include <map>
 #include <numeric>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 namespace {
 
@@ -23,6 +26,10 @@ struct ResourceFlowInfo {
     PassBindingInfo producer;
     std::vector<PassBindingInfo> writers;
     std::vector<PassBindingInfo> readers;
+};
+
+struct GraphDiagnostic {
+    std::string message;
 };
 
 bool hasStoredPosition(const std::array<float, 2>& pos) {
@@ -181,6 +188,168 @@ const PassSlotInfo* findSlotInfo(const std::vector<PassSlotInfo>& slots, const s
         }
     }
     return nullptr;
+}
+
+bool isKnownResourceKindForEditor(const std::string& kind) {
+    return kind == "transient" || kind == "imported" || kind == "backbuffer";
+}
+
+bool isKnownEdgeDirectionForEditor(const std::string& direction) {
+    return direction == "input" || direction == "output";
+}
+
+std::vector<GraphDiagnostic> collectGraphDiagnostics(const PipelineAsset& asset) {
+    std::vector<GraphDiagnostic> diagnostics;
+    auto add = [&](std::string message) {
+        diagnostics.push_back(GraphDiagnostic{std::move(message)});
+    };
+
+    if (asset.name.empty()) {
+        add("Pipeline name is empty.");
+    }
+
+    std::unordered_map<std::string, const ResourceDecl*> resourcesById;
+    std::unordered_map<std::string, const PassDecl*> passesById;
+    std::unordered_set<std::string> edgeIds;
+
+    for (const auto& resource : asset.resources) {
+        if (resource.id.empty()) {
+            add("A resource has an empty id.");
+        } else {
+            const auto [_, inserted] = resourcesById.emplace(resource.id, &resource);
+            if (!inserted) {
+                add("Duplicate resource id '" + resource.id + "'.");
+            }
+        }
+
+        if (resource.name.empty()) {
+            add("Resource '" + (resource.id.empty() ? std::string{"<empty>"} : resource.id) + "' has an empty name.");
+        }
+        if (!isKnownResourceKindForEditor(resource.kind)) {
+            add("Resource '" + resource.id + "' has unknown kind '" + resource.kind + "'.");
+        }
+        if (resource.kind == "imported" && resource.importKey.empty()) {
+            add("Imported resource '" + resource.id + "' is missing importKey.");
+        }
+    }
+
+    for (const auto& pass : asset.passes) {
+        if (pass.id.empty()) {
+            add("A pass has an empty id.");
+        } else {
+            const auto [_, inserted] = passesById.emplace(pass.id, &pass);
+            if (!inserted) {
+                add("Duplicate pass id '" + pass.id + "'.");
+            }
+        }
+
+        if (pass.name.empty()) {
+            add("Pass '" + (pass.id.empty() ? std::string{"<empty>"} : pass.id) + "' has an empty name.");
+        }
+        if (pass.type.empty()) {
+            add("Pass '" + pass.id + "' has an empty type.");
+        } else if (!PassRegistry::instance().getTypeInfo(pass.type)) {
+            add("Pass '" + pass.id + "' uses unknown type '" + pass.type + "'.");
+        }
+    }
+
+    std::unordered_map<std::string, int> slotBindingCounts;
+    std::unordered_map<std::string, int> transientProducerCounts;
+
+    for (const auto& edge : asset.edges) {
+        if (edge.id.empty()) {
+            add("An edge has an empty id.");
+        } else if (!edgeIds.insert(edge.id).second) {
+            add("Duplicate edge id '" + edge.id + "'.");
+        }
+
+        const bool validDirection = isKnownEdgeDirectionForEditor(edge.direction);
+        if (!validDirection) {
+            add("Edge '" + edge.id + "' has invalid direction '" + edge.direction + "'.");
+        }
+
+        const auto passIt = passesById.find(edge.passId);
+        const auto resourceIt = resourcesById.find(edge.resourceId);
+        const PassDecl* pass = passIt != passesById.end() ? passIt->second : nullptr;
+        const ResourceDecl* resource = resourceIt != resourcesById.end() ? resourceIt->second : nullptr;
+
+        if (!pass) {
+            add("Edge '" + edge.id + "' references missing pass '" + edge.passId + "'.");
+        }
+        if (!resource) {
+            add("Edge '" + edge.id + "' references missing resource '" + edge.resourceId + "'.");
+        }
+
+        if (!pass || !validDirection) {
+            continue;
+        }
+
+        const PassTypeInfo* typeInfo = PassRegistry::instance().getTypeInfo(pass->type);
+        if (!typeInfo) {
+            continue;
+        }
+
+        const auto& slots = edge.direction == "input" ? typeInfo->inputSlots : typeInfo->outputSlots;
+        const PassSlotInfo* slot = findSlotInfo(slots, edge.slotKey);
+        if (!slot) {
+            add("Edge '" + edge.id + "' references missing " + edge.direction + " slot '" +
+                edge.slotKey + "' on pass '" + pass->id + "'.");
+        } else if (resource && !slotAllowsKind(*slot, resource->kind)) {
+            add("Edge '" + edge.id + "' binds resource kind '" + resource->kind + "' to slot '" +
+                edge.slotKey + "' on pass '" + pass->id + "', but that kind is not allowed.");
+        }
+
+        const std::string slotKey = pass->id + "|" + edge.direction + "|" + edge.slotKey;
+        ++slotBindingCounts[slotKey];
+
+        if (pass->enabled && resource && resource->kind == "transient" && edge.direction == "output") {
+            ++transientProducerCounts[resource->id];
+        }
+    }
+
+    for (const auto& [slotKey, count] : slotBindingCounts) {
+        if (count > 1) {
+            add("Slot binding '" + slotKey + "' is connected more than once.");
+        }
+    }
+
+    for (const auto& [resourceId, count] : transientProducerCounts) {
+        if (count > 1) {
+            add("Transient resource '" + resourceId + "' has multiple enabled producers.");
+        }
+    }
+
+    for (const auto& pass : asset.passes) {
+        if (!pass.enabled) {
+            continue;
+        }
+
+        const PassTypeInfo* typeInfo = PassRegistry::instance().getTypeInfo(pass.type);
+        if (!typeInfo) {
+            continue;
+        }
+
+        for (const auto& slot : typeInfo->inputSlots) {
+            if (!slot.optional && !asset.findEdge(pass.id, "input", slot.key)) {
+                add("Enabled pass '" + pass.id + "' is missing required input '" + slot.key + "'.");
+            }
+        }
+        for (const auto& slot : typeInfo->outputSlots) {
+            if (!slot.optional && !asset.findEdge(pass.id, "output", slot.key)) {
+                add("Enabled pass '" + pass.id + "' is missing required output '" + slot.key + "'.");
+            }
+        }
+    }
+
+    const auto sortedIndices = asset.topologicalSort(false);
+    const size_t enabledPassCount = std::count_if(asset.passes.begin(),
+                                                 asset.passes.end(),
+                                                 [](const PassDecl& pass) { return pass.enabled; });
+    if (sortedIndices.size() != enabledPassCount) {
+        add("Enabled pass graph cannot be fully topologically sorted.");
+    }
+
+    return diagnostics;
 }
 
 std::string slotBindingName(const PipelineAsset& asset,
@@ -671,6 +840,9 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
         ImGui::TextDisabled("(%s | %s)", pass.type.c_str(), passTypeInfo.category.c_str());
 
         for (const auto& slot : passTypeInfo.inputSlots) {
+            if (slot.hidden) {
+                continue;
+            }
             const int pinId = ensureUiId("pin:pass:in:" + pass.id + ":" + slot.key);
             m_pinInfos[pinId] = PinInfo{PinKind::PassInput, pass.id, slot.key};
             ImNodes::BeginInputAttribute(pinId);
@@ -683,6 +855,9 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
         }
 
         for (const auto& slot : passTypeInfo.outputSlots) {
+            if (slot.hidden) {
+                continue;
+            }
             const int pinId = ensureUiId("pin:pass:out:" + pass.id + ":" + slot.key);
             m_pinInfos[pinId] = PinInfo{PinKind::PassOutput, pass.id, slot.key};
             ImNodes::BeginOutputAttribute(pinId);
@@ -781,6 +956,11 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
                         int srcPinId,
                         int dstPinId,
                         ImU32 color) {
+        if (m_pinInfos.find(srcPinId) == m_pinInfos.end() ||
+            m_pinInfos.find(dstPinId) == m_pinInfos.end()) {
+            return;
+        }
+
         const int linkId = ensureUiId(linkKey);
         m_linkIdToEdgeId[linkId] = edgeId;
         ImNodes::PushColorStyle(ImNodesCol_Link, color);
@@ -792,8 +972,22 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
         ImNodes::PopColorStyle();
     };
 
+    auto edgeUsesHiddenSlot = [&](const EdgeDecl& edge) {
+        const PassDecl* pass = asset.findPassById(edge.passId);
+        const PassTypeInfo* typeInfo = pass ? PassRegistry::instance().getTypeInfo(pass->type) : nullptr;
+        if (!typeInfo) {
+            return false;
+        }
+        const auto& slots = edge.direction == "input" ? typeInfo->inputSlots : typeInfo->outputSlots;
+        const PassSlotInfo* slot = findSlotInfo(slots, edge.slotKey);
+        return slot && slot->hidden;
+    };
+
     if (m_graphViewMode == GraphViewMode::ResourceGraph) {
         for (const auto& edge : asset.edges) {
+            if (edgeUsesHiddenSlot(edge)) {
+                continue;
+            }
             const PassDecl* pass = asset.findPassById(edge.passId);
             const ResourceDecl* resource = asset.findResourceById(edge.resourceId);
             if (!pass || !resource) {
@@ -814,6 +1008,9 @@ void PipelineEditor::renderNodeGraph(PipelineAsset& asset) {
         }
     } else {
         for (const auto& edge : asset.edges) {
+            if (edgeUsesHiddenSlot(edge)) {
+                continue;
+            }
             const PassDecl* consumerPass = asset.findPassById(edge.passId);
             const ResourceDecl* resource = asset.findResourceById(edge.resourceId);
             if (!consumerPass || !resource) {
@@ -1201,13 +1398,20 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
                 auto renderSlotEditor = [&](const char* title,
                                             const std::vector<PassSlotInfo>& slots,
                                             const char* direction) {
-                    if (slots.empty()) {
+                    const bool hasVisibleSlot = std::any_of(
+                        slots.begin(),
+                        slots.end(),
+                        [](const PassSlotInfo& slot) { return !slot.hidden; });
+                    if (!hasVisibleSlot) {
                         return;
                     }
 
                     ImGui::Separator();
                     ImGui::Text("%s", title);
                     for (const auto& slot : slots) {
+                        if (slot.hidden) {
+                            continue;
+                        }
                         const EdgeDecl* edge = asset.findEdge(pass->id, direction, slot.key);
                         const ResourceDecl* boundResource = edge ? asset.findResourceById(edge->resourceId) : nullptr;
                         const std::string preview = boundResource ? resourceLabel(*boundResource) : std::string{"<unbound>"};
@@ -1248,6 +1452,9 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
                     std::vector<PassBindingInfo> downstream;
 
                     for (const auto& slot : typeInfo->inputSlots) {
+                        if (slot.hidden) {
+                            continue;
+                        }
                         const EdgeDecl* edge = asset.findEdge(pass->id, "input", slot.key);
                         if (!edge) {
                             continue;
@@ -1259,6 +1466,9 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
                     }
 
                     for (const auto& slot : typeInfo->outputSlots) {
+                        if (slot.hidden) {
+                            continue;
+                        }
                         const EdgeDecl* edge = asset.findEdge(pass->id, "output", slot.key);
                         if (!edge) {
                             continue;
@@ -1440,13 +1650,18 @@ void PipelineEditor::renderPropertyPanel(PipelineAsset& asset) {
 
     ImGui::Separator();
 
-    std::string errorMsg;
-    const bool valid = asset.validate(errorMsg);
-    if (valid) {
+    const auto diagnostics = collectGraphDiagnostics(asset);
+    if (diagnostics.empty()) {
         ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "Valid");
     } else {
-        ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "Error:");
-        ImGui::TextWrapped("%s", errorMsg.c_str());
+        ImGui::TextColored(ImVec4(0.9f, 0.45f, 0.2f, 1.0f),
+                           "Invalid graph: %zu issue(s)",
+                           diagnostics.size());
+        if (ImGui::CollapsingHeader("Validation Issues", ImGuiTreeNodeFlags_DefaultOpen)) {
+            for (const auto& diagnostic : diagnostics) {
+                ImGui::BulletText("%s", diagnostic.message.c_str());
+            }
+        }
     }
 
     ImGui::Text("Passes: %zu", asset.passes.size());
@@ -1462,6 +1677,7 @@ void PipelineEditor::renderCompilationPreview(const PipelineAsset& asset) {
         return;
     }
 
+    const auto diagnostics = collectGraphDiagnostics(asset);
     const auto sortedIndices = asset.topologicalSort(false);
     size_t enabledCount = 0;
     for (const auto& pass : asset.passes) {
@@ -1471,9 +1687,18 @@ void PipelineEditor::renderCompilationPreview(const PipelineAsset& asset) {
     }
 
     if (sortedIndices.size() != enabledCount) {
-        ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f),
-                           "Cycle detected! Cannot determine execution order.");
-        return;
+        if (diagnostics.empty()) {
+            ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f),
+                               "Cycle detected! Cannot determine execution order.");
+            return;
+        }
+
+        ImGui::TextColored(ImVec4(0.9f, 0.55f, 0.2f, 1.0f),
+                           "Execution order is incomplete because the graph has validation issues.");
+    }
+
+    if (!diagnostics.empty()) {
+        ImGui::TextDisabled("Preview is best-effort until validation issues are fixed.");
     }
 
     ImGui::Text("Execution Order:");
@@ -1501,18 +1726,25 @@ void PipelineEditor::renderCompilationPreview(const PipelineAsset& asset) {
             std::string summary;
             if (info) {
                 for (const auto& slot : info->inputSlots) {
+                    if (slot.hidden) {
+                        continue;
+                    }
                     if (!summary.empty()) {
                         summary += ", ";
                     }
                     summary += slot.displayName + "=" + slotBindingName(asset, pass.id, "input", slot);
                 }
                 summary += " -> ";
-                for (size_t slotIndex = 0; slotIndex < info->outputSlots.size(); ++slotIndex) {
-                    if (slotIndex > 0) {
+                bool hasOutputSummary = false;
+                for (const auto& slot : info->outputSlots) {
+                    if (slot.hidden) {
+                        continue;
+                    }
+                    if (hasOutputSummary) {
                         summary += ", ";
                     }
-                    const auto& slot = info->outputSlots[slotIndex];
                     summary += slot.displayName + "=" + slotBindingName(asset, pass.id, "output", slot);
+                    hasOutputSummary = true;
                 }
             }
             ImGui::TextDisabled("%s", summary.c_str());

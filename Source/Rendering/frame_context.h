@@ -13,6 +13,7 @@ class RhiTexture;
 class RhiBuffer;
 class RhiFrameGraphBackend;
 class ClusterStreamingService;
+struct ClusterOcclusionState;
 enum class DlssPreset : uint32_t;
 #ifdef _WIN32
 class VulkanReadbackService;
@@ -140,6 +141,7 @@ struct PipelineRuntimeContext {
 
     // Shared streaming state used by authored update/request/render passes.
     ClusterStreamingService* clusterStreamingService = nullptr;
+    ClusterOcclusionState* clusterOcclusionState = nullptr;
 
 #ifdef _WIN32
     VulkanReadbackService* readbackService = nullptr;

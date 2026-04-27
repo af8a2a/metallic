@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "camera.h"
+#include "cluster_occlusion_state.h"
 #include "cluster_streaming_service.h"
 #include "frame_context.h"
 #include "frame_graph.h"
@@ -540,11 +541,9 @@ void disableVisibilityRayTracing(PipelineAsset& asset) {
     erasePassByType(asset, "ShadowRayPass");
 
     for (auto& pass : asset.passes) {
-        if (pass.type != "DeferredLightingPass") {
-            continue;
+        if (findPassSlotBinding(asset, &pass, "input", "shadowMap")) {
+            erasePassSlotBinding(asset, pass, "input", "shadowMap");
         }
-
-        erasePassSlotBinding(asset, pass, "input", "shadowMap");
     }
 
     for (const auto& resourceId : producedResourceIds) {
@@ -641,7 +640,7 @@ VisibilityUpscalerSelection analyzeVisibilityUpscalerSelection(const PipelineAss
                 "TonemapPass.exposureLut as the second input.";
         } else {
             selection.diagnostic =
-                "TonemapPass.source is unbound. Connect it to DeferredLightingPass.lightingOutput, "
+                "TonemapPass.source is unbound. Connect it to the active lighting/color output, "
                 "TAAPass.taaOutput, or StreamlineDlssPass.dlssOutput.";
         }
         return selection;
@@ -649,7 +648,7 @@ VisibilityUpscalerSelection analyzeVisibilityUpscalerSelection(const PipelineAss
 
     if (!tonemapPass && outputPass && !outputSource) {
         selection.diagnostic =
-            "OutputPass.source is unbound. Connect it to DeferredLightingPass.lightingOutput, "
+            "OutputPass.source is unbound. Connect it to the active lighting/color output, "
             "TAAPass.taaOutput, or StreamlineDlssPass.dlssOutput.";
         return selection;
     }
@@ -1023,7 +1022,8 @@ static bool s_dockLayoutInitialized = false;
 ImGuiID beginDockspace(bool& showSceneGraphWindow,
                        bool& showGraphDebug,
                        bool& showRenderPassUI,
-                       bool& showImGuiDemo) {
+                       bool& showImGuiDemo,
+                       bool& showTextureViewer) {
     const ImGuiID dockspaceId =
         ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_None);
 
@@ -1053,6 +1053,7 @@ ImGuiID beginDockspace(bool& showSceneGraphWindow,
             ImGui::MenuItem("Scene Browser", nullptr, &showSceneGraphWindow);
             ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
             ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
+            ImGui::MenuItem("Texture Viewer", nullptr, &showTextureViewer);
             ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
             ImGui::EndMenu();
         }
@@ -1226,7 +1227,7 @@ int main() {
                                 shaderProfile,
                                 shaderCompileMode);
     if (!shaderManager.buildAll()) {
-        spdlog::error("Failed to build Vulkan visibility shader set");
+        spdlog::error("Failed to build Vulkan baseline shader set");
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
@@ -1238,8 +1239,10 @@ int main() {
 
     PipelineRuntimeContext& runtimeContext = shaderManager.runtimeContext();
     ClusterStreamingService clusterStreamingService;
+    ClusterOcclusionState clusterOcclusionState;
     runtimeContext.rhi = rhi.get();
     runtimeContext.clusterStreamingService = &clusterStreamingService;
+    runtimeContext.clusterOcclusionState = &clusterOcclusionState;
     auto refreshClusterStreamingMemoryBudget = [&]() {
         const VulkanMemoryBudgetInfo vulkanMemoryBudget = getVulkanMemoryBudgetInfo(*rhi);
         ClusterStreamingService::MemoryBudgetInfo streamingMemoryBudget{};
@@ -1397,10 +1400,19 @@ int main() {
 
     const std::string visibilityPipelinePath =
         std::string(PROJECT_SOURCE_DIR) + "/Pipelines/visibilitybuffer.json";
+    const std::string clusterVisPipelinePath =
+        std::string(PROJECT_SOURCE_DIR) + "/Pipelines/cluster_vis.json";
     PipelineAsset visibilityPipelineBaseAsset;
     PipelineAsset visibilityPipelineAsset;
+    PipelineAsset clusterVisPipelineAsset;
     bool visibilityPipelineBaseLoaded =
-        loadPipelineAssetChecked(visibilityPipelinePath, "Vulkan visibility", visibilityPipelineBaseAsset);
+        loadPipelineAssetChecked(visibilityPipelinePath, "Vulkan baseline", visibilityPipelineBaseAsset);
+    bool clusterVisPipelineLoaded =
+        loadPipelineAssetChecked(clusterVisPipelinePath, "Cluster visualization", clusterVisPipelineAsset);
+    if (clusterVisPipelineLoaded) {
+        erasePassByType(clusterVisPipelineAsset, "ImGuiOverlayPass");
+    }
+    bool useClusterVisMode = clusterVisPipelineLoaded && previewSceneReady;
     bool visibilityPipelineAssetLoaded = false;
     bool visibilityAutoExposureAvailable = false;
     bool visibilityTaaAvailable = false;
@@ -1418,11 +1430,7 @@ int main() {
         visibilityAutoExposureAvailable =
             hasComputePipeline("HistogramPass") && hasComputePipeline("AutoExposurePass");
         visibilityTaaAvailable = hasComputePipeline("TAAPass");
-        visibilityGpuCullingAvailable =
-            hasComputePipeline("InstanceClassifyPass") &&
-            hasComputePipeline("MeshletCullPass") &&
-            hasComputePipeline("BuildIndirectPass") &&
-            hasRenderPipeline("VisibilityIndirectPass");
+        visibilityGpuCullingAvailable = false;
 
         auto validateVisibilityAsset = [&](const char* label) {
             std::string validationError;
@@ -1439,15 +1447,18 @@ int main() {
             erasePassByType(visibilityPipelineAsset, "ImGuiOverlayPass");
         }
 
-        if (visibilityPipelineAssetLoaded && !validateVisibilityAsset("Invalid Vulkan visibility pipeline")) {
+        if (visibilityPipelineAssetLoaded && !validateVisibilityAsset("Invalid Vulkan baseline pipeline")) {
             visibilityUpscalerMode = VisibilityUpscalerMode::None;
             dlssStateDirty = true;
         }
 
-        if (visibilityPipelineAssetLoaded && !visibilityAutoExposureAvailable) {
+        const bool pipelineRequestsAutoExposure =
+            visibilityPipelineAssetLoaded &&
+            findFirstEnabledPassByType(visibilityPipelineAsset, "AutoExposurePass") != nullptr;
+        if (pipelineRequestsAutoExposure && !visibilityAutoExposureAvailable) {
             disablePipelineAutoExposure(visibilityPipelineAsset);
-            if (validateVisibilityAsset("Invalid Vulkan visibility pipeline without AutoExposure")) {
-                spdlog::warn("Vulkan visibility auto-exposure unavailable; falling back to manual exposure");
+            if (validateVisibilityAsset("Invalid Vulkan baseline pipeline without AutoExposure")) {
+                spdlog::warn("Vulkan baseline auto-exposure unavailable; falling back to manual exposure");
             }
         }
 
@@ -1456,39 +1467,20 @@ int main() {
             : VisibilityUpscalerSelection{};
         visibilityUpscalerMode = visibilityUpscalerSelection.activeMode;
         if (visibilityUpscalerMode == VisibilityUpscalerMode::TAA && !visibilityTaaAvailable) {
-            spdlog::warn("Vulkan visibility pipeline selects TAAPass, but the TAA shader is unavailable; the pass will forward its source input");
+            spdlog::warn("Vulkan baseline pipeline selects TAAPass, but the TAA shader is unavailable; the pass will forward its source input");
         }
         if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS && !dlssAvailable) {
-            spdlog::warn("Vulkan visibility pipeline selects StreamlineDlssPass, but DLSS is unavailable; the pass will forward its source input");
+            spdlog::warn("Vulkan baseline pipeline selects StreamlineDlssPass, but DLSS is unavailable; the pass will forward its source input");
         }
         dlssStateDirty = true;
 
-        useVisibilityRenderGraph =
-            visibilityPipelineAssetLoaded &&
-            previewSceneReady &&
-            hasRenderPipeline("VisibilityPass") &&
-            hasComputePipeline("DeferredLightingPass") &&
-            (hasRenderPipeline("TonemapPass") || hasRenderPipeline("OutputPass")) &&
-            sceneCtx.mesh().positionBuffer.nativeHandle() &&
-            sceneCtx.mesh().normalBuffer.nativeHandle() &&
-            sceneCtx.mesh().uvBuffer.nativeHandle() &&
-            sceneCtx.mesh().indexBuffer.nativeHandle() &&
-            sceneCtx.meshlets().meshletBuffer.nativeHandle() &&
-            sceneCtx.meshlets().meshletVertices.nativeHandle() &&
-            sceneCtx.meshlets().meshletTriangles.nativeHandle() &&
-            sceneCtx.meshlets().boundsBuffer.nativeHandle() &&
-            sceneCtx.meshlets().materialIDs.nativeHandle() &&
-            sceneCtx.materials().materialBuffer.nativeHandle() &&
-            sceneCtx.materials().sampler.nativeHandle() &&
-            sceneCtx.shadowDummyTex().nativeHandle() &&
-            sceneCtx.skyFallbackTex().nativeHandle();
-        atmosphereSkyAvailable = hasRenderPipeline("SkyPass") && atmosphereTextures.isValid();
+        useVisibilityRenderGraph = false;
+        atmosphereSkyAvailable = false;
     };
 
     auto logVisibilityMode = [&]() {
         if (useVisibilityRenderGraph) {
-            std::string mode =
-                "Vulkan RenderGraph mode: ClusterStreamingUpdatePass -> MeshletCullPass -> VisibilityPass -> SkyPass -> DeferredLightingPass";
+            std::string mode = "Vulkan RenderGraph mode: Visibility/post pipeline";
             if (visibilityUpscalerMode == VisibilityUpscalerMode::TAA) {
                 mode += " -> TAAPass";
             } else if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS) {
@@ -1505,9 +1497,9 @@ int main() {
             }
             spdlog::info("{}", mode);
             if (visibilityGpuCullingAvailable) {
-                spdlog::info("Vulkan visibility dispatch: GPU-driven indirect meshlet path");
+                spdlog::info("Vulkan render dispatch: GPU culling path");
             } else {
-                spdlog::info("Vulkan visibility dispatch: CPU meshlet path");
+                spdlog::info("Vulkan render dispatch: CPU meshlet path");
             }
             if (visibilityUpscalerMode == VisibilityUpscalerMode::DLSS &&
                 runtimeContext.upscaler && runtimeContext.upscaler->isEnabled()) {
@@ -1527,7 +1519,9 @@ int main() {
                              runtimeContext.displayHeight);
             }
         } else {
-            spdlog::info("Vulkan RenderGraph mode: Triangle -> TonemapPass -> OutputPass fallback");
+            spdlog::info("Vulkan RenderGraph mode: {}",
+                         useClusterVisMode ? "ClusterRenderPass -> OutputPass"
+                                           : "Triangle -> TonemapPass -> OutputPass fallback");
         }
     };
 
@@ -1784,6 +1778,7 @@ int main() {
     PipelineBuilder postBuilder(renderContext);
     auto rebuildPostBuilder = [&](int targetWidth, int targetHeight) {
         const PipelineAsset& activePostAsset =
+            (useClusterVisMode && clusterVisPipelineLoaded) ? clusterVisPipelineAsset :
             useVisibilityRenderGraph ? visibilityPipelineAsset : sceneColorPostAsset;
         if (!postBuilder.build(activePostAsset, runtimeContext, targetWidth, targetHeight)) {
             spdlog::error("Failed to build Vulkan post pipeline: {}", postBuilder.lastError());
@@ -1883,6 +1878,7 @@ int main() {
     bool showSceneGraphWindow = true;
     bool showGraphDebug = true;
     bool showRenderPassUI = true;
+    bool showTextureViewer = false;
     bool showImGuiDemo = false;
     bool reloadKeyDown = false;
     bool pipelineReloadKeyDown = false;
@@ -2001,7 +1997,7 @@ int main() {
         if (shaderReloadRequested) {
             shaderReloadRequested = false;
             rhi->waitIdle();
-            spdlog::info("Reloading Vulkan visibility shaders...");
+            spdlog::info("Reloading Vulkan baseline shaders...");
             const bool previousVisibilityRenderGraph = useVisibilityRenderGraph;
             const bool previousAutoExposure = visibilityAutoExposureAvailable;
             const bool previousTaa = visibilityTaaAvailable;
@@ -2021,9 +2017,9 @@ int main() {
             }
 
             if (failed == 0) {
-                spdlog::info("All {} Vulkan visibility shaders reloaded successfully", reloaded);
+                spdlog::info("All {} Vulkan baseline shaders reloaded successfully", reloaded);
             } else {
-                spdlog::warn("{} Vulkan visibility shaders reloaded, {} failed (keeping old pipelines)",
+                spdlog::warn("{} Vulkan baseline shaders reloaded, {} failed (keeping old pipelines)",
                              reloaded,
                              failed);
             }
@@ -2043,11 +2039,11 @@ int main() {
 
         if (pipelineReloadRequested) {
             pipelineReloadRequested = false;
-            spdlog::info("Reloading Vulkan visibility pipeline asset...");
+            spdlog::info("Reloading Vulkan pipeline assets...");
 
             PipelineAsset reloadedVisibilityAsset;
             if (loadPipelineAssetChecked(visibilityPipelinePath,
-                                         "Vulkan visibility",
+                                         "Vulkan baseline",
                                          reloadedVisibilityAsset)) {
                 const bool previousVisibilityRenderGraph = useVisibilityRenderGraph;
                 const bool previousAutoExposure = visibilityAutoExposureAvailable;
@@ -2068,8 +2064,20 @@ int main() {
                 postBuilderNeedsRebuild = true;
                 streamingPipelineResetRequested = true;
             } else if (visibilityPipelineBaseLoaded) {
-                spdlog::warn("Keeping previous Vulkan visibility pipeline: {}",
+                spdlog::warn("Keeping previous Vulkan baseline pipeline: {}",
                              visibilityPipelineBaseAsset.name);
+            }
+            PipelineAsset reloadedClusterVisAsset;
+            if (loadPipelineAssetChecked(clusterVisPipelinePath,
+                                         "Cluster visualization",
+                                         reloadedClusterVisAsset)) {
+                clusterVisPipelineAsset = std::move(reloadedClusterVisAsset);
+                erasePassByType(clusterVisPipelineAsset, "ImGuiOverlayPass");
+                clusterVisPipelineLoaded = true;
+                postBuilderNeedsRebuild = true;
+            } else if (clusterVisPipelineLoaded) {
+                spdlog::warn("Keeping previous cluster visualization pipeline: {}",
+                             clusterVisPipelineAsset.name);
             }
             dlssStateDirty = true;
             visibilityHistoryResetRequested = true;
@@ -2141,7 +2149,7 @@ int main() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         const ImGuiID dockspaceId =
-            beginDockspace(showSceneGraphWindow, showGraphDebug, showRenderPassUI, showImGuiDemo);
+            beginDockspace(showSceneGraphWindow, showGraphDebug, showRenderPassUI, showImGuiDemo, showTextureViewer);
 
         // --- Viewport window: display scene render output ---
         {
@@ -2169,10 +2177,19 @@ int main() {
             useVisibilityRenderGraph &&
             findFirstEnabledPassByType(visibilityPipelineAsset, "AutoExposurePass") != nullptr;
         ImGui::Text("Resolution: %d x %d", width, height);
-        ImGui::TextUnformatted(useVisibilityRenderGraph ? "Pipeline: Visibility Buffer" : "Pipeline: Triangle Fallback");
+        ImGui::TextUnformatted(useClusterVisMode ? "Pipeline: Cluster Visualization" :
+                               useVisibilityRenderGraph ? "Pipeline: Render Graph" :
+                                                          "Pipeline: Triangle Fallback");
+        if (clusterVisPipelineLoaded && hasRenderPipeline("ClusterRenderPass")) {
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Cluster Vis", &useClusterVisMode)) {
+                spdlog::info("Cluster visualization mode: {}", useClusterVisMode ? "ON" : "OFF");
+                postBuilderNeedsRebuild = true;
+            }
+        }
         ImGui::Text("Upscaler: %s", visibilityUpscalerModeName(visibilityUpscalerMode));
         ImGui::TextUnformatted(autoExposureEnabled ? "Exposure: Auto" : "Exposure: Manual");
-        ImGui::TextUnformatted(visibilityGpuCullingAvailable ? "Visibility Dispatch: GPU" : "Visibility Dispatch: CPU");
+        ImGui::TextUnformatted(visibilityGpuCullingAvailable ? "Render Dispatch: GPU" : "Render Dispatch: CPU");
         if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Text("Adapter: %s", deviceInfo.adapterName.c_str());
             ImGui::Text("Driver: %s", deviceInfo.driverName.c_str());
@@ -2319,6 +2336,7 @@ int main() {
         }
         ImGui::Checkbox("FrameGraph Debug", &showGraphDebug);
         ImGui::Checkbox("Render Pass UI", &showRenderPassUI);
+        ImGui::Checkbox("Texture Viewer", &showTextureViewer);
         ImGui::Checkbox("Scene Browser", &showSceneGraphWindow);
         ImGui::Checkbox("ImGui Demo", &showImGuiDemo);
 
@@ -2803,7 +2821,7 @@ int main() {
             useVisibilityRenderGraph && rtShadowsAvailable && enableRTShadows;
         frameContext.enableAtmosphereSky = atmosphereSkyAvailable;
         frameContext.gpuDrivenCulling = gpuDrivenVisibilityPath;
-        frameContext.renderMode = useVisibilityRenderGraph ? 2 : 0;
+        frameContext.renderMode = useClusterVisMode ? 3 : (useVisibilityRenderGraph ? 2 : 0);
 
         postBuilder.updateFrame(&backbufferTexture, &frameContext);
 
@@ -2816,13 +2834,17 @@ int main() {
             ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
             activeFg.renderPassUI();
         }
+        if (showTextureViewer) {
+            ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
+            activeFg.textureViewerImGui();
+        }
         if (showImGuiDemo) {
             ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
             ImGui::ShowDemoWindow(&showImGuiDemo);
         }
         ImGui::Render();
 
-        if (!useVisibilityRenderGraph) {
+        if (!useVisibilityRenderGraph && !useClusterVisMode) {
             sceneGraph.execute(commandBuffer, frameGraphBackend);
         }
 
@@ -2833,7 +2855,7 @@ int main() {
         // Ensure sceneColorTexture is in SHADER_READ_ONLY_OPTIMAL for ImGui::Image sampling
         // The frame graph doesn't know about the ImGui descriptor reference, so we insert
         // a manual barrier. On the first frame (UNDEFINED), this transitions to readable state.
-        if (sceneColorTexture.nativeHandle() && !useVisibilityRenderGraph) {
+        if (sceneColorTexture.nativeHandle() && !useVisibilityRenderGraph && !useClusterVisMode) {
             VkImage sceneColorImage = getVulkanImage(&sceneColorTexture);
             if (sceneColorImage != VK_NULL_HANDLE) {
                 VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -2859,6 +2881,9 @@ int main() {
         }
 
         postBuilder.execute(commandBuffer, frameGraphBackend);
+
+        if (showTextureViewer)
+            activeFg.captureTextureViewerState();
 
         // Blit backbuffer to viewport display texture for ImGui::Image
         if (viewportDisplayTexture.nativeHandle() && backbufferImage != VK_NULL_HANDLE) {

@@ -1,12 +1,20 @@
 #pragma once
 
 #include "render_pass.h"
+#include "pass_registry.h"
 #include "imgui.h"
 
 class BlitPass : public RenderPass {
 public:
     BlitPass(FGResource source, FGResource dest, int w, int h)
         : m_source(source), m_dest(dest), m_width(w), m_height(h) {}
+
+    METALLIC_PASS_TYPE_INFO(BlitPass, "Blit", "Utility",
+        (std::vector<PassSlotInfo>{makeInputSlot("source", "Source")}),
+        (std::vector<PassSlotInfo>{
+            makeTargetSlot("destination", "Destination", false, {"transient", "imported", "backbuffer"})
+        }),
+        PassTypeInfo::PassType::Blit);
 
     FGPassType passType() const override { return FGPassType::Blit; }
     const char* name() const override { return "Blit to Drawable"; }
@@ -49,4 +57,6 @@ private:
     int m_width, m_height;
 };
 
-
+#if defined(METALLIC_PASS_REGISTRATION_METADATA_ONLY) || !defined(_WIN32)
+METALLIC_REGISTER_PASS_INFO(BlitPass);
+#endif

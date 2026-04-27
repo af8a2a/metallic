@@ -15,6 +15,15 @@ public:
         releaseHistory();
     }
 
+    METALLIC_PASS_TYPE_INFO(TAAPass, "TAA", "Post-Process",
+        (std::vector<PassSlotInfo>{
+            makeInputSlot("source", "Source"),
+            makeInputSlot("depth", "Depth", true),
+            makeInputSlot("motionVectors", "Motion Vectors", true)
+        }),
+        (std::vector<PassSlotInfo>{makeOutputSlot("taaOutput", "TAA Output")}),
+        PassTypeInfo::PassType::Compute);
+
     FGPassType passType() const override { return FGPassType::Compute; }
     const char* name() const override { return m_name.c_str(); }
 
@@ -235,5 +244,6 @@ private:
     float m_motionWeightScale = 20.0f;
 };
 
+METALLIC_REGISTER_PASS(TAAPass);
 
 
