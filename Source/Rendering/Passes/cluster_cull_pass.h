@@ -24,7 +24,7 @@ static constexpr uint32_t kIndirectArgs = 7u;
 static constexpr uint32_t kHizMipBase = 8u;
 
 inline constexpr uint32_t bufferBinding(uint32_t binding) {
-#ifdef __APPLE__
+#if METALLIC_RHI_METAL
     return binding + 1u;
 #else
     return binding;

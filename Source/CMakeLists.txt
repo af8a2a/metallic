@@ -53,6 +53,10 @@ if(APPLE)
         RHI/Metal/metal_window_runtime.cpp
         RHI/Metal/metal_frame_graph.cpp
     )
+    target_compile_definitions(Metallic PRIVATE
+        METALLIC_RHI_METAL=1
+        METALLIC_RHI_VULKAN=0
+    )
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI/Helpers"
@@ -89,21 +93,18 @@ elseif(WIN32)
     find_package(Vulkan REQUIRED)
 
     add_executable(Metallic
-        main_vulkan.cpp
+        main.cpp
         Asset/material_loader.cpp
         Asset/mesh_loader.cpp
         Asset/meshlet_builder.cpp
         Asset/cluster_lod_builder.cpp
-        PipelineEditor/pass_registry.cpp
-        PipelineEditor/pipeline_asset.cpp
-        PipelineEditor/pipeline_builder.cpp
         Scene/scene.cpp
         Scene/scene_graph.cpp
         Scene/scene_graph_ui.cpp
         Rendering/frame_graph.cpp
         Rendering/gpu_scene.cpp
         Rendering/input.cpp
-        Rendering/pass_registrations_vulkan.cpp
+        Rendering/pass_registrations.cpp
         Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
         Rendering/scene_context.cpp
@@ -117,6 +118,7 @@ elseif(WIN32)
         RHI/Helpers/rhi_shader_utils.cpp
         RHI/Vulkan/vulkan_backend.cpp
         RHI/Vulkan/vulkan_frame_graph.cpp
+        RHI/Vulkan/vulkan_window_runtime.cpp
         RHI/Vulkan/vulkan_descriptor_manager.cpp
         RHI/Vulkan/vulkan_descriptor_buffer.cpp
         RHI/Vulkan/Helpers/vulkan_diagnostics.cpp
@@ -124,6 +126,10 @@ elseif(WIN32)
         RHI/Vulkan/vulkan_rt_pipeline.cpp
         RHI/Vulkan/Helpers/vulkan_transient_allocator.cpp
         RHI/Vulkan/Helpers/vulkan_upload_service.cpp
+    )
+    target_compile_definitions(Metallic PRIVATE
+        METALLIC_RHI_METAL=0
+        METALLIC_RHI_VULKAN=1
     )
     target_include_directories(Metallic PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/RHI"
@@ -153,6 +159,7 @@ elseif(WIN32)
         tinygltf
         Tracy::TracyClient
         spdlog::spdlog_header_only
+        PipelineEditorLib
         microprofile
         Vulkan::Vulkan
     )

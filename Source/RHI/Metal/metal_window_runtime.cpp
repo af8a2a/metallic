@@ -205,3 +205,7 @@ std::unique_ptr<RhiWindowRuntime> createRhiWindowRuntime(RhiBackendType backend,
     errorMessage = "Requested window runtime backend is not available in this build.";
     return {};
 }
+
+RhiBackendType defaultRhiWindowRuntimeBackend() {
+    return RhiBackendType::Metal;
+}

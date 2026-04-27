@@ -9,6 +9,14 @@
 
 #include "rhi_interop.h"
 
+#ifndef METALLIC_RHI_METAL
+#define METALLIC_RHI_METAL 0
+#endif
+
+#ifndef METALLIC_RHI_VULKAN
+#define METALLIC_RHI_VULKAN 0
+#endif
+
 struct GLFWwindow;
 struct RhiBufferDesc;
 

@@ -60,7 +60,13 @@ static bool loadPipelineAssetChecked(const std::string& path,
     return true;
 }
 
-
+static const char* backendLabel(RhiBackendType backend) {
+    switch (backend) {
+    case RhiBackendType::Metal: return "Metal";
+    case RhiBackendType::Vulkan: return "Vulkan";
+    }
+    return "Unknown";
+}
 
 int main() {
     if (!glfwInit()) {
@@ -69,7 +75,8 @@ int main() {
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Metallic - Sponza", nullptr, nullptr);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    GLFWwindow* window = glfwCreateWindow(1280, 720, "Metallic - Sponza", nullptr, nullptr);
     if (!window) {
         spdlog::error("Failed to create GLFW window");
         glfwTerminate();
@@ -77,7 +84,7 @@ int main() {
     }
 
     std::string runtimeError;
-    auto runtime = createRhiWindowRuntime(RhiBackendType::Metal, window, runtimeError);
+    auto runtime = createRhiWindowRuntime(defaultRhiWindowRuntimeBackend(), window, runtimeError);
     if (!runtime) {
         spdlog::error("{}", runtimeError);
         glfwDestroyWindow(window);
@@ -85,8 +92,9 @@ int main() {
         return 1;
     }
     spdlog::info("RHI device: {}", runtime->deviceName());
-    RhiDeviceHandle device(runtime->device().nativeHandle());
+    RhiDeviceHandle device(runtime->device().nativeHandle(), runtime->device().ownerContext());
     RhiCommandQueueHandle commandQueue(runtime->commandQueue().nativeHandle());
+    RhiContext* rhiContext = device.ownerContext();
 
     const char* projectRoot = PROJECT_SOURCE_DIR;
 
@@ -112,15 +120,26 @@ int main() {
     runtime->initImGui();
 
     // Build all shader pipelines
-    ShaderManager shaderManager(device, projectRoot);
-    shaderManager.setGlobalDefines({
-        {"METALLIC_BINDLESS_MAX_SAMPLED_IMAGES", "96"},
-        {"METALLIC_BINDLESS_MAX_SAMPLERS", "1"},
-        {"METALLIC_METAL_DIRECT_BINDING", "1"},
-    });
+    const bool supportsMeshShaders = !rhiContext || rhiContext->features().meshShaders;
+    ShaderManagerProfile shaderProfile = runtime->backendType() == RhiBackendType::Vulkan
+        ? ShaderManagerProfile::vulkanVisibility()
+        : ShaderManagerProfile::full();
+    ShaderManager shaderManager(device,
+                                projectRoot,
+                                supportsMeshShaders,
+                                supportsMeshShaders,
+                                shaderProfile);
+    if (runtime->backendType() == RhiBackendType::Metal) {
+        shaderManager.setGlobalDefines({
+            {"METALLIC_BINDLESS_MAX_SAMPLED_IMAGES", "96"},
+            {"METALLIC_BINDLESS_MAX_SAMPLERS", "1"},
+            {"METALLIC_METAL_DIRECT_BINDING", "1"},
+        });
+    }
     if (!shaderManager.buildAll()) return 1;
 
     PipelineRuntimeContext& rtCtx = shaderManager.runtimeContext();
+    rtCtx.rhi = rhiContext;
 
     auto importRuntimeTexture = [&](const std::string& name, const RhiTexture& texture) {
         shaderManager.importTexture(name, texture);
@@ -160,7 +179,7 @@ int main() {
     std::string clusterVisPipelinePath = std::string(projectRoot) + "/Pipelines/cluster_vis.json";
 
     bool baselinePipelineLoaded =
-        loadPipelineAssetChecked(baselinePipelinePath, "Metal baseline", baselinePipelineAsset);
+        loadPipelineAssetChecked(baselinePipelinePath, backendLabel(runtime->backendType()), baselinePipelineAsset);
     bool clusterVisPipelineLoaded =
         loadPipelineAssetChecked(clusterVisPipelinePath, "Cluster visualization", clusterVisPipelineAsset);
     if (!baselinePipelineLoaded && !clusterVisPipelineLoaded) {
@@ -272,7 +291,7 @@ int main() {
             ImGui::Text("%.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
             ImGui::Separator();
             ImGui::TextUnformatted(useClusterVisMode ? "Pipeline: Cluster Visualization" :
-                                                       "Pipeline: Metal Baseline");
+                                                       "Pipeline: Baseline");
             if (clusterVisPipelineLoaded && baselinePipelineLoaded) {
                 if (ImGui::Checkbox("Cluster Vis", &useClusterVisMode)) {
                     spdlog::info("Cluster visualization mode: {}", useClusterVisMode ? "ON" : "OFF");
@@ -339,12 +358,12 @@ int main() {
             bool reloadedAnyPipeline = false;
 
             PipelineAsset reloadedBaseline;
-            if (loadPipelineAssetChecked(baselinePipelinePath, "Metal baseline", reloadedBaseline)) {
+            if (loadPipelineAssetChecked(baselinePipelinePath, backendLabel(runtime->backendType()), reloadedBaseline)) {
                 baselinePipelineAsset = std::move(reloadedBaseline);
                 baselinePipelineLoaded = true;
                 reloadedAnyPipeline = true;
             } else {
-                spdlog::warn("Keeping previous Metal baseline pipeline: {}", baselinePipelineAsset.name);
+                spdlog::warn("Keeping previous baseline pipeline: {}", baselinePipelineAsset.name);
             }
 
             PipelineAsset reloadedClusterVis;

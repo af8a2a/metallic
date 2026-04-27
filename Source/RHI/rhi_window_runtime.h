@@ -37,3 +37,5 @@ public:
 std::unique_ptr<RhiWindowRuntime> createRhiWindowRuntime(RhiBackendType backend,
                                                          GLFWwindow* window,
                                                          std::string& errorMessage);
+
+RhiBackendType defaultRhiWindowRuntimeBackend();

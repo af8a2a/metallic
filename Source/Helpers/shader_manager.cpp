@@ -10,7 +10,7 @@
 
 namespace {
 
-#ifdef __APPLE__
+#if METALLIC_RHI_METAL
 constexpr RhiBackendType kShaderBackend = RhiBackendType::Metal;
 #else
 constexpr RhiBackendType kShaderBackend = RhiBackendType::Vulkan;
@@ -20,7 +20,7 @@ constexpr RhiBackendType kShaderBackend = RhiBackendType::Vulkan;
 // On Metal, compile to MSL source string directly.
 std::string compileGraphics(const char* shaderPath, const char* projectRoot,
                             const SlangCompileOptions* options) {
-#ifdef __APPLE__
+#if METALLIC_RHI_METAL
     return compileSlangGraphicsSource(kShaderBackend, shaderPath, projectRoot, options);
 #else
     auto spirv = compileSlangGraphicsBinary(kShaderBackend, shaderPath, projectRoot, options);
@@ -31,7 +31,7 @@ std::string compileGraphics(const char* shaderPath, const char* projectRoot,
 
 std::string compileMesh(const char* shaderPath, const char* projectRoot,
                         const SlangCompileOptions* options) {
-#ifdef __APPLE__
+#if METALLIC_RHI_METAL
     return compileSlangMeshSource(kShaderBackend, shaderPath, projectRoot, options);
 #else
     auto spirv = compileSlangMeshBinary(kShaderBackend, shaderPath, projectRoot, options);
@@ -42,7 +42,7 @@ std::string compileMesh(const char* shaderPath, const char* projectRoot,
 
 std::string compileCompute(const char* shaderPath, const char* projectRoot,
                            const char* entryPoint, const SlangCompileOptions* options) {
-#ifdef __APPLE__
+#if METALLIC_RHI_METAL
     return compileSlangComputeSource(kShaderBackend, shaderPath, projectRoot, entryPoint, options);
 #else
     auto spirv = compileSlangComputeBinary(kShaderBackend, shaderPath, projectRoot, entryPoint, options);

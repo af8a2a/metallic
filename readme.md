@@ -51,8 +51,7 @@ Linux is not a supported target right now.
 
 ```text
 Source/
-  main.cpp                     Metal renderer entry point
-  main_vulkan.cpp              Windows Vulkan preview entry point
+  main.cpp                     Shared renderer entry point
   Rendering/                   Frame graph, passes, shader management, frame context
   RHI/                         Shared interfaces and backend implementations
   PipelineEditor/              Shared pipeline asset, registry, and builder code

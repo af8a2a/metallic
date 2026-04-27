@@ -35,8 +35,8 @@ No automated test suite exists. Validate with: clean build → app launch → ve
 ## Architecture
 
 ### Platform Split
-- **macOS**: Metal renderer via `main.cpp`. Platform bridge code in `Source/Platform/*.mm` (Objective-C++).
-- **Windows**: Vulkan 1.4 renderer via `main_vulkan.cpp`. Backend in `Source/RHI/Vulkan/`.
+- **macOS**: shared renderer entry via `main.cpp`; Metal window/runtime glue lives in `Source/RHI/Metal/` and `Source/Platform/*.mm` (Objective-C++).
+- **Windows**: shared renderer entry via `main.cpp`; Vulkan 1.4 window/runtime glue lives in `Source/RHI/Vulkan/`.
 - Platform ifdefs: `#if APPLE` / `#ifdef _WIN32`. Resource utils and shader utils use `#ifdef __APPLE__` / `#ifdef _WIN32` dual paths.
 
 ### RHI Layer (`Source/RHI/`)
