@@ -77,7 +77,7 @@ public:
         auto pipeIt = m_runtimeContext->computePipelinesRhi.find("ClusterHizBuild");
         if (pipeIt == m_runtimeContext->computePipelinesRhi.end() ||
             !pipeIt->second.nativeHandle()) {
-            if (!m_warnedMissingPipeline) {
+            if (m_runtimeContext->clusterHizBuildSupported && !m_warnedMissingPipeline) {
                 spdlog::warn("ClusterHizBuildPass: compute pipeline not found");
                 m_warnedMissingPipeline = true;
             }

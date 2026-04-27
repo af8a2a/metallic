@@ -18,9 +18,9 @@ namespace {
 
 constexpr size_t kDefaultUploadPageSize = 16ull * 1024ull * 1024ull;
 constexpr size_t kUploadAlignment = 256;
-constexpr NS::UInteger kMaxArgumentTableBuffers = 128;
+constexpr NS::UInteger kMaxArgumentTableBuffers = 31;
 constexpr NS::UInteger kMaxArgumentTableTextures = 128;
-constexpr NS::UInteger kMaxArgumentTableSamplers = 32;
+constexpr NS::UInteger kMaxArgumentTableSamplers = 16;
 
 struct UploadPage {
     MTL::Buffer* buffer = nullptr;
@@ -455,7 +455,6 @@ bool metalRuntimeUploadBytes(void* commandBufferHandle,
         if (alignedOffset + size <= page.size) {
             auto* cpu = static_cast<uint8_t*>(page.buffer->contents()) + alignedOffset;
             std::memcpy(cpu, data, size);
-            page.buffer->didModifyRange(NS::Range(alignedOffset, size));
             page.offset = alignedOffset + size;
             outAllocation = {
                 page.buffer,
@@ -475,7 +474,6 @@ bool metalRuntimeUploadBytes(void* commandBufferHandle,
     const size_t alignedOffset = alignUp(newPage.offset, effectiveAlignment);
     auto* cpu = static_cast<uint8_t*>(newPage.buffer->contents()) + alignedOffset;
     std::memcpy(cpu, data, size);
-    newPage.buffer->didModifyRange(NS::Range(alignedOffset, size));
     newPage.offset = alignedOffset + size;
     outAllocation = {
         newPage.buffer,

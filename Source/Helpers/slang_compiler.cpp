@@ -50,6 +50,7 @@ constexpr uint32_t kSpirvDecorationLocation = 30;
 constexpr uint32_t kSpirvDecorationPerPrimitiveExt = 5271;
 constexpr uint32_t kMetalDirectBindlessTextureBase = METALLIC_METAL_DIRECT_BINDLESS_TEXTURE_BASE;
 constexpr uint32_t kMetalDirectBindlessSamplerBase = METALLIC_METAL_DIRECT_BINDLESS_SAMPLER_BASE;
+constexpr uint32_t kMetalClusterCullHizTextureBase = 8;
 
 std::mutex g_bindingLayoutCacheMutex;
 std::unordered_map<uint64_t, SlangShaderBindingLayout> g_bindingLayoutCache;
@@ -1146,18 +1147,21 @@ std::string patchComputeMetalSource(const std::string& source) {
     std::smatch bindlessTextureMatch;
     uint32_t bindlessTextureCount = 0;
     const std::regex bindlessTextureRegex(
-        R"(array<texture2d<float,\s*access::sample>,\s*int\((\d+)\)>\s+\w+)");
+        R"(array<texture2d<float,\s*access::sample>,\s*int\((\d+)\)>\s+\w*bindlessSceneTextures\w*)");
     if (std::regex_search(source, bindlessTextureMatch, bindlessTextureRegex) &&
         bindlessTextureMatch.size() > 1) {
         bindlessTextureCount = static_cast<uint32_t>(std::stoul(bindlessTextureMatch[1].str()));
     }
 
     patched = std::regex_replace(patched,
-        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w+)(\s*,))"),
+        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w*bindlessSceneTextures\w*)(\s*,))"),
         "$1 [[texture(" + std::to_string(kMetalDirectBindlessTextureBase) + ")]]$2");
     patched = std::regex_replace(patched,
-        std::regex(R"((array<sampler,\s*int\(\d+\)>\s+\w+)(\s*,))"),
+        std::regex(R"((array<sampler,\s*int\(\d+\)>\s+\w*bindlessSceneSamplers\w*)(\s*,))"),
         "$1 [[sampler(" + std::to_string(kMetalDirectBindlessSamplerBase) + ")]]$2");
+    patched = std::regex_replace(patched,
+        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w*hzbTextures\w*)(\s*,))"),
+        "$1 [[texture(" + std::to_string(kMetalClusterCullHizTextureBase) + ")]]$2");
 
     if (bindlessTextureCount > 0) {
         for (uint32_t localIndex = 0; localIndex < kMetalDirectBindlessTextureBase; ++localIndex) {

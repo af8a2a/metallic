@@ -22,6 +22,14 @@ static constexpr uint32_t kInstances = 5u;
 static constexpr uint32_t kCounters = 6u;
 static constexpr uint32_t kIndirectArgs = 7u;
 static constexpr uint32_t kHizMipBase = 8u;
+
+inline constexpr uint32_t bufferBinding(uint32_t binding) {
+#ifdef __APPLE__
+    return binding + 1u;
+#else
+    return binding;
+#endif
+}
 } // namespace ClusterCullBindings
 
 class ClusterCullPass : public RenderPass {
@@ -198,14 +206,14 @@ private:
                 ? static_cast<const RhiBuffer*>(&m_ctx.gpuScene.clusterVisWorklistBuffer)
                 : state.recheckWorklist();
 
-        encoder.setBuffer(inputWorklist, 0, ClusterCullBindings::kInputWorklist);
-        encoder.setBuffer(state.phase0VisibleWorklist.get(), 0, ClusterCullBindings::kPhase0Visible);
-        encoder.setBuffer(state.phase0RecheckWorklist.get(), 0, ClusterCullBindings::kPhase0Recheck);
-        encoder.setBuffer(state.phase1VisibleWorklist.get(), 0, ClusterCullBindings::kPhase1Visible);
-        encoder.setBuffer(&m_ctx.clusterLodData.boundsBuffer, 0, ClusterCullBindings::kBounds);
-        encoder.setBuffer(&m_ctx.gpuScene.instanceBuffer, 0, ClusterCullBindings::kInstances);
-        encoder.setBuffer(state.counters.get(), 0, ClusterCullBindings::kCounters);
-        encoder.setBuffer(state.indirectArgs.get(), 0, ClusterCullBindings::kIndirectArgs);
+        encoder.setBuffer(inputWorklist, 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kInputWorklist));
+        encoder.setBuffer(state.phase0VisibleWorklist.get(), 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kPhase0Visible));
+        encoder.setBuffer(state.phase0RecheckWorklist.get(), 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kPhase0Recheck));
+        encoder.setBuffer(state.phase1VisibleWorklist.get(), 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kPhase1Visible));
+        encoder.setBuffer(&m_ctx.clusterLodData.boundsBuffer, 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kBounds));
+        encoder.setBuffer(&m_ctx.gpuScene.instanceBuffer, 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kInstances));
+        encoder.setBuffer(state.counters.get(), 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kCounters));
+        encoder.setBuffer(state.indirectArgs.get(), 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kIndirectArgs));
     }
 
     void bindHizTextures(RhiComputeCommandEncoder& encoder, ClusterOcclusionState& state) const {

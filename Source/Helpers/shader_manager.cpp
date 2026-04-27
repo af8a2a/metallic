@@ -169,6 +169,7 @@ void ShaderManager::syncRuntimeContext() {
         m_rtCtx->computePipelinesRhi["ClusterCullFinalize"] = m_clusterCullFinalizePipeline;
     if (m_clusterHizBuildPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["ClusterHizBuild"] = m_clusterHizBuildPipeline;
+    m_rtCtx->clusterHizBuildSupported = m_clusterHizBuildPipeline.nativeHandle() != nullptr;
 
     if (m_tonemapSampler.nativeHandle())
         m_rtCtx->samplersRhi["tonemap"] = m_tonemapSampler;
@@ -228,12 +229,13 @@ bool ShaderManager::buildAll() {
 
     errorMessage.clear();
     const bool enableClusterOcclusion =
-        m_profile.clusterOcclusion && m_profile.clusterRender &&
-        kShaderBackend == RhiBackendType::Vulkan;
+        m_profile.clusterOcclusion && m_profile.clusterRender;
+    const bool enableClusterHizBuild =
+        enableClusterOcclusion && kShaderBackend == RhiBackendType::Vulkan;
     if (enableClusterOcclusion) {
         m_clusterCullResetPipeline = reloadComputeShader("Shaders/Visibility/cluster_cull",
                                                          "resetMain",
-                                                         nullptr,
+                                                         patchComputeShaderSource,
                                                          &errorMessage);
         if (!m_clusterCullResetPipeline.nativeHandle()) {
             spdlog::warn("Failed to compile cluster cull reset shader: {}",
@@ -243,7 +245,7 @@ bool ShaderManager::buildAll() {
         errorMessage.clear();
         m_clusterCullMainPipeline = reloadComputeShader("Shaders/Visibility/cluster_cull",
                                                         "cullMain",
-                                                        nullptr,
+                                                        patchComputeShaderSource,
                                                         &errorMessage);
         if (!m_clusterCullMainPipeline.nativeHandle()) {
             spdlog::warn("Failed to compile cluster cull shader: {}",
@@ -253,21 +255,25 @@ bool ShaderManager::buildAll() {
         errorMessage.clear();
         m_clusterCullFinalizePipeline = reloadComputeShader("Shaders/Visibility/cluster_cull",
                                                             "finalizeMain",
-                                                            nullptr,
+                                                            patchComputeShaderSource,
                                                             &errorMessage);
         if (!m_clusterCullFinalizePipeline.nativeHandle()) {
             spdlog::warn("Failed to compile cluster cull finalize shader: {}",
                          formatError(&errorMessage, "Slang cluster cull finalize compilation failed"));
         }
 
-        errorMessage.clear();
-        m_clusterHizBuildPipeline = reloadComputeShader("Shaders/Visibility/hzb_spd",
-                                                        "computeMain",
-                                                        nullptr,
-                                                        &errorMessage);
-        if (!m_clusterHizBuildPipeline.nativeHandle()) {
-            spdlog::warn("Failed to compile cluster HZB build shader: {}",
-                         formatError(&errorMessage, "Slang cluster HZB build compilation failed"));
+        if (enableClusterHizBuild) {
+            errorMessage.clear();
+            m_clusterHizBuildPipeline = reloadComputeShader("Shaders/Visibility/hzb_spd",
+                                                            "computeMain",
+                                                            patchComputeShaderSource,
+                                                            &errorMessage);
+            if (!m_clusterHizBuildPipeline.nativeHandle()) {
+                spdlog::warn("Failed to compile cluster HZB build shader: {}",
+                             formatError(&errorMessage, "Slang cluster HZB build compilation failed"));
+            }
+        } else {
+            releaseOwnedHandle(m_clusterHizBuildPipeline);
         }
     } else {
         releaseOwnedHandle(m_clusterCullResetPipeline);
@@ -555,7 +561,7 @@ std::pair<int, int> ShaderManager::reloadAll() {
                        "cluster render PSO",
                        [&](std::string& localError) {
                            return reloadMeshShader("Shaders/Mesh/cluster_render",
-                                                   nullptr,
+                                                   patchMeshShaderSource,
                                                    RhiFormat::RGBA8Unorm,
                                                    RhiFormat::D32Float,
                                                    &localError);
@@ -565,8 +571,9 @@ std::pair<int, int> ShaderManager::reloadAll() {
     }
 
     const bool enableClusterOcclusion =
-        m_profile.clusterOcclusion && m_profile.clusterRender &&
-        kShaderBackend == RhiBackendType::Vulkan;
+        m_profile.clusterOcclusion && m_profile.clusterRender;
+    const bool enableClusterHizBuild =
+        enableClusterOcclusion && kShaderBackend == RhiBackendType::Vulkan;
     if (enableClusterOcclusion) {
         reloadPipeline(true,
                        m_clusterCullResetPipeline,
@@ -574,7 +581,7 @@ std::pair<int, int> ShaderManager::reloadAll() {
                        [&](std::string& localError) {
                            return reloadComputeShader("Shaders/Visibility/cluster_cull",
                                                       "resetMain",
-                                                      nullptr,
+                                                      patchComputeShaderSource,
                                                       &localError);
                        });
         reloadPipeline(true,
@@ -583,7 +590,7 @@ std::pair<int, int> ShaderManager::reloadAll() {
                        [&](std::string& localError) {
                            return reloadComputeShader("Shaders/Visibility/cluster_cull",
                                                       "cullMain",
-                                                      nullptr,
+                                                      patchComputeShaderSource,
                                                       &localError);
                        });
         reloadPipeline(true,
@@ -592,16 +599,16 @@ std::pair<int, int> ShaderManager::reloadAll() {
                        [&](std::string& localError) {
                            return reloadComputeShader("Shaders/Visibility/cluster_cull",
                                                       "finalizeMain",
-                                                      nullptr,
+                                                      patchComputeShaderSource,
                                                       &localError);
                        });
-        reloadPipeline(true,
+        reloadPipeline(enableClusterHizBuild,
                        m_clusterHizBuildPipeline,
                        "cluster HZB build CS",
                        [&](std::string& localError) {
                            return reloadComputeShader("Shaders/Visibility/hzb_spd",
                                                       "computeMain",
-                                                      nullptr,
+                                                      patchComputeShaderSource,
                                                       &localError);
                        });
     } else {

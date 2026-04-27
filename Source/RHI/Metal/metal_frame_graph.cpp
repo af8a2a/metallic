@@ -362,6 +362,7 @@ public:
     void setPushConstants(const void* data, size_t size) override {
         m_vertexTable.setBytes(data, size, 0);
         m_fragmentTable.setBytes(data, size, 0);
+        m_meshTable.setBytes(data, size, 0);
     }
     void setFragmentTexture(const RhiTexture* texture, uint32_t index) override { m_fragmentTable.setTexture(texture, index); }
     void setFragmentTextures(const RhiTexture* const* textures, uint32_t startIndex, uint32_t count) override {

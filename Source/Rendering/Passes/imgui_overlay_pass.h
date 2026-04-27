@@ -28,12 +28,18 @@ public:
 
     void setup(FGBuilder& builder) override {
         m_drawable = getOutputTarget("target");
+        m_depth = getInput("depth");
 
         if (m_drawable.isValid()) {
             m_drawable = builder.setColorAttachment(0,
                                                     m_drawable,
                                                     RhiLoadAction::Load,
                                                     RhiStoreAction::Store);
+        }
+        if (m_depth.isValid()) {
+            m_depth = builder.setDepthAttachment(m_depth,
+                                                 RhiLoadAction::Load,
+                                                 RhiStoreAction::DontCare);
         }
     }
 
@@ -46,11 +52,11 @@ public:
 private:
     const RenderContext& m_ctx;
     FGResource m_drawable;
+    FGResource m_depth;
     int m_width, m_height;
     std::string m_name = "ImGui Overlay";
 };
 
 METALLIC_REGISTER_PASS(ImGuiOverlayPass);
-
 
 

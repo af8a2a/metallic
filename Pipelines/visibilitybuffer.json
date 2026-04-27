@@ -7,73 +7,100 @@
       "name": "Backbuffer",
       "kind": "backbuffer",
       "type": "texture",
-      "size": "screen",
       "format": "BGRA8Unorm",
-      "editorPos": [980, 0]
+      "size": "screen",
+      "editorPos": [
+        4625.0,
+        38.0
+      ]
     },
     {
       "id": "c0000000000000000000000000000010",
       "name": "Cluster Color Phase0",
       "kind": "transient",
       "type": "texture",
-      "size": "screen",
       "format": "RGBA8Unorm",
-      "editorPos": [280, -80]
+      "size": "screen",
+      "editorPos": [
+        280.0,
+        -80.0
+      ]
     },
     {
       "id": "c0000000000000000000000000000011",
       "name": "Cluster Depth Phase0",
       "kind": "transient",
       "type": "texture",
-      "size": "screen",
       "format": "Depth32Float",
-      "editorPos": [280, 20]
+      "size": "screen",
+      "editorPos": [
+        280.0,
+        20.0
+      ]
     },
     {
       "id": "c0000000000000000000000000000012",
       "name": "Cluster Color Final",
       "kind": "transient",
       "type": "texture",
-      "size": "screen",
       "format": "RGBA8Unorm",
-      "editorPos": [700, -80]
+      "size": "screen",
+      "editorPos": [
+        700.0,
+        -80.0
+      ]
     },
     {
       "id": "c0000000000000000000000000000013",
       "name": "Cluster Depth Final",
       "kind": "transient",
       "type": "texture",
-      "size": "screen",
       "format": "Depth32Float",
-      "editorPos": [700, 20]
+      "size": "screen",
+      "editorPos": [
+        700.0,
+        20.0
+      ]
     },
     {
       "id": "c0000000000000000000000000000020",
       "name": "Cull Phase0 Done",
       "kind": "transient",
       "type": "token",
-      "editorPos": [120, -180]
+      "editorPos": [
+        120.0,
+        -180.0
+      ]
     },
     {
       "id": "c0000000000000000000000000000021",
       "name": "HZB Phase1 Ready",
       "kind": "transient",
       "type": "token",
-      "editorPos": [470, 120]
+      "editorPos": [
+        470.0,
+        120.0
+      ]
     },
     {
       "id": "c0000000000000000000000000000022",
       "name": "Cull Phase1 Done",
       "kind": "transient",
       "type": "token",
-      "editorPos": [560, -180]
+      "editorPos": [
+        560.0,
+        -180.0
+      ]
     },
     {
       "id": "c0000000000000000000000000000023",
       "name": "HZB History Ready",
       "kind": "transient",
       "type": "token",
-      "editorPos": [820, 120]
+      "editorPos": [
+        820.0,
+        120.0
+      ]
     }
   ],
   "passes": [
@@ -84,10 +111,13 @@
       "enabled": true,
       "sideEffect": false,
       "config": {
-        "phase": 0,
-        "enableOcclusion": true
+        "enableOcclusion": true,
+        "phase": 0
       },
-      "editorPos": [40, -120]
+      "editorPos": [
+        2385.0,
+        -217.0
+      ]
     },
     {
       "id": "c1000000000000000000000000000002",
@@ -96,12 +126,19 @@
       "enabled": true,
       "sideEffect": false,
       "config": {
-        "worklist": "CullPhase0",
         "debugLabel": "Cull Phase0",
-        "debugTint": [0.1, 0.45, 1.0],
-        "debugTintStrength": 0.2
+        "debugTint": [
+          0.1,
+          0.45,
+          1.0
+        ],
+        "debugTintStrength": 0.2,
+        "worklist": "CullPhase0"
       },
-      "editorPos": [240, -40]
+      "editorPos": [
+        2705.0,
+        -217.0
+      ]
     },
     {
       "id": "c1000000000000000000000000000003",
@@ -112,7 +149,10 @@
       "config": {
         "targetPyramid": 1
       },
-      "editorPos": [420, 80]
+      "editorPos": [
+        3025.0,
+        -217.0
+      ]
     },
     {
       "id": "c1000000000000000000000000000004",
@@ -121,10 +161,13 @@
       "enabled": true,
       "sideEffect": false,
       "config": {
-        "phase": 1,
-        "enableOcclusion": true
+        "enableOcclusion": true,
+        "phase": 1
       },
-      "editorPos": [520, -120]
+      "editorPos": [
+        3345.0,
+        -217.0
+      ]
     },
     {
       "id": "c1000000000000000000000000000005",
@@ -133,12 +176,19 @@
       "enabled": true,
       "sideEffect": false,
       "config": {
-        "worklist": "CullPhase1",
         "debugLabel": "Cull Phase1",
-        "debugTint": [1.0, 0.35, 0.05],
-        "debugTintStrength": 0.2
+        "debugTint": [
+          1.0,
+          0.35,
+          0.05
+        ],
+        "debugTintStrength": 0.2,
+        "worklist": "CullPhase1"
       },
-      "editorPos": [660, -40]
+      "editorPos": [
+        3665.0,
+        -217.0
+      ]
     },
     {
       "id": "c1000000000000000000000000000006",
@@ -149,7 +199,10 @@
       "config": {
         "targetPyramid": 0
       },
-      "editorPos": [800, 80]
+      "editorPos": [
+        3985.0,
+        -217.0
+      ]
     },
     {
       "id": "c1000000000000000000000000000007",
@@ -158,7 +211,22 @@
       "enabled": true,
       "sideEffect": false,
       "config": {},
-      "editorPos": [960, -40]
+      "editorPos": [
+        4305.0,
+        -217.0
+      ]
+    },
+    {
+      "id": "dcebcfe4d17918cf315df180be92a865",
+      "name": "ImGui Overlay 1",
+      "type": "ImGuiOverlayPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": null,
+      "editorPos": [
+        3999.0,
+        7.0
+      ]
     }
   ],
   "edges": [
@@ -284,6 +352,20 @@
     {
       "id": "c2000000000000000000000000000018",
       "passId": "c1000000000000000000000000000007",
+      "slotKey": "target",
+      "direction": "output",
+      "resourceId": "00000000000000000000000000000001"
+    },
+    {
+      "id": "d38166624326cb6ecccbdda15bc2ee0b",
+      "passId": "dcebcfe4d17918cf315df180be92a865",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000013"
+    },
+    {
+      "id": "f669922409df60356e0c7b2de7e04efc",
+      "passId": "dcebcfe4d17918cf315df180be92a865",
       "slotKey": "target",
       "direction": "output",
       "resourceId": "00000000000000000000000000000001"

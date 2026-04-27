@@ -142,6 +142,7 @@ struct PipelineRuntimeContext {
     // Shared streaming state used by authored update/request/render passes.
     ClusterStreamingService* clusterStreamingService = nullptr;
     ClusterOcclusionState* clusterOcclusionState = nullptr;
+    bool clusterHizBuildSupported = false;
 
 #ifdef _WIN32
     VulkanReadbackService* readbackService = nullptr;
