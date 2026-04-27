@@ -13,7 +13,8 @@ public:
     METALLIC_PASS_TYPE_INFO(OutputPass, "Output", "Utility",
         (std::vector<PassSlotInfo>{
             makeInputSlot("source", "Source"),
-            makeInputSlot("compareSource", "Compare Source", true)
+            makeInputSlot("compareSource", "Compare Source", true),
+            makeHiddenInputSlot("presentReady", "Present Ready", true)
         }),
         (std::vector<PassSlotInfo>{makeTargetSlot("target", "Target")}),
         PassTypeInfo::PassType::Render);
@@ -44,6 +45,7 @@ public:
     void setup(FGBuilder& builder) override {
         m_sourceRead = FGResource{};
         m_compareSourceRead = FGResource{};
+        m_presentReady = FGResource{};
         m_dest = FGResource{};
 
         FGResource sourceInput = getInput("source");
@@ -53,6 +55,10 @@ public:
         FGResource compareSourceInput = getInput("compareSource");
         if (compareSourceInput.isValid()) {
             m_compareSourceRead = builder.read(compareSourceInput);
+        }
+        FGResource presentReadyInput = getInput("presentReady");
+        if (presentReadyInput.isValid()) {
+            m_presentReady = builder.read(presentReadyInput);
         }
 
         m_dest = getOutputTarget("target");
@@ -117,6 +123,7 @@ private:
     const RenderContext& m_ctx;
     FGResource m_sourceRead;
     FGResource m_compareSourceRead;
+    FGResource m_presentReady;
     FGResource m_dest;
     int m_width, m_height;
     std::string m_name = "Output";

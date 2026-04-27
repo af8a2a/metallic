@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "camera.h"
+#include "cluster_occlusion_state.h"
 #include "cluster_streaming_service.h"
 #include "frame_context.h"
 #include "frame_graph.h"
@@ -1238,8 +1239,10 @@ int main() {
 
     PipelineRuntimeContext& runtimeContext = shaderManager.runtimeContext();
     ClusterStreamingService clusterStreamingService;
+    ClusterOcclusionState clusterOcclusionState;
     runtimeContext.rhi = rhi.get();
     runtimeContext.clusterStreamingService = &clusterStreamingService;
+    runtimeContext.clusterOcclusionState = &clusterOcclusionState;
     auto refreshClusterStreamingMemoryBudget = [&]() {
         const VulkanMemoryBudgetInfo vulkanMemoryBudget = getVulkanMemoryBudgetInfo(*rhi);
         ClusterStreamingService::MemoryBudgetInfo streamingMemoryBudget{};

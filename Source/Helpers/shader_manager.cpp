@@ -93,6 +93,10 @@ ShaderManager::~ShaderManager() {
     releaseOwnedHandle(m_histogramPipeline);
     releaseOwnedHandle(m_autoExposurePipeline);
     releaseOwnedHandle(m_taaPipeline);
+    releaseOwnedHandle(m_clusterCullResetPipeline);
+    releaseOwnedHandle(m_clusterCullMainPipeline);
+    releaseOwnedHandle(m_clusterCullFinalizePipeline);
+    releaseOwnedHandle(m_clusterHizBuildPipeline);
     releaseOwnedHandle(m_clusterRenderPipeline);
     releaseOwnedHandle(m_tonemapSampler);
     releaseOwnedHandle(m_vertexDesc);
@@ -157,6 +161,14 @@ void ShaderManager::syncRuntimeContext() {
         m_rtCtx->computePipelinesRhi["AutoExposurePass"] = m_autoExposurePipeline;
     if (m_taaPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["TAAPass"] = m_taaPipeline;
+    if (m_clusterCullResetPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["ClusterCullReset"] = m_clusterCullResetPipeline;
+    if (m_clusterCullMainPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["ClusterCullMain"] = m_clusterCullMainPipeline;
+    if (m_clusterCullFinalizePipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["ClusterCullFinalize"] = m_clusterCullFinalizePipeline;
+    if (m_clusterHizBuildPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["ClusterHizBuild"] = m_clusterHizBuildPipeline;
 
     if (m_tonemapSampler.nativeHandle())
         m_rtCtx->samplersRhi["tonemap"] = m_tonemapSampler;
@@ -212,6 +224,56 @@ bool ShaderManager::buildAll() {
         }
     } else {
         releaseOwnedHandle(m_clusterRenderPipeline);
+    }
+
+    errorMessage.clear();
+    const bool enableClusterOcclusion =
+        m_profile.clusterOcclusion && m_profile.clusterRender &&
+        kShaderBackend == RhiBackendType::Vulkan;
+    if (enableClusterOcclusion) {
+        m_clusterCullResetPipeline = reloadComputeShader("Shaders/Visibility/cluster_cull",
+                                                         "resetMain",
+                                                         nullptr,
+                                                         &errorMessage);
+        if (!m_clusterCullResetPipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile cluster cull reset shader: {}",
+                         formatError(&errorMessage, "Slang cluster cull reset compilation failed"));
+        }
+
+        errorMessage.clear();
+        m_clusterCullMainPipeline = reloadComputeShader("Shaders/Visibility/cluster_cull",
+                                                        "cullMain",
+                                                        nullptr,
+                                                        &errorMessage);
+        if (!m_clusterCullMainPipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile cluster cull shader: {}",
+                         formatError(&errorMessage, "Slang cluster cull compilation failed"));
+        }
+
+        errorMessage.clear();
+        m_clusterCullFinalizePipeline = reloadComputeShader("Shaders/Visibility/cluster_cull",
+                                                            "finalizeMain",
+                                                            nullptr,
+                                                            &errorMessage);
+        if (!m_clusterCullFinalizePipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile cluster cull finalize shader: {}",
+                         formatError(&errorMessage, "Slang cluster cull finalize compilation failed"));
+        }
+
+        errorMessage.clear();
+        m_clusterHizBuildPipeline = reloadComputeShader("Shaders/Visibility/hzb_spd",
+                                                        "computeMain",
+                                                        nullptr,
+                                                        &errorMessage);
+        if (!m_clusterHizBuildPipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile cluster HZB build shader: {}",
+                         formatError(&errorMessage, "Slang cluster HZB build compilation failed"));
+        }
+    } else {
+        releaseOwnedHandle(m_clusterCullResetPipeline);
+        releaseOwnedHandle(m_clusterCullMainPipeline);
+        releaseOwnedHandle(m_clusterCullFinalizePipeline);
+        releaseOwnedHandle(m_clusterHizBuildPipeline);
     }
 
     errorMessage.clear();
@@ -500,6 +562,53 @@ std::pair<int, int> ShaderManager::reloadAll() {
                        });
     } else {
         releaseOwnedHandle(m_clusterRenderPipeline);
+    }
+
+    const bool enableClusterOcclusion =
+        m_profile.clusterOcclusion && m_profile.clusterRender &&
+        kShaderBackend == RhiBackendType::Vulkan;
+    if (enableClusterOcclusion) {
+        reloadPipeline(true,
+                       m_clusterCullResetPipeline,
+                       "cluster cull reset CS",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Visibility/cluster_cull",
+                                                      "resetMain",
+                                                      nullptr,
+                                                      &localError);
+                       });
+        reloadPipeline(true,
+                       m_clusterCullMainPipeline,
+                       "cluster cull CS",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Visibility/cluster_cull",
+                                                      "cullMain",
+                                                      nullptr,
+                                                      &localError);
+                       });
+        reloadPipeline(true,
+                       m_clusterCullFinalizePipeline,
+                       "cluster cull finalize CS",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Visibility/cluster_cull",
+                                                      "finalizeMain",
+                                                      nullptr,
+                                                      &localError);
+                       });
+        reloadPipeline(true,
+                       m_clusterHizBuildPipeline,
+                       "cluster HZB build CS",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Visibility/hzb_spd",
+                                                      "computeMain",
+                                                      nullptr,
+                                                      &localError);
+                       });
+    } else {
+        releaseOwnedHandle(m_clusterCullResetPipeline);
+        releaseOwnedHandle(m_clusterCullMainPipeline);
+        releaseOwnedHandle(m_clusterCullFinalizePipeline);
+        releaseOwnedHandle(m_clusterHizBuildPipeline);
     }
 
     reloadPipeline(m_profile.sky,

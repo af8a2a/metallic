@@ -23,6 +23,7 @@ struct ShaderManagerProfile {
     bool autoExposure = true;
     bool taa = true;
     bool clusterRender = true;
+    bool clusterOcclusion = true;
 
     static ShaderManagerProfile full() { return {}; }
 
@@ -32,6 +33,7 @@ struct ShaderManagerProfile {
         profile.forwardMesh = false;
         profile.output = false;
         profile.taa = false;
+        profile.clusterOcclusion = false;
         return profile;
     }
 
@@ -45,6 +47,7 @@ struct ShaderManagerProfile {
         profile.autoExposure = false;
         profile.taa = false;
         profile.clusterRender = true;
+        profile.clusterOcclusion = true;
         return profile;
     }
 };
@@ -99,6 +102,10 @@ private:
     RhiComputePipelineHandle m_histogramPipeline;
     RhiComputePipelineHandle m_autoExposurePipeline;
     RhiComputePipelineHandle m_taaPipeline;
+    RhiComputePipelineHandle m_clusterCullResetPipeline;
+    RhiComputePipelineHandle m_clusterCullMainPipeline;
+    RhiComputePipelineHandle m_clusterCullFinalizePipeline;
+    RhiComputePipelineHandle m_clusterHizBuildPipeline;
     RhiGraphicsPipelineHandle m_clusterRenderPipeline;
     RhiSamplerHandle m_tonemapSampler;
 

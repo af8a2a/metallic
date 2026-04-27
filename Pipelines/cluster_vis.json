@@ -9,76 +9,281 @@
       "type": "texture",
       "size": "screen",
       "format": "BGRA8Unorm",
-      "editorPos": [680, 0]
+      "editorPos": [980, 0]
     },
     {
       "id": "c0000000000000000000000000000010",
-      "name": "Cluster Color",
+      "name": "Cluster Color Phase0",
       "kind": "transient",
       "type": "texture",
       "size": "screen",
       "format": "RGBA8Unorm",
-      "editorPos": [260, -40]
+      "editorPos": [280, -80]
     },
     {
       "id": "c0000000000000000000000000000011",
-      "name": "Cluster Depth",
+      "name": "Cluster Depth Phase0",
       "kind": "transient",
       "type": "texture",
       "size": "screen",
       "format": "Depth32Float",
-      "editorPos": [260, 40]
+      "editorPos": [280, 20]
+    },
+    {
+      "id": "c0000000000000000000000000000012",
+      "name": "Cluster Color Final",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "RGBA8Unorm",
+      "editorPos": [700, -80]
+    },
+    {
+      "id": "c0000000000000000000000000000013",
+      "name": "Cluster Depth Final",
+      "kind": "transient",
+      "type": "texture",
+      "size": "screen",
+      "format": "Depth32Float",
+      "editorPos": [700, 20]
+    },
+    {
+      "id": "c0000000000000000000000000000020",
+      "name": "Cull Phase0 Done",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [120, -180]
+    },
+    {
+      "id": "c0000000000000000000000000000021",
+      "name": "HZB Phase1 Ready",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [470, 120]
+    },
+    {
+      "id": "c0000000000000000000000000000022",
+      "name": "Cull Phase1 Done",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [560, -180]
+    },
+    {
+      "id": "c0000000000000000000000000000023",
+      "name": "HZB History Ready",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [820, 120]
     }
   ],
   "passes": [
     {
       "id": "c1000000000000000000000000000001",
-      "name": "Cluster Render",
+      "name": "Cluster Cull Phase0",
+      "type": "ClusterCullPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "phase": 0,
+        "enableOcclusion": true
+      },
+      "editorPos": [40, -120]
+    },
+    {
+      "id": "c1000000000000000000000000000002",
+      "name": "Cluster Render Phase0",
       "type": "ClusterRenderPass",
       "enabled": true,
       "sideEffect": false,
       "config": {
-        "debugLabel": "Cluster Baseline",
+        "worklist": "CullPhase0",
+        "debugLabel": "Cull Phase0",
         "debugTint": [0.1, 0.45, 1.0],
-        "debugTintStrength": 0.35
+        "debugTintStrength": 0.2
       },
-      "editorPos": [40, 0]
+      "editorPos": [240, -40]
     },
     {
-      "id": "c1000000000000000000000000000002",
+      "id": "c1000000000000000000000000000003",
+      "name": "Cluster HZB Phase1",
+      "type": "ClusterHizBuildPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "targetPyramid": 1
+      },
+      "editorPos": [420, 80]
+    },
+    {
+      "id": "c1000000000000000000000000000004",
+      "name": "Cluster Cull Phase1",
+      "type": "ClusterCullPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "phase": 1,
+        "enableOcclusion": true
+      },
+      "editorPos": [520, -120]
+    },
+    {
+      "id": "c1000000000000000000000000000005",
+      "name": "Cluster Render Phase1",
+      "type": "ClusterRenderPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "worklist": "CullPhase1",
+        "debugLabel": "Cull Phase1",
+        "debugTint": [1.0, 0.35, 0.05],
+        "debugTintStrength": 0.2
+      },
+      "editorPos": [660, -40]
+    },
+    {
+      "id": "c1000000000000000000000000000006",
+      "name": "Cluster HZB History",
+      "type": "ClusterHizBuildPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "targetPyramid": 0
+      },
+      "editorPos": [800, 80]
+    },
+    {
+      "id": "c1000000000000000000000000000007",
       "name": "Output",
       "type": "OutputPass",
       "enabled": true,
       "sideEffect": false,
       "config": {},
-      "editorPos": [460, 0]
+      "editorPos": [960, -40]
     }
   ],
   "edges": [
     {
       "id": "c2000000000000000000000000000001",
       "passId": "c1000000000000000000000000000001",
+      "slotKey": "cullDone",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000020"
+    },
+    {
+      "id": "c2000000000000000000000000000002",
+      "passId": "c1000000000000000000000000000002",
+      "slotKey": "worklistReady",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000020"
+    },
+    {
+      "id": "c2000000000000000000000000000003",
+      "passId": "c1000000000000000000000000000002",
       "slotKey": "color",
       "direction": "output",
       "resourceId": "c0000000000000000000000000000010"
     },
     {
-      "id": "c2000000000000000000000000000002",
-      "passId": "c1000000000000000000000000000001",
+      "id": "c2000000000000000000000000000004",
+      "passId": "c1000000000000000000000000000002",
       "slotKey": "depth",
       "direction": "output",
       "resourceId": "c0000000000000000000000000000011"
     },
     {
-      "id": "c2000000000000000000000000000003",
-      "passId": "c1000000000000000000000000000002",
-      "slotKey": "source",
+      "id": "c2000000000000000000000000000005",
+      "passId": "c1000000000000000000000000000003",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000011"
+    },
+    {
+      "id": "c2000000000000000000000000000006",
+      "passId": "c1000000000000000000000000000003",
+      "slotKey": "hizReady",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000021"
+    },
+    {
+      "id": "c2000000000000000000000000000007",
+      "passId": "c1000000000000000000000000000004",
+      "slotKey": "phaseReady",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000021"
+    },
+    {
+      "id": "c2000000000000000000000000000008",
+      "passId": "c1000000000000000000000000000004",
+      "slotKey": "cullDone",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000022"
+    },
+    {
+      "id": "c2000000000000000000000000000009",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "worklistReady",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000022"
+    },
+    {
+      "id": "c2000000000000000000000000000010",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "colorIn",
       "direction": "input",
       "resourceId": "c0000000000000000000000000000010"
     },
     {
-      "id": "c2000000000000000000000000000004",
-      "passId": "c1000000000000000000000000000002",
+      "id": "c2000000000000000000000000000011",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "depthIn",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000011"
+    },
+    {
+      "id": "c2000000000000000000000000000012",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "color",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000012"
+    },
+    {
+      "id": "c2000000000000000000000000000013",
+      "passId": "c1000000000000000000000000000005",
+      "slotKey": "depth",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000013"
+    },
+    {
+      "id": "c2000000000000000000000000000014",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "depth",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000013"
+    },
+    {
+      "id": "c2000000000000000000000000000015",
+      "passId": "c1000000000000000000000000000006",
+      "slotKey": "hizReady",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000023"
+    },
+    {
+      "id": "c2000000000000000000000000000016",
+      "passId": "c1000000000000000000000000000007",
+      "slotKey": "source",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000012"
+    },
+    {
+      "id": "c2000000000000000000000000000017",
+      "passId": "c1000000000000000000000000000007",
+      "slotKey": "presentReady",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000023"
+    },
+    {
+      "id": "c2000000000000000000000000000018",
+      "passId": "c1000000000000000000000000000007",
       "slotKey": "target",
       "direction": "output",
       "resourceId": "00000000000000000000000000000001"

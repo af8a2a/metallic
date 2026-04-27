@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cluster_lod_builder.h"
+#include "cluster_occlusion_state.h"
 #include "cluster_types.h"
 #include "frame_context.h"
 #include "imgui.h"
@@ -25,7 +26,11 @@ public:
         : m_ctx(ctx), m_width(w), m_height(h) {}
 
     METALLIC_PASS_TYPE_INFO(ClusterRenderPass, "Cluster Render", "Geometry",
-        (std::vector<PassSlotInfo>{}),
+        (std::vector<PassSlotInfo>{
+            makeHiddenInputSlot("worklistReady", "Worklist Ready", true),
+            makeInputSlot("colorIn", "Color In", true),
+            makeInputSlot("depthIn", "Depth In", true)
+        }),
         (std::vector<PassSlotInfo>{
             makeOutputSlot("color", "Color"),
             makeOutputSlot("depth", "Depth")
@@ -33,7 +38,11 @@ public:
         PassTypeInfo::PassType::Render);
 
     METALLIC_PASS_EDITOR_TYPE_INFO(ClusterRenderPass, "Cluster Render", "Geometry",
-        (std::vector<PassSlotInfo>{}),
+        (std::vector<PassSlotInfo>{
+            makeHiddenInputSlot("worklistReady", "Worklist Ready", true),
+            makeInputSlot("colorIn", "Color In", true),
+            makeInputSlot("depthIn", "Depth In", true)
+        }),
         (std::vector<PassSlotInfo>{
             makeOutputSlot("color", "Color"),
             makeOutputSlot("depth", "Depth")
@@ -81,6 +90,16 @@ public:
             m_debugTintStrength =
                 std::clamp(config.config["debugTintStrength"].get<float>(), 0.0f, 1.0f);
         }
+        if (config.config.contains("worklist")) {
+            const std::string mode = config.config["worklist"].get<std::string>();
+            if (mode == "CullPhase0") {
+                m_worklistMode = WorklistMode::CullPhase0;
+            } else if (mode == "CullPhase1") {
+                m_worklistMode = WorklistMode::CullPhase1;
+            } else {
+                m_worklistMode = WorklistMode::CpuFull;
+            }
+        }
     }
 
     FGResource getOutput(const std::string& name) const override {
@@ -90,16 +109,33 @@ public:
     }
 
     void setup(FGBuilder& builder) override {
-        color = builder.create("clusterVisColor",
-            FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::RGBA8Unorm));
-        depth = builder.create("clusterVisDepth",
-            FGTextureDesc::depthTarget(m_width, m_height));
-        color = builder.setColorAttachment(0, color,
-            RhiLoadAction::Clear, RhiStoreAction::Store,
-            RhiClearColor(0.05, 0.05, 0.08, 1.0));
-        depth = builder.setDepthAttachment(depth,
-            RhiLoadAction::Clear, RhiStoreAction::Store,
-            m_ctx.depthClearValue);
+        if (FGResource ready = getInput("worklistReady"); ready.isValid()) {
+            m_worklistReady = builder.read(ready);
+        }
+
+        FGResource colorInput = getInput("colorIn");
+        if (colorInput.isValid()) {
+            color = builder.setColorAttachment(0, colorInput,
+                RhiLoadAction::Load, RhiStoreAction::Store);
+        } else {
+            color = builder.create("clusterVisColor",
+                FGTextureDesc::renderTarget(m_width, m_height, RhiFormat::RGBA8Unorm));
+            color = builder.setColorAttachment(0, color,
+                RhiLoadAction::Clear, RhiStoreAction::Store,
+                RhiClearColor(0.05, 0.05, 0.08, 1.0));
+        }
+
+        FGResource depthInput = getInput("depthIn");
+        if (depthInput.isValid()) {
+            depth = builder.setDepthAttachment(depthInput,
+                RhiLoadAction::Load, RhiStoreAction::Store);
+        } else {
+            depth = builder.create("clusterVisDepth",
+                FGTextureDesc::depthTarget(m_width, m_height));
+            depth = builder.setDepthAttachment(depth,
+                RhiLoadAction::Clear, RhiStoreAction::Store,
+                m_ctx.depthClearValue);
+        }
     }
 
     void executeRender(RhiRenderCommandEncoder& encoder) override {
@@ -116,16 +152,19 @@ public:
             return;
         }
 
+        const WorklistSelection worklist = selectWorklist();
+        if (!worklist.buffer) {
+            return;
+        }
+
         if (!m_ctx.clusterLodData.packedClusterBuffer.nativeHandle() ||
             !m_ctx.clusterLodData.clusterVertexDataBuffer.nativeHandle() ||
             !m_ctx.clusterLodData.clusterIndexDataBuffer.nativeHandle() ||
-            !m_ctx.gpuScene.clusterVisWorklistBuffer.nativeHandle() ||
             !m_ctx.gpuScene.instanceBuffer.nativeHandle()) {
             return;
         }
 
-        const uint32_t clusterCount = m_ctx.gpuScene.clusterVisWorklistCount;
-        if (clusterCount == 0u) {
+        if (!worklist.indirect && worklist.directCount == 0u) {
             return;
         }
 
@@ -156,8 +195,7 @@ public:
         pushData.debugTintStrength = m_debugTintStrength;
 
         encoder.setPushConstants(&pushData, sizeof(pushData));
-        encoder.setMeshBuffer(&m_ctx.gpuScene.clusterVisWorklistBuffer, 0,
-                              ClusterRenderBindings::kClusterInfos);
+        encoder.setMeshBuffer(worklist.buffer, 0, ClusterRenderBindings::kClusterInfos);
         encoder.setMeshBuffer(&m_ctx.clusterLodData.packedClusterBuffer, 0,
                               ClusterRenderBindings::kClusters);
         encoder.setMeshBuffer(&m_ctx.clusterLodData.clusterVertexDataBuffer, 0,
@@ -172,7 +210,14 @@ public:
         encoder.setFragmentBuffer(&m_ctx.gpuScene.instanceBuffer, 0,
                                   ClusterRenderBindings::kInstances);
 
-        encoder.drawMeshThreadgroups({clusterCount, 1, 1}, {1, 1, 1}, {32, 1, 1});
+        if (worklist.indirect && worklist.indirectArgs) {
+            encoder.drawMeshThreadgroupsIndirect(*worklist.indirectArgs,
+                                                 worklist.indirectOffset,
+                                                 {1, 1, 1},
+                                                 {32, 1, 1});
+        } else {
+            encoder.drawMeshThreadgroups({worklist.directCount, 1, 1}, {1, 1, 1}, {32, 1, 1});
+        }
     }
 
     void renderUI() override {
@@ -185,6 +230,7 @@ public:
             if (!m_debugLabel.empty()) {
                 ImGui::Text("Debug View: %s", m_debugLabel.c_str());
             }
+            ImGui::Text("Worklist: %s", worklistModeName());
             ImGui::Text("Clusters: %u", m_ctx.gpuScene.clusterVisWorklistCount);
             ImGui::ColorEdit3("Debug Tint", m_debugTint);
             ImGui::SliderFloat("Debug Tint Strength", &m_debugTintStrength, 0.0f, 1.0f, "%.2f");
@@ -195,15 +241,76 @@ public:
     }
 
 private:
+    enum class WorklistMode {
+        CpuFull,
+        CullPhase0,
+        CullPhase1,
+    };
+
+    struct WorklistSelection {
+        const RhiBuffer* buffer = nullptr;
+        const RhiBuffer* indirectArgs = nullptr;
+        uint64_t indirectOffset = 0;
+        uint32_t directCount = 0;
+        bool indirect = false;
+    };
+
+    WorklistSelection selectWorklist() const {
+        WorklistSelection selection{};
+
+        if (m_worklistMode == WorklistMode::CpuFull) {
+            if (m_ctx.gpuScene.clusterVisWorklistBuffer.nativeHandle()) {
+                selection.buffer = &m_ctx.gpuScene.clusterVisWorklistBuffer;
+                selection.directCount = m_ctx.gpuScene.clusterVisWorklistCount;
+            }
+            return selection;
+        }
+
+        ClusterOcclusionState* state =
+            m_runtimeContext ? m_runtimeContext->clusterOcclusionState : nullptr;
+        const uint32_t phase =
+            m_worklistMode == WorklistMode::CullPhase1
+                ? ClusterOcclusionState::kPhase1
+                : ClusterOcclusionState::kPhase0;
+
+        if (state && state->worklistValid[phase] &&
+            state->visibleWorklist(phase) &&
+            state->indirectArgs) {
+            selection.buffer = state->visibleWorklist(phase);
+            selection.indirectArgs = state->indirectArgs.get();
+            selection.indirectOffset = state->indirectOffset(phase);
+            selection.indirect = true;
+            return selection;
+        }
+
+        if (phase == ClusterOcclusionState::kPhase0 &&
+            m_ctx.gpuScene.clusterVisWorklistBuffer.nativeHandle()) {
+            selection.buffer = &m_ctx.gpuScene.clusterVisWorklistBuffer;
+            selection.directCount = m_ctx.gpuScene.clusterVisWorklistCount;
+        }
+        return selection;
+    }
+
+    const char* worklistModeName() const {
+        switch (m_worklistMode) {
+            case WorklistMode::CullPhase0: return "CullPhase0";
+            case WorklistMode::CullPhase1: return "CullPhase1";
+            case WorklistMode::CpuFull:
+            default: return "CpuFull";
+        }
+    }
+
     const RenderContext& m_ctx;
     int m_width = 0;
     int m_height = 0;
     std::string m_name = "ClusterRenderPass";
     uint32_t m_colorMode = 0;
+    WorklistMode m_worklistMode = WorklistMode::CpuFull;
     std::string m_debugLabel;
     float m_debugTint[3] = {1.0f, 1.0f, 1.0f};
     float m_debugTintStrength = 0.0f;
     bool m_warnedMissingPipeline = false;
+    FGResource m_worklistReady;
     FGResource color;
     FGResource depth;
 };
