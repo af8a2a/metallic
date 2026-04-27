@@ -1023,7 +1023,8 @@ static bool s_dockLayoutInitialized = false;
 ImGuiID beginDockspace(bool& showSceneGraphWindow,
                        bool& showGraphDebug,
                        bool& showRenderPassUI,
-                       bool& showImGuiDemo) {
+                       bool& showImGuiDemo,
+                       bool& showTextureViewer) {
     const ImGuiID dockspaceId =
         ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_None);
 
@@ -1053,6 +1054,7 @@ ImGuiID beginDockspace(bool& showSceneGraphWindow,
             ImGui::MenuItem("Scene Browser", nullptr, &showSceneGraphWindow);
             ImGui::MenuItem("FrameGraph", nullptr, &showGraphDebug);
             ImGui::MenuItem("Render Passes", nullptr, &showRenderPassUI);
+            ImGui::MenuItem("Texture Viewer", nullptr, &showTextureViewer);
             ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo);
             ImGui::EndMenu();
         }
@@ -1893,6 +1895,7 @@ int main() {
     bool showSceneGraphWindow = true;
     bool showGraphDebug = true;
     bool showRenderPassUI = true;
+    bool showTextureViewer = false;
     bool showImGuiDemo = false;
     bool reloadKeyDown = false;
     bool pipelineReloadKeyDown = false;
@@ -2151,7 +2154,7 @@ int main() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         const ImGuiID dockspaceId =
-            beginDockspace(showSceneGraphWindow, showGraphDebug, showRenderPassUI, showImGuiDemo);
+            beginDockspace(showSceneGraphWindow, showGraphDebug, showRenderPassUI, showImGuiDemo, showTextureViewer);
 
         // --- Viewport window: display scene render output ---
         {
@@ -2336,6 +2339,7 @@ int main() {
         }
         ImGui::Checkbox("FrameGraph Debug", &showGraphDebug);
         ImGui::Checkbox("Render Pass UI", &showRenderPassUI);
+        ImGui::Checkbox("Texture Viewer", &showTextureViewer);
         ImGui::Checkbox("Scene Browser", &showSceneGraphWindow);
         ImGui::Checkbox("ImGui Demo", &showImGuiDemo);
 
@@ -2833,6 +2837,10 @@ int main() {
             ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
             activeFg.renderPassUI();
         }
+        if (showTextureViewer) {
+            ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
+            activeFg.textureViewerImGui();
+        }
         if (showImGuiDemo) {
             ImGui::SetNextWindowDockID(dockspaceId, ImGuiCond_FirstUseEver);
             ImGui::ShowDemoWindow(&showImGuiDemo);
@@ -2876,6 +2884,9 @@ int main() {
         }
 
         postBuilder.execute(commandBuffer, frameGraphBackend);
+
+        if (showTextureViewer)
+            activeFg.captureTextureViewerState();
 
         // Blit backbuffer to viewport display texture for ImGui::Image
         if (viewportDisplayTexture.nativeHandle() && backbufferImage != VK_NULL_HANDLE) {

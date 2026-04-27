@@ -226,7 +226,20 @@ bool sphereRenderableOcclusionCulledForPass(float3 centerWS, float worldRadius, 
     }
 
     if (!previousHzbAvailable) {
-        return true;
+        if (currentHzbAvailable) {
+            hzbRejected = sphereCurrentFrameOccluded(cullUniforms.viewProj,
+                                                     cullUniforms.view,
+                                                     cullUniforms.cameraWorldPos,
+                                                     cullUniforms.projScale,
+                                                     cullUniforms.currentHzbTextureSize,
+                                                     cullUniforms.currentHzbLevelCount,
+                                                     cullUniforms.occlusionBoundsScale,
+                                                     cullUniforms.occlusionDepthBias,
+                                                     centerWS,
+                                                     worldRadius);
+            return hzbRejected;
+        }
+        return false;
     }
 
     const bool wasOccludedByPreviousHzb =

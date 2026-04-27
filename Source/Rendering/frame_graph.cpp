@@ -7,6 +7,13 @@
 #include "imgui.h"
 #include <spdlog/spdlog.h>
 
+#ifdef _WIN32
+#include "imgui_impl_vulkan.h"
+#include "vulkan_resource_handles.h"
+#include <unordered_map>
+#include <unordered_set>
+#endif
+
 namespace {
 
 void appendUniqueResource(std::vector<FGAccessEntry>& entries, FGResource resource, FGResourceUsage usage) {
@@ -1559,6 +1566,225 @@ void FrameGraph::debugImGui() const {
     }
 
     ImGui::End();
+}
+
+// --- Texture Viewer window ---
+
+#ifdef _WIN32
+namespace {
+
+struct TextureViewerEntry {
+    std::string name;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    RhiFormat format = RhiFormat::BGRA8Unorm;
+    bool hasFormat = false;
+    bool imported = false;
+    std::string producerName;
+    VkImageView imageView = VK_NULL_HANDLE;
+    uint32_t resourceIndex = 0;
+};
+
+struct TextureViewerCache {
+    std::vector<TextureViewerEntry> entries;
+    std::unordered_map<uint64_t, VkDescriptorSet> descriptors;
+    VkSampler sampler = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    int selectedIndex = -1;
+    char filterBuf[128] = {};
+    float thumbnailSize = 128.0f;
+};
+
+TextureViewerCache& viewerCache() {
+    static TextureViewerCache cache;
+    return cache;
+}
+
+} // namespace
+#endif
+
+void FrameGraph::captureTextureViewerState() {
+#ifdef _WIN32
+    auto& cache = viewerCache();
+    std::unordered_set<uint64_t> currentViews;
+    cache.entries.clear();
+
+    for (uint32_t ri = 0; ri < m_resources.size(); ri++) {
+        auto& res = m_resources[ri];
+        if (res.kind != FGResourceKind::Texture || !res.texture || res.refCount == 0)
+            continue;
+        VkImageView iv = getVulkanImageView(res.texture);
+        if (iv == VK_NULL_HANDLE) continue;
+
+        if (cache.device == VK_NULL_HANDLE) {
+            auto* vkRes = getVulkanTextureResource(res.texture);
+            if (vkRes) cache.device = vkRes->device;
+        }
+
+        TextureViewerEntry entry;
+        entry.name = res.name;
+        entry.width = resourceWidth(res);
+        entry.height = resourceHeight(res);
+        entry.format = res.desc.format;
+        entry.hasFormat = resourceHasKnownFormat(res);
+        entry.imported = res.imported;
+        entry.imageView = iv;
+        entry.resourceIndex = ri;
+        if (res.producer != UINT32_MAX && res.producer < m_passes.size())
+            entry.producerName = m_passes[res.producer].name;
+        cache.entries.push_back(std::move(entry));
+
+        uint64_t key = reinterpret_cast<uint64_t>(iv);
+        currentViews.insert(key);
+
+        if (cache.descriptors.find(key) == cache.descriptors.end()) {
+            if (cache.sampler == VK_NULL_HANDLE && cache.device != VK_NULL_HANDLE) {
+                VkSamplerCreateInfo ci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+                ci.magFilter = VK_FILTER_LINEAR;
+                ci.minFilter = VK_FILTER_LINEAR;
+                ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+                ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                vkCreateSampler(cache.device, &ci, nullptr, &cache.sampler);
+            }
+            if (cache.sampler != VK_NULL_HANDLE) {
+                VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(
+                    cache.sampler, iv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                cache.descriptors[key] = ds;
+            }
+        }
+    }
+
+    for (auto it = cache.descriptors.begin(); it != cache.descriptors.end(); ) {
+        if (currentViews.find(it->first) == currentViews.end()) {
+            ImGui_ImplVulkan_RemoveTexture(it->second);
+            it = cache.descriptors.erase(it);
+        } else {
+            ++it;
+        }
+    }
+#endif
+}
+
+void FrameGraph::textureViewerImGui() {
+#ifndef _WIN32
+    if (ImGui::Begin("Texture Viewer")) {
+        ImGui::TextUnformatted("Texture viewer is only available on Vulkan.");
+    }
+    ImGui::End();
+    return;
+#else
+    if (!ImGui::Begin("Texture Viewer")) {
+        ImGui::End();
+        return;
+    }
+
+    auto& cache = viewerCache();
+    if (cache.entries.empty()) {
+        ImGui::TextUnformatted("No textures captured yet. Waiting for first frame...");
+        ImGui::End();
+        return;
+    }
+
+    // Build filtered list
+    std::vector<const TextureViewerEntry*> filtered;
+    for (auto& e : cache.entries) {
+        if (cache.filterBuf[0] != '\0') {
+            std::string lower = e.name;
+            std::string filter = cache.filterBuf;
+            for (auto& c : lower) c = static_cast<char>(std::tolower(c));
+            for (auto& c : filter) c = static_cast<char>(std::tolower(c));
+            if (lower.find(filter) == std::string::npos) continue;
+        }
+        filtered.push_back(&e);
+    }
+
+    // Detail view
+    if (cache.selectedIndex >= 0) {
+        const TextureViewerEntry* sel = nullptr;
+        for (auto* e : filtered) {
+            if (static_cast<int>(e->resourceIndex) == cache.selectedIndex) { sel = e; break; }
+        }
+        if (!sel) {
+            cache.selectedIndex = -1;
+        } else {
+            if (ImGui::Button("Back") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+                cache.selectedIndex = -1;
+            ImGui::SameLine();
+            ImGui::Text("%s", sel->name.c_str());
+            ImGui::Text("%ux%u  %s  %s", sel->width, sel->height,
+                sel->hasFormat ? pixelFormatName(sel->format) : "?",
+                sel->imported ? "Imported" : "Transient");
+            if (!sel->producerName.empty())
+                ImGui::Text("Producer: %s", sel->producerName.c_str());
+
+            uint64_t key = reinterpret_cast<uint64_t>(sel->imageView);
+            auto dit = cache.descriptors.find(key);
+            if (dit != cache.descriptors.end() && sel->width > 0 && sel->height > 0) {
+                float avail = ImGui::GetContentRegionAvail().x;
+                float scale = std::min(avail / static_cast<float>(sel->width), 1.0f);
+                ImGui::Image(reinterpret_cast<ImTextureID>(dit->second),
+                             ImVec2(sel->width * scale, sel->height * scale));
+            }
+            ImGui::End();
+            return;
+        }
+    }
+
+    // Toolbar
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::InputTextWithHint("##filter", "Filter by name...", cache.filterBuf, sizeof(cache.filterBuf));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::SliderFloat("Size", &cache.thumbnailSize, 64.0f, 256.0f, "%.0f");
+    ImGui::SameLine();
+    ImGui::Text("%zu textures", filtered.size());
+    ImGui::Separator();
+
+    // Thumbnail grid
+    float windowWidth = ImGui::GetContentRegionAvail().x;
+    float cellSize = cache.thumbnailSize + ImGui::GetStyle().ItemSpacing.x;
+    int columns = std::max(1, static_cast<int>(windowWidth / cellSize));
+    int col = 0;
+
+    for (auto* entry : filtered) {
+        if (entry->width == 0 || entry->height == 0) continue;
+        uint64_t key = reinterpret_cast<uint64_t>(entry->imageView);
+        auto dit = cache.descriptors.find(key);
+        if (dit == cache.descriptors.end()) continue;
+
+        if (col > 0) ImGui::SameLine();
+        ImGui::BeginGroup();
+
+        float aspect = static_cast<float>(entry->height) / static_cast<float>(entry->width);
+        float thumbW = cache.thumbnailSize;
+        float thumbH = thumbW * aspect;
+        if (thumbH > cache.thumbnailSize) {
+            thumbH = cache.thumbnailSize;
+            thumbW = thumbH / aspect;
+        }
+
+        ImGui::PushID(static_cast<int>(entry->resourceIndex));
+        if (ImGui::ImageButton("##thumb",
+                reinterpret_cast<ImTextureID>(dit->second),
+                ImVec2(thumbW, thumbH))) {
+            cache.selectedIndex = static_cast<int>(entry->resourceIndex);
+        }
+        ImGui::PopID();
+
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + cache.thumbnailSize);
+        ImGui::TextUnformatted(entry->name.c_str());
+        ImGui::Text("%ux%u", entry->width, entry->height);
+        ImGui::PopTextWrapPos();
+        ImGui::EndGroup();
+
+        col++;
+        if (col >= columns) col = 0;
+    }
+
+    ImGui::End();
+#endif
 }
 
 void FrameGraph::renderPassUI() {
