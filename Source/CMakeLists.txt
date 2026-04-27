@@ -228,15 +228,6 @@ add_custom_command(TARGET Metallic POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/Source/Rendering/visibility_constants.h"
         "$<TARGET_FILE_DIR:Metallic>/Source/Rendering/visibility_constants.h"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/Source/Rendering/hzb_constants.h"
-        "$<TARGET_FILE_DIR:Metallic>/Source/Rendering/hzb_constants.h"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/Source/Rendering/hzb_spd_constants.h"
-        "$<TARGET_FILE_DIR:Metallic>/Source/Rendering/hzb_spd_constants.h"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/Source/Rendering/gpu_driven_constants.h"
-        "$<TARGET_FILE_DIR:Metallic>/Source/Rendering/gpu_driven_constants.h"
 )
 
 if(APPLE)

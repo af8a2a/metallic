@@ -269,9 +269,9 @@ PassTypeInfo makeTypeInfo() {
 
 // Full registration macro with metadata for pipeline editor
 // Usage:
-//   REGISTER_RENDER_PASS(VisibilityPass, "Visibility Pass", "Geometry",
+//   REGISTER_RENDER_PASS(ExamplePass, "Example Pass", "Geometry",
 //       (std::vector<PassSlotInfo>{}),
-//       (std::vector<PassSlotInfo>{makeOutputSlot("visibility", "Visibility"), makeOutputSlot("depth", "Depth")})
+//       (std::vector<PassSlotInfo>{makeOutputSlot("color", "Color"), makeOutputSlot("depth", "Depth")})
 //   );
 #define REGISTER_RENDER_PASS(Type, DisplayName, Category, Inputs, Outputs) \
     static PassRegistrar _registrar_##Type(#Type, \

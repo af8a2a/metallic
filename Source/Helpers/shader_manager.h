@@ -17,13 +17,6 @@ enum class ShaderCompileMode {
 struct ShaderManagerProfile {
     bool forwardVertex = true;
     bool forwardMesh = true;
-    bool visibility = true;
-    bool visibilityIndirect = true;
-    bool meshletCull = true;
-    bool hzbBuild = true;
-    bool buildIndirect = true;
-    bool deferredLighting = true;
-    bool meshletVisualize = true;
     bool sky = true;
     bool tonemap = true;
     bool output = true;
@@ -37,13 +30,6 @@ struct ShaderManagerProfile {
         ShaderManagerProfile profile;
         profile.forwardVertex = true;
         profile.forwardMesh = false;
-        profile.visibility = false;
-        profile.visibilityIndirect = false;
-        profile.meshletCull = false;
-        profile.hzbBuild = false;
-        profile.buildIndirect = false;
-        profile.deferredLighting = false;
-        profile.meshletVisualize = false;
         profile.output = false;
         profile.taa = false;
         return profile;
@@ -53,18 +39,12 @@ struct ShaderManagerProfile {
         ShaderManagerProfile profile;
         profile.forwardVertex = false;
         profile.forwardMesh = false;
-        profile.visibility = true;
-        profile.visibilityIndirect = true;
-        profile.meshletCull = true;
-        profile.hzbBuild = true;
-        profile.buildIndirect = true;
-        profile.deferredLighting = true;
-        profile.meshletVisualize = false;
-        profile.sky = true;
+        profile.sky = false;
         profile.tonemap = true;
         profile.output = true;
-        profile.autoExposure = true;
-        profile.taa = true;
+        profile.autoExposure = false;
+        profile.taa = false;
+        profile.clusterRender = true;
         return profile;
     }
 };
@@ -113,16 +93,6 @@ private:
     // Owned pipeline states
     RhiGraphicsPipelineHandle m_vertexPipeline;
     RhiGraphicsPipelineHandle m_meshPipeline;
-    RhiGraphicsPipelineHandle m_visPipeline;
-    RhiGraphicsPipelineHandle m_visIndirectPipeline;
-    RhiComputePipelineHandle m_computePipeline;
-    RhiComputePipelineHandle m_clusterStreamingUpdatePipeline;
-    RhiComputePipelineHandle m_instanceClassifyPipeline;
-    RhiComputePipelineHandle m_cullPipeline;
-    RhiComputePipelineHandle m_clusterStreamingAgeFilterPipeline;
-    RhiComputePipelineHandle m_hzbBuildPipeline;
-    RhiComputePipelineHandle m_buildIndirectPipeline;
-    RhiComputePipelineHandle m_meshletVisPipeline;
     RhiGraphicsPipelineHandle m_skyPipeline;
     RhiGraphicsPipelineHandle m_tonemapPipeline;
     RhiGraphicsPipelineHandle m_outputPipeline;

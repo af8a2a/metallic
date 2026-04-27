@@ -16,9 +16,6 @@ constexpr RhiBackendType kShaderBackend = RhiBackendType::Metal;
 constexpr RhiBackendType kShaderBackend = RhiBackendType::Vulkan;
 #endif
 
-constexpr const char* kSlangVisibilityPerPrimitiveIssueUrl =
-    "https://github.com/shader-slang/slang/issues/7019";
-
 // On Vulkan, compile to SPIR-V binary and pack into a string for rhiCreatePipelineFromSource.
 // On Metal, compile to MSL source string directly.
 std::string compileGraphics(const char* shaderPath, const char* projectRoot,
@@ -90,16 +87,6 @@ ShaderManager::ShaderManager(RhiDeviceHandle device,
 ShaderManager::~ShaderManager() {
     releaseOwnedHandle(m_vertexPipeline);
     releaseOwnedHandle(m_meshPipeline);
-    releaseOwnedHandle(m_visPipeline);
-    releaseOwnedHandle(m_visIndirectPipeline);
-    releaseOwnedHandle(m_computePipeline);
-    releaseOwnedHandle(m_clusterStreamingUpdatePipeline);
-    releaseOwnedHandle(m_instanceClassifyPipeline);
-    releaseOwnedHandle(m_cullPipeline);
-    releaseOwnedHandle(m_clusterStreamingAgeFilterPipeline);
-    releaseOwnedHandle(m_hzbBuildPipeline);
-    releaseOwnedHandle(m_buildIndirectPipeline);
-    releaseOwnedHandle(m_meshletVisPipeline);
     releaseOwnedHandle(m_skyPipeline);
     releaseOwnedHandle(m_tonemapPipeline);
     releaseOwnedHandle(m_outputPipeline);
@@ -154,10 +141,6 @@ void ShaderManager::syncRuntimeContext() {
         m_rtCtx->renderPipelinesRhi["ForwardPass"] = m_vertexPipeline;
     if (m_meshPipeline.nativeHandle())
         m_rtCtx->renderPipelinesRhi["ForwardMeshPass"] = m_meshPipeline;
-    if (m_visPipeline.nativeHandle())
-        m_rtCtx->renderPipelinesRhi["VisibilityPass"] = m_visPipeline;
-    if (m_visIndirectPipeline.nativeHandle())
-        m_rtCtx->renderPipelinesRhi["VisibilityIndirectPass"] = m_visIndirectPipeline;
     if (m_clusterRenderPipeline.nativeHandle())
         m_rtCtx->renderPipelinesRhi["ClusterRenderPass"] = m_clusterRenderPipeline;
     if (m_skyPipeline.nativeHandle())
@@ -168,24 +151,6 @@ void ShaderManager::syncRuntimeContext() {
         m_rtCtx->renderPipelinesRhi["OutputPass"] = m_outputPipeline;
 
     m_rtCtx->computePipelinesRhi.clear();
-    if (m_computePipeline.nativeHandle())
-        m_rtCtx->computePipelinesRhi["DeferredLightingPass"] = m_computePipeline;
-    if (m_clusterStreamingUpdatePipeline.nativeHandle())
-        m_rtCtx->computePipelinesRhi["ClusterStreamingUpdatePass"] =
-            m_clusterStreamingUpdatePipeline;
-    if (m_instanceClassifyPipeline.nativeHandle())
-        m_rtCtx->computePipelinesRhi["InstanceClassifyPass"] = m_instanceClassifyPipeline;
-    if (m_cullPipeline.nativeHandle())
-        m_rtCtx->computePipelinesRhi["MeshletCullPass"] = m_cullPipeline;
-    if (m_clusterStreamingAgeFilterPipeline.nativeHandle())
-        m_rtCtx->computePipelinesRhi["ClusterStreamingAgeFilterPass"] =
-            m_clusterStreamingAgeFilterPipeline;
-    if (m_hzbBuildPipeline.nativeHandle())
-        m_rtCtx->computePipelinesRhi["HZBBuildPass"] = m_hzbBuildPipeline;
-    if (m_buildIndirectPipeline.nativeHandle())
-        m_rtCtx->computePipelinesRhi["BuildIndirectPass"] = m_buildIndirectPipeline;
-    if (m_meshletVisPipeline.nativeHandle())
-        m_rtCtx->computePipelinesRhi["MeshletVisualizePass"] = m_meshletVisPipeline;
     if (m_histogramPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["HistogramPass"] = m_histogramPipeline;
     if (m_autoExposurePipeline.nativeHandle())
@@ -235,52 +200,6 @@ bool ShaderManager::buildAll() {
     }
 
     errorMessage.clear();
-    if (m_profile.visibility && m_supportsMeshShaders && m_validateVisibilityPipelines) {
-        m_visPipeline = reloadMeshShader("Shaders/Visibility/visibility",
-                                         patchVisibilityShaderSource,
-                                         RhiFormat::R32Uint,
-                                         RhiFormat::D32Float,
-                                         &errorMessage);
-        if (!m_visPipeline.nativeHandle()) {
-            spdlog::error("Failed to create visibility pipeline: {}",
-                          formatError(&errorMessage, "Slang visibility shader compilation failed"));
-            return false;
-        }
-    } else if (m_profile.visibility && !m_supportsMeshShaders) {
-        spdlog::info("Skipping visibility pipeline validation because mesh shaders are not supported");
-        releaseOwnedHandle(m_visPipeline);
-    } else if (m_profile.visibility) {
-        spdlog::info("Skipping visibility pipeline validation on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
-                     kSlangVisibilityPerPrimitiveIssueUrl);
-        releaseOwnedHandle(m_visPipeline);
-    } else {
-        releaseOwnedHandle(m_visPipeline);
-    }
-
-    errorMessage.clear();
-    if (m_profile.visibilityIndirect && m_supportsMeshShaders && m_validateVisibilityPipelines) {
-        m_visIndirectPipeline = reloadMeshShader("Shaders/Visibility/visibility_indirect",
-                                                 patchVisibilityShaderSource,
-                                                 RhiFormat::R32Uint,
-                                                 RhiFormat::D32Float,
-                                                 &errorMessage);
-        if (!m_visIndirectPipeline.nativeHandle()) {
-            spdlog::error("Failed to create visibility indirect pipeline: {}",
-                          formatError(&errorMessage, "Slang visibility indirect shader compilation failed"));
-            return false;
-        }
-    } else if (m_profile.visibilityIndirect && !m_supportsMeshShaders) {
-        spdlog::info("Skipping visibility indirect pipeline validation because mesh shaders are not supported");
-        releaseOwnedHandle(m_visIndirectPipeline);
-    } else if (m_profile.visibilityIndirect) {
-        spdlog::info("Skipping visibility indirect pipeline validation on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
-                     kSlangVisibilityPerPrimitiveIssueUrl);
-        releaseOwnedHandle(m_visIndirectPipeline);
-    } else {
-        releaseOwnedHandle(m_visIndirectPipeline);
-    }
-
-    errorMessage.clear();
     if (m_profile.clusterRender && m_supportsMeshShaders) {
         m_clusterRenderPipeline = reloadMeshShader("Shaders/Mesh/cluster_render",
                                                     nullptr,
@@ -293,123 +212,6 @@ bool ShaderManager::buildAll() {
         }
     } else {
         releaseOwnedHandle(m_clusterRenderPipeline);
-    }
-
-    errorMessage.clear();
-    if (m_profile.meshletCull) {
-        m_clusterStreamingUpdatePipeline =
-            reloadComputeShader("Shaders/Streaming/stream_update_scene",
-                                "computeMain",
-                                nullptr,
-                                &errorMessage);
-        if (!m_clusterStreamingUpdatePipeline.nativeHandle()) {
-            spdlog::error("Failed to create cluster streaming update pipeline: {}",
-                          formatError(&errorMessage,
-                                      "Slang cluster streaming update shader compilation failed"));
-            return false;
-        }
-    } else {
-        releaseOwnedHandle(m_clusterStreamingUpdatePipeline);
-    }
-
-    errorMessage.clear();
-    if (m_profile.meshletCull) {
-        m_instanceClassifyPipeline = reloadComputeShader("Shaders/Visibility/instance_classify",
-                                                         "computeMain",
-                                                         nullptr,
-                                                         &errorMessage);
-        if (!m_instanceClassifyPipeline.nativeHandle()) {
-            spdlog::error("Failed to create instance classify pipeline: {}",
-                          formatError(&errorMessage, "Slang instance classify shader compilation failed"));
-            return false;
-        }
-
-        errorMessage.clear();
-        m_cullPipeline = reloadComputeShader("Shaders/Visibility/meshlet_cull",
-                                             "computeMain",
-                                             nullptr,
-                                             &errorMessage);
-        if (!m_cullPipeline.nativeHandle()) {
-            spdlog::error("Failed to create meshlet cull pipeline: {}",
-                          formatError(&errorMessage, "Slang meshlet cull shader compilation failed"));
-            return false;
-        }
-
-        errorMessage.clear();
-        m_clusterStreamingAgeFilterPipeline =
-            reloadComputeShader("Shaders/Streaming/stream_agefilter_groups",
-                                "computeMain",
-                                nullptr,
-                                &errorMessage);
-        if (!m_clusterStreamingAgeFilterPipeline.nativeHandle()) {
-            spdlog::error("Failed to create cluster streaming age filter pipeline: {}",
-                          formatError(&errorMessage,
-                                      "Slang cluster streaming age filter shader compilation failed"));
-            return false;
-        }
-    } else {
-        releaseOwnedHandle(m_instanceClassifyPipeline);
-        releaseOwnedHandle(m_cullPipeline);
-        releaseOwnedHandle(m_clusterStreamingAgeFilterPipeline);
-    }
-
-    errorMessage.clear();
-    if (m_profile.hzbBuild) {
-        m_hzbBuildPipeline = reloadComputeShader("Shaders/Visibility/hzb_spd",
-                                                 "computeMain",
-                                                 nullptr,
-                                                 &errorMessage);
-        if (!m_hzbBuildPipeline.nativeHandle()) {
-            spdlog::error("Failed to create HZB build pipeline: {}",
-                          formatError(&errorMessage, "Slang HZB build shader compilation failed"));
-            return false;
-        }
-    } else {
-        releaseOwnedHandle(m_hzbBuildPipeline);
-    }
-
-    errorMessage.clear();
-    if (m_profile.buildIndirect) {
-        m_buildIndirectPipeline = reloadComputeShader("Shaders/Visibility/build_indirect",
-                                                      "computeMain",
-                                                      nullptr,
-                                                      &errorMessage);
-        if (!m_buildIndirectPipeline.nativeHandle()) {
-            spdlog::error("Failed to create build indirect pipeline: {}",
-                          formatError(&errorMessage, "Slang build indirect shader compilation failed"));
-            return false;
-        }
-    } else {
-        releaseOwnedHandle(m_buildIndirectPipeline);
-    }
-
-    errorMessage.clear();
-    if (m_profile.deferredLighting) {
-        m_computePipeline = reloadComputeShader("Shaders/Visibility/deferred_lighting",
-                                                "computeMain",
-                                                patchComputeShaderSource,
-                                                &errorMessage);
-        if (!m_computePipeline.nativeHandle()) {
-            spdlog::error("Failed to create deferred lighting pipeline: {}",
-                          formatError(&errorMessage, "Slang deferred lighting shader compilation failed"));
-            return false;
-        }
-    } else {
-        releaseOwnedHandle(m_computePipeline);
-    }
-
-    errorMessage.clear();
-    if (m_profile.meshletVisualize) {
-        m_meshletVisPipeline = reloadComputeShader("Shaders/Visibility/meshlet_visualize",
-                                                   "computeMain",
-                                                   nullptr,
-                                                   &errorMessage);
-        if (!m_meshletVisPipeline.nativeHandle()) {
-            spdlog::warn("Failed to compile meshlet visualize shader; visualization disabled: {}",
-                         formatError(&errorMessage, "Slang meshlet visualize shader compilation failed"));
-        }
-    } else {
-        releaseOwnedHandle(m_meshletVisPipeline);
     }
 
     errorMessage.clear();
@@ -685,54 +487,6 @@ std::pair<int, int> ShaderManager::reloadAll() {
         releaseOwnedHandle(m_meshPipeline);
     }
 
-    if (m_profile.visibility) {
-        if (!m_supportsMeshShaders) {
-            spdlog::info("Skipping visibility PSO hot-reload because mesh shaders are not supported");
-            releaseOwnedHandle(m_visPipeline);
-        } else if (!m_validateVisibilityPipelines) {
-            spdlog::info("Skipping visibility PSO hot-reload on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
-                         kSlangVisibilityPerPrimitiveIssueUrl);
-            releaseOwnedHandle(m_visPipeline);
-        } else {
-            reloadPipeline(true,
-                           m_visPipeline,
-                           "visibility PSO",
-                           [&](std::string& localError) {
-                               return reloadMeshShader("Shaders/Visibility/visibility",
-                                                       patchVisibilityShaderSource,
-                                                       RhiFormat::R32Uint,
-                                                       RhiFormat::D32Float,
-                                                       &localError);
-                           });
-        }
-    } else {
-        releaseOwnedHandle(m_visPipeline);
-    }
-
-    if (m_profile.visibilityIndirect) {
-        if (!m_supportsMeshShaders) {
-            spdlog::info("Skipping visibility indirect PSO hot-reload because mesh shaders are not supported");
-            releaseOwnedHandle(m_visIndirectPipeline);
-        } else if (!m_validateVisibilityPipelines) {
-            spdlog::info("Skipping visibility indirect PSO hot-reload on Vulkan due to Slang PerPrimitiveEXT blocker: {}",
-                         kSlangVisibilityPerPrimitiveIssueUrl);
-            releaseOwnedHandle(m_visIndirectPipeline);
-        } else {
-            reloadPipeline(true,
-                           m_visIndirectPipeline,
-                           "visibility indirect PSO",
-                           [&](std::string& localError) {
-                               return reloadMeshShader("Shaders/Visibility/visibility_indirect",
-                                                       patchVisibilityShaderSource,
-                                                       RhiFormat::R32Uint,
-                                                       RhiFormat::D32Float,
-                                                       &localError);
-                           });
-        }
-    } else {
-        releaseOwnedHandle(m_visIndirectPipeline);
-    }
-
     if (m_profile.clusterRender && m_supportsMeshShaders) {
         reloadPipeline(true,
                        m_clusterRenderPipeline,
@@ -747,86 +501,6 @@ std::pair<int, int> ShaderManager::reloadAll() {
     } else {
         releaseOwnedHandle(m_clusterRenderPipeline);
     }
-
-    reloadPipeline(m_profile.meshletCull,
-                   m_clusterStreamingUpdatePipeline,
-                   "cluster streaming update PSO",
-                   [&](std::string& localError) {
-                       return reloadComputeShader("Shaders/Streaming/stream_update_scene",
-                                                  "computeMain",
-                                                  nullptr,
-                                                  &localError);
-                   });
-
-    reloadPipeline(m_profile.meshletCull,
-                   m_instanceClassifyPipeline,
-                   "instance classify PSO",
-                   [&](std::string& localError) {
-                       return reloadComputeShader("Shaders/Visibility/instance_classify",
-                                                  "computeMain",
-                                                  nullptr,
-                                                  &localError);
-                   });
-
-    reloadPipeline(m_profile.meshletCull,
-                   m_cullPipeline,
-                   "meshlet cull PSO",
-                   [&](std::string& localError) {
-                       return reloadComputeShader("Shaders/Visibility/meshlet_cull",
-                                                  "computeMain",
-                                                  nullptr,
-                                                  &localError);
-                   });
-
-    reloadPipeline(m_profile.meshletCull,
-                   m_clusterStreamingAgeFilterPipeline,
-                   "cluster streaming age filter PSO",
-                   [&](std::string& localError) {
-                       return reloadComputeShader("Shaders/Streaming/stream_agefilter_groups",
-                                                  "computeMain",
-                                                  nullptr,
-                                                  &localError);
-                   });
-
-    reloadPipeline(m_profile.hzbBuild,
-                   m_hzbBuildPipeline,
-                   "HZB build PSO",
-                   [&](std::string& localError) {
-                       return reloadComputeShader("Shaders/Visibility/hzb_spd",
-                                                  "computeMain",
-                                                  nullptr,
-                                                  &localError);
-                   });
-
-    reloadPipeline(m_profile.buildIndirect,
-                   m_buildIndirectPipeline,
-                   "build indirect PSO",
-                   [&](std::string& localError) {
-                       return reloadComputeShader("Shaders/Visibility/build_indirect",
-                                                  "computeMain",
-                                                  nullptr,
-                                                  &localError);
-                   });
-
-    reloadPipeline(m_profile.deferredLighting,
-                   m_computePipeline,
-                   "deferred lighting PSO",
-                   [&](std::string& localError) {
-                       return reloadComputeShader("Shaders/Visibility/deferred_lighting",
-                                                  "computeMain",
-                                                  patchComputeShaderSource,
-                                                  &localError);
-                   });
-
-    reloadPipeline(m_profile.meshletVisualize,
-                   m_meshletVisPipeline,
-                   "meshlet visualize PSO",
-                   [&](std::string& localError) {
-                       return reloadComputeShader("Shaders/Visibility/meshlet_visualize",
-                                                  "computeMain",
-                                                  nullptr,
-                                                  &localError);
-                   });
 
     reloadPipeline(m_profile.sky,
                    m_skyPipeline,
