@@ -355,7 +355,7 @@ bool ShaderManager::buildAll() {
 
     errorMessage.clear();
     if (m_profile.hzbBuild) {
-        m_hzbBuildPipeline = reloadComputeShader("Shaders/Visibility/hzb_build",
+        m_hzbBuildPipeline = reloadComputeShader("Shaders/Visibility/hzb_spd",
                                                  "computeMain",
                                                  nullptr,
                                                  &errorMessage);
@@ -792,7 +792,7 @@ std::pair<int, int> ShaderManager::reloadAll() {
                    m_hzbBuildPipeline,
                    "HZB build PSO",
                    [&](std::string& localError) {
-                       return reloadComputeShader("Shaders/Visibility/hzb_build",
+                       return reloadComputeShader("Shaders/Visibility/hzb_spd",
                                                   "computeMain",
                                                   nullptr,
                                                   &localError);

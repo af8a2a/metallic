@@ -1,7 +1,7 @@
 #ifndef HZB_CONSTANTS_H
 #define HZB_CONSTANTS_H
 
-#define HZB_MAX_LEVELS 10u
+#define HZB_MAX_LEVELS 13u
 
 #ifdef __cplusplus
 

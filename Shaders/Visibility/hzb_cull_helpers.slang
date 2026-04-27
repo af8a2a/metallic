@@ -9,7 +9,10 @@ float sampleHzb(uint level, uint2 coord) {
     case 6u: return hzbPyramid[6].Load(int3(coord, 0));
     case 7u: return hzbPyramid[7].Load(int3(coord, 0));
     case 8u: return hzbPyramid[8].Load(int3(coord, 0));
-    default: return hzbPyramid[9].Load(int3(coord, 0));
+    case 9u: return hzbPyramid[9].Load(int3(coord, 0));
+    case 10u: return hzbPyramid[10].Load(int3(coord, 0));
+    case 11u: return hzbPyramid[11].Load(int3(coord, 0));
+    default: return hzbPyramid[12].Load(int3(coord, 0));
     }
 }
 
@@ -112,7 +115,10 @@ float sampleCurrentHzb(uint level, uint2 coord) {
     case 6u: return currentHzbPyramid[6].Load(int3(coord, 0));
     case 7u: return currentHzbPyramid[7].Load(int3(coord, 0));
     case 8u: return currentHzbPyramid[8].Load(int3(coord, 0));
-    default: return currentHzbPyramid[9].Load(int3(coord, 0));
+    case 9u: return currentHzbPyramid[9].Load(int3(coord, 0));
+    case 10u: return currentHzbPyramid[10].Load(int3(coord, 0));
+    case 11u: return currentHzbPyramid[11].Load(int3(coord, 0));
+    default: return currentHzbPyramid[12].Load(int3(coord, 0));
     }
 }
 

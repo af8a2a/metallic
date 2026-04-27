@@ -3,6 +3,7 @@
 #include "render_pass.h"
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 
 #include "imgui.h"
 #include <spdlog/spdlog.h>
@@ -1593,6 +1594,7 @@ struct TextureViewerCache {
     int selectedIndex = -1;
     char filterBuf[128] = {};
     float thumbnailSize = 128.0f;
+    float exposureEV = 0.0f;
 };
 
 TextureViewerCache& viewerCache() {
@@ -1719,13 +1721,23 @@ void FrameGraph::textureViewerImGui() {
             if (!sel->producerName.empty())
                 ImGui::Text("Producer: %s", sel->producerName.c_str());
 
+            ImGui::SetNextItemWidth(200.0f);
+            ImGui::SliderFloat("Exposure (EV)", &cache.exposureEV, -10.0f, 10.0f, "%.1f");
+            ImGui::SameLine();
+            if (ImGui::Button("Reset"))
+                cache.exposureEV = 0.0f;
+
+            float mult = std::pow(2.0f, cache.exposureEV);
+            ImVec4 tint(mult, mult, mult, 1.0f);
+
             uint64_t key = reinterpret_cast<uint64_t>(sel->imageView);
             auto dit = cache.descriptors.find(key);
             if (dit != cache.descriptors.end() && sel->width > 0 && sel->height > 0) {
                 float avail = ImGui::GetContentRegionAvail().x;
                 float scale = std::min(avail / static_cast<float>(sel->width), 1.0f);
-                ImGui::Image(reinterpret_cast<ImTextureID>(dit->second),
-                             ImVec2(sel->width * scale, sel->height * scale));
+                ImGui::ImageWithBg(reinterpret_cast<ImTextureID>(dit->second),
+                             ImVec2(sel->width * scale, sel->height * scale),
+                             ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), tint);
             }
             ImGui::End();
             return;

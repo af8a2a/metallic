@@ -1,6 +1,8 @@
 #ifndef GPU_DRIVEN_CONSTANTS_H
 #define GPU_DRIVEN_CONSTANTS_H
 
+#include "hzb_constants.h"
+
 // Shared layout for append/consume stages that publish both stats and a typed
 // 1D indirect command into the same byte-address buffer.
 //
@@ -59,7 +61,7 @@
 #define GPU_DRIVEN_CULL_LOD_GROUP_MESHLET_INDICES_SOURCE_BINDING 16u
 #define GPU_DRIVEN_CULL_GROUP_AGE_BINDING 17u
 #define GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE 18u
-#define GPU_DRIVEN_HZB_TEXTURE_BINDING_COUNT 10u
+#define GPU_DRIVEN_HZB_TEXTURE_BINDING_COUNT HZB_MAX_LEVELS
 #define GPU_DRIVEN_CULL_CURRENT_HZB_TEXTURE_BINDING_BASE \
     (GPU_DRIVEN_CULL_HZB_TEXTURE_BINDING_BASE + GPU_DRIVEN_HZB_TEXTURE_BINDING_COUNT)
 

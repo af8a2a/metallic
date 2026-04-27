@@ -404,6 +404,13 @@ public:
         m_currentHzbLevelCount = currentHzbTextureCount;
 
         const float4x4 currentCullProj = m_frameContext->unjitteredProj;
+        const float4x4 currentCullView = m_frameContext->view;
+        const float4x4 previousCullProj = m_frameContext->prevCullProj;
+        const float4x4 previousCullView = m_frameContext->prevCullView;
+        const float2 currentProjScale =
+            float2(std::abs(currentCullProj[0].x), std::abs(currentCullProj[1].y));
+        const float2 previousProjScale =
+            float2(std::abs(previousCullProj[0].x), std::abs(previousCullProj[1].y));
         const bool classifyWithCurrentHzb =
             m_enableOcclusionCull && m_cullPassIndex > 0u && currentHzbTextureCount > 0u;
         const RhiTexture* const* classifyHzbTextures =
@@ -412,21 +419,20 @@ public:
             classifyWithCurrentHzb ? currentHzbTextureCount : hzbTextureCount;
 
         InstanceClassifyUniforms classifyUni{};
-        classifyUni.viewProj = transpose(currentCullProj * m_frameContext->view);
+        classifyUni.viewProj = transpose(currentCullProj * currentCullView);
         classifyUni.prevViewProj = classifyWithCurrentHzb
             ? classifyUni.viewProj
-            : transpose(m_frameContext->prevCullProj * m_frameContext->prevCullView);
+            : transpose(previousCullProj * previousCullView);
         classifyUni.prevView = classifyWithCurrentHzb
-            ? transpose(m_frameContext->view)
-            : transpose(m_frameContext->prevCullView);
+            ? transpose(currentCullView)
+            : transpose(previousCullView);
         classifyUni.cameraWorldPos = m_frameContext->cameraWorldPos;
         classifyUni.prevCameraWorldPos = classifyWithCurrentHzb
             ? m_frameContext->cameraWorldPos
             : m_frameContext->prevCameraWorldPos;
         classifyUni.prevProjScale = classifyWithCurrentHzb
-            ? float2(std::abs(currentCullProj[0].x), std::abs(currentCullProj[1].y))
-            : float2(std::abs(m_frameContext->prevCullProj[0].x),
-                     std::abs(m_frameContext->prevCullProj[1].y));
+            ? currentProjScale
+            : previousProjScale;
         classifyUni.instanceCount = gpuScene.instanceCount;
         classifyUni.enableFrustumCull = m_frameContext->enableFrustumCull ? 1u : 0u;
         classifyUni.enableOcclusionCull =
@@ -440,18 +446,23 @@ public:
         classifyUni.occlusionDepthBias = m_occlusionDepthBias;
         classifyUni.occlusionBoundsScale = m_occlusionBoundsScale;
 
+        // Classify may temporarily project current HZB through the "previous" helper;
+        // meshlet cull still needs both real history and current-frame HZB spaces.
         CullUniforms cullUni{};
-        cullUni.viewProj = classifyUni.viewProj;
-        cullUni.view = transpose(m_frameContext->view);
-        cullUni.prevViewProj = classifyUni.prevViewProj;
-        cullUni.prevView = classifyUni.prevView;
-        cullUni.cameraWorldPos = classifyUni.cameraWorldPos;
-        cullUni.prevCameraWorldPos = classifyUni.prevCameraWorldPos;
-        cullUni.projScale =
-            float2(std::abs(currentCullProj[0].x), std::abs(currentCullProj[1].y));
+        cullUni.viewProj = transpose(currentCullProj * currentCullView);
+        cullUni.view = transpose(currentCullView);
+        cullUni.prevViewProj = transpose(previousCullProj * previousCullView);
+        cullUni.prevView = transpose(previousCullView);
+        cullUni.cameraWorldPos = m_frameContext->cameraWorldPos;
+        cullUni.prevCameraWorldPos = m_frameContext->prevCameraWorldPos;
+        cullUni.projScale = currentProjScale;
         cullUni.renderTargetSize = float2(static_cast<float>(m_width), static_cast<float>(m_height));
-        cullUni.prevProjScale = classifyUni.prevProjScale;
-        cullUni.hzbTextureSize = classifyUni.hzbTextureSize;
+        cullUni.prevProjScale = previousProjScale;
+        if (hzbTextureCount > 0u) {
+            cullUni.hzbTextureSize =
+                float2(static_cast<float>(hzbTextures[0]->width()),
+                       static_cast<float>(hzbTextures[0]->height()));
+        }
         if (currentHzbTextureCount > 0) {
             cullUni.currentHzbTextureSize =
                 float2(static_cast<float>(currentHzbTextures[0]->width()),
@@ -585,8 +596,11 @@ public:
                 1.0f - float(m_lastVisibleInstanceCount) / float(m_ctx.gpuScene.instanceCount);
             ImGui::Text("Instance Cull Rate: %.1f%%", coarseCullRate * 100.0f);
         }
-        if (m_totalMeshlets > 0) {
-            float cullRate = 1.0f - float(m_lastVisibleCount) / float(m_totalMeshlets);
+        uint32_t totalCandidates =
+            m_lastTraversalStats.candidateClusterMeshletCount +
+            m_lastTraversalStats.candidateFallbackMeshletCount;
+        if (totalCandidates > 0) {
+            float cullRate = 1.0f - float(m_lastVisibleCount) / float(totalCandidates);
             ImGui::Text("Meshlet Cull Rate: %.1f%%", cullRate * 100.0f);
         }
         if (m_lastTraversalStats.traversedNodeCount > 0) {
