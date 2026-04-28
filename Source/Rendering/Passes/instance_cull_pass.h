@@ -147,6 +147,51 @@ public:
         ImGui::Text("Phase: %u", m_phase);
         ImGui::Text("Hard Filter: Conservative frustum");
         ImGui::Text("HZB: %s", m_enableOcclusion ? "Diagnostic only" : "Disabled");
+
+        const uint32_t instanceCount = m_ctx.gpuScene.instanceCount;
+        const uint32_t sceneVisible = m_ctx.gpuScene.visibleInstanceCount;
+        ImGui::Separator();
+        ImGui::Text("Instances: %u total, %u scene-visible", instanceCount, sceneVisible);
+
+        ClusterOcclusionState* state =
+            m_runtimeContext ? m_runtimeContext->clusterOcclusionState : nullptr;
+        if (!state) {
+            ImGui::TextDisabled("Stats unavailable: no occlusion state");
+            return;
+        }
+
+        ImGui::Text("State: %s (buffer frame %u, current frame %u)",
+                    state->instanceVisibilityValid ? "valid" : "invalid",
+                    state->instanceVisibilityFrameIndex,
+                    m_frameContext ? m_frameContext->frameIndex : 0u);
+        ImGui::Text("Capacity: %u instances", state->maxInstances);
+
+        ClusterOcclusionState::InstanceCullStats stats = state->readInstanceCullStats();
+        if (!stats.countersReadable) {
+            ImGui::TextDisabled("GPU counters unavailable");
+            return;
+        }
+
+        const uint32_t phase0Culled = sceneVisible > stats.phase0Visible
+            ? sceneVisible - stats.phase0Visible
+            : 0u;
+        const float visiblePct = sceneVisible > 0u
+            ? 100.0f * static_cast<float>(stats.phase0Visible) / static_cast<float>(sceneVisible)
+            : 0.0f;
+        const float culledPct = sceneVisible > 0u
+            ? 100.0f * static_cast<float>(phase0Culled) / static_cast<float>(sceneVisible)
+            : 0.0f;
+
+        ImGui::SeparatorText("Last GPU Counters");
+        ImGui::Text("Phase0 visible: %u (%.1f%%)", stats.phase0Visible, visiblePct);
+        ImGui::Text("Phase0 rejected: %u", stats.phase0Rejected);
+        ImGui::Text("Phase0 culled vs scene-visible: %u (%.1f%%)", phase0Culled, culledPct);
+        ImGui::Text("Phase1 visible: %u", stats.phase1Visible);
+        if (stats.indirectReadable) {
+            ImGui::Text("Indirect dispatch groups: %u", stats.dispatchGroups);
+        } else {
+            ImGui::TextDisabled("Indirect dispatch groups unavailable");
+        }
     }
 
 private:

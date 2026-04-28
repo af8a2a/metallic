@@ -17,8 +17,20 @@ struct ClusterOcclusionState {
     static constexpr uint32_t kCounterPhase0Visible = 0u;
     static constexpr uint32_t kCounterPhase0Recheck = 4u;
     static constexpr uint32_t kCounterPhase1Visible = 8u;
+    static constexpr uint32_t kInstanceCounterPhase0Visible = 0u;
+    static constexpr uint32_t kInstanceCounterPhase0Rejected = 4u;
+    static constexpr uint32_t kInstanceCounterPhase1Visible = 8u;
     static constexpr uint32_t kIndirectPhase0Offset = 0u;
     static constexpr uint32_t kIndirectPhase1Offset = 12u;
+
+    struct InstanceCullStats {
+        bool countersReadable = false;
+        bool indirectReadable = false;
+        uint32_t phase0Visible = 0;
+        uint32_t phase0Rejected = 0;
+        uint32_t phase1Visible = 0;
+        uint32_t dispatchGroups = 0;
+    };
 
     uint32_t width = 0;
     uint32_t height = 0;
@@ -121,6 +133,8 @@ struct ClusterOcclusionState {
 
         if (needsInstanceResize) {
             maxInstances = newMaxInstances;
+            const uint32_t zeroCounters[4] = {};
+            const uint32_t zeroIndirectArgs[3] = {};
             // visibleInstanceBuffer: stores uint indices of visible instances
             visibleInstanceBuffer = createBuffer(factory,
                                                  maxInstances * sizeof(uint32_t),
@@ -130,9 +144,17 @@ struct ClusterOcclusionState {
                                                     maxInstances * sizeof(uint32_t),
                                                     "InstanceCull Visibility Flags");
             // instanceCounters: [0]=phase0 visible, [4]=phase0 rejected, [8]=phase1 visible
-            instanceCounters = createBuffer(factory, 16u, "InstanceCull Counters");
+            instanceCounters = createBuffer(factory,
+                                            16u,
+                                            "InstanceCull Counters",
+                                            true,
+                                            zeroCounters);
             // instanceIndirectArgs: dispatch args for downstream passes
-            instanceIndirectArgs = createBuffer(factory, 12u, "InstanceCull Indirect Args");
+            instanceIndirectArgs = createBuffer(factory,
+                                                12u,
+                                                "InstanceCull Indirect Args",
+                                                true,
+                                                zeroIndirectArgs);
         }
 
         return phase0VisibleWorklist &&
@@ -196,6 +218,25 @@ struct ClusterOcclusionState {
             return 1u;
         }
         return hzbLevelDimension(height, std::min(level, mipCount - 1u));
+    }
+
+    InstanceCullStats readInstanceCullStats() {
+        InstanceCullStats stats{};
+        if (instanceCounters && instanceCounters->size() >= 12u) {
+            if (const auto* counters = static_cast<const uint32_t*>(instanceCounters->mappedData())) {
+                stats.countersReadable = true;
+                stats.phase0Visible = counters[kInstanceCounterPhase0Visible / sizeof(uint32_t)];
+                stats.phase0Rejected = counters[kInstanceCounterPhase0Rejected / sizeof(uint32_t)];
+                stats.phase1Visible = counters[kInstanceCounterPhase1Visible / sizeof(uint32_t)];
+            }
+        }
+        if (instanceIndirectArgs && instanceIndirectArgs->size() >= 4u) {
+            if (const auto* indirectArgs = static_cast<const uint32_t*>(instanceIndirectArgs->mappedData())) {
+                stats.indirectReadable = true;
+                stats.dispatchGroups = indirectArgs[0];
+            }
+        }
+        return stats;
     }
 
 private:
