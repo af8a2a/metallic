@@ -129,8 +129,8 @@ bool projectBounds(ClusterInfo item, out float4 clipMin, out float4 clipMax, out
 
     float4 hPos = mul(params.viewProj, mul(inst.worldMatrix, float4(boxCorner(center, radius, 0u), 1.0)));
     uint commonBits = getCullBits(hPos);
-    bool valid = !(-kEpsilon < hPos.w && hPos.w < kEpsilon);
-    float4 clip = float4(hPos.xyz / max(abs(hPos.w), kEpsilon), hPos.w);
+    bool valid = hPos.w >= kEpsilon;
+    float4 clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
     clipMin = clip;
     clipMax = clip;
     clipValid = valid;
@@ -139,8 +139,8 @@ bool projectBounds(ClusterInfo item, out float4 clipMin, out float4 clipMax, out
     for (uint corner = 1u; corner < 8u; ++corner) {
         hPos = mul(params.viewProj, mul(inst.worldMatrix, float4(boxCorner(center, radius, corner), 1.0)));
         commonBits &= getCullBits(hPos);
-        valid = !(-kEpsilon < hPos.w && hPos.w < kEpsilon);
-        clip = float4(hPos.xyz / max(abs(hPos.w), kEpsilon), hPos.w);
+        valid = hPos.w >= kEpsilon;
+        clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
         clipMin = min(clipMin, clip);
         clipMax = max(clipMax, clip);
         clipValid = clipValid && valid;

@@ -61,6 +61,7 @@ static const uint kCounterPhase1Visible  = 8u;
 static const uint kInstanceVisibleFlag   = 1u;
 static const float kEpsilon = 1.2e-7;
 static const float kDepthNudge = 2.0 / float(1 << 24);
+static const float kFrustumSlack = 1.0e-5;
 
 uint visibleCounterOffset() {
     return params.phase == 0u ? kCounterPhase0Visible : kCounterPhase1Visible;
@@ -101,8 +102,8 @@ bool projectBounds(float3 center, float radius, float4x4 worldMatrix,
                    out float4 clipMin, out float4 clipMax, out bool clipValid) {
     float4 hPos = mul(params.viewProj, mul(worldMatrix, float4(boxCorner(center, radius, 0u), 1.0)));
     uint commonBits = getCullBits(hPos);
-    bool valid = !(-kEpsilon < hPos.w && hPos.w < kEpsilon);
-    float4 clip = float4(hPos.xyz / max(abs(hPos.w), kEpsilon), hPos.w);
+    bool valid = hPos.w >= kEpsilon;
+    float4 clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
     clipMin = clip;
     clipMax = clip;
     clipValid = valid;
@@ -111,8 +112,8 @@ bool projectBounds(float3 center, float radius, float4x4 worldMatrix,
     for (uint corner = 1u; corner < 8u; ++corner) {
         hPos = mul(params.viewProj, mul(worldMatrix, float4(boxCorner(center, radius, corner), 1.0)));
         commonBits &= getCullBits(hPos);
-        valid = !(-kEpsilon < hPos.w && hPos.w < kEpsilon);
-        clip = float4(hPos.xyz / max(abs(hPos.w), kEpsilon), hPos.w);
+        valid = hPos.w >= kEpsilon;
+        clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
         clipMin = min(clipMin, clip);
         clipMax = max(clipMax, clip);
         clipValid = clipValid && valid;
@@ -121,6 +122,26 @@ bool projectBounds(float3 center, float radius, float4x4 worldMatrix,
     clipMin = float4(clamp(clipMin.xy, float2(-1.0), float2(1.0)), clipMin.zw);
     clipMax = float4(clamp(clipMax.xy, float2(-1.0), float2(1.0)), clipMax.zw);
     return commonBits == 0u;
+}
+
+bool planeIntersectsSphere(float4x4 localToClip, float3 center, float radius, float4 clipPlane) {
+    float4 localPlane = mul(clipPlane, localToClip);
+    float centerDistance = dot(localPlane, float4(center, 1.0));
+    float supportRadius = radius * length(localPlane.xyz);
+    float slack = max(kFrustumSlack, (abs(centerDistance) + supportRadius) * kFrustumSlack);
+    return centerDistance + supportRadius >= -slack;
+}
+
+bool sphereIntersectsFrustum(float3 center, float radius, float4x4 worldMatrix) {
+    float4x4 localToClip = mul(params.viewProj, worldMatrix);
+
+    // D3D/Metal/Vulkan clip volume: -w <= x,y <= w and 0 <= z <= w.
+    return planeIntersectsSphere(localToClip, center, radius, float4( 1.0,  0.0,  0.0, 1.0)) &&
+           planeIntersectsSphere(localToClip, center, radius, float4(-1.0,  0.0,  0.0, 1.0)) &&
+           planeIntersectsSphere(localToClip, center, radius, float4( 0.0,  1.0,  0.0, 1.0)) &&
+           planeIntersectsSphere(localToClip, center, radius, float4( 0.0, -1.0,  0.0, 1.0)) &&
+           planeIntersectsSphere(localToClip, center, radius, float4( 0.0,  0.0,  1.0, 0.0)) &&
+           planeIntersectsSphere(localToClip, center, radius, float4( 0.0,  0.0, -1.0, 1.0));
 }
 
 bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
@@ -193,11 +214,19 @@ void cullMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     float3 center = geom.boundsCenterRadius.xyz;
     float radius = geom.boundsCenterRadius.w;
-    if (radius <= 0.0) return;
+    if (radius <= 0.0) {
+        uint degenerateIndex;
+        counters.InterlockedAdd(visibleCounterOffset(), 1u, degenerateIndex);
+        if (degenerateIndex < params.maxInstances) {
+            visibleInstances[degenerateIndex] = instIdx;
+            instanceVisibility[instIdx] = 1u;
+        }
+        return;
+    }
 
     float4 clipMin, clipMax;
     bool clipValid;
-    bool inFrustum = projectBounds(center, radius, inst.worldMatrix, clipMin, clipMax, clipValid);
+    bool inFrustum = sphereIntersectsFrustum(center, radius, inst.worldMatrix);
     if (!inFrustum) {
         if (params.phase == 0u) {
             // Track rejected for Phase 1 recheck (future use)
@@ -205,6 +234,7 @@ void cullMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         }
         return;
     }
+    projectBounds(center, radius, inst.worldMatrix, clipMin, clipMax, clipValid);
 
     uint index;
     counters.InterlockedAdd(visibleCounterOffset(), 1u, index);

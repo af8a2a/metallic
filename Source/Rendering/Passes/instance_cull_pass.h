@@ -145,7 +145,7 @@ public:
 
     void renderUI() override {
         ImGui::Text("Phase: %u", m_phase);
-        ImGui::Text("Hard Filter: Frustum");
+        ImGui::Text("Hard Filter: Conservative frustum");
         ImGui::Text("HZB: %s", m_enableOcclusion ? "Diagnostic only" : "Disabled");
     }
 
@@ -171,7 +171,7 @@ private:
     InstanceCullUniforms makeUniforms(const ClusterOcclusionState& state,
                                       uint32_t instanceCount) const {
         InstanceCullUniforms u{};
-        float4x4 vp = m_frameContext->proj * m_frameContext->view;
+        float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
         float4x4 vpT = transpose(vp);
         std::memcpy(u.viewProj, &vpT, sizeof(u.viewProj));
         u.instanceCount = instanceCount;
