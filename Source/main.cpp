@@ -1,16 +1,8 @@
-#include <ml.h>
-
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
-#include "camera.h"
-#include "input.h"
-
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
-
-#include "scene_graph_ui.h"
-#include "scene_context.h"
 
 #include <spdlog/spdlog.h>
 #include <string>
@@ -21,6 +13,14 @@
 #include <memory>
 
 #include <tracy/Tracy.hpp>
+#include <ml.h>
+
+#include "camera.h"
+#include "input.h"
+
+#include "scene_graph_ui.h"
+#include "scene_context.h"
+
 #include "cluster_occlusion_state.h"
 #include "frame_graph.h"
 #include "visibility_constants.h"
