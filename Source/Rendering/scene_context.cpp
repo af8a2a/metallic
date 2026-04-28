@@ -51,6 +51,14 @@ static std::vector<float> loadFloatData(const std::string& path, size_t expected
     return data;
 }
 
+static std::string resolveScenePath(const std::string& projectRoot, const std::string& gltfPath) {
+    std::filesystem::path path(gltfPath);
+    if (!path.is_absolute() && !projectRoot.empty()) {
+        path = std::filesystem::path(projectRoot) / path;
+    }
+    return path.lexically_normal().generic_string();
+}
+
 static bool loadAtmosphereTextures(const RhiDevice& device, const char* projectRoot,
                                    AtmosphereTextureSet& out) {
     constexpr int kTransmittanceWidth = 256;
@@ -161,21 +169,22 @@ bool SceneContext::loadScene(const std::string& gltfPath) {
     unloadScene();
     initFallbackResources();
 
-    if (!m_scene.load(gltfPath)) {
-        spdlog::error("Failed to load scene: {}", gltfPath);
+    const std::string resolvedGltfPath = resolveScenePath(m_projectRoot, gltfPath);
+    if (!m_scene.load(resolvedGltfPath)) {
+        spdlog::error("Failed to load scene: {}", resolvedGltfPath);
         return false;
     }
 
     std::string cacheDir = m_projectRoot + "/Asset/MeshletCache";
     m_sceneGpu = std::make_unique<SceneGpu>(m_device, m_queue);
     if (!m_sceneGpu->create(m_scene, cacheDir)) {
-        spdlog::error("Failed to create GPU resources for scene: {}", gltfPath);
+        spdlog::error("Failed to create GPU resources for scene: {}", resolvedGltfPath);
         m_sceneGpu.reset();
         m_scene.clear();
         return false;
     }
 
-    spdlog::info("Scene loaded successfully: {}", gltfPath);
+    spdlog::info("Scene loaded successfully: {}", resolvedGltfPath);
     return true;
 }
 
