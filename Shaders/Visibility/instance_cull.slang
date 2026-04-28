@@ -124,7 +124,10 @@ bool projectBounds(float3 center, float radius, float4x4 worldMatrix,
 }
 
 bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
-    if (params.enableOcclusion == 0u || params.hzbValid == 0u || !clipValid) {
+    if (params.enableOcclusion == 0u ||
+        params.hzbValid == 0u ||
+        params.hzbMipCount == 0u ||
+        !clipValid) {
         return true;
     }
 
@@ -137,12 +140,28 @@ bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
     float maxSize = max(pixelSize.x, pixelSize.y);
     if (maxSize < 1.0) return true;
 
-    uint mip = min(uint(ceil(log2(max(maxSize, 1.0)))), params.hzbMipCount - 1u);
+    uint mip = min(uint(ceil(log2(max(maxSize * 0.5, 1.0)))), params.hzbMipCount - 1u);
     uint w = mipWidth(mip);
     uint h = mipHeight(mip);
-    float2 centerUv = (uvMin + uvMax) * 0.5;
-    uint2 coord = min(uint2(centerUv * float2(float(w), float(h))), uint2(w - 1u, h - 1u));
-    float hzbDepth = hzbTextures[mip].Load(int3(coord, 0));
+    uint2 maxCoord = uint2(w - 1u, h - 1u);
+    float2 mipSize = float2(float(w), float(h));
+    uint2 rectMin = min(uint2(floor(uvMin * mipSize)), maxCoord);
+    uint2 rectMax = min(uint2(max(ceil(uvMax * mipSize) - float2(1.0), float2(0.0))), maxCoord);
+    rectMin = min(rectMin, rectMax);
+
+    float hzbDepth = 1.0;
+    [unroll]
+    for (uint y = 0u; y < 4u; ++y) {
+        uint sampleY = rectMin.y + y;
+        if (sampleY > rectMax.y) continue;
+
+        [unroll]
+        for (uint x = 0u; x < 4u; ++x) {
+            uint sampleX = rectMin.x + x;
+            if (sampleX > rectMax.x) continue;
+            hzbDepth = min(hzbDepth, hzbTextures[mip].Load(int3(uint2(sampleX, sampleY), 0)));
+        }
+    }
 
     return clipMax.z >= hzbDepth - kDepthNudge;
 }

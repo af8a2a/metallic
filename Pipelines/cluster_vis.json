@@ -137,6 +137,7 @@
       "sideEffect": false,
       "config": {
         "enableOcclusion": true,
+        "enableInstanceFilter": false,
         "phase": 0
       },
       "editorPos": [
@@ -187,6 +188,7 @@
       "sideEffect": false,
       "config": {
         "enableOcclusion": true,
+        "enableInstanceFilter": false,
         "phase": 1
       },
       "editorPos": [

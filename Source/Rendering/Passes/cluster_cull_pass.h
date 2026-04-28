@@ -61,6 +61,9 @@ public:
         if (config.config.contains("enableOcclusion")) {
             m_enableOcclusion = config.config["enableOcclusion"].get<bool>();
         }
+        if (config.config.contains("enableInstanceFilter")) {
+            m_enableInstanceFilter = config.config["enableInstanceFilter"].get<bool>();
+        }
     }
 
     FGResource getOutput(const std::string& outputName) const override {
@@ -160,6 +163,7 @@ public:
 
     void renderUI() override {
         ImGui::Text("Phase: %u", m_phase);
+        ImGui::Text("Instance Filter: %s", m_enableInstanceFilter ? "Enabled" : "Disabled");
         ImGui::Text("Occlusion: %s", m_enableOcclusion ? "Enabled" : "Disabled");
     }
 
@@ -206,7 +210,8 @@ private:
         uniforms.screenHeight = static_cast<uint32_t>(std::max(m_height, 1));
         uniforms.instanceCount = m_ctx.gpuScene.instanceCount;
         uniforms.useInstanceVisibility =
-            (state.instanceVisibilityValid &&
+            (m_enableInstanceFilter &&
+             state.instanceVisibilityValid &&
              state.instanceVisibilityFrameIndex == m_frameContext->frameIndex &&
              state.instanceVisibilityBuffer) ? 1u : 0u;
         return uniforms;
@@ -245,6 +250,7 @@ private:
     std::string m_name = "Cluster Cull";
     uint32_t m_phase = 0;
     bool m_enableOcclusion = true;
+    bool m_enableInstanceFilter = false;
     bool m_warnedMissingPipeline = false;
     FGResource m_phaseReady;
     FGResource m_cullDone;
