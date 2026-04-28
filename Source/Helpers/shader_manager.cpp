@@ -97,6 +97,9 @@ ShaderManager::~ShaderManager() {
     releaseOwnedHandle(m_clusterCullMainPipeline);
     releaseOwnedHandle(m_clusterCullFinalizePipeline);
     releaseOwnedHandle(m_clusterHizBuildPipeline);
+    releaseOwnedHandle(m_instanceCullResetPipeline);
+    releaseOwnedHandle(m_instanceCullMainPipeline);
+    releaseOwnedHandle(m_instanceCullFinalizePipeline);
     releaseOwnedHandle(m_clusterRenderPipeline);
     releaseOwnedHandle(m_tonemapSampler);
     releaseOwnedHandle(m_vertexDesc);
@@ -170,6 +173,12 @@ void ShaderManager::syncRuntimeContext() {
     if (m_clusterHizBuildPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["ClusterHizBuild"] = m_clusterHizBuildPipeline;
     m_rtCtx->clusterHizBuildSupported = m_clusterHizBuildPipeline.nativeHandle() != nullptr;
+    if (m_instanceCullResetPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["InstanceCullReset"] = m_instanceCullResetPipeline;
+    if (m_instanceCullMainPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["InstanceCullMain"] = m_instanceCullMainPipeline;
+    if (m_instanceCullFinalizePipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["InstanceCullFinalize"] = m_instanceCullFinalizePipeline;
 
     if (m_tonemapSampler.nativeHandle())
         m_rtCtx->samplersRhi["tonemap"] = m_tonemapSampler;
@@ -280,6 +289,43 @@ bool ShaderManager::buildAll() {
         releaseOwnedHandle(m_clusterCullMainPipeline);
         releaseOwnedHandle(m_clusterCullFinalizePipeline);
         releaseOwnedHandle(m_clusterHizBuildPipeline);
+    }
+
+    // Instance culling compute pipelines
+    errorMessage.clear();
+    if (enableClusterOcclusion) {
+        m_instanceCullResetPipeline = reloadComputeShader("Shaders/Visibility/instance_cull",
+                                                           "resetMain",
+                                                           patchComputeShaderSource,
+                                                           &errorMessage);
+        if (!m_instanceCullResetPipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile instance cull reset shader: {}",
+                         formatError(&errorMessage, "Slang instance cull reset compilation failed"));
+        }
+
+        errorMessage.clear();
+        m_instanceCullMainPipeline = reloadComputeShader("Shaders/Visibility/instance_cull",
+                                                          "cullMain",
+                                                          patchComputeShaderSource,
+                                                          &errorMessage);
+        if (!m_instanceCullMainPipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile instance cull shader: {}",
+                         formatError(&errorMessage, "Slang instance cull compilation failed"));
+        }
+
+        errorMessage.clear();
+        m_instanceCullFinalizePipeline = reloadComputeShader("Shaders/Visibility/instance_cull",
+                                                              "finalizeMain",
+                                                              patchComputeShaderSource,
+                                                              &errorMessage);
+        if (!m_instanceCullFinalizePipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile instance cull finalize shader: {}",
+                         formatError(&errorMessage, "Slang instance cull finalize compilation failed"));
+        }
+    } else {
+        releaseOwnedHandle(m_instanceCullResetPipeline);
+        releaseOwnedHandle(m_instanceCullMainPipeline);
+        releaseOwnedHandle(m_instanceCullFinalizePipeline);
     }
 
     errorMessage.clear();
@@ -616,6 +662,41 @@ std::pair<int, int> ShaderManager::reloadAll() {
         releaseOwnedHandle(m_clusterCullMainPipeline);
         releaseOwnedHandle(m_clusterCullFinalizePipeline);
         releaseOwnedHandle(m_clusterHizBuildPipeline);
+    }
+
+    // Instance cull reload
+    if (enableClusterOcclusion) {
+        reloadPipeline(true,
+                       m_instanceCullResetPipeline,
+                       "instance cull reset CS",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Visibility/instance_cull",
+                                                      "resetMain",
+                                                      patchComputeShaderSource,
+                                                      &localError);
+                       });
+        reloadPipeline(true,
+                       m_instanceCullMainPipeline,
+                       "instance cull CS",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Visibility/instance_cull",
+                                                      "cullMain",
+                                                      patchComputeShaderSource,
+                                                      &localError);
+                       });
+        reloadPipeline(true,
+                       m_instanceCullFinalizePipeline,
+                       "instance cull finalize CS",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Visibility/instance_cull",
+                                                      "finalizeMain",
+                                                      patchComputeShaderSource,
+                                                      &localError);
+                       });
+    } else {
+        releaseOwnedHandle(m_instanceCullResetPipeline);
+        releaseOwnedHandle(m_instanceCullMainPipeline);
+        releaseOwnedHandle(m_instanceCullFinalizePipeline);
     }
 
     reloadPipeline(m_profile.sky,

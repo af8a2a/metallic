@@ -106,6 +106,9 @@ private:
     RhiComputePipelineHandle m_clusterCullMainPipeline;
     RhiComputePipelineHandle m_clusterCullFinalizePipeline;
     RhiComputePipelineHandle m_clusterHizBuildPipeline;
+    RhiComputePipelineHandle m_instanceCullResetPipeline;
+    RhiComputePipelineHandle m_instanceCullMainPipeline;
+    RhiComputePipelineHandle m_instanceCullFinalizePipeline;
     RhiGraphicsPipelineHandle m_clusterRenderPipeline;
     RhiSamplerHandle m_tonemapSampler;
 

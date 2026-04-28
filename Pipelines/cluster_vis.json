@@ -101,9 +101,34 @@
         820.0,
         120.0
       ]
+    },
+    {
+      "id": "c0000000000000000000000000000024",
+      "name": "Instance Cull Phase0 Done",
+      "kind": "transient",
+      "type": "token",
+      "editorPos": [
+        60.0,
+        -280.0
+      ]
     }
   ],
   "passes": [
+    {
+      "id": "c1000000000000000000000000000100",
+      "name": "Instance Cull Phase0",
+      "type": "InstanceCullPass",
+      "enabled": true,
+      "sideEffect": false,
+      "config": {
+        "enableOcclusion": true,
+        "phase": 0
+      },
+      "editorPos": [
+        4040.0,
+        -308.0
+      ]
+    },
     {
       "id": "c1000000000000000000000000000001",
       "name": "Cluster Cull Phase0",
@@ -230,6 +255,20 @@
     }
   ],
   "edges": [
+    {
+      "id": "c2000000000000000000000000000100",
+      "passId": "c1000000000000000000000000000100",
+      "slotKey": "cullDone",
+      "direction": "output",
+      "resourceId": "c0000000000000000000000000000024"
+    },
+    {
+      "id": "c2000000000000000000000000000101",
+      "passId": "c1000000000000000000000000000001",
+      "slotKey": "phaseReady",
+      "direction": "input",
+      "resourceId": "c0000000000000000000000000000024"
+    },
     {
       "id": "c2000000000000000000000000000001",
       "passId": "c1000000000000000000000000000001",
