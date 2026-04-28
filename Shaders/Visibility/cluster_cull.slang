@@ -31,7 +31,8 @@ struct ClusterCullParams {
     uint hzbMipCount;
     uint screenWidth;
     uint screenHeight;
-    uint _pad;
+    uint instanceCount;
+    uint useInstanceVisibility;
 };
 
 [[vk::push_constant]] ConstantBuffer<ClusterCullParams> params;
@@ -44,13 +45,15 @@ struct ClusterCullParams {
 [[vk::binding(5)]] StructuredBuffer<InstanceData>    instances;
 [[vk::binding(6)]] RWByteAddressBuffer               counters;
 [[vk::binding(7)]] RWByteAddressBuffer               indirectArgs;
-[[vk::binding(8)]] Texture2D<float>                  hzbTextures[HZB_MAX_LEVELS];
+[[vk::binding(8)]] StructuredBuffer<uint>            instanceVisibility;
+[[vk::binding(9)]] Texture2D<float>                  hzbTextures[HZB_MAX_LEVELS];
 
 static const uint kCounterPhase0Visible = 0u;
 static const uint kCounterPhase0Recheck = 4u;
 static const uint kCounterPhase1Visible = 8u;
 static const uint kIndirectPhase0 = 0u;
 static const uint kIndirectPhase1 = 12u;
+static const uint kInstanceVisibleFlag = 1u;
 static const float kEpsilon = 1.2e-7;
 static const float kDepthNudge = 2.0 / float(1 << 24);
 
@@ -67,6 +70,19 @@ uint visibleCounterOffset() {
 
 uint indirectOffset() {
     return params.phase == 0u ? kIndirectPhase0 : kIndirectPhase1;
+}
+
+bool instanceCanRender(uint instanceID) {
+    if (instanceID >= params.instanceCount) {
+        return false;
+    }
+
+    InstanceData inst = instances[instanceID];
+    if ((inst.visibilityFlags & kInstanceVisibleFlag) == 0u) {
+        return false;
+    }
+
+    return params.useInstanceVisibility == 0u || instanceVisibility[instanceID] != 0u;
 }
 
 uint mipWidth(uint mip) {
@@ -219,6 +235,10 @@ void cullMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     ClusterInfo item = inputWorklist[itemIndex];
+    if (!instanceCanRender(item.instanceID)) {
+        return;
+    }
+
     float4 clipMin;
     float4 clipMax;
     bool clipValid;

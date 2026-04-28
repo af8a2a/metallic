@@ -38,8 +38,11 @@ struct ClusterOcclusionState {
 
     // Instance culling buffers
     std::unique_ptr<RhiBuffer> visibleInstanceBuffer;
+    std::unique_ptr<RhiBuffer> instanceVisibilityBuffer;
     std::unique_ptr<RhiBuffer> instanceCounters;
     std::unique_ptr<RhiBuffer> instanceIndirectArgs;
+    bool instanceVisibilityValid = false;
+    uint32_t instanceVisibilityFrameIndex = 0;
 
     bool ensure(RhiFrameGraphBackend& factory,
                 uint32_t newWidth,
@@ -71,6 +74,7 @@ struct ClusterOcclusionState {
         const bool needsInstanceResize =
             maxInstances < newMaxInstances ||
             !visibleInstanceBuffer ||
+            !instanceVisibilityBuffer ||
             !instanceCounters ||
             !instanceIndirectArgs;
 
@@ -121,6 +125,10 @@ struct ClusterOcclusionState {
             visibleInstanceBuffer = createBuffer(factory,
                                                  maxInstances * sizeof(uint32_t),
                                                  "InstanceCull Visible Instances");
+            // instanceVisibilityBuffer: one uint flag per instance for O(1) cluster worklist filtering
+            instanceVisibilityBuffer = createBuffer(factory,
+                                                    maxInstances * sizeof(uint32_t),
+                                                    "InstanceCull Visibility Flags");
             // instanceCounters: [0]=phase0 visible, [4]=phase0 rejected, [8]=phase1 visible
             instanceCounters = createBuffer(factory, 16u, "InstanceCull Counters");
             // instanceIndirectArgs: dispatch args for downstream passes
@@ -134,6 +142,7 @@ struct ClusterOcclusionState {
                indirectArgs &&
                spdAtomicCounter &&
                visibleInstanceBuffer &&
+               instanceVisibilityBuffer &&
                instanceCounters &&
                instanceIndirectArgs &&
                hizTexturesReady(0u) &&

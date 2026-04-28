@@ -1154,14 +1154,14 @@ std::string patchComputeMetalSource(const std::string& source) {
     }
 
     patched = std::regex_replace(patched,
-        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w*bindlessSceneTextures\w*)(\s*,))"),
-        "$1 [[texture(" + std::to_string(kMetalDirectBindlessTextureBase) + ")]]$2");
+        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w*bindlessSceneTextures\w*)(?=\s*[,\)]))"),
+        "$1 [[texture(" + std::to_string(kMetalDirectBindlessTextureBase) + ")]]");
     patched = std::regex_replace(patched,
-        std::regex(R"((array<sampler,\s*int\(\d+\)>\s+\w*bindlessSceneSamplers\w*)(\s*,))"),
-        "$1 [[sampler(" + std::to_string(kMetalDirectBindlessSamplerBase) + ")]]$2");
+        std::regex(R"((array<sampler,\s*int\(\d+\)>\s+\w*bindlessSceneSamplers\w*)(?=\s*[,\)]))"),
+        "$1 [[sampler(" + std::to_string(kMetalDirectBindlessSamplerBase) + ")]]");
     patched = std::regex_replace(patched,
-        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w*hzbTextures\w*)(\s*,))"),
-        "$1 [[texture(" + std::to_string(kMetalClusterCullHizTextureBase) + ")]]$2");
+        std::regex(R"((array<texture2d<float,\s*access::sample>,\s*int\(\d+\)>\s+\w*hzbTextures\w*)(?=\s*[,\)]))"),
+        "$1 [[texture(" + std::to_string(kMetalClusterCullHizTextureBase) + ")]]");
 
     if (bindlessTextureCount > 0) {
         for (uint32_t localIndex = 0; localIndex < kMetalDirectBindlessTextureBase; ++localIndex) {

@@ -21,7 +21,12 @@ static constexpr uint32_t kBounds = 4u;
 static constexpr uint32_t kInstances = 5u;
 static constexpr uint32_t kCounters = 6u;
 static constexpr uint32_t kIndirectArgs = 7u;
+static constexpr uint32_t kInstanceVisibility = 8u;
+#if METALLIC_RHI_METAL
 static constexpr uint32_t kHizMipBase = 8u;
+#else
+static constexpr uint32_t kHizMipBase = 9u;
+#endif
 
 inline constexpr uint32_t bufferBinding(uint32_t binding) {
 #if METALLIC_RHI_METAL
@@ -121,7 +126,8 @@ public:
             !state->phase0RecheckWorklist ||
             !state->phase1VisibleWorklist ||
             !state->counters ||
-            !state->indirectArgs) {
+            !state->indirectArgs ||
+            !state->instanceVisibilityBuffer) {
             state->worklistValid[m_phase] = false;
             return;
         }
@@ -171,7 +177,8 @@ private:
         uint32_t hzbMipCount = 0;
         uint32_t screenWidth = 0;
         uint32_t screenHeight = 0;
-        uint32_t _pad = 0;
+        uint32_t instanceCount = 0;
+        uint32_t useInstanceVisibility = 0;
     };
     static_assert(sizeof(ClusterCullUniforms) <= 128,
                   "ClusterCullUniforms must fit Vulkan push constants");
@@ -197,6 +204,11 @@ private:
         uniforms.hzbMipCount = state.mipCount;
         uniforms.screenWidth = static_cast<uint32_t>(std::max(m_width, 1));
         uniforms.screenHeight = static_cast<uint32_t>(std::max(m_height, 1));
+        uniforms.instanceCount = m_ctx.gpuScene.instanceCount;
+        uniforms.useInstanceVisibility =
+            (state.instanceVisibilityValid &&
+             state.instanceVisibilityFrameIndex == m_frameContext->frameIndex &&
+             state.instanceVisibilityBuffer) ? 1u : 0u;
         return uniforms;
     }
 
@@ -214,6 +226,7 @@ private:
         encoder.setBuffer(&m_ctx.gpuScene.instanceBuffer, 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kInstances));
         encoder.setBuffer(state.counters.get(), 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kCounters));
         encoder.setBuffer(state.indirectArgs.get(), 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kIndirectArgs));
+        encoder.setBuffer(state.instanceVisibilityBuffer.get(), 0, ClusterCullBindings::bufferBinding(ClusterCullBindings::kInstanceVisibility));
     }
 
     void bindHizTextures(RhiComputeCommandEncoder& encoder, ClusterOcclusionState& state) const {

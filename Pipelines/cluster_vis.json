@@ -121,7 +121,7 @@
       "enabled": true,
       "sideEffect": false,
       "config": {
-        "enableOcclusion": true,
+        "enableOcclusion": false,
         "phase": 0
       },
       "editorPos": [

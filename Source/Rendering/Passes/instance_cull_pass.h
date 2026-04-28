@@ -17,7 +17,12 @@ static constexpr uint32_t kGeometries = 1u;
 static constexpr uint32_t kVisibleInstances = 2u;
 static constexpr uint32_t kCounters = 3u;
 static constexpr uint32_t kIndirectArgs = 4u;
-static constexpr uint32_t kHizMipBase = 5u;
+static constexpr uint32_t kVisibilityFlags = 5u;
+#if METALLIC_RHI_METAL
+static constexpr uint32_t kHizMipBase = 8u;
+#else
+static constexpr uint32_t kHizMipBase = 6u;
+#endif
 
 inline constexpr uint32_t bufferBinding(uint32_t binding) {
 #if METALLIC_RHI_METAL
@@ -82,6 +87,8 @@ public:
                            instanceCount)) {
             return;
         }
+        state->instanceVisibilityValid = false;
+        state->instanceVisibilityFrameIndex = m_frameContext->frameIndex;
 
         auto resetIt = m_runtimeContext->computePipelinesRhi.find("InstanceCullReset");
         auto cullIt = m_runtimeContext->computePipelinesRhi.find("InstanceCullMain");
@@ -102,6 +109,7 @@ public:
         if (!m_ctx.gpuScene.instanceBuffer.nativeHandle() ||
             !m_ctx.gpuScene.geometryBuffer.nativeHandle() ||
             !state->visibleInstanceBuffer ||
+            !state->instanceVisibilityBuffer ||
             !state->instanceCounters ||
             !state->instanceIndirectArgs) {
             return;
@@ -131,11 +139,14 @@ public:
         encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.dispatchThreadgroups({1, 1, 1}, {1, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
+
+        state->instanceVisibilityValid = true;
     }
 
     void renderUI() override {
         ImGui::Text("Phase: %u", m_phase);
-        ImGui::Text("Occlusion: %s", m_enableOcclusion ? "Enabled" : "Disabled");
+        ImGui::Text("Hard Filter: Frustum");
+        ImGui::Text("HZB: %s", m_enableOcclusion ? "Diagnostic only" : "Disabled");
     }
 
 private:
@@ -190,6 +201,8 @@ private:
                           InstanceCullBindings::bufferBinding(InstanceCullBindings::kCounters));
         encoder.setBuffer(state.instanceIndirectArgs.get(), 0,
                           InstanceCullBindings::bufferBinding(InstanceCullBindings::kIndirectArgs));
+        encoder.setBuffer(state.instanceVisibilityBuffer.get(), 0,
+                          InstanceCullBindings::bufferBinding(InstanceCullBindings::kVisibilityFlags));
     }
 
     void bindHizTextures(RhiComputeCommandEncoder& encoder, ClusterOcclusionState& state) const {

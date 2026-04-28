@@ -1,5 +1,6 @@
-// GPU instance culling: frustum + HZB occlusion test per instance bounding sphere.
-// Outputs visible instance indices for downstream cluster culling / DAG traversal.
+// GPU instance culling. The hard visibility flag is intentionally frustum-only
+// until Phase 1 instance rechecks are wired; cluster-level HZB still handles
+// occlusion conservatively via the two-phase cluster cull path.
 
 #include "../Shared/cluster_scene.slang"
 #include "../../Source/Rendering/hzb_constants.h"
@@ -50,12 +51,14 @@ struct InstanceCullParams {
 [[vk::binding(2)]] RWStructuredBuffer<uint>          visibleInstances;
 [[vk::binding(3)]] RWByteAddressBuffer               counters;
 [[vk::binding(4)]] RWByteAddressBuffer               indirectArgs;
-[[vk::binding(5)]] Texture2D<float>                  hzbTextures[HZB_MAX_LEVELS];
+[[vk::binding(5)]] RWStructuredBuffer<uint>          instanceVisibility;
+[[vk::binding(6)]] Texture2D<float>                  hzbTextures[HZB_MAX_LEVELS];
 
 // Counter layout: [0]=phase0 visible, [4]=phase0 rejected, [8]=phase1 visible
 static const uint kCounterPhase0Visible  = 0u;
 static const uint kCounterPhase0Rejected = 4u;
 static const uint kCounterPhase1Visible  = 8u;
+static const uint kInstanceVisibleFlag   = 1u;
 static const float kEpsilon = 1.2e-7;
 static const float kDepthNudge = 2.0 / float(1 << 24);
 
@@ -162,7 +165,11 @@ void cullMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint instIdx = dispatchThreadID.x;
     if (instIdx >= params.instanceCount) return;
 
+    instanceVisibility[instIdx] = 0u;
+
     InstanceData inst = instances[instIdx];
+    if ((inst.visibilityFlags & kInstanceVisibleFlag) == 0u) return;
+
     GeometryData geom = geometries[inst.geometryIndex];
 
     float3 center = geom.boundsCenterRadius.xyz;
@@ -180,14 +187,15 @@ void cullMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    bool visible = testHiz(clipMin, clipMax, clipValid);
-    if (visible) {
-        uint index;
-        counters.InterlockedAdd(visibleCounterOffset(), 1u, index);
-        if (index < params.maxInstances) {
-            visibleInstances[index] = instIdx;
-        }
-    } else if (params.phase == 0u) {
+    uint index;
+    counters.InterlockedAdd(visibleCounterOffset(), 1u, index);
+    if (index < params.maxInstances) {
+        visibleInstances[index] = instIdx;
+        instanceVisibility[instIdx] = 1u;
+    }
+
+    bool hizVisible = testHiz(clipMin, clipMax, clipValid);
+    if (!hizVisible && params.phase == 0u) {
         counters.InterlockedAdd(kCounterPhase0Rejected, 1u);
     }
 }
