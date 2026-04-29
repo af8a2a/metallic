@@ -97,19 +97,6 @@ public:
         }
         if (m_phase == 0u) {
             state->resetWorklists();
-            // Phase0: HZB uses history pyramid. Supply its VP for correct temporal projection.
-            if (m_enableOcclusion) {
-                state->updateHzbViewProj(state->hizViewProj[0]);
-            } else {
-                float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
-                float4x4 vpT = transpose(vp);
-                state->updateHzbViewProj(vpT.a);
-            }
-        } else {
-            // Phase1: HZB uses current-frame pyramid. Supply current VP.
-            float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
-            float4x4 vpT = transpose(vp);
-            state->updateHzbViewProj(vpT.a);
         }
 
         const uint32_t inputCount = m_ctx.gpuScene.clusterVisWorklistCount;
@@ -119,6 +106,7 @@ public:
                            inputCount)) {
             return;
         }
+        updateHzbViewProj(*state);
 
         auto resetIt = m_runtimeContext->computePipelinesRhi.find("ClusterCullReset");
         auto cullIt = m_runtimeContext->computePipelinesRhi.find("ClusterCullMain");
@@ -231,6 +219,17 @@ private:
              state.instanceVisibilityFrameIndex == m_frameContext->frameIndex &&
              state.instanceVisibilityBuffer) ? 1u : 0u;
         return uniforms;
+    }
+
+    void updateHzbViewProj(ClusterOcclusionState& state) const {
+        if (m_phase == 0u && m_enableOcclusion) {
+            state.updateHzbViewProj(state.hizViewProj[0]);
+            return;
+        }
+
+        float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
+        float4x4 vpT = transpose(vp);
+        state.updateHzbViewProj(vpT.a);
     }
 
     void bindBuffers(RhiComputeCommandEncoder& encoder, ClusterOcclusionState& state) const {

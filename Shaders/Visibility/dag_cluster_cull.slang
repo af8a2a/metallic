@@ -116,6 +116,7 @@ static const uint kDagInvalidRoot = 52u;
 static const uint kDagMaxIterRemaining = 56u;
 static const uint kDagLastActiveIteration = 60u;
 static const uint kDagLodCulled = 64u;
+static const uint kDagQueueRemaining = 68u;
 static const uint kIndirectPhase0 = 0u;
 static const uint kIndirectPhase1 = 12u;
 static const uint kIndirectNodeDispatch = 24u;
@@ -126,6 +127,7 @@ static const uint kModeClearNextQueue = 2u;
 static const uint kModeProcessNodes = 3u;
 static const uint kModeProcessRecheck = 4u;
 static const uint kModeWriteNodeIndirect = 5u;
+static const uint kModeWriteRecheckIndirect = 6u;
 
 bool flagEnabled(uint bit) { return (params.flags & (1u << bit)) != 0u; }
 uint hzbWidth()       { return params.packedHzbDims >> 16u; }
@@ -331,6 +333,13 @@ void writeNodeIndirect() {
     indirectArgs.Store(kIndirectNodeDispatch + 8u, 1u);
 }
 
+void writeRecheckIndirect() {
+    uint count = min(counters.Load(kCounterPhase0Recheck), params.maxClusters);
+    indirectArgs.Store(kIndirectNodeDispatch + 0u, (count + 63u) / 64u);
+    indirectArgs.Store(kIndirectNodeDispatch + 4u, 1u);
+    indirectArgs.Store(kIndirectNodeDispatch + 8u, 1u);
+}
+
 void clearNextQueue() {
     counters.Store(queueCountOffset(outputQueueIndex()), 0u);
 }
@@ -446,6 +455,7 @@ void resetMain() {
         counters.Store(kDagMaxIterRemaining, 0u);
         counters.Store(kDagLastActiveIteration, 0u);
         counters.Store(kDagLodCulled, 0u);
+        counters.Store(kDagQueueRemaining, 0u);
         indirectArgs.Store(kIndirectPhase0 + 0u, 0u);
         indirectArgs.Store(kIndirectPhase0 + 4u, 1u);
         indirectArgs.Store(kIndirectPhase0 + 8u, 1u);
@@ -481,6 +491,10 @@ void cullMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         if (dispatchThreadID.x == 0u) {
             writeNodeIndirect();
         }
+    } else if (params.mode == kModeWriteRecheckIndirect) {
+        if (dispatchThreadID.x == 0u) {
+            writeRecheckIndirect();
+        }
     }
 }
 
@@ -499,6 +513,8 @@ void finalizeMain() {
     if (params.phase == 0u) {
         uint lastActive = counters.Load(kDagLastActiveIteration);
         uint remaining = params.maxIterations > lastActive ? params.maxIterations - lastActive : 0u;
+        uint pendingQueue = params.maxIterations & 1u;
         counters.Store(kDagMaxIterRemaining, remaining);
+        counters.Store(kDagQueueRemaining, counters.Load(queueCountOffset(pendingQueue)));
     }
 }

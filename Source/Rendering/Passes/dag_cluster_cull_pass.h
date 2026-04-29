@@ -74,7 +74,16 @@ public:
             m_maxIterations = std::clamp(config.config["maxIterations"].get<uint32_t>(), 1u, 64u);
         }
         if (config.config.contains("lodErrorThreshold")) {
-            m_lodErrorThreshold = std::max(config.config["lodErrorThreshold"].get<float>(), 0.0f);
+            const float requestedThreshold =
+                std::max(config.config["lodErrorThreshold"].get<float>(), 0.0f);
+            if (requestedThreshold > 0.0f && !m_warnedUnsupportedLodThreshold) {
+                spdlog::warn(
+                    "{}: lodErrorThreshold={} ignored; DAG v1 traverses the LOD0 root only",
+                    m_name,
+                    requestedThreshold);
+                m_warnedUnsupportedLodThreshold = true;
+            }
+            m_lodErrorThreshold = 0.0f;
         }
         if (config.config.contains("maxNodeTasks")) {
             m_maxNodeTasks = std::clamp(config.config["maxNodeTasks"].get<uint32_t>(), 256u, 1u << 20u);
@@ -112,20 +121,6 @@ public:
         }
         if (m_phase == 0u) {
             state->resetWorklists();
-            // Phase0: HZB uses history pyramid (pyramid 0). Supply its VP so the shader
-            // can project bounds against the pyramid that was actually built.
-            if (enableOcclusion()) {
-                state->updateHzbViewProj(state->hizViewProj[0]);
-            } else {
-                float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
-                float4x4 vpT = transpose(vp);
-                state->updateHzbViewProj(vpT.a);
-            }
-        } else {
-            // Phase1: HZB uses current-frame pyramid (pyramid 1). Supply current VP.
-            float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
-            float4x4 vpT = transpose(vp);
-            state->updateHzbViewProj(vpT.a);
         }
 
         const uint32_t maxClusters = m_ctx.gpuScene.clusterVisWorklistCount;
@@ -138,6 +133,7 @@ public:
                            m_maxNodeTasks)) {
             return;
         }
+        updateHzbViewProj(*state);
 
         auto resetIt = m_runtimeContext->computePipelinesRhi.find("DagClusterCullReset");
         auto mainIt = m_runtimeContext->computePipelinesRhi.find("DagClusterCullMain");
@@ -221,10 +217,17 @@ public:
             dispatchMain(encoder,
                          *state,
                          uniforms,
-                         kModeProcessRecheck,
+                         kModeWriteRecheckIndirect,
                          0u,
-                         {(state->maxClusters + 63u) / 64u, 1, 1},
-                         {64, 1, 1});
+                         {1, 1, 1},
+                         {1, 1, 1});
+            dispatchMainIndirect(encoder,
+                                 *state,
+                                 uniforms,
+                                 kModeProcessRecheck,
+                                 0u,
+                                 *state->indirectArgs,
+                                 ClusterOcclusionState::kIndirectNodeDispatch);
         }
 
         encoder.setComputePipeline(finalizeIt->second);
@@ -309,12 +312,16 @@ public:
         ImGui::Text("HZB rejected (phase1): %u", stats.hzbRejected);
 
         ImGui::SeparatorText("Traversal Health");
-        if (stats.maxIterRemaining > 0u) {
+        ImGui::Text("Last active iteration: %u", stats.lastActiveIteration);
+        if (stats.queueRemaining > 0u) {
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.1f, 1.0f),
+                               "Queue remaining after limit: %u",
+                               stats.queueRemaining);
+        } else if (stats.maxIterRemaining > 0u) {
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
                                "Iter remaining: %u (early exit)", stats.maxIterRemaining);
         } else {
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.1f, 1.0f),
-                               "Iter remaining: 0 (hit limit %u)", m_maxIterations);
+            ImGui::Text("Iter remaining: 0 (completed on final iteration)");
         }
         const uint32_t overflow = stats.nodeOverflow + stats.clusterOverflow;
         if (overflow > 0u) {
@@ -334,7 +341,8 @@ private:
     static constexpr uint32_t kModeProcessNodes = 3u;
     static constexpr uint32_t kModeProcessRecheck = 4u;
     static constexpr uint32_t kModeWriteNodeIndirect = 5u;
-    static constexpr uint32_t kModeFinalize = 6u;
+    static constexpr uint32_t kModeWriteRecheckIndirect = 6u;
+    static constexpr uint32_t kModeFinalize = 7u;
 
     struct DagCullUniforms {
         float viewProj[16];
@@ -369,6 +377,17 @@ private:
             return m_enableOcclusionOverride != 0;
         }
         return m_enableOcclusion;
+    }
+
+    void updateHzbViewProj(ClusterOcclusionState& state) const {
+        if (m_phase == 0u && enableOcclusion()) {
+            state.updateHzbViewProj(state.hizViewProj[0]);
+            return;
+        }
+
+        float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
+        float4x4 vpT = transpose(vp);
+        state.updateHzbViewProj(vpT.a);
     }
 
     DagCullUniforms makeUniforms(const ClusterOcclusionState& state,
@@ -503,6 +522,7 @@ private:
     int m_enableFrustumOverride = -1;
     int m_enableOcclusionOverride = -1; // -1=use JSON config, 0=force off, 1=force on
     bool m_warnedMissingPipeline = false;
+    bool m_warnedUnsupportedLodThreshold = false;
     FGResource m_phaseReady;
     FGResource m_cullDone;
 };
