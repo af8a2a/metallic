@@ -136,7 +136,7 @@
       "enabled": true,
       "sideEffect": false,
       "config": {
-        "enableOcclusion": false,
+        "enableOcclusion": true,
         "enableInstanceFilter": true,
         "maxIterations": 16,
         "phase": 0
@@ -188,7 +188,7 @@
       "enabled": true,
       "sideEffect": false,
       "config": {
-        "enableOcclusion": false,
+        "enableOcclusion": true,
         "enableInstanceFilter": true,
         "maxIterations": 16,
         "phase": 1

@@ -203,18 +203,26 @@ bool projectSphereBounds(float3 center,
 }
 
 // Returns the mip level whose texels cover a 4-texel footprint over the given
-// pixel rect (already shifted right by 1 to match the HZB half-res base).
+// full-resolution pixel rect. Metallic stores mip 0 as a full-res depth copy.
 // Mirrors Nyx MipLevelForRect with HZB_TARGET_FOOTPRINT_PIXELS=4.
-int hzbMipLevelForRect(int4 coarseRect) {
+int hzbMipLevelForRect(int4 pixelRect) {
     // footprintMipBias = log2(4) - 1 = 1
-    int2 rectSize = coarseRect.zw - coarseRect.xy;
+    int2 rectSize = max(pixelRect.zw - pixelRect.xy, int2(0, 0));
     int2 dominantMip = int2(firstbithigh(rectSize.x), firstbithigh(rectSize.y));
     int mipLevel = max(max(dominantMip.x, dominantMip.y) - 1, 0);
-    int2 shifted = coarseRect.xy >> mipLevel;
-    int2 shiftedMax = coarseRect.zw >> mipLevel;
+    int2 shifted = pixelRect.xy >> mipLevel;
+    int2 shiftedMax = pixelRect.zw >> mipLevel;
     // If the 4-texel span is exceeded, go one mip coarser.
     mipLevel += any(shiftedMax - shifted > int2(3, 3)) ? 1 : 0;
     return mipLevel;
+}
+
+uint hzbMipDimension(uint baseDimension, uint mip) {
+    uint dimension = max(baseDimension, 1u);
+    for (uint level = 0u; level < mip; ++level) {
+        dimension = max(1u, (dimension + 1u) / 2u);
+    }
+    return dimension;
 }
 
 bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
@@ -226,38 +234,40 @@ bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
         return true;
     }
 
-    float sw = float(params.screenWidth);
-    float sh = float(params.screenHeight);
+    float2 uvMin = float2(clipMin.x * 0.5 + 0.5, 0.5 - clipMax.y * 0.5);
+    float2 uvMax = float2(clipMax.x * 0.5 + 0.5, 0.5 - clipMin.y * 0.5);
+    uvMin = clamp(uvMin, float2(0.0), float2(1.0));
+    uvMax = clamp(uvMax, float2(0.0), float2(1.0));
 
-    // Convert clip XY to UV, flipping Y (clip +Y=up, UV +Y=down).
-    // saturate clamps to [0,1] before pixel conversion.
-    float4 uvRect = saturate(float4(clipMin.x, clipMax.y, clipMax.x, clipMin.y) * 0.5 + 0.5);
-    // uvRect = (minU, minV, maxU, maxV)
-
-    // Pixel rect with rounding bias: min rounds up (+0.5), max rounds down (-0.5).
-    int4 pixelsRect = int4(uvRect * float4(sw, sh, sw, sh) + float4(0.5, 0.5, -0.5, -0.5));
-    pixelsRect.xy = min(pixelsRect.xy, pixelsRect.zw);
-    pixelsRect.zw = max(pixelsRect.xy, pixelsRect.zw);
-
-    // Small-bounds guard: sub-pixel footprint, skip HZB.
-    if (pixelsRect.z < pixelsRect.x || pixelsRect.w < pixelsRect.y) {
+    float2 pixelSize = (uvMax - uvMin) * float2(float(params.screenWidth), float(params.screenHeight));
+    if (max(pixelSize.x, pixelSize.y) < 1.0) {
         return true;
     }
 
-    // HZB is half-res relative to the depth buffer.
-    int4 coarseRect = pixelsRect >> 1;
-    int hzbMip = min(hzbMipLevelForRect(coarseRect), int(params.hzbMipCount) - 1);
-    coarseRect >>= hzbMip;
+    // Pixel rect with rounding bias: min rounds up (+0.5), max rounds down (-0.5).
+    float4 uvRect = float4(uvMin.x, uvMin.y, uvMax.x, uvMax.y);
+    float4 screenSize = float4(float(params.screenWidth), float(params.screenHeight),
+                               float(params.screenWidth), float(params.screenHeight));
+    int4 pixelsRect = int4(uvRect * screenSize + float4(0.5, 0.5, -0.5, -0.5));
+    int2 pixelMin = min(pixelsRect.xy, pixelsRect.zw);
+    int2 pixelMax = max(pixelsRect.xy, pixelsRect.zw);
+    pixelsRect = int4(pixelMin, pixelMax);
+
+    int hzbMip = min(hzbMipLevelForRect(pixelsRect), int(params.hzbMipCount) - 1);
+    int4 mipRect = pixelsRect >> hzbMip;
 
     uint mipIdx = uint(hzbMip);
-    uint baseW = max(params.hzbWidth, 1u);
-    uint baseH = max(params.hzbHeight, 1u);
-    int mipW = int(max(baseW >> mipIdx, 1u));
-    int mipH = int(max(baseH >> mipIdx, 1u));
+    int mipW = int(hzbMipDimension(params.hzbWidth, mipIdx));
+    int mipH = int(hzbMipDimension(params.hzbHeight, mipIdx));
+
+    int2 maxCoord = int2(mipW - 1, mipH - 1);
+    int2 rectMin = clamp(mipRect.xy, int2(0, 0), maxCoord);
+    int2 rectMax = clamp(mipRect.zw, int2(0, 0), maxCoord);
+    rectMin = min(rectMin, rectMax);
 
     // 4x4 sample grid clamped to mip dimensions.
-    int4 sampleX = clamp(coarseRect.x + int4(0, 1, 2, 3), int4(0), int4(min(coarseRect.z, mipW - 1)));
-    int4 sampleY = clamp(coarseRect.y + int4(0, 1, 2, 3), int4(0), int4(min(coarseRect.w, mipH - 1)));
+    int4 sampleX = min(rectMin.x + int4(0, 1, 2, 3), int4(rectMax.x));
+    int4 sampleY = min(rectMin.y + int4(0, 1, 2, 3), int4(rectMax.y));
 
     float4 row0 = float4(
         hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.x, 0)),
@@ -498,6 +508,9 @@ void processRecheck(uint3 dispatchThreadID) {
 
     if (testHiz(clipMin, clipMax, clipValid)) {
         appendVisible(item);
+    } else {
+        uint ignored;
+        counters.InterlockedAdd(kDagHzbRejected, 1u, ignored);
     }
 }
 
