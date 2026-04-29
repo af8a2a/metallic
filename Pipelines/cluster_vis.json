@@ -131,13 +131,14 @@
     },
     {
       "id": "c1000000000000000000000000000001",
-      "name": "Cluster Cull Phase0",
-      "type": "ClusterCullPass",
+      "name": "DAG Cluster Cull Phase0",
+      "type": "DagClusterCullPass",
       "enabled": true,
       "sideEffect": false,
       "config": {
-        "enableOcclusion": true,
+        "enableOcclusion": false,
         "enableInstanceFilter": true,
+        "maxIterations": 16,
         "phase": 0
       },
       "editorPos": [
@@ -182,13 +183,14 @@
     },
     {
       "id": "c1000000000000000000000000000004",
-      "name": "Cluster Cull Phase1",
-      "type": "ClusterCullPass",
+      "name": "DAG Cluster Cull Phase1",
+      "type": "DagClusterCullPass",
       "enabled": true,
       "sideEffect": false,
       "config": {
-        "enableOcclusion": true,
+        "enableOcclusion": false,
         "enableInstanceFilter": true,
+        "maxIterations": 16,
         "phase": 1
       },
       "editorPos": [

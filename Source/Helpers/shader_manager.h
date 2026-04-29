@@ -105,6 +105,9 @@ private:
     RhiComputePipelineHandle m_clusterCullResetPipeline;
     RhiComputePipelineHandle m_clusterCullMainPipeline;
     RhiComputePipelineHandle m_clusterCullFinalizePipeline;
+    RhiComputePipelineHandle m_dagClusterCullResetPipeline;
+    RhiComputePipelineHandle m_dagClusterCullMainPipeline;
+    RhiComputePipelineHandle m_dagClusterCullFinalizePipeline;
     RhiComputePipelineHandle m_clusterHizBuildPipeline;
     RhiComputePipelineHandle m_instanceCullResetPipeline;
     RhiComputePipelineHandle m_instanceCullMainPipeline;

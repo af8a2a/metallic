@@ -44,6 +44,7 @@
 build/
 Build/
 build-*/
+cmake-build-debug-visual-studio/
 
 # CMake generated files
 CMakeFiles/

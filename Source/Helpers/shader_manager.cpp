@@ -7,6 +7,7 @@
 
 #include <spdlog/spdlog.h>
 #include <cstring>
+#include <filesystem>
 
 namespace {
 
@@ -16,14 +17,18 @@ constexpr RhiBackendType kShaderBackend = RhiBackendType::Metal;
 constexpr RhiBackendType kShaderBackend = RhiBackendType::Vulkan;
 #endif
 
+std::string resolveProjectShaderPath(const char* shaderPath, const char* projectRoot);
+
 // On Vulkan, compile to SPIR-V binary and pack into a string for rhiCreatePipelineFromSource.
 // On Metal, compile to MSL source string directly.
 std::string compileGraphics(const char* shaderPath, const char* projectRoot,
                             const SlangCompileOptions* options) {
+    const std::string resolvedPath = resolveProjectShaderPath(shaderPath, projectRoot);
+    const char* modulePath = resolvedPath.empty() ? shaderPath : resolvedPath.c_str();
 #if METALLIC_RHI_METAL
-    return compileSlangGraphicsSource(kShaderBackend, shaderPath, projectRoot, options);
+    return compileSlangGraphicsSource(kShaderBackend, modulePath, projectRoot, options);
 #else
-    auto spirv = compileSlangGraphicsBinary(kShaderBackend, shaderPath, projectRoot, options);
+    auto spirv = compileSlangGraphicsBinary(kShaderBackend, modulePath, projectRoot, options);
     if (spirv.empty()) return {};
     return std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t));
 #endif
@@ -31,10 +36,12 @@ std::string compileGraphics(const char* shaderPath, const char* projectRoot,
 
 std::string compileMesh(const char* shaderPath, const char* projectRoot,
                         const SlangCompileOptions* options) {
+    const std::string resolvedPath = resolveProjectShaderPath(shaderPath, projectRoot);
+    const char* modulePath = resolvedPath.empty() ? shaderPath : resolvedPath.c_str();
 #if METALLIC_RHI_METAL
-    return compileSlangMeshSource(kShaderBackend, shaderPath, projectRoot, options);
+    return compileSlangMeshSource(kShaderBackend, modulePath, projectRoot, options);
 #else
-    auto spirv = compileSlangMeshBinary(kShaderBackend, shaderPath, projectRoot, options);
+    auto spirv = compileSlangMeshBinary(kShaderBackend, modulePath, projectRoot, options);
     if (spirv.empty()) return {};
     return std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t));
 #endif
@@ -42,10 +49,12 @@ std::string compileMesh(const char* shaderPath, const char* projectRoot,
 
 std::string compileCompute(const char* shaderPath, const char* projectRoot,
                            const char* entryPoint, const SlangCompileOptions* options) {
+    const std::string resolvedPath = resolveProjectShaderPath(shaderPath, projectRoot);
+    const char* modulePath = resolvedPath.empty() ? shaderPath : resolvedPath.c_str();
 #if METALLIC_RHI_METAL
-    return compileSlangComputeSource(kShaderBackend, shaderPath, projectRoot, entryPoint, options);
+    return compileSlangComputeSource(kShaderBackend, modulePath, projectRoot, entryPoint, options);
 #else
-    auto spirv = compileSlangComputeBinary(kShaderBackend, shaderPath, projectRoot, entryPoint, options);
+    auto spirv = compileSlangComputeBinary(kShaderBackend, modulePath, projectRoot, entryPoint, options);
     if (spirv.empty()) return {};
     return std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t));
 #endif
@@ -65,6 +74,18 @@ std::string formatError(const std::string* errorMessage, const char* fallback) {
         return *errorMessage;
     }
     return defaultError(fallback);
+}
+
+std::string resolveProjectShaderPath(const char* shaderPath, const char* projectRoot) {
+    if (!shaderPath || shaderPath[0] == '\0') {
+        return {};
+    }
+
+    std::filesystem::path path(shaderPath);
+    if (!path.is_absolute() && projectRoot && projectRoot[0] != '\0') {
+        path = std::filesystem::path(projectRoot) / path;
+    }
+    return path.lexically_normal().generic_string();
 }
 
 } // namespace
@@ -96,6 +117,9 @@ ShaderManager::~ShaderManager() {
     releaseOwnedHandle(m_clusterCullResetPipeline);
     releaseOwnedHandle(m_clusterCullMainPipeline);
     releaseOwnedHandle(m_clusterCullFinalizePipeline);
+    releaseOwnedHandle(m_dagClusterCullResetPipeline);
+    releaseOwnedHandle(m_dagClusterCullMainPipeline);
+    releaseOwnedHandle(m_dagClusterCullFinalizePipeline);
     releaseOwnedHandle(m_clusterHizBuildPipeline);
     releaseOwnedHandle(m_instanceCullResetPipeline);
     releaseOwnedHandle(m_instanceCullMainPipeline);
@@ -170,6 +194,12 @@ void ShaderManager::syncRuntimeContext() {
         m_rtCtx->computePipelinesRhi["ClusterCullMain"] = m_clusterCullMainPipeline;
     if (m_clusterCullFinalizePipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["ClusterCullFinalize"] = m_clusterCullFinalizePipeline;
+    if (m_dagClusterCullResetPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["DagClusterCullReset"] = m_dagClusterCullResetPipeline;
+    if (m_dagClusterCullMainPipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["DagClusterCullMain"] = m_dagClusterCullMainPipeline;
+    if (m_dagClusterCullFinalizePipeline.nativeHandle())
+        m_rtCtx->computePipelinesRhi["DagClusterCullFinalize"] = m_dagClusterCullFinalizePipeline;
     if (m_clusterHizBuildPipeline.nativeHandle())
         m_rtCtx->computePipelinesRhi["ClusterHizBuild"] = m_clusterHizBuildPipeline;
     m_rtCtx->clusterHizBuildSupported = m_clusterHizBuildPipeline.nativeHandle() != nullptr;
@@ -271,6 +301,36 @@ bool ShaderManager::buildAll() {
                          formatError(&errorMessage, "Slang cluster cull finalize compilation failed"));
         }
 
+        errorMessage.clear();
+        m_dagClusterCullResetPipeline = reloadComputeShader("Shaders/Visibility/dag_cluster_cull",
+                                                            "resetMain",
+                                                            patchComputeShaderSource,
+                                                            &errorMessage);
+        if (!m_dagClusterCullResetPipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile DAG cluster cull reset shader: {}",
+                         formatError(&errorMessage, "Slang DAG cluster cull reset compilation failed"));
+        }
+
+        errorMessage.clear();
+        m_dagClusterCullMainPipeline = reloadComputeShader("Shaders/Visibility/dag_cluster_cull",
+                                                           "cullMain",
+                                                           patchComputeShaderSource,
+                                                           &errorMessage);
+        if (!m_dagClusterCullMainPipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile DAG cluster cull shader: {}",
+                         formatError(&errorMessage, "Slang DAG cluster cull compilation failed"));
+        }
+
+        errorMessage.clear();
+        m_dagClusterCullFinalizePipeline = reloadComputeShader("Shaders/Visibility/dag_cluster_cull",
+                                                               "finalizeMain",
+                                                               patchComputeShaderSource,
+                                                               &errorMessage);
+        if (!m_dagClusterCullFinalizePipeline.nativeHandle()) {
+            spdlog::warn("Failed to compile DAG cluster cull finalize shader: {}",
+                         formatError(&errorMessage, "Slang DAG cluster cull finalize compilation failed"));
+        }
+
         if (enableClusterHizBuild) {
             errorMessage.clear();
             m_clusterHizBuildPipeline = reloadComputeShader("Shaders/Visibility/hzb_spd",
@@ -288,6 +348,9 @@ bool ShaderManager::buildAll() {
         releaseOwnedHandle(m_clusterCullResetPipeline);
         releaseOwnedHandle(m_clusterCullMainPipeline);
         releaseOwnedHandle(m_clusterCullFinalizePipeline);
+        releaseOwnedHandle(m_dagClusterCullResetPipeline);
+        releaseOwnedHandle(m_dagClusterCullMainPipeline);
+        releaseOwnedHandle(m_dagClusterCullFinalizePipeline);
         releaseOwnedHandle(m_clusterHizBuildPipeline);
     }
 
@@ -648,6 +711,33 @@ std::pair<int, int> ShaderManager::reloadAll() {
                                                       patchComputeShaderSource,
                                                       &localError);
                        });
+        reloadPipeline(true,
+                       m_dagClusterCullResetPipeline,
+                       "DAG cluster cull reset CS",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Visibility/dag_cluster_cull",
+                                                      "resetMain",
+                                                      patchComputeShaderSource,
+                                                      &localError);
+                       });
+        reloadPipeline(true,
+                       m_dagClusterCullMainPipeline,
+                       "DAG cluster cull CS",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Visibility/dag_cluster_cull",
+                                                      "cullMain",
+                                                      patchComputeShaderSource,
+                                                      &localError);
+                       });
+        reloadPipeline(true,
+                       m_dagClusterCullFinalizePipeline,
+                       "DAG cluster cull finalize CS",
+                       [&](std::string& localError) {
+                           return reloadComputeShader("Shaders/Visibility/dag_cluster_cull",
+                                                      "finalizeMain",
+                                                      patchComputeShaderSource,
+                                                      &localError);
+                       });
         reloadPipeline(enableClusterHizBuild,
                        m_clusterHizBuildPipeline,
                        "cluster HZB build CS",
@@ -661,6 +751,9 @@ std::pair<int, int> ShaderManager::reloadAll() {
         releaseOwnedHandle(m_clusterCullResetPipeline);
         releaseOwnedHandle(m_clusterCullMainPipeline);
         releaseOwnedHandle(m_clusterCullFinalizePipeline);
+        releaseOwnedHandle(m_dagClusterCullResetPipeline);
+        releaseOwnedHandle(m_dagClusterCullMainPipeline);
+        releaseOwnedHandle(m_dagClusterCullFinalizePipeline);
         releaseOwnedHandle(m_clusterHizBuildPipeline);
     }
 

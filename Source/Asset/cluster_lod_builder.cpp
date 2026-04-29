@@ -730,6 +730,29 @@ uint32_t buildLocalHierarchy(ClusterLODData& data) {
     return 0;
 }
 
+void assignLod0PrimitiveGroupRoots(ClusterLODData& data,
+                                   uint32_t primitiveGroupCount) {
+    data.primitiveGroupLodRoots.assign(primitiveGroupCount, kInvalidIndex);
+    if (primitiveGroupCount == 1u) {
+        for (const ClusterLODLevel& level : data.levels) {
+            if (level.depth == 0u && level.rootNode != kInvalidIndex) {
+                data.primitiveGroupLodRoots[0] = level.rootNode;
+                return;
+            }
+        }
+        return;
+    }
+
+    for (const ClusterLODLevel& level : data.levels) {
+        if (level.depth != 0u ||
+            level.primitiveGroupIndex >= primitiveGroupCount ||
+            level.rootNode == kInvalidIndex) {
+            continue;
+        }
+        data.primitiveGroupLodRoots[level.primitiveGroupIndex] = level.rootNode;
+    }
+}
+
 bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
                                    const MeshletData& meshletData,
                                    uint32_t primitiveGroupIndex,
@@ -927,8 +950,8 @@ bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
         return false;
     }
 
-    const uint32_t rootNode = buildLocalHierarchy(out);
-    out.primitiveGroupLodRoots.assign(1, rootNode);
+    buildLocalHierarchy(out);
+    assignLod0PrimitiveGroupRoots(out, 1u);
     out.totalMeshletCount = static_cast<uint32_t>(out.allMeshlets.size());
     out.totalGroupCount = static_cast<uint32_t>(out.groups.size());
     out.totalNodeCount = static_cast<uint32_t>(out.nodes.size());
@@ -1445,6 +1468,8 @@ bool loadClusterLODFromCache(const RhiDevice& device,
         return false;
     }
 
+    assignLod0PrimitiveGroupRoots(cached, expectedPrimitiveGroupCount);
+
     if (!validateClusterLodPayload(cached, expectedPrimitiveGroupCount)) {
         spdlog::warn("ClusterLOD cache {} failed payload validation", cachePath.string());
         return false;
@@ -1529,6 +1554,7 @@ bool buildClusterLOD(const RhiDevice& device,
         return false;
     }
 
+    assignLod0PrimitiveGroupRoots(out, primitiveGroupCount);
     buildPackedClusterData(mesh, out);
 
     if (!uploadClusterLodBuffers(device, out)) {

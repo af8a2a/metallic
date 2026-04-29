@@ -23,7 +23,10 @@ struct GeometryData {
     uint indexCount;
     uint materialIndex;
     uint lodRootNode;
-    float4 boundsCenterRadius;
+    float boundsCenterX;
+    float boundsCenterY;
+    float boundsCenterZ;
+    float boundsRadius;
     uint packedClusterStart;
     uint packedClusterCount;
 };
@@ -212,8 +215,8 @@ void cullMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     GeometryData geom = geometries[inst.geometryIndex];
 
-    float3 center = geom.boundsCenterRadius.xyz;
-    float radius = geom.boundsCenterRadius.w;
+    float3 center = float3(geom.boundsCenterX, geom.boundsCenterY, geom.boundsCenterZ);
+    float radius = geom.boundsRadius;
     if (radius <= 0.0) {
         uint degenerateIndex;
         counters.InterlockedAdd(visibleCounterOffset(), 1u, degenerateIndex);

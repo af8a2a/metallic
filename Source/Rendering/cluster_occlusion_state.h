@@ -17,11 +17,25 @@ struct ClusterOcclusionState {
     static constexpr uint32_t kCounterPhase0Visible = 0u;
     static constexpr uint32_t kCounterPhase0Recheck = 4u;
     static constexpr uint32_t kCounterPhase1Visible = 8u;
+    static constexpr uint32_t kDagQueueCount0 = 16u;
+    static constexpr uint32_t kDagQueueCount1 = 20u;
+    static constexpr uint32_t kDagNodeOverflow = 24u;
+    static constexpr uint32_t kDagNodeProcessed = 28u;
+    static constexpr uint32_t kDagClusterOverflow = 32u;
+    static constexpr uint32_t kDagSeededInstances = 36u;
     static constexpr uint32_t kInstanceCounterPhase0Visible = 0u;
     static constexpr uint32_t kInstanceCounterPhase0Rejected = 4u;
     static constexpr uint32_t kInstanceCounterPhase1Visible = 8u;
     static constexpr uint32_t kIndirectPhase0Offset = 0u;
     static constexpr uint32_t kIndirectPhase1Offset = 12u;
+    static constexpr uint32_t kDagCounterBytes = 64u;
+
+    struct DagNodeTask {
+        uint32_t instanceID = 0;
+        uint32_t nodeID = 0;
+    };
+    static_assert(sizeof(DagNodeTask) == sizeof(ClusterInfo),
+                  "DAG node task must remain 8 bytes");
 
     struct InstanceCullStats {
         bool countersReadable = false;
@@ -30,6 +44,19 @@ struct ClusterOcclusionState {
         uint32_t phase0Rejected = 0;
         uint32_t phase1Visible = 0;
         uint32_t dispatchGroups = 0;
+    };
+
+    struct DagCullStats {
+        bool readable = false;
+        uint32_t phase0Visible = 0;
+        uint32_t phase0Recheck = 0;
+        uint32_t phase1Visible = 0;
+        uint32_t queueCount0 = 0;
+        uint32_t queueCount1 = 0;
+        uint32_t nodeOverflow = 0;
+        uint32_t nodeProcessed = 0;
+        uint32_t clusterOverflow = 0;
+        uint32_t seededInstances = 0;
     };
 
     uint32_t width = 0;
@@ -45,6 +72,7 @@ struct ClusterOcclusionState {
     std::unique_ptr<RhiBuffer> phase1VisibleWorklist;
     std::unique_ptr<RhiBuffer> counters;
     std::unique_ptr<RhiBuffer> indirectArgs;
+    std::unique_ptr<RhiBuffer> dagNodeQueues[2];
     std::unique_ptr<RhiBuffer> spdAtomicCounter;
     std::array<std::unique_ptr<RhiTexture>, kHzbMaxLevels> hzb[2];
 
@@ -79,6 +107,8 @@ struct ClusterOcclusionState {
             !phase1VisibleWorklist ||
             !counters ||
             !indirectArgs ||
+            !dagNodeQueues[0] ||
+            !dagNodeQueues[1] ||
             !spdAtomicCounter ||
             !hizTexturesReady(0u, newMipCount) ||
             !hizTexturesReady(1u, newMipCount);
@@ -113,8 +143,19 @@ struct ClusterOcclusionState {
             phase1VisibleWorklist = createBuffer(factory,
                                                  maxClusters * sizeof(ClusterInfo),
                                                  "ClusterCull Phase1 Visible");
-            counters = createBuffer(factory, 16u, "ClusterCull Counters");
+            const uint32_t zeroDagCounters[kDagCounterBytes / sizeof(uint32_t)] = {};
+            counters = createBuffer(factory,
+                                    kDagCounterBytes,
+                                    "ClusterCull Counters",
+                                    true,
+                                    zeroDagCounters);
             indirectArgs = createBuffer(factory, 24u, "ClusterCull Mesh Indirect Args");
+            dagNodeQueues[0] = createBuffer(factory,
+                                            maxClusters * sizeof(DagNodeTask),
+                                            "DagClusterCull Node Queue 0");
+            dagNodeQueues[1] = createBuffer(factory,
+                                            maxClusters * sizeof(DagNodeTask),
+                                            "DagClusterCull Node Queue 1");
             const uint32_t zero = 0u;
             spdAtomicCounter = createBuffer(factory,
                                             sizeof(uint32_t),
@@ -162,6 +203,8 @@ struct ClusterOcclusionState {
                phase1VisibleWorklist &&
                counters &&
                indirectArgs &&
+               dagNodeQueues[0] &&
+               dagNodeQueues[1] &&
                spdAtomicCounter &&
                visibleInstanceBuffer &&
                instanceVisibilityBuffer &&
@@ -186,6 +229,7 @@ struct ClusterOcclusionState {
     }
 
     RhiBuffer* recheckWorklist() const { return phase0RecheckWorklist.get(); }
+    RhiBuffer* dagNodeQueue(uint32_t index) const { return dagNodeQueues[index & 1u].get(); }
 
     RhiBuffer* spdCounter() const {
         return spdAtomicCounter.get();
@@ -235,6 +279,27 @@ struct ClusterOcclusionState {
                 stats.indirectReadable = true;
                 stats.dispatchGroups = indirectArgs[0];
             }
+        }
+        return stats;
+    }
+
+    DagCullStats readDagCullStats() {
+        DagCullStats stats{};
+        if (!counters || counters->size() < kDagCounterBytes) {
+            return stats;
+        }
+
+        if (const auto* values = static_cast<const uint32_t*>(counters->mappedData())) {
+            stats.readable = true;
+            stats.phase0Visible = values[kCounterPhase0Visible / sizeof(uint32_t)];
+            stats.phase0Recheck = values[kCounterPhase0Recheck / sizeof(uint32_t)];
+            stats.phase1Visible = values[kCounterPhase1Visible / sizeof(uint32_t)];
+            stats.queueCount0 = values[kDagQueueCount0 / sizeof(uint32_t)];
+            stats.queueCount1 = values[kDagQueueCount1 / sizeof(uint32_t)];
+            stats.nodeOverflow = values[kDagNodeOverflow / sizeof(uint32_t)];
+            stats.nodeProcessed = values[kDagNodeProcessed / sizeof(uint32_t)];
+            stats.clusterOverflow = values[kDagClusterOverflow / sizeof(uint32_t)];
+            stats.seededInstances = values[kDagSeededInstances / sizeof(uint32_t)];
         }
         return stats;
     }
