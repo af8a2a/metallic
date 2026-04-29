@@ -359,23 +359,7 @@ void processNodes(uint3 dispatchThreadID) {
     uint ignored;
     counters.InterlockedAdd(kDagNodeProcessed, 1u, ignored);
 
-    // LOD selection: stop descending when screen-space error is below threshold.
-    // screenError = worldError * (renderHeight / (2 * tan(fovY/2))) / distance
-    bool lodCut = false;
-    if (node.isLeaf == 0u && params.lodErrorThreshold > 0.0) {
-        InstanceData inst = instances[task.instanceID];
-        float3 worldCenter = mul(inst.worldMatrix, float4(node.center, 1.0)).xyz;
-        float dist = max(length(worldCenter - params.cameraWorldPos), 1e-4);
-        float cotHalfFov = 1.0 / max(tan(params.cameraFovY * 0.5), 1e-6);
-        float screenError = node.maxError * float(screenHeight()) * cotHalfFov * 0.5 / dist;
-        if (screenError < params.lodErrorThreshold) {
-            lodCut = true;
-            uint ign;
-            counters.InterlockedAdd(kDagLodCulled, 1u, ign);
-        }
-    }
-
-    if (node.isLeaf != 0u || lodCut) {
+    if (node.isLeaf != 0u) {
         for (uint child = 0u; child < node.childCount; ++child) {
             processGroup(task.instanceID, node.childOffset + child);
         }

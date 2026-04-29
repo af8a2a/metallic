@@ -138,6 +138,7 @@
       "config": {
         "enableOcclusion": true,
         "enableInstanceFilter": true,
+        "lodErrorThreshold": 0.0,
         "maxIterations": 16,
         "phase": 0
       },
@@ -190,6 +191,7 @@
       "config": {
         "enableOcclusion": true,
         "enableInstanceFilter": true,
+        "lodErrorThreshold": 0.0,
         "maxIterations": 16,
         "phase": 1
       },

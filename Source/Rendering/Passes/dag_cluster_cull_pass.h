@@ -241,7 +241,7 @@ public:
         ImGui::Text("Phase: %u", m_phase);
         ImGui::Text("Instance Filter: %s", m_enableInstanceFilter ? "Enabled" : "Disabled");
         ImGui::Text("Frustum: %s", enableFrustumCull() ? "Enabled" : "Disabled");
-        ImGui::SliderFloat("LOD Error Threshold##dag", &m_lodErrorThreshold, 0.0f, 8.0f, "%.2f px");
+        ImGui::TextDisabled("LOD selection disabled: v1 traverses the LOD0 root");
         ImGui::Text("Max Iterations: %u", m_maxIterations);
         ImGui::Text("Node queue capacity: %u", m_maxNodeTasks);
 
@@ -497,7 +497,7 @@ private:
     uint32_t m_phase = 0;
     uint32_t m_maxIterations = 16;
     uint32_t m_maxNodeTasks = 65536;
-    float m_lodErrorThreshold = 1.0f;
+    float m_lodErrorThreshold = 0.0f;
     bool m_enableOcclusion = true;
     bool m_enableInstanceFilter = true;
     int m_enableFrustumOverride = -1;
