@@ -3,7 +3,7 @@
 // occlusion conservatively via the two-phase cluster cull path.
 
 #include "../Shared/cluster_scene.slang"
-#include "../../Source/Rendering/hzb_constants.h"
+#include "../Shared/hzb_cull.slang"
 
 struct InstanceData {
     float4x4 worldMatrix;
@@ -62,69 +62,18 @@ static const uint kCounterPhase0Visible  = 0u;
 static const uint kCounterPhase0Rejected = 4u;
 static const uint kCounterPhase1Visible  = 8u;
 static const uint kInstanceVisibleFlag   = 1u;
-static const float kEpsilon = 1.2e-7;
-static const float kDepthNudge = 2.0 / float(1 << 24);
 static const float kFrustumSlack = 1.0e-5;
 
 uint visibleCounterOffset() {
     return params.phase == 0u ? kCounterPhase0Visible : kCounterPhase1Visible;
 }
 
-uint mipWidth(uint mip) {
-    uint d = max(params.hzbWidth, 1u);
-    for (uint i = 0u; i < mip; ++i) d = max(1u, (d + 1u) / 2u);
-    return d;
-}
-
-uint mipHeight(uint mip) {
-    uint d = max(params.hzbHeight, 1u);
-    for (uint i = 0u; i < mip; ++i) d = max(1u, (d + 1u) / 2u);
-    return d;
-}
-
-uint getCullBits(float4 hPos) {
-    uint bits = 0u;
-    bits |= hPos.x < -hPos.w ? 1u : 0u;
-    bits |= hPos.x >  hPos.w ? 2u : 0u;
-    bits |= hPos.y < -hPos.w ? 4u : 0u;
-    bits |= hPos.y >  hPos.w ? 8u : 0u;
-    bits |= hPos.z <  0.0    ? 16u : 0u;
-    bits |= hPos.z >  hPos.w ? 32u : 0u;
-    bits |= hPos.w <= 0.0    ? 64u : 0u;
-    return bits;
-}
-
-float3 boxCorner(float3 center, float radius, uint corner) {
-    return center + float3(
-        (corner & 1u) != 0u ? radius : -radius,
-        (corner & 2u) != 0u ? radius : -radius,
-        (corner & 4u) != 0u ? radius : -radius);
-}
-
+// projectBounds: AABB-corner projection for the diagnostic HZB test.
+// (Hard frustum reject uses sphereIntersectsFrustum below instead.)
 bool projectBounds(float3 center, float radius, float4x4 worldMatrix,
                    out float4 clipMin, out float4 clipMax, out bool clipValid) {
-    float4 hPos = mul(params.viewProj, mul(worldMatrix, float4(boxCorner(center, radius, 0u), 1.0)));
-    uint commonBits = getCullBits(hPos);
-    bool valid = hPos.w >= kEpsilon;
-    float4 clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
-    clipMin = clip;
-    clipMax = clip;
-    clipValid = valid;
-
-    [unroll]
-    for (uint corner = 1u; corner < 8u; ++corner) {
-        hPos = mul(params.viewProj, mul(worldMatrix, float4(boxCorner(center, radius, corner), 1.0)));
-        commonBits &= getCullBits(hPos);
-        valid = hPos.w >= kEpsilon;
-        clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
-        clipMin = min(clipMin, clip);
-        clipMax = max(clipMax, clip);
-        clipValid = clipValid && valid;
-    }
-
-    clipMin = float4(clamp(clipMin.xy, float2(-1.0), float2(1.0)), clipMin.zw);
-    clipMax = float4(clamp(clipMax.xy, float2(-1.0), float2(1.0)), clipMax.zw);
-    return commonBits == 0u;
+    return hzbProjectSphere(center, radius, worldMatrix, params.viewProj,
+                            /*frustumCull=*/false, clipMin, clipMax, clipValid);
 }
 
 bool planeIntersectsSphere(float4x4 localToClip, float3 center, float radius, float4 clipPlane) {
@@ -147,47 +96,15 @@ bool sphereIntersectsFrustum(float3 center, float radius, float4x4 worldMatrix) 
            planeIntersectsSphere(localToClip, center, radius, float4( 0.0,  0.0, -1.0, 1.0));
 }
 
+// Diagnostic-only HZB test: result is observed but never used for hard rejection.
 bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
-    if (params.enableOcclusion == 0u ||
-        params.hzbValid == 0u ||
-        params.hzbMipCount == 0u ||
-        !clipValid) {
-        return true;
-    }
-
-    float2 uvMin = float2(clipMin.x * 0.5 + 0.5, 0.5 - clipMax.y * 0.5);
-    float2 uvMax = float2(clipMax.x * 0.5 + 0.5, 0.5 - clipMin.y * 0.5);
-    uvMin = clamp(uvMin, float2(0.0), float2(1.0));
-    uvMax = clamp(uvMax, float2(0.0), float2(1.0));
-
-    float2 pixelSize = (uvMax - uvMin) * float2(float(params.screenWidth), float(params.screenHeight));
-    float maxSize = max(pixelSize.x, pixelSize.y);
-    if (maxSize < 1.0) return true;
-
-    uint mip = min(uint(ceil(log2(max(maxSize * 0.5, 1.0)))), params.hzbMipCount - 1u);
-    uint w = mipWidth(mip);
-    uint h = mipHeight(mip);
-    uint2 maxCoord = uint2(w - 1u, h - 1u);
-    float2 mipSize = float2(float(w), float(h));
-    uint2 rectMin = min(uint2(floor(uvMin * mipSize)), maxCoord);
-    uint2 rectMax = min(uint2(max(ceil(uvMax * mipSize) - float2(1.0), float2(0.0))), maxCoord);
-    rectMin = min(rectMin, rectMax);
-
-    float hzbDepth = 1.0;
-    [unroll]
-    for (uint y = 0u; y < 4u; ++y) {
-        uint sampleY = rectMin.y + y;
-        if (sampleY > rectMax.y) continue;
-
-        [unroll]
-        for (uint x = 0u; x < 4u; ++x) {
-            uint sampleX = rectMin.x + x;
-            if (sampleX > rectMax.x) continue;
-            hzbDepth = min(hzbDepth, hzbTextures[mip].Load(int3(uint2(sampleX, sampleY), 0)));
-        }
-    }
-
-    return clipMax.z >= hzbDepth - kDepthNudge;
+    return hzbTestVisibility(clipMin, clipMax, clipValid,
+                             params.enableOcclusion != 0u,
+                             params.hzbValid != 0u,
+                             params.hzbMipCount,
+                             params.screenWidth, params.screenHeight,
+                             params.hzbWidth, params.hzbHeight,
+                             hzbTextures);
 }
 
 [shader("compute")]

@@ -1,6 +1,6 @@
 // GPU DAG traversal for the ClusterLOD visualization path.
 
-#include "../../Source/Rendering/hzb_constants.h"
+#include "../Shared/hzb_cull.slang"
 
 struct InstanceData {
     float4x4 worldMatrix;
@@ -124,8 +124,6 @@ static const uint kModeSeedNodes = 1u;
 static const uint kModeClearNextQueue = 2u;
 static const uint kModeProcessNodes = 3u;
 static const uint kModeProcessRecheck = 4u;
-static const float kEpsilon = 1.2e-7;
-static const float kDepthNudge = 2.0 / float(1 << 24);
 
 uint visibleCounterOffset() {
     return params.phase == 0u ? kCounterPhase0Visible : kCounterPhase1Visible;
@@ -147,157 +145,24 @@ uint outputQueueIndex() {
     return (params.iteration + 1u) & 1u;
 }
 
-uint getCullBits(float4 hPos) {
-    uint bits = 0u;
-    bits |= hPos.x < -hPos.w ? 1u : 0u;
-    bits |= hPos.x >  hPos.w ? 2u : 0u;
-    bits |= hPos.y < -hPos.w ? 4u : 0u;
-    bits |= hPos.y >  hPos.w ? 8u : 0u;
-    bits |= hPos.z <  0.0    ? 16u : 0u;
-    bits |= hPos.z >  hPos.w ? 32u : 0u;
-    bits |= hPos.w <= 0.0    ? 64u : 0u;
-    return bits;
-}
+// Thin wrappers so call sites keep their original names.
 
-float3 boxCorner(float3 center, float radius, uint corner) {
-    return center + float3(
-        (corner & 1u) != 0u ? radius : -radius,
-        (corner & 2u) != 0u ? radius : -radius,
-        (corner & 4u) != 0u ? radius : -radius);
-}
-
-bool projectSphereBounds(float3 center,
-                         float radius,
-                         float4x4 worldMatrix,
-                         float4x4 vp,
-                         out float4 clipMin,
-                         out float4 clipMax,
-                         out bool clipValid) {
-    if (radius <= 0.0) {
-        clipMin = float4(0.0, 0.0, 0.0, 0.0);
-        clipMax = float4(0.0, 0.0, 0.0, 0.0);
-        clipValid = false;
-        return true;
-    }
-
-    float4 hPos = mul(vp, mul(worldMatrix, float4(boxCorner(center, radius, 0u), 1.0)));
-    uint commonBits = getCullBits(hPos);
-    bool valid = hPos.w >= kEpsilon;
-    float4 clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
-    clipMin = clip;
-    clipMax = clip;
-    clipValid = valid;
-
-    [unroll]
-    for (uint corner = 1u; corner < 8u; ++corner) {
-        hPos = mul(vp, mul(worldMatrix, float4(boxCorner(center, radius, corner), 1.0)));
-        commonBits &= getCullBits(hPos);
-        valid = hPos.w >= kEpsilon;
-        clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
-        clipMin = min(clipMin, clip);
-        clipMax = max(clipMax, clip);
-        clipValid = clipValid && valid;
-    }
-
-    clipMin = float4(clamp(clipMin.xy, float2(-1.0), float2(1.0)), clipMin.zw);
-    clipMax = float4(clamp(clipMax.xy, float2(-1.0), float2(1.0)), clipMax.zw);
-    return params.enableFrustum == 0u || commonBits == 0u;
-}
-
-// Returns the mip level whose texels cover a 4-texel footprint over the given
-// full-resolution pixel rect. Metallic stores mip 0 as a full-res depth copy.
-// Mirrors Nyx MipLevelForRect with HZB_TARGET_FOOTPRINT_PIXELS=4.
-int hzbMipLevelForRect(int4 pixelRect) {
-    // footprintMipBias = log2(4) - 1 = 1
-    int2 rectSize = max(pixelRect.zw - pixelRect.xy, int2(0, 0));
-    int2 dominantMip = int2(firstbithigh(rectSize.x), firstbithigh(rectSize.y));
-    int mipLevel = max(max(dominantMip.x, dominantMip.y) - 1, 0);
-    int2 shifted = pixelRect.xy >> mipLevel;
-    int2 shiftedMax = pixelRect.zw >> mipLevel;
-    // If the 4-texel span is exceeded, go one mip coarser.
-    mipLevel += any(shiftedMax - shifted > int2(3, 3)) ? 1 : 0;
-    return mipLevel;
-}
-
-uint hzbMipDimension(uint baseDimension, uint mip) {
-    uint dimension = max(baseDimension, 1u);
-    for (uint level = 0u; level < mip; ++level) {
-        dimension = max(1u, (dimension + 1u) / 2u);
-    }
-    return dimension;
+bool projectSphereBounds(float3 center, float radius,
+                         float4x4 worldMatrix, float4x4 vp,
+                         out float4 clipMin, out float4 clipMax, out bool clipValid) {
+    bool frustumCull = params.enableFrustum != 0u;
+    return hzbProjectSphere(center, radius, worldMatrix, vp, frustumCull,
+                            clipMin, clipMax, clipValid);
 }
 
 bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
-    if (params.enableOcclusion == 0u || params.hzbValid == 0u || params.hzbMipCount == 0u) {
-        return true;
-    }
-    // Near-plane straddle: conservative, treat as visible.
-    if (!clipValid) {
-        return true;
-    }
-
-    float2 uvMin = float2(clipMin.x * 0.5 + 0.5, 0.5 - clipMax.y * 0.5);
-    float2 uvMax = float2(clipMax.x * 0.5 + 0.5, 0.5 - clipMin.y * 0.5);
-    uvMin = clamp(uvMin, float2(0.0), float2(1.0));
-    uvMax = clamp(uvMax, float2(0.0), float2(1.0));
-
-    float2 pixelSize = (uvMax - uvMin) * float2(float(params.screenWidth), float(params.screenHeight));
-    if (max(pixelSize.x, pixelSize.y) < 1.0) {
-        return true;
-    }
-
-    // Pixel rect with rounding bias: min rounds up (+0.5), max rounds down (-0.5).
-    float4 uvRect = float4(uvMin.x, uvMin.y, uvMax.x, uvMax.y);
-    float4 screenSize = float4(float(params.screenWidth), float(params.screenHeight),
-                               float(params.screenWidth), float(params.screenHeight));
-    int4 pixelsRect = int4(uvRect * screenSize + float4(0.5, 0.5, -0.5, -0.5));
-    int2 pixelMin = min(pixelsRect.xy, pixelsRect.zw);
-    int2 pixelMax = max(pixelsRect.xy, pixelsRect.zw);
-    pixelsRect = int4(pixelMin, pixelMax);
-
-    int hzbMip = min(hzbMipLevelForRect(pixelsRect), int(params.hzbMipCount) - 1);
-    int4 mipRect = pixelsRect >> hzbMip;
-
-    uint mipIdx = uint(hzbMip);
-    int mipW = int(hzbMipDimension(params.hzbWidth, mipIdx));
-    int mipH = int(hzbMipDimension(params.hzbHeight, mipIdx));
-
-    int2 maxCoord = int2(mipW - 1, mipH - 1);
-    int2 rectMin = clamp(mipRect.xy, int2(0, 0), maxCoord);
-    int2 rectMax = clamp(mipRect.zw, int2(0, 0), maxCoord);
-    rectMin = min(rectMin, rectMax);
-
-    // 4x4 sample grid clamped to mip dimensions.
-    int4 sampleX = min(rectMin.x + int4(0, 1, 2, 3), int4(rectMax.x));
-    int4 sampleY = min(rectMin.y + int4(0, 1, 2, 3), int4(rectMax.y));
-
-    float4 row0 = float4(
-        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.x, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.x, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.x, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.x, 0)));
-    float4 row1 = float4(
-        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.y, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.y, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.y, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.y, 0)));
-    float4 row2 = float4(
-        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.z, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.z, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.z, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.z, 0)));
-    float4 row3 = float4(
-        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.w, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.w, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.w, 0)),
-        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.w, 0)));
-
-    // Reversed-Z: min = farthest sample = most conservative occluder.
-    float4 colMin = min(min(row0, row1), min(row2, row3));
-    float minDepth = min(min(colMin.x, colMin.y), min(colMin.z, colMin.w));
-
-    // Visible if object's nearest depth (clipMax.z in reversed-Z) >= HZB min depth.
-    return clipMax.z >= minDepth - kDepthNudge;
+    return hzbTestVisibility(clipMin, clipMax, clipValid,
+                             params.enableOcclusion != 0u,
+                             params.hzbValid != 0u,
+                             params.hzbMipCount,
+                             params.screenWidth, params.screenHeight,
+                             params.hzbWidth, params.hzbHeight,
+                             hzbTextures);
 }
 
 bool instanceCanRender(uint instanceID) {
