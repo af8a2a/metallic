@@ -29,12 +29,13 @@ struct ClusterOcclusionState {
     static constexpr uint32_t kDagHzbRecheck = 48u;
     static constexpr uint32_t kDagInvalidRoot = 52u;
     static constexpr uint32_t kDagMaxIterRemaining = 56u;
+    static constexpr uint32_t kDagLodCulled = 64u;
     static constexpr uint32_t kInstanceCounterPhase0Visible = 0u;
     static constexpr uint32_t kInstanceCounterPhase0Rejected = 4u;
     static constexpr uint32_t kInstanceCounterPhase1Visible = 8u;
     static constexpr uint32_t kIndirectPhase0Offset = 0u;
     static constexpr uint32_t kIndirectPhase1Offset = 12u;
-    static constexpr uint32_t kDagCounterBytes = 64u;
+    static constexpr uint32_t kDagCounterBytes = 68u;
 
     struct DagNodeTask {
         uint32_t instanceID = 0;
@@ -68,6 +69,7 @@ struct ClusterOcclusionState {
         uint32_t hzbRecheck = 0;
         uint32_t invalidRoot = 0;
         uint32_t maxIterRemaining = 0;
+        uint32_t lodCulled = 0;
     };
 
     uint32_t width = 0;
@@ -345,6 +347,7 @@ struct ClusterOcclusionState {
             stats.hzbRecheck = values[kDagHzbRecheck / sizeof(uint32_t)];
             stats.invalidRoot = values[kDagInvalidRoot / sizeof(uint32_t)];
             stats.maxIterRemaining = values[kDagMaxIterRemaining / sizeof(uint32_t)];
+            stats.lodCulled = values[kDagLodCulled / sizeof(uint32_t)];
         }
         return stats;
     }

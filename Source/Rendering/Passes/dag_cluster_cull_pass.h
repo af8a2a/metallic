@@ -73,6 +73,9 @@ public:
         if (config.config.contains("maxIterations")) {
             m_maxIterations = std::clamp(config.config["maxIterations"].get<uint32_t>(), 1u, 64u);
         }
+        if (config.config.contains("lodErrorThreshold")) {
+            m_lodErrorThreshold = std::max(config.config["lodErrorThreshold"].get<float>(), 0.0f);
+        }
         // Reset UI override so the JSON value takes effect on pipeline reload.
         m_enableOcclusionOverride = -1;
     }
@@ -228,6 +231,7 @@ public:
         ImGui::Text("Phase: %u", m_phase);
         ImGui::Text("Instance Filter: %s", m_enableInstanceFilter ? "Enabled" : "Disabled");
         ImGui::Text("Frustum: %s", enableFrustumCull() ? "Enabled" : "Disabled");
+        ImGui::SliderFloat("LOD Error Threshold##dag", &m_lodErrorThreshold, 0.0f, 8.0f, "%.2f px");
         ImGui::Text("Max Iterations: %u", m_maxIterations);
 
         // HZB toggle — overrides the JSON config value for live testing.
@@ -279,6 +283,9 @@ public:
             ImGui::Text("Invalid root: 0");
         }
         ImGui::Text("Processed nodes: %u", stats.nodeProcessed);
+        if (stats.lodCulled > 0u) {
+            ImGui::Text("LOD cut nodes: %u", stats.lodCulled);
+        }
         ImGui::Text("Queue counts: %u / %u", stats.queueCount0, stats.queueCount1);
         ImGui::Text("Phase0 visible/recheck: %u / %u",
                     stats.phase0Visible,
@@ -325,16 +332,15 @@ private:
         uint32_t phase = 0;
         uint32_t mode = 0;
         uint32_t iteration = 0;
-        uint32_t enableOcclusion = 0;
-        uint32_t hzbValid = 0;
-        uint32_t hzbWidth = 0;
-        uint32_t hzbHeight = 0;
+        // bit0=enableOcclusion, bit1=hzbValid, bit2=useInstanceVisibility, bit3=enableFrustum
+        uint32_t flags = 0;
+        uint32_t packedHzbDims = 0;    // hzbWidth<<16 | hzbHeight
         uint32_t hzbMipCount = 0;
-        uint32_t screenWidth = 0;
-        uint32_t screenHeight = 0;
-        uint32_t useInstanceVisibility = 0;
-        uint32_t enableFrustum = 0;
+        uint32_t packedScreenDims = 0; // screenWidth<<16 | screenHeight
         uint32_t maxIterations = 0;
+        float cameraWorldPos[3] = {};
+        float cameraFovY = 0.0f;
+        float lodErrorThreshold = 0.0f;
     };
     static_assert(sizeof(DagCullUniforms) <= 128,
                   "DagCullUniforms must fit Vulkan push constants");
@@ -363,24 +369,34 @@ private:
         uniforms.maxClusters = state.maxClusters;
         uniforms.maxNodeTasks = state.maxClusters;
         uniforms.phase = m_phase;
-        uniforms.enableOcclusion = enableOcclusion() ? 1u : 0u;
+
         const uint32_t hzbPyramid = m_phase == 0u ? 0u : 1u;
-        uniforms.hzbValid =
-            (enableOcclusion() &&
-             state.hizValid[hzbPyramid] &&
-             state.hizTexturesReady(hzbPyramid)) ? 1u : 0u;
-        uniforms.hzbWidth = state.width;
-        uniforms.hzbHeight = state.height;
+        const bool occEnabled = enableOcclusion();
+        const bool hzbReady = occEnabled && state.hizValid[hzbPyramid] && state.hizTexturesReady(hzbPyramid);
+        const bool instVis = m_enableInstanceFilter &&
+                             state.instanceVisibilityValid &&
+                             state.instanceVisibilityFrameIndex == m_frameContext->frameIndex &&
+                             state.instanceVisibilityBuffer;
+        uniforms.flags = (occEnabled    ? 1u : 0u) |
+                         (hzbReady      ? 2u : 0u) |
+                         (instVis       ? 4u : 0u) |
+                         (enableFrustumCull() ? 8u : 0u);
+
+        const uint32_t hzbW = std::min(state.width,  0xFFFFu);
+        const uint32_t hzbH = std::min(state.height, 0xFFFFu);
+        uniforms.packedHzbDims = (hzbW << 16u) | hzbH;
         uniforms.hzbMipCount = state.mipCount;
-        uniforms.screenWidth = static_cast<uint32_t>(std::max(m_width, 1));
-        uniforms.screenHeight = static_cast<uint32_t>(std::max(m_height, 1));
-        uniforms.useInstanceVisibility =
-            (m_enableInstanceFilter &&
-             state.instanceVisibilityValid &&
-             state.instanceVisibilityFrameIndex == m_frameContext->frameIndex &&
-             state.instanceVisibilityBuffer) ? 1u : 0u;
-        uniforms.enableFrustum = enableFrustumCull() ? 1u : 0u;
+
+        const uint32_t scrW = std::min(static_cast<uint32_t>(std::max(m_width,  1)), 0xFFFFu);
+        const uint32_t scrH = std::min(static_cast<uint32_t>(std::max(m_height, 1)), 0xFFFFu);
+        uniforms.packedScreenDims = (scrW << 16u) | scrH;
         uniforms.maxIterations = m_maxIterations;
+
+        uniforms.cameraWorldPos[0] = m_frameContext->cameraWorldPos.x;
+        uniforms.cameraWorldPos[1] = m_frameContext->cameraWorldPos.y;
+        uniforms.cameraWorldPos[2] = m_frameContext->cameraWorldPos.z;
+        uniforms.cameraFovY = m_frameContext->cameraFovY;
+        uniforms.lodErrorThreshold = m_lodErrorThreshold;
         return uniforms;
     }
 
@@ -452,6 +468,7 @@ private:
     std::string m_name = "DAG Cluster Cull";
     uint32_t m_phase = 0;
     uint32_t m_maxIterations = 16;
+    float m_lodErrorThreshold = 1.0f;
     bool m_enableOcclusion = true;
     bool m_enableInstanceFilter = true;
     int m_enableFrustumOverride = -1;

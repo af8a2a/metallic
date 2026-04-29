@@ -70,16 +70,15 @@ struct DagCullParams {
     uint phase;
     uint mode;
     uint iteration;
-    uint enableOcclusion;
-    uint hzbValid;
-    uint hzbWidth;
-    uint hzbHeight;
+    // Packed flags: bit0=enableOcclusion, bit1=hzbValid, bit2=useInstanceVisibility, bit3=enableFrustum
+    uint flags;
+    uint packedHzbDims;    // hzbWidth<<16 | hzbHeight
     uint hzbMipCount;
-    uint screenWidth;
-    uint screenHeight;
-    uint useInstanceVisibility;
-    uint enableFrustum;
+    uint packedScreenDims; // screenWidth<<16 | screenHeight
     uint maxIterations;
+    float3 cameraWorldPos;
+    float cameraFovY;
+    float lodErrorThreshold;
 };
 
 [[vk::push_constant]] ConstantBuffer<DagCullParams> params;
@@ -116,6 +115,7 @@ static const uint kDagHzbRecheck = 48u;
 static const uint kDagInvalidRoot = 52u;
 static const uint kDagMaxIterRemaining = 56u;
 static const uint kDagLastActiveIteration = 60u;
+static const uint kDagLodCulled = 64u;
 static const uint kIndirectPhase0 = 0u;
 static const uint kIndirectPhase1 = 12u;
 static const uint kInstanceVisibleFlag = 1u;
@@ -124,6 +124,12 @@ static const uint kModeSeedNodes = 1u;
 static const uint kModeClearNextQueue = 2u;
 static const uint kModeProcessNodes = 3u;
 static const uint kModeProcessRecheck = 4u;
+
+bool flagEnabled(uint bit) { return (params.flags & (1u << bit)) != 0u; }
+uint hzbWidth()       { return params.packedHzbDims >> 16u; }
+uint hzbHeight()      { return params.packedHzbDims & 0xFFFFu; }
+uint screenWidth()    { return params.packedScreenDims >> 16u; }
+uint screenHeight()   { return params.packedScreenDims & 0xFFFFu; }
 
 uint visibleCounterOffset() {
     return params.phase == 0u ? kCounterPhase0Visible : kCounterPhase1Visible;
@@ -150,18 +156,18 @@ uint outputQueueIndex() {
 bool projectSphereBounds(float3 center, float radius,
                          float4x4 worldMatrix, float4x4 vp,
                          out float4 clipMin, out float4 clipMax, out bool clipValid) {
-    bool frustumCull = params.enableFrustum != 0u;
+    bool frustumCull = flagEnabled(3u);
     return hzbProjectSphere(center, radius, worldMatrix, vp, frustumCull,
                             clipMin, clipMax, clipValid);
 }
 
 bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
     return hzbTestVisibility(clipMin, clipMax, clipValid,
-                             params.enableOcclusion != 0u,
-                             params.hzbValid != 0u,
+                             flagEnabled(0u),
+                             flagEnabled(1u),
                              params.hzbMipCount,
-                             params.screenWidth, params.screenHeight,
-                             params.hzbWidth, params.hzbHeight,
+                             screenWidth(), screenHeight(),
+                             hzbWidth(), hzbHeight(),
                              hzbTextures);
 }
 
@@ -175,7 +181,7 @@ bool instanceCanRender(uint instanceID) {
         return false;
     }
 
-    return params.useInstanceVisibility == 0u || instanceVisibility[instanceID] != 0u;
+    return !flagEnabled(2u) || instanceVisibility[instanceID] != 0u;
 }
 
 DagNodeTask loadTask(uint queueIndex, uint taskIndex) {
@@ -343,7 +349,23 @@ void processNodes(uint3 dispatchThreadID) {
     uint ignored;
     counters.InterlockedAdd(kDagNodeProcessed, 1u, ignored);
 
-    if (node.isLeaf != 0u) {
+    // LOD selection: stop descending when screen-space error is below threshold.
+    // screenError = worldError * (renderHeight / (2 * tan(fovY/2))) / distance
+    bool lodCut = false;
+    if (node.isLeaf == 0u && params.lodErrorThreshold > 0.0) {
+        InstanceData inst = instances[task.instanceID];
+        float3 worldCenter = mul(inst.worldMatrix, float4(node.center, 1.0)).xyz;
+        float dist = max(length(worldCenter - params.cameraWorldPos), 1e-4);
+        float cotHalfFov = 1.0 / max(tan(params.cameraFovY * 0.5), 1e-6);
+        float screenError = node.maxError * float(screenHeight()) * cotHalfFov * 0.5 / dist;
+        if (screenError < params.lodErrorThreshold) {
+            lodCut = true;
+            uint ign;
+            counters.InterlockedAdd(kDagLodCulled, 1u, ign);
+        }
+    }
+
+    if (node.isLeaf != 0u || lodCut) {
         for (uint child = 0u; child < node.childCount; ++child) {
             processGroup(task.instanceID, node.childOffset + child);
         }
@@ -429,6 +451,7 @@ void resetMain() {
         counters.Store(kDagInvalidRoot, 0u);
         counters.Store(kDagMaxIterRemaining, 0u);
         counters.Store(kDagLastActiveIteration, 0u);
+        counters.Store(kDagLodCulled, 0u);
         indirectArgs.Store(kIndirectPhase0 + 0u, 0u);
         indirectArgs.Store(kIndirectPhase0 + 4u, 1u);
         indirectArgs.Store(kIndirectPhase0 + 8u, 1u);
