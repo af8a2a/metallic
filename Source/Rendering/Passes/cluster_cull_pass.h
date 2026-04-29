@@ -24,8 +24,10 @@ static constexpr uint32_t kIndirectArgs = 7u;
 static constexpr uint32_t kInstanceVisibility = 8u;
 #if METALLIC_RHI_METAL
 static constexpr uint32_t kHizMipBase = 8u;
+static constexpr uint32_t kHzbViewProj = 9u;
 #else
 static constexpr uint32_t kHizMipBase = 9u;
+static constexpr uint32_t kHzbViewProj = 10u;
 #endif
 
 inline constexpr uint32_t bufferBinding(uint32_t binding) {
@@ -95,6 +97,19 @@ public:
         }
         if (m_phase == 0u) {
             state->resetWorklists();
+            // Phase0: HZB uses history pyramid. Supply its VP for correct temporal projection.
+            if (m_enableOcclusion) {
+                state->updateHzbViewProj(state->hizViewProj[0]);
+            } else {
+                float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
+                float4x4 vpT = transpose(vp);
+                state->updateHzbViewProj(vpT.a);
+            }
+        } else {
+            // Phase1: HZB uses current-frame pyramid. Supply current VP.
+            float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
+            float4x4 vpT = transpose(vp);
+            state->updateHzbViewProj(vpT.a);
         }
 
         const uint32_t inputCount = m_ctx.gpuScene.clusterVisWorklistCount;
@@ -130,7 +145,8 @@ public:
             !state->phase1VisibleWorklist ||
             !state->counters ||
             !state->indirectArgs ||
-            !state->instanceVisibilityBuffer) {
+            !state->instanceVisibilityBuffer ||
+            !state->hzbViewProjBuffer) {
             state->worklistValid[m_phase] = false;
             return;
         }
@@ -190,7 +206,7 @@ private:
     ClusterCullUniforms makeUniforms(const ClusterOcclusionState& state,
                                      uint32_t inputCount) const {
         ClusterCullUniforms uniforms{};
-        float4x4 vp = m_frameContext->proj * m_frameContext->view;
+        float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
         float4x4 vpT = transpose(vp);
         std::memcpy(uniforms.viewProj, &vpT, sizeof(uniforms.viewProj));
         uniforms.inputCount = inputCount;
@@ -242,6 +258,8 @@ private:
                 encoder.setTexture(texture, ClusterCullBindings::kHizMipBase + level);
             }
         }
+        encoder.setBuffer(state.hzbViewProjBuffer.get(), 0,
+                          ClusterCullBindings::bufferBinding(ClusterCullBindings::kHzbViewProj));
     }
 
     const RenderContext& m_ctx;

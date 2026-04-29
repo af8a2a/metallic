@@ -28,6 +28,7 @@ static constexpr uint32_t kInstanceVisibility = 11u;
 static constexpr uint32_t kNodeQueue0 = 12u;
 static constexpr uint32_t kNodeQueue1 = 13u;
 static constexpr uint32_t kHizMipBase = 14u;
+static constexpr uint32_t kHzbViewProj = 15u;
 
 inline constexpr uint32_t bufferBinding(uint32_t binding) {
 #if METALLIC_RHI_METAL
@@ -105,12 +106,20 @@ public:
         }
         if (m_phase == 0u) {
             state->resetWorklists();
-            // Invalidate the history pyramid (pyramid 0) if the camera moved since it was built.
+            // Phase0: HZB uses history pyramid (pyramid 0). Supply its VP so the shader
+            // can project bounds against the pyramid that was actually built.
             if (enableOcclusion()) {
+                state->updateHzbViewProj(state->hizViewProj[0]);
+            } else {
                 float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
                 float4x4 vpT = transpose(vp);
-                state->invalidateHizIfCameraChanged(0u, vpT.a);
+                state->updateHzbViewProj(vpT.a);
             }
+        } else {
+            // Phase1: HZB uses current-frame pyramid (pyramid 1). Supply current VP.
+            float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
+            float4x4 vpT = transpose(vp);
+            state->updateHzbViewProj(vpT.a);
         }
 
         const uint32_t maxClusters = m_ctx.gpuScene.clusterVisWorklistCount;
@@ -153,7 +162,8 @@ public:
             !state->indirectArgs ||
             !state->instanceVisibilityBuffer ||
             !state->dagNodeQueue(0u) ||
-            !state->dagNodeQueue(1u)) {
+            !state->dagNodeQueue(1u) ||
+            !state->hzbViewProjBuffer) {
             state->worklistValid[m_phase] = false;
             return;
         }
@@ -422,6 +432,8 @@ private:
                           DagClusterCullBindings::bufferBinding(DagClusterCullBindings::kNodeQueue0));
         encoder.setBuffer(state.dagNodeQueue(1u), 0,
                           DagClusterCullBindings::bufferBinding(DagClusterCullBindings::kNodeQueue1));
+        encoder.setBuffer(state.hzbViewProjBuffer.get(), 0,
+                          DagClusterCullBindings::bufferBinding(DagClusterCullBindings::kHzbViewProj));
     }
 
     void bindHizTextures(RhiComputeCommandEncoder& encoder, ClusterOcclusionState& state) const {

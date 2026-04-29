@@ -87,6 +87,7 @@ struct ClusterOcclusionState {
     std::unique_ptr<RhiBuffer> indirectArgs;
     std::unique_ptr<RhiBuffer> dagNodeQueues[2];
     std::unique_ptr<RhiBuffer> spdAtomicCounter;
+    std::unique_ptr<RhiBuffer> hzbViewProjBuffer; // 64 bytes, host-visible; holds the VP for HZB tests
     std::array<std::unique_ptr<RhiTexture>, kHzbMaxLevels> hzb[2];
 
     // Instance culling buffers
@@ -123,6 +124,7 @@ struct ClusterOcclusionState {
             !dagNodeQueues[0] ||
             !dagNodeQueues[1] ||
             !spdAtomicCounter ||
+            !hzbViewProjBuffer ||
             !hizTexturesReady(0u, newMipCount) ||
             !hizTexturesReady(1u, newMipCount);
 
@@ -175,6 +177,14 @@ struct ClusterOcclusionState {
                                             "ClusterCull HZB SPD Atomic Counter",
                                             true,
                                             &zero);
+            const float identityVP[16] = {
+                1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+            };
+            hzbViewProjBuffer = createBuffer(factory,
+                                             16 * sizeof(float),
+                                             "ClusterCull HZB ViewProj",
+                                             true,
+                                             identityVP);
             for (uint32_t pyramid = 0; pyramid < 2u; ++pyramid) {
                 for (auto& texture : hzb[pyramid]) {
                     texture.reset();
@@ -219,6 +229,7 @@ struct ClusterOcclusionState {
                dagNodeQueues[0] &&
                dagNodeQueues[1] &&
                spdAtomicCounter &&
+               hzbViewProjBuffer &&
                visibleInstanceBuffer &&
                instanceVisibilityBuffer &&
                instanceCounters &&
@@ -237,17 +248,15 @@ struct ClusterOcclusionState {
         std::memcpy(hizViewProj[index & 1u], viewProj16, 16 * sizeof(float));
     }
 
-    // Invalidate pyramid `index` if the current VP matrix differs from when it was built.
-    // Returns true if the pyramid was invalidated.
-    bool invalidateHizIfCameraChanged(uint32_t index, const float* currentViewProj16) {
-        if (!hizValid[index & 1u]) {
-            return false;
+    // Write the VP matrix for HZB tests into the GPU-visible buffer.
+    // Call before dispatching the cull pass for the given phase.
+    void updateHzbViewProj(const float* viewProj16) {
+        if (!hzbViewProjBuffer) {
+            return;
         }
-        if (std::memcmp(hizViewProj[index & 1u], currentViewProj16, 16 * sizeof(float)) != 0) {
-            hizValid[index & 1u] = false;
-            return true;
+        if (auto* dst = static_cast<float*>(hzbViewProjBuffer->mappedData())) {
+            std::memcpy(dst, viewProj16, 16 * sizeof(float));
         }
-        return false;
     }
 
     void resetWorklists() {

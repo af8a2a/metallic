@@ -47,6 +47,7 @@ struct ClusterCullParams {
 [[vk::binding(7)]] RWByteAddressBuffer               indirectArgs;
 [[vk::binding(8)]] StructuredBuffer<uint>            instanceVisibility;
 [[vk::binding(9)]] Texture2D<float>                  hzbTextures[HZB_MAX_LEVELS];
+[[vk::binding(10)]] StructuredBuffer<float4x4>       hzbViewProjBuf;
 
 static const uint kCounterPhase0Visible = 0u;
 static const uint kCounterPhase0Recheck = 4u;
@@ -85,22 +86,6 @@ bool instanceCanRender(uint instanceID) {
     return params.useInstanceVisibility == 0u || instanceVisibility[instanceID] != 0u;
 }
 
-uint mipWidth(uint mip) {
-    uint dimension = max(params.hzbWidth, 1u);
-    for (uint level = 0u; level < mip; ++level) {
-        dimension = max(1u, (dimension + 1u) / 2u);
-    }
-    return dimension;
-}
-
-uint mipHeight(uint mip) {
-    uint dimension = max(params.hzbHeight, 1u);
-    for (uint level = 0u; level < mip; ++level) {
-        dimension = max(1u, (dimension + 1u) / 2u);
-    }
-    return dimension;
-}
-
 uint getCullBits(float4 hPos) {
     uint bits = 0u;
     bits |= hPos.x < -hPos.w ? 1u : 0u;
@@ -120,14 +105,13 @@ float3 boxCorner(float3 center, float radius, uint corner) {
         (corner & 4u) != 0u ? radius : -radius);
 }
 
-bool projectBounds(ClusterInfo item, out float4 clipMin, out float4 clipMax, out bool clipValid) {
+bool projectBounds(ClusterInfo item, float4x4 vp, float4x4 worldMatrix,
+                   out float4 clipMin, out float4 clipMax, out bool clipValid) {
     MeshletBounds bounds = clusterBounds[item.clusterID];
-    InstanceData inst = instances[item.instanceID];
-
     float3 center = bounds.center_radius.xyz;
     float radius = bounds.center_radius.w;
 
-    float4 hPos = mul(params.viewProj, mul(inst.worldMatrix, float4(boxCorner(center, radius, 0u), 1.0)));
+    float4 hPos = mul(vp, mul(worldMatrix, float4(boxCorner(center, radius, 0u), 1.0)));
     uint commonBits = getCullBits(hPos);
     bool valid = hPos.w >= kEpsilon;
     float4 clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
@@ -137,7 +121,7 @@ bool projectBounds(ClusterInfo item, out float4 clipMin, out float4 clipMax, out
 
     [unroll]
     for (uint corner = 1u; corner < 8u; ++corner) {
-        hPos = mul(params.viewProj, mul(inst.worldMatrix, float4(boxCorner(center, radius, corner), 1.0)));
+        hPos = mul(vp, mul(worldMatrix, float4(boxCorner(center, radius, corner), 1.0)));
         commonBits &= getCullBits(hPos);
         valid = hPos.w >= kEpsilon;
         clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
@@ -151,15 +135,29 @@ bool projectBounds(ClusterInfo item, out float4 clipMin, out float4 clipMax, out
     return commonBits == 0u;
 }
 
-float loadHiz(uint mip, uint2 coord) {
-    return hzbTextures[mip].Load(int3(coord, 0));
+uint hzbMipDimension(uint baseDimension, uint mip) {
+    uint dimension = max(baseDimension, 1u);
+    for (uint level = 0u; level < mip; ++level) {
+        dimension = max(1u, (dimension + 1u) / 2u);
+    }
+    return dimension;
+}
+
+int hzbMipLevelForRect(int4 pixelRect) {
+    int2 rectSize = max(pixelRect.zw - pixelRect.xy, int2(0, 0));
+    int2 dominantMip = int2(firstbithigh(rectSize.x), firstbithigh(rectSize.y));
+    int mipLevel = max(max(dominantMip.x, dominantMip.y) - 1, 0);
+    int2 shifted = pixelRect.xy >> mipLevel;
+    int2 shiftedMax = pixelRect.zw >> mipLevel;
+    mipLevel += any(shiftedMax - shifted > int2(3, 3)) ? 1 : 0;
+    return mipLevel;
 }
 
 bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
-    if (params.enableOcclusion == 0u ||
-        params.hzbValid == 0u ||
-        params.hzbMipCount == 0u ||
-        !clipValid) {
+    if (params.enableOcclusion == 0u || params.hzbValid == 0u || params.hzbMipCount == 0u) {
+        return true;
+    }
+    if (!clipValid) {
         return true;
     }
 
@@ -169,41 +167,58 @@ bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
     uvMax = clamp(uvMax, float2(0.0), float2(1.0));
 
     float2 pixelSize = (uvMax - uvMin) * float2(float(params.screenWidth), float(params.screenHeight));
-    float maxSize = max(pixelSize.x, pixelSize.y);
-    if (maxSize < 1.0) {
+    if (max(pixelSize.x, pixelSize.y) < 1.0) {
         return true;
     }
 
-    // The HZB stores min depth for reversed-Z. Sample the whole projected
-    // bounds rectangle at a coarse mip so partially visible bounds stay visible.
-    uint mip = min(uint(ceil(log2(max(maxSize * 0.5, 1.0)))), params.hzbMipCount - 1u);
-    uint width = mipWidth(mip);
-    uint height = mipHeight(mip);
-    uint2 maxCoord = uint2(width - 1u, height - 1u);
-    float2 mipSize = float2(float(width), float(height));
-    uint2 rectMin = min(uint2(floor(uvMin * mipSize)), maxCoord);
-    uint2 rectMax = min(uint2(max(ceil(uvMax * mipSize) - float2(1.0), float2(0.0))), maxCoord);
+    float4 uvRect = float4(uvMin.x, uvMin.y, uvMax.x, uvMax.y);
+    float4 screenSize = float4(float(params.screenWidth), float(params.screenHeight),
+                               float(params.screenWidth), float(params.screenHeight));
+    int4 pixelsRect = int4(uvRect * screenSize + float4(0.5, 0.5, -0.5, -0.5));
+    int2 pixelMin = min(pixelsRect.xy, pixelsRect.zw);
+    int2 pixelMax = max(pixelsRect.xy, pixelsRect.zw);
+    pixelsRect = int4(pixelMin, pixelMax);
+
+    int hzbMip = min(hzbMipLevelForRect(pixelsRect), int(params.hzbMipCount) - 1);
+    int4 mipRect = pixelsRect >> hzbMip;
+
+    uint mipIdx = uint(hzbMip);
+    int mipW = int(hzbMipDimension(params.hzbWidth, mipIdx));
+    int mipH = int(hzbMipDimension(params.hzbHeight, mipIdx));
+
+    int2 maxCoord = int2(mipW - 1, mipH - 1);
+    int2 rectMin = clamp(mipRect.xy, int2(0, 0), maxCoord);
+    int2 rectMax = clamp(mipRect.zw, int2(0, 0), maxCoord);
     rectMin = min(rectMin, rectMax);
 
-    float hzbDepth = 1.0;
-    [unroll]
-    for (uint y = 0u; y < 4u; ++y) {
-        uint sampleY = rectMin.y + y;
-        if (sampleY > rectMax.y) {
-            continue;
-        }
+    int4 sampleX = min(rectMin.x + int4(0, 1, 2, 3), int4(rectMax.x));
+    int4 sampleY = min(rectMin.y + int4(0, 1, 2, 3), int4(rectMax.y));
 
-        [unroll]
-        for (uint x = 0u; x < 4u; ++x) {
-            uint sampleX = rectMin.x + x;
-            if (sampleX > rectMax.x) {
-                continue;
-            }
-            hzbDepth = min(hzbDepth, loadHiz(mip, uint2(sampleX, sampleY)));
-        }
-    }
+    float4 row0 = float4(
+        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.x, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.x, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.x, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.x, 0)));
+    float4 row1 = float4(
+        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.y, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.y, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.y, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.y, 0)));
+    float4 row2 = float4(
+        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.z, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.z, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.z, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.z, 0)));
+    float4 row3 = float4(
+        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.w, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.w, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.w, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.w, 0)));
 
-    return clipMax.z >= hzbDepth - kDepthNudge;
+    float4 colMin = min(min(row0, row1), min(row2, row3));
+    float minDepth = min(min(colMin.x, colMin.y), min(colMin.z, colMin.w));
+
+    return clipMax.z >= minDepth - kDepthNudge;
 }
 
 void appendVisible(ClusterInfo item) {
@@ -263,15 +278,23 @@ void cullMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    float4 clipMin;
-    float4 clipMax;
+    InstanceData inst = instances[item.instanceID];
+
+    float4 clipMin, clipMax;
     bool clipValid;
-    bool inFrustum = projectBounds(item, clipMin, clipMax, clipValid);
+    bool inFrustum = projectBounds(item, params.viewProj, inst.worldMatrix, clipMin, clipMax, clipValid);
     if (!inFrustum) {
         return;
     }
 
-    bool visible = testHiz(clipMin, clipMax, clipValid);
+    // HZB test: phase0 uses history VP + prev world matrix; phase1 uses current VP + world matrix.
+    float4x4 hzbVP = hzbViewProjBuf[0];
+    float4x4 hzbWorld = (params.phase == 0u) ? inst.prevWorldMatrix : inst.worldMatrix;
+    float4 hzbClipMin, hzbClipMax;
+    bool hzbClipValid;
+    projectBounds(item, hzbVP, hzbWorld, hzbClipMin, hzbClipMax, hzbClipValid);
+
+    bool visible = testHiz(hzbClipMin, hzbClipMax, hzbClipValid);
     if (visible) {
         appendVisible(item);
     } else if (params.phase == 0u) {

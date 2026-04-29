@@ -99,6 +99,7 @@ struct DagCullParams {
 [[vk::binding(12)]] RWStructuredBuffer<DagNodeTask>      nodeQueue0;
 [[vk::binding(13)]] RWStructuredBuffer<DagNodeTask>      nodeQueue1;
 [[vk::binding(14)]] Texture2D<float>                     hzbTextures[HZB_MAX_LEVELS];
+[[vk::binding(15)]] StructuredBuffer<float4x4>           hzbViewProjBuf;
 
 static const uint kCounterPhase0Visible = 0u;
 static const uint kCounterPhase0Recheck = 4u;
@@ -168,6 +169,7 @@ float3 boxCorner(float3 center, float radius, uint corner) {
 bool projectSphereBounds(float3 center,
                          float radius,
                          float4x4 worldMatrix,
+                         float4x4 vp,
                          out float4 clipMin,
                          out float4 clipMax,
                          out bool clipValid) {
@@ -178,7 +180,7 @@ bool projectSphereBounds(float3 center,
         return true;
     }
 
-    float4 hPos = mul(params.viewProj, mul(worldMatrix, float4(boxCorner(center, radius, 0u), 1.0)));
+    float4 hPos = mul(vp, mul(worldMatrix, float4(boxCorner(center, radius, 0u), 1.0)));
     uint commonBits = getCullBits(hPos);
     bool valid = hPos.w >= kEpsilon;
     float4 clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
@@ -188,7 +190,7 @@ bool projectSphereBounds(float3 center,
 
     [unroll]
     for (uint corner = 1u; corner < 8u; ++corner) {
-        hPos = mul(params.viewProj, mul(worldMatrix, float4(boxCorner(center, radius, corner), 1.0)));
+        hPos = mul(vp, mul(worldMatrix, float4(boxCorner(center, radius, corner), 1.0)));
         commonBits &= getCullBits(hPos);
         valid = hPos.w >= kEpsilon;
         clip = float4(hPos.xyz / max(hPos.w, kEpsilon), hPos.w);
@@ -372,6 +374,7 @@ void processCluster(uint instanceID, uint clusterID) {
         bounds.center_radius.xyz,
         bounds.center_radius.w,
         inst.worldMatrix,
+        params.viewProj,
         clipMin,
         clipMax,
         clipValid);
@@ -381,7 +384,21 @@ void processCluster(uint instanceID, uint clusterID) {
         return;
     }
 
-    if (testHiz(clipMin, clipMax, clipValid)) {
+    // For HZB test: phase0 uses history VP + prev world matrix; phase1 uses current VP + world matrix.
+    float4x4 hzbVP = hzbViewProjBuf[0];
+    float4x4 hzbWorld = (params.phase == 0u) ? inst.prevWorldMatrix : inst.worldMatrix;
+    float4 hzbClipMin, hzbClipMax;
+    bool hzbClipValid;
+    projectSphereBounds(
+        bounds.center_radius.xyz,
+        bounds.center_radius.w,
+        hzbWorld,
+        hzbVP,
+        hzbClipMin,
+        hzbClipMax,
+        hzbClipValid);
+
+    if (testHiz(hzbClipMin, hzbClipMax, hzbClipValid)) {
         ClusterInfo item;
         item.instanceID = instanceID;
         item.clusterID = clusterID;
@@ -499,6 +516,7 @@ void processRecheck(uint3 dispatchThreadID) {
         bounds.center_radius.xyz,
         bounds.center_radius.w,
         inst.worldMatrix,
+        params.viewProj,
         clipMin,
         clipMax,
         clipValid);
@@ -506,7 +524,20 @@ void processRecheck(uint3 dispatchThreadID) {
         return;
     }
 
-    if (testHiz(clipMin, clipMax, clipValid)) {
+    // Phase1: HZB VP is current frame VP (same as frustum VP).
+    float4x4 hzbVP = hzbViewProjBuf[0];
+    float4 hzbClipMin, hzbClipMax;
+    bool hzbClipValid;
+    projectSphereBounds(
+        bounds.center_radius.xyz,
+        bounds.center_radius.w,
+        inst.worldMatrix,
+        hzbVP,
+        hzbClipMin,
+        hzbClipMax,
+        hzbClipValid);
+
+    if (testHiz(hzbClipMin, hzbClipMax, hzbClipValid)) {
         appendVisible(item);
     } else {
         uint ignored;
