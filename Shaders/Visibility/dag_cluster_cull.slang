@@ -109,6 +109,12 @@ static const uint kDagNodeOverflow = 24u;
 static const uint kDagNodeProcessed = 28u;
 static const uint kDagClusterOverflow = 32u;
 static const uint kDagSeededInstances = 36u;
+static const uint kDagFrustumRejected = 40u;
+static const uint kDagHzbRejected = 44u;
+static const uint kDagHzbRecheck = 48u;
+static const uint kDagInvalidRoot = 52u;
+static const uint kDagMaxIterRemaining = 56u;
+static const uint kDagLastActiveIteration = 60u;
 static const uint kIndirectPhase0 = 0u;
 static const uint kIndirectPhase1 = 12u;
 static const uint kInstanceVisibleFlag = 1u;
@@ -331,6 +337,8 @@ void processCluster(uint instanceID, uint clusterID) {
         clipMax,
         clipValid);
     if (!inFrustum) {
+        uint ignored;
+        counters.InterlockedAdd(kDagFrustumRejected, 1u, ignored);
         return;
     }
 
@@ -344,6 +352,11 @@ void processCluster(uint instanceID, uint clusterID) {
         item.instanceID = instanceID;
         item.clusterID = clusterID;
         appendRecheck(item);
+        uint ignored;
+        counters.InterlockedAdd(kDagHzbRecheck, 1u, ignored);
+    } else {
+        uint ignored;
+        counters.InterlockedAdd(kDagHzbRejected, 1u, ignored);
     }
 }
 
@@ -367,6 +380,8 @@ void seedNodes(uint3 dispatchThreadID) {
     InstanceData inst = instances[instanceID];
     GeometryData geom = geometries[inst.geometryIndex];
     if (geom.lodRootNode == kInvalidIndex) {
+        uint ignored;
+        counters.InterlockedAdd(kDagInvalidRoot, 1u, ignored);
         return;
     }
 
@@ -389,6 +404,12 @@ void processNodes(uint3 dispatchThreadID) {
     uint inputCount = min(counters.Load(queueCountOffset(inQueue)), params.maxNodeTasks);
     if (taskIndex >= inputCount) {
         return;
+    }
+
+    // Track the highest iteration that had live work, for maxIterRemaining.
+    if (taskIndex == 0u) {
+        uint ignored;
+        counters.InterlockedMax(kDagLastActiveIteration, params.iteration + 1u, ignored);
     }
 
     DagNodeTask task = loadTask(inQueue, taskIndex);
@@ -464,6 +485,12 @@ void resetMain() {
         counters.Store(kDagNodeProcessed, 0u);
         counters.Store(kDagClusterOverflow, 0u);
         counters.Store(kDagSeededInstances, 0u);
+        counters.Store(kDagFrustumRejected, 0u);
+        counters.Store(kDagHzbRejected, 0u);
+        counters.Store(kDagHzbRecheck, 0u);
+        counters.Store(kDagInvalidRoot, 0u);
+        counters.Store(kDagMaxIterRemaining, 0u);
+        counters.Store(kDagLastActiveIteration, 0u);
         indirectArgs.Store(kIndirectPhase0 + 0u, 0u);
         indirectArgs.Store(kIndirectPhase0 + 4u, 1u);
         indirectArgs.Store(kIndirectPhase0 + 8u, 1u);
@@ -472,6 +499,7 @@ void resetMain() {
         indirectArgs.Store(kIndirectPhase1 + 8u, 1u);
     } else {
         counters.Store(kCounterPhase1Visible, 0u);
+        counters.Store(kDagHzbRejected, 0u);
         indirectArgs.Store(kIndirectPhase1 + 0u, 0u);
         indirectArgs.Store(kIndirectPhase1 + 4u, 1u);
         indirectArgs.Store(kIndirectPhase1 + 8u, 1u);
@@ -505,4 +533,10 @@ void finalizeMain() {
     indirectArgs.Store(offset + 0u, count);
     indirectArgs.Store(offset + 4u, 1u);
     indirectArgs.Store(offset + 8u, 1u);
+
+    if (params.phase == 0u) {
+        uint lastActive = counters.Load(kDagLastActiveIteration);
+        uint remaining = params.maxIterations > lastActive ? params.maxIterations - lastActive : 0u;
+        counters.Store(kDagMaxIterRemaining, remaining);
+    }
 }

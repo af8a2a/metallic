@@ -23,6 +23,11 @@ struct ClusterOcclusionState {
     static constexpr uint32_t kDagNodeProcessed = 28u;
     static constexpr uint32_t kDagClusterOverflow = 32u;
     static constexpr uint32_t kDagSeededInstances = 36u;
+    static constexpr uint32_t kDagFrustumRejected = 40u;
+    static constexpr uint32_t kDagHzbRejected = 44u;
+    static constexpr uint32_t kDagHzbRecheck = 48u;
+    static constexpr uint32_t kDagInvalidRoot = 52u;
+    static constexpr uint32_t kDagMaxIterRemaining = 56u;
     static constexpr uint32_t kInstanceCounterPhase0Visible = 0u;
     static constexpr uint32_t kInstanceCounterPhase0Rejected = 4u;
     static constexpr uint32_t kInstanceCounterPhase1Visible = 8u;
@@ -57,6 +62,11 @@ struct ClusterOcclusionState {
         uint32_t nodeProcessed = 0;
         uint32_t clusterOverflow = 0;
         uint32_t seededInstances = 0;
+        uint32_t frustumRejected = 0;
+        uint32_t hzbRejected = 0;
+        uint32_t hzbRecheck = 0;
+        uint32_t invalidRoot = 0;
+        uint32_t maxIterRemaining = 0;
     };
 
     uint32_t width = 0;
@@ -300,6 +310,11 @@ struct ClusterOcclusionState {
             stats.nodeProcessed = values[kDagNodeProcessed / sizeof(uint32_t)];
             stats.clusterOverflow = values[kDagClusterOverflow / sizeof(uint32_t)];
             stats.seededInstances = values[kDagSeededInstances / sizeof(uint32_t)];
+            stats.frustumRejected = values[kDagFrustumRejected / sizeof(uint32_t)];
+            stats.hzbRejected = values[kDagHzbRejected / sizeof(uint32_t)];
+            stats.hzbRecheck = values[kDagHzbRecheck / sizeof(uint32_t)];
+            stats.invalidRoot = values[kDagInvalidRoot / sizeof(uint32_t)];
+            stats.maxIterRemaining = values[kDagMaxIterRemaining / sizeof(uint32_t)];
         }
         return stats;
     }

@@ -228,12 +228,32 @@ public:
 
         ImGui::SeparatorText("Last GPU Counters");
         ImGui::Text("Seeded instances: %u", stats.seededInstances);
+        if (stats.invalidRoot > 0u) {
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.1f, 1.0f),
+                               "Invalid root: %u", stats.invalidRoot);
+        } else {
+            ImGui::Text("Invalid root: 0");
+        }
         ImGui::Text("Processed nodes: %u", stats.nodeProcessed);
         ImGui::Text("Queue counts: %u / %u", stats.queueCount0, stats.queueCount1);
         ImGui::Text("Phase0 visible/recheck: %u / %u",
                     stats.phase0Visible,
                     stats.phase0Recheck);
         ImGui::Text("Phase1 visible: %u", stats.phase1Visible);
+
+        ImGui::SeparatorText("Cluster Cull");
+        ImGui::Text("Frustum rejected: %u", stats.frustumRejected);
+        ImGui::Text("HZB recheck (phase0): %u", stats.hzbRecheck);
+        ImGui::Text("HZB rejected (phase1): %u", stats.hzbRejected);
+
+        ImGui::SeparatorText("Traversal Health");
+        if (stats.maxIterRemaining > 0u) {
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
+                               "Iter remaining: %u (early exit)", stats.maxIterRemaining);
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.1f, 1.0f),
+                               "Iter remaining: 0 (hit limit %u)", m_maxIterations);
+        }
         const uint32_t overflow = stats.nodeOverflow + stats.clusterOverflow;
         if (overflow > 0u) {
             ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.1f, 1.0f),
