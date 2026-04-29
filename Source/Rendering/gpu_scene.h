@@ -41,6 +41,27 @@ struct GPUSceneInstance {
 };
 static_assert(sizeof(GPUSceneInstance) == 144, "GPUSceneInstance must match shader layout");
 
+struct DagV1ValidationStats {
+    bool available = false;
+    bool passed = false;
+    uint32_t geometryCount = 0;
+    uint32_t checkedGeometryCount = 0;
+    uint32_t skippedGeometryCount = 0;
+    uint32_t validRootCount = 0;
+    uint32_t invalidRootCount = 0;
+    uint32_t traversalFailureCount = 0;
+    uint32_t mismatchGeometryCount = 0;
+    uint32_t expectedClusterCount = 0;
+    uint32_t traversedClusterCount = 0;
+    uint32_t missingClusterCount = 0;
+    uint32_t unexpectedClusterCount = 0;
+    uint32_t duplicateClusterCount = 0;
+    uint32_t invalidNodeRefCount = 0;
+    uint32_t invalidGroupRefCount = 0;
+    uint32_t invalidClusterRefCount = 0;
+    uint32_t maxDepth = 0;
+};
+
 struct GpuSceneTables {
     std::vector<GPUSceneGeometry> geometries;
     std::vector<GPUSceneInstance> instances;
@@ -58,6 +79,8 @@ struct GpuSceneTables {
     std::vector<ClusterInfo> clusterVisWorklist;
     RhiBufferHandle clusterVisWorklistBuffer;
     uint32_t clusterVisWorklistCount = 0;
+
+    DagV1ValidationStats dagV1Validation;
 };
 
 bool buildGpuSceneTables(const RhiDevice& device,

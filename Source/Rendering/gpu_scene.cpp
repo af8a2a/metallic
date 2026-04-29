@@ -57,6 +57,17 @@ struct GeometryKeyHash {
     }
 };
 
+struct DagRootTraversalResult {
+    bool valid = true;
+    uint32_t visitedNodeCount = 0;
+    uint32_t visitedGroupCount = 0;
+    uint32_t invalidNodeRefCount = 0;
+    uint32_t invalidGroupRefCount = 0;
+    uint32_t invalidClusterRefCount = 0;
+    uint32_t maxDepth = 0;
+    std::vector<uint32_t> clusters;
+};
+
 bool isRenderableMeshletNode(const SceneNode& node) {
     return !node.hasLight && node.meshIndex >= 0 && node.meshletCount > 0;
 }
@@ -144,6 +155,185 @@ void uploadInstanceTable(GpuSceneTables& tables) {
     std::memcpy(mappedData,
                 tables.instances.data(),
                 tables.instances.size() * sizeof(GPUSceneInstance));
+}
+
+DagRootTraversalResult traverseDagV1Root(const ClusterLODData& lodData, uint32_t rootNode) {
+    DagRootTraversalResult result{};
+    if (rootNode >= lodData.nodes.size()) {
+        result.valid = false;
+        ++result.invalidNodeRefCount;
+        return result;
+    }
+
+    struct StackItem {
+        uint32_t nodeIndex = UINT32_MAX;
+        uint32_t depth = 0;
+    };
+
+    std::vector<StackItem> stack;
+    stack.push_back(StackItem{rootNode, 0u});
+
+    const uint32_t maxSteps = static_cast<uint32_t>(std::max<size_t>(lodData.nodes.size(), 1u));
+    while (!stack.empty()) {
+        const StackItem item = stack.back();
+        stack.pop_back();
+
+        if (++result.visitedNodeCount > maxSteps) {
+            result.valid = false;
+            ++result.invalidNodeRefCount;
+            break;
+        }
+        if (item.nodeIndex >= lodData.nodes.size()) {
+            result.valid = false;
+            ++result.invalidNodeRefCount;
+            continue;
+        }
+
+        result.maxDepth = std::max(result.maxDepth, item.depth);
+        const GPULodNode& node = lodData.nodes[item.nodeIndex];
+        if (node.childCount == 0u) {
+            result.valid = false;
+            ++result.invalidNodeRefCount;
+            continue;
+        }
+
+        if (node.isLeaf != 0u) {
+            if (static_cast<size_t>(node.childOffset) + node.childCount > lodData.groups.size()) {
+                result.valid = false;
+                ++result.invalidGroupRefCount;
+                continue;
+            }
+
+            for (uint32_t child = 0; child < node.childCount; ++child) {
+                const uint32_t groupIndex = node.childOffset + child;
+                const GPUClusterGroup& group = lodData.groups[groupIndex];
+                ++result.visitedGroupCount;
+
+                if (static_cast<size_t>(group.clusterStart) + group.clusterCount >
+                    lodData.groupMeshletIndices.size()) {
+                    result.valid = false;
+                    ++result.invalidClusterRefCount;
+                    continue;
+                }
+
+                for (uint32_t clusterOffset = 0; clusterOffset < group.clusterCount; ++clusterOffset) {
+                    const uint32_t clusterID =
+                        lodData.groupMeshletIndices[group.clusterStart + clusterOffset];
+                    if (clusterID >= lodData.packedClusters.size()) {
+                        result.valid = false;
+                        ++result.invalidClusterRefCount;
+                        continue;
+                    }
+                    result.clusters.push_back(clusterID);
+                }
+            }
+            continue;
+        }
+
+        if (static_cast<size_t>(node.childOffset) + node.childCount > lodData.nodes.size()) {
+            result.valid = false;
+            ++result.invalidNodeRefCount;
+            continue;
+        }
+
+        for (uint32_t child = 0; child < node.childCount; ++child) {
+            stack.push_back(StackItem{node.childOffset + child, item.depth + 1u});
+        }
+    }
+
+    return result;
+}
+
+DagV1ValidationStats validateDagV1ClusterRoots(const ClusterLODData& lodData,
+                                               const GpuSceneTables& tables) {
+    DagV1ValidationStats stats{};
+    stats.available = !lodData.nodes.empty() &&
+                      !lodData.groups.empty() &&
+                      !lodData.groupMeshletIndices.empty() &&
+                      !lodData.packedClusters.empty();
+    stats.geometryCount = static_cast<uint32_t>(tables.geometries.size());
+    if (!stats.available) {
+        return stats;
+    }
+
+    for (const GPUSceneGeometry& geom : tables.geometries) {
+        if (geom.lodRootNode == UINT32_MAX) {
+            ++stats.skippedGeometryCount;
+            continue;
+        }
+
+        ++stats.checkedGeometryCount;
+        if (geom.lodRootNode >= lodData.nodes.size()) {
+            ++stats.invalidRootCount;
+        }
+        const DagRootTraversalResult traversal = traverseDagV1Root(lodData, geom.lodRootNode);
+        stats.maxDepth = std::max(stats.maxDepth, traversal.maxDepth);
+        stats.traversedClusterCount += static_cast<uint32_t>(traversal.clusters.size());
+        stats.invalidNodeRefCount += traversal.invalidNodeRefCount;
+        stats.invalidGroupRefCount += traversal.invalidGroupRefCount;
+        stats.invalidClusterRefCount += traversal.invalidClusterRefCount;
+
+        if (!traversal.valid) {
+            ++stats.traversalFailureCount;
+        } else {
+            ++stats.validRootCount;
+        }
+
+        bool mismatch = !traversal.valid;
+        if (static_cast<size_t>(geom.packedClusterStart) + geom.packedClusterCount >
+            lodData.packedClusters.size()) {
+            mismatch = true;
+            ++stats.invalidClusterRefCount;
+        }
+
+        std::vector<uint32_t> actual = traversal.clusters;
+        std::sort(actual.begin(), actual.end());
+
+        std::vector<uint32_t> uniqueActual;
+        uniqueActual.reserve(actual.size());
+        for (uint32_t clusterID : actual) {
+            if (!uniqueActual.empty() && uniqueActual.back() == clusterID) {
+                ++stats.duplicateClusterCount;
+                mismatch = true;
+                continue;
+            }
+            uniqueActual.push_back(clusterID);
+        }
+
+        stats.expectedClusterCount += geom.packedClusterCount;
+        for (uint32_t offset = 0; offset < geom.packedClusterCount; ++offset) {
+            const uint32_t expectedClusterID = geom.packedClusterStart + offset;
+            if (!std::binary_search(uniqueActual.begin(), uniqueActual.end(), expectedClusterID)) {
+                ++stats.missingClusterCount;
+                mismatch = true;
+            }
+        }
+
+        const uint32_t expectedEnd = geom.packedClusterStart + geom.packedClusterCount;
+        for (uint32_t clusterID : uniqueActual) {
+            if (clusterID < geom.packedClusterStart || clusterID >= expectedEnd) {
+                ++stats.unexpectedClusterCount;
+                mismatch = true;
+            }
+        }
+
+        if (mismatch) {
+            ++stats.mismatchGeometryCount;
+        }
+    }
+
+    stats.passed = stats.available &&
+                   stats.checkedGeometryCount > 0u &&
+                   stats.invalidRootCount == 0u &&
+                   stats.traversalFailureCount == 0u &&
+                   stats.mismatchGeometryCount == 0u &&
+                   stats.missingClusterCount == 0u &&
+                   stats.unexpectedClusterCount == 0u &&
+                   stats.duplicateClusterCount == 0u &&
+                   stats.invalidNodeRefCount == 0u &&
+                   stats.invalidGroupRefCount == 0u &&
+                   stats.invalidClusterRefCount == 0u;
+    return stats;
 }
 
 } // namespace
@@ -255,6 +445,26 @@ bool buildGpuSceneTables(const RhiDevice& device,
             }
         }
         out.clusterVisWorklistCount = static_cast<uint32_t>(out.clusterVisWorklist.size());
+
+        out.dagV1Validation = validateDagV1ClusterRoots(*clusterLodData, out);
+        if (out.dagV1Validation.passed) {
+            spdlog::info(
+                "GpuScene: DAG v1 root validation passed for {} geometries ({} clusters)",
+                out.dagV1Validation.checkedGeometryCount,
+                out.dagV1Validation.expectedClusterCount);
+        } else if (out.dagV1Validation.available) {
+            spdlog::warn(
+                "GpuScene: DAG v1 root validation failed: checked={}, mismatched={}, "
+                "missing={}, unexpected={}, duplicates={}, invalid node/group/cluster refs={}/{}/{}",
+                out.dagV1Validation.checkedGeometryCount,
+                out.dagV1Validation.mismatchGeometryCount,
+                out.dagV1Validation.missingClusterCount,
+                out.dagV1Validation.unexpectedClusterCount,
+                out.dagV1Validation.duplicateClusterCount,
+                out.dagV1Validation.invalidNodeRefCount,
+                out.dagV1Validation.invalidGroupRefCount,
+                out.dagV1Validation.invalidClusterRefCount);
+        }
     }
 
     if (out.instances.empty() || out.geometries.empty()) {
@@ -328,8 +538,11 @@ void releaseGpuSceneTables(GpuSceneTables& tables) {
     tables.geometries.clear();
     tables.instances.clear();
     tables.nodeToInstance.clear();
+    tables.clusterVisWorklist.clear();
+    tables.dagV1Validation = DagV1ValidationStats{};
     tables.geometryCount = 0;
     tables.instanceCount = 0;
     tables.totalMeshletDispatchCount = 0;
     tables.visibleInstanceCount = 0;
+    tables.clusterVisWorklistCount = 0;
 }

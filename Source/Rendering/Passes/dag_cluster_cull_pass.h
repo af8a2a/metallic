@@ -248,6 +248,37 @@ public:
         ImGui::Text("Max Iterations: %u", m_maxIterations);
         ImGui::Text("Node queue capacity: %u", m_maxNodeTasks);
 
+        const DagV1ValidationStats& validation = m_ctx.gpuScene.dagV1Validation;
+        ImGui::SeparatorText("DAG v1 CPU Validation");
+        if (!validation.available) {
+            ImGui::TextDisabled("Unavailable");
+        } else if (validation.passed) {
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
+                               "Root traversal matches LOD0 fallback");
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.1f, 1.0f),
+                               "Root traversal mismatch");
+        }
+        if (validation.available) {
+            ImGui::Text("Geometries: %u checked, %u skipped",
+                        validation.checkedGeometryCount,
+                        validation.skippedGeometryCount);
+            ImGui::Text("Clusters: %u expected, %u traversed",
+                        validation.expectedClusterCount,
+                        validation.traversedClusterCount);
+            ImGui::Text("Mismatch: geom %u, missing %u, unexpected %u, duplicate %u",
+                        validation.mismatchGeometryCount,
+                        validation.missingClusterCount,
+                        validation.unexpectedClusterCount,
+                        validation.duplicateClusterCount);
+            ImGui::Text("Invalid refs: root %u, node %u, group %u, cluster %u",
+                        validation.invalidRootCount,
+                        validation.invalidNodeRefCount,
+                        validation.invalidGroupRefCount,
+                        validation.invalidClusterRefCount);
+            ImGui::Text("Max root depth: %u", validation.maxDepth);
+        }
+
         // HZB toggle — overrides the JSON config value for live testing.
         {
             bool occOn = enableOcclusion();
