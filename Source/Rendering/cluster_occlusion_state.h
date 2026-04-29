@@ -35,6 +35,8 @@ struct ClusterOcclusionState {
     static constexpr uint32_t kInstanceCounterPhase1Visible = 8u;
     static constexpr uint32_t kIndirectPhase0Offset = 0u;
     static constexpr uint32_t kIndirectPhase1Offset = 12u;
+    static constexpr uint32_t kIndirectNodeDispatch = 24u;
+    static constexpr uint32_t kIndirectArgsBytes = 36u;
     static constexpr uint32_t kDagCounterBytes = 68u;
 
     struct DagNodeTask {
@@ -75,6 +77,7 @@ struct ClusterOcclusionState {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t maxClusters = 0;
+    uint32_t maxNodeTasks = 0;
     uint32_t maxInstances = 0;
     uint32_t mipCount = 0;
     bool hizValid[2] = {false, false};
@@ -104,7 +107,8 @@ struct ClusterOcclusionState {
                 uint32_t newWidth,
                 uint32_t newHeight,
                 uint32_t newMaxClusters,
-                uint32_t newMaxInstances = 0) {
+                uint32_t newMaxInstances = 0,
+                uint32_t newMaxNodeTasks = 0) {
         newWidth = std::max(newWidth, 1u);
         newHeight = std::max(newHeight, 1u);
         newMaxClusters = std::max(newMaxClusters, 1u);
@@ -123,12 +127,20 @@ struct ClusterOcclusionState {
             !phase1VisibleWorklist ||
             !counters ||
             !indirectArgs ||
-            !dagNodeQueues[0] ||
-            !dagNodeQueues[1] ||
+            (indirectArgs && indirectArgs->size() < kIndirectArgsBytes) ||
             !spdAtomicCounter ||
             !hzbViewProjBuffer ||
             !hizTexturesReady(0u, newMipCount) ||
             !hizTexturesReady(1u, newMipCount);
+
+        const uint32_t effectiveMaxNodeTasks =
+            newMaxNodeTasks > 0 ? newMaxNodeTasks
+                                : (maxNodeTasks > 0 ? maxNodeTasks : newMaxClusters);
+
+        const bool needsNodeQueueResize =
+            maxNodeTasks < effectiveMaxNodeTasks ||
+            !dagNodeQueues[0] ||
+            !dagNodeQueues[1];
 
         const bool needsInstanceResize =
             maxInstances < newMaxInstances ||
@@ -137,7 +149,7 @@ struct ClusterOcclusionState {
             !instanceCounters ||
             !instanceIndirectArgs;
 
-        if (!needsResize && !needsInstanceResize) {
+        if (!needsResize && !needsNodeQueueResize && !needsInstanceResize) {
             return true;
         }
 
@@ -166,13 +178,7 @@ struct ClusterOcclusionState {
                                     "ClusterCull Counters",
                                     true,
                                     zeroDagCounters);
-            indirectArgs = createBuffer(factory, 24u, "ClusterCull Mesh Indirect Args");
-            dagNodeQueues[0] = createBuffer(factory,
-                                            maxClusters * sizeof(DagNodeTask),
-                                            "DagClusterCull Node Queue 0");
-            dagNodeQueues[1] = createBuffer(factory,
-                                            maxClusters * sizeof(DagNodeTask),
-                                            "DagClusterCull Node Queue 1");
+            indirectArgs = createBuffer(factory, kIndirectArgsBytes, "ClusterCull Mesh Indirect Args");
             const uint32_t zero = 0u;
             spdAtomicCounter = createBuffer(factory,
                                             sizeof(uint32_t),
@@ -195,6 +201,16 @@ struct ClusterOcclusionState {
                     hzb[pyramid][level] = factory.createTexture(makeHzbTextureDesc(width, height, level));
                 }
             }
+        }
+
+        if (needsNodeQueueResize) {
+            maxNodeTasks = effectiveMaxNodeTasks;
+            dagNodeQueues[0] = createBuffer(factory,
+                                            maxNodeTasks * sizeof(DagNodeTask),
+                                            "DagClusterCull Node Queue 0");
+            dagNodeQueues[1] = createBuffer(factory,
+                                            maxNodeTasks * sizeof(DagNodeTask),
+                                            "DagClusterCull Node Queue 1");
         }
 
         if (needsInstanceResize) {

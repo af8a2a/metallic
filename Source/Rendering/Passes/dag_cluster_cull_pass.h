@@ -76,6 +76,9 @@ public:
         if (config.config.contains("lodErrorThreshold")) {
             m_lodErrorThreshold = std::max(config.config["lodErrorThreshold"].get<float>(), 0.0f);
         }
+        if (config.config.contains("maxNodeTasks")) {
+            m_maxNodeTasks = std::clamp(config.config["maxNodeTasks"].get<uint32_t>(), 256u, 1u << 20u);
+        }
         // Reset UI override so the JSON value takes effect on pipeline reload.
         m_enableOcclusionOverride = -1;
     }
@@ -131,7 +134,8 @@ public:
                            static_cast<uint32_t>(std::max(m_width, 1)),
                            static_cast<uint32_t>(std::max(m_height, 1)),
                            maxClusters,
-                           instanceCount)) {
+                           instanceCount,
+                           m_maxNodeTasks)) {
             return;
         }
 
@@ -190,7 +194,6 @@ public:
                          {(instanceCount + 63u) / 64u, 1, 1},
                          {64, 1, 1});
 
-            const uint32_t maxNodeTasks = std::max(state->maxClusters, 1u);
             for (uint32_t iteration = 0; iteration < m_maxIterations; ++iteration) {
                 dispatchMain(encoder,
                              *state,
@@ -202,10 +205,17 @@ public:
                 dispatchMain(encoder,
                              *state,
                              uniforms,
-                             kModeProcessNodes,
+                             kModeWriteNodeIndirect,
                              iteration,
-                             {(maxNodeTasks + 63u) / 64u, 1, 1},
-                             {64, 1, 1});
+                             {1, 1, 1},
+                             {1, 1, 1});
+                dispatchMainIndirect(encoder,
+                                     *state,
+                                     uniforms,
+                                     kModeProcessNodes,
+                                     iteration,
+                                     *state->indirectArgs,
+                                     ClusterOcclusionState::kIndirectNodeDispatch);
             }
         } else {
             dispatchMain(encoder,
@@ -233,6 +243,7 @@ public:
         ImGui::Text("Frustum: %s", enableFrustumCull() ? "Enabled" : "Disabled");
         ImGui::SliderFloat("LOD Error Threshold##dag", &m_lodErrorThreshold, 0.0f, 8.0f, "%.2f px");
         ImGui::Text("Max Iterations: %u", m_maxIterations);
+        ImGui::Text("Node queue capacity: %u", m_maxNodeTasks);
 
         // HZB toggle — overrides the JSON config value for live testing.
         {
@@ -322,7 +333,8 @@ private:
     static constexpr uint32_t kModeClearNextQueue = 2u;
     static constexpr uint32_t kModeProcessNodes = 3u;
     static constexpr uint32_t kModeProcessRecheck = 4u;
-    static constexpr uint32_t kModeFinalize = 5u;
+    static constexpr uint32_t kModeWriteNodeIndirect = 5u;
+    static constexpr uint32_t kModeFinalize = 6u;
 
     struct DagCullUniforms {
         float viewProj[16];
@@ -367,7 +379,7 @@ private:
         std::memcpy(uniforms.viewProj, &vpT, sizeof(uniforms.viewProj));
         uniforms.instanceCount = instanceCount;
         uniforms.maxClusters = state.maxClusters;
-        uniforms.maxNodeTasks = state.maxClusters;
+        uniforms.maxNodeTasks = state.maxNodeTasks;
         uniforms.phase = m_phase;
 
         const uint32_t hzbPyramid = m_phase == 0u ? 0u : 1u;
@@ -416,6 +428,22 @@ private:
         bindHizTextures(encoder, state);
         encoder.setPushConstants(&uniforms, sizeof(uniforms));
         encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
+        encoder.memoryBarrier(RhiBarrierScope::Buffers);
+    }
+
+    void dispatchMainIndirect(RhiComputeCommandEncoder& encoder,
+                              ClusterOcclusionState& state,
+                              DagCullUniforms uniforms,
+                              uint32_t mode,
+                              uint32_t iteration,
+                              const RhiBuffer& indirectBuffer,
+                              uint64_t indirectOffset) const {
+        uniforms.mode = mode;
+        uniforms.iteration = iteration;
+        bindBuffers(encoder, state);
+        bindHizTextures(encoder, state);
+        encoder.setPushConstants(&uniforms, sizeof(uniforms));
+        encoder.dispatchThreadgroupsIndirect(indirectBuffer, indirectOffset, {64, 1, 1});
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
     }
 
@@ -468,6 +496,7 @@ private:
     std::string m_name = "DAG Cluster Cull";
     uint32_t m_phase = 0;
     uint32_t m_maxIterations = 16;
+    uint32_t m_maxNodeTasks = 65536;
     float m_lodErrorThreshold = 1.0f;
     bool m_enableOcclusion = true;
     bool m_enableInstanceFilter = true;

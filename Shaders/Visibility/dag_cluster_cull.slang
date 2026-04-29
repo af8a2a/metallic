@@ -118,12 +118,14 @@ static const uint kDagLastActiveIteration = 60u;
 static const uint kDagLodCulled = 64u;
 static const uint kIndirectPhase0 = 0u;
 static const uint kIndirectPhase1 = 12u;
+static const uint kIndirectNodeDispatch = 24u;
 static const uint kInstanceVisibleFlag = 1u;
 static const uint kInvalidIndex = 0xFFFFFFFFu;
 static const uint kModeSeedNodes = 1u;
 static const uint kModeClearNextQueue = 2u;
 static const uint kModeProcessNodes = 3u;
 static const uint kModeProcessRecheck = 4u;
+static const uint kModeWriteNodeIndirect = 5u;
 
 bool flagEnabled(uint bit) { return (params.flags & (1u << bit)) != 0u; }
 uint hzbWidth()       { return params.packedHzbDims >> 16u; }
@@ -321,6 +323,14 @@ void seedNodes(uint3 dispatchThreadID) {
     counters.InterlockedAdd(kDagSeededInstances, 1u, ignored);
 }
 
+void writeNodeIndirect() {
+    uint inQueue = inputQueueIndex();
+    uint count = min(counters.Load(queueCountOffset(inQueue)), params.maxNodeTasks);
+    indirectArgs.Store(kIndirectNodeDispatch + 0u, (count + 63u) / 64u);
+    indirectArgs.Store(kIndirectNodeDispatch + 4u, 1u);
+    indirectArgs.Store(kIndirectNodeDispatch + 8u, 1u);
+}
+
 void clearNextQueue() {
     counters.Store(queueCountOffset(outputQueueIndex()), 0u);
 }
@@ -458,6 +468,9 @@ void resetMain() {
         indirectArgs.Store(kIndirectPhase1 + 0u, 0u);
         indirectArgs.Store(kIndirectPhase1 + 4u, 1u);
         indirectArgs.Store(kIndirectPhase1 + 8u, 1u);
+        indirectArgs.Store(kIndirectNodeDispatch + 0u, 0u);
+        indirectArgs.Store(kIndirectNodeDispatch + 4u, 1u);
+        indirectArgs.Store(kIndirectNodeDispatch + 8u, 1u);
     } else {
         counters.Store(kCounterPhase1Visible, 0u);
         counters.Store(kDagHzbRejected, 0u);
@@ -480,6 +493,10 @@ void cullMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         processNodes(dispatchThreadID);
     } else if (params.mode == kModeProcessRecheck) {
         processRecheck(dispatchThreadID);
+    } else if (params.mode == kModeWriteNodeIndirect) {
+        if (dispatchThreadID.x == 0u) {
+            writeNodeIndirect();
+        }
     }
 }
 
