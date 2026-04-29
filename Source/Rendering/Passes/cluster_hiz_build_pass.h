@@ -127,6 +127,13 @@ public:
         encoder.memoryBarrier(RhiBarrierScope::Textures | RhiBarrierScope::Buffers);
 
         state->hizValid[m_targetPyramid] = true;
+
+        // Record the VP matrix so downstream passes can detect camera changes.
+        if (m_frameContext) {
+            float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
+            float4x4 vpT = transpose(vp);
+            state->recordHizViewProj(m_targetPyramid, vpT.a);
+        }
     }
 
     void renderUI() override {

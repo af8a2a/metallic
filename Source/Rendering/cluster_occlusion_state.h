@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -76,6 +77,8 @@ struct ClusterOcclusionState {
     uint32_t mipCount = 0;
     bool hizValid[2] = {false, false};
     bool worklistValid[2] = {false, false};
+    // VP matrix stored when each pyramid was last built; used to detect camera changes.
+    float hizViewProj[2][16] = {};
 
     std::unique_ptr<RhiBuffer> phase0VisibleWorklist;
     std::unique_ptr<RhiBuffer> phase0RecheckWorklist;
@@ -227,6 +230,24 @@ struct ClusterOcclusionState {
     void resetHistory() {
         hizValid[0] = false;
         hizValid[1] = false;
+    }
+
+    // Call after building pyramid `index` to record the VP matrix it was built with.
+    void recordHizViewProj(uint32_t index, const float* viewProj16) {
+        std::memcpy(hizViewProj[index & 1u], viewProj16, 16 * sizeof(float));
+    }
+
+    // Invalidate pyramid `index` if the current VP matrix differs from when it was built.
+    // Returns true if the pyramid was invalidated.
+    bool invalidateHizIfCameraChanged(uint32_t index, const float* currentViewProj16) {
+        if (!hizValid[index & 1u]) {
+            return false;
+        }
+        if (std::memcmp(hizViewProj[index & 1u], currentViewProj16, 16 * sizeof(float)) != 0) {
+            hizValid[index & 1u] = false;
+            return true;
+        }
+        return false;
     }
 
     void resetWorklists() {

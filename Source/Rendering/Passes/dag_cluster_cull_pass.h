@@ -72,6 +72,8 @@ public:
         if (config.config.contains("maxIterations")) {
             m_maxIterations = std::clamp(config.config["maxIterations"].get<uint32_t>(), 1u, 64u);
         }
+        // Reset UI override so the JSON value takes effect on pipeline reload.
+        m_enableOcclusionOverride = -1;
     }
 
     FGResource getOutput(const std::string& outputName) const override {
@@ -103,6 +105,12 @@ public:
         }
         if (m_phase == 0u) {
             state->resetWorklists();
+            // Invalidate the history pyramid (pyramid 0) if the camera moved since it was built.
+            if (enableOcclusion()) {
+                float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
+                float4x4 vpT = transpose(vp);
+                state->invalidateHizIfCameraChanged(0u, vpT.a);
+            }
         }
 
         const uint32_t maxClusters = m_ctx.gpuScene.clusterVisWorklistCount;
@@ -210,8 +218,21 @@ public:
         ImGui::Text("Phase: %u", m_phase);
         ImGui::Text("Instance Filter: %s", m_enableInstanceFilter ? "Enabled" : "Disabled");
         ImGui::Text("Frustum: %s", enableFrustumCull() ? "Enabled" : "Disabled");
-        ImGui::Text("Occlusion: %s", m_enableOcclusion ? "Enabled" : "Disabled");
         ImGui::Text("Max Iterations: %u", m_maxIterations);
+
+        // HZB toggle — overrides the JSON config value for live testing.
+        {
+            bool occOn = enableOcclusion();
+            if (ImGui::Checkbox("HZB Occlusion##dag", &occOn)) {
+                m_enableOcclusionOverride = occOn ? 1 : 0;
+            }
+            if (m_enableOcclusionOverride >= 0) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reset##dagOcc")) {
+                    m_enableOcclusionOverride = -1;
+                }
+            }
+        }
 
         ClusterOcclusionState* state =
             m_runtimeContext ? m_runtimeContext->clusterOcclusionState : nullptr;
@@ -224,6 +245,19 @@ public:
         if (!stats.readable) {
             ImGui::TextDisabled("GPU counters unavailable");
             return;
+        }
+
+        // HZB pyramid validity
+        const uint32_t hzbPyramid = m_phase == 0u ? 0u : 1u;
+        const bool hzbReady = state->hizValid[hzbPyramid] && state->hizTexturesReady(hzbPyramid);
+        if (enableOcclusion()) {
+            if (hzbReady) {
+                ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
+                                   "HZB pyramid %u: valid", hzbPyramid);
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.1f, 1.0f),
+                                   "HZB pyramid %u: stale/invalid", hzbPyramid);
+            }
         }
 
         ImGui::SeparatorText("Last GPU Counters");
@@ -302,6 +336,13 @@ private:
         return m_frameContext ? m_frameContext->enableFrustumCull : true;
     }
 
+    bool enableOcclusion() const {
+        if (m_enableOcclusionOverride >= 0) {
+            return m_enableOcclusionOverride != 0;
+        }
+        return m_enableOcclusion;
+    }
+
     DagCullUniforms makeUniforms(const ClusterOcclusionState& state,
                                  uint32_t instanceCount) const {
         DagCullUniforms uniforms{};
@@ -312,10 +353,10 @@ private:
         uniforms.maxClusters = state.maxClusters;
         uniforms.maxNodeTasks = state.maxClusters;
         uniforms.phase = m_phase;
-        uniforms.enableOcclusion = m_enableOcclusion ? 1u : 0u;
+        uniforms.enableOcclusion = enableOcclusion() ? 1u : 0u;
         const uint32_t hzbPyramid = m_phase == 0u ? 0u : 1u;
         uniforms.hzbValid =
-            (m_enableOcclusion &&
+            (enableOcclusion() &&
              state.hizValid[hzbPyramid] &&
              state.hizTexturesReady(hzbPyramid)) ? 1u : 0u;
         uniforms.hzbWidth = state.width;
@@ -402,6 +443,7 @@ private:
     bool m_enableOcclusion = true;
     bool m_enableInstanceFilter = true;
     int m_enableFrustumOverride = -1;
+    int m_enableOcclusionOverride = -1; // -1=use JSON config, 0=force off, 1=force on
     bool m_warnedMissingPipeline = false;
     FGResource m_phaseReady;
     FGResource m_cullDone;

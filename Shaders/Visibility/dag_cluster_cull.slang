@@ -146,18 +146,6 @@ uint outputQueueIndex() {
     return (params.iteration + 1u) & 1u;
 }
 
-uint mipWidth(uint mip) {
-    uint d = max(params.hzbWidth, 1u);
-    for (uint i = 0u; i < mip; ++i) d = max(1u, (d + 1u) / 2u);
-    return d;
-}
-
-uint mipHeight(uint mip) {
-    uint d = max(params.hzbHeight, 1u);
-    for (uint i = 0u; i < mip; ++i) d = max(1u, (d + 1u) / 2u);
-    return d;
-}
-
 uint getCullBits(float4 hPos) {
     uint bits = 0u;
     bits |= hPos.x < -hPos.w ? 1u : 0u;
@@ -214,49 +202,90 @@ bool projectSphereBounds(float3 center,
     return params.enableFrustum == 0u || commonBits == 0u;
 }
 
+// Returns the mip level whose texels cover a 4-texel footprint over the given
+// pixel rect (already shifted right by 1 to match the HZB half-res base).
+// Mirrors Nyx MipLevelForRect with HZB_TARGET_FOOTPRINT_PIXELS=4.
+int hzbMipLevelForRect(int4 coarseRect) {
+    // footprintMipBias = log2(4) - 1 = 1
+    int2 rectSize = coarseRect.zw - coarseRect.xy;
+    int2 dominantMip = int2(firstbithigh(rectSize.x), firstbithigh(rectSize.y));
+    int mipLevel = max(max(dominantMip.x, dominantMip.y) - 1, 0);
+    int2 shifted = coarseRect.xy >> mipLevel;
+    int2 shiftedMax = coarseRect.zw >> mipLevel;
+    // If the 4-texel span is exceeded, go one mip coarser.
+    mipLevel += any(shiftedMax - shifted > int2(3, 3)) ? 1 : 0;
+    return mipLevel;
+}
+
 bool testHiz(float4 clipMin, float4 clipMax, bool clipValid) {
-    if (params.enableOcclusion == 0u ||
-        params.hzbValid == 0u ||
-        params.hzbMipCount == 0u ||
-        !clipValid) {
+    if (params.enableOcclusion == 0u || params.hzbValid == 0u || params.hzbMipCount == 0u) {
+        return true;
+    }
+    // Near-plane straddle: conservative, treat as visible.
+    if (!clipValid) {
         return true;
     }
 
-    float2 uvMin = float2(clipMin.x * 0.5 + 0.5, 0.5 - clipMax.y * 0.5);
-    float2 uvMax = float2(clipMax.x * 0.5 + 0.5, 0.5 - clipMin.y * 0.5);
-    uvMin = clamp(uvMin, float2(0.0), float2(1.0));
-    uvMax = clamp(uvMax, float2(0.0), float2(1.0));
+    float sw = float(params.screenWidth);
+    float sh = float(params.screenHeight);
 
-    float2 pixelSize = (uvMax - uvMin) * float2(float(params.screenWidth), float(params.screenHeight));
-    float maxSize = max(pixelSize.x, pixelSize.y);
-    if (maxSize < 1.0) {
+    // Convert clip XY to UV, flipping Y (clip +Y=up, UV +Y=down).
+    // saturate clamps to [0,1] before pixel conversion.
+    float4 uvRect = saturate(float4(clipMin.x, clipMax.y, clipMax.x, clipMin.y) * 0.5 + 0.5);
+    // uvRect = (minU, minV, maxU, maxV)
+
+    // Pixel rect with rounding bias: min rounds up (+0.5), max rounds down (-0.5).
+    int4 pixelsRect = int4(uvRect * float4(sw, sh, sw, sh) + float4(0.5, 0.5, -0.5, -0.5));
+    pixelsRect.xy = min(pixelsRect.xy, pixelsRect.zw);
+    pixelsRect.zw = max(pixelsRect.xy, pixelsRect.zw);
+
+    // Small-bounds guard: sub-pixel footprint, skip HZB.
+    if (pixelsRect.z < pixelsRect.x || pixelsRect.w < pixelsRect.y) {
         return true;
     }
 
-    uint mip = min(uint(ceil(log2(max(maxSize * 0.5, 1.0)))), params.hzbMipCount - 1u);
-    uint w = mipWidth(mip);
-    uint h = mipHeight(mip);
-    uint2 maxCoord = uint2(w - 1u, h - 1u);
-    float2 mipSize = float2(float(w), float(h));
-    uint2 rectMin = min(uint2(floor(uvMin * mipSize)), maxCoord);
-    uint2 rectMax = min(uint2(max(ceil(uvMax * mipSize) - float2(1.0), float2(0.0))), maxCoord);
-    rectMin = min(rectMin, rectMax);
+    // HZB is half-res relative to the depth buffer.
+    int4 coarseRect = pixelsRect >> 1;
+    int hzbMip = min(hzbMipLevelForRect(coarseRect), int(params.hzbMipCount) - 1);
+    coarseRect >>= hzbMip;
 
-    float hzbDepth = 1.0;
-    [unroll]
-    for (uint y = 0u; y < 4u; ++y) {
-        uint sampleY = rectMin.y + y;
-        if (sampleY > rectMax.y) continue;
+    uint mipIdx = uint(hzbMip);
+    uint baseW = max(params.hzbWidth, 1u);
+    uint baseH = max(params.hzbHeight, 1u);
+    int mipW = int(max(baseW >> mipIdx, 1u));
+    int mipH = int(max(baseH >> mipIdx, 1u));
 
-        [unroll]
-        for (uint x = 0u; x < 4u; ++x) {
-            uint sampleX = rectMin.x + x;
-            if (sampleX > rectMax.x) continue;
-            hzbDepth = min(hzbDepth, hzbTextures[mip].Load(int3(uint2(sampleX, sampleY), 0)));
-        }
-    }
+    // 4x4 sample grid clamped to mip dimensions.
+    int4 sampleX = clamp(coarseRect.x + int4(0, 1, 2, 3), int4(0), int4(min(coarseRect.z, mipW - 1)));
+    int4 sampleY = clamp(coarseRect.y + int4(0, 1, 2, 3), int4(0), int4(min(coarseRect.w, mipH - 1)));
 
-    return clipMax.z >= hzbDepth - kDepthNudge;
+    float4 row0 = float4(
+        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.x, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.x, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.x, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.x, 0)));
+    float4 row1 = float4(
+        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.y, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.y, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.y, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.y, 0)));
+    float4 row2 = float4(
+        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.z, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.z, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.z, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.z, 0)));
+    float4 row3 = float4(
+        hzbTextures[mipIdx].Load(int3(sampleX.x, sampleY.w, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.y, sampleY.w, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.z, sampleY.w, 0)),
+        hzbTextures[mipIdx].Load(int3(sampleX.w, sampleY.w, 0)));
+
+    // Reversed-Z: min = farthest sample = most conservative occluder.
+    float4 colMin = min(min(row0, row1), min(row2, row3));
+    float minDepth = min(min(colMin.x, colMin.y), min(colMin.z, colMin.w));
+
+    // Visible if object's nearest depth (clipMax.z in reversed-Z) >= HZB min depth.
+    return clipMax.z >= minDepth - kDepthNudge;
 }
 
 bool instanceCanRender(uint instanceID) {
