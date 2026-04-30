@@ -56,6 +56,11 @@ struct GPUClusterGroup {
     uint   clusterCount;
 };
 
+struct GPUClusterRefineInfo {
+    uint refineGroupStart;
+    uint refineGroupCount;
+};
+
 struct ClusterInfo {
     uint instanceID;
     uint clusterID;
@@ -104,6 +109,7 @@ struct DagCullParams {
 [[vk::binding(14)]] Texture2D<float>                     hzbTextures[HZB_MAX_LEVELS];
 [[vk::binding(15)]] StructuredBuffer<float4x4>           hzbViewProjBuf;
 [[vk::binding(16)]] StructuredBuffer<uint>               nodeRepresentativeGroupIndices;
+[[vk::binding(17)]] StructuredBuffer<GPUClusterRefineInfo> clusterRefineInfos;
 
 static const uint kCounterPhase0Visible = 0u;
 static const uint kCounterPhase0Recheck = 4u;
@@ -122,6 +128,9 @@ static const uint kDagMaxIterRemaining = 56u;
 static const uint kDagLastActiveIteration = 60u;
 static const uint kDagLodCulled = 64u;
 static const uint kDagQueueRemaining = 68u;
+static const uint kDagRefineAccepted = 72u;
+static const uint kDagRefineSuppressed = 76u;
+static const uint kDagInvalidRefineGroup = 80u;
 static const uint kIndirectPhase0 = 0u;
 static const uint kIndirectPhase1 = 12u;
 static const uint kIndirectNodeDispatch = 24u;
@@ -325,8 +334,24 @@ void processCluster(uint instanceID, uint clusterID) {
 
 void emitGroupClusters(uint instanceID, uint groupID) {
     GPUClusterGroup group = lodGroups[groupID];
+    InstanceData inst = instances[instanceID];
     for (uint i = 0u; i < group.clusterCount; ++i) {
-        processCluster(instanceID, groupMeshletIndices[group.clusterStart + i]);
+        uint clusterID = groupMeshletIndices[group.clusterStart + i];
+        GPUClusterRefineInfo refineInfo = clusterRefineInfos[clusterID];
+        if (refineInfo.refineGroupCount == 0u || refineInfo.refineGroupStart == kInvalidIndex) {
+            processCluster(instanceID, clusterID);
+        } else {
+            GPUClusterGroup refineGroup = lodGroups[refineInfo.refineGroupStart];
+            uint ign;
+            if (testForLod(inst.worldMatrix, refineGroup.center, refineGroup.radius, refineGroup.error)) {
+                // Finer LOD is appropriate at this distance — suppress the coarse cluster.
+                counters.InterlockedAdd(kDagRefineSuppressed, 1u, ign);
+            } else {
+                // Finer LOD is too coarse — emit this cluster.
+                counters.InterlockedAdd(kDagRefineAccepted, 1u, ign);
+                processCluster(instanceID, clusterID);
+            }
+        }
     }
 }
 
@@ -502,6 +527,9 @@ void resetMain() {
         counters.Store(kDagLastActiveIteration, 0u);
         counters.Store(kDagLodCulled, 0u);
         counters.Store(kDagQueueRemaining, 0u);
+        counters.Store(kDagRefineAccepted, 0u);
+        counters.Store(kDagRefineSuppressed, 0u);
+        counters.Store(kDagInvalidRefineGroup, 0u);
         indirectArgs.Store(kIndirectPhase0 + 0u, 0u);
         indirectArgs.Store(kIndirectPhase0 + 4u, 1u);
         indirectArgs.Store(kIndirectPhase0 + 8u, 1u);

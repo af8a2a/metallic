@@ -40,6 +40,7 @@ if(APPLE)
         Rendering/input.cpp
         Rendering/frame_graph.cpp
         Rendering/gpu_scene.cpp
+        Rendering/dag_cpu_mirror.cpp
         Rendering/raytraced_shadows.cpp
         Rendering/render_pass.cpp
         Rendering/pass_registrations.cpp
@@ -103,6 +104,7 @@ elseif(WIN32)
         Scene/scene_graph_ui.cpp
         Rendering/frame_graph.cpp
         Rendering/gpu_scene.cpp
+        Rendering/dag_cpu_mirror.cpp
         Rendering/input.cpp
         Rendering/pass_registrations.cpp
         Rendering/raytraced_shadows.cpp

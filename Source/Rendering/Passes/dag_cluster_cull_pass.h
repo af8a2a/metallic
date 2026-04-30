@@ -2,6 +2,7 @@
 
 #include "cluster_lod_builder.h"
 #include "cluster_occlusion_state.h"
+#include "dag_cpu_mirror.h"
 #include "frame_context.h"
 #include "imgui.h"
 #include "pass_registry.h"
@@ -30,6 +31,7 @@ static constexpr uint32_t kNodeQueue1 = 13u;
 static constexpr uint32_t kHizMipBase = 14u;
 static constexpr uint32_t kHzbViewProj = 15u;
 static constexpr uint32_t kNodeRepresentativeGroupIndices = 16u;
+static constexpr uint32_t kClusterRefineInfos = 17u;
 
 inline constexpr uint32_t bufferBinding(uint32_t binding) {
 #if METALLIC_RHI_METAL
@@ -151,6 +153,7 @@ public:
             !m_ctx.clusterLodData.nodeRepresentativeGroupIndexBuffer.nativeHandle() ||
             !m_ctx.clusterLodData.groupBuffer.nativeHandle() ||
             !m_ctx.clusterLodData.groupMeshletIndicesBuffer.nativeHandle() ||
+            !m_ctx.clusterLodData.clusterRefineInfoBuffer.nativeHandle() ||
             !state->phase0VisibleWorklist ||
             !state->phase0RecheckWorklist ||
             !state->phase1VisibleWorklist ||
@@ -231,6 +234,24 @@ public:
         encoder.memoryBarrier(RhiBarrierScope::Buffers);
 
         state->worklistValid[m_phase] = true;
+
+        if (m_phase == 0u && m_runCpuMirror) {
+            m_runCpuMirror = false;
+            DagCpuMirrorParams mp{};
+            mp.cameraWorldPos[0] = m_frameContext->cameraWorldPos.x;
+            mp.cameraWorldPos[1] = m_frameContext->cameraWorldPos.y;
+            mp.cameraWorldPos[2] = m_frameContext->cameraWorldPos.z;
+            mp.cameraFovY        = m_frameContext->cameraFovY;
+            mp.lodErrorThreshold = m_lodErrorThreshold;
+            mp.screenHeight      = static_cast<uint32_t>(std::max(m_height, 1));
+            mp.maxIterations     = m_maxIterations;
+            mp.maxNodeTasks      = state->maxNodeTasks;
+            mp.maxClusters       = state->maxClusters;
+            const ClusterOcclusionState::DagCullStats gpuStats = state->readDagCullStats();
+            m_cpuMirrorStats = runDagCpuMirror(
+                m_ctx.gpuScene, m_ctx.clusterLodData, mp,
+                gpuStats.readable ? &gpuStats : nullptr);
+        }
     }
 
     void renderUI() override {
@@ -335,6 +356,15 @@ public:
         ImGui::Text("HZB recheck (phase0): %u", stats.hzbRecheck);
         ImGui::Text("HZB rejected (phase1): %u", stats.hzbRejected);
 
+        ImGui::SeparatorText("Refine");
+        ImGui::Text("Accepted: %u  Suppressed: %u", stats.refineAccepted, stats.refineSuppressed);
+        if (stats.invalidRefineGroup > 0u) {
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.1f, 1.0f),
+                               "Invalid refine group: %u", stats.invalidRefineGroup);
+        } else {
+            ImGui::Text("Invalid refine group: 0");
+        }
+
         ImGui::SeparatorText("Traversal Health");
         ImGui::Text("Last active iteration: %u", stats.lastActiveIteration);
         if (stats.queueRemaining > 0u) {
@@ -355,6 +385,66 @@ public:
                                stats.clusterOverflow);
         } else {
             ImGui::Text("Overflow: 0");
+        }
+
+        if (m_phase == 0u) {
+            ImGui::SeparatorText("CPU Mirror Validation");
+            if (ImGui::Button("Run CPU Mirror##dag")) {
+                m_runCpuMirror = true;
+            }
+            const DagCpuMirrorStats& ms = m_cpuMirrorStats;
+            if (!ms.available) {
+                ImGui::TextDisabled("Not run yet");
+            } else {
+                ImGui::Text("Seeded: %u  Nodes: %u  LOD cut: %u",
+                            ms.seededInstances, ms.nodeProcessed, ms.lodCulled);
+                ImGui::Text("Refine accepted: %u  suppressed: %u",
+                            ms.refineAccepted, ms.refineSuppressed);
+                ImGui::Text("Clusters emitted: %u", ms.clustersEmitted);
+
+                if (ms.duplicateCount > 0u) {
+                    ImGui::TextColored(ImVec4(1.f, 0.35f, 0.1f, 1.f),
+                                       "Duplicates: %u", ms.duplicateCount);
+                } else {
+                    ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "No duplicates");
+                }
+                if (ms.unexpectedCount > 0u) {
+                    ImGui::TextColored(ImVec4(1.f, 0.35f, 0.1f, 1.f),
+                                       "Unexpected clusters: %u", ms.unexpectedCount);
+                } else {
+                    ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "No unexpected clusters");
+                }
+
+                // LOD distribution histogram
+                if (ImGui::TreeNode("LOD depth distribution")) {
+                    for (uint32_t d = 0; d <= std::min(ms.maxDepthSeen, DagCpuMirrorStats::kMaxDepthBuckets - 1u); ++d) {
+                        ImGui::Text("  depth %2u: %u clusters", d, ms.clustersByDepth[d]);
+                    }
+                    ImGui::TreePop();
+                }
+
+                if (ms.gpuCompareAvailable) {
+                    ImGui::Spacing();
+                    if (ms.lodCountersMatch) {
+                        ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f),
+                                           "CPU/GPU counters match");
+                    } else {
+                        ImGui::TextColored(ImVec4(1.f, 0.35f, 0.1f, 1.f),
+                                           "CPU/GPU counter mismatch");
+                        auto showDiff = [](const char* label, int32_t d) {
+                            if (d != 0) {
+                                ImGui::TextColored(ImVec4(1.f, 0.7f, 0.1f, 1.f),
+                                                   "  %s: %+d", label, d);
+                            }
+                        };
+                        showDiff("nodeProcessed",    ms.diffNodeProcessed);
+                        showDiff("lodCulled",         ms.diffLodCulled);
+                        showDiff("refineAccepted",    ms.diffRefineAccepted);
+                        showDiff("refineSuppressed",  ms.diffRefineSuppressed);
+                        showDiff("clustersEmitted",   ms.diffClustersEmitted);
+                    }
+                }
+            }
         }
     }
 
@@ -506,6 +596,9 @@ private:
         encoder.setBuffer(&m_ctx.clusterLodData.nodeRepresentativeGroupIndexBuffer, 0,
                           DagClusterCullBindings::bufferBinding(
                               DagClusterCullBindings::kNodeRepresentativeGroupIndices));
+        encoder.setBuffer(&m_ctx.clusterLodData.clusterRefineInfoBuffer, 0,
+                          DagClusterCullBindings::bufferBinding(
+                              DagClusterCullBindings::kClusterRefineInfos));
         encoder.setBuffer(state.phase0VisibleWorklist.get(), 0,
                           DagClusterCullBindings::bufferBinding(DagClusterCullBindings::kPhase0Visible));
         encoder.setBuffer(state.phase0RecheckWorklist.get(), 0,
@@ -549,6 +642,8 @@ private:
     int m_enableFrustumOverride = -1;
     int m_enableOcclusionOverride = -1; // -1=use JSON config, 0=force off, 1=force on
     bool m_warnedMissingPipeline = false;
+    bool m_runCpuMirror = false;
+    DagCpuMirrorStats m_cpuMirrorStats;
     FGResource m_phaseReady;
     FGResource m_cullDone;
 };
