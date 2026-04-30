@@ -14,6 +14,16 @@ static void releaseMeshBuffers(LoadedMesh& mesh) {
     rhiReleaseHandle(mesh.normalBuffer);
     rhiReleaseHandle(mesh.uvBuffer);
     rhiReleaseHandle(mesh.indexBuffer);
+    mesh.cpuPositions.clear();
+    mesh.cpuIndices.clear();
+    mesh.primitiveGroups.clear();
+    mesh.meshRanges.clear();
+    mesh.vertexCount = 0;
+    mesh.indexCount = 0;
+    mesh.bboxMin[0] = mesh.bboxMin[1] = mesh.bboxMin[2] = 0.0f;
+    mesh.bboxMax[0] = mesh.bboxMax[1] = mesh.bboxMax[2] = 0.0f;
+    mesh.hasBakedRootScale = false;
+    mesh.bakedRootScale = 1.0f;
 }
 
 static void releaseMeshletBuffers(MeshletData& m) {
@@ -22,6 +32,20 @@ static void releaseMeshletBuffers(MeshletData& m) {
     rhiReleaseHandle(m.meshletTriangles);
     rhiReleaseHandle(m.boundsBuffer);
     rhiReleaseHandle(m.materialIDs);
+    m.meshletCount = 0;
+    m.meshletsPerGroup.clear();
+    m.cpuMeshlets.clear();
+    m.cpuMeshletVertices.clear();
+    m.cpuMeshletTriangles.clear();
+    m.cpuBounds.clear();
+    m.cpuMaterialIDs.clear();
+}
+
+static void resetSceneGraph(SceneGraph& graph) {
+    graph.nodes.clear();
+    graph.rootNodes.clear();
+    graph.selectedNode = -1;
+    graph.sunLightNode = -1;
 }
 
 static void releaseMaterialResources(LoadedMaterials& mat) {
@@ -48,12 +72,7 @@ void SceneGpu::destroy() {
     releaseMaterialResources(m_materials);
     releaseMeshBuffers(m_mesh);
 
-    m_mesh = LoadedMesh{};
-    m_meshlets = MeshletData{};
-    m_clusterLod = ClusterLODData{};
-    m_materials = LoadedMaterials{};
-    m_sceneGraph = SceneGraph{};
-    m_gpuScene = GpuSceneTables{};
+    resetSceneGraph(m_sceneGraph);
     m_valid = false;
 }
 
@@ -61,14 +80,30 @@ bool SceneGpu::create(const Scene& scene, const std::string& cacheDir) {
     destroy();
 
     if (!createMeshBuffers(scene)) return false;
-    if (!createMeshlets(scene, cacheDir)) { destroy(); return false; }
+    spdlog::info("SceneGpu: creating meshlets");
+    if (!createMeshlets(scene, cacheDir)) {
+        spdlog::error("SceneGpu: meshlet creation failed");
+        destroy();
+        return false;
+    }
+    spdlog::info("SceneGpu: creating cluster LOD");
     createClusterLod(scene, cacheDir);
-    if (!createMaterials(scene)) { destroy(); return false; }
-    if (!createSceneGraph(scene)) { destroy(); return false; }
+    spdlog::info("SceneGpu: creating materials");
+    if (!createMaterials(scene)) {
+        spdlog::error("SceneGpu: material creation failed");
+        destroy();
+        return false;
+    }
+    spdlog::info("SceneGpu: creating scene graph");
+    if (!createSceneGraph(scene)) {
+        spdlog::error("SceneGpu: scene graph creation failed");
+        destroy();
+        return false;
+    }
+    spdlog::info("SceneGpu: creating GPU scene tables");
     if (!createGpuSceneTables()) {
         spdlog::warn("GPU scene tables failed, continuing without");
         releaseGpuSceneTables(m_gpuScene);
-        m_gpuScene = GpuSceneTables{};
     }
 
     m_valid = true;
@@ -76,7 +111,7 @@ bool SceneGpu::create(const Scene& scene, const std::string& cacheDir) {
 }
 
 bool SceneGpu::createMeshBuffers(const Scene& scene) {
-    m_mesh = LoadedMesh{};
+    releaseMeshBuffers(m_mesh);
     m_mesh.cpuPositions = scene.positions;
     m_mesh.cpuIndices = scene.indices;
     m_mesh.vertexCount = static_cast<uint32_t>(scene.positions.size() / 3);
@@ -147,7 +182,6 @@ bool SceneGpu::createClusterLod(const Scene& scene, const std::string& cacheDir)
     if (!buildClusterLOD(dev, m_mesh, m_meshlets, m_clusterLod)) {
         spdlog::warn("SceneGpu: cluster LOD build failed, continuing without");
         releaseClusterLOD(m_clusterLod);
-        m_clusterLod = ClusterLODData{};
         return false;
     }
     return true;
@@ -226,7 +260,7 @@ bool SceneGpu::createMaterials(const Scene& scene) {
 }
 
 bool SceneGpu::createSceneGraph(const Scene& scene) {
-    m_sceneGraph = SceneGraph{};
+    resetSceneGraph(m_sceneGraph);
 
     // Build meshlet prefix sums for offset computation
     std::vector<uint32_t> meshletGroupPrefix(m_mesh.primitiveGroups.size() + 1, 0);

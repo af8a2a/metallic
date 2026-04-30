@@ -41,6 +41,10 @@ struct GPULodNode {
     uint   childOffset;
     uint   childCount;
     uint   isLeaf;
+    uint   representativeGroupStart;
+    uint   representativeGroupCount;
+    uint   reserved0;
+    uint   reserved1;
 };
 
 struct GPUClusterGroup {
@@ -99,6 +103,7 @@ struct DagCullParams {
 [[vk::binding(13)]] RWStructuredBuffer<DagNodeTask>      nodeQueue1;
 [[vk::binding(14)]] Texture2D<float>                     hzbTextures[HZB_MAX_LEVELS];
 [[vk::binding(15)]] StructuredBuffer<float4x4>           hzbViewProjBuf;
+[[vk::binding(16)]] StructuredBuffer<uint>               nodeRepresentativeGroupIndices;
 
 static const uint kCounterPhase0Visible = 0u;
 static const uint kCounterPhase0Recheck = 4u;
@@ -211,6 +216,33 @@ void appendNode(uint queueIndex, DagNodeTask task) {
     }
 }
 
+float uniformScaleUpperBound(float4x4 worldMatrix) {
+    float3 origin = mul(worldMatrix, float4(0.0, 0.0, 0.0, 1.0)).xyz;
+    float3 axisX = mul(worldMatrix, float4(1.0, 0.0, 0.0, 1.0)).xyz - origin;
+    float3 axisY = mul(worldMatrix, float4(0.0, 1.0, 0.0, 1.0)).xyz - origin;
+    float3 axisZ = mul(worldMatrix, float4(0.0, 0.0, 1.0, 1.0)).xyz - origin;
+    return max(max(length(axisX), length(axisY)), length(axisZ));
+}
+
+bool testForLod(float4x4 worldMatrix, float3 center, float radius, float error) {
+    if (params.lodErrorThreshold <= 0.0 || error <= 0.0 || error >= 3.0e37) {
+        return false;
+    }
+
+    float scale = max(uniformScaleUpperBound(worldMatrix), 1.0e-6);
+    float allowedErrorWS = error * scale;
+    float3 worldCenter = mul(worldMatrix, float4(center, 1.0)).xyz;
+    float worldRadius = radius * scale;
+    float cameraToSphereSurface =
+        max(0.0, length(params.cameraWorldPos - worldCenter) - worldRadius);
+
+    float pixelThreshold = max(params.lodErrorThreshold, 1.0e-6);
+    float screenErrorConstant =
+        tan(0.5 * params.cameraFovY) * 2.0 * pixelThreshold /
+        max(float(screenHeight()), 1.0);
+    return cameraToSphereSurface * screenErrorConstant >= allowedErrorWS;
+}
+
 void appendVisible(ClusterInfo item) {
     uint index;
     counters.InterlockedAdd(visibleCounterOffset(), 1u, index);
@@ -302,6 +334,12 @@ void processGroup(uint instanceID, uint groupID) {
     emitGroupClusters(instanceID, groupID);
 }
 
+void emitNodeRepresentativeGroups(uint instanceID, GPULodNode node) {
+    for (uint i = 0u; i < node.representativeGroupCount; ++i) {
+        processGroup(instanceID, nodeRepresentativeGroupIndices[node.representativeGroupStart + i]);
+    }
+}
+
 void seedNodes(uint3 dispatchThreadID) {
     uint instanceID = dispatchThreadID.x;
     if (!instanceCanRender(instanceID)) {
@@ -367,6 +405,14 @@ void processNodes(uint3 dispatchThreadID) {
 
     uint ignored;
     counters.InterlockedAdd(kDagNodeProcessed, 1u, ignored);
+
+    InstanceData inst = instances[task.instanceID];
+    if (node.representativeGroupCount != 0u &&
+        testForLod(inst.worldMatrix, node.center, node.radius, node.maxError)) {
+        emitNodeRepresentativeGroups(task.instanceID, node);
+        counters.InterlockedAdd(kDagLodCulled, 1u, ignored);
+        return;
+    }
 
     if (node.isLeaf != 0u) {
         for (uint child = 0u; child < node.childCount; ++child) {

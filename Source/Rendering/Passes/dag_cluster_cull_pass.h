@@ -29,6 +29,7 @@ static constexpr uint32_t kNodeQueue0 = 12u;
 static constexpr uint32_t kNodeQueue1 = 13u;
 static constexpr uint32_t kHizMipBase = 14u;
 static constexpr uint32_t kHzbViewProj = 15u;
+static constexpr uint32_t kNodeRepresentativeGroupIndices = 16u;
 
 inline constexpr uint32_t bufferBinding(uint32_t binding) {
 #if METALLIC_RHI_METAL
@@ -74,16 +75,7 @@ public:
             m_maxIterations = std::clamp(config.config["maxIterations"].get<uint32_t>(), 1u, 64u);
         }
         if (config.config.contains("lodErrorThreshold")) {
-            const float requestedThreshold =
-                std::max(config.config["lodErrorThreshold"].get<float>(), 0.0f);
-            if (requestedThreshold > 0.0f && !m_warnedUnsupportedLodThreshold) {
-                spdlog::warn(
-                    "{}: lodErrorThreshold={} ignored; DAG v1 traverses the LOD0 root only",
-                    m_name,
-                    requestedThreshold);
-                m_warnedUnsupportedLodThreshold = true;
-            }
-            m_lodErrorThreshold = 0.0f;
+            m_lodErrorThreshold = std::max(config.config["lodErrorThreshold"].get<float>(), 0.0f);
         }
         if (config.config.contains("maxNodeTasks")) {
             m_maxNodeTasks = std::clamp(config.config["maxNodeTasks"].get<uint32_t>(), 256u, 1u << 20u);
@@ -156,6 +148,7 @@ public:
             !m_ctx.gpuScene.geometryBuffer.nativeHandle() ||
             !m_ctx.clusterLodData.boundsBuffer.nativeHandle() ||
             !m_ctx.clusterLodData.nodeBuffer.nativeHandle() ||
+            !m_ctx.clusterLodData.nodeRepresentativeGroupIndexBuffer.nativeHandle() ||
             !m_ctx.clusterLodData.groupBuffer.nativeHandle() ||
             !m_ctx.clusterLodData.groupMeshletIndicesBuffer.nativeHandle() ||
             !state->phase0VisibleWorklist ||
@@ -244,17 +237,17 @@ public:
         ImGui::Text("Phase: %u", m_phase);
         ImGui::Text("Instance Filter: %s", m_enableInstanceFilter ? "Enabled" : "Disabled");
         ImGui::Text("Frustum: %s", enableFrustumCull() ? "Enabled" : "Disabled");
-        ImGui::TextDisabled("LOD selection disabled: v1 traverses the LOD0 root");
+        ImGui::SliderFloat("LOD Pixel Error##dag", &m_lodErrorThreshold, 0.0f, 16.0f, "%.2f");
         ImGui::Text("Max Iterations: %u", m_maxIterations);
         ImGui::Text("Node queue capacity: %u", m_maxNodeTasks);
 
         const DagV1ValidationStats& validation = m_ctx.gpuScene.dagV1Validation;
-        ImGui::SeparatorText("DAG v1 CPU Validation");
+        ImGui::SeparatorText("DAG Root CPU Validation");
         if (!validation.available) {
             ImGui::TextDisabled("Unavailable");
         } else if (validation.passed) {
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
-                               "Root traversal matches LOD0 fallback");
+                               "No-cut traversal matches LOD0 fallback");
         } else {
             ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.1f, 1.0f),
                                "Root traversal mismatch");
@@ -510,6 +503,9 @@ private:
                           DagClusterCullBindings::bufferBinding(DagClusterCullBindings::kGroups));
         encoder.setBuffer(&m_ctx.clusterLodData.groupMeshletIndicesBuffer, 0,
                           DagClusterCullBindings::bufferBinding(DagClusterCullBindings::kGroupMeshletIndices));
+        encoder.setBuffer(&m_ctx.clusterLodData.nodeRepresentativeGroupIndexBuffer, 0,
+                          DagClusterCullBindings::bufferBinding(
+                              DagClusterCullBindings::kNodeRepresentativeGroupIndices));
         encoder.setBuffer(state.phase0VisibleWorklist.get(), 0,
                           DagClusterCullBindings::bufferBinding(DagClusterCullBindings::kPhase0Visible));
         encoder.setBuffer(state.phase0RecheckWorklist.get(), 0,
@@ -547,13 +543,12 @@ private:
     uint32_t m_phase = 0;
     uint32_t m_maxIterations = 16;
     uint32_t m_maxNodeTasks = 65536;
-    float m_lodErrorThreshold = 0.0f;
+    float m_lodErrorThreshold = 1.0f;
     bool m_enableOcclusion = true;
     bool m_enableInstanceFilter = true;
     int m_enableFrustumOverride = -1;
     int m_enableOcclusionOverride = -1; // -1=use JSON config, 0=force off, 1=force on
     bool m_warnedMissingPipeline = false;
-    bool m_warnedUnsupportedLodThreshold = false;
     FGResource m_phaseReady;
     FGResource m_cullDone;
 };

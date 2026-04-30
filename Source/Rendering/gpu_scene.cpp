@@ -345,7 +345,6 @@ bool buildGpuSceneTables(const RhiDevice& device,
                          const SceneGraph& sceneGraph,
                          GpuSceneTables& out) {
     releaseGpuSceneTables(out);
-    out = GpuSceneTables{};
     out.nodeToInstance.assign(sceneGraph.nodes.size(), UINT32_MAX);
 
     std::unordered_map<GeometryKey, uint32_t, GeometryKeyHash> geometryMap;
@@ -449,12 +448,12 @@ bool buildGpuSceneTables(const RhiDevice& device,
         out.dagV1Validation = validateDagV1ClusterRoots(*clusterLodData, out);
         if (out.dagV1Validation.passed) {
             spdlog::info(
-                "GpuScene: DAG v1 root validation passed for {} geometries ({} clusters)",
+                "GpuScene: DAG root no-cut validation passed for {} geometries ({} clusters)",
                 out.dagV1Validation.checkedGeometryCount,
                 out.dagV1Validation.expectedClusterCount);
         } else if (out.dagV1Validation.available) {
             spdlog::warn(
-                "GpuScene: DAG v1 root validation failed: checked={}, mismatched={}, "
+                "GpuScene: DAG root no-cut validation failed: checked={}, mismatched={}, "
                 "missing={}, unexpected={}, duplicates={}, invalid node/group/cluster refs={}/{}/{}",
                 out.dagV1Validation.checkedGeometryCount,
                 out.dagV1Validation.mismatchGeometryCount,

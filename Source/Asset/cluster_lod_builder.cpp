@@ -34,7 +34,7 @@ static constexpr float kSimplifyThreshold = 0.85f;
 static constexpr float kClusterSplit = 2.0f;
 
 constexpr char kClusterLodCacheMagic[8] = {'M', 'L', 'C', 'L', 'O', 'D', '0', '1'};
-constexpr uint32_t kClusterLodCacheVersion = 2;
+constexpr uint32_t kClusterLodCacheVersion = 3;
 constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 constexpr uint32_t kInvalidIndex = UINT32_MAX;
@@ -80,6 +80,7 @@ struct ClusterLODCacheHeader {
     uint64_t groupMeshletIndexCount = 0;
     uint64_t groupCount = 0;
     uint64_t nodeCount = 0;
+    uint64_t nodeRepresentativeIndexCount = 0;
     uint64_t levelCount = 0;
     uint64_t primitiveGroupRootCount = 0;
 };
@@ -87,6 +88,7 @@ struct ClusterLODCacheHeader {
 static_assert(std::is_trivially_copyable_v<ClusterLODCacheHeader>);
 static_assert(std::is_trivially_copyable_v<GPUClusterGroup>);
 static_assert(std::is_trivially_copyable_v<GPULodNode>);
+static_assert(std::is_trivially_copyable_v<GPUClusterRefineInfo>);
 static_assert(std::is_trivially_copyable_v<ClusterLODLevel>);
 
 void releaseClusterLODHandles(ClusterLODData& data) {
@@ -98,8 +100,10 @@ void releaseClusterLODHandles(ClusterLODData& data) {
     rhiReleaseHandle(data.groupMeshletIndicesBuffer);
     rhiReleaseHandle(data.groupBuffer);
     rhiReleaseHandle(data.nodeBuffer);
+    rhiReleaseHandle(data.nodeRepresentativeGroupIndexBuffer);
     rhiReleaseHandle(data.levelBuffer);
     rhiReleaseHandle(data.packedClusterBuffer);
+    rhiReleaseHandle(data.clusterRefineInfoBuffer);
     rhiReleaseHandle(data.clusterVertexDataBuffer);
     rhiReleaseHandle(data.clusterIndexDataBuffer);
 }
@@ -564,6 +568,130 @@ uint32_t emitSimplifiedMeshlet(const Cluster& cluster,
     return static_cast<uint32_t>(out.allMeshlets.size() - 1);
 }
 
+uint32_t appendRepresentativeGroupRange(ClusterLODData& data,
+                                        uint32_t groupStart,
+                                        uint32_t groupCount) {
+    const uint32_t representativeStart =
+        static_cast<uint32_t>(data.nodeRepresentativeGroupIndices.size());
+    data.nodeRepresentativeGroupIndices.reserve(
+        data.nodeRepresentativeGroupIndices.size() + groupCount);
+    for (uint32_t groupOffset = 0; groupOffset < groupCount; ++groupOffset) {
+        data.nodeRepresentativeGroupIndices.push_back(groupStart + groupOffset);
+    }
+    return representativeStart;
+}
+
+void assignNodeRepresentativeRange(ClusterLODData& data,
+                                   uint32_t nodeIndex,
+                                   std::vector<uint8_t>& visited) {
+    if (nodeIndex >= data.nodes.size() || visited[nodeIndex] != 0) {
+        return;
+    }
+
+    const GPULodNode node = data.nodes[nodeIndex];
+    std::vector<uint32_t> representativeGroups;
+
+    if (node.isLeaf != 0) {
+        representativeGroups.reserve(node.childCount);
+        for (uint32_t child = 0; child < node.childCount; ++child) {
+            representativeGroups.push_back(node.childOffset + child);
+        }
+    } else {
+        for (uint32_t child = 0; child < node.childCount; ++child) {
+            const uint32_t childNodeIndex = node.childOffset + child;
+            assignNodeRepresentativeRange(data, childNodeIndex, visited);
+            if (childNodeIndex >= data.nodes.size()) {
+                continue;
+            }
+
+            const GPULodNode& childNode = data.nodes[childNodeIndex];
+            for (uint32_t representative = 0;
+                 representative < childNode.representativeGroupCount;
+                 ++representative) {
+                representativeGroups.push_back(
+                    data.nodeRepresentativeGroupIndices[
+                        childNode.representativeGroupStart + representative]);
+            }
+        }
+    }
+
+    GPULodNode& outputNode = data.nodes[nodeIndex];
+    outputNode.representativeGroupStart =
+        static_cast<uint32_t>(data.nodeRepresentativeGroupIndices.size());
+    outputNode.representativeGroupCount = static_cast<uint32_t>(representativeGroups.size());
+    data.nodeRepresentativeGroupIndices.insert(data.nodeRepresentativeGroupIndices.end(),
+                                               representativeGroups.begin(),
+                                               representativeGroups.end());
+    visited[nodeIndex] = 1;
+}
+
+void assignSpatialNodeRepresentativeRanges(ClusterLODData& data) {
+    data.nodeRepresentativeGroupIndices.clear();
+    std::vector<uint8_t> visited(data.nodes.size(), 0);
+    for (uint32_t nodeIndex = 0; nodeIndex < data.nodes.size(); ++nodeIndex) {
+        assignNodeRepresentativeRange(data, nodeIndex, visited);
+    }
+}
+
+float maxLevelGeometricError(const ClusterLODData& data, const ClusterLODLevel& level) {
+    float maxError = 0.0f;
+    for (uint32_t groupOffset = 0; groupOffset < level.groupCount; ++groupOffset) {
+        const uint32_t groupIndex = level.groupStart + groupOffset;
+        if (groupIndex < data.groups.size()) {
+            maxError = std::max(maxError, data.groups[groupIndex].error);
+        }
+    }
+    return maxError;
+}
+
+uint32_t appendLodSelectorChain(ClusterLODData& data) {
+    const uint32_t lodLevelCount = static_cast<uint32_t>(data.levels.size());
+    if (lodLevelCount == 0) {
+        return kInvalidIndex;
+    }
+
+    std::vector<uint32_t> levelOrder(lodLevelCount);
+    std::iota(levelOrder.begin(), levelOrder.end(), 0u);
+    std::sort(levelOrder.begin(),
+              levelOrder.end(),
+              [&](uint32_t lhs, uint32_t rhs) {
+                  return data.levels[lhs].depth > data.levels[rhs].depth;
+              });
+
+    const uint32_t selectorStart = static_cast<uint32_t>(data.nodes.size());
+    data.nodes.resize(data.nodes.size() + lodLevelCount);
+
+    for (uint32_t selectorOffset = 0; selectorOffset < lodLevelCount; ++selectorOffset) {
+        const ClusterLODLevel& level = data.levels[levelOrder[selectorOffset]];
+        if (level.rootNode == kInvalidIndex || level.rootNode >= selectorStart) {
+            return kInvalidIndex;
+        }
+
+        const GPULodNode& spatialRoot = data.nodes[level.rootNode];
+        GPULodNode& selector = data.nodes[selectorStart + selectorOffset];
+        selector = {};
+        selector.center[0] = spatialRoot.center[0];
+        selector.center[1] = spatialRoot.center[1];
+        selector.center[2] = spatialRoot.center[2];
+        selector.radius = spatialRoot.radius;
+        selector.maxError = maxLevelGeometricError(data, level);
+        selector.isLeaf = 0;
+        selector.representativeGroupStart =
+            appendRepresentativeGroupRange(data, level.groupStart, level.groupCount);
+        selector.representativeGroupCount = level.groupCount;
+
+        if (selectorOffset + 1u < lodLevelCount) {
+            selector.childOffset = selectorStart + selectorOffset + 1u;
+            selector.childCount = 1;
+        } else {
+            selector.childOffset = level.rootNode;
+            selector.childCount = 1;
+        }
+    }
+
+    return selectorStart;
+}
+
 uint32_t buildLocalHierarchy(ClusterLODData& data) {
     if (data.levels.empty()) {
         return kInvalidIndex;
@@ -703,7 +831,8 @@ uint32_t buildLocalHierarchy(ClusterLODData& data) {
         root.childOffset = 1;
         root.childCount = 1;
         root.isLeaf = 0;
-        return 0;
+        assignSpatialNodeRepresentativeRanges(data);
+        return appendLodSelectorChain(data);
     }
 
     meshopt_Bounds merged = meshopt_computeSphereBounds(
@@ -727,30 +856,8 @@ uint32_t buildLocalHierarchy(ClusterLODData& data) {
         root.maxError = std::max(root.maxError, data.nodes[1 + levelIndex].maxError);
     }
 
-    return 0;
-}
-
-void assignLod0PrimitiveGroupRoots(ClusterLODData& data,
-                                   uint32_t primitiveGroupCount) {
-    data.primitiveGroupLodRoots.assign(primitiveGroupCount, kInvalidIndex);
-    if (primitiveGroupCount == 1u) {
-        for (const ClusterLODLevel& level : data.levels) {
-            if (level.depth == 0u && level.rootNode != kInvalidIndex) {
-                data.primitiveGroupLodRoots[0] = level.rootNode;
-                return;
-            }
-        }
-        return;
-    }
-
-    for (const ClusterLODLevel& level : data.levels) {
-        if (level.depth != 0u ||
-            level.primitiveGroupIndex >= primitiveGroupCount ||
-            level.rootNode == kInvalidIndex) {
-            continue;
-        }
-        data.primitiveGroupLodRoots[level.primitiveGroupIndex] = level.rootNode;
-    }
+    assignSpatialNodeRepresentativeRanges(data);
+    return appendLodSelectorChain(data);
 }
 
 bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
@@ -760,7 +867,7 @@ bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
                                    uint32_t baseMeshletCount,
                                    const std::vector<unsigned int>& positionRemap,
                                    ClusterLODData& out) {
-    out = ClusterLODData{};
+    releaseClusterLOD(out);
     if (baseMeshletCount == 0) {
         return true;
     }
@@ -950,8 +1057,11 @@ bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
         return false;
     }
 
-    buildLocalHierarchy(out);
-    assignLod0PrimitiveGroupRoots(out, 1u);
+    const uint32_t fullRootNode = buildLocalHierarchy(out);
+    if (fullRootNode == kInvalidIndex) {
+        return false;
+    }
+    out.primitiveGroupLodRoots.assign(1u, fullRootNode);
     out.totalMeshletCount = static_cast<uint32_t>(out.allMeshlets.size());
     out.totalGroupCount = static_cast<uint32_t>(out.groups.size());
     out.totalNodeCount = static_cast<uint32_t>(out.nodes.size());
@@ -968,6 +1078,8 @@ void appendClusterLOD(const ClusterLODData& local,
     const uint32_t groupMeshletIndexOffset = static_cast<uint32_t>(out.groupMeshletIndices.size());
     const uint32_t groupOffset = static_cast<uint32_t>(out.groups.size());
     const uint32_t nodeOffset = static_cast<uint32_t>(out.nodes.size());
+    const uint32_t nodeRepresentativeIndexOffset =
+        static_cast<uint32_t>(out.nodeRepresentativeGroupIndices.size());
 
     out.allMeshletVertices.insert(
         out.allMeshletVertices.end(),
@@ -1003,6 +1115,12 @@ void appendClusterLOD(const ClusterLODData& local,
         out.groups.push_back(group);
     }
 
+    out.nodeRepresentativeGroupIndices.reserve(
+        out.nodeRepresentativeGroupIndices.size() + local.nodeRepresentativeGroupIndices.size());
+    for (uint32_t localGroupIndex : local.nodeRepresentativeGroupIndices) {
+        out.nodeRepresentativeGroupIndices.push_back(localGroupIndex + groupOffset);
+    }
+
     out.nodes.reserve(out.nodes.size() + local.nodes.size());
     for (const GPULodNode& localNode : local.nodes) {
         GPULodNode node = localNode;
@@ -1010,6 +1128,9 @@ void appendClusterLOD(const ClusterLODData& local,
             node.childOffset += groupOffset;
         } else {
             node.childOffset += nodeOffset;
+        }
+        if (node.representativeGroupCount != 0) {
+            node.representativeGroupStart += nodeRepresentativeIndexOffset;
         }
         out.nodes.push_back(node);
     }
@@ -1055,6 +1176,13 @@ bool validateClusterLodPayload(const ClusterLODData& data,
         spdlog::error("ClusterLOD primitive group root count {} does not match expected {}",
                       data.primitiveGroupLodRoots.size(),
                       expectedPrimitiveGroupCount);
+        return false;
+    }
+    if (!data.clusterRefineInfos.empty() &&
+        data.clusterRefineInfos.size() != data.allMeshlets.size()) {
+        spdlog::error("ClusterLOD refine info count {} does not match meshlet count {}",
+                      data.clusterRefineInfos.size(),
+                      data.allMeshlets.size());
         return false;
     }
 
@@ -1139,11 +1267,51 @@ bool validateClusterLodPayload(const ClusterLODData& data,
                           data.nodes.size());
             return false;
         }
+
+        if (node.representativeGroupCount == 0) {
+            spdlog::error("ClusterLOD node has no representative groups");
+            return false;
+        }
+        if (static_cast<size_t>(node.representativeGroupStart) + node.representativeGroupCount >
+            data.nodeRepresentativeGroupIndices.size()) {
+            spdlog::error("ClusterLOD node representative range [{}, {}) is out of bounds {}",
+                          node.representativeGroupStart,
+                          static_cast<size_t>(node.representativeGroupStart) + node.representativeGroupCount,
+                          data.nodeRepresentativeGroupIndices.size());
+            return false;
+        }
+        for (uint32_t representative = 0;
+             representative < node.representativeGroupCount;
+             ++representative) {
+            const uint32_t groupIndex =
+                data.nodeRepresentativeGroupIndices[node.representativeGroupStart + representative];
+            if (groupIndex >= data.groups.size()) {
+                spdlog::error("ClusterLOD node representative references invalid group {}", groupIndex);
+                return false;
+            }
+        }
     }
 
     for (uint32_t rootNode : data.primitiveGroupLodRoots) {
         if (rootNode != kInvalidIndex && rootNode >= data.nodes.size()) {
             spdlog::error("ClusterLOD primitive group root {} is out of bounds {}", rootNode, data.nodes.size());
+            return false;
+        }
+    }
+
+    for (const GPUClusterRefineInfo& refineInfo : data.clusterRefineInfos) {
+        if (refineInfo.refineGroupCount == 0u) {
+            continue;
+        }
+        if (refineInfo.refineGroupStart == kInvalidIndex ||
+            static_cast<size_t>(refineInfo.refineGroupStart) + refineInfo.refineGroupCount >
+                data.groups.size()) {
+            spdlog::error("ClusterLOD refine group range [{}, {}) is out of bounds {}",
+                          refineInfo.refineGroupStart,
+                          refineInfo.refineGroupStart == kInvalidIndex
+                              ? static_cast<size_t>(refineInfo.refineGroupCount)
+                              : static_cast<size_t>(refineInfo.refineGroupStart) + refineInfo.refineGroupCount,
+                          data.groups.size());
             return false;
         }
     }
@@ -1154,6 +1322,7 @@ bool validateClusterLodPayload(const ClusterLODData& data,
 void buildPackedClusterData(const LoadedMesh& mesh, ClusterLODData& data) {
     const size_t meshletCount = data.allMeshlets.size();
     data.packedClusters.resize(meshletCount);
+    data.clusterRefineInfos.assign(meshletCount, GPUClusterRefineInfo{kInvalidIndex, 0u});
     data.clusterVertexData.clear();
     data.clusterIndexData.clear();
 
@@ -1161,14 +1330,42 @@ void buildPackedClusterData(const LoadedMesh& mesh, ClusterLODData& data) {
     data.clusterVertexData.reserve(meshletCount * 32 * 12);
     data.clusterIndexData.reserve(meshletCount * 32 * 3);
 
-    // Build a LOD level lookup: meshlet index → LOD level
+    // Build a LOD level lookup: meshlet index -> LOD depth.
     std::vector<uint8_t> meshletLodLevel(meshletCount, 0);
     for (size_t li = 0; li < data.levels.size(); li++) {
         const auto& level = data.levels[li];
         for (uint32_t mi = 0; mi < level.meshletCount; mi++) {
             uint32_t idx = level.meshletStart + mi;
             if (idx < meshletCount)
-                meshletLodLevel[idx] = static_cast<uint8_t>(li);
+                meshletLodLevel[idx] = static_cast<uint8_t>(std::min(level.depth, 255u));
+        }
+    }
+
+    // Coarse clusters refine to the explicit group range of the next finer level.
+    // The range is intentionally stored as data, not inferred from DAG children.
+    for (const ClusterLODLevel& level : data.levels) {
+        if (level.depth == 0u) {
+            continue;
+        }
+
+        const ClusterLODLevel* finerLevel = nullptr;
+        for (const ClusterLODLevel& candidate : data.levels) {
+            if (candidate.primitiveGroupIndex == level.primitiveGroupIndex &&
+                candidate.depth + 1u == level.depth) {
+                finerLevel = &candidate;
+                break;
+            }
+        }
+        if (!finerLevel) {
+            continue;
+        }
+
+        for (uint32_t meshletOffset = 0; meshletOffset < level.meshletCount; ++meshletOffset) {
+            const uint32_t meshletIndex = level.meshletStart + meshletOffset;
+            if (meshletIndex < data.clusterRefineInfos.size()) {
+                data.clusterRefineInfos[meshletIndex].refineGroupStart = finerLevel->groupStart;
+                data.clusterRefineInfos[meshletIndex].refineGroupCount = finerLevel->groupCount;
+            }
         }
     }
 
@@ -1269,6 +1466,13 @@ bool uploadClusterLodBuffers(const RhiDevice& device, ClusterLODData& data) {
             data.nodes.size() * sizeof(GPULodNode),
             "LOD Nodes");
     }
+    if (!data.nodeRepresentativeGroupIndices.empty()) {
+        data.nodeRepresentativeGroupIndexBuffer = rhiCreateSharedBuffer(
+            device,
+            data.nodeRepresentativeGroupIndices.data(),
+            data.nodeRepresentativeGroupIndices.size() * sizeof(uint32_t),
+            "LOD Node Representative Group Indices");
+    }
     if (!data.levels.empty()) {
         data.levelBuffer = rhiCreateSharedBuffer(
             device,
@@ -1284,6 +1488,13 @@ bool uploadClusterLodBuffers(const RhiDevice& device, ClusterLODData& data) {
             data.packedClusters.data(),
             data.packedClusters.size() * sizeof(PackedCluster),
             "Packed Clusters");
+    }
+    if (!data.clusterRefineInfos.empty()) {
+        data.clusterRefineInfoBuffer = rhiCreateSharedBuffer(
+            device,
+            data.clusterRefineInfos.data(),
+            data.clusterRefineInfos.size() * sizeof(GPUClusterRefineInfo),
+            "Cluster Refine Infos");
     }
     if (!data.clusterVertexData.empty()) {
         data.clusterVertexDataBuffer = rhiCreateSharedBuffer(
@@ -1308,7 +1519,9 @@ bool uploadClusterLodBuffers(const RhiDevice& device, ClusterLODData& data) {
         (!data.groupMeshletIndices.empty() && !data.groupMeshletIndicesBuffer.nativeHandle()) ||
         (!data.groups.empty() && !data.groupBuffer.nativeHandle()) ||
         (!data.nodes.empty() && !data.nodeBuffer.nativeHandle()) ||
-        (!data.levels.empty() && !data.levelBuffer.nativeHandle())) {
+        (!data.nodeRepresentativeGroupIndices.empty() && !data.nodeRepresentativeGroupIndexBuffer.nativeHandle()) ||
+        (!data.levels.empty() && !data.levelBuffer.nativeHandle()) ||
+        (!data.clusterRefineInfos.empty() && !data.clusterRefineInfoBuffer.nativeHandle())) {
         releaseClusterLODHandles(data);
         spdlog::error("Failed to create GPU buffers for ClusterLOD payload");
         return false;
@@ -1366,6 +1579,7 @@ bool saveClusterLODToCache(const LoadedMesh& mesh,
     header.groupMeshletIndexCount = data.groupMeshletIndices.size();
     header.groupCount = data.groups.size();
     header.nodeCount = data.nodes.size();
+    header.nodeRepresentativeIndexCount = data.nodeRepresentativeGroupIndices.size();
     header.levelCount = data.levels.size();
     header.primitiveGroupRootCount = data.primitiveGroupLodRoots.size();
 
@@ -1385,6 +1599,7 @@ bool saveClusterLODToCache(const LoadedMesh& mesh,
                     writeVector(file, data.groupMeshletIndices) &&
                     writeVector(file, data.groups) &&
                     writeVector(file, data.nodes) &&
+                    writeVector(file, data.nodeRepresentativeGroupIndices) &&
                     writeVector(file, data.levels) &&
                     writeVector(file, data.primitiveGroupLodRoots);
     if (!ok) {
@@ -1444,19 +1659,21 @@ bool loadClusterLODFromCache(const RhiDevice& device,
         return false;
     }
 
-    ClusterLODData cached;
-    cached.sourceSceneSignature = meshSignature;
-    if (!readVector(file, header.meshletCount, cached.allMeshlets) ||
-        !readVector(file, header.meshletVertexCount, cached.allMeshletVertices) ||
-        !readVector(file, header.packedTriangleCount, cached.allPackedTriangles) ||
-        !readVector(file, header.boundsCount, cached.allBounds) ||
-        !readVector(file, header.materialCount, cached.allMaterialIDs) ||
-        !readVector(file, header.groupMeshletIndexCount, cached.groupMeshletIndices) ||
-        !readVector(file, header.groupCount, cached.groups) ||
-        !readVector(file, header.nodeCount, cached.nodes) ||
-        !readVector(file, header.levelCount, cached.levels) ||
-        !readVector(file, header.primitiveGroupRootCount, cached.primitiveGroupLodRoots)) {
+    releaseClusterLOD(out);
+    out.sourceSceneSignature = meshSignature;
+    if (!readVector(file, header.meshletCount, out.allMeshlets) ||
+        !readVector(file, header.meshletVertexCount, out.allMeshletVertices) ||
+        !readVector(file, header.packedTriangleCount, out.allPackedTriangles) ||
+        !readVector(file, header.boundsCount, out.allBounds) ||
+        !readVector(file, header.materialCount, out.allMaterialIDs) ||
+        !readVector(file, header.groupMeshletIndexCount, out.groupMeshletIndices) ||
+        !readVector(file, header.groupCount, out.groups) ||
+        !readVector(file, header.nodeCount, out.nodes) ||
+        !readVector(file, header.nodeRepresentativeIndexCount, out.nodeRepresentativeGroupIndices) ||
+        !readVector(file, header.levelCount, out.levels) ||
+        !readVector(file, header.primitiveGroupRootCount, out.primitiveGroupLodRoots)) {
         spdlog::warn("Failed to read ClusterLOD cache payload {}", cachePath.string());
+        releaseClusterLOD(out);
         return false;
     }
 
@@ -1465,24 +1682,24 @@ bool loadClusterLODFromCache(const RhiDevice& device,
     const auto endOffset = file.tellg();
     if (currentOffset != endOffset) {
         spdlog::warn("ClusterLOD cache {} has unexpected trailing data", cachePath.string());
+        releaseClusterLOD(out);
         return false;
     }
 
-    assignLod0PrimitiveGroupRoots(cached, expectedPrimitiveGroupCount);
-
-    if (!validateClusterLodPayload(cached, expectedPrimitiveGroupCount)) {
+    if (!validateClusterLodPayload(out, expectedPrimitiveGroupCount)) {
         spdlog::warn("ClusterLOD cache {} failed payload validation", cachePath.string());
+        releaseClusterLOD(out);
         return false;
     }
 
-    buildPackedClusterData(mesh, cached);
+    buildPackedClusterData(mesh, out);
 
-    if (!uploadClusterLodBuffers(device, cached)) {
+    if (!uploadClusterLodBuffers(device, out)) {
         spdlog::warn("Failed to create GPU ClusterLOD buffers from cache {}", cachePath.string());
+        releaseClusterLOD(out);
         return false;
     }
 
-    out = std::move(cached);
     spdlog::info("Loaded ClusterLOD cache with {} meshlets, {} groups, {} nodes from {}",
                  out.totalMeshletCount,
                  out.totalGroupCount,
@@ -1498,11 +1715,9 @@ bool buildClusterLOD(const RhiDevice& device,
                      const MeshletData& meshletData,
                      ClusterLODData& out) {
     releaseClusterLOD(out);
-    out = ClusterLODData{};
     out.sourceSceneSignature = computeMeshSignature(mesh);
 
     const auto buildStart = std::chrono::steady_clock::now();
-
     const float* allPositions = mesh.cpuPositions.empty()
         ? static_cast<const float*>(rhiBufferContents(mesh.positionBuffer))
         : mesh.cpuPositions.data();
@@ -1554,7 +1769,6 @@ bool buildClusterLOD(const RhiDevice& device,
         return false;
     }
 
-    assignLod0PrimitiveGroupRoots(out, primitiveGroupCount);
     buildPackedClusterData(mesh, out);
 
     if (!uploadClusterLodBuffers(device, out)) {
@@ -1582,7 +1796,6 @@ bool loadOrBuildClusterLOD(const RhiDevice& device,
                            const std::string& cacheDirectory,
                            ClusterLODData& out) {
     releaseClusterLOD(out);
-    out = ClusterLODData{};
 
     if (loadClusterLODFromCache(device, mesh, sourcePath, cacheDirectory, out)) {
         return true;
@@ -1609,9 +1822,11 @@ void releaseClusterLOD(ClusterLODData& data) {
     data.groupMeshletIndices.clear();
     data.groups.clear();
     data.nodes.clear();
+    data.nodeRepresentativeGroupIndices.clear();
     data.levels.clear();
     data.primitiveGroupLodRoots.clear();
     data.packedClusters.clear();
+    data.clusterRefineInfos.clear();
     data.clusterVertexData.clear();
     data.clusterIndexData.clear();
     data.totalMeshletCount = 0;
@@ -1635,6 +1850,10 @@ void drawClusterLODStats(const ClusterLODData& data) {
     ImGui::Text("Total Meshlets: %u", data.totalMeshletCount);
     ImGui::Text("Total Groups: %u", data.totalGroupCount);
     ImGui::Text("Total Nodes: %u", data.totalNodeCount);
+    ImGui::Text("Representative Group Refs: %u",
+                static_cast<uint32_t>(data.nodeRepresentativeGroupIndices.size()));
+    ImGui::Text("Cluster Refine Infos: %u",
+                static_cast<uint32_t>(data.clusterRefineInfos.size()));
     ImGui::Separator();
 
     if (ImGui::TreeNode("Per-Level Details")) {

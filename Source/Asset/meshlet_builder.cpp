@@ -54,6 +54,16 @@ void releaseMeshletHandles(MeshletData& meshlets) {
     meshlets.meshletCount = 0;
 }
 
+void releaseMeshletData(MeshletData& meshlets) {
+    releaseMeshletHandles(meshlets);
+    meshlets.meshletsPerGroup.clear();
+    meshlets.cpuMeshlets.clear();
+    meshlets.cpuMeshletVertices.clear();
+    meshlets.cpuMeshletTriangles.clear();
+    meshlets.cpuBounds.clear();
+    meshlets.cpuMaterialIDs.clear();
+}
+
 void hashBytes(uint64_t& hash, const void* data, size_t size) {
     const auto* bytes = static_cast<const uint8_t*>(data);
     for (size_t i = 0; i < size; ++i) {
@@ -376,14 +386,15 @@ bool loadMeshletsFromCache(const RhiDevice& device,
         return false;
     }
 
-    MeshletData cached;
-    if (!readVector(file, header.meshletsPerGroupCount, cached.meshletsPerGroup) ||
-        !readVector(file, header.meshletCount, cached.cpuMeshlets) ||
-        !readVector(file, header.meshletVertexCount, cached.cpuMeshletVertices) ||
-        !readVector(file, header.meshletTriangleByteCount, cached.cpuMeshletTriangles) ||
-        !readVector(file, header.boundsCount, cached.cpuBounds) ||
-        !readVector(file, header.materialCount, cached.cpuMaterialIDs)) {
+    releaseMeshletData(out);
+    if (!readVector(file, header.meshletsPerGroupCount, out.meshletsPerGroup) ||
+        !readVector(file, header.meshletCount, out.cpuMeshlets) ||
+        !readVector(file, header.meshletVertexCount, out.cpuMeshletVertices) ||
+        !readVector(file, header.meshletTriangleByteCount, out.cpuMeshletTriangles) ||
+        !readVector(file, header.boundsCount, out.cpuBounds) ||
+        !readVector(file, header.materialCount, out.cpuMaterialIDs)) {
         spdlog::warn("Failed to read meshlet cache payload {}", cachePath.string());
+        releaseMeshletData(out);
         return false;
     }
 
@@ -392,20 +403,22 @@ bool loadMeshletsFromCache(const RhiDevice& device,
     const auto endOffset = file.tellg();
     if (currentOffset != endOffset) {
         spdlog::warn("Meshlet cache {} has unexpected trailing data", cachePath.string());
+        releaseMeshletData(out);
         return false;
     }
 
-    if (!validateMeshletPayload(cached, expectedMeshletGroupCount(mesh))) {
+    if (!validateMeshletPayload(out, expectedMeshletGroupCount(mesh))) {
         spdlog::warn("Meshlet cache {} failed payload validation", cachePath.string());
+        releaseMeshletData(out);
         return false;
     }
 
-    if (!uploadMeshletBuffers(device, cached)) {
+    if (!uploadMeshletBuffers(device, out)) {
         spdlog::warn("Failed to create GPU meshlet buffers from cache {}", cachePath.string());
+        releaseMeshletData(out);
         return false;
     }
 
-    out = std::move(cached);
     spdlog::info("Loaded {} meshlets from cache {}", out.meshletCount, cachePath.string());
     return true;
 }
@@ -413,7 +426,7 @@ bool loadMeshletsFromCache(const RhiDevice& device,
 } // namespace
 
 bool buildMeshlets(const RhiDevice& device, const LoadedMesh& mesh, MeshletData& out) {
-    out.meshletsPerGroup.clear();
+    releaseMeshletData(out);
 
     const auto buildStart = std::chrono::steady_clock::now();
 
