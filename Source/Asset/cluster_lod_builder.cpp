@@ -34,7 +34,7 @@ static constexpr float kSimplifyThreshold = 0.85f;
 static constexpr float kClusterSplit = 2.0f;
 
 constexpr char kClusterLodCacheMagic[8] = {'M', 'L', 'C', 'L', 'O', 'D', '0', '1'};
-constexpr uint32_t kClusterLodCacheVersion = 3;
+constexpr uint32_t kClusterLodCacheVersion = 4;
 constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 constexpr uint32_t kInvalidIndex = UINT32_MAX;
@@ -83,6 +83,7 @@ struct ClusterLODCacheHeader {
     uint64_t nodeRepresentativeIndexCount = 0;
     uint64_t levelCount = 0;
     uint64_t primitiveGroupRootCount = 0;
+    uint64_t refineInfoCount = 0;
 };
 
 static_assert(std::is_trivially_copyable_v<ClusterLODCacheHeader>);
@@ -886,6 +887,9 @@ bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
     std::vector<int> pending(baseMeshletCount);
     std::iota(pending.begin(), pending.end(), 0);
 
+    // Base meshlets have no finer level to refine to.
+    out.clusterRefineInfos.assign(baseMeshletCount, GPUClusterRefineInfo{kInvalidIndex, 0u});
+
     std::vector<unsigned char> locks(mesh.vertexCount, 0);
     uint32_t currentLevelMeshletStart = 0;
     uint32_t currentLevelMeshletCount = baseMeshletCount;
@@ -974,6 +978,7 @@ bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
 
             const float nextError = std::max(groupBounds.error, simplifyError);
             gpuGroup.parentError = nextError;
+            const uint32_t groupIndex = static_cast<uint32_t>(out.groups.size());
             out.groups.push_back(gpuGroup);
 
             for (int clusterIndex : group) {
@@ -1000,6 +1005,7 @@ bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
                     allPositions,
                     mesh.vertexCount,
                     kPositionStride);
+                out.clusterRefineInfos.push_back(GPUClusterRefineInfo{groupIndex, 1u});
 
                 const int newClusterIndex = static_cast<int>(clusters.size());
                 clusters.push_back(std::move(cluster));
@@ -1113,6 +1119,15 @@ void appendClusterLOD(const ClusterLODData& local,
         GPUClusterGroup group = localGroup;
         group.clusterStart += groupMeshletIndexOffset;
         out.groups.push_back(group);
+    }
+
+    out.clusterRefineInfos.reserve(out.clusterRefineInfos.size() + local.clusterRefineInfos.size());
+    for (const GPUClusterRefineInfo& localInfo : local.clusterRefineInfos) {
+        GPUClusterRefineInfo info = localInfo;
+        if (info.refineGroupCount > 0u && info.refineGroupStart != kInvalidIndex) {
+            info.refineGroupStart += groupOffset;
+        }
+        out.clusterRefineInfos.push_back(info);
     }
 
     out.nodeRepresentativeGroupIndices.reserve(
@@ -1316,13 +1331,72 @@ bool validateClusterLodPayload(const ClusterLODData& data,
         }
     }
 
+    // LOD ordering: within each primitive group, depths must be strictly increasing.
+    {
+        std::vector<std::pair<uint32_t, uint32_t>> groupDepths; // (primitiveGroupIndex, depth)
+        groupDepths.reserve(data.levels.size());
+        for (const ClusterLODLevel& level : data.levels) {
+            groupDepths.emplace_back(level.primitiveGroupIndex, level.depth);
+        }
+        std::sort(groupDepths.begin(), groupDepths.end());
+        for (size_t i = 1; i < groupDepths.size(); ++i) {
+            if (groupDepths[i].first == groupDepths[i - 1].first &&
+                groupDepths[i].second == groupDepths[i - 1].second) {
+                spdlog::error("ClusterLOD: duplicate depth {} in primitive group {}",
+                              groupDepths[i].second, groupDepths[i].first);
+                return false;
+            }
+        }
+    }
+
+    // Parent error monotonic: parentError must be >= error for each group.
+    for (size_t gi = 0; gi < data.groups.size(); ++gi) {
+        const GPUClusterGroup& group = data.groups[gi];
+        if (group.parentError != FLT_MAX && group.parentError < group.error) {
+            spdlog::error("ClusterLOD: group {} parentError {} < error {}",
+                          gi, group.parentError, group.error);
+            return false;
+        }
+    }
+
+    // Refine bounds conservative: each cluster's sphere must be contained in its refine group's sphere.
+    for (size_t mi = 0; mi < data.clusterRefineInfos.size(); ++mi) {
+        const GPUClusterRefineInfo& refineInfo = data.clusterRefineInfos[mi];
+        if (refineInfo.refineGroupCount == 0u || refineInfo.refineGroupStart == kInvalidIndex) {
+            continue;
+        }
+        if (mi >= data.allBounds.size()) {
+            continue;
+        }
+        const GPUMeshletBounds& cb = data.allBounds[mi];
+        const float cx = cb.center_radius[0];
+        const float cy = cb.center_radius[1];
+        const float cz = cb.center_radius[2];
+        const float cr = cb.center_radius[3];
+        for (uint32_t gi = 0; gi < refineInfo.refineGroupCount; ++gi) {
+            const uint32_t groupIndex = refineInfo.refineGroupStart + gi;
+            if (groupIndex >= data.groups.size()) {
+                continue;
+            }
+            const GPUClusterGroup& group = data.groups[groupIndex];
+            const float dx = cx - group.center[0];
+            const float dy = cy - group.center[1];
+            const float dz = cz - group.center[2];
+            const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            const float epsilon = std::max(1e-3f * group.radius, 1e-4f);
+            if (dist + cr > group.radius + epsilon) {
+                spdlog::warn("ClusterLOD: cluster {} bounds (r={}) not contained in refine group {} (r={}, dist={})",
+                             mi, cr, groupIndex, group.radius, dist);
+            }
+        }
+    }
+
     return true;
 }
 
 void buildPackedClusterData(const LoadedMesh& mesh, ClusterLODData& data) {
     const size_t meshletCount = data.allMeshlets.size();
     data.packedClusters.resize(meshletCount);
-    data.clusterRefineInfos.assign(meshletCount, GPUClusterRefineInfo{kInvalidIndex, 0u});
     data.clusterVertexData.clear();
     data.clusterIndexData.clear();
 
@@ -1338,34 +1412,6 @@ void buildPackedClusterData(const LoadedMesh& mesh, ClusterLODData& data) {
             uint32_t idx = level.meshletStart + mi;
             if (idx < meshletCount)
                 meshletLodLevel[idx] = static_cast<uint8_t>(std::min(level.depth, 255u));
-        }
-    }
-
-    // Coarse clusters refine to the explicit group range of the next finer level.
-    // The range is intentionally stored as data, not inferred from DAG children.
-    for (const ClusterLODLevel& level : data.levels) {
-        if (level.depth == 0u) {
-            continue;
-        }
-
-        const ClusterLODLevel* finerLevel = nullptr;
-        for (const ClusterLODLevel& candidate : data.levels) {
-            if (candidate.primitiveGroupIndex == level.primitiveGroupIndex &&
-                candidate.depth + 1u == level.depth) {
-                finerLevel = &candidate;
-                break;
-            }
-        }
-        if (!finerLevel) {
-            continue;
-        }
-
-        for (uint32_t meshletOffset = 0; meshletOffset < level.meshletCount; ++meshletOffset) {
-            const uint32_t meshletIndex = level.meshletStart + meshletOffset;
-            if (meshletIndex < data.clusterRefineInfos.size()) {
-                data.clusterRefineInfos[meshletIndex].refineGroupStart = finerLevel->groupStart;
-                data.clusterRefineInfos[meshletIndex].refineGroupCount = finerLevel->groupCount;
-            }
         }
     }
 
@@ -1582,6 +1628,7 @@ bool saveClusterLODToCache(const LoadedMesh& mesh,
     header.nodeRepresentativeIndexCount = data.nodeRepresentativeGroupIndices.size();
     header.levelCount = data.levels.size();
     header.primitiveGroupRootCount = data.primitiveGroupLodRoots.size();
+    header.refineInfoCount = data.clusterRefineInfos.size();
 
     std::ofstream file(cachePath, std::ios::binary | std::ios::trunc);
     if (!file.is_open()) {
@@ -1601,7 +1648,8 @@ bool saveClusterLODToCache(const LoadedMesh& mesh,
                     writeVector(file, data.nodes) &&
                     writeVector(file, data.nodeRepresentativeGroupIndices) &&
                     writeVector(file, data.levels) &&
-                    writeVector(file, data.primitiveGroupLodRoots);
+                    writeVector(file, data.primitiveGroupLodRoots) &&
+                    writeVector(file, data.clusterRefineInfos);
     if (!ok) {
         spdlog::warn("Failed to write ClusterLOD cache file {}", cachePath.string());
         return false;
@@ -1671,7 +1719,8 @@ bool loadClusterLODFromCache(const RhiDevice& device,
         !readVector(file, header.nodeCount, out.nodes) ||
         !readVector(file, header.nodeRepresentativeIndexCount, out.nodeRepresentativeGroupIndices) ||
         !readVector(file, header.levelCount, out.levels) ||
-        !readVector(file, header.primitiveGroupRootCount, out.primitiveGroupLodRoots)) {
+        !readVector(file, header.primitiveGroupRootCount, out.primitiveGroupLodRoots) ||
+        !readVector(file, header.refineInfoCount, out.clusterRefineInfos)) {
         spdlog::warn("Failed to read ClusterLOD cache payload {}", cachePath.string());
         releaseClusterLOD(out);
         return false;
