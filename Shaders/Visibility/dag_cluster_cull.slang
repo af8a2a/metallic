@@ -339,11 +339,17 @@ void emitGroupClusters(uint instanceID, uint groupID) {
         uint clusterID = groupMeshletIndices[group.clusterStart + i];
         GPUClusterRefineInfo refineInfo = clusterRefineInfos[clusterID];
         if (refineInfo.refineGroupCount == 0u || refineInfo.refineGroupStart == kInvalidIndex) {
+            // No refine info — emit directly.
+            processCluster(instanceID, clusterID);
+        } else if (refineInfo.refineGroupCount > 64u) {
+            // Corrupt entry — refineGroupCount should always be 1.
+            uint ign;
+            counters.InterlockedAdd(kDagInvalidRefineGroup, 1u, ign);
             processCluster(instanceID, clusterID);
         } else {
             GPUClusterGroup refineGroup = lodGroups[refineInfo.refineGroupStart];
             uint ign;
-            if (testForLod(inst.worldMatrix, refineGroup.center, refineGroup.radius, refineGroup.error)) {
+            if (testForLod(inst.worldMatrix, refineGroup.center, refineGroup.radius, refineGroup.parentError)) {
                 // Finer LOD is appropriate at this distance — suppress the coarse cluster.
                 counters.InterlockedAdd(kDagRefineSuppressed, 1u, ign);
             } else {

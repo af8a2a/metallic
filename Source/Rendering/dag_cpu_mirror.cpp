@@ -116,7 +116,7 @@ void emitGroupClusters(uint32_t instanceID, uint32_t groupID, uint32_t depth,
         } else {
             const GPUClusterGroup& rg = lodData.groups[ri.refineGroupStart];
             float3 rgCenter(rg.center[0], rg.center[1], rg.center[2]);
-            if (cpuTestForLod(worldMatrix, rgCenter, rg.radius, rg.error, params)) {
+            if (cpuTestForLod(worldMatrix, rgCenter, rg.radius, rg.parentError, params)) {
                 ++stats.refineSuppressed;
             } else {
                 ++stats.refineAccepted;
