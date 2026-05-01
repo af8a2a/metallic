@@ -187,6 +187,10 @@ target_compile_definitions(Metallic PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+if(METALLIC_CLUSTER_LOD_TOPOLOGY_NYX)
+    target_compile_definitions(Metallic PRIVATE METALLIC_CLUSTER_LOD_TOPOLOGY_NYX=1)
+endif()
+
 target_link_libraries(Metallic PRIVATE metallic::nvtx3)
 
 if(TARGET metallic::aftermath)

@@ -35,10 +35,29 @@ static constexpr float kSimplifyThreshold = 0.85f;
 static constexpr float kClusterSplit = 2.0f;
 
 constexpr char kClusterLodCacheMagic[8] = {'M', 'L', 'C', 'L', 'O', 'D', '0', '1'};
-constexpr uint32_t kClusterLodCacheVersion = 6;
+constexpr uint32_t kClusterLodCacheVersion = 7;
 constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 constexpr uint32_t kInvalidIndex = UINT32_MAX;
+
+#ifndef METALLIC_CLUSTER_LOD_TOPOLOGY_NYX
+#define METALLIC_CLUSTER_LOD_TOPOLOGY_NYX 0
+#endif
+
+enum class ClusterLodTopologyMode : uint32_t {
+    SelectorChain = 0,
+    NyxStyle = 1,
+};
+
+constexpr ClusterLodTopologyMode kClusterLodTopologyMode =
+#if METALLIC_CLUSTER_LOD_TOPOLOGY_NYX
+    ClusterLodTopologyMode::NyxStyle;
+#else
+    ClusterLodTopologyMode::SelectorChain;
+#endif
+
+constexpr uint32_t kClusterLodTopologyModeValue =
+    static_cast<uint32_t>(kClusterLodTopologyMode);
 
 struct Cluster {
     std::vector<unsigned int> indices;
@@ -59,6 +78,11 @@ struct NodeRange {
     uint32_t count = 0;
 };
 
+struct HierarchyBuildResult {
+    std::vector<GPULodNode> nodes;
+    std::vector<uint32_t> leafSourceByNode;
+};
+
 struct ClusterLODCacheHeader {
     char magic[8] = {};
     uint32_t version = 0;
@@ -67,7 +91,7 @@ struct ClusterLODCacheHeader {
     uint32_t maxTriangles = 0;
     uint32_t partitionSize = 0;
     uint32_t hierarchyNodeWidth = 0;
-    uint32_t reserved0 = 0;
+    uint32_t topologyMode = 0;
     float simplifyRatio = 0.0f;
     float simplifyThreshold = 0.0f;
     float clusterSplit = 0.0f;
@@ -438,6 +462,148 @@ void orderNodesSpatially(const GPULodNode* nodes,
               });
 }
 
+GPULodNode makeParentNode(const GPULodNode* children,
+                          uint32_t childCount,
+                          uint32_t childOffset) {
+    GPULodNode node{};
+    node.childOffset = childOffset;
+    node.childCount = childCount;
+    node.isLeaf = 0;
+    node.maxError = 0.0f;
+
+    for (uint32_t childIndex = 0; childIndex < childCount; ++childIndex) {
+        node.maxError = std::max(node.maxError, children[childIndex].maxError);
+    }
+
+    const meshopt_Bounds merged = meshopt_computeSphereBounds(
+        &children[0].center[0],
+        childCount,
+        sizeof(GPULodNode),
+        &children[0].radius,
+        sizeof(GPULodNode));
+    node.center[0] = merged.center[0];
+    node.center[1] = merged.center[1];
+    node.center[2] = merged.center[2];
+    node.radius = merged.radius;
+    return node;
+}
+
+HierarchyBuildResult buildHierarchyFromLeaves(std::vector<GPULodNode> leaves) {
+    HierarchyBuildResult result{};
+    if (leaves.empty()) {
+        return result;
+    }
+
+    if (leaves.size() == 1) {
+        result.nodes.push_back(leaves[0]);
+        result.leafSourceByNode = {0u};
+        return result;
+    }
+
+    std::vector<std::vector<GPULodNode>> levels;
+    std::vector<std::vector<uint32_t>> sourceLevels;
+    levels.push_back(std::move(leaves));
+
+    sourceLevels.emplace_back(levels[0].size());
+    std::iota(sourceLevels[0].begin(), sourceLevels[0].end(), 0u);
+
+    std::vector<uint32_t> order;
+    while (levels.back().size() > 1) {
+        std::vector<GPULodNode>& currentLevel = levels.back();
+        std::vector<uint32_t>& currentSources = sourceLevels.back();
+
+        orderNodesSpatially(currentLevel.data(),
+                            static_cast<uint32_t>(currentLevel.size()),
+                            order);
+
+        std::vector<GPULodNode> orderedNodes(currentLevel.size());
+        std::vector<uint32_t> orderedSources(currentSources.size(), kInvalidIndex);
+        for (uint32_t nodeIndex = 0; nodeIndex < order.size(); ++nodeIndex) {
+            orderedNodes[nodeIndex] = currentLevel[order[nodeIndex]];
+            orderedSources[nodeIndex] = currentSources[order[nodeIndex]];
+        }
+        currentLevel = std::move(orderedNodes);
+        currentSources = std::move(orderedSources);
+
+        const uint32_t childNodeCount = static_cast<uint32_t>(currentLevel.size());
+        const uint32_t parentCount =
+            (childNodeCount + static_cast<uint32_t>(kHierarchyNodeWidth) - 1) /
+            static_cast<uint32_t>(kHierarchyNodeWidth);
+        std::vector<GPULodNode> parents(parentCount);
+        for (uint32_t parentIndex = 0; parentIndex < parentCount; ++parentIndex) {
+            const uint32_t childStart =
+                parentIndex * static_cast<uint32_t>(kHierarchyNodeWidth);
+            const uint32_t childCount =
+                std::min(childStart + static_cast<uint32_t>(kHierarchyNodeWidth),
+                         childNodeCount) -
+                childStart;
+            parents[parentIndex] =
+                makeParentNode(currentLevel.data() + childStart, childCount, childStart);
+        }
+
+        levels.push_back(std::move(parents));
+        sourceLevels.emplace_back(parentCount, kInvalidIndex);
+    }
+
+    const size_t levelCount = levels.size();
+    std::vector<uint32_t> offsets(levelCount, 0);
+    uint32_t totalNodeCount = 0;
+    for (size_t levelReverse = levelCount; levelReverse-- > 0;) {
+        offsets[levelReverse] = totalNodeCount;
+        totalNodeCount += static_cast<uint32_t>(levels[levelReverse].size());
+    }
+
+    result.nodes.resize(totalNodeCount);
+    result.leafSourceByNode.assign(totalNodeCount, kInvalidIndex);
+    for (size_t levelReverse = levelCount; levelReverse-- > 0;) {
+        const uint32_t levelBase = offsets[levelReverse];
+        const uint32_t childBase = levelReverse > 0 ? offsets[levelReverse - 1] : 0u;
+        for (uint32_t nodeIndex = 0;
+             nodeIndex < static_cast<uint32_t>(levels[levelReverse].size());
+             ++nodeIndex) {
+            GPULodNode node = levels[levelReverse][nodeIndex];
+            if (node.isLeaf == 0 && levelReverse > 0) {
+                node.childOffset += childBase;
+            }
+            result.nodes[levelBase + nodeIndex] = node;
+
+            if (levelReverse == 0) {
+                result.leafSourceByNode[levelBase + nodeIndex] =
+                    sourceLevels[levelReverse][nodeIndex];
+            }
+        }
+    }
+
+    return result;
+}
+
+std::vector<GPULodNode> buildLodLevelLocalHierarchy(const ClusterLODData& data,
+                                                    const ClusterLODLevel& level) {
+    std::vector<GPULodNode> leaves;
+    leaves.reserve(level.groupCount);
+
+    for (uint32_t groupOffset = 0; groupOffset < level.groupCount; ++groupOffset) {
+        const uint32_t groupIndex = level.groupStart + groupOffset;
+        if (groupIndex >= data.groups.size()) {
+            return {};
+        }
+
+        const GPUClusterGroup& group = data.groups[groupIndex];
+        GPULodNode leaf{};
+        leaf.center[0] = group.center[0];
+        leaf.center[1] = group.center[1];
+        leaf.center[2] = group.center[2];
+        leaf.radius = group.radius;
+        leaf.maxError = group.parentError;
+        leaf.childOffset = groupIndex;
+        leaf.childCount = 1;
+        leaf.isLeaf = 1;
+        leaves.push_back(leaf);
+    }
+
+    return buildHierarchyFromLeaves(std::move(leaves)).nodes;
+}
+
 uint32_t appendBaseMeshlet(const MeshletData& meshletData,
                            uint32_t sourceMeshletIndex,
                            ClusterLODData& out) {
@@ -694,9 +860,170 @@ uint32_t appendLodSelectorChain(ClusterLODData& data) {
     return selectorStart;
 }
 
+uint32_t buildNyxStyleLodTopology(ClusterLODData& data) {
+    const uint32_t lodLevelCount = static_cast<uint32_t>(data.levels.size());
+    if (lodLevelCount == 0) {
+        return kInvalidIndex;
+    }
+
+    std::vector<std::vector<GPULodNode>> levelHierarchies(lodLevelCount);
+    std::vector<uint32_t> levelOrder(lodLevelCount);
+    std::iota(levelOrder.begin(), levelOrder.end(), 0u);
+    std::sort(levelOrder.begin(),
+              levelOrder.end(),
+              [&](uint32_t lhs, uint32_t rhs) {
+                  return data.levels[lhs].depth > data.levels[rhs].depth;
+              });
+
+    for (uint32_t levelIndex = 0; levelIndex < lodLevelCount; ++levelIndex) {
+        const ClusterLODLevel& level = data.levels[levelIndex];
+        if (level.groupCount == 0) {
+            data.levels[levelIndex].rootNode = kInvalidIndex;
+            continue;
+        }
+
+        levelHierarchies[levelIndex] = buildLodLevelLocalHierarchy(data, level);
+        if (levelHierarchies[levelIndex].empty()) {
+            return kInvalidIndex;
+        }
+    }
+
+    std::vector<GPULodNode> topLeaves;
+    std::vector<uint32_t> topLeafLevelIndices;
+    topLeaves.reserve(lodLevelCount);
+    topLeafLevelIndices.reserve(lodLevelCount);
+    for (uint32_t levelIndex : levelOrder) {
+        if (levelHierarchies[levelIndex].empty()) {
+            continue;
+        }
+
+        GPULodNode topLeaf = levelHierarchies[levelIndex][0];
+        topLeaf.childOffset = 0;
+        topLeaf.childCount = 0;
+        topLeaf.isLeaf = 0;
+        topLeaf.representativeGroupStart = 0;
+        topLeaf.representativeGroupCount = 0;
+        topLeaf.reserved0 = 0;
+        topLeaf.reserved1 = 0;
+        topLeaves.push_back(topLeaf);
+        topLeafLevelIndices.push_back(levelIndex);
+    }
+
+    HierarchyBuildResult topHierarchy = buildHierarchyFromLeaves(std::move(topLeaves));
+    if (topHierarchy.nodes.empty()) {
+        return kInvalidIndex;
+    }
+
+    std::vector<GPULodNode> finalNodes = std::move(topHierarchy.nodes);
+    std::vector<NodeRange> levelRootChildRanges(lodLevelCount);
+    std::vector<uint8_t> levelRootIsLeaf(lodLevelCount, 0);
+    std::vector<uint32_t> levelRootNodeIndices(lodLevelCount, kInvalidIndex);
+
+    for (uint32_t levelIndex : levelOrder) {
+        const std::vector<GPULodNode>& hierarchy = levelHierarchies[levelIndex];
+        if (hierarchy.empty()) {
+            continue;
+        }
+
+        const GPULodNode& levelRoot = hierarchy[0];
+        if (levelRoot.isLeaf != 0) {
+            if (levelRoot.childOffset + levelRoot.childCount > data.groups.size()) {
+                return kInvalidIndex;
+            }
+            levelRootIsLeaf[levelIndex] = 1;
+            levelRootChildRanges[levelIndex].offset = levelRoot.childOffset;
+            levelRootChildRanges[levelIndex].count = levelRoot.childCount;
+            continue;
+        }
+
+        if (hierarchy.size() <= 1) {
+            return kInvalidIndex;
+        }
+
+        if (levelRoot.childOffset == 0 ||
+            levelRoot.childOffset + levelRoot.childCount > hierarchy.size()) {
+            return kInvalidIndex;
+        }
+
+        const uint32_t appendedStart = static_cast<uint32_t>(finalNodes.size());
+        levelRootChildRanges[levelIndex].offset = appendedStart + levelRoot.childOffset - 1u;
+        levelRootChildRanges[levelIndex].count = levelRoot.childCount;
+
+        finalNodes.reserve(finalNodes.size() + hierarchy.size() - 1u);
+        for (uint32_t nodeIndex = 1; nodeIndex < static_cast<uint32_t>(hierarchy.size()); ++nodeIndex) {
+            GPULodNode node = hierarchy[nodeIndex];
+            if (node.isLeaf == 0) {
+                if (node.childOffset == 0 ||
+                    node.childOffset + node.childCount > hierarchy.size()) {
+                    return kInvalidIndex;
+                }
+                node.childOffset = appendedStart + node.childOffset - 1u;
+            }
+            finalNodes.push_back(node);
+        }
+    }
+
+    for (uint32_t nodeIndex = 0;
+         nodeIndex < static_cast<uint32_t>(topHierarchy.leafSourceByNode.size());
+         ++nodeIndex) {
+        const uint32_t sourceIndex = topHierarchy.leafSourceByNode[nodeIndex];
+        if (sourceIndex == kInvalidIndex) {
+            continue;
+        }
+        if (sourceIndex >= static_cast<uint32_t>(topLeafLevelIndices.size())) {
+            return kInvalidIndex;
+        }
+
+        const uint32_t levelIndex = topLeafLevelIndices[sourceIndex];
+        const NodeRange& range = levelRootChildRanges[levelIndex];
+        if (range.count == 0) {
+            return kInvalidIndex;
+        }
+        if (levelRootIsLeaf[levelIndex] != 0) {
+            if (range.offset + range.count > data.groups.size()) {
+                return kInvalidIndex;
+            }
+        } else if (range.offset + range.count > finalNodes.size()) {
+            return kInvalidIndex;
+        }
+
+        GPULodNode& node = finalNodes[nodeIndex];
+        node.childOffset = range.offset;
+        node.childCount = range.count;
+        node.isLeaf = levelRootIsLeaf[levelIndex] != 0 ? 1u : 0u;
+        node.representativeGroupStart = 0;
+        node.representativeGroupCount = 0;
+        data.levels[levelIndex].rootNode = nodeIndex;
+        levelRootNodeIndices[levelIndex] = nodeIndex;
+    }
+
+    data.nodes = std::move(finalNodes);
+    data.nodeRepresentativeGroupIndices.clear();
+    std::vector<uint8_t> visited(data.nodes.size(), 0);
+    for (uint32_t levelIndex = 0; levelIndex < lodLevelCount; ++levelIndex) {
+        const NodeRange& range = levelRootChildRanges[levelIndex];
+        if (levelRootIsLeaf[levelIndex] != 0) {
+            if (levelRootNodeIndices[levelIndex] != kInvalidIndex) {
+                assignNodeRepresentativeRange(data, levelRootNodeIndices[levelIndex], visited);
+            }
+            continue;
+        }
+
+        for (uint32_t child = 0; child < range.count; ++child) {
+            assignNodeRepresentativeRange(data, range.offset + child, visited);
+        }
+    }
+
+    return 0;
+}
+
 uint32_t buildLocalHierarchy(ClusterLODData& data) {
     if (data.levels.empty()) {
         return kInvalidIndex;
+    }
+
+    if constexpr (kClusterLodTopologyMode == ClusterLodTopologyMode::NyxStyle) {
+        return buildNyxStyleLodTopology(data);
     }
 
     const uint32_t lodLevelCount = static_cast<uint32_t>(data.levels.size());
@@ -1651,6 +1978,7 @@ bool saveClusterLODToCache(const LoadedMesh& mesh,
     header.maxTriangles = static_cast<uint32_t>(kLodMaxTriangles);
     header.partitionSize = static_cast<uint32_t>(kPartitionSize);
     header.hierarchyNodeWidth = static_cast<uint32_t>(kHierarchyNodeWidth);
+    header.topologyMode = kClusterLodTopologyModeValue;
     header.simplifyRatio = kSimplifyRatio;
     header.simplifyThreshold = kSimplifyThreshold;
     header.clusterSplit = kClusterSplit;
@@ -1736,6 +2064,7 @@ bool loadClusterLODFromCache(const RhiDevice& device,
         header.maxTriangles != kLodMaxTriangles ||
         header.partitionSize != kPartitionSize ||
         header.hierarchyNodeWidth != kHierarchyNodeWidth ||
+        header.topologyMode != kClusterLodTopologyModeValue ||
         std::fabs(header.simplifyRatio - kSimplifyRatio) > 1e-6f ||
         std::fabs(header.simplifyThreshold - kSimplifyThreshold) > 1e-6f ||
         std::fabs(header.clusterSplit - kClusterSplit) > 1e-6f ||

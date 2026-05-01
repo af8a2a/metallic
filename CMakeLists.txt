@@ -3,6 +3,10 @@ project(Metallic)
 
 set(CMAKE_CXX_STANDARD 20)
 
+option(METALLIC_CLUSTER_LOD_TOPOLOGY_NYX
+    "Build ClusterLOD topology with the experimental Nyx-style top-level BVH instead of the selector chain"
+    OFF)
+
 include(cmake/SetupSlang.cmake)
 include(cmake/SetupStreamline.cmake)
 include(cmake/SetupNsight.cmake)
