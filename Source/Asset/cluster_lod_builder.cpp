@@ -495,8 +495,15 @@ HierarchyBuildResult buildHierarchyFromLeaves(std::vector<GPULodNode> leaves) {
     }
 
     if (leaves.size() == 1) {
-        result.nodes.push_back(leaves[0]);
-        result.leafSourceByNode = {0u};
+        if (leaves[0].isLeaf != 0) {
+            result.nodes.reserve(2);
+            result.nodes.push_back(makeParentNode(leaves.data(), 1, 1));
+            result.nodes.push_back(leaves[0]);
+            result.leafSourceByNode = {kInvalidIndex, 0u};
+        } else {
+            result.nodes.push_back(leaves[0]);
+            result.leafSourceByNode = {0u};
+        }
         return result;
     }
 
@@ -914,11 +921,13 @@ uint32_t buildNyxStyleLodTopology(ClusterLODData& data) {
         return kInvalidIndex;
     }
 
+    // Nyx-compatible layout: [top BVH] [LOD max skip root] ... [LOD 0 skip root].
     std::vector<GPULodNode> finalNodes = std::move(topHierarchy.nodes);
+    const uint32_t topNodeCount = static_cast<uint32_t>(finalNodes.size());
+    std::vector<NodeRange> levelPayloadRanges(lodLevelCount);
     std::vector<NodeRange> levelRootChildRanges(lodLevelCount);
-    std::vector<uint8_t> levelRootIsLeaf(lodLevelCount, 0);
-    std::vector<uint32_t> levelRootNodeIndices(lodLevelCount, kInvalidIndex);
 
+    uint32_t nodeCursor = topNodeCount;
     for (uint32_t levelIndex : levelOrder) {
         const std::vector<GPULodNode>& hierarchy = levelHierarchies[levelIndex];
         if (hierarchy.empty()) {
@@ -927,13 +936,7 @@ uint32_t buildNyxStyleLodTopology(ClusterLODData& data) {
 
         const GPULodNode& levelRoot = hierarchy[0];
         if (levelRoot.isLeaf != 0) {
-            if (levelRoot.childOffset + levelRoot.childCount > data.groups.size()) {
-                return kInvalidIndex;
-            }
-            levelRootIsLeaf[levelIndex] = 1;
-            levelRootChildRanges[levelIndex].offset = levelRoot.childOffset;
-            levelRootChildRanges[levelIndex].count = levelRoot.childCount;
-            continue;
+            return kInvalidIndex;
         }
 
         if (hierarchy.size() <= 1) {
@@ -945,11 +948,23 @@ uint32_t buildNyxStyleLodTopology(ClusterLODData& data) {
             return kInvalidIndex;
         }
 
-        const uint32_t appendedStart = static_cast<uint32_t>(finalNodes.size());
-        levelRootChildRanges[levelIndex].offset = appendedStart + levelRoot.childOffset - 1u;
+        levelPayloadRanges[levelIndex].offset = nodeCursor;
+        levelPayloadRanges[levelIndex].count =
+            static_cast<uint32_t>(hierarchy.size() - 1u);
+        levelRootChildRanges[levelIndex].offset =
+            levelPayloadRanges[levelIndex].offset + levelRoot.childOffset - 1u;
         levelRootChildRanges[levelIndex].count = levelRoot.childCount;
+        nodeCursor += levelPayloadRanges[levelIndex].count;
+    }
 
-        finalNodes.reserve(finalNodes.size() + hierarchy.size() - 1u);
+    finalNodes.resize(nodeCursor);
+    for (uint32_t levelIndex : levelOrder) {
+        const std::vector<GPULodNode>& hierarchy = levelHierarchies[levelIndex];
+        const NodeRange& payloadRange = levelPayloadRanges[levelIndex];
+        if (payloadRange.count == 0) {
+            continue;
+        }
+
         for (uint32_t nodeIndex = 1; nodeIndex < static_cast<uint32_t>(hierarchy.size()); ++nodeIndex) {
             GPULodNode node = hierarchy[nodeIndex];
             if (node.isLeaf == 0) {
@@ -957,9 +972,9 @@ uint32_t buildNyxStyleLodTopology(ClusterLODData& data) {
                     node.childOffset + node.childCount > hierarchy.size()) {
                     return kInvalidIndex;
                 }
-                node.childOffset = appendedStart + node.childOffset - 1u;
+                node.childOffset = payloadRange.offset + node.childOffset - 1u;
             }
-            finalNodes.push_back(node);
+            finalNodes[payloadRange.offset + nodeIndex - 1u] = node;
         }
     }
 
@@ -979,40 +994,21 @@ uint32_t buildNyxStyleLodTopology(ClusterLODData& data) {
         if (range.count == 0) {
             return kInvalidIndex;
         }
-        if (levelRootIsLeaf[levelIndex] != 0) {
-            if (range.offset + range.count > data.groups.size()) {
-                return kInvalidIndex;
-            }
-        } else if (range.offset + range.count > finalNodes.size()) {
+        if (range.offset + range.count > finalNodes.size()) {
             return kInvalidIndex;
         }
 
         GPULodNode& node = finalNodes[nodeIndex];
         node.childOffset = range.offset;
         node.childCount = range.count;
-        node.isLeaf = levelRootIsLeaf[levelIndex] != 0 ? 1u : 0u;
+        node.isLeaf = 0;
         node.representativeGroupStart = 0;
         node.representativeGroupCount = 0;
         data.levels[levelIndex].rootNode = nodeIndex;
-        levelRootNodeIndices[levelIndex] = nodeIndex;
     }
 
     data.nodes = std::move(finalNodes);
-    data.nodeRepresentativeGroupIndices.clear();
-    std::vector<uint8_t> visited(data.nodes.size(), 0);
-    for (uint32_t levelIndex = 0; levelIndex < lodLevelCount; ++levelIndex) {
-        const NodeRange& range = levelRootChildRanges[levelIndex];
-        if (levelRootIsLeaf[levelIndex] != 0) {
-            if (levelRootNodeIndices[levelIndex] != kInvalidIndex) {
-                assignNodeRepresentativeRange(data, levelRootNodeIndices[levelIndex], visited);
-            }
-            continue;
-        }
-
-        for (uint32_t child = 0; child < range.count; ++child) {
-            assignNodeRepresentativeRange(data, range.offset + child, visited);
-        }
-    }
+    assignSpatialNodeRepresentativeRanges(data);
 
     return 0;
 }
@@ -1187,6 +1183,18 @@ uint32_t buildLocalHierarchy(ClusterLODData& data) {
 
     assignSpatialNodeRepresentativeRanges(data);
     return appendLodSelectorChain(data);
+}
+
+uint32_t selectPrimitiveGroupTraversalRoot(const ClusterLODData& data, uint32_t builtRootNode) {
+    if (builtRootNode == kInvalidIndex) {
+        return kInvalidIndex;
+    }
+
+    if constexpr (kClusterLodTopologyMode == ClusterLodTopologyMode::NyxStyle) {
+        return data.nodes.empty() ? kInvalidIndex : 0u;
+    }
+
+    return builtRootNode;
 }
 
 bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
@@ -1395,7 +1403,11 @@ bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
     if (fullRootNode == kInvalidIndex) {
         return false;
     }
-    out.primitiveGroupLodRoots.assign(1u, fullRootNode);
+    const uint32_t traversalRootNode = selectPrimitiveGroupTraversalRoot(out, fullRootNode);
+    if (traversalRootNode == kInvalidIndex) {
+        return false;
+    }
+    out.primitiveGroupLodRoots.assign(1u, traversalRootNode);
     out.totalMeshletCount = static_cast<uint32_t>(out.allMeshlets.size());
     out.totalGroupCount = static_cast<uint32_t>(out.groups.size());
     out.totalNodeCount = static_cast<uint32_t>(out.nodes.size());

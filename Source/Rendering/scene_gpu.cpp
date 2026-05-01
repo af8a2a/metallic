@@ -297,6 +297,8 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
         if (groupCount == 1)
             gn.materialIndex = m_mesh.primitiveGroups[cFirst].materialIndex;
 
+        // ClusterLOD owns the traversal root contract: selector-chain mode stores
+        // the selector root, Nyx-style mode stores the top-level BVH root.
         if (groupCount == 1 && cFirst < m_clusterLod.primitiveGroupLodRoots.size()) {
             gn.lodRootNode = m_clusterLod.primitiveGroupLodRoots[cFirst];
         }
