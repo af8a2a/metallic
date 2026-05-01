@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <imgui.h>
 #include <limits>
+#include <map>
 #include <meshoptimizer.h>
 #include <numeric>
 #include <spdlog/spdlog.h>
@@ -34,7 +35,7 @@ static constexpr float kSimplifyThreshold = 0.85f;
 static constexpr float kClusterSplit = 2.0f;
 
 constexpr char kClusterLodCacheMagic[8] = {'M', 'L', 'C', 'L', 'O', 'D', '0', '1'};
-constexpr uint32_t kClusterLodCacheVersion = 4;
+constexpr uint32_t kClusterLodCacheVersion = 6;
 constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 constexpr uint32_t kInvalidIndex = UINT32_MAX;
@@ -1283,9 +1284,15 @@ bool validateClusterLodPayload(const ClusterLODData& data,
             return false;
         }
 
-        if (node.representativeGroupCount == 0) {
-            spdlog::error("ClusterLOD node has no representative groups");
+        // Leaf nodes must have representative groups (they are the LOD cut point).
+        // Interior nodes may have zero representative groups (e.g. the coarsest selector
+        // node in the Nyx-style chain, which is a transparent pass-through).
+        if (node.isLeaf != 0u && node.representativeGroupCount == 0) {
+            spdlog::error("ClusterLOD leaf node has no representative groups");
             return false;
+        }
+        if (node.representativeGroupCount == 0) {
+            continue;
         }
         if (static_cast<size_t>(node.representativeGroupStart) + node.representativeGroupCount >
             data.nodeRepresentativeGroupIndices.size()) {
@@ -1331,20 +1338,21 @@ bool validateClusterLodPayload(const ClusterLODData& data,
         }
     }
 
-    // LOD ordering: within each primitive group, depths must be strictly increasing.
+    // LOD ordering: within each primitive group, depths must be strictly increasing
+    // starting from 0 with no gaps.
     {
-        std::vector<std::pair<uint32_t, uint32_t>> groupDepths; // (primitiveGroupIndex, depth)
-        groupDepths.reserve(data.levels.size());
+        std::map<uint32_t, std::vector<uint32_t>> depthsByGroup;
         for (const ClusterLODLevel& level : data.levels) {
-            groupDepths.emplace_back(level.primitiveGroupIndex, level.depth);
+            depthsByGroup[level.primitiveGroupIndex].push_back(level.depth);
         }
-        std::sort(groupDepths.begin(), groupDepths.end());
-        for (size_t i = 1; i < groupDepths.size(); ++i) {
-            if (groupDepths[i].first == groupDepths[i - 1].first &&
-                groupDepths[i].second == groupDepths[i - 1].second) {
-                spdlog::error("ClusterLOD: duplicate depth {} in primitive group {}",
-                              groupDepths[i].second, groupDepths[i].first);
-                return false;
+        for (auto& [pgIndex, depths] : depthsByGroup) {
+            std::sort(depths.begin(), depths.end());
+            for (size_t i = 0; i < depths.size(); ++i) {
+                if (depths[i] != static_cast<uint32_t>(i)) {
+                    spdlog::error("ClusterLOD: primitive group {} has non-contiguous depths (expected {}, got {})",
+                                  pgIndex, i, depths[i]);
+                    return false;
+                }
             }
         }
     }
@@ -1359,7 +1367,34 @@ bool validateClusterLodPayload(const ClusterLODData& data,
         }
     }
 
-    // Refine bounds conservative: each cluster's sphere must be contained in its refine group's sphere.
+    // Refine error ordering: for each cluster's refine group, the finer group's error
+    // must be strictly less than its parentError (the coarser level's error).
+    // Terminal groups (parentError == FLT_MAX) are exempt.
+    for (size_t mi = 0; mi < data.clusterRefineInfos.size(); ++mi) {
+        const GPUClusterRefineInfo& refineInfo = data.clusterRefineInfos[mi];
+        if (refineInfo.refineGroupCount == 0u || refineInfo.refineGroupStart == kInvalidIndex) {
+            continue;
+        }
+        for (uint32_t ri = 0; ri < refineInfo.refineGroupCount; ++ri) {
+            const uint32_t groupIndex = refineInfo.refineGroupStart + ri;
+            if (groupIndex >= data.groups.size()) {
+                continue;
+            }
+            const GPUClusterGroup& refineGroup = data.groups[groupIndex];
+            if (refineGroup.parentError != FLT_MAX &&
+                refineGroup.error > refineGroup.parentError) {
+                spdlog::error("ClusterLOD: refine group {} error {} > parentError {} "
+                              "(finer level must not exceed coarser level error)",
+                              groupIndex, refineGroup.error, refineGroup.parentError);
+                return false;
+            }
+        }
+    }
+
+    // Refine bounds conservative: diagnostic warn only.
+    // The group sphere (from cluster center/radius) and meshlet sphere (from vertex positions)
+    // are computed independently, so containment is not guaranteed. Large violations
+    // indicate a problem with the group sphere computation.
     for (size_t mi = 0; mi < data.clusterRefineInfos.size(); ++mi) {
         const GPUClusterRefineInfo& refineInfo = data.clusterRefineInfos[mi];
         if (refineInfo.refineGroupCount == 0u || refineInfo.refineGroupStart == kInvalidIndex) {
@@ -1383,10 +1418,13 @@ bool validateClusterLodPayload(const ClusterLODData& data,
             const float dy = cy - group.center[1];
             const float dz = cz - group.center[2];
             const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-            const float epsilon = std::max(1e-3f * group.radius, 1e-4f);
+            // Warn only on large violations (> 10% of group radius).
+            const float epsilon = 0.1f * group.radius + 1e-4f;
             if (dist + cr > group.radius + epsilon) {
-                spdlog::warn("ClusterLOD: cluster {} bounds (r={}) not contained in refine group {} (r={}, dist={})",
-                             mi, cr, groupIndex, group.radius, dist);
+                spdlog::warn("ClusterLOD: cluster {} (r={:.4f}) extends outside refine group {} "
+                             "(r={:.4f}, dist={:.4f}, excess={:.4f})",
+                             mi, cr, groupIndex, group.radius, dist,
+                             dist + cr - group.radius);
             }
         }
     }
