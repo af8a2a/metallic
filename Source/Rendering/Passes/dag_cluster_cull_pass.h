@@ -9,6 +9,7 @@
 #include "render_pass.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <spdlog/spdlog.h>
@@ -238,6 +239,8 @@ public:
         if (m_phase == 0u && m_runCpuMirror) {
             m_runCpuMirror = false;
             DagCpuMirrorParams mp{};
+            float4x4 vp = m_frameContext->unjitteredProj * m_frameContext->view;
+            std::memcpy(mp.viewProj, &vp, sizeof(mp.viewProj));
             mp.cameraWorldPos[0] = m_frameContext->cameraWorldPos.x;
             mp.cameraWorldPos[1] = m_frameContext->cameraWorldPos.y;
             mp.cameraWorldPos[2] = m_frameContext->cameraWorldPos.z;
@@ -247,6 +250,11 @@ public:
             mp.maxIterations     = m_maxIterations;
             mp.maxNodeTasks      = state->maxNodeTasks;
             mp.maxClusters       = state->maxClusters;
+            mp.useInstanceVisibility =
+                m_enableInstanceFilter &&
+                state->instanceVisibilityValid &&
+                state->instanceVisibilityFrameIndex == m_frameContext->frameIndex &&
+                state->instanceVisibilityBuffer;
             const ClusterOcclusionState::DagCullStats gpuStats = state->readDagCullStats();
             m_cpuMirrorStats = runDagCpuMirror(
                 m_ctx.gpuScene, m_ctx.clusterLodData, mp,
@@ -437,6 +445,7 @@ public:
                                                    "  %s: %+d", label, d);
                             }
                         };
+                        showDiff("seededInstances",  ms.diffSeededInstances);
                         showDiff("nodeProcessed",    ms.diffNodeProcessed);
                         showDiff("lodCulled",         ms.diffLodCulled);
                         showDiff("refineAccepted",    ms.diffRefineAccepted);
@@ -472,12 +481,18 @@ private:
         uint32_t hzbMipCount = 0;
         uint32_t packedScreenDims = 0; // screenWidth<<16 | screenHeight
         uint32_t maxIterations = 0;
+        float lodErrorThreshold = 0.0f;
         float cameraWorldPos[3] = {};
         float cameraFovY = 0.0f;
-        float lodErrorThreshold = 0.0f;
     };
-    static_assert(sizeof(DagCullUniforms) <= 128,
-                  "DagCullUniforms must fit Vulkan push constants");
+    static_assert(sizeof(DagCullUniforms) == 128,
+                  "DagCullUniforms layout must match DagCullParams");
+    static_assert(offsetof(DagCullUniforms, lodErrorThreshold) == 108,
+                  "DagCullUniforms lodErrorThreshold offset must match shader packing");
+    static_assert(offsetof(DagCullUniforms, cameraWorldPos) == 112,
+                  "DagCullUniforms cameraWorldPos offset must match shader packing");
+    static_assert(offsetof(DagCullUniforms, cameraFovY) == 124,
+                  "DagCullUniforms cameraFovY offset must match shader packing");
 
     bool enableFrustumCull() const {
         if (m_enableFrustumOverride >= 0) {
@@ -536,12 +551,12 @@ private:
         const uint32_t scrH = std::min(static_cast<uint32_t>(std::max(m_height, 1)), 0xFFFFu);
         uniforms.packedScreenDims = (scrW << 16u) | scrH;
         uniforms.maxIterations = m_maxIterations;
+        uniforms.lodErrorThreshold = m_lodErrorThreshold;
 
         uniforms.cameraWorldPos[0] = m_frameContext->cameraWorldPos.x;
         uniforms.cameraWorldPos[1] = m_frameContext->cameraWorldPos.y;
         uniforms.cameraWorldPos[2] = m_frameContext->cameraWorldPos.z;
         uniforms.cameraFovY = m_frameContext->cameraFovY;
-        uniforms.lodErrorThreshold = m_lodErrorThreshold;
         return uniforms;
     }
 

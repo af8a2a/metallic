@@ -8,6 +8,7 @@
 
 // Parameters that mirror the GPU push constants for a single DAG cull pass.
 struct DagCpuMirrorParams {
+    float    viewProj[16];
     float    cameraWorldPos[3];
     float    cameraFovY;
     float    lodErrorThreshold;
@@ -15,6 +16,7 @@ struct DagCpuMirrorParams {
     uint32_t maxIterations;
     uint32_t maxNodeTasks;
     uint32_t maxClusters;
+    bool     useInstanceVisibility = false;
 };
 
 struct DagCpuMirrorStats {
@@ -45,6 +47,7 @@ struct DagCpuMirrorStats {
 
     // Comparison against GPU counters (populated when gpuStats != nullptr).
     bool     gpuCompareAvailable  = false;
+    int32_t  diffSeededInstances   = 0;
     int32_t  diffNodeProcessed    = 0;
     int32_t  diffLodCulled        = 0;
     int32_t  diffRefineAccepted   = 0;

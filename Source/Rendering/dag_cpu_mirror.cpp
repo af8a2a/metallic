@@ -59,6 +59,70 @@ bool cpuTestForLod(const float4x4& worldMatrix,
     return cameraToSphereSurface * screenErrorConstant >= allowedErrorWS;
 }
 
+float dot4(float4 a, float4 b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+bool cpuPlaneIntersectsSphere(const float4x4& localToClip,
+                              float3 center,
+                              float radius,
+                              float4 clipPlane) {
+    const float4 localPlane = mul(transpose(localToClip), clipPlane);
+    const float centerDistance = dot4(localPlane, float4(center, 1.f));
+    const float supportRadius = radius * length(float3(localPlane.x, localPlane.y, localPlane.z));
+    const float slack = std::max(1.0e-5f,
+                                 (std::abs(centerDistance) + supportRadius) * 1.0e-5f);
+    return centerDistance + supportRadius >= -slack;
+}
+
+bool cpuInstanceSphereIntersectsFrustum(const float4x4& viewProj,
+                                        const GPUSceneInstance& inst,
+                                        const GPUSceneGeometry& geom) {
+    const float radius = geom.boundsCenterRadius[3];
+    if (radius <= 0.f) {
+        return true;
+    }
+
+    const float4x4 worldMatrix = loadMatrix(inst.worldMatrix);
+    const float4x4 localToClip = viewProj * worldMatrix;
+    const float3 center(geom.boundsCenterRadius[0],
+                        geom.boundsCenterRadius[1],
+                        geom.boundsCenterRadius[2]);
+
+    return cpuPlaneIntersectsSphere(localToClip, center, radius, float4( 1.f,  0.f,  0.f, 1.f)) &&
+           cpuPlaneIntersectsSphere(localToClip, center, radius, float4(-1.f,  0.f,  0.f, 1.f)) &&
+           cpuPlaneIntersectsSphere(localToClip, center, radius, float4( 0.f,  1.f,  0.f, 1.f)) &&
+           cpuPlaneIntersectsSphere(localToClip, center, radius, float4( 0.f, -1.f,  0.f, 1.f)) &&
+           cpuPlaneIntersectsSphere(localToClip, center, radius, float4( 0.f,  0.f,  1.f, 0.f)) &&
+           cpuPlaneIntersectsSphere(localToClip, center, radius, float4( 0.f,  0.f, -1.f, 1.f));
+}
+
+bool cpuInstanceCanRender(uint32_t instanceID,
+                          const GpuSceneTables& scene,
+                          const DagCpuMirrorParams& params,
+                          const float4x4& viewProj) {
+    if (instanceID >= scene.instances.size()) {
+        return false;
+    }
+
+    const GPUSceneInstance& inst = scene.instances[instanceID];
+    if ((inst.visibilityFlags & 1u) == 0u) {
+        return false;
+    }
+
+    if (!params.useInstanceVisibility) {
+        return true;
+    }
+
+    if (inst.geometryIndex >= scene.geometries.size()) {
+        return false;
+    }
+
+    return cpuInstanceSphereIntersectsFrustum(viewProj,
+                                             inst,
+                                             scene.geometries[inst.geometryIndex]);
+}
+
 // Emit one cluster, tracking depth distribution and overflow.
 void emitCluster(uint32_t instanceID, uint32_t clusterID, uint32_t depth,
                  DagCpuMirrorStats& stats,
@@ -172,11 +236,13 @@ DagCpuMirrorStats runDagCpuMirror(
     std::vector<EmittedCluster> emitted;
     emitted.reserve(emitCap);
 
+    const float4x4 viewProj = loadMatrix(params.viewProj);
+
     // --- Seed instances into queue 0 ---
     const uint32_t instanceCount = static_cast<uint32_t>(scene.instances.size());
     for (uint32_t iid = 0; iid < instanceCount; ++iid) {
         const GPUSceneInstance& inst = scene.instances[iid];
-        if ((inst.visibilityFlags & 1u) == 0u) {
+        if (!cpuInstanceCanRender(iid, scene, params, viewProj)) {
             continue;
         }
         if (inst.geometryIndex >= scene.geometries.size()) {
@@ -213,13 +279,10 @@ DagCpuMirrorStats runDagCpuMirror(
 
         for (uint32_t ti = 0; ti < inputCount; ++ti) {
             const NodeTask task = queues[inQ][ti];
-            if (task.instanceID >= scene.instances.size()) {
+            if (!cpuInstanceCanRender(task.instanceID, scene, params, viewProj)) {
                 continue;
             }
             const GPUSceneInstance& inst = scene.instances[task.instanceID];
-            if ((inst.visibilityFlags & 1u) == 0u) {
-                continue;
-            }
             if (task.nodeID >= lodData.nodes.size()) {
                 continue;
             }
@@ -298,6 +361,7 @@ DagCpuMirrorStats runDagCpuMirror(
     // --- Compare with GPU counters ---
     if (gpuStats && gpuStats->readable) {
         stats.gpuCompareAvailable  = true;
+        stats.diffSeededInstances   = int32_t(stats.seededInstances)  - int32_t(gpuStats->seededInstances);
         stats.diffNodeProcessed    = int32_t(stats.nodeProcessed)   - int32_t(gpuStats->nodeProcessed);
         stats.diffLodCulled        = int32_t(stats.lodCulled)        - int32_t(gpuStats->lodCulled);
         stats.diffRefineAccepted   = int32_t(stats.refineAccepted)   - int32_t(gpuStats->refineAccepted);
@@ -309,6 +373,7 @@ DagCpuMirrorStats runDagCpuMirror(
         stats.diffClustersEmitted = int32_t(stats.clustersEmitted) - int32_t(gpuEmitted);
 
         stats.lodCountersMatch =
+            stats.diffSeededInstances   == 0 &&
             stats.diffNodeProcessed    == 0 &&
             stats.diffLodCulled        == 0 &&
             stats.diffRefineAccepted   == 0 &&

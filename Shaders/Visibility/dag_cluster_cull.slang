@@ -85,9 +85,9 @@ struct DagCullParams {
     uint hzbMipCount;
     uint packedScreenDims; // screenWidth<<16 | screenHeight
     uint maxIterations;
+    float lodErrorThreshold;
     float3 cameraWorldPos;
     float cameraFovY;
-    float lodErrorThreshold;
 };
 
 [[vk::push_constant]] ConstantBuffer<DagCullParams> params;
