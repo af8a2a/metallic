@@ -71,6 +71,7 @@ struct ClusterLODData {
     std::vector<uint32_t>         nodeRepresentativeGroupIndices;
     std::vector<ClusterLODLevel>  levels;
     std::vector<uint32_t>         primitiveGroupLodRoots;
+    std::vector<uint32_t>         primitiveGroupLod0Roots;
 
     // GPU buffers (filled after upload)
     RhiBufferHandle meshletBuffer;

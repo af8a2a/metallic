@@ -128,11 +128,11 @@ void emitCluster(uint32_t instanceID, uint32_t clusterID, uint32_t depth,
                  DagCpuMirrorStats& stats,
                  std::vector<EmittedCluster>& emitted,
                  uint32_t maxClusters) {
-    if (stats.clustersEmitted >= maxClusters) {
+    ++stats.clustersEmitted;
+    if (emitted.size() >= maxClusters) {
         ++stats.clusterOverflow;
         return;
     }
-    ++stats.clustersEmitted;
     EmittedCluster ec;
     ec.instanceID = instanceID;
     ec.clusterID  = clusterID;
@@ -147,10 +147,33 @@ void emitCluster(uint32_t instanceID, uint32_t clusterID, uint32_t depth,
     ++stats.clustersByDepth[bucket];
 }
 
-// Emit all clusters in a group, applying refine suppression.
+bool clusterExpectedForGeometry(uint32_t clusterID,
+                                const GPUSceneGeometry& geom,
+                                const ClusterLODData& lodData,
+                                const DagCpuMirrorParams& params) {
+    if (params.lodErrorThreshold <= 0.f) {
+        return clusterID >= geom.packedClusterStart &&
+               clusterID < geom.packedClusterStart + geom.packedClusterCount;
+    }
+
+    const uint32_t primitiveGroupEnd = geom.primitiveGroupStart + geom.primitiveGroupCount;
+    for (const ClusterLODLevel& level : lodData.levels) {
+        if (level.primitiveGroupIndex < geom.primitiveGroupStart ||
+            level.primitiveGroupIndex >= primitiveGroupEnd) {
+            continue;
+        }
+        if (clusterID >= level.meshletStart &&
+            clusterID < level.meshletStart + level.meshletCount) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Emit all clusters in a group. The v1 selector traversal chooses exactly one
+// LOD level before group emission, so refine links are only metadata here.
 void emitGroupClusters(uint32_t instanceID, uint32_t groupID, uint32_t depth,
                        const ClusterLODData& lodData,
-                       const GPUSceneInstance& inst,
                        const DagCpuMirrorParams& params,
                        DagCpuMirrorStats& stats,
                        std::vector<EmittedCluster>& emitted) {
@@ -158,7 +181,6 @@ void emitGroupClusters(uint32_t instanceID, uint32_t groupID, uint32_t depth,
         return;
     }
     const GPUClusterGroup& group = lodData.groups[groupID];
-    const float4x4 worldMatrix = loadMatrix(inst.worldMatrix);
 
     for (uint32_t i = 0; i < group.clusterCount; ++i) {
         const uint32_t idx = group.clusterStart + i;
@@ -166,34 +188,13 @@ void emitGroupClusters(uint32_t instanceID, uint32_t groupID, uint32_t depth,
             break;
         }
         const uint32_t clusterID = lodData.groupMeshletIndices[idx];
-
-        if (clusterID >= lodData.clusterRefineInfos.size()) {
-            emitCluster(instanceID, clusterID, depth, stats, emitted, params.maxClusters);
-            continue;
-        }
-
-        const GPUClusterRefineInfo& ri = lodData.clusterRefineInfos[clusterID];
-        if (ri.refineGroupCount == 0u || ri.refineGroupStart == kInvalidIndex) {
-            emitCluster(instanceID, clusterID, depth, stats, emitted, params.maxClusters);
-        } else if (ri.refineGroupStart >= lodData.groups.size()) {
-            emitCluster(instanceID, clusterID, depth, stats, emitted, params.maxClusters);
-        } else {
-            const GPUClusterGroup& rg = lodData.groups[ri.refineGroupStart];
-            float3 rgCenter(rg.center[0], rg.center[1], rg.center[2]);
-            if (cpuTestForLod(worldMatrix, rgCenter, rg.radius, rg.parentError, params)) {
-                ++stats.refineSuppressed;
-            } else {
-                ++stats.refineAccepted;
-                emitCluster(instanceID, clusterID, depth, stats, emitted, params.maxClusters);
-            }
-        }
+        emitCluster(instanceID, clusterID, depth, stats, emitted, params.maxClusters);
     }
 }
 
 // Emit all representative groups for a node (LOD cut path).
 void emitNodeRepGroups(uint32_t instanceID, const GPULodNode& node, uint32_t depth,
                        const ClusterLODData& lodData,
-                       const GPUSceneInstance& inst,
                        const DagCpuMirrorParams& params,
                        DagCpuMirrorStats& stats,
                        std::vector<EmittedCluster>& emitted) {
@@ -205,7 +206,7 @@ void emitNodeRepGroups(uint32_t instanceID, const GPULodNode& node, uint32_t dep
         emitGroupClusters(instanceID,
                           lodData.nodeRepresentativeGroupIndices[idx],
                           depth,
-                          lodData, inst, params, stats, emitted);
+                          lodData, params, stats, emitted);
     }
 }
 
@@ -249,7 +250,10 @@ DagCpuMirrorStats runDagCpuMirror(
             continue;
         }
         const GPUSceneGeometry& geom = scene.geometries[inst.geometryIndex];
-        if (geom.lodRootNode == kInvalidIndex || geom.lodRootNode >= lodData.nodes.size()) {
+        const uint32_t rootNode = params.lodErrorThreshold <= 0.f
+            ? geom.lod0RootNode
+            : geom.lodRootNode;
+        if (rootNode == kInvalidIndex || rootNode >= lodData.nodes.size()) {
             ++stats.invalidRoot;
             continue;
         }
@@ -259,7 +263,7 @@ DagCpuMirrorStats runDagCpuMirror(
         }
         NodeTask t;
         t.instanceID = iid;
-        t.nodeID     = geom.lodRootNode;
+        t.nodeID     = rootNode;
         t.depth      = 0u;
         queues[0].push_back(t);
         ++stats.seededInstances;
@@ -296,7 +300,7 @@ DagCpuMirrorStats runDagCpuMirror(
             if (node.representativeGroupCount != 0u &&
                 cpuTestForLod(worldMatrix, nodeCenter, node.radius, node.maxError, params)) {
                 emitNodeRepGroups(task.instanceID, node, task.depth,
-                                  lodData, inst, params, stats, emitted);
+                                  lodData, params, stats, emitted);
                 ++stats.lodCulled;
                 continue;
             }
@@ -306,7 +310,7 @@ DagCpuMirrorStats runDagCpuMirror(
                     emitGroupClusters(task.instanceID,
                                       node.childOffset + child,
                                       task.depth,
-                                      lodData, inst, params, stats, emitted);
+                                      lodData, params, stats, emitted);
                 }
                 continue;
             }
@@ -352,8 +356,7 @@ DagCpuMirrorStats runDagCpuMirror(
             continue;
         }
         const GPUSceneGeometry& geom = scene.geometries[inst.geometryIndex];
-        if (cid < geom.packedClusterStart ||
-            cid >= geom.packedClusterStart + geom.packedClusterCount) {
+        if (!clusterExpectedForGeometry(cid, geom, lodData, params)) {
             ++stats.unexpectedCount;
         }
     }
@@ -369,7 +372,8 @@ DagCpuMirrorStats runDagCpuMirror(
 
         const uint32_t gpuEmitted = gpuStats->phase0Visible +
                                     gpuStats->phase0Recheck +
-                                    gpuStats->frustumRejected;
+                                    gpuStats->frustumRejected +
+                                    gpuStats->clusterOverflow;
         stats.diffClustersEmitted = int32_t(stats.clustersEmitted) - int32_t(gpuEmitted);
 
         stats.lodCountersMatch =

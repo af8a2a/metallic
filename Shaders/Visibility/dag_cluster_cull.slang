@@ -20,12 +20,14 @@ struct GeometryData {
     uint indexCount;
     uint materialIndex;
     uint lodRootNode;
+    uint lod0RootNode;
     float boundsCenterX;
     float boundsCenterY;
     float boundsCenterZ;
     float boundsRadius;
     uint packedClusterStart;
     uint packedClusterCount;
+    uint reserved0;
 };
 
 struct MeshletBounds {
@@ -334,30 +336,9 @@ void processCluster(uint instanceID, uint clusterID) {
 
 void emitGroupClusters(uint instanceID, uint groupID) {
     GPUClusterGroup group = lodGroups[groupID];
-    InstanceData inst = instances[instanceID];
     for (uint i = 0u; i < group.clusterCount; ++i) {
         uint clusterID = groupMeshletIndices[group.clusterStart + i];
-        GPUClusterRefineInfo refineInfo = clusterRefineInfos[clusterID];
-        if (refineInfo.refineGroupCount == 0u || refineInfo.refineGroupStart == kInvalidIndex) {
-            // No refine info — emit directly.
-            processCluster(instanceID, clusterID);
-        } else if (refineInfo.refineGroupCount > 64u) {
-            // Corrupt entry — refineGroupCount should always be 1.
-            uint ign;
-            counters.InterlockedAdd(kDagInvalidRefineGroup, 1u, ign);
-            processCluster(instanceID, clusterID);
-        } else {
-            GPUClusterGroup refineGroup = lodGroups[refineInfo.refineGroupStart];
-            uint ign;
-            if (testForLod(inst.worldMatrix, refineGroup.center, refineGroup.radius, refineGroup.parentError)) {
-                // Finer LOD is appropriate at this distance — suppress the coarse cluster.
-                counters.InterlockedAdd(kDagRefineSuppressed, 1u, ign);
-            } else {
-                // Finer LOD is too coarse — emit this cluster.
-                counters.InterlockedAdd(kDagRefineAccepted, 1u, ign);
-                processCluster(instanceID, clusterID);
-            }
-        }
+        processCluster(instanceID, clusterID);
     }
 }
 
@@ -379,7 +360,10 @@ void seedNodes(uint3 dispatchThreadID) {
 
     InstanceData inst = instances[instanceID];
     GeometryData geom = geometries[inst.geometryIndex];
-    if (geom.lodRootNode == kInvalidIndex) {
+    uint rootNode = params.lodErrorThreshold <= 0.0
+        ? geom.lod0RootNode
+        : geom.lodRootNode;
+    if (rootNode == kInvalidIndex) {
         uint ignored;
         counters.InterlockedAdd(kDagInvalidRoot, 1u, ignored);
         return;
@@ -387,7 +371,7 @@ void seedNodes(uint3 dispatchThreadID) {
 
     DagNodeTask task;
     task.instanceID = instanceID;
-    task.nodeID = geom.lodRootNode;
+    task.nodeID = rootNode;
     appendNode(0u, task);
 
     uint ignored;
@@ -591,6 +575,8 @@ void finalizeMain() {
     indirectArgs.Store(offset + 8u, 1u);
 
     if (params.phase == 0u) {
+        counters.Store(kCounterPhase0Recheck,
+                       min(counters.Load(kCounterPhase0Recheck), params.maxClusters));
         uint lastActive = counters.Load(kDagLastActiveIteration);
         uint remaining = params.maxIterations > lastActive ? params.maxIterations - lastActive : 0u;
         uint pendingQueue = params.maxIterations & 1u;

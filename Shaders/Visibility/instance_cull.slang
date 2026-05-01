@@ -23,12 +23,14 @@ struct GeometryData {
     uint indexCount;
     uint materialIndex;
     uint lodRootNode;
+    uint lod0RootNode;
     float boundsCenterX;
     float boundsCenterY;
     float boundsCenterZ;
     float boundsRadius;
     uint packedClusterStart;
     uint packedClusterCount;
+    uint reserved0;
 };
 
 struct InstanceCullParams {

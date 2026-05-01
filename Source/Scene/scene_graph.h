@@ -72,6 +72,7 @@ struct SceneNode {
 
     // LOD hierarchy (UINT32_MAX = no LOD data, use flat meshlets)
     uint32_t lodRootNode = UINT32_MAX;
+    uint32_t lod0RootNode = UINT32_MAX;
 
     // Optional single light component.
     int32_t lightIndex = -1;

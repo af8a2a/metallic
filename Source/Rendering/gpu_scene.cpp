@@ -25,6 +25,7 @@ struct GeometryKey {
     uint32_t indexStart = 0;
     uint32_t indexCount = 0;
     uint32_t lodRootNode = UINT32_MAX;
+    uint32_t lod0RootNode = UINT32_MAX;
 
     bool operator==(const GeometryKey& rhs) const {
         return meshIndex == rhs.meshIndex &&
@@ -34,7 +35,8 @@ struct GeometryKey {
                meshletCount == rhs.meshletCount &&
                indexStart == rhs.indexStart &&
                indexCount == rhs.indexCount &&
-               lodRootNode == rhs.lodRootNode;
+               lodRootNode == rhs.lodRootNode &&
+               lod0RootNode == rhs.lod0RootNode;
     }
 };
 
@@ -53,6 +55,7 @@ struct GeometryKeyHash {
         hashCombine(key.indexStart);
         hashCombine(key.indexCount);
         hashCombine(key.lodRootNode);
+        hashCombine(key.lod0RootNode);
         return hash;
     }
 };
@@ -257,16 +260,16 @@ DagV1ValidationStats validateDagV1ClusterRoots(const ClusterLODData& lodData,
     }
 
     for (const GPUSceneGeometry& geom : tables.geometries) {
-        if (geom.lodRootNode == UINT32_MAX) {
+        if (geom.lod0RootNode == UINT32_MAX) {
             ++stats.skippedGeometryCount;
             continue;
         }
 
         ++stats.checkedGeometryCount;
-        if (geom.lodRootNode >= lodData.nodes.size()) {
+        if (geom.lod0RootNode >= lodData.nodes.size()) {
             ++stats.invalidRootCount;
         }
-        const DagRootTraversalResult traversal = traverseDagV1Root(lodData, geom.lodRootNode);
+        const DagRootTraversalResult traversal = traverseDagV1Root(lodData, geom.lod0RootNode);
         stats.maxDepth = std::max(stats.maxDepth, traversal.maxDepth);
         stats.traversedClusterCount += static_cast<uint32_t>(traversal.clusters.size());
         stats.invalidNodeRefCount += traversal.invalidNodeRefCount;
@@ -365,6 +368,7 @@ bool buildGpuSceneTables(const RhiDevice& device,
         key.indexStart = node.indexStart;
         key.indexCount = node.indexCount;
         key.lodRootNode = node.lodRootNode;
+        key.lod0RootNode = node.lod0RootNode;
 
         uint32_t geometryIndex = UINT32_MAX;
         const auto geometryIt = geometryMap.find(key);
@@ -379,6 +383,7 @@ bool buildGpuSceneTables(const RhiDevice& device,
             geometry.indexCount = node.indexCount;
             geometry.materialIndex = firstMaterialIndex(mesh, node);
             geometry.lodRootNode = node.lodRootNode;
+            geometry.lod0RootNode = node.lod0RootNode;
             computeGeometryBounds(meshletData, node, geometry.boundsCenterRadius);
             out.geometries.push_back(geometry);
             geometryMap.emplace(key, geometryIndex);

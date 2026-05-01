@@ -301,6 +301,11 @@ bool SceneGpu::createSceneGraph(const Scene& scene) {
         // the selector root, Nyx-style mode stores the top-level BVH root.
         if (groupCount == 1 && cFirst < m_clusterLod.primitiveGroupLodRoots.size()) {
             gn.lodRootNode = m_clusterLod.primitiveGroupLodRoots[cFirst];
+            if (cFirst < m_clusterLod.primitiveGroupLod0Roots.size()) {
+                gn.lod0RootNode = m_clusterLod.primitiveGroupLod0Roots[cFirst];
+            } else {
+                gn.lod0RootNode = gn.lodRootNode;
+            }
         }
     };
 

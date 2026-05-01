@@ -35,7 +35,7 @@ static constexpr float kSimplifyThreshold = 0.85f;
 static constexpr float kClusterSplit = 2.0f;
 
 constexpr char kClusterLodCacheMagic[8] = {'M', 'L', 'C', 'L', 'O', 'D', '0', '1'};
-constexpr uint32_t kClusterLodCacheVersion = 7;
+constexpr uint32_t kClusterLodCacheVersion = 9;
 constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 constexpr uint32_t kInvalidIndex = UINT32_MAX;
@@ -108,6 +108,7 @@ struct ClusterLODCacheHeader {
     uint64_t nodeRepresentativeIndexCount = 0;
     uint64_t levelCount = 0;
     uint64_t primitiveGroupRootCount = 0;
+    uint64_t primitiveGroupLod0RootCount = 0;
     uint64_t refineInfoCount = 0;
 };
 
@@ -1010,7 +1011,7 @@ uint32_t buildNyxStyleLodTopology(ClusterLODData& data) {
     data.nodes = std::move(finalNodes);
     assignSpatialNodeRepresentativeRanges(data);
 
-    return 0;
+    return appendLodSelectorChain(data);
 }
 
 uint32_t buildLocalHierarchy(ClusterLODData& data) {
@@ -1185,16 +1186,21 @@ uint32_t buildLocalHierarchy(ClusterLODData& data) {
     return appendLodSelectorChain(data);
 }
 
-uint32_t selectPrimitiveGroupTraversalRoot(const ClusterLODData& data, uint32_t builtRootNode) {
+uint32_t selectPrimitiveGroupTraversalRoot(const ClusterLODData&, uint32_t builtRootNode) {
     if (builtRootNode == kInvalidIndex) {
         return kInvalidIndex;
     }
 
-    if constexpr (kClusterLodTopologyMode == ClusterLodTopologyMode::NyxStyle) {
-        return data.nodes.empty() ? kInvalidIndex : 0u;
-    }
-
     return builtRootNode;
+}
+
+uint32_t selectPrimitiveGroupLod0Root(const ClusterLODData& data) {
+    for (const ClusterLODLevel& level : data.levels) {
+        if (level.depth == 0u && level.rootNode != kInvalidIndex) {
+            return level.rootNode;
+        }
+    }
+    return kInvalidIndex;
 }
 
 bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
@@ -1407,7 +1413,12 @@ bool buildPrimitiveGroupClusterLOD(const LoadedMesh& mesh,
     if (traversalRootNode == kInvalidIndex) {
         return false;
     }
+    const uint32_t lod0RootNode = selectPrimitiveGroupLod0Root(out);
+    if (lod0RootNode == kInvalidIndex) {
+        return false;
+    }
     out.primitiveGroupLodRoots.assign(1u, traversalRootNode);
+    out.primitiveGroupLod0Roots.assign(1u, lod0RootNode);
     out.totalMeshletCount = static_cast<uint32_t>(out.allMeshlets.size());
     out.totalGroupCount = static_cast<uint32_t>(out.groups.size());
     out.totalNodeCount = static_cast<uint32_t>(out.nodes.size());
@@ -1507,6 +1518,11 @@ void appendClusterLOD(const ClusterLODData& local,
         local.primitiveGroupLodRoots[0] != kInvalidIndex) {
         out.primitiveGroupLodRoots[primitiveGroupIndex] = local.primitiveGroupLodRoots[0] + nodeOffset;
     }
+    if (!local.primitiveGroupLod0Roots.empty() &&
+        primitiveGroupIndex < out.primitiveGroupLod0Roots.size() &&
+        local.primitiveGroupLod0Roots[0] != kInvalidIndex) {
+        out.primitiveGroupLod0Roots[primitiveGroupIndex] = local.primitiveGroupLod0Roots[0] + nodeOffset;
+    }
 }
 
 bool validateClusterLodPayload(const ClusterLODData& data,
@@ -1530,6 +1546,12 @@ bool validateClusterLodPayload(const ClusterLODData& data,
     if (data.primitiveGroupLodRoots.size() != expectedPrimitiveGroupCount) {
         spdlog::error("ClusterLOD primitive group root count {} does not match expected {}",
                       data.primitiveGroupLodRoots.size(),
+                      expectedPrimitiveGroupCount);
+        return false;
+    }
+    if (data.primitiveGroupLod0Roots.size() != expectedPrimitiveGroupCount) {
+        spdlog::error("ClusterLOD primitive group LOD0 root count {} does not match expected {}",
+                      data.primitiveGroupLod0Roots.size(),
                       expectedPrimitiveGroupCount);
         return false;
     }
@@ -1656,6 +1678,14 @@ bool validateClusterLodPayload(const ClusterLODData& data,
     for (uint32_t rootNode : data.primitiveGroupLodRoots) {
         if (rootNode != kInvalidIndex && rootNode >= data.nodes.size()) {
             spdlog::error("ClusterLOD primitive group root {} is out of bounds {}", rootNode, data.nodes.size());
+            return false;
+        }
+    }
+    for (uint32_t rootNode : data.primitiveGroupLod0Roots) {
+        if (rootNode != kInvalidIndex && rootNode >= data.nodes.size()) {
+            spdlog::error("ClusterLOD primitive group LOD0 root {} is out of bounds {}",
+                          rootNode,
+                          data.nodes.size());
             return false;
         }
     }
@@ -2006,6 +2036,7 @@ bool saveClusterLODToCache(const LoadedMesh& mesh,
     header.nodeRepresentativeIndexCount = data.nodeRepresentativeGroupIndices.size();
     header.levelCount = data.levels.size();
     header.primitiveGroupRootCount = data.primitiveGroupLodRoots.size();
+    header.primitiveGroupLod0RootCount = data.primitiveGroupLod0Roots.size();
     header.refineInfoCount = data.clusterRefineInfos.size();
 
     std::ofstream file(cachePath, std::ios::binary | std::ios::trunc);
@@ -2027,6 +2058,7 @@ bool saveClusterLODToCache(const LoadedMesh& mesh,
                     writeVector(file, data.nodeRepresentativeGroupIndices) &&
                     writeVector(file, data.levels) &&
                     writeVector(file, data.primitiveGroupLodRoots) &&
+                    writeVector(file, data.primitiveGroupLod0Roots) &&
                     writeVector(file, data.clusterRefineInfos);
     if (!ok) {
         spdlog::warn("Failed to write ClusterLOD cache file {}", cachePath.string());
@@ -2081,7 +2113,8 @@ bool loadClusterLODFromCache(const RhiDevice& device,
         std::fabs(header.simplifyThreshold - kSimplifyThreshold) > 1e-6f ||
         std::fabs(header.clusterSplit - kClusterSplit) > 1e-6f ||
         header.meshSignature != meshSignature ||
-        header.primitiveGroupRootCount != expectedPrimitiveGroupCount) {
+        header.primitiveGroupRootCount != expectedPrimitiveGroupCount ||
+        header.primitiveGroupLod0RootCount != expectedPrimitiveGroupCount) {
         spdlog::warn("ClusterLOD cache {} is incompatible with the current mesh", cachePath.string());
         return false;
     }
@@ -2099,6 +2132,7 @@ bool loadClusterLODFromCache(const RhiDevice& device,
         !readVector(file, header.nodeRepresentativeIndexCount, out.nodeRepresentativeGroupIndices) ||
         !readVector(file, header.levelCount, out.levels) ||
         !readVector(file, header.primitiveGroupRootCount, out.primitiveGroupLodRoots) ||
+        !readVector(file, header.primitiveGroupLod0RootCount, out.primitiveGroupLod0Roots) ||
         !readVector(file, header.refineInfoCount, out.clusterRefineInfos)) {
         spdlog::warn("Failed to read ClusterLOD cache payload {}", cachePath.string());
         releaseClusterLOD(out);
@@ -2158,6 +2192,7 @@ bool buildClusterLOD(const RhiDevice& device,
         ? 1u
         : static_cast<uint32_t>(mesh.primitiveGroups.size());
     out.primitiveGroupLodRoots.assign(primitiveGroupCount, kInvalidIndex);
+    out.primitiveGroupLod0Roots.assign(primitiveGroupCount, kInvalidIndex);
 
     std::vector<unsigned int> positionRemap(mesh.vertexCount);
     meshopt_generatePositionRemap(positionRemap.data(), allPositions, mesh.vertexCount, sizeof(float) * 3);
@@ -2253,6 +2288,7 @@ void releaseClusterLOD(ClusterLODData& data) {
     data.nodeRepresentativeGroupIndices.clear();
     data.levels.clear();
     data.primitiveGroupLodRoots.clear();
+    data.primitiveGroupLod0Roots.clear();
     data.packedClusters.clear();
     data.clusterRefineInfos.clear();
     data.clusterVertexData.clear();
@@ -2273,6 +2309,11 @@ void drawClusterLODStats(const ClusterLODData& data) {
                 static_cast<uint32_t>(std::count_if(
                     data.primitiveGroupLodRoots.begin(),
                     data.primitiveGroupLodRoots.end(),
+                    [](uint32_t rootNode) { return rootNode != kInvalidIndex; })));
+    ImGui::Text("Primitive Groups with LOD0 Root: %u",
+                static_cast<uint32_t>(std::count_if(
+                    data.primitiveGroupLod0Roots.begin(),
+                    data.primitiveGroupLod0Roots.end(),
                     [](uint32_t rootNode) { return rootNode != kInvalidIndex; })));
     ImGui::Text("LOD Levels: %u", data.lodLevelCount);
     ImGui::Text("Total Meshlets: %u", data.totalMeshletCount);

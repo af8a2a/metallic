@@ -15,6 +15,8 @@ struct DagCpuMirrorParams {
     uint32_t screenHeight;
     uint32_t maxIterations;
     uint32_t maxNodeTasks;
+    // Maximum clusters retained for duplicate/unexpected diagnostics.
+    // clustersEmitted still counts every processCluster call.
     uint32_t maxClusters;
     bool     useInstanceVisibility = false;
 };
@@ -32,8 +34,10 @@ struct DagCpuMirrorStats {
     uint32_t nodeOverflow      = 0;
     uint32_t clusterOverflow   = 0;
 
-    // Total clusters reaching processCluster (before frustum/HZB).
-    // GPU invariant: clustersEmitted == phase0Visible + phase0Recheck + frustumRejected
+    // Total clusters reaching processCluster (before frustum/HZB), not capped by
+    // the retained diagnostics list.
+    // GPU invariant: clustersEmitted == phase0Visible + phase0Recheck +
+    // frustumRejected + clusterOverflow
     uint32_t clustersEmitted = 0;
 
     // Integrity checks on the CPU-predicted output set.
@@ -52,7 +56,7 @@ struct DagCpuMirrorStats {
     int32_t  diffLodCulled        = 0;
     int32_t  diffRefineAccepted   = 0;
     int32_t  diffRefineSuppressed = 0;
-    // CPU clustersEmitted vs GPU (phase0Visible + phase0Recheck + frustumRejected)
+    // CPU clustersEmitted vs GPU retained/rejected/overflow processCluster attempts.
     int32_t  diffClustersEmitted  = 0;
     bool     lodCountersMatch     = false;
 };

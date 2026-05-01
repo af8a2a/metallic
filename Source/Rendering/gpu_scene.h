@@ -25,11 +25,13 @@ struct GPUSceneGeometry {
     uint32_t indexCount = 0;
     uint32_t materialIndex = UINT32_MAX;
     uint32_t lodRootNode = UINT32_MAX;
+    uint32_t lod0RootNode = UINT32_MAX;
     float boundsCenterRadius[4] = {};
     uint32_t packedClusterStart = 0;
     uint32_t packedClusterCount = 0;
+    uint32_t reserved0 = 0;
 };
-static_assert(sizeof(GPUSceneGeometry) == 56, "GPUSceneGeometry must match shader layout");
+static_assert(sizeof(GPUSceneGeometry) == 64, "GPUSceneGeometry must match shader layout");
 
 struct GPUSceneInstance {
     float worldMatrix[16] = {};

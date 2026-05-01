@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <spdlog/spdlog.h>
 
@@ -118,7 +119,7 @@ public:
             state->resetWorklists();
         }
 
-        const uint32_t maxClusters = m_ctx.gpuScene.clusterVisWorklistCount;
+        const uint32_t maxClusters = dagWorklistCapacity();
         const uint32_t instanceCount = m_ctx.gpuScene.instanceCount;
         if (!state->ensure(*m_runtimeContext->resourceFactory,
                            static_cast<uint32_t>(std::max(m_width, 1)),
@@ -249,7 +250,12 @@ public:
             mp.screenHeight      = static_cast<uint32_t>(std::max(m_height, 1));
             mp.maxIterations     = m_maxIterations;
             mp.maxNodeTasks      = state->maxNodeTasks;
-            mp.maxClusters       = state->maxClusters;
+            const uint64_t mirrorClusterLimit = std::min<uint64_t>(
+                1ull << 20,
+                std::max<uint64_t>(
+                    uint64_t(state->maxClusters) * 2ull,
+                    static_cast<uint64_t>(m_ctx.clusterLodData.allMeshlets.size())));
+            mp.maxClusters       = static_cast<uint32_t>(std::max<uint64_t>(mirrorClusterLimit, 1ull));
             mp.useInstanceVisibility =
                 m_enableInstanceFilter &&
                 state->instanceVisibilityValid &&
@@ -269,6 +275,7 @@ public:
         ImGui::SliderFloat("LOD Pixel Error##dag", &m_lodErrorThreshold, 0.0f, 16.0f, "%.2f");
         ImGui::Text("Max Iterations: %u", m_maxIterations);
         ImGui::Text("Node queue capacity: %u", m_maxNodeTasks);
+        ImGui::Text("Cluster worklist capacity: %u", dagWorklistCapacity());
 
         const DagV1ValidationStats& validation = m_ctx.gpuScene.dagV1Validation;
         ImGui::SeparatorText("DAG Root CPU Validation");
@@ -409,6 +416,13 @@ public:
                 ImGui::Text("Refine accepted: %u  suppressed: %u",
                             ms.refineAccepted, ms.refineSuppressed);
                 ImGui::Text("Clusters emitted: %u", ms.clustersEmitted);
+                if (ms.invalidRoot > 0u || ms.nodeOverflow > 0u || ms.clusterOverflow > 0u) {
+                    ImGui::TextColored(ImVec4(1.f, 0.35f, 0.1f, 1.f),
+                                       "Mirror issues: invalid roots %u, node overflow %u, retained cluster overflow %u",
+                                       ms.invalidRoot,
+                                       ms.nodeOverflow,
+                                       ms.clusterOverflow);
+                }
 
                 if (ms.duplicateCount > 0u) {
                     ImGui::TextColored(ImVec4(1.f, 0.35f, 0.1f, 1.f),
@@ -506,6 +520,37 @@ private:
             return m_enableOcclusionOverride != 0;
         }
         return m_enableOcclusion;
+    }
+
+    uint32_t dagWorklistCapacity() const {
+        const uint64_t fallbackCapacity =
+            std::max<uint64_t>(m_ctx.gpuScene.clusterVisWorklistCount, 1u);
+        if (m_lodErrorThreshold <= 0.0f || m_ctx.clusterLodData.levels.empty()) {
+            return static_cast<uint32_t>(
+                std::min<uint64_t>(fallbackCapacity, std::numeric_limits<uint32_t>::max()));
+        }
+
+        uint64_t lodCapacity = 0;
+        for (const GPUSceneInstance& inst : m_ctx.gpuScene.instances) {
+            if (inst.geometryIndex >= m_ctx.gpuScene.geometries.size()) {
+                continue;
+            }
+            const GPUSceneGeometry& geom = m_ctx.gpuScene.geometries[inst.geometryIndex];
+            const uint32_t primitiveGroupEnd = geom.primitiveGroupStart + geom.primitiveGroupCount;
+            uint64_t instanceLodClusterCount = 0;
+            for (const ClusterLODLevel& level : m_ctx.clusterLodData.levels) {
+                if (level.primitiveGroupIndex < geom.primitiveGroupStart ||
+                    level.primitiveGroupIndex >= primitiveGroupEnd) {
+                    continue;
+                }
+                instanceLodClusterCount += level.meshletCount;
+            }
+            lodCapacity += instanceLodClusterCount;
+        }
+
+        const uint64_t capacity = std::max(fallbackCapacity, lodCapacity);
+        return static_cast<uint32_t>(
+            std::min<uint64_t>(capacity, std::numeric_limits<uint32_t>::max()));
     }
 
     void updateHzbViewProj(ClusterOcclusionState& state) const {
