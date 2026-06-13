@@ -2,6 +2,7 @@ add_executable(MetallicRhiTests
     rhi/main.cpp
     rhi/rhi_test.h
     rhi/command_submission_tests.cpp
+    rhi/render_graph_tests.cpp
     rhi/rendering_tests.cpp
     rhi/resource_tests.cpp
     rhi/test_output.cpp
