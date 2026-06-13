@@ -310,6 +310,18 @@ struct TextureBufferCopyDesc {
     uint32_t baseLayer = 0;
 };
 
+struct TextureCopyDesc {
+    class Texture* source = nullptr;
+    class Texture* destination = nullptr;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t depth = 1;
+    uint32_t sourceMipLevel = 0;
+    uint32_t sourceBaseLayer = 0;
+    uint32_t destinationMipLevel = 0;
+    uint32_t destinationBaseLayer = 0;
+};
+
 namespace detail {
 struct DeviceImpl;
 struct QueueImpl;
@@ -518,6 +530,7 @@ public:
     Result begin();
     Result end();
     void barrier(const BarrierDesc& desc);
+    void copyTexture(const TextureCopyDesc& desc);
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
     void beginRendering(const RenderingDesc& desc);
     void clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect);

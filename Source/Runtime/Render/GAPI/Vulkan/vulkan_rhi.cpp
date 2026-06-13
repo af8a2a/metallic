@@ -1138,6 +1138,53 @@ void CommandBuffer::barrier(const BarrierDesc& desc)
     vkCmdPipelineBarrier2(impl_->commandBuffer, &dependencyInfo);
 }
 
+void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
+{
+    if (impl_ == nullptr ||
+        desc.source == nullptr ||
+        desc.source->impl_ == nullptr ||
+        desc.destination == nullptr ||
+        desc.destination->impl_ == nullptr ||
+        desc.width == 0 ||
+        desc.height == 0 ||
+        desc.depth == 0) {
+        return;
+    }
+
+    const VkImageAspectFlags sourceAspect = aspectForFormat(desc.source->impl_->desc.format);
+    const VkImageAspectFlags destinationAspect = aspectForFormat(desc.destination->impl_->desc.format);
+    if (sourceAspect != destinationAspect) {
+        return;
+    }
+
+    VkImageCopy copyRegion{
+        .srcSubresource = {
+            .aspectMask = sourceAspect,
+            .mipLevel = desc.sourceMipLevel,
+            .baseArrayLayer = desc.sourceBaseLayer,
+            .layerCount = 1,
+        },
+        .srcOffset = {0, 0, 0},
+        .dstSubresource = {
+            .aspectMask = destinationAspect,
+            .mipLevel = desc.destinationMipLevel,
+            .baseArrayLayer = desc.destinationBaseLayer,
+            .layerCount = 1,
+        },
+        .dstOffset = {0, 0, 0},
+        .extent = {desc.width, desc.height, desc.depth},
+    };
+
+    vkCmdCopyImage(
+        impl_->commandBuffer,
+        desc.source->impl_->image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        desc.destination->impl_->image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &copyRegion);
+}
+
 void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
 {
     if (impl_ == nullptr ||

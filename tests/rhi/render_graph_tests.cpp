@@ -175,9 +175,57 @@ public:
     }
 };
 
+class RenderGraphCopyColorWorkflowTest : public RhiTest {
+public:
+    RenderGraphCopyColorWorkflowTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_copy_color_workflow";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        render::RenderGraph graph;
+        graph.setName("CopyColorWorkflow");
+        graph.addNode("TriangleRasterPass", "Triangle");
+        graph.addNode("CopyColorPass", "Copy");
+        graph.addEdge("Triangle.color", "Copy.source");
+        graph.markOutput("Copy.color");
+
+        result = preview.render(graph, 128, 96);
+        if (!result) {
+            return RhiTestResult::fail(std::string("RenderGraphPreviewRenderer::render returned ") + toString(result));
+        }
+        if (countBrightPixels(preview.pixels()) < 128) {
+            return RhiTestResult::fail("copy color graph produced too few bright pixels");
+        }
+
+        graph.markDirty();
+        result = preview.render(graph, 80, 80);
+        if (!result) {
+            return RhiTestResult::fail(std::string("RenderGraphPreviewRenderer::render resize returned ") + toString(result));
+        }
+        if (preview.width() != 80 || preview.height() != 80) {
+            return RhiTestResult::fail("copy color graph resize did not update output dimensions");
+        }
+        if (countBrightPixels(preview.pixels()) < 80) {
+            return RhiTestResult::fail("resized copy color graph produced too few bright pixels");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 
 } // namespace
 } // namespace metallic::tests

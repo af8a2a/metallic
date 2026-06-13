@@ -28,6 +28,7 @@ struct RenderGraphField {
     RenderGraphFieldVisibility visibility = RenderGraphFieldVisibility::Output;
     Format format = Format::Rgba8Unorm;
     TextureUsageBits usage = TextureUsageBits::ColorAttachment;
+    ResourceState state = ResourceState::ColorAttachment;
     bool optional = false;
     uint32_t width = 0;
     uint32_t height = 0;

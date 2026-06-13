@@ -190,6 +190,48 @@ public:
     }
 };
 
+class CopyColorPass final : public RenderGraphPass {
+public:
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        RenderGraphField& source = reflection.addInput("source", "Source color texture");
+        source.usage = TextureUsageBits::TransferSource;
+        source.state = ResourceState::TransferSource;
+
+        RenderGraphField& color = reflection.addOutput("color", "Copied color texture");
+        color.usage = TextureUsageBits::TransferDestination;
+        color.state = ResourceState::TransferDestination;
+        color.format = Format::Rgba8Unorm;
+        return reflection;
+    }
+
+    Result execute(RenderGraphExecutionContext& context) override
+    {
+        RenderGraphResource* source = context.input("source");
+        RenderGraphResource* color = context.output("color");
+        if (source == nullptr ||
+            source->texture == nullptr ||
+            color == nullptr ||
+            color->texture == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        context.commandBuffer().copyTexture(TextureCopyDesc{
+            .source = source->texture,
+            .destination = color->texture,
+            .width = context.width(),
+            .height = context.height(),
+            .depth = 1,
+            .sourceMipLevel = 0,
+            .sourceBaseLayer = 0,
+            .destinationMipLevel = 0,
+            .destinationBaseLayer = 0,
+        });
+        return {};
+    }
+};
+
 class TriangleRasterPass final : public RenderGraphPass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
@@ -398,6 +440,7 @@ RenderGraphField& RenderPassReflection::addInput(std::string name, std::string d
         .visibility = RenderGraphFieldVisibility::Input,
         .format = Format::Rgba8Unorm,
         .usage = TextureUsageBits::Sampled,
+        .state = ResourceState::ShaderRead,
     });
     return fields_.back();
 }
@@ -410,6 +453,7 @@ RenderGraphField& RenderPassReflection::addOutput(std::string name, std::string 
         .visibility = RenderGraphFieldVisibility::Output,
         .format = Format::Rgba8Unorm,
         .usage = TextureUsageBits::ColorAttachment,
+        .state = ResourceState::ColorAttachment,
     });
     return fields_.back();
 }
@@ -508,6 +552,10 @@ void registerBuiltInRenderGraphPasses()
         "ClearColorPass",
         "Clear a color texture",
         []() { return std::make_unique<ClearColorPass>(); });
+    registerRenderGraphPassType(
+        "CopyColorPass",
+        "Copy a color texture",
+        []() { return std::make_unique<CopyColorPass>(); });
     registerRenderGraphPassType(
         "TriangleRasterPass",
         "Rasterize the built-in triangle shader",
@@ -1001,6 +1049,29 @@ struct RenderGraphExecutor::Impl {
         return iter == resources.end() ? nullptr : &iter->second.resource;
     }
 
+    const CompiledNode* compiledNode(std::string_view name) const
+    {
+        const auto iter = std::find_if(
+            executionList.begin(),
+            executionList.end(),
+            [name](const CompiledNode& node) {
+                return node.name == name;
+            });
+        return iter == executionList.end() ? nullptr : &(*iter);
+    }
+
+    const RenderGraphField* reflectedField(
+        std::string_view passName,
+        std::string_view fieldName,
+        RenderGraphFieldVisibility visibility) const
+    {
+        const CompiledNode* node = compiledNode(passName);
+        if (node == nullptr) {
+            return nullptr;
+        }
+        return node->reflection.findField(fieldName, visibility);
+    }
+
     Result transition(
         CommandBuffer& commandBuffer,
         RenderGraphResource& resource,
@@ -1079,7 +1150,7 @@ Result RenderGraphExecutor::compile(
     for (const std::string& passName : activeGraph.executionOrder) {
         const RenderGraphNode* node = graph.findNode(passName);
         if (node == nullptr) {
-        log = validationPrefix(std::string("active pass is missing '") + passName + "'");
+            log = validationPrefix(std::string("active pass is missing '") + passName + "'");
             return makeError(Error::InvalidArgument);
         }
 
@@ -1131,10 +1202,19 @@ Result RenderGraphExecutor::compile(
                 usage = addTextureUsage(usage, TextureUsageBits::TransferSource);
             }
             for (const RenderGraphEdge& edge : graph.edges()) {
-                if (edge.srcPass == node.name && edge.srcField == field.name) {
-                    usage = addTextureUsage(usage, TextureUsageBits::Sampled);
-                    break;
+                if (edge.srcPass != node.name ||
+                    edge.srcField != field.name ||
+                    !activeGraph.activePasses.contains(edge.dstPass)) {
+                    continue;
                 }
+
+                const RenderGraphField* dstField = impl_->reflectedField(
+                    edge.dstPass,
+                    edge.dstField,
+                    RenderGraphFieldVisibility::Input);
+                usage = addTextureUsage(
+                    usage,
+                    dstField == nullptr ? TextureUsageBits::Sampled : dstField->usage);
             }
 
             TextureDesc desc{
@@ -1202,8 +1282,8 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer)
 
             if (field.visibility == RenderGraphFieldVisibility::Output) {
                 resource = impl_->resource(fullName);
-                if (resource != nullptr && hasFlag(resource->desc.usage, TextureUsageBits::ColorAttachment)) {
-                    Result result = impl_->transition(commandBuffer, *resource, ResourceState::ColorAttachment);
+                if (resource != nullptr) {
+                    Result result = impl_->transition(commandBuffer, *resource, field.state);
                     if (!result) {
                         return result;
                     }
@@ -1212,6 +1292,12 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer)
                 const auto alias = impl_->inputAliases.find(fullName);
                 if (alias != impl_->inputAliases.end()) {
                     resource = impl_->resource(alias->second);
+                    if (resource != nullptr) {
+                        Result result = impl_->transition(commandBuffer, *resource, field.state);
+                        if (!result) {
+                            return result;
+                        }
+                    }
                 }
             }
 
