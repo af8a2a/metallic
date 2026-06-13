@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace metallic::render {
 
@@ -105,6 +106,10 @@ enum class LoadOp : uint8_t {
 enum class StoreOp : uint8_t {
     Store,
     DontCare,
+};
+
+enum class PrimitiveTopology : uint8_t {
+    TriangleList,
 };
 
 constexpr PipelineStageBits operator|(PipelineStageBits lhs, PipelineStageBits rhs)
@@ -235,6 +240,39 @@ struct QueueSubmitDesc {
     class Fence* signalFence = nullptr;
 };
 
+struct Viewport {
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+    float minDepth = 0.0f;
+    float maxDepth = 1.0f;
+};
+
+struct ShaderModuleDesc {
+    const uint32_t* code = nullptr;
+    uint64_t byteSize = 0;
+};
+
+struct GraphicsPipelineDesc {
+    class ShaderModule* vertexShader = nullptr;
+    class ShaderModule* fragmentShader = nullptr;
+    const char* vertexEntryPoint = "main";
+    const char* fragmentEntryPoint = "main";
+    Format colorFormat = Format::Unknown;
+    PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+};
+
+struct TextureBufferCopyDesc {
+    class Texture* texture = nullptr;
+    class Buffer* buffer = nullptr;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t depth = 1;
+    uint32_t mipLevel = 0;
+    uint32_t baseLayer = 0;
+};
+
 namespace detail {
 struct DeviceImpl;
 struct QueueImpl;
@@ -246,6 +284,9 @@ struct SemaphoreImpl;
 struct BufferImpl;
 struct TextureImpl;
 struct TextureViewImpl;
+struct ShaderModuleImpl;
+struct GraphicsPipelineImpl;
+struct TrianglePreviewRendererImpl;
 } // namespace detail
 
 class Queue {
@@ -331,6 +372,7 @@ public:
     const BufferDesc& desc() const;
     void* map();
     void unmap();
+    void invalidate(uint64_t offset = 0, uint64_t size = UINT64_MAX);
 
 private:
     explicit Buffer(std::unique_ptr<detail::BufferImpl> impl);
@@ -338,6 +380,7 @@ private:
     std::unique_ptr<detail::BufferImpl> impl_;
 
     friend class Device;
+    friend class CommandBuffer;
     friend struct detail::DeviceImpl;
 };
 
@@ -386,6 +429,45 @@ private:
     friend struct detail::DeviceImpl;
 };
 
+class ShaderModule {
+public:
+    ShaderModule() = default;
+    ~ShaderModule();
+    ShaderModule(ShaderModule&&) noexcept;
+    ShaderModule& operator=(ShaderModule&&) noexcept;
+
+    ShaderModule(const ShaderModule&) = delete;
+    ShaderModule& operator=(const ShaderModule&) = delete;
+
+private:
+    explicit ShaderModule(std::unique_ptr<detail::ShaderModuleImpl> impl);
+
+    std::unique_ptr<detail::ShaderModuleImpl> impl_;
+
+    friend class Device;
+    friend struct detail::DeviceImpl;
+};
+
+class GraphicsPipeline {
+public:
+    GraphicsPipeline() = default;
+    ~GraphicsPipeline();
+    GraphicsPipeline(GraphicsPipeline&&) noexcept;
+    GraphicsPipeline& operator=(GraphicsPipeline&&) noexcept;
+
+    GraphicsPipeline(const GraphicsPipeline&) = delete;
+    GraphicsPipeline& operator=(const GraphicsPipeline&) = delete;
+
+private:
+    explicit GraphicsPipeline(std::unique_ptr<detail::GraphicsPipelineImpl> impl);
+
+    std::unique_ptr<detail::GraphicsPipelineImpl> impl_;
+
+    friend class Device;
+    friend class CommandBuffer;
+    friend struct detail::DeviceImpl;
+};
+
 class CommandBuffer {
 public:
     CommandBuffer() = default;
@@ -399,9 +481,14 @@ public:
     Result begin();
     Result end();
     void barrier(const BarrierDesc& desc);
+    void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
     void beginRendering(const RenderingDesc& desc);
     void clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect);
     void endRendering();
+    void setViewport(const Viewport& viewport);
+    void setScissor(const Rect& scissor);
+    void bindGraphicsPipeline(GraphicsPipeline& pipeline);
+    void draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
 
 private:
     explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
@@ -481,6 +568,8 @@ public:
     Result createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& outBuffer);
     Result createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& outTexture);
     Result createTextureView(Texture& texture, const TextureViewDesc& desc, std::unique_ptr<TextureView>& outTextureView);
+    Result createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule);
+    Result createGraphicsPipeline(const GraphicsPipelineDesc& desc, std::unique_ptr<GraphicsPipeline>& outGraphicsPipeline);
 
 private:
     explicit Device(std::unique_ptr<detail::DeviceImpl> impl);
@@ -492,5 +581,27 @@ private:
 
 Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice);
 int runRhiSmokeTest(bool enableValidation);
+int runRhiTrianglePreviewTest(bool enableValidation);
+
+class TrianglePreviewRenderer {
+public:
+    TrianglePreviewRenderer();
+    ~TrianglePreviewRenderer();
+
+    TrianglePreviewRenderer(TrianglePreviewRenderer&&) noexcept;
+    TrianglePreviewRenderer& operator=(TrianglePreviewRenderer&&) noexcept;
+
+    TrianglePreviewRenderer(const TrianglePreviewRenderer&) = delete;
+    TrianglePreviewRenderer& operator=(const TrianglePreviewRenderer&) = delete;
+
+    Result initialize(bool enableValidation = false);
+    Result render(uint32_t width, uint32_t height);
+    const std::vector<uint32_t>& pixels() const;
+    uint32_t width() const;
+    uint32_t height() const;
+
+private:
+    std::unique_ptr<detail::TrianglePreviewRendererImpl> impl_;
+};
 
 } // namespace metallic::render

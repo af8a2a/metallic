@@ -7,6 +7,7 @@ int main(int argc, char** argv)
 {
     bool smokeTest = false;
     bool rhiSmokeTest = false;
+    bool rhiTrianglePreviewTest = false;
     bool rhiValidation = true;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
@@ -14,9 +15,15 @@ int main(int argc, char** argv)
             smokeTest = true;
         } else if (argument == "--rhi-smoke-test") {
             rhiSmokeTest = true;
+        } else if (argument == "--rhi-triangle-preview-test") {
+            rhiTrianglePreviewTest = true;
         } else if (argument == "--rhi-no-validation") {
             rhiValidation = false;
         }
+    }
+
+    if (rhiTrianglePreviewTest) {
+        return metallic::render::runRhiTrianglePreviewTest(rhiValidation);
     }
 
     if (rhiSmokeTest) {

@@ -1,5 +1,6 @@
 #include "Editor/editor_application.h"
 
+#include "Runtime/Render/GAPI/rhi.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
@@ -7,12 +8,15 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cmath>
+#include <iostream>
 
 namespace metallic {
 namespace {
 
 constexpr int kBaseWindowWidth = 1600;
 constexpr int kBaseWindowHeight = 900;
+constexpr uint32_t kMaxViewportPreviewSize = 2048;
 
 float getMainDisplayScale()
 {
@@ -119,6 +123,14 @@ bool EditorApplication::initialize()
         return false;
     }
 
+    trianglePreviewRenderer_ = std::make_unique<render::TrianglePreviewRenderer>();
+    const render::Result previewResult = trianglePreviewRenderer_->initialize(false);
+    if (previewResult != render::Result::Success) {
+        std::cerr << "Triangle preview RHI initialization failed with Result "
+                  << static_cast<int>(previewResult) << '\n';
+        trianglePreviewRenderer_.reset();
+    }
+
     return true;
 }
 
@@ -138,6 +150,9 @@ void EditorApplication::shutdown()
         ImGui::DestroyContext();
         imguiContextCreated_ = false;
     }
+
+    destroyViewportTexture();
+    trianglePreviewRenderer_.reset();
 
     if (renderer_ != nullptr) {
         SDL_DestroyRenderer(renderer_);
@@ -251,16 +266,7 @@ void EditorApplication::drawPanels()
     ImGui::BulletText("Directional Light");
     ImGui::End();
 
-    ImGui::Begin("Viewport");
-    const ImVec2 available = ImGui::GetContentRegionAvail();
-    ImGui::InvisibleButton("ViewportCanvas", available);
-    const ImVec2 min = ImGui::GetItemRectMin();
-    const ImVec2 max = ImGui::GetItemRectMax();
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    drawList->AddRectFilled(min, max, IM_COL32(16, 18, 22, 255));
-    drawList->AddRect(min, max, IM_COL32(58, 67, 80, 255));
-    drawList->AddText(ImVec2(min.x + 16.0f, min.y + 16.0f), IM_COL32(180, 190, 205, 255), "Viewport");
-    ImGui::End();
+    drawViewportPanel();
 
     ImGui::Begin("Inspector");
     ImGui::TextUnformatted("Selection");
@@ -275,6 +281,139 @@ void EditorApplication::drawPanels()
     ImGui::Begin("Console");
     ImGui::TextUnformatted("Metallic editor initialized with SDL3.");
     ImGui::End();
+}
+
+void EditorApplication::drawViewportPanel()
+{
+    ImGui::Begin("Viewport");
+
+    ImVec2 available = ImGui::GetContentRegionAvail();
+    available.x = std::max(available.x, 1.0f);
+    available.y = std::max(available.y, 1.0f);
+    ImGui::InvisibleButton("ViewportCanvas", available);
+
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    const float width = max.x - min.x;
+    const float height = max.y - min.y;
+    const uint32_t previewWidth = std::clamp(
+        static_cast<uint32_t>(std::ceil(width)),
+        1u,
+        kMaxViewportPreviewSize);
+    const uint32_t previewHeight = std::clamp(
+        static_cast<uint32_t>(std::ceil(height)),
+        1u,
+        kMaxViewportPreviewSize);
+    const bool hasRhiPreview = updateViewportPreview(previewWidth, previewHeight);
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->PushClipRect(min, max, true);
+    drawList->AddRectFilled(min, max, IM_COL32(16, 18, 22, 255));
+
+    if (hasRhiPreview) {
+        drawList->AddImage(
+            static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(viewportTexture_)),
+            min,
+            max,
+            ImVec2(0.0f, 0.0f),
+            ImVec2(1.0f, 1.0f));
+    } else {
+        const float gridStep = 32.0f * mainScale_;
+        for (float x = min.x; x < max.x; x += gridStep) {
+            drawList->AddLine(ImVec2(x, min.y), ImVec2(x, max.y), IM_COL32(32, 37, 45, 255));
+        }
+        for (float y = min.y; y < max.y; y += gridStep) {
+            drawList->AddLine(ImVec2(min.x, y), ImVec2(max.x, y), IM_COL32(32, 37, 45, 255));
+        }
+
+        const ImVec2 center(min.x + width * 0.5f, min.y + height * 0.52f);
+        const float radius = std::max(std::min(width, height) * 0.28f, 24.0f * mainScale_);
+        const ImVec2 p0(center.x, center.y - radius);
+        const ImVec2 p1(center.x - radius * 0.9f, center.y + radius * 0.72f);
+        const ImVec2 p2(center.x + radius * 0.9f, center.y + radius * 0.72f);
+
+        drawList->AddTriangleFilled(p0, p1, p2, IM_COL32(71, 140, 255, 255));
+        drawList->AddTriangle(p0, p1, p2, IM_COL32(225, 237, 255, 255), 2.0f * mainScale_);
+    }
+
+    drawList->AddRect(min, max, IM_COL32(58, 67, 80, 255));
+    drawList->PopClipRect();
+
+    ImGui::End();
+}
+
+bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
+{
+    if (renderer_ == nullptr || trianglePreviewRenderer_ == nullptr) {
+        return false;
+    }
+
+    if (viewportPreviewValid_ &&
+        viewportTexture_ != nullptr &&
+        viewportTextureWidth_ == width &&
+        viewportTextureHeight_ == height) {
+        return true;
+    }
+
+    const render::Result renderResult = trianglePreviewRenderer_->render(width, height);
+    if (renderResult != render::Result::Success) {
+        std::cerr << "Triangle preview render failed with Result "
+                  << static_cast<int>(renderResult) << '\n';
+        viewportPreviewValid_ = false;
+        return false;
+    }
+
+    if (viewportTexture_ == nullptr ||
+        viewportTextureWidth_ != width ||
+        viewportTextureHeight_ != height) {
+        destroyViewportTexture();
+        viewportTexture_ = SDL_CreateTexture(
+            renderer_,
+            SDL_PIXELFORMAT_RGBA32,
+            SDL_TEXTUREACCESS_STATIC,
+            static_cast<int>(width),
+            static_cast<int>(height));
+        if (viewportTexture_ == nullptr) {
+            std::cerr << "SDL_CreateTexture failed: " << SDL_GetError() << '\n';
+            viewportPreviewValid_ = false;
+            return false;
+        }
+
+        SDL_SetTextureBlendMode(viewportTexture_, SDL_BLENDMODE_NONE);
+        SDL_SetTextureScaleMode(viewportTexture_, SDL_SCALEMODE_LINEAR);
+        viewportTextureWidth_ = width;
+        viewportTextureHeight_ = height;
+    }
+
+    const std::vector<uint32_t>& pixels = trianglePreviewRenderer_->pixels();
+    if (pixels.size() < static_cast<size_t>(width) * static_cast<size_t>(height)) {
+        viewportPreviewValid_ = false;
+        return false;
+    }
+
+    if (!SDL_UpdateTexture(
+            viewportTexture_,
+            nullptr,
+            pixels.data(),
+            static_cast<int>(width * sizeof(uint32_t)))) {
+        std::cerr << "SDL_UpdateTexture failed: " << SDL_GetError() << '\n';
+        viewportPreviewValid_ = false;
+        return false;
+    }
+
+    viewportPreviewValid_ = true;
+    return true;
+}
+
+void EditorApplication::destroyViewportTexture()
+{
+    if (viewportTexture_ != nullptr) {
+        SDL_DestroyTexture(viewportTexture_);
+        viewportTexture_ = nullptr;
+    }
+    viewportTextureWidth_ = 0;
+    viewportTextureHeight_ = 0;
+    viewportPreviewValid_ = false;
 }
 
 } // namespace metallic

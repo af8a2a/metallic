@@ -251,6 +251,16 @@ VkAttachmentStoreOp toVkStoreOp(StoreOp storeOp)
     return VK_ATTACHMENT_STORE_OP_STORE;
 }
 
+VkPrimitiveTopology toVkPrimitiveTopology(PrimitiveTopology topology)
+{
+    switch (topology) {
+    case PrimitiveTopology::TriangleList:
+        return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    }
+
+    return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+
 StateInfo stateInfo(ResourceState state)
 {
     switch (state) {
@@ -461,6 +471,17 @@ struct TextureViewImpl {
     TextureViewDesc desc;
     VkImageView view = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
+};
+
+struct ShaderModuleImpl {
+    DeviceImpl* device = nullptr;
+    VkShaderModule module = VK_NULL_HANDLE;
+};
+
+struct GraphicsPipelineImpl {
+    DeviceImpl* device = nullptr;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
 };
 
 struct CommandPoolImpl {
@@ -930,6 +951,16 @@ void Buffer::unmap()
     }
 }
 
+void Buffer::invalidate(uint64_t offset, uint64_t size)
+{
+    if (impl_ == nullptr || impl_->allocation == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const VkDeviceSize vkSize = size == UINT64_MAX ? VK_WHOLE_SIZE : size;
+    vmaInvalidateAllocation(impl_->device->allocator, impl_->allocation, offset, vkSize);
+}
+
 Texture::Texture(std::unique_ptr<detail::TextureImpl> impl)
     : impl_(std::move(impl))
 {
@@ -968,6 +999,44 @@ TextureView::~TextureView()
 
 TextureView::TextureView(TextureView&&) noexcept = default;
 TextureView& TextureView::operator=(TextureView&&) noexcept = default;
+
+ShaderModule::ShaderModule(std::unique_ptr<detail::ShaderModuleImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+ShaderModule::~ShaderModule()
+{
+    if (impl_ != nullptr && impl_->module != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(impl_->device->device, impl_->module, nullptr);
+        impl_->module = VK_NULL_HANDLE;
+    }
+}
+
+ShaderModule::ShaderModule(ShaderModule&&) noexcept = default;
+ShaderModule& ShaderModule::operator=(ShaderModule&&) noexcept = default;
+
+GraphicsPipeline::GraphicsPipeline(std::unique_ptr<detail::GraphicsPipelineImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+GraphicsPipeline::~GraphicsPipeline()
+{
+    if (impl_ != nullptr) {
+        if (impl_->pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(impl_->device->device, impl_->pipeline, nullptr);
+            impl_->pipeline = VK_NULL_HANDLE;
+        }
+        if (impl_->layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(impl_->device->device, impl_->layout, nullptr);
+            impl_->layout = VK_NULL_HANDLE;
+        }
+    }
+}
+
+GraphicsPipeline::GraphicsPipeline(GraphicsPipeline&&) noexcept = default;
+GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&&) noexcept = default;
 
 CommandBuffer::CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl)
     : impl_(std::move(impl))
@@ -1058,6 +1127,42 @@ void CommandBuffer::barrier(const BarrierDesc& desc)
     vkCmdPipelineBarrier2(impl_->commandBuffer, &dependencyInfo);
 }
 
+void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
+{
+    if (impl_ == nullptr ||
+        desc.texture == nullptr ||
+        desc.texture->impl_ == nullptr ||
+        desc.buffer == nullptr ||
+        desc.buffer->impl_ == nullptr ||
+        desc.width == 0 ||
+        desc.height == 0 ||
+        desc.depth == 0) {
+        return;
+    }
+
+    VkBufferImageCopy copyRegion{
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = {
+            .aspectMask = aspectForFormat(desc.texture->impl_->desc.format),
+            .mipLevel = desc.mipLevel,
+            .baseArrayLayer = desc.baseLayer,
+            .layerCount = 1,
+        },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {desc.width, desc.height, desc.depth},
+    };
+
+    vkCmdCopyImageToBuffer(
+        impl_->commandBuffer,
+        desc.texture->impl_->image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        desc.buffer->impl_->buffer,
+        1,
+        &copyRegion);
+}
+
 void CommandBuffer::beginRendering(const RenderingDesc& desc)
 {
     if (impl_ == nullptr) {
@@ -1133,6 +1238,51 @@ void CommandBuffer::endRendering()
 {
     if (impl_ != nullptr) {
         vkCmdEndRendering(impl_->commandBuffer);
+    }
+}
+
+void CommandBuffer::setViewport(const Viewport& viewport)
+{
+    if (impl_ == nullptr) {
+        return;
+    }
+
+    VkViewport vkViewport{
+        .x = viewport.x,
+        .y = viewport.y,
+        .width = viewport.width,
+        .height = viewport.height,
+        .minDepth = viewport.minDepth,
+        .maxDepth = viewport.maxDepth,
+    };
+    vkCmdSetViewport(impl_->commandBuffer, 0, 1, &vkViewport);
+}
+
+void CommandBuffer::setScissor(const Rect& scissor)
+{
+    if (impl_ == nullptr) {
+        return;
+    }
+
+    VkRect2D vkScissor{
+        .offset = {scissor.x, scissor.y},
+        .extent = {scissor.width, scissor.height},
+    };
+    vkCmdSetScissor(impl_->commandBuffer, 0, 1, &vkScissor);
+}
+
+void CommandBuffer::bindGraphicsPipeline(GraphicsPipeline& pipeline)
+{
+    if (impl_ == nullptr || pipeline.impl_ == nullptr) {
+        return;
+    }
+    vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.impl_->pipeline);
+}
+
+void CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
+{
+    if (impl_ != nullptr) {
+        vkCmdDraw(impl_->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
     }
 }
 
@@ -1520,6 +1670,153 @@ Result Device::createTextureView(
     return Result::Success;
 }
 
+Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule)
+{
+    outShaderModule.reset();
+    if (impl_ == nullptr || desc.code == nullptr || desc.byteSize == 0 || (desc.byteSize % sizeof(uint32_t)) != 0) {
+        return Result::InvalidArgument;
+    }
+
+    VkShaderModuleCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = desc.byteSize,
+        .pCode = desc.code,
+    };
+
+    VkShaderModule module = VK_NULL_HANDLE;
+    const VkResult result = vkCreateShaderModule(impl_->device, &createInfo, nullptr, &module);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+
+    auto shaderImpl = std::make_unique<detail::ShaderModuleImpl>();
+    shaderImpl->device = impl_.get();
+    shaderImpl->module = module;
+    outShaderModule.reset(new ShaderModule(std::move(shaderImpl)));
+    return Result::Success;
+}
+
+Result Device::createGraphicsPipeline(
+    const GraphicsPipelineDesc& desc,
+    std::unique_ptr<GraphicsPipeline>& outGraphicsPipeline)
+{
+    outGraphicsPipeline.reset();
+    if (impl_ == nullptr ||
+        desc.vertexShader == nullptr ||
+        desc.vertexShader->impl_ == nullptr ||
+        desc.fragmentShader == nullptr ||
+        desc.fragmentShader->impl_ == nullptr ||
+        desc.colorFormat == Format::Unknown) {
+        return Result::InvalidArgument;
+    }
+
+    const char* vertexEntryPoint = desc.vertexEntryPoint != nullptr ? desc.vertexEntryPoint : "main";
+    const char* fragmentEntryPoint = desc.fragmentEntryPoint != nullptr ? desc.fragmentEntryPoint : "main";
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = desc.vertexShader->impl_->module,
+            .pName = vertexEntryPoint,
+        },
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = desc.fragmentShader->impl_->module,
+            .pName = fragmentEntryPoint,
+        },
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    };
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = toVkPrimitiveTopology(desc.topology),
+    };
+    VkPipelineViewportStateCreateInfo viewportState{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+    VkPipelineRasterizationStateCreateInfo rasterizationState{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth = 1.0f,
+    };
+    VkPipelineMultisampleStateCreateInfo multisampleState{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{
+        .blendEnable = VK_FALSE,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+            VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT |
+            VK_COLOR_COMPONENT_A_BIT,
+    };
+    VkPipelineColorBlendStateCreateInfo colorBlendState{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &colorBlendAttachment,
+    };
+    std::array<VkDynamicState, 2> dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+        .pDynamicStates = dynamicStates.data(),
+    };
+
+    VkPipelineLayoutCreateInfo layoutInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+    };
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkResult result = vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+
+    const VkFormat colorFormat = toVkFormat(desc.colorFormat);
+    VkPipelineRenderingCreateInfo renderingInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &colorFormat,
+    };
+    VkGraphicsPipelineCreateInfo pipelineInfo{
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &renderingInfo,
+        .stageCount = static_cast<uint32_t>(stages.size()),
+        .pStages = stages.data(),
+        .pVertexInputState = &vertexInput,
+        .pInputAssemblyState = &inputAssembly,
+        .pViewportState = &viewportState,
+        .pRasterizationState = &rasterizationState,
+        .pMultisampleState = &multisampleState,
+        .pColorBlendState = &colorBlendState,
+        .pDynamicState = &dynamicState,
+        .layout = layout,
+    };
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    result = vkCreateGraphicsPipelines(impl_->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    if (result != VK_SUCCESS) {
+        vkDestroyPipelineLayout(impl_->device, layout, nullptr);
+        return resultFromVk(result);
+    }
+
+    auto pipelineImpl = std::make_unique<detail::GraphicsPipelineImpl>();
+    pipelineImpl->device = impl_.get();
+    pipelineImpl->layout = layout;
+    pipelineImpl->pipeline = pipeline;
+    outGraphicsPipeline.reset(new GraphicsPipeline(std::move(pipelineImpl)));
+    return Result::Success;
+}
+
 Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 {
     outDevice.reset();
@@ -1714,7 +2011,504 @@ bool checkResult(Result result, const char* label)
     return false;
 }
 
+constexpr uint32_t kTriangleVertexShaderSpirv[] = {
+    0x07230203, 0x00010600, 0x000d000b, 0x0000003c,
+    0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e,
+    0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x000a000f, 0x00000000, 0x00000004, 0x6e69616d,
+    0x00000000, 0x0000000c, 0x00000018, 0x00000028,
+    0x0000002c, 0x00000037, 0x00030003, 0x00000002,
+    0x000001cc, 0x000a0004, 0x475f4c47, 0x4c474f4f,
+    0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c,
+    0x7269645f, 0x69746365, 0x00006576, 0x00080004,
+    0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63,
+    0x69645f65, 0x74636572, 0x00657669, 0x00040005,
+    0x00000004, 0x6e69616d, 0x00000000, 0x00050005,
+    0x0000000c, 0x69736f70, 0x6e6f6974, 0x00000073,
+    0x00040005, 0x00000018, 0x6f6c6f63, 0x00007372,
+    0x00060005, 0x00000026, 0x505f6c67, 0x65567265,
+    0x78657472, 0x00000000, 0x00060006, 0x00000026,
+    0x00000000, 0x505f6c67, 0x7469736f, 0x006e6f69,
+    0x00070006, 0x00000026, 0x00000001, 0x505f6c67,
+    0x746e696f, 0x657a6953, 0x00000000, 0x00070006,
+    0x00000026, 0x00000002, 0x435f6c67, 0x4470696c,
+    0x61747369, 0x0065636e, 0x00070006, 0x00000026,
+    0x00000003, 0x435f6c67, 0x446c6c75, 0x61747369,
+    0x0065636e, 0x00030005, 0x00000028, 0x00000000,
+    0x00060005, 0x0000002c, 0x565f6c67, 0x65747265,
+    0x646e4978, 0x00007865, 0x00040005, 0x00000037,
+    0x6c6f4376, 0x0000726f, 0x00030047, 0x00000026,
+    0x00000002, 0x00050048, 0x00000026, 0x00000000,
+    0x0000000b, 0x00000000, 0x00050048, 0x00000026,
+    0x00000001, 0x0000000b, 0x00000001, 0x00050048,
+    0x00000026, 0x00000002, 0x0000000b, 0x00000003,
+    0x00050048, 0x00000026, 0x00000003, 0x0000000b,
+    0x00000004, 0x00040047, 0x0000002c, 0x0000000b,
+    0x0000002a, 0x00040047, 0x00000037, 0x0000001e,
+    0x00000000, 0x00020013, 0x00000002, 0x00030021,
+    0x00000003, 0x00000002, 0x00030016, 0x00000006,
+    0x00000020, 0x00040017, 0x00000007, 0x00000006,
+    0x00000002, 0x00040015, 0x00000008, 0x00000020,
+    0x00000000, 0x0004002b, 0x00000008, 0x00000009,
+    0x00000003, 0x0004001c, 0x0000000a, 0x00000007,
+    0x00000009, 0x00040020, 0x0000000b, 0x00000006,
+    0x0000000a, 0x0004003b, 0x0000000b, 0x0000000c,
+    0x00000006, 0x0004002b, 0x00000006, 0x0000000d,
+    0x00000000, 0x0004002b, 0x00000006, 0x0000000e,
+    0xbf1eb852, 0x0005002c, 0x00000007, 0x0000000f,
+    0x0000000d, 0x0000000e, 0x0004002b, 0x00000006,
+    0x00000010, 0x3f1eb852, 0x0004002b, 0x00000006,
+    0x00000011, 0x3f147ae1, 0x0005002c, 0x00000007,
+    0x00000012, 0x00000010, 0x00000011, 0x0005002c,
+    0x00000007, 0x00000013, 0x0000000e, 0x00000011,
+    0x0006002c, 0x0000000a, 0x00000014, 0x0000000f,
+    0x00000012, 0x00000013, 0x00040017, 0x00000015,
+    0x00000006, 0x00000003, 0x0004001c, 0x00000016,
+    0x00000015, 0x00000009, 0x00040020, 0x00000017,
+    0x00000006, 0x00000016, 0x0004003b, 0x00000017,
+    0x00000018, 0x00000006, 0x0004002b, 0x00000006,
+    0x00000019, 0x3e3851ec, 0x0004002b, 0x00000006,
+    0x0000001a, 0x3ef5c28f, 0x0004002b, 0x00000006,
+    0x0000001b, 0x3f800000, 0x0006002c, 0x00000015,
+    0x0000001c, 0x00000019, 0x0000001a, 0x0000001b,
+    0x0004002b, 0x00000006, 0x0000001d, 0x3f733333,
+    0x0004002b, 0x00000006, 0x0000001e, 0x3f0ccccd,
+    0x0006002c, 0x00000015, 0x0000001f, 0x00000019,
+    0x0000001d, 0x0000001e, 0x0004002b, 0x00000006,
+    0x00000020, 0x3ea3d70a, 0x0006002c, 0x00000015,
+    0x00000021, 0x0000001b, 0x00000020, 0x00000020,
+    0x0006002c, 0x00000016, 0x00000022, 0x0000001c,
+    0x0000001f, 0x00000021, 0x00040017, 0x00000023,
+    0x00000006, 0x00000004, 0x0004002b, 0x00000008,
+    0x00000024, 0x00000001, 0x0004001c, 0x00000025,
+    0x00000006, 0x00000024, 0x0006001e, 0x00000026,
+    0x00000023, 0x00000006, 0x00000025, 0x00000025,
+    0x00040020, 0x00000027, 0x00000003, 0x00000026,
+    0x0004003b, 0x00000027, 0x00000028, 0x00000003,
+    0x00040015, 0x00000029, 0x00000020, 0x00000001,
+    0x0004002b, 0x00000029, 0x0000002a, 0x00000000,
+    0x00040020, 0x0000002b, 0x00000001, 0x00000029,
+    0x0004003b, 0x0000002b, 0x0000002c, 0x00000001,
+    0x00040020, 0x0000002e, 0x00000006, 0x00000007,
+    0x00040020, 0x00000034, 0x00000003, 0x00000023,
+    0x00040020, 0x00000036, 0x00000003, 0x00000015,
+    0x0004003b, 0x00000036, 0x00000037, 0x00000003,
+    0x00040020, 0x00000039, 0x00000006, 0x00000015,
+    0x00050036, 0x00000002, 0x00000004, 0x00000000,
+    0x00000003, 0x000200f8, 0x00000005, 0x0003003e,
+    0x0000000c, 0x00000014, 0x0003003e, 0x00000018,
+    0x00000022, 0x0004003d, 0x00000029, 0x0000002d,
+    0x0000002c, 0x00050041, 0x0000002e, 0x0000002f,
+    0x0000000c, 0x0000002d, 0x0004003d, 0x00000007,
+    0x00000030, 0x0000002f, 0x00050051, 0x00000006,
+    0x00000031, 0x00000030, 0x00000000, 0x00050051,
+    0x00000006, 0x00000032, 0x00000030, 0x00000001,
+    0x00070050, 0x00000023, 0x00000033, 0x00000031,
+    0x00000032, 0x0000000d, 0x0000001b, 0x00050041,
+    0x00000034, 0x00000035, 0x00000028, 0x0000002a,
+    0x0003003e, 0x00000035, 0x00000033, 0x0004003d,
+    0x00000029, 0x00000038, 0x0000002c, 0x00050041,
+    0x00000039, 0x0000003a, 0x00000018, 0x00000038,
+    0x0004003d, 0x00000015, 0x0000003b, 0x0000003a,
+    0x0003003e, 0x00000037, 0x0000003b, 0x000100fd,
+    0x00010038,
+};
+
+constexpr uint32_t kTriangleFragmentShaderSpirv[] = {
+    0x07230203, 0x00010600, 0x000d000b, 0x00000013,
+    0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e,
+    0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0007000f, 0x00000004, 0x00000004, 0x6e69616d,
+    0x00000000, 0x00000009, 0x0000000c, 0x00030010,
+    0x00000004, 0x00000007, 0x00030003, 0x00000002,
+    0x000001cc, 0x000a0004, 0x475f4c47, 0x4c474f4f,
+    0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c,
+    0x7269645f, 0x69746365, 0x00006576, 0x00080004,
+    0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63,
+    0x69645f65, 0x74636572, 0x00657669, 0x00040005,
+    0x00000004, 0x6e69616d, 0x00000000, 0x00050005,
+    0x00000009, 0x4374756f, 0x726f6c6f, 0x00000000,
+    0x00040005, 0x0000000c, 0x6c6f4376, 0x0000726f,
+    0x00040047, 0x00000009, 0x0000001e, 0x00000000,
+    0x00040047, 0x0000000c, 0x0000001e, 0x00000000,
+    0x00020013, 0x00000002, 0x00030021, 0x00000003,
+    0x00000002, 0x00030016, 0x00000006, 0x00000020,
+    0x00040017, 0x00000007, 0x00000006, 0x00000004,
+    0x00040020, 0x00000008, 0x00000003, 0x00000007,
+    0x0004003b, 0x00000008, 0x00000009, 0x00000003,
+    0x00040017, 0x0000000a, 0x00000006, 0x00000003,
+    0x00040020, 0x0000000b, 0x00000001, 0x0000000a,
+    0x0004003b, 0x0000000b, 0x0000000c, 0x00000001,
+    0x0004002b, 0x00000006, 0x0000000e, 0x3f800000,
+    0x00050036, 0x00000002, 0x00000004, 0x00000000,
+    0x00000003, 0x000200f8, 0x00000005, 0x0004003d,
+    0x0000000a, 0x0000000d, 0x0000000c, 0x00050051,
+    0x00000006, 0x0000000f, 0x0000000d, 0x00000000,
+    0x00050051, 0x00000006, 0x00000010, 0x0000000d,
+    0x00000001, 0x00050051, 0x00000006, 0x00000011,
+    0x0000000d, 0x00000002, 0x00070050, 0x00000007,
+    0x00000012, 0x0000000f, 0x00000010, 0x00000011,
+    0x0000000e, 0x0003003e, 0x00000009, 0x00000012,
+    0x000100fd, 0x00010038,
+};
+
 } // namespace
+
+namespace detail {
+
+struct TrianglePreviewRendererImpl {
+    std::unique_ptr<Device> device;
+    Queue* graphicsQueue = nullptr;
+    std::unique_ptr<CommandPool> commandPool;
+    std::unique_ptr<CommandBuffer> commandBuffer;
+    std::unique_ptr<Fence> fence;
+    std::unique_ptr<ShaderModule> vertexShader;
+    std::unique_ptr<ShaderModule> fragmentShader;
+    std::unique_ptr<GraphicsPipeline> pipeline;
+    std::unique_ptr<Texture> colorTexture;
+    std::unique_ptr<TextureView> colorTextureView;
+    std::unique_ptr<Buffer> readbackBuffer;
+    std::vector<uint32_t> pixels;
+    uint32_t width = 0;
+    uint32_t height = 0;
+
+    Result initialize(bool enableValidation);
+    Result ensureResources(uint32_t newWidth, uint32_t newHeight);
+    Result render(uint32_t newWidth, uint32_t newHeight);
+};
+
+Result TrianglePreviewRendererImpl::initialize(bool enableValidation)
+{
+    Result result = createDevice(
+        DeviceDesc{
+            .applicationName = "Metallic Triangle Preview",
+            .enableValidation = enableValidation,
+        },
+        device);
+    if (result != Result::Success) {
+        return result;
+    }
+
+    graphicsQueue = device->getQueue(QueueType::Graphics);
+    if (graphicsQueue == nullptr) {
+        return Result::Unsupported;
+    }
+
+    result = device->createCommandPool(*graphicsQueue, commandPool);
+    if (result != Result::Success) {
+        return result;
+    }
+    result = commandPool->createCommandBuffer(commandBuffer);
+    if (result != Result::Success) {
+        return result;
+    }
+    result = device->createFence(true, fence);
+    if (result != Result::Success) {
+        return result;
+    }
+
+    result = device->createShaderModule(
+        ShaderModuleDesc{
+            .code = kTriangleVertexShaderSpirv,
+            .byteSize = sizeof(kTriangleVertexShaderSpirv),
+        },
+        vertexShader);
+    if (result != Result::Success) {
+        return result;
+    }
+    result = device->createShaderModule(
+        ShaderModuleDesc{
+            .code = kTriangleFragmentShaderSpirv,
+            .byteSize = sizeof(kTriangleFragmentShaderSpirv),
+        },
+        fragmentShader);
+    if (result != Result::Success) {
+        return result;
+    }
+
+    return device->createGraphicsPipeline(
+        GraphicsPipelineDesc{
+            .vertexShader = vertexShader.get(),
+            .fragmentShader = fragmentShader.get(),
+            .colorFormat = Format::Rgba8Unorm,
+            .topology = PrimitiveTopology::TriangleList,
+        },
+        pipeline);
+}
+
+Result TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t newHeight)
+{
+    if (newWidth == 0 || newHeight == 0) {
+        return Result::InvalidArgument;
+    }
+
+    if (newWidth == width && newHeight == height && colorTexture != nullptr && readbackBuffer != nullptr) {
+        return Result::Success;
+    }
+
+    if (device == nullptr) {
+        return Result::InvalidArgument;
+    }
+
+    device->waitIdle();
+    colorTextureView.reset();
+    colorTexture.reset();
+    readbackBuffer.reset();
+
+    Result result = device->createTexture(
+        TextureDesc{
+            .type = TextureType::Texture2D,
+            .usage = TextureUsageBits::ColorAttachment | TextureUsageBits::TransferSource,
+            .format = Format::Rgba8Unorm,
+            .width = newWidth,
+            .height = newHeight,
+            .depth = 1,
+            .mipCount = 1,
+            .layerCount = 1,
+            .memoryLocation = MemoryLocation::Device,
+        },
+        colorTexture);
+    if (result != Result::Success) {
+        return result;
+    }
+
+    result = device->createTextureView(
+        *colorTexture,
+        TextureViewDesc{
+            .format = Format::Rgba8Unorm,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        },
+        colorTextureView);
+    if (result != Result::Success) {
+        return result;
+    }
+
+    const uint64_t byteSize = static_cast<uint64_t>(newWidth) * static_cast<uint64_t>(newHeight) * 4ull;
+    result = device->createBuffer(
+        BufferDesc{
+            .size = byteSize,
+            .usage = BufferUsageBits::TransferDestination,
+            .memoryLocation = MemoryLocation::HostReadback,
+        },
+        readbackBuffer);
+    if (result != Result::Success) {
+        return result;
+    }
+
+    width = newWidth;
+    height = newHeight;
+    pixels.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
+    return Result::Success;
+}
+
+Result TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeight)
+{
+    Result result = ensureResources(newWidth, newHeight);
+    if (result != Result::Success) {
+        return result;
+    }
+
+    result = fence->wait();
+    if (result != Result::Success) {
+        return result;
+    }
+    result = fence->reset();
+    if (result != Result::Success) {
+        return result;
+    }
+    result = commandPool->reset();
+    if (result != Result::Success) {
+        return result;
+    }
+
+    result = commandBuffer->begin();
+    if (result != Result::Success) {
+        return result;
+    }
+
+    TextureBarrierDesc toColor{
+        .texture = colorTexture.get(),
+        .before = ResourceState::Undefined,
+        .after = ResourceState::ColorAttachment,
+        .baseMip = 0,
+        .mipCount = 1,
+        .baseLayer = 0,
+        .layerCount = 1,
+    };
+    commandBuffer->barrier(BarrierDesc{.textures = &toColor, .textureCount = 1});
+
+    const Rect renderArea{
+        .x = 0,
+        .y = 0,
+        .width = width,
+        .height = height,
+    };
+    RenderingAttachmentDesc colorAttachment{
+        .view = colorTextureView.get(),
+        .state = ResourceState::ColorAttachment,
+        .loadOp = LoadOp::Clear,
+        .storeOp = StoreOp::Store,
+        .clearColor = ColorValue{0.04f, 0.06f, 0.09f, 1.0f},
+    };
+    commandBuffer->beginRendering(RenderingDesc{
+        .renderArea = renderArea,
+        .colorAttachments = &colorAttachment,
+        .colorAttachmentCount = 1,
+    });
+    commandBuffer->setViewport(Viewport{
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = static_cast<float>(width),
+        .height = static_cast<float>(height),
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    });
+    commandBuffer->setScissor(renderArea);
+    commandBuffer->bindGraphicsPipeline(*pipeline);
+    commandBuffer->draw(3);
+    commandBuffer->endRendering();
+
+    TextureBarrierDesc toTransfer{
+        .texture = colorTexture.get(),
+        .before = ResourceState::ColorAttachment,
+        .after = ResourceState::TransferSource,
+        .baseMip = 0,
+        .mipCount = 1,
+        .baseLayer = 0,
+        .layerCount = 1,
+    };
+    commandBuffer->barrier(BarrierDesc{.textures = &toTransfer, .textureCount = 1});
+    commandBuffer->copyTextureToBuffer(TextureBufferCopyDesc{
+        .texture = colorTexture.get(),
+        .buffer = readbackBuffer.get(),
+        .width = width,
+        .height = height,
+        .depth = 1,
+        .mipLevel = 0,
+        .baseLayer = 0,
+    });
+
+    result = commandBuffer->end();
+    if (result != Result::Success) {
+        return result;
+    }
+
+    CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+    result = graphicsQueue->submit(QueueSubmitDesc{
+        .commandBuffers = commandBuffers,
+        .commandBufferCount = 1,
+        .signalFence = fence.get(),
+    });
+    if (result != Result::Success) {
+        return result;
+    }
+    result = fence->wait();
+    if (result != Result::Success) {
+        return result;
+    }
+
+    readbackBuffer->invalidate();
+    void* mapped = readbackBuffer->map();
+    if (mapped == nullptr) {
+        return Result::Failure;
+    }
+
+    const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
+    std::memcpy(pixels.data(), mapped, static_cast<size_t>(byteSize));
+    readbackBuffer->unmap();
+    return Result::Success;
+}
+
+} // namespace detail
+
+TrianglePreviewRenderer::TrianglePreviewRenderer()
+    : impl_(std::make_unique<detail::TrianglePreviewRendererImpl>())
+{
+}
+
+TrianglePreviewRenderer::~TrianglePreviewRenderer() = default;
+TrianglePreviewRenderer::TrianglePreviewRenderer(TrianglePreviewRenderer&&) noexcept = default;
+TrianglePreviewRenderer& TrianglePreviewRenderer::operator=(TrianglePreviewRenderer&&) noexcept = default;
+
+Result TrianglePreviewRenderer::initialize(bool enableValidation)
+{
+    if (impl_ == nullptr) {
+        return Result::InvalidArgument;
+    }
+    return impl_->initialize(enableValidation);
+}
+
+Result TrianglePreviewRenderer::render(uint32_t width, uint32_t height)
+{
+    if (impl_ == nullptr) {
+        return Result::InvalidArgument;
+    }
+    return impl_->render(width, height);
+}
+
+const std::vector<uint32_t>& TrianglePreviewRenderer::pixels() const
+{
+    static const std::vector<uint32_t> emptyPixels;
+    return impl_ != nullptr ? impl_->pixels : emptyPixels;
+}
+
+uint32_t TrianglePreviewRenderer::width() const
+{
+    return impl_ != nullptr ? impl_->width : 0;
+}
+
+uint32_t TrianglePreviewRenderer::height() const
+{
+    return impl_ != nullptr ? impl_->height : 0;
+}
+
+int runRhiTrianglePreviewTest(bool enableValidation)
+{
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        std::cerr << "SDL_Init failed: " << SDL_GetError() << '\n';
+        return 1;
+    }
+
+    int exitCode = 0;
+    {
+        TrianglePreviewRenderer previewRenderer;
+        Result result = previewRenderer.initialize(enableValidation);
+        if (!checkResult(result, "TrianglePreviewRenderer::initialize")) {
+            exitCode = resultToExitCode(result);
+        } else {
+            result = previewRenderer.render(320, 240);
+            if (!checkResult(result, "TrianglePreviewRenderer::render")) {
+                exitCode = resultToExitCode(result);
+            } else {
+                uint32_t brightPixelCount = 0;
+                const std::vector<uint32_t>& pixels = previewRenderer.pixels();
+                const auto* bytes = reinterpret_cast<const uint8_t*>(pixels.data());
+                for (size_t index = 0; index < pixels.size(); ++index) {
+                    const uint8_t r = bytes[index * 4 + 0];
+                    const uint8_t g = bytes[index * 4 + 1];
+                    const uint8_t b = bytes[index * 4 + 2];
+                    if (r > 120 || g > 120 || b > 120) {
+                        ++brightPixelCount;
+                    }
+                }
+
+                if (brightPixelCount < 256) {
+                    std::cerr << "Triangle preview pixel check failed: only "
+                              << brightPixelCount << " bright pixels found.\n";
+                    exitCode = 1;
+                }
+            }
+        }
+    }
+
+    SDL_Quit();
+    return exitCode;
+}
 
 int runRhiSmokeTest(bool enableValidation)
 {
