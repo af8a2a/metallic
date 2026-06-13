@@ -6,10 +6,12 @@
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
+#include "imgui_internal.h"
 
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -24,6 +26,8 @@ namespace {
 constexpr int kBaseWindowWidth = 1600;
 constexpr int kBaseWindowHeight = 900;
 constexpr uint32_t kMaxViewportPreviewSize = 2048;
+constexpr uint32_t kViewportResizeSettleFrames = 3;
+constexpr const char* kRenderPassDragPayload = "METALLIC_RENDER_PASS_TYPE";
 #if defined(SDL_PLATFORM_WINDOWS)
 constexpr const char* kEditorRendererDrivers = "direct3d12,vulkan";
 #else
@@ -77,6 +81,47 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
         };
     }
     return render::RenderGraphProperties::object();
+}
+
+void copyToBuffer(const std::string& value, char* buffer, size_t bufferSize)
+{
+    if (buffer == nullptr || bufferSize == 0) {
+        return;
+    }
+    std::memset(buffer, 0, bufferSize);
+    const size_t copySize = std::min(value.size(), bufferSize - 1);
+    std::memcpy(buffer, value.data(), copySize);
+}
+
+bool isMarkedRenderGraphOutput(const render::RenderGraph& graph, std::string_view fullName)
+{
+    for (const render::RenderGraphOutput& output : graph.outputs()) {
+        if (render::makeRenderGraphFieldName(output.passName, output.fieldName) == fullName) {
+            return true;
+        }
+    }
+    return false;
+}
+
+ImU32 colorForPassType(const std::string& type)
+{
+    uint32_t hash = 2166136261u;
+    for (const char c : type) {
+        hash ^= static_cast<uint8_t>(c);
+        hash *= 16777619u;
+    }
+
+    const float hue = static_cast<float>(hash % 360u) / 360.0f;
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+    ImGui::ColorConvertHSVtoRGB(hue, 0.72f, 0.78f, r, g, b);
+    return ImGui::GetColorU32(ImVec4(r, g, b, 1.0f));
+}
+
+const char* renderGraphFieldVisibilityName(render::RenderGraphFieldVisibility visibility)
+{
+    return visibility == render::RenderGraphFieldVisibility::Input ? "Input" : "Output";
 }
 
 } // namespace
@@ -274,6 +319,53 @@ void EditorApplication::renderFrame()
     SDL_RenderPresent(renderer_);
 }
 
+void EditorApplication::setupDefaultDockLayout()
+{
+    if (dockLayoutInitialized_) {
+        return;
+    }
+    dockLayoutInitialized_ = true;
+
+    const ImGuiID dockspaceId = ImGui::GetID("MetallicDockspace");
+    if (ImGui::DockBuilderGetNode(dockspaceId) != nullptr) {
+        return;
+    }
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
+
+    ImGuiID graphDockId = dockspaceId;
+    ImGuiID renderUiDockId = ImGui::DockBuilderSplitNode(
+        graphDockId,
+        ImGuiDir_Right,
+        0.24f,
+        nullptr,
+        &graphDockId);
+    ImGuiID bottomDockId = ImGui::DockBuilderSplitNode(
+        graphDockId,
+        ImGuiDir_Down,
+        0.28f,
+        nullptr,
+        &graphDockId);
+    ImGuiID passesDockId = ImGui::DockBuilderSplitNode(
+        bottomDockId,
+        ImGuiDir_Right,
+        0.76f,
+        nullptr,
+        &bottomDockId);
+
+    ImGui::DockBuilderDockWindow("Graph Editor", graphDockId);
+    ImGui::DockBuilderDockWindow("Graph Editor Settings", bottomDockId);
+    ImGui::DockBuilderDockWindow("Render Passes", passesDockId);
+    ImGui::DockBuilderDockWindow("Console", passesDockId);
+    ImGui::DockBuilderDockWindow("Assets", passesDockId);
+    ImGui::DockBuilderDockWindow("Render UI", renderUiDockId);
+    ImGui::DockBuilderDockWindow("Viewport", renderUiDockId);
+    ImGui::DockBuilderDockWindow("Scene", renderUiDockId);
+    ImGui::DockBuilderFinish(dockspaceId);
+}
+
 void EditorApplication::drawDockspace()
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -298,6 +390,7 @@ void EditorApplication::drawDockspace()
     ImGui::PopStyleVar(3);
 
     const ImGuiID dockspaceId = ImGui::GetID("MetallicDockspace");
+    setupDefaultDockLayout();
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
 
     if (ImGui::BeginMenuBar()) {
@@ -319,12 +412,19 @@ void EditorApplication::drawDockspace()
         }
 
         if (ImGui::BeginMenu("Window")) {
-            ImGui::MenuItem("Scene", nullptr, false, false);
-            ImGui::MenuItem("Viewport", nullptr, false, false);
-            ImGui::MenuItem("Render Graph", nullptr, false, false);
-            ImGui::MenuItem("Inspector", nullptr, false, false);
-            ImGui::MenuItem("Assets", nullptr, false, false);
-            ImGui::MenuItem("Console", nullptr, false, false);
+            if (ImGui::MenuItem("Reset Graph Editor Layout")) {
+                ImGui::DockBuilderRemoveNode(dockspaceId);
+                dockLayoutInitialized_ = false;
+            }
+            ImGui::Separator();
+            ImGui::MenuItem("Scene");
+            ImGui::MenuItem("Viewport");
+            ImGui::MenuItem("Graph Editor");
+            ImGui::MenuItem("Graph Editor Settings");
+            ImGui::MenuItem("Render Passes");
+            ImGui::MenuItem("Render UI");
+            ImGui::MenuItem("Assets");
+            ImGui::MenuItem("Console");
             ImGui::EndMenu();
         }
 
@@ -345,8 +445,9 @@ void EditorApplication::drawPanels()
 
     drawViewportPanel();
     drawRenderGraphPanel();
-
-    drawRenderGraphInspector();
+    drawRenderGraphSettingsPanel();
+    drawRenderPassesPanel();
+    drawRenderGraphRenderUiPanel();
 
     ImGui::Begin("Assets");
     ImGui::TextUnformatted(PROJECT_SOURCE_DIR);
@@ -426,12 +527,37 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
         return false;
     }
 
-    if (viewportPreviewValid_ &&
+    const bool textureSizeMatches =
         viewportTexture_ != nullptr &&
         viewportTextureWidth_ == width &&
-        viewportTextureHeight_ == height &&
+        viewportTextureHeight_ == height;
+
+    if (viewportPreviewValid_ &&
+        textureSizeMatches &&
         !renderGraph_.dirty()) {
+        pendingViewportPreviewWidth_ = width;
+        pendingViewportPreviewHeight_ = height;
+        viewportResizeStableFrameCount_ = 0;
         return true;
+    }
+
+    const bool canReusePreviewDuringResize =
+        viewportPreviewValid_ &&
+        viewportTexture_ != nullptr &&
+        !textureSizeMatches &&
+        !renderGraph_.dirty();
+    if (canReusePreviewDuringResize) {
+        if (pendingViewportPreviewWidth_ != width || pendingViewportPreviewHeight_ != height) {
+            pendingViewportPreviewWidth_ = width;
+            pendingViewportPreviewHeight_ = height;
+            viewportResizeStableFrameCount_ = 0;
+            return true;
+        }
+
+        if (viewportResizeStableFrameCount_ < kViewportResizeSettleFrames) {
+            ++viewportResizeStableFrameCount_;
+            return true;
+        }
     }
 
     const render::Result renderResult = graphPreviewRenderer_->render(renderGraph_, width, height);
@@ -483,6 +609,9 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     }
 
     viewportPreviewValid_ = true;
+    pendingViewportPreviewWidth_ = width;
+    pendingViewportPreviewHeight_ = height;
+    viewportResizeStableFrameCount_ = 0;
     return true;
 }
 
@@ -494,6 +623,9 @@ void EditorApplication::destroyViewportTexture()
     }
     viewportTextureWidth_ = 0;
     viewportTextureHeight_ = 0;
+    pendingViewportPreviewWidth_ = 0;
+    pendingViewportPreviewHeight_ = 0;
+    viewportResizeStableFrameCount_ = 0;
     viewportPreviewValid_ = false;
 }
 
@@ -504,6 +636,7 @@ void EditorApplication::resetDefaultRenderGraph()
     selectedGraphNodeId_ = -1;
     selectedGraphLinkId_ = -1;
     viewportPreviewValid_ = false;
+    copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
     renderGraphStatus_ = "Created default RenderGraph";
 }
 
@@ -532,37 +665,58 @@ void EditorApplication::loadRenderGraph()
     selectedGraphNodeId_ = -1;
     selectedGraphLinkId_ = -1;
     viewportPreviewValid_ = false;
+    copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
     renderGraphStatus_ = message;
 }
 
-void EditorApplication::drawRenderGraphMenuBar()
+void EditorApplication::addRenderGraphNode(std::string type, ImVec2 screenPosition)
 {
-    ImGui::PushItemWidth(std::max(220.0f * mainScale_, ImGui::GetContentRegionAvail().x * 0.32f));
-    ImGui::InputText("##GraphPath", graphFilePath_, sizeof(graphFilePath_));
-    ImGui::PopItemWidth();
-    ImGui::SameLine();
-    if (ImGui::Button("New")) {
-        resetDefaultRenderGraph();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Load")) {
-        loadRenderGraph();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Save")) {
-        saveRenderGraph();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Validate")) {
-        std::string log;
-        renderGraph_.validate(log);
-        renderGraphStatus_ = log;
+    if (type.empty()) {
+        return;
     }
 
-    if (!renderGraphStatus_.empty()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", renderGraphStatus_.c_str());
+    const std::string nodeName = makeUniqueNodeName(renderGraph_, type);
+    render::RenderGraphProperties properties = defaultPropertiesForPass(type);
+    const float fallbackOffset = static_cast<float>(renderGraph_.nodes().size()) * 34.0f * mainScale_;
+    render::RenderGraphNode* node = renderGraph_.addNode(
+        std::move(type),
+        nodeName,
+        std::move(properties),
+        72.0f * mainScale_ + fallbackOffset,
+        96.0f * mainScale_ + fallbackOffset);
+    if (node == nullptr) {
+        renderGraphStatus_ = "Failed to add render pass node";
+        return;
     }
+
+    if (screenPosition.x >= 0.0f && screenPosition.y >= 0.0f) {
+        ImNodes::SetNodeScreenSpacePos(static_cast<int>(node->id), screenPosition);
+        const ImVec2 editorPosition = ImNodes::GetNodeEditorSpacePos(static_cast<int>(node->id));
+        renderGraph_.setNodePosition(node->id, editorPosition.x, editorPosition.y);
+    } else {
+        graphEditorPositionsInitialized_ = false;
+    }
+
+    selectedGraphNodeId_ = static_cast<int>(node->id);
+    selectedGraphLinkId_ = -1;
+    viewportPreviewValid_ = false;
+    renderGraphStatus_ = std::string("Added ") + node->name;
+}
+
+void EditorApplication::markRenderGraphOutput(std::string outputName)
+{
+    if (outputName.empty()) {
+        return;
+    }
+
+    renderGraph_.clearOutputs();
+    if (!renderGraph_.markOutput(outputName)) {
+        renderGraphStatus_ = std::string("Invalid graph output '") + outputName + "'";
+        return;
+    }
+    copyToBuffer(outputName, graphOutputBuffer_, sizeof(graphOutputBuffer_));
+    viewportPreviewValid_ = false;
+    renderGraphStatus_ = std::string("Graph output set to ") + outputName;
 }
 
 int EditorApplication::graphInputAttributeId(const render::RenderGraphNode& node, uint32_t fieldIndex) const
@@ -618,11 +772,28 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
 
     for (const render::RenderGraphField& field : reflection.fields()) {
         if (field.visibility == render::RenderGraphFieldVisibility::Output) {
-            ImNodes::BeginOutputAttribute(graphOutputAttributeId(node, outputIndex++));
-            const float textWidth = ImGui::CalcTextSize(field.name.c_str()).x;
+            const std::string fullName = render::makeRenderGraphFieldName(node.name, field.name);
+            const bool markedOutput = isMarkedRenderGraphOutput(renderGraph_, fullName);
+            const int attributeId = graphOutputAttributeId(node, outputIndex++);
+            if (markedOutput) {
+                ImNodes::PushColorStyle(ImNodesCol_Pin, IM_COL32(231, 65, 65, 255));
+                ImNodes::PushColorStyle(ImNodesCol_PinHovered, IM_COL32(255, 112, 112, 255));
+            }
+            ImNodes::BeginOutputAttribute(
+                attributeId,
+                markedOutput ? ImNodesPinShape_QuadFilled : ImNodesPinShape_CircleFilled);
+            const std::string label = markedOutput ? field.name + "  [Graph Output]" : field.name;
+            const float textWidth = ImGui::CalcTextSize(label.c_str()).x;
             ImGui::Indent(std::max(90.0f * mainScale_ - textWidth, 0.0f));
-            ImGui::TextUnformatted(field.name.c_str());
+            ImGui::TextUnformatted(label.c_str());
+            if (!field.description.empty() && ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", field.description.c_str());
+            }
             ImNodes::EndOutputAttribute();
+            if (markedOutput) {
+                ImNodes::PopColorStyle();
+                ImNodes::PopColorStyle();
+            }
         }
     }
 
@@ -631,35 +802,7 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
 
 void EditorApplication::drawRenderGraphPanel()
 {
-    ImGui::Begin("Render Graph");
-    drawRenderGraphMenuBar();
-    ImGui::Separator();
-
-    const float paletteWidth = std::max(170.0f * mainScale_, 150.0f);
-    ImGui::BeginChild("RenderGraphPassPalette", ImVec2(paletteWidth, 0.0f), true);
-    ImGui::TextUnformatted("Passes");
-    ImGui::Separator();
-    for (const render::RenderGraphPassInfo& passInfo : render::listRenderGraphPassTypes()) {
-        if (ImGui::Button(passInfo.type.c_str(), ImVec2(-1.0f, 0.0f))) {
-            const std::string nodeName = makeUniqueNodeName(renderGraph_, passInfo.type);
-            render::RenderGraphProperties properties = defaultPropertiesForPass(passInfo.type);
-            renderGraph_.addNode(
-                passInfo.type,
-                nodeName,
-                std::move(properties),
-                60.0f * mainScale_,
-                120.0f * mainScale_);
-            graphEditorPositionsInitialized_ = false;
-            viewportPreviewValid_ = false;
-        }
-        if (!passInfo.description.empty() && ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", passInfo.description.c_str());
-        }
-    }
-    ImGui::EndChild();
-
-    ImGui::SameLine();
-    ImGui::BeginChild("RenderGraphCanvas", ImVec2(0.0f, 0.0f), true);
+    ImGui::Begin("Graph Editor");
 
     struct AttributeInfo {
         std::string fullName;
@@ -692,6 +835,7 @@ void EditorApplication::drawRenderGraphPanel()
     }
 
     ImNodes::BeginNodeEditor();
+    ImNodes::PushAttributeFlag(ImNodesAttributeFlags_EnableLinkDetachWithDragClick);
     if (!graphEditorPositionsInitialized_) {
         for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
             ImNodes::SetNodeEditorSpacePos(
@@ -704,6 +848,7 @@ void EditorApplication::drawRenderGraphPanel()
     for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
         drawRenderGraphNode(node);
     }
+    ImNodes::PopAttributeFlag();
 
     for (const render::RenderGraphEdge& edge : renderGraph_.edges()) {
         const std::string src = render::makeRenderGraphFieldName(edge.srcPass, edge.srcField);
@@ -718,9 +863,43 @@ void EditorApplication::drawRenderGraphPanel()
     ImNodes::MiniMap(0.16f, ImNodesMiniMapLocation_BottomRight);
     ImNodes::EndNodeEditor();
 
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kRenderPassDragPayload)) {
+            const char* payloadData = static_cast<const char*>(payload->Data);
+            if (payloadData != nullptr && payload->DataSize > 1) {
+                addRenderGraphNode(
+                    std::string(payloadData, static_cast<size_t>(payload->DataSize - 1)),
+                    ImGui::GetMousePos());
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
     for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
         const ImVec2 position = ImNodes::GetNodeEditorSpacePos(static_cast<int>(node.id));
         renderGraph_.setNodePosition(node.id, position.x, position.y);
+    }
+
+    int hoveredAttribute = 0;
+    if (ImNodes::IsPinHovered(&hoveredAttribute)) {
+        const auto hovered = attributes.find(hoveredAttribute);
+        if (hovered != attributes.end()) {
+            ImGui::SetTooltip("%s", hovered->second.fullName.c_str());
+            if (hovered->second.visibility == render::RenderGraphFieldVisibility::Output &&
+                ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                copyToBuffer(hovered->second.fullName, graphOutputBuffer_, sizeof(graphOutputBuffer_));
+                ImGui::OpenPopup("RenderGraphOutputPinMenu");
+            }
+        }
+    }
+
+    if (ImGui::BeginPopup("RenderGraphOutputPinMenu")) {
+        ImGui::TextUnformatted(graphOutputBuffer_);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Set Graph Output")) {
+            markRenderGraphOutput(graphOutputBuffer_);
+        }
+        ImGui::EndPopup();
     }
 
     int startedAttribute = 0;
@@ -757,12 +936,14 @@ void EditorApplication::drawRenderGraphPanel()
         std::vector<int> selectedNodes(static_cast<size_t>(selectedNodeCount));
         ImNodes::GetSelectedNodes(selectedNodes.data());
         selectedGraphNodeId_ = selectedNodes.front();
+        selectedGraphLinkId_ = -1;
     }
     const int selectedLinkCount = ImNodes::NumSelectedLinks();
     if (selectedLinkCount > 0) {
         std::vector<int> selectedLinks(static_cast<size_t>(selectedLinkCount));
         ImNodes::GetSelectedLinks(selectedLinks.data());
         selectedGraphLinkId_ = selectedLinks.front();
+        selectedGraphNodeId_ = -1;
     }
 
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
@@ -777,24 +958,165 @@ void EditorApplication::drawRenderGraphPanel()
         }
     }
 
-    if (ImGui::Button("Mark Selected color Output")) {
-        const render::RenderGraphNode* node = renderGraph_.findNode(static_cast<uint32_t>(selectedGraphNodeId_));
-        if (node != nullptr) {
-            renderGraph_.clearOutputs();
-            renderGraph_.markOutput(render::makeRenderGraphFieldName(node->name, "color"));
-            viewportPreviewValid_ = false;
-        }
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("Current output: %s", renderGraph_.firstOutputName().c_str());
-
-    ImGui::EndChild();
     ImGui::End();
 }
 
-void EditorApplication::drawRenderGraphInspector()
+void EditorApplication::drawRenderGraphSettingsPanel()
 {
-    ImGui::Begin("Inspector");
+    ImGui::Begin("Graph Editor Settings");
+
+    const std::string graphName = renderGraph_.name();
+    if (ImGui::BeginCombo("Open Graph", graphName.c_str())) {
+        ImGui::Selectable(graphName.c_str(), true);
+        ImGui::EndCombo();
+    }
+
+    ImGui::PushItemWidth(-1.0f);
+    ImGui::InputText("##GraphPath", graphFilePath_, sizeof(graphFilePath_));
+    ImGui::PopItemWidth();
+
+    if (ImGui::Button("New Graph")) {
+        resetDefaultRenderGraph();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load")) {
+        loadRenderGraph();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save")) {
+        saveRenderGraph();
+    }
+
+    if (ImGui::Button("Validate Graph")) {
+        std::string log;
+        renderGraph_.validate(log);
+        renderGraphStatus_ = log;
+    }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Graph Output");
+    ImGui::PushItemWidth(-1.0f);
+    ImGui::InputText("##GraphOutput", graphOutputBuffer_, sizeof(graphOutputBuffer_));
+    ImGui::PopItemWidth();
+    if (ImGui::Button("Add Output")) {
+        markRenderGraphOutput(graphOutputBuffer_);
+    }
+
+    for (const render::RenderGraphOutput& output : renderGraph_.outputs()) {
+        const std::string outputName = render::makeRenderGraphFieldName(output.passName, output.fieldName);
+        const bool selected = outputName == renderGraph_.firstOutputName();
+        if (ImGui::Selectable(outputName.c_str(), selected)) {
+            markRenderGraphOutput(outputName);
+        }
+    }
+
+    if (ImGui::Button("Open Preview")) {
+        renderGraphStatus_ = "Viewport previews the current graph output";
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Nodes: %zu", renderGraph_.nodes().size());
+    ImGui::Text("Edges: %zu", renderGraph_.edges().size());
+    if (!renderGraphStatus_.empty()) {
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", renderGraphStatus_.c_str());
+    }
+
+    ImGui::End();
+}
+
+void EditorApplication::drawRenderPassesPanel()
+{
+    ImGui::Begin("Render Passes");
+
+    const float cardWidth = 148.0f * mainScale_;
+    const float cardHeight = 74.0f * mainScale_;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const int columnCount = std::max(
+        1,
+        static_cast<int>((ImGui::GetContentRegionAvail().x + spacing) / (cardWidth + spacing)));
+
+    if (ImGui::BeginTable("RenderPassPalette", columnCount, ImGuiTableFlags_SizingStretchSame)) {
+        int index = 0;
+        for (const render::RenderGraphPassInfo& passInfo : render::listRenderGraphPassTypes()) {
+            ImGui::TableNextColumn();
+            ImGui::PushID(index++);
+
+            const ImVec2 cardMin = ImGui::GetCursorScreenPos();
+            const bool clicked = ImGui::InvisibleButton("RenderPassCard", ImVec2(cardWidth, cardHeight));
+            const ImVec2 cardMax = ImGui::GetItemRectMax();
+            const bool hovered = ImGui::IsItemHovered();
+
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            const ImU32 accent = colorForPassType(passInfo.type);
+            const ImU32 border = hovered ? IM_COL32(235, 235, 235, 255) : accent;
+            drawList->PushClipRect(cardMin, cardMax, true);
+            drawList->AddRectFilled(cardMin, cardMax, IM_COL32(25, 28, 34, 255), 3.0f * mainScale_);
+            drawList->AddRect(cardMin, cardMax, border, 3.0f * mainScale_, 0, 1.5f * mainScale_);
+
+            const ImVec2 iconMin(cardMin.x + 10.0f * mainScale_, cardMin.y + 8.0f * mainScale_);
+            const ImVec2 iconMax(cardMax.x - 10.0f * mainScale_, cardMin.y + 42.0f * mainScale_);
+            drawList->AddRectFilled(iconMin, iconMax, accent, 2.0f * mainScale_);
+            drawList->AddRect(iconMin, iconMax, IM_COL32(8, 10, 14, 255), 2.0f * mainScale_);
+            const char letter[2] = {passInfo.type.empty() ? '?' : passInfo.type.front(), '\0'};
+            drawList->AddText(
+                ImVec2(iconMin.x + 8.0f * mainScale_, iconMin.y + 5.0f * mainScale_),
+                IM_COL32(230, 255, 200, 255),
+                letter);
+            drawList->AddText(
+                ImVec2(cardMin.x + 2.0f * mainScale_, cardMin.y + 49.0f * mainScale_),
+                IM_COL32(235, 238, 242, 255),
+                passInfo.type.c_str());
+            drawList->PopClipRect();
+
+            if (clicked) {
+                addRenderGraphNode(passInfo.type, ImVec2(-1.0f, -1.0f));
+            }
+
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                ImGui::SetDragDropPayload(
+                    kRenderPassDragPayload,
+                    passInfo.type.c_str(),
+                    passInfo.type.size() + 1);
+                ImGui::TextUnformatted(passInfo.type.c_str());
+                ImGui::EndDragDropSource();
+            }
+
+            if (hovered && !passInfo.description.empty()) {
+                ImGui::SetTooltip("%s", passInfo.description.c_str());
+            }
+
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::End();
+}
+
+void EditorApplication::drawRenderGraphRenderUiPanel()
+{
+    ImGui::Begin("Render UI");
+
+    const render::RenderGraphEdge* edge = selectedGraphLinkId_ >= 0
+        ? renderGraph_.findEdge(static_cast<uint32_t>(selectedGraphLinkId_))
+        : nullptr;
+    if (edge != nullptr) {
+        ImGui::TextUnformatted("Selected Edge");
+        ImGui::Separator();
+        ImGui::Text(
+            "%s -> %s",
+            render::makeRenderGraphFieldName(edge->srcPass, edge->srcField).c_str(),
+            render::makeRenderGraphFieldName(edge->dstPass, edge->dstField).c_str());
+        if (ImGui::Button("Delete Edge")) {
+            renderGraph_.removeEdge(edge->id);
+            selectedGraphLinkId_ = -1;
+            viewportPreviewValid_ = false;
+        }
+        ImGui::End();
+        return;
+    }
+
     ImGui::TextUnformatted("Render Graph Selection");
     ImGui::Separator();
 
@@ -802,16 +1124,17 @@ void EditorApplication::drawRenderGraphInspector()
         ? renderGraph_.findNode(static_cast<uint32_t>(selectedGraphNodeId_))
         : nullptr;
     if (node == nullptr) {
-        ImGui::TextUnformatted("No graph node selected");
+        ImGui::Text("Graph: %s", renderGraph_.name().c_str());
+        ImGui::Text("Output: %s", renderGraph_.firstOutputName().c_str());
+        ImGui::Text("Nodes: %zu", renderGraph_.nodes().size());
+        ImGui::Text("Edges: %zu", renderGraph_.edges().size());
         ImGui::End();
         return;
     }
 
     static int editingNodeId = -1;
     if (editingNodeId != static_cast<int>(node->id)) {
-        std::memset(graphNodeNameBuffer_, 0, sizeof(graphNodeNameBuffer_));
-        const size_t copySize = std::min(node->name.size(), sizeof(graphNodeNameBuffer_) - 1);
-        std::memcpy(graphNodeNameBuffer_, node->name.data(), copySize);
+        copyToBuffer(node->name, graphNodeNameBuffer_, sizeof(graphNodeNameBuffer_));
         editingNodeId = static_cast<int>(node->id);
     }
 
@@ -821,6 +1144,7 @@ void EditorApplication::drawRenderGraphInspector()
         if (!renderGraph_.renameNode(node->id, graphNodeNameBuffer_)) {
             renderGraphStatus_ = "Node rename failed";
         } else {
+            copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
             viewportPreviewValid_ = false;
         }
     }
@@ -846,10 +1170,45 @@ void EditorApplication::drawRenderGraphInspector()
         ImGui::TextWrapped("%s", propertiesText.c_str());
     }
 
+    std::unique_ptr<render::RenderGraphPass> pass = render::createRenderGraphPass(node->type);
+    if (pass != nullptr) {
+        pass->setProperties(node->properties);
+        const render::RenderPassReflection reflection = pass->reflect(render::RenderGraphCompileContext{});
+        ImGui::Separator();
+        ImGui::TextUnformatted("Fields");
+        for (const render::RenderGraphField& field : reflection.fields()) {
+            const std::string fullName = render::makeRenderGraphFieldName(node->name, field.name);
+            ImGui::PushID(fullName.c_str());
+            if (field.visibility == render::RenderGraphFieldVisibility::Output) {
+                bool output = isMarkedRenderGraphOutput(renderGraph_, fullName);
+                if (ImGui::Checkbox("Graph Output", &output)) {
+                    if (output) {
+                        markRenderGraphOutput(fullName);
+                    } else {
+                        renderGraph_.clearOutputs();
+                        copyToBuffer("", graphOutputBuffer_, sizeof(graphOutputBuffer_));
+                        viewportPreviewValid_ = false;
+                        renderGraphStatus_ = "Graph output cleared";
+                    }
+                }
+                ImGui::SameLine();
+            }
+            ImGui::Text(
+                "%s %s",
+                renderGraphFieldVisibilityName(field.visibility),
+                field.name.c_str());
+            if (!field.description.empty() && ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", field.description.c_str());
+            }
+            ImGui::PopID();
+        }
+    }
+
     ImGui::Separator();
     if (ImGui::Button("Delete Node")) {
         renderGraph_.removeNode(node->id);
         selectedGraphNodeId_ = -1;
+        copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
         viewportPreviewValid_ = false;
     }
 
