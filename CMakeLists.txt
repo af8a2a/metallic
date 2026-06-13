@@ -1,16 +1,25 @@
 cmake_minimum_required(VERSION 3.20)
-project(Metallic)
+project(Metallic LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(METALLIC_CLUSTER_LOD_TOPOLOGY_NYX
     "Build ClusterLOD topology with the experimental Nyx-style top-level BVH instead of the selector chain"
     OFF)
 
-include(cmake/SetupSlang.cmake)
-include(cmake/SetupStreamline.cmake)
-include(cmake/SetupNsight.cmake)
-include(cmake/SetupAftermath.cmake)
+foreach(METALLIC_SETUP_MODULE IN ITEMS
+    SetupSlang
+    SetupStreamline
+    SetupNsight
+    SetupAftermath
+)
+    set(METALLIC_SETUP_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/${METALLIC_SETUP_MODULE}.cmake")
+    if(EXISTS "${METALLIC_SETUP_MODULE_PATH}")
+        include("${METALLIC_SETUP_MODULE_PATH}")
+    endif()
+endforeach()
 
 find_package(Git QUIET)
 
@@ -51,4 +60,7 @@ ensure_git_submodule(
 
 add_subdirectory(External)
 add_subdirectory(Source)
-add_subdirectory(Tools)
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/Tools/CMakeLists.txt")
+    add_subdirectory(Tools)
+endif()
