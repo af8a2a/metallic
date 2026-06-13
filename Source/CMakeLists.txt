@@ -1,3 +1,30 @@
+find_package(Vulkan REQUIRED)
+
+add_library(MetallicRuntimeRender STATIC
+    Runtime/Render/GAPI/Vulkan/vulkan_rhi.cpp
+)
+
+target_include_directories(MetallicRuntimeRender PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+target_include_directories(MetallicRuntimeRender SYSTEM PRIVATE
+    "${CMAKE_SOURCE_DIR}/External/VulkanMemoryAllocator/include"
+)
+
+target_link_libraries(MetallicRuntimeRender PUBLIC
+    Vulkan::Vulkan
+    metallic::sdl3
+)
+
+if(WIN32)
+    target_compile_definitions(MetallicRuntimeRender PRIVATE NOMINMAX)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(MetallicRuntimeRender PRIVATE -Wno-nullability-completeness)
+endif()
+
 add_executable(Metallic
     main.cpp
     Editor/editor_application.cpp
@@ -10,6 +37,7 @@ target_include_directories(Metallic PRIVATE
 target_link_libraries(Metallic PRIVATE
     imgui
     metallic::sdl3
+    MetallicRuntimeRender
 )
 
 target_compile_definitions(Metallic PRIVATE
