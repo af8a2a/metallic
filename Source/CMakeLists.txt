@@ -1,6 +1,13 @@
 find_package(Vulkan REQUIRED)
 
+set(METALLIC_SLANG_ROOT "${CMAKE_SOURCE_DIR}/External/slang")
+if(DEFINED SLANG_ROOT)
+    set(METALLIC_SLANG_ROOT "${SLANG_ROOT}")
+endif()
+find_package(slang CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PATH)
+
 add_library(MetallicRuntimeRender STATIC
+    Runtime/Render/slang_compiler.cpp
     Runtime/Render/GAPI/Vulkan/vulkan_rhi.cpp
 )
 
@@ -15,6 +22,11 @@ target_include_directories(MetallicRuntimeRender SYSTEM PRIVATE
 target_link_libraries(MetallicRuntimeRender PUBLIC
     Vulkan::Vulkan
     metallic::sdl3
+    slang::slang
+)
+
+target_compile_definitions(MetallicRuntimeRender PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
 if(WIN32)
@@ -46,6 +58,15 @@ target_compile_definitions(Metallic PRIVATE
 
 if(WIN32)
     target_compile_definitions(Metallic PRIVATE NOMINMAX)
+
+    file(GLOB METALLIC_SLANG_RUNTIME_DLLS "${METALLIC_SLANG_ROOT}/bin/*.dll")
+    foreach(METALLIC_SLANG_RUNTIME_DLL IN LISTS METALLIC_SLANG_RUNTIME_DLLS)
+        add_custom_command(TARGET Metallic POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${METALLIC_SLANG_RUNTIME_DLL}"
+                "$<TARGET_FILE_DIR:Metallic>"
+        )
+    endforeach()
 
     if(TARGET SDL3-shared)
         add_custom_command(TARGET Metallic POST_BUILD
