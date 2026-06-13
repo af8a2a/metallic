@@ -750,7 +750,6 @@ bool RenderGraph::setNodePosition(uint32_t id, float uiX, float uiY)
     }
     node->uiX = uiX;
     node->uiY = uiY;
-    markDirty();
     return true;
 }
 

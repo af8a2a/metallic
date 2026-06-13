@@ -691,8 +691,8 @@ void EditorApplication::addRenderGraphNode(std::string type, ImVec2 screenPositi
 
     if (screenPosition.x >= 0.0f && screenPosition.y >= 0.0f) {
         ImNodes::SetNodeScreenSpacePos(static_cast<int>(node->id), screenPosition);
-        const ImVec2 editorPosition = ImNodes::GetNodeEditorSpacePos(static_cast<int>(node->id));
-        renderGraph_.setNodePosition(node->id, editorPosition.x, editorPosition.y);
+        const ImVec2 gridPosition = ImNodes::GetNodeGridSpacePos(static_cast<int>(node->id));
+        renderGraph_.setNodePosition(node->id, gridPosition.x, gridPosition.y);
     } else {
         graphEditorPositionsInitialized_ = false;
     }
@@ -838,7 +838,7 @@ void EditorApplication::drawRenderGraphPanel()
     ImNodes::PushAttributeFlag(ImNodesAttributeFlags_EnableLinkDetachWithDragClick);
     if (!graphEditorPositionsInitialized_) {
         for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
-            ImNodes::SetNodeEditorSpacePos(
+            ImNodes::SetNodeGridSpacePos(
                 static_cast<int>(node.id),
                 ImVec2(node.uiX, node.uiY));
         }
@@ -876,7 +876,7 @@ void EditorApplication::drawRenderGraphPanel()
     }
 
     for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
-        const ImVec2 position = ImNodes::GetNodeEditorSpacePos(static_cast<int>(node.id));
+        const ImVec2 position = ImNodes::GetNodeGridSpacePos(static_cast<int>(node.id));
         renderGraph_.setNodePosition(node.id, position.x, position.y);
     }
 
