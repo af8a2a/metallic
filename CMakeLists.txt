@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(METALLIC_CLUSTER_LOD_TOPOLOGY_NYX
     "Build ClusterLOD topology with the experimental Nyx-style top-level BVH instead of the selector chain"
     OFF)
+option(METALLIC_BUILD_TESTS "Build Metallic test targets" ON)
 
 foreach(METALLIC_SETUP_MODULE IN ITEMS
     SetupSlang
@@ -63,4 +64,9 @@ add_subdirectory(Source)
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/Tools/CMakeLists.txt")
     add_subdirectory(Tools)
+endif()
+
+if(METALLIC_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()
