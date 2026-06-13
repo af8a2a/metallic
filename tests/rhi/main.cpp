@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -60,11 +61,13 @@ struct Options {
     bool list = false;
     bool enableValidation = true;
     std::string filter;
+    std::filesystem::path outputDirectory = "rhi-test-output";
 };
 
 void printUsage(const char* executableName)
 {
-    std::cout << "Usage: " << executableName << " [--list] [--filter <text>] [--rhi-no-validation]\n";
+    std::cout << "Usage: " << executableName
+              << " [--list] [--filter <text>] [--output-dir <path>] [--rhi-no-validation]\n";
 }
 
 bool parseArguments(int argc, char** argv, Options& options)
@@ -97,6 +100,18 @@ bool parseArguments(int argc, char** argv, Options& options)
         }
         if (argument.starts_with("--filter=")) {
             options.filter = std::string(argument.substr(9));
+            continue;
+        }
+        if (argument == "--output-dir") {
+            if (index + 1 >= argc) {
+                std::cerr << "--output-dir requires a value\n";
+                return false;
+            }
+            options.outputDirectory = argv[++index];
+            continue;
+        }
+        if (argument.starts_with("--output-dir=")) {
+            options.outputDirectory = std::string(argument.substr(13));
             continue;
         }
 
@@ -189,6 +204,7 @@ int main(int argc, char** argv)
     tests::RhiTestContext context{
         .device = *device,
         .graphicsQueue = *graphicsQueue,
+        .outputDirectory = options.outputDirectory,
         .enableValidation = options.enableValidation,
     };
 
@@ -238,6 +254,7 @@ int main(int argc, char** argv)
               << skippedCount << " skipped, "
               << failedCount << " failed";
     std::cout << " (" << selectedTests.size() << " selected)\n";
+    std::cout << "Image output: " << options.outputDirectory.string() << '\n';
 
     return failedCount == 0 ? 0 : 1;
 }

@@ -17,6 +17,11 @@ namespace {
 constexpr int kBaseWindowWidth = 1600;
 constexpr int kBaseWindowHeight = 900;
 constexpr uint32_t kMaxViewportPreviewSize = 2048;
+#if defined(SDL_PLATFORM_WINDOWS)
+constexpr const char* kEditorRendererDrivers = "direct3d12,vulkan";
+#else
+constexpr const char* kEditorRendererDrivers = "vulkan";
+#endif
 
 float getMainDisplayScale()
 {
@@ -83,11 +88,12 @@ bool EditorApplication::initialize()
         return false;
     }
 
-    renderer_ = SDL_CreateRenderer(window_, nullptr);
+    renderer_ = SDL_CreateRenderer(window_, kEditorRendererDrivers);
     if (renderer_ == nullptr) {
-        SDL_Log("SDL_CreateRenderer failed: %s", SDL_GetError());
+        SDL_Log("SDL_CreateRenderer failed for drivers '%s': %s", kEditorRendererDrivers, SDL_GetError());
         return false;
     }
+    SDL_Log("SDL renderer backend: %s", SDL_GetRendererName(renderer_));
 
     SDL_SetRenderVSync(renderer_, 1);
     SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);

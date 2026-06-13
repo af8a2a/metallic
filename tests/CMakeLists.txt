@@ -4,7 +4,9 @@ add_executable(MetallicRhiTests
     rhi/command_submission_tests.cpp
     rhi/rendering_tests.cpp
     rhi/resource_tests.cpp
+    rhi/test_output.cpp
     rhi/validation_tests.cpp
+    rhi/stb/stb.cpp
 )
 
 target_include_directories(MetallicRhiTests PRIVATE
@@ -52,7 +54,12 @@ if(WIN32)
     endif()
 endif()
 
-add_test(NAME MetallicRhiTests COMMAND MetallicRhiTests --rhi-no-validation)
+add_test(
+    NAME MetallicRhiTests
+    COMMAND MetallicRhiTests
+        --rhi-no-validation
+        --output-dir "$<TARGET_FILE_DIR:MetallicRhiTests>/rhi-test-output"
+)
 set_tests_properties(MetallicRhiTests PROPERTIES
     LABELS "rhi"
     SKIP_RETURN_CODE 77

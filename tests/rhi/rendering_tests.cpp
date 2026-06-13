@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #ifndef PROJECT_SOURCE_DIR
 #define PROJECT_SOURCE_DIR "."
@@ -258,7 +259,17 @@ public:
             return RhiTestResult::fail("readback buffer did not map");
         }
 
-        const auto* bytes = static_cast<const uint8_t*>(mapped);
+        std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
+        std::memcpy(pixels.data(), mapped, pixels.size());
+        readbackBuffer->unmap();
+
+        std::string outputMessage;
+        const std::filesystem::path outputPath = context.outputDirectory / "offscreen_triangle_readback.png";
+        if (!saveRgba8Png(outputPath, pixels.data(), kWidth, kHeight, outputMessage)) {
+            return RhiTestResult::fail(outputMessage);
+        }
+
+        const auto* bytes = pixels.data();
         uint32_t brightPixelCount = 0;
         for (uint32_t index = 0; index < kWidth * kHeight; ++index) {
             const uint8_t r = bytes[index * 4 + 0];
@@ -268,7 +279,6 @@ public:
                 ++brightPixelCount;
             }
         }
-        readbackBuffer->unmap();
 
         if (brightPixelCount < 128) {
             return RhiTestResult::fail(
@@ -276,7 +286,7 @@ public:
                 std::to_string(brightPixelCount));
         }
 
-        return RhiTestResult::pass();
+        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 

@@ -2,6 +2,8 @@
 
 #include "Runtime/Render/GAPI/rhi.h"
 
+#include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -41,6 +43,7 @@ struct RhiTestResult {
 struct RhiTestContext {
     render::Device& device;
     render::Queue& graphicsQueue;
+    std::filesystem::path outputDirectory;
     bool enableValidation = false;
 };
 
@@ -82,6 +85,12 @@ public:
 
 const char* toString(render::Result result);
 const char* toString(RhiTestType type);
+bool saveRgba8Png(
+    const std::filesystem::path& outputPath,
+    const uint8_t* pixels,
+    uint32_t width,
+    uint32_t height,
+    std::string& outMessage);
 
 } // namespace metallic::tests
 
