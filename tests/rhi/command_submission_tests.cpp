@@ -17,28 +17,28 @@ public:
     {
         std::unique_ptr<render::CommandPool> commandPool;
         render::Result result = context.device.createCommandPool(context.graphicsQueue, commandPool);
-        if (result != render::Result::Success || commandPool == nullptr) {
+        if (!result || commandPool == nullptr) {
             return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer(commandBuffer);
-        if (result != render::Result::Success || commandBuffer == nullptr) {
+        if (!result || commandBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
 
         result = commandBuffer->begin();
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
         result = commandBuffer->end();
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
         std::unique_ptr<render::Fence> fence;
         result = context.device.createFence(false, fence);
-        if (result != render::Result::Success || fence == nullptr) {
+        if (!result || fence == nullptr) {
             return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
         }
 
@@ -49,12 +49,12 @@ public:
                 .commandBufferCount = 1,
                 .signalFence = fence.get(),
             });
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
         }
 
         result = fence->wait(5'000'000'000ull);
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
         if (!fence->isSignaled()) {
@@ -62,7 +62,7 @@ public:
         }
 
         result = context.graphicsQueue.waitIdle();
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("Queue::waitIdle returned ") + toString(result));
         }
 

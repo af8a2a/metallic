@@ -131,9 +131,9 @@ bool EditorApplication::initialize()
 
     trianglePreviewRenderer_ = std::make_unique<render::TrianglePreviewRenderer>();
     const render::Result previewResult = trianglePreviewRenderer_->initialize(false);
-    if (previewResult != render::Result::Success) {
+    if (!previewResult) {
         std::cerr << "Triangle preview RHI initialization failed with Result "
-                  << static_cast<int>(previewResult) << '\n';
+                  << render::resultToString(previewResult) << '\n';
         trianglePreviewRenderer_.reset();
     }
 
@@ -362,9 +362,9 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     }
 
     const render::Result renderResult = trianglePreviewRenderer_->render(width, height);
-    if (renderResult != render::Result::Success) {
+    if (!renderResult) {
         std::cerr << "Triangle preview render failed with Result "
-                  << static_cast<int>(renderResult) << '\n';
+                  << render::resultToString(renderResult) << '\n';
         viewportPreviewValid_ = false;
         return false;
     }

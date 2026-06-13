@@ -11,7 +11,7 @@
 - Run single-config builds from `build/Source/Metallic`; MSVC builds from `build/Source/Debug/Metallic.exe`. The editor lives under `build/Tools/PipelineEditor/...`.
 
 ## Coding Style & Naming Conventions
-C++20 is the default; use Objective-C++ only in `Source/Platform/*.mm`. Use 4-space indentation and no tabs. Match existing naming: `PascalCase` for types, `lowerCamelCase` for functions and locals, `kCamelCase` for constants, and lowercase underscore file names such as `frame_graph.cpp` and `vulkan_backend.cpp`. Keep shared logic in `Rendering/`, `RHI/`, or `PipelineEditor/`; isolate backend-specific code under `RHI/Metal`, `RHI/Vulkan`, or `Platform/`.
+C++23 is the default; use Objective-C++ only in `Source/Platform/*.mm`. Use 4-space indentation and no tabs. Match existing naming: `PascalCase` for types, `lowerCamelCase` for functions and locals, `kCamelCase` for constants, and lowercase underscore file names such as `frame_graph.cpp` and `vulkan_backend.cpp`. Keep shared logic in `Rendering/`, `RHI/`, or `PipelineEditor/`; isolate backend-specific code under `RHI/Metal`, `RHI/Vulkan`, or `Platform/`.
 
 ## Testing Guidelines
 There is no dedicated in-tree unit test suite yet, so every change needs a build plus a smoke test on the touched path. Renderer changes should launch `Metallic`, load the relevant pipeline, and verify shader or pipeline reload (`F5` / `F6`) when affected. Pipeline asset changes should round-trip through `PipelineEditorTool` and reopen cleanly. If you add automated tests, place them under a top-level `tests/` directory and wire them into CMake.

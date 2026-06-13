@@ -36,7 +36,7 @@ RhiTestResult createTriangleShaderModule(
             .searchPath = kTriangleShaderSearchPath,
         },
         compileResult);
-    if (result != render::Result::Success) {
+    if (!result) {
         std::string message = std::string("compileSlangShaderToSpirv(") + entryPointName + ") returned " + toString(result);
         if (!compileResult.diagnostics.empty()) {
             message += ": ";
@@ -51,7 +51,7 @@ RhiTestResult createTriangleShaderModule(
             .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
         },
         outShaderModule);
-    if (result != render::Result::Success || outShaderModule == nullptr) {
+    if (!result || outShaderModule == nullptr) {
         return RhiTestResult::fail(std::string("createShaderModule returned ") + toString(result));
     }
 
@@ -95,7 +95,7 @@ public:
                 .topology = render::PrimitiveTopology::TriangleList,
             },
             pipeline);
-        if (result != render::Result::Success || pipeline == nullptr) {
+        if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createGraphicsPipeline returned ") + toString(result));
         }
 
@@ -113,7 +113,7 @@ public:
                 .memoryLocation = render::MemoryLocation::Device,
             },
             colorTexture);
-        if (result != render::Result::Success || colorTexture == nullptr) {
+        if (!result || colorTexture == nullptr) {
             return RhiTestResult::fail(std::string("createTexture returned ") + toString(result));
         }
 
@@ -128,7 +128,7 @@ public:
                 .layerCount = 1,
             },
             colorTextureView);
-        if (result != render::Result::Success || colorTextureView == nullptr) {
+        if (!result || colorTextureView == nullptr) {
             return RhiTestResult::fail(std::string("createTextureView returned ") + toString(result));
         }
 
@@ -140,24 +140,24 @@ public:
                 .memoryLocation = render::MemoryLocation::HostReadback,
             },
             readbackBuffer);
-        if (result != render::Result::Success || readbackBuffer == nullptr) {
+        if (!result || readbackBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = context.device.createCommandPool(context.graphicsQueue, commandPool);
-        if (result != render::Result::Success || commandPool == nullptr) {
+        if (!result || commandPool == nullptr) {
             return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer(commandBuffer);
-        if (result != render::Result::Success || commandBuffer == nullptr) {
+        if (!result || commandBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
 
         result = commandBuffer->begin();
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
 
@@ -227,13 +227,13 @@ public:
             });
 
         result = commandBuffer->end();
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
         std::unique_ptr<render::Fence> fence;
         result = context.device.createFence(false, fence);
-        if (result != render::Result::Success || fence == nullptr) {
+        if (!result || fence == nullptr) {
             return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
         }
 
@@ -244,12 +244,12 @@ public:
                 .commandBufferCount = 1,
                 .signalFence = fence.get(),
             });
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
         }
 
         result = fence->wait(5'000'000'000ull);
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
 

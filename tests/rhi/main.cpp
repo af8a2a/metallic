@@ -14,24 +14,7 @@ namespace metallic::tests {
 
 const char* toString(render::Result result)
 {
-    switch (result) {
-    case render::Result::Success:
-        return "Success";
-    case render::Result::Failure:
-        return "Failure";
-    case render::Result::InvalidArgument:
-        return "InvalidArgument";
-    case render::Result::OutOfMemory:
-        return "OutOfMemory";
-    case render::Result::Unsupported:
-        return "Unsupported";
-    case render::Result::OutOfDate:
-        return "OutOfDate";
-    case render::Result::DeviceLost:
-        return "DeviceLost";
-    }
-
-    return "Unknown";
+    return render::resultToString(result);
 }
 
 const char* toString(RhiTestType type)
@@ -187,10 +170,10 @@ int main(int argc, char** argv)
             .enableValidation = options.enableValidation,
         },
         device);
-    if (result != render::Result::Success) {
+    if (!result) {
         std::cerr << "Skipping RHI tests: createDevice returned " << tests::toString(result) << '\n';
         SDL_Quit();
-        return result == render::Result::Unsupported ? kSkipExitCode : 1;
+        return render::hasError(result, render::Error::Unsupported) ? kSkipExitCode : 1;
     }
 
     render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);

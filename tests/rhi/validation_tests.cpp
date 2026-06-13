@@ -22,7 +22,7 @@ public:
         }
 
         render::Result result = context.device.waitIdle();
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("Device::waitIdle returned ") + toString(result));
         }
 

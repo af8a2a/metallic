@@ -25,7 +25,7 @@ public:
                 .memoryLocation = render::MemoryLocation::HostUpload,
             },
             invalidBuffer);
-        if (result != render::Result::InvalidArgument || invalidBuffer != nullptr) {
+        if (!render::hasError(result, render::Error::InvalidArgument) || invalidBuffer != nullptr) {
             return RhiTestResult::fail("zero-sized buffer was not rejected");
         }
 
@@ -38,7 +38,7 @@ public:
                 .memoryLocation = render::MemoryLocation::HostUpload,
             },
             uploadBuffer);
-        if (result != render::Result::Success || uploadBuffer == nullptr) {
+        if (!result || uploadBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createBuffer returned ") + toString(result));
         }
         if (uploadBuffer->desc().size != 256 || uploadBuffer->desc().structureStride != 16) {
@@ -58,7 +58,7 @@ public:
                 .format = render::Format::Unknown,
             },
             invalidTexture);
-        if (result != render::Result::InvalidArgument || invalidTexture != nullptr) {
+        if (!render::hasError(result, render::Error::InvalidArgument) || invalidTexture != nullptr) {
             return RhiTestResult::fail("texture with unknown format was not rejected");
         }
 
@@ -76,7 +76,7 @@ public:
                 .memoryLocation = render::MemoryLocation::Device,
             },
             texture);
-        if (result != render::Result::Success || texture == nullptr) {
+        if (!result || texture == nullptr) {
             return RhiTestResult::fail(std::string("createTexture returned ") + toString(result));
         }
         if (texture->desc().format != render::Format::Rgba8Unorm ||
@@ -96,24 +96,24 @@ public:
                 .layerCount = 1,
             },
             textureView);
-        if (result != render::Result::Success || textureView == nullptr) {
+        if (!result || textureView == nullptr) {
             return RhiTestResult::fail(std::string("createTextureView returned ") + toString(result));
         }
 
         std::unique_ptr<render::Fence> fence;
         result = context.device.createFence(true, fence);
-        if (result != render::Result::Success || fence == nullptr) {
+        if (!result || fence == nullptr) {
             return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
         }
         if (!fence->isSignaled()) {
             return RhiTestResult::fail("signaled fence reported unsignaled");
         }
         result = fence->wait(1'000'000);
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
         result = fence->reset();
-        if (result != render::Result::Success) {
+        if (!result) {
             return RhiTestResult::fail(std::string("Fence::reset returned ") + toString(result));
         }
         if (fence->isSignaled()) {
@@ -122,7 +122,7 @@ public:
 
         std::unique_ptr<render::Semaphore> semaphore;
         result = context.device.createSemaphore(semaphore);
-        if (result != render::Result::Success || semaphore == nullptr) {
+        if (!result || semaphore == nullptr) {
             return RhiTestResult::fail(std::string("createSemaphore returned ") + toString(result));
         }
 

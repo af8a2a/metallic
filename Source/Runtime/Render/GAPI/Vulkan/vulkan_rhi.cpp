@@ -41,23 +41,23 @@ Result resultFromVk(VkResult result)
 {
     switch (result) {
     case VK_SUCCESS:
-        return Result::Success;
+        return {};
     case VK_ERROR_OUT_OF_HOST_MEMORY:
     case VK_ERROR_OUT_OF_DEVICE_MEMORY:
-        return Result::OutOfMemory;
+        return makeError(Error::OutOfMemory);
     case VK_ERROR_DEVICE_LOST:
-        return Result::DeviceLost;
+        return makeError(Error::DeviceLost);
     case VK_ERROR_OUT_OF_DATE_KHR:
     case VK_ERROR_SURFACE_LOST_KHR:
-        return Result::OutOfDate;
+        return makeError(Error::OutOfDate);
     case VK_ERROR_EXTENSION_NOT_PRESENT:
     case VK_ERROR_FEATURE_NOT_PRESENT:
     case VK_ERROR_FORMAT_NOT_SUPPORTED:
     case VK_ERROR_INCOMPATIBLE_DRIVER:
     case VK_ERROR_LAYER_NOT_PRESENT:
-        return Result::Unsupported;
+        return makeError(Error::Unsupported);
     default:
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
 }
 
@@ -618,13 +618,13 @@ void SwapchainImpl::wrapImages(const std::vector<VkImage>& images, TextureUsageB
 Result SwapchainImpl::initialize(const SwapchainDesc& desc)
 {
     if (desc.window.system != WindowSystem::Sdl3 || desc.window.nativeWindow == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     auto* window = static_cast<SDL_Window*>(desc.window.nativeWindow);
     if (!SDL_Vulkan_CreateSurface(window, device->instance, nullptr, &surface)) {
         std::cerr << "SDL_Vulkan_CreateSurface failed: " << SDL_GetError() << '\n';
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
 
     VkBool32 presentSupported = VK_FALSE;
@@ -634,7 +634,10 @@ Result SwapchainImpl::initialize(const SwapchainDesc& desc)
         surface,
         &presentSupported);
     if (vkResult != VK_SUCCESS || presentSupported == VK_FALSE) {
-        return vkResult == VK_SUCCESS ? Result::Unsupported : resultFromVk(vkResult);
+        if (vkResult == VK_SUCCESS) {
+            return makeError(Error::Unsupported);
+        }
+        return resultFromVk(vkResult);
     }
 
     VkSurfaceCapabilitiesKHR capabilities{};
@@ -646,7 +649,7 @@ Result SwapchainImpl::initialize(const SwapchainDesc& desc)
     uint32_t surfaceFormatCount = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(device->physicalDevice, surface, &surfaceFormatCount, nullptr);
     if (surfaceFormatCount == 0) {
-        return Result::Unsupported;
+        return makeError(Error::Unsupported);
     }
     std::vector<VkSurfaceFormatKHR> surfaceFormats(surfaceFormatCount);
     vkGetPhysicalDeviceSurfaceFormatsKHR(
@@ -742,7 +745,7 @@ Result SwapchainImpl::initialize(const SwapchainDesc& desc)
     width = extent.width;
     height = extent.height;
     wrapImages(images, textureUsage);
-    return Result::Success;
+    return {};
 }
 
 } // namespace detail
@@ -759,12 +762,12 @@ Queue& Queue::operator=(Queue&&) noexcept = default;
 Result Queue::submit(const QueueSubmitDesc& desc)
 {
     if (impl_ == nullptr || impl_->queue == VK_NULL_HANDLE) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
     if ((desc.waitSemaphoreCount > 0 && desc.waitSemaphores == nullptr) ||
         (desc.commandBufferCount > 0 && desc.commandBuffers == nullptr) ||
         (desc.signalSemaphoreCount > 0 && desc.signalSemaphores == nullptr)) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     std::vector<VkSemaphoreSubmitInfo> waitSemaphores;
@@ -772,7 +775,7 @@ Result Queue::submit(const QueueSubmitDesc& desc)
     for (uint32_t index = 0; index < desc.waitSemaphoreCount; ++index) {
         const SemaphoreSubmitDesc& wait = desc.waitSemaphores[index];
         if (wait.semaphore == nullptr || wait.semaphore->impl_ == nullptr) {
-            return Result::InvalidArgument;
+            return makeError(Error::InvalidArgument);
         }
         waitSemaphores.push_back({
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -786,7 +789,7 @@ Result Queue::submit(const QueueSubmitDesc& desc)
     for (uint32_t index = 0; index < desc.commandBufferCount; ++index) {
         CommandBuffer* commandBuffer = desc.commandBuffers[index];
         if (commandBuffer == nullptr || commandBuffer->impl_ == nullptr) {
-            return Result::InvalidArgument;
+            return makeError(Error::InvalidArgument);
         }
         commandBuffers.push_back({
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -799,7 +802,7 @@ Result Queue::submit(const QueueSubmitDesc& desc)
     for (uint32_t index = 0; index < desc.signalSemaphoreCount; ++index) {
         const SemaphoreSubmitDesc& signal = desc.signalSemaphores[index];
         if (signal.semaphore == nullptr || signal.semaphore->impl_ == nullptr) {
-            return Result::InvalidArgument;
+            return makeError(Error::InvalidArgument);
         }
         signalSemaphores.push_back({
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -821,7 +824,7 @@ Result Queue::submit(const QueueSubmitDesc& desc)
     VkFence fence = VK_NULL_HANDLE;
     if (desc.signalFence != nullptr) {
         if (desc.signalFence->impl_ == nullptr) {
-            return Result::InvalidArgument;
+            return makeError(Error::InvalidArgument);
         }
         fence = desc.signalFence->impl_->fence;
     }
@@ -832,7 +835,7 @@ Result Queue::submit(const QueueSubmitDesc& desc)
 Result Queue::waitIdle()
 {
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
     return resultFromVk(vkQueueWaitIdle(impl_->queue));
 }
@@ -861,7 +864,7 @@ Fence& Fence::operator=(Fence&&) noexcept = default;
 Result Fence::wait(uint64_t timeoutNanoseconds)
 {
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     const VkResult result = vkWaitForFences(
@@ -870,13 +873,16 @@ Result Fence::wait(uint64_t timeoutNanoseconds)
         &impl_->fence,
         VK_TRUE,
         timeoutNanoseconds);
-    return result == VK_TIMEOUT ? Result::Failure : resultFromVk(result);
+    if (result == VK_TIMEOUT) {
+        return makeError(Error::Failure);
+    }
+    return resultFromVk(result);
 }
 
 Result Fence::reset()
 {
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
     return resultFromVk(vkResetFences(impl_->device->device, 1, &impl_->fence));
 }
@@ -1062,7 +1068,7 @@ CommandBuffer& CommandBuffer::operator=(CommandBuffer&&) noexcept = default;
 Result CommandBuffer::begin()
 {
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     VkCommandBufferBeginInfo beginInfo{
@@ -1075,7 +1081,7 @@ Result CommandBuffer::begin()
 Result CommandBuffer::end()
 {
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
     return resultFromVk(vkEndCommandBuffer(impl_->commandBuffer));
 }
@@ -1310,7 +1316,7 @@ CommandPool& CommandPool::operator=(CommandPool&&) noexcept = default;
 Result CommandPool::reset()
 {
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
     return resultFromVk(vkResetCommandPool(impl_->device->device, impl_->pool, 0));
 }
@@ -1319,7 +1325,7 @@ Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outComma
 {
     outCommandBuffer.reset();
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     VkCommandBufferAllocateInfo allocateInfo{
@@ -1340,7 +1346,7 @@ Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outComma
     commandBufferImpl->pool = impl_->pool;
     commandBufferImpl->commandBuffer = commandBuffer;
     outCommandBuffer.reset(new CommandBuffer(std::move(commandBufferImpl)));
-    return Result::Success;
+    return {};
 }
 
 Swapchain::Swapchain(std::unique_ptr<detail::SwapchainImpl> impl)
@@ -1383,7 +1389,7 @@ Texture* Swapchain::texture(uint32_t imageIndex)
 Result Swapchain::acquireNextImage(Semaphore& semaphore, uint32_t& imageIndex)
 {
     if (impl_ == nullptr || semaphore.impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     const VkResult result = vkAcquireNextImageKHR(
@@ -1394,7 +1400,7 @@ Result Swapchain::acquireNextImage(Semaphore& semaphore, uint32_t& imageIndex)
         VK_NULL_HANDLE,
         &imageIndex);
     if (result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR) {
-        return Result::OutOfDate;
+        return makeError(Error::OutOfDate);
     }
     return resultFromVk(result);
 }
@@ -1402,7 +1408,7 @@ Result Swapchain::acquireNextImage(Semaphore& semaphore, uint32_t& imageIndex)
 Result Swapchain::present(Queue& queue, uint32_t imageIndex, Semaphore& waitSemaphore)
 {
     if (impl_ == nullptr || queue.impl_ == nullptr || waitSemaphore.impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     const VkSemaphore wait = waitSemaphore.impl_->semaphore;
@@ -1417,7 +1423,7 @@ Result Swapchain::present(Queue& queue, uint32_t imageIndex, Semaphore& waitSema
 
     const VkResult result = vkQueuePresentKHR(queue.impl_->queue, &presentInfo);
     if (result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR) {
-        return Result::OutOfDate;
+        return makeError(Error::OutOfDate);
     }
     return resultFromVk(result);
 }
@@ -1452,7 +1458,7 @@ Queue* Device::getQueue(QueueType type, uint32_t index)
 Result Device::waitIdle()
 {
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
     return resultFromVk(vkDeviceWaitIdle(impl_->device));
 }
@@ -1461,25 +1467,25 @@ Result Device::createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapch
 {
     outSwapchain.reset();
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     auto swapchainImpl = std::make_unique<detail::SwapchainImpl>();
     swapchainImpl->device = impl_.get();
     const Result result = swapchainImpl->initialize(desc);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
     outSwapchain.reset(new Swapchain(std::move(swapchainImpl)));
-    return Result::Success;
+    return {};
 }
 
 Result Device::createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& outCommandPool)
 {
     outCommandPool.reset();
     if (impl_ == nullptr || queue.impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     VkCommandPoolCreateInfo createInfo{
@@ -1499,14 +1505,14 @@ Result Device::createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& out
     poolImpl->pool = pool;
     poolImpl->queueFamilyIndex = queue.impl_->familyIndex;
     outCommandPool.reset(new CommandPool(std::move(poolImpl)));
-    return Result::Success;
+    return {};
 }
 
 Result Device::createFence(bool signaled, std::unique_ptr<Fence>& outFence)
 {
     outFence.reset();
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     VkFenceCreateInfo createInfo{
@@ -1524,14 +1530,14 @@ Result Device::createFence(bool signaled, std::unique_ptr<Fence>& outFence)
     fenceImpl->device = impl_.get();
     fenceImpl->fence = fence;
     outFence.reset(new Fence(std::move(fenceImpl)));
-    return Result::Success;
+    return {};
 }
 
 Result Device::createSemaphore(std::unique_ptr<Semaphore>& outSemaphore)
 {
     outSemaphore.reset();
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     VkSemaphoreCreateInfo createInfo{
@@ -1548,14 +1554,14 @@ Result Device::createSemaphore(std::unique_ptr<Semaphore>& outSemaphore)
     semaphoreImpl->device = impl_.get();
     semaphoreImpl->semaphore = semaphore;
     outSemaphore.reset(new Semaphore(std::move(semaphoreImpl)));
-    return Result::Success;
+    return {};
 }
 
 Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& outBuffer)
 {
     outBuffer.reset();
     if (impl_ == nullptr || desc.size == 0) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     VkBufferCreateInfo bufferInfo{
@@ -1585,14 +1591,14 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
     bufferImpl->buffer = buffer;
     bufferImpl->allocation = allocation;
     outBuffer.reset(new Buffer(std::move(bufferImpl)));
-    return Result::Success;
+    return {};
 }
 
 Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& outTexture)
 {
     outTexture.reset();
     if (impl_ == nullptr || desc.format == Format::Unknown) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     VkImageCreateInfo imageInfo{
@@ -1630,7 +1636,7 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     textureImpl->allocation = allocation;
     textureImpl->ownsImage = true;
     outTexture.reset(new Texture(std::move(textureImpl)));
-    return Result::Success;
+    return {};
 }
 
 Result Device::createTextureView(
@@ -1640,7 +1646,7 @@ Result Device::createTextureView(
 {
     outTextureView.reset();
     if (impl_ == nullptr || texture.impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     const TextureDesc& textureDesc = texture.impl_->desc;
@@ -1672,14 +1678,14 @@ Result Device::createTextureView(
     viewImpl->view = view;
     viewImpl->format = toVkFormat(format);
     outTextureView.reset(new TextureView(std::move(viewImpl)));
-    return Result::Success;
+    return {};
 }
 
 Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule)
 {
     outShaderModule.reset();
     if (impl_ == nullptr || desc.code == nullptr || desc.byteSize == 0 || (desc.byteSize % sizeof(uint32_t)) != 0) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     VkShaderModuleCreateInfo createInfo{
@@ -1698,7 +1704,7 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
     shaderImpl->device = impl_.get();
     shaderImpl->module = module;
     outShaderModule.reset(new ShaderModule(std::move(shaderImpl)));
-    return Result::Success;
+    return {};
 }
 
 Result Device::createGraphicsPipeline(
@@ -1712,7 +1718,7 @@ Result Device::createGraphicsPipeline(
         desc.fragmentShader == nullptr ||
         desc.fragmentShader->impl_ == nullptr ||
         desc.colorFormat == Format::Unknown) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     const char* vertexEntryPoint = desc.vertexEntryPoint != nullptr ? desc.vertexEntryPoint : "main";
@@ -1819,7 +1825,7 @@ Result Device::createGraphicsPipeline(
     pipelineImpl->layout = layout;
     pipelineImpl->pipeline = pipeline;
     outGraphicsPipeline.reset(new GraphicsPipeline(std::move(pipelineImpl)));
-    return Result::Success;
+    return {};
 }
 
 Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
@@ -1829,7 +1835,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
     if (!SDL_Vulkan_LoadLibrary(nullptr)) {
         std::cerr << "SDL_Vulkan_LoadLibrary failed: " << SDL_GetError() << '\n';
-        return Result::Unsupported;
+        return makeError(Error::Unsupported);
     }
     deviceImpl->sdlVulkanLoaded = true;
 
@@ -1837,7 +1843,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     const char* const* sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
     if (sdlExtensions == nullptr || sdlExtensionCount == 0) {
         std::cerr << "SDL_Vulkan_GetInstanceExtensions failed: " << SDL_GetError() << '\n';
-        return Result::Unsupported;
+        return makeError(Error::Unsupported);
     }
 
     std::vector<const char*> instanceExtensions;
@@ -1891,7 +1897,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     uint32_t physicalDeviceCount = 0;
     vkResult = vkEnumeratePhysicalDevices(deviceImpl->instance, &physicalDeviceCount, nullptr);
     if (vkResult != VK_SUCCESS || physicalDeviceCount == 0) {
-        return vkResult == VK_SUCCESS ? Result::Unsupported : resultFromVk(vkResult);
+        if (vkResult == VK_SUCCESS) {
+            return makeError(Error::Unsupported);
+        }
+        return resultFromVk(vkResult);
     }
 
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
@@ -1947,7 +1956,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     }
 
     if (deviceImpl->physicalDevice == VK_NULL_HANDLE) {
-        return Result::Unsupported;
+        return makeError(Error::Unsupported);
     }
 
     const float queuePriority = 1.0f;
@@ -2006,23 +2015,23 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->addQueue(graphicsQueue, deviceImpl->graphicsFamily, QueueType::Graphics);
 
     outDevice.reset(new Device(std::move(deviceImpl)));
-    return Result::Success;
+    return {};
 }
 
 namespace {
 
 int resultToExitCode(Result result)
 {
-    return result == Result::Success ? 0 : 1;
+    return result ? 0 : 1;
 }
 
 bool checkResult(Result result, const char* label)
 {
-    if (result == Result::Success) {
+    if (result) {
         return true;
     }
 
-    std::cerr << label << " failed with Result " << static_cast<int>(result) << '\n';
+    std::cerr << label << " failed with Result " << resultToString(result) << '\n';
     return false;
 }
 
@@ -2041,7 +2050,7 @@ Result createTriangleShaderModule(Device& device, const char* entryPointName, st
             .searchPath = kTriangleShaderSearchPath,
         },
         compileResult);
-    if (result != Result::Success) {
+    if (!result) {
         std::cerr << "Slang compile failed for " << kTriangleShaderModuleName << "." << entryPointName << '\n';
         if (!compileResult.diagnostics.empty()) {
             std::cerr << compileResult.diagnostics << '\n';
@@ -2094,34 +2103,34 @@ Result TrianglePreviewRendererImpl::initialize(bool enableValidation)
             .enableValidation = enableValidation,
         },
         device);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
     graphicsQueue = device->getQueue(QueueType::Graphics);
     if (graphicsQueue == nullptr) {
-        return Result::Unsupported;
+        return makeError(Error::Unsupported);
     }
 
     result = device->createCommandPool(*graphicsQueue, commandPool);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
     result = commandPool->createCommandBuffer(commandBuffer);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
     result = device->createFence(true, fence);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
     result = createTriangleShaderModule(*device, kTriangleVertexEntryPoint, vertexShader);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
     result = createTriangleShaderModule(*device, kTriangleFragmentEntryPoint, fragmentShader);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
@@ -2138,15 +2147,15 @@ Result TrianglePreviewRendererImpl::initialize(bool enableValidation)
 Result TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t newHeight)
 {
     if (newWidth == 0 || newHeight == 0) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     if (newWidth == width && newHeight == height && colorTexture != nullptr && readbackBuffer != nullptr) {
-        return Result::Success;
+        return {};
     }
 
     if (device == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     device->waitIdle();
@@ -2167,7 +2176,7 @@ Result TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t 
             .memoryLocation = MemoryLocation::Device,
         },
         colorTexture);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
@@ -2181,7 +2190,7 @@ Result TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t 
             .layerCount = 1,
         },
         colorTextureView);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
@@ -2193,38 +2202,38 @@ Result TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t 
             .memoryLocation = MemoryLocation::HostReadback,
         },
         readbackBuffer);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
     width = newWidth;
     height = newHeight;
     pixels.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
-    return Result::Success;
+    return {};
 }
 
 Result TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeight)
 {
     Result result = ensureResources(newWidth, newHeight);
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
     result = fence->wait();
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
     result = fence->reset();
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
     result = commandPool->reset();
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
     result = commandBuffer->begin();
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
@@ -2291,7 +2300,7 @@ Result TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeight
     });
 
     result = commandBuffer->end();
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
@@ -2301,24 +2310,24 @@ Result TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeight
         .commandBufferCount = 1,
         .signalFence = fence.get(),
     });
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
     result = fence->wait();
-    if (result != Result::Success) {
+    if (!result) {
         return result;
     }
 
     readbackBuffer->invalidate();
     void* mapped = readbackBuffer->map();
     if (mapped == nullptr) {
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
 
     const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
     std::memcpy(pixels.data(), mapped, static_cast<size_t>(byteSize));
     readbackBuffer->unmap();
-    return Result::Success;
+    return {};
 }
 
 } // namespace detail
@@ -2335,7 +2344,7 @@ TrianglePreviewRenderer& TrianglePreviewRenderer::operator=(TrianglePreviewRende
 Result TrianglePreviewRenderer::initialize(bool enableValidation)
 {
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
     return impl_->initialize(enableValidation);
 }
@@ -2343,7 +2352,7 @@ Result TrianglePreviewRenderer::initialize(bool enableValidation)
 Result TrianglePreviewRenderer::render(uint32_t width, uint32_t height)
 {
     if (impl_ == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
     return impl_->render(width, height);
 }

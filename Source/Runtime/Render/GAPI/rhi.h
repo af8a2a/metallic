@@ -1,20 +1,57 @@
 #pragma once
 
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <vector>
 
 namespace metallic::render {
 
-enum class Result : int8_t {
-    Success = 0,
-    Failure,
+enum class Error : int8_t {
+    Failure = 1,
     InvalidArgument,
     OutOfMemory,
     Unsupported,
     OutOfDate,
     DeviceLost,
 };
+
+using Result = std::expected<void, Error>;
+
+[[nodiscard]] inline Result makeError(Error error)
+{
+    return std::unexpected(error);
+}
+
+[[nodiscard]] inline bool hasError(const Result& result, Error error)
+{
+    return !result.has_value() && result.error() == error;
+}
+
+[[nodiscard]] constexpr const char* errorToString(Error error)
+{
+    switch (error) {
+    case Error::Failure:
+        return "Failure";
+    case Error::InvalidArgument:
+        return "InvalidArgument";
+    case Error::OutOfMemory:
+        return "OutOfMemory";
+    case Error::Unsupported:
+        return "Unsupported";
+    case Error::OutOfDate:
+        return "OutOfDate";
+    case Error::DeviceLost:
+        return "DeviceLost";
+    }
+
+    return "Unknown";
+}
+
+[[nodiscard]] inline const char* resultToString(const Result& result)
+{
+    return result.has_value() ? "Success" : errorToString(result.error());
+}
 
 enum class WindowSystem : uint8_t {
     Sdl3,

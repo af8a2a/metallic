@@ -30,12 +30,12 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
     outResult = {};
 
     if (desc.moduleName == nullptr || desc.entryPointName == nullptr || desc.searchPath == nullptr) {
-        return Result::InvalidArgument;
+        return makeError(Error::InvalidArgument);
     }
 
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     if (SLANG_FAILED(slang::createGlobalSession(globalSession.writeRef())) || globalSession == nullptr) {
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
 
     slang::TargetDesc targetDesc{};
@@ -53,14 +53,14 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
 
     Slang::ComPtr<slang::ISession> session;
     if (SLANG_FAILED(globalSession->createSession(sessionDesc, session.writeRef())) || session == nullptr) {
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
 
     Slang::ComPtr<slang::IBlob> diagnostics;
     Slang::ComPtr<slang::IModule> module(session->loadModule(desc.moduleName, diagnostics.writeRef()));
     appendDiagnostics(diagnostics, outResult.diagnostics);
     if (module == nullptr) {
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
 
     diagnostics.setNull();
@@ -69,7 +69,7 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
         outResult.diagnostics += "Slang entry point not found: ";
         outResult.diagnostics += desc.entryPointName;
         outResult.diagnostics += '\n';
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
 
     slang::IComponentType* componentTypes[] = {module, entryPoint};
@@ -77,7 +77,7 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
     if (SLANG_FAILED(session->createCompositeComponentType(componentTypes, 2, program.writeRef(), diagnostics.writeRef()))
         || program == nullptr) {
         appendDiagnostics(diagnostics, outResult.diagnostics);
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
     appendDiagnostics(diagnostics, outResult.diagnostics);
 
@@ -85,7 +85,7 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
     Slang::ComPtr<slang::IComponentType> linkedProgram;
     if (SLANG_FAILED(program->link(linkedProgram.writeRef(), diagnostics.writeRef())) || linkedProgram == nullptr) {
         appendDiagnostics(diagnostics, outResult.diagnostics);
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
     appendDiagnostics(diagnostics, outResult.diagnostics);
 
@@ -94,19 +94,19 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
     if (SLANG_FAILED(linkedProgram->getEntryPointCode(0, 0, shaderCode.writeRef(), diagnostics.writeRef()))
         || shaderCode == nullptr) {
         appendDiagnostics(diagnostics, outResult.diagnostics);
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
     appendDiagnostics(diagnostics, outResult.diagnostics);
 
     const size_t byteSize = shaderCode->getBufferSize();
     if (byteSize == 0 || (byteSize % sizeof(uint32_t)) != 0) {
         outResult.diagnostics += "Slang produced invalid SPIR-V bytecode size.\n";
-        return Result::Failure;
+        return makeError(Error::Failure);
     }
 
     outResult.spirv.resize(byteSize / sizeof(uint32_t));
     std::memcpy(outResult.spirv.data(), shaderCode->getBufferPointer(), byteSize);
-    return Result::Success;
+    return {};
 }
 
 } // namespace metallic::render
