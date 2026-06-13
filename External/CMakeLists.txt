@@ -17,10 +17,28 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/SDL3/CMakeLists.txt")
     set(SDL_TESTS OFF CACHE BOOL "" FORCE)
     set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER_D3D OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER_D3D11 OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER_D3D12 OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER_GPU OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER_VULKAN OFF CACHE BOOL "" FORCE)
+    set(SDL_GPU OFF CACHE BOOL "" FORCE)
+    set(SDL_GPU_OPENXR OFF CACHE BOOL "" FORCE)
+    set(SDL_VULKAN ON CACHE BOOL "" FORCE)
     add_subdirectory(SDL3)
 elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/SDL/CMakeLists.txt")
     set(SDL_TESTS OFF CACHE BOOL "" FORCE)
     set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER_D3D OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER_D3D11 OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER_D3D12 OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER_GPU OFF CACHE BOOL "" FORCE)
+    set(SDL_RENDER_VULKAN OFF CACHE BOOL "" FORCE)
+    set(SDL_GPU OFF CACHE BOOL "" FORCE)
+    set(SDL_GPU_OPENXR OFF CACHE BOOL "" FORCE)
+    set(SDL_VULKAN ON CACHE BOOL "" FORCE)
     add_subdirectory(SDL)
 else()
     find_package(SDL3 CONFIG REQUIRED)
@@ -56,7 +74,6 @@ add_library(imgui STATIC
     imgui/imgui_widgets.cpp
     imgui/imgui_demo.cpp
     imgui/backends/imgui_impl_sdl3.cpp
-    imgui/backends/imgui_impl_sdlrenderer3.cpp
 )
 target_include_directories(imgui PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui

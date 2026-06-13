@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/rhi.h"
+#include "Runtime/Render/GAPI/Vulkan/vulkan_native.h"
 #include "Runtime/Render/slang_compiler.h"
 
 #include <SDL3/SDL.h>
@@ -525,6 +526,9 @@ struct DeviceImpl {
     uint32_t graphicsFamily = 0;
     bool sdlVulkanLoaded = false;
     bool validationEnabled = false;
+    bool debugUtilsEnabled = false;
+    PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
+    PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
     std::vector<std::unique_ptr<Queue>> queues;
 
     ~DeviceImpl();
@@ -1084,6 +1088,40 @@ Result CommandBuffer::end()
         return makeError(Error::InvalidArgument);
     }
     return resultFromVk(vkEndCommandBuffer(impl_->commandBuffer));
+}
+
+void CommandBuffer::beginDebugLabel(const DebugLabelDesc& desc)
+{
+    if (impl_ == nullptr ||
+        impl_->device == nullptr ||
+        impl_->device->cmdBeginDebugUtilsLabel == nullptr ||
+        desc.name == nullptr ||
+        desc.name[0] == '\0') {
+        return;
+    }
+
+    VkDebugUtilsLabelEXT label{
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+        .pLabelName = desc.name,
+        .color = {
+            desc.color.r,
+            desc.color.g,
+            desc.color.b,
+            desc.color.a,
+        },
+    };
+    impl_->device->cmdBeginDebugUtilsLabel(impl_->commandBuffer, &label);
+}
+
+void CommandBuffer::endDebugLabel()
+{
+    if (impl_ == nullptr ||
+        impl_->device == nullptr ||
+        impl_->device->cmdEndDebugUtilsLabel == nullptr) {
+        return;
+    }
+
+    impl_->device->cmdEndDebugUtilsLabel(impl_->commandBuffer);
 }
 
 void CommandBuffer::barrier(const BarrierDesc& desc)
@@ -1901,8 +1939,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
     const std::vector<VkExtensionProperties> availableExtensions = enumerateInstanceExtensions();
     const bool debugUtilsAvailable = hasName(availableExtensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    if (desc.enableValidation && debugUtilsAvailable) {
+    if (debugUtilsAvailable) {
         instanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        deviceImpl->debugUtilsEnabled = true;
     }
 
     std::vector<const char*> instanceLayers;
@@ -2047,6 +2086,13 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         return resultFromVk(vkResult);
     }
 
+    if (deviceImpl->debugUtilsEnabled) {
+        deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
+            vkGetDeviceProcAddr(deviceImpl->device, "vkCmdBeginDebugUtilsLabelEXT"));
+        deviceImpl->cmdEndDebugUtilsLabel = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
+            vkGetDeviceProcAddr(deviceImpl->device, "vkCmdEndDebugUtilsLabelEXT"));
+    }
+
     VmaAllocatorCreateInfo allocatorInfo{};
     allocatorInfo.physicalDevice = deviceImpl->physicalDevice;
     allocatorInfo.device = deviceImpl->device;
@@ -2064,6 +2110,80 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     outDevice.reset(new Device(std::move(deviceImpl)));
     return {};
 }
+
+namespace detail {
+
+struct VulkanNativeAccess {
+    static vulkan::NativeDevice nativeDevice(Device& device)
+    {
+        if (device.impl_ == nullptr) {
+            return {};
+        }
+        return vulkan::NativeDevice{
+            .instance = device.impl_->instance,
+            .physicalDevice = device.impl_->physicalDevice,
+            .device = device.impl_->device,
+            .apiVersion = kVulkanApiVersion,
+        };
+    }
+
+    static vulkan::NativeQueue nativeQueue(Queue& queue)
+    {
+        if (queue.impl_ == nullptr) {
+            return {};
+        }
+        return vulkan::NativeQueue{
+            .queue = queue.impl_->queue,
+            .familyIndex = queue.impl_->familyIndex,
+        };
+    }
+
+    static VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)
+    {
+        return commandBuffer.impl_ != nullptr ? commandBuffer.impl_->commandBuffer : VK_NULL_HANDLE;
+    }
+
+    static VkFormat nativeSwapchainFormat(Swapchain& swapchain)
+    {
+        return swapchain.impl_ != nullptr ? swapchain.impl_->vkFormat : VK_FORMAT_UNDEFINED;
+    }
+
+    static VkImageView nativeImageView(TextureView& view)
+    {
+        return view.impl_ != nullptr ? view.impl_->view : VK_NULL_HANDLE;
+    }
+};
+
+} // namespace detail
+
+namespace vulkan {
+
+NativeDevice nativeDevice(Device& device)
+{
+    return detail::VulkanNativeAccess::nativeDevice(device);
+}
+
+NativeQueue nativeQueue(Queue& queue)
+{
+    return detail::VulkanNativeAccess::nativeQueue(queue);
+}
+
+VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)
+{
+    return detail::VulkanNativeAccess::nativeCommandBuffer(commandBuffer);
+}
+
+VkFormat nativeSwapchainFormat(Swapchain& swapchain)
+{
+    return detail::VulkanNativeAccess::nativeSwapchainFormat(swapchain);
+}
+
+VkImageView nativeImageView(TextureView& view)
+{
+    return detail::VulkanNativeAccess::nativeImageView(view);
+}
+
+} // namespace vulkan
 
 namespace {
 
@@ -2205,7 +2325,7 @@ Result TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t 
         return makeError(Error::InvalidArgument);
     }
 
-    device->waitIdle();
+    (void)device->waitIdle();
     colorTextureView.reset();
     colorTexture.reset();
     readbackBuffer.reset();
@@ -2490,7 +2610,7 @@ int runRhiSmokeTest(bool enableValidation)
 
     auto cleanup = [&]() {
         if (device != nullptr) {
-            device->waitIdle();
+            (void)device->waitIdle();
         }
 
         swapchainViews.clear();

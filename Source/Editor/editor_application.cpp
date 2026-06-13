@@ -1,11 +1,12 @@
 #include "Editor/editor_application.h"
 
 #include "Runtime/Render/GAPI/rhi.h"
+#include "Runtime/Render/GAPI/Vulkan/vulkan_native.h"
 #include "Runtime/Render/RenderGraph/render_graph.h"
 #include "imnodes.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
-#include "imgui_impl_sdlrenderer3.h"
+#include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
 
 #include <SDL3/SDL.h>
@@ -28,11 +29,8 @@ constexpr int kBaseWindowHeight = 900;
 constexpr uint32_t kMaxViewportPreviewSize = 2048;
 constexpr uint32_t kViewportResizeSettleFrames = 3;
 constexpr const char* kRenderPassDragPayload = "METALLIC_RENDER_PASS_TYPE";
-#if defined(SDL_PLATFORM_WINDOWS)
-constexpr const char* kEditorRendererDrivers = "direct3d12,vulkan";
-#else
-constexpr const char* kEditorRendererDrivers = "vulkan";
-#endif
+constexpr uint32_t kSwapchainImageCount = 3;
+constexpr uint32_t kMinSwapchainImageCount = 2;
 
 float getMainDisplayScale()
 {
@@ -124,11 +122,19 @@ const char* renderGraphFieldVisibilityName(render::RenderGraphFieldVisibility vi
     return visibility == render::RenderGraphFieldVisibility::Input ? "Input" : "Output";
 }
 
+void checkVkResult(VkResult result)
+{
+    if (result < 0) {
+        std::cerr << "Vulkan error: " << static_cast<int>(result) << '\n';
+    }
+}
+
 } // namespace
 
-int EditorApplication::run(bool smokeTest)
+int EditorApplication::run(bool smokeTest, bool waitForGraphicsDebugger)
 {
     smokeTest_ = smokeTest;
+    waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
 
     if (!initialize()) {
         shutdown();
@@ -170,7 +176,7 @@ bool EditorApplication::initialize()
 
     mainScale_ = getMainDisplayScale();
     const SDL_WindowFlags windowFlags =
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
     window_ = SDL_CreateWindow(
         "Metallic Engine Editor",
@@ -182,16 +188,20 @@ bool EditorApplication::initialize()
         return false;
     }
 
-    renderer_ = SDL_CreateRenderer(window_, kEditorRendererDrivers);
-    if (renderer_ == nullptr) {
-        SDL_Log("SDL_CreateRenderer failed for drivers '%s': %s", kEditorRendererDrivers, SDL_GetError());
-        return false;
-    }
-    SDL_Log("SDL renderer backend: %s", SDL_GetRendererName(renderer_));
-
-    SDL_SetRenderVSync(renderer_, 1);
     SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     SDL_ShowWindow(window_);
+
+    if (waitForGraphicsDebugger_) {
+        SDL_ShowSimpleMessageBox(
+            SDL_MESSAGEBOX_INFORMATION,
+            "Metallic Graphics Debugger",
+            "Attach RenderDoc or Nsight Graphics now, then press OK to create the Vulkan device and swapchain.",
+            window_);
+    }
+
+    if (!initializeRhi()) {
+        return false;
+    }
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -215,35 +225,243 @@ bool EditorApplication::initialize()
     imnodesContextCreated_ = true;
     ImNodes::StyleColorsDark();
 
-    imguiPlatformInitialized_ = ImGui_ImplSDL3_InitForSDLRenderer(window_, renderer_);
-    if (!imguiPlatformInitialized_) {
-        SDL_Log("ImGui SDL3 platform backend initialization failed");
-        return false;
-    }
-
-    imguiRendererInitialized_ = ImGui_ImplSDLRenderer3_Init(renderer_);
-    if (!imguiRendererInitialized_) {
-        SDL_Log("ImGui SDL_Renderer3 backend initialization failed");
+    if (!initializeImGuiBackends()) {
         return false;
     }
 
     resetDefaultRenderGraph();
+    graphExecutor_ = std::make_unique<render::RenderGraphExecutor>();
 
-    graphPreviewRenderer_ = std::make_unique<render::RenderGraphPreviewRenderer>();
-    const render::Result previewResult = graphPreviewRenderer_->initialize(false);
-    if (!previewResult) {
-        std::cerr << "RenderGraph preview RHI initialization failed with Result "
-                  << render::resultToString(previewResult) << '\n';
-        graphPreviewRenderer_.reset();
+    return true;
+}
+
+bool EditorApplication::initializeRhi()
+{
+    render::Result result = render::createDevice(
+        render::DeviceDesc{
+            .applicationName = "Metallic Engine Editor",
+            .enableValidation = false,
+        },
+        device_);
+    if (!result || device_ == nullptr) {
+        std::cerr << "createDevice failed with Result " << render::resultToString(result) << '\n';
+        return false;
     }
 
+    graphicsQueue_ = device_->getQueue(render::QueueType::Graphics);
+    if (graphicsQueue_ == nullptr) {
+        std::cerr << "RHI graphics queue is not available\n";
+        return false;
+    }
+
+    result = device_->createCommandPool(*graphicsQueue_, commandPool_);
+    if (!result) {
+        std::cerr << "createCommandPool failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+    result = commandPool_->createCommandBuffer(commandBuffer_);
+    if (!result) {
+        std::cerr << "createCommandBuffer failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+    result = device_->createFence(true, frameFence_);
+    if (!result) {
+        std::cerr << "createFence failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+    result = device_->createSemaphore(imageAvailableSemaphore_);
+    if (!result) {
+        std::cerr << "createSemaphore(imageAvailable) failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+    result = device_->createSemaphore(renderFinishedSemaphore_);
+    if (!result) {
+        std::cerr << "createSemaphore(renderFinished) failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+
+    int width = 0;
+    int height = 0;
+    if (!SDL_GetWindowSizeInPixels(window_, &width, &height)) {
+        SDL_Log("SDL_GetWindowSizeInPixels failed: %s", SDL_GetError());
+        return false;
+    }
+    if (!createOrResizeSwapchain(
+            static_cast<uint32_t>(std::max(width, 1)),
+            static_cast<uint32_t>(std::max(height, 1)))) {
+        return false;
+    }
+
+    return createViewportSampler();
+}
+
+bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
+{
+    if (device_ == nullptr || width == 0 || height == 0) {
+        return false;
+    }
+
+    if (swapchain_ != nullptr && swapchainWidth_ == width && swapchainHeight_ == height && !swapchainOutOfDate_) {
+        return true;
+    }
+
+    (void)device_->waitIdle();
+    destroySwapchainResources();
+
+    render::Result result = device_->createSwapchain(
+        render::SwapchainDesc{
+            .window = render::WindowHandle{
+                .system = render::WindowSystem::Sdl3,
+                .nativeWindow = window_,
+            },
+            .width = width,
+            .height = height,
+            .imageCount = kSwapchainImageCount,
+            .framesInFlight = 2,
+            .format = render::Format::Bgra8Unorm,
+            .vsync = true,
+        },
+        swapchain_);
+    if (!result || swapchain_ == nullptr) {
+        std::cerr << "createSwapchain failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+
+    swapchainImageViews_.reserve(swapchain_->imageCount());
+    swapchainImageStates_.assign(swapchain_->imageCount(), render::ResourceState::Undefined);
+    for (uint32_t imageIndex = 0; imageIndex < swapchain_->imageCount(); ++imageIndex) {
+        render::Texture* texture = swapchain_->texture(imageIndex);
+        if (texture == nullptr) {
+            std::cerr << "swapchain texture is missing at image " << imageIndex << '\n';
+            return false;
+        }
+
+        std::unique_ptr<render::TextureView> view;
+        result = device_->createTextureView(
+            *texture,
+            render::TextureViewDesc{
+                .format = swapchain_->format(),
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+            view);
+        if (!result || view == nullptr) {
+            std::cerr << "createTextureView(swapchain) failed with Result " << render::resultToString(result) << '\n';
+            return false;
+        }
+        swapchainImageViews_.push_back(std::move(view));
+    }
+
+    swapchainWidth_ = swapchain_->width();
+    swapchainHeight_ = swapchain_->height();
+    swapchainOutOfDate_ = false;
+
+    if (imguiRendererInitialized_) {
+        ImGui_ImplVulkan_SetMinImageCount(kMinSwapchainImageCount);
+    }
+    return true;
+}
+
+void EditorApplication::destroySwapchainResources()
+{
+    swapchainImageViews_.clear();
+    swapchainImageStates_.clear();
+    swapchain_.reset();
+    swapchainWidth_ = 0;
+    swapchainHeight_ = 0;
+}
+
+bool EditorApplication::initializeImGuiBackends()
+{
+    imguiPlatformInitialized_ = ImGui_ImplSDL3_InitForVulkan(window_);
+    if (!imguiPlatformInitialized_) {
+        SDL_Log("ImGui SDL3 Vulkan platform backend initialization failed");
+        return false;
+    }
+
+    const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
+    const render::vulkan::NativeQueue nativeQueue = render::vulkan::nativeQueue(*graphicsQueue_);
+    const VkFormat colorFormat = render::vulkan::nativeSwapchainFormat(*swapchain_);
+    if (nativeDevice.instance == VK_NULL_HANDLE ||
+        nativeDevice.physicalDevice == VK_NULL_HANDLE ||
+        nativeDevice.device == VK_NULL_HANDLE ||
+        nativeQueue.queue == VK_NULL_HANDLE ||
+        colorFormat == VK_FORMAT_UNDEFINED) {
+        std::cerr << "Invalid Vulkan native handles for ImGui backend\n";
+        return false;
+    }
+
+    VkPipelineRenderingCreateInfo pipelineRenderingInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &colorFormat,
+    };
+
+    ImGui_ImplVulkan_InitInfo initInfo{};
+    initInfo.ApiVersion = nativeDevice.apiVersion;
+    initInfo.Instance = nativeDevice.instance;
+    initInfo.PhysicalDevice = nativeDevice.physicalDevice;
+    initInfo.Device = nativeDevice.device;
+    initInfo.QueueFamily = nativeQueue.familyIndex;
+    initInfo.Queue = nativeQueue.queue;
+    initInfo.DescriptorPoolSize = 128;
+    initInfo.MinImageCount = kMinSwapchainImageCount;
+    initInfo.ImageCount = swapchain_->imageCount();
+    initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+#ifdef IMGUI_IMPL_VULKAN_HAS_DYNAMIC_RENDERING
+    initInfo.UseDynamicRendering = true;
+    initInfo.PipelineInfoMain.PipelineRenderingCreateInfo = pipelineRenderingInfo;
+#endif
+    initInfo.CheckVkResultFn = checkVkResult;
+
+    imguiRendererInitialized_ = ImGui_ImplVulkan_Init(&initInfo);
+    if (!imguiRendererInitialized_) {
+        SDL_Log("ImGui Vulkan renderer backend initialization failed");
+        return false;
+    }
+    return true;
+}
+
+bool EditorApplication::createViewportSampler()
+{
+    if (device_ == nullptr) {
+        return false;
+    }
+    const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
+    if (nativeDevice.device == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    VkSamplerCreateInfo samplerInfo{
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .maxLod = 1.0f,
+    };
+    const VkResult result = vkCreateSampler(nativeDevice.device, &samplerInfo, nullptr, &viewportSampler_);
+    if (result != VK_SUCCESS) {
+        std::cerr << "vkCreateSampler(viewport) failed with VkResult " << static_cast<int>(result) << '\n';
+        return false;
+    }
     return true;
 }
 
 void EditorApplication::shutdown()
 {
+    if (device_ != nullptr) {
+        (void)device_->waitIdle();
+    }
+
+    destroyViewportTexture();
+
     if (imguiRendererInitialized_) {
-        ImGui_ImplSDLRenderer3_Shutdown();
+        ImGui_ImplVulkan_Shutdown();
         imguiRendererInitialized_ = false;
     }
 
@@ -262,13 +480,24 @@ void EditorApplication::shutdown()
         imguiContextCreated_ = false;
     }
 
-    destroyViewportTexture();
-    graphPreviewRenderer_.reset();
+    graphExecutor_.reset();
 
-    if (renderer_ != nullptr) {
-        SDL_DestroyRenderer(renderer_);
-        renderer_ = nullptr;
+    if (viewportSampler_ != VK_NULL_HANDLE && device_ != nullptr) {
+        const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
+        if (nativeDevice.device != VK_NULL_HANDLE) {
+            vkDestroySampler(nativeDevice.device, viewportSampler_, nullptr);
+        }
+        viewportSampler_ = VK_NULL_HANDLE;
     }
+
+    commandBuffer_.reset();
+    commandPool_.reset();
+    frameFence_.reset();
+    imageAvailableSemaphore_.reset();
+    renderFinishedSemaphore_.reset();
+    destroySwapchainResources();
+    graphicsQueue_ = nullptr;
+    device_.reset();
 
     if (window_ != nullptr) {
         SDL_DestroyWindow(window_);
@@ -297,7 +526,39 @@ void EditorApplication::pollEvents()
 
 void EditorApplication::renderFrame()
 {
-    ImGui_ImplSDLRenderer3_NewFrame();
+    int framebufferWidth = 0;
+    int framebufferHeight = 0;
+    if (!SDL_GetWindowSizeInPixels(window_, &framebufferWidth, &framebufferHeight)) {
+        SDL_Log("SDL_GetWindowSizeInPixels failed: %s", SDL_GetError());
+        running_ = false;
+        return;
+    }
+    if (framebufferWidth <= 0 || framebufferHeight <= 0) {
+        return;
+    }
+
+    if (frameFence_ != nullptr) {
+        render::Result result = frameFence_->wait();
+        if (!result) {
+            std::cerr << "frameFence wait before UI failed with Result " << render::resultToString(result) << '\n';
+            running_ = false;
+            return;
+        }
+    }
+
+    if (swapchainOutOfDate_ ||
+        swapchain_ == nullptr ||
+        swapchainWidth_ != static_cast<uint32_t>(framebufferWidth) ||
+        swapchainHeight_ != static_cast<uint32_t>(framebufferHeight)) {
+        if (!createOrResizeSwapchain(
+                static_cast<uint32_t>(framebufferWidth),
+                static_cast<uint32_t>(framebufferHeight))) {
+            running_ = false;
+            return;
+        }
+    }
+
+    ImGui_ImplVulkan_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
@@ -305,18 +566,9 @@ void EditorApplication::renderFrame()
     drawPanels();
 
     ImGui::Render();
-    const ImGuiIO& io = ImGui::GetIO();
-
-    SDL_SetRenderScale(renderer_, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
-    SDL_SetRenderDrawColorFloat(
-        renderer_,
-        clearColor_[0],
-        clearColor_[1],
-        clearColor_[2],
-        clearColor_[3]);
-    SDL_RenderClear(renderer_);
-    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
-    SDL_RenderPresent(renderer_);
+    if (!renderVulkanFrame()) {
+        running_ = false;
+    }
 }
 
 void EditorApplication::setupDefaultDockLayout()
@@ -491,7 +743,7 @@ void EditorApplication::drawViewportPanel()
 
     if (hasRhiPreview) {
         drawList->AddImage(
-            static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(viewportTexture_)),
+            static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(viewportDescriptor_)),
             min,
             max,
             ImVec2(0.0f, 0.0f),
@@ -523,12 +775,12 @@ void EditorApplication::drawViewportPanel()
 
 bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
 {
-    if (renderer_ == nullptr || graphPreviewRenderer_ == nullptr) {
+    if (device_ == nullptr || graphExecutor_ == nullptr || viewportSampler_ == VK_NULL_HANDLE) {
         return false;
     }
 
     const bool textureSizeMatches =
-        viewportTexture_ != nullptr &&
+        viewportDescriptor_ != VK_NULL_HANDLE &&
         viewportTextureWidth_ == width &&
         viewportTextureHeight_ == height;
 
@@ -538,12 +790,13 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
         pendingViewportPreviewWidth_ = width;
         pendingViewportPreviewHeight_ = height;
         viewportResizeStableFrameCount_ = 0;
+        viewportPreviewNeedsRender_ = true;
         return true;
     }
 
     const bool canReusePreviewDuringResize =
         viewportPreviewValid_ &&
-        viewportTexture_ != nullptr &&
+        viewportDescriptor_ != VK_NULL_HANDLE &&
         !textureSizeMatches &&
         !renderGraph_.dirty();
     if (canReusePreviewDuringResize) {
@@ -551,82 +804,296 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
             pendingViewportPreviewWidth_ = width;
             pendingViewportPreviewHeight_ = height;
             viewportResizeStableFrameCount_ = 0;
+            viewportPreviewNeedsRender_ = true;
             return true;
         }
 
         if (viewportResizeStableFrameCount_ < kViewportResizeSettleFrames) {
             ++viewportResizeStableFrameCount_;
+            viewportPreviewNeedsRender_ = true;
             return true;
         }
     }
 
-    const render::Result renderResult = graphPreviewRenderer_->render(renderGraph_, width, height);
-    if (!renderResult) {
-        std::cerr << "RenderGraph preview render failed with Result "
-                  << render::resultToString(renderResult) << '\n';
-        renderGraphStatus_ = graphPreviewRenderer_->lastLog();
-        viewportPreviewValid_ = false;
-        return false;
-    }
-    renderGraphStatus_ = graphPreviewRenderer_->lastLog();
+    destroyViewportTexture();
 
-    if (viewportTexture_ == nullptr ||
-        viewportTextureWidth_ != width ||
-        viewportTextureHeight_ != height) {
-        destroyViewportTexture();
-        viewportTexture_ = SDL_CreateTexture(
-            renderer_,
-            SDL_PIXELFORMAT_RGBA32,
-            SDL_TEXTUREACCESS_STATIC,
-            static_cast<int>(width),
-            static_cast<int>(height));
-        if (viewportTexture_ == nullptr) {
-            std::cerr << "SDL_CreateTexture failed: " << SDL_GetError() << '\n';
-            viewportPreviewValid_ = false;
-            return false;
-        }
-
-        SDL_SetTextureBlendMode(viewportTexture_, SDL_BLENDMODE_NONE);
-        SDL_SetTextureScaleMode(viewportTexture_, SDL_SCALEMODE_LINEAR);
-        viewportTextureWidth_ = width;
-        viewportTextureHeight_ = height;
-    }
-
-    const std::vector<uint32_t>& pixels = graphPreviewRenderer_->pixels();
-    if (pixels.size() < static_cast<size_t>(width) * static_cast<size_t>(height)) {
-        viewportPreviewValid_ = false;
+    std::string log;
+    render::Result result = graphExecutor_->compile(*device_, renderGraph_, width, height, log);
+    renderGraphStatus_ = log;
+    if (!result) {
+        std::cerr << "RenderGraph compile failed with Result "
+                  << render::resultToString(result) << '\n';
         return false;
     }
 
-    if (!SDL_UpdateTexture(
-            viewportTexture_,
-            nullptr,
-            pixels.data(),
-            static_cast<int>(width * sizeof(uint32_t)))) {
-        std::cerr << "SDL_UpdateTexture failed: " << SDL_GetError() << '\n';
-        viewportPreviewValid_ = false;
+    render::RenderGraphResource* output = graphExecutor_->outputResource(renderGraph_.firstOutputName());
+    if (output == nullptr || output->view == nullptr) {
+        renderGraphStatus_ = "RenderGraph output texture is not available";
         return false;
     }
 
+    const VkImageView imageView = render::vulkan::nativeImageView(*output->view);
+    if (imageView == VK_NULL_HANDLE) {
+        renderGraphStatus_ = "RenderGraph output image view is not available";
+        return false;
+    }
+
+    viewportDescriptor_ = ImGui_ImplVulkan_AddTexture(
+        viewportSampler_,
+        imageView,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (viewportDescriptor_ == VK_NULL_HANDLE) {
+        renderGraphStatus_ = "ImGui failed to allocate viewport descriptor";
+        return false;
+    }
+
+    viewportTextureWidth_ = width;
+    viewportTextureHeight_ = height;
     viewportPreviewValid_ = true;
+    viewportPreviewNeedsRender_ = true;
     pendingViewportPreviewWidth_ = width;
     pendingViewportPreviewHeight_ = height;
     viewportResizeStableFrameCount_ = 0;
     return true;
 }
 
+void EditorApplication::destroyViewportDescriptor()
+{
+    if (viewportDescriptor_ != VK_NULL_HANDLE && imguiRendererInitialized_) {
+        ImGui_ImplVulkan_RemoveTexture(viewportDescriptor_);
+    }
+    viewportDescriptor_ = VK_NULL_HANDLE;
+}
+
 void EditorApplication::destroyViewportTexture()
 {
-    if (viewportTexture_ != nullptr) {
-        SDL_DestroyTexture(viewportTexture_);
-        viewportTexture_ = nullptr;
-    }
+    destroyViewportDescriptor();
     viewportTextureWidth_ = 0;
     viewportTextureHeight_ = 0;
     pendingViewportPreviewWidth_ = 0;
     pendingViewportPreviewHeight_ = 0;
     viewportResizeStableFrameCount_ = 0;
     viewportPreviewValid_ = false;
+    viewportPreviewNeedsRender_ = false;
+}
+
+bool EditorApplication::renderGraphPreview()
+{
+    if (!viewportPreviewValid_ || !viewportPreviewNeedsRender_) {
+        return true;
+    }
+    if (graphExecutor_ == nullptr || commandBuffer_ == nullptr) {
+        return false;
+    }
+
+    commandBuffer_->beginDebugLabel(render::DebugLabelDesc{
+        .name = "RenderGraph Preview",
+        .color = render::ColorValue{0.78f, 0.36f, 0.92f, 1.0f},
+    });
+    render::Result result = graphExecutor_->execute(*commandBuffer_);
+    commandBuffer_->endDebugLabel();
+    if (!result) {
+        renderGraphStatus_ = std::string("RenderGraph execute failed: ") + render::resultToString(result);
+        std::cerr << renderGraphStatus_ << '\n';
+        viewportPreviewValid_ = false;
+        viewportPreviewNeedsRender_ = false;
+        return false;
+    }
+
+    result = graphExecutor_->transitionOutput(
+        *commandBuffer_,
+        renderGraph_.firstOutputName(),
+        render::ResourceState::ShaderRead);
+    if (!result) {
+        renderGraphStatus_ = std::string("RenderGraph output transition failed: ") + render::resultToString(result);
+        std::cerr << renderGraphStatus_ << '\n';
+        viewportPreviewValid_ = false;
+        viewportPreviewNeedsRender_ = false;
+        return false;
+    }
+
+    renderGraph_.clearDirty();
+    viewportPreviewNeedsRender_ = false;
+    return true;
+}
+
+bool EditorApplication::renderVulkanFrame()
+{
+    if (swapchain_ == nullptr ||
+        commandPool_ == nullptr ||
+        commandBuffer_ == nullptr ||
+        frameFence_ == nullptr ||
+        imageAvailableSemaphore_ == nullptr ||
+        renderFinishedSemaphore_ == nullptr ||
+        graphicsQueue_ == nullptr) {
+        return false;
+    }
+
+    render::Result result = frameFence_->wait();
+    if (!result) {
+        std::cerr << "frameFence wait failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+
+    uint32_t imageIndex = 0;
+    result = swapchain_->acquireNextImage(*imageAvailableSemaphore_, imageIndex);
+    if (!result) {
+        if (render::hasError(result, render::Error::OutOfDate)) {
+            swapchainOutOfDate_ = true;
+            return true;
+        }
+        std::cerr << "acquireNextImage failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+    if (imageIndex >= swapchainImageViews_.size() || imageIndex >= swapchainImageStates_.size()) {
+        std::cerr << "acquireNextImage returned invalid image index " << imageIndex << '\n';
+        return false;
+    }
+
+    result = frameFence_->reset();
+    if (!result) {
+        std::cerr << "frameFence reset failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+    result = commandPool_->reset();
+    if (!result) {
+        std::cerr << "commandPool reset failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+    result = commandBuffer_->begin();
+    if (!result) {
+        std::cerr << "commandBuffer begin failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+
+    bool frameLabelOpen = true;
+    commandBuffer_->beginDebugLabel(render::DebugLabelDesc{
+        .name = "Metallic Editor Frame",
+        .color = render::ColorValue{0.24f, 0.40f, 0.95f, 1.0f},
+    });
+    auto endFrameLabel = [&]() {
+        if (frameLabelOpen) {
+            commandBuffer_->endDebugLabel();
+            frameLabelOpen = false;
+        }
+    };
+
+    if (!renderGraphPreview()) {
+        endFrameLabel();
+        return false;
+    }
+
+    render::Texture* swapchainTexture = swapchain_->texture(imageIndex);
+    if (swapchainTexture == nullptr || swapchainImageViews_[imageIndex] == nullptr) {
+        endFrameLabel();
+        return false;
+    }
+
+    render::TextureBarrierDesc toColor{
+        .texture = swapchainTexture,
+        .before = swapchainImageStates_[imageIndex],
+        .after = render::ResourceState::ColorAttachment,
+        .baseMip = 0,
+        .mipCount = 1,
+        .baseLayer = 0,
+        .layerCount = 1,
+    };
+    commandBuffer_->barrier(render::BarrierDesc{
+        .textures = &toColor,
+        .textureCount = 1,
+    });
+    swapchainImageStates_[imageIndex] = render::ResourceState::ColorAttachment;
+
+    const render::Rect renderArea{
+        .x = 0,
+        .y = 0,
+        .width = swapchain_->width(),
+        .height = swapchain_->height(),
+    };
+    render::RenderingAttachmentDesc colorAttachment{
+        .view = swapchainImageViews_[imageIndex].get(),
+        .state = render::ResourceState::ColorAttachment,
+        .loadOp = render::LoadOp::Clear,
+        .storeOp = render::StoreOp::Store,
+        .clearColor = render::ColorValue{
+            clearColor_[0],
+            clearColor_[1],
+            clearColor_[2],
+            clearColor_[3],
+        },
+    };
+    commandBuffer_->beginDebugLabel(render::DebugLabelDesc{
+        .name = "Editor ImGui",
+        .color = render::ColorValue{0.22f, 0.70f, 0.45f, 1.0f},
+    });
+    commandBuffer_->beginRendering(render::RenderingDesc{
+        .renderArea = renderArea,
+        .colorAttachments = &colorAttachment,
+        .colorAttachmentCount = 1,
+    });
+
+    ImGui_ImplVulkan_RenderDrawData(
+        ImGui::GetDrawData(),
+        render::vulkan::nativeCommandBuffer(*commandBuffer_));
+
+    commandBuffer_->endRendering();
+    commandBuffer_->endDebugLabel();
+
+    render::TextureBarrierDesc toPresent{
+        .texture = swapchainTexture,
+        .before = render::ResourceState::ColorAttachment,
+        .after = render::ResourceState::Present,
+        .baseMip = 0,
+        .mipCount = 1,
+        .baseLayer = 0,
+        .layerCount = 1,
+    };
+    commandBuffer_->barrier(render::BarrierDesc{
+        .textures = &toPresent,
+        .textureCount = 1,
+    });
+    swapchainImageStates_[imageIndex] = render::ResourceState::Present;
+
+    endFrameLabel();
+    result = commandBuffer_->end();
+    if (!result) {
+        std::cerr << "commandBuffer end failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+
+    render::CommandBuffer* commandBuffers[] = {commandBuffer_.get()};
+    render::SemaphoreSubmitDesc waitSemaphore{
+        .semaphore = imageAvailableSemaphore_.get(),
+        .stages = render::PipelineStageBits::ColorAttachment,
+    };
+    render::SemaphoreSubmitDesc signalSemaphore{
+        .semaphore = renderFinishedSemaphore_.get(),
+        .stages = render::PipelineStageBits::AllCommands,
+    };
+    result = graphicsQueue_->submit(render::QueueSubmitDesc{
+        .waitSemaphores = &waitSemaphore,
+        .waitSemaphoreCount = 1,
+        .commandBuffers = commandBuffers,
+        .commandBufferCount = 1,
+        .signalSemaphores = &signalSemaphore,
+        .signalSemaphoreCount = 1,
+        .signalFence = frameFence_.get(),
+    });
+    if (!result) {
+        std::cerr << "graphicsQueue submit failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+    result = swapchain_->present(*graphicsQueue_, imageIndex, *renderFinishedSemaphore_);
+    if (!result) {
+        if (render::hasError(result, render::Error::OutOfDate)) {
+            swapchainOutOfDate_ = true;
+            return true;
+        }
+        std::cerr << "swapchain present failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+
+    return true;
 }
 
 void EditorApplication::resetDefaultRenderGraph()

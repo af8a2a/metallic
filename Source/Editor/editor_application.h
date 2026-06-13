@@ -5,9 +5,10 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
-struct SDL_Renderer;
-struct SDL_Texture;
+#include <vulkan/vulkan.h>
+
 struct SDL_Window;
 struct ImVec2;
 
@@ -15,7 +16,7 @@ namespace metallic {
 
 class EditorApplication {
 public:
-    int run(bool smokeTest = false);
+    int run(bool smokeTest = false, bool waitForGraphicsDebugger = false);
 
 private:
     bool initialize();
@@ -36,28 +37,51 @@ private:
     void loadRenderGraph();
     void addRenderGraphNode(std::string type, ImVec2 screenPosition);
     void markRenderGraphOutput(std::string outputName);
+    bool initializeRhi();
+    bool createOrResizeSwapchain(uint32_t width, uint32_t height);
+    void destroySwapchainResources();
+    bool initializeImGuiBackends();
+    bool createViewportSampler();
+    void destroyViewportDescriptor();
     bool updateViewportPreview(uint32_t width, uint32_t height);
     void destroyViewportTexture();
+    bool renderGraphPreview();
+    bool renderVulkanFrame();
     int graphInputAttributeId(const render::RenderGraphNode& node, uint32_t fieldIndex) const;
     int graphOutputAttributeId(const render::RenderGraphNode& node, uint32_t fieldIndex) const;
 
     SDL_Window* window_ = nullptr;
-    SDL_Renderer* renderer_ = nullptr;
-    SDL_Texture* viewportTexture_ = nullptr;
-    std::unique_ptr<render::RenderGraphPreviewRenderer> graphPreviewRenderer_;
+    std::unique_ptr<render::Device> device_;
+    render::Queue* graphicsQueue_ = nullptr;
+    std::unique_ptr<render::Swapchain> swapchain_;
+    std::vector<std::unique_ptr<render::TextureView>> swapchainImageViews_;
+    std::vector<render::ResourceState> swapchainImageStates_;
+    std::unique_ptr<render::CommandPool> commandPool_;
+    std::unique_ptr<render::CommandBuffer> commandBuffer_;
+    std::unique_ptr<render::Fence> frameFence_;
+    std::unique_ptr<render::Semaphore> imageAvailableSemaphore_;
+    std::unique_ptr<render::Semaphore> renderFinishedSemaphore_;
+    std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
     render::RenderGraph renderGraph_;
+    VkSampler viewportSampler_ = VK_NULL_HANDLE;
+    VkDescriptorSet viewportDescriptor_ = VK_NULL_HANDLE;
     uint32_t viewportTextureWidth_ = 0;
     uint32_t viewportTextureHeight_ = 0;
+    uint32_t swapchainWidth_ = 0;
+    uint32_t swapchainHeight_ = 0;
     uint32_t pendingViewportPreviewWidth_ = 0;
     uint32_t pendingViewportPreviewHeight_ = 0;
     uint32_t viewportResizeStableFrameCount_ = 0;
     bool running_ = true;
     bool smokeTest_ = false;
+    bool waitForGraphicsDebugger_ = false;
     bool imguiContextCreated_ = false;
     bool imnodesContextCreated_ = false;
     bool imguiPlatformInitialized_ = false;
     bool imguiRendererInitialized_ = false;
     bool viewportPreviewValid_ = false;
+    bool viewportPreviewNeedsRender_ = false;
+    bool swapchainOutOfDate_ = false;
     bool dockLayoutInitialized_ = false;
     bool graphEditorPositionsInitialized_ = false;
     float mainScale_ = 1.0f;

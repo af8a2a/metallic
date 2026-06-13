@@ -191,6 +191,11 @@ struct Rect {
     uint32_t height = 0;
 };
 
+struct DebugLabelDesc {
+    const char* name = nullptr;
+    ColorValue color{0.35f, 0.55f, 1.0f, 1.0f};
+};
+
 struct DeviceDesc {
     const char* applicationName = "Metallic";
     bool enableValidation = false;
@@ -336,6 +341,7 @@ struct TextureViewImpl;
 struct ShaderModuleImpl;
 struct GraphicsPipelineImpl;
 struct TrianglePreviewRendererImpl;
+struct VulkanNativeAccess;
 } // namespace detail
 
 class Queue {
@@ -361,6 +367,7 @@ private:
     friend class Swapchain;
     friend class CommandPool;
     friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class Fence {
@@ -406,6 +413,7 @@ private:
     friend class Queue;
     friend class Swapchain;
     friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class Buffer {
@@ -431,6 +439,7 @@ private:
     friend class Device;
     friend class CommandBuffer;
     friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class Texture {
@@ -476,6 +485,7 @@ private:
     friend class Device;
     friend class CommandBuffer;
     friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class ShaderModule {
@@ -529,6 +539,8 @@ public:
 
     Result begin();
     Result end();
+    void beginDebugLabel(const DebugLabelDesc& desc);
+    void endDebugLabel();
     void barrier(const BarrierDesc& desc);
     void copyTexture(const TextureCopyDesc& desc);
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
@@ -548,6 +560,7 @@ private:
     friend class CommandPool;
     friend class Queue;
     friend struct detail::CommandPoolImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class CommandPool {
@@ -570,6 +583,7 @@ private:
 
     friend class Device;
     friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class Swapchain {
@@ -597,6 +611,7 @@ private:
 
     friend class Device;
     friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class Device {
@@ -627,6 +642,7 @@ private:
     std::unique_ptr<detail::DeviceImpl> impl_;
 
     friend Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice);
+    friend struct detail::VulkanNativeAccess;
 };
 
 Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice);

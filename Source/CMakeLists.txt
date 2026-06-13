@@ -9,6 +9,7 @@ find_package(slang CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PAT
 add_library(MetallicRuntimeRender STATIC
     Runtime/Render/slang_compiler.cpp
     Runtime/Render/RenderGraph/render_graph.cpp
+    Runtime/Render/RenderPass/builtin_render_passes.cpp
     Runtime/Render/GAPI/Vulkan/vulkan_rhi.cpp
 )
 
@@ -23,6 +24,7 @@ target_include_directories(MetallicRuntimeRender SYSTEM PRIVATE
 target_link_libraries(MetallicRuntimeRender PUBLIC
     Vulkan::Vulkan
     metallic::sdl3
+    metallic::nsight_events
     nlohmann_json
     slang::slang
 )
