@@ -90,7 +90,243 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             {"color", {0.04f, 0.06f, 0.09f, 1.0f}},
         };
     }
+    if (type == "BunnyWireframePass") {
+        return render::RenderGraphProperties{
+            {"path", "Asset/StandfordBunny/scene.gltf"},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 60.0f},
+                {"znear", 0.1f},
+                {"zfar", 10000.0f},
+                {"eye", {-0.0168404f, 0.110154f, 0.22f}},
+                {"center", {-0.0168404f, 0.110154f, -0.00153695f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
+        };
+    }
     return render::RenderGraphProperties::object();
+}
+
+render::RenderGraphNode* findBunnyWireframeNode(render::RenderGraph& graph)
+{
+    for (const render::RenderGraphNode& node : graph.nodes()) {
+        if (node.type == "BunnyWireframePass") {
+            return graph.findNode(node.id);
+        }
+    }
+    return nullptr;
+}
+
+bool isVec3Property(const render::RenderGraphProperties& value)
+{
+    if (!value.is_array() || value.size() < 3) {
+        return false;
+    }
+    return value[0].is_number() && value[1].is_number() && value[2].is_number();
+}
+
+void storeVec3Property(render::RenderGraphProperties& object, const char* key, const float values[3])
+{
+    object[key] = {values[0], values[1], values[2]};
+}
+
+void readVec3Property(const render::RenderGraphProperties& object, const char* key, float outValues[3])
+{
+    const render::RenderGraphProperties& value = object.at(key);
+    outValues[0] = value[0].get<float>();
+    outValues[1] = value[1].get<float>();
+    outValues[2] = value[2].get<float>();
+}
+
+void cameraDefaultsFromBounds(const scene::Bounds& bounds, float eye[3], float center[3])
+{
+    if (bounds.valid) {
+        const float3 boundsCenter = bounds.center();
+        const float distance = std::max(bounds.radius() * 2.0f, 0.1f);
+        center[0] = boundsCenter.x;
+        center[1] = boundsCenter.y;
+        center[2] = boundsCenter.z;
+        eye[0] = boundsCenter.x;
+        eye[1] = boundsCenter.y;
+        eye[2] = boundsCenter.z + distance;
+        return;
+    }
+
+    center[0] = -0.0168404f;
+    center[1] = 0.110154f;
+    center[2] = -0.00153695f;
+    eye[0] = center[0];
+    eye[1] = center[1];
+    eye[2] = 0.22f;
+}
+
+void ensureFloatProperty(
+    render::RenderGraphProperties& object,
+    const char* key,
+    float fallback)
+{
+    auto iter = object.find(key);
+    if (iter == object.end() || !iter->is_number()) {
+        object[key] = fallback;
+    }
+}
+
+void ensureVec3Property(
+    render::RenderGraphProperties& object,
+    const char* key,
+    const float fallback[3])
+{
+    auto iter = object.find(key);
+    if (iter == object.end() || !isVec3Property(*iter)) {
+        storeVec3Property(object, key, fallback);
+    }
+}
+
+void ensureCameraProperties(render::RenderGraphProperties& properties, const scene::Bounds& bounds)
+{
+    if (!properties.is_object()) {
+        properties = render::RenderGraphProperties::object();
+    }
+
+    render::RenderGraphProperties& camera = properties["camera"];
+    if (!camera.is_object()) {
+        camera = render::RenderGraphProperties::object();
+    }
+
+    float defaultEye[3] = {};
+    float defaultCenter[3] = {};
+    cameraDefaultsFromBounds(bounds, defaultEye, defaultCenter);
+    const float defaultUp[3] = {0.0f, 1.0f, 0.0f};
+
+    auto projectionIter = camera.find("projection");
+    if (projectionIter == camera.end() || !projectionIter->is_string() ||
+        (*projectionIter != "perspective" && *projectionIter != "orthographic")) {
+        camera["projection"] = "perspective";
+    }
+    ensureFloatProperty(camera, "fovDegrees", 60.0f);
+    ensureFloatProperty(camera, "znear", 0.1f);
+    ensureFloatProperty(camera, "zfar", 10000.0f);
+    ensureVec3Property(camera, "eye", defaultEye);
+    ensureVec3Property(camera, "center", defaultCenter);
+    ensureVec3Property(camera, "up", defaultUp);
+}
+
+float propertyFloatOr(const render::RenderGraphProperties& object, const char* key, float fallback)
+{
+    auto iter = object.find(key);
+    if (iter == object.end() || !iter->is_number()) {
+        return fallback;
+    }
+    const float value = iter->get<float>();
+    return std::isfinite(value) ? value : fallback;
+}
+
+float3 normalizedOr(const float3& value, const float3& fallback)
+{
+    const float len = length(value);
+    if (len <= 0.000001f || !std::isfinite(len)) {
+        return fallback;
+    }
+    return value / len;
+}
+
+float3 perpendicularTo(const float3& axis)
+{
+    const float3 reference = std::abs(axis.x) < 0.9f
+        ? float3(1.0f, 0.0f, 0.0f)
+        : float3(0.0f, 0.0f, 1.0f);
+    return normalizedOr(reference - axis * dot(reference, axis), float3(1.0f, 0.0f, 0.0f));
+}
+
+bool orbitCamera(float deltaX, float deltaY, float width, float height, float eye[3], const float center[3], float up[3])
+{
+    if (deltaX == 0.0f && deltaY == 0.0f) {
+        return false;
+    }
+
+    constexpr float kPi = 3.14159265358979323846f;
+    constexpr float kPolePad = 0.001f;
+    const float2 displacement(
+        deltaX / std::max(width, 1.0f),
+        deltaY / std::max(height, 1.0f));
+
+    const float3 cameraUp = normalizedOr(float3(up[0], up[1], up[2]), float3(0.0f, 1.0f, 0.0f));
+    const float3 origin(center[0], center[1], center[2]);
+    const float3 position(eye[0], eye[1], eye[2]);
+    const float radius = length(position - origin);
+    if (radius <= 0.000001f || !std::isfinite(radius)) {
+        return false;
+    }
+
+    float3 centerToEye = (position - origin) / radius;
+    const float cosElev = std::clamp(dot(centerToEye, cameraUp), -1.0f, 1.0f);
+    float3 horizontal = centerToEye - cameraUp * cosElev;
+    const float sinElev = length(horizontal);
+    const float elev = std::atan2(sinElev, cosElev);
+    horizontal = sinElev < 0.000001f ? perpendicularTo(cameraUp) : horizontal / sinElev;
+
+    const float yaw = -displacement.x * 2.0f * kPi;
+    const float yawC = std::cos(yaw);
+    const float yawS = std::sin(yaw);
+    horizontal = horizontal * yawC + cross(cameraUp, horizontal) * yawS;
+
+    const float pitch = displacement.y * 2.0f * kPi;
+    const float newElev = std::clamp(elev - pitch, kPolePad, kPi - kPolePad);
+    centerToEye = (cameraUp * std::cos(newElev) + horizontal * std::sin(newElev)) * radius;
+
+    const float3 newEye = origin + centerToEye;
+    eye[0] = newEye.x;
+    eye[1] = newEye.y;
+    eye[2] = newEye.z;
+    up[0] = cameraUp.x;
+    up[1] = cameraUp.y;
+    up[2] = cameraUp.z;
+    return true;
+}
+
+bool dollyCamera(float wheel, render::RenderGraphProperties& camera)
+{
+    if (wheel == 0.0f) {
+        return false;
+    }
+
+    float eye[3] = {};
+    float center[3] = {};
+    readVec3Property(camera, "eye", eye);
+    readVec3Property(camera, "center", center);
+
+    const std::string projection = camera["projection"].get<std::string>();
+    constexpr float kWheelZoomRate = 0.1f;
+    const float factor = std::pow(1.0f - kWheelZoomRate, wheel);
+
+    if (projection == "orthographic") {
+        const float3 eyeVec(eye[0], eye[1], eye[2]);
+        const float3 centerVec(center[0], center[1], center[2]);
+        const float distance = std::max(length(eyeVec - centerVec), 0.001f);
+        constexpr float kPi = 3.14159265358979323846f;
+        const float fovRadians = std::clamp(
+            propertyFloatOr(camera, "fovDegrees", 60.0f),
+            1.0f,
+            179.0f) * (kPi / 180.0f);
+        const float defaultHeight = std::max(2.0f * distance * std::tan(fovRadians * 0.5f), 0.0001f);
+        const float currentHeight = std::max(propertyFloatOr(camera, "orthoHeight", defaultHeight), 0.0001f);
+        camera["orthoHeight"] = std::max(currentHeight * factor, 0.0001f);
+        return true;
+    }
+
+    const float3 offset(float3(eye[0], eye[1], eye[2]) - float3(center[0], center[1], center[2]));
+    const float distance = length(offset);
+    if (distance <= 0.000001f || !std::isfinite(distance)) {
+        return false;
+    }
+
+    const float newDistance = std::max(distance * factor, 0.0001f);
+    const float3 newEye = float3(center[0], center[1], center[2]) + (offset / distance) * newDistance;
+    eye[0] = newEye.x;
+    eye[1] = newEye.y;
+    eye[2] = newEye.z;
+    storeVec3Property(camera, "eye", eye);
+    return true;
 }
 
 void copyToBuffer(const std::string& value, char* buffer, size_t bufferSize)
@@ -974,6 +1210,9 @@ void EditorApplication::drawScenePanel()
         ImGui::TextWrapped("Error: %s", loadResult.error.c_str());
     }
 
+    ImGui::Separator();
+    drawCameraControls();
+
     if (!scene_.valid()) {
         ImGui::Separator();
         ImGui::TextDisabled("Load a .gltf or .glb file to inspect its CPU scene graph.");
@@ -1037,6 +1276,130 @@ void EditorApplication::drawScenePanel()
     }
 
     ImGui::End();
+}
+
+void EditorApplication::drawCameraControls()
+{
+    render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
+    if (node == nullptr) {
+        ImGui::TextDisabled("No render camera controls for this graph.");
+        return;
+    }
+
+    render::RenderGraphProperties properties = node->properties;
+    ensureCameraProperties(properties, scene_.bounds());
+    render::RenderGraphProperties& camera = properties["camera"];
+
+    bool changed = false;
+    const float labelWidth = 64.0f * mainScale_;
+
+    if (ImGui::CollapsingHeader("Projection", ImGuiTreeNodeFlags_DefaultOpen)) {
+        std::string projection = camera["projection"].get<std::string>();
+        int projectionType = projection == "orthographic" ? 1 : 0;
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Type");
+        ImGui::SameLine(labelWidth);
+        if (ImGui::RadioButton("Perspective", projectionType == 0)) {
+            projectionType = 0;
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Orthographic", projectionType == 1)) {
+            projectionType = 1;
+            changed = true;
+        }
+
+        float fovDegrees = camera["fovDegrees"].get<float>();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("FOV");
+        ImGui::SameLine(labelWidth);
+        ImGui::PushItemWidth(-1.0f);
+        if (ImGui::SliderFloat("##CameraFOV", &fovDegrees, 1.0f, 120.0f, "%.1f")) {
+            camera["fovDegrees"] = std::clamp(fovDegrees, 1.0f, 120.0f);
+            changed = true;
+        }
+        ImGui::PopItemWidth();
+
+        float zClip[2] = {
+            camera["znear"].get<float>(),
+            camera["zfar"].get<float>(),
+        };
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Z-Clip");
+        ImGui::SameLine(labelWidth);
+        ImGui::PushItemWidth(-1.0f);
+        if (ImGui::InputFloat2("##CameraZClip", zClip, "%.6f")) {
+            zClip[0] = std::max(zClip[0], 0.0001f);
+            zClip[1] = std::max(zClip[1], zClip[0] + 0.0001f);
+            camera["znear"] = zClip[0];
+            camera["zfar"] = zClip[1];
+            changed = true;
+        }
+        ImGui::PopItemWidth();
+
+        camera["projection"] = projectionType == 1 ? "orthographic" : "perspective";
+    }
+
+    if (ImGui::CollapsingHeader("Position", ImGuiTreeNodeFlags_DefaultOpen)) {
+        float eye[3] = {};
+        float center[3] = {};
+        float up[3] = {};
+        readVec3Property(camera, "eye", eye);
+        readVec3Property(camera, "center", center);
+        readVec3Property(camera, "up", up);
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Eye");
+        ImGui::SameLine(labelWidth);
+        ImGui::PushItemWidth(-1.0f);
+        if (ImGui::InputFloat3("##CameraEye", eye, "%.6f")) {
+            storeVec3Property(camera, "eye", eye);
+            changed = true;
+        }
+        ImGui::PopItemWidth();
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Center");
+        ImGui::SameLine(labelWidth);
+        ImGui::PushItemWidth(-1.0f);
+        if (ImGui::InputFloat3("##CameraCenter", center, "%.6f")) {
+            storeVec3Property(camera, "center", center);
+            changed = true;
+        }
+        ImGui::PopItemWidth();
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Up");
+        ImGui::SameLine(labelWidth);
+        ImGui::PushItemWidth(-1.0f);
+        if (ImGui::InputFloat3("##CameraUp", up, "%.6f")) {
+            storeVec3Property(camera, "up", up);
+            changed = true;
+        }
+        ImGui::PopItemWidth();
+    }
+
+    if (changed) {
+        applyBunnyCameraProperties(std::move(properties), "Updated render camera");
+    }
+}
+
+void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties properties, const char* status)
+{
+    render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
+    if (node == nullptr) {
+        return;
+    }
+
+    node->properties = std::move(properties);
+    if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
+        graphExecutor_->syncProperties(renderGraph_);
+    }
+    viewportPreviewNeedsRender_ = true;
+    if (status != nullptr) {
+        renderGraphStatus_ = status;
+    }
 }
 
 void EditorApplication::drawSceneNode(int32_t nodeIndex)
@@ -1106,6 +1469,7 @@ void EditorApplication::drawViewportPanel()
 
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
+    handleViewportCameraControls(min, max);
     const float width = max.x - min.x;
     const float height = max.y - min.y;
     const uint32_t previewWidth = std::clamp(
@@ -1152,6 +1516,57 @@ void EditorApplication::drawViewportPanel()
     drawList->PopClipRect();
 
     ImGui::End();
+}
+
+void EditorApplication::handleViewportCameraControls(const ImVec2& min, const ImVec2& max)
+{
+    render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
+    if (node == nullptr) {
+        viewportCameraDragging_ = false;
+        return;
+    }
+
+    const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    const ImVec2 size(max.x - min.x, max.y - min.y);
+    ImGuiIO& io = ImGui::GetIO();
+
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
+        viewportCameraDragging_ = true;
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+        viewportCameraDragging_ = false;
+    }
+
+    render::RenderGraphProperties properties = node->properties;
+    ensureCameraProperties(properties, scene_.bounds());
+    render::RenderGraphProperties& camera = properties["camera"];
+    bool changed = false;
+
+    if (hovered && io.MouseWheel != 0.0f) {
+        changed = dollyCamera(io.MouseWheel, camera) || changed;
+    }
+
+    if (viewportCameraDragging_) {
+        const ImVec2 delta = io.MouseDelta;
+        if (delta.x != 0.0f || delta.y != 0.0f) {
+            float eye[3] = {};
+            float center[3] = {};
+            float up[3] = {};
+            readVec3Property(camera, "eye", eye);
+            readVec3Property(camera, "center", center);
+            readVec3Property(camera, "up", up);
+            if (orbitCamera(delta.x, delta.y, size.x, size.y, eye, center, up)) {
+                storeVec3Property(camera, "eye", eye);
+                storeVec3Property(camera, "up", up);
+                changed = true;
+            }
+        }
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+
+    if (changed) {
+        applyBunnyCameraProperties(std::move(properties), "Updated render camera from viewport");
+    }
 }
 
 bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
@@ -1265,6 +1680,10 @@ bool EditorApplication::renderGraphPreview()
     }
     if (graphExecutor_ == nullptr || commandBuffer_ == nullptr) {
         return false;
+    }
+
+    if (!renderGraph_.dirty()) {
+        graphExecutor_->syncProperties(renderGraph_);
     }
 
     commandBuffer_->beginDebugLabel(render::DebugLabelDesc{

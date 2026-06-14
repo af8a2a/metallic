@@ -27,8 +27,11 @@ private:
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();
+    void drawCameraControls();
     void drawSceneNode(int32_t nodeIndex);
     void drawViewportPanel();
+    void handleViewportCameraControls(const ImVec2& min, const ImVec2& max);
+    void applyBunnyCameraProperties(render::RenderGraphProperties properties, const char* status);
     void drawRenderGraphEditorWindow();
     void drawRenderGraphPanel();
     void drawRenderGraphSettingsPanel();
@@ -91,6 +94,7 @@ private:
     bool dockLayoutInitialized_ = false;
     bool renderGraphEditorOpen_ = false;
     bool graphEditorPositionsInitialized_ = false;
+    bool viewportCameraDragging_ = false;
     float mainScale_ = 1.0f;
     float clearColor_[4] = {0.07f, 0.08f, 0.10f, 1.0f};
     int selectedGraphNodeId_ = -1;

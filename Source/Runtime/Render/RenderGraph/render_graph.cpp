@@ -1393,6 +1393,15 @@ RenderGraph RenderGraph::createDefaultBunnyGraph()
         "Bunny",
         RenderGraphProperties{
             {"path", "Asset/StandfordBunny/scene.gltf"},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 60.0f},
+                {"znear", 0.1f},
+                {"zfar", 10000.0f},
+                {"eye", {-0.0168404f, 0.110154f, 0.22f}},
+                {"center", {-0.0168404f, 0.110154f, -0.00153695f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
         },
         40.0f,
         80.0f);
@@ -1992,6 +2001,30 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer)
     return {};
 }
 
+bool RenderGraphExecutor::syncProperties(const RenderGraph& graph)
+{
+    if (!impl_->isCompiled) {
+        return false;
+    }
+
+    bool synced = false;
+    for (Impl::CompiledNode& compiledNode : impl_->executionList) {
+        const RenderGraphNode* graphNode = graph.findNode(compiledNode.id);
+        if (graphNode == nullptr ||
+            graphNode->name != compiledNode.name ||
+            graphNode->type != compiledNode.type) {
+            return false;
+        }
+
+        if (compiledNode.properties != graphNode->properties) {
+            compiledNode.properties = graphNode->properties;
+            compiledNode.pass->setProperties(compiledNode.properties);
+            synced = true;
+        }
+    }
+    return synced;
+}
+
 Result RenderGraphExecutor::transitionOutput(
     CommandBuffer& commandBuffer,
     std::string_view fullName,
@@ -2150,6 +2183,8 @@ Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth,
             return result;
         }
         graph.clearDirty();
+    } else {
+        impl_->executor.syncProperties(graph);
     }
 
     result = impl_->ensureReadback(newWidth, newHeight);

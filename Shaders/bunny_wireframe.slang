@@ -6,8 +6,11 @@ struct BindlessHeapPush
 
 struct BunnyWireframeParams
 {
-    float4 centerScale;
+    float4 eye;
+    float4 center;
+    float4 upProjection;
     float4 viewport;
+    float4 clipOrtho;
     float4 clearColor;
     float4 wireColor;
     float4 settings;
@@ -18,6 +21,49 @@ struct BunnyWireframeVertexOutput
     float4 position : SV_Position;
     float3 barycentric : TEXCOORD0;
 };
+
+float3 safeNormalize(float3 value, float3 fallback)
+{
+    float lengthSquared = dot(value, value);
+    return lengthSquared > 0.00000001 ? value * rsqrt(lengthSquared) : fallback;
+}
+
+float4 projectPosition(float3 worldPosition, BunnyWireframeParams params)
+{
+    float3 forward = safeNormalize(params.center.xyz - params.eye.xyz, float3(0.0, 0.0, -1.0));
+    float3 cameraUp = safeNormalize(params.upProjection.xyz, float3(0.0, 1.0, 0.0));
+    float3 right = safeNormalize(cross(forward, cameraUp), float3(1.0, 0.0, 0.0));
+    float3 up = safeNormalize(cross(right, forward), float3(0.0, 1.0, 0.0));
+
+    float3 cameraVector = worldPosition - params.eye.xyz;
+    float3 viewPosition = float3(
+        dot(cameraVector, right),
+        dot(cameraVector, up),
+        dot(cameraVector, forward));
+
+    float zNear = max(params.clipOrtho.x, 0.0001);
+    float zFar = max(params.clipOrtho.y, zNear + 0.0001);
+    float ndcZ = saturate((viewPosition.z - zNear) / (zFar - zNear));
+    float aspect = max(params.viewport.x, 0.001);
+
+    if (params.upProjection.w > 0.5) {
+        float halfHeight = max(params.clipOrtho.z * 0.5, 0.0001);
+        return float4(
+            viewPosition.x / (halfHeight * aspect),
+            viewPosition.y / halfHeight,
+            ndcZ,
+            1.0);
+    }
+
+    float fovRadians = clamp(params.viewport.w, 0.017453292, 3.12413936);
+    float yScale = 1.0 / tan(fovRadians * 0.5);
+    float w = max(viewPosition.z, 0.0001);
+    return float4(
+        viewPosition.x * yScale / aspect,
+        viewPosition.y * yScale,
+        ndcZ * w,
+        w);
+}
 
 float lineCoverage(float3 barycentric, float thickness, float smoothing)
 {
@@ -39,12 +85,8 @@ BunnyWireframeVertexOutput bunnyWireframeVertexMain(uint vertexIndex : SV_Vertex
     StructuredBuffer<float4> positions = positionsHandle;
     BunnyWireframeParams params = paramsBuffer[0];
 
-    float3 centered = positions[vertexIndex].xyz - params.centerScale.xyz;
-    float aspect = max(params.viewport.x, 0.001);
-    float scale = params.centerScale.w;
-
     BunnyWireframeVertexOutput output;
-    output.position = float4(centered.x * scale / aspect, centered.y * scale, centered.z * scale * 0.05, 1.0);
+    output.position = projectPosition(positions[vertexIndex].xyz, params);
 
     uint corner = vertexIndex % 3;
     output.barycentric = corner == 0 ? float3(1.0, 0.0, 0.0) :

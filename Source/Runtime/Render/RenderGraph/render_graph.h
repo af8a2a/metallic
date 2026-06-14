@@ -341,6 +341,7 @@ public:
         uint32_t height,
         std::string& log);
     Result execute(CommandBuffer& commandBuffer);
+    bool syncProperties(const RenderGraph& graph);
     Result transitionOutput(
         CommandBuffer& commandBuffer,
         std::string_view fullName,

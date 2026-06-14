@@ -8,6 +8,7 @@
 #include "stb_image.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
@@ -57,8 +58,11 @@ struct BunnyWireframeGpuPosition {
 };
 
 struct BunnyWireframeGpuParams {
-    float centerScale[4] = {};
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
     float viewport[4] = {};
+    float clipOrtho[4] = {};
     float clearColor[4] = {};
     float wireColor[4] = {};
     float settings[4] = {};
@@ -665,13 +669,14 @@ public:
 
         std::vector<BunnyWireframeGpuPosition> positions;
         BunnyWireframeGpuParams params;
-        if (!loadBunnyGeometry(context.width, context.height, properties(), positions, params, log)) {
+        if (!loadBunnyGeometry(properties(), positions, drawBounds_, log)) {
             return makeError(Error::Failure);
         }
         if (positions.size() > std::numeric_limits<uint32_t>::max()) {
             log = "BunnyWireframePass geometry is too large to draw";
             return makeError(Error::Unsupported);
         }
+        buildBunnyParams(context.width, context.height, properties(), drawBounds_, params);
 
         Result result = uploadStorageBuffer(
             *context.device,
@@ -783,6 +788,11 @@ public:
             return makeError(Error::InvalidArgument);
         }
 
+        Result result = updateParamsBuffer(context.width(), context.height(), context.properties());
+        if (!result) {
+            return result;
+        }
+
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -856,6 +866,28 @@ private:
         return {};
     }
 
+    Result updateParamsBuffer(
+        uint32_t width,
+        uint32_t height,
+        const RenderGraphProperties& properties)
+    {
+        if (paramsBuffer_ == nullptr || !drawBounds_.valid) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        BunnyWireframeGpuParams params;
+        buildBunnyParams(width, height, properties, drawBounds_, params);
+
+        void* mapped = paramsBuffer_->map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, &params, sizeof(params));
+        paramsBuffer_->flush(0, sizeof(params));
+        paramsBuffer_->unmap();
+        return {};
+    }
+
     static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
     {
         if (props.contains("path") && props["path"].is_string()) {
@@ -868,12 +900,86 @@ private:
         return kDefaultBunnyScenePath;
     }
 
+    static float finiteOr(float value, float fallback)
+    {
+        return std::isfinite(value) ? value : fallback;
+    }
+
+    static const RenderGraphProperties* cameraPropertiesFrom(const RenderGraphProperties& properties)
+    {
+        if (!properties.is_object()) {
+            return nullptr;
+        }
+        auto iter = properties.find("camera");
+        if (iter == properties.end() || !iter->is_object()) {
+            return nullptr;
+        }
+        return &(*iter);
+    }
+
+    static float cameraFloat(
+        const RenderGraphProperties* camera,
+        const char* key,
+        float fallback)
+    {
+        if (camera == nullptr) {
+            return fallback;
+        }
+        auto iter = camera->find(key);
+        if (iter == camera->end() || !iter->is_number()) {
+            return fallback;
+        }
+        return finiteOr(iter->get<float>(), fallback);
+    }
+
+    static float3 cameraVec3(
+        const RenderGraphProperties* camera,
+        const char* key,
+        const float3& fallback)
+    {
+        if (camera == nullptr) {
+            return fallback;
+        }
+        auto iter = camera->find(key);
+        if (iter == camera->end() || !iter->is_array() || iter->size() < 3) {
+            return fallback;
+        }
+
+        float values[3] = {fallback.x, fallback.y, fallback.z};
+        for (size_t index = 0; index < 3; ++index) {
+            const RenderGraphProperties& component = (*iter)[index];
+            if (component.is_number()) {
+                values[index] = finiteOr(component.get<float>(), values[index]);
+            }
+        }
+        return float3(values[0], values[1], values[2]);
+    }
+
+    static bool cameraIsOrthographic(const RenderGraphProperties* camera)
+    {
+        if (camera == nullptr) {
+            return false;
+        }
+        auto iter = camera->find("projection");
+        if (iter == camera->end() || !iter->is_string()) {
+            return false;
+        }
+        const std::string projection = iter->get<std::string>();
+        return projection == "orthographic" || projection == "ortho";
+    }
+
+    static void writeParamVec3(const float3& value, float out[4], float w)
+    {
+        out[0] = value.x;
+        out[1] = value.y;
+        out[2] = value.z;
+        out[3] = w;
+    }
+
     static bool loadBunnyGeometry(
-        uint32_t width,
-        uint32_t height,
         const RenderGraphProperties& properties,
         std::vector<BunnyWireframeGpuPosition>& outPositions,
-        BunnyWireframeGpuParams& outParams,
+        scene::Bounds& outBounds,
         std::string& log)
     {
         scene::Scene bunnyScene;
@@ -883,7 +989,7 @@ private:
             return false;
         }
 
-        scene::Bounds drawBounds;
+        outBounds.reset();
         for (const scene::RenderNode& renderNode : bunnyScene.renderNodes()) {
             if (renderNode.renderPrimitiveIndex < 0 ||
                 static_cast<size_t>(renderNode.renderPrimitiveIndex) >= bunnyScene.renderPrimitives().size()) {
@@ -907,7 +1013,7 @@ private:
                     .z = world.z,
                     .w = 1.0f,
                 });
-                drawBounds.include(world);
+                outBounds.include(world);
             };
 
             const std::vector<uint32_t>& indices = primitive.indices;
@@ -924,24 +1030,62 @@ private:
             }
         }
 
-        if (outPositions.empty() || !drawBounds.valid) {
+        if (outPositions.empty() || !outBounds.valid) {
             log = "BunnyWireframePass found no drawable triangle geometry in " + path.string();
             return false;
         }
 
+        return true;
+    }
+
+    static void buildBunnyParams(
+        uint32_t width,
+        uint32_t height,
+        const RenderGraphProperties& properties,
+        const scene::Bounds& drawBounds,
+        BunnyWireframeGpuParams& outParams)
+    {
+        outParams = BunnyWireframeGpuParams{};
         const float3 center = drawBounds.center();
         const float3 halfExtent = (drawBounds.max - drawBounds.min) * 0.5f;
         const float aspect = height == 0 ? 1.0f : static_cast<float>(width) / static_cast<float>(height);
         const float frameHalfHeight = std::max(halfExtent.y, halfExtent.x / std::max(aspect, 0.001f));
-        const float scale = frameHalfHeight > 0.000001f ? 0.82f / frameHalfHeight : 1.0f;
+        const RenderGraphProperties* cameraProperties = cameraPropertiesFrom(properties);
+        const float fovDegrees = std::clamp(
+            cameraFloat(cameraProperties, "fovDegrees", 60.0f),
+            1.0f,
+            179.0f);
+        constexpr float kPi = 3.14159265358979323846f;
+        const float fovRadians = fovDegrees * (kPi / 180.0f);
+        const float halfDepth = std::max(halfExtent.z, 0.001f);
+        const float defaultDistance = std::max(
+            frameHalfHeight > 0.000001f
+                ? frameHalfHeight / (0.72f * std::tan(fovRadians * 0.5f)) + halfDepth
+                : 1.0f,
+            0.05f);
+        const float3 defaultEye(center.x, center.y, center.z + defaultDistance);
+        const float3 eye = cameraVec3(cameraProperties, "eye", defaultEye);
+        const float3 target = cameraVec3(cameraProperties, "center", center);
+        const float3 up = cameraVec3(cameraProperties, "up", float3(0.0f, 1.0f, 0.0f));
+        const float zNear = std::max(cameraFloat(cameraProperties, "znear", 0.1f), 0.0001f);
+        const float zFar = std::max(cameraFloat(cameraProperties, "zfar", 10000.0f), zNear + 0.001f);
+        const float cameraDistance = std::max(length(eye - target), 0.001f);
+        const float defaultOrthoHeight = std::max(2.0f * cameraDistance * std::tan(fovRadians * 0.5f), 0.0001f);
+        const float orthoHeight = std::max(
+            cameraFloat(cameraProperties, "orthoHeight", defaultOrthoHeight),
+            0.0001f);
 
-        outParams.centerScale[0] = center.x;
-        outParams.centerScale[1] = center.y;
-        outParams.centerScale[2] = center.z;
-        outParams.centerScale[3] = scale;
+        writeParamVec3(eye, outParams.eye, 0.0f);
+        writeParamVec3(target, outParams.center, 0.0f);
+        writeParamVec3(up, outParams.upProjection, cameraIsOrthographic(cameraProperties) ? 1.0f : 0.0f);
         outParams.viewport[0] = aspect;
         outParams.viewport[1] = static_cast<float>(width);
         outParams.viewport[2] = static_cast<float>(height);
+        outParams.viewport[3] = fovRadians;
+        outParams.clipOrtho[0] = zNear;
+        outParams.clipOrtho[1] = zFar;
+        outParams.clipOrtho[2] = orthoHeight;
+        outParams.clipOrtho[3] = 0.0f;
         outParams.clearColor[0] = 0.015f;
         outParams.clearColor[1] = 0.018f;
         outParams.clearColor[2] = 0.024f;
@@ -954,7 +1098,6 @@ private:
         outParams.settings[1] = 0.75f;
         outParams.settings[2] = 0.0f;
         outParams.settings[3] = 0.0f;
-        return true;
     }
 
     std::unique_ptr<Buffer> positionBuffer_;
@@ -965,6 +1108,7 @@ private:
     std::unique_ptr<ShaderModule> vertexShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
+    scene::Bounds drawBounds_;
     uint32_t drawVertexCount_ = 0;
 };
 

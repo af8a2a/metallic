@@ -499,6 +499,63 @@ public:
     }
 };
 
+class RenderGraphBunnyCameraSyncTest : public RhiTest {
+public:
+    RenderGraphBunnyCameraSyncTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_bunny_camera_sync";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        render::RenderGraph graph = render::RenderGraph::createDefaultBunnyGraph();
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("Bunny wireframe preview is unsupported on this device: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("initial Bunny wireframe preview returned ") + toString(result) + ": " + preview.lastLog());
+        }
+        if (graph.dirty()) {
+            return RhiTestResult::fail("preview render did not clear graph dirty state");
+        }
+
+        render::RenderGraphNode* bunnyNode = graph.findNode("Bunny");
+        if (bunnyNode == nullptr) {
+            return RhiTestResult::fail("default Bunny graph did not create Bunny node");
+        }
+
+        bunnyNode->properties["camera"]["fovDegrees"] = 35.0f;
+        bunnyNode->properties["camera"]["eye"] = {-0.0168404f, 0.110154f, 0.34f};
+        if (graph.dirty()) {
+            return RhiTestResult::fail("direct camera property update unexpectedly marked graph dirty");
+        }
+
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("camera-synced Bunny preview returned ") + toString(result) + ": " + preview.lastLog());
+        }
+        const uint32_t brightPixels = countBrightPixels(preview.pixels());
+        if (brightPixels < 512) {
+            return RhiTestResult::fail(
+                std::string("camera-synced Bunny preview produced too few bright pixels: ") +
+                std::to_string(brightPixels));
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 class RenderGraphCopyColorWorkflowTest : public RhiTest {
 public:
     RenderGraphCopyColorWorkflowTest()
@@ -905,6 +962,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyWireframePreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);
