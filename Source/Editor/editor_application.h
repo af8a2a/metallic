@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/RenderGraph/render_graph.h"
 #include "Runtime/Render/GAPI/Vulkan/vulkan_scene_rtx.h"
+#include "Runtime/Render/history_resources.h"
 #include "Runtime/Scene/scene.h"
 
 #include <cstdint>
@@ -73,6 +74,7 @@ private:
     std::unique_ptr<render::Semaphore> imageAvailableSemaphore_;
     std::unique_ptr<render::Semaphore> renderFinishedSemaphore_;
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
+    render::HistoryResourceManager historyResources_;
     std::unique_ptr<render::vulkan::SceneRtxBuilder> sceneRtx_;
     render::RenderGraph renderGraph_;
     scene::Scene scene_;
@@ -85,6 +87,7 @@ private:
     uint32_t pendingViewportPreviewWidth_ = 0;
     uint32_t pendingViewportPreviewHeight_ = 0;
     uint32_t viewportResizeStableFrameCount_ = 0;
+    uint64_t historyFrameIndex_ = 0;
     bool running_ = true;
     bool smokeTest_ = false;
     bool waitForGraphicsDebugger_ = false;

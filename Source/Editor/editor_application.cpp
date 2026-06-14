@@ -806,6 +806,12 @@ bool EditorApplication::initializeRhi()
         return false;
     }
 
+    result = historyResources_.initialize(*device_);
+    if (!result) {
+        std::cerr << "HistoryResourceManager initialize failed with Result " << render::resultToString(result) << '\n';
+        return false;
+    }
+
     result = device_->createCommandPool(*graphicsQueue_, commandPool_);
     if (!result) {
         std::cerr << "createCommandPool failed with Result " << render::resultToString(result) << '\n';
@@ -1011,6 +1017,7 @@ void EditorApplication::shutdown()
     }
 
     destroyViewportTexture();
+    historyResources_.reset();
 
     if (imguiRendererInitialized_) {
         ImGui_ImplVulkan_Shutdown();
@@ -1768,6 +1775,7 @@ void EditorApplication::destroyViewportDescriptor()
 void EditorApplication::destroyViewportTexture()
 {
     destroyViewportDescriptor();
+    historyResources_.invalidateAll();
     viewportTextureWidth_ = 0;
     viewportTextureHeight_ = 0;
     pendingViewportPreviewWidth_ = 0;
@@ -1869,6 +1877,7 @@ bool EditorApplication::renderVulkanFrame()
         std::cerr << "commandBuffer begin failed with Result " << render::resultToString(result) << '\n';
         return false;
     }
+    historyResources_.beginFrame(historyFrameIndex_++);
 
     bool frameLabelOpen = true;
     commandBuffer_->beginDebugLabel(render::DebugLabelDesc{
@@ -2007,6 +2016,7 @@ void EditorApplication::resetDefaultRenderGraph()
     selectedGraphNodeId_ = -1;
     selectedGraphLinkId_ = -1;
     viewportPreviewValid_ = false;
+    historyResources_.invalidateAll();
     copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
     renderGraphStatus_ = "Created meet_mat path tracing RenderGraph";
 }
@@ -2036,6 +2046,7 @@ void EditorApplication::loadRenderGraph()
     selectedGraphNodeId_ = -1;
     selectedGraphLinkId_ = -1;
     viewportPreviewValid_ = false;
+    historyResources_.invalidateAll();
     copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
     renderGraphStatus_ = message;
 }
@@ -2043,6 +2054,7 @@ void EditorApplication::loadRenderGraph()
 void EditorApplication::loadScene()
 {
     clearSceneRtx();
+    historyResources_.invalidateAll();
 
     const std::filesystem::path path = resolveSceneAssetPath(sceneFilePath_);
     if (path.empty()) {

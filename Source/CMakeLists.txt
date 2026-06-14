@@ -5,6 +5,7 @@ endif()
 find_package(slang CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PATH)
 
 add_library(MetallicRuntimeRender STATIC
+    Runtime/Render/history_resources.cpp
     Runtime/Render/slang_compiler.cpp
     Runtime/Render/RenderGraph/render_graph.cpp
     Runtime/Render/RenderPass/builtin_render_passes.cpp
