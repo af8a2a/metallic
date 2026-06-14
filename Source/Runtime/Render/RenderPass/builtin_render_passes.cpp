@@ -119,7 +119,7 @@ Result createSlangShaderModule(
     return result;
 }
 
-class ClearColorPass final : public RenderGraphPass {
+class ClearColorPass final : public RasterPass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -168,7 +168,7 @@ public:
     }
 };
 
-class CopyColorPass final : public RenderGraphPass {
+class CopyColorPass final : public UnsafePass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -204,7 +204,7 @@ public:
     }
 };
 
-class TriangleRasterPass final : public RenderGraphPass {
+class TriangleRasterPass final : public RasterPass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -333,7 +333,7 @@ private:
     std::unique_ptr<GraphicsPipeline> pipeline_;
 };
 
-class ImageSamplePass final : public RenderGraphPass {
+class ImageSamplePass final : public UnsafePass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -644,7 +644,7 @@ private:
     bool uploaded_ = false;
 };
 
-class BunnyWireframePass final : public RenderGraphPass {
+class BunnyWireframePass final : public RasterPass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -1112,13 +1112,8 @@ private:
     uint32_t drawVertexCount_ = 0;
 };
 
-class RenderGraphBufferWritePass final : public RenderGraphPass {
+class RenderGraphBufferWritePass final : public ComputePass {
 public:
-    QueueType queueType() const override
-    {
-        return QueueType::Compute;
-    }
-
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
@@ -1191,13 +1186,8 @@ private:
     std::unique_ptr<ComputePipeline> pipeline_;
 };
 
-class RenderGraphBufferCopyPass final : public RenderGraphPass {
+class RenderGraphBufferCopyPass final : public ComputePass {
 public:
-    QueueType queueType() const override
-    {
-        return QueueType::Compute;
-    }
-
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;

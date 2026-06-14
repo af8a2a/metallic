@@ -47,6 +47,12 @@ enum class RenderGraphBindlessAccess : uint8_t {
     Buffer,
 };
 
+enum class RenderGraphPassKind : uint8_t {
+    Raster,
+    Compute,
+    Unsafe,
+};
+
 struct RenderGraphField {
     std::string name;
     std::string description;
@@ -209,6 +215,7 @@ public:
     virtual ~RenderGraphPass() = default;
 
     virtual RenderPassReflection reflect(const RenderGraphCompileContext& context) const = 0;
+    virtual RenderGraphPassKind kind() const;
     virtual QueueType queueType() const;
     virtual Result compile(const RenderGraphCompileContext& context, std::string& log);
     virtual Result execute(RenderGraphExecutionContext& context) = 0;
@@ -220,13 +227,36 @@ private:
     RenderGraphProperties properties_ = RenderGraphProperties::object();
 };
 
+class RasterPass : public RenderGraphPass {
+public:
+    RenderGraphPassKind kind() const override;
+    QueueType queueType() const override;
+};
+
+class ComputePass : public RenderGraphPass {
+public:
+    RenderGraphPassKind kind() const override;
+    QueueType queueType() const override;
+};
+
+// Unsafe passes may record mixed graphics, compute, or transfer commands and are
+// kept on the graphics queue until the graph can prove finer-grained hazards.
+class UnsafePass : public RenderGraphPass {
+public:
+    RenderGraphPassKind kind() const override;
+    QueueType queueType() const override;
+};
+
 using RenderGraphPassFactory = std::function<std::unique_ptr<RenderGraphPass>()>;
 
 struct RenderGraphPassInfo {
     std::string type;
     std::string description;
+    RenderGraphPassKind kind = RenderGraphPassKind::Unsafe;
+    QueueType queueType = QueueType::Graphics;
 };
 
+const char* renderGraphPassKindName(RenderGraphPassKind kind);
 bool registerRenderGraphPassType(
     std::string type,
     std::string description,

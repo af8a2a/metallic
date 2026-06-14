@@ -57,7 +57,7 @@ render::Result createSlangShaderModule(
         outShaderModule);
 }
 
-class TestInputOutputPass final : public render::RenderGraphPass {
+class TestInputOutputPass final : public render::RasterPass {
 public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
@@ -73,7 +73,7 @@ public:
     }
 };
 
-class TestBufferOutputPass final : public render::RenderGraphPass {
+class TestBufferOutputPass final : public render::ComputePass {
 public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
@@ -90,7 +90,7 @@ public:
     }
 };
 
-class TestBufferInputPass final : public render::RenderGraphPass {
+class TestBufferInputPass final : public render::ComputePass {
 public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
@@ -107,7 +107,7 @@ public:
     }
 };
 
-class TestBindlessSamplePass final : public render::RenderGraphPass {
+class TestBindlessSamplePass final : public render::RasterPass {
 public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
@@ -308,6 +308,62 @@ public:
             foundBuffer->structureStride != 8 ||
             foundBuffer->memoryLocation != render::MemoryLocation::HostReadback) {
             return RhiTestResult::fail("buffer field metadata was not preserved");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
+class RenderGraphPassKindTest : public RhiTest {
+public:
+    RenderGraphPassKindTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_pass_kind";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::unique_ptr<render::RenderGraphPass> triangle =
+            render::createRenderGraphPass("TriangleRasterPass");
+        const std::unique_ptr<render::RenderGraphPass> copy =
+            render::createRenderGraphPass("CopyColorPass");
+        const std::unique_ptr<render::RenderGraphPass> bufferWrite =
+            render::createRenderGraphPass("RenderGraphBufferWritePass");
+
+        if (triangle == nullptr || copy == nullptr || bufferWrite == nullptr) {
+            return RhiTestResult::fail("failed to create built-in render graph passes");
+        }
+        if (triangle->kind() != render::RenderGraphPassKind::Raster ||
+            triangle->queueType() != render::QueueType::Graphics) {
+            return RhiTestResult::fail("TriangleRasterPass is not classified as Raster/Graphics");
+        }
+        if (copy->kind() != render::RenderGraphPassKind::Unsafe ||
+            copy->queueType() != render::QueueType::Graphics) {
+            return RhiTestResult::fail("CopyColorPass is not classified as Unsafe/Graphics");
+        }
+        if (bufferWrite->kind() != render::RenderGraphPassKind::Compute ||
+            bufferWrite->queueType() != render::QueueType::Compute) {
+            return RhiTestResult::fail("RenderGraphBufferWritePass is not classified as Compute/Compute");
+        }
+
+        bool foundTriangle = false;
+        bool foundCopy = false;
+        bool foundBufferWrite = false;
+        for (const render::RenderGraphPassInfo& passInfo : render::listRenderGraphPassTypes()) {
+            if (passInfo.type == "TriangleRasterPass") {
+                foundTriangle = passInfo.kind == render::RenderGraphPassKind::Raster &&
+                    passInfo.queueType == render::QueueType::Graphics;
+            } else if (passInfo.type == "CopyColorPass") {
+                foundCopy = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
+                    passInfo.queueType == render::QueueType::Graphics;
+            } else if (passInfo.type == "RenderGraphBufferWritePass") {
+                foundBufferWrite = passInfo.kind == render::RenderGraphPassKind::Compute &&
+                    passInfo.queueType == render::QueueType::Compute;
+            }
+        }
+        if (!foundTriangle || !foundCopy || !foundBufferWrite) {
+            return RhiTestResult::fail("RenderGraphPassInfo did not preserve pass kind metadata");
         }
 
         return RhiTestResult::pass();
@@ -1026,6 +1082,7 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyWireframePreviewTest);

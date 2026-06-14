@@ -2418,7 +2418,7 @@ void EditorApplication::drawRenderGraphSettingsPanel()
 void EditorApplication::drawRenderPassesPanel()
 {
     const float cardWidth = 148.0f * mainScale_;
-    const float cardHeight = 74.0f * mainScale_;
+    const float cardHeight = 86.0f * mainScale_;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const int columnCount = std::max(
         1,
@@ -2455,6 +2455,10 @@ void EditorApplication::drawRenderPassesPanel()
                 ImVec2(cardMin.x + 2.0f * mainScale_, cardMin.y + 49.0f * mainScale_),
                 IM_COL32(235, 238, 242, 255),
                 passInfo.type.c_str());
+            drawList->AddText(
+                ImVec2(cardMin.x + 2.0f * mainScale_, cardMin.y + 66.0f * mainScale_),
+                IM_COL32(155, 164, 178, 255),
+                render::renderGraphPassKindName(passInfo.kind));
             drawList->PopClipRect();
 
             if (clicked) {
@@ -2470,8 +2474,15 @@ void EditorApplication::drawRenderPassesPanel()
                 ImGui::EndDragDropSource();
             }
 
-            if (hovered && !passInfo.description.empty()) {
-                ImGui::SetTooltip("%s", passInfo.description.c_str());
+            if (hovered) {
+                if (passInfo.description.empty()) {
+                    ImGui::SetTooltip("%s", render::renderGraphPassKindName(passInfo.kind));
+                } else {
+                    ImGui::SetTooltip(
+                        "%s\n%s",
+                        render::renderGraphPassKindName(passInfo.kind),
+                        passInfo.description.c_str());
+                }
             }
 
             ImGui::PopID();
@@ -2520,7 +2531,15 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         editingNodeId = static_cast<int>(node->id);
     }
 
-    ImGui::Text("Type: %s", node->type.c_str());
+    std::unique_ptr<render::RenderGraphPass> pass = render::createRenderGraphPass(node->type);
+    if (pass != nullptr) {
+        ImGui::Text(
+            "Type: %s (%s)",
+            node->type.c_str(),
+            render::renderGraphPassKindName(pass->kind()));
+    } else {
+        ImGui::Text("Type: %s", node->type.c_str());
+    }
     ImGui::InputText("Name", graphNodeNameBuffer_, sizeof(graphNodeNameBuffer_));
     if (ImGui::IsItemDeactivatedAfterEdit() && std::strlen(graphNodeNameBuffer_) > 0) {
         if (!renderGraph_.renameNode(node->id, graphNodeNameBuffer_)) {
@@ -2552,7 +2571,6 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         ImGui::TextWrapped("%s", propertiesText.c_str());
     }
 
-    std::unique_ptr<render::RenderGraphPass> pass = render::createRenderGraphPass(node->type);
     if (pass != nullptr) {
         pass->setProperties(node->properties);
         const render::RenderPassReflection reflection = pass->reflect(render::RenderGraphCompileContext{});

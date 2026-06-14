@@ -715,14 +715,71 @@ const RenderGraphField* RenderPassReflection::findField(
     return iter == fields_.end() ? nullptr : &(*iter);
 }
 
+const char* renderGraphPassKindName(RenderGraphPassKind kind)
+{
+    switch (kind) {
+    case RenderGraphPassKind::Raster:
+        return "Raster";
+    case RenderGraphPassKind::Compute:
+        return "Compute";
+    case RenderGraphPassKind::Unsafe:
+        return "Unsafe";
+    }
+
+    return "Unknown";
+}
+
+RenderGraphPassKind RenderGraphPass::kind() const
+{
+    return RenderGraphPassKind::Unsafe;
+}
+
 QueueType RenderGraphPass::queueType() const
 {
+    switch (kind()) {
+    case RenderGraphPassKind::Compute:
+        return QueueType::Compute;
+    case RenderGraphPassKind::Raster:
+    case RenderGraphPassKind::Unsafe:
+        return QueueType::Graphics;
+    }
+
     return QueueType::Graphics;
 }
 
 Result RenderGraphPass::compile(const RenderGraphCompileContext&, std::string&)
 {
     return {};
+}
+
+RenderGraphPassKind RasterPass::kind() const
+{
+    return RenderGraphPassKind::Raster;
+}
+
+QueueType RasterPass::queueType() const
+{
+    return QueueType::Graphics;
+}
+
+RenderGraphPassKind ComputePass::kind() const
+{
+    return RenderGraphPassKind::Compute;
+}
+
+QueueType ComputePass::queueType() const
+{
+    return QueueType::Compute;
+}
+
+RenderGraphPassKind UnsafePass::kind() const
+{
+    return RenderGraphPassKind::Unsafe;
+}
+
+QueueType UnsafePass::queueType() const
+{
+    return QueueType::Graphics;
 }
 
 TextureHandle::TextureHandle(RenderGraphResource* resource)
@@ -961,9 +1018,12 @@ std::vector<RenderGraphPassInfo> listRenderGraphPassTypes()
     std::vector<RenderGraphPassInfo> passTypes;
     passTypes.reserve(passRegistry().size());
     for (const auto& [type, entry] : passRegistry()) {
+        std::unique_ptr<RenderGraphPass> pass = entry.factory ? entry.factory() : nullptr;
         passTypes.push_back(RenderGraphPassInfo{
             .type = type,
             .description = entry.description,
+            .kind = pass != nullptr ? pass->kind() : RenderGraphPassKind::Unsafe,
+            .queueType = pass != nullptr ? pass->queueType() : QueueType::Graphics,
         });
     }
     std::sort(
@@ -1481,6 +1541,7 @@ struct RenderGraphExecutor::Impl {
         uint32_t id = 0;
         std::string name;
         std::string type;
+        RenderGraphPassKind kind = RenderGraphPassKind::Unsafe;
         QueueType queueType = QueueType::Graphics;
         RenderGraphProperties properties = RenderGraphProperties::object();
         std::unique_ptr<RenderGraphPass> pass;
@@ -1877,12 +1938,14 @@ Result RenderGraphExecutor::compile(
             return makeError(Error::InvalidArgument);
         }
         pass->setProperties(node->properties);
+        const RenderGraphPassKind kind = pass->kind();
         const QueueType queueType = pass->queueType();
         RenderPassReflection reflection = pass->reflect(compileContext);
         impl_->executionList.push_back(Impl::CompiledNode{
             .id = node->id,
             .name = node->name,
             .type = node->type,
+            .kind = kind,
             .queueType = queueType,
             .properties = node->properties,
             .pass = std::move(pass),
