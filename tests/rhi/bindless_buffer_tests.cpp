@@ -111,6 +111,20 @@ RhiTestResult createBuffer(
     return RhiTestResult::pass();
 }
 
+RhiTestResult createBufferView(
+    render::Device& device,
+    render::Buffer& buffer,
+    const render::BufferViewDesc& desc,
+    const char* label,
+    std::unique_ptr<render::BufferView>& outBufferView)
+{
+    render::Result result = device.createBufferView(buffer, desc, outBufferView);
+    if (!result || outBufferView == nullptr) {
+        return RhiTestResult::fail(std::string("createBufferView(") + label + ") returned " + toString(result));
+    }
+    return RhiTestResult::pass();
+}
+
 RhiTestResult createCommandObjects(
     render::Device& device,
     render::Queue& queue,
@@ -237,6 +251,38 @@ public:
             return testResult;
         }
 
+        std::unique_ptr<render::BufferView> constantView;
+        testResult = createBufferView(
+            *setup.device,
+            *constantBuffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::Constant,
+                .offset = 0,
+                .size = 256,
+                .structureStride = 16,
+            },
+            "constant",
+            constantView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BufferView> outputView;
+        testResult = createBufferView(
+            *setup.device,
+            *outputBuffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::ReadWriteRaw,
+                .offset = 0,
+                .size = outputBuffer->desc().size,
+                .structureStride = sizeof(uint32_t),
+            },
+            "output",
+            outputView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
         render::Result result = setup.device->createBindlessHeap(
             render::BindlessHeapDesc{
@@ -260,13 +306,13 @@ public:
             return RhiTestResult::fail(std::string("allocateBuffer(output) returned ") + toString(result));
         }
 
-        result = bindlessHeap->writeConstantBuffer(constantHandle, *constantBuffer);
+        result = bindlessHeap->writeBufferView(constantHandle, *constantView);
         if (!result) {
-            return RhiTestResult::fail(std::string("writeConstantBuffer returned ") + toString(result));
+            return RhiTestResult::fail(std::string("writeBufferView(constant) returned ") + toString(result));
         }
-        result = bindlessHeap->writeStorageBuffer(outputHandle, *outputBuffer);
+        result = bindlessHeap->writeBufferView(outputHandle, *outputView);
         if (!result) {
-            return RhiTestResult::fail(std::string("writeStorageBuffer(output) returned ") + toString(result));
+            return RhiTestResult::fail(std::string("writeBufferView(output) returned ") + toString(result));
         }
 
         std::unique_ptr<render::ShaderModule> shader;
@@ -345,6 +391,603 @@ public:
     }
 };
 
+class BindlessBufferStructuredReadTest : public RhiTest {
+public:
+    BindlessBufferStructuredReadTest()
+    {
+        type = RhiTestType::Command;
+        name = "bindless_buffer_structured_read";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        BindlessDeviceSetup setup;
+        RhiTestResult testResult = setupBindlessDevice(context.enableValidation, setup);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        constexpr uint32_t kElementCount = 4;
+        constexpr uint64_t kByteSize = kElementCount * 8ull;
+        std::unique_ptr<render::Buffer> inputBuffer;
+        testResult = createBuffer(
+            *setup.device,
+            render::BufferDesc{
+                .size = kByteSize,
+                .structureStride = 8,
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "input",
+            inputBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::array<uint32_t, kElementCount * 2> inputWords{};
+        for (uint32_t index = 0; index < kElementCount; ++index) {
+            inputWords[index * 2 + 0] = index * 2u;
+            inputWords[index * 2 + 1] = index * 2u + 1u;
+        }
+        void* mappedInput = inputBuffer->map();
+        if (mappedInput == nullptr) {
+            return RhiTestResult::fail("structured input buffer did not map");
+        }
+        std::memcpy(mappedInput, inputWords.data(), inputWords.size() * sizeof(uint32_t));
+        inputBuffer->flush(0, inputWords.size() * sizeof(uint32_t));
+        inputBuffer->unmap();
+
+        std::unique_ptr<render::Buffer> outputBuffer;
+        testResult = createBuffer(
+            *setup.device,
+            render::BufferDesc{
+                .size = kByteSize,
+                .structureStride = sizeof(uint32_t),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "output",
+            outputBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BufferView> inputView;
+        testResult = createBufferView(
+            *setup.device,
+            *inputBuffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::Structured,
+                .offset = 0,
+                .size = inputBuffer->desc().size,
+                .structureStride = 8,
+            },
+            "input",
+            inputView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BufferView> outputView;
+        testResult = createBufferView(
+            *setup.device,
+            *outputBuffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::ReadWriteRaw,
+                .offset = 0,
+                .size = outputBuffer->desc().size,
+                .structureStride = sizeof(uint32_t),
+            },
+            "output",
+            outputView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BindlessHeap> bindlessHeap;
+        render::Result result = setup.device->createBindlessHeap(
+            render::BindlessHeapDesc{.maxBuffers = 2},
+            bindlessHeap);
+        if (!result || bindlessHeap == nullptr) {
+            return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
+        }
+
+        render::BindlessHandle inputHandle;
+        result = bindlessHeap->allocateBuffer(inputHandle);
+        if (!result) {
+            return RhiTestResult::fail(std::string("allocateBuffer(input) returned ") + toString(result));
+        }
+        render::BindlessHandle outputHandle;
+        result = bindlessHeap->allocateBuffer(outputHandle);
+        if (!result) {
+            return RhiTestResult::fail(std::string("allocateBuffer(output) returned ") + toString(result));
+        }
+
+        result = bindlessHeap->writeBufferView(inputHandle, *inputView);
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeBufferView(input) returned ") + toString(result));
+        }
+        result = bindlessHeap->writeBufferView(outputHandle, *outputView);
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeBufferView(output) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::ShaderModule> shader;
+        testResult = createShaderModule(*setup.device, "bindlessBufferStructuredMain", shader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::ComputePipeline> pipeline;
+        result = setup.device->createComputePipeline(
+            render::ComputePipelineDesc{
+                .computeShader = shader.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
+            },
+            pipeline);
+        if (!result || pipeline == nullptr) {
+            return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        std::unique_ptr<render::Fence> fence;
+        testResult = createCommandObjects(*setup.device, *setup.computeQueue, commandPool, commandBuffer, fence);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        result = commandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+        }
+
+        const BindlessBufferUserPush push{
+            .inputBuffer = inputHandle.index,
+            .outputBuffer = outputHandle.index,
+        };
+        commandBuffer->bindComputePipeline(*pipeline);
+        commandBuffer->bindBindlessHeap(*bindlessHeap);
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        render::BufferBarrierDesc outputBarrier{
+            .buffer = outputBuffer.get(),
+            .before = render::ResourceState::General,
+            .after = render::ResourceState::General,
+            .offset = 0,
+            .size = outputBuffer->desc().size,
+        };
+        commandBuffer->barrier(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1});
+
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+        }
+
+        testResult = submitAndWait(*setup.computeQueue, *commandBuffer, *fence);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::vector<uint8_t> readback;
+        testResult = readBufferBytes(*outputBuffer, outputBuffer->desc().size, readback);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        if (!equalBytes(readback, reinterpret_cast<const uint8_t*>(inputWords.data()), inputWords.size() * sizeof(uint32_t))) {
+            return RhiTestResult::fail("bindless StructuredBuffer readback mismatch");
+        }
+
+        (void)setup.device->waitIdle();
+        return RhiTestResult::pass();
+    }
+};
+
+class BindlessBufferRwStructuredTest : public RhiTest {
+public:
+    BindlessBufferRwStructuredTest()
+    {
+        type = RhiTestType::Command;
+        name = "bindless_buffer_rwstructured_write";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        BindlessDeviceSetup setup;
+        RhiTestResult testResult = setupBindlessDevice(context.enableValidation, setup);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        constexpr uint32_t kElementCount = 4;
+        constexpr uint64_t kByteSize = kElementCount * 8ull;
+        std::unique_ptr<render::Buffer> rwBuffer;
+        testResult = createBuffer(
+            *setup.device,
+            render::BufferDesc{
+                .size = kByteSize,
+                .structureStride = 8,
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "rw_structured",
+            rwBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::Buffer> outputBuffer;
+        testResult = createBuffer(
+            *setup.device,
+            render::BufferDesc{
+                .size = kByteSize,
+                .structureStride = sizeof(uint32_t),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "output",
+            outputBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BufferView> rwView;
+        testResult = createBufferView(
+            *setup.device,
+            *rwBuffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::ReadWriteStructured,
+                .offset = 0,
+                .size = rwBuffer->desc().size,
+                .structureStride = 8,
+            },
+            "rw_structured",
+            rwView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BufferView> outputView;
+        testResult = createBufferView(
+            *setup.device,
+            *outputBuffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::ReadWriteRaw,
+                .offset = 0,
+                .size = outputBuffer->desc().size,
+                .structureStride = sizeof(uint32_t),
+            },
+            "output",
+            outputView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BindlessHeap> bindlessHeap;
+        render::Result result = setup.device->createBindlessHeap(
+            render::BindlessHeapDesc{.maxBuffers = 2},
+            bindlessHeap);
+        if (!result || bindlessHeap == nullptr) {
+            return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
+        }
+
+        render::BindlessHandle rwHandle;
+        result = bindlessHeap->allocateBuffer(rwHandle);
+        if (!result) {
+            return RhiTestResult::fail(std::string("allocateBuffer(rw) returned ") + toString(result));
+        }
+        render::BindlessHandle outputHandle;
+        result = bindlessHeap->allocateBuffer(outputHandle);
+        if (!result) {
+            return RhiTestResult::fail(std::string("allocateBuffer(output) returned ") + toString(result));
+        }
+
+        result = bindlessHeap->writeBufferView(rwHandle, *rwView);
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeBufferView(rw) returned ") + toString(result));
+        }
+        result = bindlessHeap->writeBufferView(outputHandle, *outputView);
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeBufferView(output) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::ShaderModule> shader;
+        testResult = createShaderModule(*setup.device, "bindlessBufferRwStructuredMain", shader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::ComputePipeline> pipeline;
+        result = setup.device->createComputePipeline(
+            render::ComputePipelineDesc{
+                .computeShader = shader.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
+            },
+            pipeline);
+        if (!result || pipeline == nullptr) {
+            return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        std::unique_ptr<render::Fence> fence;
+        testResult = createCommandObjects(*setup.device, *setup.computeQueue, commandPool, commandBuffer, fence);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        result = commandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+        }
+
+        commandBuffer->bindComputePipeline(*pipeline);
+        commandBuffer->bindBindlessHeap(*bindlessHeap);
+
+        BindlessBufferUserPush push{
+            .inputBuffer = rwHandle.index,
+            .outputBuffer = outputHandle.index,
+            .passIndex = 0,
+        };
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        render::BufferBarrierDesc rwBarrier{
+            .buffer = rwBuffer.get(),
+            .before = render::ResourceState::General,
+            .after = render::ResourceState::General,
+            .offset = 0,
+            .size = rwBuffer->desc().size,
+        };
+        commandBuffer->barrier(render::BarrierDesc{.buffers = &rwBarrier, .bufferCount = 1});
+
+        push.passIndex = 1;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        render::BufferBarrierDesc outputBarrier{
+            .buffer = outputBuffer.get(),
+            .before = render::ResourceState::General,
+            .after = render::ResourceState::General,
+            .offset = 0,
+            .size = outputBuffer->desc().size,
+        };
+        commandBuffer->barrier(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1});
+
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+        }
+
+        testResult = submitAndWait(*setup.computeQueue, *commandBuffer, *fence);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        const std::array<uint32_t, kElementCount * 2> expectedWords = {
+            0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u,
+        };
+        std::vector<uint8_t> readback;
+        testResult = readBufferBytes(*outputBuffer, outputBuffer->desc().size, readback);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        if (!equalBytes(readback, reinterpret_cast<const uint8_t*>(expectedWords.data()), expectedWords.size() * sizeof(uint32_t))) {
+            return RhiTestResult::fail("bindless RWStructuredBuffer readback mismatch");
+        }
+
+        (void)setup.device->waitIdle();
+        return RhiTestResult::pass();
+    }
+};
+
+class BindlessBufferByteAddressReadTest : public RhiTest {
+public:
+    BindlessBufferByteAddressReadTest()
+    {
+        type = RhiTestType::Command;
+        name = "bindless_buffer_byteaddress_read";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        BindlessDeviceSetup setup;
+        RhiTestResult testResult = setupBindlessDevice(context.enableValidation, setup);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        constexpr uint64_t kByteSize = 28;
+        constexpr std::array<uint32_t, 7> kInputWords = {
+            0xDEADBEEFu,
+            0x11223344u,
+            0xAABBCCDDu,
+            0x10203040u,
+            0x50607080u,
+            0x90A0B0C0u,
+            0xD0E0F000u,
+        };
+
+        std::unique_ptr<render::Buffer> inputBuffer;
+        testResult = createBuffer(
+            *setup.device,
+            render::BufferDesc{
+                .size = kByteSize,
+                .structureStride = sizeof(uint32_t),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "input",
+            inputBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        void* mappedInput = inputBuffer->map();
+        if (mappedInput == nullptr) {
+            return RhiTestResult::fail("raw input buffer did not map");
+        }
+        std::memcpy(mappedInput, kInputWords.data(), kInputWords.size() * sizeof(uint32_t));
+        inputBuffer->flush(0, kInputWords.size() * sizeof(uint32_t));
+        inputBuffer->unmap();
+
+        std::unique_ptr<render::Buffer> outputBuffer;
+        testResult = createBuffer(
+            *setup.device,
+            render::BufferDesc{
+                .size = kByteSize,
+                .structureStride = sizeof(uint32_t),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "output",
+            outputBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BufferView> inputView;
+        testResult = createBufferView(
+            *setup.device,
+            *inputBuffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::Raw,
+                .offset = 0,
+                .size = inputBuffer->desc().size,
+                .structureStride = sizeof(uint32_t),
+            },
+            "input",
+            inputView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BufferView> outputView;
+        testResult = createBufferView(
+            *setup.device,
+            *outputBuffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::ReadWriteRaw,
+                .offset = 0,
+                .size = outputBuffer->desc().size,
+                .structureStride = sizeof(uint32_t),
+            },
+            "output",
+            outputView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BindlessHeap> bindlessHeap;
+        render::Result result = setup.device->createBindlessHeap(
+            render::BindlessHeapDesc{.maxBuffers = 2},
+            bindlessHeap);
+        if (!result || bindlessHeap == nullptr) {
+            return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
+        }
+
+        render::BindlessHandle inputHandle;
+        result = bindlessHeap->allocateBuffer(inputHandle);
+        if (!result) {
+            return RhiTestResult::fail(std::string("allocateBuffer(input) returned ") + toString(result));
+        }
+        render::BindlessHandle outputHandle;
+        result = bindlessHeap->allocateBuffer(outputHandle);
+        if (!result) {
+            return RhiTestResult::fail(std::string("allocateBuffer(output) returned ") + toString(result));
+        }
+
+        result = bindlessHeap->writeBufferView(inputHandle, *inputView);
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeBufferView(input) returned ") + toString(result));
+        }
+        result = bindlessHeap->writeBufferView(outputHandle, *outputView);
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeBufferView(output) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::ShaderModule> shader;
+        testResult = createShaderModule(*setup.device, "bindlessBufferByteAddressMain", shader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::ComputePipeline> pipeline;
+        result = setup.device->createComputePipeline(
+            render::ComputePipelineDesc{
+                .computeShader = shader.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
+            },
+            pipeline);
+        if (!result || pipeline == nullptr) {
+            return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        std::unique_ptr<render::Fence> fence;
+        testResult = createCommandObjects(*setup.device, *setup.computeQueue, commandPool, commandBuffer, fence);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        result = commandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+        }
+
+        const BindlessBufferUserPush push{
+            .inputBuffer = inputHandle.index,
+            .outputBuffer = outputHandle.index,
+        };
+        commandBuffer->bindComputePipeline(*pipeline);
+        commandBuffer->bindBindlessHeap(*bindlessHeap);
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        render::BufferBarrierDesc outputBarrier{
+            .buffer = outputBuffer.get(),
+            .before = render::ResourceState::General,
+            .after = render::ResourceState::General,
+            .offset = 0,
+            .size = outputBuffer->desc().size,
+        };
+        commandBuffer->barrier(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1});
+
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+        }
+
+        testResult = submitAndWait(*setup.computeQueue, *commandBuffer, *fence);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::vector<uint8_t> readback;
+        testResult = readBufferBytes(*outputBuffer, outputBuffer->desc().size, readback);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        if (!equalBytes(readback, reinterpret_cast<const uint8_t*>(kInputWords.data()), kInputWords.size() * sizeof(uint32_t))) {
+            return RhiTestResult::fail("bindless ByteAddressBuffer readback mismatch");
+        }
+
+        (void)setup.device->waitIdle();
+        return RhiTestResult::pass();
+    }
+};
+
 class BindlessBufferRwByteAddressTest : public RhiTest {
 public:
     BindlessBufferRwByteAddressTest()
@@ -392,6 +1035,38 @@ public:
             return testResult;
         }
 
+        std::unique_ptr<render::BufferView> rwView;
+        testResult = createBufferView(
+            *setup.device,
+            *rwBuffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::ReadWriteRaw,
+                .offset = 0,
+                .size = rwBuffer->desc().size,
+                .structureStride = sizeof(uint32_t),
+            },
+            "rw",
+            rwView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BufferView> outputView;
+        testResult = createBufferView(
+            *setup.device,
+            *outputBuffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::ReadWriteRaw,
+                .offset = 0,
+                .size = outputBuffer->desc().size,
+                .structureStride = sizeof(uint32_t),
+            },
+            "output",
+            outputView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
         render::Result result = setup.device->createBindlessHeap(
             render::BindlessHeapDesc{
@@ -415,13 +1090,13 @@ public:
             return RhiTestResult::fail(std::string("allocateBuffer(output) returned ") + toString(result));
         }
 
-        result = bindlessHeap->writeStorageBuffer(rwHandle, *rwBuffer);
+        result = bindlessHeap->writeBufferView(rwHandle, *rwView);
         if (!result) {
-            return RhiTestResult::fail(std::string("writeStorageBuffer(rw) returned ") + toString(result));
+            return RhiTestResult::fail(std::string("writeBufferView(rw) returned ") + toString(result));
         }
-        result = bindlessHeap->writeStorageBuffer(outputHandle, *outputBuffer);
+        result = bindlessHeap->writeBufferView(outputHandle, *outputView);
         if (!result) {
-            return RhiTestResult::fail(std::string("writeStorageBuffer(output) returned ") + toString(result));
+            return RhiTestResult::fail(std::string("writeBufferView(output) returned ") + toString(result));
         }
 
         std::unique_ptr<render::ShaderModule> shader;
@@ -523,8 +1198,169 @@ public:
     }
 };
 
+class BindlessBufferRawAtomicsTest : public RhiTest {
+public:
+    BindlessBufferRawAtomicsTest()
+    {
+        type = RhiTestType::Command;
+        name = "bindless_buffer_raw_atomics";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        BindlessDeviceSetup setup;
+        RhiTestResult testResult = setupBindlessDevice(context.enableValidation, setup);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        constexpr uint64_t kByteSize = 64;
+        std::unique_ptr<render::Buffer> buffer;
+        testResult = createBuffer(
+            *setup.device,
+            render::BufferDesc{
+                .size = kByteSize,
+                .structureStride = sizeof(uint32_t),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "atomic",
+            buffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        void* mapped = buffer->map();
+        if (mapped == nullptr) {
+            return RhiTestResult::fail("atomic buffer did not map");
+        }
+        std::memset(mapped, 0, static_cast<size_t>(kByteSize));
+        auto* words = static_cast<uint32_t*>(mapped);
+        words[3] = 0xDEADBEEFu;
+        buffer->flush(0, kByteSize);
+        buffer->unmap();
+
+        std::unique_ptr<render::BufferView> bufferView;
+        testResult = createBufferView(
+            *setup.device,
+            *buffer,
+            render::BufferViewDesc{
+                .type = render::BufferViewType::ReadWriteRaw,
+                .offset = 0,
+                .size = buffer->desc().size,
+                .structureStride = sizeof(uint32_t),
+            },
+            "atomic",
+            bufferView);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::BindlessHeap> bindlessHeap;
+        render::Result result = setup.device->createBindlessHeap(
+            render::BindlessHeapDesc{.maxBuffers = 1},
+            bindlessHeap);
+        if (!result || bindlessHeap == nullptr) {
+            return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
+        }
+
+        render::BindlessHandle bufferHandle;
+        result = bindlessHeap->allocateBuffer(bufferHandle);
+        if (!result) {
+            return RhiTestResult::fail(std::string("allocateBuffer(atomic) returned ") + toString(result));
+        }
+
+        result = bindlessHeap->writeBufferView(bufferHandle, *bufferView);
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeBufferView(atomic) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::ShaderModule> shader;
+        testResult = createShaderModule(*setup.device, "bindlessBufferAtomicsMain", shader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::ComputePipeline> pipeline;
+        result = setup.device->createComputePipeline(
+            render::ComputePipelineDesc{
+                .computeShader = shader.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
+            },
+            pipeline);
+        if (!result || pipeline == nullptr) {
+            return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        std::unique_ptr<render::Fence> fence;
+        testResult = createCommandObjects(*setup.device, *setup.computeQueue, commandPool, commandBuffer, fence);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        result = commandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+        }
+
+        const BindlessBufferUserPush push{
+            .outputBuffer = bufferHandle.index,
+        };
+        commandBuffer->bindComputePipeline(*pipeline);
+        commandBuffer->bindBindlessHeap(*bindlessHeap);
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        render::BufferBarrierDesc barrier{
+            .buffer = buffer.get(),
+            .before = render::ResourceState::General,
+            .after = render::ResourceState::General,
+            .offset = 0,
+            .size = buffer->desc().size,
+        };
+        commandBuffer->barrier(render::BarrierDesc{.buffers = &barrier, .bufferCount = 1});
+
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+        }
+
+        testResult = submitAndWait(*setup.computeQueue, *commandBuffer, *fence);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::array<uint32_t, 16> expectedWords{};
+        expectedWords[0] = 64u;
+        expectedWords[1] = 0u;
+        expectedWords[2] = 63u;
+        expectedWords[3] = 0xCAFEBABEu;
+
+        std::vector<uint8_t> readback;
+        testResult = readBufferBytes(*buffer, buffer->desc().size, readback);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        if (!equalBytes(readback, reinterpret_cast<const uint8_t*>(expectedWords.data()), expectedWords.size() * sizeof(uint32_t))) {
+            return RhiTestResult::fail("bindless raw atomics readback mismatch");
+        }
+
+        (void)setup.device->waitIdle();
+        return RhiTestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(BindlessBufferConstantReadTest);
+METALLIC_REGISTER_RHI_TEST(BindlessBufferStructuredReadTest);
+METALLIC_REGISTER_RHI_TEST(BindlessBufferRwStructuredTest);
+METALLIC_REGISTER_RHI_TEST(BindlessBufferByteAddressReadTest);
 METALLIC_REGISTER_RHI_TEST(BindlessBufferRwByteAddressTest);
+METALLIC_REGISTER_RHI_TEST(BindlessBufferRawAtomicsTest);
 
 } // namespace
 } // namespace metallic::tests

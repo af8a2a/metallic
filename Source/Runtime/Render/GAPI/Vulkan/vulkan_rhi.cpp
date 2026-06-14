@@ -1114,6 +1114,15 @@ struct BufferImpl {
     void* mapped = nullptr;
 };
 
+struct BufferViewImpl {
+    DeviceImpl* device = nullptr;
+    Buffer* buffer = nullptr;
+    BufferViewDesc desc;
+    VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    VkDeviceAddress address = 0;
+    VkDeviceSize size = 0;
+};
+
 struct TextureImpl {
     DeviceImpl* device = nullptr;
     TextureDesc desc;
@@ -1830,6 +1839,21 @@ void Buffer::invalidate(uint64_t offset, uint64_t size)
     vmaInvalidateAllocation(impl_->device->allocator, impl_->allocation, offset, vkSize);
 }
 
+BufferView::BufferView(std::unique_ptr<detail::BufferViewImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+BufferView::~BufferView() = default;
+BufferView::BufferView(BufferView&&) noexcept = default;
+BufferView& BufferView::operator=(BufferView&&) noexcept = default;
+
+const BufferViewDesc& BufferView::desc() const
+{
+    static const BufferViewDesc emptyDesc;
+    return impl_ != nullptr ? impl_->desc : emptyDesc;
+}
+
 Texture::Texture(std::unique_ptr<detail::TextureImpl> impl)
     : impl_(std::move(impl))
 {
@@ -2015,6 +2039,25 @@ Result BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view,
         imageState.layout,
         subresourceRange,
         toVkImageViewType(textureDesc.type),
+        impl_->resourceHeap.mapped);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+    impl_->flushResourceDirty();
+    return {};
+}
+
+Result BindlessHeap::writeBufferView(BindlessHandle handle, BufferView& view)
+{
+    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || view.impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const VkResult result = impl_->heap.writeBufferDescriptor(
+        handle,
+        view.impl_->address,
+        view.impl_->size,
+        view.impl_->descriptorType,
         impl_->resourceHeap.mapped);
     if (result != VK_SUCCESS) {
         return resultFromVk(result);
@@ -2895,6 +2938,75 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
     bufferImpl->buffer = buffer;
     bufferImpl->allocation = allocation;
     outBuffer.reset(new Buffer(std::move(bufferImpl)));
+    return {};
+}
+
+Result Device::createBufferView(
+    Buffer& buffer,
+    const BufferViewDesc& desc,
+    std::unique_ptr<BufferView>& outBufferView)
+{
+    outBufferView.reset();
+    if (impl_ == nullptr || buffer.impl_ == nullptr || desc.offset >= buffer.impl_->desc.size) {
+        return makeError(Error::InvalidArgument);
+    }
+    activateVolkDevice(impl_->device);
+    if (!impl_->capabilities.bindlessDescriptorHeap) {
+        return makeError(Error::Unsupported);
+    }
+
+    const uint64_t availableSize = buffer.impl_->desc.size - desc.offset;
+    const uint64_t viewSize = desc.size == UINT64_MAX ? availableSize : desc.size;
+    if (viewSize == 0 || viewSize > availableSize) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    switch (desc.type) {
+    case BufferViewType::Constant:
+        if (!hasFlag(buffer.impl_->desc.usage, BufferUsageBits::Constant)) {
+            return makeError(Error::InvalidArgument);
+        }
+        descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        break;
+    case BufferViewType::Structured:
+    case BufferViewType::Raw:
+    case BufferViewType::ReadWriteStructured:
+    case BufferViewType::ReadWriteRaw:
+        if (!hasFlag(buffer.impl_->desc.usage, BufferUsageBits::Storage)) {
+            return makeError(Error::InvalidArgument);
+        }
+        descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        break;
+    }
+
+    const uint32_t structureStride = desc.structureStride != 0
+        ? desc.structureStride
+        : buffer.impl_->desc.structureStride;
+    if ((desc.type == BufferViewType::Structured || desc.type == BufferViewType::ReadWriteStructured) &&
+        structureStride == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    VkBufferDeviceAddressInfo addressInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = buffer.impl_->buffer,
+    };
+    const VkDeviceAddress bufferAddress = vkGetBufferDeviceAddress(impl_->device, &addressInfo);
+    if (bufferAddress == 0) {
+        return makeError(Error::Failure);
+    }
+
+    auto viewImpl = std::make_unique<detail::BufferViewImpl>();
+    viewImpl->device = impl_.get();
+    viewImpl->buffer = &buffer;
+    viewImpl->desc = desc;
+    viewImpl->desc.size = viewSize;
+    viewImpl->desc.structureStride = structureStride;
+    viewImpl->descriptorType = descriptorType;
+    viewImpl->address = bufferAddress + desc.offset;
+    viewImpl->size = viewSize;
+    outBufferView.reset(new BufferView(std::move(viewImpl)));
     return {};
 }
 

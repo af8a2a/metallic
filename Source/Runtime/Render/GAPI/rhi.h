@@ -216,6 +216,21 @@ struct BufferDesc {
     MemoryLocation memoryLocation = MemoryLocation::Device;
 };
 
+enum class BufferViewType : uint8_t {
+    Constant,
+    Structured,
+    Raw,
+    ReadWriteStructured,
+    ReadWriteRaw,
+};
+
+struct BufferViewDesc {
+    BufferViewType type = BufferViewType::Raw;
+    uint64_t offset = 0;
+    uint64_t size = UINT64_MAX;
+    uint32_t structureStride = 0;
+};
+
 struct TextureDesc {
     TextureType type = TextureType::Texture2D;
     TextureUsageBits usage = TextureUsageBits::None;
@@ -393,6 +408,7 @@ struct CommandBufferImpl;
 struct FenceImpl;
 struct SemaphoreImpl;
 struct BufferImpl;
+struct BufferViewImpl;
 struct TextureImpl;
 struct TextureViewImpl;
 struct ShaderModuleImpl;
@@ -498,6 +514,30 @@ private:
 
     friend class Device;
     friend class CommandBuffer;
+    friend class BufferView;
+    friend class BindlessHeap;
+    friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
+};
+
+class BufferView {
+public:
+    BufferView() = default;
+    ~BufferView();
+    BufferView(BufferView&&) noexcept;
+    BufferView& operator=(BufferView&&) noexcept;
+
+    BufferView(const BufferView&) = delete;
+    BufferView& operator=(const BufferView&) = delete;
+
+    const BufferViewDesc& desc() const;
+
+private:
+    explicit BufferView(std::unique_ptr<detail::BufferViewImpl> impl);
+
+    std::unique_ptr<detail::BufferViewImpl> impl_;
+
+    friend class Device;
     friend class BindlessHeap;
     friend struct detail::DeviceImpl;
     friend struct detail::VulkanNativeAccess;
@@ -628,6 +668,7 @@ public:
     Result allocateBuffer(BindlessHandle& outHandle);
     void release(BindlessHandle handle);
     Result writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state = ResourceState::ShaderRead);
+    Result writeBufferView(BindlessHandle handle, BufferView& view);
     Result writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
     Result writeStorageBuffer(BindlessHandle handle, Buffer& buffer);
 
@@ -751,6 +792,7 @@ public:
     Result createFence(bool signaled, std::unique_ptr<Fence>& outFence);
     Result createSemaphore(std::unique_ptr<Semaphore>& outSemaphore);
     Result createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& outBuffer);
+    Result createBufferView(Buffer& buffer, const BufferViewDesc& desc, std::unique_ptr<BufferView>& outBufferView);
     Result createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& outTexture);
     Result createTextureView(Texture& texture, const TextureViewDesc& desc, std::unique_ptr<TextureView>& outTextureView);
     Result createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule);
