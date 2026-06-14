@@ -122,6 +122,134 @@ const char* renderGraphFieldVisibilityName(render::RenderGraphFieldVisibility vi
     return visibility == render::RenderGraphFieldVisibility::Input ? "Input" : "Output";
 }
 
+const char* renderGraphResourceTypeName(render::RenderGraphResourceType type)
+{
+    switch (type) {
+    case render::RenderGraphResourceType::Texture2D:
+        return "Texture2D";
+    case render::RenderGraphResourceType::Buffer:
+        return "Buffer";
+    }
+
+    return "Unknown";
+}
+
+const char* renderGraphResourceAccessName(render::RenderGraphResourceAccess access)
+{
+    switch (access) {
+    case render::RenderGraphResourceAccess::None:
+        return "None";
+    case render::RenderGraphResourceAccess::TextureSampleRead:
+        return "SampleRead";
+    case render::RenderGraphResourceAccess::TextureColorWrite:
+        return "ColorWrite";
+    case render::RenderGraphResourceAccess::TextureTransferRead:
+        return "TransferRead";
+    case render::RenderGraphResourceAccess::TextureTransferWrite:
+        return "TransferWrite";
+    case render::RenderGraphResourceAccess::TextureStorageReadWrite:
+        return "StorageReadWrite";
+    case render::RenderGraphResourceAccess::BufferShaderRead:
+        return "ShaderRead";
+    case render::RenderGraphResourceAccess::BufferStorageReadWrite:
+        return "StorageReadWrite";
+    case render::RenderGraphResourceAccess::BufferTransferRead:
+        return "TransferRead";
+    case render::RenderGraphResourceAccess::BufferTransferWrite:
+        return "TransferWrite";
+    case render::RenderGraphResourceAccess::BufferConstantRead:
+        return "ConstantRead";
+    }
+
+    return "Unknown";
+}
+
+const char* renderGraphBindlessAccessName(render::RenderGraphBindlessAccess access)
+{
+    switch (access) {
+    case render::RenderGraphBindlessAccess::None:
+        return "None";
+    case render::RenderGraphBindlessAccess::SampledImage:
+        return "SampledImage";
+    case render::RenderGraphBindlessAccess::Buffer:
+        return "Buffer";
+    }
+
+    return "Unknown";
+}
+
+const char* renderGraphFormatName(render::Format format)
+{
+    switch (format) {
+    case render::Format::Unknown:
+        return "Unknown";
+    case render::Format::Bgra8Unorm:
+        return "Bgra8Unorm";
+    case render::Format::Bgra8Srgb:
+        return "Bgra8Srgb";
+    case render::Format::Rgba8Unorm:
+        return "Rgba8Unorm";
+    case render::Format::Rgba8Srgb:
+        return "Rgba8Srgb";
+    case render::Format::D32Sfloat:
+        return "D32Sfloat";
+    }
+
+    return "Unknown";
+}
+
+std::string renderGraphFieldTag(const render::RenderGraphField& field)
+{
+    std::string tag = "[";
+    tag += renderGraphResourceTypeName(field.resourceType);
+    tag += "/";
+    tag += renderGraphResourceAccessName(field.access);
+    if (field.bindlessAccess != render::RenderGraphBindlessAccess::None) {
+        tag += "/";
+        tag += renderGraphBindlessAccessName(field.bindlessAccess);
+    }
+    if (field.optional) {
+        tag += "/Optional";
+    }
+    tag += "]";
+    return tag;
+}
+
+void setRenderGraphFieldTooltip(const render::RenderGraphField& field)
+{
+    if (!ImGui::IsItemHovered()) {
+        return;
+    }
+
+    std::string text = std::string(renderGraphResourceTypeName(field.resourceType)) +
+        " / " +
+        renderGraphResourceAccessName(field.access);
+    if (field.bindlessAccess != render::RenderGraphBindlessAccess::None) {
+        text += "\nBindless: ";
+        text += renderGraphBindlessAccessName(field.bindlessAccess);
+    }
+    if (field.resourceType == render::RenderGraphResourceType::Texture2D) {
+        text += "\nFormat: ";
+        text += renderGraphFormatName(field.format);
+    } else {
+        text += "\nSize: ";
+        text += std::to_string(field.size);
+        text += " bytes";
+        if (field.structureStride > 0) {
+            text += "\nStride: ";
+            text += std::to_string(field.structureStride);
+        }
+    }
+    if (field.optional) {
+        text += "\nOptional";
+    }
+    if (!field.description.empty()) {
+        text += "\n";
+        text += field.description;
+    }
+    ImGui::SetTooltip("%s", text.c_str());
+}
+
 void checkVkResult(VkResult result)
 {
     if (result < 0) {
@@ -1324,6 +1452,9 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
         if (field.visibility == render::RenderGraphFieldVisibility::Input) {
             ImNodes::BeginInputAttribute(graphInputAttributeId(node, inputIndex++));
             ImGui::TextUnformatted(field.name.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", renderGraphFieldTag(field).c_str());
+            setRenderGraphFieldTooltip(field);
             ImNodes::EndInputAttribute();
         }
     }
@@ -1355,13 +1486,16 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
             ImNodes::BeginOutputAttribute(
                 attributeId,
                 markedOutput ? ImNodesPinShape_QuadFilled : ImNodesPinShape_CircleFilled);
-            const std::string label = markedOutput ? field.name + "  [Graph Output]" : field.name;
+            std::string label = field.name;
+            label += "  ";
+            label += renderGraphFieldTag(field);
+            if (markedOutput) {
+                label += "  [Graph Output]";
+            }
             const float textWidth = ImGui::CalcTextSize(label.c_str()).x;
             ImGui::Indent(std::max(90.0f * mainScale_ - textWidth, 0.0f));
             ImGui::TextUnformatted(label.c_str());
-            if (!field.description.empty() && ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s", field.description.c_str());
-            }
+            setRenderGraphFieldTooltip(field);
             ImNodes::EndOutputAttribute();
             if (markedOutput) {
                 ImNodes::PopColorStyle();
@@ -1380,6 +1514,9 @@ void EditorApplication::drawRenderGraphPanel()
     struct AttributeInfo {
         std::string fullName;
         render::RenderGraphFieldVisibility visibility = render::RenderGraphFieldVisibility::Output;
+        render::RenderGraphResourceType resourceType = render::RenderGraphResourceType::Texture2D;
+        render::RenderGraphResourceAccess access = render::RenderGraphResourceAccess::None;
+        std::string tag;
     };
     std::unordered_map<int, AttributeInfo> attributes;
     std::unordered_map<std::string, int> inputAttributeIds;
@@ -1390,18 +1527,26 @@ void EditorApplication::drawRenderGraphPanel()
         if (pass == nullptr) {
             continue;
         }
+        pass->setProperties(node.properties);
         const render::RenderPassReflection reflection = pass->reflect(render::RenderGraphCompileContext{});
         uint32_t inputIndex = 0;
         uint32_t outputIndex = 0;
         for (const render::RenderGraphField& field : reflection.fields()) {
             const std::string fullName = render::makeRenderGraphFieldName(node.name, field.name);
+            AttributeInfo info{
+                .fullName = fullName,
+                .visibility = field.visibility,
+                .resourceType = field.resourceType,
+                .access = field.access,
+                .tag = renderGraphFieldTag(field),
+            };
             if (field.visibility == render::RenderGraphFieldVisibility::Input) {
                 const int attrId = graphInputAttributeId(node, inputIndex++);
-                attributes.emplace(attrId, AttributeInfo{fullName, field.visibility});
+                attributes.emplace(attrId, info);
                 inputAttributeIds.emplace(fullName, attrId);
             } else {
                 const int attrId = graphOutputAttributeId(node, outputIndex++);
-                attributes.emplace(attrId, AttributeInfo{fullName, field.visibility});
+                attributes.emplace(attrId, info);
                 outputAttributeIds.emplace(fullName, attrId);
             }
         }
@@ -1457,7 +1602,10 @@ void EditorApplication::drawRenderGraphPanel()
     if (ImNodes::IsPinHovered(&hoveredAttribute)) {
         const auto hovered = attributes.find(hoveredAttribute);
         if (hovered != attributes.end()) {
-            ImGui::SetTooltip("%s", hovered->second.fullName.c_str());
+            ImGui::SetTooltip(
+                "%s\n%s",
+                hovered->second.fullName.c_str(),
+                hovered->second.tag.c_str());
             if (hovered->second.visibility == render::RenderGraphFieldVisibility::Output &&
                 ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
                 copyToBuffer(hovered->second.fullName, graphOutputBuffer_, sizeof(graphOutputBuffer_));
@@ -1489,7 +1637,13 @@ void EditorApplication::drawRenderGraphPanel()
             }
             if (src->visibility == render::RenderGraphFieldVisibility::Output &&
                 dst->visibility == render::RenderGraphFieldVisibility::Input) {
-                if (renderGraph_.addEdge(src->fullName, dst->fullName) == nullptr) {
+                if (src->resourceType != dst->resourceType) {
+                    renderGraphStatus_ = std::string("Cannot link ") +
+                        renderGraphResourceTypeName(src->resourceType) +
+                        " output to " +
+                        renderGraphResourceTypeName(dst->resourceType) +
+                        " input";
+                } else if (renderGraph_.addEdge(src->fullName, dst->fullName) == nullptr) {
                     renderGraphStatus_ = "Link already exists or endpoint is invalid";
                 } else {
                     viewportPreviewValid_ = false;
@@ -1767,12 +1921,11 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
                 ImGui::SameLine();
             }
             ImGui::Text(
-                "%s %s",
+                "%s %s %s",
                 renderGraphFieldVisibilityName(field.visibility),
-                field.name.c_str());
-            if (!field.description.empty() && ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s", field.description.c_str());
-            }
+                field.name.c_str(),
+                renderGraphFieldTag(field).c_str());
+            setRenderGraphFieldTooltip(field);
             ImGui::PopID();
         }
     }

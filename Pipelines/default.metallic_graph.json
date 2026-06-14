@@ -1,18 +1,36 @@
 {
-    "edges": [],
+    "edges": [
+        {
+            "dst": "CopyColor.source",
+            "id": 2,
+            "src": "ImageSample.color"
+        }
+    ],
     "name": "DefaultTriangle",
     "nodes": [
         {
-            "id": 3,
-            "name": "TriangleRaster",
+            "id": 2,
+            "name": "CopyColor",
             "position": {
-                "x": 135.0,
-                "y": 343.0
+                "x": 220.0,
+                "y": 428.0
             },
             "properties": {},
-            "type": "TriangleRasterPass"
+            "type": "CopyColorPass"
+        },
+        {
+            "id": 3,
+            "name": "ImageSample",
+            "position": {
+                "x": -72.0,
+                "y": 705.0
+            },
+            "properties": {},
+            "type": "ImageSamplePass"
         }
     ],
-    "outputs": [],
+    "outputs": [
+        "CopyColor.color"
+    ],
     "version": 1
 }

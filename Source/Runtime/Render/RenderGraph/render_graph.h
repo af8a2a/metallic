@@ -22,22 +22,63 @@ enum class RenderGraphFieldVisibility : uint8_t {
     Output,
 };
 
+enum class RenderGraphResourceType : uint8_t {
+    Texture2D,
+    Buffer,
+};
+
+enum class RenderGraphResourceAccess : uint8_t {
+    None,
+    TextureSampleRead,
+    TextureColorWrite,
+    TextureTransferRead,
+    TextureTransferWrite,
+    TextureStorageReadWrite,
+    BufferShaderRead,
+    BufferStorageReadWrite,
+    BufferTransferRead,
+    BufferTransferWrite,
+    BufferConstantRead,
+};
+
 enum class RenderGraphBindlessAccess : uint8_t {
     None,
     SampledImage,
+    Buffer,
 };
 
 struct RenderGraphField {
     std::string name;
     std::string description;
     RenderGraphFieldVisibility visibility = RenderGraphFieldVisibility::Output;
+    RenderGraphResourceType resourceType = RenderGraphResourceType::Texture2D;
+    RenderGraphResourceAccess access = RenderGraphResourceAccess::TextureColorWrite;
     RenderGraphBindlessAccess bindlessAccess = RenderGraphBindlessAccess::None;
     Format format = Format::Rgba8Unorm;
     TextureUsageBits usage = TextureUsageBits::ColorAttachment;
+    BufferUsageBits bufferUsage = BufferUsageBits::None;
+    BufferViewType bufferViewType = BufferViewType::Raw;
     ResourceState state = ResourceState::ColorAttachment;
     bool optional = false;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint64_t size = 0;
+    uint32_t structureStride = 0;
+    MemoryLocation memoryLocation = MemoryLocation::Device;
+
+    RenderGraphField& texture2D(uint32_t newWidth = 0, uint32_t newHeight = 0);
+    RenderGraphField& buffer(uint64_t newSize, uint32_t newStructureStride = 0);
+    RenderGraphField& setOptional(bool value = true);
+    RenderGraphField& sampledRead();
+    RenderGraphField& colorWrite();
+    RenderGraphField& storageReadWrite();
+    RenderGraphField& transferRead();
+    RenderGraphField& transferWrite();
+    RenderGraphField& shaderRead();
+    RenderGraphField& constantRead();
+    RenderGraphField& bindlessSampledImage();
+    RenderGraphField& bindlessBuffer();
+    RenderGraphField& hostReadback();
 };
 
 class RenderPassReflection {
@@ -45,6 +86,10 @@ public:
     RenderGraphField& addInput(std::string name, std::string description = {});
     RenderGraphField& addBindlessSampledInput(std::string name, std::string description = {});
     RenderGraphField& addOutput(std::string name, std::string description = {});
+    RenderGraphField& addTextureInput(std::string name, std::string description = {});
+    RenderGraphField& addTextureOutput(std::string name, std::string description = {});
+    RenderGraphField& addBufferInput(std::string name, std::string description = {});
+    RenderGraphField& addBufferOutput(std::string name, std::string description = {});
 
     const RenderGraphField* findField(
         std::string_view name,
@@ -63,11 +108,55 @@ struct RenderGraphCompileContext {
 };
 
 struct RenderGraphResource {
+    RenderGraphResourceType type = RenderGraphResourceType::Texture2D;
     Texture* texture = nullptr;
     TextureView* view = nullptr;
     TextureDesc desc;
+    Buffer* buffer = nullptr;
+    BufferView* bufferView = nullptr;
+    BufferDesc bufferDesc;
+    BufferViewDesc bufferViewDesc;
     ResourceState state = ResourceState::Undefined;
+    RenderGraphResourceAccess lastAccess = RenderGraphResourceAccess::None;
+    BindlessHandle bindlessHandle;
     BindlessHandle sampledImageBindlessHandle;
+};
+
+class TextureHandle {
+public:
+    TextureHandle() = default;
+
+    bool valid() const;
+    Texture* texture() const;
+    TextureView* view() const;
+    const TextureDesc& desc() const;
+    const BindlessHandle& bindlessHandle() const;
+
+private:
+    explicit TextureHandle(RenderGraphResource* resource);
+
+    RenderGraphResource* resource_ = nullptr;
+
+    friend class RenderGraphExecutionContext;
+};
+
+class BufferHandle {
+public:
+    BufferHandle() = default;
+
+    bool valid() const;
+    Buffer* buffer() const;
+    BufferView* view() const;
+    const BufferDesc& desc() const;
+    const BufferViewDesc& viewDesc() const;
+    const BindlessHandle& bindlessHandle() const;
+
+private:
+    explicit BufferHandle(RenderGraphResource* resource);
+
+    RenderGraphResource* resource_ = nullptr;
+
+    friend class RenderGraphExecutionContext;
 };
 
 class RenderGraphExecutionContext {
@@ -80,6 +169,12 @@ public:
     RenderGraphResource* resource(std::string_view fieldName) const;
     RenderGraphResource* input(std::string_view fieldName) const;
     RenderGraphResource* output(std::string_view fieldName) const;
+    TextureHandle texture(std::string_view fieldName) const;
+    TextureHandle inputTexture(std::string_view fieldName) const;
+    TextureHandle outputTexture(std::string_view fieldName) const;
+    BufferHandle buffer(std::string_view fieldName) const;
+    BufferHandle inputBuffer(std::string_view fieldName) const;
+    BufferHandle outputBuffer(std::string_view fieldName) const;
     const BindlessHandle* bindlessResource(std::string_view fieldName) const;
     const BindlessHandle* bindlessInput(std::string_view fieldName) const;
 
@@ -89,6 +184,7 @@ private:
         RenderGraphResource* resource = nullptr;
         RenderGraphFieldVisibility visibility = RenderGraphFieldVisibility::Output;
         RenderGraphBindlessAccess bindlessAccess = RenderGraphBindlessAccess::None;
+        BindlessHandle bindlessHandle;
         BindlessHandle sampledImageBindlessHandle;
     };
 

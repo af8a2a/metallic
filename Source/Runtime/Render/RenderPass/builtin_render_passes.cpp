@@ -26,7 +26,18 @@ constexpr const char* kTriangleFragmentEntryPoint = "triangleFragmentMain";
 constexpr const char* kImageSampleShaderModuleName = "image_sample";
 constexpr const char* kImageSampleVertexEntryPoint = "imageSampleVertexMain";
 constexpr const char* kImageSampleFragmentEntryPoint = "imageSampleFragmentMain";
+constexpr const char* kRenderGraphBufferShaderModuleName = "render_graph_buffer";
+constexpr const char* kRenderGraphBufferWriteEntryPoint = "renderGraphBufferWriteMain";
+constexpr const char* kRenderGraphBufferCopyEntryPoint = "renderGraphBufferCopyMain";
 constexpr const char* kDefaultImageSamplePath = PROJECT_SOURCE_DIR "/Asset/statue-1275469_1280.jpg";
+constexpr uint64_t kRenderGraphBufferByteSize = 16;
+
+struct RenderGraphBufferUserPush {
+    uint32_t inputBuffer = 0;
+    uint32_t outputBuffer = 0;
+    uint32_t passIndex = 0;
+    uint32_t padding = 0;
+};
 
 std::string resultMessage(std::string_view label, const Result& result)
 {
@@ -36,20 +47,63 @@ std::string resultMessage(std::string_view label, const Result& result)
     return message;
 }
 
+Result createSlangShaderModule(
+    Device& device,
+    const char* moduleName,
+    const char* entryPointName,
+    std::unique_ptr<ShaderModule>& outShaderModule,
+    std::string& log)
+{
+    ShaderCompileResult compileResult;
+    Result result = compileSlangShaderToSpirv(
+        SlangShaderDesc{
+            .moduleName = moduleName,
+            .entryPointName = entryPointName,
+            .searchPath = kTriangleShaderSearchPath,
+        },
+        compileResult);
+    if (!result) {
+        log += "compileSlangShaderToSpirv(";
+        log += moduleName;
+        log += ".";
+        log += entryPointName;
+        log += ") returned ";
+        log += resultToString(result);
+        if (!compileResult.diagnostics.empty()) {
+            log += ": ";
+            log += compileResult.diagnostics;
+        }
+        log += '\n';
+        return result;
+    }
+
+    result = device.createShaderModule(
+        ShaderModuleDesc{
+            .code = compileResult.spirv.data(),
+            .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+        },
+        outShaderModule);
+    if (!result) {
+        log += resultMessage("createShaderModule", result);
+        log += '\n';
+    }
+    return result;
+}
+
 class ClearColorPass final : public RenderGraphPass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addOutput("color", "Cleared color target")
+        reflection.addTextureOutput("color", "Cleared color target")
             .format = Format::Rgba8Unorm;
         return reflection;
     }
 
     Result execute(RenderGraphExecutionContext& context) override
     {
-        RenderGraphResource* color = context.output("color");
-        if (color == nullptr || color->view == nullptr) {
+        TextureHandle color = context.outputTexture("color");
+        if (!color.valid()) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -69,7 +123,7 @@ public:
             .height = context.height(),
         };
         RenderingAttachmentDesc attachment{
-            .view = color->view,
+            .view = color.view(),
             .state = ResourceState::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
@@ -90,31 +144,25 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        RenderGraphField& source = reflection.addInput("source", "Source color texture");
-        source.usage = TextureUsageBits::TransferSource;
-        source.state = ResourceState::TransferSource;
-
-        RenderGraphField& color = reflection.addOutput("color", "Copied color texture");
-        color.usage = TextureUsageBits::TransferDestination;
-        color.state = ResourceState::TransferDestination;
-        color.format = Format::Rgba8Unorm;
+        reflection.addTextureInput("source", "Source color texture")
+            .transferRead();
+        reflection.addTextureOutput("color", "Copied color texture")
+            .transferWrite()
+            .format = Format::Rgba8Unorm;
         return reflection;
     }
 
     Result execute(RenderGraphExecutionContext& context) override
     {
-        RenderGraphResource* source = context.input("source");
-        RenderGraphResource* color = context.output("color");
-        if (source == nullptr ||
-            source->texture == nullptr ||
-            color == nullptr ||
-            color->texture == nullptr) {
+        TextureHandle source = context.inputTexture("source");
+        TextureHandle color = context.outputTexture("color");
+        if (!source.valid() || !color.valid()) {
             return makeError(Error::InvalidArgument);
         }
 
         context.commandBuffer().copyTexture(TextureCopyDesc{
-            .source = source->texture,
-            .destination = color->texture,
+            .source = source.texture(),
+            .destination = color.texture(),
             .width = context.width(),
             .height = context.height(),
             .depth = 1,
@@ -132,7 +180,7 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addOutput("color", "Rasterized triangle color")
+        reflection.addTextureOutput("color", "Rasterized triangle color")
             .format = Format::Rgba8Unorm;
         return reflection;
     }
@@ -172,8 +220,8 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
-        RenderGraphResource* color = context.output("color");
-        if (color == nullptr || color->view == nullptr || pipeline_ == nullptr) {
+        TextureHandle color = context.outputTexture("color");
+        if (!color.valid() || pipeline_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -184,7 +232,7 @@ public:
             .height = context.height(),
         };
         RenderingAttachmentDesc attachment{
-            .view = color->view,
+            .view = color.view(),
             .state = ResourceState::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
@@ -261,7 +309,7 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addOutput("color", "Fullscreen sampled image")
+        reflection.addTextureOutput("color", "Fullscreen sampled image")
             .format = Format::Rgba8Unorm;
         return reflection;
     }
@@ -413,9 +461,8 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
-        RenderGraphResource* color = context.output("color");
-        if (color == nullptr ||
-            color->view == nullptr ||
+        TextureHandle color = context.outputTexture("color");
+        if (!color.valid() ||
             uploadBuffer_ == nullptr ||
             imageTexture_ == nullptr ||
             bindlessHeap_ == nullptr ||
@@ -473,7 +520,7 @@ public:
             .height = context.height(),
         };
         RenderingAttachmentDesc attachment{
-            .view = color->view,
+            .view = color.view(),
             .state = ResourceState::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
@@ -568,6 +615,163 @@ private:
     bool uploaded_ = false;
 };
 
+class RenderGraphBufferWritePass final : public RenderGraphPass {
+public:
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        reflection.addBufferOutput("data", "Known test byte pattern")
+            .buffer(kRenderGraphBufferByteSize)
+            .storageReadWrite()
+            .bindlessBuffer();
+        return reflection;
+    }
+
+    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        if (context.device == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (!context.device->capabilities().bindlessDescriptorHeap) {
+            log = "RenderGraphBufferWritePass requires DeviceCapabilities::bindlessDescriptorHeap";
+            return makeError(Error::Unsupported);
+        }
+        if (pipeline_ != nullptr) {
+            return {};
+        }
+
+        Result result = createSlangShaderModule(
+            *context.device,
+            kRenderGraphBufferShaderModuleName,
+            kRenderGraphBufferWriteEntryPoint,
+            shader_,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        result = context.device->createComputePipeline(
+            ComputePipelineDesc{
+                .computeShader = shader_.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
+            },
+            pipeline_);
+        if (!result) {
+            log += resultMessage("createComputePipeline(RenderGraphBufferWritePass)", result);
+            log += '\n';
+        }
+        return result;
+    }
+
+    Result execute(RenderGraphExecutionContext& context) override
+    {
+        BufferHandle data = context.outputBuffer("data");
+        if (!data.valid() || !data.bindlessHandle().valid() || pipeline_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        const RenderGraphBufferUserPush push{
+            .inputBuffer = 0,
+            .outputBuffer = data.bindlessHandle().index,
+            .passIndex = 0,
+            .padding = 0,
+        };
+        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        context.commandBuffer().bindComputePipeline(*pipeline_);
+        context.commandBuffer().dispatch(1, 1, 1);
+        return {};
+    }
+
+private:
+    std::unique_ptr<ShaderModule> shader_;
+    std::unique_ptr<ComputePipeline> pipeline_;
+};
+
+class RenderGraphBufferCopyPass final : public RenderGraphPass {
+public:
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        reflection.addBufferInput("source", "Source byte buffer")
+            .buffer(kRenderGraphBufferByteSize)
+            .storageReadWrite()
+            .bindlessBuffer();
+        reflection.addBufferOutput("data", "Copied byte buffer")
+            .buffer(kRenderGraphBufferByteSize)
+            .storageReadWrite()
+            .bindlessBuffer();
+        return reflection;
+    }
+
+    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        if (context.device == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (!context.device->capabilities().bindlessDescriptorHeap) {
+            log = "RenderGraphBufferCopyPass requires DeviceCapabilities::bindlessDescriptorHeap";
+            return makeError(Error::Unsupported);
+        }
+        if (pipeline_ != nullptr) {
+            return {};
+        }
+
+        Result result = createSlangShaderModule(
+            *context.device,
+            kRenderGraphBufferShaderModuleName,
+            kRenderGraphBufferCopyEntryPoint,
+            shader_,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        result = context.device->createComputePipeline(
+            ComputePipelineDesc{
+                .computeShader = shader_.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
+            },
+            pipeline_);
+        if (!result) {
+            log += resultMessage("createComputePipeline(RenderGraphBufferCopyPass)", result);
+            log += '\n';
+        }
+        return result;
+    }
+
+    Result execute(RenderGraphExecutionContext& context) override
+    {
+        BufferHandle source = context.inputBuffer("source");
+        BufferHandle data = context.outputBuffer("data");
+        if (!source.valid() ||
+            !source.bindlessHandle().valid() ||
+            !data.valid() ||
+            !data.bindlessHandle().valid() ||
+            pipeline_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        const RenderGraphBufferUserPush push{
+            .inputBuffer = source.bindlessHandle().index,
+            .outputBuffer = data.bindlessHandle().index,
+            .passIndex = 0,
+            .padding = 0,
+        };
+        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        context.commandBuffer().bindComputePipeline(*pipeline_);
+        context.commandBuffer().dispatch(1, 1, 1);
+        return {};
+    }
+
+private:
+    std::unique_ptr<ShaderModule> shader_;
+    std::unique_ptr<ComputePipeline> pipeline_;
+};
+
 } // namespace
 
 void registerBuiltInRenderGraphPasses()
@@ -594,6 +798,14 @@ void registerBuiltInRenderGraphPasses()
         "ImageSamplePass",
         "Draw a fullscreen sampled image",
         []() { return std::make_unique<ImageSamplePass>(); });
+    registerRenderGraphPassType(
+        "RenderGraphBufferWritePass",
+        "Write a known byte pattern into a graph buffer",
+        []() { return std::make_unique<RenderGraphBufferWritePass>(); });
+    registerRenderGraphPassType(
+        "RenderGraphBufferCopyPass",
+        "Copy a graph buffer through bindless compute",
+        []() { return std::make_unique<RenderGraphBufferCopyPass>(); });
 }
 
 } // namespace metallic::render

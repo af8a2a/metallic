@@ -39,18 +39,244 @@ TextureUsageBits addTextureUsage(TextureUsageBits usage, TextureUsageBits flag)
     return usage | flag;
 }
 
+BufferUsageBits addBufferUsage(BufferUsageBits usage, BufferUsageBits flag)
+{
+    return usage | flag;
+}
+
+bool isTextureField(const RenderGraphField& field)
+{
+    return field.resourceType == RenderGraphResourceType::Texture2D;
+}
+
+bool isBufferField(const RenderGraphField& field)
+{
+    return field.resourceType == RenderGraphResourceType::Buffer;
+}
+
+bool isBindlessField(const RenderGraphField& field)
+{
+    return field.bindlessAccess != RenderGraphBindlessAccess::None;
+}
+
 bool isBindlessSampledImageField(const RenderGraphField& field)
 {
     return field.bindlessAccess == RenderGraphBindlessAccess::SampledImage;
 }
 
-TextureUsageBits textureUsageForInputField(const RenderGraphField& field)
+bool isBindlessBufferField(const RenderGraphField& field)
 {
-    TextureUsageBits usage = field.usage;
+    return field.bindlessAccess == RenderGraphBindlessAccess::Buffer;
+}
+
+bool accessWrites(RenderGraphResourceAccess access)
+{
+    switch (access) {
+    case RenderGraphResourceAccess::TextureColorWrite:
+    case RenderGraphResourceAccess::TextureTransferWrite:
+    case RenderGraphResourceAccess::TextureStorageReadWrite:
+    case RenderGraphResourceAccess::BufferStorageReadWrite:
+    case RenderGraphResourceAccess::BufferTransferWrite:
+        return true;
+    case RenderGraphResourceAccess::None:
+    case RenderGraphResourceAccess::TextureSampleRead:
+    case RenderGraphResourceAccess::TextureTransferRead:
+    case RenderGraphResourceAccess::BufferShaderRead:
+    case RenderGraphResourceAccess::BufferTransferRead:
+    case RenderGraphResourceAccess::BufferConstantRead:
+        return false;
+    }
+    return false;
+}
+
+ResourceState stateForAccess(RenderGraphResourceAccess access)
+{
+    switch (access) {
+    case RenderGraphResourceAccess::TextureSampleRead:
+    case RenderGraphResourceAccess::BufferShaderRead:
+    case RenderGraphResourceAccess::BufferConstantRead:
+        return ResourceState::ShaderRead;
+    case RenderGraphResourceAccess::TextureColorWrite:
+        return ResourceState::ColorAttachment;
+    case RenderGraphResourceAccess::TextureTransferRead:
+    case RenderGraphResourceAccess::BufferTransferRead:
+        return ResourceState::TransferSource;
+    case RenderGraphResourceAccess::TextureTransferWrite:
+    case RenderGraphResourceAccess::BufferTransferWrite:
+        return ResourceState::TransferDestination;
+    case RenderGraphResourceAccess::TextureStorageReadWrite:
+    case RenderGraphResourceAccess::BufferStorageReadWrite:
+        return ResourceState::General;
+    case RenderGraphResourceAccess::None:
+        return ResourceState::Undefined;
+    }
+    return ResourceState::Undefined;
+}
+
+TextureUsageBits textureUsageForAccess(RenderGraphResourceAccess access)
+{
+    switch (access) {
+    case RenderGraphResourceAccess::TextureSampleRead:
+        return TextureUsageBits::Sampled;
+    case RenderGraphResourceAccess::TextureColorWrite:
+        return TextureUsageBits::ColorAttachment;
+    case RenderGraphResourceAccess::TextureTransferRead:
+        return TextureUsageBits::TransferSource;
+    case RenderGraphResourceAccess::TextureTransferWrite:
+        return TextureUsageBits::TransferDestination;
+    case RenderGraphResourceAccess::TextureStorageReadWrite:
+        return TextureUsageBits::Storage;
+    case RenderGraphResourceAccess::None:
+    case RenderGraphResourceAccess::BufferShaderRead:
+    case RenderGraphResourceAccess::BufferStorageReadWrite:
+    case RenderGraphResourceAccess::BufferTransferRead:
+    case RenderGraphResourceAccess::BufferTransferWrite:
+    case RenderGraphResourceAccess::BufferConstantRead:
+        return TextureUsageBits::None;
+    }
+    return TextureUsageBits::None;
+}
+
+BufferUsageBits bufferUsageForAccess(RenderGraphResourceAccess access)
+{
+    switch (access) {
+    case RenderGraphResourceAccess::BufferShaderRead:
+    case RenderGraphResourceAccess::BufferStorageReadWrite:
+        return BufferUsageBits::Storage;
+    case RenderGraphResourceAccess::BufferTransferRead:
+        return BufferUsageBits::TransferSource;
+    case RenderGraphResourceAccess::BufferTransferWrite:
+        return BufferUsageBits::TransferDestination;
+    case RenderGraphResourceAccess::BufferConstantRead:
+        return BufferUsageBits::Constant;
+    case RenderGraphResourceAccess::None:
+    case RenderGraphResourceAccess::TextureSampleRead:
+    case RenderGraphResourceAccess::TextureColorWrite:
+    case RenderGraphResourceAccess::TextureTransferRead:
+    case RenderGraphResourceAccess::TextureTransferWrite:
+    case RenderGraphResourceAccess::TextureStorageReadWrite:
+        return BufferUsageBits::None;
+    }
+    return BufferUsageBits::None;
+}
+
+BufferViewType bufferViewTypeForField(const RenderGraphField& field)
+{
+    switch (field.access) {
+    case RenderGraphResourceAccess::BufferConstantRead:
+        return BufferViewType::Constant;
+    case RenderGraphResourceAccess::BufferShaderRead:
+        return field.structureStride == 0 ? BufferViewType::Raw : BufferViewType::Structured;
+    case RenderGraphResourceAccess::BufferStorageReadWrite:
+        return field.structureStride == 0 ? BufferViewType::ReadWriteRaw : BufferViewType::ReadWriteStructured;
+    case RenderGraphResourceAccess::None:
+    case RenderGraphResourceAccess::TextureSampleRead:
+    case RenderGraphResourceAccess::TextureColorWrite:
+    case RenderGraphResourceAccess::TextureTransferRead:
+    case RenderGraphResourceAccess::TextureTransferWrite:
+    case RenderGraphResourceAccess::TextureStorageReadWrite:
+    case RenderGraphResourceAccess::BufferTransferRead:
+    case RenderGraphResourceAccess::BufferTransferWrite:
+        return field.bufferViewType;
+    }
+    return field.bufferViewType;
+}
+
+bool accessMatchesResourceType(RenderGraphResourceAccess access, RenderGraphResourceType resourceType)
+{
+    switch (access) {
+    case RenderGraphResourceAccess::None:
+        return true;
+    case RenderGraphResourceAccess::TextureSampleRead:
+    case RenderGraphResourceAccess::TextureColorWrite:
+    case RenderGraphResourceAccess::TextureTransferRead:
+    case RenderGraphResourceAccess::TextureTransferWrite:
+    case RenderGraphResourceAccess::TextureStorageReadWrite:
+        return resourceType == RenderGraphResourceType::Texture2D;
+    case RenderGraphResourceAccess::BufferShaderRead:
+    case RenderGraphResourceAccess::BufferStorageReadWrite:
+    case RenderGraphResourceAccess::BufferTransferRead:
+    case RenderGraphResourceAccess::BufferTransferWrite:
+    case RenderGraphResourceAccess::BufferConstantRead:
+        return resourceType == RenderGraphResourceType::Buffer;
+    }
+    return false;
+}
+
+TextureUsageBits textureUsageForField(const RenderGraphField& field)
+{
+    TextureUsageBits usage = textureUsageForAccess(field.access);
+    if (field.usage != TextureUsageBits::None) {
+        usage = addTextureUsage(usage, field.usage);
+    }
     if (isBindlessSampledImageField(field)) {
         usage = addTextureUsage(usage, TextureUsageBits::Sampled);
     }
     return usage;
+}
+
+BufferUsageBits bufferUsageForField(const RenderGraphField& field)
+{
+    BufferUsageBits usage = bufferUsageForAccess(field.access);
+    if (field.bufferUsage != BufferUsageBits::None) {
+        usage = addBufferUsage(usage, field.bufferUsage);
+    }
+    if (isBindlessBufferField(field)) {
+        usage = addBufferUsage(usage, BufferUsageBits::Storage);
+    }
+    return usage;
+}
+
+void applyAccessDefaults(RenderGraphField& field)
+{
+    field.state = stateForAccess(field.access);
+    if (field.resourceType == RenderGraphResourceType::Texture2D) {
+        field.usage = textureUsageForAccess(field.access);
+        return;
+    }
+
+    field.usage = TextureUsageBits::None;
+    field.bufferUsage = bufferUsageForAccess(field.access);
+    field.bufferViewType = bufferViewTypeForField(field);
+}
+
+RenderGraphResourceAccess explicitAccessForState(RenderGraphResourceType type, ResourceState state)
+{
+    if (type == RenderGraphResourceType::Texture2D) {
+        switch (state) {
+        case ResourceState::ShaderRead:
+            return RenderGraphResourceAccess::TextureSampleRead;
+        case ResourceState::ColorAttachment:
+            return RenderGraphResourceAccess::TextureColorWrite;
+        case ResourceState::TransferSource:
+            return RenderGraphResourceAccess::TextureTransferRead;
+        case ResourceState::TransferDestination:
+            return RenderGraphResourceAccess::TextureTransferWrite;
+        case ResourceState::General:
+            return RenderGraphResourceAccess::TextureStorageReadWrite;
+        case ResourceState::Undefined:
+        case ResourceState::Present:
+        case ResourceState::DepthStencilAttachment:
+            return RenderGraphResourceAccess::None;
+        }
+    }
+
+    switch (state) {
+    case ResourceState::ShaderRead:
+        return RenderGraphResourceAccess::BufferShaderRead;
+    case ResourceState::TransferSource:
+        return RenderGraphResourceAccess::BufferTransferRead;
+    case ResourceState::TransferDestination:
+        return RenderGraphResourceAccess::BufferTransferWrite;
+    case ResourceState::General:
+        return RenderGraphResourceAccess::BufferStorageReadWrite;
+    case ResourceState::Undefined:
+    case ResourceState::Present:
+    case ResourceState::ColorAttachment:
+    case ResourceState::DepthStencilAttachment:
+        return RenderGraphResourceAccess::None;
+    }
+    return RenderGraphResourceAccess::None;
 }
 
 Format resolveFormat(Format format, Format defaultFormat)
@@ -237,39 +463,212 @@ bool buildActiveGraph(const RenderGraph& graph, ActiveGraph& activeGraph, std::s
 
 } // namespace
 
+RenderGraphField& RenderGraphField::texture2D(uint32_t newWidth, uint32_t newHeight)
+{
+    resourceType = RenderGraphResourceType::Texture2D;
+    width = newWidth;
+    height = newHeight;
+    if (!accessMatchesResourceType(access, resourceType) || access == RenderGraphResourceAccess::None) {
+        access = visibility == RenderGraphFieldVisibility::Input
+            ? RenderGraphResourceAccess::TextureSampleRead
+            : RenderGraphResourceAccess::TextureColorWrite;
+    }
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::buffer(uint64_t newSize, uint32_t newStructureStride)
+{
+    resourceType = RenderGraphResourceType::Buffer;
+    size = newSize;
+    structureStride = newStructureStride;
+    if (!accessMatchesResourceType(access, resourceType) || access == RenderGraphResourceAccess::None) {
+        access = visibility == RenderGraphFieldVisibility::Input
+            ? RenderGraphResourceAccess::BufferShaderRead
+            : RenderGraphResourceAccess::BufferStorageReadWrite;
+    }
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::setOptional(bool value)
+{
+    optional = value;
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::sampledRead()
+{
+    resourceType = RenderGraphResourceType::Texture2D;
+    access = RenderGraphResourceAccess::TextureSampleRead;
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::colorWrite()
+{
+    resourceType = RenderGraphResourceType::Texture2D;
+    access = RenderGraphResourceAccess::TextureColorWrite;
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::storageReadWrite()
+{
+    access = resourceType == RenderGraphResourceType::Buffer
+        ? RenderGraphResourceAccess::BufferStorageReadWrite
+        : RenderGraphResourceAccess::TextureStorageReadWrite;
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::transferRead()
+{
+    access = resourceType == RenderGraphResourceType::Buffer
+        ? RenderGraphResourceAccess::BufferTransferRead
+        : RenderGraphResourceAccess::TextureTransferRead;
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::transferWrite()
+{
+    access = resourceType == RenderGraphResourceType::Buffer
+        ? RenderGraphResourceAccess::BufferTransferWrite
+        : RenderGraphResourceAccess::TextureTransferWrite;
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::shaderRead()
+{
+    resourceType = RenderGraphResourceType::Buffer;
+    access = RenderGraphResourceAccess::BufferShaderRead;
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::constantRead()
+{
+    resourceType = RenderGraphResourceType::Buffer;
+    access = RenderGraphResourceAccess::BufferConstantRead;
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::bindlessSampledImage()
+{
+    resourceType = RenderGraphResourceType::Texture2D;
+    bindlessAccess = RenderGraphBindlessAccess::SampledImage;
+    if (!accessMatchesResourceType(access, resourceType) || access == RenderGraphResourceAccess::None) {
+        access = RenderGraphResourceAccess::TextureSampleRead;
+    }
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::bindlessBuffer()
+{
+    resourceType = RenderGraphResourceType::Buffer;
+    bindlessAccess = RenderGraphBindlessAccess::Buffer;
+    if (!accessMatchesResourceType(access, resourceType) || access == RenderGraphResourceAccess::None) {
+        access = visibility == RenderGraphFieldVisibility::Input
+            ? RenderGraphResourceAccess::BufferShaderRead
+            : RenderGraphResourceAccess::BufferStorageReadWrite;
+    }
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::hostReadback()
+{
+    memoryLocation = MemoryLocation::HostReadback;
+    return *this;
+}
+
 RenderGraphField& RenderPassReflection::addInput(std::string name, std::string description)
+{
+    return addTextureInput(std::move(name), std::move(description));
+}
+
+RenderGraphField& RenderPassReflection::addBindlessSampledInput(std::string name, std::string description)
+{
+    return addTextureInput(std::move(name), std::move(description)).bindlessSampledImage().sampledRead();
+}
+
+RenderGraphField& RenderPassReflection::addOutput(std::string name, std::string description)
+{
+    return addTextureOutput(std::move(name), std::move(description));
+}
+
+RenderGraphField& RenderPassReflection::addTextureInput(std::string name, std::string description)
 {
     fields_.push_back(RenderGraphField{
         .name = std::move(name),
         .description = std::move(description),
         .visibility = RenderGraphFieldVisibility::Input,
+        .resourceType = RenderGraphResourceType::Texture2D,
+        .access = RenderGraphResourceAccess::TextureSampleRead,
         .bindlessAccess = RenderGraphBindlessAccess::None,
         .format = Format::Rgba8Unorm,
         .usage = TextureUsageBits::Sampled,
+        .bufferUsage = BufferUsageBits::None,
+        .bufferViewType = BufferViewType::Raw,
         .state = ResourceState::ShaderRead,
     });
     return fields_.back();
 }
 
-RenderGraphField& RenderPassReflection::addBindlessSampledInput(std::string name, std::string description)
-{
-    RenderGraphField& field = addInput(std::move(name), std::move(description));
-    field.bindlessAccess = RenderGraphBindlessAccess::SampledImage;
-    field.usage = TextureUsageBits::Sampled;
-    field.state = ResourceState::ShaderRead;
-    return field;
-}
-
-RenderGraphField& RenderPassReflection::addOutput(std::string name, std::string description)
+RenderGraphField& RenderPassReflection::addTextureOutput(std::string name, std::string description)
 {
     fields_.push_back(RenderGraphField{
         .name = std::move(name),
         .description = std::move(description),
         .visibility = RenderGraphFieldVisibility::Output,
+        .resourceType = RenderGraphResourceType::Texture2D,
+        .access = RenderGraphResourceAccess::TextureColorWrite,
         .bindlessAccess = RenderGraphBindlessAccess::None,
         .format = Format::Rgba8Unorm,
         .usage = TextureUsageBits::ColorAttachment,
+        .bufferUsage = BufferUsageBits::None,
+        .bufferViewType = BufferViewType::Raw,
         .state = ResourceState::ColorAttachment,
+    });
+    return fields_.back();
+}
+
+RenderGraphField& RenderPassReflection::addBufferInput(std::string name, std::string description)
+{
+    fields_.push_back(RenderGraphField{
+        .name = std::move(name),
+        .description = std::move(description),
+        .visibility = RenderGraphFieldVisibility::Input,
+        .resourceType = RenderGraphResourceType::Buffer,
+        .access = RenderGraphResourceAccess::BufferShaderRead,
+        .bindlessAccess = RenderGraphBindlessAccess::None,
+        .format = Format::Unknown,
+        .usage = TextureUsageBits::None,
+        .bufferUsage = BufferUsageBits::Storage,
+        .bufferViewType = BufferViewType::Raw,
+        .state = ResourceState::ShaderRead,
+    });
+    return fields_.back();
+}
+
+RenderGraphField& RenderPassReflection::addBufferOutput(std::string name, std::string description)
+{
+    fields_.push_back(RenderGraphField{
+        .name = std::move(name),
+        .description = std::move(description),
+        .visibility = RenderGraphFieldVisibility::Output,
+        .resourceType = RenderGraphResourceType::Buffer,
+        .access = RenderGraphResourceAccess::BufferStorageReadWrite,
+        .bindlessAccess = RenderGraphBindlessAccess::None,
+        .format = Format::Unknown,
+        .usage = TextureUsageBits::None,
+        .bufferUsage = BufferUsageBits::Storage,
+        .bufferViewType = BufferViewType::ReadWriteRaw,
+        .state = ResourceState::General,
     });
     return fields_.back();
 }
@@ -290,6 +689,81 @@ const RenderGraphField* RenderPassReflection::findField(
 Result RenderGraphPass::compile(const RenderGraphCompileContext&, std::string&)
 {
     return {};
+}
+
+TextureHandle::TextureHandle(RenderGraphResource* resource)
+    : resource_(resource)
+{
+}
+
+bool TextureHandle::valid() const
+{
+    return resource_ != nullptr &&
+        resource_->type == RenderGraphResourceType::Texture2D &&
+        resource_->texture != nullptr &&
+        resource_->view != nullptr;
+}
+
+Texture* TextureHandle::texture() const
+{
+    return valid() ? resource_->texture : nullptr;
+}
+
+TextureView* TextureHandle::view() const
+{
+    return valid() ? resource_->view : nullptr;
+}
+
+const TextureDesc& TextureHandle::desc() const
+{
+    static const TextureDesc kEmptyDesc;
+    return valid() ? resource_->desc : kEmptyDesc;
+}
+
+const BindlessHandle& TextureHandle::bindlessHandle() const
+{
+    static const BindlessHandle kEmptyHandle;
+    return resource_ != nullptr ? resource_->bindlessHandle : kEmptyHandle;
+}
+
+BufferHandle::BufferHandle(RenderGraphResource* resource)
+    : resource_(resource)
+{
+}
+
+bool BufferHandle::valid() const
+{
+    return resource_ != nullptr &&
+        resource_->type == RenderGraphResourceType::Buffer &&
+        resource_->buffer != nullptr;
+}
+
+Buffer* BufferHandle::buffer() const
+{
+    return valid() ? resource_->buffer : nullptr;
+}
+
+BufferView* BufferHandle::view() const
+{
+    return valid() ? resource_->bufferView : nullptr;
+}
+
+const BufferDesc& BufferHandle::desc() const
+{
+    static const BufferDesc kEmptyDesc;
+    return valid() ? resource_->bufferDesc : kEmptyDesc;
+}
+
+const BufferViewDesc& BufferHandle::viewDesc() const
+{
+    static const BufferViewDesc kEmptyDesc;
+    return valid() ? resource_->bufferViewDesc : kEmptyDesc;
+}
+
+const BindlessHandle& BufferHandle::bindlessHandle() const
+{
+    static const BindlessHandle kEmptyHandle;
+    return resource_ != nullptr ? resource_->bindlessHandle : kEmptyHandle;
 }
 
 RenderGraphExecutionContext::RenderGraphExecutionContext(
@@ -341,6 +815,54 @@ RenderGraphResource* RenderGraphExecutionContext::output(std::string_view fieldN
     return iter == bindings_.end() ? nullptr : iter->resource;
 }
 
+TextureHandle RenderGraphExecutionContext::texture(std::string_view fieldName) const
+{
+    RenderGraphResource* found = resource(fieldName);
+    return found != nullptr && found->type == RenderGraphResourceType::Texture2D
+        ? TextureHandle(found)
+        : TextureHandle();
+}
+
+TextureHandle RenderGraphExecutionContext::inputTexture(std::string_view fieldName) const
+{
+    RenderGraphResource* found = input(fieldName);
+    return found != nullptr && found->type == RenderGraphResourceType::Texture2D
+        ? TextureHandle(found)
+        : TextureHandle();
+}
+
+TextureHandle RenderGraphExecutionContext::outputTexture(std::string_view fieldName) const
+{
+    RenderGraphResource* found = output(fieldName);
+    return found != nullptr && found->type == RenderGraphResourceType::Texture2D
+        ? TextureHandle(found)
+        : TextureHandle();
+}
+
+BufferHandle RenderGraphExecutionContext::buffer(std::string_view fieldName) const
+{
+    RenderGraphResource* found = resource(fieldName);
+    return found != nullptr && found->type == RenderGraphResourceType::Buffer
+        ? BufferHandle(found)
+        : BufferHandle();
+}
+
+BufferHandle RenderGraphExecutionContext::inputBuffer(std::string_view fieldName) const
+{
+    RenderGraphResource* found = input(fieldName);
+    return found != nullptr && found->type == RenderGraphResourceType::Buffer
+        ? BufferHandle(found)
+        : BufferHandle();
+}
+
+BufferHandle RenderGraphExecutionContext::outputBuffer(std::string_view fieldName) const
+{
+    RenderGraphResource* found = output(fieldName);
+    return found != nullptr && found->type == RenderGraphResourceType::Buffer
+        ? BufferHandle(found)
+        : BufferHandle();
+}
+
 const BindlessHandle* RenderGraphExecutionContext::bindlessResource(std::string_view fieldName) const
 {
     const auto iter = std::find_if(
@@ -350,11 +872,11 @@ const BindlessHandle* RenderGraphExecutionContext::bindlessResource(std::string_
             return binding.fieldName == fieldName;
         });
     if (iter == bindings_.end() ||
-        iter->bindlessAccess != RenderGraphBindlessAccess::SampledImage ||
-        !iter->sampledImageBindlessHandle.valid()) {
+        iter->bindlessAccess == RenderGraphBindlessAccess::None ||
+        !iter->bindlessHandle.valid()) {
         return nullptr;
     }
-    return &iter->sampledImageBindlessHandle;
+    return &iter->bindlessHandle;
 }
 
 const BindlessHandle* RenderGraphExecutionContext::bindlessInput(std::string_view fieldName) const
@@ -367,11 +889,11 @@ const BindlessHandle* RenderGraphExecutionContext::bindlessInput(std::string_vie
                 binding.fieldName == fieldName;
         });
     if (iter == bindings_.end() ||
-        iter->bindlessAccess != RenderGraphBindlessAccess::SampledImage ||
-        !iter->sampledImageBindlessHandle.valid()) {
+        iter->bindlessAccess == RenderGraphBindlessAccess::None ||
+        !iter->bindlessHandle.valid()) {
         return nullptr;
     }
-    return &iter->sampledImageBindlessHandle;
+    return &iter->bindlessHandle;
 }
 
 bool registerRenderGraphPassType(
@@ -720,7 +1242,42 @@ bool RenderGraph::validate(std::string& log) const
             return false;
         }
         pass->setProperties(node.properties);
-        reflections.emplace(node.name, pass->reflect(reflectContext));
+        RenderPassReflection reflection = pass->reflect(reflectContext);
+        for (const RenderGraphField& field : reflection.fields()) {
+            if (!accessMatchesResourceType(field.access, field.resourceType)) {
+                log = validationPrefix(
+                    std::string("field access does not match resource type '") +
+                    makeRenderGraphFieldName(node.name, field.name) +
+                    "'");
+                return false;
+            }
+            if (field.bindlessAccess == RenderGraphBindlessAccess::SampledImage &&
+                field.resourceType != RenderGraphResourceType::Texture2D) {
+                log = validationPrefix(
+                    std::string("sampled image bindless access requires a texture field '") +
+                    makeRenderGraphFieldName(node.name, field.name) +
+                    "'");
+                return false;
+            }
+            if (field.bindlessAccess == RenderGraphBindlessAccess::Buffer &&
+                field.resourceType != RenderGraphResourceType::Buffer) {
+                log = validationPrefix(
+                    std::string("buffer bindless access requires a buffer field '") +
+                    makeRenderGraphFieldName(node.name, field.name) +
+                    "'");
+                return false;
+            }
+            if (field.visibility == RenderGraphFieldVisibility::Output &&
+                field.resourceType == RenderGraphResourceType::Buffer &&
+                field.size == 0) {
+                log = validationPrefix(
+                    std::string("buffer output has zero size '") +
+                    makeRenderGraphFieldName(node.name, field.name) +
+                    "'");
+                return false;
+            }
+        }
+        reflections.emplace(node.name, std::move(reflection));
     }
 
     for (const RenderGraphOutput& output : outputs_) {
@@ -738,18 +1295,31 @@ bool RenderGraph::validate(std::string& log) const
     for (const RenderGraphEdge& edge : edges_) {
         const auto src = reflections.find(edge.srcPass);
         const auto dst = reflections.find(edge.dstPass);
-        if (src == reflections.end() ||
-            src->second.findField(edge.srcField, RenderGraphFieldVisibility::Output) == nullptr) {
+        const RenderGraphField* srcField = src == reflections.end()
+            ? nullptr
+            : src->second.findField(edge.srcField, RenderGraphFieldVisibility::Output);
+        if (srcField == nullptr) {
             log = validationPrefix(
                 std::string("invalid edge source '") +
                 makeRenderGraphFieldName(edge.srcPass, edge.srcField) +
                 "'");
             return false;
         }
-        if (dst == reflections.end() ||
-            dst->second.findField(edge.dstField, RenderGraphFieldVisibility::Input) == nullptr) {
+        const RenderGraphField* dstField = dst == reflections.end()
+            ? nullptr
+            : dst->second.findField(edge.dstField, RenderGraphFieldVisibility::Input);
+        if (dstField == nullptr) {
             log = validationPrefix(
                 std::string("invalid edge destination '") +
+                makeRenderGraphFieldName(edge.dstPass, edge.dstField) +
+                "'");
+            return false;
+        }
+        if (srcField->resourceType != dstField->resourceType) {
+            log = validationPrefix(
+                std::string("edge resource type mismatch '") +
+                makeRenderGraphFieldName(edge.srcPass, edge.srcField) +
+                "' -> '" +
                 makeRenderGraphFieldName(edge.dstPass, edge.dstField) +
                 "'");
             return false;
@@ -841,7 +1411,9 @@ std::string makeRenderGraphFieldName(std::string_view passName, std::string_view
 struct RenderGraphExecutor::Impl {
     struct ResourceSlot {
         std::unique_ptr<Texture> texture;
-        std::unique_ptr<TextureView> view;
+        std::unique_ptr<TextureView> textureView;
+        std::unique_ptr<Buffer> buffer;
+        std::unique_ptr<BufferView> bufferView;
         RenderGraphResource resource;
     };
 
@@ -899,39 +1471,67 @@ struct RenderGraphExecutor::Impl {
         return node->reflection.findField(fieldName, visibility);
     }
 
-    static bool usesBindlessSampledInput(const CompiledNode& node)
+    static bool usesBindlessResource(const CompiledNode& node)
     {
         return std::any_of(
             node.reflection.fields().begin(),
             node.reflection.fields().end(),
             [](const RenderGraphField& field) {
-                return field.visibility == RenderGraphFieldVisibility::Input &&
-                    isBindlessSampledImageField(field);
+                return isBindlessField(field);
             });
     }
 
     Result transition(
         CommandBuffer& commandBuffer,
         RenderGraphResource& resource,
-        ResourceState state)
+        ResourceState state,
+        RenderGraphResourceAccess access)
     {
-        if (resource.texture == nullptr || resource.state == state) {
+        const bool needsSameStateStorageBarrier =
+            resource.state == state &&
+            state == ResourceState::General &&
+            (accessWrites(resource.lastAccess) || accessWrites(access));
+        if (resource.state == state && !needsSameStateStorageBarrier) {
+            resource.lastAccess = access;
             return {};
         }
-        TextureBarrierDesc barrier{
-            .texture = resource.texture,
-            .before = resource.state,
-            .after = state,
-            .baseMip = 0,
-            .mipCount = resource.desc.mipCount,
-            .baseLayer = 0,
-            .layerCount = resource.desc.layerCount,
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = &barrier,
-            .textureCount = 1,
-        });
+
+        if (resource.type == RenderGraphResourceType::Texture2D) {
+            if (resource.texture == nullptr) {
+                return {};
+            }
+            TextureBarrierDesc barrier{
+                .texture = resource.texture,
+                .before = resource.state,
+                .after = state,
+                .baseMip = 0,
+                .mipCount = resource.desc.mipCount,
+                .baseLayer = 0,
+                .layerCount = resource.desc.layerCount,
+            };
+            commandBuffer.barrier(BarrierDesc{
+                .textures = &barrier,
+                .textureCount = 1,
+            });
+        } else {
+            if (resource.buffer == nullptr) {
+                return {};
+            }
+            BufferBarrierDesc barrier{
+                .buffer = resource.buffer,
+                .before = resource.state,
+                .after = state,
+                .offset = 0,
+                .size = resource.bufferDesc.size,
+            };
+            commandBuffer.barrier(BarrierDesc{
+                .buffers = &barrier,
+                .bufferCount = 1,
+            });
+        }
+
         resource.state = state;
+        resource.lastAccess = access;
         return {};
     }
 };
@@ -1021,28 +1621,40 @@ Result RenderGraphExecutor::compile(
     }
 
     std::vector<std::string> bindlessSampledImageResources;
+    std::vector<std::string> bindlessBufferResources;
     std::unordered_set<std::string> bindlessSampledImageResourceSet;
+    std::unordered_set<std::string> bindlessBufferResourceSet;
     for (const Impl::CompiledNode& node : impl_->executionList) {
         for (const RenderGraphField& field : node.reflection.fields()) {
-            if (field.visibility != RenderGraphFieldVisibility::Input ||
-                !isBindlessSampledImageField(field)) {
+            if (!isBindlessField(field)) {
                 continue;
             }
 
             const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
-            const auto alias = impl_->inputAliases.find(fullName);
-            if (alias == impl_->inputAliases.end()) {
+            std::string resourceName = fullName;
+            if (field.visibility == RenderGraphFieldVisibility::Input) {
+                const auto alias = impl_->inputAliases.find(fullName);
+                if (alias == impl_->inputAliases.end()) {
+                    continue;
+                }
+                resourceName = alias->second;
+            }
+
+            if (isBindlessSampledImageField(field) &&
+                bindlessSampledImageResourceSet.insert(resourceName).second) {
+                bindlessSampledImageResources.push_back(std::move(resourceName));
                 continue;
             }
-            if (bindlessSampledImageResourceSet.insert(alias->second).second) {
-                bindlessSampledImageResources.push_back(alias->second);
+            if (isBindlessBufferField(field) &&
+                bindlessBufferResourceSet.insert(resourceName).second) {
+                bindlessBufferResources.push_back(std::move(resourceName));
             }
         }
     }
 
-    if (!bindlessSampledImageResources.empty() &&
+    if ((!bindlessSampledImageResources.empty() || !bindlessBufferResources.empty()) &&
         !device.capabilities().bindlessDescriptorHeap) {
-        log = "RenderGraph compile failed: bindless sampled-image inputs require "
+        log = "RenderGraph compile failed: bindless resources require "
             "DeviceCapabilities::bindlessDescriptorHeap";
         return makeError(Error::Unsupported);
     }
@@ -1062,79 +1674,154 @@ Result RenderGraphExecutor::compile(
             }
 
             const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
-            TextureUsageBits usage = field.usage;
-            if (usage == TextureUsageBits::None) {
-                usage = TextureUsageBits::ColorAttachment;
-            }
-            if (isOutputMarked(graph, fullName)) {
-                usage = addTextureUsage(usage, TextureUsageBits::TransferSource);
-                usage = addTextureUsage(usage, TextureUsageBits::Sampled);
-            }
-            for (const RenderGraphEdge& edge : graph.edges()) {
-                if (edge.srcPass != node.name ||
-                    edge.srcField != field.name ||
-                    !activeGraph.activePasses.contains(edge.dstPass)) {
-                    continue;
+            Impl::ResourceSlot slot;
+
+            if (field.resourceType == RenderGraphResourceType::Texture2D) {
+                TextureUsageBits usage = textureUsageForField(field);
+                if (usage == TextureUsageBits::None) {
+                    usage = TextureUsageBits::ColorAttachment;
+                }
+                if (isOutputMarked(graph, fullName)) {
+                    usage = addTextureUsage(usage, TextureUsageBits::TransferSource);
+                    usage = addTextureUsage(usage, TextureUsageBits::Sampled);
+                }
+                for (const RenderGraphEdge& edge : graph.edges()) {
+                    if (edge.srcPass != node.name ||
+                        edge.srcField != field.name ||
+                        !activeGraph.activePasses.contains(edge.dstPass)) {
+                        continue;
+                    }
+
+                    const RenderGraphField* dstField = impl_->reflectedField(
+                        edge.dstPass,
+                        edge.dstField,
+                        RenderGraphFieldVisibility::Input);
+                    if (dstField != nullptr) {
+                        usage = addTextureUsage(usage, textureUsageForField(*dstField));
+                    }
                 }
 
-                const RenderGraphField* dstField = impl_->reflectedField(
-                    edge.dstPass,
-                    edge.dstField,
-                    RenderGraphFieldVisibility::Input);
-                TextureUsageBits dstUsage = dstField == nullptr
-                    ? TextureUsageBits::Sampled
-                    : textureUsageForInputField(*dstField);
-                usage = addTextureUsage(usage, dstUsage);
-            }
-
-            TextureDesc desc{
-                .type = TextureType::Texture2D,
-                .usage = usage,
-                .format = resolveFormat(field.format, impl_->defaultFormat),
-                .width = field.width == 0 ? width : field.width,
-                .height = field.height == 0 ? height : field.height,
-                .depth = 1,
-                .mipCount = 1,
-                .layerCount = 1,
-                .memoryLocation = MemoryLocation::Device,
-            };
-
-            Impl::ResourceSlot slot;
-            Result result = device.createTexture(desc, slot.texture);
-            if (!result || slot.texture == nullptr) {
-                log += resultMessage(std::string("createTexture(") + fullName + ")", result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
-            }
-            result = device.createTextureView(
-                *slot.texture,
-                TextureViewDesc{
-                    .format = desc.format,
-                    .baseMip = 0,
+                TextureDesc desc{
+                    .type = TextureType::Texture2D,
+                    .usage = usage,
+                    .format = resolveFormat(field.format, impl_->defaultFormat),
+                    .width = field.width == 0 ? width : field.width,
+                    .height = field.height == 0 ? height : field.height,
+                    .depth = 1,
                     .mipCount = 1,
-                    .baseLayer = 0,
                     .layerCount = 1,
-                },
-                slot.view);
-            if (!result || slot.view == nullptr) {
-                log += resultMessage(std::string("createTextureView(") + fullName + ")", result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
+                    .memoryLocation = MemoryLocation::Device,
+                };
+
+                Result result = device.createTexture(desc, slot.texture);
+                if (!result || slot.texture == nullptr) {
+                    log += resultMessage(std::string("createTexture(") + fullName + ")", result);
+                    log += '\n';
+                    return result ? makeError(Error::Failure) : result;
+                }
+                result = device.createTextureView(
+                    *slot.texture,
+                    TextureViewDesc{
+                        .format = desc.format,
+                        .baseMip = 0,
+                        .mipCount = 1,
+                        .baseLayer = 0,
+                        .layerCount = 1,
+                    },
+                    slot.textureView);
+                if (!result || slot.textureView == nullptr) {
+                    log += resultMessage(std::string("createTextureView(") + fullName + ")", result);
+                    log += '\n';
+                    return result ? makeError(Error::Failure) : result;
+                }
+                slot.resource = RenderGraphResource{
+                    .type = RenderGraphResourceType::Texture2D,
+                    .texture = slot.texture.get(),
+                    .view = slot.textureView.get(),
+                    .desc = desc,
+                    .state = ResourceState::Undefined,
+                };
+            } else {
+                BufferUsageBits usage = bufferUsageForField(field);
+                if (usage == BufferUsageBits::None) {
+                    usage = BufferUsageBits::Storage;
+                }
+                BufferViewType viewType = bufferViewTypeForField(field);
+                for (const RenderGraphEdge& edge : graph.edges()) {
+                    if (edge.srcPass != node.name ||
+                        edge.srcField != field.name ||
+                        !activeGraph.activePasses.contains(edge.dstPass)) {
+                        continue;
+                    }
+
+                    const RenderGraphField* dstField = impl_->reflectedField(
+                        edge.dstPass,
+                        edge.dstField,
+                        RenderGraphFieldVisibility::Input);
+                    if (dstField == nullptr) {
+                        continue;
+                    }
+                    usage = addBufferUsage(usage, bufferUsageForField(*dstField));
+                    if (dstField->access == RenderGraphResourceAccess::BufferStorageReadWrite) {
+                        viewType = dstField->structureStride == 0
+                            ? BufferViewType::ReadWriteRaw
+                            : BufferViewType::ReadWriteStructured;
+                    }
+                }
+
+                const bool markedBufferOutput = isOutputMarked(graph, fullName);
+                BufferDesc desc{
+                    .size = field.size,
+                    .structureStride = field.structureStride,
+                    .usage = usage,
+                    .memoryLocation = markedBufferOutput
+                        ? MemoryLocation::HostReadback
+                        : field.memoryLocation,
+                };
+
+                Result result = device.createBuffer(desc, slot.buffer);
+                if (!result || slot.buffer == nullptr) {
+                    log += resultMessage(std::string("createBuffer(") + fullName + ")", result);
+                    log += '\n';
+                    return result ? makeError(Error::Failure) : result;
+                }
+
+                BufferViewDesc viewDesc{
+                    .type = viewType,
+                    .offset = 0,
+                    .size = desc.size,
+                    .structureStride = desc.structureStride,
+                };
+                const bool needsBindlessBuffer = bindlessBufferResourceSet.contains(fullName);
+                if (needsBindlessBuffer) {
+                    result = device.createBufferView(*slot.buffer, viewDesc, slot.bufferView);
+                    if (!result || slot.bufferView == nullptr) {
+                        log += resultMessage(std::string("createBufferView(") + fullName + ")", result);
+                        log += '\n';
+                        return result ? makeError(Error::Failure) : result;
+                    }
+                    viewDesc = slot.bufferView->desc();
+                }
+
+                slot.resource = RenderGraphResource{
+                    .type = RenderGraphResourceType::Buffer,
+                    .buffer = slot.buffer.get(),
+                    .bufferView = slot.bufferView.get(),
+                    .bufferDesc = desc,
+                    .bufferViewDesc = viewDesc,
+                    .state = ResourceState::Undefined,
+                };
             }
-            slot.resource = RenderGraphResource{
-                .texture = slot.texture.get(),
-                .view = slot.view.get(),
-                .desc = desc,
-                .state = ResourceState::Undefined,
-            };
+
             impl_->resources.emplace(fullName, std::move(slot));
         }
     }
 
-    if (!bindlessSampledImageResources.empty()) {
+    if (!bindlessSampledImageResources.empty() || !bindlessBufferResources.empty()) {
         Result result = device.createBindlessHeap(
             BindlessHeapDesc{
                 .maxSampledImages = static_cast<uint32_t>(bindlessSampledImageResources.size()),
+                .maxBuffers = static_cast<uint32_t>(bindlessBufferResources.size()),
             },
             impl_->bindlessHeap);
         if (!result || impl_->bindlessHeap == nullptr) {
@@ -1167,7 +1854,32 @@ Result RenderGraphExecutor::compile(
                 log += '\n';
                 return result;
             }
+            resource->bindlessHandle = handle;
             resource->sampledImageBindlessHandle = handle;
+        }
+
+        for (const std::string& fullName : bindlessBufferResources) {
+            RenderGraphResource* resource = impl_->resource(fullName);
+            if (resource == nullptr || resource->bufferView == nullptr) {
+                log = validationPrefix(std::string("bindless buffer resource is missing '") + fullName + "'");
+                return makeError(Error::InvalidArgument);
+            }
+
+            BindlessHandle handle;
+            result = impl_->bindlessHeap->allocateBuffer(handle);
+            if (!result) {
+                log += resultMessage(std::string("allocateBuffer(") + fullName + ")", result);
+                log += '\n';
+                return result;
+            }
+
+            result = impl_->bindlessHeap->writeBufferView(handle, *resource->bufferView);
+            if (!result) {
+                log += resultMessage(std::string("writeBufferView(") + fullName + ")", result);
+                log += '\n';
+                return result;
+            }
+            resource->bindlessHandle = handle;
         }
     }
 
@@ -1193,7 +1905,11 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer)
             if (field.visibility == RenderGraphFieldVisibility::Output) {
                 resource = impl_->resource(fullName);
                 if (resource != nullptr) {
-                    Result result = impl_->transition(commandBuffer, *resource, field.state);
+                    Result result = impl_->transition(
+                        commandBuffer,
+                        *resource,
+                        stateForAccess(field.access),
+                        field.access);
                     if (!result) {
                         return result;
                     }
@@ -1203,7 +1919,11 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer)
                 if (alias != impl_->inputAliases.end()) {
                     resource = impl_->resource(alias->second);
                     if (resource != nullptr) {
-                        Result result = impl_->transition(commandBuffer, *resource, field.state);
+                        Result result = impl_->transition(
+                            commandBuffer,
+                            *resource,
+                            stateForAccess(field.access),
+                            field.access);
                         if (!result) {
                             return result;
                         }
@@ -1216,13 +1936,16 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer)
                 .resource = resource,
                 .visibility = field.visibility,
                 .bindlessAccess = field.bindlessAccess,
+                .bindlessHandle = resource != nullptr
+                    ? resource->bindlessHandle
+                    : BindlessHandle{},
                 .sampledImageBindlessHandle = resource != nullptr
                     ? resource->sampledImageBindlessHandle
                     : BindlessHandle{},
             });
         }
 
-        if (impl_->bindlessHeap != nullptr && Impl::usesBindlessSampledInput(node)) {
+        if (impl_->bindlessHeap != nullptr && Impl::usesBindlessResource(node)) {
             commandBuffer.bindBindlessHeap(*impl_->bindlessHeap);
         }
 
@@ -1261,7 +1984,11 @@ Result RenderGraphExecutor::transitionOutput(
     if (resource == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    return impl_->transition(commandBuffer, *resource, state);
+    return impl_->transition(
+        commandBuffer,
+        *resource,
+        state,
+        explicitAccessForState(resource->type, state));
 }
 
 RenderGraphResource* RenderGraphExecutor::outputResource(std::string_view fullName)
@@ -1433,7 +2160,12 @@ Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth,
 
     const std::string outputName = graph.firstOutputName();
     RenderGraphResource* output = impl_->executor.outputResource(outputName);
-    if (output == nullptr || output->texture == nullptr || impl_->readbackBuffer == nullptr) {
+    if (output == nullptr || impl_->readbackBuffer == nullptr) {
+        impl_->lastLog = std::string("RenderGraph preview output resource is missing '") + outputName + "'";
+        return makeError(Error::InvalidArgument);
+    }
+    if (output->type != RenderGraphResourceType::Texture2D || output->texture == nullptr) {
+        impl_->lastLog = std::string("RenderGraph preview output is not a Texture2D '") + outputName + "'";
         return makeError(Error::InvalidArgument);
     }
     result = impl_->executor.transitionOutput(

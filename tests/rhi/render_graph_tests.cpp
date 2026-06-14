@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderGraph/render_graph.h"
 #include "Runtime/Render/slang_compiler.h"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -72,6 +73,40 @@ public:
     }
 };
 
+class TestBufferOutputPass final : public render::RenderGraphPass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferOutput("data", "Buffer output")
+            .buffer(16)
+            .storageReadWrite();
+        return reflection;
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext&) override
+    {
+        return {};
+    }
+};
+
+class TestBufferInputPass final : public render::RenderGraphPass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferInput("data", "Buffer input")
+            .buffer(16)
+            .shaderRead();
+        return reflection;
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext&) override
+    {
+        return {};
+    }
+};
+
 class TestBindlessSamplePass final : public render::RenderGraphPass {
 public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
@@ -126,12 +161,11 @@ public:
     render::Result execute(render::RenderGraphExecutionContext& context) override
     {
         const render::BindlessHandle* sourceHandle = context.bindlessInput("source");
-        render::RenderGraphResource* color = context.output("color");
+        render::TextureHandle color = context.outputTexture("color");
         if (sourceHandle == nullptr ||
             sourceHandle->kind != render::BindlessHandleKind::SampledImage ||
             sourceHandle->index != 0 ||
-            color == nullptr ||
-            color->view == nullptr ||
+            !color.valid() ||
             pipeline_ == nullptr) {
             return render::makeError(render::Error::InvalidArgument);
         }
@@ -143,7 +177,7 @@ public:
             .height = context.height(),
         };
         render::RenderingAttachmentDesc attachment{
-            .view = color->view,
+            .view = color.view(),
             .state = render::ResourceState::ColorAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
@@ -187,6 +221,14 @@ void registerTestPass()
         "Test-only pass with one required input and one output",
         []() { return std::make_unique<TestInputOutputPass>(); });
     render::registerRenderGraphPassType(
+        "TestBufferOutputPass",
+        "Test-only pass with one buffer output",
+        []() { return std::make_unique<TestBufferOutputPass>(); });
+    render::registerRenderGraphPassType(
+        "TestBufferInputPass",
+        "Test-only pass with one buffer input",
+        []() { return std::make_unique<TestBufferInputPass>(); });
+    render::registerRenderGraphPassType(
         "TestBindlessSamplePass",
         "Test-only pass that samples a RenderGraph input through bindless",
         []() { return std::make_unique<TestBindlessSamplePass>(); });
@@ -219,6 +261,58 @@ uint32_t countVisiblePixels(const std::vector<uint32_t>& pixels)
     }
     return visiblePixelCount;
 }
+
+class RenderGraphReflectionApiTest : public RhiTest {
+public:
+    RenderGraphReflectionApiTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_reflection_api";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::RenderPassReflection reflection;
+        render::RenderGraphField& texture = reflection.addTextureInput("source", "Texture source")
+            .texture2D(32, 16)
+            .sampledRead()
+            .bindlessSampledImage()
+            .setOptional();
+        texture.format = render::Format::Rgba8Unorm;
+
+        render::RenderGraphField& buffer = reflection.addBufferOutput("data", "Buffer output")
+            .buffer(64, 8)
+            .storageReadWrite()
+            .bindlessBuffer()
+            .hostReadback();
+
+        const render::RenderGraphField* foundTexture =
+            reflection.findField("source", render::RenderGraphFieldVisibility::Input);
+        const render::RenderGraphField* foundBuffer =
+            reflection.findField("data", render::RenderGraphFieldVisibility::Output);
+        if (foundTexture == nullptr || foundBuffer == nullptr) {
+            return RhiTestResult::fail("reflection did not preserve fields");
+        }
+        if (foundTexture->resourceType != render::RenderGraphResourceType::Texture2D ||
+            foundTexture->access != render::RenderGraphResourceAccess::TextureSampleRead ||
+            foundTexture->bindlessAccess != render::RenderGraphBindlessAccess::SampledImage ||
+            foundTexture->width != 32 ||
+            foundTexture->height != 16 ||
+            !foundTexture->optional) {
+            return RhiTestResult::fail("texture field metadata was not preserved");
+        }
+        if (foundBuffer->resourceType != render::RenderGraphResourceType::Buffer ||
+            foundBuffer->access != render::RenderGraphResourceAccess::BufferStorageReadWrite ||
+            foundBuffer->bindlessAccess != render::RenderGraphBindlessAccess::Buffer ||
+            foundBuffer->size != 64 ||
+            foundBuffer->structureStride != 8 ||
+            foundBuffer->memoryLocation != render::MemoryLocation::HostReadback) {
+            return RhiTestResult::fail("buffer field metadata was not preserved");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
 
 class RenderGraphSerializationTest : public RhiTest {
 public:
@@ -295,6 +389,31 @@ public:
         cyclic.markOutput("A.color");
         if (cyclic.validate(log)) {
             return RhiTestResult::fail("cyclic graph validated successfully");
+        }
+
+        render::RenderGraph textureToBuffer;
+        textureToBuffer.addNode("TriangleRasterPass", "Triangle");
+        textureToBuffer.addNode("TestBufferInputPass", "BufferRead");
+        textureToBuffer.addEdge("Triangle.color", "BufferRead.data");
+        textureToBuffer.markOutput("Triangle.color");
+        if (textureToBuffer.validate(log)) {
+            return RhiTestResult::fail("texture-to-buffer edge validated successfully");
+        }
+
+        render::RenderGraph bufferToTexture;
+        bufferToTexture.addNode("TestBufferOutputPass", "BufferWrite");
+        bufferToTexture.addNode("TestInputOutputPass", "TextureRead");
+        bufferToTexture.addEdge("BufferWrite.data", "TextureRead.input");
+        bufferToTexture.markOutput("TextureRead.color");
+        if (bufferToTexture.validate(log)) {
+            return RhiTestResult::fail("buffer-to-texture edge validated successfully");
+        }
+
+        render::RenderGraph missingBufferInput;
+        missingBufferInput.addNode("RenderGraphBufferCopyPass", "Copy");
+        missingBufferInput.markOutput("Copy.data");
+        if (missingBufferInput.validate(log)) {
+            return RhiTestResult::fail("graph with missing required buffer input validated successfully");
         }
 
         return RhiTestResult::pass();
@@ -562,6 +681,140 @@ public:
     }
 };
 
+class RenderGraphBufferWorkflowTest : public RhiTest {
+public:
+    RenderGraphBufferWorkflowTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_buffer_workflow";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        constexpr uint64_t kByteSize = 16;
+        constexpr std::array<uint32_t, 4> kExpectedWords = {
+            0x11223344u,
+            0xAABBCCDDu,
+            0xDEADBEEFu,
+            0xCAFEBABEu,
+        };
+
+        std::unique_ptr<render::Device> device;
+        render::Result result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic RenderGraph Buffer Workflow Test",
+                .enableValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true,
+            },
+            device);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+            }
+            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+        }
+        if (!device->capabilities().bindlessDescriptorHeap) {
+            return RhiTestResult::skip("DeviceCapabilities::bindlessDescriptorHeap is false");
+        }
+
+        render::Queue* computeQueue = device->getQueue(render::QueueType::Compute);
+        if (computeQueue == nullptr) {
+            return RhiTestResult::skip("buffer workflow device has no compute queue");
+        }
+
+        render::RenderGraph graph;
+        graph.setName("BufferWorkflow");
+        graph.addNode("RenderGraphBufferWritePass", "Write");
+        graph.addNode("RenderGraphBufferCopyPass", "Copy");
+        graph.addEdge("Write.data", "Copy.source");
+        graph.markOutput("Copy.data");
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        result = executor.compile(*device, graph, 1, 1, log);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(log);
+            }
+            return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        result = device->createCommandPool(*computeQueue, commandPool);
+        if (!result || commandPool == nullptr) {
+            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        result = commandPool->createCommandBuffer(commandBuffer);
+        if (!result || commandBuffer == nullptr) {
+            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::Fence> fence;
+        result = device->createFence(false, fence);
+        if (!result || fence == nullptr) {
+            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+        }
+
+        result = commandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+        }
+
+        result = executor.execute(*commandBuffer);
+        if (!result) {
+            return RhiTestResult::fail(std::string("RenderGraphExecutor::execute returned ") + toString(result));
+        }
+
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+        }
+
+        render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+        result = computeQueue->submit(render::QueueSubmitDesc{
+            .commandBuffers = commandBuffers,
+            .commandBufferCount = 1,
+            .signalFence = fence.get(),
+        });
+        if (!result) {
+            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+        }
+
+        result = fence->wait(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+        }
+
+        render::RenderGraphResource* output = executor.outputResource("Copy.data");
+        if (output == nullptr ||
+            output->type != render::RenderGraphResourceType::Buffer ||
+            output->buffer == nullptr ||
+            output->bufferDesc.memoryLocation != render::MemoryLocation::HostReadback ||
+            output->bufferDesc.size != kByteSize) {
+            return RhiTestResult::fail("buffer graph output resource is invalid");
+        }
+
+        output->buffer->invalidate();
+        void* mapped = output->buffer->map();
+        if (mapped == nullptr) {
+            return RhiTestResult::fail("buffer graph output did not map");
+        }
+
+        std::array<uint32_t, 4> actualWords{};
+        std::memcpy(actualWords.data(), mapped, actualWords.size() * sizeof(uint32_t));
+        output->buffer->unmap();
+
+        if (actualWords != kExpectedWords) {
+            return RhiTestResult::fail("buffer graph output bytes did not match expected pattern");
+        }
+
+        (void)device->waitIdle();
+        return RhiTestResult::pass();
+    }
+};
+
 class RenderGraphImageSamplePassPreviewTest : public RhiTest {
 public:
     RenderGraphImageSamplePassPreviewTest()
@@ -610,10 +863,12 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphImageSamplePassPreviewTest);
 
 } // namespace
