@@ -32,6 +32,7 @@
                     "zfar": 10000.0,
                     "znear": 0.001
                 },
+                "accumulate": true,
                 "maxDepth": 3,
                 "path": "Asset/meet_mat.glb",
                 "samples": 2

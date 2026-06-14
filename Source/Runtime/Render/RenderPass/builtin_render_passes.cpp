@@ -3,6 +3,7 @@
 #include "Runtime/Render/GAPI/Vulkan/vulkan_native.h"
 #include "Runtime/Render/GAPI/Vulkan/vulkan_scene_rtx.h"
 #include "Runtime/Render/slang_compiler.h"
+#include "Runtime/Render/history_resources.h"
 #include "Runtime/Scene/scene.h"
 
 #define STB_IMAGE_STATIC
@@ -60,6 +61,7 @@ constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
 constexpr uint32_t kRayQueryVisualizationGranularityPrimitive = 1;
 constexpr uint32_t kDefaultPathTraceMaxDepth = 3;
 constexpr uint32_t kDefaultPathTraceSamples = 2;
+constexpr const char* kScenePathTraceHistoryPrefix = "ScenePathTracePass.";
 constexpr bool kDefaultReversedZ = true;
 
 struct RenderGraphBufferUserPush {
@@ -176,6 +178,10 @@ struct ScenePathTracePush {
     uint32_t height = 1;
     uint32_t maxDepth = kDefaultPathTraceMaxDepth;
     uint32_t samples = kDefaultPathTraceSamples;
+    uint32_t accumulationFrame = 0;
+    uint32_t hasHistory = 0;
+    uint32_t enableAccumulation = 1;
+    uint32_t padding = 0;
 };
 
 std::string resultMessage(std::string_view label, const Result& result)
@@ -2548,10 +2554,22 @@ public:
         if (outputView == VK_NULL_HANDLE) {
             return makeError(Error::InvalidArgument);
         }
-        updateDescriptorSet(outputView);
 
         ScenePathTracePush push;
         buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
+
+        VkImageView historyCurrentView = outputView;
+        VkImageView historyPreviousView = outputView;
+        Result result = prepareHistoryTextures(
+            context,
+            outputView,
+            push,
+            historyCurrentView,
+            historyPreviousView);
+        if (!result) {
+            return result;
+        }
+        updateDescriptorSet(outputView, historyCurrentView, historyPreviousView);
 
         VkCommandBuffer commandBuffer = vulkan::nativeCommandBuffer(context.commandBuffer());
         if (commandBuffer == VK_NULL_HANDLE) {
@@ -2576,6 +2594,9 @@ public:
             sizeof(push),
             &push);
         vkCmdDispatch(commandBuffer, (context.width() + 7) / 8, (context.height() + 7) / 8, 1);
+        if (push.enableAccumulation != 0 && context.historyResources() != nullptr) {
+            context.historyResources()->markWritten(historyNameForContext(context));
+        }
         return {};
     }
 
@@ -2587,6 +2608,87 @@ private:
         std::vector<ScenePathTraceGpuInstance> instances;
         std::vector<ScenePathTraceGpuMaterial> materials;
     };
+
+    Result prepareHistoryTextures(
+        RenderGraphExecutionContext& context,
+        VkImageView fallbackView,
+        ScenePathTracePush& push,
+        VkImageView& outCurrentView,
+        VkImageView& outPreviousView)
+    {
+        HistoryResourceManager* history = context.historyResources();
+        const bool accumulationEnabled = boolProperty(context.properties(), "accumulate", true);
+        push.enableAccumulation = accumulationEnabled && history != nullptr ? 1u : 0u;
+        push.hasHistory = 0;
+        push.accumulationFrame = 0;
+        outCurrentView = fallbackView;
+        outPreviousView = fallbackView;
+        if (push.enableAccumulation == 0) {
+            accumulationFrame_ = 0;
+            return {};
+        }
+
+        const TextureDesc historyDesc{
+            .type = TextureType::Texture2D,
+            .usage = TextureUsageBits::Sampled |
+                TextureUsageBits::Storage |
+                TextureUsageBits::TransferSource,
+            .format = Format::Rgba8Unorm,
+            .width = context.width(),
+            .height = context.height(),
+            .depth = 1,
+            .mipCount = 1,
+            .layerCount = 1,
+            .memoryLocation = MemoryLocation::Device,
+        };
+        const std::string historyName = historyNameForContext(context);
+        Result result = history->ensureTexture(
+            historyName,
+            historyDesc,
+            TextureViewDesc{.format = Format::Rgba8Unorm});
+        if (!result) {
+            return result;
+        }
+
+        HistoryTextureRef current = history->texture(historyName, HistorySlot::Current);
+        HistoryTextureRef previous = history->texture(historyName, HistorySlot::Previous);
+        if (current.texture == nullptr || current.view == nullptr || previous.texture == nullptr || previous.view == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        result = history->transitionTexture(
+            context.commandBuffer(),
+            historyName,
+            HistorySlot::Current,
+            ResourceState::General);
+        if (!result) {
+            return result;
+        }
+        result = history->transitionTexture(
+            context.commandBuffer(),
+            historyName,
+            HistorySlot::Previous,
+            ResourceState::General);
+        if (!result) {
+            return result;
+        }
+
+        outCurrentView = vulkan::nativeImageView(*current.view);
+        outPreviousView = vulkan::nativeImageView(*previous.view);
+        if (outCurrentView == VK_NULL_HANDLE || outPreviousView == VK_NULL_HANDLE) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        if (previous.valid) {
+            ++accumulationFrame_;
+            push.hasHistory = 1;
+        } else {
+            accumulationFrame_ = 0;
+            push.hasHistory = 0;
+        }
+        push.accumulationFrame = accumulationFrame_;
+        return {};
+    }
 
     void destroyNative()
     {
@@ -2645,6 +2747,18 @@ private:
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
             },
+            VkDescriptorSetLayoutBinding{
+                .binding = 7,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            VkDescriptorSetLayoutBinding{
+                .binding = 8,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
         };
         VkDescriptorSetLayoutCreateInfo setLayoutInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -2669,7 +2783,7 @@ private:
             },
             VkDescriptorPoolSize{
                 .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .descriptorCount = 1,
+                .descriptorCount = 3,
             },
             VkDescriptorPoolSize{
                 .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -2788,7 +2902,10 @@ private:
         }
     }
 
-    void updateDescriptorSet(VkImageView outputView)
+    void updateDescriptorSet(
+        VkImageView outputView,
+        VkImageView historyCurrentView,
+        VkImageView historyPreviousView)
     {
         VkAccelerationStructureKHR tlas = rtxBuilder_.tlas();
         VkWriteDescriptorSetAccelerationStructureKHR accelerationInfo{
@@ -2799,6 +2916,14 @@ private:
 
         VkDescriptorImageInfo outputInfo{
             .imageView = outputView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+        VkDescriptorImageInfo historyCurrentInfo{
+            .imageView = historyCurrentView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+        VkDescriptorImageInfo historyPreviousInfo{
+            .imageView = historyPreviousView,
             .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
         };
 
@@ -2871,6 +2996,22 @@ private:
                 .descriptorCount = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .pBufferInfo = &bufferInfos[4],
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptorSet_,
+                .dstBinding = 7,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .pImageInfo = &historyCurrentInfo,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptorSet_,
+                .dstBinding = 8,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .pImageInfo = &historyPreviousInfo,
             },
         };
         vkUpdateDescriptorSets(nativeDevice_, static_cast<uint32_t>(std::size(writes)), writes, 0, nullptr);
@@ -2951,6 +3092,26 @@ private:
             value = static_cast<uint32_t>(std::max(iter->get<float>(), static_cast<float>(minimum)));
         }
         return std::clamp(value, minimum, maximum);
+    }
+
+    static bool boolProperty(const RenderGraphProperties& properties, const char* key, bool fallback)
+    {
+        if (!properties.is_object()) {
+            return fallback;
+        }
+        auto iter = properties.find(key);
+        if (iter == properties.end() || !iter->is_boolean()) {
+            return fallback;
+        }
+        return iter->get<bool>();
+    }
+
+    static std::string historyNameForContext(const RenderGraphExecutionContext& context)
+    {
+        std::string name(kScenePathTraceHistoryPrefix);
+        name += context.passName();
+        name += ".accumulation";
+        return name;
     }
 
     static float finiteOr(float value, float fallback)
@@ -3255,6 +3416,7 @@ private:
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkShaderModule shaderModule_ = VK_NULL_HANDLE;
+    uint32_t accumulationFrame_ = 0;
 };
 
 class RenderGraphBufferWritePass final : public ComputePass {

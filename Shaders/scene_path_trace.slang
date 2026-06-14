@@ -49,6 +49,12 @@ StructuredBuffer<PathTraceInstance> gInstances;
 [[vk::binding(6, 0)]]
 StructuredBuffer<PathTraceMaterial> gMaterials;
 
+[[vk::binding(7, 0)]]
+RWTexture2D<float4> gHistoryCurrent;
+
+[[vk::binding(8, 0)]]
+RWTexture2D<float4> gHistoryPrevious;
+
 struct ScenePathTracePush
 {
     float4 eye;
@@ -60,6 +66,10 @@ struct ScenePathTracePush
     uint height;
     uint maxDepth;
     uint samples;
+    uint accumulationFrame;
+    uint hasHistory;
+    uint enableAccumulation;
+    uint padding;
 };
 
 struct Ray
@@ -331,7 +341,10 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     }
 
     uint samples = clamp(push.samples, 1u, 16u);
-    uint seed = hash(pixel.x + pixel.y * max(push.width, 1u) + 0x9e3779b9u);
+    uint seed = hash(
+        pixel.x +
+        pixel.y * max(push.width, 1u) +
+        (push.accumulationFrame + 1u) * 0x9e3779b9u);
     float3 color = float3(0.0, 0.0, 0.0);
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
         float2 jitter = samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed));
@@ -346,5 +359,16 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
 
     color = color / (color + float3(1.0, 1.0, 1.0));
     color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
-    gOutput[pixel] = float4(saturate(color), 1.0);
+    color = saturate(color);
+
+    if (push.enableAccumulation != 0u) {
+        if (push.hasHistory != 0u) {
+            float accumulationWeight = 1.0 / float(push.accumulationFrame + 1u);
+            float3 previousColor = gHistoryPrevious[pixel].rgb;
+            color = lerp(previousColor, color, accumulationWeight);
+        }
+        gHistoryCurrent[pixel] = float4(color, 1.0);
+    }
+
+    gOutput[pixel] = float4(color, 1.0);
 }

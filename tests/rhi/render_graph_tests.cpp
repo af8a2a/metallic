@@ -743,6 +743,7 @@ public:
             {"path", "Asset/meet_mat.glb"},
             {"maxDepth", 2},
             {"samples", 1},
+            {"accumulate", true},
             {"camera", {
                 {"projection", "perspective"},
                 {"fovDegrees", 50.0f},
@@ -772,10 +773,26 @@ public:
                 preview.lastLog());
         }
 
-        const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
+        uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 512) {
             return RhiTestResult::fail(
                 std::string("ScenePathTracePass produced too few visible pixels: ") +
+                std::to_string(visiblePixelCount));
+        }
+
+        result = preview.render(graph, 192, 192);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("ScenePathTracePass accumulated render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        visiblePixelCount = countVisiblePixels(preview.pixels());
+        if (visiblePixelCount < 512) {
+            return RhiTestResult::fail(
+                std::string("ScenePathTracePass accumulated frame produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
 

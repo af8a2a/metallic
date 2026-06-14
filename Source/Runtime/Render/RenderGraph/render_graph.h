@@ -15,6 +15,8 @@
 
 namespace metallic::render {
 
+class HistoryResourceManager;
+
 using RenderGraphProperties = nlohmann::json;
 
 enum class RenderGraphFieldVisibility : uint8_t {
@@ -173,7 +175,9 @@ public:
     CommandBuffer& commandBuffer() const { return commandBuffer_; }
     uint32_t width() const { return width_; }
     uint32_t height() const { return height_; }
+    const std::string& passName() const { return passName_; }
     const RenderGraphProperties& properties() const { return properties_; }
+    HistoryResourceManager* historyResources() const { return historyResources_; }
 
     RenderGraphResource* resource(std::string_view fieldName) const;
     RenderGraphResource* input(std::string_view fieldName) const;
@@ -201,14 +205,18 @@ private:
         CommandBuffer& commandBuffer,
         uint32_t width,
         uint32_t height,
+        std::string passName,
         const RenderGraphProperties& properties,
-        std::vector<Binding> bindings);
+        std::vector<Binding> bindings,
+        HistoryResourceManager* historyResources);
 
     CommandBuffer& commandBuffer_;
     uint32_t width_ = 1;
     uint32_t height_ = 1;
+    std::string passName_;
     const RenderGraphProperties& properties_;
     std::vector<Binding> bindings_;
+    HistoryResourceManager* historyResources_ = nullptr;
 
     friend class RenderGraphExecutor;
 };
@@ -380,7 +388,7 @@ public:
         uint32_t width,
         uint32_t height,
         std::string& log);
-    Result execute(CommandBuffer& commandBuffer);
+    Result execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources = nullptr);
     Result execute(const RenderGraphSubmitDesc& desc);
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);
     bool syncProperties(const RenderGraph& graph);

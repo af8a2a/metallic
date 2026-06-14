@@ -126,6 +126,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             {"path", "Asset/meet_mat.glb"},
             {"maxDepth", 3},
             {"samples", 2},
+            {"accumulate", true},
             {"camera", {
                 {"projection", "perspective"},
                 {"fovDegrees", 50.0f},
@@ -1504,6 +1505,7 @@ void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties
     }
 
     node->properties = std::move(properties);
+    historyResources_.invalidateAll();
     if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
         graphExecutor_->syncProperties(renderGraph_);
     }
@@ -1802,7 +1804,7 @@ bool EditorApplication::renderGraphPreview()
         .name = "RenderGraph Preview",
         .color = render::ColorValue{0.78f, 0.36f, 0.92f, 1.0f},
     });
-    render::Result result = graphExecutor_->execute(*commandBuffer_);
+    render::Result result = graphExecutor_->execute(*commandBuffer_, &historyResources_);
     commandBuffer_->endDebugLabel();
     if (!result) {
         renderGraphStatus_ = std::string("RenderGraph execute failed: ") + render::resultToString(result);
@@ -2766,6 +2768,9 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         if (!properties.contains("samples") || !properties["samples"].is_number()) {
             properties["samples"] = 2;
         }
+        if (!properties.contains("accumulate") || !properties["accumulate"].is_boolean()) {
+            properties["accumulate"] = true;
+        }
         if (editingPathTraceNodeId != static_cast<int>(node->id)) {
             copyToBuffer(
                 properties["path"].get<std::string>(),
@@ -2793,8 +2798,15 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
             changed = true;
         }
 
+        bool accumulate = properties["accumulate"].get<bool>();
+        if (ImGui::Checkbox("Accumulate", &accumulate)) {
+            properties["accumulate"] = accumulate;
+            changed = true;
+        }
+
         if (changed) {
             renderGraph_.setNodeProperties(node->id, std::move(properties));
+            historyResources_.invalidateAll();
             viewportPreviewValid_ = false;
         }
     } else if (!node->properties.empty()) {

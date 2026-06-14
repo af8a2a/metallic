@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderGraph/render_graph.h"
+#include "Runtime/Render/history_resources.h"
 #include "Runtime/Render/Profiling/nsight_events.h"
 
 #include <algorithm>
@@ -879,13 +880,17 @@ RenderGraphExecutionContext::RenderGraphExecutionContext(
     CommandBuffer& commandBuffer,
     uint32_t width,
     uint32_t height,
+    std::string passName,
     const RenderGraphProperties& properties,
-    std::vector<Binding> bindings)
+    std::vector<Binding> bindings,
+    HistoryResourceManager* historyResources)
     : commandBuffer_(commandBuffer)
     , width_(width)
     , height_(height)
+    , passName_(std::move(passName))
     , properties_(properties)
     , bindings_(std::move(bindings))
+    , historyResources_(historyResources)
 {
 }
 
@@ -1583,6 +1588,7 @@ struct RenderGraphExecutor::Impl {
     uint32_t width = 0;
     uint32_t height = 0;
     Format defaultFormat = Format::Rgba8Unorm;
+    HistoryResourceManager* historyResources = nullptr;
     std::vector<CompiledNode> executionList;
     std::unordered_map<std::string, ResourceSlot> resources;
     std::unordered_map<std::string, std::string> inputAliases;
@@ -1856,8 +1862,10 @@ struct RenderGraphExecutor::Impl {
             commandBuffer,
             width,
             height,
+            node.name,
             node.properties,
-            std::move(bindings));
+            std::move(bindings),
+            historyResources);
         const std::string markerName = passProfileMarkerName(node.name, node.type);
         const uint32_t markerColor = profiling::nsightColorFromName(node.type);
         const profiling::NsightProfileRange passMarker(
@@ -2251,19 +2259,22 @@ Result RenderGraphExecutor::compile(
     return {};
 }
 
-Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer)
+Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources)
 {
     if (!impl_->isCompiled) {
         return makeError(Error::InvalidArgument);
     }
 
+    impl_->historyResources = historyResources;
     for (Impl::CompiledNode& node : impl_->executionList) {
         Result result = impl_->executeNode(commandBuffer, node);
         if (!result) {
+            impl_->historyResources = nullptr;
             return result;
         }
     }
 
+    impl_->historyResources = nullptr;
     return {};
 }
 
@@ -2273,6 +2284,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         return makeError(Error::InvalidArgument);
     }
 
+    impl_->historyResources = nullptr;
     Result result = impl_->waitForSubmittedWork(UINT64_MAX);
     if (!result) {
         return result;
@@ -2518,11 +2530,13 @@ struct RenderGraphPreviewRenderer::Impl {
     std::unique_ptr<Fence> fence;
     std::unique_ptr<Buffer> readbackBuffer;
     RenderGraphExecutor executor;
+    HistoryResourceManager historyResources;
     std::vector<uint32_t> pixels;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t readbackWidth = 0;
     uint32_t readbackHeight = 0;
+    uint64_t historyFrameIndex = 0;
     std::string lastLog;
 
     Result ensureReadback(uint32_t newWidth, uint32_t newHeight)
@@ -2590,6 +2604,10 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
     if (!result) {
         return result;
     }
+    result = impl_->historyResources.initialize(*impl_->device);
+    if (!result) {
+        return result;
+    }
     return impl_->device->createFence(true, impl_->fence);
 }
 
@@ -2620,6 +2638,8 @@ Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth,
         if (!result) {
             return result;
         }
+        impl_->historyResources.invalidateAll();
+        impl_->historyFrameIndex = 0;
         result = impl_->executor.compile(
             *impl_->device,
             graph,
@@ -2652,7 +2672,8 @@ Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth,
         return result;
     }
 
-    result = impl_->executor.execute(*impl_->commandBuffer);
+    impl_->historyResources.beginFrame(impl_->historyFrameIndex++);
+    result = impl_->executor.execute(*impl_->commandBuffer, &impl_->historyResources);
     if (!result) {
         return result;
     }
