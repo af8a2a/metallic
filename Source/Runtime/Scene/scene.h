@@ -67,6 +67,8 @@ struct RenderPrimitive {
     uint64_t triangleCount = 0;
     Bounds localBounds;
     std::vector<float3> positions;
+    std::vector<float3> normals;
+    std::vector<float2> texcoords0;
     std::vector<uint32_t> indices;
 };
 
@@ -81,6 +83,11 @@ struct RenderNode {
 struct RenderMaterial {
     std::string name;
     float4 baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
+    float metallicFactor = 1.0f;
+    float roughnessFactor = 1.0f;
+    float3 emissiveFactor{0.0f, 0.0f, 0.0f};
+    float alphaCutoff = 0.5f;
+    bool doubleSided = false;
 };
 
 struct RenderCamera {

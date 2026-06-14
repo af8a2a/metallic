@@ -45,16 +45,21 @@ constexpr const char* kMaterialShaderObjectAlternateFragmentEntryPoint =
     "materialShaderObjectAlternateFragmentMain";
 constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "scene_rayquery_visualize";
 constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
+constexpr const char* kScenePathTraceShaderModuleName = "scene_path_trace";
+constexpr const char* kScenePathTraceEntryPoint = "scenePathTraceMain";
 constexpr const char* kRenderGraphBufferShaderModuleName = "render_graph_buffer";
 constexpr const char* kRenderGraphBufferWriteEntryPoint = "renderGraphBufferWriteMain";
 constexpr const char* kRenderGraphBufferCopyEntryPoint = "renderGraphBufferCopyMain";
 constexpr const char* kDefaultImageSamplePath = PROJECT_SOURCE_DIR "/Asset/statue-1275469_1280.jpg";
 constexpr const char* kDefaultBunnyScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
 constexpr const char* kDefaultMaterialScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
+constexpr const char* kDefaultPathTraceScenePath = PROJECT_SOURCE_DIR "/Asset/meet_mat.glb";
 constexpr uint64_t kRenderGraphBufferByteSize = 16;
 constexpr int32_t kGltfTriangleListMode = 4;
 constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
 constexpr uint32_t kRayQueryVisualizationGranularityPrimitive = 1;
+constexpr uint32_t kDefaultPathTraceMaxDepth = 3;
+constexpr uint32_t kDefaultPathTraceSamples = 2;
 
 struct RenderGraphBufferUserPush {
     uint32_t inputBuffer = 0;
@@ -132,6 +137,44 @@ struct SceneRayQueryVisualizationPush {
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t padding = 0;
+};
+
+struct ScenePathTraceGpuVertex {
+    float position[4] = {};
+    float normal[4] = {};
+    float texcoord[4] = {};
+};
+
+struct ScenePathTraceGpuPrimitive {
+    uint32_t firstVertex = 0;
+    uint32_t vertexCount = 0;
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;
+};
+
+struct ScenePathTraceGpuInstance {
+    uint32_t primitiveIndex = 0;
+    uint32_t materialIndex = 0;
+    uint32_t flags = 0;
+    uint32_t padding = 0;
+};
+
+struct ScenePathTraceGpuMaterial {
+    float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float emissive[4] = {};
+    float params[4] = {};
+};
+
+struct ScenePathTracePush {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t maxDepth = kDefaultPathTraceMaxDepth;
+    uint32_t samples = kDefaultPathTraceSamples;
 };
 
 std::string resultMessage(std::string_view label, const Result& result)
@@ -2252,6 +2295,906 @@ private:
     VkShaderModule shaderModule_ = VK_NULL_HANDLE;
 };
 
+class ScenePathTracePass final : public ComputePass {
+public:
+    ~ScenePathTracePass() override
+    {
+        destroyNative();
+    }
+
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        reflection.addTextureOutput("color", "Path-traced glTF scene")
+            .storageReadWrite()
+            .format = Format::Rgba8Unorm;
+        return reflection;
+    }
+
+    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        if (context.device == nullptr || context.graphicsQueue == nullptr) {
+            log = "ScenePathTracePass requires a device and graphics queue";
+            return makeError(Error::InvalidArgument);
+        }
+        if (!context.device->capabilities().rayTracingAccelerationStructure ||
+            !context.device->capabilities().rayQuery) {
+            log = "ScenePathTracePass requires rayTracingAccelerationStructure and rayQuery capabilities";
+            return makeError(Error::Unsupported);
+        }
+        if (pipeline_ != VK_NULL_HANDLE && rtxBuilder_.valid() && vertexBuffer_ != nullptr) {
+            return {};
+        }
+
+        scene::Scene loadedScene;
+        const std::filesystem::path path = scenePathFromProperties(properties());
+        if (!loadedScene.load(path)) {
+            log = "ScenePathTracePass failed to load glTF: " + loadedScene.lastLoadResult().error;
+            return makeError(Error::Failure);
+        }
+        if (!loadedScene.bounds().valid) {
+            log = "ScenePathTracePass scene bounds are unavailable";
+            return makeError(Error::Failure);
+        }
+
+        ScenePathTraceGpuScene gpuScene;
+        if (!buildGpuScene(loadedScene, gpuScene, log)) {
+            return makeError(Error::Failure);
+        }
+
+        Result result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
+        if (!result) {
+            return result;
+        }
+
+        result = uploadStorageBuffer(
+            *context.device,
+            gpuScene.vertices.data(),
+            static_cast<uint64_t>(gpuScene.vertices.size() * sizeof(ScenePathTraceGpuVertex)),
+            sizeof(ScenePathTraceGpuVertex),
+            vertexBuffer_,
+            log,
+            "ScenePathTracePass vertices");
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        result = uploadStorageBuffer(
+            *context.device,
+            gpuScene.indices.data(),
+            static_cast<uint64_t>(gpuScene.indices.size() * sizeof(uint32_t)),
+            sizeof(uint32_t),
+            indexBuffer_,
+            log,
+            "ScenePathTracePass indices");
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        result = uploadStorageBuffer(
+            *context.device,
+            gpuScene.primitives.data(),
+            static_cast<uint64_t>(gpuScene.primitives.size() * sizeof(ScenePathTraceGpuPrimitive)),
+            sizeof(ScenePathTraceGpuPrimitive),
+            primitiveBuffer_,
+            log,
+            "ScenePathTracePass primitives");
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        result = uploadStorageBuffer(
+            *context.device,
+            gpuScene.instances.data(),
+            static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGpuInstance)),
+            sizeof(ScenePathTraceGpuInstance),
+            instanceBuffer_,
+            log,
+            "ScenePathTracePass instances");
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        result = uploadStorageBuffer(
+            *context.device,
+            gpuScene.materials.data(),
+            static_cast<uint64_t>(gpuScene.materials.size() * sizeof(ScenePathTraceGpuMaterial)),
+            sizeof(ScenePathTraceGpuMaterial),
+            materialBuffer_,
+            log,
+            "ScenePathTracePass materials");
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+
+        nativeDevice_ = vulkan::nativeDevice(*context.device).device;
+        if (nativeDevice_ == VK_NULL_HANDLE) {
+            log = "ScenePathTracePass Vulkan device is unavailable";
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return makeError(Error::InvalidArgument);
+        }
+        volkLoadDevice(nativeDevice_);
+
+        ShaderCompileResult computeCompile;
+        const char* capabilities[] = {"spvRayQueryKHR"};
+        result = compileSlangShaderToSpirv(
+            SlangShaderDesc{
+                .moduleName = kScenePathTraceShaderModuleName,
+                .entryPointName = kScenePathTraceEntryPoint,
+                .searchPath = kTriangleShaderSearchPath,
+                .profileName = "glsl_460",
+                .capabilities = capabilities,
+                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+            },
+            computeCompile);
+        if (!result) {
+            log += "compileSlangShaderToSpirv(";
+            log += kScenePathTraceShaderModuleName;
+            log += ".";
+            log += kScenePathTraceEntryPoint;
+            log += ") returned ";
+            log += resultToString(result);
+            if (!computeCompile.diagnostics.empty()) {
+                log += ": ";
+                log += computeCompile.diagnostics;
+            }
+            log += '\n';
+            destroyNative();
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+
+        result = createNativePipeline(computeCompile, log);
+        if (!result) {
+            destroyNative();
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+
+        drawBounds_ = loadedScene.bounds();
+        return {};
+    }
+
+    Result execute(RenderGraphExecutionContext& context) override
+    {
+        TextureHandle color = context.outputTexture("color");
+        if (!color.valid() ||
+            nativeDevice_ == VK_NULL_HANDLE ||
+            descriptorSet_ == VK_NULL_HANDLE ||
+            pipeline_ == VK_NULL_HANDLE ||
+            pipelineLayout_ == VK_NULL_HANDLE ||
+            vertexBuffer_ == nullptr ||
+            indexBuffer_ == nullptr ||
+            primitiveBuffer_ == nullptr ||
+            instanceBuffer_ == nullptr ||
+            materialBuffer_ == nullptr ||
+            !rtxBuilder_.valid() ||
+            !drawBounds_.valid) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        VkImageView outputView = vulkan::nativeImageView(*color.view());
+        if (outputView == VK_NULL_HANDLE) {
+            return makeError(Error::InvalidArgument);
+        }
+        updateDescriptorSet(outputView);
+
+        ScenePathTracePush push;
+        buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
+
+        VkCommandBuffer commandBuffer = vulkan::nativeCommandBuffer(context.commandBuffer());
+        if (commandBuffer == VK_NULL_HANDLE) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipelineLayout_,
+            0,
+            1,
+            &descriptorSet_,
+            0,
+            nullptr);
+        vkCmdPushConstants(
+            commandBuffer,
+            pipelineLayout_,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(push),
+            &push);
+        vkCmdDispatch(commandBuffer, (context.width() + 7) / 8, (context.height() + 7) / 8, 1);
+        return {};
+    }
+
+private:
+    struct ScenePathTraceGpuScene {
+        std::vector<ScenePathTraceGpuVertex> vertices;
+        std::vector<uint32_t> indices;
+        std::vector<ScenePathTraceGpuPrimitive> primitives;
+        std::vector<ScenePathTraceGpuInstance> instances;
+        std::vector<ScenePathTraceGpuMaterial> materials;
+    };
+
+    void destroyNative()
+    {
+        if (nativeDevice_ == VK_NULL_HANDLE) {
+            return;
+        }
+        volkLoadDevice(nativeDevice_);
+        destroyNativePipelineObjects();
+        nativeDevice_ = VK_NULL_HANDLE;
+    }
+
+    Result createNativePipeline(const ShaderCompileResult& computeCompile, std::string& log)
+    {
+        destroyNativePipelineObjects();
+
+        const VkDescriptorSetLayoutBinding bindings[] = {
+            VkDescriptorSetLayoutBinding{
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            VkDescriptorSetLayoutBinding{
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            VkDescriptorSetLayoutBinding{
+                .binding = 2,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            VkDescriptorSetLayoutBinding{
+                .binding = 3,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            VkDescriptorSetLayoutBinding{
+                .binding = 4,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            VkDescriptorSetLayoutBinding{
+                .binding = 5,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            VkDescriptorSetLayoutBinding{
+                .binding = 6,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+        };
+        VkDescriptorSetLayoutCreateInfo setLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .pBindings = bindings,
+        };
+        VkResult vkResult = vkCreateDescriptorSetLayout(
+            nativeDevice_,
+            &setLayoutInfo,
+            nullptr,
+            &descriptorSetLayout_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkCreateDescriptorSetLayout(ScenePathTracePass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        VkDescriptorPoolSize poolSizes[] = {
+            VkDescriptorPoolSize{
+                .type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                .descriptorCount = 1,
+            },
+            VkDescriptorPoolSize{
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+            },
+            VkDescriptorPoolSize{
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 5,
+            },
+        };
+        VkDescriptorPoolCreateInfo poolInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = 1,
+            .poolSizeCount = static_cast<uint32_t>(std::size(poolSizes)),
+            .pPoolSizes = poolSizes,
+        };
+        vkResult = vkCreateDescriptorPool(nativeDevice_, &poolInfo, nullptr, &descriptorPool_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkCreateDescriptorPool(ScenePathTracePass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        VkDescriptorSetAllocateInfo allocateInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = descriptorPool_,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &descriptorSetLayout_,
+        };
+        vkResult = vkAllocateDescriptorSets(nativeDevice_, &allocateInfo, &descriptorSet_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkAllocateDescriptorSets(ScenePathTracePass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        VkPushConstantRange pushRange{
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            .offset = 0,
+            .size = sizeof(ScenePathTracePush),
+        };
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &descriptorSetLayout_,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &pushRange,
+        };
+        vkResult = vkCreatePipelineLayout(nativeDevice_, &pipelineLayoutInfo, nullptr, &pipelineLayout_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkCreatePipelineLayout(ScenePathTracePass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        VkShaderModuleCreateInfo shaderInfo{
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = computeCompile.spirv.size() * sizeof(uint32_t),
+            .pCode = computeCompile.spirv.data(),
+        };
+        vkResult = vkCreateShaderModule(nativeDevice_, &shaderInfo, nullptr, &shaderModule_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkCreateShaderModule(ScenePathTracePass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        VkPipelineShaderStageCreateInfo stageInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = shaderModule_,
+            .pName = "main",
+        };
+        VkComputePipelineCreateInfo pipelineInfo{
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = stageInfo,
+            .layout = pipelineLayout_,
+        };
+        vkResult = vkCreateComputePipelines(
+            nativeDevice_,
+            VK_NULL_HANDLE,
+            1,
+            &pipelineInfo,
+            nullptr,
+            &pipeline_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkCreateComputePipelines(ScenePathTracePass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        return {};
+    }
+
+    void destroyNativePipelineObjects()
+    {
+        if (nativeDevice_ == VK_NULL_HANDLE) {
+            return;
+        }
+        if (pipeline_ != VK_NULL_HANDLE) {
+            vkDestroyPipeline(nativeDevice_, pipeline_, nullptr);
+            pipeline_ = VK_NULL_HANDLE;
+        }
+        if (pipelineLayout_ != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(nativeDevice_, pipelineLayout_, nullptr);
+            pipelineLayout_ = VK_NULL_HANDLE;
+        }
+        if (shaderModule_ != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(nativeDevice_, shaderModule_, nullptr);
+            shaderModule_ = VK_NULL_HANDLE;
+        }
+        if (descriptorPool_ != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(nativeDevice_, descriptorPool_, nullptr);
+            descriptorPool_ = VK_NULL_HANDLE;
+            descriptorSet_ = VK_NULL_HANDLE;
+        }
+        if (descriptorSetLayout_ != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(nativeDevice_, descriptorSetLayout_, nullptr);
+            descriptorSetLayout_ = VK_NULL_HANDLE;
+        }
+    }
+
+    void updateDescriptorSet(VkImageView outputView)
+    {
+        VkAccelerationStructureKHR tlas = rtxBuilder_.tlas();
+        VkWriteDescriptorSetAccelerationStructureKHR accelerationInfo{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+            .accelerationStructureCount = 1,
+            .pAccelerationStructures = &tlas,
+        };
+
+        VkDescriptorImageInfo outputInfo{
+            .imageView = outputView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+
+        const vulkan::NativeBuffer vertexBuffer = vulkan::nativeBuffer(*vertexBuffer_);
+        const vulkan::NativeBuffer indexBuffer = vulkan::nativeBuffer(*indexBuffer_);
+        const vulkan::NativeBuffer primitiveBuffer = vulkan::nativeBuffer(*primitiveBuffer_);
+        const vulkan::NativeBuffer instanceBuffer = vulkan::nativeBuffer(*instanceBuffer_);
+        const vulkan::NativeBuffer materialBuffer = vulkan::nativeBuffer(*materialBuffer_);
+        const VkDescriptorBufferInfo bufferInfos[] = {
+            VkDescriptorBufferInfo{.buffer = vertexBuffer.buffer, .offset = 0, .range = vertexBuffer.size},
+            VkDescriptorBufferInfo{.buffer = indexBuffer.buffer, .offset = 0, .range = indexBuffer.size},
+            VkDescriptorBufferInfo{.buffer = primitiveBuffer.buffer, .offset = 0, .range = primitiveBuffer.size},
+            VkDescriptorBufferInfo{.buffer = instanceBuffer.buffer, .offset = 0, .range = instanceBuffer.size},
+            VkDescriptorBufferInfo{.buffer = materialBuffer.buffer, .offset = 0, .range = materialBuffer.size},
+        };
+
+        const VkWriteDescriptorSet writes[] = {
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = &accelerationInfo,
+                .dstSet = descriptorSet_,
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptorSet_,
+                .dstBinding = 1,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .pImageInfo = &outputInfo,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptorSet_,
+                .dstBinding = 2,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = &bufferInfos[0],
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptorSet_,
+                .dstBinding = 3,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = &bufferInfos[1],
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptorSet_,
+                .dstBinding = 4,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = &bufferInfos[2],
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptorSet_,
+                .dstBinding = 5,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = &bufferInfos[3],
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptorSet_,
+                .dstBinding = 6,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = &bufferInfos[4],
+            },
+        };
+        vkUpdateDescriptorSets(nativeDevice_, static_cast<uint32_t>(std::size(writes)), writes, 0, nullptr);
+    }
+
+    static Result uploadStorageBuffer(
+        Device& device,
+        const void* data,
+        uint64_t byteSize,
+        uint32_t structureStride,
+        std::unique_ptr<Buffer>& outBuffer,
+        std::string& log,
+        std::string_view label)
+    {
+        if (data == nullptr || byteSize == 0) {
+            log = std::string(label) + " upload data is empty";
+            return makeError(Error::InvalidArgument);
+        }
+
+        Result result = device.createBuffer(
+            BufferDesc{
+                .size = byteSize,
+                .structureStride = structureStride,
+                .usage = BufferUsageBits::Storage,
+                .memoryLocation = MemoryLocation::HostUpload,
+            },
+            outBuffer);
+        if (!result || outBuffer == nullptr) {
+            log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        void* mapped = outBuffer->map();
+        if (mapped == nullptr) {
+            log = std::string(label) + " failed to map upload buffer";
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, data, static_cast<size_t>(byteSize));
+        outBuffer->flush(0, byteSize);
+        outBuffer->unmap();
+        return {};
+    }
+
+    static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
+    {
+        if (props.contains("path") && props["path"].is_string()) {
+            std::filesystem::path path = props["path"].get<std::string>();
+            if (path.is_relative()) {
+                path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
+            }
+            return path;
+        }
+        return kDefaultPathTraceScenePath;
+    }
+
+    static uint32_t uintProperty(
+        const RenderGraphProperties& properties,
+        const char* key,
+        uint32_t fallback,
+        uint32_t minimum,
+        uint32_t maximum)
+    {
+        if (!properties.is_object()) {
+            return fallback;
+        }
+        auto iter = properties.find(key);
+        if (iter == properties.end() || !iter->is_number()) {
+            return fallback;
+        }
+        uint32_t value = fallback;
+        if (iter->is_number_unsigned()) {
+            value = iter->get<uint32_t>();
+        } else if (iter->is_number_integer()) {
+            const int64_t signedValue = iter->get<int64_t>();
+            value = signedValue > 0 ? static_cast<uint32_t>(signedValue) : minimum;
+        } else {
+            value = static_cast<uint32_t>(std::max(iter->get<float>(), static_cast<float>(minimum)));
+        }
+        return std::clamp(value, minimum, maximum);
+    }
+
+    static float finiteOr(float value, float fallback)
+    {
+        return std::isfinite(value) ? value : fallback;
+    }
+
+    static const RenderGraphProperties* cameraPropertiesFrom(const RenderGraphProperties& properties)
+    {
+        if (!properties.is_object()) {
+            return nullptr;
+        }
+        auto iter = properties.find("camera");
+        if (iter == properties.end() || !iter->is_object()) {
+            return nullptr;
+        }
+        return &(*iter);
+    }
+
+    static float cameraFloat(const RenderGraphProperties* camera, const char* key, float fallback)
+    {
+        if (camera == nullptr) {
+            return fallback;
+        }
+        auto iter = camera->find(key);
+        if (iter == camera->end() || !iter->is_number()) {
+            return fallback;
+        }
+        return finiteOr(iter->get<float>(), fallback);
+    }
+
+    static float3 cameraVec3(
+        const RenderGraphProperties* camera,
+        const char* key,
+        const float3& fallback)
+    {
+        if (camera == nullptr) {
+            return fallback;
+        }
+        auto iter = camera->find(key);
+        if (iter == camera->end() || !iter->is_array() || iter->size() < 3) {
+            return fallback;
+        }
+
+        float values[3] = {fallback.x, fallback.y, fallback.z};
+        for (size_t index = 0; index < 3; ++index) {
+            const RenderGraphProperties& component = (*iter)[index];
+            if (component.is_number()) {
+                values[index] = finiteOr(component.get<float>(), values[index]);
+            }
+        }
+        return float3(values[0], values[1], values[2]);
+    }
+
+    static bool cameraIsOrthographic(const RenderGraphProperties* camera)
+    {
+        if (camera == nullptr) {
+            return false;
+        }
+        auto iter = camera->find("projection");
+        if (iter == camera->end() || !iter->is_string()) {
+            return false;
+        }
+        const std::string projection = iter->get<std::string>();
+        return projection == "orthographic" || projection == "ortho";
+    }
+
+    static void writeParamVec3(const float3& value, float out[4], float w)
+    {
+        out[0] = value.x;
+        out[1] = value.y;
+        out[2] = value.z;
+        out[3] = w;
+    }
+
+    static void buildPush(
+        uint32_t width,
+        uint32_t height,
+        const RenderGraphProperties& properties,
+        const scene::Bounds& drawBounds,
+        ScenePathTracePush& outPush)
+    {
+        outPush = ScenePathTracePush{};
+        const float3 center = drawBounds.center();
+        const float3 halfExtent = (drawBounds.max - drawBounds.min) * 0.5f;
+        const float radius = std::max(drawBounds.radius(), 0.01f);
+        const float aspect = height == 0 ? 1.0f : static_cast<float>(width) / static_cast<float>(height);
+        const float frameHalfHeight = std::max(halfExtent.y, halfExtent.x / std::max(aspect, 0.001f));
+        const RenderGraphProperties* cameraProperties = cameraPropertiesFrom(properties);
+        constexpr float kPi = 3.14159265358979323846f;
+        const float fovDegrees = std::clamp(
+            cameraFloat(cameraProperties, "fovDegrees", 50.0f),
+            1.0f,
+            179.0f);
+        const float fovRadians = fovDegrees * (kPi / 180.0f);
+        const float defaultDistance = std::max(
+            frameHalfHeight > 0.000001f
+                ? frameHalfHeight / (0.72f * std::tan(fovRadians * 0.5f)) + radius
+                : radius * 2.5f,
+            0.05f);
+        const float3 defaultEye(center.x, center.y + radius * 0.12f, center.z + defaultDistance);
+        const float3 eye = cameraVec3(cameraProperties, "eye", defaultEye);
+        const float3 target = cameraVec3(cameraProperties, "center", center);
+        const float3 up = cameraVec3(cameraProperties, "up", float3(0.0f, 1.0f, 0.0f));
+        const float zNear = std::max(cameraFloat(cameraProperties, "znear", 0.001f), 0.0001f);
+        const float zFar = std::max(
+            cameraFloat(cameraProperties, "zfar", defaultDistance + radius * 4.0f),
+            zNear + 0.001f);
+        const float cameraDistance = std::max(length(eye - target), 0.001f);
+        const float defaultOrthoHeight = std::max(2.0f * cameraDistance * std::tan(fovRadians * 0.5f), 0.0001f);
+        const float orthoHeight = std::max(
+            cameraFloat(cameraProperties, "orthoHeight", defaultOrthoHeight),
+            0.0001f);
+
+        writeParamVec3(eye, outPush.eye, 0.0f);
+        writeParamVec3(target, outPush.center, 0.0f);
+        writeParamVec3(up, outPush.upProjection, cameraIsOrthographic(cameraProperties) ? 1.0f : 0.0f);
+        outPush.viewport[0] = aspect;
+        outPush.viewport[1] = static_cast<float>(width);
+        outPush.viewport[2] = static_cast<float>(height);
+        outPush.viewport[3] = fovRadians;
+        outPush.clipOrtho[0] = zNear;
+        outPush.clipOrtho[1] = zFar;
+        outPush.clipOrtho[2] = orthoHeight;
+        outPush.clipOrtho[3] = 0.0f;
+        outPush.width = width;
+        outPush.height = height;
+        outPush.maxDepth = uintProperty(properties, "maxDepth", kDefaultPathTraceMaxDepth, 1, 12);
+        outPush.samples = uintProperty(properties, "samples", kDefaultPathTraceSamples, 1, 16);
+    }
+
+    static ScenePathTraceGpuMaterial makeMaterial(const scene::RenderMaterial& material)
+    {
+        ScenePathTraceGpuMaterial gpuMaterial;
+        gpuMaterial.baseColor[0] = material.baseColorFactor.x;
+        gpuMaterial.baseColor[1] = material.baseColorFactor.y;
+        gpuMaterial.baseColor[2] = material.baseColorFactor.z;
+        gpuMaterial.baseColor[3] = material.baseColorFactor.w;
+        gpuMaterial.emissive[0] = material.emissiveFactor.x;
+        gpuMaterial.emissive[1] = material.emissiveFactor.y;
+        gpuMaterial.emissive[2] = material.emissiveFactor.z;
+        gpuMaterial.emissive[3] = 0.0f;
+        gpuMaterial.params[0] = material.metallicFactor;
+        gpuMaterial.params[1] = material.roughnessFactor;
+        gpuMaterial.params[2] = material.alphaCutoff;
+        gpuMaterial.params[3] = material.doubleSided ? 1.0f : 0.0f;
+        return gpuMaterial;
+    }
+
+    static uint32_t materialIndexForNode(const scene::RenderNode& renderNode, uint32_t materialCount)
+    {
+        if (renderNode.materialIndex >= 0 &&
+            static_cast<uint32_t>(renderNode.materialIndex) < materialCount) {
+            return static_cast<uint32_t>(renderNode.materialIndex);
+        }
+        return 0;
+    }
+
+    static bool appendPrimitiveGeometry(
+        const scene::RenderPrimitive& primitive,
+        ScenePathTraceGpuScene& outScene,
+        ScenePathTraceGpuPrimitive& outPrimitive)
+    {
+        const uint64_t sourceIndexCount = primitive.indices.empty()
+            ? (primitive.positions.size() / 3) * 3
+            : (primitive.indices.size() / 3) * 3;
+        if (primitive.mode != kGltfTriangleListMode ||
+            primitive.positions.size() < 3 ||
+            sourceIndexCount < 3 ||
+            sourceIndexCount > std::numeric_limits<uint32_t>::max() ||
+            primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
+            return false;
+        }
+
+        outPrimitive = ScenePathTraceGpuPrimitive{
+            .firstVertex = static_cast<uint32_t>(outScene.vertices.size()),
+            .vertexCount = static_cast<uint32_t>(primitive.positions.size()),
+            .firstIndex = static_cast<uint32_t>(outScene.indices.size()),
+            .indexCount = static_cast<uint32_t>(sourceIndexCount),
+        };
+
+        for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
+            const float3 position = primitive.positions[vertexIndex];
+            const float3 normal = vertexIndex < primitive.normals.size()
+                ? primitive.normals[vertexIndex]
+                : float3(0.0f, 0.0f, 0.0f);
+            const float2 texcoord = vertexIndex < primitive.texcoords0.size()
+                ? primitive.texcoords0[vertexIndex]
+                : float2(0.0f, 0.0f);
+            ScenePathTraceGpuVertex vertex;
+            vertex.position[0] = position.x;
+            vertex.position[1] = position.y;
+            vertex.position[2] = position.z;
+            vertex.position[3] = 1.0f;
+            vertex.normal[0] = normal.x;
+            vertex.normal[1] = normal.y;
+            vertex.normal[2] = normal.z;
+            vertex.normal[3] = 0.0f;
+            vertex.texcoord[0] = texcoord.x;
+            vertex.texcoord[1] = texcoord.y;
+            outScene.vertices.push_back(vertex);
+        }
+
+        if (primitive.indices.empty()) {
+            for (uint32_t index = 0; index < outPrimitive.indexCount; ++index) {
+                outScene.indices.push_back(index);
+            }
+            return true;
+        }
+
+        for (uint32_t index = 0; index < outPrimitive.indexCount; ++index) {
+            const uint32_t sourceIndex = primitive.indices[index];
+            if (sourceIndex >= outPrimitive.vertexCount) {
+                outScene.vertices.resize(outPrimitive.firstVertex);
+                outScene.indices.resize(outPrimitive.firstIndex);
+                return false;
+            }
+            outScene.indices.push_back(sourceIndex);
+        }
+        return true;
+    }
+
+    static bool buildGpuScene(
+        const scene::Scene& scene,
+        ScenePathTraceGpuScene& outScene,
+        std::string& log)
+    {
+        outScene = ScenePathTraceGpuScene{};
+        outScene.materials.reserve(std::max<size_t>(scene.materials().size(), 1));
+        if (scene.materials().empty()) {
+            outScene.materials.push_back(ScenePathTraceGpuMaterial{});
+        } else {
+            for (const scene::RenderMaterial& material : scene.materials()) {
+                outScene.materials.push_back(makeMaterial(material));
+            }
+        }
+
+        constexpr uint32_t kInvalidPrimitiveIndex = std::numeric_limits<uint32_t>::max();
+        std::vector<uint32_t> primitiveToGpuPrimitive(
+            scene.renderPrimitives().size(),
+            kInvalidPrimitiveIndex);
+        for (uint32_t primitiveIndex = 0; primitiveIndex < scene.renderPrimitives().size(); ++primitiveIndex) {
+            ScenePathTraceGpuPrimitive gpuPrimitive;
+            if (!appendPrimitiveGeometry(scene.renderPrimitives()[primitiveIndex], outScene, gpuPrimitive)) {
+                continue;
+            }
+            primitiveToGpuPrimitive[primitiveIndex] = static_cast<uint32_t>(outScene.primitives.size());
+            outScene.primitives.push_back(gpuPrimitive);
+        }
+
+        for (const scene::RenderNode& renderNode : scene.renderNodes()) {
+            if (!renderNode.visible ||
+                renderNode.renderPrimitiveIndex < 0 ||
+                static_cast<size_t>(renderNode.renderPrimitiveIndex) >= primitiveToGpuPrimitive.size()) {
+                continue;
+            }
+            const uint32_t primitiveIndex =
+                primitiveToGpuPrimitive[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
+            if (primitiveIndex == kInvalidPrimitiveIndex) {
+                continue;
+            }
+
+            outScene.instances.push_back(ScenePathTraceGpuInstance{
+                .primitiveIndex = primitiveIndex,
+                .materialIndex = materialIndexForNode(
+                    renderNode,
+                    static_cast<uint32_t>(outScene.materials.size())),
+            });
+        }
+
+        if (outScene.vertices.empty() ||
+            outScene.indices.empty() ||
+            outScene.primitives.empty() ||
+            outScene.instances.empty() ||
+            outScene.materials.empty()) {
+            log = "ScenePathTracePass found no visible triangle geometry for path tracing";
+            return false;
+        }
+        return true;
+    }
+
+    void resetGpuBuffers()
+    {
+        vertexBuffer_.reset();
+        indexBuffer_.reset();
+        primitiveBuffer_.reset();
+        instanceBuffer_.reset();
+        materialBuffer_.reset();
+    }
+
+    vulkan::SceneRtxBuilder rtxBuilder_;
+    scene::Bounds drawBounds_;
+    std::unique_ptr<Buffer> vertexBuffer_;
+    std::unique_ptr<Buffer> indexBuffer_;
+    std::unique_ptr<Buffer> primitiveBuffer_;
+    std::unique_ptr<Buffer> instanceBuffer_;
+    std::unique_ptr<Buffer> materialBuffer_;
+    VkDevice nativeDevice_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkShaderModule shaderModule_ = VK_NULL_HANDLE;
+};
+
 class RenderGraphBufferWritePass final : public ComputePass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
@@ -2447,6 +3390,10 @@ void registerBuiltInRenderGraphPasses()
         "SceneRayQueryVisualizationPass",
         "Visualize a glTF Vulkan acceleration structure with RayQuery",
         []() { return std::make_unique<SceneRayQueryVisualizationPass>(); });
+    registerRenderGraphPassType(
+        "ScenePathTracePass",
+        "Path trace a glTF scene with RayQuery",
+        []() { return std::make_unique<ScenePathTracePass>(); });
     registerRenderGraphPassType(
         "RenderGraphBufferWritePass",
         "Write a known byte pattern into a graph buffer",

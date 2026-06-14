@@ -319,6 +319,36 @@ std::vector<float3> readPositionAccessor(const tinygltf::Model& model, const tin
     return positions;
 }
 
+std::vector<float2> readFloat2Accessor(const tinygltf::Model& model, const tinygltf::Accessor& accessor)
+{
+    std::vector<float2> values;
+    if (accessor.type != TINYGLTF_TYPE_VEC2 || accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
+        return values;
+    }
+
+    const tinygltf::BufferView* bufferView = nullptr;
+    int stride = 0;
+    const uint8_t* data = accessorData(model, accessor, bufferView, stride);
+    if (data == nullptr || bufferView == nullptr) {
+        return values;
+    }
+
+    values.reserve(accessor.count);
+    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView->buffer)];
+    for (size_t index = 0; index < accessor.count; ++index) {
+        const size_t elementOffset = static_cast<size_t>(stride) * index;
+        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + sizeof(float) * 2 > buffer.data.size()) {
+            values.clear();
+            return values;
+        }
+
+        float components[2] = {};
+        std::memcpy(components, data + elementOffset, sizeof(components));
+        values.emplace_back(components[0], components[1]);
+    }
+    return values;
+}
+
 std::vector<uint32_t> readIndexAccessor(const tinygltf::Model& model, const tinygltf::Accessor& accessor)
 {
     std::vector<uint32_t> indices;
@@ -624,6 +654,11 @@ bool Scene::load(const std::filesystem::path& filename)
         material.baseColorFactor = makeFloat4(
             gltfMaterial.pbrMetallicRoughness.baseColorFactor,
             float4(1.0f, 1.0f, 1.0f, 1.0f));
+        material.metallicFactor = static_cast<float>(gltfMaterial.pbrMetallicRoughness.metallicFactor);
+        material.roughnessFactor = static_cast<float>(gltfMaterial.pbrMetallicRoughness.roughnessFactor);
+        material.emissiveFactor = makeFloat3(gltfMaterial.emissiveFactor, float3(0.0f, 0.0f, 0.0f));
+        material.alphaCutoff = static_cast<float>(gltfMaterial.alphaCutoff);
+        material.doubleSided = gltfMaterial.doubleSided;
         materials_.push_back(material);
     }
 
@@ -700,6 +735,28 @@ bool Scene::load(const std::filesystem::path& filename)
                     primitive.vertexCount = positionAccessor.count;
                     primitive.localBounds = accessorBounds(positionAccessor);
                     primitive.positions = readPositionAccessor(model, positionAccessor);
+                }
+
+                const auto normalAccessorIter = gltfPrimitive.attributes.find("NORMAL");
+                if (normalAccessorIter != gltfPrimitive.attributes.end() &&
+                    validIndex(normalAccessorIter->second, model.accessors.size())) {
+                    primitive.normals = readPositionAccessor(
+                        model,
+                        model.accessors[static_cast<size_t>(normalAccessorIter->second)]);
+                    if (primitive.normals.size() != primitive.positions.size()) {
+                        primitive.normals.clear();
+                    }
+                }
+
+                const auto texcoordAccessorIter = gltfPrimitive.attributes.find("TEXCOORD_0");
+                if (texcoordAccessorIter != gltfPrimitive.attributes.end() &&
+                    validIndex(texcoordAccessorIter->second, model.accessors.size())) {
+                    primitive.texcoords0 = readFloat2Accessor(
+                        model,
+                        model.accessors[static_cast<size_t>(texcoordAccessorIter->second)]);
+                    if (primitive.texcoords0.size() != primitive.positions.size()) {
+                        primitive.texcoords0.clear();
+                    }
                 }
 
                 if (validIndex(gltfPrimitive.indices, model.accessors.size())) {

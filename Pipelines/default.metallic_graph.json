@@ -1,10 +1,10 @@
 {
     "edges": [],
-    "name": "StanfordBunnyWireframe",
+    "name": "MeetMatPathTrace",
     "nodes": [
         {
             "id": 2,
-            "name": "SceneRayQueryVisualization",
+            "name": "PathTrace",
             "position": {
                 "x": 335.0,
                 "y": 281.0
@@ -12,16 +12,16 @@
             "properties": {
                 "camera": {
                     "center": [
-                        -0.01684040017426014,
-                        0.11015400290489197,
-                        -0.0015369500033557415
+                        0.0,
+                        0.15,
+                        0.0
                     ],
                     "eye": [
-                        -0.01684040017426014,
-                        0.11015400290489197,
-                        0.2199999988079071
+                        0.0,
+                        0.25,
+                        3.0
                     ],
-                    "fovDegrees": 60.0,
+                    "fovDegrees": 50.0,
                     "projection": "perspective",
                     "up": [
                         0.0,
@@ -29,16 +29,17 @@
                         0.0
                     ],
                     "zfar": 10000.0,
-                    "znear": 0.10000000149011612
+                    "znear": 0.001
                 },
-                "granularity": "instance",
-                "path": "Asset/StandfordBunny/scene.gltf"
+                "maxDepth": 3,
+                "path": "Asset/meet_mat.glb",
+                "samples": 2
             },
-            "type": "SceneRayQueryVisualizationPass"
+            "type": "ScenePathTracePass"
         }
     ],
     "outputs": [
-        "SceneRayQueryVisualization.color"
+        "PathTrace.color"
     ],
     "version": 1
 }

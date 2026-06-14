@@ -330,8 +330,10 @@ public:
             render::createRenderGraphPass("CopyColorPass");
         const std::unique_ptr<render::RenderGraphPass> bufferWrite =
             render::createRenderGraphPass("RenderGraphBufferWritePass");
+        const std::unique_ptr<render::RenderGraphPass> pathTrace =
+            render::createRenderGraphPass("ScenePathTracePass");
 
-        if (triangle == nullptr || copy == nullptr || bufferWrite == nullptr) {
+        if (triangle == nullptr || copy == nullptr || bufferWrite == nullptr || pathTrace == nullptr) {
             return RhiTestResult::fail("failed to create built-in render graph passes");
         }
         if (triangle->kind() != render::RenderGraphPassKind::Raster ||
@@ -346,10 +348,15 @@ public:
             bufferWrite->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("RenderGraphBufferWritePass is not classified as Compute/Compute");
         }
+        if (pathTrace->kind() != render::RenderGraphPassKind::Compute ||
+            pathTrace->queueType() != render::QueueType::Compute) {
+            return RhiTestResult::fail("ScenePathTracePass is not classified as Compute/Compute");
+        }
 
         bool foundTriangle = false;
         bool foundCopy = false;
         bool foundBufferWrite = false;
+        bool foundPathTrace = false;
         for (const render::RenderGraphPassInfo& passInfo : render::listRenderGraphPassTypes()) {
             if (passInfo.type == "TriangleRasterPass") {
                 foundTriangle = passInfo.kind == render::RenderGraphPassKind::Raster &&
@@ -360,9 +367,12 @@ public:
             } else if (passInfo.type == "RenderGraphBufferWritePass") {
                 foundBufferWrite = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
+            } else if (passInfo.type == "ScenePathTracePass") {
+                foundPathTrace = passInfo.kind == render::RenderGraphPassKind::Compute &&
+                    passInfo.queueType == render::QueueType::Compute;
             }
         }
-        if (!foundTriangle || !foundCopy || !foundBufferWrite) {
+        if (!foundTriangle || !foundCopy || !foundBufferWrite || !foundPathTrace) {
             return RhiTestResult::fail("RenderGraphPassInfo did not preserve pass kind metadata");
         }
 
@@ -692,6 +702,73 @@ public:
         const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
         const std::filesystem::path outputPath =
             context.outputDirectory / "render_graph_scene_rayquery_visualization_preview.png";
+        if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), outputMessage)) {
+            return RhiTestResult::fail(outputMessage);
+        }
+
+        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+    }
+};
+
+class RenderGraphScenePathTracePreviewTest : public RhiTest {
+public:
+    RenderGraphScenePathTracePreviewTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_scene_path_trace_preview";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        render::RenderGraphProperties properties{
+            {"path", "Asset/meet_mat.glb"},
+            {"maxDepth", 2},
+            {"samples", 1},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 50.0f},
+                {"znear", 0.001f},
+                {"zfar", 10000.0f},
+                {"eye", {0.0f, 0.25f, 3.0f}},
+                {"center", {0.0f, 0.15f, 0.0f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
+        };
+        render::RenderGraph graph;
+        graph.setName("ScenePathTracePreview");
+        graph.addNode("ScenePathTracePass", "PathTrace", properties);
+        graph.markOutput("PathTrace.color");
+
+        result = preview.render(graph, 192, 192);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("ScenePathTracePass is unsupported on this device: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("ScenePathTracePass render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
+        if (visiblePixelCount < 512) {
+            return RhiTestResult::fail(
+                std::string("ScenePathTracePass produced too few visible pixels: ") +
+                std::to_string(visiblePixelCount));
+        }
+
+        std::string outputMessage;
+        const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const std::filesystem::path outputPath =
+            context.outputDirectory / "render_graph_scene_path_trace_preview.png";
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), outputMessage)) {
             return RhiTestResult::fail(outputMessage);
         }
@@ -1242,6 +1319,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyWireframePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);

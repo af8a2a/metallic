@@ -119,13 +119,46 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             }},
         };
     }
+    if (type == "ScenePathTracePass") {
+        return render::RenderGraphProperties{
+            {"path", "Asset/meet_mat.glb"},
+            {"maxDepth", 3},
+            {"samples", 2},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 50.0f},
+                {"znear", 0.001f},
+                {"zfar", 10000.0f},
+                {"eye", {0.0f, 0.25f, 3.0f}},
+                {"center", {0.0f, 0.15f, 0.0f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
+        };
+    }
     return render::RenderGraphProperties::object();
+}
+
+render::RenderGraph createDefaultPathTraceGraph()
+{
+    render::RenderGraph graph;
+    graph.setName("MeetMatPathTrace");
+    graph.addNode(
+        "ScenePathTracePass",
+        "PathTrace",
+        defaultPropertiesForPass("ScenePathTracePass"),
+        335.0f,
+        281.0f);
+    graph.markOutput("PathTrace.color");
+    graph.clearDirty();
+    return graph;
 }
 
 render::RenderGraphNode* findBunnyWireframeNode(render::RenderGraph& graph)
 {
     for (const render::RenderGraphNode& node : graph.nodes()) {
-        if (node.type == "BunnyWireframePass" || node.type == "SceneRayQueryVisualizationPass") {
+        if (node.type == "BunnyWireframePass" ||
+            node.type == "SceneRayQueryVisualizationPass" ||
+            node.type == "ScenePathTracePass") {
             return graph.findNode(node.id);
         }
     }
@@ -1943,13 +1976,13 @@ bool EditorApplication::renderVulkanFrame()
 
 void EditorApplication::resetDefaultRenderGraph()
 {
-    renderGraph_ = render::RenderGraph::createDefaultBunnyGraph();
+    renderGraph_ = createDefaultPathTraceGraph();
     graphEditorPositionsInitialized_ = false;
     selectedGraphNodeId_ = -1;
     selectedGraphLinkId_ = -1;
     viewportPreviewValid_ = false;
     copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
-    renderGraphStatus_ = "Created Stanford Bunny wireframe RenderGraph";
+    renderGraphStatus_ = "Created meet_mat path tracing RenderGraph";
 }
 
 void EditorApplication::saveRenderGraph()
@@ -2681,6 +2714,50 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
                 renderGraph_.setNodeProperties(node->id, std::move(properties));
                 viewportPreviewValid_ = false;
             }
+        }
+    } else if (node->type == "ScenePathTracePass") {
+        static int editingPathTraceNodeId = -1;
+        static char pathTraceScenePathBuffer[260] = {};
+        render::RenderGraphProperties properties = node->properties;
+        if (!properties.contains("path") || !properties["path"].is_string()) {
+            properties["path"] = "Asset/meet_mat.glb";
+        }
+        if (!properties.contains("maxDepth") || !properties["maxDepth"].is_number()) {
+            properties["maxDepth"] = 3;
+        }
+        if (!properties.contains("samples") || !properties["samples"].is_number()) {
+            properties["samples"] = 2;
+        }
+        if (editingPathTraceNodeId != static_cast<int>(node->id)) {
+            copyToBuffer(
+                properties["path"].get<std::string>(),
+                pathTraceScenePathBuffer,
+                sizeof(pathTraceScenePathBuffer));
+            editingPathTraceNodeId = static_cast<int>(node->id);
+        }
+
+        bool changed = false;
+        ImGui::InputText("Scene Path", pathTraceScenePathBuffer, sizeof(pathTraceScenePathBuffer));
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            properties["path"] = pathTraceScenePathBuffer;
+            changed = true;
+        }
+
+        int maxDepth = std::clamp(properties["maxDepth"].get<int>(), 1, 12);
+        if (ImGui::SliderInt("Max Depth", &maxDepth, 1, 12)) {
+            properties["maxDepth"] = maxDepth;
+            changed = true;
+        }
+
+        int samples = std::clamp(properties["samples"].get<int>(), 1, 16);
+        if (ImGui::SliderInt("Samples", &samples, 1, 16)) {
+            properties["samples"] = samples;
+            changed = true;
+        }
+
+        if (changed) {
+            renderGraph_.setNodeProperties(node->id, std::move(properties));
+            viewportPreviewValid_ = false;
         }
     } else if (!node->properties.empty()) {
         const std::string propertiesText = node->properties.dump(2);

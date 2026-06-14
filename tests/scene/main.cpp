@@ -137,8 +137,12 @@ std::filesystem::path writeFullScene(const std::filesystem::path& directory)
     {
       "name": "Tinted Material",
       "pbrMetallicRoughness": {
-        "baseColorFactor": [0.25, 0.5, 0.75, 0.8]
-      }
+        "baseColorFactor": [0.25, 0.5, 0.75, 0.8],
+        "metallicFactor": 0.35,
+        "roughnessFactor": 0.6
+      },
+      "emissiveFactor": [0.05, 0.1, 0.2],
+      "doubleSided": true
     }
   ],
   "meshes": [
@@ -368,6 +372,14 @@ void testFullSceneImport(TestContext& test, const std::filesystem::path& directo
         scene.materials()[1].baseColorFactor,
         float4(0.25f, 0.5f, 0.75f, 0.8f),
         "explicit baseColorFactor");
+    test.expect(std::abs(scene.materials()[1].metallicFactor - 0.35f) < 0.0001f, "explicit metallicFactor");
+    test.expect(std::abs(scene.materials()[1].roughnessFactor - 0.6f) < 0.0001f, "explicit roughnessFactor");
+    expectVec3(
+        test,
+        scene.materials()[1].emissiveFactor,
+        float3(0.05f, 0.1f, 0.2f),
+        "explicit emissiveFactor");
+    test.expect(scene.materials()[1].doubleSided, "explicit doubleSided");
 
     test.expect(scene.bounds().valid, "bounds should be valid");
     expectVec3(test, scene.bounds().min, float3(5.0f, 2.0f, 3.0f), "scene bounds min");
