@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/RenderGraph/render_graph.h"
+#include "Runtime/Scene/scene.h"
 
 #include <cstdint>
 #include <memory>
@@ -25,6 +26,8 @@ private:
     void renderFrame();
     void drawDockspace();
     void drawPanels();
+    void drawScenePanel();
+    void drawSceneNode(int32_t nodeIndex);
     void drawViewportPanel();
     void drawRenderGraphPanel();
     void drawRenderGraphSettingsPanel();
@@ -35,6 +38,7 @@ private:
     void resetDefaultRenderGraph();
     void saveRenderGraph();
     void loadRenderGraph();
+    void loadScene();
     void addRenderGraphNode(std::string type, ImVec2 screenPosition);
     void markRenderGraphOutput(std::string outputName);
     bool initializeRhi();
@@ -63,6 +67,7 @@ private:
     std::unique_ptr<render::Semaphore> renderFinishedSemaphore_;
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
     render::RenderGraph renderGraph_;
+    scene::Scene scene_;
     VkSampler viewportSampler_ = VK_NULL_HANDLE;
     VkDescriptorSet viewportDescriptor_ = VK_NULL_HANDLE;
     uint32_t viewportTextureWidth_ = 0;
@@ -89,9 +94,11 @@ private:
     int selectedGraphNodeId_ = -1;
     int selectedGraphLinkId_ = -1;
     char graphFilePath_[260] = "Pipelines/default.metallic_graph.json";
+    char sceneFilePath_[260] = "Asset/";
     char graphNodeNameBuffer_[128] = {};
     char graphOutputBuffer_[128] = "Triangle.color";
     std::string renderGraphStatus_;
+    std::string sceneStatus_ = "No scene loaded.";
 };
 
 } // namespace metallic

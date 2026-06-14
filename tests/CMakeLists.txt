@@ -1,3 +1,31 @@
+add_executable(MetallicSceneTests
+    scene/main.cpp
+)
+
+target_include_directories(MetallicSceneTests PRIVATE
+    "${CMAKE_SOURCE_DIR}/Source"
+)
+
+target_link_libraries(MetallicSceneTests PRIVATE
+    MetallicRuntimeScene
+)
+
+target_compile_definitions(MetallicSceneTests PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+if(WIN32)
+    target_compile_definitions(MetallicSceneTests PRIVATE NOMINMAX)
+endif()
+
+add_test(
+    NAME MetallicSceneTests
+    COMMAND MetallicSceneTests
+)
+set_tests_properties(MetallicSceneTests PROPERTIES
+    LABELS "scene"
+)
+
 add_executable(MetallicRhiTests
     rhi/main.cpp
     rhi/rhi_test.h

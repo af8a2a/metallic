@@ -51,6 +51,18 @@ std::filesystem::path resolveGraphAssetPath(const char* path)
     return assetPath;
 }
 
+std::filesystem::path resolveSceneAssetPath(const char* path)
+{
+    std::filesystem::path assetPath(path == nullptr ? "" : path);
+    if (assetPath.empty()) {
+        return {};
+    }
+    if (assetPath.is_relative()) {
+        assetPath = std::filesystem::path(PROJECT_SOURCE_DIR) / assetPath;
+    }
+    return assetPath;
+}
+
 std::string makeUniqueNodeName(const render::RenderGraph& graph, const std::string& type)
 {
     std::string base = type;
@@ -922,13 +934,7 @@ void EditorApplication::drawDockspace()
 
 void EditorApplication::drawPanels()
 {
-    ImGui::Begin("Scene");
-    ImGui::TextUnformatted("Scene graph");
-    ImGui::Separator();
-    ImGui::BulletText("Camera");
-    ImGui::BulletText("Directional Light");
-    ImGui::End();
-
+    drawScenePanel();
     drawViewportPanel();
     drawRenderGraphPanel();
     drawRenderGraphSettingsPanel();
@@ -946,6 +952,156 @@ void EditorApplication::drawPanels()
         ImGui::TextWrapped("%s", renderGraphStatus_.c_str());
     }
     ImGui::End();
+}
+
+void EditorApplication::drawScenePanel()
+{
+    ImGui::Begin("Scene");
+
+    ImGui::TextUnformatted("glTF Scene");
+    ImGui::PushItemWidth(-1.0f);
+    ImGui::InputText("##ScenePath", sceneFilePath_, sizeof(sceneFilePath_));
+    ImGui::PopItemWidth();
+
+    if (ImGui::Button("Load")) {
+        loadScene();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) {
+        scene_.clear();
+        sceneStatus_ = "No scene loaded.";
+    }
+
+    if (!sceneStatus_.empty()) {
+        ImGui::TextWrapped("%s", sceneStatus_.c_str());
+    }
+    const scene::LoadResult& loadResult = scene_.lastLoadResult();
+    if (!loadResult.warning.empty()) {
+        ImGui::TextWrapped("Warning: %s", loadResult.warning.c_str());
+    }
+    if (!loadResult.error.empty() && !loadResult.success) {
+        ImGui::TextWrapped("Error: %s", loadResult.error.c_str());
+    }
+
+    if (!scene_.valid()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("Load a .gltf or .glb file to inspect its CPU scene graph.");
+        ImGui::End();
+        return;
+    }
+
+    const scene::SceneStats& stats = scene_.stats();
+    ImGui::Separator();
+    ImGui::Text("Scene: %s", scene_.sceneName().c_str());
+    ImGui::Text("Scene index: %d", scene_.sceneIndex());
+    ImGui::Text(
+        "Meshes: %llu  Primitives: %llu  Render nodes: %llu",
+        static_cast<unsigned long long>(stats.meshCount),
+        static_cast<unsigned long long>(stats.primitiveCount),
+        static_cast<unsigned long long>(stats.renderNodeCount));
+    ImGui::Text(
+        "Materials: %llu  Triangles: %llu",
+        static_cast<unsigned long long>(stats.materialCount),
+        static_cast<unsigned long long>(stats.triangleCount));
+
+    const scene::Bounds& bounds = scene_.bounds();
+    if (bounds.valid) {
+        ImGui::Text("Bounds min: %s", scene::formatVec3(bounds.min).c_str());
+        ImGui::Text("Bounds max: %s", scene::formatVec3(bounds.max).c_str());
+    } else {
+        ImGui::TextDisabled("Bounds: unavailable");
+    }
+
+    if (ImGui::CollapsingHeader("Cameras", ImGuiTreeNodeFlags_DefaultOpen)) {
+        int cameraIndex = 0;
+        for (const scene::RenderCamera& camera : scene_.cameras()) {
+            ImGui::PushID(cameraIndex++);
+            const char* suffix = camera.fallback ? " (fallback)" : "";
+            ImGui::Text("%s%s", camera.name.c_str(), suffix);
+            ImGui::Text("  Type: %s", scene::cameraTypeName(camera.type));
+            ImGui::Text("  Eye: %s", scene::formatVec3(camera.eye).c_str());
+            ImGui::Text("  Center: %s", scene::formatVec3(camera.center).c_str());
+            ImGui::PopID();
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Lights")) {
+        int lightIndex = 0;
+        for (const scene::RenderLight& light : scene_.lights()) {
+            ImGui::PushID(lightIndex++);
+            ImGui::Text("%s  [%s]", light.name.c_str(), light.type.c_str());
+            ImGui::Text("  Color: %s", scene::formatVec3(light.color).c_str());
+            ImGui::Text("  Intensity: %.3f", light.intensity);
+            ImGui::PopID();
+        }
+        if (scene_.lights().empty()) {
+            ImGui::TextDisabled("No punctual lights.");
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Scene Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
+        for (const int32_t rootNodeIndex : scene_.rootNodeIndices()) {
+            drawSceneNode(rootNodeIndex);
+        }
+    }
+
+    ImGui::End();
+}
+
+void EditorApplication::drawSceneNode(int32_t nodeIndex)
+{
+    const std::vector<scene::SceneNode>& nodes = scene_.nodes();
+    if (nodeIndex < 0 || static_cast<size_t>(nodeIndex) >= nodes.size()) {
+        return;
+    }
+
+    const scene::SceneNode& node = nodes[static_cast<size_t>(nodeIndex)];
+    std::string label = node.name;
+    if (node.meshIndex >= 0) {
+        label += " [Mesh ";
+        label += std::to_string(node.meshIndex);
+        label += "]";
+    }
+    if (node.cameraIndex >= 0) {
+        label += " [Camera ";
+        label += std::to_string(node.cameraIndex);
+        label += "]";
+    }
+    if (node.lightIndex >= 0) {
+        label += " [Light ";
+        label += std::to_string(node.lightIndex);
+        label += "]";
+    }
+    if (!node.visible) {
+        label += " [Hidden]";
+    }
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    const bool leaf = node.children.empty();
+    if (leaf) {
+        flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    }
+
+    const bool open = ImGui::TreeNodeEx(
+        reinterpret_cast<void*>(static_cast<intptr_t>(nodeIndex)),
+        flags,
+        "%s",
+        label.c_str());
+    if (ImGui::IsItemHovered()) {
+        const float3 translation(node.worldMatrix.a03, node.worldMatrix.a13, node.worldMatrix.a23);
+        ImGui::SetTooltip(
+            "Node %d\nParent: %d\nWorld translation: %s",
+            nodeIndex,
+            node.parent,
+            scene::formatVec3(translation).c_str());
+    }
+
+    if (open && !leaf) {
+        for (const int32_t child : node.children) {
+            drawSceneNode(child);
+        }
+        ImGui::TreePop();
+    }
 }
 
 void EditorApplication::drawViewportPanel()
@@ -1368,6 +1524,27 @@ void EditorApplication::loadRenderGraph()
     viewportPreviewValid_ = false;
     copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
     renderGraphStatus_ = message;
+}
+
+void EditorApplication::loadScene()
+{
+    const std::filesystem::path path = resolveSceneAssetPath(sceneFilePath_);
+    if (path.empty()) {
+        sceneStatus_ = "Scene path is empty.";
+        return;
+    }
+
+    if (!scene_.load(path)) {
+        const scene::LoadResult& loadResult = scene_.lastLoadResult();
+        sceneStatus_ = loadResult.error.empty()
+            ? "Failed to load scene."
+            : "Failed to load scene: " + loadResult.error;
+        return;
+    }
+
+    const scene::SceneStats& stats = scene_.stats();
+    sceneStatus_ = "Loaded " + path.string() + " (" + std::to_string(stats.renderNodeCount) +
+        " render nodes, " + std::to_string(scene_.nodes().size()) + " scene nodes).";
 }
 
 void EditorApplication::addRenderGraphNode(std::string type, ImVec2 screenPosition)

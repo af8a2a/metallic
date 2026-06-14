@@ -40,6 +40,33 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(MetallicRuntimeRender PRIVATE -Wno-nullability-completeness)
 endif()
 
+add_library(MetallicRuntimeScene STATIC
+    Runtime/Scene/scene.cpp
+    Runtime/Scene/tinygltf_impl.cpp
+)
+
+target_include_directories(MetallicRuntimeScene PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+target_include_directories(MetallicRuntimeScene SYSTEM PRIVATE
+    "${CMAKE_SOURCE_DIR}/External/stb"
+)
+
+target_link_libraries(MetallicRuntimeScene PUBLIC
+    MathLib
+    nlohmann_json
+    tinygltf
+)
+
+if(WIN32)
+    target_compile_definitions(MetallicRuntimeScene PRIVATE NOMINMAX)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    target_compile_options(MetallicRuntimeScene PUBLIC -msse3)
+endif()
+
 add_executable(Metallic
     main.cpp
     Editor/editor_application.cpp
@@ -54,6 +81,7 @@ target_link_libraries(Metallic PRIVATE
     imnodes
     metallic::sdl3
     MetallicRuntimeRender
+    MetallicRuntimeScene
 )
 
 target_compile_definitions(Metallic PRIVATE
