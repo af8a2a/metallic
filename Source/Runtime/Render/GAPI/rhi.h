@@ -256,9 +256,19 @@ struct TextureBarrierDesc {
     uint32_t layerCount = 1;
 };
 
+struct BufferBarrierDesc {
+    class Buffer* buffer = nullptr;
+    ResourceState before = ResourceState::Undefined;
+    ResourceState after = ResourceState::Undefined;
+    uint64_t offset = 0;
+    uint64_t size = UINT64_MAX;
+};
+
 struct BarrierDesc {
     const TextureBarrierDesc* textures = nullptr;
     uint32_t textureCount = 0;
+    const BufferBarrierDesc* buffers = nullptr;
+    uint32_t bufferCount = 0;
 };
 
 struct RenderingAttachmentDesc {
@@ -312,6 +322,13 @@ struct GraphicsPipelineDesc {
     Format colorFormat = Format::Unknown;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
     bool usesBindlessHeap = false;
+};
+
+struct ComputePipelineDesc {
+    class ShaderModule* computeShader = nullptr;
+    const char* computeEntryPoint = "main";
+    bool usesBindlessHeap = false;
+    uint32_t bindlessUserPushDataSize = 0;
 };
 
 struct TextureBufferCopyDesc {
@@ -380,6 +397,7 @@ struct TextureImpl;
 struct TextureViewImpl;
 struct ShaderModuleImpl;
 struct GraphicsPipelineImpl;
+struct ComputePipelineImpl;
 struct BindlessHeapImpl;
 struct TrianglePreviewRendererImpl;
 struct VulkanNativeAccess;
@@ -572,6 +590,26 @@ private:
     friend struct detail::DeviceImpl;
 };
 
+class ComputePipeline {
+public:
+    ComputePipeline() = default;
+    ~ComputePipeline();
+    ComputePipeline(ComputePipeline&&) noexcept;
+    ComputePipeline& operator=(ComputePipeline&&) noexcept;
+
+    ComputePipeline(const ComputePipeline&) = delete;
+    ComputePipeline& operator=(const ComputePipeline&) = delete;
+
+private:
+    explicit ComputePipeline(std::unique_ptr<detail::ComputePipelineImpl> impl);
+
+    std::unique_ptr<detail::ComputePipelineImpl> impl_;
+
+    friend class Device;
+    friend class CommandBuffer;
+    friend struct detail::DeviceImpl;
+};
+
 class BindlessHeap {
 public:
     BindlessHeap() = default;
@@ -627,8 +665,11 @@ public:
     void setViewport(const Viewport& viewport);
     void setScissor(const Rect& scissor);
     void bindGraphicsPipeline(GraphicsPipeline& pipeline);
+    void bindComputePipeline(ComputePipeline& pipeline);
     void bindBindlessHeap(BindlessHeap& heap);
+    void pushBindlessData(const void* data, uint32_t byteSize);
     void draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
+    void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
 
 private:
     explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
@@ -714,6 +755,7 @@ public:
     Result createTextureView(Texture& texture, const TextureViewDesc& desc, std::unique_ptr<TextureView>& outTextureView);
     Result createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule);
     Result createGraphicsPipeline(const GraphicsPipelineDesc& desc, std::unique_ptr<GraphicsPipeline>& outGraphicsPipeline);
+    Result createComputePipeline(const ComputePipelineDesc& desc, std::unique_ptr<ComputePipeline>& outComputePipeline);
     Result createBindlessHeap(const BindlessHeapDesc& desc, std::unique_ptr<BindlessHeap>& outBindlessHeap);
 
 private:

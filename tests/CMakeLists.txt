@@ -1,6 +1,7 @@
 add_executable(MetallicRhiTests
     rhi/main.cpp
     rhi/rhi_test.h
+    rhi/bindless_buffer_tests.cpp
     rhi/command_submission_tests.cpp
     rhi/render_graph_tests.cpp
     rhi/rendering_tests.cpp

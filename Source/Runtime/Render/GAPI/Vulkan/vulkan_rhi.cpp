@@ -528,6 +528,8 @@ struct BindlessHeapPushConstants {
     uint32_t bufferShaderIndexBase = 0;
 };
 
+static_assert(sizeof(BindlessHeapPushConstants) == 8);
+
 class DescriptorHeapWriter {
 public:
     static bool isSupported(VkPhysicalDevice physicalDevice)
@@ -1140,6 +1142,13 @@ struct GraphicsPipelineImpl {
     bool usesBindlessHeap = false;
 };
 
+struct ComputePipelineImpl {
+    DeviceImpl* device = nullptr;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    bool usesBindlessHeap = false;
+};
+
 struct CommandPoolImpl {
     DeviceImpl* device = nullptr;
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -1151,8 +1160,11 @@ struct CommandBufferImpl {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkPipelineLayout currentGraphicsPipelineLayout = VK_NULL_HANDLE;
+    VkPipelineLayout currentComputePipelineLayout = VK_NULL_HANDLE;
     BindlessHeapImpl* currentBindlessHeap = nullptr;
     bool currentGraphicsPipelineUsesBindlessHeap = false;
+    bool currentComputePipelineUsesBindlessHeap = false;
+    std::vector<uint8_t> currentBindlessUserData;
 };
 
 struct SwapchainImpl {
@@ -1203,6 +1215,7 @@ struct DeviceImpl {
     DeviceCapabilities capabilities;
     DescriptorHeapWriter descriptorHeapWriter;
     uint32_t graphicsFamily = 0;
+    uint32_t computeFamily = 0;
     bool sdlVulkanLoaded = false;
     bool validationEnabled = false;
     bool debugUtilsEnabled = false;
@@ -1894,6 +1907,28 @@ GraphicsPipeline::~GraphicsPipeline()
 GraphicsPipeline::GraphicsPipeline(GraphicsPipeline&&) noexcept = default;
 GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&&) noexcept = default;
 
+ComputePipeline::ComputePipeline(std::unique_ptr<detail::ComputePipelineImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+ComputePipeline::~ComputePipeline()
+{
+    if (impl_ != nullptr) {
+        if (impl_->pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(impl_->device->device, impl_->pipeline, nullptr);
+            impl_->pipeline = VK_NULL_HANDLE;
+        }
+        if (impl_->layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(impl_->device->device, impl_->layout, nullptr);
+            impl_->layout = VK_NULL_HANDLE;
+        }
+    }
+}
+
+ComputePipeline::ComputePipeline(ComputePipeline&&) noexcept = default;
+ComputePipeline& ComputePipeline::operator=(ComputePipeline&&) noexcept = default;
+
 BindlessHeap::BindlessHeap(std::unique_ptr<detail::BindlessHeapImpl> impl)
     : impl_(std::move(impl))
 {
@@ -2059,8 +2094,11 @@ Result CommandBuffer::begin()
     }
 
     impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
+    impl_->currentComputePipelineLayout = VK_NULL_HANDLE;
     impl_->currentBindlessHeap = nullptr;
     impl_->currentGraphicsPipelineUsesBindlessHeap = false;
+    impl_->currentComputePipelineUsesBindlessHeap = false;
+    impl_->currentBindlessUserData.clear();
 
     VkCommandBufferBeginInfo beginInfo{
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -2113,14 +2151,14 @@ void CommandBuffer::endDebugLabel()
 
 void CommandBuffer::barrier(const BarrierDesc& desc)
 {
-    if (impl_ == nullptr || desc.textureCount == 0 || desc.textures == nullptr) {
+    if (impl_ == nullptr) {
         return;
     }
 
     std::vector<VkImageMemoryBarrier2> imageBarriers;
     imageBarriers.reserve(desc.textureCount);
 
-    for (uint32_t index = 0; index < desc.textureCount; ++index) {
+    for (uint32_t index = 0; index < desc.textureCount && desc.textures != nullptr; ++index) {
         const TextureBarrierDesc& barrier = desc.textures[index];
         if (barrier.texture == nullptr || barrier.texture->impl_ == nullptr) {
             continue;
@@ -2151,12 +2189,41 @@ void CommandBuffer::barrier(const BarrierDesc& desc)
         });
     }
 
-    if (imageBarriers.empty()) {
+    std::vector<VkBufferMemoryBarrier2> bufferBarriers;
+    bufferBarriers.reserve(desc.bufferCount);
+
+    for (uint32_t index = 0; index < desc.bufferCount && desc.buffers != nullptr; ++index) {
+        const BufferBarrierDesc& barrier = desc.buffers[index];
+        if (barrier.buffer == nullptr || barrier.buffer->impl_ == nullptr) {
+            continue;
+        }
+
+        const StateInfo before = stateInfo(barrier.before);
+        const StateInfo after = stateInfo(barrier.after);
+        bufferBarriers.push_back({
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = before.stage,
+            .srcAccessMask = before.access,
+            .dstStageMask = after.stage,
+            .dstAccessMask = after.access,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = barrier.buffer->impl_->buffer,
+            .offset = barrier.offset,
+            .size = barrier.size == UINT64_MAX ? VK_WHOLE_SIZE : barrier.size,
+        });
+    }
+
+    if (imageBarriers.empty() && bufferBarriers.empty()) {
         return;
     }
 
     VkDependencyInfo dependencyInfo{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 0,
+        .pMemoryBarriers = nullptr,
+        .bufferMemoryBarrierCount = static_cast<uint32_t>(bufferBarriers.size()),
+        .pBufferMemoryBarriers = bufferBarriers.data(),
         .imageMemoryBarrierCount = static_cast<uint32_t>(imageBarriers.size()),
         .pImageMemoryBarriers = imageBarriers.data(),
     };
@@ -2392,7 +2459,7 @@ void CommandBuffer::setScissor(const Rect& scissor)
 
 namespace {
 
-void pushBindlessHeapData(detail::CommandBufferImpl& commandBuffer, detail::BindlessHeapImpl& heap)
+void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer, detail::BindlessHeapImpl& heap)
 {
     const BindlessHeapPushConstants push{
         .imageShaderIndexBase = heap.heap.imageShaderIndexBase(),
@@ -2408,17 +2475,37 @@ void pushBindlessHeapData(detail::CommandBufferImpl& commandBuffer, detail::Bind
             sizeof(push),
             &push);
     }
+    if (commandBuffer.currentComputePipelineUsesBindlessHeap &&
+        commandBuffer.currentComputePipelineLayout != VK_NULL_HANDLE) {
+        vkCmdPushConstants(
+            commandBuffer.commandBuffer,
+            commandBuffer.currentComputePipelineLayout,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(push),
+            &push);
+    }
 
+    const size_t payloadSize = sizeof(push) + commandBuffer.currentBindlessUserData.size();
     if (commandBuffer.device != nullptr &&
         commandBuffer.device->bindlessDescriptorHeapEnabled &&
-        commandBuffer.device->descriptorHeapWriter.maxPushDataSize() >= sizeof(push) &&
+        commandBuffer.device->descriptorHeapWriter.maxPushDataSize() >= payloadSize &&
         vkCmdPushDataEXT != nullptr) {
+        std::vector<uint8_t> payload(payloadSize);
+        std::memcpy(payload.data(), &push, sizeof(push));
+        if (!commandBuffer.currentBindlessUserData.empty()) {
+            std::memcpy(
+                payload.data() + sizeof(push),
+                commandBuffer.currentBindlessUserData.data(),
+                commandBuffer.currentBindlessUserData.size());
+        }
+
         const VkPushDataInfoEXT pushInfo{
             .sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT,
             .offset = 0,
             .data = {
-                .address = &push,
-                .size = sizeof(push),
+                .address = payload.data(),
+                .size = payload.size(),
             },
         };
         vkCmdPushDataEXT(commandBuffer.commandBuffer, &pushInfo);
@@ -2436,7 +2523,20 @@ void CommandBuffer::bindGraphicsPipeline(GraphicsPipeline& pipeline)
     impl_->currentGraphicsPipelineLayout = pipeline.impl_->layout;
     impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
     if (impl_->currentGraphicsPipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
-        pushBindlessHeapData(*impl_, *impl_->currentBindlessHeap);
+        pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
+    }
+}
+
+void CommandBuffer::bindComputePipeline(ComputePipeline& pipeline)
+{
+    if (impl_ == nullptr || pipeline.impl_ == nullptr) {
+        return;
+    }
+    vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.impl_->pipeline);
+    impl_->currentComputePipelineLayout = pipeline.impl_->layout;
+    impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
+    if (impl_->currentComputePipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
+        pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
     }
 }
 
@@ -2451,13 +2551,35 @@ void CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
         impl_->commandBuffer,
         heap.impl_->samplerHeap.address,
         heap.impl_->resourceHeap.address);
-    pushBindlessHeapData(*impl_, *heap.impl_);
+    pushCurrentBindlessData(*impl_, *heap.impl_);
+}
+
+void CommandBuffer::pushBindlessData(const void* data, uint32_t byteSize)
+{
+    if (impl_ == nullptr || (byteSize > 0 && data == nullptr)) {
+        return;
+    }
+
+    impl_->currentBindlessUserData.resize(byteSize);
+    if (byteSize > 0) {
+        std::memcpy(impl_->currentBindlessUserData.data(), data, byteSize);
+    }
+    if (impl_->currentBindlessHeap != nullptr) {
+        pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
+    }
 }
 
 void CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
 {
     if (impl_ != nullptr) {
         vkCmdDraw(impl_->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+    }
+}
+
+void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
+{
+    if (impl_ != nullptr && groupCountX > 0 && groupCountY > 0 && groupCountZ > 0) {
+        vkCmdDispatch(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
     }
 }
 
@@ -3078,6 +3200,117 @@ Result Device::createGraphicsPipeline(
     return {};
 }
 
+Result Device::createComputePipeline(
+    const ComputePipelineDesc& desc,
+    std::unique_ptr<ComputePipeline>& outComputePipeline)
+{
+    outComputePipeline.reset();
+    if (impl_ == nullptr || desc.computeShader == nullptr || desc.computeShader->impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    activateVolkDevice(impl_->device);
+    if (desc.usesBindlessHeap) {
+        if (!impl_->capabilities.bindlessDescriptorHeap) {
+            return makeError(Error::Unsupported);
+        }
+        const VkDeviceSize requiredPushDataSize =
+            sizeof(BindlessHeapPushConstants) + desc.bindlessUserPushDataSize;
+        if (impl_->descriptorHeapWriter.maxPushDataSize() < requiredPushDataSize) {
+            return makeError(Error::Unsupported);
+        }
+    }
+
+    const char* computeEntryPoint = desc.computeEntryPoint != nullptr ? desc.computeEntryPoint : "main";
+    VkPipelineShaderStageCreateInfo stage{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+        .module = desc.computeShader->impl_->module,
+        .pName = computeEntryPoint,
+    };
+
+    std::array<VkDescriptorSetAndBindingMappingEXT, 3> bindlessMappings{};
+    VkShaderDescriptorSetAndBindingMappingInfoEXT bindlessMappingInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
+    };
+    if (desc.usesBindlessHeap) {
+        auto makeHeapMapping = [](uint32_t binding, VkSpirvResourceTypeFlagsEXT resourceMask, uint32_t stride) {
+            VkDescriptorSetAndBindingMappingEXT mapping{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
+                .descriptorSet = 0,
+                .firstBinding = binding,
+                .bindingCount = 1,
+                .resourceMask = resourceMask,
+                .source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
+            };
+            mapping.sourceData.constantOffset.heapOffset = 0;
+            mapping.sourceData.constantOffset.heapArrayStride = stride;
+            mapping.sourceData.constantOffset.samplerHeapOffset = 0;
+            mapping.sourceData.constantOffset.samplerHeapArrayStride = stride;
+            return mapping;
+        };
+
+        bindlessMappings[0] = makeHeapMapping(
+            0,
+            VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize()));
+        bindlessMappings[1] = makeHeapMapping(
+            2,
+            VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize()));
+        bindlessMappings[2] = makeHeapMapping(
+            2,
+            VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize()));
+        bindlessMappingInfo.mappingCount = static_cast<uint32_t>(bindlessMappings.size());
+        bindlessMappingInfo.pMappings = bindlessMappings.data();
+        stage.pNext = &bindlessMappingInfo;
+    }
+
+    VkPipelineLayoutCreateInfo layoutInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+    };
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkResult result = VK_SUCCESS;
+    if (!desc.usesBindlessHeap) {
+        result = vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
+        if (result != VK_SUCCESS) {
+            return resultFromVk(result);
+        }
+    }
+
+    VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
+        .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT,
+    };
+    VkComputePipelineCreateInfo pipelineInfo{
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .pNext = desc.usesBindlessHeap ? static_cast<const void*>(&bindlessPipelineFlags) : nullptr,
+        .stage = stage,
+        .layout = layout,
+    };
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    result = vkCreateComputePipelines(impl_->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    if (result != VK_SUCCESS) {
+        if (layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(impl_->device, layout, nullptr);
+        }
+        return resultFromVk(result);
+    }
+
+    auto pipelineImpl = std::make_unique<detail::ComputePipelineImpl>();
+    pipelineImpl->device = impl_.get();
+    pipelineImpl->layout = layout;
+    pipelineImpl->pipeline = pipeline;
+    pipelineImpl->usesBindlessHeap = desc.usesBindlessHeap;
+    outComputePipeline.reset(new ComputePipeline(std::move(pipelineImpl)));
+    return {};
+}
+
 Result Device::createBindlessHeap(const BindlessHeapDesc& desc, std::unique_ptr<BindlessHeap>& outBindlessHeap)
 {
     outBindlessHeap.reset();
@@ -3188,6 +3421,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     const bool requestBindlessDescriptorHeap = desc.enableBindlessDescriptorHeap;
     VkPhysicalDevice fallbackPhysicalDevice = VK_NULL_HANDLE;
     uint32_t fallbackGraphicsFamily = 0;
+    uint32_t fallbackComputeFamily = 0;
     bool selectedBindlessDescriptorHeap = false;
 
     for (VkPhysicalDevice physicalDevice : physicalDevices) {
@@ -3245,26 +3479,43 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
 
         uint32_t graphicsFamily = UINT32_MAX;
+        uint32_t computeFamily = UINT32_MAX;
         for (uint32_t queueIndex = 0; queueIndex < queueFamilyCount; ++queueIndex) {
-            if ((queueFamilies[queueIndex].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) {
-                continue;
+            const VkQueueFlags queueFlags = queueFamilies[queueIndex].queueFlags;
+            if ((queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
+                if (graphicsFamily == UINT32_MAX) {
+                    graphicsFamily = queueIndex;
+                }
+                if ((queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
+                    graphicsFamily = queueIndex;
+                    computeFamily = queueIndex;
+                    break;
+                }
             }
-
-            graphicsFamily = queueIndex;
-            break;
         }
-        if (graphicsFamily == UINT32_MAX) {
+
+        if (computeFamily == UINT32_MAX) {
+            for (uint32_t queueIndex = 0; queueIndex < queueFamilyCount; ++queueIndex) {
+                if ((queueFamilies[queueIndex].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
+                    computeFamily = queueIndex;
+                    break;
+                }
+            }
+        }
+        if (graphicsFamily == UINT32_MAX || computeFamily == UINT32_MAX) {
             continue;
         }
 
         if (fallbackPhysicalDevice == VK_NULL_HANDLE) {
             fallbackPhysicalDevice = physicalDevice;
             fallbackGraphicsFamily = graphicsFamily;
+            fallbackComputeFamily = computeFamily;
         }
 
         if (descriptorHeapSupported) {
             deviceImpl->physicalDevice = physicalDevice;
             deviceImpl->graphicsFamily = graphicsFamily;
+            deviceImpl->computeFamily = computeFamily;
             selectedBindlessDescriptorHeap = true;
             break;
         }
@@ -3273,6 +3524,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     if (deviceImpl->physicalDevice == VK_NULL_HANDLE && fallbackPhysicalDevice != VK_NULL_HANDLE) {
         deviceImpl->physicalDevice = fallbackPhysicalDevice;
         deviceImpl->graphicsFamily = fallbackGraphicsFamily;
+        deviceImpl->computeFamily = fallbackComputeFamily;
         selectedBindlessDescriptorHeap = false;
     }
 
@@ -3281,12 +3533,29 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     }
 
     const float queuePriority = 1.0f;
-    VkDeviceQueueCreateInfo queueInfo{
-        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .queueFamilyIndex = deviceImpl->graphicsFamily,
-        .queueCount = 1,
-        .pQueuePriorities = &queuePriority,
+    std::array<uint32_t, 2> queueFamilies = {
+        deviceImpl->graphicsFamily,
+        deviceImpl->computeFamily,
     };
+    std::vector<VkDeviceQueueCreateInfo> queueInfos;
+    queueInfos.reserve(queueFamilies.size());
+    for (uint32_t queueFamily : queueFamilies) {
+        const bool alreadyAdded = std::any_of(
+            queueInfos.begin(),
+            queueInfos.end(),
+            [queueFamily](const VkDeviceQueueCreateInfo& info) {
+                return info.queueFamilyIndex == queueFamily;
+            });
+        if (alreadyAdded) {
+            continue;
+        }
+        queueInfos.push_back({
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = queueFamily,
+            .queueCount = 1,
+            .pQueuePriorities = &queuePriority,
+        });
+    }
 
     VkPhysicalDeviceVulkan13Features enabledVulkan13Features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -3327,8 +3596,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     VkDeviceCreateInfo deviceInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &enabledFeatures,
-        .queueCreateInfoCount = 1,
-        .pQueueCreateInfos = &queueInfo,
+        .queueCreateInfoCount = static_cast<uint32_t>(queueInfos.size()),
+        .pQueueCreateInfos = queueInfos.data(),
         .enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size()),
         .ppEnabledExtensionNames = deviceExtensions.data(),
     };
@@ -3402,6 +3671,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     vkGetDeviceQueue(deviceImpl->device, deviceImpl->graphicsFamily, 0, &graphicsQueue);
     deviceImpl->addQueue(graphicsQueue, deviceImpl->graphicsFamily, QueueType::Graphics);
+
+    VkQueue computeQueue = VK_NULL_HANDLE;
+    vkGetDeviceQueue(deviceImpl->device, deviceImpl->computeFamily, 0, &computeQueue);
+    deviceImpl->addQueue(computeQueue, deviceImpl->computeFamily, QueueType::Compute);
 
     outDevice.reset(new Device(std::move(deviceImpl)));
     return {};
