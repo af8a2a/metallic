@@ -1254,6 +1254,7 @@ struct DeviceImpl {
     bool shaderObjectEnabled = false;
     bool bufferDeviceAddressEnabled = false;
     bool rayTracingAccelerationStructureEnabled = false;
+    bool rayQueryEnabled = false;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
     std::vector<std::unique_ptr<Queue>> queues;
@@ -3923,12 +3924,19 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     const bool requestBindlessDescriptorHeap = desc.enableBindlessDescriptorHeap;
     const bool requestShaderObject = desc.enableShaderObject;
     const bool requestRayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure;
-    VkPhysicalDevice fallbackPhysicalDevice = VK_NULL_HANDLE;
-    uint32_t fallbackGraphicsFamily = 0;
-    uint32_t fallbackComputeFamily = 0;
+    const bool requestRayQuery = desc.enableRayQuery;
+    VkPhysicalDevice bestPhysicalDevice = VK_NULL_HANDLE;
+    uint32_t bestGraphicsFamily = 0;
+    uint32_t bestComputeFamily = 0;
+    int32_t bestFeatureScore = -1;
+    bool bestBindlessDescriptorHeap = false;
+    bool bestShaderObject = false;
+    bool bestRayTracingAccelerationStructure = false;
+    bool bestRayQuery = false;
     bool selectedBindlessDescriptorHeap = false;
     bool selectedShaderObject = false;
     bool selectedRayTracingAccelerationStructure = false;
+    bool selectedRayQuery = false;
 
     for (VkPhysicalDevice physicalDevice : physicalDevices) {
         VkPhysicalDeviceProperties properties{};
@@ -3946,6 +3954,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             hasDeviceExtension(physicalDevice, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         const bool deferredHostOperationsExtensionAvailable =
             hasDeviceExtension(physicalDevice, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        const bool rayQueryExtensionAvailable =
+            hasDeviceExtension(physicalDevice, VK_KHR_RAY_QUERY_EXTENSION_NAME);
         if (!swapchainExtensionAvailable) {
             continue;
         }
@@ -3953,9 +3963,13 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
         };
+        VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+            .pNext = &accelerationStructureFeatures,
+        };
         VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-            .pNext = &accelerationStructureFeatures,
+            .pNext = &rayQueryFeatures,
         };
         VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
@@ -3996,12 +4010,19 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             requestShaderObject &&
             shaderObjectExtensionAvailable &&
             shaderObjectFeatures.shaderObject == VK_TRUE;
-        const bool rayTracingAccelerationStructureSupported =
-            requestRayTracingAccelerationStructure &&
+        const bool accelerationStructureSupported =
             accelerationStructureExtensionAvailable &&
             deferredHostOperationsExtensionAvailable &&
             accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
             vulkan12Features.bufferDeviceAddress == VK_TRUE;
+        const bool rayTracingAccelerationStructureSupported =
+            (requestRayTracingAccelerationStructure || requestRayQuery) &&
+            accelerationStructureSupported;
+        const bool rayQuerySupported =
+            requestRayQuery &&
+            accelerationStructureSupported &&
+            rayQueryExtensionAvailable &&
+            rayQueryFeatures.rayQuery == VK_TRUE;
 
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
@@ -4036,34 +4057,48 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             continue;
         }
 
-        if (fallbackPhysicalDevice == VK_NULL_HANDLE) {
-            fallbackPhysicalDevice = physicalDevice;
-            fallbackGraphicsFamily = graphicsFamily;
-            fallbackComputeFamily = computeFamily;
-        }
-
         const bool matchesRequestedFeatures =
             (!requestBindlessDescriptorHeap || descriptorHeapSupported) &&
             (!requestShaderObject || shaderObjectSupported) &&
-            (!requestRayTracingAccelerationStructure || rayTracingAccelerationStructureSupported);
+            (!requestRayTracingAccelerationStructure || rayTracingAccelerationStructureSupported) &&
+            (!requestRayQuery || rayQuerySupported);
+        const int32_t featureScore =
+            (descriptorHeapSupported ? 8 : 0) +
+            (shaderObjectSupported ? 4 : 0) +
+            (rayTracingAccelerationStructureSupported ? 2 : 0) +
+            (rayQuerySupported ? 1 : 0);
+        if (featureScore > bestFeatureScore) {
+            bestFeatureScore = featureScore;
+            bestPhysicalDevice = physicalDevice;
+            bestGraphicsFamily = graphicsFamily;
+            bestComputeFamily = computeFamily;
+            bestBindlessDescriptorHeap = descriptorHeapSupported;
+            bestShaderObject = shaderObjectSupported;
+            bestRayTracingAccelerationStructure = rayTracingAccelerationStructureSupported;
+            bestRayQuery = rayQuerySupported;
+        }
         if (matchesRequestedFeatures) {
             deviceImpl->physicalDevice = physicalDevice;
             deviceImpl->graphicsFamily = graphicsFamily;
             deviceImpl->computeFamily = computeFamily;
             selectedBindlessDescriptorHeap = descriptorHeapSupported;
             selectedShaderObject = shaderObjectSupported;
-            selectedRayTracingAccelerationStructure = rayTracingAccelerationStructureSupported;
+            selectedRayTracingAccelerationStructure =
+                (requestRayTracingAccelerationStructure || requestRayQuery) &&
+                accelerationStructureSupported;
+            selectedRayQuery = rayQuerySupported;
             break;
         }
     }
 
-    if (deviceImpl->physicalDevice == VK_NULL_HANDLE && fallbackPhysicalDevice != VK_NULL_HANDLE) {
-        deviceImpl->physicalDevice = fallbackPhysicalDevice;
-        deviceImpl->graphicsFamily = fallbackGraphicsFamily;
-        deviceImpl->computeFamily = fallbackComputeFamily;
-        selectedBindlessDescriptorHeap = false;
-        selectedShaderObject = false;
-        selectedRayTracingAccelerationStructure = false;
+    if (deviceImpl->physicalDevice == VK_NULL_HANDLE && bestPhysicalDevice != VK_NULL_HANDLE) {
+        deviceImpl->physicalDevice = bestPhysicalDevice;
+        deviceImpl->graphicsFamily = bestGraphicsFamily;
+        deviceImpl->computeFamily = bestComputeFamily;
+        selectedBindlessDescriptorHeap = bestBindlessDescriptorHeap;
+        selectedShaderObject = bestShaderObject;
+        selectedRayTracingAccelerationStructure = bestRayTracingAccelerationStructure;
+        selectedRayQuery = bestRayQuery;
     }
 
     if (deviceImpl->physicalDevice == VK_NULL_HANDLE) {
@@ -4112,30 +4147,35 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
         .accelerationStructure = selectedRayTracingAccelerationStructure ? VK_TRUE : VK_FALSE,
     };
+    VkPhysicalDeviceRayQueryFeaturesKHR enabledRayQueryFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+        .rayQuery = selectedRayQuery ? VK_TRUE : VK_FALSE,
+    };
+    void** featureTail = &enabledVulkan13Features.pNext;
     if (selectedBindlessDescriptorHeap) {
-        enabledVulkan13Features.pNext = &enabledDescriptorHeapFeatures;
-        void** featureTail = &enabledDescriptorHeapFeatures.pNext;
-        if (selectedShaderObject) {
-            *featureTail = &enabledShaderObjectFeatures;
-            featureTail = &enabledShaderObjectFeatures.pNext;
-        }
-        if (selectedRayTracingAccelerationStructure) {
-            *featureTail = &enabledAccelerationStructureFeatures;
-        }
-    } else if (selectedShaderObject) {
-        enabledVulkan13Features.pNext = &enabledShaderObjectFeatures;
-        if (selectedRayTracingAccelerationStructure) {
-            enabledShaderObjectFeatures.pNext = &enabledAccelerationStructureFeatures;
-        }
-    } else if (selectedRayTracingAccelerationStructure) {
-        enabledVulkan13Features.pNext = &enabledAccelerationStructureFeatures;
+        *featureTail = &enabledDescriptorHeapFeatures;
+        featureTail = &enabledDescriptorHeapFeatures.pNext;
+    }
+    if (selectedShaderObject) {
+        *featureTail = &enabledShaderObjectFeatures;
+        featureTail = &enabledShaderObjectFeatures.pNext;
+    }
+    if (selectedRayTracingAccelerationStructure) {
+        *featureTail = &enabledAccelerationStructureFeatures;
+        featureTail = &enabledAccelerationStructureFeatures.pNext;
+    }
+    if (selectedRayQuery) {
+        *featureTail = &enabledRayQueryFeatures;
     }
     VkPhysicalDeviceVulkan12Features enabledVulkan12Features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &enabledVulkan13Features,
         .descriptorIndexing = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
         .runtimeDescriptorArray = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
-        .bufferDeviceAddress = (selectedBindlessDescriptorHeap || selectedRayTracingAccelerationStructure) ? VK_TRUE : VK_FALSE,
+        .bufferDeviceAddress =
+            (selectedBindlessDescriptorHeap || selectedRayTracingAccelerationStructure || selectedRayQuery)
+                ? VK_TRUE
+                : VK_FALSE,
     };
     VkPhysicalDeviceVulkan11Features enabledVulkan11Features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
@@ -4159,6 +4199,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     if (selectedRayTracingAccelerationStructure) {
         deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+    }
+    if (selectedRayQuery) {
+        deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
     }
 
     VkDeviceCreateInfo deviceInfo{
@@ -4213,7 +4256,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->shaderObjectEnabled = selectedShaderObject;
     deviceImpl->capabilities.rayTracingAccelerationStructure = selectedRayTracingAccelerationStructure;
     deviceImpl->rayTracingAccelerationStructureEnabled = selectedRayTracingAccelerationStructure;
-    deviceImpl->bufferDeviceAddressEnabled = selectedBindlessDescriptorHeap || selectedRayTracingAccelerationStructure;
+    deviceImpl->capabilities.rayQuery = selectedRayQuery;
+    deviceImpl->rayQueryEnabled = selectedRayQuery;
+    deviceImpl->bufferDeviceAddressEnabled =
+        selectedBindlessDescriptorHeap || selectedRayTracingAccelerationStructure || selectedRayQuery;
 
     if (deviceImpl->debugUtilsEnabled) {
         deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(

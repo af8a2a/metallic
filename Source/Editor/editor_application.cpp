@@ -104,13 +104,28 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             }},
         };
     }
+    if (type == "SceneRayQueryVisualizationPass") {
+        return render::RenderGraphProperties{
+            {"path", "Asset/StandfordBunny/scene.gltf"},
+            {"granularity", "instance"},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 60.0f},
+                {"znear", 0.1f},
+                {"zfar", 10000.0f},
+                {"eye", {-0.0168404f, 0.110154f, 0.22f}},
+                {"center", {-0.0168404f, 0.110154f, -0.00153695f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
+        };
+    }
     return render::RenderGraphProperties::object();
 }
 
 render::RenderGraphNode* findBunnyWireframeNode(render::RenderGraph& graph)
 {
     for (const render::RenderGraphNode& node : graph.nodes()) {
-        if (node.type == "BunnyWireframePass") {
+        if (node.type == "BunnyWireframePass" || node.type == "SceneRayQueryVisualizationPass") {
             return graph.findNode(node.id);
         }
     }
@@ -727,6 +742,7 @@ bool EditorApplication::initializeRhi()
             .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true,
             .enableRayTracingAccelerationStructure = true,
+            .enableRayQuery = true,
         },
         device_);
     if (!result || device_ == nullptr) {
@@ -2625,6 +2641,46 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
             properties["color"] = {color[0], color[1], color[2], color[3]};
             renderGraph_.setNodeProperties(node->id, std::move(properties));
             viewportPreviewValid_ = false;
+        }
+    } else if (node->type == "SceneRayQueryVisualizationPass") {
+        static int editingRayQueryNodeId = -1;
+        static char rayQueryScenePathBuffer[260] = {};
+        render::RenderGraphProperties properties = node->properties;
+        if (!properties.contains("path") || !properties["path"].is_string()) {
+            properties["path"] = "Asset/StandfordBunny/scene.gltf";
+        }
+        if (!properties.contains("granularity") || !properties["granularity"].is_string()) {
+            properties["granularity"] = "instance";
+        }
+        if (editingRayQueryNodeId != static_cast<int>(node->id)) {
+            copyToBuffer(properties["path"].get<std::string>(), rayQueryScenePathBuffer, sizeof(rayQueryScenePathBuffer));
+            editingRayQueryNodeId = static_cast<int>(node->id);
+        }
+
+        ImGui::InputText("Scene Path", rayQueryScenePathBuffer, sizeof(rayQueryScenePathBuffer));
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            properties["path"] = rayQueryScenePathBuffer;
+            renderGraph_.setNodeProperties(node->id, std::move(properties));
+            viewportPreviewValid_ = false;
+        } else {
+            int granularity = properties["granularity"].get<std::string>() == "primitive" ? 1 : 0;
+            ImGui::TextUnformatted("Granularity");
+            ImGui::SameLine();
+            bool changed = false;
+            if (ImGui::RadioButton("Per Instance", granularity == 0)) {
+                granularity = 0;
+                changed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Per Primitive", granularity == 1)) {
+                granularity = 1;
+                changed = true;
+            }
+            if (changed) {
+                properties["granularity"] = granularity == 1 ? "primitive" : "instance";
+                renderGraph_.setNodeProperties(node->id, std::move(properties));
+                viewportPreviewValid_ = false;
+            }
         }
     } else if (!node->properties.empty()) {
         const std::string propertiesText = node->properties.dump(2);

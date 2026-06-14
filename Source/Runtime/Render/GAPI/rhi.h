@@ -205,12 +205,14 @@ struct DeviceDesc {
     bool enableBindlessDescriptorHeap = false;
     bool enableShaderObject = false;
     bool enableRayTracingAccelerationStructure = false;
+    bool enableRayQuery = false;
 };
 
 struct DeviceCapabilities {
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool rayTracingAccelerationStructure = false;
+    bool rayQuery = false;
     uint32_t maxBindlessSamplers = 0;
     uint32_t maxBindlessSampledImages = 0;
     uint32_t maxBindlessBuffers = 0;

@@ -4,6 +4,7 @@
 #include <slang.h>
 
 #include <cstring>
+#include <vector>
 
 namespace metallic::render {
 namespace {
@@ -40,9 +41,24 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
 
     slang::TargetDesc targetDesc{};
     targetDesc.format = SLANG_SPIRV;
-    targetDesc.profile = globalSession->findProfile("glsl_450");
+    targetDesc.profile = globalSession->findProfile(desc.profileName != nullptr ? desc.profileName : "glsl_450");
 
     const char* searchPaths[] = {desc.searchPath};
+    std::vector<slang::CompilerOptionEntry> compilerOptions;
+    compilerOptions.reserve(desc.capabilityCount);
+    for (uint32_t capabilityIndex = 0; capabilityIndex < desc.capabilityCount; ++capabilityIndex) {
+        const char* capability = desc.capabilities[capabilityIndex];
+        if (capability == nullptr || capability[0] == '\0') {
+            continue;
+        }
+        compilerOptions.push_back(slang::CompilerOptionEntry{
+            .name = slang::CompilerOptionName::Capability,
+            .value = slang::CompilerOptionValue{
+                .kind = slang::CompilerOptionValueKind::String,
+                .stringValue0 = capability,
+            },
+        });
+    }
 
     slang::SessionDesc sessionDesc{};
     sessionDesc.targets = &targetDesc;
@@ -50,6 +66,8 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
     sessionDesc.searchPaths = searchPaths;
     sessionDesc.searchPathCount = 1;
     sessionDesc.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
+    sessionDesc.compilerOptionEntries = compilerOptions.empty() ? nullptr : compilerOptions.data();
+    sessionDesc.compilerOptionEntryCount = compilerOptions.size();
 
     Slang::ComPtr<slang::ISession> session;
     if (SLANG_FAILED(globalSession->createSession(sessionDesc, session.writeRef())) || session == nullptr) {

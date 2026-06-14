@@ -1920,6 +1920,7 @@ Result RenderGraphExecutor::compile(
 
     const RenderGraphCompileContext compileContext{
         .device = &device,
+        .graphicsQueue = device.getQueue(QueueType::Graphics),
         .width = width,
         .height = height,
         .defaultFormat = impl_->defaultFormat,
@@ -2541,7 +2542,7 @@ RenderGraphPreviewRenderer::~RenderGraphPreviewRenderer() = default;
 RenderGraphPreviewRenderer::RenderGraphPreviewRenderer(RenderGraphPreviewRenderer&&) noexcept = default;
 RenderGraphPreviewRenderer& RenderGraphPreviewRenderer::operator=(RenderGraphPreviewRenderer&&) noexcept = default;
 
-Result RenderGraphPreviewRenderer::initialize(bool enableValidation)
+Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery)
 {
     Result result = createDevice(
         DeviceDesc{
@@ -2549,6 +2550,8 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation)
             .enableValidation = enableValidation,
             .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true,
+            .enableRayTracingAccelerationStructure = enableRayQuery,
+            .enableRayQuery = enableRayQuery,
         },
         impl_->device);
     if (!result) {

@@ -108,6 +108,7 @@ private:
 
 struct RenderGraphCompileContext {
     Device* device = nullptr;
+    Queue* graphicsQueue = nullptr;
     uint32_t width = 1;
     uint32_t height = 1;
     Format defaultFormat = Format::Rgba8Unorm;
@@ -408,7 +409,7 @@ public:
     RenderGraphPreviewRenderer(const RenderGraphPreviewRenderer&) = delete;
     RenderGraphPreviewRenderer& operator=(const RenderGraphPreviewRenderer&) = delete;
 
-    Result initialize(bool enableValidation = false);
+    Result initialize(bool enableValidation = false, bool enableRayQuery = false);
     Result render(RenderGraph& graph, uint32_t width, uint32_t height);
     const std::vector<uint32_t>& pixels() const;
     uint32_t width() const;

@@ -1,5 +1,7 @@
 #include "Runtime/Render/RenderGraph/render_graph.h"
 
+#include "Runtime/Render/GAPI/Vulkan/vulkan_native.h"
+#include "Runtime/Render/GAPI/Vulkan/vulkan_scene_rtx.h"
 #include "Runtime/Render/slang_compiler.h"
 #include "Runtime/Scene/scene.h"
 
@@ -41,6 +43,8 @@ constexpr const char* kMaterialShaderObjectVertexEntryPoint = "materialShaderObj
 constexpr const char* kMaterialShaderObjectFragmentEntryPoint = "materialShaderObjectFragmentMain";
 constexpr const char* kMaterialShaderObjectAlternateFragmentEntryPoint =
     "materialShaderObjectAlternateFragmentMain";
+constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "scene_rayquery_visualize";
+constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
 constexpr const char* kRenderGraphBufferShaderModuleName = "render_graph_buffer";
 constexpr const char* kRenderGraphBufferWriteEntryPoint = "renderGraphBufferWriteMain";
 constexpr const char* kRenderGraphBufferCopyEntryPoint = "renderGraphBufferCopyMain";
@@ -49,6 +53,8 @@ constexpr const char* kDefaultBunnyScenePath = PROJECT_SOURCE_DIR "/Asset/Standf
 constexpr const char* kDefaultMaterialScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
 constexpr uint64_t kRenderGraphBufferByteSize = 16;
 constexpr int32_t kGltfTriangleListMode = 4;
+constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
+constexpr uint32_t kRayQueryVisualizationGranularityPrimitive = 1;
 
 struct RenderGraphBufferUserPush {
     uint32_t inputBuffer = 0;
@@ -114,6 +120,18 @@ struct MaterialShaderObjectBatch {
     uint32_t materialIndex = 0;
     uint32_t firstVertex = 0;
     uint32_t vertexCount = 0;
+};
+
+struct SceneRayQueryVisualizationPush {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+    uint32_t mode = kRayQueryVisualizationGranularityInstance;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t padding = 0;
 };
 
 std::string resultMessage(std::string_view label, const Result& result)
@@ -1709,6 +1727,531 @@ private:
     scene::Bounds drawBounds_;
 };
 
+class SceneRayQueryVisualizationPass final : public ComputePass {
+public:
+    ~SceneRayQueryVisualizationPass() override
+    {
+        destroyNative();
+    }
+
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        reflection.addTextureOutput("color", "RayQuery acceleration-structure visualization")
+            .storageReadWrite()
+            .format = Format::Rgba8Unorm;
+        return reflection;
+    }
+
+    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        if (context.device == nullptr || context.graphicsQueue == nullptr) {
+            log = "SceneRayQueryVisualizationPass requires a device and graphics queue";
+            return makeError(Error::InvalidArgument);
+        }
+        if (!context.device->capabilities().rayTracingAccelerationStructure ||
+            !context.device->capabilities().rayQuery) {
+            log = "SceneRayQueryVisualizationPass requires rayTracingAccelerationStructure and rayQuery capabilities";
+            return makeError(Error::Unsupported);
+        }
+        if (pipeline_ != VK_NULL_HANDLE && rtxBuilder_.valid()) {
+            return {};
+        }
+
+        scene::Scene loadedScene;
+        const std::filesystem::path path = scenePathFromProperties(properties());
+        if (!loadedScene.load(path)) {
+            log = "SceneRayQueryVisualizationPass failed to load glTF: " + loadedScene.lastLoadResult().error;
+            return makeError(Error::Failure);
+        }
+        if (!loadedScene.bounds().valid) {
+            log = "SceneRayQueryVisualizationPass scene bounds are unavailable";
+            return makeError(Error::Failure);
+        }
+
+        drawBounds_ = loadedScene.bounds();
+        Result result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
+        if (!result) {
+            return result;
+        }
+
+        nativeDevice_ = vulkan::nativeDevice(*context.device).device;
+        if (nativeDevice_ == VK_NULL_HANDLE) {
+            log = "SceneRayQueryVisualizationPass Vulkan device is unavailable";
+            return makeError(Error::InvalidArgument);
+        }
+        volkLoadDevice(nativeDevice_);
+
+        ShaderCompileResult computeCompile;
+        const char* capabilities[] = {"spvRayQueryKHR"};
+        result = compileSlangShaderToSpirv(
+            SlangShaderDesc{
+                .moduleName = kSceneRayQueryVisualizationShaderModuleName,
+                .entryPointName = kSceneRayQueryVisualizationEntryPoint,
+                .searchPath = kTriangleShaderSearchPath,
+                .profileName = "glsl_460",
+                .capabilities = capabilities,
+                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+            },
+            computeCompile);
+        if (!result) {
+            log += "compileSlangShaderToSpirv(";
+            log += kSceneRayQueryVisualizationShaderModuleName;
+            log += ".";
+            log += kSceneRayQueryVisualizationEntryPoint;
+            log += ") returned ";
+            log += resultToString(result);
+            if (!computeCompile.diagnostics.empty()) {
+                log += ": ";
+                log += computeCompile.diagnostics;
+            }
+            log += '\n';
+            return result;
+        }
+
+        result = createNativePipeline(computeCompile, log);
+        if (!result) {
+            destroyNative();
+            return result;
+        }
+
+        return {};
+    }
+
+    Result execute(RenderGraphExecutionContext& context) override
+    {
+        TextureHandle color = context.outputTexture("color");
+        if (!color.valid() ||
+            nativeDevice_ == VK_NULL_HANDLE ||
+            descriptorSet_ == VK_NULL_HANDLE ||
+            pipeline_ == VK_NULL_HANDLE ||
+            pipelineLayout_ == VK_NULL_HANDLE ||
+            !rtxBuilder_.valid() ||
+            !drawBounds_.valid) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        VkImageView outputView = vulkan::nativeImageView(*color.view());
+        if (outputView == VK_NULL_HANDLE) {
+            return makeError(Error::InvalidArgument);
+        }
+        updateDescriptorSet(outputView);
+
+        SceneRayQueryVisualizationPush push;
+        buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
+
+        VkCommandBuffer commandBuffer = vulkan::nativeCommandBuffer(context.commandBuffer());
+        if (commandBuffer == VK_NULL_HANDLE) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipelineLayout_,
+            0,
+            1,
+            &descriptorSet_,
+            0,
+            nullptr);
+        vkCmdPushConstants(
+            commandBuffer,
+            pipelineLayout_,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(push),
+            &push);
+        vkCmdDispatch(commandBuffer, (context.width() + 7) / 8, (context.height() + 7) / 8, 1);
+        return {};
+    }
+
+private:
+    void destroyNative()
+    {
+        if (nativeDevice_ == VK_NULL_HANDLE) {
+            return;
+        }
+        volkLoadDevice(nativeDevice_);
+        if (pipeline_ != VK_NULL_HANDLE) {
+            vkDestroyPipeline(nativeDevice_, pipeline_, nullptr);
+            pipeline_ = VK_NULL_HANDLE;
+        }
+        if (pipelineLayout_ != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(nativeDevice_, pipelineLayout_, nullptr);
+            pipelineLayout_ = VK_NULL_HANDLE;
+        }
+        if (shaderModule_ != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(nativeDevice_, shaderModule_, nullptr);
+            shaderModule_ = VK_NULL_HANDLE;
+        }
+        if (descriptorPool_ != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(nativeDevice_, descriptorPool_, nullptr);
+            descriptorPool_ = VK_NULL_HANDLE;
+            descriptorSet_ = VK_NULL_HANDLE;
+        }
+        if (descriptorSetLayout_ != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(nativeDevice_, descriptorSetLayout_, nullptr);
+            descriptorSetLayout_ = VK_NULL_HANDLE;
+        }
+        nativeDevice_ = VK_NULL_HANDLE;
+    }
+
+    Result createNativePipeline(const ShaderCompileResult& computeCompile, std::string& log)
+    {
+        destroyNativePipelineObjects();
+
+        VkDescriptorSetLayoutBinding accelerationBinding{
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        };
+        VkDescriptorSetLayoutBinding outputBinding{
+            .binding = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        };
+        const VkDescriptorSetLayoutBinding bindings[] = {accelerationBinding, outputBinding};
+        VkDescriptorSetLayoutCreateInfo setLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .pBindings = bindings,
+        };
+        VkResult vkResult = vkCreateDescriptorSetLayout(
+            nativeDevice_,
+            &setLayoutInfo,
+            nullptr,
+            &descriptorSetLayout_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkCreateDescriptorSetLayout(SceneRayQueryVisualizationPass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        VkDescriptorPoolSize poolSizes[] = {
+            VkDescriptorPoolSize{
+                .type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                .descriptorCount = 1,
+            },
+            VkDescriptorPoolSize{
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+            },
+        };
+        VkDescriptorPoolCreateInfo poolInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = 1,
+            .poolSizeCount = static_cast<uint32_t>(std::size(poolSizes)),
+            .pPoolSizes = poolSizes,
+        };
+        vkResult = vkCreateDescriptorPool(nativeDevice_, &poolInfo, nullptr, &descriptorPool_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkCreateDescriptorPool(SceneRayQueryVisualizationPass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        VkDescriptorSetAllocateInfo allocateInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = descriptorPool_,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &descriptorSetLayout_,
+        };
+        vkResult = vkAllocateDescriptorSets(nativeDevice_, &allocateInfo, &descriptorSet_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkAllocateDescriptorSets(SceneRayQueryVisualizationPass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        VkPushConstantRange pushRange{
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            .offset = 0,
+            .size = sizeof(SceneRayQueryVisualizationPush),
+        };
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &descriptorSetLayout_,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &pushRange,
+        };
+        vkResult = vkCreatePipelineLayout(nativeDevice_, &pipelineLayoutInfo, nullptr, &pipelineLayout_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkCreatePipelineLayout(SceneRayQueryVisualizationPass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        VkShaderModuleCreateInfo shaderInfo{
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = computeCompile.spirv.size() * sizeof(uint32_t),
+            .pCode = computeCompile.spirv.data(),
+        };
+        vkResult = vkCreateShaderModule(nativeDevice_, &shaderInfo, nullptr, &shaderModule_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkCreateShaderModule(SceneRayQueryVisualizationPass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        VkPipelineShaderStageCreateInfo stageInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = shaderModule_,
+            .pName = "main",
+        };
+        VkComputePipelineCreateInfo pipelineInfo{
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = stageInfo,
+            .layout = pipelineLayout_,
+        };
+        vkResult = vkCreateComputePipelines(
+            nativeDevice_,
+            VK_NULL_HANDLE,
+            1,
+            &pipelineInfo,
+            nullptr,
+            &pipeline_);
+        if (vkResult != VK_SUCCESS) {
+            log = "vkCreateComputePipelines(SceneRayQueryVisualizationPass) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+
+        return {};
+    }
+
+    void destroyNativePipelineObjects()
+    {
+        if (nativeDevice_ == VK_NULL_HANDLE) {
+            return;
+        }
+        if (pipeline_ != VK_NULL_HANDLE) {
+            vkDestroyPipeline(nativeDevice_, pipeline_, nullptr);
+            pipeline_ = VK_NULL_HANDLE;
+        }
+        if (pipelineLayout_ != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(nativeDevice_, pipelineLayout_, nullptr);
+            pipelineLayout_ = VK_NULL_HANDLE;
+        }
+        if (shaderModule_ != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(nativeDevice_, shaderModule_, nullptr);
+            shaderModule_ = VK_NULL_HANDLE;
+        }
+        if (descriptorPool_ != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(nativeDevice_, descriptorPool_, nullptr);
+            descriptorPool_ = VK_NULL_HANDLE;
+            descriptorSet_ = VK_NULL_HANDLE;
+        }
+        if (descriptorSetLayout_ != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(nativeDevice_, descriptorSetLayout_, nullptr);
+            descriptorSetLayout_ = VK_NULL_HANDLE;
+        }
+    }
+
+    void updateDescriptorSet(VkImageView outputView)
+    {
+        VkAccelerationStructureKHR tlas = rtxBuilder_.tlas();
+        VkWriteDescriptorSetAccelerationStructureKHR accelerationInfo{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+            .accelerationStructureCount = 1,
+            .pAccelerationStructures = &tlas,
+        };
+        VkWriteDescriptorSet accelerationWrite{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext = &accelerationInfo,
+            .dstSet = descriptorSet_,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+        };
+
+        VkDescriptorImageInfo outputInfo{
+            .imageView = outputView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+        VkWriteDescriptorSet outputWrite{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptorSet_,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .pImageInfo = &outputInfo,
+        };
+
+        const VkWriteDescriptorSet writes[] = {accelerationWrite, outputWrite};
+        vkUpdateDescriptorSets(nativeDevice_, static_cast<uint32_t>(std::size(writes)), writes, 0, nullptr);
+    }
+
+    static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
+    {
+        if (props.contains("path") && props["path"].is_string()) {
+            std::filesystem::path path = props["path"].get<std::string>();
+            if (path.is_relative()) {
+                path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
+            }
+            return path;
+        }
+        return kDefaultMaterialScenePath;
+    }
+
+    static float finiteOr(float value, float fallback)
+    {
+        return std::isfinite(value) ? value : fallback;
+    }
+
+    static const RenderGraphProperties* cameraPropertiesFrom(const RenderGraphProperties& properties)
+    {
+        if (!properties.is_object()) {
+            return nullptr;
+        }
+        auto iter = properties.find("camera");
+        if (iter == properties.end() || !iter->is_object()) {
+            return nullptr;
+        }
+        return &(*iter);
+    }
+
+    static float cameraFloat(const RenderGraphProperties* camera, const char* key, float fallback)
+    {
+        if (camera == nullptr) {
+            return fallback;
+        }
+        auto iter = camera->find(key);
+        if (iter == camera->end() || !iter->is_number()) {
+            return fallback;
+        }
+        return finiteOr(iter->get<float>(), fallback);
+    }
+
+    static float3 cameraVec3(
+        const RenderGraphProperties* camera,
+        const char* key,
+        const float3& fallback)
+    {
+        if (camera == nullptr) {
+            return fallback;
+        }
+        auto iter = camera->find(key);
+        if (iter == camera->end() || !iter->is_array() || iter->size() < 3) {
+            return fallback;
+        }
+
+        float values[3] = {fallback.x, fallback.y, fallback.z};
+        for (size_t index = 0; index < 3; ++index) {
+            const RenderGraphProperties& component = (*iter)[index];
+            if (component.is_number()) {
+                values[index] = finiteOr(component.get<float>(), values[index]);
+            }
+        }
+        return float3(values[0], values[1], values[2]);
+    }
+
+    static bool cameraIsOrthographic(const RenderGraphProperties* camera)
+    {
+        if (camera == nullptr) {
+            return false;
+        }
+        auto iter = camera->find("projection");
+        if (iter == camera->end() || !iter->is_string()) {
+            return false;
+        }
+        const std::string projection = iter->get<std::string>();
+        return projection == "orthographic" || projection == "ortho";
+    }
+
+    static uint32_t visualizationModeFromProperties(const RenderGraphProperties& properties)
+    {
+        if (!properties.is_object()) {
+            return kRayQueryVisualizationGranularityInstance;
+        }
+        auto iter = properties.find("granularity");
+        if (iter == properties.end() || !iter->is_string()) {
+            return kRayQueryVisualizationGranularityInstance;
+        }
+        const std::string value = iter->get<std::string>();
+        return value == "primitive" || value == "per primitive" || value == "perPrimitive"
+            ? kRayQueryVisualizationGranularityPrimitive
+            : kRayQueryVisualizationGranularityInstance;
+    }
+
+    static void writeParamVec3(const float3& value, float out[4], float w)
+    {
+        out[0] = value.x;
+        out[1] = value.y;
+        out[2] = value.z;
+        out[3] = w;
+    }
+
+    static void buildPush(
+        uint32_t width,
+        uint32_t height,
+        const RenderGraphProperties& properties,
+        const scene::Bounds& drawBounds,
+        SceneRayQueryVisualizationPush& outPush)
+    {
+        outPush = SceneRayQueryVisualizationPush{};
+        const float3 center = drawBounds.center();
+        const float3 halfExtent = (drawBounds.max - drawBounds.min) * 0.5f;
+        const float radius = std::max(drawBounds.radius(), 0.01f);
+        const float aspect = height == 0 ? 1.0f : static_cast<float>(width) / static_cast<float>(height);
+        const float frameHalfHeight = std::max(halfExtent.y, halfExtent.x / std::max(aspect, 0.001f));
+        const RenderGraphProperties* cameraProperties = cameraPropertiesFrom(properties);
+        constexpr float kPi = 3.14159265358979323846f;
+        const float fovDegrees = std::clamp(
+            cameraFloat(cameraProperties, "fovDegrees", 60.0f),
+            1.0f,
+            179.0f);
+        const float fovRadians = fovDegrees * (kPi / 180.0f);
+        const float defaultDistance = std::max(
+            frameHalfHeight > 0.000001f
+                ? frameHalfHeight / (0.72f * std::tan(fovRadians * 0.5f)) + radius
+                : radius * 2.5f,
+            0.05f);
+        const float3 defaultEye(center.x, center.y, center.z + defaultDistance);
+        const float3 eye = cameraVec3(cameraProperties, "eye", defaultEye);
+        const float3 target = cameraVec3(cameraProperties, "center", center);
+        const float3 up = cameraVec3(cameraProperties, "up", float3(0.0f, 1.0f, 0.0f));
+        const float zNear = std::max(cameraFloat(cameraProperties, "znear", 0.001f), 0.0001f);
+        const float zFar = std::max(
+            cameraFloat(cameraProperties, "zfar", defaultDistance + radius * 3.0f),
+            zNear + 0.001f);
+        const float cameraDistance = std::max(length(eye - target), 0.001f);
+        const float defaultOrthoHeight = std::max(2.0f * cameraDistance * std::tan(fovRadians * 0.5f), 0.0001f);
+        const float orthoHeight = std::max(
+            cameraFloat(cameraProperties, "orthoHeight", defaultOrthoHeight),
+            0.0001f);
+
+        writeParamVec3(eye, outPush.eye, 0.0f);
+        writeParamVec3(target, outPush.center, 0.0f);
+        writeParamVec3(up, outPush.upProjection, cameraIsOrthographic(cameraProperties) ? 1.0f : 0.0f);
+        outPush.viewport[0] = aspect;
+        outPush.viewport[1] = static_cast<float>(width);
+        outPush.viewport[2] = static_cast<float>(height);
+        outPush.viewport[3] = fovRadians;
+        outPush.clipOrtho[0] = zNear;
+        outPush.clipOrtho[1] = zFar;
+        outPush.clipOrtho[2] = orthoHeight;
+        outPush.clipOrtho[3] = 0.0f;
+        outPush.mode = visualizationModeFromProperties(properties);
+        outPush.width = width;
+        outPush.height = height;
+    }
+
+    vulkan::SceneRtxBuilder rtxBuilder_;
+    scene::Bounds drawBounds_;
+    VkDevice nativeDevice_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkShaderModule shaderModule_ = VK_NULL_HANDLE;
+};
+
 class RenderGraphBufferWritePass final : public ComputePass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
@@ -1900,6 +2443,10 @@ void registerBuiltInRenderGraphPasses()
         "SceneMaterialShaderObjectPass",
         "Draw glTF material colors with VK_EXT_shader_object",
         []() { return std::make_unique<SceneMaterialShaderObjectPass>(); });
+    registerRenderGraphPassType(
+        "SceneRayQueryVisualizationPass",
+        "Visualize a glTF Vulkan acceleration structure with RayQuery",
+        []() { return std::make_unique<SceneRayQueryVisualizationPass>(); });
     registerRenderGraphPassType(
         "RenderGraphBufferWritePass",
         "Write a known byte pattern into a graph buffer",

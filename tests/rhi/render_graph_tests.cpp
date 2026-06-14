@@ -612,6 +612,94 @@ public:
     }
 };
 
+class RenderGraphSceneRayQueryVisualizationPreviewTest : public RhiTest {
+public:
+    RenderGraphSceneRayQueryVisualizationPreviewTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_scene_rayquery_visualization_preview";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        render::RenderGraphProperties properties{
+            {"path", "Asset/StandfordBunny/scene.gltf"},
+            {"granularity", "instance"},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 60.0f},
+                {"znear", 0.1f},
+                {"zfar", 10000.0f},
+                {"eye", {-0.0168404f, 0.110154f, 0.22f}},
+                {"center", {-0.0168404f, 0.110154f, -0.00153695f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
+        };
+        render::RenderGraph graph;
+        graph.setName("SceneRayQueryVisualization");
+        graph.addNode("SceneRayQueryVisualizationPass", "RayQuery", properties);
+        graph.markOutput("RayQuery.color");
+
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("SceneRayQueryVisualizationPass is unsupported on this device: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("SceneRayQueryVisualizationPass render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
+        if (visiblePixelCount < 512) {
+            return RhiTestResult::fail(
+                std::string("RayQuery instance visualization produced too few visible pixels: ") +
+                std::to_string(visiblePixelCount));
+        }
+
+        properties["granularity"] = "primitive";
+        render::RenderGraphNode* node = graph.findNode("RayQuery");
+        if (node == nullptr || !graph.setNodeProperties(node->id, properties)) {
+            return RhiTestResult::fail("failed to switch RayQuery visualization to primitive granularity");
+        }
+
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RayQuery primitive visualization render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        visiblePixelCount = countVisiblePixels(preview.pixels());
+        if (visiblePixelCount < 512) {
+            return RhiTestResult::fail(
+                std::string("RayQuery primitive visualization produced too few visible pixels: ") +
+                std::to_string(visiblePixelCount));
+        }
+
+        std::string outputMessage;
+        const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const std::filesystem::path outputPath =
+            context.outputDirectory / "render_graph_scene_rayquery_visualization_preview.png";
+        if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), outputMessage)) {
+            return RhiTestResult::fail(outputMessage);
+        }
+
+        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+    }
+};
+
 class RenderGraphCopyColorWorkflowTest : public RhiTest {
 public:
     RenderGraphCopyColorWorkflowTest()
@@ -1153,6 +1241,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyWireframePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);
