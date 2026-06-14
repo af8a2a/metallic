@@ -42,6 +42,7 @@ int main(int argc, char** argv)
     bool smokeTest = false;
     bool rhiSmokeTest = false;
     bool rhiTrianglePreviewTest = false;
+    bool rhiBindlessDescriptorHeapSmokeTest = false;
     bool rhiValidation = true;
     bool waitForGraphicsDebugger = waitForGraphicsDebuggerFromEnv();
     for (int index = 1; index < argc; ++index) {
@@ -52,6 +53,8 @@ int main(int argc, char** argv)
             rhiSmokeTest = true;
         } else if (argument == "--rhi-triangle-preview-test") {
             rhiTrianglePreviewTest = true;
+        } else if (argument == "--rhi-bindless-descriptor-heap-smoke-test") {
+            rhiBindlessDescriptorHeapSmokeTest = true;
         } else if (argument == "--rhi-no-validation") {
             rhiValidation = false;
         } else if (argument == "--wait-for-graphics-debugger") {
@@ -61,6 +64,10 @@ int main(int argc, char** argv)
 
     if (rhiTrianglePreviewTest) {
         return metallic::render::runRhiTrianglePreviewTest(rhiValidation);
+    }
+
+    if (rhiBindlessDescriptorHeapSmokeTest) {
+        return metallic::render::runRhiBindlessDescriptorHeapSmokeTest(rhiValidation);
     }
 
     if (rhiSmokeTest) {

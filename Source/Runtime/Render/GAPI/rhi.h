@@ -199,6 +199,14 @@ struct DebugLabelDesc {
 struct DeviceDesc {
     const char* applicationName = "Metallic";
     bool enableValidation = false;
+    bool enableBindlessDescriptorHeap = false;
+};
+
+struct DeviceCapabilities {
+    bool bindlessDescriptorHeap = false;
+    uint32_t maxBindlessSamplers = 0;
+    uint32_t maxBindlessSampledImages = 0;
+    uint32_t maxBindlessBuffers = 0;
 };
 
 struct BufferDesc {
@@ -303,6 +311,7 @@ struct GraphicsPipelineDesc {
     const char* fragmentEntryPoint = "main";
     Format colorFormat = Format::Unknown;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+    bool usesBindlessHeap = false;
 };
 
 struct TextureBufferCopyDesc {
@@ -327,6 +336,27 @@ struct TextureCopyDesc {
     uint32_t destinationBaseLayer = 0;
 };
 
+struct BindlessHeapDesc {
+    uint32_t maxSamplers = 0;
+    uint32_t maxSampledImages = 0;
+    uint32_t maxBuffers = 0;
+};
+
+enum class BindlessHandleKind : uint8_t {
+    Invalid,
+    Sampler,
+    SampledImage,
+    Buffer,
+};
+
+struct BindlessHandle {
+    BindlessHandleKind kind = BindlessHandleKind::Invalid;
+    uint32_t index = UINT32_MAX;
+    uint32_t shaderIndex = UINT32_MAX;
+
+    bool valid() const { return kind != BindlessHandleKind::Invalid && index != UINT32_MAX; }
+};
+
 namespace detail {
 struct DeviceImpl;
 struct QueueImpl;
@@ -340,6 +370,7 @@ struct TextureImpl;
 struct TextureViewImpl;
 struct ShaderModuleImpl;
 struct GraphicsPipelineImpl;
+struct BindlessHeapImpl;
 struct TrianglePreviewRendererImpl;
 struct VulkanNativeAccess;
 } // namespace detail
@@ -438,6 +469,7 @@ private:
 
     friend class Device;
     friend class CommandBuffer;
+    friend class BindlessHeap;
     friend struct detail::DeviceImpl;
     friend struct detail::VulkanNativeAccess;
 };
@@ -463,6 +495,7 @@ private:
     friend class Swapchain;
     friend class CommandBuffer;
     friend class TextureView;
+    friend class BindlessHeap;
     friend struct detail::DeviceImpl;
     friend struct detail::SwapchainImpl;
 };
@@ -484,6 +517,7 @@ private:
 
     friend class Device;
     friend class CommandBuffer;
+    friend class BindlessHeap;
     friend struct detail::DeviceImpl;
     friend struct detail::VulkanNativeAccess;
 };
@@ -527,6 +561,37 @@ private:
     friend struct detail::DeviceImpl;
 };
 
+class BindlessHeap {
+public:
+    BindlessHeap() = default;
+    ~BindlessHeap();
+    BindlessHeap(BindlessHeap&&) noexcept;
+    BindlessHeap& operator=(BindlessHeap&&) noexcept;
+
+    BindlessHeap(const BindlessHeap&) = delete;
+    BindlessHeap& operator=(const BindlessHeap&) = delete;
+
+    const BindlessHeapDesc& desc() const;
+    uint32_t imageShaderIndexBase() const;
+    uint32_t bufferShaderIndexBase() const;
+
+    Result allocateSampledImage(BindlessHandle& outHandle);
+    Result allocateBuffer(BindlessHandle& outHandle);
+    void release(BindlessHandle handle);
+    Result writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state = ResourceState::ShaderRead);
+    Result writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
+    Result writeStorageBuffer(BindlessHandle handle, Buffer& buffer);
+
+private:
+    explicit BindlessHeap(std::unique_ptr<detail::BindlessHeapImpl> impl);
+
+    std::unique_ptr<detail::BindlessHeapImpl> impl_;
+
+    friend class Device;
+    friend class CommandBuffer;
+    friend struct detail::DeviceImpl;
+};
+
 class CommandBuffer {
 public:
     CommandBuffer() = default;
@@ -550,6 +615,7 @@ public:
     void setViewport(const Viewport& viewport);
     void setScissor(const Rect& scissor);
     void bindGraphicsPipeline(GraphicsPipeline& pipeline);
+    void bindBindlessHeap(BindlessHeap& heap);
     void draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
 
 private:
@@ -624,6 +690,7 @@ public:
     Device(const Device&) = delete;
     Device& operator=(const Device&) = delete;
 
+    const DeviceCapabilities& capabilities() const;
     Queue* getQueue(QueueType type, uint32_t index = 0);
     Result waitIdle();
     Result createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapchain>& outSwapchain);
@@ -635,6 +702,7 @@ public:
     Result createTextureView(Texture& texture, const TextureViewDesc& desc, std::unique_ptr<TextureView>& outTextureView);
     Result createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule);
     Result createGraphicsPipeline(const GraphicsPipelineDesc& desc, std::unique_ptr<GraphicsPipeline>& outGraphicsPipeline);
+    Result createBindlessHeap(const BindlessHeapDesc& desc, std::unique_ptr<BindlessHeap>& outBindlessHeap);
 
 private:
     explicit Device(std::unique_ptr<detail::DeviceImpl> impl);
@@ -648,6 +716,7 @@ private:
 Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice);
 int runRhiSmokeTest(bool enableValidation);
 int runRhiTrianglePreviewTest(bool enableValidation);
+int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation);
 
 class TrianglePreviewRenderer {
 public:

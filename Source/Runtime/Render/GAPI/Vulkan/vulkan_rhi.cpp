@@ -17,6 +17,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <new>
 #include <utility>
 #include <vector>
@@ -73,6 +74,79 @@ bool hasName(const std::vector<VkLayerProperties>& properties, const char* name)
     return std::any_of(properties.begin(), properties.end(), [name](const VkLayerProperties& property) {
         return std::strcmp(property.layerName, name) == 0;
     });
+}
+
+std::mutex& sdlVulkanLibraryMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+uint32_t& sdlVulkanLibraryRefCount()
+{
+    static uint32_t refCount = 0;
+    return refCount;
+}
+
+bool acquireSdlVulkanLibrary()
+{
+    std::lock_guard lock(sdlVulkanLibraryMutex());
+    uint32_t& refCount = sdlVulkanLibraryRefCount();
+    if (refCount == 0 && !SDL_Vulkan_LoadLibrary(nullptr)) {
+        return false;
+    }
+
+    ++refCount;
+    return true;
+}
+
+void releaseSdlVulkanLibrary()
+{
+    std::lock_guard lock(sdlVulkanLibraryMutex());
+    uint32_t& refCount = sdlVulkanLibraryRefCount();
+    if (refCount == 0) {
+        return;
+    }
+
+    --refCount;
+    if (refCount == 0) {
+        SDL_Vulkan_UnloadLibrary();
+    }
+}
+
+std::mutex& volkDeviceMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+VkDevice& activeVolkDevice()
+{
+    static VkDevice device = VK_NULL_HANDLE;
+    return device;
+}
+
+void activateVolkDevice(VkDevice device)
+{
+    if (device == VK_NULL_HANDLE) {
+        return;
+    }
+
+    std::lock_guard lock(volkDeviceMutex());
+    VkDevice& activeDevice = activeVolkDevice();
+    if (activeDevice != device) {
+        volkLoadDevice(device);
+        activeDevice = device;
+    }
+}
+
+void clearActiveVolkDevice(VkDevice device)
+{
+    std::lock_guard lock(volkDeviceMutex());
+    VkDevice& activeDevice = activeVolkDevice();
+    if (activeDevice == device) {
+        activeDevice = VK_NULL_HANDLE;
+    }
 }
 
 std::vector<VkExtensionProperties> enumerateInstanceExtensions()
@@ -431,6 +505,582 @@ void destroyDebugMessenger(VkInstance instance, VkDebugUtilsMessengerEXT messeng
     }
 }
 
+VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment)
+{
+    if (alignment == 0) {
+        return value;
+    }
+    return (value + alignment - 1) / alignment * alignment;
+}
+
+uint32_t capacityFromBytes(VkDeviceSize byteSize, VkDeviceSize descriptorSize)
+{
+    if (descriptorSize == 0) {
+        return 0;
+    }
+
+    constexpr VkDeviceSize kMaxUint32 = std::numeric_limits<uint32_t>::max();
+    return static_cast<uint32_t>(std::min(byteSize / descriptorSize, kMaxUint32));
+}
+
+struct BindlessHeapPushConstants {
+    uint32_t imageShaderIndexBase = 0;
+    uint32_t bufferShaderIndexBase = 0;
+};
+
+class DescriptorHeapWriter {
+public:
+    static bool isSupported(VkPhysicalDevice physicalDevice)
+    {
+        VkPhysicalDeviceDescriptorHeapFeaturesEXT heapFeatures{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
+        };
+        VkPhysicalDeviceFeatures2 features{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            .pNext = &heapFeatures,
+        };
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
+        if (heapFeatures.descriptorHeap != VK_TRUE) {
+            return false;
+        }
+
+        VkPhysicalDeviceDescriptorHeapPropertiesEXT heapProperties{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT,
+        };
+        VkPhysicalDeviceProperties2 properties{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+            .pNext = &heapProperties,
+        };
+        vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+        return heapProperties.samplerDescriptorSize > 0 &&
+            heapProperties.imageDescriptorSize > 0 &&
+            heapProperties.bufferDescriptorSize > 0 &&
+            heapProperties.maxPushDataSize >= sizeof(BindlessHeapPushConstants);
+    }
+
+    VkResult initialize(VkPhysicalDevice physicalDevice, VkDevice device)
+    {
+        *this = {};
+        if (device == VK_NULL_HANDLE) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+
+        VkPhysicalDeviceDescriptorHeapPropertiesEXT heapProperties{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT,
+        };
+        VkPhysicalDeviceProperties2 properties{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+            .pNext = &heapProperties,
+        };
+        vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+        if (heapProperties.samplerDescriptorSize == 0 ||
+            heapProperties.imageDescriptorSize == 0 ||
+            heapProperties.bufferDescriptorSize == 0 ||
+            heapProperties.maxPushDataSize < sizeof(BindlessHeapPushConstants)) {
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
+
+        device_ = device;
+        samplerDescriptorSize_ = heapProperties.samplerDescriptorSize;
+        imageDescriptorSize_ = heapProperties.imageDescriptorSize;
+        bufferDescriptorSize_ = heapProperties.bufferDescriptorSize;
+        samplerDescriptorAlignment_ = heapProperties.samplerDescriptorAlignment;
+        imageDescriptorAlignment_ = heapProperties.imageDescriptorAlignment;
+        bufferDescriptorAlignment_ = heapProperties.bufferDescriptorAlignment;
+        samplerHeapAlignment_ = heapProperties.samplerHeapAlignment;
+        resourceHeapAlignment_ = heapProperties.resourceHeapAlignment;
+        maxSamplerHeapSize_ = heapProperties.maxSamplerHeapSize;
+        maxResourceHeapSize_ = heapProperties.maxResourceHeapSize;
+        minSamplerHeapReservedRange_ = heapProperties.minSamplerHeapReservedRange;
+        minResourceHeapReservedRange_ = heapProperties.minResourceHeapReservedRange;
+        maxPushDataSize_ = heapProperties.maxPushDataSize;
+        return VK_SUCCESS;
+    }
+
+    bool initialized() const { return device_ != VK_NULL_HANDLE; }
+
+    VkDeviceSize samplerDescriptorSize() const { return samplerDescriptorSize_; }
+    VkDeviceSize imageDescriptorSize() const { return imageDescriptorSize_; }
+    VkDeviceSize bufferDescriptorSize() const { return bufferDescriptorSize_; }
+    VkDeviceSize samplerHeapAlignment() const { return samplerHeapAlignment_; }
+    VkDeviceSize resourceHeapAlignment() const { return resourceHeapAlignment_; }
+    VkDeviceSize maxSamplerHeapSize() const { return maxSamplerHeapSize_; }
+    VkDeviceSize maxResourceHeapSize() const { return maxResourceHeapSize_; }
+    VkDeviceSize minSamplerHeapReservedRange() const { return minSamplerHeapReservedRange_; }
+    VkDeviceSize minResourceHeapReservedRange() const { return minResourceHeapReservedRange_; }
+    VkDeviceSize maxPushDataSize() const { return maxPushDataSize_; }
+
+    VkDeviceSize samplerOffset(uint32_t index) const { return samplerDescriptorSize_ * index; }
+    VkDeviceSize imageOffset(uint32_t index) const { return imageDescriptorSize_ * index; }
+    VkDeviceSize bufferOffset(uint32_t index) const { return bufferDescriptorSize_ * index; }
+
+    VkDeviceSize appendSamplerDescriptors(VkDeviceSize& offset, uint32_t count) const
+    {
+        const VkDeviceSize start = alignUp(offset, samplerDescriptorAlignment_);
+        offset = start + samplerDescriptorSize_ * count;
+        return start;
+    }
+
+    VkDeviceSize appendImageDescriptors(VkDeviceSize& offset, uint32_t count) const
+    {
+        const VkDeviceSize start = alignUp(offset, imageDescriptorAlignment_);
+        offset = start + imageDescriptorSize_ * count;
+        return start;
+    }
+
+    VkDeviceSize appendBufferDescriptors(VkDeviceSize& offset, uint32_t count) const
+    {
+        const VkDeviceSize start = alignUp(offset, bufferDescriptorAlignment_);
+        offset = start + bufferDescriptorSize_ * count;
+        return start;
+    }
+
+    VkDeviceSize appendSamplerReservedRange(VkDeviceSize& offset) const
+    {
+        const VkDeviceSize start = offset;
+        offset = start + minSamplerHeapReservedRange_;
+        return start;
+    }
+
+    VkDeviceSize appendResourceReservedRange(VkDeviceSize& offset) const
+    {
+        const VkDeviceSize start = alignUp(offset, imageDescriptorAlignment_);
+        offset = start + minResourceHeapReservedRange_;
+        return start;
+    }
+
+    VkDeviceSize alignToSamplerHeap(VkDeviceSize offset) const { return alignUp(offset, samplerHeapAlignment_); }
+    VkDeviceSize alignToResourceHeap(VkDeviceSize offset) const { return alignUp(offset, resourceHeapAlignment_); }
+
+    VkResult writeSamplerDescriptor(const VkSamplerCreateInfo& samplerCreateInfo, void* dst) const
+    {
+        if (!initialized() || dst == nullptr) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+
+        const VkHostAddressRangeEXT dstRange{
+            .address = dst,
+            .size = static_cast<size_t>(samplerDescriptorSize_),
+        };
+        return vkWriteSamplerDescriptorsEXT(device_, 1, &samplerCreateInfo, &dstRange);
+    }
+
+    VkResult writeImageDescriptor(
+        VkImage image,
+        VkFormat format,
+        VkImageLayout layout,
+        const VkImageSubresourceRange& subresourceRange,
+        VkImageViewType viewType,
+        void* dst) const
+    {
+        if (!initialized() || dst == nullptr) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+
+        VkImageViewCreateInfo viewInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = image,
+            .viewType = viewType,
+            .format = format,
+            .subresourceRange = subresourceRange,
+        };
+        VkImageDescriptorInfoEXT imageInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT,
+            .pView = &viewInfo,
+            .layout = layout,
+        };
+        VkResourceDescriptorInfoEXT resourceInfo{
+            .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
+            .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .data = {.pImage = &imageInfo},
+        };
+        const VkHostAddressRangeEXT dstRange{
+            .address = dst,
+            .size = static_cast<size_t>(imageDescriptorSize_),
+        };
+        return vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
+    }
+
+    VkResult writeBufferDescriptor(
+        VkDeviceAddress bufferAddress,
+        VkDeviceSize bufferSize,
+        VkDescriptorType type,
+        void* dst) const
+    {
+        if (!initialized() || dst == nullptr || bufferAddress == 0 || bufferSize == 0) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        if (type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+            return VK_ERROR_VALIDATION_FAILED_EXT;
+        }
+
+        VkDeviceAddressRangeEXT addressRange{
+            .address = bufferAddress,
+            .size = bufferSize,
+        };
+        VkResourceDescriptorInfoEXT resourceInfo{
+            .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
+            .type = type,
+            .data = {.pAddressRange = &addressRange},
+        };
+        const VkHostAddressRangeEXT dstRange{
+            .address = dst,
+            .size = static_cast<size_t>(bufferDescriptorSize_),
+        };
+        return vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
+    }
+
+private:
+    VkDevice device_ = VK_NULL_HANDLE;
+    VkDeviceSize samplerDescriptorSize_ = 0;
+    VkDeviceSize imageDescriptorSize_ = 0;
+    VkDeviceSize bufferDescriptorSize_ = 0;
+    VkDeviceSize samplerDescriptorAlignment_ = 0;
+    VkDeviceSize imageDescriptorAlignment_ = 0;
+    VkDeviceSize bufferDescriptorAlignment_ = 0;
+    VkDeviceSize samplerHeapAlignment_ = 0;
+    VkDeviceSize resourceHeapAlignment_ = 0;
+    VkDeviceSize maxSamplerHeapSize_ = 0;
+    VkDeviceSize maxResourceHeapSize_ = 0;
+    VkDeviceSize minSamplerHeapReservedRange_ = 0;
+    VkDeviceSize minResourceHeapReservedRange_ = 0;
+    VkDeviceSize maxPushDataSize_ = 0;
+};
+
+class DescriptorHeap {
+public:
+    VkResult initialize(VkPhysicalDevice physicalDevice, VkDevice device)
+    {
+        *this = {};
+        const VkResult result = writer_.initialize(physicalDevice, device);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        const VkDeviceSize samplerAvailable =
+            writer_.maxSamplerHeapSize() > writer_.minSamplerHeapReservedRange()
+            ? writer_.maxSamplerHeapSize() - writer_.minSamplerHeapReservedRange()
+            : 0;
+        const VkDeviceSize resourceAvailable =
+            writer_.maxResourceHeapSize() > writer_.minResourceHeapReservedRange()
+            ? writer_.maxResourceHeapSize() - writer_.minResourceHeapReservedRange()
+            : 0;
+        maxSamplerCapacity_ = capacityFromBytes(samplerAvailable, writer_.samplerDescriptorSize());
+        maxImageCapacity_ = capacityFromBytes(resourceAvailable, writer_.imageDescriptorSize());
+        maxBufferCapacity_ = capacityFromBytes(resourceAvailable, writer_.bufferDescriptorSize());
+        return VK_SUCCESS;
+    }
+
+    bool initialized() const { return writer_.initialized(); }
+    const DescriptorHeapWriter& writer() const { return writer_; }
+    uint32_t maxSamplerCapacity() const { return maxSamplerCapacity_; }
+    uint32_t maxImageCapacity() const { return maxImageCapacity_; }
+    uint32_t maxBufferCapacity() const { return maxBufferCapacity_; }
+    uint32_t maxImages() const { return maxImages_; }
+    uint32_t maxBuffers() const { return maxBuffers_; }
+    VkDeviceSize samplerHeapSize() const { return samplerHeapSize_; }
+    VkDeviceSize resourceHeapSize() const { return resourceHeapSize_; }
+    VkDeviceSize samplerHeapAlignment() const { return writer_.samplerHeapAlignment(); }
+    VkDeviceSize resourceHeapAlignment() const { return writer_.resourceHeapAlignment(); }
+
+    VkDeviceSize setupSamplerHeap(uint32_t maxSamplers)
+    {
+        if (!initialized() || maxSamplers == 0 || maxSamplers > maxSamplerCapacity_) {
+            return 0;
+        }
+
+        VkDeviceSize offset = 0;
+        writer_.appendSamplerDescriptors(offset, maxSamplers);
+        writer_.appendSamplerReservedRange(offset);
+        samplerHeapSize_ = writer_.alignToSamplerHeap(offset);
+        maxSamplers_ = maxSamplers;
+        nextSamplerSlot_ = 0;
+        freeSamplerSlots_.clear();
+        clearSamplerDirty();
+        return samplerHeapSize_;
+    }
+
+    VkDeviceSize setupResourceHeap(uint32_t maxImages, uint32_t maxBuffers)
+    {
+        if (!initialized() || (maxImages == 0 && maxBuffers == 0)) {
+            return 0;
+        }
+
+        VkDeviceSize offset = 0;
+        imageRegionStartBytes_ = writer_.appendImageDescriptors(offset, maxImages);
+        bufferRegionStartBytes_ = writer_.appendBufferDescriptors(offset, maxBuffers);
+        resourceReservedRangeOffsetBytes_ = writer_.appendResourceReservedRange(offset);
+        const VkDeviceSize packedSize = writer_.alignToResourceHeap(offset);
+        if (packedSize > writer_.maxResourceHeapSize()) {
+            return 0;
+        }
+
+        resourceHeapSize_ = packedSize;
+        maxImages_ = maxImages;
+        maxBuffers_ = maxBuffers;
+        nextImageSlot_ = 0;
+        nextBufferSlot_ = 0;
+        freeImageSlots_.clear();
+        freeBufferSlots_.clear();
+        clearResourceDirty();
+        return resourceHeapSize_;
+    }
+
+    uint32_t imageShaderIndexBase() const
+    {
+        const VkDeviceSize size = writer_.imageDescriptorSize();
+        return size > 0 ? static_cast<uint32_t>(imageRegionStartBytes_ / size) : 0;
+    }
+
+    uint32_t bufferShaderIndexBase() const
+    {
+        const VkDeviceSize size = writer_.bufferDescriptorSize();
+        return size > 0 ? static_cast<uint32_t>(bufferRegionStartBytes_ / size) : 0;
+    }
+
+    bool allocateSampledImage(BindlessHandle& outHandle)
+    {
+        uint32_t slot = 0;
+        if (!allocateSlot(maxImages_, nextImageSlot_, freeImageSlots_, slot)) {
+            return false;
+        }
+        outHandle = {
+            .kind = BindlessHandleKind::SampledImage,
+            .index = slot,
+            .shaderIndex = imageShaderIndexBase() + slot,
+        };
+        return true;
+    }
+
+    bool allocateBuffer(BindlessHandle& outHandle)
+    {
+        uint32_t slot = 0;
+        if (!allocateSlot(maxBuffers_, nextBufferSlot_, freeBufferSlots_, slot)) {
+            return false;
+        }
+        outHandle = {
+            .kind = BindlessHandleKind::Buffer,
+            .index = slot,
+            .shaderIndex = bufferShaderIndexBase() + slot,
+        };
+        return true;
+    }
+
+    void release(BindlessHandle handle)
+    {
+        if (!handle.valid()) {
+            return;
+        }
+        switch (handle.kind) {
+        case BindlessHandleKind::SampledImage:
+            if (handle.index < maxImages_) {
+                freeImageSlots_.push_back(handle.index);
+            }
+            break;
+        case BindlessHandleKind::Buffer:
+            if (handle.index < maxBuffers_) {
+                freeBufferSlots_.push_back(handle.index);
+            }
+            break;
+        case BindlessHandleKind::Sampler:
+            if (handle.index < maxSamplers_) {
+                freeSamplerSlots_.push_back(handle.index);
+            }
+            break;
+        case BindlessHandleKind::Invalid:
+            break;
+        }
+    }
+
+    VkResult writeImageDescriptor(
+        BindlessHandle handle,
+        VkImage image,
+        VkFormat format,
+        VkImageLayout layout,
+        const VkImageSubresourceRange& subresourceRange,
+        VkImageViewType viewType,
+        void* resourceHeapBase)
+    {
+        if (handle.kind != BindlessHandleKind::SampledImage ||
+            handle.index >= maxImages_ ||
+            resourceHeapBase == nullptr) {
+            return VK_ERROR_VALIDATION_FAILED_EXT;
+        }
+
+        const VkDeviceSize descriptorSize = writer_.imageDescriptorSize();
+        const VkDeviceSize offset = imageRegionStartBytes_ + writer_.imageOffset(handle.index);
+        void* dst = static_cast<uint8_t*>(resourceHeapBase) + offset;
+        const VkResult result = writer_.writeImageDescriptor(
+            image,
+            format,
+            layout,
+            subresourceRange,
+            viewType,
+            dst);
+        if (result == VK_SUCCESS) {
+            markResourceImageDirty(offset, descriptorSize);
+        }
+        return result;
+    }
+
+    VkResult writeBufferDescriptor(
+        BindlessHandle handle,
+        VkDeviceAddress address,
+        VkDeviceSize size,
+        VkDescriptorType type,
+        void* resourceHeapBase)
+    {
+        if (handle.kind != BindlessHandleKind::Buffer ||
+            handle.index >= maxBuffers_ ||
+            resourceHeapBase == nullptr) {
+            return VK_ERROR_VALIDATION_FAILED_EXT;
+        }
+
+        const VkDeviceSize descriptorSize = writer_.bufferDescriptorSize();
+        const VkDeviceSize offset = bufferRegionStartBytes_ + writer_.bufferOffset(handle.index);
+        void* dst = static_cast<uint8_t*>(resourceHeapBase) + offset;
+        const VkResult result = writer_.writeBufferDescriptor(address, size, type, dst);
+        if (result == VK_SUCCESS) {
+            markResourceBufferDirty(offset, descriptorSize);
+        }
+        return result;
+    }
+
+    struct DirtyRange {
+        VkDeviceSize offset = 0;
+        VkDeviceSize size = 0;
+    };
+
+    DirtyRange samplerDirtyRange() const
+    {
+        if (samplerDirtyMin_ > samplerDirtyMax_) {
+            return {};
+        }
+        const VkDeviceSize descriptorSize = writer_.samplerDescriptorSize();
+        return {
+            .offset = static_cast<VkDeviceSize>(samplerDirtyMin_) * descriptorSize,
+            .size = static_cast<VkDeviceSize>(samplerDirtyMax_ - samplerDirtyMin_ + 1) * descriptorSize,
+        };
+    }
+
+    DirtyRange resourceImageDirtyRange() const
+    {
+        if (resourceImageDirtyMin_ > resourceImageDirtyMax_) {
+            return {};
+        }
+        return {
+            .offset = resourceImageDirtyMin_,
+            .size = resourceImageDirtyMax_ - resourceImageDirtyMin_ + 1,
+        };
+    }
+
+    DirtyRange resourceBufferDirtyRange() const
+    {
+        if (resourceBufferDirtyMin_ > resourceBufferDirtyMax_) {
+            return {};
+        }
+        return {
+            .offset = resourceBufferDirtyMin_,
+            .size = resourceBufferDirtyMax_ - resourceBufferDirtyMin_ + 1,
+        };
+    }
+
+    void clearSamplerDirty()
+    {
+        samplerDirtyMin_ = std::numeric_limits<uint32_t>::max();
+        samplerDirtyMax_ = 0;
+    }
+
+    void clearResourceDirty()
+    {
+        resourceImageDirtyMin_ = std::numeric_limits<VkDeviceSize>::max();
+        resourceImageDirtyMax_ = 0;
+        resourceBufferDirtyMin_ = std::numeric_limits<VkDeviceSize>::max();
+        resourceBufferDirtyMax_ = 0;
+    }
+
+    void bind(VkCommandBuffer commandBuffer, VkDeviceAddress samplerHeapAddress, VkDeviceAddress resourceHeapAddress) const
+    {
+        if (samplerHeapAddress != 0 && maxSamplers_ > 0) {
+            const VkBindHeapInfoEXT samplerBind{
+                .sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT,
+                .heapRange = {
+                    .address = samplerHeapAddress,
+                    .size = samplerHeapSize_,
+                },
+                .reservedRangeOffset = writer_.samplerDescriptorSize() * maxSamplers_,
+                .reservedRangeSize = writer_.minSamplerHeapReservedRange(),
+            };
+            vkCmdBindSamplerHeapEXT(commandBuffer, &samplerBind);
+        }
+
+        if (resourceHeapAddress != 0 && (maxImages_ > 0 || maxBuffers_ > 0)) {
+            const VkBindHeapInfoEXT resourceBind{
+                .sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT,
+                .heapRange = {
+                    .address = resourceHeapAddress,
+                    .size = resourceHeapSize_,
+                },
+                .reservedRangeOffset = resourceReservedRangeOffsetBytes_,
+                .reservedRangeSize = writer_.minResourceHeapReservedRange(),
+            };
+            vkCmdBindResourceHeapEXT(commandBuffer, &resourceBind);
+        }
+    }
+
+private:
+    static bool allocateSlot(uint32_t maxSlots, uint32_t& nextSlot, std::vector<uint32_t>& freeSlots, uint32_t& outSlot)
+    {
+        if (!freeSlots.empty()) {
+            outSlot = freeSlots.back();
+            freeSlots.pop_back();
+            return true;
+        }
+        if (nextSlot >= maxSlots) {
+            return false;
+        }
+        outSlot = nextSlot++;
+        return true;
+    }
+
+    void markResourceImageDirty(VkDeviceSize offset, VkDeviceSize size)
+    {
+        resourceImageDirtyMin_ = std::min(resourceImageDirtyMin_, offset);
+        resourceImageDirtyMax_ = std::max(resourceImageDirtyMax_, offset + size - 1);
+    }
+
+    void markResourceBufferDirty(VkDeviceSize offset, VkDeviceSize size)
+    {
+        resourceBufferDirtyMin_ = std::min(resourceBufferDirtyMin_, offset);
+        resourceBufferDirtyMax_ = std::max(resourceBufferDirtyMax_, offset + size - 1);
+    }
+
+    DescriptorHeapWriter writer_;
+    uint32_t maxSamplerCapacity_ = 0;
+    uint32_t maxImageCapacity_ = 0;
+    uint32_t maxBufferCapacity_ = 0;
+    uint32_t maxSamplers_ = 0;
+    uint32_t maxImages_ = 0;
+    uint32_t maxBuffers_ = 0;
+    VkDeviceSize samplerHeapSize_ = 0;
+    VkDeviceSize resourceHeapSize_ = 0;
+    VkDeviceSize imageRegionStartBytes_ = 0;
+    VkDeviceSize bufferRegionStartBytes_ = 0;
+    VkDeviceSize resourceReservedRangeOffsetBytes_ = 0;
+    uint32_t nextSamplerSlot_ = 0;
+    uint32_t nextImageSlot_ = 0;
+    uint32_t nextBufferSlot_ = 0;
+    std::vector<uint32_t> freeSamplerSlots_;
+    std::vector<uint32_t> freeImageSlots_;
+    std::vector<uint32_t> freeBufferSlots_;
+    uint32_t samplerDirtyMin_ = std::numeric_limits<uint32_t>::max();
+    uint32_t samplerDirtyMax_ = 0;
+    VkDeviceSize resourceImageDirtyMin_ = std::numeric_limits<VkDeviceSize>::max();
+    VkDeviceSize resourceImageDirtyMax_ = 0;
+    VkDeviceSize resourceBufferDirtyMin_ = std::numeric_limits<VkDeviceSize>::max();
+    VkDeviceSize resourceBufferDirtyMax_ = 0;
+};
+
 } // namespace
 
 namespace detail {
@@ -487,6 +1137,7 @@ struct GraphicsPipelineImpl {
     DeviceImpl* device = nullptr;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
+    bool usesBindlessHeap = false;
 };
 
 struct CommandPoolImpl {
@@ -499,6 +1150,8 @@ struct CommandBufferImpl {
     DeviceImpl* device = nullptr;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkPipelineLayout currentGraphicsPipelineLayout = VK_NULL_HANDLE;
+    bool currentGraphicsPipelineUsesBindlessHeap = false;
 };
 
 struct SwapchainImpl {
@@ -516,16 +1169,43 @@ struct SwapchainImpl {
     void wrapImages(const std::vector<VkImage>& images, TextureUsageBits usage);
 };
 
+struct BindlessHeapBuffer {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    VkDeviceAddress address = 0;
+    VkDeviceSize size = 0;
+    VkDeviceSize mappedOffset = 0;
+};
+
+struct BindlessHeapImpl {
+    DeviceImpl* device = nullptr;
+    BindlessHeapDesc desc;
+    DescriptorHeap heap;
+    BindlessHeapBuffer samplerHeap;
+    BindlessHeapBuffer resourceHeap;
+
+    ~BindlessHeapImpl();
+    Result initialize(DeviceImpl& owningDevice, const BindlessHeapDesc& heapDesc);
+    Result createHeapBuffer(VkDeviceSize size, VkDeviceSize alignment, BindlessHeapBuffer& outBuffer);
+    void destroyHeapBuffer(BindlessHeapBuffer& buffer);
+    void flushSamplerDirty();
+    void flushResourceDirty();
+};
+
 struct DeviceImpl {
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
+    DeviceCapabilities capabilities;
+    DescriptorHeapWriter descriptorHeapWriter;
     uint32_t graphicsFamily = 0;
     bool sdlVulkanLoaded = false;
     bool validationEnabled = false;
     bool debugUtilsEnabled = false;
+    bool bindlessDescriptorHeapEnabled = false;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
     std::vector<std::unique_ptr<Queue>> queues;
@@ -539,6 +1219,7 @@ DeviceImpl::~DeviceImpl()
     queues.clear();
 
     if (device != VK_NULL_HANDLE) {
+        activateVolkDevice(device);
         vkDeviceWaitIdle(device);
     }
 
@@ -548,7 +1229,9 @@ DeviceImpl::~DeviceImpl()
     }
 
     if (device != VK_NULL_HANDLE) {
+        activateVolkDevice(device);
         vkDestroyDevice(device, nullptr);
+        clearActiveVolkDevice(device);
         device = VK_NULL_HANDLE;
     }
 
@@ -563,7 +1246,7 @@ DeviceImpl::~DeviceImpl()
     }
 
     if (sdlVulkanLoaded) {
-        SDL_Vulkan_UnloadLibrary();
+        releaseSdlVulkanLibrary();
         sdlVulkanLoaded = false;
     }
 }
@@ -576,6 +1259,154 @@ void DeviceImpl::addQueue(VkQueue queue, uint32_t familyIndex, QueueType type)
     impl->familyIndex = familyIndex;
     impl->type = type;
     queues.emplace_back(new Queue(std::move(impl)));
+}
+
+BindlessHeapImpl::~BindlessHeapImpl()
+{
+    destroyHeapBuffer(samplerHeap);
+    destroyHeapBuffer(resourceHeap);
+}
+
+Result BindlessHeapImpl::initialize(DeviceImpl& owningDevice, const BindlessHeapDesc& heapDesc)
+{
+    if (!owningDevice.capabilities.bindlessDescriptorHeap) {
+        return makeError(Error::Unsupported);
+    }
+    if (heapDesc.maxSampledImages == 0 && heapDesc.maxBuffers == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    device = &owningDevice;
+    desc = heapDesc;
+
+    VkResult vkResult = heap.initialize(device->physicalDevice, device->device);
+    if (vkResult != VK_SUCCESS) {
+        return resultFromVk(vkResult);
+    }
+
+    if (desc.maxSamplers > 0) {
+        if (heap.setupSamplerHeap(desc.maxSamplers) == 0) {
+            return makeError(Error::Unsupported);
+        }
+        Result result = createHeapBuffer(heap.samplerHeapSize(), heap.samplerHeapAlignment(), samplerHeap);
+        if (!result) {
+            return result;
+        }
+    }
+
+    if (heap.setupResourceHeap(desc.maxSampledImages, desc.maxBuffers) == 0) {
+        return makeError(Error::Unsupported);
+    }
+    return createHeapBuffer(heap.resourceHeapSize(), heap.resourceHeapAlignment(), resourceHeap);
+}
+
+Result BindlessHeapImpl::createHeapBuffer(VkDeviceSize size, VkDeviceSize alignment, BindlessHeapBuffer& outBuffer)
+{
+    if (device == nullptr || size == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const VkDeviceSize paddedSize = size + std::max<VkDeviceSize>(alignment, 1) - 1;
+    VkBufferUsageFlags2CreateInfo usage2{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO,
+        .usage = VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_2_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_2_DESCRIPTOR_HEAP_BIT_EXT,
+    };
+    VkBufferCreateInfo bufferInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = &usage2,
+        .size = paddedSize,
+        .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VmaAllocationCreateInfo allocationInfo{
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO,
+    };
+
+    VmaAllocationInfo allocatedInfo{};
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    const VkResult vkResult = vmaCreateBuffer(
+        device->allocator,
+        &bufferInfo,
+        &allocationInfo,
+        &buffer,
+        &allocation,
+        &allocatedInfo);
+    if (vkResult != VK_SUCCESS) {
+        return resultFromVk(vkResult);
+    }
+
+    VkBufferDeviceAddressInfo addressInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = buffer,
+    };
+    const VkDeviceAddress rawAddress = vkGetBufferDeviceAddress(device->device, &addressInfo);
+    const VkDeviceAddress address = alignUp(rawAddress, alignment);
+    const VkDeviceSize mappedOffset = static_cast<VkDeviceSize>(address - rawAddress);
+    if (rawAddress == 0 || address == 0 || mappedOffset + size > paddedSize || allocatedInfo.pMappedData == nullptr) {
+        vmaDestroyBuffer(device->allocator, buffer, allocation);
+        return makeError(Error::Failure);
+    }
+
+    outBuffer = {
+        .buffer = buffer,
+        .allocation = allocation,
+        .mapped = static_cast<uint8_t*>(allocatedInfo.pMappedData) + mappedOffset,
+        .address = address,
+        .size = size,
+        .mappedOffset = mappedOffset,
+    };
+    return {};
+}
+
+void BindlessHeapImpl::destroyHeapBuffer(BindlessHeapBuffer& buffer)
+{
+    if (device != nullptr && buffer.buffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(device->allocator, buffer.buffer, buffer.allocation);
+    }
+    buffer = {};
+}
+
+void BindlessHeapImpl::flushSamplerDirty()
+{
+    if (device == nullptr || samplerHeap.allocation == VK_NULL_HANDLE) {
+        return;
+    }
+    const DescriptorHeap::DirtyRange dirty = heap.samplerDirtyRange();
+    if (dirty.size > 0) {
+        vmaFlushAllocation(device->allocator, samplerHeap.allocation, samplerHeap.mappedOffset + dirty.offset, dirty.size);
+        heap.clearSamplerDirty();
+    }
+}
+
+void BindlessHeapImpl::flushResourceDirty()
+{
+    if (device == nullptr || resourceHeap.allocation == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const DescriptorHeap::DirtyRange dirtyImages = heap.resourceImageDirtyRange();
+    if (dirtyImages.size > 0) {
+        vmaFlushAllocation(
+            device->allocator,
+            resourceHeap.allocation,
+            resourceHeap.mappedOffset + dirtyImages.offset,
+            dirtyImages.size);
+    }
+    const DescriptorHeap::DirtyRange dirtyBuffers = heap.resourceBufferDirtyRange();
+    if (dirtyBuffers.size > 0) {
+        vmaFlushAllocation(
+            device->allocator,
+            resourceHeap.allocation,
+            resourceHeap.mappedOffset + dirtyBuffers.offset,
+            dirtyBuffers.size);
+    }
+    heap.clearResourceDirty();
 }
 
 SwapchainImpl::~SwapchainImpl()
@@ -1052,6 +1883,148 @@ GraphicsPipeline::~GraphicsPipeline()
 GraphicsPipeline::GraphicsPipeline(GraphicsPipeline&&) noexcept = default;
 GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&&) noexcept = default;
 
+BindlessHeap::BindlessHeap(std::unique_ptr<detail::BindlessHeapImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+BindlessHeap::~BindlessHeap() = default;
+BindlessHeap::BindlessHeap(BindlessHeap&&) noexcept = default;
+BindlessHeap& BindlessHeap::operator=(BindlessHeap&&) noexcept = default;
+
+const BindlessHeapDesc& BindlessHeap::desc() const
+{
+    static const BindlessHeapDesc emptyDesc;
+    return impl_ != nullptr ? impl_->desc : emptyDesc;
+}
+
+uint32_t BindlessHeap::imageShaderIndexBase() const
+{
+    return impl_ != nullptr ? impl_->heap.imageShaderIndexBase() : 0;
+}
+
+uint32_t BindlessHeap::bufferShaderIndexBase() const
+{
+    return impl_ != nullptr ? impl_->heap.bufferShaderIndexBase() : 0;
+}
+
+Result BindlessHeap::allocateSampledImage(BindlessHandle& outHandle)
+{
+    outHandle = {};
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->heap.allocateSampledImage(outHandle)) {
+        return makeError(Error::OutOfMemory);
+    }
+    return {};
+}
+
+Result BindlessHeap::allocateBuffer(BindlessHandle& outHandle)
+{
+    outHandle = {};
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->heap.allocateBuffer(outHandle)) {
+        return makeError(Error::OutOfMemory);
+    }
+    return {};
+}
+
+void BindlessHeap::release(BindlessHandle handle)
+{
+    if (impl_ != nullptr) {
+        impl_->heap.release(handle);
+    }
+}
+
+Result BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state)
+{
+    if (impl_ == nullptr ||
+        impl_->resourceHeap.mapped == nullptr ||
+        view.impl_ == nullptr ||
+        view.impl_->texture == nullptr ||
+        view.impl_->texture->impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (handle.kind != BindlessHandleKind::SampledImage) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const TextureDesc& textureDesc = view.impl_->texture->impl_->desc;
+    const TextureViewDesc& viewDesc = view.impl_->desc;
+    const VkImageSubresourceRange subresourceRange{
+        .aspectMask = aspectForFormat(textureDesc.format),
+        .baseMipLevel = viewDesc.baseMip,
+        .levelCount = viewDesc.mipCount,
+        .baseArrayLayer = viewDesc.baseLayer,
+        .layerCount = viewDesc.layerCount,
+    };
+    const StateInfo imageState = stateInfo(state);
+    const VkResult result = impl_->heap.writeImageDescriptor(
+        handle,
+        view.impl_->texture->impl_->image,
+        view.impl_->format,
+        imageState.layout,
+        subresourceRange,
+        toVkImageViewType(textureDesc.type),
+        impl_->resourceHeap.mapped);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+    impl_->flushResourceDirty();
+    return {};
+}
+
+Result BindlessHeap::writeConstantBuffer(BindlessHandle handle, Buffer& buffer)
+{
+    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || buffer.impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    VkBufferDeviceAddressInfo addressInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = buffer.impl_->buffer,
+    };
+    const VkDeviceAddress address = vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
+    const VkResult result = impl_->heap.writeBufferDescriptor(
+        handle,
+        address,
+        buffer.impl_->desc.size,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        impl_->resourceHeap.mapped);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+    impl_->flushResourceDirty();
+    return {};
+}
+
+Result BindlessHeap::writeStorageBuffer(BindlessHandle handle, Buffer& buffer)
+{
+    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || buffer.impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    VkBufferDeviceAddressInfo addressInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = buffer.impl_->buffer,
+    };
+    const VkDeviceAddress address = vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
+    const VkResult result = impl_->heap.writeBufferDescriptor(
+        handle,
+        address,
+        buffer.impl_->desc.size,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        impl_->resourceHeap.mapped);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+    impl_->flushResourceDirty();
+    return {};
+}
+
 CommandBuffer::CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl)
     : impl_(std::move(impl))
 {
@@ -1372,6 +2345,50 @@ void CommandBuffer::bindGraphicsPipeline(GraphicsPipeline& pipeline)
         return;
     }
     vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.impl_->pipeline);
+    impl_->currentGraphicsPipelineLayout = pipeline.impl_->layout;
+    impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
+}
+
+void CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
+{
+    if (impl_ == nullptr || heap.impl_ == nullptr) {
+        return;
+    }
+
+    heap.impl_->heap.bind(
+        impl_->commandBuffer,
+        heap.impl_->samplerHeap.address,
+        heap.impl_->resourceHeap.address);
+
+    const BindlessHeapPushConstants push{
+        .imageShaderIndexBase = heap.imageShaderIndexBase(),
+        .bufferShaderIndexBase = heap.bufferShaderIndexBase(),
+    };
+    if (impl_->currentGraphicsPipelineUsesBindlessHeap &&
+        impl_->currentGraphicsPipelineLayout != VK_NULL_HANDLE) {
+        vkCmdPushConstants(
+            impl_->commandBuffer,
+            impl_->currentGraphicsPipelineLayout,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0,
+            sizeof(push),
+            &push);
+    }
+
+    if (impl_->device != nullptr &&
+        impl_->device->bindlessDescriptorHeapEnabled &&
+        impl_->device->descriptorHeapWriter.maxPushDataSize() >= sizeof(push) &&
+        vkCmdPushDataEXT != nullptr) {
+        const VkPushDataInfoEXT pushInfo{
+            .sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT,
+            .offset = 0,
+            .data = {
+                .address = &push,
+                .size = sizeof(push),
+            },
+        };
+        vkCmdPushDataEXT(impl_->commandBuffer, &pushInfo);
+    }
 }
 
 void CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
@@ -1521,6 +2538,12 @@ Device::~Device() = default;
 Device::Device(Device&&) noexcept = default;
 Device& Device::operator=(Device&&) noexcept = default;
 
+const DeviceCapabilities& Device::capabilities() const
+{
+    static const DeviceCapabilities emptyCapabilities;
+    return impl_ != nullptr ? impl_->capabilities : emptyCapabilities;
+}
+
 Queue* Device::getQueue(QueueType type, uint32_t index)
 {
     if (impl_ == nullptr) {
@@ -1544,6 +2567,7 @@ Result Device::waitIdle()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    activateVolkDevice(impl_->device);
     return resultFromVk(vkDeviceWaitIdle(impl_->device));
 }
 
@@ -1553,6 +2577,7 @@ Result Device::createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapch
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    activateVolkDevice(impl_->device);
 
     auto swapchainImpl = std::make_unique<detail::SwapchainImpl>();
     swapchainImpl->device = impl_.get();
@@ -1571,6 +2596,7 @@ Result Device::createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& out
     if (impl_ == nullptr || queue.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    activateVolkDevice(impl_->device);
 
     VkCommandPoolCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -1598,6 +2624,7 @@ Result Device::createFence(bool signaled, std::unique_ptr<Fence>& outFence)
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    activateVolkDevice(impl_->device);
 
     VkFenceCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -1623,6 +2650,7 @@ Result Device::createSemaphore(std::unique_ptr<Semaphore>& outSemaphore)
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    activateVolkDevice(impl_->device);
 
     VkSemaphoreCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -1647,11 +2675,18 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
     if (impl_ == nullptr || desc.size == 0) {
         return makeError(Error::InvalidArgument);
     }
+    activateVolkDevice(impl_->device);
+
+    VkBufferUsageFlags usage = toVkBufferUsage(desc.usage);
+    if (impl_->capabilities.bindlessDescriptorHeap &&
+        (hasFlag(desc.usage, BufferUsageBits::Constant) || hasFlag(desc.usage, BufferUsageBits::Storage))) {
+        usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    }
 
     VkBufferCreateInfo bufferInfo{
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = desc.size,
-        .usage = toVkBufferUsage(desc.usage),
+        .usage = usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
 
@@ -1684,6 +2719,7 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     if (impl_ == nullptr || desc.format == Format::Unknown) {
         return makeError(Error::InvalidArgument);
     }
+    activateVolkDevice(impl_->device);
 
     VkImageCreateInfo imageInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -1732,6 +2768,7 @@ Result Device::createTextureView(
     if (impl_ == nullptr || texture.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    activateVolkDevice(impl_->device);
 
     const TextureDesc& textureDesc = texture.impl_->desc;
     const Format format = desc.format != Format::Unknown ? desc.format : textureDesc.format;
@@ -1771,6 +2808,7 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
     if (impl_ == nullptr || desc.code == nullptr || desc.byteSize == 0 || (desc.byteSize % sizeof(uint32_t)) != 0) {
         return makeError(Error::InvalidArgument);
     }
+    activateVolkDevice(impl_->device);
 
     VkShaderModuleCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1804,6 +2842,10 @@ Result Device::createGraphicsPipeline(
         desc.colorFormat == Format::Unknown) {
         return makeError(Error::InvalidArgument);
     }
+    activateVolkDevice(impl_->device);
+    if (desc.usesBindlessHeap && !impl_->capabilities.bindlessDescriptorHeap) {
+        return makeError(Error::Unsupported);
+    }
 
     const char* vertexEntryPoint = desc.vertexEntryPoint != nullptr ? desc.vertexEntryPoint : "main";
     const char* fragmentEntryPoint = desc.fragmentEntryPoint != nullptr ? desc.fragmentEntryPoint : "main";
@@ -1821,6 +2863,48 @@ Result Device::createGraphicsPipeline(
             .pName = fragmentEntryPoint,
         },
     };
+    std::array<VkDescriptorSetAndBindingMappingEXT, 3> bindlessMappings{};
+    VkShaderDescriptorSetAndBindingMappingInfoEXT bindlessMappingInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
+    };
+    if (desc.usesBindlessHeap) {
+        auto makeHeapMapping = [](uint32_t binding, VkSpirvResourceTypeFlagsEXT resourceMask, uint32_t stride) {
+            VkDescriptorSetAndBindingMappingEXT mapping{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
+                .descriptorSet = 0,
+                .firstBinding = binding,
+                .bindingCount = 1,
+                .resourceMask = resourceMask,
+                .source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
+            };
+            mapping.sourceData.constantOffset.heapOffset = 0;
+            mapping.sourceData.constantOffset.heapArrayStride = stride;
+            mapping.sourceData.constantOffset.samplerHeapOffset = 0;
+            mapping.sourceData.constantOffset.samplerHeapArrayStride = stride;
+            return mapping;
+        };
+
+        bindlessMappings[0] = makeHeapMapping(
+            0,
+            VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize()));
+        bindlessMappings[1] = makeHeapMapping(
+            2,
+            VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize()));
+        bindlessMappings[2] = makeHeapMapping(
+            2,
+            VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize()));
+        bindlessMappingInfo.mappingCount = static_cast<uint32_t>(bindlessMappings.size());
+        bindlessMappingInfo.pMappings = bindlessMappings.data();
+        stages[0].pNext = &bindlessMappingInfo;
+        stages[1].pNext = &bindlessMappingInfo;
+    }
 
     VkPipelineVertexInputStateCreateInfo vertexInput{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -1867,13 +2951,23 @@ Result Device::createGraphicsPipeline(
         .pDynamicStates = dynamicStates.data(),
     };
 
+    VkPushConstantRange bindlessPushConstantRange{
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0,
+        .size = sizeof(BindlessHeapPushConstants),
+    };
     VkPipelineLayoutCreateInfo layoutInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pushConstantRangeCount = desc.usesBindlessHeap ? 1u : 0u,
+        .pPushConstantRanges = desc.usesBindlessHeap ? &bindlessPushConstantRange : nullptr,
     };
     VkPipelineLayout layout = VK_NULL_HANDLE;
-    VkResult result = vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
-    if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+    VkResult result = VK_SUCCESS;
+    if (!desc.usesBindlessHeap) {
+        result = vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
+        if (result != VK_SUCCESS) {
+            return resultFromVk(result);
+        }
     }
 
     const VkFormat colorFormat = toVkFormat(desc.colorFormat);
@@ -1882,9 +2976,15 @@ Result Device::createGraphicsPipeline(
         .colorAttachmentCount = 1,
         .pColorAttachmentFormats = &colorFormat,
     };
+    VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
+        .pNext = &renderingInfo,
+        .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT,
+    };
     VkGraphicsPipelineCreateInfo pipelineInfo{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .pNext = &renderingInfo,
+        .pNext = desc.usesBindlessHeap ? static_cast<const void*>(&bindlessPipelineFlags) :
+            static_cast<const void*>(&renderingInfo),
         .stageCount = static_cast<uint32_t>(stages.size()),
         .pStages = stages.data(),
         .pVertexInputState = &vertexInput,
@@ -1900,7 +3000,9 @@ Result Device::createGraphicsPipeline(
     VkPipeline pipeline = VK_NULL_HANDLE;
     result = vkCreateGraphicsPipelines(impl_->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
     if (result != VK_SUCCESS) {
-        vkDestroyPipelineLayout(impl_->device, layout, nullptr);
+        if (layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(impl_->device, layout, nullptr);
+        }
         return resultFromVk(result);
     }
 
@@ -1908,7 +3010,29 @@ Result Device::createGraphicsPipeline(
     pipelineImpl->device = impl_.get();
     pipelineImpl->layout = layout;
     pipelineImpl->pipeline = pipeline;
+    pipelineImpl->usesBindlessHeap = desc.usesBindlessHeap;
     outGraphicsPipeline.reset(new GraphicsPipeline(std::move(pipelineImpl)));
+    return {};
+}
+
+Result Device::createBindlessHeap(const BindlessHeapDesc& desc, std::unique_ptr<BindlessHeap>& outBindlessHeap)
+{
+    outBindlessHeap.reset();
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    activateVolkDevice(impl_->device);
+    if (!impl_->capabilities.bindlessDescriptorHeap) {
+        return makeError(Error::Unsupported);
+    }
+
+    auto bindlessImpl = std::make_unique<detail::BindlessHeapImpl>();
+    Result result = bindlessImpl->initialize(*impl_, desc);
+    if (!result) {
+        return result;
+    }
+
+    outBindlessHeap.reset(new BindlessHeap(std::move(bindlessImpl)));
     return {};
 }
 
@@ -1917,7 +3041,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     outDevice.reset();
 
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
-    if (!SDL_Vulkan_LoadLibrary(nullptr)) {
+    if (!acquireSdlVulkanLibrary()) {
         std::cerr << "SDL_Vulkan_LoadLibrary failed: " << SDL_GetError() << '\n';
         return makeError(Error::Unsupported);
     }
@@ -1998,6 +3122,11 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
     vkEnumeratePhysicalDevices(deviceImpl->instance, &physicalDeviceCount, physicalDevices.data());
 
+    const bool requestBindlessDescriptorHeap = desc.enableBindlessDescriptorHeap;
+    VkPhysicalDevice fallbackPhysicalDevice = VK_NULL_HANDLE;
+    uint32_t fallbackGraphicsFamily = 0;
+    bool selectedBindlessDescriptorHeap = false;
+
     for (VkPhysicalDevice physicalDevice : physicalDevices) {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(physicalDevice, &properties);
@@ -2005,16 +3134,27 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             continue;
         }
 
-        if (!hasDeviceExtension(physicalDevice, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+        const bool swapchainExtensionAvailable = hasDeviceExtension(physicalDevice, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        const bool descriptorHeapExtensionAvailable =
+            hasDeviceExtension(physicalDevice, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+        if (!swapchainExtensionAvailable) {
             continue;
         }
 
+        VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
+        };
         VkPhysicalDeviceVulkan13Features vulkan13Features{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+            .pNext = &descriptorHeapFeatures,
+        };
+        VkPhysicalDeviceVulkan12Features vulkan12Features{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+            .pNext = &vulkan13Features,
         };
         VkPhysicalDeviceVulkan11Features vulkan11Features{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-            .pNext = &vulkan13Features,
+            .pNext = &vulkan12Features,
         };
         VkPhysicalDeviceFeatures2 features{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
@@ -2027,24 +3167,50 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             continue;
         }
 
+        const bool descriptorHeapSupported =
+            requestBindlessDescriptorHeap &&
+            descriptorHeapExtensionAvailable &&
+            descriptorHeapFeatures.descriptorHeap == VK_TRUE &&
+            vulkan12Features.descriptorIndexing == VK_TRUE &&
+            vulkan12Features.runtimeDescriptorArray == VK_TRUE &&
+            vulkan12Features.bufferDeviceAddress == VK_TRUE &&
+            DescriptorHeapWriter::isSupported(physicalDevice);
+
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
         std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
 
+        uint32_t graphicsFamily = UINT32_MAX;
         for (uint32_t queueIndex = 0; queueIndex < queueFamilyCount; ++queueIndex) {
             if ((queueFamilies[queueIndex].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) {
                 continue;
             }
 
-            deviceImpl->physicalDevice = physicalDevice;
-            deviceImpl->graphicsFamily = queueIndex;
+            graphicsFamily = queueIndex;
             break;
+        }
+        if (graphicsFamily == UINT32_MAX) {
+            continue;
         }
 
-        if (deviceImpl->physicalDevice != VK_NULL_HANDLE) {
+        if (fallbackPhysicalDevice == VK_NULL_HANDLE) {
+            fallbackPhysicalDevice = physicalDevice;
+            fallbackGraphicsFamily = graphicsFamily;
+        }
+
+        if (descriptorHeapSupported) {
+            deviceImpl->physicalDevice = physicalDevice;
+            deviceImpl->graphicsFamily = graphicsFamily;
+            selectedBindlessDescriptorHeap = true;
             break;
         }
+    }
+
+    if (deviceImpl->physicalDevice == VK_NULL_HANDLE && fallbackPhysicalDevice != VK_NULL_HANDLE) {
+        deviceImpl->physicalDevice = fallbackPhysicalDevice;
+        deviceImpl->graphicsFamily = fallbackGraphicsFamily;
+        selectedBindlessDescriptorHeap = false;
     }
 
     if (deviceImpl->physicalDevice == VK_NULL_HANDLE) {
@@ -2064,9 +3230,23 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
     };
+    VkPhysicalDeviceDescriptorHeapFeaturesEXT enabledDescriptorHeapFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
+        .descriptorHeap = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
+    };
+    if (selectedBindlessDescriptorHeap) {
+        enabledVulkan13Features.pNext = &enabledDescriptorHeapFeatures;
+    }
+    VkPhysicalDeviceVulkan12Features enabledVulkan12Features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .pNext = &enabledVulkan13Features,
+        .descriptorIndexing = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
+        .runtimeDescriptorArray = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
+        .bufferDeviceAddress = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
+    };
     VkPhysicalDeviceVulkan11Features enabledVulkan11Features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-        .pNext = &enabledVulkan13Features,
+        .pNext = &enabledVulkan12Features,
         .shaderDrawParameters = VK_TRUE,
     };
     VkPhysicalDeviceFeatures2 enabledFeatures{
@@ -2074,9 +3254,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         .pNext = &enabledVulkan11Features,
     };
 
-    const std::array<const char*, 1> deviceExtensions = {
+    std::vector<const char*> deviceExtensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     };
+    if (selectedBindlessDescriptorHeap) {
+        deviceExtensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+    }
 
     VkDeviceCreateInfo deviceInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -2091,7 +3274,41 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     if (vkResult != VK_SUCCESS) {
         return resultFromVk(vkResult);
     }
-    volkLoadDevice(deviceImpl->device);
+    activateVolkDevice(deviceImpl->device);
+
+    if (selectedBindlessDescriptorHeap) {
+        vkResult = deviceImpl->descriptorHeapWriter.initialize(deviceImpl->physicalDevice, deviceImpl->device);
+        if (vkResult != VK_SUCCESS) {
+            return resultFromVk(vkResult);
+        }
+
+        const VkDeviceSize samplerCapacityBytes =
+            deviceImpl->descriptorHeapWriter.maxSamplerHeapSize() >
+                deviceImpl->descriptorHeapWriter.minSamplerHeapReservedRange()
+            ? deviceImpl->descriptorHeapWriter.maxSamplerHeapSize() -
+                deviceImpl->descriptorHeapWriter.minSamplerHeapReservedRange()
+            : 0;
+        const VkDeviceSize resourceCapacityBytes =
+            deviceImpl->descriptorHeapWriter.maxResourceHeapSize() >
+                deviceImpl->descriptorHeapWriter.minResourceHeapReservedRange()
+            ? deviceImpl->descriptorHeapWriter.maxResourceHeapSize() -
+                deviceImpl->descriptorHeapWriter.minResourceHeapReservedRange()
+            : 0;
+
+        deviceImpl->capabilities = DeviceCapabilities{
+            .bindlessDescriptorHeap = true,
+            .maxBindlessSamplers = capacityFromBytes(
+                samplerCapacityBytes,
+                deviceImpl->descriptorHeapWriter.samplerDescriptorSize()),
+            .maxBindlessSampledImages = capacityFromBytes(
+                resourceCapacityBytes,
+                deviceImpl->descriptorHeapWriter.imageDescriptorSize()),
+            .maxBindlessBuffers = capacityFromBytes(
+                resourceCapacityBytes,
+                deviceImpl->descriptorHeapWriter.bufferDescriptorSize()),
+        };
+        deviceImpl->bindlessDescriptorHeapEnabled = true;
+    }
 
     if (deviceImpl->debugUtilsEnabled) {
         deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
@@ -2105,6 +3322,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     allocatorInfo.device = deviceImpl->device;
     allocatorInfo.instance = deviceImpl->instance;
     allocatorInfo.vulkanApiVersion = kVulkanApiVersion;
+    if (selectedBindlessDescriptorHeap) {
+        allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    }
     VmaVulkanFunctions vulkanFunctions{};
     vkResult = vmaImportVulkanFunctionsFromVolk(&allocatorInfo, &vulkanFunctions);
     if (vkResult != VK_SUCCESS) {
@@ -2219,19 +3439,26 @@ constexpr const char* kTriangleShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
 constexpr const char* kTriangleShaderModuleName = "triangle";
 constexpr const char* kTriangleVertexEntryPoint = "triangleVertexMain";
 constexpr const char* kTriangleFragmentEntryPoint = "triangleFragmentMain";
+constexpr const char* kBindlessSmokeShaderModuleName = "bindless_smoke";
+constexpr const char* kBindlessSmokeVertexEntryPoint = "bindlessSmokeVertexMain";
+constexpr const char* kBindlessSmokeFragmentEntryPoint = "bindlessSmokeFragmentMain";
 
-Result createTriangleShaderModule(Device& device, const char* entryPointName, std::unique_ptr<ShaderModule>& outShaderModule)
+Result createSlangShaderModule(
+    Device& device,
+    const char* moduleName,
+    const char* entryPointName,
+    std::unique_ptr<ShaderModule>& outShaderModule)
 {
     ShaderCompileResult compileResult;
     Result result = compileSlangShaderToSpirv(
         SlangShaderDesc{
-            .moduleName = kTriangleShaderModuleName,
+            .moduleName = moduleName,
             .entryPointName = entryPointName,
             .searchPath = kTriangleShaderSearchPath,
         },
         compileResult);
     if (!result) {
-        std::cerr << "Slang compile failed for " << kTriangleShaderModuleName << "." << entryPointName << '\n';
+        std::cerr << "Slang compile failed for " << moduleName << "." << entryPointName << '\n';
         if (!compileResult.diagnostics.empty()) {
             std::cerr << compileResult.diagnostics << '\n';
         }
@@ -2249,6 +3476,10 @@ Result createTriangleShaderModule(Device& device, const char* entryPointName, st
         outShaderModule);
 }
 
+Result createTriangleShaderModule(Device& device, const char* entryPointName, std::unique_ptr<ShaderModule>& outShaderModule)
+{
+    return createSlangShaderModule(device, kTriangleShaderModuleName, entryPointName, outShaderModule);
+}
 
 } // namespace
 
@@ -2588,6 +3819,410 @@ int runRhiTrianglePreviewTest(bool enableValidation)
                               << brightPixelCount << " bright pixels found.\n";
                     exitCode = 1;
                 }
+            }
+        }
+    }
+
+    SDL_Quit();
+    return exitCode;
+}
+
+int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
+{
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        std::cerr << "SDL_Init failed: " << SDL_GetError() << '\n';
+        return 1;
+    }
+
+    int exitCode = 0;
+    {
+        constexpr uint32_t kWidth = 16;
+        constexpr uint32_t kHeight = 16;
+        constexpr uint64_t kReadbackByteSize = static_cast<uint64_t>(kWidth) * kHeight * 4ull;
+
+        std::unique_ptr<Device> device;
+        std::unique_ptr<CommandPool> commandPool;
+        std::unique_ptr<CommandBuffer> commandBuffer;
+        std::unique_ptr<Fence> fence;
+        std::unique_ptr<Texture> sourceTexture;
+        std::unique_ptr<TextureView> sourceTextureView;
+        std::unique_ptr<Texture> outputTexture;
+        std::unique_ptr<TextureView> outputTextureView;
+        std::unique_ptr<Buffer> readbackBuffer;
+        std::unique_ptr<BindlessHeap> bindlessHeap;
+        std::unique_ptr<ShaderModule> vertexShader;
+        std::unique_ptr<ShaderModule> fragmentShader;
+        std::unique_ptr<GraphicsPipeline> pipeline;
+
+        Result result = createDevice(
+            DeviceDesc{
+                .applicationName = "Metallic RHI Bindless Descriptor Heap Smoke Test",
+                .enableValidation = enableValidation,
+                .enableBindlessDescriptorHeap = true,
+            },
+            device);
+        if (!checkResult(result, "createDevice")) {
+            exitCode = resultToExitCode(result);
+        } else {
+            const BindlessHeapDesc bindlessHeapDesc{
+                .maxSampledImages = 1,
+            };
+            result = device->createBindlessHeap(bindlessHeapDesc, bindlessHeap);
+            if (!device->capabilities().bindlessDescriptorHeap) {
+                if (hasError(result, Error::Unsupported)) {
+                    std::cout << "VK_EXT_descriptor_heap unsupported; bindless smoke test skipped.\n";
+                } else {
+                    std::cerr << "createBindlessHeap was expected to return Unsupported, got "
+                              << resultToString(result) << '\n';
+                    exitCode = 1;
+                }
+            } else if (!checkResult(result, "createBindlessHeap")) {
+                exitCode = resultToExitCode(result);
+            } else {
+                Queue* graphicsQueue = device->getQueue(QueueType::Graphics);
+                if (graphicsQueue == nullptr) {
+                    std::cerr << "No graphics queue available.\n";
+                    exitCode = 1;
+                }
+
+                if (exitCode == 0) {
+                    result = device->createCommandPool(*graphicsQueue, commandPool);
+                    if (!checkResult(result, "createCommandPool")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = commandPool->createCommandBuffer(commandBuffer);
+                    if (!checkResult(result, "createCommandBuffer")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = device->createFence(true, fence);
+                    if (!checkResult(result, "createFence")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = device->createTexture(
+                        TextureDesc{
+                            .type = TextureType::Texture2D,
+                            .usage = TextureUsageBits::Sampled | TextureUsageBits::ColorAttachment,
+                            .format = Format::Rgba8Unorm,
+                            .width = kWidth,
+                            .height = kHeight,
+                            .depth = 1,
+                            .mipCount = 1,
+                            .layerCount = 1,
+                            .memoryLocation = MemoryLocation::Device,
+                        },
+                        sourceTexture);
+                    if (!checkResult(result, "createTexture(source)")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = device->createTextureView(
+                        *sourceTexture,
+                        TextureViewDesc{
+                            .format = Format::Rgba8Unorm,
+                            .baseMip = 0,
+                            .mipCount = 1,
+                            .baseLayer = 0,
+                            .layerCount = 1,
+                        },
+                        sourceTextureView);
+                    if (!checkResult(result, "createTextureView(source)")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = device->createTexture(
+                        TextureDesc{
+                            .type = TextureType::Texture2D,
+                            .usage = TextureUsageBits::ColorAttachment | TextureUsageBits::TransferSource,
+                            .format = Format::Rgba8Unorm,
+                            .width = kWidth,
+                            .height = kHeight,
+                            .depth = 1,
+                            .mipCount = 1,
+                            .layerCount = 1,
+                            .memoryLocation = MemoryLocation::Device,
+                        },
+                        outputTexture);
+                    if (!checkResult(result, "createTexture(output)")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = device->createTextureView(
+                        *outputTexture,
+                        TextureViewDesc{
+                            .format = Format::Rgba8Unorm,
+                            .baseMip = 0,
+                            .mipCount = 1,
+                            .baseLayer = 0,
+                            .layerCount = 1,
+                        },
+                        outputTextureView);
+                    if (!checkResult(result, "createTextureView(output)")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = device->createBuffer(
+                        BufferDesc{
+                            .size = kReadbackByteSize,
+                            .usage = BufferUsageBits::TransferDestination,
+                            .memoryLocation = MemoryLocation::HostReadback,
+                        },
+                        readbackBuffer);
+                    if (!checkResult(result, "createBuffer(readback)")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+
+                BindlessHandle sourceImageHandle;
+                if (exitCode == 0) {
+                    result = bindlessHeap->allocateSampledImage(sourceImageHandle);
+                    if (!checkResult(result, "allocateSampledImage")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = bindlessHeap->writeSampledImage(
+                        sourceImageHandle,
+                        *sourceTextureView,
+                        ResourceState::ShaderRead);
+                    if (!checkResult(result, "writeSampledImage")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = createSlangShaderModule(
+                        *device,
+                        kBindlessSmokeShaderModuleName,
+                        kBindlessSmokeVertexEntryPoint,
+                        vertexShader);
+                    if (!checkResult(result, "createSlangShaderModule(vertex)")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = createSlangShaderModule(
+                        *device,
+                        kBindlessSmokeShaderModuleName,
+                        kBindlessSmokeFragmentEntryPoint,
+                        fragmentShader);
+                    if (!checkResult(result, "createSlangShaderModule(fragment)")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = device->createGraphicsPipeline(
+                        GraphicsPipelineDesc{
+                            .vertexShader = vertexShader.get(),
+                            .fragmentShader = fragmentShader.get(),
+                            .colorFormat = Format::Rgba8Unorm,
+                            .topology = PrimitiveTopology::TriangleList,
+                            .usesBindlessHeap = true,
+                        },
+                        pipeline);
+                    if (!checkResult(result, "createGraphicsPipeline(bindless)")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+
+                if (exitCode == 0) {
+                    result = fence->wait();
+                    if (!checkResult(result, "fence wait")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = fence->reset();
+                    if (!checkResult(result, "fence reset")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = commandPool->reset();
+                    if (!checkResult(result, "commandPool reset")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = commandBuffer->begin();
+                    if (!checkResult(result, "commandBuffer begin")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+
+                if (exitCode == 0) {
+                    TextureBarrierDesc sourceToColor{
+                        .texture = sourceTexture.get(),
+                        .before = ResourceState::Undefined,
+                        .after = ResourceState::ColorAttachment,
+                        .baseMip = 0,
+                        .mipCount = 1,
+                        .baseLayer = 0,
+                        .layerCount = 1,
+                    };
+                    commandBuffer->barrier(BarrierDesc{.textures = &sourceToColor, .textureCount = 1});
+
+                    const Rect renderArea{
+                        .x = 0,
+                        .y = 0,
+                        .width = kWidth,
+                        .height = kHeight,
+                    };
+                    RenderingAttachmentDesc sourceAttachment{
+                        .view = sourceTextureView.get(),
+                        .state = ResourceState::ColorAttachment,
+                        .loadOp = LoadOp::Clear,
+                        .storeOp = StoreOp::Store,
+                        .clearColor = ColorValue{0.25f, 0.50f, 0.75f, 1.0f},
+                    };
+                    commandBuffer->beginRendering(RenderingDesc{
+                        .renderArea = renderArea,
+                        .colorAttachments = &sourceAttachment,
+                        .colorAttachmentCount = 1,
+                    });
+                    commandBuffer->endRendering();
+
+                    TextureBarrierDesc sourceToShaderRead{
+                        .texture = sourceTexture.get(),
+                        .before = ResourceState::ColorAttachment,
+                        .after = ResourceState::ShaderRead,
+                        .baseMip = 0,
+                        .mipCount = 1,
+                        .baseLayer = 0,
+                        .layerCount = 1,
+                    };
+                    commandBuffer->barrier(BarrierDesc{.textures = &sourceToShaderRead, .textureCount = 1});
+
+                    TextureBarrierDesc outputToColor{
+                        .texture = outputTexture.get(),
+                        .before = ResourceState::Undefined,
+                        .after = ResourceState::ColorAttachment,
+                        .baseMip = 0,
+                        .mipCount = 1,
+                        .baseLayer = 0,
+                        .layerCount = 1,
+                    };
+                    commandBuffer->barrier(BarrierDesc{.textures = &outputToColor, .textureCount = 1});
+
+                    RenderingAttachmentDesc outputAttachment{
+                        .view = outputTextureView.get(),
+                        .state = ResourceState::ColorAttachment,
+                        .loadOp = LoadOp::Clear,
+                        .storeOp = StoreOp::Store,
+                        .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 1.0f},
+                    };
+                    commandBuffer->beginRendering(RenderingDesc{
+                        .renderArea = renderArea,
+                        .colorAttachments = &outputAttachment,
+                        .colorAttachmentCount = 1,
+                    });
+                    commandBuffer->setViewport(Viewport{
+                        .x = 0.0f,
+                        .y = 0.0f,
+                        .width = static_cast<float>(kWidth),
+                        .height = static_cast<float>(kHeight),
+                        .minDepth = 0.0f,
+                        .maxDepth = 1.0f,
+                    });
+                    commandBuffer->setScissor(renderArea);
+                    commandBuffer->bindGraphicsPipeline(*pipeline);
+                    commandBuffer->bindBindlessHeap(*bindlessHeap);
+                    commandBuffer->draw(3);
+                    commandBuffer->endRendering();
+
+                    TextureBarrierDesc outputToTransfer{
+                        .texture = outputTexture.get(),
+                        .before = ResourceState::ColorAttachment,
+                        .after = ResourceState::TransferSource,
+                        .baseMip = 0,
+                        .mipCount = 1,
+                        .baseLayer = 0,
+                        .layerCount = 1,
+                    };
+                    commandBuffer->barrier(BarrierDesc{.textures = &outputToTransfer, .textureCount = 1});
+                    commandBuffer->copyTextureToBuffer(TextureBufferCopyDesc{
+                        .texture = outputTexture.get(),
+                        .buffer = readbackBuffer.get(),
+                        .width = kWidth,
+                        .height = kHeight,
+                        .depth = 1,
+                        .mipLevel = 0,
+                        .baseLayer = 0,
+                    });
+
+                    result = commandBuffer->end();
+                    if (!checkResult(result, "commandBuffer end")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+
+                if (exitCode == 0) {
+                    CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+                    result = graphicsQueue->submit(QueueSubmitDesc{
+                        .commandBuffers = commandBuffers,
+                        .commandBufferCount = 1,
+                        .signalFence = fence.get(),
+                    });
+                    if (!checkResult(result, "graphicsQueue submit")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    result = fence->wait();
+                    if (!checkResult(result, "fence wait after submit")) {
+                        exitCode = resultToExitCode(result);
+                    }
+                }
+                if (exitCode == 0) {
+                    readbackBuffer->invalidate();
+                    std::vector<uint32_t> pixels(static_cast<size_t>(kWidth) * kHeight);
+                    void* mapped = readbackBuffer->map();
+                    if (mapped == nullptr) {
+                        std::cerr << "Failed to map bindless smoke readback buffer.\n";
+                        exitCode = 1;
+                    } else {
+                        std::memcpy(pixels.data(), mapped, static_cast<size_t>(kReadbackByteSize));
+                        readbackBuffer->unmap();
+
+                        uint32_t matchedPixelCount = 0;
+                        const auto* bytes = reinterpret_cast<const uint8_t*>(pixels.data());
+                        for (size_t index = 0; index < pixels.size(); ++index) {
+                            const uint8_t r = bytes[index * 4 + 0];
+                            const uint8_t g = bytes[index * 4 + 1];
+                            const uint8_t b = bytes[index * 4 + 2];
+                            const uint8_t a = bytes[index * 4 + 3];
+                            if (r >= 48 && r <= 80 && g >= 112 && g <= 144 && b >= 176 && b <= 208 && a >= 240) {
+                                ++matchedPixelCount;
+                            }
+                        }
+
+                        if (matchedPixelCount < pixels.size() / 2) {
+                            const uint8_t r = bytes[0];
+                            const uint8_t g = bytes[1];
+                            const uint8_t b = bytes[2];
+                            const uint8_t a = bytes[3];
+                            std::cerr << "Bindless descriptor heap pixel check failed: "
+                                      << matchedPixelCount << " matching pixels. First pixel RGBA=("
+                                      << static_cast<uint32_t>(r) << ", "
+                                      << static_cast<uint32_t>(g) << ", "
+                                      << static_cast<uint32_t>(b) << ", "
+                                      << static_cast<uint32_t>(a) << ").\n";
+                            exitCode = 1;
+                        }
+                    }
+                }
+            }
+
+            if (device != nullptr) {
+                (void)device->waitIdle();
             }
         }
     }
