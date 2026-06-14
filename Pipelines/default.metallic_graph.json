@@ -1,36 +1,44 @@
 {
-    "edges": [
-        {
-            "dst": "CopyColor.source",
-            "id": 2,
-            "src": "ImageSample.color"
-        }
-    ],
-    "name": "DefaultTriangle",
+    "edges": [],
+    "name": "StanfordBunnyWireframe",
     "nodes": [
         {
             "id": 2,
-            "name": "CopyColor",
+            "name": "SceneRayQueryVisualization",
             "position": {
-                "x": 220.0,
-                "y": 428.0
+                "x": 335.0,
+                "y": 281.0
             },
-            "properties": {},
-            "type": "CopyColorPass"
-        },
-        {
-            "id": 3,
-            "name": "ImageSample",
-            "position": {
-                "x": -72.0,
-                "y": 705.0
+            "properties": {
+                "camera": {
+                    "center": [
+                        -0.01684040017426014,
+                        0.11015400290489197,
+                        -0.0015369500033557415
+                    ],
+                    "eye": [
+                        -0.01684040017426014,
+                        0.11015400290489197,
+                        0.2199999988079071
+                    ],
+                    "fovDegrees": 60.0,
+                    "projection": "perspective",
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 10000.0,
+                    "znear": 0.10000000149011612
+                },
+                "granularity": "instance",
+                "path": "Asset/StandfordBunny/scene.gltf"
             },
-            "properties": {},
-            "type": "ImageSamplePass"
+            "type": "SceneRayQueryVisualizationPass"
         }
     ],
     "outputs": [
-        "CopyColor.color"
+        "SceneRayQueryVisualization.color"
     ],
     "version": 1
 }
