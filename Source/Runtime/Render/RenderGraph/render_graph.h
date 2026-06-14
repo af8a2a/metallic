@@ -209,6 +209,7 @@ public:
     virtual ~RenderGraphPass() = default;
 
     virtual RenderPassReflection reflect(const RenderGraphCompileContext& context) const = 0;
+    virtual QueueType queueType() const;
     virtual Result compile(const RenderGraphCompileContext& context, std::string& log);
     virtual Result execute(RenderGraphExecutionContext& context) = 0;
 
@@ -323,6 +324,12 @@ bool splitRenderGraphFieldName(
     std::string& outFieldName);
 std::string makeRenderGraphFieldName(std::string_view passName, std::string_view fieldName);
 
+struct RenderGraphSubmitDesc {
+    Queue* graphicsQueue = nullptr;
+    Queue* computeQueue = nullptr;
+    Queue* copyQueue = nullptr;
+};
+
 class RenderGraphExecutor {
 public:
     RenderGraphExecutor();
@@ -341,6 +348,8 @@ public:
         uint32_t height,
         std::string& log);
     Result execute(CommandBuffer& commandBuffer);
+    Result execute(const RenderGraphSubmitDesc& desc);
+    Result waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);
     bool syncProperties(const RenderGraph& graph);
     Result transitionOutput(
         CommandBuffer& commandBuffer,

@@ -1114,6 +1114,11 @@ private:
 
 class RenderGraphBufferWritePass final : public RenderGraphPass {
 public:
+    QueueType queueType() const override
+    {
+        return QueueType::Compute;
+    }
+
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
@@ -1188,6 +1193,11 @@ private:
 
 class RenderGraphBufferCopyPass final : public RenderGraphPass {
 public:
+    QueueType queueType() const override
+    {
+        return QueueType::Compute;
+    }
+
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;

@@ -2,6 +2,7 @@
 #include "Runtime/Render/Profiling/nsight_events.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <fstream>
 #include <queue>
@@ -311,6 +312,34 @@ ColorValue debugLabelColorFromArgb(uint32_t argb)
         static_cast<float>(argb & 0xffu) * kInv255,
         static_cast<float>((argb >> 24u) & 0xffu) * kInv255,
     };
+}
+
+const char* queueTypeName(QueueType type)
+{
+    switch (type) {
+    case QueueType::Graphics:
+        return "Graphics";
+    case QueueType::Compute:
+        return "Compute";
+    case QueueType::Copy:
+        return "Copy";
+    }
+
+    return "Unknown";
+}
+
+Queue* queueForSubmitDesc(const RenderGraphSubmitDesc& desc, QueueType type)
+{
+    switch (type) {
+    case QueueType::Graphics:
+        return desc.graphicsQueue;
+    case QueueType::Compute:
+        return desc.computeQueue;
+    case QueueType::Copy:
+        return desc.copyQueue;
+    }
+
+    return nullptr;
 }
 
 bool nodeNameExists(const std::vector<RenderGraphNode>& nodes, std::string_view name, uint32_t ignoreId = 0)
@@ -684,6 +713,11 @@ const RenderGraphField* RenderPassReflection::findField(
             return field.visibility == visibility && field.name == name;
         });
     return iter == fields_.end() ? nullptr : &(*iter);
+}
+
+QueueType RenderGraphPass::queueType() const
+{
+    return QueueType::Graphics;
 }
 
 Result RenderGraphPass::compile(const RenderGraphCompileContext&, std::string&)
@@ -1447,9 +1481,22 @@ struct RenderGraphExecutor::Impl {
         uint32_t id = 0;
         std::string name;
         std::string type;
+        QueueType queueType = QueueType::Graphics;
         RenderGraphProperties properties = RenderGraphProperties::object();
         std::unique_ptr<RenderGraphPass> pass;
         RenderPassReflection reflection;
+    };
+
+    struct QueueCommandContext {
+        Queue* queue = nullptr;
+        std::unique_ptr<CommandPool> commandPool;
+        bool resetForCurrentSubmit = false;
+    };
+
+    struct SubmissionSegment {
+        QueueType queueType = QueueType::Graphics;
+        Queue* queue = nullptr;
+        CommandBuffer* commandBuffer = nullptr;
     };
 
     Device* device = nullptr;
@@ -1460,6 +1507,11 @@ struct RenderGraphExecutor::Impl {
     std::unordered_map<std::string, ResourceSlot> resources;
     std::unordered_map<std::string, std::string> inputAliases;
     std::unique_ptr<BindlessHeap> bindlessHeap;
+    std::array<QueueCommandContext, 3> queueCommandContexts;
+    std::vector<std::unique_ptr<CommandBuffer>> submittedCommandBuffers;
+    std::vector<std::unique_ptr<Semaphore>> submittedSemaphores;
+    std::vector<std::unique_ptr<Fence>> submittedFences;
+    bool hasSubmittedWork = false;
     bool isCompiled = false;
 
     RenderGraphResource* resource(std::string_view fullName)
@@ -1505,6 +1557,109 @@ struct RenderGraphExecutor::Impl {
             [](const RenderGraphField& field) {
                 return isBindlessField(field);
             });
+    }
+
+    static size_t queueContextIndex(QueueType type)
+    {
+        switch (type) {
+        case QueueType::Graphics:
+            return 0;
+        case QueueType::Compute:
+            return 1;
+        case QueueType::Copy:
+            return 2;
+        }
+
+        return 0;
+    }
+
+    QueueCommandContext& queueCommandContext(QueueType type)
+    {
+        return queueCommandContexts[queueContextIndex(type)];
+    }
+
+    Result waitForSubmittedWork(uint64_t timeoutNanoseconds)
+    {
+        if (!hasSubmittedWork) {
+            return {};
+        }
+
+        for (const std::unique_ptr<Fence>& fence : submittedFences) {
+            if (fence == nullptr) {
+                continue;
+            }
+            Result result = fence->wait(timeoutNanoseconds);
+            if (!result) {
+                return result;
+            }
+        }
+
+        hasSubmittedWork = false;
+        submittedCommandBuffers.clear();
+        submittedSemaphores.clear();
+        submittedFences.clear();
+        return {};
+    }
+
+    Result prepareCommandPool(QueueType type, Queue& queue, CommandPool*& outCommandPool)
+    {
+        outCommandPool = nullptr;
+        QueueCommandContext& context = queueCommandContext(type);
+        if (context.queue != &queue || context.commandPool == nullptr) {
+            context.commandPool.reset();
+            Result result = device->createCommandPool(queue, context.commandPool);
+            if (!result || context.commandPool == nullptr) {
+                return result ? makeError(Error::Failure) : result;
+            }
+            context.queue = &queue;
+        }
+
+        if (!context.resetForCurrentSubmit) {
+            Result result = context.commandPool->reset();
+            if (!result) {
+                return result;
+            }
+            context.resetForCurrentSubmit = true;
+        }
+
+        outCommandPool = context.commandPool.get();
+        return {};
+    }
+
+    bool hasCrossQueueResourceEdges(std::string& log) const
+    {
+        for (const auto& [inputName, outputName] : inputAliases) {
+            std::string inputPass;
+            std::string inputField;
+            std::string outputPass;
+            std::string outputField;
+            if (!splitRenderGraphFieldName(inputName, inputPass, inputField) ||
+                !splitRenderGraphFieldName(outputName, outputPass, outputField)) {
+                continue;
+            }
+
+            const CompiledNode* inputNode = compiledNode(inputPass);
+            const CompiledNode* outputNode = compiledNode(outputPass);
+            if (inputNode == nullptr || outputNode == nullptr) {
+                continue;
+            }
+
+            if (inputNode->queueType != outputNode->queueType) {
+                log = std::string("RenderGraph multi-queue submission does not yet support "
+                    "cross-queue resource edges: ") +
+                    outputName +
+                    " (" +
+                    queueTypeName(outputNode->queueType) +
+                    ") -> " +
+                    inputName +
+                    " (" +
+                    queueTypeName(inputNode->queueType) +
+                    ")";
+                return true;
+            }
+        }
+
+        return false;
     }
 
     Result transition(
@@ -1560,6 +1715,83 @@ struct RenderGraphExecutor::Impl {
         resource.lastAccess = access;
         return {};
     }
+
+    Result executeNode(CommandBuffer& commandBuffer, CompiledNode& node)
+    {
+        std::vector<RenderGraphExecutionContext::Binding> bindings;
+
+        for (const RenderGraphField& field : node.reflection.fields()) {
+            const std::string localName = field.name;
+            const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
+            RenderGraphResource* resource = nullptr;
+
+            if (field.visibility == RenderGraphFieldVisibility::Output) {
+                resource = this->resource(fullName);
+                if (resource != nullptr) {
+                    Result result = transition(
+                        commandBuffer,
+                        *resource,
+                        stateForAccess(field.access),
+                        field.access);
+                    if (!result) {
+                        return result;
+                    }
+                }
+            } else {
+                const auto alias = inputAliases.find(fullName);
+                if (alias != inputAliases.end()) {
+                    resource = this->resource(alias->second);
+                    if (resource != nullptr) {
+                        Result result = transition(
+                            commandBuffer,
+                            *resource,
+                            stateForAccess(field.access),
+                            field.access);
+                        if (!result) {
+                            return result;
+                        }
+                    }
+                }
+            }
+
+            bindings.push_back(RenderGraphExecutionContext::Binding{
+                .fieldName = localName,
+                .resource = resource,
+                .visibility = field.visibility,
+                .bindlessAccess = field.bindlessAccess,
+                .bindlessHandle = resource != nullptr
+                    ? resource->bindlessHandle
+                    : BindlessHandle{},
+                .sampledImageBindlessHandle = resource != nullptr
+                    ? resource->sampledImageBindlessHandle
+                    : BindlessHandle{},
+            });
+        }
+
+        if (bindlessHeap != nullptr && usesBindlessResource(node)) {
+            commandBuffer.bindBindlessHeap(*bindlessHeap);
+        }
+
+        RenderGraphExecutionContext context(
+            commandBuffer,
+            width,
+            height,
+            node.properties,
+            std::move(bindings));
+        const std::string markerName = passProfileMarkerName(node.name, node.type);
+        const uint32_t markerColor = profiling::nsightColorFromName(node.type);
+        const profiling::NsightProfileRange passMarker(
+            markerName.c_str(),
+            markerColor,
+            node.id);
+        commandBuffer.beginDebugLabel(DebugLabelDesc{
+            .name = markerName.c_str(),
+            .color = debugLabelColorFromArgb(markerColor),
+        });
+        Result result = node.pass->execute(context);
+        commandBuffer.endDebugLabel();
+        return result;
+    }
 };
 
 RenderGraphExecutor::RenderGraphExecutor()
@@ -1567,7 +1799,12 @@ RenderGraphExecutor::RenderGraphExecutor()
 {
 }
 
-RenderGraphExecutor::~RenderGraphExecutor() = default;
+RenderGraphExecutor::~RenderGraphExecutor()
+{
+    if (impl_ != nullptr) {
+        (void)impl_->waitForSubmittedWork(UINT64_MAX);
+    }
+}
 RenderGraphExecutor::RenderGraphExecutor(RenderGraphExecutor&&) noexcept = default;
 RenderGraphExecutor& RenderGraphExecutor::operator=(RenderGraphExecutor&&) noexcept = default;
 
@@ -1594,6 +1831,21 @@ Result RenderGraphExecutor::compile(
     if (!buildActiveGraph(graph, activeGraph, log)) {
         impl_->isCompiled = false;
         return makeError(Error::InvalidArgument);
+    }
+
+    Result pendingResult = impl_->waitForSubmittedWork(UINT64_MAX);
+    if (!pendingResult) {
+        log = resultMessage("RenderGraph waitForSubmittedWork", pendingResult);
+        impl_->isCompiled = false;
+        return pendingResult;
+    }
+
+    if (impl_->device != nullptr && impl_->device != &device) {
+        for (Impl::QueueCommandContext& queueContext : impl_->queueCommandContexts) {
+            queueContext.queue = nullptr;
+            queueContext.commandPool.reset();
+            queueContext.resetForCurrentSubmit = false;
+        }
     }
 
     impl_->device = &device;
@@ -1625,11 +1877,13 @@ Result RenderGraphExecutor::compile(
             return makeError(Error::InvalidArgument);
         }
         pass->setProperties(node->properties);
+        const QueueType queueType = pass->queueType();
         RenderPassReflection reflection = pass->reflect(compileContext);
         impl_->executionList.push_back(Impl::CompiledNode{
             .id = node->id,
             .name = node->name,
             .type = node->type,
+            .queueType = queueType,
             .properties = node->properties,
             .pass = std::move(pass),
             .reflection = std::move(reflection),
@@ -1921,84 +2175,191 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer)
     }
 
     for (Impl::CompiledNode& node : impl_->executionList) {
-        std::vector<RenderGraphExecutionContext::Binding> bindings;
-
-        for (const RenderGraphField& field : node.reflection.fields()) {
-            const std::string localName = field.name;
-            const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
-            RenderGraphResource* resource = nullptr;
-
-            if (field.visibility == RenderGraphFieldVisibility::Output) {
-                resource = impl_->resource(fullName);
-                if (resource != nullptr) {
-                    Result result = impl_->transition(
-                        commandBuffer,
-                        *resource,
-                        stateForAccess(field.access),
-                        field.access);
-                    if (!result) {
-                        return result;
-                    }
-                }
-            } else {
-                const auto alias = impl_->inputAliases.find(fullName);
-                if (alias != impl_->inputAliases.end()) {
-                    resource = impl_->resource(alias->second);
-                    if (resource != nullptr) {
-                        Result result = impl_->transition(
-                            commandBuffer,
-                            *resource,
-                            stateForAccess(field.access),
-                            field.access);
-                        if (!result) {
-                            return result;
-                        }
-                    }
-                }
-            }
-
-            bindings.push_back(RenderGraphExecutionContext::Binding{
-                .fieldName = localName,
-                .resource = resource,
-                .visibility = field.visibility,
-                .bindlessAccess = field.bindlessAccess,
-                .bindlessHandle = resource != nullptr
-                    ? resource->bindlessHandle
-                    : BindlessHandle{},
-                .sampledImageBindlessHandle = resource != nullptr
-                    ? resource->sampledImageBindlessHandle
-                    : BindlessHandle{},
-            });
-        }
-
-        if (impl_->bindlessHeap != nullptr && Impl::usesBindlessResource(node)) {
-            commandBuffer.bindBindlessHeap(*impl_->bindlessHeap);
-        }
-
-        RenderGraphExecutionContext context(
-            commandBuffer,
-            impl_->width,
-            impl_->height,
-            node.properties,
-            std::move(bindings));
-        const std::string markerName = passProfileMarkerName(node.name, node.type);
-        const uint32_t markerColor = profiling::nsightColorFromName(node.type);
-        const profiling::NsightProfileRange passMarker(
-            markerName.c_str(),
-            markerColor,
-            node.id);
-        commandBuffer.beginDebugLabel(DebugLabelDesc{
-            .name = markerName.c_str(),
-            .color = debugLabelColorFromArgb(markerColor),
-        });
-        Result result = node.pass->execute(context);
-        commandBuffer.endDebugLabel();
+        Result result = impl_->executeNode(commandBuffer, node);
         if (!result) {
             return result;
         }
     }
 
     return {};
+}
+
+Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
+{
+    if (!impl_->isCompiled || impl_->device == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    Result result = impl_->waitForSubmittedWork(UINT64_MAX);
+    if (!result) {
+        return result;
+    }
+    impl_->submittedCommandBuffers.clear();
+    impl_->submittedSemaphores.clear();
+    impl_->submittedFences.clear();
+
+    std::string crossQueueLog;
+    if (impl_->hasCrossQueueResourceEdges(crossQueueLog)) {
+        return makeError(Error::Unsupported);
+    }
+
+    for (Impl::QueueCommandContext& queueContext : impl_->queueCommandContexts) {
+        queueContext.resetForCurrentSubmit = false;
+    }
+
+    std::vector<Impl::SubmissionSegment> segments;
+    CommandBuffer* currentCommandBuffer = nullptr;
+    QueueType currentQueueType = QueueType::Graphics;
+    bool hasCurrentSegment = false;
+
+    auto endCurrentSegment = [&]() -> Result {
+        if (currentCommandBuffer == nullptr) {
+            return {};
+        }
+        Result endResult = currentCommandBuffer->end();
+        if (!endResult) {
+            return endResult;
+        }
+        currentCommandBuffer = nullptr;
+        hasCurrentSegment = false;
+        return {};
+    };
+
+    auto beginSegment = [&](QueueType queueType, Queue& queue) -> Result {
+        CommandPool* commandPool = nullptr;
+        Result prepareResult = impl_->prepareCommandPool(queueType, queue, commandPool);
+        if (!prepareResult) {
+            return prepareResult;
+        }
+        if (commandPool == nullptr) {
+            return makeError(Error::Failure);
+        }
+
+        std::unique_ptr<CommandBuffer> commandBuffer;
+        Result createResult = commandPool->createCommandBuffer(commandBuffer);
+        if (!createResult || commandBuffer == nullptr) {
+            return createResult ? makeError(Error::Failure) : createResult;
+        }
+        Result beginResult = commandBuffer->begin();
+        if (!beginResult) {
+            return beginResult;
+        }
+
+        currentCommandBuffer = commandBuffer.get();
+        currentQueueType = queueType;
+        hasCurrentSegment = true;
+        segments.push_back(Impl::SubmissionSegment{
+            .queueType = queueType,
+            .queue = &queue,
+            .commandBuffer = currentCommandBuffer,
+        });
+        impl_->submittedCommandBuffers.push_back(std::move(commandBuffer));
+        return {};
+    };
+
+    for (Impl::CompiledNode& node : impl_->executionList) {
+        Queue* queue = queueForSubmitDesc(desc, node.queueType);
+        if (queue == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (!hasCurrentSegment || node.queueType != currentQueueType) {
+            result = endCurrentSegment();
+            if (!result) {
+                return result;
+            }
+            result = beginSegment(node.queueType, *queue);
+            if (!result) {
+                return result;
+            }
+        }
+
+        result = impl_->executeNode(*currentCommandBuffer, node);
+        if (!result) {
+            return result;
+        }
+    }
+
+    result = endCurrentSegment();
+    if (!result) {
+        return result;
+    }
+
+    if (segments.empty()) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    if (segments.size() > 1) {
+        impl_->submittedSemaphores.reserve(segments.size() - 1);
+        for (size_t index = 0; index + 1 < segments.size(); ++index) {
+            std::unique_ptr<Semaphore> semaphore;
+            result = impl_->device->createSemaphore(semaphore);
+            if (!result || semaphore == nullptr) {
+                return result ? makeError(Error::Failure) : result;
+            }
+            impl_->submittedSemaphores.push_back(std::move(semaphore));
+        }
+    }
+
+    impl_->submittedFences.reserve(segments.size());
+    for (size_t index = 0; index < segments.size(); ++index) {
+        std::unique_ptr<Fence> fence;
+        result = impl_->device->createFence(false, fence);
+        if (!result || fence == nullptr) {
+            return result ? makeError(Error::Failure) : result;
+        }
+        impl_->submittedFences.push_back(std::move(fence));
+    }
+
+    for (size_t index = 0; index < segments.size(); ++index) {
+        Impl::SubmissionSegment& segment = segments[index];
+        CommandBuffer* commandBuffers[] = {segment.commandBuffer};
+
+        SemaphoreSubmitDesc waitSemaphore{};
+        const bool waitsOnPrevious = index > 0;
+        if (waitsOnPrevious) {
+            waitSemaphore = SemaphoreSubmitDesc{
+                .semaphore = impl_->submittedSemaphores[index - 1].get(),
+                .stages = PipelineStageBits::AllCommands,
+            };
+        }
+
+        SemaphoreSubmitDesc signalSemaphore{};
+        const bool signalsNext = index + 1 < segments.size();
+        if (signalsNext) {
+            signalSemaphore = SemaphoreSubmitDesc{
+                .semaphore = impl_->submittedSemaphores[index].get(),
+                .stages = PipelineStageBits::AllCommands,
+            };
+        }
+
+        result = segment.queue->submit(QueueSubmitDesc{
+            .waitSemaphores = waitsOnPrevious ? &waitSemaphore : nullptr,
+            .waitSemaphoreCount = waitsOnPrevious ? 1u : 0u,
+            .commandBuffers = commandBuffers,
+            .commandBufferCount = 1,
+            .signalSemaphores = signalsNext ? &signalSemaphore : nullptr,
+            .signalSemaphoreCount = signalsNext ? 1u : 0u,
+            .signalFence = impl_->submittedFences[index].get(),
+        });
+        if (!result) {
+            impl_->submittedFences.resize(index);
+            impl_->hasSubmittedWork = index > 0;
+            if (!impl_->hasSubmittedWork) {
+                impl_->submittedCommandBuffers.clear();
+                impl_->submittedSemaphores.clear();
+                impl_->submittedFences.clear();
+            }
+            return result;
+        }
+        impl_->hasSubmittedWork = true;
+    }
+
+    return {};
+}
+
+Result RenderGraphExecutor::waitForSubmittedWork(uint64_t timeoutNanoseconds)
+{
+    return impl_->waitForSubmittedWork(timeoutNanoseconds);
 }
 
 bool RenderGraphExecutor::syncProperties(const RenderGraph& graph)

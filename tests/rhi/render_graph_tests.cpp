@@ -834,52 +834,16 @@ public:
             return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
 
-        std::unique_ptr<render::CommandPool> commandPool;
-        result = device->createCommandPool(*computeQueue, commandPool);
-        if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
-        }
-
-        std::unique_ptr<render::CommandBuffer> commandBuffer;
-        result = commandPool->createCommandBuffer(commandBuffer);
-        if (!result || commandBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
-        }
-
-        std::unique_ptr<render::Fence> fence;
-        result = device->createFence(false, fence);
-        if (!result || fence == nullptr) {
-            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
-        }
-
-        result = commandBuffer->begin();
-        if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
-        }
-
-        result = executor.execute(*commandBuffer);
+        result = executor.execute(render::RenderGraphSubmitDesc{
+            .computeQueue = computeQueue,
+        });
         if (!result) {
             return RhiTestResult::fail(std::string("RenderGraphExecutor::execute returned ") + toString(result));
         }
 
-        result = commandBuffer->end();
+        result = executor.waitForSubmittedWork(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
-        }
-
-        render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
-        result = computeQueue->submit(render::QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
-            .signalFence = fence.get(),
-        });
-        if (!result) {
-            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
-        }
-
-        result = fence->wait(5'000'000'000ull);
-        if (!result) {
-            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+            return RhiTestResult::fail(std::string("RenderGraphExecutor::waitForSubmittedWork returned ") + toString(result));
         }
 
         render::RenderGraphResource* output = executor.outputResource("Copy.data");
@@ -903,6 +867,109 @@ public:
 
         if (actualWords != kExpectedWords) {
             return RhiTestResult::fail("buffer graph output bytes did not match expected pattern");
+        }
+
+        (void)device->waitIdle();
+        return RhiTestResult::pass();
+    }
+};
+
+class RenderGraphMultiQueueSubmitTest : public RhiTest {
+public:
+    RenderGraphMultiQueueSubmitTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_multi_queue_submit";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        constexpr uint64_t kByteSize = 16;
+        constexpr std::array<uint32_t, 4> kExpectedWords = {
+            0x11223344u,
+            0xAABBCCDDu,
+            0xDEADBEEFu,
+            0xCAFEBABEu,
+        };
+
+        std::unique_ptr<render::Device> device;
+        render::Result result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic RenderGraph Multi Queue Submit Test",
+                .enableValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true,
+            },
+            device);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+            }
+            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+        }
+        if (!device->capabilities().bindlessDescriptorHeap) {
+            return RhiTestResult::skip("DeviceCapabilities::bindlessDescriptorHeap is false");
+        }
+
+        render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
+        render::Queue* computeQueue = device->getQueue(render::QueueType::Compute);
+        if (graphicsQueue == nullptr) {
+            return RhiTestResult::fail("multi queue submit device has no graphics queue");
+        }
+        if (computeQueue == nullptr) {
+            return RhiTestResult::skip("multi queue submit device has no compute queue");
+        }
+
+        render::RenderGraph graph;
+        graph.setName("MultiQueueSubmit");
+        graph.addNode("TriangleRasterPass", "Triangle");
+        graph.addNode("RenderGraphBufferWritePass", "Write");
+        graph.markOutput("Triangle.color");
+        graph.markOutput("Write.data");
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        result = executor.compile(*device, graph, 32, 32, log);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(log);
+            }
+            return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+        }
+
+        result = executor.execute(render::RenderGraphSubmitDesc{
+            .graphicsQueue = graphicsQueue,
+            .computeQueue = computeQueue,
+        });
+        if (!result) {
+            return RhiTestResult::fail(std::string("RenderGraphExecutor::execute(RenderGraphSubmitDesc) returned ") + toString(result));
+        }
+
+        result = executor.waitForSubmittedWork(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(std::string("RenderGraphExecutor::waitForSubmittedWork returned ") + toString(result));
+        }
+
+        render::RenderGraphResource* output = executor.outputResource("Write.data");
+        if (output == nullptr ||
+            output->type != render::RenderGraphResourceType::Buffer ||
+            output->buffer == nullptr ||
+            output->bufferDesc.memoryLocation != render::MemoryLocation::HostReadback ||
+            output->bufferDesc.size != kByteSize) {
+            return RhiTestResult::fail("multi queue buffer output resource is invalid");
+        }
+
+        output->buffer->invalidate();
+        void* mapped = output->buffer->map();
+        if (mapped == nullptr) {
+            return RhiTestResult::fail("multi queue buffer graph output did not map");
+        }
+
+        std::array<uint32_t, 4> actualWords{};
+        std::memcpy(actualWords.data(), mapped, actualWords.size() * sizeof(uint32_t));
+        output->buffer->unmap();
+
+        if (actualWords != kExpectedWords) {
+            return RhiTestResult::fail("multi queue buffer graph output bytes did not match expected pattern");
         }
 
         (void)device->waitIdle();
@@ -966,6 +1033,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphMultiQueueSubmitTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphImageSamplePassPreviewTest);
 
 } // namespace
