@@ -29,6 +29,7 @@ private:
     void drawScenePanel();
     void drawSceneNode(int32_t nodeIndex);
     void drawViewportPanel();
+    void drawRenderGraphEditorWindow();
     void drawRenderGraphPanel();
     void drawRenderGraphSettingsPanel();
     void drawRenderPassesPanel();
@@ -88,6 +89,7 @@ private:
     bool viewportPreviewNeedsRender_ = false;
     bool swapchainOutOfDate_ = false;
     bool dockLayoutInitialized_ = false;
+    bool renderGraphEditorOpen_ = false;
     bool graphEditorPositionsInitialized_ = false;
     float mainScale_ = 1.0f;
     float clearColor_[4] = {0.07f, 0.08f, 0.10f, 1.0f};

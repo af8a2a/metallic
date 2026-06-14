@@ -833,34 +833,24 @@ void EditorApplication::setupDefaultDockLayout()
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
 
-    ImGuiID graphDockId = dockspaceId;
-    ImGuiID renderUiDockId = ImGui::DockBuilderSplitNode(
-        graphDockId,
+    ImGuiID viewportDockId = dockspaceId;
+    ImGuiID sideDockId = ImGui::DockBuilderSplitNode(
+        viewportDockId,
         ImGuiDir_Right,
         0.24f,
         nullptr,
-        &graphDockId);
+        &viewportDockId);
     ImGuiID bottomDockId = ImGui::DockBuilderSplitNode(
-        graphDockId,
+        viewportDockId,
         ImGuiDir_Down,
         0.28f,
         nullptr,
-        &graphDockId);
-    ImGuiID passesDockId = ImGui::DockBuilderSplitNode(
-        bottomDockId,
-        ImGuiDir_Right,
-        0.76f,
-        nullptr,
-        &bottomDockId);
+        &viewportDockId);
 
-    ImGui::DockBuilderDockWindow("Graph Editor", graphDockId);
-    ImGui::DockBuilderDockWindow("Graph Editor Settings", bottomDockId);
-    ImGui::DockBuilderDockWindow("Render Passes", passesDockId);
-    ImGui::DockBuilderDockWindow("Console", passesDockId);
-    ImGui::DockBuilderDockWindow("Assets", passesDockId);
-    ImGui::DockBuilderDockWindow("Render UI", renderUiDockId);
-    ImGui::DockBuilderDockWindow("Viewport", renderUiDockId);
-    ImGui::DockBuilderDockWindow("Scene", renderUiDockId);
+    ImGui::DockBuilderDockWindow("Viewport", viewportDockId);
+    ImGui::DockBuilderDockWindow("Scene", sideDockId);
+    ImGui::DockBuilderDockWindow("Assets", bottomDockId);
+    ImGui::DockBuilderDockWindow("Console", bottomDockId);
     ImGui::DockBuilderFinish(dockspaceId);
 }
 
@@ -910,20 +900,23 @@ void EditorApplication::drawDockspace()
         }
 
         if (ImGui::BeginMenu("Window")) {
-            if (ImGui::MenuItem("Reset Graph Editor Layout")) {
+            if (ImGui::MenuItem("Open Render Graph Editor")) {
+                renderGraphEditorOpen_ = true;
+            }
+            if (ImGui::MenuItem("Reset Main Layout")) {
                 ImGui::DockBuilderRemoveNode(dockspaceId);
                 dockLayoutInitialized_ = false;
             }
             ImGui::Separator();
             ImGui::MenuItem("Scene");
             ImGui::MenuItem("Viewport");
-            ImGui::MenuItem("Graph Editor");
-            ImGui::MenuItem("Graph Editor Settings");
-            ImGui::MenuItem("Render Passes");
-            ImGui::MenuItem("Render UI");
             ImGui::MenuItem("Assets");
             ImGui::MenuItem("Console");
             ImGui::EndMenu();
+        }
+
+        if (ImGui::Button("Open Render Graph Editor")) {
+            renderGraphEditorOpen_ = true;
         }
 
         ImGui::EndMenuBar();
@@ -936,10 +929,7 @@ void EditorApplication::drawPanels()
 {
     drawScenePanel();
     drawViewportPanel();
-    drawRenderGraphPanel();
-    drawRenderGraphSettingsPanel();
-    drawRenderPassesPanel();
-    drawRenderGraphRenderUiPanel();
+    drawRenderGraphEditorWindow();
 
     ImGui::Begin("Assets");
     ImGui::TextUnformatted(PROJECT_SOURCE_DIR);
@@ -1684,10 +1674,92 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
     ImNodes::EndNode();
 }
 
+void EditorApplication::drawRenderGraphEditorWindow()
+{
+    if (!renderGraphEditorOpen_) {
+        return;
+    }
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(
+        ImVec2(viewport->WorkPos.x + 48.0f * mainScale_, viewport->WorkPos.y + 48.0f * mainScale_),
+        ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1220.0f * mainScale_, 760.0f * mainScale_), ImGuiCond_FirstUseEver);
+
+    if (!ImGui::Begin("Render Graph Editor", &renderGraphEditorOpen_, ImGuiWindowFlags_NoDocking)) {
+        ImGui::End();
+        return;
+    }
+
+    if (ImGui::Button("New Graph")) {
+        resetDefaultRenderGraph();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load")) {
+        loadRenderGraph();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save")) {
+        saveRenderGraph();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Validate")) {
+        std::string log;
+        renderGraph_.validate(log);
+        renderGraphStatus_ = log;
+    }
+    if (!renderGraphStatus_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", renderGraphStatus_.c_str());
+    }
+
+    ImGui::Separator();
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float spacing = style.ItemSpacing.x;
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    const float bottomHeight = std::min(
+        218.0f * mainScale_,
+        std::max(150.0f * mainScale_, available.y * 0.42f));
+    const float topHeight = std::max(260.0f * mainScale_, available.y - bottomHeight - spacing);
+    const float sideWidth = std::min(
+        330.0f * mainScale_,
+        std::max(260.0f * mainScale_, available.x * 0.38f));
+    const float canvasWidth = std::max(360.0f * mainScale_, available.x - sideWidth - spacing);
+
+    ImGui::BeginChild("GraphCanvasPanel", ImVec2(canvasWidth, topHeight), true);
+    ImGui::TextUnformatted("Graph Editor");
+    ImGui::Separator();
+    drawRenderGraphPanel();
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    ImGui::BeginChild("RenderUiPanel", ImVec2(0.0f, topHeight), true);
+    ImGui::TextUnformatted("Render UI");
+    ImGui::Separator();
+    drawRenderGraphRenderUiPanel();
+    ImGui::EndChild();
+
+    ImGui::BeginChild("GraphSettingsPanel", ImVec2(sideWidth, 0.0f), true);
+    ImGui::TextUnformatted("Graph Editor Settings");
+    ImGui::Separator();
+    drawRenderGraphSettingsPanel();
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    ImGui::BeginChild("RenderPassesPanel", ImVec2(0.0f, 0.0f), true);
+    ImGui::TextUnformatted("Render Passes");
+    ImGui::Separator();
+    drawRenderPassesPanel();
+    ImGui::EndChild();
+
+    ImGui::End();
+}
+
 void EditorApplication::drawRenderGraphPanel()
 {
-    ImGui::Begin("Graph Editor");
-
     struct AttributeInfo {
         std::string fullName;
         render::RenderGraphFieldVisibility visibility = render::RenderGraphFieldVisibility::Output;
@@ -1861,14 +1933,10 @@ void EditorApplication::drawRenderGraphPanel()
             viewportPreviewValid_ = false;
         }
     }
-
-    ImGui::End();
 }
 
 void EditorApplication::drawRenderGraphSettingsPanel()
 {
-    ImGui::Begin("Graph Editor Settings");
-
     const std::string graphName = renderGraph_.name();
     if (ImGui::BeginCombo("Open Graph", graphName.c_str())) {
         ImGui::Selectable(graphName.c_str(), true);
@@ -1925,14 +1993,10 @@ void EditorApplication::drawRenderGraphSettingsPanel()
         ImGui::Separator();
         ImGui::TextWrapped("%s", renderGraphStatus_.c_str());
     }
-
-    ImGui::End();
 }
 
 void EditorApplication::drawRenderPassesPanel()
 {
-    ImGui::Begin("Render Passes");
-
     const float cardWidth = 148.0f * mainScale_;
     const float cardHeight = 74.0f * mainScale_;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
@@ -1994,14 +2058,10 @@ void EditorApplication::drawRenderPassesPanel()
         }
         ImGui::EndTable();
     }
-
-    ImGui::End();
 }
 
 void EditorApplication::drawRenderGraphRenderUiPanel()
 {
-    ImGui::Begin("Render UI");
-
     const render::RenderGraphEdge* edge = selectedGraphLinkId_ >= 0
         ? renderGraph_.findEdge(static_cast<uint32_t>(selectedGraphLinkId_))
         : nullptr;
@@ -2017,7 +2077,6 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
             selectedGraphLinkId_ = -1;
             viewportPreviewValid_ = false;
         }
-        ImGui::End();
         return;
     }
 
@@ -2032,7 +2091,6 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         ImGui::Text("Output: %s", renderGraph_.firstOutputName().c_str());
         ImGui::Text("Nodes: %zu", renderGraph_.nodes().size());
         ImGui::Text("Edges: %zu", renderGraph_.edges().size());
-        ImGui::End();
         return;
     }
 
@@ -2114,8 +2172,6 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
         viewportPreviewValid_ = false;
     }
-
-    ImGui::End();
 }
 
 } // namespace metallic

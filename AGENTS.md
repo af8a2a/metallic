@@ -1,20 +1,24 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`Source/` holds the runtime: `Rendering/` contains the frame graph and passes, `RHI/` contains backend-agnostic interfaces plus `Metal/` and `Vulkan/`, `PipelineEditor/` contains shared pipeline asset code, and `Asset/`, `Scene/`, and `Platform/` cover loading, scene state, and platform bridges. `Tools/PipelineEditor/` builds the standalone editor. `Shaders/` stores Slang/MSL sources, `Pipelines/` stores JSON graphs, `Asset/` stores runtime content, and `External/` vendors third-party libraries. Treat `build/`, `build-*`, `cmake-build-*`, `.idea/`, and `.cache/` as local outputs.
+`Source/` contains the application and runtime code. `Source/Editor/` hosts the editor shell, `Source/Runtime/Scene/` handles scene loading, and `Source/Runtime/Render/` contains Slang compilation, render graph code, render passes, and the Vulkan RHI backend under `GAPI/Vulkan/`. `Shaders/` stores Slang sources, `Pipelines/` stores JSON render graph assets, and `Asset/` contains sample content. `tests/scene/` and `tests/rhi/` build CTest executables. `External/` vendors dependencies; avoid changes there unless intentional. Treat `build/`, `build-*`, `cmake-build-*`, `Testing/`, `.cache/`, and IDE folders as local output.
 
 ## Build, Test, and Development Commands
-- `cmake -S . -B build` configures the project. Pass `-DSLANG_ROOT=<sdk>` if `External/slang` is absent; Windows also requires a Vulkan SDK.
-- `cmake --build build --target Metallic --config Debug` builds the renderer.
-- `cmake --build build --target PipelineEditorTool --config Debug` builds the standalone pipeline editor.
-- `cmake --build build --target Metallic --config Debug --clean-first` forces a clean renderer rebuild.
-- Run single-config builds from `build/Source/Metallic`; MSVC builds from `build/Source/Debug/Metallic.exe`. The editor lives under `build/Tools/PipelineEditor/...`.
+- `git submodule update --init --recursive` initializes vendored dependencies such as microprofile.
+- `cmake -S . -B build -DMETALLIC_BUILD_TESTS=ON` configures the project with tests enabled. Provide `-DSLANG_ROOT=<path>` if Slang is not available under `External/slang`.
+- `cmake --build build --target Metallic --config Debug` builds the main executable.
+- `cmake --build build --target MetallicSceneTests --config Debug` builds a focused test target.
+- `ctest --test-dir build -C Debug --output-on-failure` runs all tests. Add `-L scene` or `-L rhi` for subsets.
+- `build\Source\Debug\Metallic.exe --smoke-test` runs a quick Windows/MSVC smoke check after building.
 
 ## Coding Style & Naming Conventions
-C++23 is the default; use Objective-C++ only in `Source/Platform/*.mm`. Use 4-space indentation and no tabs. Match existing naming: `PascalCase` for types, `lowerCamelCase` for functions and locals, `kCamelCase` for constants, and lowercase underscore file names such as `frame_graph.cpp` and `vulkan_backend.cpp`. Keep shared logic in `Rendering/`, `RHI/`, or `PipelineEditor/`; isolate backend-specific code under `RHI/Metal`, `RHI/Vulkan`, or `Platform/`.
+The project uses C++23 through CMake. Match the existing style: 4-space indentation, no tabs, Allman braces for function definitions, same-line braces for control statements, and namespace end comments such as `} // namespace metallic::render`. Use `PascalCase` for types, `lowerCamelCase` for functions and locals, `kPascalCase` for constants, trailing underscores for private members, and snake_case file names such as `render_graph.cpp`.
 
 ## Testing Guidelines
-There is no dedicated in-tree unit test suite yet, so every change needs a build plus a smoke test on the touched path. Renderer changes should launch `Metallic`, load the relevant pipeline, and verify shader or pipeline reload (`F5` / `F6`) when affected. Pipeline asset changes should round-trip through `PipelineEditorTool` and reopen cleanly. If you add automated tests, place them under a top-level `tests/` directory and wire them into CMake.
+Tests are custom CTest executables, not a third-party unit framework. Scene tests use simple `expect` helpers and return nonzero on failure. RHI tests are registry-based, support `--list` and `--filter <text>`, and use exit code `77` for unsupported environments. Add tests under `tests/scene/` or `tests/rhi/`, wire them in `tests/CMakeLists.txt`, and keep generated images out of source control.
 
 ## Commit & Pull Request Guidelines
-Recent history uses imperative, feature-focused subjects such as `Refactor Vulkan ...`, `Fix ...`, and `Replace ...`. Keep commits scoped to one subsystem or behavior. Pull requests should explain what changed, why it changed, and which platform/backend you validated. Include screenshots for UI or rendering work, link related issues when relevant, and call out shader, pipeline JSON, asset, or dependency updates explicitly.
+Recent commits use short imperative subjects such as `Add runtime scene browser and tests`, `Refactor frame graph resource handling`, and `Integrate volk for Vulkan loading`. Keep commits scoped to one subsystem. Pull requests should describe the change, list validation commands, link issues, and include screenshots or output images for editor, shader, or rendering changes.
+
+## Agent-Specific Instructions
+Avoid broad rewrites in `External/` and generated build directories. Before changing shared render or RHI interfaces, inspect runtime callers and tests so behavior stays consistent across scene, render graph, and Vulkan paths.
