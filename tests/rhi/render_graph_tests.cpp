@@ -1080,6 +1080,72 @@ public:
     }
 };
 
+class RenderGraphMaterialShaderObjectPassSmokeTest : public RhiTest {
+public:
+    RenderGraphMaterialShaderObjectPassSmokeTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_material_shader_object_pass_smoke";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        render::Result result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic RenderGraph Shader Object Smoke Test",
+                .enableValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true,
+                .enableShaderObject = true,
+            },
+            device);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+            }
+            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+        }
+
+        render::RenderGraph graph;
+        graph.setName("MaterialShaderObjectSmoke");
+        graph.addNode(
+            "SceneMaterialShaderObjectPass",
+            "MaterialScene",
+            render::RenderGraphProperties{
+                {"path", "Asset/StandfordBunny/scene.gltf"},
+                {"debugAlternateShaders", true},
+            });
+        graph.markOutput("MaterialScene.color");
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        result = executor.compile(*device, graph, 128, 96, log);
+        const bool hasRequiredCapabilities =
+            device->capabilities().shaderObject &&
+            device->capabilities().bindlessDescriptorHeap;
+        if (!hasRequiredCapabilities) {
+            if (!render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::fail(
+                    std::string("expected Unsupported without shader-object capabilities, got ") +
+                    toString(result) +
+                    ": " +
+                    log);
+            }
+            return RhiTestResult::pass("SceneMaterialShaderObjectPass reported Unsupported without required capabilities");
+        }
+
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RenderGraphExecutor::compile returned ") +
+                toString(result) +
+                ": " +
+                log);
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
@@ -1092,6 +1158,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMultiQueueSubmitTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphImageSamplePassPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphMaterialShaderObjectPassSmokeTest);
 
 } // namespace
 } // namespace metallic::tests

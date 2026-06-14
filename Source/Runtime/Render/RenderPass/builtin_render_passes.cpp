@@ -8,6 +8,7 @@
 #include "stb_image.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <cstdint>
@@ -35,11 +36,17 @@ constexpr const char* kImageSampleFragmentEntryPoint = "imageSampleFragmentMain"
 constexpr const char* kBunnyWireframeShaderModuleName = "bunny_wireframe";
 constexpr const char* kBunnyWireframeVertexEntryPoint = "bunnyWireframeVertexMain";
 constexpr const char* kBunnyWireframeFragmentEntryPoint = "bunnyWireframeFragmentMain";
+constexpr const char* kMaterialShaderObjectShaderModuleName = "material_shader_object";
+constexpr const char* kMaterialShaderObjectVertexEntryPoint = "materialShaderObjectVertexMain";
+constexpr const char* kMaterialShaderObjectFragmentEntryPoint = "materialShaderObjectFragmentMain";
+constexpr const char* kMaterialShaderObjectAlternateFragmentEntryPoint =
+    "materialShaderObjectAlternateFragmentMain";
 constexpr const char* kRenderGraphBufferShaderModuleName = "render_graph_buffer";
 constexpr const char* kRenderGraphBufferWriteEntryPoint = "renderGraphBufferWriteMain";
 constexpr const char* kRenderGraphBufferCopyEntryPoint = "renderGraphBufferCopyMain";
 constexpr const char* kDefaultImageSamplePath = PROJECT_SOURCE_DIR "/Asset/statue-1275469_1280.jpg";
 constexpr const char* kDefaultBunnyScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
+constexpr const char* kDefaultMaterialScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
 constexpr uint64_t kRenderGraphBufferByteSize = 16;
 constexpr int32_t kGltfTriangleListMode = 4;
 
@@ -66,6 +73,47 @@ struct BunnyWireframeGpuParams {
     float clearColor[4] = {};
     float wireColor[4] = {};
     float settings[4] = {};
+};
+
+struct BunnyWireframeUserPush {
+    uint32_t paramsBuffer = 0;
+    uint32_t positionBuffer = 0;
+};
+
+struct MaterialShaderObjectGpuPosition {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float w = 1.0f;
+};
+
+struct MaterialShaderObjectGpuMaterial {
+    float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+struct MaterialShaderObjectGpuParams {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+};
+
+struct MaterialShaderObjectUserPush {
+    uint32_t positionBuffer = 0;
+    uint32_t materialIndexBuffer = 0;
+    uint32_t materialBuffer = 0;
+    uint32_t paramsBuffer = 0;
+    uint32_t vertexOffset = 0;
+    uint32_t materialVariant = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+};
+
+struct MaterialShaderObjectBatch {
+    uint32_t materialIndex = 0;
+    uint32_t firstVertex = 0;
+    uint32_t vertexCount = 0;
 };
 
 std::string resultMessage(std::string_view label, const Result& result)
@@ -114,6 +162,35 @@ Result createSlangShaderModule(
         outShaderModule);
     if (!result) {
         log += resultMessage("createShaderModule", result);
+        log += '\n';
+    }
+    return result;
+}
+
+Result compileSlangShader(
+    const char* moduleName,
+    const char* entryPointName,
+    ShaderCompileResult& outCompileResult,
+    std::string& log)
+{
+    Result result = compileSlangShaderToSpirv(
+        SlangShaderDesc{
+            .moduleName = moduleName,
+            .entryPointName = entryPointName,
+            .searchPath = kTriangleShaderSearchPath,
+        },
+        outCompileResult);
+    if (!result) {
+        log += "compileSlangShaderToSpirv(";
+        log += moduleName;
+        log += ".";
+        log += entryPointName;
+        log += ") returned ";
+        log += resultToString(result);
+        if (!outCompileResult.diagnostics.empty()) {
+            log += ": ";
+            log += outCompileResult.diagnostics;
+        }
         log += '\n';
     }
     return result;
@@ -659,11 +736,12 @@ public:
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        if (!context.device->capabilities().bindlessDescriptorHeap) {
-            log = "BunnyWireframePass requires DeviceCapabilities::bindlessDescriptorHeap";
+        if (!context.device->capabilities().shaderObject ||
+            !context.device->capabilities().bindlessDescriptorHeap) {
+            log = "BunnyWireframePass requires shaderObject and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
-        if (pipeline_ != nullptr) {
+        if (program_ != nullptr) {
             return {};
         }
 
@@ -722,11 +800,6 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        if (paramsHandle_.index != 0 || positionHandle_.index != 1) {
-            log = "BunnyWireframePass expected fresh bindless buffer handles 0 and 1";
-            return makeError(Error::Failure);
-        }
-
         result = bindlessHeap_->writeStorageBuffer(paramsHandle_, *paramsBuffer_);
         if (!result) {
             log += resultMessage("writeStorageBuffer(BunnyWireframePass params)", result);
@@ -740,38 +813,39 @@ public:
             return result;
         }
 
-        result = createSlangShaderModule(
-            *context.device,
+        ShaderCompileResult vertexCompile;
+        result = compileSlangShader(
             kBunnyWireframeShaderModuleName,
             kBunnyWireframeVertexEntryPoint,
-            vertexShader_,
+            vertexCompile,
             log);
         if (!result) {
             return result;
         }
-        result = createSlangShaderModule(
-            *context.device,
+        ShaderCompileResult fragmentCompile;
+        result = compileSlangShader(
             kBunnyWireframeShaderModuleName,
             kBunnyWireframeFragmentEntryPoint,
-            fragmentShader_,
+            fragmentCompile,
             log);
         if (!result) {
             return result;
         }
 
-        result = context.device->createGraphicsPipeline(
-            GraphicsPipelineDesc{
-                .vertexShader = vertexShader_.get(),
-                .fragmentShader = fragmentShader_.get(),
-                .colorFormat = Format::Rgba8Unorm,
-                .topology = PrimitiveTopology::TriangleList,
+        result = context.device->createGraphicsShaderObjectProgram(
+            GraphicsShaderObjectProgramDesc{
+                .vertexCode = vertexCompile.spirv.data(),
+                .vertexByteSize = static_cast<uint64_t>(vertexCompile.spirv.size() * sizeof(uint32_t)),
+                .fragmentCode = fragmentCompile.spirv.data(),
+                .fragmentByteSize = static_cast<uint64_t>(fragmentCompile.spirv.size() * sizeof(uint32_t)),
                 .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(BunnyWireframeUserPush),
             },
-            pipeline_);
-        if (!result) {
-            log += resultMessage("createGraphicsPipeline(BunnyWireframePass)", result);
+            program_);
+        if (!result || program_ == nullptr) {
+            log += resultMessage("createGraphicsShaderObjectProgram(BunnyWireframePass)", result);
             log += '\n';
-            return result;
+            return result ? makeError(Error::Failure) : result;
         }
 
         drawVertexCount_ = static_cast<uint32_t>(positions.size());
@@ -783,7 +857,7 @@ public:
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() ||
             bindlessHeap_ == nullptr ||
-            pipeline_ == nullptr ||
+            program_ == nullptr ||
             drawVertexCount_ == 0) {
             return makeError(Error::InvalidArgument);
         }
@@ -821,7 +895,13 @@ public:
         });
         context.commandBuffer().setScissor(renderArea);
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
-        context.commandBuffer().bindGraphicsPipeline(*pipeline_);
+        context.commandBuffer().bindGraphicsShaderObjectProgram(*program_);
+        context.commandBuffer().setGraphicsShaderObjectState();
+        const BunnyWireframeUserPush push{
+            .paramsBuffer = paramsHandle_.index,
+            .positionBuffer = positionHandle_.index,
+        };
+        context.commandBuffer().pushBindlessData(&push, sizeof(push));
         context.commandBuffer().draw(drawVertexCount_);
         context.commandBuffer().endRendering();
         return {};
@@ -1105,11 +1185,528 @@ private:
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     BindlessHandle positionHandle_;
     BindlessHandle paramsHandle_;
-    std::unique_ptr<ShaderModule> vertexShader_;
-    std::unique_ptr<ShaderModule> fragmentShader_;
-    std::unique_ptr<GraphicsPipeline> pipeline_;
+    std::unique_ptr<GraphicsShaderObjectProgram> program_;
     scene::Bounds drawBounds_;
     uint32_t drawVertexCount_ = 0;
+};
+
+class SceneMaterialShaderObjectPass final : public RasterPass {
+public:
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        reflection.addTextureOutput("color", "glTF material color via VK_EXT_shader_object")
+            .format = Format::Rgba8Unorm;
+        return reflection;
+    }
+
+    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        if (context.device == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (!context.device->capabilities().shaderObject ||
+            !context.device->capabilities().bindlessDescriptorHeap) {
+            log = "SceneMaterialShaderObjectPass requires shaderObject and bindlessDescriptorHeap capabilities";
+            return makeError(Error::Unsupported);
+        }
+        if (defaultProgram_ != nullptr && !batches_.empty()) {
+            return {};
+        }
+
+        std::vector<MaterialShaderObjectGpuPosition> positions;
+        std::vector<uint32_t> materialIndices;
+        std::vector<MaterialShaderObjectGpuMaterial> materials;
+        if (!loadSceneGeometry(properties(), positions, materialIndices, materials, batches_, drawBounds_, log)) {
+            return makeError(Error::Failure);
+        }
+
+        MaterialShaderObjectGpuParams params;
+        buildParams(context.width, context.height, drawBounds_, params);
+
+        Result result = uploadStorageBuffer(
+            *context.device,
+            positions.data(),
+            static_cast<uint64_t>(positions.size() * sizeof(MaterialShaderObjectGpuPosition)),
+            positionBuffer_,
+            log,
+            "SceneMaterialShaderObjectPass positions");
+        if (!result) {
+            return result;
+        }
+        result = uploadStorageBuffer(
+            *context.device,
+            materialIndices.data(),
+            static_cast<uint64_t>(materialIndices.size() * sizeof(uint32_t)),
+            materialIndexBuffer_,
+            log,
+            "SceneMaterialShaderObjectPass material indices");
+        if (!result) {
+            return result;
+        }
+        result = uploadStorageBuffer(
+            *context.device,
+            materials.data(),
+            static_cast<uint64_t>(materials.size() * sizeof(MaterialShaderObjectGpuMaterial)),
+            materialBuffer_,
+            log,
+            "SceneMaterialShaderObjectPass materials");
+        if (!result) {
+            return result;
+        }
+        result = uploadStorageBuffer(
+            *context.device,
+            &params,
+            sizeof(params),
+            paramsBuffer_,
+            log,
+            "SceneMaterialShaderObjectPass params");
+        if (!result) {
+            return result;
+        }
+
+        result = context.device->createBindlessHeap(
+            BindlessHeapDesc{
+                .maxBuffers = 4,
+            },
+            bindlessHeap_);
+        if (!result || bindlessHeap_ == nullptr) {
+            log += resultMessage("createBindlessHeap(SceneMaterialShaderObjectPass)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = allocateAndWriteBuffer(*bindlessHeap_, *positionBuffer_, positionHandle_, log, "positions");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *materialIndexBuffer_, materialIndexHandle_, log, "material indices");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *materialBuffer_, materialHandle_, log, "materials");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *paramsBuffer_, paramsHandle_, log, "params");
+        if (!result) {
+            return result;
+        }
+
+        ShaderCompileResult vertexCompile;
+        result = compileSlangShader(
+            kMaterialShaderObjectShaderModuleName,
+            kMaterialShaderObjectVertexEntryPoint,
+            vertexCompile,
+            log);
+        if (!result) {
+            return result;
+        }
+        ShaderCompileResult fragmentCompile;
+        result = compileSlangShader(
+            kMaterialShaderObjectShaderModuleName,
+            kMaterialShaderObjectFragmentEntryPoint,
+            fragmentCompile,
+            log);
+        if (!result) {
+            return result;
+        }
+        ShaderCompileResult alternateFragmentCompile;
+        result = compileSlangShader(
+            kMaterialShaderObjectShaderModuleName,
+            kMaterialShaderObjectAlternateFragmentEntryPoint,
+            alternateFragmentCompile,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        result = createProgram(*context.device, vertexCompile, fragmentCompile, defaultProgram_, log, "default");
+        if (!result) {
+            return result;
+        }
+        result = createProgram(*context.device, vertexCompile, alternateFragmentCompile, alternateProgram_, log, "alternate");
+        if (!result) {
+            return result;
+        }
+
+        return {};
+    }
+
+    Result execute(RenderGraphExecutionContext& context) override
+    {
+        TextureHandle color = context.outputTexture("color");
+        if (!color.valid() ||
+            bindlessHeap_ == nullptr ||
+            defaultProgram_ == nullptr ||
+            alternateProgram_ == nullptr ||
+            batches_.empty()) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        Result result = updateParamsBuffer(context.width(), context.height());
+        if (!result) {
+            return result;
+        }
+
+        const Rect renderArea{
+            .x = 0,
+            .y = 0,
+            .width = context.width(),
+            .height = context.height(),
+        };
+        RenderingAttachmentDesc attachment{
+            .view = color.view(),
+            .state = ResourceState::ColorAttachment,
+            .loadOp = LoadOp::Clear,
+            .storeOp = StoreOp::Store,
+            .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
+        };
+        context.commandBuffer().beginRendering(RenderingDesc{
+            .renderArea = renderArea,
+            .colorAttachments = &attachment,
+            .colorAttachmentCount = 1,
+        });
+        context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
+        context.commandBuffer().bindGraphicsShaderObjectProgram(*defaultProgram_);
+        context.commandBuffer().setViewport(Viewport{
+            .x = 0.0f,
+            .y = 0.0f,
+            .width = static_cast<float>(context.width()),
+            .height = static_cast<float>(context.height()),
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f,
+        });
+        context.commandBuffer().setScissor(renderArea);
+        context.commandBuffer().setGraphicsShaderObjectState();
+
+        const bool debugAlternateShaders =
+            context.properties().value("debugAlternateShaders", false);
+        GraphicsShaderObjectProgram* currentProgram = defaultProgram_.get();
+        for (const MaterialShaderObjectBatch& batch : batches_) {
+            GraphicsShaderObjectProgram* desiredProgram =
+                debugAlternateShaders && ((batch.materialIndex & 1u) != 0)
+                ? alternateProgram_.get()
+                : defaultProgram_.get();
+            if (desiredProgram != currentProgram) {
+                context.commandBuffer().bindGraphicsShaderObjectProgram(*desiredProgram);
+                currentProgram = desiredProgram;
+            }
+
+            const MaterialShaderObjectUserPush push{
+                .positionBuffer = positionHandle_.index,
+                .materialIndexBuffer = materialIndexHandle_.index,
+                .materialBuffer = materialHandle_.index,
+                .paramsBuffer = paramsHandle_.index,
+                .vertexOffset = batch.firstVertex,
+                .materialVariant = desiredProgram == alternateProgram_.get() ? 1u : 0u,
+            };
+            context.commandBuffer().pushBindlessData(&push, sizeof(push));
+            context.commandBuffer().draw(batch.vertexCount);
+        }
+
+        context.commandBuffer().endRendering();
+        return {};
+    }
+
+private:
+    static Result uploadStorageBuffer(
+        Device& device,
+        const void* data,
+        uint64_t byteSize,
+        std::unique_ptr<Buffer>& outBuffer,
+        std::string& log,
+        std::string_view label)
+    {
+        if (data == nullptr || byteSize == 0) {
+            log = std::string(label) + " upload data is empty";
+            return makeError(Error::InvalidArgument);
+        }
+
+        Result result = device.createBuffer(
+            BufferDesc{
+                .size = byteSize,
+                .structureStride = 0,
+                .usage = BufferUsageBits::Storage,
+                .memoryLocation = MemoryLocation::HostUpload,
+            },
+            outBuffer);
+        if (!result || outBuffer == nullptr) {
+            log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        void* mapped = outBuffer->map();
+        if (mapped == nullptr) {
+            log = std::string(label) + " failed to map upload buffer";
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, data, static_cast<size_t>(byteSize));
+        outBuffer->flush(0, byteSize);
+        outBuffer->unmap();
+        return {};
+    }
+
+    static Result allocateAndWriteBuffer(
+        BindlessHeap& heap,
+        Buffer& buffer,
+        BindlessHandle& outHandle,
+        std::string& log,
+        std::string_view label)
+    {
+        Result result = heap.allocateBuffer(outHandle);
+        if (!result || !outHandle.valid()) {
+            log += resultMessage(std::string("allocateBuffer(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = heap.writeStorageBuffer(outHandle, buffer);
+        if (!result) {
+            log += resultMessage(std::string("writeStorageBuffer(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
+            log += '\n';
+        }
+        return result;
+    }
+
+    static Result createProgram(
+        Device& device,
+        const ShaderCompileResult& vertexCompile,
+        const ShaderCompileResult& fragmentCompile,
+        std::unique_ptr<GraphicsShaderObjectProgram>& outProgram,
+        std::string& log,
+        std::string_view label)
+    {
+        Result result = device.createGraphicsShaderObjectProgram(
+            GraphicsShaderObjectProgramDesc{
+                .vertexCode = vertexCompile.spirv.data(),
+                .vertexByteSize = static_cast<uint64_t>(vertexCompile.spirv.size() * sizeof(uint32_t)),
+                .fragmentCode = fragmentCompile.spirv.data(),
+                .fragmentByteSize = static_cast<uint64_t>(fragmentCompile.spirv.size() * sizeof(uint32_t)),
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MaterialShaderObjectUserPush),
+            },
+            outProgram);
+        if (!result || outProgram == nullptr) {
+            log += resultMessage(std::string("createGraphicsShaderObjectProgram(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
+    }
+
+    static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
+    {
+        if (props.contains("path") && props["path"].is_string()) {
+            std::filesystem::path path = props["path"].get<std::string>();
+            if (path.is_relative()) {
+                path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
+            }
+            return path;
+        }
+        return kDefaultMaterialScenePath;
+    }
+
+    static uint32_t materialIndexOrDefault(int32_t materialIndex, uint32_t materialCount)
+    {
+        if (materialCount == 0 ||
+            materialIndex < 0 ||
+            static_cast<uint32_t>(materialIndex) >= materialCount) {
+            return 0;
+        }
+        return static_cast<uint32_t>(materialIndex);
+    }
+
+    static void appendTriangleVertex(
+        const scene::RenderNode& renderNode,
+        const scene::RenderPrimitive& primitive,
+        uint32_t localIndex,
+        std::vector<MaterialShaderObjectGpuPosition>& outPositions,
+        scene::Bounds& outBounds)
+    {
+        if (static_cast<size_t>(localIndex) >= primitive.positions.size()) {
+            return;
+        }
+        const float3 world = renderNode.worldMatrix * primitive.positions[static_cast<size_t>(localIndex)];
+        outPositions.push_back(MaterialShaderObjectGpuPosition{
+            .x = world.x,
+            .y = world.y,
+            .z = world.z,
+            .w = 1.0f,
+        });
+        outBounds.include(world);
+    }
+
+    static bool loadSceneGeometry(
+        const RenderGraphProperties& properties,
+        std::vector<MaterialShaderObjectGpuPosition>& outPositions,
+        std::vector<uint32_t>& outMaterialIndices,
+        std::vector<MaterialShaderObjectGpuMaterial>& outMaterials,
+        std::vector<MaterialShaderObjectBatch>& outBatches,
+        scene::Bounds& outBounds,
+        std::string& log)
+    {
+        scene::Scene loadedScene;
+        const std::filesystem::path path = scenePathFromProperties(properties);
+        if (!loadedScene.load(path)) {
+            log = "SceneMaterialShaderObjectPass failed to load glTF: " + loadedScene.lastLoadResult().error;
+            return false;
+        }
+
+        outMaterials.clear();
+        if (loadedScene.materials().empty()) {
+            outMaterials.push_back(MaterialShaderObjectGpuMaterial{});
+        } else {
+            outMaterials.reserve(loadedScene.materials().size());
+            for (const scene::RenderMaterial& material : loadedScene.materials()) {
+                outMaterials.push_back(MaterialShaderObjectGpuMaterial{
+                    .baseColor = {
+                        material.baseColorFactor.x,
+                        material.baseColorFactor.y,
+                        material.baseColorFactor.z,
+                        material.baseColorFactor.w,
+                    },
+                });
+            }
+        }
+
+        std::vector<std::vector<MaterialShaderObjectGpuPosition>> positionsByMaterial(outMaterials.size());
+        outBounds.reset();
+        for (const scene::RenderNode& renderNode : loadedScene.renderNodes()) {
+            if (!renderNode.visible ||
+                renderNode.renderPrimitiveIndex < 0 ||
+                static_cast<size_t>(renderNode.renderPrimitiveIndex) >= loadedScene.renderPrimitives().size()) {
+                continue;
+            }
+
+            const scene::RenderPrimitive& primitive =
+                loadedScene.renderPrimitives()[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
+            if (primitive.mode != kGltfTriangleListMode || primitive.positions.empty()) {
+                continue;
+            }
+
+            const uint32_t materialIndex = materialIndexOrDefault(
+                renderNode.materialIndex,
+                static_cast<uint32_t>(outMaterials.size()));
+            std::vector<MaterialShaderObjectGpuPosition>& materialPositions = positionsByMaterial[materialIndex];
+            const std::vector<uint32_t>& indices = primitive.indices;
+            if (!indices.empty()) {
+                const size_t triangleIndexCount = indices.size() - (indices.size() % 3);
+                for (size_t index = 0; index < triangleIndexCount; ++index) {
+                    appendTriangleVertex(renderNode, primitive, indices[index], materialPositions, outBounds);
+                }
+            } else {
+                const size_t triangleVertexCount = primitive.positions.size() - (primitive.positions.size() % 3);
+                for (size_t index = 0; index < triangleVertexCount; ++index) {
+                    appendTriangleVertex(
+                        renderNode,
+                        primitive,
+                        static_cast<uint32_t>(index),
+                        materialPositions,
+                        outBounds);
+                }
+            }
+        }
+
+        outPositions.clear();
+        outMaterialIndices.clear();
+        outBatches.clear();
+        for (uint32_t materialIndex = 0; materialIndex < positionsByMaterial.size(); ++materialIndex) {
+            const std::vector<MaterialShaderObjectGpuPosition>& materialPositions = positionsByMaterial[materialIndex];
+            if (materialPositions.empty()) {
+                continue;
+            }
+
+            const uint32_t firstVertex = static_cast<uint32_t>(outPositions.size());
+            outPositions.insert(outPositions.end(), materialPositions.begin(), materialPositions.end());
+            outMaterialIndices.insert(outMaterialIndices.end(), materialPositions.size(), materialIndex);
+            outBatches.push_back(MaterialShaderObjectBatch{
+                .materialIndex = materialIndex,
+                .firstVertex = firstVertex,
+                .vertexCount = static_cast<uint32_t>(materialPositions.size()),
+            });
+        }
+
+        if (outPositions.empty() || outMaterialIndices.size() != outPositions.size() || !outBounds.valid) {
+            log = "SceneMaterialShaderObjectPass found no drawable triangle geometry in " + path.string();
+            return false;
+        }
+        if (outPositions.size() > std::numeric_limits<uint32_t>::max()) {
+            log = "SceneMaterialShaderObjectPass geometry is too large to draw";
+            return false;
+        }
+        return true;
+    }
+
+    static void writeParamVec3(const float3& value, float out[4], float w)
+    {
+        out[0] = value.x;
+        out[1] = value.y;
+        out[2] = value.z;
+        out[3] = w;
+    }
+
+    static void buildParams(
+        uint32_t width,
+        uint32_t height,
+        const scene::Bounds& drawBounds,
+        MaterialShaderObjectGpuParams& outParams)
+    {
+        outParams = MaterialShaderObjectGpuParams{};
+        const float3 center = drawBounds.center();
+        const float radius = std::max(drawBounds.radius(), 0.01f);
+        const float aspect = height == 0 ? 1.0f : static_cast<float>(width) / static_cast<float>(height);
+        constexpr float kPi = 3.14159265358979323846f;
+        const float fovRadians = 60.0f * (kPi / 180.0f);
+        const float distance = std::max(radius / std::tan(fovRadians * 0.5f), 0.1f) + radius;
+        const float3 eye(center.x, center.y, center.z + distance);
+
+        writeParamVec3(eye, outParams.eye, 0.0f);
+        writeParamVec3(center, outParams.center, 0.0f);
+        writeParamVec3(float3(0.0f, 1.0f, 0.0f), outParams.upProjection, 0.0f);
+        outParams.viewport[0] = aspect;
+        outParams.viewport[1] = static_cast<float>(width);
+        outParams.viewport[2] = static_cast<float>(height);
+        outParams.viewport[3] = fovRadians;
+        outParams.clipOrtho[0] = 0.001f;
+        outParams.clipOrtho[1] = std::max(distance + radius * 3.0f, 1.0f);
+        outParams.clipOrtho[2] = radius * 2.0f;
+        outParams.clipOrtho[3] = 0.0f;
+    }
+
+    Result updateParamsBuffer(uint32_t width, uint32_t height)
+    {
+        if (paramsBuffer_ == nullptr || !drawBounds_.valid) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        MaterialShaderObjectGpuParams params;
+        buildParams(width, height, drawBounds_, params);
+
+        void* mapped = paramsBuffer_->map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, &params, sizeof(params));
+        paramsBuffer_->flush(0, sizeof(params));
+        paramsBuffer_->unmap();
+        return {};
+    }
+
+    std::unique_ptr<Buffer> positionBuffer_;
+    std::unique_ptr<Buffer> materialIndexBuffer_;
+    std::unique_ptr<Buffer> materialBuffer_;
+    std::unique_ptr<Buffer> paramsBuffer_;
+    std::unique_ptr<BindlessHeap> bindlessHeap_;
+    BindlessHandle positionHandle_;
+    BindlessHandle materialIndexHandle_;
+    BindlessHandle materialHandle_;
+    BindlessHandle paramsHandle_;
+    std::unique_ptr<GraphicsShaderObjectProgram> defaultProgram_;
+    std::unique_ptr<GraphicsShaderObjectProgram> alternateProgram_;
+    std::vector<MaterialShaderObjectBatch> batches_;
+    scene::Bounds drawBounds_;
 };
 
 class RenderGraphBufferWritePass final : public ComputePass {
@@ -1299,6 +1896,10 @@ void registerBuiltInRenderGraphPasses()
         "BunnyWireframePass",
         "Draw the Stanford Bunny glTF as a barycentric wireframe",
         []() { return std::make_unique<BunnyWireframePass>(); });
+    registerRenderGraphPassType(
+        "SceneMaterialShaderObjectPass",
+        "Draw glTF material colors with VK_EXT_shader_object",
+        []() { return std::make_unique<SceneMaterialShaderObjectPass>(); });
     registerRenderGraphPassType(
         "RenderGraphBufferWritePass",
         "Write a known byte pattern into a graph buffer",

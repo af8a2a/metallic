@@ -42,6 +42,20 @@ void expectVec3(
             metallic::scene::formatVec3(actual) + "]");
 }
 
+void expectVec4(
+    TestContext& test,
+    const float4& actual,
+    const float4& expected,
+    const std::string& label)
+{
+    test.expect(
+        nearlyEqual(actual.x, expected.x) &&
+            nearlyEqual(actual.y, expected.y) &&
+            nearlyEqual(actual.z, expected.z) &&
+            nearlyEqual(actual.w, expected.w),
+        label);
+}
+
 void writeTextFile(const std::filesystem::path& path, const std::string& text)
 {
     std::ofstream file(path, std::ios::binary);
@@ -119,7 +133,13 @@ std::filesystem::path writeFullScene(const std::filesystem::path& directory)
     }
   ],
   "materials": [
-    { "name": "Test Material" }
+    { "name": "Test Material" },
+    {
+      "name": "Tinted Material",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.25, 0.5, 0.75, 0.8]
+      }
+    }
   ],
   "meshes": [
     {
@@ -320,7 +340,7 @@ void testFullSceneImport(TestContext& test, const std::filesystem::path& directo
 
     const metallic::scene::SceneStats& stats = scene.stats();
     test.expect(stats.meshCount == 1, "mesh count");
-    test.expect(stats.materialCount == 1, "material count");
+    test.expect(stats.materialCount == 2, "material count");
     test.expect(stats.primitiveCount == 1, "primitive count");
     test.expect(stats.renderNodeCount == 1, "render node count");
     test.expect(stats.triangleCount == 1, "triangle count");
@@ -334,6 +354,20 @@ void testFullSceneImport(TestContext& test, const std::filesystem::path& directo
     test.expect(primitive.indices.size() == 3, "primitive index data count");
     expectVec3(test, primitive.positions[2], float3(1.0f, 1.0f, 0.0f), "primitive position data");
     test.expect(primitive.indices[2] == 2, "primitive index data");
+
+    test.expect(scene.materials().size() == 2, "material vector size");
+    test.expect(scene.materials()[0].name == "Test Material", "default material name");
+    expectVec4(
+        test,
+        scene.materials()[0].baseColorFactor,
+        float4(1.0f, 1.0f, 1.0f, 1.0f),
+        "default baseColorFactor");
+    test.expect(scene.materials()[1].name == "Tinted Material", "tinted material name");
+    expectVec4(
+        test,
+        scene.materials()[1].baseColorFactor,
+        float4(0.25f, 0.5f, 0.75f, 0.8f),
+        "explicit baseColorFactor");
 
     test.expect(scene.bounds().valid, "bounds should be valid");
     expectVec3(test, scene.bounds().min, float3(5.0f, 2.0f, 3.0f), "scene bounds min");

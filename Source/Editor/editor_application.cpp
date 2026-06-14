@@ -724,6 +724,7 @@ bool EditorApplication::initializeRhi()
             .applicationName = "Metallic Engine Editor",
             .enableValidation = false,
             .enableBindlessDescriptorHeap = true,
+            .enableShaderObject = true,
         },
         device_);
     if (!result || device_ == nullptr) {

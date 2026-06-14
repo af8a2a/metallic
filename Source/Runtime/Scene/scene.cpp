@@ -87,6 +87,18 @@ float3 makeFloat3(const std::vector<double>& values, const float3& fallback)
         static_cast<float>(values[2]));
 }
 
+float4 makeFloat4(const std::vector<double>& values, const float4& fallback)
+{
+    if (values.size() < 4) {
+        return fallback;
+    }
+    return float4(
+        static_cast<float>(values[0]),
+        static_cast<float>(values[1]),
+        static_cast<float>(values[2]),
+        static_cast<float>(values[3]));
+}
+
 float4 makeQuaternion(const std::vector<double>& values)
 {
     if (values.size() < 4) {
@@ -604,6 +616,17 @@ bool Scene::load(const std::filesystem::path& filename)
     stats_.meshCount = model.meshes.size();
     stats_.materialCount = model.materials.size();
 
+    materials_.reserve(model.materials.size());
+    for (size_t materialIndex = 0; materialIndex < model.materials.size(); ++materialIndex) {
+        const tinygltf::Material& gltfMaterial = model.materials[materialIndex];
+        RenderMaterial material;
+        material.name = defaultName(gltfMaterial.name, "Material", static_cast<int32_t>(materialIndex));
+        material.baseColorFactor = makeFloat4(
+            gltfMaterial.pbrMetallicRoughness.baseColorFactor,
+            float4(1.0f, 1.0f, 1.0f, 1.0f));
+        materials_.push_back(material);
+    }
+
     nodes_.resize(model.nodes.size());
     for (size_t nodeIndex = 0; nodeIndex < model.nodes.size(); ++nodeIndex) {
         const tinygltf::Node& gltfNode = model.nodes[nodeIndex];
@@ -739,6 +762,7 @@ void Scene::clearParsedData()
     nodes_.clear();
     renderPrimitives_.clear();
     renderNodes_.clear();
+    materials_.clear();
     cameras_.clear();
     lights_.clear();
 }

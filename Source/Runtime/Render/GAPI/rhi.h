@@ -200,10 +200,12 @@ struct DeviceDesc {
     const char* applicationName = "Metallic";
     bool enableValidation = false;
     bool enableBindlessDescriptorHeap = false;
+    bool enableShaderObject = false;
 };
 
 struct DeviceCapabilities {
     bool bindlessDescriptorHeap = false;
+    bool shaderObject = false;
     uint32_t maxBindlessSamplers = 0;
     uint32_t maxBindlessSampledImages = 0;
     uint32_t maxBindlessBuffers = 0;
@@ -346,6 +348,17 @@ struct ComputePipelineDesc {
     uint32_t bindlessUserPushDataSize = 0;
 };
 
+struct GraphicsShaderObjectProgramDesc {
+    const uint32_t* vertexCode = nullptr;
+    uint64_t vertexByteSize = 0;
+    const char* vertexEntryPoint = "main";
+    const uint32_t* fragmentCode = nullptr;
+    uint64_t fragmentByteSize = 0;
+    const char* fragmentEntryPoint = "main";
+    bool usesBindlessHeap = false;
+    uint32_t bindlessUserPushDataSize = 0;
+};
+
 struct TextureBufferCopyDesc {
     class Texture* texture = nullptr;
     class Buffer* buffer = nullptr;
@@ -414,6 +427,7 @@ struct TextureViewImpl;
 struct ShaderModuleImpl;
 struct GraphicsPipelineImpl;
 struct ComputePipelineImpl;
+struct GraphicsShaderObjectProgramImpl;
 struct BindlessHeapImpl;
 struct TrianglePreviewRendererImpl;
 struct VulkanNativeAccess;
@@ -650,6 +664,26 @@ private:
     friend struct detail::DeviceImpl;
 };
 
+class GraphicsShaderObjectProgram {
+public:
+    GraphicsShaderObjectProgram() = default;
+    ~GraphicsShaderObjectProgram();
+    GraphicsShaderObjectProgram(GraphicsShaderObjectProgram&&) noexcept;
+    GraphicsShaderObjectProgram& operator=(GraphicsShaderObjectProgram&&) noexcept;
+
+    GraphicsShaderObjectProgram(const GraphicsShaderObjectProgram&) = delete;
+    GraphicsShaderObjectProgram& operator=(const GraphicsShaderObjectProgram&) = delete;
+
+private:
+    explicit GraphicsShaderObjectProgram(std::unique_ptr<detail::GraphicsShaderObjectProgramImpl> impl);
+
+    std::unique_ptr<detail::GraphicsShaderObjectProgramImpl> impl_;
+
+    friend class Device;
+    friend class CommandBuffer;
+    friend struct detail::DeviceImpl;
+};
+
 class BindlessHeap {
 public:
     BindlessHeap() = default;
@@ -707,6 +741,8 @@ public:
     void setScissor(const Rect& scissor);
     void bindGraphicsPipeline(GraphicsPipeline& pipeline);
     void bindComputePipeline(ComputePipeline& pipeline);
+    void setGraphicsShaderObjectState();
+    void bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram& program);
     void bindBindlessHeap(BindlessHeap& heap);
     void pushBindlessData(const void* data, uint32_t byteSize);
     void draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
@@ -798,6 +834,9 @@ public:
     Result createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule);
     Result createGraphicsPipeline(const GraphicsPipelineDesc& desc, std::unique_ptr<GraphicsPipeline>& outGraphicsPipeline);
     Result createComputePipeline(const ComputePipelineDesc& desc, std::unique_ptr<ComputePipeline>& outComputePipeline);
+    Result createGraphicsShaderObjectProgram(
+        const GraphicsShaderObjectProgramDesc& desc,
+        std::unique_ptr<GraphicsShaderObjectProgram>& outProgram);
     Result createBindlessHeap(const BindlessHeapDesc& desc, std::unique_ptr<BindlessHeap>& outBindlessHeap);
 
 private:

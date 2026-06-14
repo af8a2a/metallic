@@ -2548,6 +2548,7 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation)
             .applicationName = "Metallic RenderGraph Preview",
             .enableValidation = enableValidation,
             .enableBindlessDescriptorHeap = true,
+            .enableShaderObject = true,
         },
         impl_->device);
     if (!result) {

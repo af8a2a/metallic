@@ -1158,6 +1158,13 @@ struct ComputePipelineImpl {
     bool usesBindlessHeap = false;
 };
 
+struct GraphicsShaderObjectProgramImpl {
+    DeviceImpl* device = nullptr;
+    VkShaderEXT vertexShader = VK_NULL_HANDLE;
+    VkShaderEXT fragmentShader = VK_NULL_HANDLE;
+    bool usesBindlessHeap = false;
+};
+
 struct CommandPoolImpl {
     DeviceImpl* device = nullptr;
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -1173,6 +1180,12 @@ struct CommandBufferImpl {
     BindlessHeapImpl* currentBindlessHeap = nullptr;
     bool currentGraphicsPipelineUsesBindlessHeap = false;
     bool currentComputePipelineUsesBindlessHeap = false;
+    bool currentGraphicsShaderObjectUsesBindlessHeap = false;
+    bool currentGraphicsShaderObjectBound = false;
+    Viewport currentViewport;
+    Rect currentScissor;
+    bool hasCurrentViewport = false;
+    bool hasCurrentScissor = false;
     std::vector<uint8_t> currentBindlessUserData;
 };
 
@@ -1229,6 +1242,7 @@ struct DeviceImpl {
     bool validationEnabled = false;
     bool debugUtilsEnabled = false;
     bool bindlessDescriptorHeapEnabled = false;
+    bool shaderObjectEnabled = false;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
     std::vector<std::unique_ptr<Queue>> queues;
@@ -1953,6 +1967,29 @@ ComputePipeline::~ComputePipeline()
 ComputePipeline::ComputePipeline(ComputePipeline&&) noexcept = default;
 ComputePipeline& ComputePipeline::operator=(ComputePipeline&&) noexcept = default;
 
+GraphicsShaderObjectProgram::GraphicsShaderObjectProgram(
+    std::unique_ptr<detail::GraphicsShaderObjectProgramImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+GraphicsShaderObjectProgram::~GraphicsShaderObjectProgram()
+{
+    if (impl_ != nullptr) {
+        if (impl_->vertexShader != VK_NULL_HANDLE) {
+            vkDestroyShaderEXT(impl_->device->device, impl_->vertexShader, nullptr);
+            impl_->vertexShader = VK_NULL_HANDLE;
+        }
+        if (impl_->fragmentShader != VK_NULL_HANDLE) {
+            vkDestroyShaderEXT(impl_->device->device, impl_->fragmentShader, nullptr);
+            impl_->fragmentShader = VK_NULL_HANDLE;
+        }
+    }
+}
+
+GraphicsShaderObjectProgram::GraphicsShaderObjectProgram(GraphicsShaderObjectProgram&&) noexcept = default;
+GraphicsShaderObjectProgram& GraphicsShaderObjectProgram::operator=(GraphicsShaderObjectProgram&&) noexcept = default;
+
 BindlessHeap::BindlessHeap(std::unique_ptr<detail::BindlessHeapImpl> impl)
     : impl_(std::move(impl))
 {
@@ -2141,6 +2178,10 @@ Result CommandBuffer::begin()
     impl_->currentBindlessHeap = nullptr;
     impl_->currentGraphicsPipelineUsesBindlessHeap = false;
     impl_->currentComputePipelineUsesBindlessHeap = false;
+    impl_->currentGraphicsShaderObjectUsesBindlessHeap = false;
+    impl_->currentGraphicsShaderObjectBound = false;
+    impl_->hasCurrentViewport = false;
+    impl_->hasCurrentScissor = false;
     impl_->currentBindlessUserData.clear();
 
     VkCommandBufferBeginInfo beginInfo{
@@ -2484,7 +2525,12 @@ void CommandBuffer::setViewport(const Viewport& viewport)
         .minDepth = viewport.minDepth,
         .maxDepth = viewport.maxDepth,
     };
+    impl_->currentViewport = viewport;
+    impl_->hasCurrentViewport = true;
     vkCmdSetViewport(impl_->commandBuffer, 0, 1, &vkViewport);
+    if (impl_->currentGraphicsShaderObjectBound && vkCmdSetViewportWithCountEXT != nullptr) {
+        vkCmdSetViewportWithCountEXT(impl_->commandBuffer, 1, &vkViewport);
+    }
 }
 
 void CommandBuffer::setScissor(const Rect& scissor)
@@ -2497,10 +2543,42 @@ void CommandBuffer::setScissor(const Rect& scissor)
         .offset = {scissor.x, scissor.y},
         .extent = {scissor.width, scissor.height},
     };
+    impl_->currentScissor = scissor;
+    impl_->hasCurrentScissor = true;
     vkCmdSetScissor(impl_->commandBuffer, 0, 1, &vkScissor);
+    if (impl_->currentGraphicsShaderObjectBound && vkCmdSetScissorWithCountEXT != nullptr) {
+        vkCmdSetScissorWithCountEXT(impl_->commandBuffer, 1, &vkScissor);
+    }
 }
 
 namespace {
+
+void clearGraphicsShaderObjects(detail::CommandBufferImpl& commandBuffer)
+{
+    if (!commandBuffer.currentGraphicsShaderObjectBound ||
+        commandBuffer.device == nullptr ||
+        !commandBuffer.device->shaderObjectEnabled ||
+        vkCmdBindShadersEXT == nullptr) {
+        commandBuffer.currentGraphicsShaderObjectBound = false;
+        commandBuffer.currentGraphicsShaderObjectUsesBindlessHeap = false;
+        return;
+    }
+
+    const std::array<VkShaderStageFlagBits, 5> stages{
+        VK_SHADER_STAGE_VERTEX_BIT,
+        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+        VK_SHADER_STAGE_GEOMETRY_BIT,
+        VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    vkCmdBindShadersEXT(
+        commandBuffer.commandBuffer,
+        static_cast<uint32_t>(stages.size()),
+        stages.data(),
+        nullptr);
+    commandBuffer.currentGraphicsShaderObjectBound = false;
+    commandBuffer.currentGraphicsShaderObjectUsesBindlessHeap = false;
+}
 
 void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer, detail::BindlessHeapImpl& heap)
 {
@@ -2530,7 +2608,12 @@ void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer, detail::B
     }
 
     const size_t payloadSize = sizeof(push) + commandBuffer.currentBindlessUserData.size();
-    if (commandBuffer.device != nullptr &&
+    const bool needsDescriptorHeapPush =
+        commandBuffer.currentGraphicsPipelineUsesBindlessHeap ||
+        commandBuffer.currentComputePipelineUsesBindlessHeap ||
+        commandBuffer.currentGraphicsShaderObjectUsesBindlessHeap;
+    if (needsDescriptorHeapPush &&
+        commandBuffer.device != nullptr &&
         commandBuffer.device->bindlessDescriptorHeapEnabled &&
         commandBuffer.device->descriptorHeapWriter.maxPushDataSize() >= payloadSize &&
         vkCmdPushDataEXT != nullptr) {
@@ -2562,6 +2645,7 @@ void CommandBuffer::bindGraphicsPipeline(GraphicsPipeline& pipeline)
     if (impl_ == nullptr || pipeline.impl_ == nullptr) {
         return;
     }
+    clearGraphicsShaderObjects(*impl_);
     vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.impl_->pipeline);
     impl_->currentGraphicsPipelineLayout = pipeline.impl_->layout;
     impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
@@ -2579,6 +2663,159 @@ void CommandBuffer::bindComputePipeline(ComputePipeline& pipeline)
     impl_->currentComputePipelineLayout = pipeline.impl_->layout;
     impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
     if (impl_->currentComputePipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
+        pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
+    }
+}
+
+void CommandBuffer::setGraphicsShaderObjectState()
+{
+    if (impl_ == nullptr ||
+        impl_->device == nullptr ||
+        !impl_->device->shaderObjectEnabled) {
+        return;
+    }
+
+    if (vkCmdSetVertexInputEXT != nullptr) {
+        vkCmdSetVertexInputEXT(impl_->commandBuffer, 0, nullptr, 0, nullptr);
+    }
+    if (vkCmdSetPrimitiveTopologyEXT != nullptr) {
+        vkCmdSetPrimitiveTopologyEXT(impl_->commandBuffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+    }
+    if (vkCmdSetPrimitiveRestartEnableEXT != nullptr) {
+        vkCmdSetPrimitiveRestartEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    if (vkCmdSetRasterizerDiscardEnableEXT != nullptr) {
+        vkCmdSetRasterizerDiscardEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    if (vkCmdSetPolygonModeEXT != nullptr) {
+        vkCmdSetPolygonModeEXT(impl_->commandBuffer, VK_POLYGON_MODE_FILL);
+    }
+    if (vkCmdSetCullModeEXT != nullptr) {
+        vkCmdSetCullModeEXT(impl_->commandBuffer, VK_CULL_MODE_NONE);
+    }
+    if (vkCmdSetFrontFaceEXT != nullptr) {
+        vkCmdSetFrontFaceEXT(impl_->commandBuffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    }
+    if (vkCmdSetDepthClampEnableEXT != nullptr) {
+        vkCmdSetDepthClampEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    if (vkCmdSetDepthBiasEnableEXT != nullptr) {
+        vkCmdSetDepthBiasEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    vkCmdSetLineWidth(impl_->commandBuffer, 1.0f);
+    if (vkCmdSetRasterizationSamplesEXT != nullptr) {
+        vkCmdSetRasterizationSamplesEXT(impl_->commandBuffer, VK_SAMPLE_COUNT_1_BIT);
+    }
+    if (vkCmdSetSampleMaskEXT != nullptr) {
+        const VkSampleMask sampleMask = 0xffffffffu;
+        vkCmdSetSampleMaskEXT(impl_->commandBuffer, VK_SAMPLE_COUNT_1_BIT, &sampleMask);
+    }
+    if (vkCmdSetAlphaToCoverageEnableEXT != nullptr) {
+        vkCmdSetAlphaToCoverageEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    if (vkCmdSetAlphaToOneEnableEXT != nullptr) {
+        vkCmdSetAlphaToOneEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    if (vkCmdSetDepthTestEnableEXT != nullptr) {
+        vkCmdSetDepthTestEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    if (vkCmdSetDepthWriteEnableEXT != nullptr) {
+        vkCmdSetDepthWriteEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    if (vkCmdSetDepthCompareOpEXT != nullptr) {
+        vkCmdSetDepthCompareOpEXT(impl_->commandBuffer, VK_COMPARE_OP_ALWAYS);
+    }
+    if (vkCmdSetDepthBoundsTestEnableEXT != nullptr) {
+        vkCmdSetDepthBoundsTestEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    if (vkCmdSetStencilTestEnableEXT != nullptr) {
+        vkCmdSetStencilTestEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    if (vkCmdSetColorBlendEnableEXT != nullptr) {
+        const VkBool32 blendEnable = VK_FALSE;
+        vkCmdSetColorBlendEnableEXT(impl_->commandBuffer, 0, 1, &blendEnable);
+    }
+    if (vkCmdSetColorBlendEquationEXT != nullptr) {
+        const VkColorBlendEquationEXT blendEquation{
+            .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+            .colorBlendOp = VK_BLEND_OP_ADD,
+            .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+            .alphaBlendOp = VK_BLEND_OP_ADD,
+        };
+        vkCmdSetColorBlendEquationEXT(impl_->commandBuffer, 0, 1, &blendEquation);
+    }
+    if (vkCmdSetColorWriteMaskEXT != nullptr) {
+        const VkColorComponentFlags colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT |
+            VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT |
+            VK_COLOR_COMPONENT_A_BIT;
+        vkCmdSetColorWriteMaskEXT(impl_->commandBuffer, 0, 1, &colorWriteMask);
+    }
+    if (vkCmdSetLogicOpEnableEXT != nullptr) {
+        vkCmdSetLogicOpEnableEXT(impl_->commandBuffer, VK_FALSE);
+    }
+    if (vkCmdSetLogicOpEXT != nullptr) {
+        vkCmdSetLogicOpEXT(impl_->commandBuffer, VK_LOGIC_OP_COPY);
+    }
+
+    if (impl_->hasCurrentViewport && vkCmdSetViewportWithCountEXT != nullptr) {
+        const VkViewport viewport{
+            .x = impl_->currentViewport.x,
+            .y = impl_->currentViewport.y,
+            .width = impl_->currentViewport.width,
+            .height = impl_->currentViewport.height,
+            .minDepth = impl_->currentViewport.minDepth,
+            .maxDepth = impl_->currentViewport.maxDepth,
+        };
+        vkCmdSetViewportWithCountEXT(impl_->commandBuffer, 1, &viewport);
+    }
+    if (impl_->hasCurrentScissor && vkCmdSetScissorWithCountEXT != nullptr) {
+        const VkRect2D scissor{
+            .offset = {impl_->currentScissor.x, impl_->currentScissor.y},
+            .extent = {impl_->currentScissor.width, impl_->currentScissor.height},
+        };
+        vkCmdSetScissorWithCountEXT(impl_->commandBuffer, 1, &scissor);
+    }
+}
+
+void CommandBuffer::bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram& program)
+{
+    if (impl_ == nullptr ||
+        program.impl_ == nullptr ||
+        impl_->device == nullptr ||
+        !impl_->device->shaderObjectEnabled ||
+        vkCmdBindShadersEXT == nullptr) {
+        return;
+    }
+
+    const std::array<VkShaderStageFlagBits, 5> stages{
+        VK_SHADER_STAGE_VERTEX_BIT,
+        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+        VK_SHADER_STAGE_GEOMETRY_BIT,
+        VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    const std::array<VkShaderEXT, 5> shaders{
+        program.impl_->vertexShader,
+        VK_NULL_HANDLE,
+        VK_NULL_HANDLE,
+        VK_NULL_HANDLE,
+        program.impl_->fragmentShader,
+    };
+    vkCmdBindShadersEXT(
+        impl_->commandBuffer,
+        static_cast<uint32_t>(stages.size()),
+        stages.data(),
+        shaders.data());
+
+    impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
+    impl_->currentGraphicsPipelineUsesBindlessHeap = false;
+    impl_->currentGraphicsShaderObjectBound = true;
+    impl_->currentGraphicsShaderObjectUsesBindlessHeap = program.impl_->usesBindlessHeap;
+    if (impl_->currentGraphicsShaderObjectUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
         pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
     }
 }
@@ -3423,6 +3660,134 @@ Result Device::createComputePipeline(
     return {};
 }
 
+Result Device::createGraphicsShaderObjectProgram(
+    const GraphicsShaderObjectProgramDesc& desc,
+    std::unique_ptr<GraphicsShaderObjectProgram>& outProgram)
+{
+    outProgram.reset();
+    if (impl_ == nullptr ||
+        desc.vertexCode == nullptr ||
+        desc.vertexByteSize == 0 ||
+        (desc.vertexByteSize % sizeof(uint32_t)) != 0 ||
+        desc.fragmentCode == nullptr ||
+        desc.fragmentByteSize == 0 ||
+        (desc.fragmentByteSize % sizeof(uint32_t)) != 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    activateVolkDevice(impl_->device);
+    if (!impl_->capabilities.shaderObject || !impl_->shaderObjectEnabled) {
+        return makeError(Error::Unsupported);
+    }
+    if (desc.usesBindlessHeap) {
+        if (!impl_->capabilities.bindlessDescriptorHeap) {
+            return makeError(Error::Unsupported);
+        }
+        const VkDeviceSize requiredPushDataSize =
+            sizeof(BindlessHeapPushConstants) + desc.bindlessUserPushDataSize;
+        if (impl_->descriptorHeapWriter.maxPushDataSize() < requiredPushDataSize) {
+            return makeError(Error::Unsupported);
+        }
+    }
+
+    std::array<VkDescriptorSetAndBindingMappingEXT, 3> bindlessMappings{};
+    VkShaderDescriptorSetAndBindingMappingInfoEXT bindlessMappingInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
+    };
+    if (desc.usesBindlessHeap) {
+        auto makeHeapMapping = [](uint32_t binding, VkSpirvResourceTypeFlagsEXT resourceMask, uint32_t stride) {
+            VkDescriptorSetAndBindingMappingEXT mapping{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
+                .descriptorSet = 0,
+                .firstBinding = binding,
+                .bindingCount = 1,
+                .resourceMask = resourceMask,
+                .source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
+            };
+            mapping.sourceData.constantOffset.heapOffset = 0;
+            mapping.sourceData.constantOffset.heapArrayStride = stride;
+            mapping.sourceData.constantOffset.samplerHeapOffset = 0;
+            mapping.sourceData.constantOffset.samplerHeapArrayStride = stride;
+            return mapping;
+        };
+
+        bindlessMappings[0] = makeHeapMapping(
+            0,
+            VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize()));
+        bindlessMappings[1] = makeHeapMapping(
+            2,
+            VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize()));
+        bindlessMappings[2] = makeHeapMapping(
+            2,
+            VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
+                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize()));
+        bindlessMappingInfo.mappingCount = static_cast<uint32_t>(bindlessMappings.size());
+        bindlessMappingInfo.pMappings = bindlessMappings.data();
+    }
+
+    const char* vertexEntryPoint = desc.vertexEntryPoint != nullptr ? desc.vertexEntryPoint : "main";
+    const char* fragmentEntryPoint = desc.fragmentEntryPoint != nullptr ? desc.fragmentEntryPoint : "main";
+    const VkShaderCreateFlagsEXT shaderFlags =
+        VK_SHADER_CREATE_LINK_STAGE_BIT_EXT |
+        (desc.usesBindlessHeap ? VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT : 0);
+    std::array<VkShaderCreateInfoEXT, 2> shaderInfos{
+        VkShaderCreateInfoEXT{
+            .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+            .pNext = desc.usesBindlessHeap ? static_cast<const void*>(&bindlessMappingInfo) : nullptr,
+            .flags = shaderFlags,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .nextStage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
+            .codeSize = static_cast<size_t>(desc.vertexByteSize),
+            .pCode = desc.vertexCode,
+            .pName = vertexEntryPoint,
+        },
+        VkShaderCreateInfoEXT{
+            .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+            .pNext = desc.usesBindlessHeap ? static_cast<const void*>(&bindlessMappingInfo) : nullptr,
+            .flags = shaderFlags,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .nextStage = 0,
+            .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
+            .codeSize = static_cast<size_t>(desc.fragmentByteSize),
+            .pCode = desc.fragmentCode,
+            .pName = fragmentEntryPoint,
+        },
+    };
+
+    std::array<VkShaderEXT, 2> shaders{
+        VK_NULL_HANDLE,
+        VK_NULL_HANDLE,
+    };
+    const VkResult result = vkCreateShadersEXT(
+        impl_->device,
+        static_cast<uint32_t>(shaderInfos.size()),
+        shaderInfos.data(),
+        nullptr,
+        shaders.data());
+    if (result != VK_SUCCESS) {
+        for (VkShaderEXT shader : shaders) {
+            if (shader != VK_NULL_HANDLE) {
+                vkDestroyShaderEXT(impl_->device, shader, nullptr);
+            }
+        }
+        return resultFromVk(result);
+    }
+
+    auto programImpl = std::make_unique<detail::GraphicsShaderObjectProgramImpl>();
+    programImpl->device = impl_.get();
+    programImpl->vertexShader = shaders[0];
+    programImpl->fragmentShader = shaders[1];
+    programImpl->usesBindlessHeap = desc.usesBindlessHeap;
+    outProgram.reset(new GraphicsShaderObjectProgram(std::move(programImpl)));
+    return {};
+}
+
 Result Device::createBindlessHeap(const BindlessHeapDesc& desc, std::unique_ptr<BindlessHeap>& outBindlessHeap)
 {
     outBindlessHeap.reset();
@@ -3531,10 +3896,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     vkEnumeratePhysicalDevices(deviceImpl->instance, &physicalDeviceCount, physicalDevices.data());
 
     const bool requestBindlessDescriptorHeap = desc.enableBindlessDescriptorHeap;
+    const bool requestShaderObject = desc.enableShaderObject;
     VkPhysicalDevice fallbackPhysicalDevice = VK_NULL_HANDLE;
     uint32_t fallbackGraphicsFamily = 0;
     uint32_t fallbackComputeFamily = 0;
     bool selectedBindlessDescriptorHeap = false;
+    bool selectedShaderObject = false;
 
     for (VkPhysicalDevice physicalDevice : physicalDevices) {
         VkPhysicalDeviceProperties properties{};
@@ -3546,12 +3913,18 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         const bool swapchainExtensionAvailable = hasDeviceExtension(physicalDevice, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         const bool descriptorHeapExtensionAvailable =
             hasDeviceExtension(physicalDevice, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+        const bool shaderObjectExtensionAvailable =
+            hasDeviceExtension(physicalDevice, VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
         if (!swapchainExtensionAvailable) {
             continue;
         }
 
+        VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
+        };
         VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
+            .pNext = &shaderObjectFeatures,
         };
         VkPhysicalDeviceVulkan13Features vulkan13Features{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -3584,6 +3957,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             vulkan12Features.runtimeDescriptorArray == VK_TRUE &&
             vulkan12Features.bufferDeviceAddress == VK_TRUE &&
             DescriptorHeapWriter::isSupported(physicalDevice);
+        const bool shaderObjectSupported =
+            requestShaderObject &&
+            shaderObjectExtensionAvailable &&
+            shaderObjectFeatures.shaderObject == VK_TRUE;
 
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
@@ -3624,11 +4001,15 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             fallbackComputeFamily = computeFamily;
         }
 
-        if (descriptorHeapSupported) {
+        const bool matchesRequestedFeatures =
+            (!requestBindlessDescriptorHeap || descriptorHeapSupported) &&
+            (!requestShaderObject || shaderObjectSupported);
+        if (matchesRequestedFeatures) {
             deviceImpl->physicalDevice = physicalDevice;
             deviceImpl->graphicsFamily = graphicsFamily;
             deviceImpl->computeFamily = computeFamily;
-            selectedBindlessDescriptorHeap = true;
+            selectedBindlessDescriptorHeap = descriptorHeapSupported;
+            selectedShaderObject = shaderObjectSupported;
             break;
         }
     }
@@ -3638,6 +4019,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         deviceImpl->graphicsFamily = fallbackGraphicsFamily;
         deviceImpl->computeFamily = fallbackComputeFamily;
         selectedBindlessDescriptorHeap = false;
+        selectedShaderObject = false;
     }
 
     if (deviceImpl->physicalDevice == VK_NULL_HANDLE) {
@@ -3678,8 +4060,17 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
         .descriptorHeap = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
     };
+    VkPhysicalDeviceShaderObjectFeaturesEXT enabledShaderObjectFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
+        .shaderObject = selectedShaderObject ? VK_TRUE : VK_FALSE,
+    };
     if (selectedBindlessDescriptorHeap) {
         enabledVulkan13Features.pNext = &enabledDescriptorHeapFeatures;
+        if (selectedShaderObject) {
+            enabledDescriptorHeapFeatures.pNext = &enabledShaderObjectFeatures;
+        }
+    } else if (selectedShaderObject) {
+        enabledVulkan13Features.pNext = &enabledShaderObjectFeatures;
     }
     VkPhysicalDeviceVulkan12Features enabledVulkan12Features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -3703,6 +4094,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     };
     if (selectedBindlessDescriptorHeap) {
         deviceExtensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+    }
+    if (selectedShaderObject) {
+        deviceExtensions.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
     }
 
     VkDeviceCreateInfo deviceInfo{
@@ -3753,6 +4147,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         };
         deviceImpl->bindlessDescriptorHeapEnabled = true;
     }
+    deviceImpl->capabilities.shaderObject = selectedShaderObject;
+    deviceImpl->shaderObjectEnabled = selectedShaderObject;
 
     if (deviceImpl->debugUtilsEnabled) {
         deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(

@@ -78,6 +78,11 @@ struct RenderNode {
     bool visible = true;
 };
 
+struct RenderMaterial {
+    std::string name;
+    float4 baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
+};
+
 struct RenderCamera {
     std::string name;
     int32_t nodeIndex = kInvalidSceneIndex;
@@ -124,6 +129,7 @@ public:
     const std::vector<SceneNode>& nodes() const { return nodes_; }
     const std::vector<RenderPrimitive>& renderPrimitives() const { return renderPrimitives_; }
     const std::vector<RenderNode>& renderNodes() const { return renderNodes_; }
+    const std::vector<RenderMaterial>& materials() const { return materials_; }
     const std::vector<RenderCamera>& cameras() const { return cameras_; }
     const std::vector<RenderLight>& lights() const { return lights_; }
 
@@ -140,6 +146,7 @@ private:
     std::vector<SceneNode> nodes_;
     std::vector<RenderPrimitive> renderPrimitives_;
     std::vector<RenderNode> renderNodes_;
+    std::vector<RenderMaterial> materials_;
     std::vector<RenderCamera> cameras_;
     std::vector<RenderLight> lights_;
 };
