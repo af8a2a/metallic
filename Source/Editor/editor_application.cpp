@@ -129,6 +129,111 @@ void checkVkResult(VkResult result)
     }
 }
 
+ImVec4 nvproColor(float r, float g, float b, float a)
+{
+    return ImVec4(r, g, b, a);
+}
+
+ImU32 nvproColorU32(float r, float g, float b, float a)
+{
+    return ImGui::ColorConvertFloat4ToU32(nvproColor(r, g, b, a));
+}
+
+template <size_t Count>
+void applyImGuiColorGroup(ImGuiStyle& style, const ImGuiCol (&colorIndices)[Count], const ImVec4& color)
+{
+    for (const ImGuiCol colorIndex : colorIndices) {
+        style.Colors[colorIndex] = color;
+    }
+}
+
+void applyNvproImGuiStyle()
+{
+    ImGui::StyleColorsDark();
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 0.0f;
+    style.WindowBorderSize = 0.0f;
+    style.ColorButtonPosition = ImGuiDir_Right;
+    style.FrameRounding = 2.0f;
+    style.FrameBorderSize = 1.0f;
+    style.GrabRounding = 4.0f;
+    style.IndentSpacing = 12.0f;
+
+    style.Colors[ImGuiCol_WindowBg] = nvproColor(0.2f, 0.2f, 0.2f, 1.0f);
+    style.Colors[ImGuiCol_MenuBarBg] = nvproColor(0.2f, 0.2f, 0.2f, 1.0f);
+    style.Colors[ImGuiCol_ScrollbarBg] = nvproColor(0.2f, 0.2f, 0.2f, 1.0f);
+    style.Colors[ImGuiCol_PopupBg] = nvproColor(0.135f, 0.135f, 0.135f, 1.0f);
+    style.Colors[ImGuiCol_Border] = nvproColor(0.4f, 0.4f, 0.4f, 0.5f);
+    style.Colors[ImGuiCol_FrameBg] = nvproColor(0.05f, 0.05f, 0.05f, 0.5f);
+
+    constexpr ImGuiCol kNormalColors[] = {
+        ImGuiCol_Header,
+        ImGuiCol_SliderGrab,
+        ImGuiCol_Button,
+        ImGuiCol_CheckMark,
+        ImGuiCol_ResizeGrip,
+        ImGuiCol_TextSelectedBg,
+        ImGuiCol_Separator,
+        ImGuiCol_FrameBgActive,
+    };
+    applyImGuiColorGroup(style, kNormalColors, nvproColor(0.465f, 0.465f, 0.525f, 1.0f));
+
+    constexpr ImGuiCol kActiveColors[] = {
+        ImGuiCol_HeaderActive,
+        ImGuiCol_SliderGrabActive,
+        ImGuiCol_ButtonActive,
+        ImGuiCol_ResizeGripActive,
+        ImGuiCol_SeparatorActive,
+    };
+    applyImGuiColorGroup(style, kActiveColors, nvproColor(0.365f, 0.365f, 0.425f, 1.0f));
+
+    constexpr ImGuiCol kHoveredColors[] = {
+        ImGuiCol_HeaderHovered,
+        ImGuiCol_ButtonHovered,
+        ImGuiCol_FrameBgHovered,
+        ImGuiCol_ResizeGripHovered,
+        ImGuiCol_SeparatorHovered,
+    };
+    applyImGuiColorGroup(style, kHoveredColors, nvproColor(0.565f, 0.565f, 0.625f, 1.0f));
+
+    style.Colors[ImGuiCol_TitleBgActive] = nvproColor(0.465f, 0.465f, 0.465f, 1.0f);
+    style.Colors[ImGuiCol_TitleBg] = nvproColor(0.125f, 0.125f, 0.125f, 1.0f);
+    style.Colors[ImGuiCol_Tab] = nvproColor(0.05f, 0.05f, 0.05f, 0.5f);
+    style.Colors[ImGuiCol_TabHovered] = nvproColor(0.465f, 0.495f, 0.525f, 1.0f);
+    style.Colors[ImGuiCol_TabSelected] = nvproColor(0.282f, 0.290f, 0.302f, 1.0f);
+    style.Colors[ImGuiCol_TabDimmedSelected] = style.Colors[ImGuiCol_TabSelected];
+    style.Colors[ImGuiCol_DockingPreview] = nvproColor(0.465f, 0.465f, 0.525f, 0.7f);
+    style.Colors[ImGuiCol_DockingEmptyBg] = nvproColor(0.2f, 0.2f, 0.2f, 1.0f);
+    style.Colors[ImGuiCol_ModalWindowDimBg] = nvproColor(0.465f, 0.465f, 0.465f, 0.350f);
+
+    ImGui::SetColorEditOptions(ImGuiColorEditFlags_Float | ImGuiColorEditFlags_PickerHueWheel);
+}
+
+void applyNvproImNodesStyle()
+{
+    ImNodes::StyleColorsDark();
+
+    ImNodesStyle& style = ImNodes::GetStyle();
+    style.Colors[ImNodesCol_NodeBackground] = nvproColorU32(0.135f, 0.135f, 0.135f, 1.0f);
+    style.Colors[ImNodesCol_NodeBackgroundHovered] = nvproColorU32(0.2f, 0.2f, 0.2f, 1.0f);
+    style.Colors[ImNodesCol_NodeBackgroundSelected] = nvproColorU32(0.2f, 0.2f, 0.2f, 1.0f);
+    style.Colors[ImNodesCol_NodeOutline] = nvproColorU32(0.4f, 0.4f, 0.4f, 0.5f);
+    style.Colors[ImNodesCol_TitleBar] = nvproColorU32(0.125f, 0.125f, 0.125f, 1.0f);
+    style.Colors[ImNodesCol_TitleBarHovered] = nvproColorU32(0.465f, 0.495f, 0.525f, 1.0f);
+    style.Colors[ImNodesCol_TitleBarSelected] = nvproColorU32(0.282f, 0.290f, 0.302f, 1.0f);
+    style.Colors[ImNodesCol_Link] = nvproColorU32(0.465f, 0.465f, 0.525f, 0.85f);
+    style.Colors[ImNodesCol_LinkHovered] = nvproColorU32(0.565f, 0.565f, 0.625f, 1.0f);
+    style.Colors[ImNodesCol_LinkSelected] = nvproColorU32(0.565f, 0.565f, 0.625f, 1.0f);
+    style.Colors[ImNodesCol_Pin] = nvproColorU32(0.465f, 0.465f, 0.525f, 0.85f);
+    style.Colors[ImNodesCol_PinHovered] = nvproColorU32(0.565f, 0.565f, 0.625f, 1.0f);
+    style.Colors[ImNodesCol_BoxSelector] = nvproColorU32(0.465f, 0.465f, 0.525f, 0.12f);
+    style.Colors[ImNodesCol_BoxSelectorOutline] = nvproColorU32(0.565f, 0.565f, 0.625f, 0.8f);
+    style.Colors[ImNodesCol_GridBackground] = nvproColorU32(0.2f, 0.2f, 0.2f, 1.0f);
+    style.Colors[ImNodesCol_GridLine] = nvproColorU32(0.565f, 0.565f, 0.625f, 0.18f);
+    style.Colors[ImNodesCol_GridLinePrimary] = nvproColorU32(0.565f, 0.565f, 0.625f, 0.28f);
+}
+
 } // namespace
 
 int EditorApplication::run(bool smokeTest, bool waitForGraphicsDebugger)
@@ -216,14 +321,14 @@ bool EditorApplication::initialize()
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-    ImGui::StyleColorsDark();
+    applyNvproImGuiStyle();
     ImGuiStyle& style = ImGui::GetStyle();
     style.ScaleAllSizes(mainScale_);
     style.FontScaleDpi = mainScale_;
 
     ImNodes::CreateContext();
     imnodesContextCreated_ = true;
-    ImNodes::StyleColorsDark();
+    applyNvproImNodesStyle();
 
     if (!initializeImGuiBackends()) {
         return false;
