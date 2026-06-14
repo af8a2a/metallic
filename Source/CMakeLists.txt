@@ -67,6 +67,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND NOT CMAKE_SYSTEM_PROCESSOR MATC
     target_compile_options(MetallicRuntimeScene PUBLIC -msse3)
 endif()
 
+target_link_libraries(MetallicRuntimeRender PUBLIC
+    MetallicRuntimeScene
+)
+
 add_executable(Metallic
     main.cpp
     Editor/editor_application.cpp

@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <functional>
 #include <sstream>
 #include <string_view>
@@ -229,6 +230,8 @@ bool readNodeVisibility(const tinygltf::Node& node)
     return value.Get("visible").Get<bool>();
 }
 
+bool validIndex(int32_t index, size_t size);
+
 Bounds accessorBounds(const tinygltf::Accessor& accessor)
 {
     Bounds bounds;
@@ -239,6 +242,130 @@ Bounds accessorBounds(const tinygltf::Accessor& accessor)
     bounds.include(makeFloat3(accessor.minValues, float3(0.0f, 0.0f, 0.0f)));
     bounds.include(makeFloat3(accessor.maxValues, float3(0.0f, 0.0f, 0.0f)));
     return bounds;
+}
+
+const uint8_t* accessorData(
+    const tinygltf::Model& model,
+    const tinygltf::Accessor& accessor,
+    const tinygltf::BufferView*& outBufferView,
+    int& outStride)
+{
+    outBufferView = nullptr;
+    outStride = 0;
+    if (accessor.sparse.isSparse || !validIndex(accessor.bufferView, model.bufferViews.size())) {
+        return nullptr;
+    }
+
+    const tinygltf::BufferView& bufferView = model.bufferViews[static_cast<size_t>(accessor.bufferView)];
+    if (!validIndex(bufferView.buffer, model.buffers.size())) {
+        return nullptr;
+    }
+
+    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView.buffer)];
+    const size_t byteOffset = bufferView.byteOffset + accessor.byteOffset;
+    if (byteOffset >= buffer.data.size()) {
+        return nullptr;
+    }
+
+    const int stride = accessor.ByteStride(bufferView);
+    if (stride <= 0) {
+        return nullptr;
+    }
+
+    outBufferView = &bufferView;
+    outStride = stride;
+    return buffer.data.data() + byteOffset;
+}
+
+std::vector<float3> readPositionAccessor(const tinygltf::Model& model, const tinygltf::Accessor& accessor)
+{
+    std::vector<float3> positions;
+    if (accessor.type != TINYGLTF_TYPE_VEC3 || accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
+        return positions;
+    }
+
+    const tinygltf::BufferView* bufferView = nullptr;
+    int stride = 0;
+    const uint8_t* data = accessorData(model, accessor, bufferView, stride);
+    if (data == nullptr || bufferView == nullptr) {
+        return positions;
+    }
+
+    positions.reserve(accessor.count);
+    for (size_t index = 0; index < accessor.count; ++index) {
+        const size_t elementOffset = static_cast<size_t>(stride) * index;
+        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + sizeof(float) * 3 >
+            model.buffers[static_cast<size_t>(bufferView->buffer)].data.size()) {
+            positions.clear();
+            return positions;
+        }
+
+        float values[3] = {};
+        std::memcpy(values, data + elementOffset, sizeof(values));
+        positions.emplace_back(values[0], values[1], values[2]);
+    }
+    return positions;
+}
+
+std::vector<uint32_t> readIndexAccessor(const tinygltf::Model& model, const tinygltf::Accessor& accessor)
+{
+    std::vector<uint32_t> indices;
+    if (accessor.type != TINYGLTF_TYPE_SCALAR) {
+        return indices;
+    }
+
+    const tinygltf::BufferView* bufferView = nullptr;
+    int stride = 0;
+    const uint8_t* data = accessorData(model, accessor, bufferView, stride);
+    if (data == nullptr || bufferView == nullptr) {
+        return indices;
+    }
+
+    size_t componentSize = 0;
+    switch (accessor.componentType) {
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+        componentSize = sizeof(uint8_t);
+        break;
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+        componentSize = sizeof(uint16_t);
+        break;
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+        componentSize = sizeof(uint32_t);
+        break;
+    default:
+        return indices;
+    }
+
+    indices.reserve(accessor.count);
+    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView->buffer)];
+    for (size_t index = 0; index < accessor.count; ++index) {
+        const size_t elementOffset = static_cast<size_t>(stride) * index;
+        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + componentSize > buffer.data.size()) {
+            indices.clear();
+            return indices;
+        }
+
+        switch (accessor.componentType) {
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+            indices.push_back(*(data + elementOffset));
+            break;
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+            uint16_t value = 0;
+            std::memcpy(&value, data + elementOffset, sizeof(value));
+            indices.push_back(value);
+            break;
+        }
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
+            uint32_t value = 0;
+            std::memcpy(&value, data + elementOffset, sizeof(value));
+            indices.push_back(value);
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    return indices;
 }
 
 RenderCamera makeRenderCamera(
@@ -549,12 +676,20 @@ bool Scene::load(const std::filesystem::path& filename)
                         model.accessors[static_cast<size_t>(positionAccessorIter->second)];
                     primitive.vertexCount = positionAccessor.count;
                     primitive.localBounds = accessorBounds(positionAccessor);
+                    primitive.positions = readPositionAccessor(model, positionAccessor);
                 }
 
                 if (validIndex(gltfPrimitive.indices, model.accessors.size())) {
-                    primitive.indexCount = model.accessors[static_cast<size_t>(gltfPrimitive.indices)].count;
+                    const tinygltf::Accessor& indexAccessor =
+                        model.accessors[static_cast<size_t>(gltfPrimitive.indices)];
+                    primitive.indexCount = indexAccessor.count;
+                    primitive.indices = readIndexAccessor(model, indexAccessor);
                 } else {
                     primitive.indexCount = primitive.vertexCount;
+                    primitive.indices.reserve(static_cast<size_t>(primitive.vertexCount));
+                    for (uint64_t index = 0; index < primitive.vertexCount; ++index) {
+                        primitive.indices.push_back(static_cast<uint32_t>(index));
+                    }
                 }
                 primitive.triangleCount = triangleCountForPrimitive(primitive.mode, primitive.indexCount);
 

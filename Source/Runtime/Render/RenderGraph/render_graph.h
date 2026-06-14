@@ -300,6 +300,7 @@ public:
     std::string firstOutputName() const;
 
     static RenderGraph createDefaultTriangleGraph();
+    static RenderGraph createDefaultBunnyGraph();
 
 private:
     std::string name_ = "RenderGraph";

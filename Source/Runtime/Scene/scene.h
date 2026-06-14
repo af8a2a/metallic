@@ -66,6 +66,8 @@ struct RenderPrimitive {
     uint64_t indexCount = 0;
     uint64_t triangleCount = 0;
     Bounds localBounds;
+    std::vector<float3> positions;
+    std::vector<uint32_t> indices;
 };
 
 struct RenderNode {

@@ -461,6 +461,44 @@ public:
     }
 };
 
+class RenderGraphBunnyWireframePreviewTest : public RhiTest {
+public:
+    RenderGraphBunnyWireframePreviewTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_bunny_wireframe_preview";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        render::RenderGraph graph = render::RenderGraph::createDefaultBunnyGraph();
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("Bunny wireframe preview is unsupported on this device: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("Bunny wireframe preview render returned ") + toString(result) + ": " + preview.lastLog());
+        }
+
+        const uint32_t brightPixels = countBrightPixels(preview.pixels());
+        if (brightPixels < 512) {
+            return RhiTestResult::fail(
+                std::string("Bunny wireframe preview produced too few bright pixels: ") +
+                std::to_string(brightPixels));
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 class RenderGraphCopyColorWorkflowTest : public RhiTest {
 public:
     RenderGraphCopyColorWorkflowTest()
@@ -866,6 +904,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyWireframePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);

@@ -1384,6 +1384,23 @@ RenderGraph RenderGraph::createDefaultTriangleGraph()
     return graph;
 }
 
+RenderGraph RenderGraph::createDefaultBunnyGraph()
+{
+    RenderGraph graph;
+    graph.setName("StanfordBunnyWireframe");
+    graph.addNode(
+        "BunnyWireframePass",
+        "Bunny",
+        RenderGraphProperties{
+            {"path", "Asset/StandfordBunny/scene.gltf"},
+        },
+        40.0f,
+        80.0f);
+    graph.markOutput("Bunny.color");
+    graph.clearDirty();
+    return graph;
+}
+
 bool splitRenderGraphFieldName(
     std::string_view fullName,
     std::string& outPassName,

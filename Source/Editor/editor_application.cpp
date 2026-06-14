@@ -474,8 +474,9 @@ bool EditorApplication::initialize()
         return false;
     }
 
-    resetDefaultRenderGraph();
     graphExecutor_ = std::make_unique<render::RenderGraphExecutor>();
+    resetDefaultRenderGraph();
+    loadScene();
 
     return true;
 }
@@ -1478,13 +1479,13 @@ bool EditorApplication::renderVulkanFrame()
 
 void EditorApplication::resetDefaultRenderGraph()
 {
-    renderGraph_ = render::RenderGraph::createDefaultTriangleGraph();
+    renderGraph_ = render::RenderGraph::createDefaultBunnyGraph();
     graphEditorPositionsInitialized_ = false;
     selectedGraphNodeId_ = -1;
     selectedGraphLinkId_ = -1;
     viewportPreviewValid_ = false;
     copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
-    renderGraphStatus_ = "Created default RenderGraph";
+    renderGraphStatus_ = "Created Stanford Bunny wireframe RenderGraph";
 }
 
 void EditorApplication::saveRenderGraph()

@@ -96,9 +96,9 @@ private:
     int selectedGraphNodeId_ = -1;
     int selectedGraphLinkId_ = -1;
     char graphFilePath_[260] = "Pipelines/default.metallic_graph.json";
-    char sceneFilePath_[260] = "Asset/";
+    char sceneFilePath_[260] = "Asset/StandfordBunny/scene.gltf";
     char graphNodeNameBuffer_[128] = {};
-    char graphOutputBuffer_[128] = "Triangle.color";
+    char graphOutputBuffer_[128] = "Bunny.color";
     std::string renderGraphStatus_;
     std::string sceneStatus_ = "No scene loaded.";
 };

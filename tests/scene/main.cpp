@@ -330,6 +330,10 @@ void testFullSceneImport(TestContext& test, const std::filesystem::path& directo
     test.expect(primitive.vertexCount == 3, "primitive vertex count");
     test.expect(primitive.indexCount == 3, "primitive index count");
     test.expect(primitive.materialIndex == 0, "primitive material index");
+    test.expect(primitive.positions.size() == 3, "primitive position data count");
+    test.expect(primitive.indices.size() == 3, "primitive index data count");
+    expectVec3(test, primitive.positions[2], float3(1.0f, 1.0f, 0.0f), "primitive position data");
+    test.expect(primitive.indices[2] == 2, "primitive index data");
 
     test.expect(scene.bounds().valid, "bounds should be valid");
     expectVec3(test, scene.bounds().min, float3(5.0f, 2.0f, 3.0f), "scene bounds min");
