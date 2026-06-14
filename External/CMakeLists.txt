@@ -12,6 +12,26 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/meshoptimizer_build/CMakeLists.txt")
     add_subdirectory(meshoptimizer_build)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/volk/volk.c")
+    add_library(volk STATIC
+        volk/volk.c
+    )
+    add_library(metallic::volk ALIAS volk)
+    target_include_directories(volk PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/volk"
+    )
+
+    set(METALLIC_VOLK_VULKAN_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/SDL3/src/video/khronos")
+    if(EXISTS "${METALLIC_VOLK_VULKAN_INCLUDE_DIR}/vulkan/vulkan.h")
+        target_include_directories(volk SYSTEM PUBLIC
+            "${METALLIC_VOLK_VULKAN_INCLUDE_DIR}"
+        )
+        target_compile_definitions(volk PUBLIC
+            "VOLK_VULKAN_H_PATH=\"${METALLIC_VOLK_VULKAN_INCLUDE_DIR}/vulkan/vulkan.h\""
+        )
+    endif()
+endif()
+
 # SDL3: prefer a complete vendored checkout, but allow package managers to
 # provide SDL3 while the repository is being restructured.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/SDL3/CMakeLists.txt")
@@ -85,10 +105,16 @@ if(APPLE)
     target_sources(imgui PRIVATE imgui/backends/imgui_impl_metal.mm)
     target_link_libraries(imgui PUBLIC metal-cpp "-framework Metal" "-framework AppKit")
 elseif(WIN32)
-    find_package(Vulkan QUIET)
-    if(Vulkan_FOUND)
+    if(TARGET metallic::volk)
         target_sources(imgui PRIVATE imgui/backends/imgui_impl_vulkan.cpp)
-        target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
+        target_compile_definitions(imgui PUBLIC IMGUI_IMPL_VULKAN_USE_VOLK)
+        target_link_libraries(imgui PUBLIC metallic::volk)
+    else()
+        find_package(Vulkan QUIET)
+        if(Vulkan_FOUND)
+            target_sources(imgui PRIVATE imgui/backends/imgui_impl_vulkan.cpp)
+            target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
+        endif()
     endif()
 endif()
 

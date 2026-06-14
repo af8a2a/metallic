@@ -4,10 +4,9 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
-#include <vulkan/vulkan.h>
 
-#define VMA_STATIC_VULKAN_FUNCTIONS 1
-#define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #define VMA_VULKAN_VERSION 1004000
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
@@ -1924,6 +1923,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     }
     deviceImpl->sdlVulkanLoaded = true;
 
+    VkResult vkResult = volkInitialize();
+    if (vkResult != VK_SUCCESS) {
+        std::cerr << "volkInitialize failed with VkResult " << static_cast<int>(vkResult) << '\n';
+        return resultFromVk(vkResult);
+    }
+
     Uint32 sdlExtensionCount = 0;
     const char* const* sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
     if (sdlExtensions == nullptr || sdlExtensionCount == 0) {
@@ -1971,10 +1976,11 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         .ppEnabledExtensionNames = instanceExtensions.data(),
     };
 
-    VkResult vkResult = vkCreateInstance(&instanceInfo, nullptr, &deviceImpl->instance);
+    vkResult = vkCreateInstance(&instanceInfo, nullptr, &deviceImpl->instance);
     if (vkResult != VK_SUCCESS) {
         return resultFromVk(vkResult);
     }
+    volkLoadInstance(deviceImpl->instance);
 
     if (deviceImpl->validationEnabled && debugUtilsAvailable) {
         deviceImpl->debugMessenger = createDebugMessenger(deviceImpl->instance);
@@ -2085,6 +2091,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     if (vkResult != VK_SUCCESS) {
         return resultFromVk(vkResult);
     }
+    volkLoadDevice(deviceImpl->device);
 
     if (deviceImpl->debugUtilsEnabled) {
         deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
@@ -2098,6 +2105,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     allocatorInfo.device = deviceImpl->device;
     allocatorInfo.instance = deviceImpl->instance;
     allocatorInfo.vulkanApiVersion = kVulkanApiVersion;
+    VmaVulkanFunctions vulkanFunctions{};
+    vkResult = vmaImportVulkanFunctionsFromVolk(&allocatorInfo, &vulkanFunctions);
+    if (vkResult != VK_SUCCESS) {
+        return resultFromVk(vkResult);
+    }
+    allocatorInfo.pVulkanFunctions = &vulkanFunctions;
     vkResult = vmaCreateAllocator(&allocatorInfo, &deviceImpl->allocator);
     if (vkResult != VK_SUCCESS) {
         return resultFromVk(vkResult);

@@ -1,5 +1,3 @@
-find_package(Vulkan REQUIRED)
-
 set(METALLIC_SLANG_ROOT "${CMAKE_SOURCE_DIR}/External/slang")
 if(DEFINED SLANG_ROOT)
     set(METALLIC_SLANG_ROOT "${SLANG_ROOT}")
@@ -22,7 +20,7 @@ target_include_directories(MetallicRuntimeRender SYSTEM PRIVATE
 )
 
 target_link_libraries(MetallicRuntimeRender PUBLIC
-    Vulkan::Vulkan
+    metallic::volk
     metallic::sdl3
     metallic::nsight_events
     nlohmann_json

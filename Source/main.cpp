@@ -43,7 +43,7 @@ int main(int argc, char** argv)
     bool rhiSmokeTest = false;
     bool rhiTrianglePreviewTest = false;
     bool rhiValidation = true;
-    bool waitForGraphicsDebugger =true;// waitForGraphicsDebuggerFromEnv();
+    bool waitForGraphicsDebugger = waitForGraphicsDebuggerFromEnv();
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--smoke-test") {
