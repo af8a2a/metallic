@@ -324,6 +324,16 @@ struct TextureBufferCopyDesc {
     uint32_t baseLayer = 0;
 };
 
+struct BufferTextureCopyDesc {
+    class Buffer* buffer = nullptr;
+    class Texture* texture = nullptr;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t depth = 1;
+    uint32_t mipLevel = 0;
+    uint32_t baseLayer = 0;
+};
+
 struct TextureCopyDesc {
     class Texture* source = nullptr;
     class Texture* destination = nullptr;
@@ -460,6 +470,7 @@ public:
     const BufferDesc& desc() const;
     void* map();
     void unmap();
+    void flush(uint64_t offset = 0, uint64_t size = UINT64_MAX);
     void invalidate(uint64_t offset = 0, uint64_t size = UINT64_MAX);
 
 private:
@@ -609,6 +620,7 @@ public:
     void barrier(const BarrierDesc& desc);
     void copyTexture(const TextureCopyDesc& desc);
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
+    void copyBufferToTexture(const BufferTextureCopyDesc& desc);
     void beginRendering(const RenderingDesc& desc);
     void clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect);
     void endRendering();

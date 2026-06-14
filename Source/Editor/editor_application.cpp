@@ -346,6 +346,7 @@ bool EditorApplication::initializeRhi()
         render::DeviceDesc{
             .applicationName = "Metallic Engine Editor",
             .enableValidation = false,
+            .enableBindlessDescriptorHeap = true,
         },
         device_);
     if (!result || device_ == nullptr) {

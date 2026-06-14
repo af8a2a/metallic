@@ -1151,6 +1151,7 @@ struct CommandBufferImpl {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkPipelineLayout currentGraphicsPipelineLayout = VK_NULL_HANDLE;
+    BindlessHeapImpl* currentBindlessHeap = nullptr;
     bool currentGraphicsPipelineUsesBindlessHeap = false;
 };
 
@@ -1796,6 +1797,16 @@ void Buffer::unmap()
     }
 }
 
+void Buffer::flush(uint64_t offset, uint64_t size)
+{
+    if (impl_ == nullptr || impl_->allocation == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const VkDeviceSize vkSize = size == UINT64_MAX ? VK_WHOLE_SIZE : size;
+    vmaFlushAllocation(impl_->device->allocator, impl_->allocation, offset, vkSize);
+}
+
 void Buffer::invalidate(uint64_t offset, uint64_t size)
 {
     if (impl_ == nullptr || impl_->allocation == VK_NULL_HANDLE) {
@@ -2047,6 +2058,10 @@ Result CommandBuffer::begin()
         return makeError(Error::InvalidArgument);
     }
 
+    impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
+    impl_->currentBindlessHeap = nullptr;
+    impl_->currentGraphicsPipelineUsesBindlessHeap = false;
+
     VkCommandBufferBeginInfo beginInfo{
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -2231,6 +2246,42 @@ void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
         &copyRegion);
 }
 
+void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
+{
+    if (impl_ == nullptr ||
+        desc.buffer == nullptr ||
+        desc.buffer->impl_ == nullptr ||
+        desc.texture == nullptr ||
+        desc.texture->impl_ == nullptr ||
+        desc.width == 0 ||
+        desc.height == 0 ||
+        desc.depth == 0) {
+        return;
+    }
+
+    VkBufferImageCopy copyRegion{
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = {
+            .aspectMask = aspectForFormat(desc.texture->impl_->desc.format),
+            .mipLevel = desc.mipLevel,
+            .baseArrayLayer = desc.baseLayer,
+            .layerCount = 1,
+        },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {desc.width, desc.height, desc.depth},
+    };
+
+    vkCmdCopyBufferToImage(
+        impl_->commandBuffer,
+        desc.buffer->impl_->buffer,
+        desc.texture->impl_->image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &copyRegion);
+}
+
 void CommandBuffer::beginRendering(const RenderingDesc& desc)
 {
     if (impl_ == nullptr) {
@@ -2339,45 +2390,28 @@ void CommandBuffer::setScissor(const Rect& scissor)
     vkCmdSetScissor(impl_->commandBuffer, 0, 1, &vkScissor);
 }
 
-void CommandBuffer::bindGraphicsPipeline(GraphicsPipeline& pipeline)
+namespace {
+
+void pushBindlessHeapData(detail::CommandBufferImpl& commandBuffer, detail::BindlessHeapImpl& heap)
 {
-    if (impl_ == nullptr || pipeline.impl_ == nullptr) {
-        return;
-    }
-    vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.impl_->pipeline);
-    impl_->currentGraphicsPipelineLayout = pipeline.impl_->layout;
-    impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
-}
-
-void CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
-{
-    if (impl_ == nullptr || heap.impl_ == nullptr) {
-        return;
-    }
-
-    heap.impl_->heap.bind(
-        impl_->commandBuffer,
-        heap.impl_->samplerHeap.address,
-        heap.impl_->resourceHeap.address);
-
     const BindlessHeapPushConstants push{
-        .imageShaderIndexBase = heap.imageShaderIndexBase(),
-        .bufferShaderIndexBase = heap.bufferShaderIndexBase(),
+        .imageShaderIndexBase = heap.heap.imageShaderIndexBase(),
+        .bufferShaderIndexBase = heap.heap.bufferShaderIndexBase(),
     };
-    if (impl_->currentGraphicsPipelineUsesBindlessHeap &&
-        impl_->currentGraphicsPipelineLayout != VK_NULL_HANDLE) {
+    if (commandBuffer.currentGraphicsPipelineUsesBindlessHeap &&
+        commandBuffer.currentGraphicsPipelineLayout != VK_NULL_HANDLE) {
         vkCmdPushConstants(
-            impl_->commandBuffer,
-            impl_->currentGraphicsPipelineLayout,
+            commandBuffer.commandBuffer,
+            commandBuffer.currentGraphicsPipelineLayout,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0,
             sizeof(push),
             &push);
     }
 
-    if (impl_->device != nullptr &&
-        impl_->device->bindlessDescriptorHeapEnabled &&
-        impl_->device->descriptorHeapWriter.maxPushDataSize() >= sizeof(push) &&
+    if (commandBuffer.device != nullptr &&
+        commandBuffer.device->bindlessDescriptorHeapEnabled &&
+        commandBuffer.device->descriptorHeapWriter.maxPushDataSize() >= sizeof(push) &&
         vkCmdPushDataEXT != nullptr) {
         const VkPushDataInfoEXT pushInfo{
             .sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT,
@@ -2387,8 +2421,37 @@ void CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
                 .size = sizeof(push),
             },
         };
-        vkCmdPushDataEXT(impl_->commandBuffer, &pushInfo);
+        vkCmdPushDataEXT(commandBuffer.commandBuffer, &pushInfo);
     }
+}
+
+} // namespace
+
+void CommandBuffer::bindGraphicsPipeline(GraphicsPipeline& pipeline)
+{
+    if (impl_ == nullptr || pipeline.impl_ == nullptr) {
+        return;
+    }
+    vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.impl_->pipeline);
+    impl_->currentGraphicsPipelineLayout = pipeline.impl_->layout;
+    impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
+    if (impl_->currentGraphicsPipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
+        pushBindlessHeapData(*impl_, *impl_->currentBindlessHeap);
+    }
+}
+
+void CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
+{
+    if (impl_ == nullptr || heap.impl_ == nullptr) {
+        return;
+    }
+
+    impl_->currentBindlessHeap = heap.impl_.get();
+    heap.impl_->heap.bind(
+        impl_->commandBuffer,
+        heap.impl_->samplerHeap.address,
+        heap.impl_->resourceHeap.address);
+    pushBindlessHeapData(*impl_, *heap.impl_);
 }
 
 void CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)

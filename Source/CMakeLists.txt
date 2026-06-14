@@ -16,6 +16,7 @@ target_include_directories(MetallicRuntimeRender PUBLIC
 )
 
 target_include_directories(MetallicRuntimeRender SYSTEM PRIVATE
+    "${CMAKE_SOURCE_DIR}/External/stb"
     "${CMAKE_SOURCE_DIR}/External/VulkanMemoryAllocator/include"
 )
 

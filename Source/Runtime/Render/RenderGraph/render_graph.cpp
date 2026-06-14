@@ -39,6 +39,20 @@ TextureUsageBits addTextureUsage(TextureUsageBits usage, TextureUsageBits flag)
     return usage | flag;
 }
 
+bool isBindlessSampledImageField(const RenderGraphField& field)
+{
+    return field.bindlessAccess == RenderGraphBindlessAccess::SampledImage;
+}
+
+TextureUsageBits textureUsageForInputField(const RenderGraphField& field)
+{
+    TextureUsageBits usage = field.usage;
+    if (isBindlessSampledImageField(field)) {
+        usage = addTextureUsage(usage, TextureUsageBits::Sampled);
+    }
+    return usage;
+}
+
 Format resolveFormat(Format format, Format defaultFormat)
 {
     return format == Format::Unknown ? defaultFormat : format;
@@ -229,11 +243,21 @@ RenderGraphField& RenderPassReflection::addInput(std::string name, std::string d
         .name = std::move(name),
         .description = std::move(description),
         .visibility = RenderGraphFieldVisibility::Input,
+        .bindlessAccess = RenderGraphBindlessAccess::None,
         .format = Format::Rgba8Unorm,
         .usage = TextureUsageBits::Sampled,
         .state = ResourceState::ShaderRead,
     });
     return fields_.back();
+}
+
+RenderGraphField& RenderPassReflection::addBindlessSampledInput(std::string name, std::string description)
+{
+    RenderGraphField& field = addInput(std::move(name), std::move(description));
+    field.bindlessAccess = RenderGraphBindlessAccess::SampledImage;
+    field.usage = TextureUsageBits::Sampled;
+    field.state = ResourceState::ShaderRead;
+    return field;
 }
 
 RenderGraphField& RenderPassReflection::addOutput(std::string name, std::string description)
@@ -242,6 +266,7 @@ RenderGraphField& RenderPassReflection::addOutput(std::string name, std::string 
         .name = std::move(name),
         .description = std::move(description),
         .visibility = RenderGraphFieldVisibility::Output,
+        .bindlessAccess = RenderGraphBindlessAccess::None,
         .format = Format::Rgba8Unorm,
         .usage = TextureUsageBits::ColorAttachment,
         .state = ResourceState::ColorAttachment,
@@ -314,6 +339,39 @@ RenderGraphResource* RenderGraphExecutionContext::output(std::string_view fieldN
                 binding.fieldName == fieldName;
         });
     return iter == bindings_.end() ? nullptr : iter->resource;
+}
+
+const BindlessHandle* RenderGraphExecutionContext::bindlessResource(std::string_view fieldName) const
+{
+    const auto iter = std::find_if(
+        bindings_.begin(),
+        bindings_.end(),
+        [fieldName](const Binding& binding) {
+            return binding.fieldName == fieldName;
+        });
+    if (iter == bindings_.end() ||
+        iter->bindlessAccess != RenderGraphBindlessAccess::SampledImage ||
+        !iter->sampledImageBindlessHandle.valid()) {
+        return nullptr;
+    }
+    return &iter->sampledImageBindlessHandle;
+}
+
+const BindlessHandle* RenderGraphExecutionContext::bindlessInput(std::string_view fieldName) const
+{
+    const auto iter = std::find_if(
+        bindings_.begin(),
+        bindings_.end(),
+        [fieldName](const Binding& binding) {
+            return binding.visibility == RenderGraphFieldVisibility::Input &&
+                binding.fieldName == fieldName;
+        });
+    if (iter == bindings_.end() ||
+        iter->bindlessAccess != RenderGraphBindlessAccess::SampledImage ||
+        !iter->sampledImageBindlessHandle.valid()) {
+        return nullptr;
+    }
+    return &iter->sampledImageBindlessHandle;
 }
 
 bool registerRenderGraphPassType(
@@ -803,6 +861,7 @@ struct RenderGraphExecutor::Impl {
     std::vector<CompiledNode> executionList;
     std::unordered_map<std::string, ResourceSlot> resources;
     std::unordered_map<std::string, std::string> inputAliases;
+    std::unique_ptr<BindlessHeap> bindlessHeap;
     bool isCompiled = false;
 
     RenderGraphResource* resource(std::string_view fullName)
@@ -838,6 +897,17 @@ struct RenderGraphExecutor::Impl {
             return nullptr;
         }
         return node->reflection.findField(fieldName, visibility);
+    }
+
+    static bool usesBindlessSampledInput(const CompiledNode& node)
+    {
+        return std::any_of(
+            node.reflection.fields().begin(),
+            node.reflection.fields().end(),
+            [](const RenderGraphField& field) {
+                return field.visibility == RenderGraphFieldVisibility::Input &&
+                    isBindlessSampledImageField(field);
+            });
     }
 
     Result transition(
@@ -906,6 +976,7 @@ Result RenderGraphExecutor::compile(
     impl_->executionList.clear();
     impl_->resources.clear();
     impl_->inputAliases.clear();
+    impl_->bindlessHeap.reset();
     impl_->isCompiled = false;
 
     const RenderGraphCompileContext compileContext{
@@ -929,12 +1000,6 @@ Result RenderGraphExecutor::compile(
         }
         pass->setProperties(node->properties);
         RenderPassReflection reflection = pass->reflect(compileContext);
-        Result result = pass->compile(compileContext, log);
-        if (!result) {
-            impl_->isCompiled = false;
-            return result;
-        }
-
         impl_->executionList.push_back(Impl::CompiledNode{
             .id = node->id,
             .name = node->name,
@@ -953,6 +1018,41 @@ Result RenderGraphExecutor::compile(
         impl_->inputAliases.emplace(
             makeRenderGraphFieldName(edge.dstPass, edge.dstField),
             makeRenderGraphFieldName(edge.srcPass, edge.srcField));
+    }
+
+    std::vector<std::string> bindlessSampledImageResources;
+    std::unordered_set<std::string> bindlessSampledImageResourceSet;
+    for (const Impl::CompiledNode& node : impl_->executionList) {
+        for (const RenderGraphField& field : node.reflection.fields()) {
+            if (field.visibility != RenderGraphFieldVisibility::Input ||
+                !isBindlessSampledImageField(field)) {
+                continue;
+            }
+
+            const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
+            const auto alias = impl_->inputAliases.find(fullName);
+            if (alias == impl_->inputAliases.end()) {
+                continue;
+            }
+            if (bindlessSampledImageResourceSet.insert(alias->second).second) {
+                bindlessSampledImageResources.push_back(alias->second);
+            }
+        }
+    }
+
+    if (!bindlessSampledImageResources.empty() &&
+        !device.capabilities().bindlessDescriptorHeap) {
+        log = "RenderGraph compile failed: bindless sampled-image inputs require "
+            "DeviceCapabilities::bindlessDescriptorHeap";
+        return makeError(Error::Unsupported);
+    }
+
+    for (Impl::CompiledNode& node : impl_->executionList) {
+        Result result = node.pass->compile(compileContext, log);
+        if (!result) {
+            impl_->isCompiled = false;
+            return result;
+        }
     }
 
     for (const Impl::CompiledNode& node : impl_->executionList) {
@@ -981,9 +1081,10 @@ Result RenderGraphExecutor::compile(
                     edge.dstPass,
                     edge.dstField,
                     RenderGraphFieldVisibility::Input);
-                usage = addTextureUsage(
-                    usage,
-                    dstField == nullptr ? TextureUsageBits::Sampled : dstField->usage);
+                TextureUsageBits dstUsage = dstField == nullptr
+                    ? TextureUsageBits::Sampled
+                    : textureUsageForInputField(*dstField);
+                usage = addTextureUsage(usage, dstUsage);
             }
 
             TextureDesc desc{
@@ -1027,6 +1128,46 @@ Result RenderGraphExecutor::compile(
                 .state = ResourceState::Undefined,
             };
             impl_->resources.emplace(fullName, std::move(slot));
+        }
+    }
+
+    if (!bindlessSampledImageResources.empty()) {
+        Result result = device.createBindlessHeap(
+            BindlessHeapDesc{
+                .maxSampledImages = static_cast<uint32_t>(bindlessSampledImageResources.size()),
+            },
+            impl_->bindlessHeap);
+        if (!result || impl_->bindlessHeap == nullptr) {
+            log += resultMessage("createBindlessHeap(RenderGraph)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        for (const std::string& fullName : bindlessSampledImageResources) {
+            RenderGraphResource* resource = impl_->resource(fullName);
+            if (resource == nullptr || resource->view == nullptr) {
+                log = validationPrefix(std::string("bindless sampled image resource is missing '") + fullName + "'");
+                return makeError(Error::InvalidArgument);
+            }
+
+            BindlessHandle handle;
+            result = impl_->bindlessHeap->allocateSampledImage(handle);
+            if (!result) {
+                log += resultMessage(std::string("allocateSampledImage(") + fullName + ")", result);
+                log += '\n';
+                return result;
+            }
+
+            result = impl_->bindlessHeap->writeSampledImage(
+                handle,
+                *resource->view,
+                ResourceState::ShaderRead);
+            if (!result) {
+                log += resultMessage(std::string("writeSampledImage(") + fullName + ")", result);
+                log += '\n';
+                return result;
+            }
+            resource->sampledImageBindlessHandle = handle;
         }
     }
 
@@ -1074,7 +1215,15 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer)
                 .fieldName = localName,
                 .resource = resource,
                 .visibility = field.visibility,
+                .bindlessAccess = field.bindlessAccess,
+                .sampledImageBindlessHandle = resource != nullptr
+                    ? resource->sampledImageBindlessHandle
+                    : BindlessHandle{},
             });
+        }
+
+        if (impl_->bindlessHeap != nullptr && Impl::usesBindlessSampledInput(node)) {
+            commandBuffer.bindBindlessHeap(*impl_->bindlessHeap);
         }
 
         RenderGraphExecutionContext context(
@@ -1197,6 +1346,7 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation)
         DeviceDesc{
             .applicationName = "Metallic RenderGraph Preview",
             .enableValidation = enableValidation,
+            .enableBindlessDescriptorHeap = true,
         },
         impl_->device);
     if (!result) {

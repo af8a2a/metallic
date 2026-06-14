@@ -22,10 +22,16 @@ enum class RenderGraphFieldVisibility : uint8_t {
     Output,
 };
 
+enum class RenderGraphBindlessAccess : uint8_t {
+    None,
+    SampledImage,
+};
+
 struct RenderGraphField {
     std::string name;
     std::string description;
     RenderGraphFieldVisibility visibility = RenderGraphFieldVisibility::Output;
+    RenderGraphBindlessAccess bindlessAccess = RenderGraphBindlessAccess::None;
     Format format = Format::Rgba8Unorm;
     TextureUsageBits usage = TextureUsageBits::ColorAttachment;
     ResourceState state = ResourceState::ColorAttachment;
@@ -37,6 +43,7 @@ struct RenderGraphField {
 class RenderPassReflection {
 public:
     RenderGraphField& addInput(std::string name, std::string description = {});
+    RenderGraphField& addBindlessSampledInput(std::string name, std::string description = {});
     RenderGraphField& addOutput(std::string name, std::string description = {});
 
     const RenderGraphField* findField(
@@ -60,6 +67,7 @@ struct RenderGraphResource {
     TextureView* view = nullptr;
     TextureDesc desc;
     ResourceState state = ResourceState::Undefined;
+    BindlessHandle sampledImageBindlessHandle;
 };
 
 class RenderGraphExecutionContext {
@@ -72,12 +80,16 @@ public:
     RenderGraphResource* resource(std::string_view fieldName) const;
     RenderGraphResource* input(std::string_view fieldName) const;
     RenderGraphResource* output(std::string_view fieldName) const;
+    const BindlessHandle* bindlessResource(std::string_view fieldName) const;
+    const BindlessHandle* bindlessInput(std::string_view fieldName) const;
 
 private:
     struct Binding {
         std::string fieldName;
         RenderGraphResource* resource = nullptr;
         RenderGraphFieldVisibility visibility = RenderGraphFieldVisibility::Output;
+        RenderGraphBindlessAccess bindlessAccess = RenderGraphBindlessAccess::None;
+        BindlessHandle sampledImageBindlessHandle;
     };
 
     RenderGraphExecutionContext(
