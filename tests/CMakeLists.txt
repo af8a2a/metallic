@@ -34,6 +34,7 @@ add_executable(MetallicRhiTests
     rhi/render_graph_tests.cpp
     rhi/rendering_tests.cpp
     rhi/resource_tests.cpp
+    rhi/scene_rtx_tests.cpp
     rhi/test_output.cpp
     rhi/validation_tests.cpp
     rhi/stb/stb.cpp

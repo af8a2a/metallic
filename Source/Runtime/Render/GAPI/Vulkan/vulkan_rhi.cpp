@@ -249,6 +249,15 @@ VkBufferUsageFlags toVkBufferUsage(BufferUsageBits usage)
     if (hasFlag(usage, BufferUsageBits::TransferDestination)) {
         flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     }
+    if (hasFlag(usage, BufferUsageBits::ShaderDeviceAddress)) {
+        flags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    }
+    if (hasFlag(usage, BufferUsageBits::AccelerationStructureBuildInput)) {
+        flags |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    }
+    if (hasFlag(usage, BufferUsageBits::AccelerationStructureStorage)) {
+        flags |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
+    }
     return flags != 0 ? flags : VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 }
 
@@ -1243,6 +1252,8 @@ struct DeviceImpl {
     bool debugUtilsEnabled = false;
     bool bindlessDescriptorHeapEnabled = false;
     bool shaderObjectEnabled = false;
+    bool bufferDeviceAddressEnabled = false;
+    bool rayTracingAccelerationStructureEnabled = false;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
     std::vector<std::unique_ptr<Queue>> queues;
@@ -3142,8 +3153,22 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
     }
     activateVolkDevice(impl_->device);
 
+    const bool usesAccelerationStructure =
+        hasFlag(desc.usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+        hasFlag(desc.usage, BufferUsageBits::AccelerationStructureStorage);
+    if (usesAccelerationStructure && !impl_->capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+
+    const bool requestsDeviceAddress =
+        hasFlag(desc.usage, BufferUsageBits::ShaderDeviceAddress) ||
+        usesAccelerationStructure;
+    if (requestsDeviceAddress && !impl_->bufferDeviceAddressEnabled) {
+        return makeError(Error::Unsupported);
+    }
+
     VkBufferUsageFlags usage = toVkBufferUsage(desc.usage);
-    if (impl_->capabilities.bindlessDescriptorHeap &&
+    if (impl_->bufferDeviceAddressEnabled &&
         (hasFlag(desc.usage, BufferUsageBits::Constant) || hasFlag(desc.usage, BufferUsageBits::Storage))) {
         usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     }
@@ -3897,11 +3922,13 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
     const bool requestBindlessDescriptorHeap = desc.enableBindlessDescriptorHeap;
     const bool requestShaderObject = desc.enableShaderObject;
+    const bool requestRayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure;
     VkPhysicalDevice fallbackPhysicalDevice = VK_NULL_HANDLE;
     uint32_t fallbackGraphicsFamily = 0;
     uint32_t fallbackComputeFamily = 0;
     bool selectedBindlessDescriptorHeap = false;
     bool selectedShaderObject = false;
+    bool selectedRayTracingAccelerationStructure = false;
 
     for (VkPhysicalDevice physicalDevice : physicalDevices) {
         VkPhysicalDeviceProperties properties{};
@@ -3915,12 +3942,20 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             hasDeviceExtension(physicalDevice, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
         const bool shaderObjectExtensionAvailable =
             hasDeviceExtension(physicalDevice, VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+        const bool accelerationStructureExtensionAvailable =
+            hasDeviceExtension(physicalDevice, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        const bool deferredHostOperationsExtensionAvailable =
+            hasDeviceExtension(physicalDevice, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         if (!swapchainExtensionAvailable) {
             continue;
         }
 
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+        };
         VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
+            .pNext = &accelerationStructureFeatures,
         };
         VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
@@ -3961,6 +3996,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             requestShaderObject &&
             shaderObjectExtensionAvailable &&
             shaderObjectFeatures.shaderObject == VK_TRUE;
+        const bool rayTracingAccelerationStructureSupported =
+            requestRayTracingAccelerationStructure &&
+            accelerationStructureExtensionAvailable &&
+            deferredHostOperationsExtensionAvailable &&
+            accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
+            vulkan12Features.bufferDeviceAddress == VK_TRUE;
 
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
@@ -4003,13 +4044,15 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
         const bool matchesRequestedFeatures =
             (!requestBindlessDescriptorHeap || descriptorHeapSupported) &&
-            (!requestShaderObject || shaderObjectSupported);
+            (!requestShaderObject || shaderObjectSupported) &&
+            (!requestRayTracingAccelerationStructure || rayTracingAccelerationStructureSupported);
         if (matchesRequestedFeatures) {
             deviceImpl->physicalDevice = physicalDevice;
             deviceImpl->graphicsFamily = graphicsFamily;
             deviceImpl->computeFamily = computeFamily;
             selectedBindlessDescriptorHeap = descriptorHeapSupported;
             selectedShaderObject = shaderObjectSupported;
+            selectedRayTracingAccelerationStructure = rayTracingAccelerationStructureSupported;
             break;
         }
     }
@@ -4020,6 +4063,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         deviceImpl->computeFamily = fallbackComputeFamily;
         selectedBindlessDescriptorHeap = false;
         selectedShaderObject = false;
+        selectedRayTracingAccelerationStructure = false;
     }
 
     if (deviceImpl->physicalDevice == VK_NULL_HANDLE) {
@@ -4064,20 +4108,34 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
         .shaderObject = selectedShaderObject ? VK_TRUE : VK_FALSE,
     };
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR enabledAccelerationStructureFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+        .accelerationStructure = selectedRayTracingAccelerationStructure ? VK_TRUE : VK_FALSE,
+    };
     if (selectedBindlessDescriptorHeap) {
         enabledVulkan13Features.pNext = &enabledDescriptorHeapFeatures;
+        void** featureTail = &enabledDescriptorHeapFeatures.pNext;
         if (selectedShaderObject) {
-            enabledDescriptorHeapFeatures.pNext = &enabledShaderObjectFeatures;
+            *featureTail = &enabledShaderObjectFeatures;
+            featureTail = &enabledShaderObjectFeatures.pNext;
+        }
+        if (selectedRayTracingAccelerationStructure) {
+            *featureTail = &enabledAccelerationStructureFeatures;
         }
     } else if (selectedShaderObject) {
         enabledVulkan13Features.pNext = &enabledShaderObjectFeatures;
+        if (selectedRayTracingAccelerationStructure) {
+            enabledShaderObjectFeatures.pNext = &enabledAccelerationStructureFeatures;
+        }
+    } else if (selectedRayTracingAccelerationStructure) {
+        enabledVulkan13Features.pNext = &enabledAccelerationStructureFeatures;
     }
     VkPhysicalDeviceVulkan12Features enabledVulkan12Features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &enabledVulkan13Features,
         .descriptorIndexing = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
         .runtimeDescriptorArray = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
-        .bufferDeviceAddress = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
+        .bufferDeviceAddress = (selectedBindlessDescriptorHeap || selectedRayTracingAccelerationStructure) ? VK_TRUE : VK_FALSE,
     };
     VkPhysicalDeviceVulkan11Features enabledVulkan11Features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
@@ -4097,6 +4155,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     }
     if (selectedShaderObject) {
         deviceExtensions.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+    }
+    if (selectedRayTracingAccelerationStructure) {
+        deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
     }
 
     VkDeviceCreateInfo deviceInfo{
@@ -4149,6 +4211,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     }
     deviceImpl->capabilities.shaderObject = selectedShaderObject;
     deviceImpl->shaderObjectEnabled = selectedShaderObject;
+    deviceImpl->capabilities.rayTracingAccelerationStructure = selectedRayTracingAccelerationStructure;
+    deviceImpl->rayTracingAccelerationStructureEnabled = selectedRayTracingAccelerationStructure;
+    deviceImpl->bufferDeviceAddressEnabled = selectedBindlessDescriptorHeap || selectedRayTracingAccelerationStructure;
 
     if (deviceImpl->debugUtilsEnabled) {
         deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
@@ -4162,7 +4227,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     allocatorInfo.device = deviceImpl->device;
     allocatorInfo.instance = deviceImpl->instance;
     allocatorInfo.vulkanApiVersion = kVulkanApiVersion;
-    if (selectedBindlessDescriptorHeap) {
+    if (deviceImpl->bufferDeviceAddressEnabled) {
         allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     }
     VmaVulkanFunctions vulkanFunctions{};
@@ -4215,6 +4280,39 @@ struct VulkanNativeAccess {
         };
     }
 
+    static vulkan::NativeBuffer nativeBuffer(Buffer& buffer)
+    {
+        if (buffer.impl_ == nullptr) {
+            return {};
+        }
+
+        VkDeviceAddress address = 0;
+        const BufferUsageBits usage = buffer.impl_->desc.usage;
+        const bool expectsAddress =
+            hasFlag(usage, BufferUsageBits::ShaderDeviceAddress) ||
+            hasFlag(usage, BufferUsageBits::AccelerationStructureBuildInput) ||
+            hasFlag(usage, BufferUsageBits::AccelerationStructureStorage) ||
+            (buffer.impl_->device != nullptr &&
+                buffer.impl_->device->bufferDeviceAddressEnabled &&
+                (hasFlag(usage, BufferUsageBits::Constant) || hasFlag(usage, BufferUsageBits::Storage)));
+        if (expectsAddress &&
+            buffer.impl_->device != nullptr &&
+            buffer.impl_->buffer != VK_NULL_HANDLE) {
+            activateVolkDevice(buffer.impl_->device->device);
+            VkBufferDeviceAddressInfo addressInfo{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+                .buffer = buffer.impl_->buffer,
+            };
+            address = vkGetBufferDeviceAddress(buffer.impl_->device->device, &addressInfo);
+        }
+
+        return vulkan::NativeBuffer{
+            .buffer = buffer.impl_->buffer,
+            .address = address,
+            .size = buffer.impl_->desc.size,
+        };
+    }
+
     static VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)
     {
         return commandBuffer.impl_ != nullptr ? commandBuffer.impl_->commandBuffer : VK_NULL_HANDLE;
@@ -4243,6 +4341,11 @@ NativeDevice nativeDevice(Device& device)
 NativeQueue nativeQueue(Queue& queue)
 {
     return detail::VulkanNativeAccess::nativeQueue(queue);
+}
+
+NativeBuffer nativeBuffer(Buffer& buffer)
+{
+    return detail::VulkanNativeAccess::nativeBuffer(buffer);
 }
 
 VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)

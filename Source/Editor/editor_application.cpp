@@ -711,6 +711,7 @@ bool EditorApplication::initialize()
     }
 
     graphExecutor_ = std::make_unique<render::RenderGraphExecutor>();
+    sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
     resetDefaultRenderGraph();
     loadScene();
 
@@ -725,6 +726,7 @@ bool EditorApplication::initializeRhi()
             .enableValidation = false,
             .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true,
+            .enableRayTracingAccelerationStructure = true,
         },
         device_);
     if (!result || device_ == nullptr) {
@@ -965,6 +967,7 @@ void EditorApplication::shutdown()
     }
 
     graphExecutor_.reset();
+    sceneRtx_.reset();
 
     if (viewportSampler_ != VK_NULL_HANDLE && device_ != nullptr) {
         const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
@@ -1196,12 +1199,37 @@ void EditorApplication::drawScenePanel()
     }
     ImGui::SameLine();
     if (ImGui::Button("Clear")) {
+        clearSceneRtx();
         scene_.clear();
         sceneStatus_ = "No scene loaded.";
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Build RTX AS")) {
+        buildSceneRtx();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear RTX AS")) {
+        clearSceneRtx();
     }
 
     if (!sceneStatus_.empty()) {
         ImGui::TextWrapped("%s", sceneStatus_.c_str());
+    }
+    if (!sceneRtxStatus_.empty()) {
+        ImGui::TextWrapped("%s", sceneRtxStatus_.c_str());
+    }
+    if (sceneRtx_ != nullptr && sceneRtx_->valid()) {
+        const render::vulkan::SceneRtxStats& rtxStats = sceneRtx_->stats();
+        ImGui::Text(
+            "RTX AS: %u BLAS, %u instances, %llu triangles",
+            rtxStats.blasCount,
+            rtxStats.instanceCount,
+            static_cast<unsigned long long>(rtxStats.triangleCount));
+        ImGui::Text(
+            "RTX memory: geometry %llu bytes, AS %llu bytes, scratch %llu bytes",
+            static_cast<unsigned long long>(rtxStats.geometryBytes),
+            static_cast<unsigned long long>(rtxStats.accelerationStructureBytes),
+            static_cast<unsigned long long>(rtxStats.scratchBytes));
     }
     const scene::LoadResult& loadResult = scene_.lastLoadResult();
     if (!loadResult.warning.empty()) {
@@ -1939,6 +1967,8 @@ void EditorApplication::loadRenderGraph()
 
 void EditorApplication::loadScene()
 {
+    clearSceneRtx();
+
     const std::filesystem::path path = resolveSceneAssetPath(sceneFilePath_);
     if (path.empty()) {
         sceneStatus_ = "Scene path is empty.";
@@ -1956,6 +1986,35 @@ void EditorApplication::loadScene()
     const scene::SceneStats& stats = scene_.stats();
     sceneStatus_ = "Loaded " + path.string() + " (" + std::to_string(stats.renderNodeCount) +
         " render nodes, " + std::to_string(scene_.nodes().size()) + " scene nodes).";
+}
+
+void EditorApplication::buildSceneRtx()
+{
+    if (sceneRtx_ == nullptr) {
+        sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
+    }
+    if (device_ == nullptr || graphicsQueue_ == nullptr) {
+        sceneRtxStatus_ = "RTX AS build failed: RHI device is not initialized.";
+        return;
+    }
+    if (!scene_.valid()) {
+        sceneRtxStatus_ = "RTX AS build failed: load a glTF scene first.";
+        return;
+    }
+
+    std::string log;
+    const render::Result result = sceneRtx_->build(*device_, *graphicsQueue_, scene_, log);
+    sceneRtxStatus_ = log.empty()
+        ? std::string("RTX AS build returned ") + render::resultToString(result)
+        : log;
+}
+
+void EditorApplication::clearSceneRtx()
+{
+    if (sceneRtx_ != nullptr) {
+        sceneRtx_->clear();
+    }
+    sceneRtxStatus_ = "RTX AS not built.";
 }
 
 void EditorApplication::addRenderGraphNode(std::string type, ImVec2 screenPosition)

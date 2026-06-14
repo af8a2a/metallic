@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/RenderGraph/render_graph.h"
+#include "Runtime/Render/GAPI/Vulkan/vulkan_scene_rtx.h"
 #include "Runtime/Scene/scene.h"
 
 #include <cstdint>
@@ -43,6 +44,8 @@ private:
     void saveRenderGraph();
     void loadRenderGraph();
     void loadScene();
+    void buildSceneRtx();
+    void clearSceneRtx();
     void addRenderGraphNode(std::string type, ImVec2 screenPosition);
     void markRenderGraphOutput(std::string outputName);
     bool initializeRhi();
@@ -70,6 +73,7 @@ private:
     std::unique_ptr<render::Semaphore> imageAvailableSemaphore_;
     std::unique_ptr<render::Semaphore> renderFinishedSemaphore_;
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
+    std::unique_ptr<render::vulkan::SceneRtxBuilder> sceneRtx_;
     render::RenderGraph renderGraph_;
     scene::Scene scene_;
     VkSampler viewportSampler_ = VK_NULL_HANDLE;
@@ -105,6 +109,7 @@ private:
     char graphOutputBuffer_[128] = "Bunny.color";
     std::string renderGraphStatus_;
     std::string sceneStatus_ = "No scene loaded.";
+    std::string sceneRtxStatus_ = "RTX AS not built.";
 };
 
 } // namespace metallic

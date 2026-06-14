@@ -115,6 +115,9 @@ enum class BufferUsageBits : uint32_t {
     Storage = 1u << 3,
     TransferSource = 1u << 4,
     TransferDestination = 1u << 5,
+    ShaderDeviceAddress = 1u << 6,
+    AccelerationStructureBuildInput = 1u << 7,
+    AccelerationStructureStorage = 1u << 8,
 };
 
 enum class TextureUsageBits : uint32_t {
@@ -201,11 +204,13 @@ struct DeviceDesc {
     bool enableValidation = false;
     bool enableBindlessDescriptorHeap = false;
     bool enableShaderObject = false;
+    bool enableRayTracingAccelerationStructure = false;
 };
 
 struct DeviceCapabilities {
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
+    bool rayTracingAccelerationStructure = false;
     uint32_t maxBindlessSamplers = 0;
     uint32_t maxBindlessSampledImages = 0;
     uint32_t maxBindlessBuffers = 0;

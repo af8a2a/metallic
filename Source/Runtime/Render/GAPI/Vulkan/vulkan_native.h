@@ -18,8 +18,15 @@ struct NativeQueue {
     uint32_t familyIndex = 0;
 };
 
+struct NativeBuffer {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceAddress address = 0;
+    uint64_t size = 0;
+};
+
 NativeDevice nativeDevice(Device& device);
 NativeQueue nativeQueue(Queue& queue);
+NativeBuffer nativeBuffer(Buffer& buffer);
 VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer);
 VkFormat nativeSwapchainFormat(Swapchain& swapchain);
 VkImageView nativeImageView(TextureView& view);
