@@ -98,6 +98,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
                 {"fovDegrees", 60.0f},
                 {"znear", 0.1f},
                 {"zfar", 10000.0f},
+                {"reversedZ", true},
                 {"eye", {-0.0168404f, 0.110154f, 0.22f}},
                 {"center", {-0.0168404f, 0.110154f, -0.00153695f}},
                 {"up", {0.0f, 1.0f, 0.0f}},
@@ -113,6 +114,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
                 {"fovDegrees", 60.0f},
                 {"znear", 0.1f},
                 {"zfar", 10000.0f},
+                {"reversedZ", true},
                 {"eye", {-0.0168404f, 0.110154f, 0.22f}},
                 {"center", {-0.0168404f, 0.110154f, -0.00153695f}},
                 {"up", {0.0f, 1.0f, 0.0f}},
@@ -129,6 +131,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
                 {"fovDegrees", 50.0f},
                 {"znear", 0.001f},
                 {"zfar", 10000.0f},
+                {"reversedZ", true},
                 {"eye", {0.0f, 0.25f, 3.0f}},
                 {"center", {0.0f, 0.15f, 0.0f}},
                 {"up", {0.0f, 1.0f, 0.0f}},
@@ -219,6 +222,17 @@ void ensureFloatProperty(
     }
 }
 
+void ensureBoolProperty(
+    render::RenderGraphProperties& object,
+    const char* key,
+    bool fallback)
+{
+    auto iter = object.find(key);
+    if (iter == object.end() || !iter->is_boolean()) {
+        object[key] = fallback;
+    }
+}
+
 void ensureVec3Property(
     render::RenderGraphProperties& object,
     const char* key,
@@ -254,6 +268,7 @@ void ensureCameraProperties(render::RenderGraphProperties& properties, const sce
     ensureFloatProperty(camera, "fovDegrees", 60.0f);
     ensureFloatProperty(camera, "znear", 0.1f);
     ensureFloatProperty(camera, "zfar", 10000.0f);
+    ensureBoolProperty(camera, "reversedZ", true);
     ensureVec3Property(camera, "eye", defaultEye);
     ensureVec3Property(camera, "center", defaultCenter);
     ensureVec3Property(camera, "up", defaultUp);
@@ -439,6 +454,8 @@ const char* renderGraphResourceAccessName(render::RenderGraphResourceAccess acce
         return "SampleRead";
     case render::RenderGraphResourceAccess::TextureColorWrite:
         return "ColorWrite";
+    case render::RenderGraphResourceAccess::TextureDepthStencilWrite:
+        return "DepthStencilWrite";
     case render::RenderGraphResourceAccess::TextureTransferRead:
         return "TransferRead";
     case render::RenderGraphResourceAccess::TextureTransferWrite:
@@ -1415,6 +1432,15 @@ void EditorApplication::drawCameraControls()
             changed = true;
         }
         ImGui::PopItemWidth();
+
+        bool reversedZ = camera["reversedZ"].get<bool>();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Depth");
+        ImGui::SameLine(labelWidth);
+        if (ImGui::Checkbox("Reversed Z", &reversedZ)) {
+            camera["reversedZ"] = reversedZ;
+            changed = true;
+        }
 
         camera["projection"] = projectionType == 1 ? "orthographic" : "perspective";
     }

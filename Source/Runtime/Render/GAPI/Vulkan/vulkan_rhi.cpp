@@ -349,6 +349,30 @@ VkPrimitiveTopology toVkPrimitiveTopology(PrimitiveTopology topology)
     return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
+VkCompareOp toVkCompareOp(CompareOp compareOp)
+{
+    switch (compareOp) {
+    case CompareOp::Never:
+        return VK_COMPARE_OP_NEVER;
+    case CompareOp::Less:
+        return VK_COMPARE_OP_LESS;
+    case CompareOp::Equal:
+        return VK_COMPARE_OP_EQUAL;
+    case CompareOp::LessEqual:
+        return VK_COMPARE_OP_LESS_OR_EQUAL;
+    case CompareOp::Greater:
+        return VK_COMPARE_OP_GREATER;
+    case CompareOp::NotEqual:
+        return VK_COMPARE_OP_NOT_EQUAL;
+    case CompareOp::GreaterEqual:
+        return VK_COMPARE_OP_GREATER_OR_EQUAL;
+    case CompareOp::Always:
+        return VK_COMPARE_OP_ALWAYS;
+    }
+
+    return VK_COMPARE_OP_LESS_OR_EQUAL;
+}
+
 StateInfo stateInfo(ResourceState state)
 {
     switch (state) {
@@ -2456,6 +2480,8 @@ void CommandBuffer::beginRendering(const RenderingDesc& desc)
 
     std::vector<VkRenderingAttachmentInfo> colorAttachments;
     colorAttachments.reserve(desc.colorAttachmentCount);
+    VkRenderingAttachmentInfo depthAttachment{};
+    const VkRenderingAttachmentInfo* depthAttachmentPtr = nullptr;
 
     for (uint32_t index = 0; index < desc.colorAttachmentCount; ++index) {
         const RenderingAttachmentDesc& attachment = desc.colorAttachments[index];
@@ -2477,6 +2503,24 @@ void CommandBuffer::beginRendering(const RenderingDesc& desc)
         });
     }
 
+    if (desc.depthStencilAttachment != nullptr) {
+        const RenderingAttachmentDesc& attachment = *desc.depthStencilAttachment;
+        if (attachment.view != nullptr && attachment.view->impl_ != nullptr) {
+            const StateInfo state = stateInfo(attachment.state);
+            depthAttachment = {
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .imageView = attachment.view->impl_->view,
+                .imageLayout = state.layout,
+                .loadOp = toVkLoadOp(attachment.loadOp),
+                .storeOp = toVkStoreOp(attachment.storeOp),
+                .clearValue = {
+                    .depthStencil = {attachment.clearDepth, attachment.clearStencil},
+                },
+            };
+            depthAttachmentPtr = &depthAttachment;
+        }
+    }
+
     VkRenderingInfo renderingInfo{
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .renderArea = {
@@ -2486,6 +2530,7 @@ void CommandBuffer::beginRendering(const RenderingDesc& desc)
         .layerCount = 1,
         .colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size()),
         .pColorAttachments = colorAttachments.data(),
+        .pDepthAttachment = depthAttachmentPtr,
     };
     vkCmdBeginRendering(impl_->commandBuffer, &renderingInfo);
 }
@@ -2560,6 +2605,29 @@ void CommandBuffer::setScissor(const Rect& scissor)
     vkCmdSetScissor(impl_->commandBuffer, 0, 1, &vkScissor);
     if (impl_->currentGraphicsShaderObjectBound && vkCmdSetScissorWithCountEXT != nullptr) {
         vkCmdSetScissorWithCountEXT(impl_->commandBuffer, 1, &vkScissor);
+    }
+}
+
+void CommandBuffer::setDepthStencilState(const DepthStencilState& state)
+{
+    if (impl_ == nullptr) {
+        return;
+    }
+
+    if (vkCmdSetDepthTestEnableEXT != nullptr) {
+        vkCmdSetDepthTestEnableEXT(
+            impl_->commandBuffer,
+            state.depthTestEnable ? VK_TRUE : VK_FALSE);
+    }
+    if (vkCmdSetDepthWriteEnableEXT != nullptr) {
+        vkCmdSetDepthWriteEnableEXT(
+            impl_->commandBuffer,
+            state.depthWriteEnable ? VK_TRUE : VK_FALSE);
+    }
+    if (vkCmdSetDepthCompareOpEXT != nullptr) {
+        vkCmdSetDepthCompareOpEXT(
+            impl_->commandBuffer,
+            toVkCompareOp(state.depthCompareOp));
     }
 }
 
@@ -3406,6 +3474,10 @@ Result Device::createGraphicsPipeline(
     if (desc.usesBindlessHeap && !impl_->capabilities.bindlessDescriptorHeap) {
         return makeError(Error::Unsupported);
     }
+    const bool hasDepthStencilFormat = desc.depthStencilFormat != Format::Unknown;
+    if ((desc.depthStencil.depthTestEnable || desc.depthStencil.depthWriteEnable) && !hasDepthStencilFormat) {
+        return makeError(Error::InvalidArgument);
+    }
 
     const char* vertexEntryPoint = desc.vertexEntryPoint != nullptr ? desc.vertexEntryPoint : "main";
     const char* fragmentEntryPoint = desc.fragmentEntryPoint != nullptr ? desc.fragmentEntryPoint : "main";
@@ -3489,6 +3561,12 @@ Result Device::createGraphicsPipeline(
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
+    VkPipelineDepthStencilStateCreateInfo depthStencilState{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = desc.depthStencil.depthTestEnable ? VK_TRUE : VK_FALSE,
+        .depthWriteEnable = desc.depthStencil.depthWriteEnable ? VK_TRUE : VK_FALSE,
+        .depthCompareOp = toVkCompareOp(desc.depthStencil.depthCompareOp),
+    };
     VkPipelineColorBlendAttachmentState colorBlendAttachment{
         .blendEnable = VK_FALSE,
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
@@ -3531,10 +3609,12 @@ Result Device::createGraphicsPipeline(
     }
 
     const VkFormat colorFormat = toVkFormat(desc.colorFormat);
+    const VkFormat depthStencilFormat = toVkFormat(desc.depthStencilFormat);
     VkPipelineRenderingCreateInfo renderingInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .colorAttachmentCount = 1,
         .pColorAttachmentFormats = &colorFormat,
+        .depthAttachmentFormat = depthStencilFormat,
     };
     VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
@@ -3552,6 +3632,7 @@ Result Device::createGraphicsPipeline(
         .pViewportState = &viewportState,
         .pRasterizationState = &rasterizationState,
         .pMultisampleState = &multisampleState,
+        .pDepthStencilState = hasDepthStencilFormat ? &depthStencilState : nullptr,
         .pColorBlendState = &colorBlendState,
         .pDynamicState = &dynamicState,
         .layout = layout,

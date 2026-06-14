@@ -23,6 +23,7 @@
                     ],
                     "fovDegrees": 50.0,
                     "projection": "perspective",
+                    "reversedZ": true,
                     "up": [
                         0.0,
                         1.0,

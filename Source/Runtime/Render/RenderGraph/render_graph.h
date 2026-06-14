@@ -31,6 +31,7 @@ enum class RenderGraphResourceAccess : uint8_t {
     None,
     TextureSampleRead,
     TextureColorWrite,
+    TextureDepthStencilWrite,
     TextureTransferRead,
     TextureTransferWrite,
     TextureStorageReadWrite,
@@ -77,6 +78,7 @@ struct RenderGraphField {
     RenderGraphField& setOptional(bool value = true);
     RenderGraphField& sampledRead();
     RenderGraphField& colorWrite();
+    RenderGraphField& depthStencilWrite();
     RenderGraphField& storageReadWrite();
     RenderGraphField& transferRead();
     RenderGraphField& transferWrite();

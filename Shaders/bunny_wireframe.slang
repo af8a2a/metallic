@@ -46,6 +46,9 @@ float4 projectPosition(float3 worldPosition, BunnyWireframeParams params)
     float zNear = max(params.clipOrtho.x, 0.0001);
     float zFar = max(params.clipOrtho.y, zNear + 0.0001);
     float ndcZ = saturate((viewPosition.z - zNear) / (zFar - zNear));
+    if (params.clipOrtho.w > 0.5) {
+        ndcZ = 1.0 - ndcZ;
+    }
     float aspect = max(params.viewport.x, 0.001);
 
     if (params.upProjection.w > 0.5) {

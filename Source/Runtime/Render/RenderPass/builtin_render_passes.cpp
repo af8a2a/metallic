@@ -60,6 +60,7 @@ constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
 constexpr uint32_t kRayQueryVisualizationGranularityPrimitive = 1;
 constexpr uint32_t kDefaultPathTraceMaxDepth = 3;
 constexpr uint32_t kDefaultPathTraceSamples = 2;
+constexpr bool kDefaultReversedZ = true;
 
 struct RenderGraphBufferUserPush {
     uint32_t inputBuffer = 0;
@@ -183,6 +184,30 @@ std::string resultMessage(std::string_view label, const Result& result)
     message += " returned ";
     message += resultToString(result);
     return message;
+}
+
+bool boolProperty(const RenderGraphProperties* properties, const char* key, bool fallback)
+{
+    if (properties == nullptr) {
+        return fallback;
+    }
+    auto iter = properties->find(key);
+    return iter != properties->end() && iter->is_boolean() ? iter->get<bool>() : fallback;
+}
+
+bool cameraUsesReversedZ(const RenderGraphProperties* camera)
+{
+    return boolProperty(camera, "reversedZ", kDefaultReversedZ);
+}
+
+float depthClearValue(bool reversedZ)
+{
+    return reversedZ ? 0.0f : 1.0f;
+}
+
+CompareOp depthCompareOp(bool reversedZ)
+{
+    return reversedZ ? CompareOp::GreaterEqual : CompareOp::LessEqual;
 }
 
 Result createSlangShaderModule(
@@ -789,6 +814,8 @@ public:
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "Stanford Bunny barycentric wireframe")
             .format = Format::Rgba8Unorm;
+        reflection.addTextureOutput("depth", "Stanford Bunny depth")
+            .depthStencilWrite();
         return reflection;
     }
 
@@ -916,7 +943,9 @@ public:
     Result execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle color = context.outputTexture("color");
+        TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
+            !depth.valid() ||
             bindlessHeap_ == nullptr ||
             program_ == nullptr ||
             drawVertexCount_ == 0) {
@@ -941,10 +970,19 @@ public:
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
         };
+        const bool reversedZ = cameraUsesReversedZ(cameraPropertiesFrom(context.properties()));
+        RenderingAttachmentDesc depthAttachment{
+            .view = depth.view(),
+            .state = ResourceState::DepthStencilAttachment,
+            .loadOp = LoadOp::Clear,
+            .storeOp = StoreOp::Store,
+            .clearDepth = depthClearValue(reversedZ),
+        };
         context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
+            .depthStencilAttachment = &depthAttachment,
         });
         context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
@@ -958,6 +996,11 @@ public:
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
         context.commandBuffer().bindGraphicsShaderObjectProgram(*program_);
         context.commandBuffer().setGraphicsShaderObjectState();
+        context.commandBuffer().setDepthStencilState(DepthStencilState{
+            .depthTestEnable = true,
+            .depthWriteEnable = true,
+            .depthCompareOp = depthCompareOp(reversedZ),
+        });
         const BunnyWireframeUserPush push{
             .paramsBuffer = paramsHandle_.index,
             .positionBuffer = positionHandle_.index,
@@ -1210,6 +1253,7 @@ private:
         const float3 up = cameraVec3(cameraProperties, "up", float3(0.0f, 1.0f, 0.0f));
         const float zNear = std::max(cameraFloat(cameraProperties, "znear", 0.1f), 0.0001f);
         const float zFar = std::max(cameraFloat(cameraProperties, "zfar", 10000.0f), zNear + 0.001f);
+        const bool reversedZ = cameraUsesReversedZ(cameraProperties);
         const float cameraDistance = std::max(length(eye - target), 0.001f);
         const float defaultOrthoHeight = std::max(2.0f * cameraDistance * std::tan(fovRadians * 0.5f), 0.0001f);
         const float orthoHeight = std::max(
@@ -1226,7 +1270,7 @@ private:
         outParams.clipOrtho[0] = zNear;
         outParams.clipOrtho[1] = zFar;
         outParams.clipOrtho[2] = orthoHeight;
-        outParams.clipOrtho[3] = 0.0f;
+        outParams.clipOrtho[3] = reversedZ ? 1.0f : 0.0f;
         outParams.clearColor[0] = 0.015f;
         outParams.clearColor[1] = 0.018f;
         outParams.clearColor[2] = 0.024f;
@@ -1258,6 +1302,8 @@ public:
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "glTF material color via VK_EXT_shader_object")
             .format = Format::Rgba8Unorm;
+        reflection.addTextureOutput("depth", "glTF material depth")
+            .depthStencilWrite();
         return reflection;
     }
 
@@ -1397,7 +1443,9 @@ public:
     Result execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle color = context.outputTexture("color");
+        TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
+            !depth.valid() ||
             bindlessHeap_ == nullptr ||
             defaultProgram_ == nullptr ||
             alternateProgram_ == nullptr ||
@@ -1423,10 +1471,19 @@ public:
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
         };
+        constexpr bool kMaterialReversedZ = kDefaultReversedZ;
+        RenderingAttachmentDesc depthAttachment{
+            .view = depth.view(),
+            .state = ResourceState::DepthStencilAttachment,
+            .loadOp = LoadOp::Clear,
+            .storeOp = StoreOp::Store,
+            .clearDepth = depthClearValue(kMaterialReversedZ),
+        };
         context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
+            .depthStencilAttachment = &depthAttachment,
         });
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
         context.commandBuffer().bindGraphicsShaderObjectProgram(*defaultProgram_);
@@ -1440,6 +1497,11 @@ public:
         });
         context.commandBuffer().setScissor(renderArea);
         context.commandBuffer().setGraphicsShaderObjectState();
+        context.commandBuffer().setDepthStencilState(DepthStencilState{
+            .depthTestEnable = true,
+            .depthWriteEnable = true,
+            .depthCompareOp = depthCompareOp(kMaterialReversedZ),
+        });
 
         const bool debugAlternateShaders =
             context.properties().value("debugAlternateShaders", false);
@@ -1733,7 +1795,7 @@ private:
         outParams.clipOrtho[0] = 0.001f;
         outParams.clipOrtho[1] = std::max(distance + radius * 3.0f, 1.0f);
         outParams.clipOrtho[2] = radius * 2.0f;
-        outParams.clipOrtho[3] = 0.0f;
+        outParams.clipOrtho[3] = kDefaultReversedZ ? 1.0f : 0.0f;
     }
 
     Result updateParamsBuffer(uint32_t width, uint32_t height)

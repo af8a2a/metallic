@@ -23,6 +23,10 @@ constexpr const char* kTriangleShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
 constexpr const char* kTriangleShaderModuleName = "triangle";
 constexpr const char* kTriangleVertexEntryPoint = "triangleVertexMain";
 constexpr const char* kTriangleFragmentEntryPoint = "triangleFragmentMain";
+constexpr const char* kReversedDepthNearVertexEntryPoint = "reversedDepthNearVertexMain";
+constexpr const char* kReversedDepthFarVertexEntryPoint = "reversedDepthFarVertexMain";
+constexpr const char* kSolidGreenFragmentEntryPoint = "solidGreenFragmentMain";
+constexpr const char* kSolidRedFragmentEntryPoint = "solidRedFragmentMain";
 constexpr const char* kMaterialShaderModuleName = "material_shader_object";
 constexpr const char* kMaterialVertexEntryPoint = "materialShaderObjectVertexMain";
 constexpr const char* kMaterialFragmentEntryPoint = "materialShaderObjectFragmentMain";
@@ -359,6 +363,335 @@ public:
             return RhiTestResult::fail(
                 std::string("triangle readback found too few bright pixels: ") +
                 std::to_string(brightPixelCount));
+        }
+
+        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+    }
+};
+
+class ReversedZDepthRenderingTest : public RhiTest {
+public:
+    ReversedZDepthRenderingTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "reversed_z_depth_readback";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::ShaderModule> nearVertexShader;
+        RhiTestResult testResult = createTriangleShaderModule(
+            context.device,
+            kReversedDepthNearVertexEntryPoint,
+            nearVertexShader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::ShaderModule> farVertexShader;
+        testResult = createTriangleShaderModule(
+            context.device,
+            kReversedDepthFarVertexEntryPoint,
+            farVertexShader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::ShaderModule> greenFragmentShader;
+        testResult = createTriangleShaderModule(
+            context.device,
+            kSolidGreenFragmentEntryPoint,
+            greenFragmentShader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::ShaderModule> redFragmentShader;
+        testResult = createTriangleShaderModule(
+            context.device,
+            kSolidRedFragmentEntryPoint,
+            redFragmentShader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        auto createDepthPipeline =
+            [&](render::ShaderModule& vertexShader,
+                render::ShaderModule& fragmentShader,
+                std::unique_ptr<render::GraphicsPipeline>& outPipeline) -> RhiTestResult {
+            render::Result result = context.device.createGraphicsPipeline(
+                render::GraphicsPipelineDesc{
+                    .vertexShader = &vertexShader,
+                    .fragmentShader = &fragmentShader,
+                    .colorFormat = render::Format::Rgba8Unorm,
+                    .depthStencilFormat = render::Format::D32Sfloat,
+                    .topology = render::PrimitiveTopology::TriangleList,
+                    .depthStencil = render::DepthStencilState{
+                        .depthTestEnable = true,
+                        .depthWriteEnable = true,
+                        .depthCompareOp = render::CompareOp::GreaterEqual,
+                    },
+                },
+                outPipeline);
+            if (!result || outPipeline == nullptr) {
+                return RhiTestResult::fail(std::string("createGraphicsPipeline(depth) returned ") + toString(result));
+            }
+            return RhiTestResult::pass();
+        };
+
+        std::unique_ptr<render::GraphicsPipeline> nearGreenPipeline;
+        testResult = createDepthPipeline(*nearVertexShader, *greenFragmentShader, nearGreenPipeline);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::GraphicsPipeline> farRedPipeline;
+        testResult = createDepthPipeline(*farVertexShader, *redFragmentShader, farRedPipeline);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        std::unique_ptr<render::Texture> colorTexture;
+        render::Result result = context.device.createTexture(
+            render::TextureDesc{
+                .type = render::TextureType::Texture2D,
+                .usage = render::TextureUsageBits::ColorAttachment | render::TextureUsageBits::TransferSource,
+                .format = render::Format::Rgba8Unorm,
+                .width = kWidth,
+                .height = kHeight,
+                .depth = 1,
+                .mipCount = 1,
+                .layerCount = 1,
+                .memoryLocation = render::MemoryLocation::Device,
+            },
+            colorTexture);
+        if (!result || colorTexture == nullptr) {
+            return RhiTestResult::fail(std::string("createTexture(color) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::TextureView> colorTextureView;
+        result = context.device.createTextureView(
+            *colorTexture,
+            render::TextureViewDesc{
+                .format = render::Format::Rgba8Unorm,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+            colorTextureView);
+        if (!result || colorTextureView == nullptr) {
+            return RhiTestResult::fail(std::string("createTextureView(color) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::Texture> depthTexture;
+        result = context.device.createTexture(
+            render::TextureDesc{
+                .type = render::TextureType::Texture2D,
+                .usage = render::TextureUsageBits::DepthStencilAttachment,
+                .format = render::Format::D32Sfloat,
+                .width = kWidth,
+                .height = kHeight,
+                .depth = 1,
+                .mipCount = 1,
+                .layerCount = 1,
+                .memoryLocation = render::MemoryLocation::Device,
+            },
+            depthTexture);
+        if (!result || depthTexture == nullptr) {
+            return RhiTestResult::fail(std::string("createTexture(depth) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::TextureView> depthTextureView;
+        result = context.device.createTextureView(
+            *depthTexture,
+            render::TextureViewDesc{
+                .format = render::Format::D32Sfloat,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+            depthTextureView);
+        if (!result || depthTextureView == nullptr) {
+            return RhiTestResult::fail(std::string("createTextureView(depth) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::Buffer> readbackBuffer;
+        result = context.device.createBuffer(
+            render::BufferDesc{
+                .size = static_cast<uint64_t>(kWidth) * static_cast<uint64_t>(kHeight) * 4ull,
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            readbackBuffer);
+        if (!result || readbackBuffer == nullptr) {
+            return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        result = context.device.createCommandPool(context.graphicsQueue, commandPool);
+        if (!result || commandPool == nullptr) {
+            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        result = commandPool->createCommandBuffer(commandBuffer);
+        if (!result || commandBuffer == nullptr) {
+            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+        }
+
+        result = commandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+        }
+
+        render::TextureBarrierDesc renderBarriers[] = {
+            render::TextureBarrierDesc{
+                .texture = colorTexture.get(),
+                .before = render::ResourceState::Undefined,
+                .after = render::ResourceState::ColorAttachment,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+            render::TextureBarrierDesc{
+                .texture = depthTexture.get(),
+                .before = render::ResourceState::Undefined,
+                .after = render::ResourceState::DepthStencilAttachment,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+        };
+        commandBuffer->barrier(render::BarrierDesc{
+            .textures = renderBarriers,
+            .textureCount = 2,
+        });
+
+        const render::Rect renderArea{
+            .x = 0,
+            .y = 0,
+            .width = kWidth,
+            .height = kHeight,
+        };
+        render::RenderingAttachmentDesc colorAttachment{
+            .view = colorTextureView.get(),
+            .state = render::ResourceState::ColorAttachment,
+            .loadOp = render::LoadOp::Clear,
+            .storeOp = render::StoreOp::Store,
+            .clearColor = render::ColorValue{0.0f, 0.0f, 0.0f, 1.0f},
+        };
+        render::RenderingAttachmentDesc depthAttachment{
+            .view = depthTextureView.get(),
+            .state = render::ResourceState::DepthStencilAttachment,
+            .loadOp = render::LoadOp::Clear,
+            .storeOp = render::StoreOp::Store,
+            .clearDepth = 0.0f,
+        };
+        commandBuffer->beginRendering(
+            render::RenderingDesc{
+                .renderArea = renderArea,
+                .colorAttachments = &colorAttachment,
+                .colorAttachmentCount = 1,
+                .depthStencilAttachment = &depthAttachment,
+            });
+        commandBuffer->setViewport(
+            render::Viewport{
+                .x = 0.0f,
+                .y = 0.0f,
+                .width = static_cast<float>(kWidth),
+                .height = static_cast<float>(kHeight),
+                .minDepth = 0.0f,
+                .maxDepth = 1.0f,
+            });
+        commandBuffer->setScissor(renderArea);
+        commandBuffer->bindGraphicsPipeline(*nearGreenPipeline);
+        commandBuffer->draw(3);
+        commandBuffer->bindGraphicsPipeline(*farRedPipeline);
+        commandBuffer->draw(3);
+        commandBuffer->endRendering();
+
+        render::TextureBarrierDesc toTransfer{
+            .texture = colorTexture.get(),
+            .before = render::ResourceState::ColorAttachment,
+            .after = render::ResourceState::TransferSource,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        };
+        commandBuffer->barrier(render::BarrierDesc{.textures = &toTransfer, .textureCount = 1});
+        commandBuffer->copyTextureToBuffer(
+            render::TextureBufferCopyDesc{
+                .texture = colorTexture.get(),
+                .buffer = readbackBuffer.get(),
+                .width = kWidth,
+                .height = kHeight,
+                .depth = 1,
+                .mipLevel = 0,
+                .baseLayer = 0,
+            });
+
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::Fence> fence;
+        result = context.device.createFence(false, fence);
+        if (!result || fence == nullptr) {
+            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+        }
+
+        render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+        result = context.graphicsQueue.submit(
+            render::QueueSubmitDesc{
+                .commandBuffers = commandBuffers,
+                .commandBufferCount = 1,
+                .signalFence = fence.get(),
+            });
+        if (!result) {
+            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+        }
+
+        result = fence->wait(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+        }
+
+        readbackBuffer->invalidate();
+        const void* mapped = readbackBuffer->map();
+        if (mapped == nullptr) {
+            return RhiTestResult::fail("readback buffer did not map");
+        }
+
+        std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
+        std::memcpy(pixels.data(), mapped, pixels.size());
+        readbackBuffer->unmap();
+
+        const size_t centerIndex =
+            (static_cast<size_t>(kHeight / 2) * static_cast<size_t>(kWidth) + static_cast<size_t>(kWidth / 2)) * 4u;
+        const uint8_t r = pixels[centerIndex + 0];
+        const uint8_t g = pixels[centerIndex + 1];
+        const uint8_t b = pixels[centerIndex + 2];
+        if (g < 180 || r > 80 || b > 80) {
+            return RhiTestResult::fail(
+                "reversed-z center pixel was not preserved by depth test: rgba=(" +
+                std::to_string(r) +
+                ", " +
+                std::to_string(g) +
+                ", " +
+                std::to_string(b) +
+                ")");
+        }
+
+        std::string outputMessage;
+        const std::filesystem::path outputPath = context.outputDirectory / "reversed_z_depth_readback.png";
+        if (!saveRgba8Png(outputPath, pixels.data(), kWidth, kHeight, outputMessage)) {
+            return RhiTestResult::fail(outputMessage);
         }
 
         return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
@@ -749,6 +1082,7 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(OffscreenTriangleTest);
+METALLIC_REGISTER_RHI_TEST(ReversedZDepthRenderingTest);
 METALLIC_REGISTER_RHI_TEST(ShaderObjectMaterialRenderingTest);
 
 } // namespace

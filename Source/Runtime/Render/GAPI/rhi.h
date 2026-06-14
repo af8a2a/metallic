@@ -148,6 +148,17 @@ enum class StoreOp : uint8_t {
     DontCare,
 };
 
+enum class CompareOp : uint8_t {
+    Never,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    NotEqual,
+    GreaterEqual,
+    Always,
+};
+
 enum class PrimitiveTopology : uint8_t {
     TriangleList,
 };
@@ -301,12 +312,15 @@ struct RenderingAttachmentDesc {
     LoadOp loadOp = LoadOp::Load;
     StoreOp storeOp = StoreOp::Store;
     ColorValue clearColor;
+    float clearDepth = 1.0f;
+    uint32_t clearStencil = 0;
 };
 
 struct RenderingDesc {
     Rect renderArea;
     const RenderingAttachmentDesc* colorAttachments = nullptr;
     uint32_t colorAttachmentCount = 0;
+    const RenderingAttachmentDesc* depthStencilAttachment = nullptr;
 };
 
 struct SemaphoreSubmitDesc {
@@ -333,6 +347,12 @@ struct Viewport {
     float maxDepth = 1.0f;
 };
 
+struct DepthStencilState {
+    bool depthTestEnable = false;
+    bool depthWriteEnable = false;
+    CompareOp depthCompareOp = CompareOp::LessEqual;
+};
+
 struct ShaderModuleDesc {
     const uint32_t* code = nullptr;
     uint64_t byteSize = 0;
@@ -344,7 +364,9 @@ struct GraphicsPipelineDesc {
     const char* vertexEntryPoint = "main";
     const char* fragmentEntryPoint = "main";
     Format colorFormat = Format::Unknown;
+    Format depthStencilFormat = Format::Unknown;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+    DepthStencilState depthStencil;
     bool usesBindlessHeap = false;
 };
 
@@ -746,6 +768,7 @@ public:
     void endRendering();
     void setViewport(const Viewport& viewport);
     void setScissor(const Rect& scissor);
+    void setDepthStencilState(const DepthStencilState& state);
     void bindGraphicsPipeline(GraphicsPipeline& pipeline);
     void bindComputePipeline(ComputePipeline& pipeline);
     void setGraphicsShaderObjectState();

@@ -286,11 +286,16 @@ public:
             .bindlessBuffer()
             .hostReadback();
 
+        reflection.addTextureOutput("depth", "Depth output")
+            .depthStencilWrite();
+
         const render::RenderGraphField* foundTexture =
             reflection.findField("source", render::RenderGraphFieldVisibility::Input);
         const render::RenderGraphField* foundBuffer =
             reflection.findField("data", render::RenderGraphFieldVisibility::Output);
-        if (foundTexture == nullptr || foundBuffer == nullptr) {
+        const render::RenderGraphField* foundDepth =
+            reflection.findField("depth", render::RenderGraphFieldVisibility::Output);
+        if (foundTexture == nullptr || foundBuffer == nullptr || foundDepth == nullptr) {
             return RhiTestResult::fail("reflection did not preserve fields");
         }
         if (foundTexture->resourceType != render::RenderGraphResourceType::Texture2D ||
@@ -308,6 +313,13 @@ public:
             foundBuffer->structureStride != 8 ||
             foundBuffer->memoryLocation != render::MemoryLocation::HostReadback) {
             return RhiTestResult::fail("buffer field metadata was not preserved");
+        }
+        if (foundDepth->resourceType != render::RenderGraphResourceType::Texture2D ||
+            foundDepth->access != render::RenderGraphResourceAccess::TextureDepthStencilWrite ||
+            foundDepth->format != render::Format::D32Sfloat ||
+            foundDepth->usage != render::TextureUsageBits::DepthStencilAttachment ||
+            foundDepth->state != render::ResourceState::DepthStencilAttachment) {
+            return RhiTestResult::fail("depth field metadata was not preserved");
         }
 
         return RhiTestResult::pass();
@@ -646,6 +658,7 @@ public:
                 {"fovDegrees", 60.0f},
                 {"znear", 0.1f},
                 {"zfar", 10000.0f},
+                {"reversedZ", true},
                 {"eye", {-0.0168404f, 0.110154f, 0.22f}},
                 {"center", {-0.0168404f, 0.110154f, -0.00153695f}},
                 {"up", {0.0f, 1.0f, 0.0f}},
@@ -735,6 +748,7 @@ public:
                 {"fovDegrees", 50.0f},
                 {"znear", 0.001f},
                 {"zfar", 10000.0f},
+                {"reversedZ", true},
                 {"eye", {0.0f, 0.25f, 3.0f}},
                 {"center", {0.0f, 0.15f, 0.0f}},
                 {"up", {0.0f, 1.0f, 0.0f}},

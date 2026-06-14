@@ -74,6 +74,7 @@ bool accessWrites(RenderGraphResourceAccess access)
 {
     switch (access) {
     case RenderGraphResourceAccess::TextureColorWrite:
+    case RenderGraphResourceAccess::TextureDepthStencilWrite:
     case RenderGraphResourceAccess::TextureTransferWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
     case RenderGraphResourceAccess::BufferStorageReadWrite:
@@ -99,6 +100,8 @@ ResourceState stateForAccess(RenderGraphResourceAccess access)
         return ResourceState::ShaderRead;
     case RenderGraphResourceAccess::TextureColorWrite:
         return ResourceState::ColorAttachment;
+    case RenderGraphResourceAccess::TextureDepthStencilWrite:
+        return ResourceState::DepthStencilAttachment;
     case RenderGraphResourceAccess::TextureTransferRead:
     case RenderGraphResourceAccess::BufferTransferRead:
         return ResourceState::TransferSource;
@@ -121,6 +124,8 @@ TextureUsageBits textureUsageForAccess(RenderGraphResourceAccess access)
         return TextureUsageBits::Sampled;
     case RenderGraphResourceAccess::TextureColorWrite:
         return TextureUsageBits::ColorAttachment;
+    case RenderGraphResourceAccess::TextureDepthStencilWrite:
+        return TextureUsageBits::DepthStencilAttachment;
     case RenderGraphResourceAccess::TextureTransferRead:
         return TextureUsageBits::TransferSource;
     case RenderGraphResourceAccess::TextureTransferWrite:
@@ -153,6 +158,7 @@ BufferUsageBits bufferUsageForAccess(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::None:
     case RenderGraphResourceAccess::TextureSampleRead:
     case RenderGraphResourceAccess::TextureColorWrite:
+    case RenderGraphResourceAccess::TextureDepthStencilWrite:
     case RenderGraphResourceAccess::TextureTransferRead:
     case RenderGraphResourceAccess::TextureTransferWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
@@ -173,6 +179,7 @@ BufferViewType bufferViewTypeForField(const RenderGraphField& field)
     case RenderGraphResourceAccess::None:
     case RenderGraphResourceAccess::TextureSampleRead:
     case RenderGraphResourceAccess::TextureColorWrite:
+    case RenderGraphResourceAccess::TextureDepthStencilWrite:
     case RenderGraphResourceAccess::TextureTransferRead:
     case RenderGraphResourceAccess::TextureTransferWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
@@ -190,6 +197,7 @@ bool accessMatchesResourceType(RenderGraphResourceAccess access, RenderGraphReso
         return true;
     case RenderGraphResourceAccess::TextureSampleRead:
     case RenderGraphResourceAccess::TextureColorWrite:
+    case RenderGraphResourceAccess::TextureDepthStencilWrite:
     case RenderGraphResourceAccess::TextureTransferRead:
     case RenderGraphResourceAccess::TextureTransferWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
@@ -249,6 +257,8 @@ RenderGraphResourceAccess explicitAccessForState(RenderGraphResourceType type, R
             return RenderGraphResourceAccess::TextureSampleRead;
         case ResourceState::ColorAttachment:
             return RenderGraphResourceAccess::TextureColorWrite;
+        case ResourceState::DepthStencilAttachment:
+            return RenderGraphResourceAccess::TextureDepthStencilWrite;
         case ResourceState::TransferSource:
             return RenderGraphResourceAccess::TextureTransferRead;
         case ResourceState::TransferDestination:
@@ -257,7 +267,6 @@ RenderGraphResourceAccess explicitAccessForState(RenderGraphResourceType type, R
             return RenderGraphResourceAccess::TextureStorageReadWrite;
         case ResourceState::Undefined:
         case ResourceState::Present:
-        case ResourceState::DepthStencilAttachment:
             return RenderGraphResourceAccess::None;
         }
     }
@@ -539,6 +548,15 @@ RenderGraphField& RenderGraphField::colorWrite()
     resourceType = RenderGraphResourceType::Texture2D;
     access = RenderGraphResourceAccess::TextureColorWrite;
     applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::depthStencilWrite()
+{
+    resourceType = RenderGraphResourceType::Texture2D;
+    access = RenderGraphResourceAccess::TextureDepthStencilWrite;
+    applyAccessDefaults(*this);
+    format = Format::D32Sfloat;
     return *this;
 }
 
@@ -1492,6 +1510,7 @@ RenderGraph RenderGraph::createDefaultBunnyGraph()
                 {"fovDegrees", 60.0f},
                 {"znear", 0.1f},
                 {"zfar", 10000.0f},
+                {"reversedZ", true},
                 {"eye", {-0.0168404f, 0.110154f, 0.22f}},
                 {"center", {-0.0168404f, 0.110154f, -0.00153695f}},
                 {"up", {0.0f, 1.0f, 0.0f}},
