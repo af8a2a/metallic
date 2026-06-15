@@ -62,7 +62,7 @@ public:
                 ": " +
                 log);
         }
-        if (!builder.valid() || builder.tlas() == VK_NULL_HANDLE || builder.tlasDeviceAddress() == 0) {
+        if (!builder.valid()) {
             return RhiTestResult::fail("SceneRtxBuilder did not produce a valid TLAS");
         }
 

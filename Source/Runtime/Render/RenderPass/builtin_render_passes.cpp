@@ -1,7 +1,6 @@
 #include "Runtime/Render/RenderGraph/render_graph.h"
 
-#include "Runtime/Render/GAPI/Vulkan/vulkan_native.h"
-#include "Runtime/Render/GAPI/Vulkan/vulkan_scene_rtx.h"
+#include "Runtime/Render/GAPI/scene_rtx.h"
 #include "Runtime/Render/slang_compiler.h"
 #include "Runtime/Render/history_resources.h"
 #include "Runtime/Scene/scene.h"
@@ -1840,10 +1839,7 @@ private:
 
 class SceneRayQueryVisualizationPass final : public ComputePass {
 public:
-    ~SceneRayQueryVisualizationPass() override
-    {
-        destroyNative();
-    }
+    ~SceneRayQueryVisualizationPass() override = default;
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -1865,7 +1861,7 @@ public:
             log = "SceneRayQueryVisualizationPass requires rayTracingAccelerationStructure and rayQuery capabilities";
             return makeError(Error::Unsupported);
         }
-        if (pipeline_ != VK_NULL_HANDLE && rtxBuilder_.valid()) {
+        if (rayQueryProgram_.valid() && rtxBuilder_.valid()) {
             return {};
         }
 
@@ -1885,13 +1881,6 @@ public:
         if (!result) {
             return result;
         }
-
-        nativeDevice_ = vulkan::nativeDevice(*context.device).device;
-        if (nativeDevice_ == VK_NULL_HANDLE) {
-            log = "SceneRayQueryVisualizationPass Vulkan device is unavailable";
-            return makeError(Error::InvalidArgument);
-        }
-        volkLoadDevice(nativeDevice_);
 
         ShaderCompileResult computeCompile;
         const char* capabilities[] = {"spvRayQueryKHR"};
@@ -1920,9 +1909,29 @@ public:
             return result;
         }
 
-        result = createNativePipeline(computeCompile, log);
+        const SceneRayQueryBindingDesc bindings[] = {
+            SceneRayQueryBindingDesc{
+                .binding = 0,
+                .kind = SceneRayQueryBindingKind::AccelerationStructure,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 1,
+                .kind = SceneRayQueryBindingKind::StorageImage,
+            },
+        };
+        result = rayQueryProgram_.initialize(
+            *context.device,
+            SceneRayQueryProgramDesc{
+                .spirv = computeCompile.spirv.data(),
+                .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
+                .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
+                .bindings = bindings,
+                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+                .debugName = "SceneRayQueryVisualizationPass",
+            },
+            log);
         if (!result) {
-            destroyNative();
+            rayQueryProgram_.clear();
             return result;
         }
 
@@ -1933,270 +1942,39 @@ public:
     {
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() ||
-            nativeDevice_ == VK_NULL_HANDLE ||
-            descriptorSet_ == VK_NULL_HANDLE ||
-            pipeline_ == VK_NULL_HANDLE ||
-            pipelineLayout_ == VK_NULL_HANDLE ||
+            color.view() == nullptr ||
+            !rayQueryProgram_.valid() ||
             !rtxBuilder_.valid() ||
             !drawBounds_.valid) {
             return makeError(Error::InvalidArgument);
         }
 
-        VkImageView outputView = vulkan::nativeImageView(*color.view());
-        if (outputView == VK_NULL_HANDLE) {
-            return makeError(Error::InvalidArgument);
-        }
-        updateDescriptorSet(outputView);
-
         SceneRayQueryVisualizationPush push;
         buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
 
-        VkCommandBuffer commandBuffer = vulkan::nativeCommandBuffer(context.commandBuffer());
-        if (commandBuffer == VK_NULL_HANDLE) {
-            return makeError(Error::InvalidArgument);
-        }
-
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-        vkCmdBindDescriptorSets(
-            commandBuffer,
-            VK_PIPELINE_BIND_POINT_COMPUTE,
-            pipelineLayout_,
-            0,
-            1,
-            &descriptorSet_,
-            0,
-            nullptr);
-        vkCmdPushConstants(
-            commandBuffer,
-            pipelineLayout_,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            0,
-            sizeof(push),
-            &push);
-        vkCmdDispatch(commandBuffer, (context.width() + 7) / 8, (context.height() + 7) / 8, 1);
-        return {};
+        const SceneRayQueryDispatchBinding bindings[] = {
+            SceneRayQueryDispatchBinding{
+                .binding = 0,
+                .accelerationStructure = &rtxBuilder_,
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = 1,
+                .textureView = color.view(),
+            },
+        };
+        return rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = bindings,
+            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+            .groupCountZ = 1,
+        });
     }
 
 private:
-    void destroyNative()
-    {
-        if (nativeDevice_ == VK_NULL_HANDLE) {
-            return;
-        }
-        volkLoadDevice(nativeDevice_);
-        if (pipeline_ != VK_NULL_HANDLE) {
-            vkDestroyPipeline(nativeDevice_, pipeline_, nullptr);
-            pipeline_ = VK_NULL_HANDLE;
-        }
-        if (pipelineLayout_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(nativeDevice_, pipelineLayout_, nullptr);
-            pipelineLayout_ = VK_NULL_HANDLE;
-        }
-        if (shaderModule_ != VK_NULL_HANDLE) {
-            vkDestroyShaderModule(nativeDevice_, shaderModule_, nullptr);
-            shaderModule_ = VK_NULL_HANDLE;
-        }
-        if (descriptorPool_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(nativeDevice_, descriptorPool_, nullptr);
-            descriptorPool_ = VK_NULL_HANDLE;
-            descriptorSet_ = VK_NULL_HANDLE;
-        }
-        if (descriptorSetLayout_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(nativeDevice_, descriptorSetLayout_, nullptr);
-            descriptorSetLayout_ = VK_NULL_HANDLE;
-        }
-        nativeDevice_ = VK_NULL_HANDLE;
-    }
-
-    Result createNativePipeline(const ShaderCompileResult& computeCompile, std::string& log)
-    {
-        destroyNativePipelineObjects();
-
-        VkDescriptorSetLayoutBinding accelerationBinding{
-            .binding = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-        };
-        VkDescriptorSetLayoutBinding outputBinding{
-            .binding = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-        };
-        const VkDescriptorSetLayoutBinding bindings[] = {accelerationBinding, outputBinding};
-        VkDescriptorSetLayoutCreateInfo setLayoutInfo{
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
-            .pBindings = bindings,
-        };
-        VkResult vkResult = vkCreateDescriptorSetLayout(
-            nativeDevice_,
-            &setLayoutInfo,
-            nullptr,
-            &descriptorSetLayout_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkCreateDescriptorSetLayout(SceneRayQueryVisualizationPass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        VkDescriptorPoolSize poolSizes[] = {
-            VkDescriptorPoolSize{
-                .type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-                .descriptorCount = 1,
-            },
-            VkDescriptorPoolSize{
-                .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .descriptorCount = 1,
-            },
-        };
-        VkDescriptorPoolCreateInfo poolInfo{
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = 1,
-            .poolSizeCount = static_cast<uint32_t>(std::size(poolSizes)),
-            .pPoolSizes = poolSizes,
-        };
-        vkResult = vkCreateDescriptorPool(nativeDevice_, &poolInfo, nullptr, &descriptorPool_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkCreateDescriptorPool(SceneRayQueryVisualizationPass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        VkDescriptorSetAllocateInfo allocateInfo{
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = descriptorPool_,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &descriptorSetLayout_,
-        };
-        vkResult = vkAllocateDescriptorSets(nativeDevice_, &allocateInfo, &descriptorSet_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkAllocateDescriptorSets(SceneRayQueryVisualizationPass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        VkPushConstantRange pushRange{
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .offset = 0,
-            .size = sizeof(SceneRayQueryVisualizationPush),
-        };
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 1,
-            .pSetLayouts = &descriptorSetLayout_,
-            .pushConstantRangeCount = 1,
-            .pPushConstantRanges = &pushRange,
-        };
-        vkResult = vkCreatePipelineLayout(nativeDevice_, &pipelineLayoutInfo, nullptr, &pipelineLayout_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkCreatePipelineLayout(SceneRayQueryVisualizationPass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        VkShaderModuleCreateInfo shaderInfo{
-            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-            .codeSize = computeCompile.spirv.size() * sizeof(uint32_t),
-            .pCode = computeCompile.spirv.data(),
-        };
-        vkResult = vkCreateShaderModule(nativeDevice_, &shaderInfo, nullptr, &shaderModule_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkCreateShaderModule(SceneRayQueryVisualizationPass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        VkPipelineShaderStageCreateInfo stageInfo{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-            .module = shaderModule_,
-            .pName = "main",
-        };
-        VkComputePipelineCreateInfo pipelineInfo{
-            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-            .stage = stageInfo,
-            .layout = pipelineLayout_,
-        };
-        vkResult = vkCreateComputePipelines(
-            nativeDevice_,
-            VK_NULL_HANDLE,
-            1,
-            &pipelineInfo,
-            nullptr,
-            &pipeline_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkCreateComputePipelines(SceneRayQueryVisualizationPass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        return {};
-    }
-
-    void destroyNativePipelineObjects()
-    {
-        if (nativeDevice_ == VK_NULL_HANDLE) {
-            return;
-        }
-        if (pipeline_ != VK_NULL_HANDLE) {
-            vkDestroyPipeline(nativeDevice_, pipeline_, nullptr);
-            pipeline_ = VK_NULL_HANDLE;
-        }
-        if (pipelineLayout_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(nativeDevice_, pipelineLayout_, nullptr);
-            pipelineLayout_ = VK_NULL_HANDLE;
-        }
-        if (shaderModule_ != VK_NULL_HANDLE) {
-            vkDestroyShaderModule(nativeDevice_, shaderModule_, nullptr);
-            shaderModule_ = VK_NULL_HANDLE;
-        }
-        if (descriptorPool_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(nativeDevice_, descriptorPool_, nullptr);
-            descriptorPool_ = VK_NULL_HANDLE;
-            descriptorSet_ = VK_NULL_HANDLE;
-        }
-        if (descriptorSetLayout_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(nativeDevice_, descriptorSetLayout_, nullptr);
-            descriptorSetLayout_ = VK_NULL_HANDLE;
-        }
-    }
-
-    void updateDescriptorSet(VkImageView outputView)
-    {
-        VkAccelerationStructureKHR tlas = rtxBuilder_.tlas();
-        VkWriteDescriptorSetAccelerationStructureKHR accelerationInfo{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
-            .accelerationStructureCount = 1,
-            .pAccelerationStructures = &tlas,
-        };
-        VkWriteDescriptorSet accelerationWrite{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext = &accelerationInfo,
-            .dstSet = descriptorSet_,
-            .dstBinding = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-        };
-
-        VkDescriptorImageInfo outputInfo{
-            .imageView = outputView,
-            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-        };
-        VkWriteDescriptorSet outputWrite{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = descriptorSet_,
-            .dstBinding = 1,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .pImageInfo = &outputInfo,
-        };
-
-        const VkWriteDescriptorSet writes[] = {accelerationWrite, outputWrite};
-        vkUpdateDescriptorSets(nativeDevice_, static_cast<uint32_t>(std::size(writes)), writes, 0, nullptr);
-    }
-
     static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
     {
         if (props.contains("path") && props["path"].is_string()) {
@@ -2352,23 +2130,14 @@ private:
         outPush.height = height;
     }
 
-    vulkan::SceneRtxBuilder rtxBuilder_;
+    SceneRtxBuilder rtxBuilder_;
+    SceneRayQueryProgram rayQueryProgram_;
     scene::Bounds drawBounds_;
-    VkDevice nativeDevice_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
-    VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
-    VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
-    VkPipeline pipeline_ = VK_NULL_HANDLE;
-    VkShaderModule shaderModule_ = VK_NULL_HANDLE;
 };
 
 class ScenePathTracePass final : public ComputePass {
 public:
-    ~ScenePathTracePass() override
-    {
-        destroyNative();
-    }
+    ~ScenePathTracePass() override = default;
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -2390,7 +2159,7 @@ public:
             log = "ScenePathTracePass requires rayTracingAccelerationStructure and rayQuery capabilities";
             return makeError(Error::Unsupported);
         }
-        if (pipeline_ != VK_NULL_HANDLE && rtxBuilder_.valid() && vertexBuffer_ != nullptr) {
+        if (rayQueryProgram_.valid() && rtxBuilder_.valid() && vertexBuffer_ != nullptr) {
             return {};
         }
 
@@ -2481,15 +2250,6 @@ public:
             return result;
         }
 
-        nativeDevice_ = vulkan::nativeDevice(*context.device).device;
-        if (nativeDevice_ == VK_NULL_HANDLE) {
-            log = "ScenePathTracePass Vulkan device is unavailable";
-            resetGpuBuffers();
-            rtxBuilder_.clear();
-            return makeError(Error::InvalidArgument);
-        }
-        volkLoadDevice(nativeDevice_);
-
         ShaderCompileResult computeCompile;
         const char* capabilities[] = {"spvRayQueryKHR"};
         result = compileSlangShaderToSpirv(
@@ -2514,15 +2274,63 @@ public:
                 log += computeCompile.diagnostics;
             }
             log += '\n';
-            destroyNative();
+            rayQueryProgram_.clear();
             resetGpuBuffers();
             rtxBuilder_.clear();
             return result;
         }
 
-        result = createNativePipeline(computeCompile, log);
+        const SceneRayQueryBindingDesc bindings[] = {
+            SceneRayQueryBindingDesc{
+                .binding = 0,
+                .kind = SceneRayQueryBindingKind::AccelerationStructure,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 1,
+                .kind = SceneRayQueryBindingKind::StorageImage,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 2,
+                .kind = SceneRayQueryBindingKind::StorageBuffer,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 3,
+                .kind = SceneRayQueryBindingKind::StorageBuffer,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 4,
+                .kind = SceneRayQueryBindingKind::StorageBuffer,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 5,
+                .kind = SceneRayQueryBindingKind::StorageBuffer,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 6,
+                .kind = SceneRayQueryBindingKind::StorageBuffer,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 7,
+                .kind = SceneRayQueryBindingKind::StorageImage,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 8,
+                .kind = SceneRayQueryBindingKind::StorageImage,
+            },
+        };
+        result = rayQueryProgram_.initialize(
+            *context.device,
+            SceneRayQueryProgramDesc{
+                .spirv = computeCompile.spirv.data(),
+                .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
+                .pushConstantSize = sizeof(ScenePathTracePush),
+                .bindings = bindings,
+                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+                .debugName = "ScenePathTracePass",
+            },
+            log);
         if (!result) {
-            destroyNative();
+            rayQueryProgram_.clear();
             resetGpuBuffers();
             rtxBuilder_.clear();
             return result;
@@ -2536,10 +2344,8 @@ public:
     {
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() ||
-            nativeDevice_ == VK_NULL_HANDLE ||
-            descriptorSet_ == VK_NULL_HANDLE ||
-            pipeline_ == VK_NULL_HANDLE ||
-            pipelineLayout_ == VK_NULL_HANDLE ||
+            color.view() == nullptr ||
+            !rayQueryProgram_.valid() ||
             vertexBuffer_ == nullptr ||
             indexBuffer_ == nullptr ||
             primitiveBuffer_ == nullptr ||
@@ -2550,50 +2356,75 @@ public:
             return makeError(Error::InvalidArgument);
         }
 
-        VkImageView outputView = vulkan::nativeImageView(*color.view());
-        if (outputView == VK_NULL_HANDLE) {
-            return makeError(Error::InvalidArgument);
-        }
-
         ScenePathTracePush push;
         buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
 
-        VkImageView historyCurrentView = outputView;
-        VkImageView historyPreviousView = outputView;
+        TextureView* historyCurrentView = color.view();
+        TextureView* historyPreviousView = color.view();
         Result result = prepareHistoryTextures(
             context,
-            outputView,
+            *color.view(),
             push,
             historyCurrentView,
             historyPreviousView);
         if (!result) {
             return result;
         }
-        updateDescriptorSet(outputView, historyCurrentView, historyPreviousView);
-
-        VkCommandBuffer commandBuffer = vulkan::nativeCommandBuffer(context.commandBuffer());
-        if (commandBuffer == VK_NULL_HANDLE) {
+        if (historyCurrentView == nullptr || historyPreviousView == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-        vkCmdBindDescriptorSets(
-            commandBuffer,
-            VK_PIPELINE_BIND_POINT_COMPUTE,
-            pipelineLayout_,
-            0,
-            1,
-            &descriptorSet_,
-            0,
-            nullptr);
-        vkCmdPushConstants(
-            commandBuffer,
-            pipelineLayout_,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            0,
-            sizeof(push),
-            &push);
-        vkCmdDispatch(commandBuffer, (context.width() + 7) / 8, (context.height() + 7) / 8, 1);
+        const SceneRayQueryDispatchBinding bindings[] = {
+            SceneRayQueryDispatchBinding{
+                .binding = 0,
+                .accelerationStructure = &rtxBuilder_,
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = 1,
+                .textureView = color.view(),
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = 2,
+                .buffer = vertexBuffer_.get(),
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = 3,
+                .buffer = indexBuffer_.get(),
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = 4,
+                .buffer = primitiveBuffer_.get(),
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = 5,
+                .buffer = instanceBuffer_.get(),
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = 6,
+                .buffer = materialBuffer_.get(),
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = 7,
+                .textureView = historyCurrentView,
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = 8,
+                .textureView = historyPreviousView,
+            },
+        };
+        result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = bindings,
+            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+            .groupCountZ = 1,
+        });
+        if (!result) {
+            return result;
+        }
         if (push.enableAccumulation != 0 && context.historyResources() != nullptr) {
             context.historyResources()->markWritten(historyNameForContext(context));
         }
@@ -2611,18 +2442,18 @@ private:
 
     Result prepareHistoryTextures(
         RenderGraphExecutionContext& context,
-        VkImageView fallbackView,
+        TextureView& fallbackView,
         ScenePathTracePush& push,
-        VkImageView& outCurrentView,
-        VkImageView& outPreviousView)
+        TextureView*& outCurrentView,
+        TextureView*& outPreviousView)
     {
         HistoryResourceManager* history = context.historyResources();
         const bool accumulationEnabled = boolProperty(context.properties(), "accumulate", true);
         push.enableAccumulation = accumulationEnabled && history != nullptr ? 1u : 0u;
         push.hasHistory = 0;
         push.accumulationFrame = 0;
-        outCurrentView = fallbackView;
-        outPreviousView = fallbackView;
+        outCurrentView = &fallbackView;
+        outPreviousView = &fallbackView;
         if (push.enableAccumulation == 0) {
             accumulationFrame_ = 0;
             return {};
@@ -2673,11 +2504,8 @@ private:
             return result;
         }
 
-        outCurrentView = vulkan::nativeImageView(*current.view);
-        outPreviousView = vulkan::nativeImageView(*previous.view);
-        if (outCurrentView == VK_NULL_HANDLE || outPreviousView == VK_NULL_HANDLE) {
-            return makeError(Error::InvalidArgument);
-        }
+        outCurrentView = current.view;
+        outPreviousView = previous.view;
 
         if (previous.valid) {
             ++accumulationFrame_;
@@ -2688,333 +2516,6 @@ private:
         }
         push.accumulationFrame = accumulationFrame_;
         return {};
-    }
-
-    void destroyNative()
-    {
-        if (nativeDevice_ == VK_NULL_HANDLE) {
-            return;
-        }
-        volkLoadDevice(nativeDevice_);
-        destroyNativePipelineObjects();
-        nativeDevice_ = VK_NULL_HANDLE;
-    }
-
-    Result createNativePipeline(const ShaderCompileResult& computeCompile, std::string& log)
-    {
-        destroyNativePipelineObjects();
-
-        const VkDescriptorSetLayoutBinding bindings[] = {
-            VkDescriptorSetLayoutBinding{
-                .binding = 0,
-                .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            VkDescriptorSetLayoutBinding{
-                .binding = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            VkDescriptorSetLayoutBinding{
-                .binding = 2,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            VkDescriptorSetLayoutBinding{
-                .binding = 3,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            VkDescriptorSetLayoutBinding{
-                .binding = 4,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            VkDescriptorSetLayoutBinding{
-                .binding = 5,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            VkDescriptorSetLayoutBinding{
-                .binding = 6,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            VkDescriptorSetLayoutBinding{
-                .binding = 7,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            VkDescriptorSetLayoutBinding{
-                .binding = 8,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-        };
-        VkDescriptorSetLayoutCreateInfo setLayoutInfo{
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
-            .pBindings = bindings,
-        };
-        VkResult vkResult = vkCreateDescriptorSetLayout(
-            nativeDevice_,
-            &setLayoutInfo,
-            nullptr,
-            &descriptorSetLayout_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkCreateDescriptorSetLayout(ScenePathTracePass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        VkDescriptorPoolSize poolSizes[] = {
-            VkDescriptorPoolSize{
-                .type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-                .descriptorCount = 1,
-            },
-            VkDescriptorPoolSize{
-                .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .descriptorCount = 3,
-            },
-            VkDescriptorPoolSize{
-                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 5,
-            },
-        };
-        VkDescriptorPoolCreateInfo poolInfo{
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = 1,
-            .poolSizeCount = static_cast<uint32_t>(std::size(poolSizes)),
-            .pPoolSizes = poolSizes,
-        };
-        vkResult = vkCreateDescriptorPool(nativeDevice_, &poolInfo, nullptr, &descriptorPool_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkCreateDescriptorPool(ScenePathTracePass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        VkDescriptorSetAllocateInfo allocateInfo{
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = descriptorPool_,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &descriptorSetLayout_,
-        };
-        vkResult = vkAllocateDescriptorSets(nativeDevice_, &allocateInfo, &descriptorSet_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkAllocateDescriptorSets(ScenePathTracePass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        VkPushConstantRange pushRange{
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .offset = 0,
-            .size = sizeof(ScenePathTracePush),
-        };
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 1,
-            .pSetLayouts = &descriptorSetLayout_,
-            .pushConstantRangeCount = 1,
-            .pPushConstantRanges = &pushRange,
-        };
-        vkResult = vkCreatePipelineLayout(nativeDevice_, &pipelineLayoutInfo, nullptr, &pipelineLayout_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkCreatePipelineLayout(ScenePathTracePass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        VkShaderModuleCreateInfo shaderInfo{
-            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-            .codeSize = computeCompile.spirv.size() * sizeof(uint32_t),
-            .pCode = computeCompile.spirv.data(),
-        };
-        vkResult = vkCreateShaderModule(nativeDevice_, &shaderInfo, nullptr, &shaderModule_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkCreateShaderModule(ScenePathTracePass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        VkPipelineShaderStageCreateInfo stageInfo{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-            .module = shaderModule_,
-            .pName = "main",
-        };
-        VkComputePipelineCreateInfo pipelineInfo{
-            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-            .stage = stageInfo,
-            .layout = pipelineLayout_,
-        };
-        vkResult = vkCreateComputePipelines(
-            nativeDevice_,
-            VK_NULL_HANDLE,
-            1,
-            &pipelineInfo,
-            nullptr,
-            &pipeline_);
-        if (vkResult != VK_SUCCESS) {
-            log = "vkCreateComputePipelines(ScenePathTracePass) returned " +
-                std::to_string(static_cast<int>(vkResult));
-            return makeError(Error::Failure);
-        }
-
-        return {};
-    }
-
-    void destroyNativePipelineObjects()
-    {
-        if (nativeDevice_ == VK_NULL_HANDLE) {
-            return;
-        }
-        if (pipeline_ != VK_NULL_HANDLE) {
-            vkDestroyPipeline(nativeDevice_, pipeline_, nullptr);
-            pipeline_ = VK_NULL_HANDLE;
-        }
-        if (pipelineLayout_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(nativeDevice_, pipelineLayout_, nullptr);
-            pipelineLayout_ = VK_NULL_HANDLE;
-        }
-        if (shaderModule_ != VK_NULL_HANDLE) {
-            vkDestroyShaderModule(nativeDevice_, shaderModule_, nullptr);
-            shaderModule_ = VK_NULL_HANDLE;
-        }
-        if (descriptorPool_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(nativeDevice_, descriptorPool_, nullptr);
-            descriptorPool_ = VK_NULL_HANDLE;
-            descriptorSet_ = VK_NULL_HANDLE;
-        }
-        if (descriptorSetLayout_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(nativeDevice_, descriptorSetLayout_, nullptr);
-            descriptorSetLayout_ = VK_NULL_HANDLE;
-        }
-    }
-
-    void updateDescriptorSet(
-        VkImageView outputView,
-        VkImageView historyCurrentView,
-        VkImageView historyPreviousView)
-    {
-        VkAccelerationStructureKHR tlas = rtxBuilder_.tlas();
-        VkWriteDescriptorSetAccelerationStructureKHR accelerationInfo{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
-            .accelerationStructureCount = 1,
-            .pAccelerationStructures = &tlas,
-        };
-
-        VkDescriptorImageInfo outputInfo{
-            .imageView = outputView,
-            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-        };
-        VkDescriptorImageInfo historyCurrentInfo{
-            .imageView = historyCurrentView,
-            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-        };
-        VkDescriptorImageInfo historyPreviousInfo{
-            .imageView = historyPreviousView,
-            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-        };
-
-        const vulkan::NativeBuffer vertexBuffer = vulkan::nativeBuffer(*vertexBuffer_);
-        const vulkan::NativeBuffer indexBuffer = vulkan::nativeBuffer(*indexBuffer_);
-        const vulkan::NativeBuffer primitiveBuffer = vulkan::nativeBuffer(*primitiveBuffer_);
-        const vulkan::NativeBuffer instanceBuffer = vulkan::nativeBuffer(*instanceBuffer_);
-        const vulkan::NativeBuffer materialBuffer = vulkan::nativeBuffer(*materialBuffer_);
-        const VkDescriptorBufferInfo bufferInfos[] = {
-            VkDescriptorBufferInfo{.buffer = vertexBuffer.buffer, .offset = 0, .range = vertexBuffer.size},
-            VkDescriptorBufferInfo{.buffer = indexBuffer.buffer, .offset = 0, .range = indexBuffer.size},
-            VkDescriptorBufferInfo{.buffer = primitiveBuffer.buffer, .offset = 0, .range = primitiveBuffer.size},
-            VkDescriptorBufferInfo{.buffer = instanceBuffer.buffer, .offset = 0, .range = instanceBuffer.size},
-            VkDescriptorBufferInfo{.buffer = materialBuffer.buffer, .offset = 0, .range = materialBuffer.size},
-        };
-
-        const VkWriteDescriptorSet writes[] = {
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = &accelerationInfo,
-                .dstSet = descriptorSet_,
-                .dstBinding = 0,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = descriptorSet_,
-                .dstBinding = 1,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .pImageInfo = &outputInfo,
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = descriptorSet_,
-                .dstBinding = 2,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pBufferInfo = &bufferInfos[0],
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = descriptorSet_,
-                .dstBinding = 3,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pBufferInfo = &bufferInfos[1],
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = descriptorSet_,
-                .dstBinding = 4,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pBufferInfo = &bufferInfos[2],
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = descriptorSet_,
-                .dstBinding = 5,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pBufferInfo = &bufferInfos[3],
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = descriptorSet_,
-                .dstBinding = 6,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pBufferInfo = &bufferInfos[4],
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = descriptorSet_,
-                .dstBinding = 7,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .pImageInfo = &historyCurrentInfo,
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = descriptorSet_,
-                .dstBinding = 8,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .pImageInfo = &historyPreviousInfo,
-            },
-        };
-        vkUpdateDescriptorSets(nativeDevice_, static_cast<uint32_t>(std::size(writes)), writes, 0, nullptr);
     }
 
     static Result uploadStorageBuffer(
@@ -3402,20 +2903,14 @@ private:
         materialBuffer_.reset();
     }
 
-    vulkan::SceneRtxBuilder rtxBuilder_;
+    SceneRtxBuilder rtxBuilder_;
+    SceneRayQueryProgram rayQueryProgram_;
     scene::Bounds drawBounds_;
     std::unique_ptr<Buffer> vertexBuffer_;
     std::unique_ptr<Buffer> indexBuffer_;
     std::unique_ptr<Buffer> primitiveBuffer_;
     std::unique_ptr<Buffer> instanceBuffer_;
     std::unique_ptr<Buffer> materialBuffer_;
-    VkDevice nativeDevice_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
-    VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
-    VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
-    VkPipeline pipeline_ = VK_NULL_HANDLE;
-    VkShaderModule shaderModule_ = VK_NULL_HANDLE;
     uint32_t accumulationFrame_ = 0;
 };
 
@@ -3612,7 +3107,7 @@ void registerBuiltInRenderGraphPasses()
         []() { return std::make_unique<SceneMaterialShaderObjectPass>(); });
     registerRenderGraphPassType(
         "SceneRayQueryVisualizationPass",
-        "Visualize a glTF Vulkan acceleration structure with RayQuery",
+        "Visualize a glTF acceleration structure with RayQuery",
         []() { return std::make_unique<SceneRayQueryVisualizationPass>(); });
     registerRenderGraphPassType(
         "ScenePathTracePass",

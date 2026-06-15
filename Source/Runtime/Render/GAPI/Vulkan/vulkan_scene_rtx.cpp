@@ -294,6 +294,66 @@ Result createAccelerationStructure(
     return {};
 }
 
+VkDescriptorType descriptorTypeFor(SceneRayQueryBindingKind kind)
+{
+    switch (kind) {
+    case SceneRayQueryBindingKind::AccelerationStructure:
+        return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    case SceneRayQueryBindingKind::StorageImage:
+        return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    case SceneRayQueryBindingKind::StorageBuffer:
+        return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    }
+    return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+}
+
+const SceneRayQueryDispatchBinding* findDispatchBinding(
+    const SceneRayQueryDispatchDesc& desc,
+    uint32_t binding)
+{
+    if (desc.bindings == nullptr) {
+        return nullptr;
+    }
+    for (uint32_t index = 0; index < desc.bindingCount; ++index) {
+        if (desc.bindings[index].binding == binding) {
+            return &desc.bindings[index];
+        }
+    }
+    return nullptr;
+}
+
+bool hasDuplicateBindings(const SceneRayQueryBindingDesc* bindings, uint32_t bindingCount)
+{
+    if (bindings == nullptr) {
+        return bindingCount != 0;
+    }
+    for (uint32_t lhs = 0; lhs < bindingCount; ++lhs) {
+        for (uint32_t rhs = lhs + 1; rhs < bindingCount; ++rhs) {
+            if (bindings[lhs].binding == bindings[rhs].binding) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void addPoolSize(
+    std::array<VkDescriptorPoolSize, 3>& poolSizes,
+    uint32_t& poolSizeCount,
+    VkDescriptorType type)
+{
+    for (uint32_t index = 0; index < poolSizeCount; ++index) {
+        if (poolSizes[index].type == type) {
+            ++poolSizes[index].descriptorCount;
+            return;
+        }
+    }
+    poolSizes[poolSizeCount++] = VkDescriptorPoolSize{
+        .type = type,
+        .descriptorCount = 1,
+    };
+}
+
 } // namespace
 
 struct SceneRtxBuilder::Impl {
@@ -751,20 +811,368 @@ bool SceneRtxBuilder::valid() const
     return impl_ != nullptr && impl_->tlas != VK_NULL_HANDLE && impl_->tlasAddress != 0;
 }
 
-VkAccelerationStructureKHR SceneRtxBuilder::tlas() const
-{
-    return impl_ != nullptr ? impl_->tlas : VK_NULL_HANDLE;
-}
-
-VkDeviceAddress SceneRtxBuilder::tlasDeviceAddress() const
-{
-    return impl_ != nullptr ? impl_->tlasAddress : 0;
-}
-
 const SceneRtxStats& SceneRtxBuilder::stats() const
 {
     static const SceneRtxStats kEmptyStats;
     return impl_ != nullptr ? impl_->stats : kEmptyStats;
+}
+
+struct SceneRayQueryProgram::Impl {
+    VkDevice device = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkShaderModule shaderModule = VK_NULL_HANDLE;
+    uint32_t pushConstantSize = 0;
+    std::string debugName = "SceneRayQueryProgram";
+    std::vector<SceneRayQueryBindingDesc> bindings;
+
+    ~Impl()
+    {
+        destroy();
+    }
+
+    void destroy()
+    {
+        if (device != VK_NULL_HANDLE) {
+            volkLoadDevice(device);
+            if (pipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(device, pipeline, nullptr);
+                pipeline = VK_NULL_HANDLE;
+            }
+            if (pipelineLayout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+                pipelineLayout = VK_NULL_HANDLE;
+            }
+            if (shaderModule != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(device, shaderModule, nullptr);
+                shaderModule = VK_NULL_HANDLE;
+            }
+            if (descriptorPool != VK_NULL_HANDLE) {
+                vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+                descriptorPool = VK_NULL_HANDLE;
+                descriptorSet = VK_NULL_HANDLE;
+            }
+            if (descriptorSetLayout != VK_NULL_HANDLE) {
+                vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+                descriptorSetLayout = VK_NULL_HANDLE;
+            }
+        }
+
+        device = VK_NULL_HANDLE;
+        pushConstantSize = 0;
+        bindings.clear();
+        debugName = "SceneRayQueryProgram";
+    }
+};
+
+SceneRayQueryProgram::SceneRayQueryProgram()
+    : impl_(std::make_unique<Impl>())
+{
+}
+
+SceneRayQueryProgram::~SceneRayQueryProgram() = default;
+SceneRayQueryProgram::SceneRayQueryProgram(SceneRayQueryProgram&&) noexcept = default;
+SceneRayQueryProgram& SceneRayQueryProgram::operator=(SceneRayQueryProgram&&) noexcept = default;
+
+Result SceneRayQueryProgram::initialize(
+    Device& device,
+    const SceneRayQueryProgramDesc& desc,
+    std::string& log)
+{
+    if (impl_ == nullptr) {
+        impl_ = std::make_unique<Impl>();
+    }
+    log.clear();
+
+    if (desc.spirv == nullptr ||
+        desc.byteSize == 0 ||
+        (desc.byteSize % sizeof(uint32_t)) != 0 ||
+        desc.bindings == nullptr ||
+        desc.bindingCount == 0 ||
+        hasDuplicateBindings(desc.bindings, desc.bindingCount)) {
+        log = "SceneRayQueryProgramDesc is invalid";
+        return makeError(Error::InvalidArgument);
+    }
+    if (!device.capabilities().rayTracingAccelerationStructure || !device.capabilities().rayQuery) {
+        log = "SceneRayQueryProgram requires rayTracingAccelerationStructure and rayQuery capabilities";
+        return makeError(Error::Unsupported);
+    }
+
+    NativeDevice nativeDeviceInfo = nativeDevice(device);
+    if (nativeDeviceInfo.device == VK_NULL_HANDLE) {
+        log = "SceneRayQueryProgram Vulkan device is unavailable";
+        return makeError(Error::InvalidArgument);
+    }
+    volkLoadDevice(nativeDeviceInfo.device);
+
+    impl_->destroy();
+    impl_->device = nativeDeviceInfo.device;
+    impl_->pushConstantSize = desc.pushConstantSize;
+    impl_->debugName = desc.debugName != nullptr ? desc.debugName : "SceneRayQueryProgram";
+    impl_->bindings.assign(desc.bindings, desc.bindings + desc.bindingCount);
+
+    std::vector<VkDescriptorSetLayoutBinding> vkBindings;
+    vkBindings.reserve(desc.bindingCount);
+    std::array<VkDescriptorPoolSize, 3> poolSizes{};
+    uint32_t poolSizeCount = 0;
+    for (const SceneRayQueryBindingDesc& binding : impl_->bindings) {
+        const VkDescriptorType descriptorType = descriptorTypeFor(binding.kind);
+        vkBindings.push_back(VkDescriptorSetLayoutBinding{
+            .binding = binding.binding,
+            .descriptorType = descriptorType,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        });
+        addPoolSize(poolSizes, poolSizeCount, descriptorType);
+    }
+
+    VkDescriptorSetLayoutCreateInfo setLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = static_cast<uint32_t>(vkBindings.size()),
+        .pBindings = vkBindings.data(),
+    };
+    VkResult vkResult = vkCreateDescriptorSetLayout(
+        impl_->device,
+        &setLayoutInfo,
+        nullptr,
+        &impl_->descriptorSetLayout);
+    if (vkResult != VK_SUCCESS) {
+        log = "vkCreateDescriptorSetLayout(" + impl_->debugName + ") returned " +
+            std::to_string(static_cast<int>(vkResult));
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    VkDescriptorPoolCreateInfo poolInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 1,
+        .poolSizeCount = poolSizeCount,
+        .pPoolSizes = poolSizes.data(),
+    };
+    vkResult = vkCreateDescriptorPool(impl_->device, &poolInfo, nullptr, &impl_->descriptorPool);
+    if (vkResult != VK_SUCCESS) {
+        log = "vkCreateDescriptorPool(" + impl_->debugName + ") returned " +
+            std::to_string(static_cast<int>(vkResult));
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    VkDescriptorSetAllocateInfo allocateInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = impl_->descriptorPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &impl_->descriptorSetLayout,
+    };
+    vkResult = vkAllocateDescriptorSets(impl_->device, &allocateInfo, &impl_->descriptorSet);
+    if (vkResult != VK_SUCCESS) {
+        log = "vkAllocateDescriptorSets(" + impl_->debugName + ") returned " +
+            std::to_string(static_cast<int>(vkResult));
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    VkPushConstantRange pushRange{
+        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        .offset = 0,
+        .size = desc.pushConstantSize,
+    };
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &impl_->descriptorSetLayout,
+        .pushConstantRangeCount = desc.pushConstantSize > 0 ? 1u : 0u,
+        .pPushConstantRanges = desc.pushConstantSize > 0 ? &pushRange : nullptr,
+    };
+    vkResult = vkCreatePipelineLayout(impl_->device, &pipelineLayoutInfo, nullptr, &impl_->pipelineLayout);
+    if (vkResult != VK_SUCCESS) {
+        log = "vkCreatePipelineLayout(" + impl_->debugName + ") returned " +
+            std::to_string(static_cast<int>(vkResult));
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    VkShaderModuleCreateInfo shaderInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = desc.byteSize,
+        .pCode = desc.spirv,
+    };
+    vkResult = vkCreateShaderModule(impl_->device, &shaderInfo, nullptr, &impl_->shaderModule);
+    if (vkResult != VK_SUCCESS) {
+        log = "vkCreateShaderModule(" + impl_->debugName + ") returned " +
+            std::to_string(static_cast<int>(vkResult));
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    VkPipelineShaderStageCreateInfo stageInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+        .module = impl_->shaderModule,
+        .pName = "main",
+    };
+    VkComputePipelineCreateInfo pipelineInfo{
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = stageInfo,
+        .layout = impl_->pipelineLayout,
+    };
+    vkResult = vkCreateComputePipelines(
+        impl_->device,
+        VK_NULL_HANDLE,
+        1,
+        &pipelineInfo,
+        nullptr,
+        &impl_->pipeline);
+    if (vkResult != VK_SUCCESS) {
+        log = "vkCreateComputePipelines(" + impl_->debugName + ") returned " +
+            std::to_string(static_cast<int>(vkResult));
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    return {};
+}
+
+void SceneRayQueryProgram::clear()
+{
+    if (impl_ != nullptr) {
+        impl_->destroy();
+    }
+}
+
+bool SceneRayQueryProgram::valid() const
+{
+    return impl_ != nullptr &&
+        impl_->device != VK_NULL_HANDLE &&
+        impl_->descriptorSet != VK_NULL_HANDLE &&
+        impl_->pipelineLayout != VK_NULL_HANDLE &&
+        impl_->pipeline != VK_NULL_HANDLE;
+}
+
+Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
+{
+    if (!valid() ||
+        desc.commandBuffer == nullptr ||
+        desc.groupCountX == 0 ||
+        desc.groupCountY == 0 ||
+        desc.groupCountZ == 0 ||
+        (impl_->pushConstantSize > 0 && (desc.pushData == nullptr || desc.pushDataSize != impl_->pushConstantSize)) ||
+        (impl_->pushConstantSize == 0 && desc.pushDataSize != 0)) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    std::vector<VkWriteDescriptorSet> writes;
+    std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationInfos;
+    std::vector<VkAccelerationStructureKHR> accelerationStructures;
+    std::vector<VkDescriptorImageInfo> imageInfos;
+    std::vector<VkDescriptorBufferInfo> bufferInfos;
+    writes.reserve(impl_->bindings.size());
+    accelerationInfos.reserve(impl_->bindings.size());
+    accelerationStructures.reserve(impl_->bindings.size());
+    imageInfos.reserve(impl_->bindings.size());
+    bufferInfos.reserve(impl_->bindings.size());
+
+    for (const SceneRayQueryBindingDesc& expectedBinding : impl_->bindings) {
+        const SceneRayQueryDispatchBinding* binding = findDispatchBinding(desc, expectedBinding.binding);
+        if (binding == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        VkWriteDescriptorSet write{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = impl_->descriptorSet,
+            .dstBinding = expectedBinding.binding,
+            .descriptorCount = 1,
+            .descriptorType = descriptorTypeFor(expectedBinding.kind),
+        };
+        switch (expectedBinding.kind) {
+        case SceneRayQueryBindingKind::AccelerationStructure:
+            if (binding->accelerationStructure == nullptr ||
+                !binding->accelerationStructure->valid() ||
+                binding->accelerationStructure->impl_ == nullptr ||
+                binding->accelerationStructure->impl_->tlas == VK_NULL_HANDLE) {
+                return makeError(Error::InvalidArgument);
+            }
+            accelerationStructures.push_back(binding->accelerationStructure->impl_->tlas);
+            accelerationInfos.push_back(VkWriteDescriptorSetAccelerationStructureKHR{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+                .accelerationStructureCount = 1,
+                .pAccelerationStructures = &accelerationStructures.back(),
+            });
+            write.pNext = &accelerationInfos.back();
+            break;
+        case SceneRayQueryBindingKind::StorageImage: {
+            if (binding->textureView == nullptr) {
+                return makeError(Error::InvalidArgument);
+            }
+            VkImageView imageView = nativeImageView(*binding->textureView);
+            if (imageView == VK_NULL_HANDLE) {
+                return makeError(Error::InvalidArgument);
+            }
+            imageInfos.push_back(VkDescriptorImageInfo{
+                .imageView = imageView,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            });
+            write.pImageInfo = &imageInfos.back();
+            break;
+        }
+        case SceneRayQueryBindingKind::StorageBuffer: {
+            if (binding->buffer == nullptr) {
+                return makeError(Error::InvalidArgument);
+            }
+            const NativeBuffer native = nativeBuffer(*binding->buffer);
+            if (native.buffer == VK_NULL_HANDLE ||
+                binding->offset > native.size ||
+                (binding->size != UINT64_MAX && binding->size > native.size - binding->offset)) {
+                return makeError(Error::InvalidArgument);
+            }
+            bufferInfos.push_back(VkDescriptorBufferInfo{
+                .buffer = native.buffer,
+                .offset = binding->offset,
+                .range = binding->size == UINT64_MAX ? VK_WHOLE_SIZE : binding->size,
+            });
+            write.pBufferInfo = &bufferInfos.back();
+            break;
+        }
+        }
+        writes.push_back(write);
+    }
+
+    vkUpdateDescriptorSets(
+        impl_->device,
+        static_cast<uint32_t>(writes.size()),
+        writes.data(),
+        0,
+        nullptr);
+
+    VkCommandBuffer commandBuffer = nativeCommandBuffer(*desc.commandBuffer);
+    if (commandBuffer == VK_NULL_HANDLE) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, impl_->pipeline);
+    vkCmdBindDescriptorSets(
+        commandBuffer,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        impl_->pipelineLayout,
+        0,
+        1,
+        &impl_->descriptorSet,
+        0,
+        nullptr);
+    if (impl_->pushConstantSize > 0) {
+        vkCmdPushConstants(
+            commandBuffer,
+            impl_->pipelineLayout,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            desc.pushDataSize,
+            desc.pushData);
+    }
+    vkCmdDispatch(commandBuffer, desc.groupCountX, desc.groupCountY, desc.groupCountZ);
+    return {};
 }
 
 } // namespace metallic::render::vulkan
