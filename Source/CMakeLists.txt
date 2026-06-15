@@ -10,6 +10,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderGraph/render_graph.cpp
     Runtime/Render/RenderPass/builtin_render_passes.cpp
     Runtime/Render/GAPI/Vulkan/vulkan_rhi.cpp
+    Runtime/Render/GAPI/Vulkan/vulkan_nrd_wrapper.cpp
     Runtime/Render/GAPI/Vulkan/vulkan_scene_rtx.cpp
 )
 
@@ -29,6 +30,13 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     nlohmann_json
     slang::slang
 )
+
+if(TARGET NRD)
+    target_link_libraries(MetallicRuntimeRender PUBLIC NRD)
+    target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_HAS_NRD=1)
+else()
+    target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_HAS_NRD=0)
+endif()
 
 target_compile_definitions(MetallicRuntimeRender PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

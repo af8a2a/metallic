@@ -24,9 +24,18 @@ struct NativeBuffer {
     uint64_t size = 0;
 };
 
+struct NativeTexture {
+    VkImage image = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t depth = 0;
+};
+
 NativeDevice nativeDevice(Device& device);
 NativeQueue nativeQueue(Queue& queue);
 NativeBuffer nativeBuffer(Buffer& buffer);
+NativeTexture nativeTexture(Texture& texture);
 VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer);
 VkFormat nativeSwapchainFormat(Swapchain& swapchain);
 VkImageView nativeImageView(TextureView& view);

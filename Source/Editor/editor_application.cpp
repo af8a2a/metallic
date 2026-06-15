@@ -17,6 +17,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -139,20 +140,41 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             }},
         };
     }
+    if (type == "ChessNrdPathTracePass") {
+        return render::RenderGraphProperties{
+            {"path", "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"},
+            {"maxDepth", 4},
+            {"samples", 2},
+            {"denoiser", "REBLUR"},
+            {"visualization", "Final"},
+            {"enableValidation", true},
+            {"resetSerial", 0},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 42.0f},
+                {"znear", 0.001f},
+                {"zfar", 10000.0f},
+                {"reversedZ", true},
+                {"eye", {0.0f, 0.42f, 0.78f}},
+                {"center", {0.0f, 0.02f, 0.0f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
+        };
+    }
     return render::RenderGraphProperties::object();
 }
 
 render::RenderGraph createDefaultPathTraceGraph()
 {
     render::RenderGraph graph;
-    graph.setName("MeetMatPathTrace");
+    graph.setName("ChessNrdPathTrace");
     graph.addNode(
-        "ScenePathTracePass",
-        "PathTrace",
-        defaultPropertiesForPass("ScenePathTracePass"),
+        "ChessNrdPathTracePass",
+        "ChessNRD",
+        defaultPropertiesForPass("ChessNrdPathTracePass"),
         335.0f,
         281.0f);
-    graph.markOutput("PathTrace.color");
+    graph.markOutput("ChessNRD.color");
     graph.clearDirty();
     return graph;
 }
@@ -162,7 +184,8 @@ render::RenderGraphNode* findBunnyWireframeNode(render::RenderGraph& graph)
     for (const render::RenderGraphNode& node : graph.nodes()) {
         if (node.type == "BunnyWireframePass" ||
             node.type == "SceneRayQueryVisualizationPass" ||
-            node.type == "ScenePathTracePass") {
+            node.type == "ScenePathTracePass" ||
+            node.type == "ChessNrdPathTracePass") {
             return graph.findNode(node.id);
         }
     }
@@ -497,14 +520,98 @@ const char* renderGraphFormatName(render::Format format)
     switch (format) {
     case render::Format::Unknown:
         return "Unknown";
+    case render::Format::R8Unorm:
+        return "R8Unorm";
+    case render::Format::R8Snorm:
+        return "R8Snorm";
+    case render::Format::R8Uint:
+        return "R8Uint";
+    case render::Format::R8Sint:
+        return "R8Sint";
+    case render::Format::Rg8Unorm:
+        return "Rg8Unorm";
+    case render::Format::Rg8Snorm:
+        return "Rg8Snorm";
+    case render::Format::Rg8Uint:
+        return "Rg8Uint";
+    case render::Format::Rg8Sint:
+        return "Rg8Sint";
     case render::Format::Bgra8Unorm:
         return "Bgra8Unorm";
     case render::Format::Bgra8Srgb:
         return "Bgra8Srgb";
     case render::Format::Rgba8Unorm:
         return "Rgba8Unorm";
+    case render::Format::Rgba8Snorm:
+        return "Rgba8Snorm";
     case render::Format::Rgba8Srgb:
         return "Rgba8Srgb";
+    case render::Format::Rgba8Uint:
+        return "Rgba8Uint";
+    case render::Format::Rgba8Sint:
+        return "Rgba8Sint";
+    case render::Format::R16Unorm:
+        return "R16Unorm";
+    case render::Format::R16Snorm:
+        return "R16Snorm";
+    case render::Format::R16Uint:
+        return "R16Uint";
+    case render::Format::R16Sint:
+        return "R16Sint";
+    case render::Format::R16Sfloat:
+        return "R16Sfloat";
+    case render::Format::Rg16Unorm:
+        return "Rg16Unorm";
+    case render::Format::Rg16Snorm:
+        return "Rg16Snorm";
+    case render::Format::Rg16Uint:
+        return "Rg16Uint";
+    case render::Format::Rg16Sint:
+        return "Rg16Sint";
+    case render::Format::Rg16Sfloat:
+        return "Rg16Sfloat";
+    case render::Format::Rgba16Unorm:
+        return "Rgba16Unorm";
+    case render::Format::Rgba16Snorm:
+        return "Rgba16Snorm";
+    case render::Format::Rgba16Uint:
+        return "Rgba16Uint";
+    case render::Format::Rgba16Sint:
+        return "Rgba16Sint";
+    case render::Format::Rgba16Sfloat:
+        return "Rgba16Sfloat";
+    case render::Format::R32Uint:
+        return "R32Uint";
+    case render::Format::R32Sint:
+        return "R32Sint";
+    case render::Format::R32Sfloat:
+        return "R32Sfloat";
+    case render::Format::Rg32Uint:
+        return "Rg32Uint";
+    case render::Format::Rg32Sint:
+        return "Rg32Sint";
+    case render::Format::Rg32Sfloat:
+        return "Rg32Sfloat";
+    case render::Format::Rgb32Uint:
+        return "Rgb32Uint";
+    case render::Format::Rgb32Sint:
+        return "Rgb32Sint";
+    case render::Format::Rgb32Sfloat:
+        return "Rgb32Sfloat";
+    case render::Format::Rgba32Uint:
+        return "Rgba32Uint";
+    case render::Format::Rgba32Sint:
+        return "Rgba32Sint";
+    case render::Format::Rgba32Sfloat:
+        return "Rgba32Sfloat";
+    case render::Format::A2B10G10R10UnormPack32:
+        return "A2B10G10R10UnormPack32";
+    case render::Format::A2R10G10B10UintPack32:
+        return "A2R10G10B10UintPack32";
+    case render::Format::B10G11R11UfloatPack32:
+        return "B10G11R11UfloatPack32";
+    case render::Format::E5B9G9R9UfloatPack32:
+        return "E5B9G9R9UfloatPack32";
     case render::Format::D32Sfloat:
         return "D32Sfloat";
     }
@@ -794,6 +901,7 @@ bool EditorApplication::initializeRhi()
             .enableShaderObject = true,
             .enableRayTracingAccelerationStructure = true,
             .enableRayQuery = true,
+            .enablePushDescriptor = true,
         },
         device_);
     if (!result || device_ == nullptr) {
@@ -2801,6 +2909,117 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         bool accumulate = properties["accumulate"].get<bool>();
         if (ImGui::Checkbox("Accumulate", &accumulate)) {
             properties["accumulate"] = accumulate;
+            changed = true;
+        }
+
+        if (changed) {
+            renderGraph_.setNodeProperties(node->id, std::move(properties));
+            historyResources_.invalidateAll();
+            viewportPreviewValid_ = false;
+        }
+    } else if (node->type == "ChessNrdPathTracePass") {
+        static int editingChessNrdNodeId = -1;
+        static char chessNrdScenePathBuffer[260] = {};
+        render::RenderGraphProperties properties = node->properties;
+        if (!properties.contains("path") || !properties["path"].is_string()) {
+            properties["path"] = "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf";
+        }
+        if (!properties.contains("maxDepth") || !properties["maxDepth"].is_number()) {
+            properties["maxDepth"] = 4;
+        }
+        if (!properties.contains("samples") || !properties["samples"].is_number()) {
+            properties["samples"] = 2;
+        }
+        if (!properties.contains("denoiser") || !properties["denoiser"].is_string()) {
+            properties["denoiser"] = "REBLUR";
+        }
+        if (!properties.contains("visualization") || !properties["visualization"].is_string()) {
+            properties["visualization"] = "Final";
+        }
+        if (!properties.contains("enableValidation") || !properties["enableValidation"].is_boolean()) {
+            properties["enableValidation"] = true;
+        }
+        if (!properties.contains("resetSerial") || !properties["resetSerial"].is_number_unsigned()) {
+            properties["resetSerial"] = 0;
+        }
+        if (editingChessNrdNodeId != static_cast<int>(node->id)) {
+            copyToBuffer(
+                properties["path"].get<std::string>(),
+                chessNrdScenePathBuffer,
+                sizeof(chessNrdScenePathBuffer));
+            editingChessNrdNodeId = static_cast<int>(node->id);
+        }
+
+        bool changed = false;
+        ImGui::InputText("Scene Path", chessNrdScenePathBuffer, sizeof(chessNrdScenePathBuffer));
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            properties["path"] = chessNrdScenePathBuffer;
+            changed = true;
+        }
+
+        int maxDepth = std::clamp(properties["maxDepth"].get<int>(), 1, 12);
+        if (ImGui::SliderInt("Max Depth", &maxDepth, 1, 12)) {
+            properties["maxDepth"] = maxDepth;
+            changed = true;
+        }
+
+        int samples = std::clamp(properties["samples"].get<int>(), 1, 16);
+        if (ImGui::SliderInt("Samples", &samples, 1, 16)) {
+            properties["samples"] = samples;
+            changed = true;
+        }
+
+        const char* denoiserItems[] = {"REBLUR", "RELAX", "REFERENCE"};
+        std::string denoiser = properties["denoiser"].get<std::string>();
+        int denoiserIndex = denoiser == "RELAX" ? 1 : (denoiser == "REFERENCE" ? 2 : 0);
+        if (ImGui::Combo("Denoiser", &denoiserIndex, denoiserItems, static_cast<int>(std::size(denoiserItems)))) {
+            properties["denoiser"] = denoiserItems[denoiserIndex];
+            changed = true;
+        }
+
+        const char* visualizationItems[] = {
+            "Final",
+            "Noisy",
+            "Direct",
+            "NoisyDiffuse",
+            "NoisySpecular",
+            "DenoisedDiffuse",
+            "DenoisedSpecular",
+            "NormalRoughness",
+            "ViewZ",
+            "Motion",
+            "BaseColorMetalness",
+            "Validation",
+        };
+        std::string visualization = properties["visualization"].get<std::string>();
+        int visualizationIndex = 0;
+        for (int itemIndex = 0; itemIndex < static_cast<int>(std::size(visualizationItems)); ++itemIndex) {
+            if (visualization == visualizationItems[itemIndex]) {
+                visualizationIndex = itemIndex;
+                break;
+            }
+        }
+        if (ImGui::Combo(
+                "Visualization",
+                &visualizationIndex,
+                visualizationItems,
+                static_cast<int>(std::size(visualizationItems)))) {
+            properties["visualization"] = visualizationItems[visualizationIndex];
+            changed = true;
+        }
+
+        bool enableValidation = properties["enableValidation"].get<bool>();
+        if (ImGui::Checkbox("Validation Buffer", &enableValidation)) {
+            properties["enableValidation"] = enableValidation;
+            changed = true;
+        }
+
+        if (ImGui::Button("Reset NRD History")) {
+            uint32_t resetSerial = 0;
+            if (properties["resetSerial"].is_number_unsigned()) {
+                resetSerial = properties["resetSerial"].get<uint32_t>();
+            }
+            properties["resetSerial"] = resetSerial + 1u;
             changed = true;
         }
 

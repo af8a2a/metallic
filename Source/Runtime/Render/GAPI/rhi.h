@@ -64,10 +64,52 @@ struct WindowHandle {
 
 enum class Format : uint16_t {
     Unknown,
+    R8Unorm,
+    R8Snorm,
+    R8Uint,
+    R8Sint,
+    Rg8Unorm,
+    Rg8Snorm,
+    Rg8Uint,
+    Rg8Sint,
     Bgra8Unorm,
     Bgra8Srgb,
     Rgba8Unorm,
+    Rgba8Snorm,
     Rgba8Srgb,
+    Rgba8Uint,
+    Rgba8Sint,
+    R16Unorm,
+    R16Snorm,
+    R16Uint,
+    R16Sint,
+    R16Sfloat,
+    Rg16Unorm,
+    Rg16Snorm,
+    Rg16Uint,
+    Rg16Sint,
+    Rg16Sfloat,
+    Rgba16Unorm,
+    Rgba16Snorm,
+    Rgba16Uint,
+    Rgba16Sint,
+    Rgba16Sfloat,
+    R32Uint,
+    R32Sint,
+    R32Sfloat,
+    Rg32Uint,
+    Rg32Sint,
+    Rg32Sfloat,
+    Rgb32Uint,
+    Rgb32Sint,
+    Rgb32Sfloat,
+    Rgba32Uint,
+    Rgba32Sint,
+    Rgba32Sfloat,
+    A2B10G10R10UnormPack32,
+    A2R10G10B10UintPack32,
+    B10G11R11UfloatPack32,
+    E5B9G9R9UfloatPack32,
     D32Sfloat,
 };
 
@@ -217,6 +259,7 @@ struct DeviceDesc {
     bool enableShaderObject = false;
     bool enableRayTracingAccelerationStructure = false;
     bool enableRayQuery = false;
+    bool enablePushDescriptor = false;
 };
 
 struct DeviceCapabilities {
@@ -224,6 +267,7 @@ struct DeviceCapabilities {
     bool shaderObject = false;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
+    bool pushDescriptor = false;
     uint32_t maxBindlessSamplers = 0;
     uint32_t maxBindlessSampledImages = 0;
     uint32_t maxBindlessBuffers = 0;
@@ -610,6 +654,7 @@ private:
     friend class BindlessHeap;
     friend struct detail::DeviceImpl;
     friend struct detail::SwapchainImpl;
+    friend struct detail::VulkanNativeAccess;
 };
 
 class TextureView {

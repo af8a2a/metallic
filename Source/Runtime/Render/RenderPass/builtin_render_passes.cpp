@@ -1,6 +1,7 @@
 #include "Runtime/Render/RenderGraph/render_graph.h"
 
 #include "Runtime/Render/GAPI/scene_rtx.h"
+#include "Runtime/Render/GAPI/Vulkan/vulkan_nrd_wrapper.h"
 #include "Runtime/Render/slang_compiler.h"
 #include "Runtime/Render/history_resources.h"
 #include "Runtime/Scene/scene.h"
@@ -47,6 +48,10 @@ constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "scene_rayqu
 constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
 constexpr const char* kScenePathTraceShaderModuleName = "scene_path_trace";
 constexpr const char* kScenePathTraceEntryPoint = "scenePathTraceMain";
+constexpr const char* kChessNrdPathTraceShaderModuleName = "chess_nrd_path_trace";
+constexpr const char* kChessNrdPathTraceEntryPoint = "chessNrdPathTraceMain";
+constexpr const char* kChessNrdCompositeShaderModuleName = "chess_nrd_composite";
+constexpr const char* kChessNrdCompositeEntryPoint = "chessNrdCompositeMain";
 constexpr const char* kRenderGraphBufferShaderModuleName = "render_graph_buffer";
 constexpr const char* kRenderGraphBufferWriteEntryPoint = "renderGraphBufferWriteMain";
 constexpr const char* kRenderGraphBufferCopyEntryPoint = "renderGraphBufferCopyMain";
@@ -54,12 +59,28 @@ constexpr const char* kDefaultImageSamplePath = PROJECT_SOURCE_DIR "/Asset/statu
 constexpr const char* kDefaultBunnyScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
 constexpr const char* kDefaultMaterialScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
 constexpr const char* kDefaultPathTraceScenePath = PROJECT_SOURCE_DIR "/Asset/meet_mat.glb";
+constexpr const char* kDefaultChessScenePath = PROJECT_SOURCE_DIR "/Asset/ABeautifulGame/glTF/ABeautifulGame.gltf";
 constexpr uint64_t kRenderGraphBufferByteSize = 16;
 constexpr int32_t kGltfTriangleListMode = 4;
 constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
 constexpr uint32_t kRayQueryVisualizationGranularityPrimitive = 1;
 constexpr uint32_t kDefaultPathTraceMaxDepth = 3;
 constexpr uint32_t kDefaultPathTraceSamples = 2;
+constexpr uint32_t kNrdDenoiserModeReblur = 0;
+constexpr uint32_t kNrdDenoiserModeRelax = 1;
+constexpr uint32_t kNrdDenoiserModeReference = 2;
+constexpr uint32_t kChessNrdVisualFinal = 0;
+constexpr uint32_t kChessNrdVisualNoisy = 1;
+constexpr uint32_t kChessNrdVisualDirect = 2;
+constexpr uint32_t kChessNrdVisualNoisyDiffuse = 3;
+constexpr uint32_t kChessNrdVisualNoisySpecular = 4;
+constexpr uint32_t kChessNrdVisualDenoisedDiffuse = 5;
+constexpr uint32_t kChessNrdVisualDenoisedSpecular = 6;
+constexpr uint32_t kChessNrdVisualNormalRoughness = 7;
+constexpr uint32_t kChessNrdVisualViewZ = 8;
+constexpr uint32_t kChessNrdVisualMotion = 9;
+constexpr uint32_t kChessNrdVisualBaseColorMetalness = 10;
+constexpr uint32_t kChessNrdVisualValidation = 11;
 constexpr const char* kScenePathTraceHistoryPrefix = "ScenePathTracePass.";
 constexpr bool kDefaultReversedZ = true;
 
@@ -181,6 +202,29 @@ struct ScenePathTracePush {
     uint32_t hasHistory = 0;
     uint32_t enableAccumulation = 1;
     uint32_t padding = 0;
+};
+
+struct ChessNrdPathTracePush {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t maxDepth = kDefaultPathTraceMaxDepth;
+    uint32_t samples = kDefaultPathTraceSamples;
+    uint32_t frameIndex = 0;
+    uint32_t denoiserMode = kNrdDenoiserModeReblur;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+};
+
+struct ChessNrdCompositePush {
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t denoiserMode = kNrdDenoiserModeReblur;
+    uint32_t visualization = kChessNrdVisualFinal;
 };
 
 std::string resultMessage(std::string_view label, const Result& result)
@@ -2432,6 +2476,8 @@ public:
     }
 
 private:
+    friend class ChessNrdPathTracePass;
+
     struct ScenePathTraceGpuScene {
         std::vector<ScenePathTraceGpuVertex> vertices;
         std::vector<uint32_t> indices;
@@ -2914,6 +2960,802 @@ private:
     uint32_t accumulationFrame_ = 0;
 };
 
+class ChessNrdPathTracePass final : public ComputePass {
+public:
+    ~ChessNrdPathTracePass() override = default;
+
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        reflection.addTextureOutput("color", "Composited NRD chess path tracing result")
+            .storageReadWrite()
+            .format = Format::Rgba8Unorm;
+        reflection.addTextureOutput("noisyColor", "Noisy direct plus indirect composite")
+            .storageReadWrite()
+            .format = Format::Rgba8Unorm;
+        reflection.addTextureOutput("noisyDiffuse", "Noisy diffuse radiance and hit distance")
+            .storageReadWrite()
+            .format = Format::Rgba16Sfloat;
+        reflection.addTextureOutput("noisySpecular", "Noisy specular radiance and hit distance")
+            .storageReadWrite()
+            .format = Format::Rgba16Sfloat;
+        reflection.addTextureOutput("normalRoughness", "NRD packed normal and roughness")
+            .storageReadWrite()
+            .format = vulkan::nrdNormalRoughnessFormat();
+        reflection.addTextureOutput("motionVectors", "NRD motion vectors")
+            .storageReadWrite()
+            .format = Format::Rgba16Sfloat;
+        reflection.addTextureOutput("viewZ", "NRD linear view depth")
+            .storageReadWrite()
+            .format = Format::R16Sfloat;
+        reflection.addTextureOutput("directLighting", "Direct lighting and sky")
+            .storageReadWrite()
+            .format = Format::Rgba16Sfloat;
+        reflection.addTextureOutput("baseColorMetalness", "Base color and metalness")
+            .storageReadWrite()
+            .format = Format::Rgba8Unorm;
+        reflection.addTextureOutput("denoisedDiffuse", "NRD denoised diffuse radiance and hit distance")
+            .storageReadWrite()
+            .format = Format::Rgba16Sfloat;
+        reflection.addTextureOutput("denoisedSpecular", "NRD denoised specular radiance and hit distance")
+            .storageReadWrite()
+            .format = Format::Rgba16Sfloat;
+        reflection.addTextureOutput("validation", "NRD validation/debug output")
+            .storageReadWrite()
+            .format = Format::Rgba8Unorm;
+        return reflection;
+    }
+
+    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    {
+#if !METALLIC_HAS_NRD
+        log = "ChessNrdPathTracePass requires the NRD SDK target";
+        return makeError(Error::Unsupported);
+#else
+        if (context.device == nullptr || context.graphicsQueue == nullptr) {
+            log = "ChessNrdPathTracePass requires a device and graphics queue";
+            return makeError(Error::InvalidArgument);
+        }
+        if (!context.device->capabilities().rayTracingAccelerationStructure ||
+            !context.device->capabilities().rayQuery ||
+            !context.device->capabilities().pushDescriptor) {
+            log = "ChessNrdPathTracePass requires ray tracing, ray query, and push descriptor capabilities";
+            return makeError(Error::Unsupported);
+        }
+        if (pathTraceProgram_.valid() && compositeProgram_.valid() && rtxBuilder_.valid() && vertexBuffer_ != nullptr) {
+            device_ = context.device;
+            queue_ = context.graphicsQueue;
+            return {};
+        }
+
+        scene::Scene loadedScene;
+        const std::filesystem::path path = scenePathFromProperties(properties());
+        if (!loadedScene.load(path)) {
+            log = "ChessNrdPathTracePass failed to load glTF: " + loadedScene.lastLoadResult().error;
+            return makeError(Error::Failure);
+        }
+        if (!loadedScene.bounds().valid) {
+            log = "ChessNrdPathTracePass scene bounds are unavailable";
+            return makeError(Error::Failure);
+        }
+
+        ScenePathTracePass::ScenePathTraceGpuScene gpuScene;
+        if (!ScenePathTracePass::buildGpuScene(loadedScene, gpuScene, log)) {
+            return makeError(Error::Failure);
+        }
+        applyChessMaterialKinds(loadedScene, gpuScene);
+
+        Result result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
+        if (!result) {
+            return result;
+        }
+
+        result = ScenePathTracePass::uploadStorageBuffer(
+            *context.device,
+            gpuScene.vertices.data(),
+            static_cast<uint64_t>(gpuScene.vertices.size() * sizeof(ScenePathTraceGpuVertex)),
+            sizeof(ScenePathTraceGpuVertex),
+            vertexBuffer_,
+            log,
+            "ChessNrdPathTracePass vertices");
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        result = ScenePathTracePass::uploadStorageBuffer(
+            *context.device,
+            gpuScene.indices.data(),
+            static_cast<uint64_t>(gpuScene.indices.size() * sizeof(uint32_t)),
+            sizeof(uint32_t),
+            indexBuffer_,
+            log,
+            "ChessNrdPathTracePass indices");
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        result = ScenePathTracePass::uploadStorageBuffer(
+            *context.device,
+            gpuScene.primitives.data(),
+            static_cast<uint64_t>(gpuScene.primitives.size() * sizeof(ScenePathTraceGpuPrimitive)),
+            sizeof(ScenePathTraceGpuPrimitive),
+            primitiveBuffer_,
+            log,
+            "ChessNrdPathTracePass primitives");
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        result = ScenePathTracePass::uploadStorageBuffer(
+            *context.device,
+            gpuScene.instances.data(),
+            static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGpuInstance)),
+            sizeof(ScenePathTraceGpuInstance),
+            instanceBuffer_,
+            log,
+            "ChessNrdPathTracePass instances");
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        result = ScenePathTracePass::uploadStorageBuffer(
+            *context.device,
+            gpuScene.materials.data(),
+            static_cast<uint64_t>(gpuScene.materials.size() * sizeof(ScenePathTraceGpuMaterial)),
+            sizeof(ScenePathTraceGpuMaterial),
+            materialBuffer_,
+            log,
+            "ChessNrdPathTracePass materials");
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+
+        ShaderCompileResult pathTraceCompile;
+        const char* capabilities[] = {"spvRayQueryKHR"};
+        result = compileSlangShaderToSpirv(
+            SlangShaderDesc{
+                .moduleName = kChessNrdPathTraceShaderModuleName,
+                .entryPointName = kChessNrdPathTraceEntryPoint,
+                .searchPath = kTriangleShaderSearchPath,
+                .profileName = "glsl_460",
+                .capabilities = capabilities,
+                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+            },
+            pathTraceCompile);
+        if (!result) {
+            appendShaderCompileFailure(log, kChessNrdPathTraceShaderModuleName, kChessNrdPathTraceEntryPoint, result, pathTraceCompile);
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+
+        const SceneRayQueryBindingDesc pathTraceBindings[] = {
+            {.binding = 0, .kind = SceneRayQueryBindingKind::AccelerationStructure},
+            {.binding = 1, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 2, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 3, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 4, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 5, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 6, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 7, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 8, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 9, .kind = SceneRayQueryBindingKind::StorageBuffer},
+            {.binding = 10, .kind = SceneRayQueryBindingKind::StorageBuffer},
+            {.binding = 11, .kind = SceneRayQueryBindingKind::StorageBuffer},
+            {.binding = 12, .kind = SceneRayQueryBindingKind::StorageBuffer},
+            {.binding = 13, .kind = SceneRayQueryBindingKind::StorageBuffer},
+        };
+        result = pathTraceProgram_.initialize(
+            *context.device,
+            SceneRayQueryProgramDesc{
+                .spirv = pathTraceCompile.spirv.data(),
+                .byteSize = static_cast<uint64_t>(pathTraceCompile.spirv.size() * sizeof(uint32_t)),
+                .pushConstantSize = sizeof(ChessNrdPathTracePush),
+                .bindings = pathTraceBindings,
+                .bindingCount = static_cast<uint32_t>(std::size(pathTraceBindings)),
+                .debugName = "ChessNrdPathTracePass.pathTrace",
+            },
+            log);
+        if (!result) {
+            pathTraceProgram_.clear();
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+
+        ShaderCompileResult compositeCompile;
+        result = compileSlangShader(
+            kChessNrdCompositeShaderModuleName,
+            kChessNrdCompositeEntryPoint,
+            compositeCompile,
+            log);
+        if (!result) {
+            pathTraceProgram_.clear();
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        const SceneRayQueryBindingDesc compositeBindings[] = {
+            {.binding = 0, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 1, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 2, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 3, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 4, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 5, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 6, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 7, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 8, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 9, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 10, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 11, .kind = SceneRayQueryBindingKind::StorageImage},
+        };
+        result = compositeProgram_.initialize(
+            *context.device,
+            SceneRayQueryProgramDesc{
+                .spirv = compositeCompile.spirv.data(),
+                .byteSize = static_cast<uint64_t>(compositeCompile.spirv.size() * sizeof(uint32_t)),
+                .pushConstantSize = sizeof(ChessNrdCompositePush),
+                .bindings = compositeBindings,
+                .bindingCount = static_cast<uint32_t>(std::size(compositeBindings)),
+                .debugName = "ChessNrdPathTracePass.composite",
+            },
+            log);
+        if (!result) {
+            pathTraceProgram_.clear();
+            compositeProgram_.clear();
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+
+        drawBounds_ = loadedScene.bounds();
+        device_ = context.device;
+        queue_ = context.graphicsQueue;
+        return {};
+#endif
+    }
+
+    Result execute(RenderGraphExecutionContext& context) override
+    {
+#if !METALLIC_HAS_NRD
+        (void)context;
+        return makeError(Error::Unsupported);
+#else
+        TextureHandle color = context.outputTexture("color");
+        TextureHandle noisyColor = context.outputTexture("noisyColor");
+        TextureHandle noisyDiffuse = context.outputTexture("noisyDiffuse");
+        TextureHandle noisySpecular = context.outputTexture("noisySpecular");
+        TextureHandle normalRoughness = context.outputTexture("normalRoughness");
+        TextureHandle motionVectors = context.outputTexture("motionVectors");
+        TextureHandle viewZ = context.outputTexture("viewZ");
+        TextureHandle directLighting = context.outputTexture("directLighting");
+        TextureHandle baseColorMetalness = context.outputTexture("baseColorMetalness");
+        TextureHandle denoisedDiffuse = context.outputTexture("denoisedDiffuse");
+        TextureHandle denoisedSpecular = context.outputTexture("denoisedSpecular");
+        TextureHandle validation = context.outputTexture("validation");
+
+        if (!validTexture(color) ||
+            !validTexture(noisyColor) ||
+            !validTexture(noisyDiffuse) ||
+            !validTexture(noisySpecular) ||
+            !validTexture(normalRoughness) ||
+            !validTexture(motionVectors) ||
+            !validTexture(viewZ) ||
+            !validTexture(directLighting) ||
+            !validTexture(baseColorMetalness) ||
+            !validTexture(denoisedDiffuse) ||
+            !validTexture(denoisedSpecular) ||
+            !validTexture(validation) ||
+            !pathTraceProgram_.valid() ||
+            !compositeProgram_.valid() ||
+            vertexBuffer_ == nullptr ||
+            indexBuffer_ == nullptr ||
+            primitiveBuffer_ == nullptr ||
+            instanceBuffer_ == nullptr ||
+            materialBuffer_ == nullptr ||
+            !rtxBuilder_.valid() ||
+            !drawBounds_.valid ||
+            device_ == nullptr ||
+            queue_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        const uint32_t denoiserMode = denoiserModeFromProperties(context.properties());
+        const uint32_t resetSerial = ScenePathTracePass::uintProperty(
+            context.properties(),
+            "resetSerial",
+            0,
+            0,
+            std::numeric_limits<uint32_t>::max());
+        if (lastDenoiserMode_ != denoiserMode || lastResetSerial_ != resetSerial) {
+            frameIndex_ = 0;
+            lastDenoiserMode_ = denoiserMode;
+            lastResetSerial_ = resetSerial;
+        }
+
+        ChessNrdPathTracePush pathPush;
+        buildChessPathTracePush(context, denoiserMode, pathPush);
+        const SceneRayQueryDispatchBinding pathTraceBindings[] = {
+            {.binding = 0, .accelerationStructure = &rtxBuilder_},
+            {.binding = 1, .textureView = noisyDiffuse.view()},
+            {.binding = 2, .textureView = noisySpecular.view()},
+            {.binding = 3, .textureView = normalRoughness.view()},
+            {.binding = 4, .textureView = motionVectors.view()},
+            {.binding = 5, .textureView = viewZ.view()},
+            {.binding = 6, .textureView = directLighting.view()},
+            {.binding = 7, .textureView = baseColorMetalness.view()},
+            {.binding = 8, .textureView = noisyColor.view()},
+            {.binding = 9, .buffer = vertexBuffer_.get()},
+            {.binding = 10, .buffer = indexBuffer_.get()},
+            {.binding = 11, .buffer = primitiveBuffer_.get()},
+            {.binding = 12, .buffer = instanceBuffer_.get()},
+            {.binding = 13, .buffer = materialBuffer_.get()},
+        };
+        Result result = pathTraceProgram_.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = pathTraceBindings,
+            .bindingCount = static_cast<uint32_t>(std::size(pathTraceBindings)),
+            .pushData = &pathPush,
+            .pushDataSize = sizeof(pathPush),
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+            .groupCountZ = 1,
+        });
+        if (!result) {
+            return result;
+        }
+
+        barrierGeneral(
+            context.commandBuffer(),
+            {noisyColor, noisyDiffuse, noisySpecular, normalRoughness, motionVectors, viewZ, directLighting, baseColorMetalness});
+
+        result = ensureNrd(context, noisyDiffuse, noisySpecular, normalRoughness, motionVectors, viewZ,
+            directLighting, baseColorMetalness, denoisedDiffuse, denoisedSpecular, validation);
+        if (!result) {
+            return result;
+        }
+
+        result = runNrd(context, denoiserMode, noisyDiffuse, noisySpecular, denoisedDiffuse, denoisedSpecular);
+        if (!result) {
+            return result;
+        }
+
+        barrierGeneral(context.commandBuffer(), {denoisedDiffuse, denoisedSpecular, validation});
+
+        ChessNrdCompositePush compositePush{
+            .width = context.width(),
+            .height = context.height(),
+            .denoiserMode = denoiserMode,
+            .visualization = visualizationFromProperties(context.properties()),
+        };
+        const SceneRayQueryDispatchBinding compositeBindings[] = {
+            {.binding = 0, .textureView = color.view()},
+            {.binding = 1, .textureView = noisyDiffuse.view()},
+            {.binding = 2, .textureView = noisySpecular.view()},
+            {.binding = 3, .textureView = denoisedDiffuse.view()},
+            {.binding = 4, .textureView = denoisedSpecular.view()},
+            {.binding = 5, .textureView = normalRoughness.view()},
+            {.binding = 6, .textureView = motionVectors.view()},
+            {.binding = 7, .textureView = viewZ.view()},
+            {.binding = 8, .textureView = directLighting.view()},
+            {.binding = 9, .textureView = baseColorMetalness.view()},
+            {.binding = 10, .textureView = validation.view()},
+            {.binding = 11, .textureView = noisyColor.view()},
+        };
+        result = compositeProgram_.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = compositeBindings,
+            .bindingCount = static_cast<uint32_t>(std::size(compositeBindings)),
+            .pushData = &compositePush,
+            .pushDataSize = sizeof(compositePush),
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+            .groupCountZ = 1,
+        });
+        if (result) {
+            ++frameIndex_;
+        }
+        return result;
+#endif
+    }
+
+private:
+    static void appendShaderCompileFailure(
+        std::string& log,
+        const char* moduleName,
+        const char* entryPointName,
+        const Result& result,
+        const ShaderCompileResult& compileResult)
+    {
+        log += "compileSlangShaderToSpirv(";
+        log += moduleName;
+        log += ".";
+        log += entryPointName;
+        log += ") returned ";
+        log += resultToString(result);
+        if (!compileResult.diagnostics.empty()) {
+            log += ": ";
+            log += compileResult.diagnostics;
+        }
+        log += '\n';
+    }
+
+    static bool validTexture(TextureHandle texture)
+    {
+        return texture.valid() && texture.texture() != nullptr && texture.view() != nullptr;
+    }
+
+    static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
+    {
+        if (props.contains("path") && props["path"].is_string()) {
+            std::filesystem::path path = props["path"].get<std::string>();
+            if (path.is_relative()) {
+                path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
+            }
+            return path;
+        }
+        return kDefaultChessScenePath;
+    }
+
+    static uint32_t classifyMaterialKind(const std::string& name)
+    {
+        if (name.find("Chessboard") != std::string::npos) {
+            return 1;
+        }
+        if (name.find("White") != std::string::npos || name.find("_W") != std::string::npos) {
+            return 2;
+        }
+        if (name.find("Black") != std::string::npos || name.find("_B") != std::string::npos) {
+            return 3;
+        }
+        return 0;
+    }
+
+    static void applyChessMaterialKinds(
+        const scene::Scene& scene,
+        ScenePathTracePass::ScenePathTraceGpuScene& gpuScene)
+    {
+        const size_t materialCount = std::min(gpuScene.materials.size(), scene.materials().size());
+        for (size_t materialIndex = 0; materialIndex < materialCount; ++materialIndex) {
+            const scene::RenderMaterial& source = scene.materials()[materialIndex];
+            ScenePathTraceGpuMaterial& material = gpuScene.materials[materialIndex];
+            const uint32_t kind = classifyMaterialKind(source.name);
+            material.params[3] = static_cast<float>(kind);
+            if (kind == 1) {
+                material.baseColor[0] = 0.65f;
+                material.baseColor[1] = 0.55f;
+                material.baseColor[2] = 0.40f;
+                material.params[0] = 0.0f;
+                material.params[1] = 0.42f;
+            } else if (kind == 2) {
+                material.baseColor[0] = std::max(material.baseColor[0], 0.92f);
+                material.baseColor[1] = std::max(material.baseColor[1], 0.86f);
+                material.baseColor[2] = std::max(material.baseColor[2], 0.68f);
+                material.params[0] = std::max(material.params[0], 0.05f);
+                material.params[1] = std::min(std::max(material.params[1], 0.18f), 0.34f);
+            } else if (kind == 3) {
+                material.baseColor[0] = 0.09f;
+                material.baseColor[1] = 0.22f;
+                material.baseColor[2] = 0.19f;
+                material.params[0] = std::max(material.params[0], 0.08f);
+                material.params[1] = std::min(std::max(material.params[1], 0.18f), 0.36f);
+            }
+        }
+    }
+
+    static uint32_t denoiserModeFromProperties(const RenderGraphProperties& properties)
+    {
+        if (properties.is_object()) {
+            auto iter = properties.find("denoiser");
+            if (iter != properties.end() && iter->is_string()) {
+                const std::string value = iter->get<std::string>();
+                if (value == "RELAX" || value == "Relax" || value == "relax") {
+                    return kNrdDenoiserModeRelax;
+                }
+                if (value == "REFERENCE" || value == "Reference" || value == "reference") {
+                    return kNrdDenoiserModeReference;
+                }
+            }
+        }
+        return kNrdDenoiserModeReblur;
+    }
+
+    static uint32_t visualizationFromProperties(const RenderGraphProperties& properties)
+    {
+        if (!properties.is_object()) {
+            return kChessNrdVisualFinal;
+        }
+        auto iter = properties.find("visualization");
+        if (iter == properties.end() || !iter->is_string()) {
+            return kChessNrdVisualFinal;
+        }
+        const std::string value = iter->get<std::string>();
+        if (value == "Noisy") {
+            return kChessNrdVisualNoisy;
+        }
+        if (value == "Direct") {
+            return kChessNrdVisualDirect;
+        }
+        if (value == "NoisyDiffuse") {
+            return kChessNrdVisualNoisyDiffuse;
+        }
+        if (value == "NoisySpecular") {
+            return kChessNrdVisualNoisySpecular;
+        }
+        if (value == "DenoisedDiffuse") {
+            return kChessNrdVisualDenoisedDiffuse;
+        }
+        if (value == "DenoisedSpecular") {
+            return kChessNrdVisualDenoisedSpecular;
+        }
+        if (value == "NormalRoughness") {
+            return kChessNrdVisualNormalRoughness;
+        }
+        if (value == "ViewZ") {
+            return kChessNrdVisualViewZ;
+        }
+        if (value == "Motion") {
+            return kChessNrdVisualMotion;
+        }
+        if (value == "BaseColorMetalness") {
+            return kChessNrdVisualBaseColorMetalness;
+        }
+        if (value == "Validation") {
+            return kChessNrdVisualValidation;
+        }
+        return kChessNrdVisualFinal;
+    }
+
+    static void copyFloat4(const float source[4], float destination[4])
+    {
+        std::memcpy(destination, source, sizeof(float) * 4);
+    }
+
+    void buildChessPathTracePush(
+        RenderGraphExecutionContext& context,
+        uint32_t denoiserMode,
+        ChessNrdPathTracePush& outPush) const
+    {
+        ScenePathTracePush basePush;
+        ScenePathTracePass::buildPush(context.width(), context.height(), context.properties(), drawBounds_, basePush);
+        copyFloat4(basePush.eye, outPush.eye);
+        copyFloat4(basePush.center, outPush.center);
+        copyFloat4(basePush.upProjection, outPush.upProjection);
+        copyFloat4(basePush.viewport, outPush.viewport);
+        copyFloat4(basePush.clipOrtho, outPush.clipOrtho);
+        outPush.width = basePush.width;
+        outPush.height = basePush.height;
+        outPush.maxDepth = basePush.maxDepth;
+        outPush.samples = basePush.samples;
+        outPush.frameIndex = frameIndex_;
+        outPush.denoiserMode = denoiserMode;
+    }
+
+    static void barrierGeneral(CommandBuffer& commandBuffer, std::initializer_list<TextureHandle> textures)
+    {
+        std::vector<TextureBarrierDesc> barriers;
+        barriers.reserve(textures.size());
+        for (TextureHandle texture : textures) {
+            if (validTexture(texture)) {
+                barriers.push_back(TextureBarrierDesc{
+                    .texture = texture.texture(),
+                    .before = ResourceState::General,
+                    .after = ResourceState::General,
+                    .baseMip = 0,
+                    .mipCount = 1,
+                    .baseLayer = 0,
+                    .layerCount = 1,
+                });
+            }
+        }
+        if (!barriers.empty()) {
+            commandBuffer.barrier(BarrierDesc{
+                .textures = barriers.data(),
+                .textureCount = static_cast<uint32_t>(barriers.size()),
+            });
+        }
+    }
+
+#if METALLIC_HAS_NRD
+    static void setIdentity(float matrix[16])
+    {
+        for (uint32_t index = 0; index < 16; ++index) {
+            matrix[index] = 0.0f;
+        }
+        matrix[0] = 1.0f;
+        matrix[5] = 1.0f;
+        matrix[10] = 1.0f;
+        matrix[15] = 1.0f;
+    }
+
+    static vulkan::NrdDenoiserMode wrapperMode(uint32_t denoiserMode)
+    {
+        if (denoiserMode == kNrdDenoiserModeRelax) {
+            return vulkan::NrdDenoiserMode::Relax;
+        }
+        if (denoiserMode == kNrdDenoiserModeReference) {
+            return vulkan::NrdDenoiserMode::Reference;
+        }
+        return vulkan::NrdDenoiserMode::Reblur;
+    }
+
+    Result ensureNrd(
+        RenderGraphExecutionContext& context,
+        TextureHandle noisyDiffuse,
+        TextureHandle noisySpecular,
+        TextureHandle normalRoughness,
+        TextureHandle motionVectors,
+        TextureHandle viewZ,
+        TextureHandle directLighting,
+        TextureHandle baseColorMetalness,
+        TextureHandle denoisedDiffuse,
+        TextureHandle denoisedSpecular,
+        TextureHandle validation)
+    {
+        vulkan::NrdUserTexturePool pool{};
+        auto put = [&pool](nrd::ResourceType resource, TextureHandle texture) {
+            pool[static_cast<size_t>(resource)] = vulkan::NrdTextureRef{
+                .texture = texture.texture(),
+                .view = texture.view(),
+            };
+        };
+        put(nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST, noisyDiffuse);
+        put(nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST, noisySpecular);
+        put(nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST, denoisedDiffuse);
+        put(nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST, denoisedSpecular);
+        put(nrd::ResourceType::IN_NORMAL_ROUGHNESS, normalRoughness);
+        put(nrd::ResourceType::IN_MV, motionVectors);
+        put(nrd::ResourceType::IN_VIEWZ, viewZ);
+        put(nrd::ResourceType::IN_BASECOLOR_METALNESS, baseColorMetalness);
+        put(nrd::ResourceType::OUT_VALIDATION, validation);
+        put(nrd::ResourceType::IN_SIGNAL, noisyDiffuse);
+        put(nrd::ResourceType::OUT_SIGNAL, denoisedDiffuse);
+
+        const bool sizeChanged = nrd_ == nullptr ||
+            !nrd_->valid() ||
+            nrd_->width() != static_cast<uint16_t>(context.width()) ||
+            nrd_->height() != static_cast<uint16_t>(context.height());
+        if (sizeChanged) {
+            nrd_ = std::make_unique<vulkan::NrdDenoiser>();
+            std::string log;
+            Result result = nrd_->initialize(
+                *device_,
+                *queue_,
+                static_cast<uint16_t>(context.width()),
+                static_cast<uint16_t>(context.height()),
+                pool,
+                log);
+            if (!result) {
+                runtimeLog_ = log;
+                nrd_.reset();
+                return result;
+            }
+            frameIndex_ = 0;
+        } else {
+            nrd_->setUserPoolTexture(nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST, *noisyDiffuse.texture(), *noisyDiffuse.view());
+            nrd_->setUserPoolTexture(nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST, *noisySpecular.texture(), *noisySpecular.view());
+            nrd_->setUserPoolTexture(nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST, *denoisedDiffuse.texture(), *denoisedDiffuse.view());
+            nrd_->setUserPoolTexture(nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST, *denoisedSpecular.texture(), *denoisedSpecular.view());
+            nrd_->setUserPoolTexture(nrd::ResourceType::IN_NORMAL_ROUGHNESS, *normalRoughness.texture(), *normalRoughness.view());
+            nrd_->setUserPoolTexture(nrd::ResourceType::IN_MV, *motionVectors.texture(), *motionVectors.view());
+            nrd_->setUserPoolTexture(nrd::ResourceType::IN_VIEWZ, *viewZ.texture(), *viewZ.view());
+            nrd_->setUserPoolTexture(nrd::ResourceType::IN_BASECOLOR_METALNESS, *baseColorMetalness.texture(), *baseColorMetalness.view());
+            nrd_->setUserPoolTexture(nrd::ResourceType::OUT_VALIDATION, *validation.texture(), *validation.view());
+        }
+        (void)directLighting;
+        return {};
+    }
+
+    Result runNrd(
+        RenderGraphExecutionContext& context,
+        uint32_t denoiserMode,
+        TextureHandle noisyDiffuse,
+        TextureHandle noisySpecular,
+        TextureHandle denoisedDiffuse,
+        TextureHandle denoisedSpecular)
+    {
+        if (nrd_ == nullptr || !nrd_->valid()) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        nrd::CommonSettings commonSettings;
+        setIdentity(commonSettings.viewToClipMatrix);
+        setIdentity(commonSettings.viewToClipMatrixPrev);
+        setIdentity(commonSettings.worldToViewMatrix);
+        setIdentity(commonSettings.worldToViewMatrixPrev);
+        commonSettings.motionVectorScale[0] = 1.0f;
+        commonSettings.motionVectorScale[1] = 1.0f;
+        commonSettings.motionVectorScale[2] = 0.0f;
+        commonSettings.resourceSize[0] = static_cast<uint16_t>(context.width());
+        commonSettings.resourceSize[1] = static_cast<uint16_t>(context.height());
+        commonSettings.resourceSizePrev[0] = static_cast<uint16_t>(context.width());
+        commonSettings.resourceSizePrev[1] = static_cast<uint16_t>(context.height());
+        commonSettings.rectSize[0] = static_cast<uint16_t>(context.width());
+        commonSettings.rectSize[1] = static_cast<uint16_t>(context.height());
+        commonSettings.rectSizePrev[0] = static_cast<uint16_t>(context.width());
+        commonSettings.rectSizePrev[1] = static_cast<uint16_t>(context.height());
+        commonSettings.frameIndex = frameIndex_;
+        commonSettings.timeDeltaBetweenFrames = 1.0f / 60.0f;
+        commonSettings.denoisingRange = 10000.0f;
+        commonSettings.accumulationMode = frameIndex_ == 0
+            ? nrd::AccumulationMode::CLEAR_AND_RESTART
+            : nrd::AccumulationMode::CONTINUE;
+        commonSettings.isMotionVectorInWorldSpace = false;
+        commonSettings.isBaseColorMetalnessAvailable = true;
+        commonSettings.enableValidation = boolProperty(&context.properties(), "enableValidation", true);
+
+        Result result = nrd_->setCommonSettings(commonSettings);
+        if (!result) {
+            return result;
+        }
+
+        if (denoiserMode == kNrdDenoiserModeReference) {
+            nrd_->setUserPoolTexture(nrd::ResourceType::IN_SIGNAL, *noisyDiffuse.texture(), *noisyDiffuse.view());
+            nrd_->setUserPoolTexture(nrd::ResourceType::OUT_SIGNAL, *denoisedDiffuse.texture(), *denoisedDiffuse.view());
+            nrd::Identifier referenceDiffuse = static_cast<nrd::Identifier>(nrd::Denoiser::REFERENCE);
+            result = nrd_->denoiseIdentifiers(&referenceDiffuse, 1, context.commandBuffer());
+            if (!result) {
+                return result;
+            }
+
+            nrd_->setUserPoolTexture(nrd::ResourceType::IN_SIGNAL, *noisySpecular.texture(), *noisySpecular.view());
+            nrd_->setUserPoolTexture(nrd::ResourceType::OUT_SIGNAL, *denoisedSpecular.texture(), *denoisedSpecular.view());
+            nrd::Identifier referenceSpecular = static_cast<nrd::Identifier>(nrd::Denoiser::REFERENCE) + 1;
+            return nrd_->denoiseIdentifiers(&referenceSpecular, 1, context.commandBuffer());
+        }
+
+        if (denoiserMode == kNrdDenoiserModeRelax) {
+            nrd::RelaxSettings relaxSettings;
+            result = nrd_->setRelaxSettings(relaxSettings);
+            if (!result) {
+                return result;
+            }
+        } else {
+            nrd::ReblurSettings reblurSettings;
+            result = nrd_->setReblurSettings(reblurSettings);
+            if (!result) {
+                return result;
+            }
+        }
+        return nrd_->denoise(wrapperMode(denoiserMode), context.commandBuffer());
+    }
+#endif
+
+    void resetGpuBuffers()
+    {
+        vertexBuffer_.reset();
+        indexBuffer_.reset();
+        primitiveBuffer_.reset();
+        instanceBuffer_.reset();
+        materialBuffer_.reset();
+    }
+
+    SceneRtxBuilder rtxBuilder_;
+    SceneRayQueryProgram pathTraceProgram_;
+    SceneRayQueryProgram compositeProgram_;
+    scene::Bounds drawBounds_;
+    std::unique_ptr<Buffer> vertexBuffer_;
+    std::unique_ptr<Buffer> indexBuffer_;
+    std::unique_ptr<Buffer> primitiveBuffer_;
+    std::unique_ptr<Buffer> instanceBuffer_;
+    std::unique_ptr<Buffer> materialBuffer_;
+    Device* device_ = nullptr;
+    Queue* queue_ = nullptr;
+    uint32_t frameIndex_ = 0;
+    uint32_t lastDenoiserMode_ = std::numeric_limits<uint32_t>::max();
+    uint32_t lastResetSerial_ = 0;
+    std::string runtimeLog_;
+#if METALLIC_HAS_NRD
+    std::unique_ptr<vulkan::NrdDenoiser> nrd_;
+#endif
+};
+
 class RenderGraphBufferWritePass final : public ComputePass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
@@ -3113,6 +3955,10 @@ void registerBuiltInRenderGraphPasses()
         "ScenePathTracePass",
         "Path trace a glTF scene with RayQuery",
         []() { return std::make_unique<ScenePathTracePass>(); });
+    registerRenderGraphPassType(
+        "ChessNrdPathTracePass",
+        "Path trace the chess sample and denoise it with NRD",
+        []() { return std::make_unique<ChessNrdPathTracePass>(); });
     registerRenderGraphPassType(
         "RenderGraphBufferWritePass",
         "Write a known byte pattern into a graph buffer",

@@ -2585,6 +2585,7 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
             .enableShaderObject = true,
             .enableRayTracingAccelerationStructure = enableRayQuery,
             .enableRayQuery = enableRayQuery,
+            .enablePushDescriptor = enableRayQuery,
         },
         impl_->device);
     if (!result) {

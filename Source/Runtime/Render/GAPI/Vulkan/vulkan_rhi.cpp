@@ -185,14 +185,98 @@ bool hasDeviceExtension(VkPhysicalDevice physicalDevice, const char* extensionNa
 VkFormat toVkFormat(Format format)
 {
     switch (format) {
+    case Format::R8Unorm:
+        return VK_FORMAT_R8_UNORM;
+    case Format::R8Snorm:
+        return VK_FORMAT_R8_SNORM;
+    case Format::R8Uint:
+        return VK_FORMAT_R8_UINT;
+    case Format::R8Sint:
+        return VK_FORMAT_R8_SINT;
+    case Format::Rg8Unorm:
+        return VK_FORMAT_R8G8_UNORM;
+    case Format::Rg8Snorm:
+        return VK_FORMAT_R8G8_SNORM;
+    case Format::Rg8Uint:
+        return VK_FORMAT_R8G8_UINT;
+    case Format::Rg8Sint:
+        return VK_FORMAT_R8G8_SINT;
     case Format::Bgra8Unorm:
         return VK_FORMAT_B8G8R8A8_UNORM;
     case Format::Bgra8Srgb:
         return VK_FORMAT_B8G8R8A8_SRGB;
     case Format::Rgba8Unorm:
         return VK_FORMAT_R8G8B8A8_UNORM;
+    case Format::Rgba8Snorm:
+        return VK_FORMAT_R8G8B8A8_SNORM;
     case Format::Rgba8Srgb:
         return VK_FORMAT_R8G8B8A8_SRGB;
+    case Format::Rgba8Uint:
+        return VK_FORMAT_R8G8B8A8_UINT;
+    case Format::Rgba8Sint:
+        return VK_FORMAT_R8G8B8A8_SINT;
+    case Format::R16Unorm:
+        return VK_FORMAT_R16_UNORM;
+    case Format::R16Snorm:
+        return VK_FORMAT_R16_SNORM;
+    case Format::R16Uint:
+        return VK_FORMAT_R16_UINT;
+    case Format::R16Sint:
+        return VK_FORMAT_R16_SINT;
+    case Format::R16Sfloat:
+        return VK_FORMAT_R16_SFLOAT;
+    case Format::Rg16Unorm:
+        return VK_FORMAT_R16G16_UNORM;
+    case Format::Rg16Snorm:
+        return VK_FORMAT_R16G16_SNORM;
+    case Format::Rg16Uint:
+        return VK_FORMAT_R16G16_UINT;
+    case Format::Rg16Sint:
+        return VK_FORMAT_R16G16_SINT;
+    case Format::Rg16Sfloat:
+        return VK_FORMAT_R16G16_SFLOAT;
+    case Format::Rgba16Unorm:
+        return VK_FORMAT_R16G16B16A16_UNORM;
+    case Format::Rgba16Snorm:
+        return VK_FORMAT_R16G16B16A16_SNORM;
+    case Format::Rgba16Uint:
+        return VK_FORMAT_R16G16B16A16_UINT;
+    case Format::Rgba16Sint:
+        return VK_FORMAT_R16G16B16A16_SINT;
+    case Format::Rgba16Sfloat:
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
+    case Format::R32Uint:
+        return VK_FORMAT_R32_UINT;
+    case Format::R32Sint:
+        return VK_FORMAT_R32_SINT;
+    case Format::R32Sfloat:
+        return VK_FORMAT_R32_SFLOAT;
+    case Format::Rg32Uint:
+        return VK_FORMAT_R32G32_UINT;
+    case Format::Rg32Sint:
+        return VK_FORMAT_R32G32_SINT;
+    case Format::Rg32Sfloat:
+        return VK_FORMAT_R32G32_SFLOAT;
+    case Format::Rgb32Uint:
+        return VK_FORMAT_R32G32B32_UINT;
+    case Format::Rgb32Sint:
+        return VK_FORMAT_R32G32B32_SINT;
+    case Format::Rgb32Sfloat:
+        return VK_FORMAT_R32G32B32_SFLOAT;
+    case Format::Rgba32Uint:
+        return VK_FORMAT_R32G32B32A32_UINT;
+    case Format::Rgba32Sint:
+        return VK_FORMAT_R32G32B32A32_SINT;
+    case Format::Rgba32Sfloat:
+        return VK_FORMAT_R32G32B32A32_SFLOAT;
+    case Format::A2B10G10R10UnormPack32:
+        return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    case Format::A2R10G10B10UintPack32:
+        return VK_FORMAT_A2R10G10B10_UINT_PACK32;
+    case Format::B10G11R11UfloatPack32:
+        return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+    case Format::E5B9G9R9UfloatPack32:
+        return VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
     case Format::D32Sfloat:
         return VK_FORMAT_D32_SFLOAT;
     case Format::Unknown:
@@ -205,14 +289,98 @@ VkFormat toVkFormat(Format format)
 Format fromVkFormat(VkFormat format)
 {
     switch (format) {
+    case VK_FORMAT_R8_UNORM:
+        return Format::R8Unorm;
+    case VK_FORMAT_R8_SNORM:
+        return Format::R8Snorm;
+    case VK_FORMAT_R8_UINT:
+        return Format::R8Uint;
+    case VK_FORMAT_R8_SINT:
+        return Format::R8Sint;
+    case VK_FORMAT_R8G8_UNORM:
+        return Format::Rg8Unorm;
+    case VK_FORMAT_R8G8_SNORM:
+        return Format::Rg8Snorm;
+    case VK_FORMAT_R8G8_UINT:
+        return Format::Rg8Uint;
+    case VK_FORMAT_R8G8_SINT:
+        return Format::Rg8Sint;
     case VK_FORMAT_B8G8R8A8_UNORM:
         return Format::Bgra8Unorm;
     case VK_FORMAT_B8G8R8A8_SRGB:
         return Format::Bgra8Srgb;
     case VK_FORMAT_R8G8B8A8_UNORM:
         return Format::Rgba8Unorm;
+    case VK_FORMAT_R8G8B8A8_SNORM:
+        return Format::Rgba8Snorm;
     case VK_FORMAT_R8G8B8A8_SRGB:
         return Format::Rgba8Srgb;
+    case VK_FORMAT_R8G8B8A8_UINT:
+        return Format::Rgba8Uint;
+    case VK_FORMAT_R8G8B8A8_SINT:
+        return Format::Rgba8Sint;
+    case VK_FORMAT_R16_UNORM:
+        return Format::R16Unorm;
+    case VK_FORMAT_R16_SNORM:
+        return Format::R16Snorm;
+    case VK_FORMAT_R16_UINT:
+        return Format::R16Uint;
+    case VK_FORMAT_R16_SINT:
+        return Format::R16Sint;
+    case VK_FORMAT_R16_SFLOAT:
+        return Format::R16Sfloat;
+    case VK_FORMAT_R16G16_UNORM:
+        return Format::Rg16Unorm;
+    case VK_FORMAT_R16G16_SNORM:
+        return Format::Rg16Snorm;
+    case VK_FORMAT_R16G16_UINT:
+        return Format::Rg16Uint;
+    case VK_FORMAT_R16G16_SINT:
+        return Format::Rg16Sint;
+    case VK_FORMAT_R16G16_SFLOAT:
+        return Format::Rg16Sfloat;
+    case VK_FORMAT_R16G16B16A16_UNORM:
+        return Format::Rgba16Unorm;
+    case VK_FORMAT_R16G16B16A16_SNORM:
+        return Format::Rgba16Snorm;
+    case VK_FORMAT_R16G16B16A16_UINT:
+        return Format::Rgba16Uint;
+    case VK_FORMAT_R16G16B16A16_SINT:
+        return Format::Rgba16Sint;
+    case VK_FORMAT_R16G16B16A16_SFLOAT:
+        return Format::Rgba16Sfloat;
+    case VK_FORMAT_R32_UINT:
+        return Format::R32Uint;
+    case VK_FORMAT_R32_SINT:
+        return Format::R32Sint;
+    case VK_FORMAT_R32_SFLOAT:
+        return Format::R32Sfloat;
+    case VK_FORMAT_R32G32_UINT:
+        return Format::Rg32Uint;
+    case VK_FORMAT_R32G32_SINT:
+        return Format::Rg32Sint;
+    case VK_FORMAT_R32G32_SFLOAT:
+        return Format::Rg32Sfloat;
+    case VK_FORMAT_R32G32B32_UINT:
+        return Format::Rgb32Uint;
+    case VK_FORMAT_R32G32B32_SINT:
+        return Format::Rgb32Sint;
+    case VK_FORMAT_R32G32B32_SFLOAT:
+        return Format::Rgb32Sfloat;
+    case VK_FORMAT_R32G32B32A32_UINT:
+        return Format::Rgba32Uint;
+    case VK_FORMAT_R32G32B32A32_SINT:
+        return Format::Rgba32Sint;
+    case VK_FORMAT_R32G32B32A32_SFLOAT:
+        return Format::Rgba32Sfloat;
+    case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        return Format::A2B10G10R10UnormPack32;
+    case VK_FORMAT_A2R10G10B10_UINT_PACK32:
+        return Format::A2R10G10B10UintPack32;
+    case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+        return Format::B10G11R11UfloatPack32;
+    case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
+        return Format::E5B9G9R9UfloatPack32;
     case VK_FORMAT_D32_SFLOAT:
         return Format::D32Sfloat;
     default:
@@ -1279,6 +1447,7 @@ struct DeviceImpl {
     bool bufferDeviceAddressEnabled = false;
     bool rayTracingAccelerationStructureEnabled = false;
     bool rayQueryEnabled = false;
+    bool pushDescriptorEnabled = false;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
     std::vector<std::unique_ptr<Queue>> queues;
@@ -4006,6 +4175,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     const bool requestShaderObject = desc.enableShaderObject;
     const bool requestRayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure;
     const bool requestRayQuery = desc.enableRayQuery;
+    const bool requestPushDescriptor = desc.enablePushDescriptor;
     VkPhysicalDevice bestPhysicalDevice = VK_NULL_HANDLE;
     uint32_t bestGraphicsFamily = 0;
     uint32_t bestComputeFamily = 0;
@@ -4014,10 +4184,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     bool bestShaderObject = false;
     bool bestRayTracingAccelerationStructure = false;
     bool bestRayQuery = false;
+    bool bestPushDescriptor = false;
     bool selectedBindlessDescriptorHeap = false;
     bool selectedShaderObject = false;
     bool selectedRayTracingAccelerationStructure = false;
     bool selectedRayQuery = false;
+    bool selectedPushDescriptor = false;
 
     for (VkPhysicalDevice physicalDevice : physicalDevices) {
         VkPhysicalDeviceProperties properties{};
@@ -4037,6 +4209,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             hasDeviceExtension(physicalDevice, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         const bool rayQueryExtensionAvailable =
             hasDeviceExtension(physicalDevice, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        const bool pushDescriptorExtensionAvailable =
+            hasDeviceExtension(physicalDevice, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
         if (!swapchainExtensionAvailable) {
             continue;
         }
@@ -4104,6 +4278,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             accelerationStructureSupported &&
             rayQueryExtensionAvailable &&
             rayQueryFeatures.rayQuery == VK_TRUE;
+        const bool pushDescriptorSupported =
+            requestPushDescriptor &&
+            pushDescriptorExtensionAvailable;
 
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
@@ -4142,12 +4319,14 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             (!requestBindlessDescriptorHeap || descriptorHeapSupported) &&
             (!requestShaderObject || shaderObjectSupported) &&
             (!requestRayTracingAccelerationStructure || rayTracingAccelerationStructureSupported) &&
-            (!requestRayQuery || rayQuerySupported);
+            (!requestRayQuery || rayQuerySupported) &&
+            (!requestPushDescriptor || pushDescriptorSupported);
         const int32_t featureScore =
-            (descriptorHeapSupported ? 8 : 0) +
-            (shaderObjectSupported ? 4 : 0) +
-            (rayTracingAccelerationStructureSupported ? 2 : 0) +
-            (rayQuerySupported ? 1 : 0);
+            (descriptorHeapSupported ? 16 : 0) +
+            (shaderObjectSupported ? 8 : 0) +
+            (rayTracingAccelerationStructureSupported ? 4 : 0) +
+            (rayQuerySupported ? 2 : 0) +
+            (pushDescriptorSupported ? 1 : 0);
         if (featureScore > bestFeatureScore) {
             bestFeatureScore = featureScore;
             bestPhysicalDevice = physicalDevice;
@@ -4157,6 +4336,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             bestShaderObject = shaderObjectSupported;
             bestRayTracingAccelerationStructure = rayTracingAccelerationStructureSupported;
             bestRayQuery = rayQuerySupported;
+            bestPushDescriptor = pushDescriptorSupported;
         }
         if (matchesRequestedFeatures) {
             deviceImpl->physicalDevice = physicalDevice;
@@ -4168,6 +4348,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
                 (requestRayTracingAccelerationStructure || requestRayQuery) &&
                 accelerationStructureSupported;
             selectedRayQuery = rayQuerySupported;
+            selectedPushDescriptor = pushDescriptorSupported;
             break;
         }
     }
@@ -4180,6 +4361,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         selectedShaderObject = bestShaderObject;
         selectedRayTracingAccelerationStructure = bestRayTracingAccelerationStructure;
         selectedRayQuery = bestRayQuery;
+        selectedPushDescriptor = bestPushDescriptor;
     }
 
     if (deviceImpl->physicalDevice == VK_NULL_HANDLE) {
@@ -4284,6 +4466,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     if (selectedRayQuery) {
         deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
     }
+    if (selectedPushDescriptor) {
+        deviceExtensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+    }
 
     VkDeviceCreateInfo deviceInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -4339,6 +4524,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->rayTracingAccelerationStructureEnabled = selectedRayTracingAccelerationStructure;
     deviceImpl->capabilities.rayQuery = selectedRayQuery;
     deviceImpl->rayQueryEnabled = selectedRayQuery;
+    deviceImpl->capabilities.pushDescriptor = selectedPushDescriptor;
+    deviceImpl->pushDescriptorEnabled = selectedPushDescriptor;
     deviceImpl->bufferDeviceAddressEnabled =
         selectedBindlessDescriptorHeap || selectedRayTracingAccelerationStructure || selectedRayQuery;
 
@@ -4440,6 +4627,22 @@ struct VulkanNativeAccess {
         };
     }
 
+    static vulkan::NativeTexture nativeTexture(Texture& texture)
+    {
+        if (texture.impl_ == nullptr) {
+            return {};
+        }
+
+        const TextureDesc& desc = texture.impl_->desc;
+        return vulkan::NativeTexture{
+            .image = texture.impl_->image,
+            .format = toVkFormat(desc.format),
+            .width = desc.width,
+            .height = desc.height,
+            .depth = desc.depth,
+        };
+    }
+
     static VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)
     {
         return commandBuffer.impl_ != nullptr ? commandBuffer.impl_->commandBuffer : VK_NULL_HANDLE;
@@ -4473,6 +4676,11 @@ NativeQueue nativeQueue(Queue& queue)
 NativeBuffer nativeBuffer(Buffer& buffer)
 {
     return detail::VulkanNativeAccess::nativeBuffer(buffer);
+}
+
+NativeTexture nativeTexture(Texture& texture)
+{
+    return detail::VulkanNativeAccess::nativeTexture(texture);
 }
 
 VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)

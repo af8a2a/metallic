@@ -122,6 +122,58 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/MathLib/CMakeLists.txt")
     add_subdirectory(MathLib)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ShaderMakeBlob/ShaderBlob.cpp")
+    add_library(ShaderMakeBlob STATIC
+        ShaderMakeBlob/ShaderBlob.cpp
+    )
+    target_include_directories(ShaderMakeBlob PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/ShaderMakeBlob"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ShaderMakeBlob/ShaderMake"
+    )
+    target_compile_features(ShaderMakeBlob PUBLIC cxx_std_17)
+
+    add_executable(ShaderMake
+        ShaderMakeBlob/ShaderMake.cpp
+        ShaderMakeBlob/argparse.c
+        ShaderMakeBlob/ShaderBlob.cpp
+    )
+    target_include_directories(ShaderMake PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/ShaderMakeBlob"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ShaderMakeBlob/ShaderMake"
+    )
+    target_compile_features(ShaderMake PRIVATE cxx_std_17)
+    if(WIN32)
+        target_compile_definitions(ShaderMake PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
+endif()
+
+set(METALLIC_NRD_ROOT "" CACHE PATH "Path to the NVIDIA NRD SDK checkout")
+if(NOT METALLIC_NRD_ROOT)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/nrd/CMakeLists.txt")
+        set(METALLIC_NRD_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/nrd")
+    elseif(EXISTS "E:/vk_denoise_nrd/externals/nrd/CMakeLists.txt")
+        set(METALLIC_NRD_ROOT "E:/vk_denoise_nrd/externals/nrd")
+    endif()
+endif()
+
+if(METALLIC_NRD_ROOT AND EXISTS "${METALLIC_NRD_ROOT}/CMakeLists.txt")
+    set(NRD_STATIC_LIBRARY ON CACHE BOOL "" FORCE)
+    set(NRD_NRI OFF CACHE BOOL "" FORCE)
+    set(NRD_EMBEDS_SPIRV_SHADERS ON CACHE BOOL "" FORCE)
+    set(NRD_EMBEDS_DXIL_SHADERS OFF CACHE BOOL "" FORCE)
+    set(NRD_EMBEDS_DXBC_SHADERS OFF CACHE BOOL "" FORCE)
+    set(NRD_NORMAL_ENCODING "2" CACHE STRING "" FORCE)
+    set(NRD_ROUGHNESS_ENCODING "1" CACHE STRING "" FORCE)
+    if(TARGET ShaderMake)
+        set(SHADERMAKE_PATH "$<TARGET_FILE:ShaderMake>" CACHE STRING "" FORCE)
+    endif()
+    if(EXISTS "E:/vk_denoise_nrd/out/build/x64-Debug/_deps/dxc-src/bin/x64/dxc.exe")
+        set(DXC_SPIRV_PATH "E:/vk_denoise_nrd/out/build/x64-Debug/_deps/dxc-src/bin/x64/dxc.exe" CACHE FILEPATH "" FORCE)
+        set(SHADERMAKE_DXC_VK_PATH "E:/vk_denoise_nrd/out/build/x64-Debug/_deps/dxc-src/bin/x64/dxc.exe" CACHE FILEPATH "" FORCE)
+    endif()
+    add_subdirectory("${METALLIC_NRD_ROOT}" "${CMAKE_BINARY_DIR}/External/nrd")
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tracy/CMakeLists.txt")
     option(TRACY_ENABLE "Enable Tracy profiler" ON)
     option(TRACY_ON_DEMAND "Tracy on-demand mode" ON)
