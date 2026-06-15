@@ -64,6 +64,14 @@ constexpr const char* kDefaultChessEnvironmentPath = PROJECT_SOURCE_DIR "/Asset/
 constexpr float kDefaultChessEnvironmentIntensity = 0.18f;
 constexpr float kDefaultChessEnvironmentRotationDegrees = 0.0f;
 constexpr float kDegreesToRadians = 0.017453292519943295769f;
+constexpr float kPi = 3.14159265358979323846f;
+constexpr uint32_t kChessEnvironmentDiffuseWidth = 64;
+constexpr uint32_t kChessEnvironmentDiffuseHeight = 32;
+constexpr uint32_t kChessEnvironmentGlossyWidth = 64;
+constexpr uint32_t kChessEnvironmentGlossyLayerHeight = 32;
+constexpr uint32_t kChessEnvironmentGlossyLevels = 6;
+constexpr uint32_t kChessEnvironmentDiffuseSamples = 64;
+constexpr uint32_t kChessEnvironmentGlossySamples = 64;
 constexpr uint64_t kRenderGraphBufferByteSize = 16;
 constexpr int32_t kGltfTriangleListMode = 4;
 constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
@@ -267,6 +275,263 @@ struct ChessNrdMaterialTextureResource {
     ResourceState state = ResourceState::Undefined;
     bool uploaded = false;
 };
+
+struct ChessNrdEnvironmentPixels {
+    std::vector<float> rgba;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+struct ChessNrdFloat3 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+};
+
+ChessNrdFloat3 makeFloat3(float x, float y, float z)
+{
+    return ChessNrdFloat3{x, y, z};
+}
+
+ChessNrdFloat3 operator+(ChessNrdFloat3 lhs, ChessNrdFloat3 rhs)
+{
+    return makeFloat3(lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z);
+}
+
+ChessNrdFloat3 operator-(ChessNrdFloat3 lhs, ChessNrdFloat3 rhs)
+{
+    return makeFloat3(lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z);
+}
+
+ChessNrdFloat3 operator*(ChessNrdFloat3 value, float scale)
+{
+    return makeFloat3(value.x * scale, value.y * scale, value.z * scale);
+}
+
+ChessNrdFloat3 operator/(ChessNrdFloat3 value, float scale)
+{
+    return scale > 0.0f ? value * (1.0f / scale) : ChessNrdFloat3{};
+}
+
+float dot(ChessNrdFloat3 lhs, ChessNrdFloat3 rhs)
+{
+    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+}
+
+ChessNrdFloat3 cross(ChessNrdFloat3 lhs, ChessNrdFloat3 rhs)
+{
+    return makeFloat3(
+        lhs.y * rhs.z - lhs.z * rhs.y,
+        lhs.z * rhs.x - lhs.x * rhs.z,
+        lhs.x * rhs.y - lhs.y * rhs.x);
+}
+
+float length(ChessNrdFloat3 value)
+{
+    return std::sqrt(std::max(dot(value, value), 0.0f));
+}
+
+ChessNrdFloat3 normalizeOr(ChessNrdFloat3 value, ChessNrdFloat3 fallback)
+{
+    const float len = length(value);
+    return len > 0.000001f && std::isfinite(len) ? value / len : fallback;
+}
+
+ChessNrdFloat3 reflect(ChessNrdFloat3 incident, ChessNrdFloat3 normal)
+{
+    return incident - normal * (2.0f * dot(incident, normal));
+}
+
+void orthonormalBasis(ChessNrdFloat3 normal, ChessNrdFloat3& tangent, ChessNrdFloat3& bitangent)
+{
+    tangent = std::abs(normal.z) < 0.999f
+        ? normalizeOr(cross(makeFloat3(0.0f, 0.0f, 1.0f), normal), makeFloat3(1.0f, 0.0f, 0.0f))
+        : normalizeOr(cross(makeFloat3(0.0f, 1.0f, 0.0f), normal), makeFloat3(1.0f, 0.0f, 0.0f));
+    bitangent = cross(normal, tangent);
+}
+
+float radicalInverseVdc(uint32_t bits)
+{
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xaaaaaaaau) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xccccccccu) >> 2u);
+    bits = ((bits & 0x0f0f0f0fu) << 4u) | ((bits & 0xf0f0f0f0u) >> 4u);
+    bits = ((bits & 0x00ff00ffu) << 8u) | ((bits & 0xff00ff00u) >> 8u);
+    return static_cast<float>(bits) * 2.3283064365386963e-10f;
+}
+
+std::array<float, 2> hammersley(uint32_t index, uint32_t count)
+{
+    return {
+        (static_cast<float>(index) + 0.5f) / static_cast<float>(std::max(count, 1u)),
+        radicalInverseVdc(index),
+    };
+}
+
+ChessNrdFloat3 directionFromEquirectTexel(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+{
+    const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(std::max(width, 1u));
+    const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(std::max(height, 1u));
+    const float phi = (u - 0.5f) * 2.0f * kPi;
+    const float theta = v * kPi;
+    const float sinTheta = std::sin(theta);
+    return normalizeOr(
+        makeFloat3(std::cos(phi) * sinTheta, std::cos(theta), std::sin(phi) * sinTheta),
+        makeFloat3(0.0f, 1.0f, 0.0f));
+}
+
+ChessNrdFloat3 sampleEnvironmentPixels(const ChessNrdEnvironmentPixels& environment, ChessNrdFloat3 direction)
+{
+    if (environment.rgba.empty() || environment.width == 0 || environment.height == 0) {
+        return {};
+    }
+
+    const ChessNrdFloat3 dir = normalizeOr(direction, makeFloat3(0.0f, 1.0f, 0.0f));
+    const float phi = std::atan2(dir.z, dir.x);
+    const float theta = std::acos(std::clamp(dir.y, -1.0f, 1.0f));
+    const float u = std::fmod(0.5f + phi / (2.0f * kPi) + 1.0f, 1.0f);
+    const float v = theta / kPi;
+    const float imageX = u * static_cast<float>(environment.width) - 0.5f;
+    const float imageY = v * static_cast<float>(environment.height) - 0.5f;
+    const int32_t baseX = static_cast<int32_t>(std::floor(imageX));
+    const int32_t baseY = static_cast<int32_t>(std::floor(imageY));
+    const float blendX = imageX - std::floor(imageX);
+    const float blendY = imageY - std::floor(imageY);
+
+    auto wrapX = [&](int32_t value) -> uint32_t {
+        const int32_t size = static_cast<int32_t>(environment.width);
+        int32_t wrapped = value % size;
+        return static_cast<uint32_t>(wrapped < 0 ? wrapped + size : wrapped);
+    };
+    auto clampY = [&](int32_t value) -> uint32_t {
+        return static_cast<uint32_t>(std::clamp(value, 0, static_cast<int32_t>(environment.height) - 1));
+    };
+    auto texel = [&](uint32_t x, uint32_t y) -> ChessNrdFloat3 {
+        const size_t offset = (static_cast<size_t>(y) * environment.width + x) * 4u;
+        return makeFloat3(
+            std::max(environment.rgba[offset + 0u], 0.0f),
+            std::max(environment.rgba[offset + 1u], 0.0f),
+            std::max(environment.rgba[offset + 2u], 0.0f));
+    };
+
+    const ChessNrdFloat3 c00 = texel(wrapX(baseX), clampY(baseY));
+    const ChessNrdFloat3 c10 = texel(wrapX(baseX + 1), clampY(baseY));
+    const ChessNrdFloat3 c01 = texel(wrapX(baseX), clampY(baseY + 1));
+    const ChessNrdFloat3 c11 = texel(wrapX(baseX + 1), clampY(baseY + 1));
+    const ChessNrdFloat3 cx0 = c00 * (1.0f - blendX) + c10 * blendX;
+    const ChessNrdFloat3 cx1 = c01 * (1.0f - blendX) + c11 * blendX;
+    return cx0 * (1.0f - blendY) + cx1 * blendY;
+}
+
+ChessNrdFloat3 sampleCosineHemisphere(const std::array<float, 2>& xi)
+{
+    const float phi = 2.0f * kPi * xi[0];
+    const float cosTheta = std::sqrt(std::max(1.0f - xi[1], 0.0f));
+    const float sinTheta = std::sqrt(std::max(xi[1], 0.0f));
+    return makeFloat3(std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, cosTheta);
+}
+
+ChessNrdFloat3 sampleGgxHalfVector(const std::array<float, 2>& xi, float alpha)
+{
+    const float phi = 2.0f * kPi * xi[0];
+    const float alphaSquared = alpha * alpha;
+    const float cosTheta = std::sqrt((1.0f - xi[1]) / std::max(1.0f + (alphaSquared - 1.0f) * xi[1], 0.000001f));
+    const float sinTheta = std::sqrt(std::max(1.0f - cosTheta * cosTheta, 0.0f));
+    return makeFloat3(std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, cosTheta);
+}
+
+std::vector<float> generateDiffuseEnvironmentMap(const ChessNrdEnvironmentPixels& environment)
+{
+    std::vector<float> pixels(
+        static_cast<size_t>(kChessEnvironmentDiffuseWidth) * kChessEnvironmentDiffuseHeight * 4u,
+        0.0f);
+    for (uint32_t y = 0; y < kChessEnvironmentDiffuseHeight; ++y) {
+        for (uint32_t x = 0; x < kChessEnvironmentDiffuseWidth; ++x) {
+            const ChessNrdFloat3 normal = directionFromEquirectTexel(
+                x,
+                y,
+                kChessEnvironmentDiffuseWidth,
+                kChessEnvironmentDiffuseHeight);
+            ChessNrdFloat3 tangent;
+            ChessNrdFloat3 bitangent;
+            orthonormalBasis(normal, tangent, bitangent);
+
+            ChessNrdFloat3 accum{};
+            for (uint32_t sampleIndex = 0; sampleIndex < kChessEnvironmentDiffuseSamples; ++sampleIndex) {
+                const ChessNrdFloat3 localDirection = sampleCosineHemisphere(
+                    hammersley(sampleIndex, kChessEnvironmentDiffuseSamples));
+                const ChessNrdFloat3 sampleDirection = normalizeOr(
+                    tangent * localDirection.x + bitangent * localDirection.y + normal * localDirection.z,
+                    normal);
+                accum = accum + sampleEnvironmentPixels(environment, sampleDirection);
+            }
+
+            const ChessNrdFloat3 value = accum / static_cast<float>(kChessEnvironmentDiffuseSamples);
+            const size_t offset = (static_cast<size_t>(y) * kChessEnvironmentDiffuseWidth + x) * 4u;
+            pixels[offset + 0u] = value.x;
+            pixels[offset + 1u] = value.y;
+            pixels[offset + 2u] = value.z;
+            pixels[offset + 3u] = 1.0f;
+        }
+    }
+    return pixels;
+}
+
+std::vector<float> generateGlossyEnvironmentMap(const ChessNrdEnvironmentPixels& environment)
+{
+    const uint32_t packedHeight = kChessEnvironmentGlossyLayerHeight * kChessEnvironmentGlossyLevels;
+    std::vector<float> pixels(
+        static_cast<size_t>(kChessEnvironmentGlossyWidth) * packedHeight * 4u,
+        0.0f);
+    for (uint32_t level = 0; level < kChessEnvironmentGlossyLevels; ++level) {
+        const float roughness = kChessEnvironmentGlossyLevels <= 1
+            ? 0.0f
+            : static_cast<float>(level) / static_cast<float>(kChessEnvironmentGlossyLevels - 1u);
+        const float alpha = std::max(roughness * roughness, 0.0001f);
+        const uint32_t sampleCount = level == 0 ? 1u : kChessEnvironmentGlossySamples;
+
+        for (uint32_t y = 0; y < kChessEnvironmentGlossyLayerHeight; ++y) {
+            for (uint32_t x = 0; x < kChessEnvironmentGlossyWidth; ++x) {
+                const ChessNrdFloat3 normal = directionFromEquirectTexel(
+                    x,
+                    y,
+                    kChessEnvironmentGlossyWidth,
+                    kChessEnvironmentGlossyLayerHeight);
+                ChessNrdFloat3 tangent;
+                ChessNrdFloat3 bitangent;
+                orthonormalBasis(normal, tangent, bitangent);
+
+                ChessNrdFloat3 accum{};
+                float weightSum = 0.0f;
+                for (uint32_t sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
+                    ChessNrdFloat3 sampleDirection = normal;
+                    float nDotL = 1.0f;
+                    if (level > 0) {
+                        const ChessNrdFloat3 localHalf = sampleGgxHalfVector(hammersley(sampleIndex, sampleCount), alpha);
+                        const ChessNrdFloat3 halfVector = normalizeOr(
+                            tangent * localHalf.x + bitangent * localHalf.y + normal * localHalf.z,
+                            normal);
+                        sampleDirection = normalizeOr(reflect(normal * -1.0f, halfVector), normal);
+                        nDotL = std::max(dot(normal, sampleDirection), 0.0f);
+                    }
+                    if (nDotL > 0.0f) {
+                        accum = accum + sampleEnvironmentPixels(environment, sampleDirection) * nDotL;
+                        weightSum += nDotL;
+                    }
+                }
+
+                const ChessNrdFloat3 value = weightSum > 0.0f ? accum / weightSum : sampleEnvironmentPixels(environment, normal);
+                const uint32_t packedY = level * kChessEnvironmentGlossyLayerHeight + y;
+                const size_t offset = (static_cast<size_t>(packedY) * kChessEnvironmentGlossyWidth + x) * 4u;
+                pixels[offset + 0u] = value.x;
+                pixels[offset + 1u] = value.y;
+                pixels[offset + 2u] = value.z;
+                pixels[offset + 3u] = 1.0f;
+            }
+        }
+    }
+    return pixels;
+}
 
 std::string resultMessage(std::string_view label, const Result& result)
 {
@@ -3154,7 +3419,13 @@ public:
             return makeError(Error::Failure);
         }
         const std::filesystem::path environmentPath = environmentPathFromProperties(properties());
-        Result result = loadEnvironmentTextureResource(*context.device, environmentPath, environmentTexture_, log);
+        Result result = createEnvironmentResources(
+            *context.device,
+            environmentPath,
+            environmentTexture_,
+            diffuseEnvironmentTexture_,
+            glossyEnvironmentTexture_,
+            log);
         if (!result) {
             resetGpuBuffers();
             return result;
@@ -3271,6 +3542,8 @@ public:
                 .descriptorCount = kChessNrdMaxMaterialTextures,
             },
             {.binding = 15, .kind = SceneRayQueryBindingKind::SampledImage},
+            {.binding = 16, .kind = SceneRayQueryBindingKind::SampledImage},
+            {.binding = 17, .kind = SceneRayQueryBindingKind::SampledImage},
         };
         result = pathTraceProgram_.initialize(
             *context.device,
@@ -3384,6 +3657,8 @@ public:
             !drawBounds_.valid ||
             fallbackMaterialTexture_.view == nullptr ||
             environmentTexture_.view == nullptr ||
+            diffuseEnvironmentTexture_.view == nullptr ||
+            glossyEnvironmentTexture_.view == nullptr ||
             device_ == nullptr ||
             queue_ == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -3397,11 +3672,21 @@ public:
         if (!result) {
             return result;
         }
+        result = uploadTextureIfNeeded(context.commandBuffer(), diffuseEnvironmentTexture_);
+        if (!result) {
+            return result;
+        }
+        result = uploadTextureIfNeeded(context.commandBuffer(), glossyEnvironmentTexture_);
+        if (!result) {
+            return result;
+        }
         std::array<TextureView*, kChessNrdMaxMaterialTextures> materialTextureViews{};
         if (!buildMaterialTextureViewArray(materialTextureViews)) {
             return makeError(Error::InvalidArgument);
         }
         TextureView* environmentTextureViews[1] = {environmentTexture_.view.get()};
+        TextureView* diffuseEnvironmentTextureViews[1] = {diffuseEnvironmentTexture_.view.get()};
+        TextureView* glossyEnvironmentTextureViews[1] = {glossyEnvironmentTexture_.view.get()};
 
         const uint32_t denoiserMode = denoiserModeFromProperties(context.properties());
         const uint32_t resetSerial = ScenePathTracePass::uintProperty(
@@ -3449,6 +3734,16 @@ public:
                 .binding = 15,
                 .textureViews = environmentTextureViews,
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
+            },
+            {
+                .binding = 16,
+                .textureViews = diffuseEnvironmentTextureViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(diffuseEnvironmentTextureViews)),
+            },
+            {
+                .binding = 17,
+                .textureViews = glossyEnvironmentTextureViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(glossyEnvironmentTextureViews)),
             },
         };
         result = pathTraceProgram_.dispatch(SceneRayQueryDispatchDesc{
@@ -3763,10 +4058,9 @@ private:
         return std::filesystem::path(kDefaultChessEnvironmentPath);
     }
 
-    static Result loadEnvironmentTextureResource(
-        Device& device,
+    static Result loadEnvironmentPixels(
         const std::filesystem::path& path,
-        ChessNrdMaterialTextureResource& outResource,
+        ChessNrdEnvironmentPixels& outPixels,
         std::string& log)
     {
         int imageWidth = 0;
@@ -3782,18 +4076,82 @@ private:
             return makeError(Error::Failure);
         }
 
-        Result result = createTextureResource(
+        outPixels.width = static_cast<uint32_t>(imageWidth);
+        outPixels.height = static_cast<uint32_t>(imageHeight);
+        outPixels.rgba.assign(pixels, pixels + static_cast<size_t>(imageWidth) * static_cast<size_t>(imageHeight) * 4u);
+        stbi_image_free(pixels);
+        return {};
+    }
+
+    static Result createEnvironmentTextureResource(
+        Device& device,
+        const float* pixels,
+        uint32_t width,
+        uint32_t height,
+        ChessNrdMaterialTextureResource& outResource,
+        std::string& log,
+        std::string_view label)
+    {
+        return createTextureResource(
             device,
             pixels,
-            static_cast<uint32_t>(imageWidth),
-            static_cast<uint32_t>(imageHeight),
+            width,
+            height,
             Format::Rgba32Sfloat,
             sizeof(float) * 4u,
             outResource,
             log,
+            label);
+    }
+
+    static Result createEnvironmentResources(
+        Device& device,
+        const std::filesystem::path& path,
+        ChessNrdMaterialTextureResource& outEnvironment,
+        ChessNrdMaterialTextureResource& outDiffuseEnvironment,
+        ChessNrdMaterialTextureResource& outGlossyEnvironment,
+        std::string& log)
+    {
+        ChessNrdEnvironmentPixels environmentPixels;
+        Result result = loadEnvironmentPixels(path, environmentPixels, log);
+        if (!result) {
+            return result;
+        }
+
+        result = createEnvironmentTextureResource(
+            device,
+            environmentPixels.rgba.data(),
+            environmentPixels.width,
+            environmentPixels.height,
+            outEnvironment,
+            log,
             "ChessNrdPathTracePass environment texture");
-        stbi_image_free(pixels);
-        return result;
+        if (!result) {
+            return result;
+        }
+
+        std::vector<float> diffusePixels = generateDiffuseEnvironmentMap(environmentPixels);
+        result = createEnvironmentTextureResource(
+            device,
+            diffusePixels.data(),
+            kChessEnvironmentDiffuseWidth,
+            kChessEnvironmentDiffuseHeight,
+            outDiffuseEnvironment,
+            log,
+            "ChessNrdPathTracePass diffuse environment texture");
+        if (!result) {
+            return result;
+        }
+
+        std::vector<float> glossyPixels = generateGlossyEnvironmentMap(environmentPixels);
+        return createEnvironmentTextureResource(
+            device,
+            glossyPixels.data(),
+            kChessEnvironmentGlossyWidth,
+            kChessEnvironmentGlossyLayerHeight * kChessEnvironmentGlossyLevels,
+            outGlossyEnvironment,
+            log,
+            "ChessNrdPathTracePass glossy environment texture");
     }
 
     bool prepareMaterialTextures(Device& device, const scene::Scene& loadedScene, std::string& log)
@@ -4317,6 +4675,8 @@ private:
         materialTextures_.clear();
         fallbackMaterialTexture_ = ChessNrdMaterialTextureResource{};
         environmentTexture_ = ChessNrdMaterialTextureResource{};
+        diffuseEnvironmentTexture_ = ChessNrdMaterialTextureResource{};
+        glossyEnvironmentTexture_ = ChessNrdMaterialTextureResource{};
     }
 
     SceneRtxBuilder rtxBuilder_;
@@ -4331,6 +4691,8 @@ private:
     std::vector<ChessNrdMaterialTextureResource> materialTextures_;
     ChessNrdMaterialTextureResource fallbackMaterialTexture_;
     ChessNrdMaterialTextureResource environmentTexture_;
+    ChessNrdMaterialTextureResource diffuseEnvironmentTexture_;
+    ChessNrdMaterialTextureResource glossyEnvironmentTexture_;
     Device* device_ = nullptr;
     Queue* queue_ = nullptr;
     uint32_t frameIndex_ = 0;

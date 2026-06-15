@@ -1539,7 +1539,7 @@ void EditorApplication::drawEnvironmentControls()
     ImGui::TextUnformatted("Intensity");
     ImGui::SameLine(labelWidth);
     ImGui::PushItemWidth(-1.0f);
-    if (ImGui::SliderFloat("##EnvironmentIntensity", &intensity, 0.0f, 4.0f, "%.3f")) {
+    if (ImGui::SliderFloat("##EnvironmentIntensity", &intensity, 0.0f, 40.0f, "%.3f")) {
         properties["environmentIntensity"] = intensity;
         changed = true;
     }

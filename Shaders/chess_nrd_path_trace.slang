@@ -102,6 +102,12 @@ Texture2D<float4> gMaterialTextures[128];
 [[vk::binding(15, 0)]]
 Texture2D<float4> gEnvironmentTexture;
 
+[[vk::binding(16, 0)]]
+Texture2D<float4> gEnvironmentDiffuseTexture;
+
+[[vk::binding(17, 0)]]
+Texture2D<float4> gEnvironmentGlossyTexture;
+
 struct ChessNrdPush
 {
     float4 eye;
@@ -161,6 +167,7 @@ static const uint kNrdRelax = 1u;
 static const uint kNrdReference = 2u;
 static const uint kInvalidTextureIndex = 0xffffffffu;
 static const uint kMaxMaterialTextures = 128u;
+static const uint kEnvironmentGlossyLevels = 6u;
 static const float kPi = 3.14159265358979323846;
 static const float4 kDiffHitDistParams = float4(3.0, 0.1, 20.0, -25.0);
 static const float4 kSpecHitDistParams = float4(3.0, 0.1, 20.0, -25.0);
@@ -256,31 +263,67 @@ uint clampEnvironmentTexel(int value, uint size)
     return uint(clamp(value, 0, int(max(size, 1u)) - 1));
 }
 
+float2 environmentUv(float3 direction, float rotation)
+{
+    float3 dir = safeNormalize(direction, float3(0.0, 1.0, 0.0));
+    float phi = atan2(dir.z, dir.x) - rotation;
+    float theta = acos(clamp(dir.y, -1.0, 1.0));
+    return float2(frac(0.5 + phi / (2.0 * kPi)), theta / kPi);
+}
+
+float3 sampleEnvironmentLayer(Texture2D<float4> texture, float2 uv, uint width, uint layerOffset, uint layerHeight)
+{
+    float2 imageCoord = uv * float2(width, layerHeight) - 0.5;
+    int2 baseCoord = int2(floor(imageCoord));
+    float2 blend = frac(imageCoord);
+
+    uint y00 = layerOffset + clampEnvironmentTexel(baseCoord.y, layerHeight);
+    uint y01 = layerOffset + clampEnvironmentTexel(baseCoord.y + 1, layerHeight);
+    uint2 p00 = uint2(wrapEnvironmentTexel(baseCoord.x, width), y00);
+    uint2 p10 = uint2(wrapEnvironmentTexel(baseCoord.x + 1, width), p00.y);
+    uint2 p01 = uint2(p00.x, y01);
+    uint2 p11 = uint2(p10.x, y01);
+
+    float3 c00 = texture.Load(int3(p00, 0)).rgb;
+    float3 c10 = texture.Load(int3(p10, 0)).rgb;
+    float3 c01 = texture.Load(int3(p01, 0)).rgb;
+    float3 c11 = texture.Load(int3(p11, 0)).rgb;
+    float3 value = lerp(lerp(c00, c10, blend.x), lerp(c01, c11, blend.x), blend.y);
+    return max(value, float3(0.0, 0.0, 0.0));
+}
+
 float3 skyRadiance(float3 direction, ChessNrdPush push)
 {
     uint width = 1u;
     uint height = 1u;
     gEnvironmentTexture.GetDimensions(width, height);
-
-    float3 dir = safeNormalize(direction, float3(0.0, 1.0, 0.0));
-    float phi = atan2(dir.z, dir.x) - push.environment.y;
-    float theta = acos(clamp(dir.y, -1.0, 1.0));
-    float2 uv = float2(frac(0.5 + phi / (2.0 * kPi)), theta / kPi);
-    float2 imageCoord = uv * float2(width, height) - 0.5;
-    int2 baseCoord = int2(floor(imageCoord));
-    float2 blend = frac(imageCoord);
-
-    uint2 p00 = uint2(wrapEnvironmentTexel(baseCoord.x, width), clampEnvironmentTexel(baseCoord.y, height));
-    uint2 p10 = uint2(wrapEnvironmentTexel(baseCoord.x + 1, width), p00.y);
-    uint2 p01 = uint2(p00.x, clampEnvironmentTexel(baseCoord.y + 1, height));
-    uint2 p11 = uint2(p10.x, p01.y);
-
-    float3 c00 = gEnvironmentTexture.Load(int3(p00, 0)).rgb;
-    float3 c10 = gEnvironmentTexture.Load(int3(p10, 0)).rgb;
-    float3 c01 = gEnvironmentTexture.Load(int3(p01, 0)).rgb;
-    float3 c11 = gEnvironmentTexture.Load(int3(p11, 0)).rgb;
-    float3 value = lerp(lerp(c00, c10, blend.x), lerp(c01, c11, blend.x), blend.y);
+    float3 value = sampleEnvironmentLayer(gEnvironmentTexture, environmentUv(direction, push.environment.y), width, 0u, height);
     return max(value, float3(0.0, 0.0, 0.0)) * max(push.environment.x, 0.0);
+}
+
+float3 diffuseEnvironmentRadiance(float3 normal, ChessNrdPush push)
+{
+    uint width = 1u;
+    uint height = 1u;
+    gEnvironmentDiffuseTexture.GetDimensions(width, height);
+    float3 value = sampleEnvironmentLayer(gEnvironmentDiffuseTexture, environmentUv(normal, push.environment.y), width, 0u, height);
+    return value * max(push.environment.x, 0.0);
+}
+
+float3 glossyEnvironmentRadiance(float3 direction, float roughness, ChessNrdPush push)
+{
+    uint width = 1u;
+    uint packedHeight = 1u;
+    gEnvironmentGlossyTexture.GetDimensions(width, packedHeight);
+    uint layerHeight = max(packedHeight / kEnvironmentGlossyLevels, 1u);
+    float level = saturate(roughness) * float(kEnvironmentGlossyLevels - 1u);
+    uint level0 = min(uint(floor(level)), kEnvironmentGlossyLevels - 1u);
+    uint level1 = min(level0 + 1u, kEnvironmentGlossyLevels - 1u);
+    float blend = frac(level);
+    float2 uv = environmentUv(direction, push.environment.y);
+    float3 value0 = sampleEnvironmentLayer(gEnvironmentGlossyTexture, uv, width, level0 * layerHeight, layerHeight);
+    float3 value1 = sampleEnvironmentLayer(gEnvironmentGlossyTexture, uv, width, level1 * layerHeight, layerHeight);
+    return lerp(value0, value1, blend) * max(push.environment.x, 0.0);
 }
 
 float3 srgbToLinear(float3 value)
@@ -732,7 +775,7 @@ float3 evaluateDirect(HitInfo hit, MaterialSample material, float3 viewDirection
     return direct + material.emissive;
 }
 
-float3 traceBsdfPath(Ray ray, ChessNrdPush push, inout uint seed, out float firstHitDistance)
+float3 traceBsdfPath(Ray ray, ChessNrdPush push, inout uint seed, bool skipFirstEnvironmentMiss, out float firstHitDistance)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
@@ -742,7 +785,9 @@ float3 traceBsdfPath(Ray ray, ChessNrdPush push, inout uint seed, out float firs
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         if (!traceClosestSecondary(ray, push, hit)) {
-            radiance += throughput * skyRadiance(ray.direction, push);
+            if (!(skipFirstEnvironmentMiss && depth == 0u)) {
+                radiance += throughput * skyRadiance(ray.direction, push);
+            }
             break;
         }
 
@@ -909,6 +954,11 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     float3 specularAccum = float3(0.0, 0.0, 0.0);
     float diffuseHitDistance = 0.0;
     float specularHitDistance = 0.0;
+    float3 environmentDiffuse = diffuseEnvironmentRadiance(material.normal, push);
+    float3 environmentGlossyDirection = safeNormalize(
+        reflect(primarySurfaceRay.direction, material.normal),
+        material.normal);
+    float3 environmentGlossy = glossyEnvironmentRadiance(environmentGlossyDirection, material.roughness, push);
 
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
         bool sampleDiffuseTransmission =
@@ -921,7 +971,7 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         diffuseRay.origin = offsetRay(primaryHit.position, offsetNormalForDirection(diffuseDirection, primaryHit.geometryNormal));
         diffuseRay.direction = diffuseDirection;
         float diffHit = 0.0;
-        float3 diffRadiance = traceBsdfPath(diffuseRay, push, seed, diffHit);
+        float3 diffRadiance = traceBsdfPath(diffuseRay, push, seed, true, diffHit);
         float3 diffuseFactor = material.baseColor * (1.0 - material.metallic) * (1.0 - material.transmission) * material.occlusion;
         if (sampleDiffuseTransmission) {
             diffuseFactor *=
@@ -942,7 +992,7 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         specularRay.origin = offsetRay(primaryHit.position, offsetNormalForDirection(specularDirection, primaryHit.geometryNormal));
         specularRay.direction = specularDirection;
         float specHit = 0.0;
-        float3 specRadiance = traceBsdfPath(specularRay, push, seed, specHit);
+        float3 specRadiance = traceBsdfPath(specularRay, push, seed, true, specHit);
         float3 specFactor = lerp(fresnelF0(material), material.baseColor, material.metallic * 0.25);
         specularAccum += primaryThroughput * specRadiance * specFactor;
         specularHitDistance += specHit;
@@ -952,6 +1002,16 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     specularAccum /= float(samples);
     diffuseHitDistance /= float(samples);
     specularHitDistance /= float(samples);
+
+    float3 environmentDiffuseFactor =
+        material.baseColor *
+        (1.0 - material.metallic) *
+        (1.0 - material.transmission) *
+        (1.0 - material.diffuseTransmission) *
+        material.occlusion;
+    float3 environmentSpecularFactor = lerp(fresnelF0(material), material.baseColor, material.metallic * 0.25);
+    diffuseAccum += primaryThroughput * environmentDiffuse * environmentDiffuseFactor;
+    specularAccum += primaryThroughput * environmentGlossy * environmentSpecularFactor;
 
     float3 diffDemodulate = material.baseColor * 0.99 + 0.01;
     float3 specDemodulate = fresnelF0(material) * 0.99 + 0.01;
