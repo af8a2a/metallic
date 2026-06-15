@@ -67,11 +67,15 @@ struct PathTraceMaterial
     float4 emissive;
     float4 params;
     float4 textureParams;
+    float4 glassParams;
+    float4 attenuationColor;
     PathTraceTextureInfo baseColorTexture;
     PathTraceTextureInfo metallicRoughnessTexture;
     PathTraceTextureInfo normalTexture;
     PathTraceTextureInfo occlusionTexture;
     PathTraceTextureInfo emissiveTexture;
+    PathTraceTextureInfo transmissionTexture;
+    PathTraceTextureInfo thicknessTexture;
 };
 
 [[vk::binding(9, 0)]]
@@ -125,6 +129,7 @@ struct HitInfo
     float bitangentSign;
     float2 texcoord;
     uint materialIndex;
+    bool frontFace;
 };
 
 struct MaterialSample
@@ -135,6 +140,11 @@ struct MaterialSample
     float3 emissive;
     float occlusion;
     float3 normal;
+    float transmission;
+    float ior;
+    float thickness;
+    float attenuationDistance;
+    float3 attenuationColor;
 };
 
 static const uint kNrdReblur = 0u;
@@ -311,7 +321,7 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance)
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
-bool traceClosest(Ray ray, ChessNrdPush push, out HitInfo hit)
+bool traceClosestRange(Ray ray, float minDistance, float maxDistance, out HitInfo hit)
 {
     hit = HitInfo();
     hit.t = 0.0;
@@ -322,12 +332,13 @@ bool traceClosest(Ray ray, ChessNrdPush push, out HitInfo hit)
     hit.bitangentSign = 1.0;
     hit.texcoord = float2(0.0, 0.0);
     hit.materialIndex = 0u;
+    hit.frontFace = true;
 
     RayDesc rayDesc;
     rayDesc.Origin = ray.origin;
     rayDesc.Direction = ray.direction;
-    rayDesc.TMin = max(push.clipOrtho.x, 0.0001);
-    rayDesc.TMax = max(push.clipOrtho.y, rayDesc.TMin + 0.0001);
+    rayDesc.TMin = max(minDistance, 0.0001);
+    rayDesc.TMax = max(maxDistance, rayDesc.TMin + 0.0001);
 
     RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
     query.TraceRayInline(gScene, RAY_FLAG_FORCE_OPAQUE, 0xff, rayDesc);
@@ -376,7 +387,8 @@ bool traceClosest(Ray ray, ChessNrdPush push, out HitInfo hit)
     hit.texcoord = localTexcoord;
 
     float3 view = -ray.direction;
-    if (dot(hit.geometryNormal, view) < 0.0) {
+    hit.frontFace = dot(hit.geometryNormal, view) >= 0.0;
+    if (!hit.frontFace) {
         hit.geometryNormal = -hit.geometryNormal;
     }
     if (dot(hit.normal, hit.geometryNormal) < 0.0) {
@@ -390,6 +402,16 @@ bool traceClosest(Ray ray, ChessNrdPush push, out HitInfo hit)
     return true;
 }
 
+bool traceClosest(Ray ray, ChessNrdPush push, out HitInfo hit)
+{
+    return traceClosestRange(ray, push.clipOrtho.x, push.clipOrtho.y, hit);
+}
+
+bool traceClosestSecondary(Ray ray, ChessNrdPush push, out HitInfo hit)
+{
+    return traceClosestRange(ray, 0.001, push.clipOrtho.y, hit);
+}
+
 MaterialSample sampleMaterial(HitInfo hit)
 {
     PathTraceMaterial source = gMaterials[hit.materialIndex];
@@ -400,6 +422,11 @@ MaterialSample sampleMaterial(HitInfo hit)
     material.emissive = max(source.emissive.rgb, float3(0.0, 0.0, 0.0));
     material.occlusion = 1.0;
     material.normal = hit.normal;
+    material.transmission = saturate(source.glassParams.x);
+    material.ior = clamp(source.glassParams.y, 1.0, 3.0);
+    material.thickness = max(source.glassParams.z, 0.0);
+    material.attenuationDistance = max(source.glassParams.w, 0.0);
+    material.attenuationColor = saturate(source.attenuationColor.rgb);
 
     if (hasMaterialTexture(source.baseColorTexture)) {
         float4 baseColor = loadMaterialTexture(source.baseColorTexture, hit.texcoord, true);
@@ -421,6 +448,14 @@ MaterialSample sampleMaterial(HitInfo hit)
         material.emissive *= loadMaterialTexture(source.emissiveTexture, hit.texcoord, true).rgb;
     }
 
+    if (hasMaterialTexture(source.transmissionTexture)) {
+        material.transmission *= loadMaterialTexture(source.transmissionTexture, hit.texcoord, false).r;
+    }
+
+    if (hasMaterialTexture(source.thicknessTexture)) {
+        material.thickness *= loadMaterialTexture(source.thicknessTexture, hit.texcoord, false).g;
+    }
+
     if (hasMaterialTexture(source.normalTexture)) {
         float3 tangentNormal = loadMaterialTexture(source.normalTexture, hit.texcoord, false).xyz * 2.0 - 1.0;
         tangentNormal.xy *= max(source.textureParams.x, 0.0);
@@ -439,47 +474,221 @@ MaterialSample sampleMaterial(HitInfo hit)
     material.metallic = saturate(material.metallic);
     material.roughness = clamp(material.roughness, 0.03, 0.95);
     material.occlusion = saturate(material.occlusion);
+    material.transmission = saturate(material.transmission);
+    material.ior = clamp(material.ior, 1.0, 3.0);
+    material.thickness = max(material.thickness, 0.0);
+    material.attenuationDistance = max(material.attenuationDistance, 0.0);
+    material.attenuationColor = max(material.attenuationColor, float3(0.001, 0.001, 0.001));
     return material;
 }
 
 float3 fresnelF0(MaterialSample material)
 {
-    return lerp(float3(0.04, 0.04, 0.04), material.baseColor, material.metallic);
+    float f0 = (material.ior - 1.0) / (material.ior + 1.0);
+    f0 *= f0;
+    return lerp(float3(f0, f0, f0), material.baseColor, material.metallic);
 }
 
-float3 evaluateDirect(HitInfo hit, MaterialSample material, float3 viewDirection)
+float luminanceMax(float3 value)
+{
+    return max(value.x, max(value.y, value.z));
+}
+
+bool isTransmissive(MaterialSample material)
+{
+    return material.transmission > 0.01;
+}
+
+float fresnelDielectric(MaterialSample material, float cosTheta)
+{
+    float f0 = (material.ior - 1.0) / (material.ior + 1.0);
+    f0 *= f0;
+    float x = 1.0 - saturate(cosTheta);
+    return saturate(f0 + (1.0 - f0) * x * x * x * x * x);
+}
+
+bool refractDirection(float3 incident, float3 normal, float eta, out float3 transmitted)
+{
+    float cosTheta = saturate(dot(-incident, normal));
+    float sin2Theta = max(0.0, 1.0 - cosTheta * cosTheta);
+    float sin2Transmitted = eta * eta * sin2Theta;
+    if (sin2Transmitted >= 1.0) {
+        transmitted = float3(0.0, 0.0, 0.0);
+        return false;
+    }
+
+    float cosTransmitted = sqrt(max(0.0, 1.0 - sin2Transmitted));
+    transmitted = safeNormalize(eta * incident + (eta * cosTheta - cosTransmitted) * normal, incident);
+    return true;
+}
+
+float3 powColor(float3 value, float exponent)
+{
+    float3 clamped = max(value, float3(0.001, 0.001, 0.001));
+    return float3(pow(clamped.x, exponent), pow(clamped.y, exponent), pow(clamped.z, exponent));
+}
+
+float3 volumeTransmittance(MaterialSample material, float distance)
+{
+    float exponent = 0.0;
+    if (material.attenuationDistance > 0.0001) {
+        exponent = max(distance, 0.0) / material.attenuationDistance;
+    } else if (material.thickness > 0.0001) {
+        exponent = saturate(max(distance, material.thickness) * 2.0);
+    }
+
+    float3 attenuation = powColor(material.attenuationColor, exponent);
+    float3 baseTint = lerp(float3(1.0, 1.0, 1.0), max(material.baseColor, float3(0.001, 0.001, 0.001)), material.transmission * 0.35);
+    return saturate(attenuation * baseTint);
+}
+
+float3 offsetNormalForDirection(float3 direction, float3 geometryNormal)
+{
+    return dot(direction, geometryNormal) > 0.0 ? geometryNormal : -geometryNormal;
+}
+
+bool sampleGlassEvent(
+    Ray ray,
+    HitInfo hit,
+    MaterialSample material,
+    inout uint seed,
+    bool forceTransmission,
+    out float3 direction,
+    out float3 weight)
+{
+    float eta = hit.frontFace ? 1.0 / max(material.ior, 1.001) : max(material.ior, 1.001);
+    float3 refractedDirection = float3(0.0, 0.0, 0.0);
+    bool canRefract = refractDirection(ray.direction, material.normal, eta, refractedDirection);
+    float cosTheta = saturate(dot(-ray.direction, material.normal));
+    float reflectProbability = canRefract ? fresnelDielectric(material, cosTheta) : 1.0;
+
+    if (!forceTransmission && rand(seed) < reflectProbability) {
+        direction = safeNormalize(reflect(ray.direction, material.normal), material.normal);
+        weight = float3(1.0, 1.0, 1.0);
+        return true;
+    }
+
+    if (canRefract) {
+        direction = safeNormalize(refractedDirection, ray.direction);
+        weight = volumeTransmittance(material, max(material.thickness, 0.001)) * material.transmission;
+        return true;
+    }
+
+    direction = safeNormalize(reflect(ray.direction, material.normal), material.normal);
+    weight = float3(1.0, 1.0, 1.0);
+    return true;
+}
+
+float3 traceVisibility(float3 origin, float3 direction, float maxDistance, ChessNrdPush push)
+{
+    float3 visibility = float3(1.0, 1.0, 1.0);
+    Ray ray;
+    ray.origin = origin;
+    ray.direction = direction;
+    float remainingDistance = max(maxDistance, 0.001);
+
+    for (uint depth = 0u; depth < 8u; ++depth) {
+        HitInfo hit;
+        if (!traceClosestSecondary(ray, push, hit) || hit.t >= remainingDistance) {
+            return visibility;
+        }
+
+        MaterialSample material = sampleMaterial(hit);
+        if (!isTransmissive(material)) {
+            return float3(0.0, 0.0, 0.0);
+        }
+
+        visibility *= volumeTransmittance(material, max(material.thickness, hit.t * 0.1)) * material.transmission;
+        if (luminanceMax(visibility) < 0.01) {
+            return float3(0.0, 0.0, 0.0);
+        }
+
+        remainingDistance -= hit.t;
+        ray.origin = offsetRay(hit.position, offsetNormalForDirection(direction, hit.geometryNormal));
+    }
+
+    return visibility;
+}
+
+float3 evaluateDirect(HitInfo hit, MaterialSample material, float3 viewDirection, ChessNrdPush push)
 {
     float3 lightDirection = sunDirection();
     float nDotL = saturate(dot(material.normal, lightDirection));
     float3 direct = float3(0.0, 0.0, 0.0);
     if (nDotL > 0.0) {
-        bool occluded = traceShadow(offsetRay(hit.position, hit.geometryNormal), lightDirection, 10000.0);
-        if (!occluded) {
+        float3 visibility = traceVisibility(offsetRay(hit.position, hit.geometryNormal), lightDirection, 10000.0, push);
+        if (luminanceMax(visibility) > 0.0) {
             float3 halfVector = safeNormalize(lightDirection + viewDirection, material.normal);
             float nDotH = saturate(dot(material.normal, halfVector));
             float specularPower = lerp(128.0, 10.0, material.roughness);
-            float3 diffuse = material.baseColor * (1.0 - material.metallic) * (nDotL / kPi);
+            float3 diffuse = material.baseColor * (1.0 - material.metallic) * (1.0 - material.transmission) * (nDotL / kPi);
             float3 specular = fresnelF0(material) * pow(nDotH, specularPower) * nDotL;
-            direct += (diffuse + specular) * float3(7.2, 6.5, 5.3);
+            direct += (diffuse + specular) * float3(7.2, 6.5, 5.3) * visibility;
         }
     }
-    float ambient = (0.10 + 0.08 * saturate(material.normal.y)) * material.occlusion;
+    float ambient = (0.10 + 0.08 * saturate(material.normal.y)) * material.occlusion * (1.0 - material.transmission * 0.75);
     direct += material.baseColor * ambient;
     return direct + material.emissive;
 }
 
-float3 bounceRadiance(Ray ray, ChessNrdPush push, inout uint seed, out float hitDistance)
+float3 traceBsdfPath(Ray ray, ChessNrdPush push, inout uint seed, out float firstHitDistance)
 {
-    HitInfo hit;
-    if (!traceClosest(ray, push, hit)) {
-        hitDistance = 500000.0;
-        return skyRadiance(ray.direction);
+    float3 radiance = float3(0.0, 0.0, 0.0);
+    float3 throughput = float3(1.0, 1.0, 1.0);
+    firstHitDistance = 500000.0;
+    uint maxDepth = clamp(push.maxDepth, 1u, 12u);
+
+    for (uint depth = 0u; depth < maxDepth; ++depth) {
+        HitInfo hit;
+        if (!traceClosestSecondary(ray, push, hit)) {
+            radiance += throughput * skyRadiance(ray.direction);
+            break;
+        }
+
+        if (depth == 0u) {
+            firstHitDistance = max(hit.t, 0.0);
+        }
+
+        MaterialSample material = sampleMaterial(hit);
+        float3 viewDirection = -ray.direction;
+        radiance += throughput * evaluateDirect(hit, material, viewDirection, push);
+
+        float3 nextDirection = material.normal;
+        float3 nextWeight = float3(1.0, 1.0, 1.0);
+        if (isTransmissive(material)) {
+            sampleGlassEvent(ray, hit, material, seed, false, nextDirection, nextWeight);
+        } else {
+            float3 diffuseDirection = sampleCosineHemisphere(material.normal, seed);
+            float3 reflectedDirection = safeNormalize(reflect(ray.direction, material.normal), material.normal);
+            float specularChance = saturate(0.08 + material.metallic * 0.72 + (1.0 - material.roughness) * 0.18);
+            if (rand(seed) < specularChance) {
+                float glossMix = material.roughness * material.roughness;
+                nextDirection = safeNormalize(lerp(reflectedDirection, diffuseDirection, glossMix), reflectedDirection);
+                nextWeight = lerp(fresnelF0(material), material.baseColor, material.metallic * 0.35);
+            } else {
+                nextDirection = diffuseDirection;
+                nextWeight = material.baseColor * (1.0 - material.metallic) * material.occlusion;
+            }
+        }
+
+        throughput *= max(nextWeight, float3(0.0, 0.0, 0.0));
+        if (luminanceMax(throughput) < 0.001) {
+            break;
+        }
+
+        ray.origin = offsetRay(hit.position, offsetNormalForDirection(nextDirection, hit.geometryNormal));
+        ray.direction = nextDirection;
+
+        if (depth >= 2u) {
+            float continueProbability = min(luminanceMax(throughput) + 0.05, 0.92);
+            if (rand(seed) > continueProbability) {
+                break;
+            }
+            throughput /= max(continueProbability, 0.001);
+        }
     }
 
-    MaterialSample material = sampleMaterial(hit);
-    float3 viewDirection = -ray.direction;
-    hitDistance = max(hit.t, 0.0);
-    return evaluateDirect(hit, material, viewDirection) + material.emissive;
+    return radiance;
 }
 
 float3 tonemap(float3 color)
@@ -505,8 +714,68 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     primaryRay.direction = rayDirectionFromPixel(float2(pixel) + jitter, push);
 
     HitInfo primaryHit;
-    if (!traceClosest(primaryRay, push, primaryHit)) {
-        float3 sky = skyRadiance(primaryRay.direction);
+    MaterialSample material;
+    Ray primarySurfaceRay = primaryRay;
+    float3 primaryThroughput = float3(1.0, 1.0, 1.0);
+    float3 primaryPrefix = float3(0.0, 0.0, 0.0);
+    float viewZ = 0.0;
+    bool resolvedPrimary = false;
+
+    for (uint psrDepth = 0u; psrDepth < 5u; ++psrDepth) {
+        HitInfo candidateHit;
+        bool foundCandidate = false;
+        if (psrDepth == 0u) {
+            foundCandidate = traceClosest(primarySurfaceRay, push, candidateHit);
+        } else {
+            foundCandidate = traceClosestSecondary(primarySurfaceRay, push, candidateHit);
+        }
+        if (!foundCandidate) {
+            float3 sky = primaryPrefix + primaryThroughput * skyRadiance(primarySurfaceRay.direction);
+            gNoisyDiffuse[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+            gNoisySpecular[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+            gNormalRoughness[pixel] = NRD_FrontEnd_PackNormalAndRoughness(float3(0.0, 1.0, 0.0), 1.0, 0.0);
+            gMotionVectors[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+            gViewZ[pixel] = push.clipOrtho.y + 1.0;
+            gDirectLighting[pixel] = float4(sky, 0.0);
+            gBaseColorMetalness[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+            gNoisyColor[pixel] = float4(tonemap(sky), 1.0);
+            return;
+        }
+
+        MaterialSample candidateMaterial = sampleMaterial(candidateHit);
+        viewZ += max(candidateHit.t, 0.0);
+        if (!isTransmissive(candidateMaterial) || psrDepth == 4u) {
+            primaryHit = candidateHit;
+            material = candidateMaterial;
+            resolvedPrimary = true;
+            break;
+        }
+
+        primaryPrefix += primaryThroughput * evaluateDirect(candidateHit, candidateMaterial, -primarySurfaceRay.direction, push) * 0.25;
+
+        float3 nextDirection = candidateMaterial.normal;
+        float3 nextWeight = float3(1.0, 1.0, 1.0);
+        sampleGlassEvent(primarySurfaceRay, candidateHit, candidateMaterial, seed, true, nextDirection, nextWeight);
+        primaryThroughput *= max(nextWeight, float3(0.0, 0.0, 0.0));
+        if (luminanceMax(primaryThroughput) < 0.001) {
+            float3 sky = primaryPrefix;
+            gNoisyDiffuse[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+            gNoisySpecular[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+            gNormalRoughness[pixel] = NRD_FrontEnd_PackNormalAndRoughness(float3(0.0, 1.0, 0.0), 1.0, 0.0);
+            gMotionVectors[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+            gViewZ[pixel] = push.clipOrtho.y + 1.0;
+            gDirectLighting[pixel] = float4(sky, 0.0);
+            gBaseColorMetalness[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+            gNoisyColor[pixel] = float4(tonemap(sky), 1.0);
+            return;
+        }
+
+        primarySurfaceRay.origin = offsetRay(candidateHit.position, offsetNormalForDirection(nextDirection, candidateHit.geometryNormal));
+        primarySurfaceRay.direction = nextDirection;
+    }
+
+    if (!resolvedPrimary) {
+        float3 sky = primaryPrefix;
         gNoisyDiffuse[pixel] = float4(0.0, 0.0, 0.0, 0.0);
         gNoisySpecular[pixel] = float4(0.0, 0.0, 0.0, 0.0);
         gNormalRoughness[pixel] = NRD_FrontEnd_PackNormalAndRoughness(float3(0.0, 1.0, 0.0), 1.0, 0.0);
@@ -518,12 +787,11 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         return;
     }
 
-    MaterialSample material = sampleMaterial(primaryHit);
-    float3 viewDirection = -primaryRay.direction;
-    float viewZ = max(primaryHit.t, 0.0001);
+    float3 viewDirection = -primarySurfaceRay.direction;
+    viewZ = max(viewZ, 0.0001);
     uint samples = clamp(push.samples, 1u, 16u);
 
-    float3 direct = evaluateDirect(primaryHit, material, viewDirection);
+    float3 direct = primaryPrefix + primaryThroughput * evaluateDirect(primaryHit, material, viewDirection, push);
     float3 diffuseAccum = float3(0.0, 0.0, 0.0);
     float3 specularAccum = float3(0.0, 0.0, 0.0);
     float diffuseHitDistance = 0.0;
@@ -535,21 +803,21 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         diffuseRay.origin = offsetRay(primaryHit.position, primaryHit.geometryNormal);
         diffuseRay.direction = diffuseDirection;
         float diffHit = 0.0;
-        float3 diffRadiance = bounceRadiance(diffuseRay, push, seed, diffHit);
-        diffuseAccum += diffRadiance * material.baseColor * (1.0 - material.metallic) * material.occlusion;
+        float3 diffRadiance = traceBsdfPath(diffuseRay, push, seed, diffHit);
+        diffuseAccum += primaryThroughput * diffRadiance * material.baseColor * (1.0 - material.metallic) * (1.0 - material.transmission) * material.occlusion;
         diffuseHitDistance += diffHit;
 
-        float3 reflectedDirection = reflect(primaryRay.direction, material.normal);
+        float3 reflectedDirection = reflect(primarySurfaceRay.direction, material.normal);
         float3 specularDirection = safeNormalize(
             lerp(reflectedDirection, diffuseDirection, material.roughness * material.roughness),
             reflectedDirection);
         Ray specularRay;
-        specularRay.origin = offsetRay(primaryHit.position, dot(specularDirection, primaryHit.geometryNormal) > 0.0 ? primaryHit.geometryNormal : -primaryHit.geometryNormal);
+        specularRay.origin = offsetRay(primaryHit.position, offsetNormalForDirection(specularDirection, primaryHit.geometryNormal));
         specularRay.direction = specularDirection;
         float specHit = 0.0;
-        float3 specRadiance = bounceRadiance(specularRay, push, seed, specHit);
+        float3 specRadiance = traceBsdfPath(specularRay, push, seed, specHit);
         float3 specFactor = lerp(fresnelF0(material), material.baseColor, material.metallic * 0.25);
-        specularAccum += specRadiance * specFactor;
+        specularAccum += primaryThroughput * specRadiance * specFactor;
         specularHitDistance += specHit;
     }
 
@@ -559,7 +827,7 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     specularHitDistance /= float(samples);
 
     float3 diffDemodulate = material.baseColor * 0.99 + 0.01;
-    float3 specDemodulate = lerp(float3(0.04, 0.04, 0.04), material.baseColor, material.metallic) * 0.99 + 0.01;
+    float3 specDemodulate = fresnelF0(material) * 0.99 + 0.01;
     float3 diffuseRadiance = diffuseAccum / diffDemodulate;
     float3 specularRadiance = specularAccum / specDemodulate;
 

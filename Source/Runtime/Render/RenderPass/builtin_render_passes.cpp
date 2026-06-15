@@ -190,6 +190,8 @@ struct ScenePathTraceGpuMaterial {
     float emissive[4] = {};
     float params[4] = {};
     float textureParams[4] = {1.0f, 1.0f, 0.0f, 0.0f};
+    float glassParams[4] = {0.0f, 1.5f, 0.0f, 0.0f};
+    float attenuationColor[4] = {1.0f, 1.0f, 1.0f, 0.0f};
     struct TextureInfo {
         uint32_t textureIndex = kInvalidMaterialTextureIndex;
         uint32_t texCoord = 0;
@@ -203,6 +205,8 @@ struct ScenePathTraceGpuMaterial {
     TextureInfo normalTexture;
     TextureInfo occlusionTexture;
     TextureInfo emissiveTexture;
+    TextureInfo transmissionTexture;
+    TextureInfo thicknessTexture;
 };
 
 struct ScenePathTracePush {
@@ -2866,11 +2870,21 @@ private:
         gpuMaterial.textureParams[1] = material.occlusionTextureStrength;
         gpuMaterial.textureParams[2] = 0.0f;
         gpuMaterial.textureParams[3] = alphaModeCode(material.alphaMode);
+        gpuMaterial.glassParams[0] = material.transmissionFactor;
+        gpuMaterial.glassParams[1] = material.ior;
+        gpuMaterial.glassParams[2] = material.thicknessFactor;
+        gpuMaterial.glassParams[3] = material.attenuationDistance;
+        gpuMaterial.attenuationColor[0] = material.attenuationColor.x;
+        gpuMaterial.attenuationColor[1] = material.attenuationColor.y;
+        gpuMaterial.attenuationColor[2] = material.attenuationColor.z;
+        gpuMaterial.attenuationColor[3] = 0.0f;
         gpuMaterial.baseColorTexture = makeGpuTextureInfo(material.baseColorTexture);
         gpuMaterial.metallicRoughnessTexture = makeGpuTextureInfo(material.metallicRoughnessTexture);
         gpuMaterial.normalTexture = makeGpuTextureInfo(material.normalTexture);
         gpuMaterial.occlusionTexture = makeGpuTextureInfo(material.occlusionTexture);
         gpuMaterial.emissiveTexture = makeGpuTextureInfo(material.emissiveTexture);
+        gpuMaterial.transmissionTexture = makeGpuTextureInfo(material.transmissionTexture);
+        gpuMaterial.thicknessTexture = makeGpuTextureInfo(material.thicknessTexture);
         return gpuMaterial;
     }
 

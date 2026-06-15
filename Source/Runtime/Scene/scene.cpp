@@ -26,6 +26,9 @@ namespace metallic::scene {
 namespace {
 
 constexpr const char* kExtensionLightsPunctual = "KHR_lights_punctual";
+constexpr const char* kExtensionMaterialsIor = "KHR_materials_ior";
+constexpr const char* kExtensionMaterialsTransmission = "KHR_materials_transmission";
+constexpr const char* kExtensionMaterialsVolume = "KHR_materials_volume";
 constexpr const char* kExtensionNodeVisibility = "KHR_node_visibility";
 constexpr const char* kExtensionTextureTransform = "KHR_texture_transform";
 constexpr double kFallbackCameraYFov = 0.7853981633974483;
@@ -40,14 +43,14 @@ const std::unordered_set<std::string>& supportedRequiredExtensions()
         "KHR_materials_diffuse_transmission",
         "KHR_materials_dispersion",
         "KHR_materials_emissive_strength",
-        "KHR_materials_ior",
+        kExtensionMaterialsIor,
         "KHR_materials_iridescence",
         "KHR_materials_pbrSpecularGlossiness",
         "KHR_materials_sheen",
         "KHR_materials_specular",
-        "KHR_materials_transmission",
+        kExtensionMaterialsTransmission,
         "KHR_materials_unlit",
-        "KHR_materials_volume",
+        kExtensionMaterialsVolume,
         "KHR_materials_volume_scatter",
         "KHR_mesh_quantization",
         kExtensionTextureTransform,
@@ -227,6 +230,35 @@ bool readVec3Value(const tinygltf::Value& object, const std::string& key, float3
         static_cast<float>(array.Get(1).GetNumberAsDouble()),
         static_cast<float>(array.Get(2).GetNumberAsDouble()));
     return true;
+}
+
+float readFloatValue(const tinygltf::Value& object, const char* key, float fallback)
+{
+    if (!object.IsObject() || !object.Has(key)) {
+        return fallback;
+    }
+
+    const tinygltf::Value& value = object.Get(key);
+    if (!value.IsNumber()) {
+        return fallback;
+    }
+    return static_cast<float>(value.GetNumberAsDouble());
+}
+
+int32_t readIntValue(const tinygltf::Value& object, const char* key, int32_t fallback)
+{
+    if (!object.IsObject() || !object.Has(key)) {
+        return fallback;
+    }
+
+    const tinygltf::Value& value = object.Get(key);
+    if (value.IsInt()) {
+        return value.Get<int>();
+    }
+    if (value.IsNumber()) {
+        return static_cast<int32_t>(value.GetNumberAsDouble());
+    }
+    return fallback;
 }
 
 bool readNodeVisibility(const tinygltf::Node& node)
@@ -503,6 +535,48 @@ RenderTextureInfo makeRenderTextureInfo(const TextureInfoT& gltfTextureInfo)
     }
     setUvTransform(textureInfo, offset, scale, rotation);
     return textureInfo;
+}
+
+RenderTextureInfo makeRenderTextureInfo(const tinygltf::Value& gltfTextureInfo)
+{
+    RenderTextureInfo textureInfo;
+    if (!gltfTextureInfo.IsObject()) {
+        return textureInfo;
+    }
+
+    textureInfo.textureIndex = readIntValue(gltfTextureInfo, "index", kInvalidSceneIndex);
+    textureInfo.texCoord = std::max(readIntValue(gltfTextureInfo, "texCoord", 0), 0);
+
+    if (!gltfTextureInfo.Has("extensions")) {
+        return textureInfo;
+    }
+
+    const tinygltf::Value& extensions = gltfTextureInfo.Get("extensions");
+    if (!extensions.IsObject() || !extensions.Has(kExtensionTextureTransform)) {
+        return textureInfo;
+    }
+
+    const tinygltf::Value& transform = extensions.Get(kExtensionTextureTransform);
+    float offset[2] = {0.0f, 0.0f};
+    float scale[2] = {1.0f, 1.0f};
+    float rotation = 0.0f;
+    readFloatArray2(transform, "offset", offset);
+    readFloatArray2(transform, "scale", scale);
+    rotation = readFloatValue(transform, "rotation", 0.0f);
+    textureInfo.texCoord = std::max(readIntValue(transform, "texCoord", textureInfo.texCoord), 0);
+    setUvTransform(textureInfo, offset, scale, rotation);
+    return textureInfo;
+}
+
+void readExtensionTextureInfo(
+    const tinygltf::Value& object,
+    const char* key,
+    RenderTextureInfo& textureInfo)
+{
+    if (!object.IsObject() || !object.Has(key)) {
+        return;
+    }
+    textureInfo = makeRenderTextureInfo(object.Get(key));
 }
 
 float3 fallbackTangentForNormal(const float3& normal)
@@ -849,6 +923,34 @@ bool Scene::load(const std::filesystem::path& filename)
         material.normalTexture = makeRenderTextureInfo(gltfMaterial.normalTexture);
         material.occlusionTexture = makeRenderTextureInfo(gltfMaterial.occlusionTexture);
         material.emissiveTexture = makeRenderTextureInfo(gltfMaterial.emissiveTexture);
+
+        const auto transmissionExtension = gltfMaterial.extensions.find(kExtensionMaterialsTransmission);
+        if (transmissionExtension != gltfMaterial.extensions.end()) {
+            const tinygltf::Value& transmission = transmissionExtension->second;
+            material.transmissionFactor = std::clamp(
+                readFloatValue(transmission, "transmissionFactor", material.transmissionFactor),
+                0.0f,
+                1.0f);
+            readExtensionTextureInfo(transmission, "transmissionTexture", material.transmissionTexture);
+        }
+
+        const auto iorExtension = gltfMaterial.extensions.find(kExtensionMaterialsIor);
+        if (iorExtension != gltfMaterial.extensions.end()) {
+            material.ior = std::clamp(readFloatValue(iorExtension->second, "ior", material.ior), 1.0f, 3.0f);
+        }
+
+        const auto volumeExtension = gltfMaterial.extensions.find(kExtensionMaterialsVolume);
+        if (volumeExtension != gltfMaterial.extensions.end()) {
+            const tinygltf::Value& volume = volumeExtension->second;
+            material.thicknessFactor = std::max(
+                readFloatValue(volume, "thicknessFactor", material.thicknessFactor),
+                0.0f);
+            material.attenuationDistance = std::max(
+                readFloatValue(volume, "attenuationDistance", material.attenuationDistance),
+                0.0f);
+            readVec3Value(volume, "attenuationColor", material.attenuationColor);
+            readExtensionTextureInfo(volume, "thicknessTexture", material.thicknessTexture);
+        }
         materials_.push_back(material);
     }
 

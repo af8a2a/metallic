@@ -113,11 +113,18 @@ struct RenderMaterial {
     bool doubleSided = false;
     float normalTextureScale = 1.0f;
     float occlusionTextureStrength = 1.0f;
+    float transmissionFactor = 0.0f;
+    float ior = 1.5f;
+    float thicknessFactor = 0.0f;
+    float attenuationDistance = 0.0f;
+    float3 attenuationColor{1.0f, 1.0f, 1.0f};
     RenderTextureInfo baseColorTexture;
     RenderTextureInfo metallicRoughnessTexture;
     RenderTextureInfo normalTexture;
     RenderTextureInfo occlusionTexture;
     RenderTextureInfo emissiveTexture;
+    RenderTextureInfo transmissionTexture;
+    RenderTextureInfo thicknessTexture;
 };
 
 struct RenderCamera {

@@ -44,11 +44,15 @@ struct PathTraceMaterial
     float4 emissive;
     float4 params;
     float4 textureParams;
+    float4 glassParams;
+    float4 attenuationColor;
     PathTraceTextureInfo baseColorTexture;
     PathTraceTextureInfo metallicRoughnessTexture;
     PathTraceTextureInfo normalTexture;
     PathTraceTextureInfo occlusionTexture;
     PathTraceTextureInfo emissiveTexture;
+    PathTraceTextureInfo transmissionTexture;
+    PathTraceTextureInfo thicknessTexture;
 };
 
 [[vk::binding(2, 0)]]
@@ -102,6 +106,7 @@ struct HitInfo
     float3 normal;
     float3 geometryNormal;
     uint materialIndex;
+    bool frontFace;
 };
 
 static const float kPi = 3.14159265358979323846;
@@ -222,6 +227,7 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.normal = float3(0.0, 1.0, 0.0);
     hit.geometryNormal = hit.normal;
     hit.materialIndex = 0u;
+    hit.frontFace = true;
 
     RayDesc rayDesc;
     rayDesc.Origin = ray.origin;
@@ -269,7 +275,8 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.normal = safeNormalize(float3(mul(worldToObject, localNormal).xyz), hit.geometryNormal);
 
     float3 view = -ray.direction;
-    if (dot(hit.geometryNormal, view) < 0.0) {
+    hit.frontFace = dot(hit.geometryNormal, view) >= 0.0;
+    if (!hit.frontFace) {
         hit.geometryNormal = -hit.geometryNormal;
     }
     if (dot(hit.normal, hit.geometryNormal) < 0.0) {
@@ -284,6 +291,49 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
 float luminanceMax(float3 value)
 {
     return max(value.x, max(value.y, value.z));
+}
+
+float fresnelDielectric(float ior, float cosTheta)
+{
+    float f0 = (ior - 1.0) / (ior + 1.0);
+    f0 *= f0;
+    float x = 1.0 - saturate(cosTheta);
+    return saturate(f0 + (1.0 - f0) * x * x * x * x * x);
+}
+
+bool refractDirection(float3 incident, float3 normal, float eta, out float3 transmitted)
+{
+    float cosTheta = saturate(dot(-incident, normal));
+    float sin2Theta = max(0.0, 1.0 - cosTheta * cosTheta);
+    float sin2Transmitted = eta * eta * sin2Theta;
+    if (sin2Transmitted >= 1.0) {
+        transmitted = float3(0.0, 0.0, 0.0);
+        return false;
+    }
+
+    float cosTransmitted = sqrt(max(0.0, 1.0 - sin2Transmitted));
+    transmitted = safeNormalize(eta * incident + (eta * cosTheta - cosTransmitted) * normal, incident);
+    return true;
+}
+
+float3 powColor(float3 value, float exponent)
+{
+    float3 clamped = max(value, float3(0.001, 0.001, 0.001));
+    return float3(pow(clamped.x, exponent), pow(clamped.y, exponent), pow(clamped.z, exponent));
+}
+
+float3 volumeTransmittance(float3 baseColor, float transmission, float thickness, float attenuationDistance, float3 attenuationColor, float distance)
+{
+    float exponent = 0.0;
+    if (attenuationDistance > 0.0001) {
+        exponent = max(distance, 0.0) / attenuationDistance;
+    } else if (thickness > 0.0001) {
+        exponent = saturate(max(distance, thickness) * 2.0);
+    }
+
+    float3 attenuation = powColor(max(attenuationColor, float3(0.001, 0.001, 0.001)), exponent);
+    float3 baseTint = lerp(float3(1.0, 1.0, 1.0), max(baseColor, float3(0.001, 0.001, 0.001)), transmission * 0.35);
+    return saturate(attenuation * baseTint);
 }
 
 float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
@@ -303,9 +353,39 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
         float3 baseColor = saturate(material.baseColor.rgb);
         float metallic = saturate(material.params.x);
         float roughness = clamp(material.params.y, 0.02, 1.0);
-        float3 f0 = lerp(float3(0.04, 0.04, 0.04), baseColor, metallic);
+        float transmission = saturate(material.glassParams.x);
+        float ior = clamp(material.glassParams.y, 1.0, 3.0);
+        float thickness = max(material.glassParams.z, 0.0);
+        float attenuationDistance = max(material.glassParams.w, 0.0);
+        float3 attenuationColor = max(saturate(material.attenuationColor.rgb), float3(0.001, 0.001, 0.001));
+        float dielectricF0 = (ior - 1.0) / (ior + 1.0);
+        dielectricF0 *= dielectricF0;
+        float3 f0 = lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metallic);
 
         radiance += throughput * max(material.emissive.rgb, float3(0.0, 0.0, 0.0));
+
+        if (transmission > 0.01) {
+            float eta = hit.frontFace ? 1.0 / max(ior, 1.001) : max(ior, 1.001);
+            float3 refractedDirection = float3(0.0, 0.0, 0.0);
+            bool canRefract = refractDirection(ray.direction, hit.normal, eta, refractedDirection);
+            float reflectProbability = canRefract
+                ? fresnelDielectric(ior, saturate(dot(-ray.direction, hit.normal)))
+                : 1.0;
+            if (!canRefract || rand(seed) < reflectProbability) {
+                ray.direction = safeNormalize(reflect(ray.direction, hit.normal), hit.normal);
+            } else {
+                ray.direction = safeNormalize(refractedDirection, ray.direction);
+                throughput *= volumeTransmittance(
+                    baseColor,
+                    transmission,
+                    thickness,
+                    attenuationDistance,
+                    attenuationColor,
+                    max(thickness, 0.001)) * transmission;
+            }
+            ray.origin = offsetRay(hit.position, dot(ray.direction, hit.geometryNormal) > 0.0 ? hit.geometryNormal : -hit.geometryNormal);
+            continue;
+        }
 
         float3 sunDirection = safeNormalize(float3(0.35, 0.88, 0.22), float3(0.0, 1.0, 0.0));
         float nDotL = saturate(dot(hit.normal, sunDirection));
