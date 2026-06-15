@@ -46,6 +46,7 @@ struct PathTraceMaterial
     float4 textureParams;
     float4 glassParams;
     float4 attenuationColor;
+    float4 diffuseTransmission;
     PathTraceTextureInfo baseColorTexture;
     PathTraceTextureInfo metallicRoughnessTexture;
     PathTraceTextureInfo normalTexture;
@@ -53,6 +54,8 @@ struct PathTraceMaterial
     PathTraceTextureInfo emissiveTexture;
     PathTraceTextureInfo transmissionTexture;
     PathTraceTextureInfo thicknessTexture;
+    PathTraceTextureInfo diffuseTransmissionTexture;
+    PathTraceTextureInfo diffuseTransmissionColorTexture;
 };
 
 [[vk::binding(2, 0)]]
@@ -358,6 +361,8 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
         float thickness = max(material.glassParams.z, 0.0);
         float attenuationDistance = max(material.glassParams.w, 0.0);
         float3 attenuationColor = max(saturate(material.attenuationColor.rgb), float3(0.001, 0.001, 0.001));
+        float diffuseTransmission = saturate(material.diffuseTransmission.a);
+        float3 diffuseTransmissionColor = max(saturate(material.diffuseTransmission.rgb), float3(0.001, 0.001, 0.001));
         float dielectricF0 = (ior - 1.0) / (ior + 1.0);
         dielectricF0 *= dielectricF0;
         float3 f0 = lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metallic);
@@ -396,9 +401,27 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
                 float3 halfVector = safeNormalize(sunDirection + viewDirection, hit.normal);
                 float nDotH = saturate(dot(hit.normal, halfVector));
                 float specularPower = lerp(96.0, 8.0, roughness);
-                float3 diffuse = baseColor * (1.0 - metallic) * (nDotL / kPi);
+                float3 diffuse = baseColor * (1.0 - metallic) * (1.0 - diffuseTransmission) * (nDotL / kPi);
                 float3 specular = f0 * pow(nDotH, specularPower) * nDotL;
                 radiance += throughput * (diffuse + specular) * float3(5.2, 4.8, 4.2);
+            }
+        }
+        if (diffuseTransmission > 0.01) {
+            float backNDotL = saturate(dot(-hit.normal, sunDirection));
+            if (backNDotL > 0.0) {
+                float3 transmittedDiffuse =
+                    baseColor *
+                    diffuseTransmissionColor *
+                    diffuseTransmission *
+                    volumeTransmittance(
+                        baseColor,
+                        transmission,
+                        thickness,
+                        attenuationDistance,
+                        attenuationColor,
+                        max(thickness, 0.01)) *
+                    (backNDotL / kPi);
+                radiance += throughput * transmittedDiffuse * float3(5.2, 4.8, 4.2);
             }
         }
 
@@ -409,9 +432,22 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
             float glossMix = roughness * roughness;
             ray.direction = safeNormalize(lerp(reflectedDirection, diffuseDirection, glossMix), reflectedDirection);
             throughput *= lerp(f0, baseColor, metallic * 0.35);
+        } else if (rand(seed) < diffuseTransmission * (1.0 - metallic)) {
+            ray.direction = sampleCosineHemisphere(-hit.normal, seed);
+            throughput *=
+                baseColor *
+                diffuseTransmissionColor *
+                diffuseTransmission *
+                volumeTransmittance(
+                    baseColor,
+                    transmission,
+                    thickness,
+                    attenuationDistance,
+                    attenuationColor,
+                    max(thickness, 0.01));
         } else {
             ray.direction = diffuseDirection;
-            throughput *= baseColor * (1.0 - metallic);
+            throughput *= baseColor * (1.0 - metallic) * (1.0 - diffuseTransmission);
         }
         ray.origin = offsetRay(hit.position, dot(ray.direction, hit.geometryNormal) > 0.0 ? hit.geometryNormal : -hit.geometryNormal);
 

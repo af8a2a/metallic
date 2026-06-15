@@ -118,6 +118,8 @@ struct RenderMaterial {
     float thicknessFactor = 0.0f;
     float attenuationDistance = 0.0f;
     float3 attenuationColor{1.0f, 1.0f, 1.0f};
+    float diffuseTransmissionFactor = 0.0f;
+    float3 diffuseTransmissionColor{1.0f, 1.0f, 1.0f};
     RenderTextureInfo baseColorTexture;
     RenderTextureInfo metallicRoughnessTexture;
     RenderTextureInfo normalTexture;
@@ -125,6 +127,8 @@ struct RenderMaterial {
     RenderTextureInfo emissiveTexture;
     RenderTextureInfo transmissionTexture;
     RenderTextureInfo thicknessTexture;
+    RenderTextureInfo diffuseTransmissionTexture;
+    RenderTextureInfo diffuseTransmissionColorTexture;
 };
 
 struct RenderCamera {

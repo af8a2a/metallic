@@ -69,6 +69,7 @@ struct PathTraceMaterial
     float4 textureParams;
     float4 glassParams;
     float4 attenuationColor;
+    float4 diffuseTransmission;
     PathTraceTextureInfo baseColorTexture;
     PathTraceTextureInfo metallicRoughnessTexture;
     PathTraceTextureInfo normalTexture;
@@ -76,6 +77,8 @@ struct PathTraceMaterial
     PathTraceTextureInfo emissiveTexture;
     PathTraceTextureInfo transmissionTexture;
     PathTraceTextureInfo thicknessTexture;
+    PathTraceTextureInfo diffuseTransmissionTexture;
+    PathTraceTextureInfo diffuseTransmissionColorTexture;
 };
 
 [[vk::binding(9, 0)]]
@@ -145,6 +148,8 @@ struct MaterialSample
     float thickness;
     float attenuationDistance;
     float3 attenuationColor;
+    float diffuseTransmission;
+    float3 diffuseTransmissionColor;
 };
 
 static const uint kNrdReblur = 0u;
@@ -306,6 +311,11 @@ float3 sampleCosineHemisphere(float3 normal, inout uint seed)
     return safeNormalize(tangent * (cos(phi) * sinTheta) + bitangent * (sin(phi) * sinTheta) + normal * cosTheta, normal);
 }
 
+float3 sampleSubsurfaceDiffuseDirection(float3 normal, inout uint seed)
+{
+    return sampleCosineHemisphere(-normal, seed);
+}
+
 bool traceShadow(float3 origin, float3 direction, float maxDistance)
 {
     RayDesc ray;
@@ -427,6 +437,8 @@ MaterialSample sampleMaterial(HitInfo hit)
     material.thickness = max(source.glassParams.z, 0.0);
     material.attenuationDistance = max(source.glassParams.w, 0.0);
     material.attenuationColor = saturate(source.attenuationColor.rgb);
+    material.diffuseTransmissionColor = saturate(source.diffuseTransmission.rgb);
+    material.diffuseTransmission = saturate(source.diffuseTransmission.a);
 
     if (hasMaterialTexture(source.baseColorTexture)) {
         float4 baseColor = loadMaterialTexture(source.baseColorTexture, hit.texcoord, true);
@@ -456,6 +468,20 @@ MaterialSample sampleMaterial(HitInfo hit)
         material.thickness *= loadMaterialTexture(source.thicknessTexture, hit.texcoord, false).g;
     }
 
+    if (hasMaterialTexture(source.diffuseTransmissionTexture)) {
+        material.diffuseTransmission *= loadMaterialTexture(
+            source.diffuseTransmissionTexture,
+            hit.texcoord,
+            false).a;
+    }
+
+    if (hasMaterialTexture(source.diffuseTransmissionColorTexture)) {
+        material.diffuseTransmissionColor *= loadMaterialTexture(
+            source.diffuseTransmissionColorTexture,
+            hit.texcoord,
+            true).rgb;
+    }
+
     if (hasMaterialTexture(source.normalTexture)) {
         float3 tangentNormal = loadMaterialTexture(source.normalTexture, hit.texcoord, false).xyz * 2.0 - 1.0;
         tangentNormal.xy *= max(source.textureParams.x, 0.0);
@@ -479,6 +505,8 @@ MaterialSample sampleMaterial(HitInfo hit)
     material.thickness = max(material.thickness, 0.0);
     material.attenuationDistance = max(material.attenuationDistance, 0.0);
     material.attenuationColor = max(material.attenuationColor, float3(0.001, 0.001, 0.001));
+    material.diffuseTransmission = saturate(material.diffuseTransmission);
+    material.diffuseTransmissionColor = max(material.diffuseTransmissionColor, float3(0.001, 0.001, 0.001));
     return material;
 }
 
@@ -497,6 +525,11 @@ float luminanceMax(float3 value)
 bool isTransmissive(MaterialSample material)
 {
     return material.transmission > 0.01;
+}
+
+bool isDiffuseTransmissive(MaterialSample material)
+{
+    return material.diffuseTransmission > 0.01;
 }
 
 float fresnelDielectric(MaterialSample material, float cosTheta)
@@ -616,18 +649,42 @@ float3 evaluateDirect(HitInfo hit, MaterialSample material, float3 viewDirection
     float nDotL = saturate(dot(material.normal, lightDirection));
     float3 direct = float3(0.0, 0.0, 0.0);
     if (nDotL > 0.0) {
-        float3 visibility = traceVisibility(offsetRay(hit.position, hit.geometryNormal), lightDirection, 10000.0, push);
+        float3 visibility = traceVisibility(
+            offsetRay(hit.position, offsetNormalForDirection(lightDirection, hit.geometryNormal)),
+            lightDirection,
+            10000.0,
+            push);
         if (luminanceMax(visibility) > 0.0) {
             float3 halfVector = safeNormalize(lightDirection + viewDirection, material.normal);
             float nDotH = saturate(dot(material.normal, halfVector));
             float specularPower = lerp(128.0, 10.0, material.roughness);
-            float3 diffuse = material.baseColor * (1.0 - material.metallic) * (1.0 - material.transmission) * (nDotL / kPi);
+            float diffuseReflectance = (1.0 - material.metallic) * (1.0 - material.transmission) * (1.0 - material.diffuseTransmission);
+            float3 diffuse = material.baseColor * diffuseReflectance * (nDotL / kPi);
             float3 specular = fresnelF0(material) * pow(nDotH, specularPower) * nDotL;
             direct += (diffuse + specular) * float3(7.2, 6.5, 5.3) * visibility;
         }
     }
+    if (isDiffuseTransmissive(material)) {
+        float backNDotL = saturate(dot(-material.normal, lightDirection));
+        if (backNDotL > 0.0) {
+            float3 visibility = traceVisibility(
+                offsetRay(hit.position, offsetNormalForDirection(lightDirection, hit.geometryNormal)),
+                lightDirection,
+                10000.0,
+                push);
+            float3 transmittance = volumeTransmittance(material, max(material.thickness, 0.01));
+            float3 transmittedDiffuse =
+                material.baseColor *
+                material.diffuseTransmissionColor *
+                material.diffuseTransmission *
+                transmittance *
+                (backNDotL / kPi);
+            direct += transmittedDiffuse * float3(7.2, 6.5, 5.3) * visibility;
+        }
+    }
     float ambient = (0.10 + 0.08 * saturate(material.normal.y)) * material.occlusion * (1.0 - material.transmission * 0.75);
     direct += material.baseColor * ambient;
+    direct += material.baseColor * material.diffuseTransmissionColor * material.diffuseTransmission * material.occlusion * 0.08;
     return direct + material.emissive;
 }
 
@@ -665,9 +722,21 @@ float3 traceBsdfPath(Ray ray, ChessNrdPush push, inout uint seed, out float firs
                 float glossMix = material.roughness * material.roughness;
                 nextDirection = safeNormalize(lerp(reflectedDirection, diffuseDirection, glossMix), reflectedDirection);
                 nextWeight = lerp(fresnelF0(material), material.baseColor, material.metallic * 0.35);
+            } else if (rand(seed) < material.diffuseTransmission * (1.0 - material.metallic)) {
+                nextDirection = sampleSubsurfaceDiffuseDirection(material.normal, seed);
+                nextWeight =
+                    material.baseColor *
+                    material.diffuseTransmissionColor *
+                    material.diffuseTransmission *
+                    volumeTransmittance(material, max(material.thickness, 0.01)) *
+                    material.occlusion;
             } else {
                 nextDirection = diffuseDirection;
-                nextWeight = material.baseColor * (1.0 - material.metallic) * material.occlusion;
+                nextWeight =
+                    material.baseColor *
+                    (1.0 - material.metallic) *
+                    (1.0 - material.diffuseTransmission) *
+                    material.occlusion;
             }
         }
 
@@ -798,13 +867,27 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     float specularHitDistance = 0.0;
 
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
-        float3 diffuseDirection = sampleCosineHemisphere(material.normal, seed);
+        bool sampleDiffuseTransmission =
+            isDiffuseTransmissive(material) &&
+            rand(seed) < material.diffuseTransmission * (1.0 - material.metallic);
+        float3 diffuseDirection = sampleDiffuseTransmission
+            ? sampleSubsurfaceDiffuseDirection(material.normal, seed)
+            : sampleCosineHemisphere(material.normal, seed);
         Ray diffuseRay;
-        diffuseRay.origin = offsetRay(primaryHit.position, primaryHit.geometryNormal);
+        diffuseRay.origin = offsetRay(primaryHit.position, offsetNormalForDirection(diffuseDirection, primaryHit.geometryNormal));
         diffuseRay.direction = diffuseDirection;
         float diffHit = 0.0;
         float3 diffRadiance = traceBsdfPath(diffuseRay, push, seed, diffHit);
-        diffuseAccum += primaryThroughput * diffRadiance * material.baseColor * (1.0 - material.metallic) * (1.0 - material.transmission) * material.occlusion;
+        float3 diffuseFactor = material.baseColor * (1.0 - material.metallic) * (1.0 - material.transmission) * material.occlusion;
+        if (sampleDiffuseTransmission) {
+            diffuseFactor *=
+                material.diffuseTransmissionColor *
+                material.diffuseTransmission *
+                volumeTransmittance(material, max(material.thickness, 0.01));
+        } else {
+            diffuseFactor *= (1.0 - material.diffuseTransmission);
+        }
+        diffuseAccum += primaryThroughput * diffRadiance * diffuseFactor;
         diffuseHitDistance += diffHit;
 
         float3 reflectedDirection = reflect(primarySurfaceRay.direction, material.normal);

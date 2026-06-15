@@ -96,7 +96,7 @@ std::filesystem::path writeFullScene(const std::filesystem::path& directory)
 {
   "asset": { "version": "2.0" },
   "scene": 0,
-  "extensionsUsed": ["KHR_lights_punctual"],
+  "extensionsUsed": ["KHR_lights_punctual", "KHR_materials_diffuse_transmission"],
   "extensions": {
     "KHR_lights_punctual": {
       "lights": [
@@ -142,7 +142,13 @@ std::filesystem::path writeFullScene(const std::filesystem::path& directory)
         "roughnessFactor": 0.6
       },
       "emissiveFactor": [0.05, 0.1, 0.2],
-      "doubleSided": true
+      "doubleSided": true,
+      "extensions": {
+        "KHR_materials_diffuse_transmission": {
+          "diffuseTransmissionFactor": 0.45,
+          "diffuseTransmissionColor": [0.4, 0.9, 0.55]
+        }
+      }
     }
   ],
   "meshes": [
@@ -380,6 +386,14 @@ void testFullSceneImport(TestContext& test, const std::filesystem::path& directo
         float3(0.05f, 0.1f, 0.2f),
         "explicit emissiveFactor");
     test.expect(scene.materials()[1].doubleSided, "explicit doubleSided");
+    test.expect(
+        std::abs(scene.materials()[1].diffuseTransmissionFactor - 0.45f) < 0.0001f,
+        "explicit diffuseTransmissionFactor");
+    expectVec3(
+        test,
+        scene.materials()[1].diffuseTransmissionColor,
+        float3(0.4f, 0.9f, 0.55f),
+        "explicit diffuseTransmissionColor");
 
     test.expect(scene.bounds().valid, "bounds should be valid");
     expectVec3(test, scene.bounds().min, float3(5.0f, 2.0f, 3.0f), "scene bounds min");

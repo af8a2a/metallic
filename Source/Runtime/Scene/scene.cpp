@@ -26,6 +26,7 @@ namespace metallic::scene {
 namespace {
 
 constexpr const char* kExtensionLightsPunctual = "KHR_lights_punctual";
+constexpr const char* kExtensionMaterialsDiffuseTransmission = "KHR_materials_diffuse_transmission";
 constexpr const char* kExtensionMaterialsIor = "KHR_materials_ior";
 constexpr const char* kExtensionMaterialsTransmission = "KHR_materials_transmission";
 constexpr const char* kExtensionMaterialsVolume = "KHR_materials_volume";
@@ -40,7 +41,7 @@ const std::unordered_set<std::string>& supportedRequiredExtensions()
         kExtensionNodeVisibility,
         "KHR_materials_anisotropy",
         "KHR_materials_clearcoat",
-        "KHR_materials_diffuse_transmission",
+        kExtensionMaterialsDiffuseTransmission,
         "KHR_materials_dispersion",
         "KHR_materials_emissive_strength",
         kExtensionMaterialsIor,
@@ -950,6 +951,31 @@ bool Scene::load(const std::filesystem::path& filename)
                 0.0f);
             readVec3Value(volume, "attenuationColor", material.attenuationColor);
             readExtensionTextureInfo(volume, "thicknessTexture", material.thicknessTexture);
+        }
+
+        const auto diffuseTransmissionExtension =
+            gltfMaterial.extensions.find(kExtensionMaterialsDiffuseTransmission);
+        if (diffuseTransmissionExtension != gltfMaterial.extensions.end()) {
+            const tinygltf::Value& diffuseTransmission = diffuseTransmissionExtension->second;
+            material.diffuseTransmissionFactor = std::clamp(
+                readFloatValue(
+                    diffuseTransmission,
+                    "diffuseTransmissionFactor",
+                    material.diffuseTransmissionFactor),
+                0.0f,
+                1.0f);
+            readVec3Value(
+                diffuseTransmission,
+                "diffuseTransmissionColor",
+                material.diffuseTransmissionColor);
+            readExtensionTextureInfo(
+                diffuseTransmission,
+                "diffuseTransmissionTexture",
+                material.diffuseTransmissionTexture);
+            readExtensionTextureInfo(
+                diffuseTransmission,
+                "diffuseTransmissionColorTexture",
+                material.diffuseTransmissionColorTexture);
         }
         materials_.push_back(material);
     }

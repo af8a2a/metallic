@@ -192,6 +192,7 @@ struct ScenePathTraceGpuMaterial {
     float textureParams[4] = {1.0f, 1.0f, 0.0f, 0.0f};
     float glassParams[4] = {0.0f, 1.5f, 0.0f, 0.0f};
     float attenuationColor[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    float diffuseTransmission[4] = {1.0f, 1.0f, 1.0f, 0.0f};
     struct TextureInfo {
         uint32_t textureIndex = kInvalidMaterialTextureIndex;
         uint32_t texCoord = 0;
@@ -207,6 +208,8 @@ struct ScenePathTraceGpuMaterial {
     TextureInfo emissiveTexture;
     TextureInfo transmissionTexture;
     TextureInfo thicknessTexture;
+    TextureInfo diffuseTransmissionTexture;
+    TextureInfo diffuseTransmissionColorTexture;
 };
 
 struct ScenePathTracePush {
@@ -2878,6 +2881,10 @@ private:
         gpuMaterial.attenuationColor[1] = material.attenuationColor.y;
         gpuMaterial.attenuationColor[2] = material.attenuationColor.z;
         gpuMaterial.attenuationColor[3] = 0.0f;
+        gpuMaterial.diffuseTransmission[0] = material.diffuseTransmissionColor.x;
+        gpuMaterial.diffuseTransmission[1] = material.diffuseTransmissionColor.y;
+        gpuMaterial.diffuseTransmission[2] = material.diffuseTransmissionColor.z;
+        gpuMaterial.diffuseTransmission[3] = material.diffuseTransmissionFactor;
         gpuMaterial.baseColorTexture = makeGpuTextureInfo(material.baseColorTexture);
         gpuMaterial.metallicRoughnessTexture = makeGpuTextureInfo(material.metallicRoughnessTexture);
         gpuMaterial.normalTexture = makeGpuTextureInfo(material.normalTexture);
@@ -2885,6 +2892,9 @@ private:
         gpuMaterial.emissiveTexture = makeGpuTextureInfo(material.emissiveTexture);
         gpuMaterial.transmissionTexture = makeGpuTextureInfo(material.transmissionTexture);
         gpuMaterial.thicknessTexture = makeGpuTextureInfo(material.thicknessTexture);
+        gpuMaterial.diffuseTransmissionTexture = makeGpuTextureInfo(material.diffuseTransmissionTexture);
+        gpuMaterial.diffuseTransmissionColorTexture =
+            makeGpuTextureInfo(material.diffuseTransmissionColorTexture);
         return gpuMaterial;
     }
 
@@ -3814,6 +3824,9 @@ private:
         if (name.find("Chessboard") != std::string::npos) {
             return 1;
         }
+        if (name.find("King") != std::string::npos || name.find("Queen") != std::string::npos) {
+            return 4;
+        }
         if (name.find("White") != std::string::npos || name.find("_W") != std::string::npos) {
             return 2;
         }
@@ -3833,6 +3846,16 @@ private:
             ScenePathTraceGpuMaterial& material = gpuScene.materials[materialIndex];
             const uint32_t kind = classifyMaterialKind(source.name);
             material.textureParams[2] = static_cast<float>(kind);
+            if (kind == 4 && material.diffuseTransmission[3] <= 0.001f) {
+                material.diffuseTransmission[0] = 0.55f;
+                material.diffuseTransmission[1] = 0.95f;
+                material.diffuseTransmission[2] = 0.68f;
+                material.diffuseTransmission[3] = 0.42f;
+                material.attenuationColor[0] = 0.55f;
+                material.attenuationColor[1] = 0.88f;
+                material.attenuationColor[2] = 0.62f;
+                material.glassParams[2] = std::max(material.glassParams[2], 0.18f);
+            }
         }
     }
 
