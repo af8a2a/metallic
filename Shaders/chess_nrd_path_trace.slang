@@ -99,6 +99,9 @@ StructuredBuffer<PathTraceMaterial> gMaterials;
 [[vk::binding(14, 0)]]
 Texture2D<float4> gMaterialTextures[128];
 
+[[vk::binding(15, 0)]]
+Texture2D<float4> gEnvironmentTexture;
+
 struct ChessNrdPush
 {
     float4 eye;
@@ -231,13 +234,43 @@ float3 sunDirection()
     return safeNormalize(float3(-0.35, 0.82, -0.28), float3(0.0, 1.0, 0.0));
 }
 
+uint wrapEnvironmentTexel(int value, uint size)
+{
+    int signedSize = int(max(size, 1u));
+    int wrapped = value % signedSize;
+    return uint(wrapped < 0 ? wrapped + signedSize : wrapped);
+}
+
+uint clampEnvironmentTexel(int value, uint size)
+{
+    return uint(clamp(value, 0, int(max(size, 1u)) - 1));
+}
+
 float3 skyRadiance(float3 direction)
 {
-    float t = saturate(direction.y * 0.5 + 0.5);
-    float3 horizon = float3(0.70, 0.76, 0.82);
-    float3 zenith = float3(0.14, 0.23, 0.42);
-    float sun = pow(saturate(dot(direction, sunDirection())), 512.0);
-    return lerp(horizon, zenith, t) * 0.55 + sun * float3(8.0, 7.1, 5.8);
+    uint width = 1u;
+    uint height = 1u;
+    gEnvironmentTexture.GetDimensions(width, height);
+
+    float3 dir = safeNormalize(direction, float3(0.0, 1.0, 0.0));
+    float phi = atan2(dir.z, dir.x);
+    float theta = acos(clamp(dir.y, -1.0, 1.0));
+    float2 uv = float2(frac(0.5 + phi / (2.0 * kPi)), theta / kPi);
+    float2 imageCoord = uv * float2(width, height) - 0.5;
+    int2 baseCoord = int2(floor(imageCoord));
+    float2 blend = frac(imageCoord);
+
+    uint2 p00 = uint2(wrapEnvironmentTexel(baseCoord.x, width), clampEnvironmentTexel(baseCoord.y, height));
+    uint2 p10 = uint2(wrapEnvironmentTexel(baseCoord.x + 1, width), p00.y);
+    uint2 p01 = uint2(p00.x, clampEnvironmentTexel(baseCoord.y + 1, height));
+    uint2 p11 = uint2(p10.x, p01.y);
+
+    float3 c00 = gEnvironmentTexture.Load(int3(p00, 0)).rgb;
+    float3 c10 = gEnvironmentTexture.Load(int3(p10, 0)).rgb;
+    float3 c01 = gEnvironmentTexture.Load(int3(p01, 0)).rgb;
+    float3 c11 = gEnvironmentTexture.Load(int3(p11, 0)).rgb;
+    float3 value = lerp(lerp(c00, c10, blend.x), lerp(c01, c11, blend.x), blend.y);
+    return max(value, float3(0.0, 0.0, 0.0));
 }
 
 float3 srgbToLinear(float3 value)
@@ -646,6 +679,7 @@ float3 traceVisibility(float3 origin, float3 direction, float maxDistance, Chess
 float3 evaluateDirect(HitInfo hit, MaterialSample material, float3 viewDirection, ChessNrdPush push)
 {
     float3 lightDirection = sunDirection();
+    float3 lightRadiance = max(skyRadiance(lightDirection), float3(0.001, 0.001, 0.001));
     float nDotL = saturate(dot(material.normal, lightDirection));
     float3 direct = float3(0.0, 0.0, 0.0);
     if (nDotL > 0.0) {
@@ -661,7 +695,7 @@ float3 evaluateDirect(HitInfo hit, MaterialSample material, float3 viewDirection
             float diffuseReflectance = (1.0 - material.metallic) * (1.0 - material.transmission) * (1.0 - material.diffuseTransmission);
             float3 diffuse = material.baseColor * diffuseReflectance * (nDotL / kPi);
             float3 specular = fresnelF0(material) * pow(nDotH, specularPower) * nDotL;
-            direct += (diffuse + specular) * float3(7.2, 6.5, 5.3) * visibility;
+            direct += (diffuse + specular) * lightRadiance * visibility;
         }
     }
     if (isDiffuseTransmissive(material)) {
@@ -679,7 +713,7 @@ float3 evaluateDirect(HitInfo hit, MaterialSample material, float3 viewDirection
                 material.diffuseTransmission *
                 transmittance *
                 (backNDotL / kPi);
-            direct += transmittedDiffuse * float3(7.2, 6.5, 5.3) * visibility;
+            direct += transmittedDiffuse * lightRadiance * visibility;
         }
     }
     float ambient = (0.10 + 0.08 * saturate(material.normal.y)) * material.occlusion * (1.0 - material.transmission * 0.75);

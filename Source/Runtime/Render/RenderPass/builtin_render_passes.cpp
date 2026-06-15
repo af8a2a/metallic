@@ -60,6 +60,7 @@ constexpr const char* kDefaultBunnyScenePath = PROJECT_SOURCE_DIR "/Asset/Standf
 constexpr const char* kDefaultMaterialScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
 constexpr const char* kDefaultPathTraceScenePath = PROJECT_SOURCE_DIR "/Asset/meet_mat.glb";
 constexpr const char* kDefaultChessScenePath = PROJECT_SOURCE_DIR "/Asset/ABeautifulGame/glTF/ABeautifulGame.gltf";
+constexpr const char* kDefaultChessEnvironmentPath = PROJECT_SOURCE_DIR "/Asset/ABeautifulGame/environment.hdr";
 constexpr uint64_t kRenderGraphBufferByteSize = 16;
 constexpr int32_t kGltfTriangleListMode = 4;
 constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
@@ -257,6 +258,8 @@ struct ChessNrdMaterialTextureResource {
     std::unique_ptr<TextureView> view;
     uint32_t width = 1;
     uint32_t height = 1;
+    Format format = Format::Rgba8Unorm;
+    uint32_t bytesPerPixel = 4;
     ResourceState state = ResourceState::Undefined;
     bool uploaded = false;
 };
@@ -3146,8 +3149,14 @@ public:
             resetGpuBuffers();
             return makeError(Error::Failure);
         }
+        const std::filesystem::path environmentPath = environmentPathFromProperties(properties());
+        Result result = loadEnvironmentTextureResource(*context.device, environmentPath, environmentTexture_, log);
+        if (!result) {
+            resetGpuBuffers();
+            return result;
+        }
 
-        Result result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
+        result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
         if (!result) {
             return result;
         }
@@ -3257,6 +3266,7 @@ public:
                 .kind = SceneRayQueryBindingKind::SampledImage,
                 .descriptorCount = kChessNrdMaxMaterialTextures,
             },
+            {.binding = 15, .kind = SceneRayQueryBindingKind::SampledImage},
         };
         result = pathTraceProgram_.initialize(
             *context.device,
@@ -3369,6 +3379,7 @@ public:
             !rtxBuilder_.valid() ||
             !drawBounds_.valid ||
             fallbackMaterialTexture_.view == nullptr ||
+            environmentTexture_.view == nullptr ||
             device_ == nullptr ||
             queue_ == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -3378,10 +3389,15 @@ public:
         if (!result) {
             return result;
         }
+        result = uploadTextureIfNeeded(context.commandBuffer(), environmentTexture_);
+        if (!result) {
+            return result;
+        }
         std::array<TextureView*, kChessNrdMaxMaterialTextures> materialTextureViews{};
         if (!buildMaterialTextureViewArray(materialTextureViews)) {
             return makeError(Error::InvalidArgument);
         }
+        TextureView* environmentTextureViews[1] = {environmentTexture_.view.get()};
 
         const uint32_t denoiserMode = denoiserModeFromProperties(context.properties());
         const uint32_t resetSerial = ScenePathTracePass::uintProperty(
@@ -3417,6 +3433,11 @@ public:
                 .binding = 14,
                 .textureViews = materialTextureViews.data(),
                 .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
+            },
+            {
+                .binding = 15,
+                .textureViews = environmentTextureViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
             },
         };
         result = pathTraceProgram_.dispatch(SceneRayQueryDispatchDesc{
@@ -3513,16 +3534,18 @@ private:
         return texture.valid() && texture.texture() != nullptr && texture.view() != nullptr;
     }
 
-    static Result createMaterialTextureResource(
+    static Result createTextureResource(
         Device& device,
-        const uint8_t* pixels,
+        const void* pixels,
         uint32_t width,
         uint32_t height,
+        Format format,
+        uint32_t bytesPerPixel,
         ChessNrdMaterialTextureResource& outResource,
         std::string& log,
         std::string_view label)
     {
-        if (pixels == nullptr || width == 0 || height == 0) {
+        if (pixels == nullptr || width == 0 || height == 0 || bytesPerPixel == 0) {
             log = std::string(label) + " texture pixels are empty";
             return makeError(Error::InvalidArgument);
         }
@@ -3530,7 +3553,10 @@ private:
         outResource = ChessNrdMaterialTextureResource{};
         outResource.width = width;
         outResource.height = height;
-        const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
+        outResource.format = format;
+        outResource.bytesPerPixel = bytesPerPixel;
+        const uint64_t byteSize =
+            static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * bytesPerPixel;
         Result result = device.createBuffer(
             BufferDesc{
                 .size = byteSize,
@@ -3557,7 +3583,7 @@ private:
             TextureDesc{
                 .type = TextureType::Texture2D,
                 .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-                .format = Format::Rgba8Unorm,
+                .format = format,
                 .width = width,
                 .height = height,
                 .depth = 1,
@@ -3575,7 +3601,7 @@ private:
         result = device.createTextureView(
             *outResource.texture,
             TextureViewDesc{
-                .format = Format::Rgba8Unorm,
+                .format = format,
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,
@@ -3588,6 +3614,27 @@ private:
             return result ? makeError(Error::Failure) : result;
         }
         return {};
+    }
+
+    static Result createMaterialTextureResource(
+        Device& device,
+        const uint8_t* pixels,
+        uint32_t width,
+        uint32_t height,
+        ChessNrdMaterialTextureResource& outResource,
+        std::string& log,
+        std::string_view label)
+    {
+        return createTextureResource(
+            device,
+            pixels,
+            width,
+            height,
+            Format::Rgba8Unorm,
+            4,
+            outResource,
+            log,
+            label);
     }
 
     static Result createFallbackMaterialTexture(
@@ -3682,6 +3729,58 @@ private:
             outResource,
             log,
             std::string("ChessNrdPathTracePass material texture ") + std::to_string(textureIndex));
+        stbi_image_free(pixels);
+        return result;
+    }
+
+    static std::filesystem::path environmentPathFromProperties(const RenderGraphProperties& props)
+    {
+        if (props.contains("environment") && props["environment"].is_string()) {
+            std::filesystem::path path = props["environment"].get<std::string>();
+            if (path.is_relative()) {
+                path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
+            }
+            return path;
+        }
+        if (props.contains("environmentPath") && props["environmentPath"].is_string()) {
+            std::filesystem::path path = props["environmentPath"].get<std::string>();
+            if (path.is_relative()) {
+                path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
+            }
+            return path;
+        }
+        return std::filesystem::path(kDefaultChessEnvironmentPath);
+    }
+
+    static Result loadEnvironmentTextureResource(
+        Device& device,
+        const std::filesystem::path& path,
+        ChessNrdMaterialTextureResource& outResource,
+        std::string& log)
+    {
+        int imageWidth = 0;
+        int imageHeight = 0;
+        int channelCount = 0;
+        float* pixels = stbi_loadf(path.string().c_str(), &imageWidth, &imageHeight, &channelCount, 4);
+        if (pixels == nullptr || imageWidth <= 0 || imageHeight <= 0) {
+            log = "ChessNrdPathTracePass failed to load environment texture: " + path.string();
+            if (const char* reason = stbi_failure_reason()) {
+                log += ": ";
+                log += reason;
+            }
+            return makeError(Error::Failure);
+        }
+
+        Result result = createTextureResource(
+            device,
+            pixels,
+            static_cast<uint32_t>(imageWidth),
+            static_cast<uint32_t>(imageHeight),
+            Format::Rgba32Sfloat,
+            sizeof(float) * 4u,
+            outResource,
+            log,
+            "ChessNrdPathTracePass environment texture");
         stbi_image_free(pixels);
         return result;
     }
@@ -4146,6 +4245,7 @@ private:
         materialBuffer_.reset();
         materialTextures_.clear();
         fallbackMaterialTexture_ = ChessNrdMaterialTextureResource{};
+        environmentTexture_ = ChessNrdMaterialTextureResource{};
     }
 
     SceneRtxBuilder rtxBuilder_;
@@ -4159,6 +4259,7 @@ private:
     std::unique_ptr<Buffer> materialBuffer_;
     std::vector<ChessNrdMaterialTextureResource> materialTextures_;
     ChessNrdMaterialTextureResource fallbackMaterialTexture_;
+    ChessNrdMaterialTextureResource environmentTexture_;
     Device* device_ = nullptr;
     Queue* queue_ = nullptr;
     uint32_t frameIndex_ = 0;
