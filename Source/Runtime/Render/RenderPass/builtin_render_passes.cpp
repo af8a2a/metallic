@@ -69,6 +69,8 @@ constexpr uint32_t kDefaultPathTraceSamples = 2;
 constexpr uint32_t kNrdDenoiserModeReblur = 0;
 constexpr uint32_t kNrdDenoiserModeRelax = 1;
 constexpr uint32_t kNrdDenoiserModeReference = 2;
+constexpr uint32_t kInvalidMaterialTextureIndex = std::numeric_limits<uint32_t>::max();
+constexpr uint32_t kChessNrdMaxMaterialTextures = 128;
 constexpr uint32_t kChessNrdVisualFinal = 0;
 constexpr uint32_t kChessNrdVisualNoisy = 1;
 constexpr uint32_t kChessNrdVisualDirect = 2;
@@ -165,6 +167,7 @@ struct SceneRayQueryVisualizationPush {
 struct ScenePathTraceGpuVertex {
     float position[4] = {};
     float normal[4] = {};
+    float tangent[4] = {1.0f, 0.0f, 0.0f, 1.0f};
     float texcoord[4] = {};
 };
 
@@ -186,6 +189,20 @@ struct ScenePathTraceGpuMaterial {
     float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float emissive[4] = {};
     float params[4] = {};
+    float textureParams[4] = {1.0f, 1.0f, 0.0f, 0.0f};
+    struct TextureInfo {
+        uint32_t textureIndex = kInvalidMaterialTextureIndex;
+        uint32_t texCoord = 0;
+        uint32_t padding0 = 0;
+        uint32_t padding1 = 0;
+        float transform0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+        float transform1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
+    };
+    TextureInfo baseColorTexture;
+    TextureInfo metallicRoughnessTexture;
+    TextureInfo normalTexture;
+    TextureInfo occlusionTexture;
+    TextureInfo emissiveTexture;
 };
 
 struct ScenePathTracePush {
@@ -225,6 +242,16 @@ struct ChessNrdCompositePush {
     uint32_t height = 1;
     uint32_t denoiserMode = kNrdDenoiserModeReblur;
     uint32_t visualization = kChessNrdVisualFinal;
+};
+
+struct ChessNrdMaterialTextureResource {
+    std::unique_ptr<Buffer> uploadBuffer;
+    std::unique_ptr<Texture> texture;
+    std::unique_ptr<TextureView> view;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    ResourceState state = ResourceState::Undefined;
+    bool uploaded = false;
 };
 
 std::string resultMessage(std::string_view label, const Result& result)
@@ -2790,6 +2817,36 @@ private:
         outPush.samples = uintProperty(properties, "samples", kDefaultPathTraceSamples, 1, 16);
     }
 
+    static uint32_t materialTextureIndex(int32_t textureIndex)
+    {
+        return textureIndex >= 0 ? static_cast<uint32_t>(textureIndex) : kInvalidMaterialTextureIndex;
+    }
+
+    static ScenePathTraceGpuMaterial::TextureInfo makeGpuTextureInfo(const scene::RenderTextureInfo& textureInfo)
+    {
+        ScenePathTraceGpuMaterial::TextureInfo gpuTextureInfo;
+        gpuTextureInfo.textureIndex = materialTextureIndex(textureInfo.textureIndex);
+        gpuTextureInfo.texCoord = textureInfo.texCoord > 0 ? static_cast<uint32_t>(textureInfo.texCoord) : 0;
+        gpuTextureInfo.transform0[0] = textureInfo.uvTransform[0];
+        gpuTextureInfo.transform0[1] = textureInfo.uvTransform[1];
+        gpuTextureInfo.transform0[2] = textureInfo.uvTransform[2];
+        gpuTextureInfo.transform1[0] = textureInfo.uvTransform[3];
+        gpuTextureInfo.transform1[1] = textureInfo.uvTransform[4];
+        gpuTextureInfo.transform1[2] = textureInfo.uvTransform[5];
+        return gpuTextureInfo;
+    }
+
+    static float alphaModeCode(const std::string& alphaMode)
+    {
+        if (alphaMode == "MASK") {
+            return 1.0f;
+        }
+        if (alphaMode == "BLEND") {
+            return 2.0f;
+        }
+        return 0.0f;
+    }
+
     static ScenePathTraceGpuMaterial makeMaterial(const scene::RenderMaterial& material)
     {
         ScenePathTraceGpuMaterial gpuMaterial;
@@ -2805,6 +2862,15 @@ private:
         gpuMaterial.params[1] = material.roughnessFactor;
         gpuMaterial.params[2] = material.alphaCutoff;
         gpuMaterial.params[3] = material.doubleSided ? 1.0f : 0.0f;
+        gpuMaterial.textureParams[0] = material.normalTextureScale;
+        gpuMaterial.textureParams[1] = material.occlusionTextureStrength;
+        gpuMaterial.textureParams[2] = 0.0f;
+        gpuMaterial.textureParams[3] = alphaModeCode(material.alphaMode);
+        gpuMaterial.baseColorTexture = makeGpuTextureInfo(material.baseColorTexture);
+        gpuMaterial.metallicRoughnessTexture = makeGpuTextureInfo(material.metallicRoughnessTexture);
+        gpuMaterial.normalTexture = makeGpuTextureInfo(material.normalTexture);
+        gpuMaterial.occlusionTexture = makeGpuTextureInfo(material.occlusionTexture);
+        gpuMaterial.emissiveTexture = makeGpuTextureInfo(material.emissiveTexture);
         return gpuMaterial;
     }
 
@@ -2845,6 +2911,9 @@ private:
             const float3 normal = vertexIndex < primitive.normals.size()
                 ? primitive.normals[vertexIndex]
                 : float3(0.0f, 0.0f, 0.0f);
+            const float4 tangent = vertexIndex < primitive.tangents.size()
+                ? primitive.tangents[vertexIndex]
+                : float4(1.0f, 0.0f, 0.0f, 1.0f);
             const float2 texcoord = vertexIndex < primitive.texcoords0.size()
                 ? primitive.texcoords0[vertexIndex]
                 : float2(0.0f, 0.0f);
@@ -2857,6 +2926,10 @@ private:
             vertex.normal[1] = normal.y;
             vertex.normal[2] = normal.z;
             vertex.normal[3] = 0.0f;
+            vertex.tangent[0] = tangent.x;
+            vertex.tangent[1] = tangent.y;
+            vertex.tangent[2] = tangent.z;
+            vertex.tangent[3] = tangent.w >= 0.0f ? 1.0f : -1.0f;
             vertex.texcoord[0] = texcoord.x;
             vertex.texcoord[1] = texcoord.y;
             outScene.vertices.push_back(vertex);
@@ -3018,8 +3091,9 @@ public:
         }
         if (!context.device->capabilities().rayTracingAccelerationStructure ||
             !context.device->capabilities().rayQuery ||
-            !context.device->capabilities().pushDescriptor) {
-            log = "ChessNrdPathTracePass requires ray tracing, ray query, and push descriptor capabilities";
+            !context.device->capabilities().pushDescriptor ||
+            !context.device->capabilities().bindlessDescriptorHeap) {
+            log = "ChessNrdPathTracePass requires ray tracing, ray query, push descriptor, and descriptor indexing capabilities";
             return makeError(Error::Unsupported);
         }
         if (pathTraceProgram_.valid() && compositeProgram_.valid() && rtxBuilder_.valid() && vertexBuffer_ != nullptr) {
@@ -3044,6 +3118,10 @@ public:
             return makeError(Error::Failure);
         }
         applyChessMaterialKinds(loadedScene, gpuScene);
+        if (!prepareMaterialTextures(*context.device, loadedScene, log)) {
+            resetGpuBuffers();
+            return makeError(Error::Failure);
+        }
 
         Result result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
         if (!result) {
@@ -3150,6 +3228,11 @@ public:
             {.binding = 11, .kind = SceneRayQueryBindingKind::StorageBuffer},
             {.binding = 12, .kind = SceneRayQueryBindingKind::StorageBuffer},
             {.binding = 13, .kind = SceneRayQueryBindingKind::StorageBuffer},
+            {
+                .binding = 14,
+                .kind = SceneRayQueryBindingKind::SampledImage,
+                .descriptorCount = kChessNrdMaxMaterialTextures,
+            },
         };
         result = pathTraceProgram_.initialize(
             *context.device,
@@ -3261,8 +3344,18 @@ public:
             materialBuffer_ == nullptr ||
             !rtxBuilder_.valid() ||
             !drawBounds_.valid ||
+            fallbackMaterialTexture_.view == nullptr ||
             device_ == nullptr ||
             queue_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        Result result = uploadMaterialTexturesIfNeeded(context.commandBuffer());
+        if (!result) {
+            return result;
+        }
+        std::array<TextureView*, kChessNrdMaxMaterialTextures> materialTextureViews{};
+        if (!buildMaterialTextureViewArray(materialTextureViews)) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -3296,8 +3389,13 @@ public:
             {.binding = 11, .buffer = primitiveBuffer_.get()},
             {.binding = 12, .buffer = instanceBuffer_.get()},
             {.binding = 13, .buffer = materialBuffer_.get()},
+            {
+                .binding = 14,
+                .textureViews = materialTextureViews.data(),
+                .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
+            },
         };
-        Result result = pathTraceProgram_.dispatch(SceneRayQueryDispatchDesc{
+        result = pathTraceProgram_.dispatch(SceneRayQueryDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
             .bindings = pathTraceBindings,
             .bindingCount = static_cast<uint32_t>(std::size(pathTraceBindings)),
@@ -3391,6 +3489,300 @@ private:
         return texture.valid() && texture.texture() != nullptr && texture.view() != nullptr;
     }
 
+    static Result createMaterialTextureResource(
+        Device& device,
+        const uint8_t* pixels,
+        uint32_t width,
+        uint32_t height,
+        ChessNrdMaterialTextureResource& outResource,
+        std::string& log,
+        std::string_view label)
+    {
+        if (pixels == nullptr || width == 0 || height == 0) {
+            log = std::string(label) + " texture pixels are empty";
+            return makeError(Error::InvalidArgument);
+        }
+
+        outResource = ChessNrdMaterialTextureResource{};
+        outResource.width = width;
+        outResource.height = height;
+        const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
+        Result result = device.createBuffer(
+            BufferDesc{
+                .size = byteSize,
+                .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload,
+            },
+            outResource.uploadBuffer);
+        if (!result || outResource.uploadBuffer == nullptr) {
+            log += resultMessage(std::string("createBuffer(") + std::string(label) + " upload)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        void* mapped = outResource.uploadBuffer->map();
+        if (mapped == nullptr) {
+            log = std::string(label) + " failed to map texture upload buffer";
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, pixels, static_cast<size_t>(byteSize));
+        outResource.uploadBuffer->flush(0, byteSize);
+        outResource.uploadBuffer->unmap();
+
+        result = device.createTexture(
+            TextureDesc{
+                .type = TextureType::Texture2D,
+                .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+                .format = Format::Rgba8Unorm,
+                .width = width,
+                .height = height,
+                .depth = 1,
+                .mipCount = 1,
+                .layerCount = 1,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            outResource.texture);
+        if (!result || outResource.texture == nullptr) {
+            log += resultMessage(std::string("createTexture(") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = device.createTextureView(
+            *outResource.texture,
+            TextureViewDesc{
+                .format = Format::Rgba8Unorm,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+            outResource.view);
+        if (!result || outResource.view == nullptr) {
+            log += resultMessage(std::string("createTextureView(") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
+    }
+
+    static Result createFallbackMaterialTexture(
+        Device& device,
+        ChessNrdMaterialTextureResource& outResource,
+        std::string& log)
+    {
+        const uint8_t fallbackPixel[4] = {255, 255, 255, 255};
+        return createMaterialTextureResource(
+            device,
+            fallbackPixel,
+            1,
+            1,
+            outResource,
+            log,
+            "ChessNrdPathTracePass material fallback texture");
+    }
+
+    static stbi_uc* loadSceneImageRgba(
+        const scene::Scene& loadedScene,
+        const scene::RenderImage& image,
+        int& outWidth,
+        int& outHeight,
+        int& outChannelCount,
+        std::string& log)
+    {
+        outWidth = 0;
+        outHeight = 0;
+        outChannelCount = 0;
+        if (!image.encodedData.empty()) {
+            return stbi_load_from_memory(
+                image.encodedData.data(),
+                static_cast<int>(image.encodedData.size()),
+                &outWidth,
+                &outHeight,
+                &outChannelCount,
+                4);
+        }
+
+        if (image.uri.empty()) {
+            log = "ChessNrdPathTracePass image has neither URI nor embedded data: " + image.name;
+            return nullptr;
+        }
+
+        std::filesystem::path imagePath = image.uri;
+        if (imagePath.is_relative()) {
+            imagePath = loadedScene.filename().parent_path() / imagePath;
+        }
+        return stbi_load(imagePath.string().c_str(), &outWidth, &outHeight, &outChannelCount, 4);
+    }
+
+    static Result loadSceneTextureResource(
+        Device& device,
+        const scene::Scene& loadedScene,
+        uint32_t textureIndex,
+        ChessNrdMaterialTextureResource& outResource,
+        std::string& log)
+    {
+        if (textureIndex >= loadedScene.textures().size()) {
+            log = "ChessNrdPathTracePass texture index is out of range";
+            return makeError(Error::InvalidArgument);
+        }
+
+        const scene::RenderTexture& texture = loadedScene.textures()[textureIndex];
+        if (texture.imageIndex < 0 ||
+            static_cast<size_t>(texture.imageIndex) >= loadedScene.images().size()) {
+            log = "ChessNrdPathTracePass texture references an invalid image: " + texture.name;
+            return makeError(Error::Failure);
+        }
+
+        const scene::RenderImage& image = loadedScene.images()[static_cast<size_t>(texture.imageIndex)];
+        int imageWidth = 0;
+        int imageHeight = 0;
+        int channelCount = 0;
+        stbi_uc* pixels = loadSceneImageRgba(loadedScene, image, imageWidth, imageHeight, channelCount, log);
+        if (pixels == nullptr || imageWidth <= 0 || imageHeight <= 0) {
+            if (log.empty()) {
+                log = "ChessNrdPathTracePass failed to load material texture: " + image.name;
+            }
+            if (const char* reason = stbi_failure_reason()) {
+                log += ": ";
+                log += reason;
+            }
+            return makeError(Error::Failure);
+        }
+
+        Result result = createMaterialTextureResource(
+            device,
+            pixels,
+            static_cast<uint32_t>(imageWidth),
+            static_cast<uint32_t>(imageHeight),
+            outResource,
+            log,
+            std::string("ChessNrdPathTracePass material texture ") + std::to_string(textureIndex));
+        stbi_image_free(pixels);
+        return result;
+    }
+
+    bool prepareMaterialTextures(Device& device, const scene::Scene& loadedScene, std::string& log)
+    {
+        materialTextures_.clear();
+        fallbackMaterialTexture_ = ChessNrdMaterialTextureResource{};
+        if (loadedScene.textures().size() > kChessNrdMaxMaterialTextures) {
+            log = "ChessNrdPathTracePass material texture count exceeds descriptor array capacity";
+            return false;
+        }
+
+        Result result = createFallbackMaterialTexture(device, fallbackMaterialTexture_, log);
+        if (!result) {
+            return false;
+        }
+
+        materialTextures_.resize(loadedScene.textures().size());
+        for (uint32_t textureIndex = 0; textureIndex < materialTextures_.size(); ++textureIndex) {
+            result = loadSceneTextureResource(
+                device,
+                loadedScene,
+                textureIndex,
+                materialTextures_[textureIndex],
+                log);
+            if (!result) {
+                materialTextures_.clear();
+                fallbackMaterialTexture_ = ChessNrdMaterialTextureResource{};
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static Result uploadTextureIfNeeded(
+        CommandBuffer& commandBuffer,
+        ChessNrdMaterialTextureResource& resource)
+    {
+        if (resource.uploaded) {
+            return {};
+        }
+        if (resource.uploadBuffer == nullptr ||
+            resource.texture == nullptr ||
+            resource.view == nullptr ||
+            resource.width == 0 ||
+            resource.height == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        TextureBarrierDesc toTransfer{
+            .texture = resource.texture.get(),
+            .before = resource.state,
+            .after = ResourceState::TransferDestination,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .textures = &toTransfer,
+            .textureCount = 1,
+        });
+        resource.state = ResourceState::TransferDestination;
+
+        commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
+            .buffer = resource.uploadBuffer.get(),
+            .texture = resource.texture.get(),
+            .width = resource.width,
+            .height = resource.height,
+            .depth = 1,
+            .mipLevel = 0,
+            .baseLayer = 0,
+        });
+
+        TextureBarrierDesc toShaderRead{
+            .texture = resource.texture.get(),
+            .before = resource.state,
+            .after = ResourceState::ShaderRead,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .textures = &toShaderRead,
+            .textureCount = 1,
+        });
+        resource.state = ResourceState::ShaderRead;
+        resource.uploaded = true;
+        return {};
+    }
+
+    Result uploadMaterialTexturesIfNeeded(CommandBuffer& commandBuffer)
+    {
+        Result result = uploadTextureIfNeeded(commandBuffer, fallbackMaterialTexture_);
+        if (!result) {
+            return result;
+        }
+        for (ChessNrdMaterialTextureResource& texture : materialTextures_) {
+            result = uploadTextureIfNeeded(commandBuffer, texture);
+            if (!result) {
+                return result;
+            }
+        }
+        return {};
+    }
+
+    bool buildMaterialTextureViewArray(
+        std::array<TextureView*, kChessNrdMaxMaterialTextures>& outTextureViews) const
+    {
+        if (fallbackMaterialTexture_.view == nullptr ||
+            materialTextures_.size() > outTextureViews.size()) {
+            return false;
+        }
+        outTextureViews.fill(fallbackMaterialTexture_.view.get());
+        for (size_t textureIndex = 0; textureIndex < materialTextures_.size(); ++textureIndex) {
+            if (materialTextures_[textureIndex].view == nullptr) {
+                return false;
+            }
+            outTextureViews[textureIndex] = materialTextures_[textureIndex].view.get();
+        }
+        return true;
+    }
+
     static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
     {
         if (props.contains("path") && props["path"].is_string()) {
@@ -3426,26 +3818,7 @@ private:
             const scene::RenderMaterial& source = scene.materials()[materialIndex];
             ScenePathTraceGpuMaterial& material = gpuScene.materials[materialIndex];
             const uint32_t kind = classifyMaterialKind(source.name);
-            material.params[3] = static_cast<float>(kind);
-            if (kind == 1) {
-                material.baseColor[0] = 0.65f;
-                material.baseColor[1] = 0.55f;
-                material.baseColor[2] = 0.40f;
-                material.params[0] = 0.0f;
-                material.params[1] = 0.42f;
-            } else if (kind == 2) {
-                material.baseColor[0] = std::max(material.baseColor[0], 0.92f);
-                material.baseColor[1] = std::max(material.baseColor[1], 0.86f);
-                material.baseColor[2] = std::max(material.baseColor[2], 0.68f);
-                material.params[0] = std::max(material.params[0], 0.05f);
-                material.params[1] = std::min(std::max(material.params[1], 0.18f), 0.34f);
-            } else if (kind == 3) {
-                material.baseColor[0] = 0.09f;
-                material.baseColor[1] = 0.22f;
-                material.baseColor[2] = 0.19f;
-                material.params[0] = std::max(material.params[0], 0.08f);
-                material.params[1] = std::min(std::max(material.params[1], 0.18f), 0.36f);
-            }
+            material.textureParams[2] = static_cast<float>(kind);
         }
     }
 
@@ -3734,6 +4107,8 @@ private:
         primitiveBuffer_.reset();
         instanceBuffer_.reset();
         materialBuffer_.reset();
+        materialTextures_.clear();
+        fallbackMaterialTexture_ = ChessNrdMaterialTextureResource{};
     }
 
     SceneRtxBuilder rtxBuilder_;
@@ -3745,6 +4120,8 @@ private:
     std::unique_ptr<Buffer> primitiveBuffer_;
     std::unique_ptr<Buffer> instanceBuffer_;
     std::unique_ptr<Buffer> materialBuffer_;
+    std::vector<ChessNrdMaterialTextureResource> materialTextures_;
+    ChessNrdMaterialTextureResource fallbackMaterialTexture_;
     Device* device_ = nullptr;
     Queue* queue_ = nullptr;
     uint32_t frameIndex_ = 0;

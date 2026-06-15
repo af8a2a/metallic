@@ -27,6 +27,7 @@ namespace {
 
 constexpr const char* kExtensionLightsPunctual = "KHR_lights_punctual";
 constexpr const char* kExtensionNodeVisibility = "KHR_node_visibility";
+constexpr const char* kExtensionTextureTransform = "KHR_texture_transform";
 constexpr double kFallbackCameraYFov = 0.7853981633974483;
 
 const std::unordered_set<std::string>& supportedRequiredExtensions()
@@ -49,7 +50,7 @@ const std::unordered_set<std::string>& supportedRequiredExtensions()
         "KHR_materials_volume",
         "KHR_materials_volume_scatter",
         "KHR_mesh_quantization",
-        "KHR_texture_transform",
+        kExtensionTextureTransform,
     };
     return kExtensions;
 }
@@ -349,6 +350,36 @@ std::vector<float2> readFloat2Accessor(const tinygltf::Model& model, const tinyg
     return values;
 }
 
+std::vector<float4> readFloat4Accessor(const tinygltf::Model& model, const tinygltf::Accessor& accessor)
+{
+    std::vector<float4> values;
+    if (accessor.type != TINYGLTF_TYPE_VEC4 || accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
+        return values;
+    }
+
+    const tinygltf::BufferView* bufferView = nullptr;
+    int stride = 0;
+    const uint8_t* data = accessorData(model, accessor, bufferView, stride);
+    if (data == nullptr || bufferView == nullptr) {
+        return values;
+    }
+
+    values.reserve(accessor.count);
+    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView->buffer)];
+    for (size_t index = 0; index < accessor.count; ++index) {
+        const size_t elementOffset = static_cast<size_t>(stride) * index;
+        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + sizeof(float) * 4 > buffer.data.size()) {
+            values.clear();
+            return values;
+        }
+
+        float components[4] = {};
+        std::memcpy(components, data + elementOffset, sizeof(components));
+        values.emplace_back(components[0], components[1], components[2], components[3]);
+    }
+    return values;
+}
+
 std::vector<uint32_t> readIndexAccessor(const tinygltf::Model& model, const tinygltf::Accessor& accessor)
 {
     std::vector<uint32_t> indices;
@@ -408,6 +439,124 @@ std::vector<uint32_t> readIndexAccessor(const tinygltf::Model& model, const tiny
         }
     }
     return indices;
+}
+
+bool readFloatArray2(const tinygltf::Value& value, const char* key, float out[2])
+{
+    if (!value.IsObject() || !value.Has(key)) {
+        return false;
+    }
+    const tinygltf::Value& array = value.Get(key);
+    if (!array.IsArray() || array.ArrayLen() < 2) {
+        return false;
+    }
+    for (size_t index = 0; index < 2; ++index) {
+        if (!array.Get(index).IsNumber()) {
+            return false;
+        }
+        out[index] = static_cast<float>(array.Get(index).GetNumberAsDouble());
+    }
+    return true;
+}
+
+void setUvTransform(
+    RenderTextureInfo& textureInfo,
+    const float offset[2],
+    const float scale[2],
+    float rotation)
+{
+    const float cosRotation = std::cos(rotation);
+    const float sinRotation = std::sin(rotation);
+    textureInfo.uvTransform = {
+        cosRotation * scale[0],
+        -sinRotation * scale[1],
+        offset[0],
+        sinRotation * scale[0],
+        cosRotation * scale[1],
+        offset[1],
+    };
+}
+
+template <typename TextureInfoT>
+RenderTextureInfo makeRenderTextureInfo(const TextureInfoT& gltfTextureInfo)
+{
+    RenderTextureInfo textureInfo;
+    textureInfo.textureIndex = gltfTextureInfo.index >= 0 ? gltfTextureInfo.index : kInvalidSceneIndex;
+    textureInfo.texCoord = std::max(gltfTextureInfo.texCoord, 0);
+
+    const auto extension = gltfTextureInfo.extensions.find(kExtensionTextureTransform);
+    if (extension == gltfTextureInfo.extensions.end()) {
+        return textureInfo;
+    }
+
+    const tinygltf::Value& transform = extension->second;
+    float offset[2] = {0.0f, 0.0f};
+    float scale[2] = {1.0f, 1.0f};
+    float rotation = 0.0f;
+    readFloatArray2(transform, "offset", offset);
+    readFloatArray2(transform, "scale", scale);
+    if (transform.IsObject() && transform.Has("rotation") && transform.Get("rotation").IsNumber()) {
+        rotation = static_cast<float>(transform.Get("rotation").GetNumberAsDouble());
+    }
+    if (transform.IsObject() && transform.Has("texCoord") && transform.Get("texCoord").IsInt()) {
+        textureInfo.texCoord = std::max(transform.Get("texCoord").Get<int>(), 0);
+    }
+    setUvTransform(textureInfo, offset, scale, rotation);
+    return textureInfo;
+}
+
+float3 fallbackTangentForNormal(const float3& normal)
+{
+    const float3 axis = std::abs(normal.z) < 0.999f
+        ? float3(0.0f, 0.0f, 1.0f)
+        : float3(0.0f, 1.0f, 0.0f);
+    return normalizedOr(cross(axis, normal), float3(1.0f, 0.0f, 0.0f));
+}
+
+void generateTangents(RenderPrimitive& primitive)
+{
+    if (primitive.positions.empty() ||
+        primitive.normals.size() != primitive.positions.size() ||
+        primitive.texcoords0.size() != primitive.positions.size()) {
+        return;
+    }
+
+    std::vector<float3> accumulated(primitive.positions.size(), float3(0.0f, 0.0f, 0.0f));
+    const size_t indexCount = primitive.indices.empty()
+        ? (primitive.positions.size() / 3) * 3
+        : (primitive.indices.size() / 3) * 3;
+    for (size_t index = 0; index + 2 < indexCount; index += 3) {
+        const uint32_t i0 = primitive.indices.empty() ? static_cast<uint32_t>(index + 0) : primitive.indices[index + 0];
+        const uint32_t i1 = primitive.indices.empty() ? static_cast<uint32_t>(index + 1) : primitive.indices[index + 1];
+        const uint32_t i2 = primitive.indices.empty() ? static_cast<uint32_t>(index + 2) : primitive.indices[index + 2];
+        if (i0 >= primitive.positions.size() || i1 >= primitive.positions.size() || i2 >= primitive.positions.size()) {
+            continue;
+        }
+
+        const float3 edge1 = primitive.positions[i1] - primitive.positions[i0];
+        const float3 edge2 = primitive.positions[i2] - primitive.positions[i0];
+        const float2 uv1 = primitive.texcoords0[i1] - primitive.texcoords0[i0];
+        const float2 uv2 = primitive.texcoords0[i2] - primitive.texcoords0[i0];
+        const float determinant = uv1.x * uv2.y - uv1.y * uv2.x;
+        if (std::abs(determinant) <= 0.0000001f) {
+            continue;
+        }
+
+        const float invDeterminant = 1.0f / determinant;
+        const float3 tangent = (edge1 * uv2.y - edge2 * uv1.y) * invDeterminant;
+        accumulated[i0] = accumulated[i0] + tangent;
+        accumulated[i1] = accumulated[i1] + tangent;
+        accumulated[i2] = accumulated[i2] + tangent;
+    }
+
+    primitive.tangents.clear();
+    primitive.tangents.reserve(primitive.positions.size());
+    for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
+        const float3 normal = normalizedOr(primitive.normals[vertexIndex], float3(0.0f, 1.0f, 0.0f));
+        float3 tangent = accumulated[vertexIndex] - normal * dot(normal, accumulated[vertexIndex]);
+        tangent = normalizedOr(tangent, fallbackTangentForNormal(normal));
+        primitive.tangents.emplace_back(tangent.x, tangent.y, tangent.z, 1.0f);
+    }
 }
 
 RenderCamera makeRenderCamera(
@@ -646,6 +795,38 @@ bool Scene::load(const std::filesystem::path& filename)
     stats_.meshCount = model.meshes.size();
     stats_.materialCount = model.materials.size();
 
+    images_.reserve(model.images.size());
+    for (size_t imageIndex = 0; imageIndex < model.images.size(); ++imageIndex) {
+        const tinygltf::Image& gltfImage = model.images[imageIndex];
+        RenderImage image;
+        image.name = defaultName(gltfImage.name, "Image", static_cast<int32_t>(imageIndex));
+        image.uri = gltfImage.uri;
+        image.mimeType = gltfImage.mimeType;
+        image.bufferView = gltfImage.bufferView;
+        if (validIndex(gltfImage.bufferView, model.bufferViews.size())) {
+            const tinygltf::BufferView& bufferView = model.bufferViews[static_cast<size_t>(gltfImage.bufferView)];
+            if (validIndex(bufferView.buffer, model.buffers.size())) {
+                const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView.buffer)];
+                if (bufferView.byteOffset <= buffer.data.size() &&
+                    bufferView.byteLength <= buffer.data.size() - bufferView.byteOffset) {
+                    const uint8_t* begin = buffer.data.data() + bufferView.byteOffset;
+                    image.encodedData.assign(begin, begin + bufferView.byteLength);
+                }
+            }
+        }
+        images_.push_back(std::move(image));
+    }
+
+    textures_.reserve(model.textures.size());
+    for (size_t textureIndex = 0; textureIndex < model.textures.size(); ++textureIndex) {
+        const tinygltf::Texture& gltfTexture = model.textures[textureIndex];
+        RenderTexture texture;
+        texture.name = defaultName(gltfTexture.name, "Texture", static_cast<int32_t>(textureIndex));
+        texture.imageIndex = gltfTexture.source;
+        texture.samplerIndex = gltfTexture.sampler;
+        textures_.push_back(std::move(texture));
+    }
+
     materials_.reserve(model.materials.size());
     for (size_t materialIndex = 0; materialIndex < model.materials.size(); ++materialIndex) {
         const tinygltf::Material& gltfMaterial = model.materials[materialIndex];
@@ -658,7 +839,16 @@ bool Scene::load(const std::filesystem::path& filename)
         material.roughnessFactor = static_cast<float>(gltfMaterial.pbrMetallicRoughness.roughnessFactor);
         material.emissiveFactor = makeFloat3(gltfMaterial.emissiveFactor, float3(0.0f, 0.0f, 0.0f));
         material.alphaCutoff = static_cast<float>(gltfMaterial.alphaCutoff);
+        material.alphaMode = gltfMaterial.alphaMode.empty() ? "OPAQUE" : gltfMaterial.alphaMode;
         material.doubleSided = gltfMaterial.doubleSided;
+        material.normalTextureScale = static_cast<float>(gltfMaterial.normalTexture.scale);
+        material.occlusionTextureStrength = static_cast<float>(gltfMaterial.occlusionTexture.strength);
+        material.baseColorTexture = makeRenderTextureInfo(gltfMaterial.pbrMetallicRoughness.baseColorTexture);
+        material.metallicRoughnessTexture = makeRenderTextureInfo(
+            gltfMaterial.pbrMetallicRoughness.metallicRoughnessTexture);
+        material.normalTexture = makeRenderTextureInfo(gltfMaterial.normalTexture);
+        material.occlusionTexture = makeRenderTextureInfo(gltfMaterial.occlusionTexture);
+        material.emissiveTexture = makeRenderTextureInfo(gltfMaterial.emissiveTexture);
         materials_.push_back(material);
     }
 
@@ -748,6 +938,17 @@ bool Scene::load(const std::filesystem::path& filename)
                     }
                 }
 
+                const auto tangentAccessorIter = gltfPrimitive.attributes.find("TANGENT");
+                if (tangentAccessorIter != gltfPrimitive.attributes.end() &&
+                    validIndex(tangentAccessorIter->second, model.accessors.size())) {
+                    primitive.tangents = readFloat4Accessor(
+                        model,
+                        model.accessors[static_cast<size_t>(tangentAccessorIter->second)]);
+                    if (primitive.tangents.size() != primitive.positions.size()) {
+                        primitive.tangents.clear();
+                    }
+                }
+
                 const auto texcoordAccessorIter = gltfPrimitive.attributes.find("TEXCOORD_0");
                 if (texcoordAccessorIter != gltfPrimitive.attributes.end() &&
                     validIndex(texcoordAccessorIter->second, model.accessors.size())) {
@@ -772,6 +973,9 @@ bool Scene::load(const std::filesystem::path& filename)
                     }
                 }
                 primitive.triangleCount = triangleCountForPrimitive(primitive.mode, primitive.indexCount);
+                if (primitive.tangents.empty()) {
+                    generateTangents(primitive);
+                }
 
                 RenderNode renderNode;
                 renderNode.nodeIndex = nodeIndex;
@@ -819,6 +1023,8 @@ void Scene::clearParsedData()
     nodes_.clear();
     renderPrimitives_.clear();
     renderNodes_.clear();
+    images_.clear();
+    textures_.clear();
     materials_.clear();
     cameras_.clear();
     lights_.clear();

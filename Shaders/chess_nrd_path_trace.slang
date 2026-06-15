@@ -31,6 +31,7 @@ struct PathTraceVertex
 {
     float4 position;
     float4 normal;
+    float4 tangent;
     float4 texcoord;
 };
 
@@ -50,11 +51,27 @@ struct PathTraceInstance
     uint padding;
 };
 
+struct PathTraceTextureInfo
+{
+    uint textureIndex;
+    uint texCoord;
+    uint padding0;
+    uint padding1;
+    float4 transform0;
+    float4 transform1;
+};
+
 struct PathTraceMaterial
 {
     float4 baseColor;
     float4 emissive;
     float4 params;
+    float4 textureParams;
+    PathTraceTextureInfo baseColorTexture;
+    PathTraceTextureInfo metallicRoughnessTexture;
+    PathTraceTextureInfo normalTexture;
+    PathTraceTextureInfo occlusionTexture;
+    PathTraceTextureInfo emissiveTexture;
 };
 
 [[vk::binding(9, 0)]]
@@ -71,6 +88,9 @@ StructuredBuffer<PathTraceInstance> gInstances;
 
 [[vk::binding(13, 0)]]
 StructuredBuffer<PathTraceMaterial> gMaterials;
+
+[[vk::binding(14, 0)]]
+Texture2D<float4> gMaterialTextures[128];
 
 struct ChessNrdPush
 {
@@ -101,6 +121,8 @@ struct HitInfo
     float3 position;
     float3 normal;
     float3 geometryNormal;
+    float3 tangent;
+    float bitangentSign;
     float2 texcoord;
     uint materialIndex;
 };
@@ -111,11 +133,15 @@ struct MaterialSample
     float metallic;
     float roughness;
     float3 emissive;
+    float occlusion;
+    float3 normal;
 };
 
 static const uint kNrdReblur = 0u;
 static const uint kNrdRelax = 1u;
 static const uint kNrdReference = 2u;
+static const uint kInvalidTextureIndex = 0xffffffffu;
+static const uint kMaxMaterialTextures = 128u;
 static const float kPi = 3.14159265358979323846;
 static const float4 kDiffHitDistParams = float4(3.0, 0.1, 20.0, -25.0);
 static const float4 kSpecHitDistParams = float4(3.0, 0.1, 20.0, -25.0);
@@ -199,6 +225,62 @@ float3 skyRadiance(float3 direction)
     return lerp(horizon, zenith, t) * 0.55 + sun * float3(8.0, 7.1, 5.8);
 }
 
+float3 srgbToLinear(float3 value)
+{
+    return pow(max(value, float3(0.0, 0.0, 0.0)), 2.2);
+}
+
+bool hasMaterialTexture(PathTraceTextureInfo textureInfo)
+{
+    return textureInfo.textureIndex != kInvalidTextureIndex &&
+        textureInfo.textureIndex < kMaxMaterialTextures;
+}
+
+float2 transformTexcoord(PathTraceTextureInfo textureInfo, float2 texcoord)
+{
+    float3 uv = float3(texcoord, 1.0);
+    return float2(dot(textureInfo.transform0.xyz, uv), dot(textureInfo.transform1.xyz, uv));
+}
+
+uint wrapTexel(int value, uint size)
+{
+    int signedSize = int(max(size, 1u));
+    int wrapped = value % signedSize;
+    return uint(wrapped < 0 ? wrapped + signedSize : wrapped);
+}
+
+float4 loadMaterialTexture(PathTraceTextureInfo textureInfo, float2 texcoord, bool srgb)
+{
+    if (!hasMaterialTexture(textureInfo)) {
+        return float4(1.0, 1.0, 1.0, 1.0);
+    }
+
+    Texture2D<float4> texture = gMaterialTextures[NonUniformResourceIndex(textureInfo.textureIndex)];
+    uint width = 1u;
+    uint height = 1u;
+    texture.GetDimensions(width, height);
+
+    float2 uv = frac(transformTexcoord(textureInfo, texcoord));
+    float2 imageCoord = uv * float2(width, height) - 0.5;
+    int2 baseCoord = int2(floor(imageCoord));
+    float2 blend = frac(imageCoord);
+
+    uint2 p00 = uint2(wrapTexel(baseCoord.x, width), wrapTexel(baseCoord.y, height));
+    uint2 p10 = uint2(wrapTexel(baseCoord.x + 1, width), p00.y);
+    uint2 p01 = uint2(p00.x, wrapTexel(baseCoord.y + 1, height));
+    uint2 p11 = uint2(p10.x, p01.y);
+
+    float4 c00 = texture.Load(int3(p00, 0));
+    float4 c10 = texture.Load(int3(p10, 0));
+    float4 c01 = texture.Load(int3(p01, 0));
+    float4 c11 = texture.Load(int3(p11, 0));
+    float4 value = lerp(lerp(c00, c10, blend.x), lerp(c01, c11, blend.x), blend.y);
+    if (srgb) {
+        value.rgb = srgbToLinear(value.rgb);
+    }
+    return value;
+}
+
 float3 sampleCosineHemisphere(float3 normal, inout uint seed)
 {
     float r0 = rand(seed);
@@ -236,6 +318,8 @@ bool traceClosest(Ray ray, ChessNrdPush push, out HitInfo hit)
     hit.position = ray.origin;
     hit.normal = float3(0.0, 1.0, 0.0);
     hit.geometryNormal = hit.normal;
+    hit.tangent = float3(1.0, 0.0, 0.0);
+    hit.bitangentSign = 1.0;
     hit.texcoord = float2(0.0, 0.0);
     hit.materialIndex = 0u;
 
@@ -277,6 +361,10 @@ bool traceClosest(Ray ray, ChessNrdPush push, out HitInfo hit)
     float3 localGeometryNormal = safeNormalize(cross(p1 - p0, p2 - p0), float3(0.0, 1.0, 0.0));
     float3 localNormal = v0.normal.xyz * weights.x + v1.normal.xyz * weights.y + v2.normal.xyz * weights.z;
     localNormal = dot(localNormal, localNormal) > 0.000001 ? safeNormalize(localNormal, localGeometryNormal) : localGeometryNormal;
+    float4 localTangent4 = v0.tangent * weights.x + v1.tangent * weights.y + v2.tangent * weights.z;
+    float3 localTangent = dot(localTangent4.xyz, localTangent4.xyz) > 0.000001
+        ? safeNormalize(localTangent4.xyz, float3(1.0, 0.0, 0.0))
+        : float3(1.0, 0.0, 0.0);
     float2 localTexcoord = v0.texcoord.xy * weights.x + v1.texcoord.xy * weights.y + v2.texcoord.xy * weights.z;
 
     float4x3 objectToWorld = query.CommittedObjectToWorld4x3();
@@ -284,6 +372,7 @@ bool traceClosest(Ray ray, ChessNrdPush push, out HitInfo hit)
     hit.position = float3(mul(float4(localPosition, 1.0), objectToWorld));
     hit.geometryNormal = safeNormalize(float3(mul(worldToObject, localGeometryNormal).xyz), localGeometryNormal);
     hit.normal = safeNormalize(float3(mul(worldToObject, localNormal).xyz), hit.geometryNormal);
+    hit.tangent = safeNormalize(float3(mul(worldToObject, localTangent).xyz), float3(1.0, 0.0, 0.0));
     hit.texcoord = localTexcoord;
 
     float3 view = -ray.direction;
@@ -293,6 +382,8 @@ bool traceClosest(Ray ray, ChessNrdPush push, out HitInfo hit)
     if (dot(hit.normal, hit.geometryNormal) < 0.0) {
         hit.normal = -hit.normal;
     }
+    hit.tangent = safeNormalize(hit.tangent - hit.normal * dot(hit.normal, hit.tangent), safeNormalize(cross(float3(0.0, 1.0, 0.0), hit.normal), float3(1.0, 0.0, 0.0)));
+    hit.bitangentSign = localTangent4.w >= 0.0 ? 1.0 : -1.0;
 
     hit.t = query.CommittedRayT();
     hit.materialIndex = instance.materialIndex;
@@ -307,27 +398,47 @@ MaterialSample sampleMaterial(HitInfo hit)
     material.metallic = saturate(source.params.x);
     material.roughness = clamp(source.params.y, 0.03, 0.95);
     material.emissive = max(source.emissive.rgb, float3(0.0, 0.0, 0.0));
+    material.occlusion = 1.0;
+    material.normal = hit.normal;
 
-    uint kind = uint(round(source.params.w));
-    if (kind == 1u) {
-        float squareSize = 0.0625;
-        float2 board = (hit.position.xz + float2(0.255, 0.255)) / squareSize;
-        uint square = (uint(floor(board.x)) + uint(floor(board.y))) & 1u;
-        float edge = smoothstep(0.025, 0.08, min(frac(board.x), min(frac(board.y), min(1.0 - frac(board.x), 1.0 - frac(board.y)))));
-        float3 lightSquare = float3(0.86, 0.78, 0.58);
-        float3 darkSquare = float3(0.18, 0.24, 0.22);
-        material.baseColor = lerp(lerp(lightSquare, darkSquare, float(square)), float3(0.08, 0.08, 0.075), 1.0 - edge);
-        material.metallic = 0.0;
-        material.roughness = 0.42;
-    } else if (kind == 2u) {
-        material.baseColor = max(material.baseColor, float3(0.92, 0.86, 0.68));
-        material.metallic = max(material.metallic, 0.05);
-        material.roughness = min(material.roughness, 0.34);
-    } else if (kind == 3u) {
-        material.baseColor = min(max(material.baseColor, float3(0.09, 0.21, 0.19)), float3(0.22, 0.42, 0.36));
-        material.metallic = max(material.metallic, 0.08);
-        material.roughness = min(material.roughness, 0.36);
+    if (hasMaterialTexture(source.baseColorTexture)) {
+        float4 baseColor = loadMaterialTexture(source.baseColorTexture, hit.texcoord, true);
+        material.baseColor *= saturate(baseColor.rgb);
     }
+
+    if (hasMaterialTexture(source.metallicRoughnessTexture)) {
+        float4 metallicRoughness = loadMaterialTexture(source.metallicRoughnessTexture, hit.texcoord, false);
+        material.roughness *= metallicRoughness.g;
+        material.metallic *= metallicRoughness.b;
+    }
+
+    if (hasMaterialTexture(source.occlusionTexture)) {
+        float occlusion = loadMaterialTexture(source.occlusionTexture, hit.texcoord, false).r;
+        material.occlusion = 1.0 + source.textureParams.y * (occlusion - 1.0);
+    }
+
+    if (hasMaterialTexture(source.emissiveTexture)) {
+        material.emissive *= loadMaterialTexture(source.emissiveTexture, hit.texcoord, true).rgb;
+    }
+
+    if (hasMaterialTexture(source.normalTexture)) {
+        float3 tangentNormal = loadMaterialTexture(source.normalTexture, hit.texcoord, false).xyz * 2.0 - 1.0;
+        tangentNormal.xy *= max(source.textureParams.x, 0.0);
+        tangentNormal = safeNormalize(tangentNormal, float3(0.0, 0.0, 1.0));
+        float3 fallbackBitangent = safeNormalize(cross(hit.geometryNormal, hit.tangent), float3(0.0, 0.0, 1.0));
+        float3 bitangent = safeNormalize(cross(hit.normal, hit.tangent) * hit.bitangentSign, fallbackBitangent);
+        material.normal = safeNormalize(
+            hit.tangent * tangentNormal.x + bitangent * tangentNormal.y + hit.normal * tangentNormal.z,
+            hit.normal);
+        if (dot(material.normal, hit.geometryNormal) < 0.0) {
+            material.normal = hit.normal;
+        }
+    }
+
+    material.baseColor = saturate(material.baseColor);
+    material.metallic = saturate(material.metallic);
+    material.roughness = clamp(material.roughness, 0.03, 0.95);
+    material.occlusion = saturate(material.occlusion);
     return material;
 }
 
@@ -339,20 +450,20 @@ float3 fresnelF0(MaterialSample material)
 float3 evaluateDirect(HitInfo hit, MaterialSample material, float3 viewDirection)
 {
     float3 lightDirection = sunDirection();
-    float nDotL = saturate(dot(hit.normal, lightDirection));
+    float nDotL = saturate(dot(material.normal, lightDirection));
     float3 direct = float3(0.0, 0.0, 0.0);
     if (nDotL > 0.0) {
         bool occluded = traceShadow(offsetRay(hit.position, hit.geometryNormal), lightDirection, 10000.0);
         if (!occluded) {
-            float3 halfVector = safeNormalize(lightDirection + viewDirection, hit.normal);
-            float nDotH = saturate(dot(hit.normal, halfVector));
+            float3 halfVector = safeNormalize(lightDirection + viewDirection, material.normal);
+            float nDotH = saturate(dot(material.normal, halfVector));
             float specularPower = lerp(128.0, 10.0, material.roughness);
             float3 diffuse = material.baseColor * (1.0 - material.metallic) * (nDotL / kPi);
             float3 specular = fresnelF0(material) * pow(nDotH, specularPower) * nDotL;
             direct += (diffuse + specular) * float3(7.2, 6.5, 5.3);
         }
     }
-    float ambient = 0.10 + 0.08 * saturate(hit.normal.y);
+    float ambient = (0.10 + 0.08 * saturate(material.normal.y)) * material.occlusion;
     direct += material.baseColor * ambient;
     return direct + material.emissive;
 }
@@ -419,17 +530,19 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     float specularHitDistance = 0.0;
 
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
-        float3 diffuseDirection = sampleCosineHemisphere(primaryHit.normal, seed);
+        float3 diffuseDirection = sampleCosineHemisphere(material.normal, seed);
         Ray diffuseRay;
         diffuseRay.origin = offsetRay(primaryHit.position, primaryHit.geometryNormal);
         diffuseRay.direction = diffuseDirection;
         float diffHit = 0.0;
         float3 diffRadiance = bounceRadiance(diffuseRay, push, seed, diffHit);
-        diffuseAccum += diffRadiance * material.baseColor * (1.0 - material.metallic);
+        diffuseAccum += diffRadiance * material.baseColor * (1.0 - material.metallic) * material.occlusion;
         diffuseHitDistance += diffHit;
 
-        float3 reflectedDirection = reflect(primaryRay.direction, primaryHit.normal);
-        float3 specularDirection = safeNormalize(lerp(reflectedDirection, diffuseDirection, material.roughness * material.roughness), reflectedDirection);
+        float3 reflectedDirection = reflect(primaryRay.direction, material.normal);
+        float3 specularDirection = safeNormalize(
+            lerp(reflectedDirection, diffuseDirection, material.roughness * material.roughness),
+            reflectedDirection);
         Ray specularRay;
         specularRay.origin = offsetRay(primaryHit.position, dot(specularDirection, primaryHit.geometryNormal) > 0.0 ? primaryHit.geometryNormal : -primaryHit.geometryNormal);
         specularRay.direction = specularDirection;
@@ -467,7 +580,7 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
 
     gNoisyDiffuse[pixel] = packedDiffuse;
     gNoisySpecular[pixel] = packedSpecular;
-    gNormalRoughness[pixel] = NRD_FrontEnd_PackNormalAndRoughness(primaryHit.normal, material.roughness, 0.0);
+    gNormalRoughness[pixel] = NRD_FrontEnd_PackNormalAndRoughness(material.normal, material.roughness, 0.0);
     gMotionVectors[pixel] = float4(0.0, 0.0, 0.0, 0.0);
     gViewZ[pixel] = viewZ;
     gDirectLighting[pixel] = float4(direct, 1.0);

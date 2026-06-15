@@ -303,6 +303,8 @@ VkDescriptorType descriptorTypeFor(SceneRayQueryBindingKind kind)
         return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     case SceneRayQueryBindingKind::StorageBuffer:
         return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    case SceneRayQueryBindingKind::SampledImage:
+        return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     }
     return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 }
@@ -338,19 +340,20 @@ bool hasDuplicateBindings(const SceneRayQueryBindingDesc* bindings, uint32_t bin
 }
 
 void addPoolSize(
-    std::array<VkDescriptorPoolSize, 3>& poolSizes,
+    std::array<VkDescriptorPoolSize, 4>& poolSizes,
     uint32_t& poolSizeCount,
-    VkDescriptorType type)
+    VkDescriptorType type,
+    uint32_t descriptorCount)
 {
     for (uint32_t index = 0; index < poolSizeCount; ++index) {
         if (poolSizes[index].type == type) {
-            ++poolSizes[index].descriptorCount;
+            poolSizes[index].descriptorCount += descriptorCount;
             return;
         }
     }
     poolSizes[poolSizeCount++] = VkDescriptorPoolSize{
         .type = type,
-        .descriptorCount = 1,
+        .descriptorCount = descriptorCount,
     };
 }
 
@@ -916,17 +919,18 @@ Result SceneRayQueryProgram::initialize(
 
     std::vector<VkDescriptorSetLayoutBinding> vkBindings;
     vkBindings.reserve(desc.bindingCount);
-    std::array<VkDescriptorPoolSize, 3> poolSizes{};
+    std::array<VkDescriptorPoolSize, 4> poolSizes{};
     uint32_t poolSizeCount = 0;
     for (const SceneRayQueryBindingDesc& binding : impl_->bindings) {
         const VkDescriptorType descriptorType = descriptorTypeFor(binding.kind);
+        const uint32_t descriptorCount = std::max(binding.descriptorCount, 1u);
         vkBindings.push_back(VkDescriptorSetLayoutBinding{
             .binding = binding.binding,
             .descriptorType = descriptorType,
-            .descriptorCount = 1,
+            .descriptorCount = descriptorCount,
             .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
         });
-        addPoolSize(poolSizes, poolSizeCount, descriptorType);
+        addPoolSize(poolSizes, poolSizeCount, descriptorType, descriptorCount);
     }
 
     VkDescriptorSetLayoutCreateInfo setLayoutInfo{
@@ -1071,7 +1075,14 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
     writes.reserve(impl_->bindings.size());
     accelerationInfos.reserve(impl_->bindings.size());
     accelerationStructures.reserve(impl_->bindings.size());
-    imageInfos.reserve(impl_->bindings.size());
+    size_t imageInfoCapacity = 0;
+    for (const SceneRayQueryBindingDesc& binding : impl_->bindings) {
+        if (binding.kind == SceneRayQueryBindingKind::StorageImage ||
+            binding.kind == SceneRayQueryBindingKind::SampledImage) {
+            imageInfoCapacity += std::max(binding.descriptorCount, 1u);
+        }
+    }
+    imageInfos.reserve(imageInfoCapacity);
     bufferInfos.reserve(impl_->bindings.size());
 
     for (const SceneRayQueryBindingDesc& expectedBinding : impl_->bindings) {
@@ -1084,7 +1095,7 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = impl_->descriptorSet,
             .dstBinding = expectedBinding.binding,
-            .descriptorCount = 1,
+            .descriptorCount = std::max(expectedBinding.descriptorCount, 1u),
             .descriptorType = descriptorTypeFor(expectedBinding.kind),
         };
         switch (expectedBinding.kind) {
@@ -1095,6 +1106,7 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
                 binding->accelerationStructure->impl_->tlas == VK_NULL_HANDLE) {
                 return makeError(Error::InvalidArgument);
             }
+            write.descriptorCount = 1;
             accelerationStructures.push_back(binding->accelerationStructure->impl_->tlas);
             accelerationInfos.push_back(VkWriteDescriptorSetAccelerationStructureKHR{
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
@@ -1107,6 +1119,7 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
             if (binding->textureView == nullptr) {
                 return makeError(Error::InvalidArgument);
             }
+            write.descriptorCount = 1;
             VkImageView imageView = nativeImageView(*binding->textureView);
             if (imageView == VK_NULL_HANDLE) {
                 return makeError(Error::InvalidArgument);
@@ -1118,10 +1131,35 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
             write.pImageInfo = &imageInfos.back();
             break;
         }
+        case SceneRayQueryBindingKind::SampledImage: {
+            const uint32_t descriptorCount = std::max(expectedBinding.descriptorCount, 1u);
+            if (binding->textureViews == nullptr || binding->textureViewCount < descriptorCount) {
+                return makeError(Error::InvalidArgument);
+            }
+            const size_t firstImageInfo = imageInfos.size();
+            for (uint32_t index = 0; index < descriptorCount; ++index) {
+                TextureView* textureView = binding->textureViews[index];
+                if (textureView == nullptr) {
+                    return makeError(Error::InvalidArgument);
+                }
+                VkImageView imageView = nativeImageView(*textureView);
+                if (imageView == VK_NULL_HANDLE) {
+                    return makeError(Error::InvalidArgument);
+                }
+                imageInfos.push_back(VkDescriptorImageInfo{
+                    .imageView = imageView,
+                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                });
+            }
+            write.descriptorCount = descriptorCount;
+            write.pImageInfo = imageInfos.data() + firstImageInfo;
+            break;
+        }
         case SceneRayQueryBindingKind::StorageBuffer: {
             if (binding->buffer == nullptr) {
                 return makeError(Error::InvalidArgument);
             }
+            write.descriptorCount = 1;
             const NativeBuffer native = nativeBuffer(*binding->buffer);
             if (native.buffer == VK_NULL_HANDLE ||
                 binding->offset > native.size ||

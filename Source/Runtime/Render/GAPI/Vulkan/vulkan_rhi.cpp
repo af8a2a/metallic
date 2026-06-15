@@ -4259,6 +4259,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             descriptorHeapFeatures.descriptorHeap == VK_TRUE &&
             vulkan12Features.descriptorIndexing == VK_TRUE &&
             vulkan12Features.runtimeDescriptorArray == VK_TRUE &&
+            vulkan12Features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
             vulkan12Features.bufferDeviceAddress == VK_TRUE &&
             DescriptorHeapWriter::isSupported(physicalDevice);
         const bool shaderObjectSupported =
@@ -4434,6 +4435,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &enabledVulkan13Features,
         .descriptorIndexing = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
+        .shaderSampledImageArrayNonUniformIndexing = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
         .runtimeDescriptorArray = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
         .bufferDeviceAddress =
             (selectedBindlessDescriptorHeap || selectedRayTracingAccelerationStructure || selectedRayQuery)

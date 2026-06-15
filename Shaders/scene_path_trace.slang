@@ -8,6 +8,7 @@ struct PathTraceVertex
 {
     float4 position;
     float4 normal;
+    float4 tangent;
     float4 texcoord;
 };
 
@@ -27,11 +28,27 @@ struct PathTraceInstance
     uint padding;
 };
 
+struct PathTraceTextureInfo
+{
+    uint textureIndex;
+    uint texCoord;
+    uint padding0;
+    uint padding1;
+    float4 transform0;
+    float4 transform1;
+};
+
 struct PathTraceMaterial
 {
     float4 baseColor;
     float4 emissive;
     float4 params;
+    float4 textureParams;
+    PathTraceTextureInfo baseColorTexture;
+    PathTraceTextureInfo metallicRoughnessTexture;
+    PathTraceTextureInfo normalTexture;
+    PathTraceTextureInfo occlusionTexture;
+    PathTraceTextureInfo emissiveTexture;
 };
 
 [[vk::binding(2, 0)]]

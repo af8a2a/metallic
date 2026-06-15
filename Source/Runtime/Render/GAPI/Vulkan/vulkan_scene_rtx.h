@@ -48,11 +48,13 @@ enum class SceneRayQueryBindingKind : uint8_t {
     AccelerationStructure,
     StorageImage,
     StorageBuffer,
+    SampledImage,
 };
 
 struct SceneRayQueryBindingDesc {
     uint32_t binding = 0;
     SceneRayQueryBindingKind kind = SceneRayQueryBindingKind::StorageBuffer;
+    uint32_t descriptorCount = 1;
 };
 
 struct SceneRayQueryProgramDesc {
@@ -68,6 +70,8 @@ struct SceneRayQueryDispatchBinding {
     uint32_t binding = 0;
     SceneRtxBuilder* accelerationStructure = nullptr;
     TextureView* textureView = nullptr;
+    TextureView* const* textureViews = nullptr;
+    uint32_t textureViewCount = 0;
     Buffer* buffer = nullptr;
     uint64_t offset = 0;
     uint64_t size = UINT64_MAX;

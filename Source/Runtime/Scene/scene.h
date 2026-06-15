@@ -2,6 +2,7 @@
 
 
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -68,8 +69,29 @@ struct RenderPrimitive {
     Bounds localBounds;
     std::vector<float3> positions;
     std::vector<float3> normals;
+    std::vector<float4> tangents;
     std::vector<float2> texcoords0;
     std::vector<uint32_t> indices;
+};
+
+struct RenderImage {
+    std::string name;
+    std::string uri;
+    std::string mimeType;
+    int32_t bufferView = kInvalidSceneIndex;
+    std::vector<uint8_t> encodedData;
+};
+
+struct RenderTexture {
+    std::string name;
+    int32_t imageIndex = kInvalidSceneIndex;
+    int32_t samplerIndex = kInvalidSceneIndex;
+};
+
+struct RenderTextureInfo {
+    int32_t textureIndex = kInvalidSceneIndex;
+    int32_t texCoord = 0;
+    std::array<float, 6> uvTransform{1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
 };
 
 struct RenderNode {
@@ -87,7 +109,15 @@ struct RenderMaterial {
     float roughnessFactor = 1.0f;
     float3 emissiveFactor{0.0f, 0.0f, 0.0f};
     float alphaCutoff = 0.5f;
+    std::string alphaMode = "OPAQUE";
     bool doubleSided = false;
+    float normalTextureScale = 1.0f;
+    float occlusionTextureStrength = 1.0f;
+    RenderTextureInfo baseColorTexture;
+    RenderTextureInfo metallicRoughnessTexture;
+    RenderTextureInfo normalTexture;
+    RenderTextureInfo occlusionTexture;
+    RenderTextureInfo emissiveTexture;
 };
 
 struct RenderCamera {
@@ -136,6 +166,8 @@ public:
     const std::vector<SceneNode>& nodes() const { return nodes_; }
     const std::vector<RenderPrimitive>& renderPrimitives() const { return renderPrimitives_; }
     const std::vector<RenderNode>& renderNodes() const { return renderNodes_; }
+    const std::vector<RenderImage>& images() const { return images_; }
+    const std::vector<RenderTexture>& textures() const { return textures_; }
     const std::vector<RenderMaterial>& materials() const { return materials_; }
     const std::vector<RenderCamera>& cameras() const { return cameras_; }
     const std::vector<RenderLight>& lights() const { return lights_; }
@@ -153,6 +185,8 @@ private:
     std::vector<SceneNode> nodes_;
     std::vector<RenderPrimitive> renderPrimitives_;
     std::vector<RenderNode> renderNodes_;
+    std::vector<RenderImage> images_;
+    std::vector<RenderTexture> textures_;
     std::vector<RenderMaterial> materials_;
     std::vector<RenderCamera> cameras_;
     std::vector<RenderLight> lights_;
