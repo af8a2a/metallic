@@ -52,6 +52,10 @@ constexpr const char* kChessNrdPathTraceShaderModuleName = "chess_nrd_path_trace
 constexpr const char* kChessNrdPathTraceEntryPoint = "chessNrdPathTraceMain";
 constexpr const char* kChessNrdCompositeShaderModuleName = "chess_nrd_composite";
 constexpr const char* kChessNrdCompositeEntryPoint = "chessNrdCompositeMain";
+constexpr const char* kChessHdrPrefilterDiffuseShaderModuleName = "chess_hdr_prefilter_diffuse";
+constexpr const char* kChessHdrPrefilterDiffuseEntryPoint = "chessHdrPrefilterDiffuseMain";
+constexpr const char* kChessHdrPrefilterGlossyShaderModuleName = "chess_hdr_prefilter_glossy";
+constexpr const char* kChessHdrPrefilterGlossyEntryPoint = "chessHdrPrefilterGlossyMain";
 constexpr const char* kRenderGraphBufferShaderModuleName = "render_graph_buffer";
 constexpr const char* kRenderGraphBufferWriteEntryPoint = "renderGraphBufferWriteMain";
 constexpr const char* kRenderGraphBufferCopyEntryPoint = "renderGraphBufferCopyMain";
@@ -64,7 +68,6 @@ constexpr const char* kDefaultChessEnvironmentPath = PROJECT_SOURCE_DIR "/Asset/
 constexpr float kDefaultChessEnvironmentIntensity = 0.18f;
 constexpr float kDefaultChessEnvironmentRotationDegrees = 0.0f;
 constexpr float kDegreesToRadians = 0.017453292519943295769f;
-constexpr float kPi = 3.14159265358979323846f;
 constexpr uint32_t kChessEnvironmentDiffuseWidth = 64;
 constexpr uint32_t kChessEnvironmentDiffuseHeight = 32;
 constexpr uint32_t kChessEnvironmentGlossyWidth = 64;
@@ -264,6 +267,17 @@ struct ChessNrdCompositePush {
     uint32_t visualization = kChessNrdVisualFinal;
 };
 
+struct ChessHdrPrefilterPush {
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t layerOffset = 0;
+    uint32_t sampleCount = 1;
+    float roughness = 0.0f;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+};
+
 struct ChessNrdMaterialTextureResource {
     std::unique_ptr<Buffer> uploadBuffer;
     std::unique_ptr<Texture> texture;
@@ -281,257 +295,6 @@ struct ChessNrdEnvironmentPixels {
     uint32_t width = 0;
     uint32_t height = 0;
 };
-
-struct ChessNrdFloat3 {
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-};
-
-ChessNrdFloat3 makeFloat3(float x, float y, float z)
-{
-    return ChessNrdFloat3{x, y, z};
-}
-
-ChessNrdFloat3 operator+(ChessNrdFloat3 lhs, ChessNrdFloat3 rhs)
-{
-    return makeFloat3(lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z);
-}
-
-ChessNrdFloat3 operator-(ChessNrdFloat3 lhs, ChessNrdFloat3 rhs)
-{
-    return makeFloat3(lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z);
-}
-
-ChessNrdFloat3 operator*(ChessNrdFloat3 value, float scale)
-{
-    return makeFloat3(value.x * scale, value.y * scale, value.z * scale);
-}
-
-ChessNrdFloat3 operator/(ChessNrdFloat3 value, float scale)
-{
-    return scale > 0.0f ? value * (1.0f / scale) : ChessNrdFloat3{};
-}
-
-float dot(ChessNrdFloat3 lhs, ChessNrdFloat3 rhs)
-{
-    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
-}
-
-ChessNrdFloat3 cross(ChessNrdFloat3 lhs, ChessNrdFloat3 rhs)
-{
-    return makeFloat3(
-        lhs.y * rhs.z - lhs.z * rhs.y,
-        lhs.z * rhs.x - lhs.x * rhs.z,
-        lhs.x * rhs.y - lhs.y * rhs.x);
-}
-
-float length(ChessNrdFloat3 value)
-{
-    return std::sqrt(std::max(dot(value, value), 0.0f));
-}
-
-ChessNrdFloat3 normalizeOr(ChessNrdFloat3 value, ChessNrdFloat3 fallback)
-{
-    const float len = length(value);
-    return len > 0.000001f && std::isfinite(len) ? value / len : fallback;
-}
-
-ChessNrdFloat3 reflect(ChessNrdFloat3 incident, ChessNrdFloat3 normal)
-{
-    return incident - normal * (2.0f * dot(incident, normal));
-}
-
-void orthonormalBasis(ChessNrdFloat3 normal, ChessNrdFloat3& tangent, ChessNrdFloat3& bitangent)
-{
-    tangent = std::abs(normal.z) < 0.999f
-        ? normalizeOr(cross(makeFloat3(0.0f, 0.0f, 1.0f), normal), makeFloat3(1.0f, 0.0f, 0.0f))
-        : normalizeOr(cross(makeFloat3(0.0f, 1.0f, 0.0f), normal), makeFloat3(1.0f, 0.0f, 0.0f));
-    bitangent = cross(normal, tangent);
-}
-
-float radicalInverseVdc(uint32_t bits)
-{
-    bits = (bits << 16u) | (bits >> 16u);
-    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xaaaaaaaau) >> 1u);
-    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xccccccccu) >> 2u);
-    bits = ((bits & 0x0f0f0f0fu) << 4u) | ((bits & 0xf0f0f0f0u) >> 4u);
-    bits = ((bits & 0x00ff00ffu) << 8u) | ((bits & 0xff00ff00u) >> 8u);
-    return static_cast<float>(bits) * 2.3283064365386963e-10f;
-}
-
-std::array<float, 2> hammersley(uint32_t index, uint32_t count)
-{
-    return {
-        (static_cast<float>(index) + 0.5f) / static_cast<float>(std::max(count, 1u)),
-        radicalInverseVdc(index),
-    };
-}
-
-ChessNrdFloat3 directionFromEquirectTexel(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
-{
-    const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(std::max(width, 1u));
-    const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(std::max(height, 1u));
-    const float phi = (u - 0.5f) * 2.0f * kPi;
-    const float theta = v * kPi;
-    const float sinTheta = std::sin(theta);
-    return normalizeOr(
-        makeFloat3(std::cos(phi) * sinTheta, std::cos(theta), std::sin(phi) * sinTheta),
-        makeFloat3(0.0f, 1.0f, 0.0f));
-}
-
-ChessNrdFloat3 sampleEnvironmentPixels(const ChessNrdEnvironmentPixels& environment, ChessNrdFloat3 direction)
-{
-    if (environment.rgba.empty() || environment.width == 0 || environment.height == 0) {
-        return {};
-    }
-
-    const ChessNrdFloat3 dir = normalizeOr(direction, makeFloat3(0.0f, 1.0f, 0.0f));
-    const float phi = std::atan2(dir.z, dir.x);
-    const float theta = std::acos(std::clamp(dir.y, -1.0f, 1.0f));
-    const float u = std::fmod(0.5f + phi / (2.0f * kPi) + 1.0f, 1.0f);
-    const float v = theta / kPi;
-    const float imageX = u * static_cast<float>(environment.width) - 0.5f;
-    const float imageY = v * static_cast<float>(environment.height) - 0.5f;
-    const int32_t baseX = static_cast<int32_t>(std::floor(imageX));
-    const int32_t baseY = static_cast<int32_t>(std::floor(imageY));
-    const float blendX = imageX - std::floor(imageX);
-    const float blendY = imageY - std::floor(imageY);
-
-    auto wrapX = [&](int32_t value) -> uint32_t {
-        const int32_t size = static_cast<int32_t>(environment.width);
-        int32_t wrapped = value % size;
-        return static_cast<uint32_t>(wrapped < 0 ? wrapped + size : wrapped);
-    };
-    auto clampY = [&](int32_t value) -> uint32_t {
-        return static_cast<uint32_t>(std::clamp(value, 0, static_cast<int32_t>(environment.height) - 1));
-    };
-    auto texel = [&](uint32_t x, uint32_t y) -> ChessNrdFloat3 {
-        const size_t offset = (static_cast<size_t>(y) * environment.width + x) * 4u;
-        return makeFloat3(
-            std::max(environment.rgba[offset + 0u], 0.0f),
-            std::max(environment.rgba[offset + 1u], 0.0f),
-            std::max(environment.rgba[offset + 2u], 0.0f));
-    };
-
-    const ChessNrdFloat3 c00 = texel(wrapX(baseX), clampY(baseY));
-    const ChessNrdFloat3 c10 = texel(wrapX(baseX + 1), clampY(baseY));
-    const ChessNrdFloat3 c01 = texel(wrapX(baseX), clampY(baseY + 1));
-    const ChessNrdFloat3 c11 = texel(wrapX(baseX + 1), clampY(baseY + 1));
-    const ChessNrdFloat3 cx0 = c00 * (1.0f - blendX) + c10 * blendX;
-    const ChessNrdFloat3 cx1 = c01 * (1.0f - blendX) + c11 * blendX;
-    return cx0 * (1.0f - blendY) + cx1 * blendY;
-}
-
-ChessNrdFloat3 sampleCosineHemisphere(const std::array<float, 2>& xi)
-{
-    const float phi = 2.0f * kPi * xi[0];
-    const float cosTheta = std::sqrt(std::max(1.0f - xi[1], 0.0f));
-    const float sinTheta = std::sqrt(std::max(xi[1], 0.0f));
-    return makeFloat3(std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, cosTheta);
-}
-
-ChessNrdFloat3 sampleGgxHalfVector(const std::array<float, 2>& xi, float alpha)
-{
-    const float phi = 2.0f * kPi * xi[0];
-    const float alphaSquared = alpha * alpha;
-    const float cosTheta = std::sqrt((1.0f - xi[1]) / std::max(1.0f + (alphaSquared - 1.0f) * xi[1], 0.000001f));
-    const float sinTheta = std::sqrt(std::max(1.0f - cosTheta * cosTheta, 0.0f));
-    return makeFloat3(std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, cosTheta);
-}
-
-std::vector<float> generateDiffuseEnvironmentMap(const ChessNrdEnvironmentPixels& environment)
-{
-    std::vector<float> pixels(
-        static_cast<size_t>(kChessEnvironmentDiffuseWidth) * kChessEnvironmentDiffuseHeight * 4u,
-        0.0f);
-    for (uint32_t y = 0; y < kChessEnvironmentDiffuseHeight; ++y) {
-        for (uint32_t x = 0; x < kChessEnvironmentDiffuseWidth; ++x) {
-            const ChessNrdFloat3 normal = directionFromEquirectTexel(
-                x,
-                y,
-                kChessEnvironmentDiffuseWidth,
-                kChessEnvironmentDiffuseHeight);
-            ChessNrdFloat3 tangent;
-            ChessNrdFloat3 bitangent;
-            orthonormalBasis(normal, tangent, bitangent);
-
-            ChessNrdFloat3 accum{};
-            for (uint32_t sampleIndex = 0; sampleIndex < kChessEnvironmentDiffuseSamples; ++sampleIndex) {
-                const ChessNrdFloat3 localDirection = sampleCosineHemisphere(
-                    hammersley(sampleIndex, kChessEnvironmentDiffuseSamples));
-                const ChessNrdFloat3 sampleDirection = normalizeOr(
-                    tangent * localDirection.x + bitangent * localDirection.y + normal * localDirection.z,
-                    normal);
-                accum = accum + sampleEnvironmentPixels(environment, sampleDirection);
-            }
-
-            const ChessNrdFloat3 value = accum / static_cast<float>(kChessEnvironmentDiffuseSamples);
-            const size_t offset = (static_cast<size_t>(y) * kChessEnvironmentDiffuseWidth + x) * 4u;
-            pixels[offset + 0u] = value.x;
-            pixels[offset + 1u] = value.y;
-            pixels[offset + 2u] = value.z;
-            pixels[offset + 3u] = 1.0f;
-        }
-    }
-    return pixels;
-}
-
-std::vector<float> generateGlossyEnvironmentMap(const ChessNrdEnvironmentPixels& environment)
-{
-    const uint32_t packedHeight = kChessEnvironmentGlossyLayerHeight * kChessEnvironmentGlossyLevels;
-    std::vector<float> pixels(
-        static_cast<size_t>(kChessEnvironmentGlossyWidth) * packedHeight * 4u,
-        0.0f);
-    for (uint32_t level = 0; level < kChessEnvironmentGlossyLevels; ++level) {
-        const float roughness = kChessEnvironmentGlossyLevels <= 1
-            ? 0.0f
-            : static_cast<float>(level) / static_cast<float>(kChessEnvironmentGlossyLevels - 1u);
-        const float alpha = std::max(roughness * roughness, 0.0001f);
-        const uint32_t sampleCount = level == 0 ? 1u : kChessEnvironmentGlossySamples;
-
-        for (uint32_t y = 0; y < kChessEnvironmentGlossyLayerHeight; ++y) {
-            for (uint32_t x = 0; x < kChessEnvironmentGlossyWidth; ++x) {
-                const ChessNrdFloat3 normal = directionFromEquirectTexel(
-                    x,
-                    y,
-                    kChessEnvironmentGlossyWidth,
-                    kChessEnvironmentGlossyLayerHeight);
-                ChessNrdFloat3 tangent;
-                ChessNrdFloat3 bitangent;
-                orthonormalBasis(normal, tangent, bitangent);
-
-                ChessNrdFloat3 accum{};
-                float weightSum = 0.0f;
-                for (uint32_t sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
-                    ChessNrdFloat3 sampleDirection = normal;
-                    float nDotL = 1.0f;
-                    if (level > 0) {
-                        const ChessNrdFloat3 localHalf = sampleGgxHalfVector(hammersley(sampleIndex, sampleCount), alpha);
-                        const ChessNrdFloat3 halfVector = normalizeOr(
-                            tangent * localHalf.x + bitangent * localHalf.y + normal * localHalf.z,
-                            normal);
-                        sampleDirection = normalizeOr(reflect(normal * -1.0f, halfVector), normal);
-                        nDotL = std::max(dot(normal, sampleDirection), 0.0f);
-                    }
-                    if (nDotL > 0.0f) {
-                        accum = accum + sampleEnvironmentPixels(environment, sampleDirection) * nDotL;
-                        weightSum += nDotL;
-                    }
-                }
-
-                const ChessNrdFloat3 value = weightSum > 0.0f ? accum / weightSum : sampleEnvironmentPixels(environment, normal);
-                const uint32_t packedY = level * kChessEnvironmentGlossyLayerHeight + y;
-                const size_t offset = (static_cast<size_t>(packedY) * kChessEnvironmentGlossyWidth + x) * 4u;
-                pixels[offset + 0u] = value.x;
-                pixels[offset + 1u] = value.y;
-                pixels[offset + 2u] = value.z;
-                pixels[offset + 3u] = 1.0f;
-            }
-        }
-    }
-    return pixels;
-}
 
 std::string resultMessage(std::string_view label, const Result& result)
 {
@@ -3392,7 +3155,12 @@ public:
             log = "ChessNrdPathTracePass requires ray tracing, ray query, push descriptor, and descriptor indexing capabilities";
             return makeError(Error::Unsupported);
         }
-        if (pathTraceProgram_.valid() && compositeProgram_.valid() && rtxBuilder_.valid() && vertexBuffer_ != nullptr) {
+        if (pathTraceProgram_.valid() &&
+            compositeProgram_.valid() &&
+            diffusePrefilterProgram_.valid() &&
+            glossyPrefilterProgram_.valid() &&
+            rtxBuilder_.valid() &&
+            vertexBuffer_ != nullptr) {
             device_ = context.device;
             queue_ = context.graphicsQueue;
             return {};
@@ -3502,6 +3270,70 @@ public:
             return result;
         }
 
+        ShaderCompileResult diffusePrefilterCompile;
+        result = compileSlangShader(
+            kChessHdrPrefilterDiffuseShaderModuleName,
+            kChessHdrPrefilterDiffuseEntryPoint,
+            diffusePrefilterCompile,
+            log);
+        if (!result) {
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        const SceneRayQueryBindingDesc prefilterBindings[] = {
+            {.binding = 0, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 1, .kind = SceneRayQueryBindingKind::SampledImage},
+        };
+        result = diffusePrefilterProgram_.initialize(
+            *context.device,
+            SceneRayQueryProgramDesc{
+                .spirv = diffusePrefilterCompile.spirv.data(),
+                .byteSize = static_cast<uint64_t>(diffusePrefilterCompile.spirv.size() * sizeof(uint32_t)),
+                .pushConstantSize = sizeof(ChessHdrPrefilterPush),
+                .bindings = prefilterBindings,
+                .bindingCount = static_cast<uint32_t>(std::size(prefilterBindings)),
+                .debugName = "ChessNrdPathTracePass.prefilterDiffuse",
+            },
+            log);
+        if (!result) {
+            diffusePrefilterProgram_.clear();
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+
+        ShaderCompileResult glossyPrefilterCompile;
+        result = compileSlangShader(
+            kChessHdrPrefilterGlossyShaderModuleName,
+            kChessHdrPrefilterGlossyEntryPoint,
+            glossyPrefilterCompile,
+            log);
+        if (!result) {
+            diffusePrefilterProgram_.clear();
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+        result = glossyPrefilterProgram_.initialize(
+            *context.device,
+            SceneRayQueryProgramDesc{
+                .spirv = glossyPrefilterCompile.spirv.data(),
+                .byteSize = static_cast<uint64_t>(glossyPrefilterCompile.spirv.size() * sizeof(uint32_t)),
+                .pushConstantSize = sizeof(ChessHdrPrefilterPush),
+                .bindings = prefilterBindings,
+                .bindingCount = static_cast<uint32_t>(std::size(prefilterBindings)),
+                .debugName = "ChessNrdPathTracePass.prefilterGlossy",
+            },
+            log);
+        if (!result) {
+            diffusePrefilterProgram_.clear();
+            glossyPrefilterProgram_.clear();
+            resetGpuBuffers();
+            rtxBuilder_.clear();
+            return result;
+        }
+
         ShaderCompileResult pathTraceCompile;
         const char* capabilities[] = {"spvRayQueryKHR"};
         result = compileSlangShaderToSpirv(
@@ -3516,6 +3348,8 @@ public:
             pathTraceCompile);
         if (!result) {
             appendShaderCompileFailure(log, kChessNrdPathTraceShaderModuleName, kChessNrdPathTraceEntryPoint, result, pathTraceCompile);
+            diffusePrefilterProgram_.clear();
+            glossyPrefilterProgram_.clear();
             resetGpuBuffers();
             rtxBuilder_.clear();
             return result;
@@ -3558,6 +3392,8 @@ public:
             log);
         if (!result) {
             pathTraceProgram_.clear();
+            diffusePrefilterProgram_.clear();
+            glossyPrefilterProgram_.clear();
             resetGpuBuffers();
             rtxBuilder_.clear();
             return result;
@@ -3571,6 +3407,8 @@ public:
             log);
         if (!result) {
             pathTraceProgram_.clear();
+            diffusePrefilterProgram_.clear();
+            glossyPrefilterProgram_.clear();
             resetGpuBuffers();
             rtxBuilder_.clear();
             return result;
@@ -3603,6 +3441,8 @@ public:
         if (!result) {
             pathTraceProgram_.clear();
             compositeProgram_.clear();
+            diffusePrefilterProgram_.clear();
+            glossyPrefilterProgram_.clear();
             resetGpuBuffers();
             rtxBuilder_.clear();
             return result;
@@ -3648,6 +3488,8 @@ public:
             !validTexture(validation) ||
             !pathTraceProgram_.valid() ||
             !compositeProgram_.valid() ||
+            !diffusePrefilterProgram_.valid() ||
+            !glossyPrefilterProgram_.valid() ||
             vertexBuffer_ == nullptr ||
             indexBuffer_ == nullptr ||
             primitiveBuffer_ == nullptr ||
@@ -3672,11 +3514,7 @@ public:
         if (!result) {
             return result;
         }
-        result = uploadTextureIfNeeded(context.commandBuffer(), diffuseEnvironmentTexture_);
-        if (!result) {
-            return result;
-        }
-        result = uploadTextureIfNeeded(context.commandBuffer(), glossyEnvironmentTexture_);
+        result = generateEnvironmentPrefilterIfNeeded(context.commandBuffer());
         if (!result) {
             return result;
         }
@@ -4104,6 +3942,61 @@ private:
             label);
     }
 
+    static Result createComputedEnvironmentTextureResource(
+        Device& device,
+        uint32_t width,
+        uint32_t height,
+        ChessNrdMaterialTextureResource& outResource,
+        std::string& log,
+        std::string_view label)
+    {
+        if (width == 0 || height == 0) {
+            log = std::string(label) + " texture size is empty";
+            return makeError(Error::InvalidArgument);
+        }
+
+        outResource = ChessNrdMaterialTextureResource{};
+        outResource.width = width;
+        outResource.height = height;
+        outResource.format = Format::Rgba32Sfloat;
+        outResource.bytesPerPixel = sizeof(float) * 4u;
+        Result result = device.createTexture(
+            TextureDesc{
+                .type = TextureType::Texture2D,
+                .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage,
+                .format = Format::Rgba32Sfloat,
+                .width = width,
+                .height = height,
+                .depth = 1,
+                .mipCount = 1,
+                .layerCount = 1,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            outResource.texture);
+        if (!result || outResource.texture == nullptr) {
+            log += resultMessage(std::string("createTexture(") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = device.createTextureView(
+            *outResource.texture,
+            TextureViewDesc{
+                .format = Format::Rgba32Sfloat,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+            outResource.view);
+        if (!result || outResource.view == nullptr) {
+            log += resultMessage(std::string("createTextureView(") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
+    }
+
     static Result createEnvironmentResources(
         Device& device,
         const std::filesystem::path& path,
@@ -4130,10 +4023,8 @@ private:
             return result;
         }
 
-        std::vector<float> diffusePixels = generateDiffuseEnvironmentMap(environmentPixels);
-        result = createEnvironmentTextureResource(
+        result = createComputedEnvironmentTextureResource(
             device,
-            diffusePixels.data(),
             kChessEnvironmentDiffuseWidth,
             kChessEnvironmentDiffuseHeight,
             outDiffuseEnvironment,
@@ -4143,10 +4034,8 @@ private:
             return result;
         }
 
-        std::vector<float> glossyPixels = generateGlossyEnvironmentMap(environmentPixels);
-        return createEnvironmentTextureResource(
+        return createComputedEnvironmentTextureResource(
             device,
-            glossyPixels.data(),
             kChessEnvironmentGlossyWidth,
             kChessEnvironmentGlossyLayerHeight * kChessEnvironmentGlossyLevels,
             outGlossyEnvironment,
@@ -4240,6 +4129,143 @@ private:
         });
         resource.state = ResourceState::ShaderRead;
         resource.uploaded = true;
+        return {};
+    }
+
+    Result generateEnvironmentPrefilterIfNeeded(CommandBuffer& commandBuffer)
+    {
+        if (diffuseEnvironmentTexture_.uploaded && glossyEnvironmentTexture_.uploaded) {
+            return {};
+        }
+        if (!diffusePrefilterProgram_.valid() ||
+            !glossyPrefilterProgram_.valid() ||
+            environmentTexture_.view == nullptr ||
+            diffuseEnvironmentTexture_.texture == nullptr ||
+            diffuseEnvironmentTexture_.view == nullptr ||
+            glossyEnvironmentTexture_.texture == nullptr ||
+            glossyEnvironmentTexture_.view == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        TextureBarrierDesc toGeneral[] = {
+            TextureBarrierDesc{
+                .texture = diffuseEnvironmentTexture_.texture.get(),
+                .before = diffuseEnvironmentTexture_.state,
+                .after = ResourceState::General,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+            TextureBarrierDesc{
+                .texture = glossyEnvironmentTexture_.texture.get(),
+                .before = glossyEnvironmentTexture_.state,
+                .after = ResourceState::General,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .textures = toGeneral,
+            .textureCount = static_cast<uint32_t>(std::size(toGeneral)),
+        });
+        diffuseEnvironmentTexture_.state = ResourceState::General;
+        glossyEnvironmentTexture_.state = ResourceState::General;
+
+        TextureView* environmentTextureViews[1] = {environmentTexture_.view.get()};
+        const SceneRayQueryDispatchBinding diffuseBindings[] = {
+            {.binding = 0, .textureView = diffuseEnvironmentTexture_.view.get()},
+            {
+                .binding = 1,
+                .textureViews = environmentTextureViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
+            },
+        };
+        const ChessHdrPrefilterPush diffusePush{
+            .width = kChessEnvironmentDiffuseWidth,
+            .height = kChessEnvironmentDiffuseHeight,
+            .layerOffset = 0,
+            .sampleCount = kChessEnvironmentDiffuseSamples,
+            .roughness = 0.0f,
+        };
+        Result result = diffusePrefilterProgram_.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = diffuseBindings,
+            .bindingCount = static_cast<uint32_t>(std::size(diffuseBindings)),
+            .pushData = &diffusePush,
+            .pushDataSize = sizeof(diffusePush),
+            .groupCountX = (kChessEnvironmentDiffuseWidth + 7u) / 8u,
+            .groupCountY = (kChessEnvironmentDiffuseHeight + 7u) / 8u,
+            .groupCountZ = 1,
+        });
+        if (!result) {
+            return result;
+        }
+
+        const SceneRayQueryDispatchBinding glossyBindings[] = {
+            {.binding = 0, .textureView = glossyEnvironmentTexture_.view.get()},
+            {
+                .binding = 1,
+                .textureViews = environmentTextureViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
+            },
+        };
+        for (uint32_t level = 0; level < kChessEnvironmentGlossyLevels; ++level) {
+            const float roughness = kChessEnvironmentGlossyLevels <= 1u
+                ? 0.0f
+                : static_cast<float>(level) / static_cast<float>(kChessEnvironmentGlossyLevels - 1u);
+            const ChessHdrPrefilterPush glossyPush{
+                .width = kChessEnvironmentGlossyWidth,
+                .height = kChessEnvironmentGlossyLayerHeight,
+                .layerOffset = level * kChessEnvironmentGlossyLayerHeight,
+                .sampleCount = level == 0u ? 1u : kChessEnvironmentGlossySamples,
+                .roughness = roughness,
+            };
+            result = glossyPrefilterProgram_.dispatch(SceneRayQueryDispatchDesc{
+                .commandBuffer = &commandBuffer,
+                .bindings = glossyBindings,
+                .bindingCount = static_cast<uint32_t>(std::size(glossyBindings)),
+                .pushData = &glossyPush,
+                .pushDataSize = sizeof(glossyPush),
+                .groupCountX = (kChessEnvironmentGlossyWidth + 7u) / 8u,
+                .groupCountY = (kChessEnvironmentGlossyLayerHeight + 7u) / 8u,
+                .groupCountZ = 1,
+            });
+            if (!result) {
+                return result;
+            }
+        }
+
+        TextureBarrierDesc toShaderRead[] = {
+            TextureBarrierDesc{
+                .texture = diffuseEnvironmentTexture_.texture.get(),
+                .before = diffuseEnvironmentTexture_.state,
+                .after = ResourceState::ShaderRead,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+            TextureBarrierDesc{
+                .texture = glossyEnvironmentTexture_.texture.get(),
+                .before = glossyEnvironmentTexture_.state,
+                .after = ResourceState::ShaderRead,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .textures = toShaderRead,
+            .textureCount = static_cast<uint32_t>(std::size(toShaderRead)),
+        });
+        diffuseEnvironmentTexture_.state = ResourceState::ShaderRead;
+        glossyEnvironmentTexture_.state = ResourceState::ShaderRead;
+        diffuseEnvironmentTexture_.uploaded = true;
+        glossyEnvironmentTexture_.uploaded = true;
         return {};
     }
 
@@ -4680,6 +4706,8 @@ private:
     }
 
     SceneRtxBuilder rtxBuilder_;
+    SceneRayQueryProgram diffusePrefilterProgram_;
+    SceneRayQueryProgram glossyPrefilterProgram_;
     SceneRayQueryProgram pathTraceProgram_;
     SceneRayQueryProgram compositeProgram_;
     scene::Bounds drawBounds_;
