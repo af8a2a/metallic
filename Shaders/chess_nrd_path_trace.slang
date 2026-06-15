@@ -109,6 +109,7 @@ struct ChessNrdPush
     float4 upProjection;
     float4 viewport;
     float4 clipOrtho;
+    float4 environment;
     uint width;
     uint height;
     uint maxDepth;
@@ -234,6 +235,15 @@ float3 sunDirection()
     return safeNormalize(float3(-0.35, 0.82, -0.28), float3(0.0, 1.0, 0.0));
 }
 
+float3 rotateEnvironmentDirection(float3 direction, float radians)
+{
+    float sine = sin(radians);
+    float cosine = cos(radians);
+    return safeNormalize(
+        float3(direction.x * cosine - direction.z * sine, direction.y, direction.x * sine + direction.z * cosine),
+        direction);
+}
+
 uint wrapEnvironmentTexel(int value, uint size)
 {
     int signedSize = int(max(size, 1u));
@@ -246,14 +256,14 @@ uint clampEnvironmentTexel(int value, uint size)
     return uint(clamp(value, 0, int(max(size, 1u)) - 1));
 }
 
-float3 skyRadiance(float3 direction)
+float3 skyRadiance(float3 direction, ChessNrdPush push)
 {
     uint width = 1u;
     uint height = 1u;
     gEnvironmentTexture.GetDimensions(width, height);
 
     float3 dir = safeNormalize(direction, float3(0.0, 1.0, 0.0));
-    float phi = atan2(dir.z, dir.x);
+    float phi = atan2(dir.z, dir.x) - push.environment.y;
     float theta = acos(clamp(dir.y, -1.0, 1.0));
     float2 uv = float2(frac(0.5 + phi / (2.0 * kPi)), theta / kPi);
     float2 imageCoord = uv * float2(width, height) - 0.5;
@@ -270,7 +280,7 @@ float3 skyRadiance(float3 direction)
     float3 c01 = gEnvironmentTexture.Load(int3(p01, 0)).rgb;
     float3 c11 = gEnvironmentTexture.Load(int3(p11, 0)).rgb;
     float3 value = lerp(lerp(c00, c10, blend.x), lerp(c01, c11, blend.x), blend.y);
-    return max(value, float3(0.0, 0.0, 0.0));
+    return max(value, float3(0.0, 0.0, 0.0)) * max(push.environment.x, 0.0);
 }
 
 float3 srgbToLinear(float3 value)
@@ -678,8 +688,8 @@ float3 traceVisibility(float3 origin, float3 direction, float maxDistance, Chess
 
 float3 evaluateDirect(HitInfo hit, MaterialSample material, float3 viewDirection, ChessNrdPush push)
 {
-    float3 lightDirection = sunDirection();
-    float3 lightRadiance = max(skyRadiance(lightDirection), float3(0.001, 0.001, 0.001));
+    float3 lightDirection = rotateEnvironmentDirection(sunDirection(), push.environment.y);
+    float3 lightRadiance = max(skyRadiance(lightDirection, push), float3(0.001, 0.001, 0.001));
     float nDotL = saturate(dot(material.normal, lightDirection));
     float3 direct = float3(0.0, 0.0, 0.0);
     if (nDotL > 0.0) {
@@ -732,7 +742,7 @@ float3 traceBsdfPath(Ray ray, ChessNrdPush push, inout uint seed, out float firs
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         if (!traceClosestSecondary(ray, push, hit)) {
-            radiance += throughput * skyRadiance(ray.direction);
+            radiance += throughput * skyRadiance(ray.direction, push);
             break;
         }
 
@@ -833,7 +843,7 @@ void chessNrdPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
             foundCandidate = traceClosestSecondary(primarySurfaceRay, push, candidateHit);
         }
         if (!foundCandidate) {
-            float3 sky = primaryPrefix + primaryThroughput * skyRadiance(primarySurfaceRay.direction);
+            float3 sky = primaryPrefix + primaryThroughput * skyRadiance(primarySurfaceRay.direction, push);
             gNoisyDiffuse[pixel] = float4(0.0, 0.0, 0.0, 0.0);
             gNoisySpecular[pixel] = float4(0.0, 0.0, 0.0, 0.0);
             gNormalRoughness[pixel] = NRD_FrontEnd_PackNormalAndRoughness(float3(0.0, 1.0, 0.0), 1.0, 0.0);

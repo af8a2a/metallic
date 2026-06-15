@@ -32,6 +32,8 @@ constexpr uint32_t kViewportResizeSettleFrames = 3;
 constexpr const char* kRenderPassDragPayload = "METALLIC_RENDER_PASS_TYPE";
 constexpr uint32_t kSwapchainImageCount = 3;
 constexpr uint32_t kMinSwapchainImageCount = 2;
+constexpr float kDefaultEnvironmentIntensity = 0.18f;
+constexpr float kDefaultEnvironmentRotation = 0.0f;
 
 float getMainDisplayScale()
 {
@@ -148,6 +150,8 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             {"denoiser", "REBLUR"},
             {"visualization", "Final"},
             {"enableValidation", true},
+            {"environmentIntensity", kDefaultEnvironmentIntensity},
+            {"environmentRotation", kDefaultEnvironmentRotation},
             {"resetSerial", 0},
             {"camera", {
                 {"projection", "perspective"},
@@ -186,6 +190,16 @@ render::RenderGraphNode* findBunnyWireframeNode(render::RenderGraph& graph)
             node.type == "SceneRayQueryVisualizationPass" ||
             node.type == "ScenePathTracePass" ||
             node.type == "ChessNrdPathTracePass") {
+            return graph.findNode(node.id);
+        }
+    }
+    return nullptr;
+}
+
+render::RenderGraphNode* findChessNrdPathTraceNode(render::RenderGraph& graph)
+{
+    for (const render::RenderGraphNode& node : graph.nodes()) {
+        if (node.type == "ChessNrdPathTracePass") {
             return graph.findNode(node.id);
         }
     }
@@ -1467,6 +1481,8 @@ void EditorApplication::drawScenePanel()
     }
 
     if (ImGui::CollapsingHeader("Lights")) {
+        drawEnvironmentControls();
+
         int lightIndex = 0;
         for (const scene::RenderLight& light : scene_.lights()) {
             ImGui::PushID(lightIndex++);
@@ -1487,6 +1503,67 @@ void EditorApplication::drawScenePanel()
     }
 
     ImGui::End();
+}
+
+void EditorApplication::drawEnvironmentControls()
+{
+    const bool open = ImGui::TreeNodeEx(
+        "Environment",
+        ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+    if (!open) {
+        return;
+    }
+
+    render::RenderGraphNode* node = findChessNrdPathTraceNode(renderGraph_);
+    if (node == nullptr) {
+        ImGui::TextDisabled("Current graph has no HDRI environment controls.");
+        ImGui::TreePop();
+        return;
+    }
+
+    render::RenderGraphProperties properties = node->properties;
+    if (!properties.is_object()) {
+        properties = render::RenderGraphProperties::object();
+    }
+    ensureFloatProperty(properties, "environmentIntensity", kDefaultEnvironmentIntensity);
+    ensureFloatProperty(properties, "environmentRotation", kDefaultEnvironmentRotation);
+
+    bool changed = false;
+    const float labelWidth = 72.0f * mainScale_;
+
+    float intensity = std::clamp(
+        propertyFloatOr(properties, "environmentIntensity", kDefaultEnvironmentIntensity),
+        0.0f,
+        16.0f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Intensity");
+    ImGui::SameLine(labelWidth);
+    ImGui::PushItemWidth(-1.0f);
+    if (ImGui::SliderFloat("##EnvironmentIntensity", &intensity, 0.0f, 4.0f, "%.3f")) {
+        properties["environmentIntensity"] = intensity;
+        changed = true;
+    }
+    ImGui::PopItemWidth();
+
+    float rotation = std::clamp(
+        propertyFloatOr(properties, "environmentRotation", kDefaultEnvironmentRotation),
+        -360.0f,
+        360.0f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Rotation");
+    ImGui::SameLine(labelWidth);
+    ImGui::PushItemWidth(-1.0f);
+    if (ImGui::SliderFloat("##EnvironmentRotation", &rotation, -180.0f, 180.0f, "%.1f deg")) {
+        properties["environmentRotation"] = rotation;
+        changed = true;
+    }
+    ImGui::PopItemWidth();
+
+    if (changed) {
+        applyRuntimeNodeProperties(node->id, std::move(properties), "Updated environment lighting");
+    }
+
+    ImGui::TreePop();
 }
 
 void EditorApplication::drawCameraControls()
@@ -1605,9 +1682,12 @@ void EditorApplication::drawCameraControls()
     }
 }
 
-void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties properties, const char* status)
+void EditorApplication::applyRuntimeNodeProperties(
+    uint32_t nodeId,
+    render::RenderGraphProperties properties,
+    const char* status)
 {
-    render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
+    render::RenderGraphNode* node = renderGraph_.findNode(nodeId);
     if (node == nullptr) {
         return;
     }
@@ -1621,6 +1701,15 @@ void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties
     if (status != nullptr) {
         renderGraphStatus_ = status;
     }
+}
+
+void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties properties, const char* status)
+{
+    render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
+    if (node == nullptr) {
+        return;
+    }
+    applyRuntimeNodeProperties(node->id, std::move(properties), status);
 }
 
 void EditorApplication::drawSceneNode(int32_t nodeIndex)

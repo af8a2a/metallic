@@ -61,6 +61,9 @@ constexpr const char* kDefaultMaterialScenePath = PROJECT_SOURCE_DIR "/Asset/Sta
 constexpr const char* kDefaultPathTraceScenePath = PROJECT_SOURCE_DIR "/Asset/meet_mat.glb";
 constexpr const char* kDefaultChessScenePath = PROJECT_SOURCE_DIR "/Asset/ABeautifulGame/glTF/ABeautifulGame.gltf";
 constexpr const char* kDefaultChessEnvironmentPath = PROJECT_SOURCE_DIR "/Asset/ABeautifulGame/environment.hdr";
+constexpr float kDefaultChessEnvironmentIntensity = 0.18f;
+constexpr float kDefaultChessEnvironmentRotationDegrees = 0.0f;
+constexpr float kDegreesToRadians = 0.017453292519943295769f;
 constexpr uint64_t kRenderGraphBufferByteSize = 16;
 constexpr int32_t kGltfTriangleListMode = 4;
 constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
@@ -235,6 +238,7 @@ struct ChessNrdPathTracePush {
     float upProjection[4] = {};
     float viewport[4] = {};
     float clipOrtho[4] = {};
+    float environment[4] = {kDefaultChessEnvironmentIntensity, 0.0f, 0.0f, 0.0f};
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t maxDepth = kDefaultPathTraceMaxDepth;
@@ -3406,10 +3410,17 @@ public:
             0,
             0,
             std::numeric_limits<uint32_t>::max());
-        if (lastDenoiserMode_ != denoiserMode || lastResetSerial_ != resetSerial) {
+        const float environmentIntensity = environmentIntensityFromProperties(context.properties());
+        const float environmentRotationDegrees = environmentRotationDegreesFromProperties(context.properties());
+        if (lastDenoiserMode_ != denoiserMode ||
+            lastResetSerial_ != resetSerial ||
+            floatPropertyChanged(lastEnvironmentIntensity_, environmentIntensity) ||
+            floatPropertyChanged(lastEnvironmentRotationDegrees_, environmentRotationDegrees)) {
             frameIndex_ = 0;
             lastDenoiserMode_ = denoiserMode;
             lastResetSerial_ = resetSerial;
+            lastEnvironmentIntensity_ = environmentIntensity;
+            lastEnvironmentRotationDegrees_ = environmentRotationDegrees;
         }
 
         ChessNrdPathTracePush pathPush;
@@ -4021,6 +4032,62 @@ private:
         return kChessNrdVisualFinal;
     }
 
+    static float floatProperty(
+        const RenderGraphProperties& properties,
+        const char* key,
+        float fallback,
+        float minimum,
+        float maximum)
+    {
+        if (!properties.is_object()) {
+            return fallback;
+        }
+        auto iter = properties.find(key);
+        if (iter == properties.end() || !iter->is_number()) {
+            return fallback;
+        }
+        const float value = iter->get<float>();
+        if (!std::isfinite(value)) {
+            return fallback;
+        }
+        return std::clamp(value, minimum, maximum);
+    }
+
+    static float environmentIntensityFromProperties(const RenderGraphProperties& properties)
+    {
+        return floatProperty(
+            properties,
+            "environmentIntensity",
+            kDefaultChessEnvironmentIntensity,
+            0.0f,
+            40.0f);
+    }
+
+    static float environmentRotationDegreesFromProperties(const RenderGraphProperties& properties)
+    {
+        if (properties.is_object() &&
+            properties.contains("environmentRotation") &&
+            properties["environmentRotation"].is_number()) {
+            return floatProperty(
+                properties,
+                "environmentRotation",
+                kDefaultChessEnvironmentRotationDegrees,
+                -360.0f,
+                360.0f);
+        }
+        return floatProperty(
+            properties,
+            "environmentRotationDegrees",
+            kDefaultChessEnvironmentRotationDegrees,
+            -360.0f,
+            360.0f);
+    }
+
+    static bool floatPropertyChanged(float cached, float current)
+    {
+        return !std::isfinite(cached) || std::abs(cached - current) > 0.0001f;
+    }
+
     static void copyFloat4(const float source[4], float destination[4])
     {
         std::memcpy(destination, source, sizeof(float) * 4);
@@ -4038,6 +4105,10 @@ private:
         copyFloat4(basePush.upProjection, outPush.upProjection);
         copyFloat4(basePush.viewport, outPush.viewport);
         copyFloat4(basePush.clipOrtho, outPush.clipOrtho);
+        outPush.environment[0] = environmentIntensityFromProperties(context.properties());
+        outPush.environment[1] = environmentRotationDegreesFromProperties(context.properties()) * kDegreesToRadians;
+        outPush.environment[2] = 0.0f;
+        outPush.environment[3] = 0.0f;
         outPush.width = basePush.width;
         outPush.height = basePush.height;
         outPush.maxDepth = basePush.maxDepth;
@@ -4265,6 +4336,8 @@ private:
     uint32_t frameIndex_ = 0;
     uint32_t lastDenoiserMode_ = std::numeric_limits<uint32_t>::max();
     uint32_t lastResetSerial_ = 0;
+    float lastEnvironmentIntensity_ = std::numeric_limits<float>::quiet_NaN();
+    float lastEnvironmentRotationDegrees_ = std::numeric_limits<float>::quiet_NaN();
     std::string runtimeLog_;
 #if METALLIC_HAS_NRD
     std::unique_ptr<vulkan::NrdDenoiser> nrd_;

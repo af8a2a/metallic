@@ -29,10 +29,12 @@ private:
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();
+    void drawEnvironmentControls();
     void drawCameraControls();
     void drawSceneNode(int32_t nodeIndex);
     void drawViewportPanel();
     void handleViewportCameraControls(const ImVec2& min, const ImVec2& max);
+    void applyRuntimeNodeProperties(uint32_t nodeId, render::RenderGraphProperties properties, const char* status);
     void applyBunnyCameraProperties(render::RenderGraphProperties properties, const char* status);
     void drawRenderGraphEditorWindow();
     void drawRenderGraphPanel();
