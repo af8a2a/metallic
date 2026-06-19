@@ -517,19 +517,41 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
             push);
+        float4 transmissionSample = loadMaterialTexture(
+            material.transmissionTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push);
+        float4 thicknessSample = loadMaterialTexture(
+            material.thicknessTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push);
+        float4 diffuseTransmissionSample = loadMaterialTexture(
+            material.diffuseTransmissionTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push);
+        float4 diffuseTransmissionColorSample = loadMaterialTexture(
+            material.diffuseTransmissionColorTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push);
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, normalSample, material.textureParams.x);
         float occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
 
         float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
         float metallic = saturate(material.params.x * metallicRoughnessSample.b);
         float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.02, 1.0);
-        float transmission = saturate(material.glassParams.x);
+        float transmission = saturate(material.glassParams.x * transmissionSample.r);
         float ior = clamp(material.glassParams.y, 1.0, 3.0);
-        float thickness = max(material.glassParams.z, 0.0);
+        float thickness = max(material.glassParams.z * thicknessSample.g, 0.0);
         float attenuationDistance = max(material.glassParams.w, 0.0);
         float3 attenuationColor = max(saturate(material.attenuationColor.rgb), float3(0.001, 0.001, 0.001));
-        float diffuseTransmission = saturate(material.diffuseTransmission.a);
-        float3 diffuseTransmissionColor = max(saturate(material.diffuseTransmission.rgb), float3(0.001, 0.001, 0.001));
+        float diffuseTransmission = saturate(material.diffuseTransmission.a * diffuseTransmissionSample.a);
+        float3 diffuseTransmissionColor = max(
+            saturate(material.diffuseTransmission.rgb * srgbToLinear(diffuseTransmissionColorSample.rgb)),
+            float3(0.001, 0.001, 0.001));
         float dielectricF0 = (ior - 1.0) / (ior + 1.0);
         dielectricF0 *= dielectricF0;
         float3 f0 = lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metallic);

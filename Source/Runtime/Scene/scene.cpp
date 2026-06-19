@@ -27,6 +27,7 @@ namespace {
 
 constexpr const char* kExtensionLightsPunctual = "KHR_lights_punctual";
 constexpr const char* kExtensionMaterialsDiffuseTransmission = "KHR_materials_diffuse_transmission";
+constexpr const char* kExtensionMaterialsEmissiveStrength = "KHR_materials_emissive_strength";
 constexpr const char* kExtensionMaterialsIor = "KHR_materials_ior";
 constexpr const char* kExtensionMaterialsTransmission = "KHR_materials_transmission";
 constexpr const char* kExtensionMaterialsVolume = "KHR_materials_volume";
@@ -39,20 +40,11 @@ const std::unordered_set<std::string>& supportedRequiredExtensions()
     static const std::unordered_set<std::string> kExtensions{
         kExtensionLightsPunctual,
         kExtensionNodeVisibility,
-        "KHR_materials_anisotropy",
-        "KHR_materials_clearcoat",
         kExtensionMaterialsDiffuseTransmission,
-        "KHR_materials_dispersion",
-        "KHR_materials_emissive_strength",
+        kExtensionMaterialsEmissiveStrength,
         kExtensionMaterialsIor,
-        "KHR_materials_iridescence",
-        "KHR_materials_pbrSpecularGlossiness",
-        "KHR_materials_sheen",
-        "KHR_materials_specular",
         kExtensionMaterialsTransmission,
-        "KHR_materials_unlit",
         kExtensionMaterialsVolume,
-        "KHR_materials_volume_scatter",
         "KHR_mesh_quantization",
         kExtensionTextureTransform,
     };
@@ -913,6 +905,13 @@ bool Scene::load(const std::filesystem::path& filename)
         material.metallicFactor = static_cast<float>(gltfMaterial.pbrMetallicRoughness.metallicFactor);
         material.roughnessFactor = static_cast<float>(gltfMaterial.pbrMetallicRoughness.roughnessFactor);
         material.emissiveFactor = makeFloat3(gltfMaterial.emissiveFactor, float3(0.0f, 0.0f, 0.0f));
+        const auto emissiveStrengthExtension = gltfMaterial.extensions.find(kExtensionMaterialsEmissiveStrength);
+        if (emissiveStrengthExtension != gltfMaterial.extensions.end()) {
+            const float emissiveStrength = std::max(
+                readFloatValue(emissiveStrengthExtension->second, "emissiveStrength", 1.0f),
+                0.0f);
+            material.emissiveFactor = material.emissiveFactor * emissiveStrength;
+        }
         material.alphaCutoff = static_cast<float>(gltfMaterial.alphaCutoff);
         material.alphaMode = gltfMaterial.alphaMode.empty() ? "OPAQUE" : gltfMaterial.alphaMode;
         material.doubleSided = gltfMaterial.doubleSided;

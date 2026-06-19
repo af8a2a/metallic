@@ -314,15 +314,19 @@ std::filesystem::path writeFallbackScene(const std::filesystem::path& directory)
     return gltfPath;
 }
 
-std::filesystem::path writeUnsupportedRequiredExtensionScene(const std::filesystem::path& directory)
+std::filesystem::path writeUnsupportedRequiredExtensionScene(
+    const std::filesystem::path& directory,
+    const std::string& extension)
 {
     const std::filesystem::path gltfPath = directory / "unsupported_required.gltf";
-    writeTextFile(gltfPath, R"json(
+    writeTextFile(
+        gltfPath,
+        std::string(R"json(
 {
   "asset": { "version": "2.0" },
   "scene": 0,
-  "extensionsRequired": ["EXT_meshopt_compression"],
-  "extensionsUsed": ["EXT_meshopt_compression"],
+  "extensionsRequired": [")json") + extension + R"json("],
+  "extensionsUsed": [")json" + extension + R"json("],
   "nodes": [
     { "name": "Node" }
   ],
@@ -341,8 +345,12 @@ std::filesystem::path writeMaterialFeatureScene(const std::filesystem::path& dir
 {
   "asset": { "version": "2.0" },
   "scene": 0,
+  "extensionsRequired": [
+    "KHR_materials_emissive_strength"
+  ],
   "extensionsUsed": [
     "KHR_texture_transform",
+    "KHR_materials_emissive_strength",
     "KHR_materials_transmission",
     "KHR_materials_ior",
     "KHR_materials_volume",
@@ -427,6 +435,7 @@ std::filesystem::path writeMaterialFeatureScene(const std::filesystem::path& dir
       "alphaCutoff": 0.37,
       "doubleSided": true,
       "extensions": {
+        "KHR_materials_emissive_strength": { "emissiveStrength": 4.0 },
         "KHR_materials_transmission": {
           "transmissionFactor": 0.8,
           "transmissionTexture": {
@@ -647,7 +656,7 @@ void testMaterialImport(const std::filesystem::path& directory)
         "full material baseColorFactor");
     expect(nearlyEqual(fullMaterial.metallicFactor, 0.25f), "full material metallicFactor");
     expect(nearlyEqual(fullMaterial.roughnessFactor, 0.75f), "full material roughnessFactor");
-    expectVec3(fullMaterial.emissiveFactor, float3(0.1f, 0.2f, 0.3f), "full material emissiveFactor");
+    expectVec3(fullMaterial.emissiveFactor, float3(0.4f, 0.8f, 1.2f), "full material emissiveFactor");
     expect(fullMaterial.alphaMode == "MASK", "full material alphaMode");
     expect(nearlyEqual(fullMaterial.alphaCutoff, 0.37f), "full material alphaCutoff");
     expect(fullMaterial.doubleSided, "full material doubleSided");
@@ -845,13 +854,31 @@ void testFallbackCamera(const std::filesystem::path& directory)
 
 void testUnsupportedRequiredExtension(const std::filesystem::path& directory)
 {
-    metallic::scene::Scene scene;
-    const std::filesystem::path gltfPath = writeUnsupportedRequiredExtensionScene(directory);
-    expect(!scene.load(gltfPath), "unsupported required extension should fail");
-    expect(!scene.valid(), "failed scene should not be valid");
-    expect(
-        scene.lastLoadResult().error.find("EXT_meshopt_compression") != std::string::npos,
-        "unsupported extension error should mention extension name");
+    auto expectUnsupportedRequired = [&](const std::string& extension) {
+        metallic::scene::Scene scene;
+        const std::filesystem::path gltfPath = writeUnsupportedRequiredExtensionScene(directory, extension);
+        expect(!scene.load(gltfPath), "unsupported required extension should fail: " + extension);
+        expect(!scene.valid(), "failed scene should not be valid: " + extension);
+        expect(
+            scene.lastLoadResult().error.find(extension) != std::string::npos,
+            "unsupported extension error should mention extension name: " + extension);
+    };
+
+    expectUnsupportedRequired("EXT_meshopt_compression");
+    const std::vector<std::string> unsupportedMaterialExtensions{
+        "KHR_materials_anisotropy",
+        "KHR_materials_clearcoat",
+        "KHR_materials_dispersion",
+        "KHR_materials_iridescence",
+        "KHR_materials_pbrSpecularGlossiness",
+        "KHR_materials_sheen",
+        "KHR_materials_specular",
+        "KHR_materials_unlit",
+        "KHR_materials_volume_scatter",
+    };
+    for (const std::string& extension : unsupportedMaterialExtensions) {
+        expectUnsupportedRequired(extension);
+    }
 }
 
 } // namespace

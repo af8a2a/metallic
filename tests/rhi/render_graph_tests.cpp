@@ -433,6 +433,158 @@ bool writeAlphaMaskScene(
     return true;
 }
 
+bool writeTransmissionTextureScene(
+    const std::filesystem::path& directory,
+    std::filesystem::path& outPath,
+    std::string& outMessage)
+{
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+        outMessage = "failed to create transmission texture scene directory: " + error.message();
+        return false;
+    }
+
+    const std::array<std::pair<const char*, uint32_t>, 4> textures{
+        std::pair<const char*, uint32_t>{"transmission_zero.png", packRgba8(0, 255, 255, 255)},
+        std::pair<const char*, uint32_t>{"thickness_half.png", packRgba8(255, 128, 255, 255)},
+        std::pair<const char*, uint32_t>{"diffuse_transmission_zero.png", packRgba8(255, 255, 255, 0)},
+        std::pair<const char*, uint32_t>{"diffuse_transmission_color.png", packRgba8(64, 128, 255, 255)},
+    };
+    for (const auto& texture : textures) {
+        std::array<uint32_t, 4> pixels{};
+        for (uint32_t& pixel : pixels) {
+            pixel = texture.second;
+        }
+        const auto* bytes = reinterpret_cast<const uint8_t*>(pixels.data());
+        if (!saveRgba8Png(directory / texture.first, bytes, 2, 2, outMessage)) {
+            return false;
+        }
+    }
+
+    const std::filesystem::path binPath = directory / "transmission_textures.bin";
+    std::ofstream bin(binPath, std::ios::binary);
+    if (!bin) {
+        outMessage = "failed to open transmission texture scene binary";
+        return false;
+    }
+
+    const std::array<float, 12> positions{
+        -1.0f, -1.0f, 0.0f,
+        1.0f, -1.0f, 0.0f,
+        1.0f, 1.0f, 0.0f,
+        -1.0f, 1.0f, 0.0f,
+    };
+    const std::array<float, 12> normals{
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+    };
+    const std::array<float, 8> texcoords{
+        0.0f, 1.0f,
+        1.0f, 1.0f,
+        1.0f, 0.0f,
+        0.0f, 0.0f,
+    };
+    const std::array<uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    if (!writeBinaryArray(bin, positions) ||
+        !writeBinaryArray(bin, normals) ||
+        !writeBinaryArray(bin, texcoords) ||
+        !writeBinaryArray(bin, indices)) {
+        outMessage = "failed to write transmission texture scene binary";
+        return false;
+    }
+    bin.close();
+
+    const std::filesystem::path gltfPath = directory / "transmission_textures.gltf";
+    std::ofstream gltf(gltfPath);
+    if (!gltf) {
+        outMessage = "failed to open transmission texture glTF";
+        return false;
+    }
+
+    gltf << R"json({
+  "asset": { "version": "2.0", "generator": "MetallicRhiTests" },
+  "extensionsUsed": [
+    "KHR_materials_transmission",
+    "KHR_materials_volume",
+    "KHR_materials_diffuse_transmission"
+  ],
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0, "name": "Transmission Texture Quad" }],
+  "buffers": [{ "uri": "transmission_textures.bin", "byteLength": 152 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 48, "target": 34962 },
+    { "buffer": 0, "byteOffset": 48, "byteLength": 48, "target": 34962 },
+    { "buffer": 0, "byteOffset": 96, "byteLength": 32, "target": 34962 },
+    { "buffer": 0, "byteOffset": 128, "byteLength": 24, "target": 34963 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3", "min": [-1, -1, 0], "max": [1, 1, 0] },
+    { "bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC3" },
+    { "bufferView": 2, "componentType": 5126, "count": 4, "type": "VEC2" },
+    { "bufferView": 3, "componentType": 5125, "count": 6, "type": "SCALAR" }
+  ],
+  "samplers": [{ "magFilter": 9728, "minFilter": 9728, "wrapS": 10497, "wrapT": 10497 }],
+  "images": [
+    { "uri": "transmission_zero.png", "name": "Transmission Zero" },
+    { "uri": "thickness_half.png", "name": "Thickness Half" },
+    { "uri": "diffuse_transmission_zero.png", "name": "Diffuse Transmission Zero" },
+    { "uri": "diffuse_transmission_color.png", "name": "Diffuse Transmission Color" }
+  ],
+  "textures": [
+    { "source": 0, "sampler": 0, "name": "Transmission Zero Texture" },
+    { "source": 1, "sampler": 0, "name": "Thickness Half Texture" },
+    { "source": 2, "sampler": 0, "name": "Diffuse Transmission Zero Texture" },
+    { "source": 3, "sampler": 0, "name": "Diffuse Transmission Color Texture" }
+  ],
+  "materials": [
+    {
+      "name": "Texture Gated Red",
+      "doubleSided": true,
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [1.0, 0.0, 0.0, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
+      },
+      "extensions": {
+        "KHR_materials_transmission": {
+          "transmissionFactor": 1.0,
+          "transmissionTexture": { "index": 0 }
+        },
+        "KHR_materials_volume": {
+          "thicknessFactor": 0.8,
+          "attenuationDistance": 4.0,
+          "attenuationColor": [0.8, 0.9, 1.0],
+          "thicknessTexture": { "index": 1 }
+        },
+        "KHR_materials_diffuse_transmission": {
+          "diffuseTransmissionFactor": 1.0,
+          "diffuseTransmissionColor": [1.0, 1.0, 1.0],
+          "diffuseTransmissionTexture": { "index": 2 },
+          "diffuseTransmissionColorTexture": { "index": 3 }
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Transmission Texture Mesh",
+      "primitives": [
+        { "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 }, "indices": 3, "material": 0 }
+      ]
+    }
+  ]
+})json";
+    gltf.close();
+
+    outPath = gltfPath;
+    outMessage.clear();
+    return true;
+}
+
 class RenderGraphReflectionApiTest : public RhiTest {
 public:
     RenderGraphReflectionApiTest()
@@ -1052,6 +1204,87 @@ public:
     }
 };
 
+class RenderGraphScenePathTraceTransmissionTexturesPreviewTest : public RhiTest {
+public:
+    RenderGraphScenePathTraceTransmissionTexturesPreviewTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_scene_path_trace_transmission_textures_preview";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::filesystem::path scenePath;
+        std::string message;
+        if (!writeTransmissionTextureScene(context.outputDirectory / "transmission-texture-scene", scenePath, message)) {
+            return RhiTestResult::fail(message);
+        }
+
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        render::RenderGraphProperties properties{
+            {"path", scenePath.string()},
+            {"maxDepth", 1},
+            {"samples", 1},
+            {"accumulate", false},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 45.0f},
+                {"znear", 0.001f},
+                {"zfar", 10.0f},
+                {"eye", {0.0f, 0.0f, 2.0f}},
+                {"center", {0.0f, 0.0f, 0.0f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
+        };
+        render::RenderGraph graph;
+        graph.setName("ScenePathTraceTransmissionTexturesPreview");
+        graph.addNode("ScenePathTracePass", "PathTrace", properties);
+        graph.markOutput("PathTrace.color");
+
+        result = preview.render(graph, 96, 96);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("ScenePathTracePass is unsupported on this device: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("ScenePathTracePass transmission texture render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        uint32_t redPixelCount = 0;
+        for (uint32_t pixel : preview.pixels()) {
+            const uint8_t r = static_cast<uint8_t>(pixel & 0xffu);
+            const uint8_t g = static_cast<uint8_t>((pixel >> 8u) & 0xffu);
+            const uint8_t b = static_cast<uint8_t>((pixel >> 16u) & 0xffu);
+            if (r > 48 && r > g + 24 && r > b + 24) {
+                ++redPixelCount;
+            }
+        }
+        if (redPixelCount < 1024) {
+            return RhiTestResult::fail(
+                std::string("transmission texture preview expected visible red diffuse pixels, got red=") +
+                std::to_string(redPixelCount));
+        }
+
+        const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const std::filesystem::path outputPath =
+            context.outputDirectory / "render_graph_scene_path_trace_transmission_textures_preview.png";
+        if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
+            return RhiTestResult::fail(message);
+        }
+
+        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+    }
+};
+
 class RenderGraphScenePathTraceAlphaMaskPreviewTest : public RhiTest {
 public:
     RenderGraphScenePathTraceAlphaMaskPreviewTest()
@@ -1128,7 +1361,6 @@ public:
                 std::to_string(bluePixelCount));
         }
 
-
         const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
         const std::filesystem::path outputPath =
             context.outputDirectory / "render_graph_scene_path_trace_alpha_mask_preview.png";
@@ -1139,6 +1371,7 @@ public:
         return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
+
 class RenderGraphCopyColorWorkflowTest : public RhiTest {
 public:
     RenderGraphCopyColorWorkflowTest()
@@ -1683,6 +1916,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceTransmissionTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceAlphaMaskPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
