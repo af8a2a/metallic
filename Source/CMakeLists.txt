@@ -10,6 +10,16 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/slang_compiler.cpp
     Runtime/Render/RenderGraph/render_graph.cpp
     Runtime/Render/RenderPass/builtin_render_passes.cpp
+    Runtime/Render/RenderPass/BuiltinPass/bunny_wireframe_pass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/clear_color_pass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/copy_color_pass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/image_sample_pass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/nrd_denoise_pass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/render_graph_buffer_passes.cpp
+    Runtime/Render/RenderPass/BuiltinPass/scene_material_shader_object_pass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/scene_path_trace_pass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/scene_ray_query_visualization_pass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/triangle_raster_pass.cpp
     Runtime/Render/RenderPass/scene_path_trace_resources.cpp
     Runtime/Render/GAPI/Vulkan/vulkan_rhi.cpp
     Runtime/Render/GAPI/Vulkan/vulkan_nrd_wrapper.cpp
