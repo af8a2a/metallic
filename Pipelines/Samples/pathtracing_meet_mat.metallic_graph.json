@@ -1,0 +1,47 @@
+{
+    "edges": [],
+    "name": "ScenePathTrace",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "PathTrace",
+            "position": {
+                "x": 335.0,
+                "y": 281.0
+            },
+            "properties": {
+                "accumulate": true,
+                "camera": {
+                    "center": [
+                        0.0,
+                        0.15000000596046448,
+                        0.0
+                    ],
+                    "eye": [
+                        0.0,
+                        0.25,
+                        3.0
+                    ],
+                    "fovDegrees": 50.0,
+                    "projection": "perspective",
+                    "reversedZ": true,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 10000.0,
+                    "znear": 0.0010000000474974513
+                },
+                "maxDepth": 3,
+                "path": "Asset/meet_mat.glb",
+                "samples": 2
+            },
+            "type": "ScenePathTracePass"
+        }
+    ],
+    "outputs": [
+        "PathTrace.color"
+    ],
+    "version": 1
+}

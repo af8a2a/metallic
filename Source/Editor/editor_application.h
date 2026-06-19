@@ -42,6 +42,7 @@ private:
     void drawRenderGraphRenderUiPanel();
     void drawRenderGraphNode(const render::RenderGraphNode& node);
     void setupDefaultDockLayout();
+    void loadBuiltInSample(const char* sampleId);
     void resetDefaultRenderGraph();
     void saveRenderGraph();
     void loadRenderGraph();

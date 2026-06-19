@@ -1,11 +1,13 @@
 #include "rhi_test.h"
 
 #include "Runtime/Render/RenderGraph/render_graph.h"
+#include "Runtime/Render/render_sample.h"
 #include "Runtime/Render/slang_compiler.h"
 
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -771,6 +773,125 @@ public:
     }
 };
 
+class RenderSampleLoadTest : public RhiTest {
+public:
+    RenderSampleLoadTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_sample_load";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string message;
+        if (!render::loadBuiltInRenderSample("pathtracing-meet-mat", sample, message)) {
+            return RhiTestResult::fail(message);
+        }
+
+        if (sample.desc.id != "pathtracing-meet-mat" ||
+            sample.desc.name != "Path Tracing / meet_mat" ||
+            sample.desc.category != "PathTracing" ||
+            sample.desc.scenePath != "Asset/meet_mat.glb" ||
+            sample.desc.graphPath != "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json" ||
+            sample.desc.previewOutput != "PathTrace.color") {
+            return RhiTestResult::fail("built-in Sample metadata did not load as expected");
+        }
+
+        const render::RenderGraphNode* pathTrace = sample.graph.findNode("PathTrace");
+        if (pathTrace == nullptr ||
+            !pathTrace->properties.is_object() ||
+            pathTrace->properties.value("path", "") != sample.desc.scenePath) {
+            return RhiTestResult::fail("Sample did not apply scene path to target node");
+        }
+
+        std::string validationLog;
+        if (!sample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (sample.graph.firstOutputName() != "PathTrace.color") {
+            return RhiTestResult::fail("Sample graph first output changed");
+        }
+
+        bool listed = false;
+        for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
+            listed = listed || desc.id == "pathtracing-meet-mat";
+        }
+        if (!listed) {
+            return RhiTestResult::fail("built-in Sample list did not contain pathtracing-meet-mat");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+class RenderSampleFallbackAndValidationTest : public RhiTest {
+public:
+    RenderSampleFallbackAndValidationTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_sample_fallback_and_validation";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::filesystem::path directory = std::filesystem::temp_directory_path() / "metallic_render_sample_tests";
+        std::error_code error;
+        std::filesystem::create_directories(directory, error);
+        if (error) {
+            return RhiTestResult::fail(error.message());
+        }
+
+        const std::filesystem::path fallbackPath = directory / "fallback_preview.metallic_sample.json";
+        {
+            std::ofstream file(fallbackPath, std::ios::binary | std::ios::trunc);
+            file << R"json({
+    "version": 1,
+    "id": "test-fallback-preview",
+    "name": "Test Fallback Preview",
+    "category": "PathTracing",
+    "scene": "Asset/StandfordBunny/scene.gltf",
+    "graph": "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json",
+    "scenePathTargets": ["PathTrace"]
+})json";
+        }
+
+        render::RenderSampleLoadResult sample;
+        std::string message;
+        if (!render::loadRenderSampleFromFile(fallbackPath, sample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (sample.desc.previewOutput != "PathTrace.color") {
+            return RhiTestResult::fail("Sample loader did not fallback to first graph output");
+        }
+        const render::RenderGraphNode* node = sample.graph.findNode("PathTrace");
+        if (node == nullptr || node->properties.value("path", "") != "Asset/StandfordBunny/scene.gltf") {
+            return RhiTestResult::fail("Sample loader did not override target scene path");
+        }
+
+        const std::filesystem::path invalidPath = directory / "invalid_preview.metallic_sample.json";
+        {
+            std::ofstream file(invalidPath, std::ios::binary | std::ios::trunc);
+            file << R"json({
+    "version": 1,
+    "id": "test-invalid-preview",
+    "name": "Test Invalid Preview",
+    "category": "PathTracing",
+    "scene": "Asset/meet_mat.glb",
+    "graph": "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json",
+    "scenePathTargets": ["PathTrace"],
+    "previewOutput": "Missing.color"
+})json";
+        }
+
+        if (render::loadRenderSampleFromFile(invalidPath, sample, message)) {
+            return RhiTestResult::fail("Sample loader accepted invalid previewOutput");
+        }
+        if (message.find("previewOutput") == std::string::npos) {
+            return RhiTestResult::fail("Sample loader did not report previewOutput failure");
+        }
+        return RhiTestResult::pass();
+    }
+};
 class RenderGraphValidationTest : public RhiTest {
 public:
     RenderGraphValidationTest()
@@ -1909,6 +2030,8 @@ public:
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
+METALLIC_REGISTER_RHI_TEST(RenderSampleLoadTest);
+METALLIC_REGISTER_RHI_TEST(RenderSampleFallbackAndValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyWireframePreviewTest);

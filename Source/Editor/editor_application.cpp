@@ -3,6 +3,7 @@
 #include "Runtime/Render/GAPI/rhi.h"
 #include "Runtime/Render/GAPI/Vulkan/vulkan_native.h"
 #include "Runtime/Render/RenderGraph/render_graph.h"
+#include "Runtime/Render/render_sample.h"
 #include "imnodes.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -32,6 +33,7 @@ constexpr uint32_t kViewportResizeSettleFrames = 3;
 constexpr const char* kRenderPassDragPayload = "METALLIC_RENDER_PASS_TYPE";
 constexpr uint32_t kSwapchainImageCount = 3;
 constexpr uint32_t kMinSwapchainImageCount = 2;
+constexpr const char* kDefaultRenderSampleId = "pathtracing-meet-mat";
 
 float getMainDisplayScale()
 {
@@ -148,21 +150,6 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
         };
     }
     return render::RenderGraphProperties::object();
-}
-
-render::RenderGraph createDefaultPathTraceGraph()
-{
-    render::RenderGraph graph;
-    graph.setName("ScenePathTrace");
-    graph.addNode(
-        "ScenePathTracePass",
-        "PathTrace",
-        defaultPropertiesForPass("ScenePathTracePass"),
-        335.0f,
-        281.0f);
-    graph.markOutput("PathTrace.color");
-    graph.clearDirty();
-    return graph;
 }
 
 render::RenderGraphNode* findBunnyWireframeNode(render::RenderGraph& graph)
@@ -871,7 +858,6 @@ bool EditorApplication::initialize()
     graphExecutor_ = std::make_unique<render::RenderGraphExecutor>();
     sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
     resetDefaultRenderGraph();
-    loadScene();
 
     return true;
 }
@@ -2116,16 +2102,31 @@ bool EditorApplication::renderVulkanFrame()
     return true;
 }
 
-void EditorApplication::resetDefaultRenderGraph()
+void EditorApplication::loadBuiltInSample(const char* sampleId)
 {
-    renderGraph_ = createDefaultPathTraceGraph();
+    render::RenderSampleLoadResult sample;
+    std::string message;
+    if (!render::loadBuiltInRenderSample(sampleId, sample, message)) {
+        renderGraphStatus_ = message;
+        return;
+    }
+
+    renderGraph_ = std::move(sample.graph);
     graphEditorPositionsInitialized_ = false;
     selectedGraphNodeId_ = -1;
     selectedGraphLinkId_ = -1;
     viewportPreviewValid_ = false;
     historyResources_.invalidateAll();
-    copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
-    renderGraphStatus_ = "Created meet_mat path tracing RenderGraph";
+    copyToBuffer(sample.desc.graphPath, graphFilePath_, sizeof(graphFilePath_));
+    copyToBuffer(sample.desc.scenePath, sceneFilePath_, sizeof(sceneFilePath_));
+    copyToBuffer(sample.desc.previewOutput, graphOutputBuffer_, sizeof(graphOutputBuffer_));
+    renderGraphStatus_ = "Loaded Sample: " + sample.desc.name;
+    loadScene();
+}
+
+void EditorApplication::resetDefaultRenderGraph()
+{
+    loadBuiltInSample(kDefaultRenderSampleId);
 }
 
 void EditorApplication::saveRenderGraph()
