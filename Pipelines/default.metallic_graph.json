@@ -1,27 +1,28 @@
 {
     "edges": [],
-    "name": "ChessNrdPathTrace",
+    "name": "ScenePathTrace",
     "nodes": [
         {
             "id": 1,
-            "name": "ChessNRD",
+            "name": "PathTrace",
             "position": {
                 "x": 335.0,
                 "y": 281.0
             },
             "properties": {
+                "accumulate": true,
                 "camera": {
                     "center": [
                         0.0,
-                        0.019999999552965164,
+                        0.15000000596046448,
                         0.0
                     ],
                     "eye": [
-                        -0.3934091329574585,
-                        0.06449665129184723,
-                        -0.13796865940093994
+                        0.0,
+                        0.25,
+                        3.0
                     ],
-                    "fovDegrees": 42.0,
+                    "fovDegrees": 50.0,
                     "projection": "perspective",
                     "reversedZ": true,
                     "up": [
@@ -32,21 +33,15 @@
                     "zfar": 10000.0,
                     "znear": 0.0010000000474974513
                 },
-                "denoiser": "REBLUR",
-                "enableValidation": true,
-                "environmentIntensity": 4.0,
-                "environmentRotation": -44.099998474121094,
-                "maxDepth": 5,
-                "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
-                "resetSerial": 0,
-                "samples": 2,
-                "visualization": "Final"
+                "maxDepth": 3,
+                "path": "Asset/meet_mat.glb",
+                "samples": 2
             },
-            "type": "ChessNrdPathTracePass"
+            "type": "ScenePathTracePass"
         }
     ],
     "outputs": [
-        "ChessNRD.color"
+        "PathTrace.color"
     ],
     "version": 1
 }

@@ -344,8 +344,14 @@ public:
             render::createRenderGraphPass("RenderGraphBufferWritePass");
         const std::unique_ptr<render::RenderGraphPass> pathTrace =
             render::createRenderGraphPass("ScenePathTracePass");
+        const std::unique_ptr<render::RenderGraphPass> nrdDenoise =
+            render::createRenderGraphPass("NrdDenoisePass");
 
-        if (triangle == nullptr || copy == nullptr || bufferWrite == nullptr || pathTrace == nullptr) {
+        if (triangle == nullptr ||
+            copy == nullptr ||
+            bufferWrite == nullptr ||
+            pathTrace == nullptr ||
+            nrdDenoise == nullptr) {
             return RhiTestResult::fail("failed to create built-in render graph passes");
         }
         if (triangle->kind() != render::RenderGraphPassKind::Raster ||
@@ -364,11 +370,16 @@ public:
             pathTrace->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("ScenePathTracePass is not classified as Compute/Compute");
         }
+        if (nrdDenoise->kind() != render::RenderGraphPassKind::Compute ||
+            nrdDenoise->queueType() != render::QueueType::Compute) {
+            return RhiTestResult::fail("NrdDenoisePass is not classified as Compute/Compute");
+        }
 
         bool foundTriangle = false;
         bool foundCopy = false;
         bool foundBufferWrite = false;
         bool foundPathTrace = false;
+        bool foundNrdDenoise = false;
         for (const render::RenderGraphPassInfo& passInfo : render::listRenderGraphPassTypes()) {
             if (passInfo.type == "TriangleRasterPass") {
                 foundTriangle = passInfo.kind == render::RenderGraphPassKind::Raster &&
@@ -382,9 +393,12 @@ public:
             } else if (passInfo.type == "ScenePathTracePass") {
                 foundPathTrace = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
+            } else if (passInfo.type == "NrdDenoisePass") {
+                foundNrdDenoise = passInfo.kind == render::RenderGraphPassKind::Compute &&
+                    passInfo.queueType == render::QueueType::Compute;
             }
         }
-        if (!foundTriangle || !foundCopy || !foundBufferWrite || !foundPathTrace) {
+        if (!foundTriangle || !foundCopy || !foundBufferWrite || !foundPathTrace || !foundNrdDenoise) {
             return RhiTestResult::fail("RenderGraphPassInfo did not preserve pass kind metadata");
         }
 

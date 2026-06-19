@@ -32,8 +32,6 @@ constexpr uint32_t kViewportResizeSettleFrames = 3;
 constexpr const char* kRenderPassDragPayload = "METALLIC_RENDER_PASS_TYPE";
 constexpr uint32_t kSwapchainImageCount = 3;
 constexpr uint32_t kMinSwapchainImageCount = 2;
-constexpr float kDefaultEnvironmentIntensity = 0.18f;
-constexpr float kDefaultEnvironmentRotation = 0.0f;
 
 float getMainDisplayScale()
 {
@@ -142,27 +140,11 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             }},
         };
     }
-    if (type == "ChessNrdPathTracePass") {
+    if (type == "NrdDenoisePass") {
         return render::RenderGraphProperties{
-            {"path", "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"},
-            {"maxDepth", 4},
-            {"samples", 2},
             {"denoiser", "REBLUR"},
-            {"visualization", "Final"},
             {"enableValidation", true},
-            {"environmentIntensity", kDefaultEnvironmentIntensity},
-            {"environmentRotation", kDefaultEnvironmentRotation},
             {"resetSerial", 0},
-            {"camera", {
-                {"projection", "perspective"},
-                {"fovDegrees", 42.0f},
-                {"znear", 0.001f},
-                {"zfar", 10000.0f},
-                {"reversedZ", true},
-                {"eye", {0.0f, 0.42f, 0.78f}},
-                {"center", {0.0f, 0.02f, 0.0f}},
-                {"up", {0.0f, 1.0f, 0.0f}},
-            }},
         };
     }
     return render::RenderGraphProperties::object();
@@ -171,14 +153,14 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
 render::RenderGraph createDefaultPathTraceGraph()
 {
     render::RenderGraph graph;
-    graph.setName("ChessNrdPathTrace");
+    graph.setName("ScenePathTrace");
     graph.addNode(
-        "ChessNrdPathTracePass",
-        "ChessNRD",
-        defaultPropertiesForPass("ChessNrdPathTracePass"),
+        "ScenePathTracePass",
+        "PathTrace",
+        defaultPropertiesForPass("ScenePathTracePass"),
         335.0f,
         281.0f);
-    graph.markOutput("ChessNRD.color");
+    graph.markOutput("PathTrace.color");
     graph.clearDirty();
     return graph;
 }
@@ -188,18 +170,7 @@ render::RenderGraphNode* findBunnyWireframeNode(render::RenderGraph& graph)
     for (const render::RenderGraphNode& node : graph.nodes()) {
         if (node.type == "BunnyWireframePass" ||
             node.type == "SceneRayQueryVisualizationPass" ||
-            node.type == "ScenePathTracePass" ||
-            node.type == "ChessNrdPathTracePass") {
-            return graph.findNode(node.id);
-        }
-    }
-    return nullptr;
-}
-
-render::RenderGraphNode* findChessNrdPathTraceNode(render::RenderGraph& graph)
-{
-    for (const render::RenderGraphNode& node : graph.nodes()) {
-        if (node.type == "ChessNrdPathTracePass") {
+            node.type == "ScenePathTracePass") {
             return graph.findNode(node.id);
         }
     }
@@ -1481,8 +1452,6 @@ void EditorApplication::drawScenePanel()
     }
 
     if (ImGui::CollapsingHeader("Lights")) {
-        drawEnvironmentControls();
-
         int lightIndex = 0;
         for (const scene::RenderLight& light : scene_.lights()) {
             ImGui::PushID(lightIndex++);
@@ -1503,67 +1472,6 @@ void EditorApplication::drawScenePanel()
     }
 
     ImGui::End();
-}
-
-void EditorApplication::drawEnvironmentControls()
-{
-    const bool open = ImGui::TreeNodeEx(
-        "Environment",
-        ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
-    if (!open) {
-        return;
-    }
-
-    render::RenderGraphNode* node = findChessNrdPathTraceNode(renderGraph_);
-    if (node == nullptr) {
-        ImGui::TextDisabled("Current graph has no HDRI environment controls.");
-        ImGui::TreePop();
-        return;
-    }
-
-    render::RenderGraphProperties properties = node->properties;
-    if (!properties.is_object()) {
-        properties = render::RenderGraphProperties::object();
-    }
-    ensureFloatProperty(properties, "environmentIntensity", kDefaultEnvironmentIntensity);
-    ensureFloatProperty(properties, "environmentRotation", kDefaultEnvironmentRotation);
-
-    bool changed = false;
-    const float labelWidth = 72.0f * mainScale_;
-
-    float intensity = std::clamp(
-        propertyFloatOr(properties, "environmentIntensity", kDefaultEnvironmentIntensity),
-        0.0f,
-        16.0f);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Intensity");
-    ImGui::SameLine(labelWidth);
-    ImGui::PushItemWidth(-1.0f);
-    if (ImGui::SliderFloat("##EnvironmentIntensity", &intensity, 0.0f, 40.0f, "%.3f")) {
-        properties["environmentIntensity"] = intensity;
-        changed = true;
-    }
-    ImGui::PopItemWidth();
-
-    float rotation = std::clamp(
-        propertyFloatOr(properties, "environmentRotation", kDefaultEnvironmentRotation),
-        -360.0f,
-        360.0f);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Rotation");
-    ImGui::SameLine(labelWidth);
-    ImGui::PushItemWidth(-1.0f);
-    if (ImGui::SliderFloat("##EnvironmentRotation", &rotation, -180.0f, 180.0f, "%.1f deg")) {
-        properties["environmentRotation"] = rotation;
-        changed = true;
-    }
-    ImGui::PopItemWidth();
-
-    if (changed) {
-        applyRuntimeNodeProperties(node->id, std::move(properties), "Updated environment lighting");
-    }
-
-    ImGui::TreePop();
 }
 
 void EditorApplication::drawCameraControls()
@@ -3006,24 +2914,13 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
             historyResources_.invalidateAll();
             viewportPreviewValid_ = false;
         }
-    } else if (node->type == "ChessNrdPathTracePass") {
-        static int editingChessNrdNodeId = -1;
-        static char chessNrdScenePathBuffer[260] = {};
+    } else if (node->type == "NrdDenoisePass") {
         render::RenderGraphProperties properties = node->properties;
-        if (!properties.contains("path") || !properties["path"].is_string()) {
-            properties["path"] = "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf";
-        }
-        if (!properties.contains("maxDepth") || !properties["maxDepth"].is_number()) {
-            properties["maxDepth"] = 4;
-        }
-        if (!properties.contains("samples") || !properties["samples"].is_number()) {
-            properties["samples"] = 2;
+        if (!properties.is_object()) {
+            properties = render::RenderGraphProperties::object();
         }
         if (!properties.contains("denoiser") || !properties["denoiser"].is_string()) {
             properties["denoiser"] = "REBLUR";
-        }
-        if (!properties.contains("visualization") || !properties["visualization"].is_string()) {
-            properties["visualization"] = "Final";
         }
         if (!properties.contains("enableValidation") || !properties["enableValidation"].is_boolean()) {
             properties["enableValidation"] = true;
@@ -3031,69 +2928,13 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         if (!properties.contains("resetSerial") || !properties["resetSerial"].is_number_unsigned()) {
             properties["resetSerial"] = 0;
         }
-        if (editingChessNrdNodeId != static_cast<int>(node->id)) {
-            copyToBuffer(
-                properties["path"].get<std::string>(),
-                chessNrdScenePathBuffer,
-                sizeof(chessNrdScenePathBuffer));
-            editingChessNrdNodeId = static_cast<int>(node->id);
-        }
 
         bool changed = false;
-        ImGui::InputText("Scene Path", chessNrdScenePathBuffer, sizeof(chessNrdScenePathBuffer));
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            properties["path"] = chessNrdScenePathBuffer;
-            changed = true;
-        }
-
-        int maxDepth = std::clamp(properties["maxDepth"].get<int>(), 1, 12);
-        if (ImGui::SliderInt("Max Depth", &maxDepth, 1, 12)) {
-            properties["maxDepth"] = maxDepth;
-            changed = true;
-        }
-
-        int samples = std::clamp(properties["samples"].get<int>(), 1, 16);
-        if (ImGui::SliderInt("Samples", &samples, 1, 16)) {
-            properties["samples"] = samples;
-            changed = true;
-        }
-
         const char* denoiserItems[] = {"REBLUR", "RELAX", "REFERENCE"};
         std::string denoiser = properties["denoiser"].get<std::string>();
         int denoiserIndex = denoiser == "RELAX" ? 1 : (denoiser == "REFERENCE" ? 2 : 0);
         if (ImGui::Combo("Denoiser", &denoiserIndex, denoiserItems, static_cast<int>(std::size(denoiserItems)))) {
             properties["denoiser"] = denoiserItems[denoiserIndex];
-            changed = true;
-        }
-
-        const char* visualizationItems[] = {
-            "Final",
-            "Noisy",
-            "Direct",
-            "NoisyDiffuse",
-            "NoisySpecular",
-            "DenoisedDiffuse",
-            "DenoisedSpecular",
-            "NormalRoughness",
-            "ViewZ",
-            "Motion",
-            "BaseColorMetalness",
-            "Validation",
-        };
-        std::string visualization = properties["visualization"].get<std::string>();
-        int visualizationIndex = 0;
-        for (int itemIndex = 0; itemIndex < static_cast<int>(std::size(visualizationItems)); ++itemIndex) {
-            if (visualization == visualizationItems[itemIndex]) {
-                visualizationIndex = itemIndex;
-                break;
-            }
-        }
-        if (ImGui::Combo(
-                "Visualization",
-                &visualizationIndex,
-                visualizationItems,
-                static_cast<int>(std::size(visualizationItems)))) {
-            properties["visualization"] = visualizationItems[visualizationIndex];
             changed = true;
         }
 

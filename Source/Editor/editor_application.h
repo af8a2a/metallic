@@ -29,7 +29,6 @@ private:
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();
-    void drawEnvironmentControls();
     void drawCameraControls();
     void drawSceneNode(int32_t nodeIndex);
     void drawViewportPanel();
