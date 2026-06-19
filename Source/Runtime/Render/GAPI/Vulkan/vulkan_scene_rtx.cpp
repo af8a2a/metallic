@@ -38,6 +38,7 @@ struct PrimitiveInput {
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
     uint32_t triangleCount = 0;
+    bool opaque = true;
 };
 
 struct BuiltBlas {
@@ -146,6 +147,7 @@ VkAccelerationStructureGeometryKHR makeBlasGeometry(
     VkDeviceAddress indexAddress,
     const PrimitiveInput& input)
 {
+    const VkGeometryFlagsKHR geometryFlags = input.opaque ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0;
     VkAccelerationStructureGeometryTrianglesDataKHR triangles{
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
         .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
@@ -163,7 +165,7 @@ VkAccelerationStructureGeometryKHR makeBlasGeometry(
     VkAccelerationStructureGeometryKHR geometry{
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
         .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR,
-        .flags = VK_GEOMETRY_OPAQUE_BIT_KHR,
+        .flags = geometryFlags,
     };
     geometry.geometry.triangles = triangles;
     return geometry;
@@ -230,6 +232,18 @@ VkDeviceAddress accelerationStructureAddress(VkDevice device, VkAccelerationStru
         .accelerationStructure = accelerationStructure,
     };
     return vkGetAccelerationStructureDeviceAddressKHR(device, &addressInfo);
+}
+
+bool primitiveUsesAlphaMask(
+    const scene::Scene& scene,
+    const scene::RenderPrimitive& primitive)
+{
+    if (primitive.materialIndex < 0 ||
+        static_cast<size_t>(primitive.materialIndex) >= scene.materials().size()) {
+        return false;
+    }
+
+    return scene.materials()[static_cast<size_t>(primitive.materialIndex)].alphaMode == "MASK";
 }
 
 VkDeviceSize scratchAlignment(VkPhysicalDevice physicalDevice)
@@ -463,6 +477,7 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
             .firstIndex = static_cast<uint32_t>(indices.size()),
             .indexCount = static_cast<uint32_t>(sourceIndexCount),
             .triangleCount = static_cast<uint32_t>(sourceIndexCount / 3),
+            .opaque = !primitiveUsesAlphaMask(scene, primitive),
         };
 
         for (const float3& position : primitive.positions) {

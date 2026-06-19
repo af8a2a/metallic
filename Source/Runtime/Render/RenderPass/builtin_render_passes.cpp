@@ -2218,9 +2218,21 @@ public:
             return makeError(Error::Failure);
         }
 
-        result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
+        std::string rtxLog;
+        result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, rtxLog);
         if (!result) {
+            if (!log.empty() && !rtxLog.empty() && log.back() != '\n') {
+                log += '\n';
+            }
+            log += rtxLog;
             return result;
+        }
+        if (!rtxLog.empty()) {
+            if (!log.empty() && log.back() != '\n') {
+                log += '\n';
+            }
+            log += rtxLog;
+            log += '\n';
         }
 
         result = uploadStorageBuffer(
@@ -2362,6 +2374,7 @@ public:
                 .descriptorCount = kMaxScenePathTraceMaterialTextures,
             },
         };
+        std::string programLog;
         result = rayQueryProgram_.initialize(
             *context.device,
             SceneRayQueryProgramDesc{
@@ -2372,7 +2385,13 @@ public:
                 .bindingCount = static_cast<uint32_t>(std::size(bindings)),
                 .debugName = "ScenePathTracePass",
             },
-            log);
+            programLog);
+        if (!programLog.empty()) {
+            if (!log.empty() && log.back() != '\n') {
+                log += '\n';
+            }
+            log += programLog;
+        }
         if (!result) {
             rayQueryProgram_.clear();
             resetGpuBuffers();
@@ -3154,7 +3173,7 @@ private:
             return 1.0f;
         }
         if (alphaMode == "BLEND") {
-            return 2.0f;
+            return 0.0f;
         }
         return 0.0f;
     }
@@ -3181,6 +3200,16 @@ private:
         gpuMaterial.textureParams[1] = material.occlusionTextureStrength;
         gpuMaterial.textureParams[2] = 0.0f;
         gpuMaterial.textureParams[3] = alphaModeCode(material.alphaMode);
+        if (material.alphaMode == "BLEND") {
+            std::string message =
+                "alphaMode BLEND is not supported by ScenePathTracePass yet; rendering as OPAQUE";
+            if (!material.name.empty()) {
+                message += " for material '";
+                message += material.name;
+                message += "'";
+            }
+            appendScenePathTraceWarning(log, message);
+        }
         gpuMaterial.glassParams[0] = material.transmissionFactor;
         gpuMaterial.glassParams[1] = material.ior;
         gpuMaterial.glassParams[2] = material.thicknessFactor;

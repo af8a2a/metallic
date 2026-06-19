@@ -218,7 +218,75 @@ float3 sampleCosineHemisphere(float3 normal, inout uint seed)
         normal);
 }
 
-bool traceShadow(float3 origin, float3 direction, float maxDistance)
+bool hasMaterialTexture(PathTraceTextureInfo textureInfo, ScenePathTracePush push)
+{
+    return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
+        textureInfo.textureIndex < push.materialTextureCount &&
+        textureInfo.textureIndex < kMaxMaterialTextures;
+}
+
+float2 transformMaterialUv(PathTraceTextureInfo textureInfo, float2 uv)
+{
+    return float2(
+        dot(textureInfo.transform0.xy, uv) + textureInfo.transform0.z,
+        dot(textureInfo.transform1.xy, uv) + textureInfo.transform1.z);
+}
+
+float4 loadMaterialTexture(
+    PathTraceTextureInfo textureInfo,
+    float2 uv,
+    float4 fallback,
+    ScenePathTracePush push)
+{
+    if (!hasMaterialTexture(textureInfo, push)) {
+        return fallback;
+    }
+
+    uint width = 1u;
+    uint height = 1u;
+    uint textureIndex = textureInfo.textureIndex;
+    gMaterialTextures[textureIndex].GetDimensions(width, height);
+    if (width == 0u || height == 0u) {
+        return fallback;
+    }
+
+    float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
+    uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
+    return gMaterialTextures[textureIndex].Load(int3(texel, 0));
+}
+
+float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
+{
+    PathTraceInstance instance = gInstances[instanceIndex];
+    PathTracePrimitive primitive = gPrimitives[instance.primitiveIndex];
+    uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
+    uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
+    uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
+    uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
+    float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
+    return gVertices[i0].texcoord.xy * weights.x +
+        gVertices[i1].texcoord.xy * weights.y +
+        gVertices[i2].texcoord.xy * weights.z;
+}
+
+bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, ScenePathTracePush push)
+{
+    PathTraceInstance instance = gInstances[instanceIndex];
+    PathTraceMaterial material = gMaterials[instance.materialIndex];
+    if (abs(material.textureParams.w - 1.0) > 0.25) {
+        return true;
+    }
+
+    float2 uv = triangleTexcoord(instanceIndex, triangleIndex, bary);
+    float alpha = material.baseColor.a * loadMaterialTexture(
+        material.baseColorTexture,
+        uv,
+        float4(1.0, 1.0, 1.0, 1.0),
+        push).a;
+    return saturate(alpha) >= saturate(material.params.z);
+}
+
+bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTracePush push)
 {
     RayDesc ray;
     ray.Origin = origin;
@@ -226,9 +294,17 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance)
     ray.TMin = 0.001;
     ray.TMax = max(maxDistance, 0.001);
 
-    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_FORCE_OPAQUE, 0xff, ray);
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, ray);
     while (query.Proceed()) {
+        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            alphaMaskAcceptsHit(
+                query.CandidateInstanceIndex(),
+                query.CandidatePrimitiveIndex(),
+                query.CandidateTriangleBarycentrics(),
+                push)) {
+            query.CommitNonOpaqueTriangleHit();
+        }
     }
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
@@ -251,9 +327,17 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     rayDesc.TMin = max(push.clipOrtho.x, 0.0001);
     rayDesc.TMax = max(push.clipOrtho.y, rayDesc.TMin + 0.0001);
 
-    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_FORCE_OPAQUE, 0xff, rayDesc);
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, rayDesc);
     while (query.Proceed()) {
+        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            alphaMaskAcceptsHit(
+                query.CandidateInstanceIndex(),
+                query.CandidatePrimitiveIndex(),
+                query.CandidateTriangleBarycentrics(),
+                push)) {
+            query.CommitNonOpaqueTriangleHit();
+        }
     }
 
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
@@ -368,42 +452,6 @@ float3 srgbToLinear(float3 color)
         color.b <= 0.04045 ? color.b / 12.92 : pow((color.b + 0.055) / 1.055, 2.4));
 }
 
-bool hasMaterialTexture(PathTraceTextureInfo textureInfo, ScenePathTracePush push)
-{
-    return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
-        textureInfo.textureIndex < push.materialTextureCount &&
-        textureInfo.textureIndex < kMaxMaterialTextures;
-}
-
-float2 transformMaterialUv(PathTraceTextureInfo textureInfo, float2 uv)
-{
-    return float2(
-        dot(textureInfo.transform0.xy, uv) + textureInfo.transform0.z,
-        dot(textureInfo.transform1.xy, uv) + textureInfo.transform1.z);
-}
-
-float4 loadMaterialTexture(
-    PathTraceTextureInfo textureInfo,
-    float2 uv,
-    float4 fallback,
-    ScenePathTracePush push)
-{
-    if (!hasMaterialTexture(textureInfo, push)) {
-        return fallback;
-    }
-
-    uint width = 1u;
-    uint height = 1u;
-    uint textureIndex = textureInfo.textureIndex;
-    gMaterialTextures[textureIndex].GetDimensions(width, height);
-    if (width == 0u || height == 0u) {
-        return fallback;
-    }
-
-    float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
-    uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
-    return gMaterialTextures[textureIndex].Load(int3(texel, 0));
-}
 
 float3 applyNormalMap(
     float3 normal,
@@ -515,7 +563,7 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
         float3 sunDirection = safeNormalize(float3(0.35, 0.88, 0.22), float3(0.0, 1.0, 0.0));
         float nDotL = saturate(dot(hit.normal, sunDirection));
         if (nDotL > 0.0) {
-            bool occluded = traceShadow(offsetRay(hit.position, hit.geometryNormal), sunDirection, 10000.0);
+            bool occluded = traceShadow(offsetRay(hit.position, hit.geometryNormal), sunDirection, 10000.0, push);
             if (!occluded) {
                 float3 viewDirection = -ray.direction;
                 float3 halfVector = safeNormalize(sunDirection + viewDirection, hit.normal);

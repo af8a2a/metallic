@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -260,6 +261,176 @@ uint32_t countVisiblePixels(const std::vector<uint32_t>& pixels)
         }
     }
     return visiblePixelCount;
+}
+
+uint32_t packRgba8(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    return static_cast<uint32_t>(r) |
+        (static_cast<uint32_t>(g) << 8u) |
+        (static_cast<uint32_t>(b) << 16u) |
+        (static_cast<uint32_t>(a) << 24u);
+}
+
+template <typename T, size_t N>
+bool writeBinaryArray(std::ofstream& stream, const std::array<T, N>& values)
+{
+    stream.write(
+        reinterpret_cast<const char*>(values.data()),
+        static_cast<std::streamsize>(values.size() * sizeof(T)));
+    return stream.good();
+}
+
+bool writeAlphaMaskScene(
+    const std::filesystem::path& directory,
+    std::filesystem::path& outPath,
+    std::string& outMessage)
+{
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+        outMessage = "failed to create alpha mask scene directory: " + error.message();
+        return false;
+    }
+
+    const std::filesystem::path imagePath = directory / "alpha_mask.png";
+    std::array<uint32_t, 16> alphaPixels{};
+    for (uint32_t y = 0; y < 4; ++y) {
+        for (uint32_t x = 0; x < 4; ++x) {
+            const uint8_t alpha = x < 2 ? 0 : 255;
+            alphaPixels[y * 4 + x] = packRgba8(255, 255, 255, alpha);
+        }
+    }
+    const auto* alphaBytes = reinterpret_cast<const uint8_t*>(alphaPixels.data());
+    if (!saveRgba8Png(imagePath, alphaBytes, 4, 4, outMessage)) {
+        return false;
+    }
+
+    const std::filesystem::path binPath = directory / "alpha_mask.bin";
+    std::ofstream bin(binPath, std::ios::binary);
+    if (!bin) {
+        outMessage = "failed to open alpha mask scene binary";
+        return false;
+    }
+
+    const std::array<float, 12> frontPositions{
+        -1.0f, -1.0f, 0.0f,
+        1.0f, -1.0f, 0.0f,
+        1.0f, 1.0f, 0.0f,
+        -1.0f, 1.0f, 0.0f,
+    };
+    const std::array<float, 12> backPositions{
+        -1.0f, -1.0f, -0.1f,
+        1.0f, -1.0f, -0.1f,
+        1.0f, 1.0f, -0.1f,
+        -1.0f, 1.0f, -0.1f,
+    };
+    const std::array<float, 12> normals{
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+    };
+    const std::array<float, 8> texcoords{
+        0.0f, 1.0f,
+        1.0f, 1.0f,
+        1.0f, 0.0f,
+        0.0f, 0.0f,
+    };
+    const std::array<uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    if (!writeBinaryArray(bin, frontPositions) ||
+        !writeBinaryArray(bin, normals) ||
+        !writeBinaryArray(bin, texcoords) ||
+        !writeBinaryArray(bin, indices) ||
+        !writeBinaryArray(bin, backPositions) ||
+        !writeBinaryArray(bin, normals) ||
+        !writeBinaryArray(bin, texcoords) ||
+        !writeBinaryArray(bin, indices)) {
+        outMessage = "failed to write alpha mask scene binary";
+        return false;
+    }
+    bin.close();
+
+    const std::filesystem::path gltfPath = directory / "alpha_mask.gltf";
+    std::ofstream gltf(gltfPath);
+    if (!gltf) {
+        outMessage = "failed to open alpha mask glTF";
+        return false;
+    }
+
+    gltf << R"json({
+  "asset": { "version": "2.0", "generator": "MetallicRhiTests" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0, "name": "Alpha Mask Stack" }],
+  "buffers": [{ "uri": "alpha_mask.bin", "byteLength": 304 }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 48, "target": 34962 },
+    { "buffer": 0, "byteOffset": 48, "byteLength": 48, "target": 34962 },
+    { "buffer": 0, "byteOffset": 96, "byteLength": 32, "target": 34962 },
+    { "buffer": 0, "byteOffset": 128, "byteLength": 24, "target": 34963 },
+    { "buffer": 0, "byteOffset": 152, "byteLength": 48, "target": 34962 },
+    { "buffer": 0, "byteOffset": 200, "byteLength": 48, "target": 34962 },
+    { "buffer": 0, "byteOffset": 248, "byteLength": 32, "target": 34962 },
+    { "buffer": 0, "byteOffset": 280, "byteLength": 24, "target": 34963 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3", "min": [-1, -1, 0], "max": [1, 1, 0] },
+    { "bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC3" },
+    { "bufferView": 2, "componentType": 5126, "count": 4, "type": "VEC2" },
+    { "bufferView": 3, "componentType": 5125, "count": 6, "type": "SCALAR" },
+    { "bufferView": 4, "componentType": 5126, "count": 4, "type": "VEC3", "min": [-1, -1, -0.1], "max": [1, 1, -0.1] },
+    { "bufferView": 5, "componentType": 5126, "count": 4, "type": "VEC3" },
+    { "bufferView": 6, "componentType": 5126, "count": 4, "type": "VEC2" },
+    { "bufferView": 7, "componentType": 5125, "count": 6, "type": "SCALAR" }
+  ],
+  "samplers": [{ "magFilter": 9728, "minFilter": 9728, "wrapS": 10497, "wrapT": 10497 }],
+  "images": [{ "uri": "alpha_mask.png", "name": "Alpha Mask" }],
+  "textures": [{ "source": 0, "sampler": 0, "name": "Alpha Mask Texture" }],
+  "materials": [
+    {
+      "name": "Masked Red",
+      "alphaMode": "MASK",
+      "alphaCutoff": 0.5,
+      "doubleSided": true,
+      "emissiveFactor": [1.0, 0.0, 0.0],
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+        "baseColorTexture": { "index": 0 },
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
+      }
+    },
+    {
+      "name": "Blend Blue Downgrade",
+      "alphaMode": "BLEND",
+      "emissiveFactor": [0.0, 0.0, 1.0],
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.0, 0.0, 1.0, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
+      }
+    },
+    {
+      "name": "Blend Downgrade",
+      "alphaMode": "BLEND",
+      "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 0.5] }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Alpha Mask Mesh",
+      "primitives": [
+        { "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 }, "indices": 3, "material": 0 },
+        { "attributes": { "POSITION": 4, "NORMAL": 5, "TEXCOORD_0": 6 }, "indices": 7, "material": 1 }
+      ]
+    }
+  ]
+})json";
+    gltf.close();
+
+    outPath = gltfPath;
+    outMessage.clear();
+    return true;
 }
 
 class RenderGraphReflectionApiTest : public RhiTest {
@@ -881,6 +1052,93 @@ public:
     }
 };
 
+class RenderGraphScenePathTraceAlphaMaskPreviewTest : public RhiTest {
+public:
+    RenderGraphScenePathTraceAlphaMaskPreviewTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_scene_path_trace_alpha_mask_preview";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::filesystem::path scenePath;
+        std::string message;
+        if (!writeAlphaMaskScene(context.outputDirectory / "alpha-mask-scene", scenePath, message)) {
+            return RhiTestResult::fail(message);
+        }
+
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        render::RenderGraphProperties properties{
+            {"path", scenePath.string()},
+            {"maxDepth", 1},
+            {"samples", 1},
+            {"accumulate", false},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 45.0f},
+                {"znear", 0.001f},
+                {"zfar", 10.0f},
+                {"eye", {0.0f, 0.0f, 2.0f}},
+                {"center", {0.0f, 0.0f, 0.0f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
+        };
+        render::RenderGraph graph;
+        graph.setName("ScenePathTraceAlphaMaskPreview");
+        graph.addNode("ScenePathTracePass", "PathTrace", properties);
+        graph.markOutput("PathTrace.color");
+
+        result = preview.render(graph, 96, 96);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("ScenePathTracePass is unsupported on this device: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("ScenePathTracePass alpha mask render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        uint32_t redPixelCount = 0;
+        uint32_t bluePixelCount = 0;
+        for (uint32_t pixel : preview.pixels()) {
+            const uint8_t r = static_cast<uint8_t>(pixel & 0xffu);
+            const uint8_t g = static_cast<uint8_t>((pixel >> 8u) & 0xffu);
+            const uint8_t b = static_cast<uint8_t>((pixel >> 16u) & 0xffu);
+            if (r > 24 && r > g + 24 && r > b + 24) {
+                ++redPixelCount;
+            }
+            if (b > 24 && b > r + 24 && b > g + 24) {
+                ++bluePixelCount;
+            }
+        }
+        if (redPixelCount < 1024 || bluePixelCount < 1024) {
+            return RhiTestResult::fail(
+                std::string("alpha mask preview expected red masked pixels and blue revealed pixels, got red=") +
+                std::to_string(redPixelCount) +
+                " blue=" +
+                std::to_string(bluePixelCount));
+        }
+
+
+        const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const std::filesystem::path outputPath =
+            context.outputDirectory / "render_graph_scene_path_trace_alpha_mask_preview.png";
+        if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
+            return RhiTestResult::fail(message);
+        }
+
+        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+    }
+};
 class RenderGraphCopyColorWorkflowTest : public RhiTest {
 public:
     RenderGraphCopyColorWorkflowTest()
@@ -1425,6 +1683,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceAlphaMaskPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);
