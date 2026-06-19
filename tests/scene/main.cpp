@@ -692,6 +692,100 @@ void testMaterialImport(const std::filesystem::path& directory)
         "high clamp diffuseTransmissionFactor");
 }
 
+void testABeautifulGameMaterialImport()
+{
+    const std::array<float, 6> identityUv{1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const std::filesystem::path scenePath =
+        std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf";
+
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.load(scenePath)) << scene.lastLoadResult().error;
+
+    EXPECT_EQ(scene.sceneName(), "Scene");
+    EXPECT_EQ(scene.stats().meshCount, 15u);
+    EXPECT_EQ(scene.stats().materialCount, 15u);
+    EXPECT_EQ(scene.materials().size(), 15u);
+    EXPECT_EQ(scene.textures().size(), 43u);
+    EXPECT_EQ(scene.images().size(), 33u);
+    EXPECT_FALSE(scene.renderPrimitives().empty());
+
+    for (const metallic::scene::RenderPrimitive& primitive : scene.renderPrimitives()) {
+        EXPECT_GE(primitive.materialIndex, 0) << primitive.name;
+        EXPECT_LT(static_cast<size_t>(primitive.materialIndex), scene.materials().size()) << primitive.name;
+    }
+
+    const metallic::scene::RenderMaterial& kingBlack = scene.materials()[0];
+    EXPECT_EQ(kingBlack.name, "King_Black");
+    expectTextureInfo(kingBlack.normalTexture, 0, 0, identityUv, "King_Black normalTexture");
+    expectTextureInfo(kingBlack.occlusionTexture, 1, 0, identityUv, "King_Black occlusionTexture");
+    expectTextureInfo(kingBlack.baseColorTexture, 2, 0, identityUv, "King_Black baseColorTexture");
+    expectTextureInfo(
+        kingBlack.metallicRoughnessTexture,
+        1,
+        0,
+        identityUv,
+        "King_Black metallicRoughnessTexture");
+    EXPECT_EQ(scene.textures()[1].imageIndex, 1);
+    EXPECT_EQ(scene.textures()[2].imageIndex, 2);
+    EXPECT_EQ(scene.images()[1].name, "King_black_ORM");
+    EXPECT_EQ(scene.images()[1].uri, "King_black_ORM.jpg");
+    EXPECT_EQ(scene.images()[2].name, "king_black_base_color");
+    EXPECT_EQ(scene.images()[2].uri, "king_black_base_color.jpg");
+
+    const metallic::scene::RenderMaterial& pawnTopWhite = scene.materials()[5];
+    EXPECT_EQ(pawnTopWhite.name, "Pawn_Top_White");
+    expectVec4(
+        pawnTopWhite.baseColorFactor,
+        float4(1.0f, 1.0f, 0.828000009f, 1.0f),
+        "Pawn_Top_White baseColorFactor");
+    expectTextureInfo(
+        pawnTopWhite.baseColorTexture,
+        metallic::scene::kInvalidSceneIndex,
+        0,
+        identityUv,
+        "Pawn_Top_White baseColorTexture");
+    expectTextureInfo(pawnTopWhite.normalTexture, 15, 0, identityUv, "Pawn_Top_White normalTexture");
+    expectTextureInfo(
+        pawnTopWhite.metallicRoughnessTexture,
+        16,
+        0,
+        identityUv,
+        "Pawn_Top_White metallicRoughnessTexture");
+    expectTextureInfo(
+        pawnTopWhite.occlusionTexture,
+        metallic::scene::kInvalidSceneIndex,
+        0,
+        identityUv,
+        "Pawn_Top_White occlusionTexture");
+    EXPECT_TRUE(nearlyEqual(pawnTopWhite.transmissionFactor, 1.0f));
+    EXPECT_TRUE(nearlyEqual(pawnTopWhite.thicknessFactor, 0.219999999f));
+    EXPECT_TRUE(nearlyEqual(pawnTopWhite.attenuationDistance, 0.0f));
+    expectVec3(
+        pawnTopWhite.attenuationColor,
+        float3(0.800000012f, 0.800000012f, 0.800000012f),
+        "Pawn_Top_White attenuationColor");
+    EXPECT_EQ(scene.textures()[15].imageIndex, 15);
+    EXPECT_EQ(scene.images()[15].uri, "Pawn_normal.jpg");
+    EXPECT_EQ(scene.textures()[16].imageIndex, 16);
+    EXPECT_EQ(scene.images()[16].uri, "Pawn_ORM.jpg");
+
+    const metallic::scene::RenderMaterial& bishopWhite = scene.materials()[14];
+    EXPECT_EQ(bishopWhite.name, "Bishop_White");
+    expectTextureInfo(bishopWhite.normalTexture, 40, 0, identityUv, "Bishop_White normalTexture");
+    expectTextureInfo(bishopWhite.occlusionTexture, 41, 0, identityUv, "Bishop_White occlusionTexture");
+    expectTextureInfo(
+        bishopWhite.metallicRoughnessTexture,
+        41,
+        0,
+        identityUv,
+        "Bishop_White metallicRoughnessTexture");
+    expectTextureInfo(bishopWhite.baseColorTexture, 42, 0, identityUv, "Bishop_White baseColorTexture");
+    EXPECT_EQ(scene.textures()[41].imageIndex, 31);
+    EXPECT_EQ(scene.images()[31].uri, "Bishop_white_ORM.jpg");
+    EXPECT_EQ(scene.textures()[42].imageIndex, 32);
+    EXPECT_EQ(scene.images()[32].uri, "bishop_white_base_color.jpg");
+}
+
 void testGlbImport(const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
@@ -739,6 +833,11 @@ TEST(SceneImport, FullScene)
 TEST(SceneImport, Materials)
 {
     testMaterialImport(prepareOutputDirectory());
+}
+
+TEST(SceneImport, ABeautifulGameMaterials)
+{
+    testABeautifulGameMaterialImport();
 }
 
 TEST(SceneImport, Glb)
