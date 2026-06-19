@@ -117,6 +117,7 @@ struct HitInfo
     float3 position;
     float3 normal;
     float3 geometryNormal;
+    float4 tangent;
     float2 texcoord;
     uint materialIndex;
     bool frontFace;
@@ -239,6 +240,7 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.position = ray.origin;
     hit.normal = float3(0.0, 1.0, 0.0);
     hit.geometryNormal = hit.normal;
+    hit.tangent = float4(1.0, 0.0, 0.0, 1.0);
     hit.texcoord = float2(0.0, 0.0);
     hit.materialIndex = 0u;
     hit.frontFace = true;
@@ -281,6 +283,11 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     float3 localGeometryNormal = safeNormalize(cross(p1 - p0, p2 - p0), float3(0.0, 1.0, 0.0));
     float3 localNormal = v0.normal.xyz * weights.x + v1.normal.xyz * weights.y + v2.normal.xyz * weights.z;
     localNormal = dot(localNormal, localNormal) > 0.000001 ? safeNormalize(localNormal, localGeometryNormal) : localGeometryNormal;
+    float4 localTangent = v0.tangent * weights.x + v1.tangent * weights.y + v2.tangent * weights.z;
+    float3 localTangentDirection = dot(localTangent.xyz, localTangent.xyz) > 0.000001
+        ? safeNormalize(localTangent.xyz, float3(1.0, 0.0, 0.0))
+        : float3(1.0, 0.0, 0.0);
+    float tangentSign = localTangent.w >= 0.0 ? 1.0 : -1.0;
     hit.texcoord = v0.texcoord.xy * weights.x + v1.texcoord.xy * weights.y + v2.texcoord.xy * weights.z;
 
     float4x3 objectToWorld = query.CommittedObjectToWorld4x3();
@@ -288,6 +295,8 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.position = float3(mul(float4(localPosition, 1.0), objectToWorld));
     hit.geometryNormal = safeNormalize(float3(mul(worldToObject, localGeometryNormal).xyz), localGeometryNormal);
     hit.normal = safeNormalize(float3(mul(worldToObject, localNormal).xyz), hit.geometryNormal);
+    float3 worldTangent = safeNormalize(float3(mul(float4(localTangentDirection, 0.0), objectToWorld)), float3(1.0, 0.0, 0.0));
+    hit.tangent = float4(worldTangent, tangentSign);
 
     float3 view = -ray.direction;
     hit.frontFace = dot(hit.geometryNormal, view) >= 0.0;
@@ -396,6 +405,31 @@ float4 loadMaterialTexture(
     return gMaterialTextures[textureIndex].Load(int3(texel, 0));
 }
 
+float3 applyNormalMap(
+    float3 normal,
+    float3 geometryNormal,
+    float4 tangent,
+    float4 normalSample,
+    float normalScale)
+{
+    normal = safeNormalize(normal, geometryNormal);
+    float3 referenceAxis = abs(normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+    float3 fallbackTangent = safeNormalize(cross(referenceAxis, normal), float3(1.0, 0.0, 0.0));
+    float3 tangentDirection = tangent.xyz - normal * dot(normal, tangent.xyz);
+    tangentDirection = safeNormalize(tangentDirection, fallbackTangent);
+    float tangentSign = tangent.w >= 0.0 ? 1.0 : -1.0;
+    float3 bitangentDirection = safeNormalize(cross(normal, tangentDirection) * tangentSign, cross(normal, fallbackTangent));
+
+    float3 tangentNormal = float3(normalSample.xy * 2.0 - 1.0, normalSample.z * 2.0 - 1.0);
+    tangentNormal.xy *= max(normalScale, 0.0);
+    tangentNormal = safeNormalize(tangentNormal, float3(0.0, 0.0, 1.0));
+    return safeNormalize(
+        tangentDirection * tangentNormal.x +
+        bitangentDirection * tangentNormal.y +
+        normal * tangentNormal.z,
+        normal);
+}
+
 float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
@@ -425,6 +459,18 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
             push);
+        float4 normalSample = loadMaterialTexture(
+            material.normalTexture,
+            hit.texcoord,
+            float4(0.5, 0.5, 1.0, 1.0),
+            push);
+        float4 occlusionSample = loadMaterialTexture(
+            material.occlusionTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push);
+        hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, normalSample, material.textureParams.x);
+        float occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
 
         float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
         float metallic = saturate(material.params.x * metallicRoughnessSample.b);
@@ -475,7 +521,7 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
                 float3 halfVector = safeNormalize(sunDirection + viewDirection, hit.normal);
                 float nDotH = saturate(dot(hit.normal, halfVector));
                 float specularPower = lerp(96.0, 8.0, roughness);
-                float3 diffuse = baseColor * (1.0 - metallic) * (1.0 - diffuseTransmission) * (nDotL / kPi);
+                float3 diffuse = baseColor * occlusion * (1.0 - metallic) * (1.0 - diffuseTransmission) * (nDotL / kPi);
                 float3 specular = f0 * pow(nDotH, specularPower) * nDotL;
                 radiance += throughput * (diffuse + specular) * float3(5.2, 4.8, 4.2);
             }
@@ -521,7 +567,7 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
                     max(thickness, 0.01));
         } else {
             ray.direction = diffuseDirection;
-            throughput *= baseColor * (1.0 - metallic) * (1.0 - diffuseTransmission);
+            throughput *= baseColor * occlusion * (1.0 - metallic) * (1.0 - diffuseTransmission);
         }
         ray.origin = offsetRay(hit.position, dot(ray.direction, hit.geometryNormal) > 0.0 ? hit.geometryNormal : -hit.geometryNormal);
 

@@ -822,6 +822,65 @@ public:
     }
 };
 
+class RenderGraphScenePathTraceMaterialTexturesPreviewTest : public RhiTest {
+public:
+    RenderGraphScenePathTraceMaterialTexturesPreviewTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_scene_path_trace_material_textures_preview";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        render::RenderGraphProperties properties{
+            {"path", PROJECT_SOURCE_DIR "/Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"},
+            {"maxDepth", 2},
+            {"samples", 1},
+            {"accumulate", false},
+        };
+        render::RenderGraph graph;
+        graph.setName("ScenePathTraceMaterialTexturesPreview");
+        graph.addNode("ScenePathTracePass", "PathTrace", properties);
+        graph.markOutput("PathTrace.color");
+
+        result = preview.render(graph, 128, 128);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("ScenePathTracePass is unsupported on this device: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("ScenePathTracePass textured material render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
+        if (visiblePixelCount < 512) {
+            return RhiTestResult::fail(
+                std::string("ScenePathTracePass textured material preview produced too few visible pixels: ") +
+                std::to_string(visiblePixelCount));
+        }
+
+        std::string outputMessage;
+        const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const std::filesystem::path outputPath =
+            context.outputDirectory / "render_graph_scene_path_trace_material_textures_preview.png";
+        if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), outputMessage)) {
+            return RhiTestResult::fail(outputMessage);
+        }
+
+        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+    }
+};
+
 class RenderGraphCopyColorWorkflowTest : public RhiTest {
 public:
     RenderGraphCopyColorWorkflowTest()
@@ -1365,6 +1424,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyWireframePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);

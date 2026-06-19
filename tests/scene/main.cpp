@@ -398,8 +398,29 @@ std::filesystem::path writeMaterialFeatureScene(const std::filesystem::path& dir
         },
         "metallicRoughnessTexture": { "index": 1, "texCoord": 0 }
       },
-      "normalTexture": { "index": 2, "texCoord": 0, "scale": 0.42 },
-      "occlusionTexture": { "index": 3, "texCoord": 1, "strength": 0.66 },
+      "normalTexture": {
+        "index": 2,
+        "texCoord": 0,
+        "scale": 0.42,
+        "extensions": {
+          "KHR_texture_transform": {
+            "offset": [0.05, 0.15],
+            "scale": [0.5, 0.25]
+          }
+        }
+      },
+      "occlusionTexture": {
+        "index": 3,
+        "texCoord": 1,
+        "strength": 0.66,
+        "extensions": {
+          "KHR_texture_transform": {
+            "offset": [0.3, 0.4],
+            "scale": [1.25, 0.75],
+            "texCoord": 3
+          }
+        }
+      },
       "emissiveTexture": { "index": 4, "texCoord": 0 },
       "emissiveFactor": [0.1, 0.2, 0.3],
       "alphaMode": "MASK",
@@ -639,8 +660,18 @@ void testMaterialImport(const std::filesystem::path& directory)
         {0.0f, -3.0f, 0.1f, 2.0f, 0.0f, 0.2f},
         "full material baseColorTexture");
     expectTextureInfo(fullMaterial.metallicRoughnessTexture, 1, 0, identityUv, "full material metallicRoughnessTexture");
-    expectTextureInfo(fullMaterial.normalTexture, 2, 0, identityUv, "full material normalTexture");
-    expectTextureInfo(fullMaterial.occlusionTexture, 3, 1, identityUv, "full material occlusionTexture");
+    expectTextureInfo(
+        fullMaterial.normalTexture,
+        2,
+        0,
+        {0.5f, 0.0f, 0.05f, 0.0f, 0.25f, 0.15f},
+        "full material normalTexture");
+    expectTextureInfo(
+        fullMaterial.occlusionTexture,
+        3,
+        3,
+        {1.25f, 0.0f, 0.3f, 0.0f, 0.75f, 0.4f},
+        "full material occlusionTexture");
     expectTextureInfo(fullMaterial.emissiveTexture, 4, 0, identityUv, "full material emissiveTexture");
 
     expect(nearlyEqual(fullMaterial.transmissionFactor, 0.8f), "full material transmissionFactor");

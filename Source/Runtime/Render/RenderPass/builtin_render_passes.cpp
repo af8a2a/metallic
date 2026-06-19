@@ -3123,11 +3123,22 @@ private:
 
     static ScenePathTraceGpuMaterial::TextureInfo makeGpuTextureInfo(
         const scene::RenderTextureInfo& textureInfo,
-        const std::vector<uint32_t>& textureIndexMap)
+        const std::vector<uint32_t>& textureIndexMap,
+        std::string& log,
+        std::string_view textureLabel)
     {
         ScenePathTraceGpuMaterial::TextureInfo gpuTextureInfo;
         gpuTextureInfo.textureIndex = materialTextureIndex(textureInfo.textureIndex, textureIndexMap);
-        gpuTextureInfo.texCoord = textureInfo.texCoord > 0 ? static_cast<uint32_t>(textureInfo.texCoord) : 0;
+        if (textureInfo.texCoord > 0) {
+            if (gpuTextureInfo.textureIndex != kInvalidMaterialTextureIndex) {
+                appendScenePathTraceWarning(
+                    log,
+                    std::string(textureLabel) + " requests TEXCOORD_" +
+                        std::to_string(textureInfo.texCoord) +
+                        "; ScenePathTracePass currently samples TEXCOORD_0");
+            }
+            gpuTextureInfo.texCoord = 0;
+        }
         gpuTextureInfo.transform0[0] = textureInfo.uvTransform[0];
         gpuTextureInfo.transform0[1] = textureInfo.uvTransform[1];
         gpuTextureInfo.transform0[2] = textureInfo.uvTransform[2];
@@ -3150,7 +3161,8 @@ private:
 
     static ScenePathTraceGpuMaterial makeMaterial(
         const scene::RenderMaterial& material,
-        const std::vector<uint32_t>& textureIndexMap)
+        const std::vector<uint32_t>& textureIndexMap,
+        std::string& log)
     {
         ScenePathTraceGpuMaterial gpuMaterial;
         gpuMaterial.baseColor[0] = material.baseColorFactor.x;
@@ -3181,16 +3193,31 @@ private:
         gpuMaterial.diffuseTransmission[1] = material.diffuseTransmissionColor.y;
         gpuMaterial.diffuseTransmission[2] = material.diffuseTransmissionColor.z;
         gpuMaterial.diffuseTransmission[3] = material.diffuseTransmissionFactor;
-        gpuMaterial.baseColorTexture = makeGpuTextureInfo(material.baseColorTexture, textureIndexMap);
-        gpuMaterial.metallicRoughnessTexture = makeGpuTextureInfo(material.metallicRoughnessTexture, textureIndexMap);
-        gpuMaterial.normalTexture = makeGpuTextureInfo(material.normalTexture, textureIndexMap);
-        gpuMaterial.occlusionTexture = makeGpuTextureInfo(material.occlusionTexture, textureIndexMap);
-        gpuMaterial.emissiveTexture = makeGpuTextureInfo(material.emissiveTexture, textureIndexMap);
-        gpuMaterial.transmissionTexture = makeGpuTextureInfo(material.transmissionTexture, textureIndexMap);
-        gpuMaterial.thicknessTexture = makeGpuTextureInfo(material.thicknessTexture, textureIndexMap);
-        gpuMaterial.diffuseTransmissionTexture = makeGpuTextureInfo(material.diffuseTransmissionTexture, textureIndexMap);
-        gpuMaterial.diffuseTransmissionColorTexture =
-            makeGpuTextureInfo(material.diffuseTransmissionColorTexture, textureIndexMap);
+        gpuMaterial.baseColorTexture = makeGpuTextureInfo(material.baseColorTexture, textureIndexMap, log, "baseColorTexture");
+        gpuMaterial.metallicRoughnessTexture = makeGpuTextureInfo(
+            material.metallicRoughnessTexture,
+            textureIndexMap,
+            log,
+            "metallicRoughnessTexture");
+        gpuMaterial.normalTexture = makeGpuTextureInfo(material.normalTexture, textureIndexMap, log, "normalTexture");
+        gpuMaterial.occlusionTexture = makeGpuTextureInfo(material.occlusionTexture, textureIndexMap, log, "occlusionTexture");
+        gpuMaterial.emissiveTexture = makeGpuTextureInfo(material.emissiveTexture, textureIndexMap, log, "emissiveTexture");
+        gpuMaterial.transmissionTexture = makeGpuTextureInfo(
+            material.transmissionTexture,
+            textureIndexMap,
+            log,
+            "transmissionTexture");
+        gpuMaterial.thicknessTexture = makeGpuTextureInfo(material.thicknessTexture, textureIndexMap, log, "thicknessTexture");
+        gpuMaterial.diffuseTransmissionTexture = makeGpuTextureInfo(
+            material.diffuseTransmissionTexture,
+            textureIndexMap,
+            log,
+            "diffuseTransmissionTexture");
+        gpuMaterial.diffuseTransmissionColorTexture = makeGpuTextureInfo(
+            material.diffuseTransmissionColorTexture,
+            textureIndexMap,
+            log,
+            "diffuseTransmissionColorTexture");
         return gpuMaterial;
     }
 
@@ -3286,7 +3313,7 @@ private:
             outScene.materials.push_back(ScenePathTraceGpuMaterial{});
         } else {
             for (const scene::RenderMaterial& material : scene.materials()) {
-                outScene.materials.push_back(makeMaterial(material, textureIndexMap));
+                outScene.materials.push_back(makeMaterial(material, textureIndexMap, log));
             }
         }
 
