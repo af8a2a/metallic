@@ -65,6 +65,7 @@ constexpr uint32_t kNrdDenoiserModeReblur = 0;
 constexpr uint32_t kNrdDenoiserModeRelax = 1;
 constexpr uint32_t kNrdDenoiserModeReference = 2;
 constexpr uint32_t kInvalidMaterialTextureIndex = std::numeric_limits<uint32_t>::max();
+constexpr uint32_t kMaxScenePathTraceMaterialTextures = 256;
 constexpr const char* kScenePathTraceHistoryPrefix = "ScenePathTracePass.";
 constexpr bool kDefaultReversedZ = true;
 
@@ -207,7 +208,10 @@ struct ScenePathTracePush {
     uint32_t accumulationFrame = 0;
     uint32_t hasHistory = 0;
     uint32_t enableAccumulation = 1;
-    uint32_t padding = 0;
+    uint32_t materialTextureCount = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
 };
 
 std::string resultMessage(std::string_view label, const Result& result)
@@ -2186,7 +2190,7 @@ public:
             log = "ScenePathTracePass requires rayTracingAccelerationStructure and rayQuery capabilities";
             return makeError(Error::Unsupported);
         }
-        if (rayQueryProgram_.valid() && rtxBuilder_.valid() && vertexBuffer_ != nullptr) {
+        if (rayQueryProgram_.valid() && rtxBuilder_.valid() && vertexBuffer_ != nullptr && !materialTextures_.empty()) {
             return {};
         }
 
@@ -2201,12 +2205,20 @@ public:
             return makeError(Error::Failure);
         }
 
+        std::vector<uint32_t> textureIndexMap;
+        Result result = buildMaterialTextures(*context.device, loadedScene, textureIndexMap, log);
+        if (!result) {
+            resetGpuBuffers();
+            return result;
+        }
+
         ScenePathTraceGpuScene gpuScene;
-        if (!buildGpuScene(loadedScene, gpuScene, log)) {
+        if (!buildGpuScene(loadedScene, textureIndexMap, gpuScene, log)) {
+            resetGpuBuffers();
             return makeError(Error::Failure);
         }
 
-        Result result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
+        result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
         if (!result) {
             return result;
         }
@@ -2344,6 +2356,11 @@ public:
                 .binding = 8,
                 .kind = SceneRayQueryBindingKind::StorageImage,
             },
+            SceneRayQueryBindingDesc{
+                .binding = 9,
+                .kind = SceneRayQueryBindingKind::SampledImage,
+                .descriptorCount = kMaxScenePathTraceMaterialTextures,
+            },
         };
         result = rayQueryProgram_.initialize(
             *context.device,
@@ -2378,6 +2395,8 @@ public:
             primitiveBuffer_ == nullptr ||
             instanceBuffer_ == nullptr ||
             materialBuffer_ == nullptr ||
+            materialTextures_.empty() ||
+            materialTextureViews_[0] == nullptr ||
             !rtxBuilder_.valid() ||
             !drawBounds_.valid) {
             return makeError(Error::InvalidArgument);
@@ -2385,6 +2404,7 @@ public:
 
         ScenePathTracePush push;
         buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
+        push.materialTextureCount = materialTextureCount_;
 
         TextureView* historyCurrentView = color.view();
         TextureView* historyPreviousView = color.view();
@@ -2399,6 +2419,11 @@ public:
         }
         if (historyCurrentView == nullptr || historyPreviousView == nullptr) {
             return makeError(Error::InvalidArgument);
+        }
+
+        result = uploadMaterialTextures(context);
+        if (!result) {
+            return result;
         }
 
         const SceneRayQueryDispatchBinding bindings[] = {
@@ -2438,6 +2463,11 @@ public:
                 .binding = 8,
                 .textureView = historyPreviousView,
             },
+            SceneRayQueryDispatchBinding{
+                .binding = 9,
+                .textureViews = materialTextureViews_.data(),
+                .textureViewCount = static_cast<uint32_t>(materialTextureViews_.size()),
+            },
         };
         result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
@@ -2466,6 +2496,23 @@ private:
         std::vector<ScenePathTraceGpuPrimitive> primitives;
         std::vector<ScenePathTraceGpuInstance> instances;
         std::vector<ScenePathTraceGpuMaterial> materials;
+    };
+
+    struct ScenePathTraceMaterialTexture {
+        std::unique_ptr<Buffer> uploadBuffer;
+        std::unique_ptr<Texture> texture;
+        std::unique_ptr<TextureView> view;
+        uint32_t width = 1;
+        uint32_t height = 1;
+        ResourceState state = ResourceState::Undefined;
+        bool uploaded = false;
+    };
+
+    struct DecodedMaterialTexture {
+        std::vector<uint8_t> pixels;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        std::string label;
     };
 
     Result prepareHistoryTextures(
@@ -2582,6 +2629,298 @@ private:
         std::memcpy(mapped, data, static_cast<size_t>(byteSize));
         outBuffer->flush(0, byteSize);
         outBuffer->unmap();
+        return {};
+    }
+
+    static void appendScenePathTraceWarning(std::string& log, std::string_view message)
+    {
+        if (!log.empty() && log.back() != '\n') {
+            log += '\n';
+        }
+        log += "Warning: ";
+        log += message;
+        log += '\n';
+    }
+
+    static bool decodeSceneTexture(
+        const scene::Scene& loadedScene,
+        uint32_t textureIndex,
+        DecodedMaterialTexture& outTexture,
+        std::string& log)
+    {
+        outTexture = DecodedMaterialTexture{};
+        if (textureIndex >= loadedScene.textures().size()) {
+            return false;
+        }
+
+        const scene::RenderTexture& texture = loadedScene.textures()[textureIndex];
+        if (texture.imageIndex < 0 || static_cast<size_t>(texture.imageIndex) >= loadedScene.images().size()) {
+            return false;
+        }
+
+        const scene::RenderImage& image = loadedScene.images()[static_cast<size_t>(texture.imageIndex)];
+        outTexture.label = texture.name.empty() ? image.name : texture.name;
+
+        int width = 0;
+        int height = 0;
+        int channelCount = 0;
+        stbi_uc* pixels = nullptr;
+        if (!image.encodedData.empty()) {
+            if (image.encodedData.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+                appendScenePathTraceWarning(log, "embedded glTF image is too large to decode");
+                return false;
+            }
+            pixels = stbi_load_from_memory(
+                image.encodedData.data(),
+                static_cast<int>(image.encodedData.size()),
+                &width,
+                &height,
+                &channelCount,
+                4);
+        } else if (!image.uri.empty()) {
+            if (image.uri.rfind("data:", 0) == 0) {
+                appendScenePathTraceWarning(log, "data URI material textures are not supported yet");
+                return false;
+            }
+            std::filesystem::path imagePath = image.uri;
+            if (imagePath.is_relative()) {
+                imagePath = loadedScene.filename().parent_path() / imagePath;
+            }
+            pixels = stbi_load(imagePath.string().c_str(), &width, &height, &channelCount, 4);
+        }
+
+        if (pixels == nullptr || width <= 0 || height <= 0) {
+            std::string message = "failed to decode material texture";
+            if (!outTexture.label.empty()) {
+                message += " '";
+                message += outTexture.label;
+                message += "'";
+            }
+            if (const char* reason = stbi_failure_reason()) {
+                message += ": ";
+                message += reason;
+            }
+            appendScenePathTraceWarning(log, message);
+            return false;
+        }
+
+        const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
+        if (byteSize > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+            stbi_image_free(pixels);
+            appendScenePathTraceWarning(log, "decoded material texture is too large");
+            return false;
+        }
+        outTexture.width = static_cast<uint32_t>(width);
+        outTexture.height = static_cast<uint32_t>(height);
+        outTexture.pixels.assign(pixels, pixels + static_cast<size_t>(byteSize));
+        stbi_image_free(pixels);
+        return true;
+    }
+
+    static Result createMaterialTexture(
+        Device& device,
+        const uint8_t* pixels,
+        uint32_t width,
+        uint32_t height,
+        std::string_view label,
+        ScenePathTraceMaterialTexture& outTexture,
+        std::string& log)
+    {
+        if (pixels == nullptr || width == 0 || height == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        outTexture = ScenePathTraceMaterialTexture{};
+        outTexture.width = width;
+        outTexture.height = height;
+        const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
+        Result result = device.createBuffer(
+            BufferDesc{
+                .size = byteSize,
+                .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload,
+            },
+            outTexture.uploadBuffer);
+        if (!result || outTexture.uploadBuffer == nullptr) {
+            log += resultMessage(std::string("createBuffer(ScenePathTracePass texture upload ") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        void* mapped = outTexture.uploadBuffer->map();
+        if (mapped == nullptr) {
+            log = "ScenePathTracePass failed to map material texture upload buffer";
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, pixels, static_cast<size_t>(byteSize));
+        outTexture.uploadBuffer->flush(0, byteSize);
+        outTexture.uploadBuffer->unmap();
+
+        result = device.createTexture(
+            TextureDesc{
+                .type = TextureType::Texture2D,
+                .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+                .format = Format::Rgba8Unorm,
+                .width = width,
+                .height = height,
+                .depth = 1,
+                .mipCount = 1,
+                .layerCount = 1,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            outTexture.texture);
+        if (!result || outTexture.texture == nullptr) {
+            log += resultMessage(std::string("createTexture(ScenePathTracePass material texture ") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = device.createTextureView(
+            *outTexture.texture,
+            TextureViewDesc{
+                .format = Format::Rgba8Unorm,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+            outTexture.view);
+        if (!result || outTexture.view == nullptr) {
+            log += resultMessage(std::string("createTextureView(ScenePathTracePass material texture ") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
+    }
+
+    Result buildMaterialTextures(
+        Device& device,
+        const scene::Scene& loadedScene,
+        std::vector<uint32_t>& outTextureIndexMap,
+        std::string& log)
+    {
+        materialTextures_.clear();
+        materialTextureViews_.fill(nullptr);
+        materialTextureCount_ = 0;
+        outTextureIndexMap.assign(loadedScene.textures().size(), kInvalidMaterialTextureIndex);
+
+        const uint8_t fallbackPixels[4] = {255, 255, 255, 255};
+        ScenePathTraceMaterialTexture fallbackTexture;
+        Result result = createMaterialTexture(
+            device,
+            fallbackPixels,
+            1,
+            1,
+            "fallback",
+            fallbackTexture,
+            log);
+        if (!result) {
+            return result;
+        }
+        materialTextures_.push_back(std::move(fallbackTexture));
+
+        for (uint32_t textureIndex = 0; textureIndex < loadedScene.textures().size(); ++textureIndex) {
+            if (materialTextures_.size() >= kMaxScenePathTraceMaterialTextures) {
+                log = "ScenePathTracePass exceeded the material texture descriptor limit";
+                return makeError(Error::Unsupported);
+            }
+
+            DecodedMaterialTexture decodedTexture;
+            if (!decodeSceneTexture(loadedScene, textureIndex, decodedTexture, log)) {
+                continue;
+            }
+            if (decodedTexture.pixels.empty()) {
+                continue;
+            }
+
+            ScenePathTraceMaterialTexture materialTexture;
+            result = createMaterialTexture(
+                device,
+                decodedTexture.pixels.data(),
+                decodedTexture.width,
+                decodedTexture.height,
+                decodedTexture.label,
+                materialTexture,
+                log);
+            if (!result) {
+                return result;
+            }
+
+            const uint32_t materialTextureIndex = static_cast<uint32_t>(materialTextures_.size());
+            outTextureIndexMap[textureIndex] = materialTextureIndex;
+            materialTextures_.push_back(std::move(materialTexture));
+        }
+
+        TextureView* fallbackView = materialTextures_.front().view.get();
+        if (fallbackView == nullptr) {
+            return makeError(Error::Failure);
+        }
+        materialTextureViews_.fill(fallbackView);
+        for (uint32_t textureIndex = 0; textureIndex < materialTextures_.size(); ++textureIndex) {
+            if (materialTextures_[textureIndex].view == nullptr) {
+                return makeError(Error::Failure);
+            }
+            materialTextureViews_[textureIndex] = materialTextures_[textureIndex].view.get();
+        }
+        materialTextureCount_ = static_cast<uint32_t>(materialTextures_.size());
+        return {};
+    }
+
+    Result uploadMaterialTextures(RenderGraphExecutionContext& context)
+    {
+        if (materialTextures_.empty()) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        for (ScenePathTraceMaterialTexture& texture : materialTextures_) {
+            if (texture.uploaded) {
+                continue;
+            }
+            if (texture.uploadBuffer == nullptr || texture.texture == nullptr) {
+                return makeError(Error::InvalidArgument);
+            }
+
+            TextureBarrierDesc toTransfer{
+                .texture = texture.texture.get(),
+                .before = texture.state,
+                .after = ResourceState::TransferDestination,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            };
+            context.commandBuffer().barrier(BarrierDesc{
+                .textures = &toTransfer,
+                .textureCount = 1,
+            });
+            texture.state = ResourceState::TransferDestination;
+
+            context.commandBuffer().copyBufferToTexture(BufferTextureCopyDesc{
+                .buffer = texture.uploadBuffer.get(),
+                .texture = texture.texture.get(),
+                .width = texture.width,
+                .height = texture.height,
+                .depth = 1,
+                .mipLevel = 0,
+                .baseLayer = 0,
+            });
+
+            TextureBarrierDesc toShaderRead{
+                .texture = texture.texture.get(),
+                .before = texture.state,
+                .after = ResourceState::ShaderRead,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            };
+            context.commandBuffer().barrier(BarrierDesc{
+                .textures = &toShaderRead,
+                .textureCount = 1,
+            });
+            texture.state = ResourceState::ShaderRead;
+            texture.uploaded = true;
+        }
         return {};
     }
 
@@ -2772,15 +3111,22 @@ private:
         outPush.samples = uintProperty(properties, "samples", kDefaultPathTraceSamples, 1, 16);
     }
 
-    static uint32_t materialTextureIndex(int32_t textureIndex)
+    static uint32_t materialTextureIndex(
+        int32_t textureIndex,
+        const std::vector<uint32_t>& textureIndexMap)
     {
-        return textureIndex >= 0 ? static_cast<uint32_t>(textureIndex) : kInvalidMaterialTextureIndex;
+        if (textureIndex < 0 || static_cast<size_t>(textureIndex) >= textureIndexMap.size()) {
+            return kInvalidMaterialTextureIndex;
+        }
+        return textureIndexMap[static_cast<size_t>(textureIndex)];
     }
 
-    static ScenePathTraceGpuMaterial::TextureInfo makeGpuTextureInfo(const scene::RenderTextureInfo& textureInfo)
+    static ScenePathTraceGpuMaterial::TextureInfo makeGpuTextureInfo(
+        const scene::RenderTextureInfo& textureInfo,
+        const std::vector<uint32_t>& textureIndexMap)
     {
         ScenePathTraceGpuMaterial::TextureInfo gpuTextureInfo;
-        gpuTextureInfo.textureIndex = materialTextureIndex(textureInfo.textureIndex);
+        gpuTextureInfo.textureIndex = materialTextureIndex(textureInfo.textureIndex, textureIndexMap);
         gpuTextureInfo.texCoord = textureInfo.texCoord > 0 ? static_cast<uint32_t>(textureInfo.texCoord) : 0;
         gpuTextureInfo.transform0[0] = textureInfo.uvTransform[0];
         gpuTextureInfo.transform0[1] = textureInfo.uvTransform[1];
@@ -2802,7 +3148,9 @@ private:
         return 0.0f;
     }
 
-    static ScenePathTraceGpuMaterial makeMaterial(const scene::RenderMaterial& material)
+    static ScenePathTraceGpuMaterial makeMaterial(
+        const scene::RenderMaterial& material,
+        const std::vector<uint32_t>& textureIndexMap)
     {
         ScenePathTraceGpuMaterial gpuMaterial;
         gpuMaterial.baseColor[0] = material.baseColorFactor.x;
@@ -2833,16 +3181,16 @@ private:
         gpuMaterial.diffuseTransmission[1] = material.diffuseTransmissionColor.y;
         gpuMaterial.diffuseTransmission[2] = material.diffuseTransmissionColor.z;
         gpuMaterial.diffuseTransmission[3] = material.diffuseTransmissionFactor;
-        gpuMaterial.baseColorTexture = makeGpuTextureInfo(material.baseColorTexture);
-        gpuMaterial.metallicRoughnessTexture = makeGpuTextureInfo(material.metallicRoughnessTexture);
-        gpuMaterial.normalTexture = makeGpuTextureInfo(material.normalTexture);
-        gpuMaterial.occlusionTexture = makeGpuTextureInfo(material.occlusionTexture);
-        gpuMaterial.emissiveTexture = makeGpuTextureInfo(material.emissiveTexture);
-        gpuMaterial.transmissionTexture = makeGpuTextureInfo(material.transmissionTexture);
-        gpuMaterial.thicknessTexture = makeGpuTextureInfo(material.thicknessTexture);
-        gpuMaterial.diffuseTransmissionTexture = makeGpuTextureInfo(material.diffuseTransmissionTexture);
+        gpuMaterial.baseColorTexture = makeGpuTextureInfo(material.baseColorTexture, textureIndexMap);
+        gpuMaterial.metallicRoughnessTexture = makeGpuTextureInfo(material.metallicRoughnessTexture, textureIndexMap);
+        gpuMaterial.normalTexture = makeGpuTextureInfo(material.normalTexture, textureIndexMap);
+        gpuMaterial.occlusionTexture = makeGpuTextureInfo(material.occlusionTexture, textureIndexMap);
+        gpuMaterial.emissiveTexture = makeGpuTextureInfo(material.emissiveTexture, textureIndexMap);
+        gpuMaterial.transmissionTexture = makeGpuTextureInfo(material.transmissionTexture, textureIndexMap);
+        gpuMaterial.thicknessTexture = makeGpuTextureInfo(material.thicknessTexture, textureIndexMap);
+        gpuMaterial.diffuseTransmissionTexture = makeGpuTextureInfo(material.diffuseTransmissionTexture, textureIndexMap);
         gpuMaterial.diffuseTransmissionColorTexture =
-            makeGpuTextureInfo(material.diffuseTransmissionColorTexture);
+            makeGpuTextureInfo(material.diffuseTransmissionColorTexture, textureIndexMap);
         return gpuMaterial;
     }
 
@@ -2928,6 +3276,7 @@ private:
 
     static bool buildGpuScene(
         const scene::Scene& scene,
+        const std::vector<uint32_t>& textureIndexMap,
         ScenePathTraceGpuScene& outScene,
         std::string& log)
     {
@@ -2937,7 +3286,7 @@ private:
             outScene.materials.push_back(ScenePathTraceGpuMaterial{});
         } else {
             for (const scene::RenderMaterial& material : scene.materials()) {
-                outScene.materials.push_back(makeMaterial(material));
+                outScene.materials.push_back(makeMaterial(material, textureIndexMap));
             }
         }
 
@@ -2992,6 +3341,9 @@ private:
         primitiveBuffer_.reset();
         instanceBuffer_.reset();
         materialBuffer_.reset();
+        materialTextures_.clear();
+        materialTextureViews_.fill(nullptr);
+        materialTextureCount_ = 0;
     }
 
     SceneRtxBuilder rtxBuilder_;
@@ -3002,6 +3354,9 @@ private:
     std::unique_ptr<Buffer> primitiveBuffer_;
     std::unique_ptr<Buffer> instanceBuffer_;
     std::unique_ptr<Buffer> materialBuffer_;
+    std::vector<ScenePathTraceMaterialTexture> materialTextures_;
+    std::array<TextureView*, kMaxScenePathTraceMaterialTextures> materialTextureViews_{};
+    uint32_t materialTextureCount_ = 0;
     uint32_t accumulationFrame_ = 0;
 };
 

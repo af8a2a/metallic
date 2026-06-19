@@ -79,6 +79,12 @@ RWTexture2D<float4> gHistoryCurrent;
 [[vk::binding(8, 0)]]
 RWTexture2D<float4> gHistoryPrevious;
 
+[[vk::binding(9, 0)]]
+Texture2D<float4> gMaterialTextures[256];
+
+static const uint kMaxMaterialTextures = 256u;
+static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
+
 struct ScenePathTracePush
 {
     float4 eye;
@@ -93,7 +99,10 @@ struct ScenePathTracePush
     uint accumulationFrame;
     uint hasHistory;
     uint enableAccumulation;
-    uint padding;
+    uint materialTextureCount;
+    uint padding0;
+    uint padding1;
+    uint padding2;
 };
 
 struct Ray
@@ -108,6 +117,7 @@ struct HitInfo
     float3 position;
     float3 normal;
     float3 geometryNormal;
+    float2 texcoord;
     uint materialIndex;
     bool frontFace;
 };
@@ -229,6 +239,7 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.position = ray.origin;
     hit.normal = float3(0.0, 1.0, 0.0);
     hit.geometryNormal = hit.normal;
+    hit.texcoord = float2(0.0, 0.0);
     hit.materialIndex = 0u;
     hit.frontFace = true;
 
@@ -270,6 +281,7 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     float3 localGeometryNormal = safeNormalize(cross(p1 - p0, p2 - p0), float3(0.0, 1.0, 0.0));
     float3 localNormal = v0.normal.xyz * weights.x + v1.normal.xyz * weights.y + v2.normal.xyz * weights.z;
     localNormal = dot(localNormal, localNormal) > 0.000001 ? safeNormalize(localNormal, localGeometryNormal) : localGeometryNormal;
+    hit.texcoord = v0.texcoord.xy * weights.x + v1.texcoord.xy * weights.y + v2.texcoord.xy * weights.z;
 
     float4x3 objectToWorld = query.CommittedObjectToWorld4x3();
     float4x3 worldToObject = query.CommittedWorldToObject4x3();
@@ -339,6 +351,51 @@ float3 volumeTransmittance(float3 baseColor, float transmission, float thickness
     return saturate(attenuation * baseTint);
 }
 
+float3 srgbToLinear(float3 color)
+{
+    return float3(
+        color.r <= 0.04045 ? color.r / 12.92 : pow((color.r + 0.055) / 1.055, 2.4),
+        color.g <= 0.04045 ? color.g / 12.92 : pow((color.g + 0.055) / 1.055, 2.4),
+        color.b <= 0.04045 ? color.b / 12.92 : pow((color.b + 0.055) / 1.055, 2.4));
+}
+
+bool hasMaterialTexture(PathTraceTextureInfo textureInfo, ScenePathTracePush push)
+{
+    return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
+        textureInfo.textureIndex < push.materialTextureCount &&
+        textureInfo.textureIndex < kMaxMaterialTextures;
+}
+
+float2 transformMaterialUv(PathTraceTextureInfo textureInfo, float2 uv)
+{
+    return float2(
+        dot(textureInfo.transform0.xy, uv) + textureInfo.transform0.z,
+        dot(textureInfo.transform1.xy, uv) + textureInfo.transform1.z);
+}
+
+float4 loadMaterialTexture(
+    PathTraceTextureInfo textureInfo,
+    float2 uv,
+    float4 fallback,
+    ScenePathTracePush push)
+{
+    if (!hasMaterialTexture(textureInfo, push)) {
+        return fallback;
+    }
+
+    uint width = 1u;
+    uint height = 1u;
+    uint textureIndex = textureInfo.textureIndex;
+    gMaterialTextures[textureIndex].GetDimensions(width, height);
+    if (width == 0u || height == 0u) {
+        return fallback;
+    }
+
+    float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
+    uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
+    return gMaterialTextures[textureIndex].Load(int3(texel, 0));
+}
+
 float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
@@ -353,9 +410,25 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
         }
 
         PathTraceMaterial material = gMaterials[hit.materialIndex];
-        float3 baseColor = saturate(material.baseColor.rgb);
-        float metallic = saturate(material.params.x);
-        float roughness = clamp(material.params.y, 0.02, 1.0);
+        float4 baseColorSample = loadMaterialTexture(
+            material.baseColorTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push);
+        float4 metallicRoughnessSample = loadMaterialTexture(
+            material.metallicRoughnessTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push);
+        float4 emissiveSample = loadMaterialTexture(
+            material.emissiveTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push);
+
+        float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+        float metallic = saturate(material.params.x * metallicRoughnessSample.b);
+        float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.02, 1.0);
         float transmission = saturate(material.glassParams.x);
         float ior = clamp(material.glassParams.y, 1.0, 3.0);
         float thickness = max(material.glassParams.z, 0.0);
@@ -367,7 +440,8 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
         dielectricF0 *= dielectricF0;
         float3 f0 = lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metallic);
 
-        radiance += throughput * max(material.emissive.rgb, float3(0.0, 0.0, 0.0));
+        float3 emissive = max(material.emissive.rgb * srgbToLinear(emissiveSample.rgb), float3(0.0, 0.0, 0.0));
+        radiance += throughput * emissive;
 
         if (transmission > 0.01) {
             float eta = hit.frontFace ? 1.0 / max(ior, 1.001) : max(ior, 1.001);

@@ -56,6 +56,23 @@ void expectVec4(
         label);
 }
 
+void expectTextureInfo(
+    TestContext& test,
+    const metallic::scene::RenderTextureInfo& actual,
+    int32_t expectedTextureIndex,
+    int32_t expectedTexCoord,
+    const std::array<float, 6>& expectedUvTransform,
+    const std::string& label)
+{
+    test.expect(actual.textureIndex == expectedTextureIndex, label + " texture index");
+    test.expect(actual.texCoord == expectedTexCoord, label + " texcoord");
+    for (size_t index = 0; index < expectedUvTransform.size(); ++index) {
+        test.expect(
+            nearlyEqual(actual.uvTransform[index], expectedUvTransform[index]),
+            label + " uvTransform[" + std::to_string(index) + "]");
+    }
+}
+
 void writeTextFile(const std::filesystem::path& path, const std::string& text)
 {
     std::ofstream file(path, std::ios::binary);
@@ -327,6 +344,143 @@ std::filesystem::path writeUnsupportedRequiredExtensionScene(const std::filesyst
     return gltfPath;
 }
 
+std::filesystem::path writeMaterialFeatureScene(const std::filesystem::path& directory)
+{
+    const std::filesystem::path gltfPath = directory / "materials.gltf";
+    writeTextFile(gltfPath, R"json(
+{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "extensionsUsed": [
+    "KHR_texture_transform",
+    "KHR_materials_transmission",
+    "KHR_materials_ior",
+    "KHR_materials_volume",
+    "KHR_materials_diffuse_transmission"
+  ],
+  "samplers": [
+    { "magFilter": 9729, "minFilter": 9729 },
+    { "magFilter": 9728, "minFilter": 9728 }
+  ],
+  "images": [
+    { "name": "Base Color Image", "uri": "base_color.png" },
+    { "name": "Metallic Roughness Image", "uri": "metallic_roughness.png" },
+    { "name": "Normal Image", "uri": "normal.png" },
+    { "name": "Occlusion Image", "uri": "occlusion.png" },
+    { "name": "Emissive Image", "uri": "emissive.png" },
+    { "name": "Transmission Image", "uri": "transmission.png" },
+    { "name": "Thickness Image", "uri": "thickness.png" },
+    { "name": "Diffuse Transmission Image", "uri": "diffuse_transmission.png" },
+    { "name": "Diffuse Transmission Color Image", "uri": "diffuse_transmission_color.png" }
+  ],
+  "textures": [
+    { "name": "Base Color Texture", "sampler": 0, "source": 0 },
+    { "name": "Metallic Roughness Texture", "sampler": 0, "source": 1 },
+    { "name": "Normal Texture", "sampler": 1, "source": 2 },
+    { "name": "Occlusion Texture", "sampler": 1, "source": 3 },
+    { "name": "Emissive Texture", "sampler": 0, "source": 4 },
+    { "name": "Transmission Texture", "sampler": 0, "source": 5 },
+    { "name": "Thickness Texture", "sampler": 1, "source": 6 },
+    { "name": "Diffuse Transmission Texture", "sampler": 0, "source": 7 },
+    { "name": "Diffuse Transmission Color Texture", "sampler": 1, "source": 8 }
+  ],
+  "materials": [
+    {
+      "name": "Default Material"
+    },
+    {
+      "name": "Full Material",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.2, 0.3, 0.4, 0.5],
+        "metallicFactor": 0.25,
+        "roughnessFactor": 0.75,
+        "baseColorTexture": {
+          "index": 0,
+          "texCoord": 1,
+          "extensions": {
+            "KHR_texture_transform": {
+              "offset": [0.1, 0.2],
+              "scale": [2.0, 3.0],
+              "rotation": 1.5707963267948966,
+              "texCoord": 2
+            }
+          }
+        },
+        "metallicRoughnessTexture": { "index": 1, "texCoord": 0 }
+      },
+      "normalTexture": { "index": 2, "texCoord": 0, "scale": 0.42 },
+      "occlusionTexture": { "index": 3, "texCoord": 1, "strength": 0.66 },
+      "emissiveTexture": { "index": 4, "texCoord": 0 },
+      "emissiveFactor": [0.1, 0.2, 0.3],
+      "alphaMode": "MASK",
+      "alphaCutoff": 0.37,
+      "doubleSided": true,
+      "extensions": {
+        "KHR_materials_transmission": {
+          "transmissionFactor": 0.8,
+          "transmissionTexture": {
+            "index": 5,
+            "texCoord": 1,
+            "extensions": {
+              "KHR_texture_transform": {
+                "offset": [0.25, 0.75],
+                "scale": [0.5, 0.25],
+                "texCoord": 0
+              }
+            }
+          }
+        },
+        "KHR_materials_ior": { "ior": 2.2 },
+        "KHR_materials_volume": {
+          "thicknessFactor": 0.6,
+          "attenuationDistance": 12.5,
+          "attenuationColor": [0.7, 0.8, 0.9],
+          "thicknessTexture": { "index": 6, "texCoord": 0 }
+        },
+        "KHR_materials_diffuse_transmission": {
+          "diffuseTransmissionFactor": 0.55,
+          "diffuseTransmissionColor": [0.4, 0.5, 0.6],
+          "diffuseTransmissionTexture": { "index": 7, "texCoord": 0 },
+          "diffuseTransmissionColorTexture": { "index": 8, "texCoord": 1 }
+        }
+      }
+    },
+    {
+      "name": "Low Clamp Material",
+      "extensions": {
+        "KHR_materials_transmission": { "transmissionFactor": -0.5 },
+        "KHR_materials_ior": { "ior": 0.5 },
+        "KHR_materials_volume": {
+          "thicknessFactor": -1.0,
+          "attenuationDistance": -2.0
+        },
+        "KHR_materials_diffuse_transmission": {
+          "diffuseTransmissionFactor": -0.25
+        }
+      }
+    },
+    {
+      "name": "High Clamp Material",
+      "extensions": {
+        "KHR_materials_transmission": { "transmissionFactor": 1.5 },
+        "KHR_materials_ior": { "ior": 4.5 },
+        "KHR_materials_diffuse_transmission": {
+          "diffuseTransmissionFactor": 1.25
+        }
+      }
+    }
+  ],
+  "nodes": [
+    { "name": "Material Test Node" }
+  ],
+  "scenes": [
+    { "name": "Material Test Scene", "nodes": [0] }
+  ]
+}
+)json");
+    return gltfPath;
+}
+
 void testFullSceneImport(TestContext& test, const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
@@ -420,6 +574,150 @@ void testFullSceneImport(TestContext& test, const std::filesystem::path& directo
     test.expect(scene.lights().front().type == "directional", "punctual light type");
 }
 
+void testMaterialImport(TestContext& test, const std::filesystem::path& directory)
+{
+    metallic::scene::Scene scene;
+    const std::filesystem::path gltfPath = writeMaterialFeatureScene(directory);
+    test.expect(scene.load(gltfPath), scene.lastLoadResult().error);
+
+    test.expect(scene.stats().materialCount == 4, "material feature scene material count");
+    test.expect(scene.images().size() == 9, "material feature scene image count");
+    test.expect(scene.images()[0].name == "Base Color Image", "base color image name");
+    test.expect(scene.images()[0].uri == "base_color.png", "base color image uri");
+    test.expect(scene.textures().size() == 9, "material feature scene texture count");
+    test.expect(scene.textures()[2].imageIndex == 2, "normal texture image index");
+    test.expect(scene.textures()[2].samplerIndex == 1, "normal texture sampler index");
+
+    const std::array<float, 6> identityUv{1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const metallic::scene::RenderMaterial& defaultMaterial = scene.materials()[0];
+    expectVec4(
+        test,
+        defaultMaterial.baseColorFactor,
+        float4(1.0f, 1.0f, 1.0f, 1.0f),
+        "material default baseColorFactor");
+    test.expect(nearlyEqual(defaultMaterial.metallicFactor, 1.0f), "material default metallicFactor");
+    test.expect(nearlyEqual(defaultMaterial.roughnessFactor, 1.0f), "material default roughnessFactor");
+    expectVec3(
+        test,
+        defaultMaterial.emissiveFactor,
+        float3(0.0f, 0.0f, 0.0f),
+        "material default emissiveFactor");
+    test.expect(defaultMaterial.alphaMode == "OPAQUE", "material default alphaMode");
+    test.expect(nearlyEqual(defaultMaterial.alphaCutoff, 0.5f), "material default alphaCutoff");
+    test.expect(!defaultMaterial.doubleSided, "material default doubleSided");
+    test.expect(nearlyEqual(defaultMaterial.normalTextureScale, 1.0f), "material default normal scale");
+    test.expect(nearlyEqual(defaultMaterial.occlusionTextureStrength, 1.0f), "material default occlusion strength");
+    test.expect(nearlyEqual(defaultMaterial.transmissionFactor, 0.0f), "material default transmissionFactor");
+    test.expect(nearlyEqual(defaultMaterial.ior, 1.5f), "material default ior");
+    test.expect(nearlyEqual(defaultMaterial.thicknessFactor, 0.0f), "material default thicknessFactor");
+    test.expect(nearlyEqual(defaultMaterial.attenuationDistance, 0.0f), "material default attenuationDistance");
+    expectVec3(
+        test,
+        defaultMaterial.attenuationColor,
+        float3(1.0f, 1.0f, 1.0f),
+        "material default attenuationColor");
+    test.expect(
+        nearlyEqual(defaultMaterial.diffuseTransmissionFactor, 0.0f),
+        "material default diffuseTransmissionFactor");
+    expectVec3(
+        test,
+        defaultMaterial.diffuseTransmissionColor,
+        float3(1.0f, 1.0f, 1.0f),
+        "material default diffuseTransmissionColor");
+    expectTextureInfo(
+        test,
+        defaultMaterial.baseColorTexture,
+        metallic::scene::kInvalidSceneIndex,
+        0,
+        identityUv,
+        "material default baseColorTexture");
+    expectTextureInfo(
+        test,
+        defaultMaterial.diffuseTransmissionColorTexture,
+        metallic::scene::kInvalidSceneIndex,
+        0,
+        identityUv,
+        "material default diffuseTransmissionColorTexture");
+
+    const metallic::scene::RenderMaterial& fullMaterial = scene.materials()[1];
+    expectVec4(
+        test,
+        fullMaterial.baseColorFactor,
+        float4(0.2f, 0.3f, 0.4f, 0.5f),
+        "full material baseColorFactor");
+    test.expect(nearlyEqual(fullMaterial.metallicFactor, 0.25f), "full material metallicFactor");
+    test.expect(nearlyEqual(fullMaterial.roughnessFactor, 0.75f), "full material roughnessFactor");
+    expectVec3(test, fullMaterial.emissiveFactor, float3(0.1f, 0.2f, 0.3f), "full material emissiveFactor");
+    test.expect(fullMaterial.alphaMode == "MASK", "full material alphaMode");
+    test.expect(nearlyEqual(fullMaterial.alphaCutoff, 0.37f), "full material alphaCutoff");
+    test.expect(fullMaterial.doubleSided, "full material doubleSided");
+    test.expect(nearlyEqual(fullMaterial.normalTextureScale, 0.42f), "full material normal scale");
+    test.expect(nearlyEqual(fullMaterial.occlusionTextureStrength, 0.66f), "full material occlusion strength");
+    expectTextureInfo(
+        test,
+        fullMaterial.baseColorTexture,
+        0,
+        2,
+        {0.0f, -3.0f, 0.1f, 2.0f, 0.0f, 0.2f},
+        "full material baseColorTexture");
+    expectTextureInfo(test, fullMaterial.metallicRoughnessTexture, 1, 0, identityUv, "full material metallicRoughnessTexture");
+    expectTextureInfo(test, fullMaterial.normalTexture, 2, 0, identityUv, "full material normalTexture");
+    expectTextureInfo(test, fullMaterial.occlusionTexture, 3, 1, identityUv, "full material occlusionTexture");
+    expectTextureInfo(test, fullMaterial.emissiveTexture, 4, 0, identityUv, "full material emissiveTexture");
+
+    test.expect(nearlyEqual(fullMaterial.transmissionFactor, 0.8f), "full material transmissionFactor");
+    test.expect(nearlyEqual(fullMaterial.ior, 2.2f), "full material ior");
+    test.expect(nearlyEqual(fullMaterial.thicknessFactor, 0.6f), "full material thicknessFactor");
+    test.expect(nearlyEqual(fullMaterial.attenuationDistance, 12.5f), "full material attenuationDistance");
+    expectVec3(test, fullMaterial.attenuationColor, float3(0.7f, 0.8f, 0.9f), "full material attenuationColor");
+    test.expect(
+        nearlyEqual(fullMaterial.diffuseTransmissionFactor, 0.55f),
+        "full material diffuseTransmissionFactor");
+    expectVec3(
+        test,
+        fullMaterial.diffuseTransmissionColor,
+        float3(0.4f, 0.5f, 0.6f),
+        "full material diffuseTransmissionColor");
+    expectTextureInfo(
+        test,
+        fullMaterial.transmissionTexture,
+        5,
+        0,
+        {0.5f, 0.0f, 0.25f, 0.0f, 0.25f, 0.75f},
+        "full material transmissionTexture");
+    expectTextureInfo(test, fullMaterial.thicknessTexture, 6, 0, identityUv, "full material thicknessTexture");
+    expectTextureInfo(
+        test,
+        fullMaterial.diffuseTransmissionTexture,
+        7,
+        0,
+        identityUv,
+        "full material diffuseTransmissionTexture");
+    expectTextureInfo(
+        test,
+        fullMaterial.diffuseTransmissionColorTexture,
+        8,
+        1,
+        identityUv,
+        "full material diffuseTransmissionColorTexture");
+
+    const metallic::scene::RenderMaterial& lowClampMaterial = scene.materials()[2];
+    test.expect(nearlyEqual(lowClampMaterial.transmissionFactor, 0.0f), "low clamp transmissionFactor");
+    test.expect(nearlyEqual(lowClampMaterial.ior, 1.0f), "low clamp ior");
+    test.expect(nearlyEqual(lowClampMaterial.thicknessFactor, 0.0f), "low clamp thicknessFactor");
+    test.expect(nearlyEqual(lowClampMaterial.attenuationDistance, 0.0f), "low clamp attenuationDistance");
+    test.expect(
+        nearlyEqual(lowClampMaterial.diffuseTransmissionFactor, 0.0f),
+        "low clamp diffuseTransmissionFactor");
+
+    const metallic::scene::RenderMaterial& highClampMaterial = scene.materials()[3];
+    test.expect(nearlyEqual(highClampMaterial.transmissionFactor, 1.0f), "high clamp transmissionFactor");
+    test.expect(nearlyEqual(highClampMaterial.ior, 3.0f), "high clamp ior");
+    test.expect(
+        nearlyEqual(highClampMaterial.diffuseTransmissionFactor, 1.0f),
+        "high clamp diffuseTransmissionFactor");
+}
+
 void testGlbImport(TestContext& test, const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
@@ -465,6 +763,7 @@ int main()
 
     TestContext test;
     testFullSceneImport(test, outputDirectory);
+    testMaterialImport(test, outputDirectory);
     testGlbImport(test, outputDirectory);
     testFallbackCamera(test, outputDirectory);
     testUnsupportedRequiredExtension(test, outputDirectory);
