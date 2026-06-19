@@ -9,6 +9,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/render_sample.cpp
     Runtime/Render/slang_compiler.cpp
     Runtime/Render/RenderGraph/render_graph.cpp
+    Runtime/Render/RenderGraph/render_graph_node.cpp
+    Runtime/Render/RenderGraph/render_graph_executor.cpp
     Runtime/Render/RenderPass/builtin_render_passes.cpp
     Runtime/Render/RenderPass/BuiltinPass/bunny_wireframe_pass.cpp
     Runtime/Render/RenderPass/BuiltinPass/clear_color_pass.cpp
