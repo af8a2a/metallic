@@ -1,14 +1,16 @@
 #include "rhi_test.h"
 
 #include <SDL3/SDL.h>
+#include <gtest/gtest.h>
 
-#include <algorithm>
 #include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace metallic::tests {
 
@@ -37,52 +39,38 @@ const char* toString(RhiTestType type)
 
 namespace {
 
-constexpr int kSkipExitCode = 77;
+namespace render = metallic::render;
 
 struct Options {
-    bool help = false;
-    bool list = false;
     bool enableValidation = true;
-    std::string filter;
     std::filesystem::path outputDirectory = "rhi-test-output";
 };
 
-void printUsage(const char* executableName)
+void printRhiUsage()
 {
-    std::cout << "Usage: " << executableName
-              << " [--list] [--filter <text>] [--output-dir <path>] [--rhi-no-validation]\n";
+    std::cout << "Metallic RHI options:\n"
+              << "  --output-dir <path>      Write generated images to <path>\n"
+              << "  --rhi-no-validation      Disable Vulkan validation for RHI tests\n"
+              << "  --rhi-validation         Enable Vulkan validation for RHI tests\n"
+              << "\n"
+              << "GoogleTest options replace the old custom runner flags:\n"
+              << "  --gtest_list_tests       List registered tests\n"
+              << "  --gtest_filter=<filter>  Run a subset of tests\n";
 }
 
-bool parseArguments(int argc, char** argv, Options& options)
+bool parseArguments(int argc, char** argv, Options& options, std::vector<std::string>& gtestArguments)
 {
+    gtestArguments.clear();
+    gtestArguments.emplace_back(argv[0]);
+
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
-        if (argument == "--help" || argument == "-h") {
-            options.help = true;
-            return true;
-        }
-        if (argument == "--list") {
-            options.list = true;
-            continue;
-        }
         if (argument == "--rhi-no-validation") {
             options.enableValidation = false;
             continue;
         }
         if (argument == "--rhi-validation") {
             options.enableValidation = true;
-            continue;
-        }
-        if (argument == "--filter") {
-            if (index + 1 >= argc) {
-                std::cerr << "--filter requires a value\n";
-                return false;
-            }
-            options.filter = argv[++index];
-            continue;
-        }
-        if (argument.starts_with("--filter=")) {
-            options.filter = std::string(argument.substr(9));
             continue;
         }
         if (argument == "--output-dir") {
@@ -98,146 +86,254 @@ bool parseArguments(int argc, char** argv, Options& options)
             continue;
         }
 
-        std::cerr << "Unknown argument: " << argument << '\n';
-        return false;
+        if (argument == "--list") {
+            gtestArguments.emplace_back("--gtest_list_tests");
+            continue;
+        }
+        if (argument == "--filter") {
+            if (index + 1 >= argc) {
+                std::cerr << "--filter requires a value\n";
+                return false;
+            }
+            gtestArguments.emplace_back(std::string("--gtest_filter=*") + argv[++index] + "*");
+            continue;
+        }
+        if (argument.starts_with("--filter=")) {
+            gtestArguments.emplace_back(
+                std::string("--gtest_filter=*") + std::string(argument.substr(9)) + "*");
+            continue;
+        }
+        if (argument == "--help" || argument == "-h") {
+            printRhiUsage();
+        }
+
+        gtestArguments.emplace_back(argument);
     }
 
     return true;
 }
 
-bool matchesFilter(const metallic::tests::RhiTest& test, const std::string& filter)
+std::vector<char*> makeMutableArgv(std::vector<std::string>& arguments)
 {
-    if (filter.empty()) {
-        return true;
+    std::vector<char*> argv;
+    argv.reserve(arguments.size());
+    for (std::string& argument : arguments) {
+        argv.push_back(argument.data());
+    }
+    return argv;
+}
+
+const char* suiteNameFor(metallic::tests::RhiTestType type)
+{
+    switch (type) {
+    case metallic::tests::RhiTestType::Validation:
+        return "RhiValidation";
+    case metallic::tests::RhiTestType::Resource:
+        return "RhiResource";
+    case metallic::tests::RhiTestType::Command:
+        return "RhiCommand";
+    case metallic::tests::RhiTestType::Rendering:
+        return "RhiRendering";
     }
 
-    const std::string_view name = test.name != nullptr ? test.name : "";
-    const std::string_view type = metallic::tests::toString(test.type);
-    const std::string_view filterView(filter);
-    return name.find(filterView) != std::string_view::npos ||
-        type.find(filterView) != std::string_view::npos;
+    return "RhiUnknown";
+}
+
+class RhiTestEnvironment : public ::testing::Environment {
+public:
+    explicit RhiTestEnvironment(Options options)
+        : options_(std::move(options))
+    {
+    }
+
+    void SetUp() override
+    {
+        if (!SDL_Init(SDL_INIT_VIDEO)) {
+            skipReason_ = std::string("SDL_Init failed: ") + SDL_GetError();
+            return;
+        }
+        sdlInitialized_ = true;
+
+        render::Result result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic RHI Tests",
+                .enableValidation = options_.enableValidation,
+            },
+            device_);
+        if (!result) {
+            const std::string message = std::string("createDevice returned ") + metallic::tests::toString(result);
+            if (render::hasError(result, render::Error::Unsupported)) {
+                skipReason_ = message;
+            } else {
+                setupFailure_ = message;
+            }
+            return;
+        }
+
+        graphicsQueue_ = device_->getQueue(render::QueueType::Graphics);
+        if (graphicsQueue_ == nullptr) {
+            setupFailure_ = "no graphics queue is available";
+            return;
+        }
+
+        context_ = std::make_unique<metallic::tests::RhiTestContext>(
+            metallic::tests::RhiTestContext{
+                .device = *device_,
+                .graphicsQueue = *graphicsQueue_,
+                .outputDirectory = options_.outputDirectory,
+                .enableValidation = options_.enableValidation,
+            });
+    }
+
+    void TearDown() override
+    {
+        context_.reset();
+        graphicsQueue_ = nullptr;
+        if (device_ != nullptr) {
+            (void)device_->waitIdle();
+            device_.reset();
+        }
+        if (sdlInitialized_) {
+            SDL_Quit();
+            sdlInitialized_ = false;
+        }
+    }
+
+    metallic::tests::RhiTestContext* context() const
+    {
+        return context_.get();
+    }
+
+    const std::string& skipReason() const
+    {
+        return skipReason_;
+    }
+
+    const std::string& setupFailure() const
+    {
+        return setupFailure_;
+    }
+
+private:
+    Options options_;
+    bool sdlInitialized_ = false;
+    std::unique_ptr<render::Device> device_;
+    render::Queue* graphicsQueue_ = nullptr;
+    std::unique_ptr<metallic::tests::RhiTestContext> context_;
+    std::string skipReason_;
+    std::string setupFailure_;
+};
+
+RhiTestEnvironment* gEnvironment = nullptr;
+
+class RhiGTestAdapter : public ::testing::Test {
+public:
+    explicit RhiGTestAdapter(std::unique_ptr<metallic::tests::RhiTest> test)
+        : test_(std::move(test))
+    {
+    }
+
+protected:
+    void TestBody() override
+    {
+        if (gEnvironment == nullptr) {
+            FAIL() << "RHI test environment is missing";
+            return;
+        }
+        if (!gEnvironment->setupFailure().empty()) {
+            FAIL() << gEnvironment->setupFailure();
+            return;
+        }
+        if (!gEnvironment->skipReason().empty()) {
+            GTEST_SKIP() << gEnvironment->skipReason();
+        }
+
+        metallic::tests::RhiTestContext* context = gEnvironment->context();
+        if (context == nullptr) {
+            FAIL() << "RHI test context is unavailable";
+            return;
+        }
+
+        metallic::tests::RhiTestResult result;
+        try {
+            test_->init(*context);
+            result = test_->run(*context);
+        } catch (const std::exception& exception) {
+            result = metallic::tests::RhiTestResult::fail(exception.what());
+        } catch (...) {
+            result = metallic::tests::RhiTestResult::fail("unknown exception");
+        }
+
+        try {
+            test_->cleanup(*context);
+        } catch (const std::exception& exception) {
+            if (result.passed || result.skipped) {
+                result = metallic::tests::RhiTestResult::fail(
+                    std::string("cleanup failed: ") + exception.what());
+            }
+        } catch (...) {
+            if (result.passed || result.skipped) {
+                result = metallic::tests::RhiTestResult::fail("cleanup failed with unknown exception");
+            }
+        }
+
+        if (result.skipped) {
+            GTEST_SKIP() << result.message;
+        }
+        EXPECT_TRUE(result.passed) << result.message;
+        if (!result.message.empty()) {
+            RecordProperty("message", result.message);
+        }
+    }
+
+private:
+    std::unique_ptr<metallic::tests::RhiTest> test_;
+};
+
+void registerRhiTests()
+{
+    using metallic::tests::RhiTestRegistry;
+
+    for (const RhiTestRegistry::Factory& factory : RhiTestRegistry::factories()) {
+        std::unique_ptr<metallic::tests::RhiTest> prototype = factory();
+        if (prototype == nullptr || prototype->name == nullptr) {
+            continue;
+        }
+
+        const char* suiteName = suiteNameFor(prototype->type);
+        const std::string testName = prototype->name;
+        ::testing::RegisterTest(
+            suiteName,
+            testName.c_str(),
+            nullptr,
+            nullptr,
+            __FILE__,
+            __LINE__,
+            [factory]() -> RhiGTestAdapter* {
+                return new RhiGTestAdapter(factory());
+            });
+    }
 }
 
 } // namespace
 
 int main(int argc, char** argv)
 {
-    using namespace metallic;
-
     Options options;
-    if (!parseArguments(argc, argv, options)) {
-        return 1;
-    }
-    if (options.help) {
-        printUsage(argv[0]);
-        return 0;
-    }
-
-    std::vector<std::unique_ptr<tests::RhiTest>> allTests = tests::RhiTestRegistry::createAll();
-    std::vector<tests::RhiTest*> selectedTests;
-    selectedTests.reserve(allTests.size());
-    for (const std::unique_ptr<tests::RhiTest>& test : allTests) {
-        if (test != nullptr && matchesFilter(*test, options.filter)) {
-            selectedTests.push_back(test.get());
-        }
-    }
-
-    if (options.list) {
-        for (const tests::RhiTest* test : selectedTests) {
-            std::cout << tests::toString(test->type) << '\t' << test->name << '\n';
-        }
-        return 0;
-    }
-
-    if (selectedTests.empty()) {
-        std::cerr << "No RHI tests matched";
-        if (!options.filter.empty()) {
-            std::cerr << " filter '" << options.filter << "'";
-        }
-        std::cerr << ".\n";
+    std::vector<std::string> gtestArguments;
+    if (!parseArguments(argc, argv, options, gtestArguments)) {
         return 1;
     }
 
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
-        std::cerr << "Skipping RHI tests: SDL_Init failed: " << SDL_GetError() << '\n';
-        return kSkipExitCode;
-    }
+    std::vector<char*> gtestArgv = makeMutableArgv(gtestArguments);
+    int gtestArgc = static_cast<int>(gtestArgv.size());
+    ::testing::InitGoogleTest(&gtestArgc, gtestArgv.data());
 
-    std::unique_ptr<render::Device> device;
-    render::Result result = render::createDevice(
-        render::DeviceDesc{
-            .applicationName = "Metallic RHI Tests",
-            .enableValidation = options.enableValidation,
-        },
-        device);
-    if (!result) {
-        std::cerr << "Skipping RHI tests: createDevice returned " << tests::toString(result) << '\n';
-        SDL_Quit();
-        return render::hasError(result, render::Error::Unsupported) ? kSkipExitCode : 1;
-    }
+    registerRhiTests();
 
-    render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
-    if (graphicsQueue == nullptr) {
-        std::cerr << "RHI test setup failed: no graphics queue is available.\n";
-        device.reset();
-        SDL_Quit();
-        return 1;
-    }
+    auto* environment = new RhiTestEnvironment(options);
+    gEnvironment = environment;
+    ::testing::AddGlobalTestEnvironment(environment);
 
-    tests::RhiTestContext context{
-        .device = *device,
-        .graphicsQueue = *graphicsQueue,
-        .outputDirectory = options.outputDirectory,
-        .enableValidation = options.enableValidation,
-    };
-
-    int passedCount = 0;
-    int skippedCount = 0;
-    int failedCount = 0;
-
-    for (tests::RhiTest* test : selectedTests) {
-        std::cout << "  [RUN ] " << test->name << " ... ";
-        std::cout.flush();
-
-        tests::RhiTestResult testResult;
-        try {
-            test->init(context);
-            testResult = test->run(context);
-            test->cleanup(context);
-        } catch (const std::exception& exception) {
-            testResult = tests::RhiTestResult::fail(exception.what());
-            test->cleanup(context);
-        } catch (...) {
-            testResult = tests::RhiTestResult::fail("unknown exception");
-            test->cleanup(context);
-        }
-
-        if (testResult.skipped) {
-            ++skippedCount;
-            std::cout << "SKIP";
-        } else if (testResult.passed) {
-            ++passedCount;
-            std::cout << "PASS";
-        } else {
-            ++failedCount;
-            std::cout << "FAIL";
-        }
-
-        if (!testResult.message.empty()) {
-            std::cout << " - " << testResult.message;
-        }
-        std::cout << '\n';
-    }
-
-    device->waitIdle();
-    device.reset();
-    SDL_Quit();
-
-    std::cout << "\nResults: " << passedCount << " passed, "
-              << skippedCount << " skipped, "
-              << failedCount << " failed";
-    std::cout << " (" << selectedTests.size() << " selected)\n";
-    std::cout << "Image output: " << options.outputDirectory.string() << '\n';
-
-    return failedCount == 0 ? 0 : 1;
+    return RUN_ALL_TESTS();
 }

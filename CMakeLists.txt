@@ -59,6 +59,11 @@ ensure_git_submodule(
     "microprofile"
 )
 
+ensure_git_submodule(
+    "External/googletest"
+    "${CMAKE_SOURCE_DIR}/External/googletest/googletest/include/gtest/gtest.h"
+    "GoogleTest"
+)
 add_subdirectory(External)
 add_subdirectory(Source)
 

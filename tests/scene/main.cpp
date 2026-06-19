@@ -1,40 +1,32 @@
 #include "Runtime/Scene/scene.h"
 
+#include <gtest/gtest.h>
+
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <string>
 #include <vector>
 
 namespace {
 
-struct TestContext {
-    int failures = 0;
-
-    void expect(bool condition, const std::string& message)
-    {
-        if (!condition) {
-            ++failures;
-            std::cerr << "FAIL: " << message << '\n';
-        }
-    }
-};
-
+void expect(bool condition, const std::string& message)
+{
+    EXPECT_TRUE(condition) << message;
+}
 bool nearlyEqual(float lhs, float rhs, float epsilon = 0.0001f)
 {
     return std::fabs(lhs - rhs) <= epsilon;
 }
 
 void expectVec3(
-    TestContext& test,
     const float3& actual,
     const float3& expected,
     const std::string& label)
 {
-    test.expect(
+    expect(
         nearlyEqual(actual.x, expected.x) &&
             nearlyEqual(actual.y, expected.y) &&
             nearlyEqual(actual.z, expected.z),
@@ -43,12 +35,11 @@ void expectVec3(
 }
 
 void expectVec4(
-    TestContext& test,
     const float4& actual,
     const float4& expected,
     const std::string& label)
 {
-    test.expect(
+    expect(
         nearlyEqual(actual.x, expected.x) &&
             nearlyEqual(actual.y, expected.y) &&
             nearlyEqual(actual.z, expected.z) &&
@@ -57,17 +48,16 @@ void expectVec4(
 }
 
 void expectTextureInfo(
-    TestContext& test,
     const metallic::scene::RenderTextureInfo& actual,
     int32_t expectedTextureIndex,
     int32_t expectedTexCoord,
     const std::array<float, 6>& expectedUvTransform,
     const std::string& label)
 {
-    test.expect(actual.textureIndex == expectedTextureIndex, label + " texture index");
-    test.expect(actual.texCoord == expectedTexCoord, label + " texcoord");
+    expect(actual.textureIndex == expectedTextureIndex, label + " texture index");
+    expect(actual.texCoord == expectedTexCoord, label + " texcoord");
     for (size_t index = 0; index < expectedUvTransform.size(); ++index) {
-        test.expect(
+        expect(
             nearlyEqual(actual.uvTransform[index], expectedUvTransform[index]),
             label + " uvTransform[" + std::to_string(index) + "]");
     }
@@ -481,158 +471,148 @@ std::filesystem::path writeMaterialFeatureScene(const std::filesystem::path& dir
     return gltfPath;
 }
 
-void testFullSceneImport(TestContext& test, const std::filesystem::path& directory)
+void testFullSceneImport(const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
     const std::filesystem::path gltfPath = writeFullScene(directory);
-    test.expect(scene.load(gltfPath), scene.lastLoadResult().error);
+    expect(scene.load(gltfPath), scene.lastLoadResult().error);
 
-    test.expect(scene.valid(), "loaded scene should be valid");
-    test.expect(scene.sceneIndex() == 0, "default scene index should be 0");
-    test.expect(scene.sceneName() == "Default Scene", "scene name should come from glTF scene");
-    test.expect(scene.rootNodeIndices().size() == 1, "scene should expose one root node");
-    test.expect(scene.rootNodeIndices().front() == 0, "root node index should be 0");
-    test.expect(scene.nodes().size() == 5, "scene should load all nodes");
-    test.expect(scene.nodes()[1].parent == 0, "child parent index should be assigned");
-    test.expect(scene.nodes()[0].children.size() == 4, "root children should be preserved");
+    expect(scene.valid(), "loaded scene should be valid");
+    expect(scene.sceneIndex() == 0, "default scene index should be 0");
+    expect(scene.sceneName() == "Default Scene", "scene name should come from glTF scene");
+    expect(scene.rootNodeIndices().size() == 1, "scene should expose one root node");
+    expect(scene.rootNodeIndices().front() == 0, "root node index should be 0");
+    expect(scene.nodes().size() == 5, "scene should load all nodes");
+    expect(scene.nodes()[1].parent == 0, "child parent index should be assigned");
+    expect(scene.nodes()[0].children.size() == 4, "root children should be preserved");
 
     const float3 meshWorldTranslation(
         scene.nodes()[1].worldMatrix.a03,
         scene.nodes()[1].worldMatrix.a13,
         scene.nodes()[1].worldMatrix.a23);
-    expectVec3(test, meshWorldTranslation, float3(5.0f, 2.0f, 3.0f), "mesh node world translation");
+    expectVec3(meshWorldTranslation, float3(5.0f, 2.0f, 3.0f), "mesh node world translation");
 
     const metallic::scene::SceneStats& stats = scene.stats();
-    test.expect(stats.meshCount == 1, "mesh count");
-    test.expect(stats.materialCount == 2, "material count");
-    test.expect(stats.primitiveCount == 1, "primitive count");
-    test.expect(stats.renderNodeCount == 1, "render node count");
-    test.expect(stats.triangleCount == 1, "triangle count");
+    expect(stats.meshCount == 1, "mesh count");
+    expect(stats.materialCount == 2, "material count");
+    expect(stats.primitiveCount == 1, "primitive count");
+    expect(stats.renderNodeCount == 1, "render node count");
+    expect(stats.triangleCount == 1, "triangle count");
 
-    test.expect(scene.renderPrimitives().size() == 1, "primitive vector size");
+    expect(scene.renderPrimitives().size() == 1, "primitive vector size");
     const metallic::scene::RenderPrimitive& primitive = scene.renderPrimitives().front();
-    test.expect(primitive.vertexCount == 3, "primitive vertex count");
-    test.expect(primitive.indexCount == 3, "primitive index count");
-    test.expect(primitive.materialIndex == 0, "primitive material index");
-    test.expect(primitive.positions.size() == 3, "primitive position data count");
-    test.expect(primitive.indices.size() == 3, "primitive index data count");
-    expectVec3(test, primitive.positions[2], float3(1.0f, 1.0f, 0.0f), "primitive position data");
-    test.expect(primitive.indices[2] == 2, "primitive index data");
+    expect(primitive.vertexCount == 3, "primitive vertex count");
+    expect(primitive.indexCount == 3, "primitive index count");
+    expect(primitive.materialIndex == 0, "primitive material index");
+    expect(primitive.positions.size() == 3, "primitive position data count");
+    expect(primitive.indices.size() == 3, "primitive index data count");
+    expectVec3(primitive.positions[2], float3(1.0f, 1.0f, 0.0f), "primitive position data");
+    expect(primitive.indices[2] == 2, "primitive index data");
 
-    test.expect(scene.materials().size() == 2, "material vector size");
-    test.expect(scene.materials()[0].name == "Test Material", "default material name");
+    expect(scene.materials().size() == 2, "material vector size");
+    expect(scene.materials()[0].name == "Test Material", "default material name");
     expectVec4(
-        test,
         scene.materials()[0].baseColorFactor,
         float4(1.0f, 1.0f, 1.0f, 1.0f),
         "default baseColorFactor");
-    test.expect(scene.materials()[1].name == "Tinted Material", "tinted material name");
+    expect(scene.materials()[1].name == "Tinted Material", "tinted material name");
     expectVec4(
-        test,
         scene.materials()[1].baseColorFactor,
         float4(0.25f, 0.5f, 0.75f, 0.8f),
         "explicit baseColorFactor");
-    test.expect(std::abs(scene.materials()[1].metallicFactor - 0.35f) < 0.0001f, "explicit metallicFactor");
-    test.expect(std::abs(scene.materials()[1].roughnessFactor - 0.6f) < 0.0001f, "explicit roughnessFactor");
+    expect(std::abs(scene.materials()[1].metallicFactor - 0.35f) < 0.0001f, "explicit metallicFactor");
+    expect(std::abs(scene.materials()[1].roughnessFactor - 0.6f) < 0.0001f, "explicit roughnessFactor");
     expectVec3(
-        test,
         scene.materials()[1].emissiveFactor,
         float3(0.05f, 0.1f, 0.2f),
         "explicit emissiveFactor");
-    test.expect(scene.materials()[1].doubleSided, "explicit doubleSided");
-    test.expect(
+    expect(scene.materials()[1].doubleSided, "explicit doubleSided");
+    expect(
         std::abs(scene.materials()[1].diffuseTransmissionFactor - 0.45f) < 0.0001f,
         "explicit diffuseTransmissionFactor");
     expectVec3(
-        test,
         scene.materials()[1].diffuseTransmissionColor,
         float3(0.4f, 0.9f, 0.55f),
         "explicit diffuseTransmissionColor");
 
-    test.expect(scene.bounds().valid, "bounds should be valid");
-    expectVec3(test, scene.bounds().min, float3(5.0f, 2.0f, 3.0f), "scene bounds min");
-    expectVec3(test, scene.bounds().max, float3(6.0f, 3.0f, 3.0f), "scene bounds max");
+    expect(scene.bounds().valid, "bounds should be valid");
+    expectVec3(scene.bounds().min, float3(5.0f, 2.0f, 3.0f), "scene bounds min");
+    expectVec3(scene.bounds().max, float3(6.0f, 3.0f, 3.0f), "scene bounds max");
 
-    test.expect(scene.cameras().size() == 2, "camera count");
+    expect(scene.cameras().size() == 2, "camera count");
     const metallic::scene::RenderCamera& perspectiveCamera = scene.cameras()[0];
-    test.expect(
+    expect(
         perspectiveCamera.type == metallic::scene::CameraType::Perspective,
         "first camera should be perspective");
-    test.expect(nearlyEqual(static_cast<float>(perspectiveCamera.yfov), 0.75f), "perspective yfov");
-    test.expect(nearlyEqual(static_cast<float>(perspectiveCamera.aspectRatio), 1.7777778f), "perspective aspect");
-    expectVec3(test, perspectiveCamera.eye, float3(1.0f, 2.0f, 13.0f), "perspective camera eye");
-    expectVec3(test, perspectiveCamera.center, float3(1.0f, 2.0f, 12.0f), "perspective camera center");
+    expect(nearlyEqual(static_cast<float>(perspectiveCamera.yfov), 0.75f), "perspective yfov");
+    expect(nearlyEqual(static_cast<float>(perspectiveCamera.aspectRatio), 1.7777778f), "perspective aspect");
+    expectVec3(perspectiveCamera.eye, float3(1.0f, 2.0f, 13.0f), "perspective camera eye");
+    expectVec3(perspectiveCamera.center, float3(1.0f, 2.0f, 12.0f), "perspective camera center");
 
     const metallic::scene::RenderCamera& orthoCamera = scene.cameras()[1];
-    test.expect(
+    expect(
         orthoCamera.type == metallic::scene::CameraType::Orthographic,
         "second camera should be orthographic");
-    test.expect(nearlyEqual(static_cast<float>(orthoCamera.xmag), 4.0f), "orthographic xmag");
-    test.expect(nearlyEqual(static_cast<float>(orthoCamera.ymag), 3.0f), "orthographic ymag");
+    expect(nearlyEqual(static_cast<float>(orthoCamera.xmag), 4.0f), "orthographic xmag");
+    expect(nearlyEqual(static_cast<float>(orthoCamera.ymag), 3.0f), "orthographic ymag");
 
-    test.expect(scene.lights().size() == 1, "punctual light count");
-    test.expect(scene.lights().front().type == "directional", "punctual light type");
+    expect(scene.lights().size() == 1, "punctual light count");
+    expect(scene.lights().front().type == "directional", "punctual light type");
 }
 
-void testMaterialImport(TestContext& test, const std::filesystem::path& directory)
+void testMaterialImport(const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
     const std::filesystem::path gltfPath = writeMaterialFeatureScene(directory);
-    test.expect(scene.load(gltfPath), scene.lastLoadResult().error);
+    expect(scene.load(gltfPath), scene.lastLoadResult().error);
 
-    test.expect(scene.stats().materialCount == 4, "material feature scene material count");
-    test.expect(scene.images().size() == 9, "material feature scene image count");
-    test.expect(scene.images()[0].name == "Base Color Image", "base color image name");
-    test.expect(scene.images()[0].uri == "base_color.png", "base color image uri");
-    test.expect(scene.textures().size() == 9, "material feature scene texture count");
-    test.expect(scene.textures()[2].imageIndex == 2, "normal texture image index");
-    test.expect(scene.textures()[2].samplerIndex == 1, "normal texture sampler index");
+    expect(scene.stats().materialCount == 4, "material feature scene material count");
+    expect(scene.images().size() == 9, "material feature scene image count");
+    expect(scene.images()[0].name == "Base Color Image", "base color image name");
+    expect(scene.images()[0].uri == "base_color.png", "base color image uri");
+    expect(scene.textures().size() == 9, "material feature scene texture count");
+    expect(scene.textures()[2].imageIndex == 2, "normal texture image index");
+    expect(scene.textures()[2].samplerIndex == 1, "normal texture sampler index");
 
     const std::array<float, 6> identityUv{1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
     const metallic::scene::RenderMaterial& defaultMaterial = scene.materials()[0];
     expectVec4(
-        test,
         defaultMaterial.baseColorFactor,
         float4(1.0f, 1.0f, 1.0f, 1.0f),
         "material default baseColorFactor");
-    test.expect(nearlyEqual(defaultMaterial.metallicFactor, 1.0f), "material default metallicFactor");
-    test.expect(nearlyEqual(defaultMaterial.roughnessFactor, 1.0f), "material default roughnessFactor");
+    expect(nearlyEqual(defaultMaterial.metallicFactor, 1.0f), "material default metallicFactor");
+    expect(nearlyEqual(defaultMaterial.roughnessFactor, 1.0f), "material default roughnessFactor");
     expectVec3(
-        test,
         defaultMaterial.emissiveFactor,
         float3(0.0f, 0.0f, 0.0f),
         "material default emissiveFactor");
-    test.expect(defaultMaterial.alphaMode == "OPAQUE", "material default alphaMode");
-    test.expect(nearlyEqual(defaultMaterial.alphaCutoff, 0.5f), "material default alphaCutoff");
-    test.expect(!defaultMaterial.doubleSided, "material default doubleSided");
-    test.expect(nearlyEqual(defaultMaterial.normalTextureScale, 1.0f), "material default normal scale");
-    test.expect(nearlyEqual(defaultMaterial.occlusionTextureStrength, 1.0f), "material default occlusion strength");
-    test.expect(nearlyEqual(defaultMaterial.transmissionFactor, 0.0f), "material default transmissionFactor");
-    test.expect(nearlyEqual(defaultMaterial.ior, 1.5f), "material default ior");
-    test.expect(nearlyEqual(defaultMaterial.thicknessFactor, 0.0f), "material default thicknessFactor");
-    test.expect(nearlyEqual(defaultMaterial.attenuationDistance, 0.0f), "material default attenuationDistance");
+    expect(defaultMaterial.alphaMode == "OPAQUE", "material default alphaMode");
+    expect(nearlyEqual(defaultMaterial.alphaCutoff, 0.5f), "material default alphaCutoff");
+    expect(!defaultMaterial.doubleSided, "material default doubleSided");
+    expect(nearlyEqual(defaultMaterial.normalTextureScale, 1.0f), "material default normal scale");
+    expect(nearlyEqual(defaultMaterial.occlusionTextureStrength, 1.0f), "material default occlusion strength");
+    expect(nearlyEqual(defaultMaterial.transmissionFactor, 0.0f), "material default transmissionFactor");
+    expect(nearlyEqual(defaultMaterial.ior, 1.5f), "material default ior");
+    expect(nearlyEqual(defaultMaterial.thicknessFactor, 0.0f), "material default thicknessFactor");
+    expect(nearlyEqual(defaultMaterial.attenuationDistance, 0.0f), "material default attenuationDistance");
     expectVec3(
-        test,
         defaultMaterial.attenuationColor,
         float3(1.0f, 1.0f, 1.0f),
         "material default attenuationColor");
-    test.expect(
+    expect(
         nearlyEqual(defaultMaterial.diffuseTransmissionFactor, 0.0f),
         "material default diffuseTransmissionFactor");
     expectVec3(
-        test,
         defaultMaterial.diffuseTransmissionColor,
         float3(1.0f, 1.0f, 1.0f),
         "material default diffuseTransmissionColor");
     expectTextureInfo(
-        test,
         defaultMaterial.baseColorTexture,
         metallic::scene::kInvalidSceneIndex,
         0,
         identityUv,
         "material default baseColorTexture");
     expectTextureInfo(
-        test,
         defaultMaterial.diffuseTransmissionColorTexture,
         metallic::scene::kInvalidSceneIndex,
         0,
@@ -641,60 +621,54 @@ void testMaterialImport(TestContext& test, const std::filesystem::path& director
 
     const metallic::scene::RenderMaterial& fullMaterial = scene.materials()[1];
     expectVec4(
-        test,
         fullMaterial.baseColorFactor,
         float4(0.2f, 0.3f, 0.4f, 0.5f),
         "full material baseColorFactor");
-    test.expect(nearlyEqual(fullMaterial.metallicFactor, 0.25f), "full material metallicFactor");
-    test.expect(nearlyEqual(fullMaterial.roughnessFactor, 0.75f), "full material roughnessFactor");
-    expectVec3(test, fullMaterial.emissiveFactor, float3(0.1f, 0.2f, 0.3f), "full material emissiveFactor");
-    test.expect(fullMaterial.alphaMode == "MASK", "full material alphaMode");
-    test.expect(nearlyEqual(fullMaterial.alphaCutoff, 0.37f), "full material alphaCutoff");
-    test.expect(fullMaterial.doubleSided, "full material doubleSided");
-    test.expect(nearlyEqual(fullMaterial.normalTextureScale, 0.42f), "full material normal scale");
-    test.expect(nearlyEqual(fullMaterial.occlusionTextureStrength, 0.66f), "full material occlusion strength");
+    expect(nearlyEqual(fullMaterial.metallicFactor, 0.25f), "full material metallicFactor");
+    expect(nearlyEqual(fullMaterial.roughnessFactor, 0.75f), "full material roughnessFactor");
+    expectVec3(fullMaterial.emissiveFactor, float3(0.1f, 0.2f, 0.3f), "full material emissiveFactor");
+    expect(fullMaterial.alphaMode == "MASK", "full material alphaMode");
+    expect(nearlyEqual(fullMaterial.alphaCutoff, 0.37f), "full material alphaCutoff");
+    expect(fullMaterial.doubleSided, "full material doubleSided");
+    expect(nearlyEqual(fullMaterial.normalTextureScale, 0.42f), "full material normal scale");
+    expect(nearlyEqual(fullMaterial.occlusionTextureStrength, 0.66f), "full material occlusion strength");
     expectTextureInfo(
-        test,
         fullMaterial.baseColorTexture,
         0,
         2,
         {0.0f, -3.0f, 0.1f, 2.0f, 0.0f, 0.2f},
         "full material baseColorTexture");
-    expectTextureInfo(test, fullMaterial.metallicRoughnessTexture, 1, 0, identityUv, "full material metallicRoughnessTexture");
-    expectTextureInfo(test, fullMaterial.normalTexture, 2, 0, identityUv, "full material normalTexture");
-    expectTextureInfo(test, fullMaterial.occlusionTexture, 3, 1, identityUv, "full material occlusionTexture");
-    expectTextureInfo(test, fullMaterial.emissiveTexture, 4, 0, identityUv, "full material emissiveTexture");
+    expectTextureInfo(fullMaterial.metallicRoughnessTexture, 1, 0, identityUv, "full material metallicRoughnessTexture");
+    expectTextureInfo(fullMaterial.normalTexture, 2, 0, identityUv, "full material normalTexture");
+    expectTextureInfo(fullMaterial.occlusionTexture, 3, 1, identityUv, "full material occlusionTexture");
+    expectTextureInfo(fullMaterial.emissiveTexture, 4, 0, identityUv, "full material emissiveTexture");
 
-    test.expect(nearlyEqual(fullMaterial.transmissionFactor, 0.8f), "full material transmissionFactor");
-    test.expect(nearlyEqual(fullMaterial.ior, 2.2f), "full material ior");
-    test.expect(nearlyEqual(fullMaterial.thicknessFactor, 0.6f), "full material thicknessFactor");
-    test.expect(nearlyEqual(fullMaterial.attenuationDistance, 12.5f), "full material attenuationDistance");
-    expectVec3(test, fullMaterial.attenuationColor, float3(0.7f, 0.8f, 0.9f), "full material attenuationColor");
-    test.expect(
+    expect(nearlyEqual(fullMaterial.transmissionFactor, 0.8f), "full material transmissionFactor");
+    expect(nearlyEqual(fullMaterial.ior, 2.2f), "full material ior");
+    expect(nearlyEqual(fullMaterial.thicknessFactor, 0.6f), "full material thicknessFactor");
+    expect(nearlyEqual(fullMaterial.attenuationDistance, 12.5f), "full material attenuationDistance");
+    expectVec3(fullMaterial.attenuationColor, float3(0.7f, 0.8f, 0.9f), "full material attenuationColor");
+    expect(
         nearlyEqual(fullMaterial.diffuseTransmissionFactor, 0.55f),
         "full material diffuseTransmissionFactor");
     expectVec3(
-        test,
         fullMaterial.diffuseTransmissionColor,
         float3(0.4f, 0.5f, 0.6f),
         "full material diffuseTransmissionColor");
     expectTextureInfo(
-        test,
         fullMaterial.transmissionTexture,
         5,
         0,
         {0.5f, 0.0f, 0.25f, 0.0f, 0.25f, 0.75f},
         "full material transmissionTexture");
-    expectTextureInfo(test, fullMaterial.thicknessTexture, 6, 0, identityUv, "full material thicknessTexture");
+    expectTextureInfo(fullMaterial.thicknessTexture, 6, 0, identityUv, "full material thicknessTexture");
     expectTextureInfo(
-        test,
         fullMaterial.diffuseTransmissionTexture,
         7,
         0,
         identityUv,
         "full material diffuseTransmissionTexture");
     expectTextureInfo(
-        test,
         fullMaterial.diffuseTransmissionColorTexture,
         8,
         1,
@@ -702,77 +676,82 @@ void testMaterialImport(TestContext& test, const std::filesystem::path& director
         "full material diffuseTransmissionColorTexture");
 
     const metallic::scene::RenderMaterial& lowClampMaterial = scene.materials()[2];
-    test.expect(nearlyEqual(lowClampMaterial.transmissionFactor, 0.0f), "low clamp transmissionFactor");
-    test.expect(nearlyEqual(lowClampMaterial.ior, 1.0f), "low clamp ior");
-    test.expect(nearlyEqual(lowClampMaterial.thicknessFactor, 0.0f), "low clamp thicknessFactor");
-    test.expect(nearlyEqual(lowClampMaterial.attenuationDistance, 0.0f), "low clamp attenuationDistance");
-    test.expect(
+    expect(nearlyEqual(lowClampMaterial.transmissionFactor, 0.0f), "low clamp transmissionFactor");
+    expect(nearlyEqual(lowClampMaterial.ior, 1.0f), "low clamp ior");
+    expect(nearlyEqual(lowClampMaterial.thicknessFactor, 0.0f), "low clamp thicknessFactor");
+    expect(nearlyEqual(lowClampMaterial.attenuationDistance, 0.0f), "low clamp attenuationDistance");
+    expect(
         nearlyEqual(lowClampMaterial.diffuseTransmissionFactor, 0.0f),
         "low clamp diffuseTransmissionFactor");
 
     const metallic::scene::RenderMaterial& highClampMaterial = scene.materials()[3];
-    test.expect(nearlyEqual(highClampMaterial.transmissionFactor, 1.0f), "high clamp transmissionFactor");
-    test.expect(nearlyEqual(highClampMaterial.ior, 3.0f), "high clamp ior");
-    test.expect(
+    expect(nearlyEqual(highClampMaterial.transmissionFactor, 1.0f), "high clamp transmissionFactor");
+    expect(nearlyEqual(highClampMaterial.ior, 3.0f), "high clamp ior");
+    expect(
         nearlyEqual(highClampMaterial.diffuseTransmissionFactor, 1.0f),
         "high clamp diffuseTransmissionFactor");
 }
 
-void testGlbImport(TestContext& test, const std::filesystem::path& directory)
+void testGlbImport(const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
     const std::filesystem::path glbPath = writeMinimalGlbScene(directory);
-    test.expect(scene.load(glbPath), scene.lastLoadResult().error);
+    expect(scene.load(glbPath), scene.lastLoadResult().error);
 
-    test.expect(scene.sceneName() == "GLB Scene", "GLB scene name");
-    test.expect(scene.nodes().size() == 1, "GLB node count");
-    test.expect(scene.nodes().front().name == "GLB Node", "GLB node name");
-    test.expect(scene.cameras().size() == 1, "GLB scene should get fallback camera");
+    expect(scene.sceneName() == "GLB Scene", "GLB scene name");
+    expect(scene.nodes().size() == 1, "GLB node count");
+    expect(scene.nodes().front().name == "GLB Node", "GLB node name");
+    expect(scene.cameras().size() == 1, "GLB scene should get fallback camera");
 }
 
-void testFallbackCamera(TestContext& test, const std::filesystem::path& directory)
+void testFallbackCamera(const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
     const std::filesystem::path gltfPath = writeFallbackScene(directory);
-    test.expect(scene.load(gltfPath), scene.lastLoadResult().error);
+    expect(scene.load(gltfPath), scene.lastLoadResult().error);
 
-    test.expect(scene.sceneIndex() == 0, "missing default scene should fall back to scene 0");
-    test.expect(scene.cameras().size() == 1, "fallback scene should expose one camera");
-    test.expect(scene.cameras().front().fallback, "camera should be marked as fallback");
-    test.expect(
+    expect(scene.sceneIndex() == 0, "missing default scene should fall back to scene 0");
+    expect(scene.cameras().size() == 1, "fallback scene should expose one camera");
+    expect(scene.cameras().front().fallback, "camera should be marked as fallback");
+    expect(
         scene.cameras().front().type == metallic::scene::CameraType::Perspective,
         "fallback camera should be perspective");
 }
 
-void testUnsupportedRequiredExtension(TestContext& test, const std::filesystem::path& directory)
+void testUnsupportedRequiredExtension(const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
     const std::filesystem::path gltfPath = writeUnsupportedRequiredExtensionScene(directory);
-    test.expect(!scene.load(gltfPath), "unsupported required extension should fail");
-    test.expect(!scene.valid(), "failed scene should not be valid");
-    test.expect(
+    expect(!scene.load(gltfPath), "unsupported required extension should fail");
+    expect(!scene.valid(), "failed scene should not be valid");
+    expect(
         scene.lastLoadResult().error.find("EXT_meshopt_compression") != std::string::npos,
         "unsupported extension error should mention extension name");
 }
 
 } // namespace
 
-int main()
+TEST(SceneImport, FullScene)
 {
-    const std::filesystem::path outputDirectory = prepareOutputDirectory();
+    testFullSceneImport(prepareOutputDirectory());
+}
 
-    TestContext test;
-    testFullSceneImport(test, outputDirectory);
-    testMaterialImport(test, outputDirectory);
-    testGlbImport(test, outputDirectory);
-    testFallbackCamera(test, outputDirectory);
-    testUnsupportedRequiredExtension(test, outputDirectory);
+TEST(SceneImport, Materials)
+{
+    testMaterialImport(prepareOutputDirectory());
+}
 
-    if (test.failures != 0) {
-        std::cerr << test.failures << " scene test failure(s)\n";
-        return 1;
-    }
+TEST(SceneImport, Glb)
+{
+    testGlbImport(prepareOutputDirectory());
+}
 
-    std::cout << "MetallicSceneTests passed\n";
-    return 0;
+TEST(SceneImport, FallbackCamera)
+{
+    testFallbackCamera(prepareOutputDirectory());
+}
+
+TEST(SceneImport, UnsupportedRequiredExtension)
+{
+    testUnsupportedRequiredExtension(prepareOutputDirectory());
 }

@@ -32,6 +32,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/volk/volk.c")
     endif()
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/googletest/CMakeLists.txt")
+    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    if(MSVC)
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    endif()
+    add_subdirectory(googletest)
+endif()
 # SDL3: prefer a complete vendored checkout, but allow package managers to
 # provide SDL3 while the repository is being restructured.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/SDL3/CMakeLists.txt")

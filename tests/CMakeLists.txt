@@ -1,3 +1,5 @@
+include(GoogleTest)
+
 add_executable(MetallicSceneTests
     scene/main.cpp
 )
@@ -8,6 +10,7 @@ target_include_directories(MetallicSceneTests PRIVATE
 
 target_link_libraries(MetallicSceneTests PRIVATE
     MetallicRuntimeScene
+    GTest::gtest_main
 )
 
 target_compile_definitions(MetallicSceneTests PRIVATE
@@ -48,6 +51,7 @@ target_include_directories(MetallicRhiTests PRIVATE
 
 target_link_libraries(MetallicRhiTests PRIVATE
     MetallicRuntimeRender
+    GTest::gtest
 )
 
 target_compile_definitions(MetallicRhiTests PRIVATE
@@ -91,6 +95,7 @@ add_test(
     COMMAND MetallicRhiTests
         --rhi-no-validation
         --output-dir "$<TARGET_FILE_DIR:MetallicRhiTests>/rhi-test-output"
+        --gtest_color=no
 )
 set_tests_properties(MetallicRhiTests PROPERTIES
     LABELS "rhi"
