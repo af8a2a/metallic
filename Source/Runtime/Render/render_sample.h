@@ -23,12 +23,27 @@ struct RenderSampleDesc {
 struct RenderSampleLoadResult {
     RenderSampleDesc desc;
     RenderGraph graph;
-    std::filesystem::path samplePath;
     std::filesystem::path graphFilePath;
 };
 
-bool loadRenderSampleFromFile(
-    const std::filesystem::path& path,
+class RenderSample {
+public:
+    virtual ~RenderSample() = default;
+
+    virtual std::string_view id() const = 0;
+    virtual std::string_view name() const = 0;
+    virtual std::string_view category() const = 0;
+    virtual std::string_view description() const { return {}; }
+    virtual std::string scenePath() const = 0;
+    virtual std::string graphPath() const = 0;
+    virtual std::vector<std::string> scenePathTargets() const = 0;
+    virtual std::string previewOutput() const { return {}; }
+
+    RenderSampleDesc desc() const;
+};
+
+bool loadRenderSample(
+    const RenderSample& sample,
     RenderSampleLoadResult& outResult,
     std::string& outMessage);
 std::vector<RenderSampleDesc> listBuiltInRenderSamples();

@@ -773,6 +773,32 @@ public:
     }
 };
 
+class TestPathTraceSample final : public render::RenderSample {
+public:
+    TestPathTraceSample(std::string id, std::string scenePath, std::string previewOutput) :
+        id_(std::move(id)),
+        scenePath_(std::move(scenePath)),
+        previewOutput_(std::move(previewOutput))
+    {
+    }
+
+    std::string_view id() const override { return id_; }
+    std::string_view name() const override { return "Test Path Trace Sample"; }
+    std::string_view category() const override { return "PathTracing"; }
+    std::string scenePath() const override { return scenePath_; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
+    std::string previewOutput() const override { return previewOutput_; }
+
+private:
+    std::string id_;
+    std::string scenePath_;
+    std::string previewOutput_;
+};
+
 class RenderSampleLoadTest : public RhiTest {
 public:
     RenderSampleLoadTest()
@@ -834,30 +860,14 @@ public:
 
     RhiTestResult run(RhiTestContext&) override
     {
-        const std::filesystem::path directory = std::filesystem::temp_directory_path() / "metallic_render_sample_tests";
-        std::error_code error;
-        std::filesystem::create_directories(directory, error);
-        if (error) {
-            return RhiTestResult::fail(error.message());
-        }
-
-        const std::filesystem::path fallbackPath = directory / "fallback_preview.metallic_sample.json";
-        {
-            std::ofstream file(fallbackPath, std::ios::binary | std::ios::trunc);
-            file << R"json({
-    "version": 1,
-    "id": "test-fallback-preview",
-    "name": "Test Fallback Preview",
-    "category": "PathTracing",
-    "scene": "Asset/StandfordBunny/scene.gltf",
-    "graph": "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json",
-    "scenePathTargets": ["PathTrace"]
-})json";
-        }
+        const TestPathTraceSample fallback(
+            "test-fallback-preview",
+            "Asset/StandfordBunny/scene.gltf",
+            "");
 
         render::RenderSampleLoadResult sample;
         std::string message;
-        if (!render::loadRenderSampleFromFile(fallbackPath, sample, message)) {
+        if (!render::loadRenderSample(fallback, sample, message)) {
             return RhiTestResult::fail(message);
         }
         if (sample.desc.previewOutput != "PathTrace.color") {
@@ -868,22 +878,11 @@ public:
             return RhiTestResult::fail("Sample loader did not override target scene path");
         }
 
-        const std::filesystem::path invalidPath = directory / "invalid_preview.metallic_sample.json";
-        {
-            std::ofstream file(invalidPath, std::ios::binary | std::ios::trunc);
-            file << R"json({
-    "version": 1,
-    "id": "test-invalid-preview",
-    "name": "Test Invalid Preview",
-    "category": "PathTracing",
-    "scene": "Asset/meet_mat.glb",
-    "graph": "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json",
-    "scenePathTargets": ["PathTrace"],
-    "previewOutput": "Missing.color"
-})json";
-        }
-
-        if (render::loadRenderSampleFromFile(invalidPath, sample, message)) {
+        const TestPathTraceSample invalid(
+            "test-invalid-preview",
+            "Asset/meet_mat.glb",
+            "Missing.color");
+        if (render::loadRenderSample(invalid, sample, message)) {
             return RhiTestResult::fail("Sample loader accepted invalid previewOutput");
         }
         if (message.find("previewOutput") == std::string::npos) {
