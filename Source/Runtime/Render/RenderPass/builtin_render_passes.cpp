@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/GAPI/scene_rtx.h"
 #include "Runtime/Render/GAPI/Vulkan/vulkan_nrd_wrapper.h"
+#include "Runtime/Render/RenderPass/scene_path_trace_resources.h"
 #include "Runtime/Render/slang_compiler.h"
 #include "Runtime/Render/history_resources.h"
 #include "Runtime/Scene/scene.h"
@@ -54,7 +55,6 @@ constexpr const char* kRenderGraphBufferCopyEntryPoint = "renderGraphBufferCopyM
 constexpr const char* kDefaultImageSamplePath = PROJECT_SOURCE_DIR "/Asset/statue-1275469_1280.jpg";
 constexpr const char* kDefaultBunnyScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
 constexpr const char* kDefaultMaterialScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
-constexpr const char* kDefaultPathTraceScenePath = PROJECT_SOURCE_DIR "/Asset/meet_mat.glb";
 constexpr uint64_t kRenderGraphBufferByteSize = 16;
 constexpr int32_t kGltfTriangleListMode = 4;
 constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
@@ -64,8 +64,6 @@ constexpr uint32_t kDefaultPathTraceSamples = 2;
 constexpr uint32_t kNrdDenoiserModeReblur = 0;
 constexpr uint32_t kNrdDenoiserModeRelax = 1;
 constexpr uint32_t kNrdDenoiserModeReference = 2;
-constexpr uint32_t kInvalidMaterialTextureIndex = std::numeric_limits<uint32_t>::max();
-constexpr uint32_t kMaxScenePathTraceMaterialTextures = 256;
 constexpr const char* kScenePathTraceHistoryPrefix = "ScenePathTracePass.";
 constexpr bool kDefaultReversedZ = true;
 
@@ -145,54 +143,6 @@ struct SceneRayQueryVisualizationPush {
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t padding = 0;
-};
-
-struct ScenePathTraceGpuVertex {
-    float position[4] = {};
-    float normal[4] = {};
-    float tangent[4] = {1.0f, 0.0f, 0.0f, 1.0f};
-    float texcoord[4] = {};
-};
-
-struct ScenePathTraceGpuPrimitive {
-    uint32_t firstVertex = 0;
-    uint32_t vertexCount = 0;
-    uint32_t firstIndex = 0;
-    uint32_t indexCount = 0;
-};
-
-struct ScenePathTraceGpuInstance {
-    uint32_t primitiveIndex = 0;
-    uint32_t materialIndex = 0;
-    uint32_t flags = 0;
-    uint32_t padding = 0;
-};
-
-struct ScenePathTraceGpuMaterial {
-    float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-    float emissive[4] = {};
-    float params[4] = {};
-    float textureParams[4] = {1.0f, 1.0f, 0.0f, 0.0f};
-    float glassParams[4] = {0.0f, 1.5f, 0.0f, 0.0f};
-    float attenuationColor[4] = {1.0f, 1.0f, 1.0f, 0.0f};
-    float diffuseTransmission[4] = {1.0f, 1.0f, 1.0f, 0.0f};
-    struct TextureInfo {
-        uint32_t textureIndex = kInvalidMaterialTextureIndex;
-        uint32_t texCoord = 0;
-        uint32_t padding0 = 0;
-        uint32_t padding1 = 0;
-        float transform0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
-        float transform1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
-    };
-    TextureInfo baseColorTexture;
-    TextureInfo metallicRoughnessTexture;
-    TextureInfo normalTexture;
-    TextureInfo occlusionTexture;
-    TextureInfo emissiveTexture;
-    TextureInfo transmissionTexture;
-    TextureInfo thicknessTexture;
-    TextureInfo diffuseTransmissionTexture;
-    TextureInfo diffuseTransmissionColorTexture;
 };
 
 struct ScenePathTracePush {
@@ -2190,115 +2140,18 @@ public:
             log = "ScenePathTracePass requires rayTracingAccelerationStructure and rayQuery capabilities";
             return makeError(Error::Unsupported);
         }
-        if (rayQueryProgram_.valid() && rtxBuilder_.valid() && vertexBuffer_ != nullptr && !materialTextures_.empty()) {
+
+        Result result = sceneResources_.prepare(*context.device, *context.graphicsQueue, properties(), log);
+        if (!result) {
+            return result;
+        }
+        const uint64_t resourceRevision = sceneResources_.revision();
+        if (resourceRevision != sceneResourceRevision_) {
+            sceneResourceRevision_ = resourceRevision;
+            resetAccumulation_ = true;
+        }
+        if (rayQueryProgram_.valid()) {
             return {};
-        }
-
-        scene::Scene loadedScene;
-        const std::filesystem::path path = scenePathFromProperties(properties());
-        if (!loadedScene.load(path)) {
-            log = "ScenePathTracePass failed to load glTF: " + loadedScene.lastLoadResult().error;
-            return makeError(Error::Failure);
-        }
-        if (!loadedScene.bounds().valid) {
-            log = "ScenePathTracePass scene bounds are unavailable";
-            return makeError(Error::Failure);
-        }
-
-        std::vector<uint32_t> textureIndexMap;
-        Result result = buildMaterialTextures(*context.device, loadedScene, textureIndexMap, log);
-        if (!result) {
-            resetGpuBuffers();
-            return result;
-        }
-
-        ScenePathTraceGpuScene gpuScene;
-        if (!buildGpuScene(loadedScene, textureIndexMap, gpuScene, log)) {
-            resetGpuBuffers();
-            return makeError(Error::Failure);
-        }
-
-        std::string rtxLog;
-        result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, rtxLog);
-        if (!result) {
-            if (!log.empty() && !rtxLog.empty() && log.back() != '\n') {
-                log += '\n';
-            }
-            log += rtxLog;
-            return result;
-        }
-        if (!rtxLog.empty()) {
-            if (!log.empty() && log.back() != '\n') {
-                log += '\n';
-            }
-            log += rtxLog;
-            log += '\n';
-        }
-
-        result = uploadStorageBuffer(
-            *context.device,
-            gpuScene.vertices.data(),
-            static_cast<uint64_t>(gpuScene.vertices.size() * sizeof(ScenePathTraceGpuVertex)),
-            sizeof(ScenePathTraceGpuVertex),
-            vertexBuffer_,
-            log,
-            "ScenePathTracePass vertices");
-        if (!result) {
-            resetGpuBuffers();
-            rtxBuilder_.clear();
-            return result;
-        }
-        result = uploadStorageBuffer(
-            *context.device,
-            gpuScene.indices.data(),
-            static_cast<uint64_t>(gpuScene.indices.size() * sizeof(uint32_t)),
-            sizeof(uint32_t),
-            indexBuffer_,
-            log,
-            "ScenePathTracePass indices");
-        if (!result) {
-            resetGpuBuffers();
-            rtxBuilder_.clear();
-            return result;
-        }
-        result = uploadStorageBuffer(
-            *context.device,
-            gpuScene.primitives.data(),
-            static_cast<uint64_t>(gpuScene.primitives.size() * sizeof(ScenePathTraceGpuPrimitive)),
-            sizeof(ScenePathTraceGpuPrimitive),
-            primitiveBuffer_,
-            log,
-            "ScenePathTracePass primitives");
-        if (!result) {
-            resetGpuBuffers();
-            rtxBuilder_.clear();
-            return result;
-        }
-        result = uploadStorageBuffer(
-            *context.device,
-            gpuScene.instances.data(),
-            static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGpuInstance)),
-            sizeof(ScenePathTraceGpuInstance),
-            instanceBuffer_,
-            log,
-            "ScenePathTracePass instances");
-        if (!result) {
-            resetGpuBuffers();
-            rtxBuilder_.clear();
-            return result;
-        }
-        result = uploadStorageBuffer(
-            *context.device,
-            gpuScene.materials.data(),
-            static_cast<uint64_t>(gpuScene.materials.size() * sizeof(ScenePathTraceGpuMaterial)),
-            sizeof(ScenePathTraceGpuMaterial),
-            materialBuffer_,
-            log,
-            "ScenePathTracePass materials");
-        if (!result) {
-            resetGpuBuffers();
-            rtxBuilder_.clear();
-            return result;
         }
 
         ShaderCompileResult computeCompile;
@@ -2326,8 +2179,6 @@ public:
             }
             log += '\n';
             rayQueryProgram_.clear();
-            resetGpuBuffers();
-            rtxBuilder_.clear();
             return result;
         }
 
@@ -2371,7 +2222,7 @@ public:
             SceneRayQueryBindingDesc{
                 .binding = 9,
                 .kind = SceneRayQueryBindingKind::SampledImage,
-                .descriptorCount = kMaxScenePathTraceMaterialTextures,
+                .descriptorCount = kScenePathTraceMaxMaterialTextures,
             },
         };
         std::string programLog;
@@ -2394,36 +2245,26 @@ public:
         }
         if (!result) {
             rayQueryProgram_.clear();
-            resetGpuBuffers();
-            rtxBuilder_.clear();
             return result;
         }
-
-        drawBounds_ = loadedScene.bounds();
         return {};
     }
 
     Result execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle color = context.outputTexture("color");
+        const auto& materialTextureViews = sceneResources_.materialTextureViews();
         if (!color.valid() ||
             color.view() == nullptr ||
             !rayQueryProgram_.valid() ||
-            vertexBuffer_ == nullptr ||
-            indexBuffer_ == nullptr ||
-            primitiveBuffer_ == nullptr ||
-            instanceBuffer_ == nullptr ||
-            materialBuffer_ == nullptr ||
-            materialTextures_.empty() ||
-            materialTextureViews_[0] == nullptr ||
-            !rtxBuilder_.valid() ||
-            !drawBounds_.valid) {
+            !sceneResources_.valid() ||
+            materialTextureViews[0] == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
         ScenePathTracePush push;
-        buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
-        push.materialTextureCount = materialTextureCount_;
+        buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(), push);
+        push.materialTextureCount = sceneResources_.materialTextureCount();
 
         TextureView* historyCurrentView = color.view();
         TextureView* historyPreviousView = color.view();
@@ -2440,7 +2281,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
 
-        result = uploadMaterialTextures(context);
+        result = sceneResources_.uploadMaterialTextures(context.commandBuffer());
         if (!result) {
             return result;
         }
@@ -2448,7 +2289,7 @@ public:
         const SceneRayQueryDispatchBinding bindings[] = {
             SceneRayQueryDispatchBinding{
                 .binding = 0,
-                .accelerationStructure = &rtxBuilder_,
+                .accelerationStructure = &sceneResources_.accelerationStructure(),
             },
             SceneRayQueryDispatchBinding{
                 .binding = 1,
@@ -2456,23 +2297,23 @@ public:
             },
             SceneRayQueryDispatchBinding{
                 .binding = 2,
-                .buffer = vertexBuffer_.get(),
+                .buffer = sceneResources_.vertexBuffer(),
             },
             SceneRayQueryDispatchBinding{
                 .binding = 3,
-                .buffer = indexBuffer_.get(),
+                .buffer = sceneResources_.indexBuffer(),
             },
             SceneRayQueryDispatchBinding{
                 .binding = 4,
-                .buffer = primitiveBuffer_.get(),
+                .buffer = sceneResources_.primitiveBuffer(),
             },
             SceneRayQueryDispatchBinding{
                 .binding = 5,
-                .buffer = instanceBuffer_.get(),
+                .buffer = sceneResources_.instanceBuffer(),
             },
             SceneRayQueryDispatchBinding{
                 .binding = 6,
-                .buffer = materialBuffer_.get(),
+                .buffer = sceneResources_.materialBuffer(),
             },
             SceneRayQueryDispatchBinding{
                 .binding = 7,
@@ -2484,8 +2325,8 @@ public:
             },
             SceneRayQueryDispatchBinding{
                 .binding = 9,
-                .textureViews = materialTextureViews_.data(),
-                .textureViewCount = static_cast<uint32_t>(materialTextureViews_.size()),
+                .textureViews = materialTextureViews.data(),
+                .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
             },
         };
         result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
@@ -2508,32 +2349,6 @@ public:
     }
 
 private:
-
-    struct ScenePathTraceGpuScene {
-        std::vector<ScenePathTraceGpuVertex> vertices;
-        std::vector<uint32_t> indices;
-        std::vector<ScenePathTraceGpuPrimitive> primitives;
-        std::vector<ScenePathTraceGpuInstance> instances;
-        std::vector<ScenePathTraceGpuMaterial> materials;
-    };
-
-    struct ScenePathTraceMaterialTexture {
-        std::unique_ptr<Buffer> uploadBuffer;
-        std::unique_ptr<Texture> texture;
-        std::unique_ptr<TextureView> view;
-        uint32_t width = 1;
-        uint32_t height = 1;
-        ResourceState state = ResourceState::Undefined;
-        bool uploaded = false;
-    };
-
-    struct DecodedMaterialTexture {
-        std::vector<uint8_t> pixels;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        std::string label;
-    };
-
     Result prepareHistoryTextures(
         RenderGraphExecutionContext& context,
         TextureView& fallbackView,
@@ -2550,6 +2365,7 @@ private:
         outPreviousView = &fallbackView;
         if (push.enableAccumulation == 0) {
             accumulationFrame_ = 0;
+            resetAccumulation_ = true;
             return {};
         }
 
@@ -2601,358 +2417,16 @@ private:
         outCurrentView = current.view;
         outPreviousView = previous.view;
 
-        if (previous.valid) {
+        if (previous.valid && !resetAccumulation_) {
             ++accumulationFrame_;
             push.hasHistory = 1;
         } else {
             accumulationFrame_ = 0;
             push.hasHistory = 0;
         }
+        resetAccumulation_ = false;
         push.accumulationFrame = accumulationFrame_;
         return {};
-    }
-
-    static Result uploadStorageBuffer(
-        Device& device,
-        const void* data,
-        uint64_t byteSize,
-        uint32_t structureStride,
-        std::unique_ptr<Buffer>& outBuffer,
-        std::string& log,
-        std::string_view label)
-    {
-        if (data == nullptr || byteSize == 0) {
-            log = std::string(label) + " upload data is empty";
-            return makeError(Error::InvalidArgument);
-        }
-
-        Result result = device.createBuffer(
-            BufferDesc{
-                .size = byteSize,
-                .structureStride = structureStride,
-                .usage = BufferUsageBits::Storage,
-                .memoryLocation = MemoryLocation::HostUpload,
-            },
-            outBuffer);
-        if (!result || outBuffer == nullptr) {
-            log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        void* mapped = outBuffer->map();
-        if (mapped == nullptr) {
-            log = std::string(label) + " failed to map upload buffer";
-            return makeError(Error::Failure);
-        }
-        std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-        outBuffer->flush(0, byteSize);
-        outBuffer->unmap();
-        return {};
-    }
-
-    static void appendScenePathTraceWarning(std::string& log, std::string_view message)
-    {
-        if (!log.empty() && log.back() != '\n') {
-            log += '\n';
-        }
-        log += "Warning: ";
-        log += message;
-        log += '\n';
-    }
-
-    static bool decodeSceneTexture(
-        const scene::Scene& loadedScene,
-        uint32_t textureIndex,
-        DecodedMaterialTexture& outTexture,
-        std::string& log)
-    {
-        outTexture = DecodedMaterialTexture{};
-        if (textureIndex >= loadedScene.textures().size()) {
-            return false;
-        }
-
-        const scene::RenderTexture& texture = loadedScene.textures()[textureIndex];
-        if (texture.imageIndex < 0 || static_cast<size_t>(texture.imageIndex) >= loadedScene.images().size()) {
-            return false;
-        }
-
-        const scene::RenderImage& image = loadedScene.images()[static_cast<size_t>(texture.imageIndex)];
-        outTexture.label = texture.name.empty() ? image.name : texture.name;
-
-        int width = 0;
-        int height = 0;
-        int channelCount = 0;
-        stbi_uc* pixels = nullptr;
-        if (!image.encodedData.empty()) {
-            if (image.encodedData.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
-                appendScenePathTraceWarning(log, "embedded glTF image is too large to decode");
-                return false;
-            }
-            pixels = stbi_load_from_memory(
-                image.encodedData.data(),
-                static_cast<int>(image.encodedData.size()),
-                &width,
-                &height,
-                &channelCount,
-                4);
-        } else if (!image.uri.empty()) {
-            if (image.uri.rfind("data:", 0) == 0) {
-                appendScenePathTraceWarning(log, "data URI material textures are not supported yet");
-                return false;
-            }
-            std::filesystem::path imagePath = image.uri;
-            if (imagePath.is_relative()) {
-                imagePath = loadedScene.filename().parent_path() / imagePath;
-            }
-            pixels = stbi_load(imagePath.string().c_str(), &width, &height, &channelCount, 4);
-        }
-
-        if (pixels == nullptr || width <= 0 || height <= 0) {
-            std::string message = "failed to decode material texture";
-            if (!outTexture.label.empty()) {
-                message += " '";
-                message += outTexture.label;
-                message += "'";
-            }
-            if (const char* reason = stbi_failure_reason()) {
-                message += ": ";
-                message += reason;
-            }
-            appendScenePathTraceWarning(log, message);
-            return false;
-        }
-
-        const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
-        if (byteSize > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
-            stbi_image_free(pixels);
-            appendScenePathTraceWarning(log, "decoded material texture is too large");
-            return false;
-        }
-        outTexture.width = static_cast<uint32_t>(width);
-        outTexture.height = static_cast<uint32_t>(height);
-        outTexture.pixels.assign(pixels, pixels + static_cast<size_t>(byteSize));
-        stbi_image_free(pixels);
-        return true;
-    }
-
-    static Result createMaterialTexture(
-        Device& device,
-        const uint8_t* pixels,
-        uint32_t width,
-        uint32_t height,
-        std::string_view label,
-        ScenePathTraceMaterialTexture& outTexture,
-        std::string& log)
-    {
-        if (pixels == nullptr || width == 0 || height == 0) {
-            return makeError(Error::InvalidArgument);
-        }
-
-        outTexture = ScenePathTraceMaterialTexture{};
-        outTexture.width = width;
-        outTexture.height = height;
-        const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
-        Result result = device.createBuffer(
-            BufferDesc{
-                .size = byteSize,
-                .usage = BufferUsageBits::TransferSource,
-                .memoryLocation = MemoryLocation::HostUpload,
-            },
-            outTexture.uploadBuffer);
-        if (!result || outTexture.uploadBuffer == nullptr) {
-            log += resultMessage(std::string("createBuffer(ScenePathTracePass texture upload ") + std::string(label) + ")", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        void* mapped = outTexture.uploadBuffer->map();
-        if (mapped == nullptr) {
-            log = "ScenePathTracePass failed to map material texture upload buffer";
-            return makeError(Error::Failure);
-        }
-        std::memcpy(mapped, pixels, static_cast<size_t>(byteSize));
-        outTexture.uploadBuffer->flush(0, byteSize);
-        outTexture.uploadBuffer->unmap();
-
-        result = device.createTexture(
-            TextureDesc{
-                .type = TextureType::Texture2D,
-                .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-                .format = Format::Rgba8Unorm,
-                .width = width,
-                .height = height,
-                .depth = 1,
-                .mipCount = 1,
-                .layerCount = 1,
-                .memoryLocation = MemoryLocation::Device,
-            },
-            outTexture.texture);
-        if (!result || outTexture.texture == nullptr) {
-            log += resultMessage(std::string("createTexture(ScenePathTracePass material texture ") + std::string(label) + ")", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        result = device.createTextureView(
-            *outTexture.texture,
-            TextureViewDesc{
-                .format = Format::Rgba8Unorm,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            },
-            outTexture.view);
-        if (!result || outTexture.view == nullptr) {
-            log += resultMessage(std::string("createTextureView(ScenePathTracePass material texture ") + std::string(label) + ")", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-        return {};
-    }
-
-    Result buildMaterialTextures(
-        Device& device,
-        const scene::Scene& loadedScene,
-        std::vector<uint32_t>& outTextureIndexMap,
-        std::string& log)
-    {
-        materialTextures_.clear();
-        materialTextureViews_.fill(nullptr);
-        materialTextureCount_ = 0;
-        outTextureIndexMap.assign(loadedScene.textures().size(), kInvalidMaterialTextureIndex);
-
-        const uint8_t fallbackPixels[4] = {255, 255, 255, 255};
-        ScenePathTraceMaterialTexture fallbackTexture;
-        Result result = createMaterialTexture(
-            device,
-            fallbackPixels,
-            1,
-            1,
-            "fallback",
-            fallbackTexture,
-            log);
-        if (!result) {
-            return result;
-        }
-        materialTextures_.push_back(std::move(fallbackTexture));
-
-        for (uint32_t textureIndex = 0; textureIndex < loadedScene.textures().size(); ++textureIndex) {
-            if (materialTextures_.size() >= kMaxScenePathTraceMaterialTextures) {
-                log = "ScenePathTracePass exceeded the material texture descriptor limit";
-                return makeError(Error::Unsupported);
-            }
-
-            DecodedMaterialTexture decodedTexture;
-            if (!decodeSceneTexture(loadedScene, textureIndex, decodedTexture, log)) {
-                continue;
-            }
-            if (decodedTexture.pixels.empty()) {
-                continue;
-            }
-
-            ScenePathTraceMaterialTexture materialTexture;
-            result = createMaterialTexture(
-                device,
-                decodedTexture.pixels.data(),
-                decodedTexture.width,
-                decodedTexture.height,
-                decodedTexture.label,
-                materialTexture,
-                log);
-            if (!result) {
-                return result;
-            }
-
-            const uint32_t materialTextureIndex = static_cast<uint32_t>(materialTextures_.size());
-            outTextureIndexMap[textureIndex] = materialTextureIndex;
-            materialTextures_.push_back(std::move(materialTexture));
-        }
-
-        TextureView* fallbackView = materialTextures_.front().view.get();
-        if (fallbackView == nullptr) {
-            return makeError(Error::Failure);
-        }
-        materialTextureViews_.fill(fallbackView);
-        for (uint32_t textureIndex = 0; textureIndex < materialTextures_.size(); ++textureIndex) {
-            if (materialTextures_[textureIndex].view == nullptr) {
-                return makeError(Error::Failure);
-            }
-            materialTextureViews_[textureIndex] = materialTextures_[textureIndex].view.get();
-        }
-        materialTextureCount_ = static_cast<uint32_t>(materialTextures_.size());
-        return {};
-    }
-
-    Result uploadMaterialTextures(RenderGraphExecutionContext& context)
-    {
-        if (materialTextures_.empty()) {
-            return makeError(Error::InvalidArgument);
-        }
-
-        for (ScenePathTraceMaterialTexture& texture : materialTextures_) {
-            if (texture.uploaded) {
-                continue;
-            }
-            if (texture.uploadBuffer == nullptr || texture.texture == nullptr) {
-                return makeError(Error::InvalidArgument);
-            }
-
-            TextureBarrierDesc toTransfer{
-                .texture = texture.texture.get(),
-                .before = texture.state,
-                .after = ResourceState::TransferDestination,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            };
-            context.commandBuffer().barrier(BarrierDesc{
-                .textures = &toTransfer,
-                .textureCount = 1,
-            });
-            texture.state = ResourceState::TransferDestination;
-
-            context.commandBuffer().copyBufferToTexture(BufferTextureCopyDesc{
-                .buffer = texture.uploadBuffer.get(),
-                .texture = texture.texture.get(),
-                .width = texture.width,
-                .height = texture.height,
-                .depth = 1,
-                .mipLevel = 0,
-                .baseLayer = 0,
-            });
-
-            TextureBarrierDesc toShaderRead{
-                .texture = texture.texture.get(),
-                .before = texture.state,
-                .after = ResourceState::ShaderRead,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            };
-            context.commandBuffer().barrier(BarrierDesc{
-                .textures = &toShaderRead,
-                .textureCount = 1,
-            });
-            texture.state = ResourceState::ShaderRead;
-            texture.uploaded = true;
-        }
-        return {};
-    }
-
-    static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
-    {
-        if (props.contains("path") && props["path"].is_string()) {
-            std::filesystem::path path = props["path"].get<std::string>();
-            if (path.is_relative()) {
-                path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
-            }
-            return path;
-        }
-        return kDefaultPathTraceScenePath;
     }
 
     static uint32_t uintProperty(
@@ -3130,290 +2604,11 @@ private:
         outPush.samples = uintProperty(properties, "samples", kDefaultPathTraceSamples, 1, 16);
     }
 
-    static uint32_t materialTextureIndex(
-        int32_t textureIndex,
-        const std::vector<uint32_t>& textureIndexMap)
-    {
-        if (textureIndex < 0 || static_cast<size_t>(textureIndex) >= textureIndexMap.size()) {
-            return kInvalidMaterialTextureIndex;
-        }
-        return textureIndexMap[static_cast<size_t>(textureIndex)];
-    }
-
-    static ScenePathTraceGpuMaterial::TextureInfo makeGpuTextureInfo(
-        const scene::RenderTextureInfo& textureInfo,
-        const std::vector<uint32_t>& textureIndexMap,
-        std::string& log,
-        std::string_view textureLabel)
-    {
-        ScenePathTraceGpuMaterial::TextureInfo gpuTextureInfo;
-        gpuTextureInfo.textureIndex = materialTextureIndex(textureInfo.textureIndex, textureIndexMap);
-        if (textureInfo.texCoord > 0) {
-            if (gpuTextureInfo.textureIndex != kInvalidMaterialTextureIndex) {
-                appendScenePathTraceWarning(
-                    log,
-                    std::string(textureLabel) + " requests TEXCOORD_" +
-                        std::to_string(textureInfo.texCoord) +
-                        "; ScenePathTracePass currently samples TEXCOORD_0");
-            }
-            gpuTextureInfo.texCoord = 0;
-        }
-        gpuTextureInfo.transform0[0] = textureInfo.uvTransform[0];
-        gpuTextureInfo.transform0[1] = textureInfo.uvTransform[1];
-        gpuTextureInfo.transform0[2] = textureInfo.uvTransform[2];
-        gpuTextureInfo.transform1[0] = textureInfo.uvTransform[3];
-        gpuTextureInfo.transform1[1] = textureInfo.uvTransform[4];
-        gpuTextureInfo.transform1[2] = textureInfo.uvTransform[5];
-        return gpuTextureInfo;
-    }
-
-    static float alphaModeCode(const std::string& alphaMode)
-    {
-        if (alphaMode == "MASK") {
-            return 1.0f;
-        }
-        if (alphaMode == "BLEND") {
-            return 0.0f;
-        }
-        return 0.0f;
-    }
-
-    static ScenePathTraceGpuMaterial makeMaterial(
-        const scene::RenderMaterial& material,
-        const std::vector<uint32_t>& textureIndexMap,
-        std::string& log)
-    {
-        ScenePathTraceGpuMaterial gpuMaterial;
-        gpuMaterial.baseColor[0] = material.baseColorFactor.x;
-        gpuMaterial.baseColor[1] = material.baseColorFactor.y;
-        gpuMaterial.baseColor[2] = material.baseColorFactor.z;
-        gpuMaterial.baseColor[3] = material.baseColorFactor.w;
-        gpuMaterial.emissive[0] = material.emissiveFactor.x;
-        gpuMaterial.emissive[1] = material.emissiveFactor.y;
-        gpuMaterial.emissive[2] = material.emissiveFactor.z;
-        gpuMaterial.emissive[3] = 0.0f;
-        gpuMaterial.params[0] = material.metallicFactor;
-        gpuMaterial.params[1] = material.roughnessFactor;
-        gpuMaterial.params[2] = material.alphaCutoff;
-        gpuMaterial.params[3] = material.doubleSided ? 1.0f : 0.0f;
-        gpuMaterial.textureParams[0] = material.normalTextureScale;
-        gpuMaterial.textureParams[1] = material.occlusionTextureStrength;
-        gpuMaterial.textureParams[2] = 0.0f;
-        gpuMaterial.textureParams[3] = alphaModeCode(material.alphaMode);
-        if (material.alphaMode == "BLEND") {
-            std::string message =
-                "alphaMode BLEND is not supported by ScenePathTracePass yet; rendering as OPAQUE";
-            if (!material.name.empty()) {
-                message += " for material '";
-                message += material.name;
-                message += "'";
-            }
-            appendScenePathTraceWarning(log, message);
-        }
-        gpuMaterial.glassParams[0] = material.transmissionFactor;
-        gpuMaterial.glassParams[1] = material.ior;
-        gpuMaterial.glassParams[2] = material.thicknessFactor;
-        gpuMaterial.glassParams[3] = material.attenuationDistance;
-        gpuMaterial.attenuationColor[0] = material.attenuationColor.x;
-        gpuMaterial.attenuationColor[1] = material.attenuationColor.y;
-        gpuMaterial.attenuationColor[2] = material.attenuationColor.z;
-        gpuMaterial.attenuationColor[3] = 0.0f;
-        gpuMaterial.diffuseTransmission[0] = material.diffuseTransmissionColor.x;
-        gpuMaterial.diffuseTransmission[1] = material.diffuseTransmissionColor.y;
-        gpuMaterial.diffuseTransmission[2] = material.diffuseTransmissionColor.z;
-        gpuMaterial.diffuseTransmission[3] = material.diffuseTransmissionFactor;
-        gpuMaterial.baseColorTexture = makeGpuTextureInfo(material.baseColorTexture, textureIndexMap, log, "baseColorTexture");
-        gpuMaterial.metallicRoughnessTexture = makeGpuTextureInfo(
-            material.metallicRoughnessTexture,
-            textureIndexMap,
-            log,
-            "metallicRoughnessTexture");
-        gpuMaterial.normalTexture = makeGpuTextureInfo(material.normalTexture, textureIndexMap, log, "normalTexture");
-        gpuMaterial.occlusionTexture = makeGpuTextureInfo(material.occlusionTexture, textureIndexMap, log, "occlusionTexture");
-        gpuMaterial.emissiveTexture = makeGpuTextureInfo(material.emissiveTexture, textureIndexMap, log, "emissiveTexture");
-        gpuMaterial.transmissionTexture = makeGpuTextureInfo(
-            material.transmissionTexture,
-            textureIndexMap,
-            log,
-            "transmissionTexture");
-        gpuMaterial.thicknessTexture = makeGpuTextureInfo(material.thicknessTexture, textureIndexMap, log, "thicknessTexture");
-        gpuMaterial.diffuseTransmissionTexture = makeGpuTextureInfo(
-            material.diffuseTransmissionTexture,
-            textureIndexMap,
-            log,
-            "diffuseTransmissionTexture");
-        gpuMaterial.diffuseTransmissionColorTexture = makeGpuTextureInfo(
-            material.diffuseTransmissionColorTexture,
-            textureIndexMap,
-            log,
-            "diffuseTransmissionColorTexture");
-        return gpuMaterial;
-    }
-
-    static uint32_t materialIndexForNode(const scene::RenderNode& renderNode, uint32_t materialCount)
-    {
-        if (renderNode.materialIndex >= 0 &&
-            static_cast<uint32_t>(renderNode.materialIndex) < materialCount) {
-            return static_cast<uint32_t>(renderNode.materialIndex);
-        }
-        return 0;
-    }
-
-    static bool appendPrimitiveGeometry(
-        const scene::RenderPrimitive& primitive,
-        ScenePathTraceGpuScene& outScene,
-        ScenePathTraceGpuPrimitive& outPrimitive)
-    {
-        const uint64_t sourceIndexCount = primitive.indices.empty()
-            ? (primitive.positions.size() / 3) * 3
-            : (primitive.indices.size() / 3) * 3;
-        if (primitive.mode != kGltfTriangleListMode ||
-            primitive.positions.size() < 3 ||
-            sourceIndexCount < 3 ||
-            sourceIndexCount > std::numeric_limits<uint32_t>::max() ||
-            primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
-            return false;
-        }
-
-        outPrimitive = ScenePathTraceGpuPrimitive{
-            .firstVertex = static_cast<uint32_t>(outScene.vertices.size()),
-            .vertexCount = static_cast<uint32_t>(primitive.positions.size()),
-            .firstIndex = static_cast<uint32_t>(outScene.indices.size()),
-            .indexCount = static_cast<uint32_t>(sourceIndexCount),
-        };
-
-        for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
-            const float3 position = primitive.positions[vertexIndex];
-            const float3 normal = vertexIndex < primitive.normals.size()
-                ? primitive.normals[vertexIndex]
-                : float3(0.0f, 0.0f, 0.0f);
-            const float4 tangent = vertexIndex < primitive.tangents.size()
-                ? primitive.tangents[vertexIndex]
-                : float4(1.0f, 0.0f, 0.0f, 1.0f);
-            const float2 texcoord = vertexIndex < primitive.texcoords0.size()
-                ? primitive.texcoords0[vertexIndex]
-                : float2(0.0f, 0.0f);
-            ScenePathTraceGpuVertex vertex;
-            vertex.position[0] = position.x;
-            vertex.position[1] = position.y;
-            vertex.position[2] = position.z;
-            vertex.position[3] = 1.0f;
-            vertex.normal[0] = normal.x;
-            vertex.normal[1] = normal.y;
-            vertex.normal[2] = normal.z;
-            vertex.normal[3] = 0.0f;
-            vertex.tangent[0] = tangent.x;
-            vertex.tangent[1] = tangent.y;
-            vertex.tangent[2] = tangent.z;
-            vertex.tangent[3] = tangent.w >= 0.0f ? 1.0f : -1.0f;
-            vertex.texcoord[0] = texcoord.x;
-            vertex.texcoord[1] = texcoord.y;
-            outScene.vertices.push_back(vertex);
-        }
-
-        if (primitive.indices.empty()) {
-            for (uint32_t index = 0; index < outPrimitive.indexCount; ++index) {
-                outScene.indices.push_back(index);
-            }
-            return true;
-        }
-
-        for (uint32_t index = 0; index < outPrimitive.indexCount; ++index) {
-            const uint32_t sourceIndex = primitive.indices[index];
-            if (sourceIndex >= outPrimitive.vertexCount) {
-                outScene.vertices.resize(outPrimitive.firstVertex);
-                outScene.indices.resize(outPrimitive.firstIndex);
-                return false;
-            }
-            outScene.indices.push_back(sourceIndex);
-        }
-        return true;
-    }
-
-    static bool buildGpuScene(
-        const scene::Scene& scene,
-        const std::vector<uint32_t>& textureIndexMap,
-        ScenePathTraceGpuScene& outScene,
-        std::string& log)
-    {
-        outScene = ScenePathTraceGpuScene{};
-        outScene.materials.reserve(std::max<size_t>(scene.materials().size(), 1));
-        if (scene.materials().empty()) {
-            outScene.materials.push_back(ScenePathTraceGpuMaterial{});
-        } else {
-            for (const scene::RenderMaterial& material : scene.materials()) {
-                outScene.materials.push_back(makeMaterial(material, textureIndexMap, log));
-            }
-        }
-
-        constexpr uint32_t kInvalidPrimitiveIndex = std::numeric_limits<uint32_t>::max();
-        std::vector<uint32_t> primitiveToGpuPrimitive(
-            scene.renderPrimitives().size(),
-            kInvalidPrimitiveIndex);
-        for (uint32_t primitiveIndex = 0; primitiveIndex < scene.renderPrimitives().size(); ++primitiveIndex) {
-            ScenePathTraceGpuPrimitive gpuPrimitive;
-            if (!appendPrimitiveGeometry(scene.renderPrimitives()[primitiveIndex], outScene, gpuPrimitive)) {
-                continue;
-            }
-            primitiveToGpuPrimitive[primitiveIndex] = static_cast<uint32_t>(outScene.primitives.size());
-            outScene.primitives.push_back(gpuPrimitive);
-        }
-
-        for (const scene::RenderNode& renderNode : scene.renderNodes()) {
-            if (!renderNode.visible ||
-                renderNode.renderPrimitiveIndex < 0 ||
-                static_cast<size_t>(renderNode.renderPrimitiveIndex) >= primitiveToGpuPrimitive.size()) {
-                continue;
-            }
-            const uint32_t primitiveIndex =
-                primitiveToGpuPrimitive[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
-            if (primitiveIndex == kInvalidPrimitiveIndex) {
-                continue;
-            }
-
-            outScene.instances.push_back(ScenePathTraceGpuInstance{
-                .primitiveIndex = primitiveIndex,
-                .materialIndex = materialIndexForNode(
-                    renderNode,
-                    static_cast<uint32_t>(outScene.materials.size())),
-            });
-        }
-
-        if (outScene.vertices.empty() ||
-            outScene.indices.empty() ||
-            outScene.primitives.empty() ||
-            outScene.instances.empty() ||
-            outScene.materials.empty()) {
-            log = "ScenePathTracePass found no visible triangle geometry for path tracing";
-            return false;
-        }
-        return true;
-    }
-
-    void resetGpuBuffers()
-    {
-        vertexBuffer_.reset();
-        indexBuffer_.reset();
-        primitiveBuffer_.reset();
-        instanceBuffer_.reset();
-        materialBuffer_.reset();
-        materialTextures_.clear();
-        materialTextureViews_.fill(nullptr);
-        materialTextureCount_ = 0;
-    }
-
-    SceneRtxBuilder rtxBuilder_;
+    ScenePathTraceResources sceneResources_;
     SceneRayQueryProgram rayQueryProgram_;
-    scene::Bounds drawBounds_;
-    std::unique_ptr<Buffer> vertexBuffer_;
-    std::unique_ptr<Buffer> indexBuffer_;
-    std::unique_ptr<Buffer> primitiveBuffer_;
-    std::unique_ptr<Buffer> instanceBuffer_;
-    std::unique_ptr<Buffer> materialBuffer_;
-    std::vector<ScenePathTraceMaterialTexture> materialTextures_;
-    std::array<TextureView*, kMaxScenePathTraceMaterialTextures> materialTextureViews_{};
-    uint32_t materialTextureCount_ = 0;
+    uint64_t sceneResourceRevision_ = 0;
     uint32_t accumulationFrame_ = 0;
+    bool resetAccumulation_ = false;
 };
 
 class NrdDenoisePass final : public ComputePass {

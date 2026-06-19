@@ -9,6 +9,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/slang_compiler.cpp
     Runtime/Render/RenderGraph/render_graph.cpp
     Runtime/Render/RenderPass/builtin_render_passes.cpp
+    Runtime/Render/RenderPass/scene_path_trace_resources.cpp
     Runtime/Render/GAPI/Vulkan/vulkan_rhi.cpp
     Runtime/Render/GAPI/Vulkan/vulkan_nrd_wrapper.cpp
     Runtime/Render/GAPI/Vulkan/vulkan_scene_rtx.cpp
