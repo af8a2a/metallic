@@ -5,27 +5,27 @@ endif()
 find_package(slang CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PATH)
 
 add_library(MetallicRuntimeRender STATIC
-    Runtime/Render/history_resources.cpp
-    Runtime/Render/render_sample.cpp
-    Runtime/Render/slang_compiler.cpp
-    Runtime/Render/RenderGraph/render_graph.cpp
-    Runtime/Render/RenderGraph/render_graph_node.cpp
-    Runtime/Render/RenderGraph/render_graph_executor.cpp
-    Runtime/Render/RenderPass/builtin_render_passes.cpp
-    Runtime/Render/RenderPass/BuiltinPass/bunny_wireframe_pass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/clear_color_pass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/copy_color_pass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/image_sample_pass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/nrd_denoise_pass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/render_graph_buffer_passes.cpp
-    Runtime/Render/RenderPass/BuiltinPass/scene_material_shader_object_pass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/scene_path_trace_pass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/scene_ray_query_visualization_pass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/triangle_raster_pass.cpp
-    Runtime/Render/RenderPass/scene_path_trace_resources.cpp
-    Runtime/Render/GAPI/Vulkan/vulkan_rhi.cpp
-    Runtime/Render/GAPI/Vulkan/vulkan_nrd_wrapper.cpp
-    Runtime/Render/GAPI/Vulkan/vulkan_scene_rtx.cpp
+    Runtime/Render/HistoryResources.cpp
+    Runtime/Render/RenderSample.cpp
+    Runtime/Render/SlangCompiler.cpp
+    Runtime/Render/RenderGraph/RenderGraph.cpp
+    Runtime/Render/RenderGraph/RenderGraphNode.cpp
+    Runtime/Render/RenderGraph/RenderGraphExecutor.cpp
+    Runtime/Render/RenderPass/BuiltinRenderPasses.cpp
+    Runtime/Render/RenderPass/BuiltinPass/BunnyWireframePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/ClearColorPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/CopyColorPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/ImageSamplePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/NrdDenoisePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/RenderGraphBufferPasses.cpp
+    Runtime/Render/RenderPass/BuiltinPass/SceneMaterialShaderObjectPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
+    Runtime/Render/RenderPass/ScenePathTraceResources.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.cpp
 )
 
 target_include_directories(MetallicRuntimeRender PUBLIC
@@ -65,8 +65,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 add_library(MetallicRuntimeScene STATIC
-    Runtime/Scene/scene.cpp
-    Runtime/Scene/tinygltf_impl.cpp
+    Runtime/Scene/Scene.cpp
+    Runtime/Scene/TinyGltfImpl.cpp
 )
 
 target_include_directories(MetallicRuntimeScene PUBLIC
@@ -96,8 +96,8 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
 )
 
 add_executable(Metallic
-    main.cpp
-    Editor/editor_application.cpp
+    Main.cpp
+    Editor/EditorApplication.cpp
 )
 
 target_include_directories(Metallic PRIVATE

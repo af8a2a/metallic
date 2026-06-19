@@ -1,0 +1,176 @@
+#include "Runtime/Render/RenderSample.h"
+
+#include <algorithm>
+#include <string>
+#include <utility>
+
+#ifndef PROJECT_SOURCE_DIR
+#define PROJECT_SOURCE_DIR "."
+#endif
+
+namespace metallic::render {
+namespace {
+
+std::filesystem::path projectPath(std::string_view path)
+{
+    std::filesystem::path resolved(path);
+    if (resolved.is_relative()) {
+        resolved = std::filesystem::path(PROJECT_SOURCE_DIR) / resolved;
+    }
+    return resolved;
+}
+
+bool graphHasOutput(const RenderGraph& graph, std::string_view outputName)
+{
+    return std::any_of(
+        graph.outputs().begin(),
+        graph.outputs().end(),
+        [&](const RenderGraphOutput& output) {
+            return makeRenderGraphFieldName(output.passName, output.fieldName) == outputName;
+        });
+}
+
+bool applySampleScenePath(RenderGraph& graph, const RenderSampleDesc& desc, std::string& outMessage)
+{
+    for (const std::string& target : desc.scenePathTargets) {
+        RenderGraphNode* node = graph.findNode(target);
+        if (node == nullptr) {
+            outMessage = "Sample scenePathTargets node not found: " + target;
+            return false;
+        }
+        RenderGraphProperties properties = node->properties;
+        if (!properties.is_object()) {
+            properties = RenderGraphProperties::object();
+        }
+        properties["path"] = desc.scenePath;
+        if (!graph.setNodeProperties(node->id, std::move(properties))) {
+            outMessage = "Sample failed to update node properties: " + target;
+            return false;
+        }
+    }
+    return true;
+}
+
+class PathTracingMeetMatSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "pathtracing-meet-mat"; }
+    std::string_view name() const override { return "Path Tracing / meet_mat"; }
+    std::string_view category() const override { return "PathTracing"; }
+    std::string_view description() const override
+    {
+        return "Path tracing validation sample using the meet_mat glTF scene.";
+    }
+    std::string scenePath() const override { return "Asset/meet_mat.glb"; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
+    std::string previewOutput() const override { return "PathTrace.color"; }
+};
+
+const RenderSample& pathTracingMeetMatSample()
+{
+    static const PathTracingMeetMatSample sample;
+    return sample;
+}
+
+std::vector<const RenderSample*> builtInRenderSamples()
+{
+    return {&pathTracingMeetMatSample()};
+}
+
+} // namespace
+
+RenderSampleDesc RenderSample::desc() const
+{
+    return RenderSampleDesc{
+        .id = std::string(id()),
+        .name = std::string(name()),
+        .category = std::string(category()),
+        .description = std::string(description()),
+        .scenePath = scenePath(),
+        .graphPath = graphPath(),
+        .scenePathTargets = scenePathTargets(),
+        .previewOutput = previewOutput(),
+    };
+}
+
+bool loadRenderSample(
+    const RenderSample& sample,
+    RenderSampleLoadResult& outResult,
+    std::string& outMessage)
+{
+    outResult = RenderSampleLoadResult{};
+    outMessage.clear();
+
+    RenderSampleDesc desc = sample.desc();
+    if (desc.id.empty()) {
+        outMessage = "Sample id is required";
+        return false;
+    }
+    if (desc.graphPath.empty()) {
+        outMessage = "Sample graphPath is required";
+        return false;
+    }
+    if (desc.scenePath.empty()) {
+        outMessage = "Sample scenePath is required";
+        return false;
+    }
+
+    const std::filesystem::path graphPath = projectPath(desc.graphPath);
+    RenderGraph graph;
+    std::string graphMessage;
+    if (!loadRenderGraphFromFile(graphPath, graph, graphMessage)) {
+        outMessage = "Sample failed to load RenderGraph: " + graphMessage;
+        return false;
+    }
+
+    if (!applySampleScenePath(graph, desc, outMessage)) {
+        return false;
+    }
+
+    if (desc.previewOutput.empty()) {
+        desc.previewOutput = graph.firstOutputName();
+    }
+    if (!graphHasOutput(graph, desc.previewOutput)) {
+        outMessage = "Sample previewOutput is not a marked graph output: " + desc.previewOutput;
+        return false;
+    }
+
+    graph.clearDirty();
+    outResult = RenderSampleLoadResult{
+        .desc = std::move(desc),
+        .graph = std::move(graph),
+        .graphFilePath = graphPath,
+    };
+    outMessage = "Loaded Sample";
+    return true;
+}
+
+std::vector<RenderSampleDesc> listBuiltInRenderSamples()
+{
+    std::vector<RenderSampleDesc> samples;
+    for (const RenderSample* sample : builtInRenderSamples()) {
+        samples.push_back(sample->desc());
+    }
+    return samples;
+}
+
+bool loadBuiltInRenderSample(
+    std::string_view id,
+    RenderSampleLoadResult& outResult,
+    std::string& outMessage)
+{
+    for (const RenderSample* sample : builtInRenderSamples()) {
+        if (sample->id() == id) {
+            return loadRenderSample(*sample, outResult, outMessage);
+        }
+    }
+
+    outResult = RenderSampleLoadResult{};
+    outMessage = std::string("Unknown built-in Sample: ") + std::string(id);
+    return false;
+}
+
+} // namespace metallic::render

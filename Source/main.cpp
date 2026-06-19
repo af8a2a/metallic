@@ -1,5 +1,5 @@
-#include "Editor/editor_application.h"
-#include "Runtime/Render/GAPI/rhi.h"
+#include "Editor/EditorApplication.h"
+#include "Runtime/Render/GAPI/Rhi.h"
 
 #include <cstdlib>
 #include <string>

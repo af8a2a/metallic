@@ -1,4 +1,4 @@
-#include "Runtime/Scene/scene.h"
+#include "Runtime/Scene/Scene.h"
 
 #include <gtest/gtest.h>
 

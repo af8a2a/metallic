@@ -1,4 +1,4 @@
-#include "rhi_test.h"
+#include "RhiTest.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>

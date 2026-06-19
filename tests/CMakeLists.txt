@@ -1,7 +1,7 @@
 include(GoogleTest)
 
 add_executable(MetallicSceneTests
-    scene/main.cpp
+    scene/Main.cpp
 )
 
 target_include_directories(MetallicSceneTests PRIVATE
@@ -30,18 +30,18 @@ set_tests_properties(MetallicSceneTests PROPERTIES
 )
 
 add_executable(MetallicRhiTests
-    rhi/main.cpp
-    rhi/rhi_test.h
-    rhi/bindless_buffer_tests.cpp
-    rhi/command_submission_tests.cpp
-    rhi/history_resources_tests.cpp
-    rhi/render_graph_tests.cpp
-    rhi/rendering_tests.cpp
-    rhi/resource_tests.cpp
-    rhi/scene_rtx_tests.cpp
-    rhi/test_output.cpp
-    rhi/validation_tests.cpp
-    rhi/stb/stb.cpp
+    rhi/Main.cpp
+    rhi/RhiTest.h
+    rhi/BindlessBufferTests.cpp
+    rhi/CommandSubmissionTests.cpp
+    rhi/HistoryResourcesTests.cpp
+    rhi/RenderGraphTests.cpp
+    rhi/RenderingTests.cpp
+    rhi/ResourceTests.cpp
+    rhi/SceneRtxTests.cpp
+    rhi/TestOutput.cpp
+    rhi/ValidationTests.cpp
+    rhi/stb/Stb.cpp
 )
 
 target_include_directories(MetallicRhiTests PRIVATE

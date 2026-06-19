@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "Runtime/Scene/scene.h"
+#include "Runtime/Scene/Scene.h"
 
 #include "json.hpp"
 #include "tiny_gltf.h"
