@@ -23,6 +23,7 @@ public:
             runtimeIntSetting("maxDepth", "Max Depth", static_cast<int32_t>(kDefaultPathTraceMaxDepth), 1, 12, true),
             runtimeIntSetting("samples", "Samples", static_cast<int32_t>(kDefaultPathTraceSamples), 1, 16, true),
             runtimeBoolSetting("accumulate", "Accumulate", true, true),
+            runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
         };
         appendCameraRuntimeSettings(
             settings,
@@ -505,6 +506,9 @@ private:
         outPush.height = height;
         outPush.maxDepth = uintProperty(properties, "maxDepth", kDefaultPathTraceMaxDepth, 1, 12);
         outPush.samples = uintProperty(properties, "samples", kDefaultPathTraceSamples, 1, 16);
+        outPush.bitangentFlip = metallic::render::builtin_pass::boolProperty(&properties, "flipBitangent", false)
+            ? -1.0f
+            : 1.0f;
     }
 
     ScenePathTraceResources sceneResources_;

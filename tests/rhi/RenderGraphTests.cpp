@@ -764,6 +764,44 @@ public:
     }
 };
 
+
+bool hasBoolRuntimeSetting(const render::RenderGraphPass& pass, const std::string& key)
+{
+    const std::vector<render::RenderGraphRuntimeSetting> settings = pass.runtimeSettings();
+    for (const render::RenderGraphRuntimeSetting& setting : settings) {
+        if (setting.key == key && setting.type == render::RenderGraphRuntimeSettingType::Bool) {
+            return true;
+        }
+    }
+    return false;
+}
+
+class RenderGraphRuntimeSettingsDeclarationTest : public RhiTest {
+public:
+    RenderGraphRuntimeSettingsDeclarationTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_runtime_settings_declarations";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const std::unique_ptr<render::RenderGraphPass> pathTrace =
+            render::createRenderGraphPass("ScenePathTracePass");
+        const std::unique_ptr<render::RenderGraphPass> materialVisualization =
+            render::createRenderGraphPass("SceneMaterialVisualizationPass");
+        if (pathTrace == nullptr || materialVisualization == nullptr) {
+            return RhiTestResult::fail("failed to create passes for runtime settings declaration test");
+        }
+        if (!hasBoolRuntimeSetting(*pathTrace, "flipBitangent")) {
+            return RhiTestResult::fail("ScenePathTracePass missing Bool runtime setting flipBitangent");
+        }
+        if (!hasBoolRuntimeSetting(*materialVisualization, "flipBitangent")) {
+            return RhiTestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
+        }
+        return RhiTestResult::pass();
+    }
+};
 class RenderGraphSerializationTest : public RhiTest {
 public:
     RenderGraphSerializationTest()
@@ -1288,13 +1326,20 @@ public:
             return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
-        const std::array<const char*, 6> modes{
+        const std::array<const char*, 13> modes{
             "material",
             "baseColor",
             "normal",
             "roughness",
             "metallic",
             "ao",
+            "geometryNormal",
+            "vertexNormal",
+            "normalTexture",
+            "tangent",
+            "bitangent",
+            "nrdNormalRoughness",
+            "normalDeviation",
         };
         const std::string graphOutputBefore = sample.graph.firstOutputName();
         const size_t graphOutputCountBefore = sample.graph.outputs().size();
@@ -2210,6 +2255,7 @@ public:
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphRuntimeSettingsDeclarationTest);
 METALLIC_REGISTER_RHI_TEST(RenderSampleLoadTest);
 METALLIC_REGISTER_RHI_TEST(RenderSampleFallbackAndValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);

@@ -71,6 +71,8 @@ struct RenderPrimitive {
     std::vector<float3> normals;
     std::vector<float4> tangents;
     std::vector<float2> texcoords0;
+    bool hasAuthoredNormals = false;
+    bool hasAuthoredTangents = false;
     std::vector<uint32_t> indices;
 };
 

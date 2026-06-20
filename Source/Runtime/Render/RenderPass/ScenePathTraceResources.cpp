@@ -23,6 +23,7 @@ namespace {
 constexpr const char* kDefaultPathTraceScenePath = PROJECT_SOURCE_DIR "/Asset/meet_mat.glb";
 constexpr int32_t kGltfTriangleListMode = 4;
 constexpr uint32_t kInvalidMaterialTextureIndex = std::numeric_limits<uint32_t>::max();
+constexpr uint32_t kPrimitiveHasAuthoredTangents = 1u << 0u;
 
 struct ScenePathTraceGpuVertex {
     float position[4] = {};
@@ -36,6 +37,10 @@ struct ScenePathTraceGpuPrimitive {
     uint32_t vertexCount = 0;
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
+    uint32_t flags = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
 };
 
 struct ScenePathTraceGpuInstance {
@@ -481,6 +486,7 @@ bool appendPrimitiveGeometry(
         .vertexCount = static_cast<uint32_t>(primitive.positions.size()),
         .firstIndex = static_cast<uint32_t>(outScene.indices.size()),
         .indexCount = static_cast<uint32_t>(sourceIndexCount),
+        .flags = primitive.hasAuthoredTangents ? kPrimitiveHasAuthoredTangents : 0u,
     };
 
     for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {

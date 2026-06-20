@@ -65,6 +65,13 @@ inline constexpr uint32_t kSceneMaterialVisualizationModeNormal = 2;
 inline constexpr uint32_t kSceneMaterialVisualizationModeRoughness = 3;
 inline constexpr uint32_t kSceneMaterialVisualizationModeMetallic = 4;
 inline constexpr uint32_t kSceneMaterialVisualizationModeAo = 5;
+inline constexpr uint32_t kSceneMaterialVisualizationModeGeometryNormal = 6;
+inline constexpr uint32_t kSceneMaterialVisualizationModeVertexNormal = 7;
+inline constexpr uint32_t kSceneMaterialVisualizationModeNormalTexture = 8;
+inline constexpr uint32_t kSceneMaterialVisualizationModeTangent = 9;
+inline constexpr uint32_t kSceneMaterialVisualizationModeBitangent = 10;
+inline constexpr uint32_t kSceneMaterialVisualizationModeNrdNormalRoughness = 11;
+inline constexpr uint32_t kSceneMaterialVisualizationModeNormalDeviation = 12;
 inline constexpr uint32_t kDefaultPathTraceMaxDepth = 3;
 inline constexpr uint32_t kDefaultPathTraceSamples = 2;
 inline constexpr uint32_t kNrdDenoiserModeReblur = 0;
@@ -299,6 +306,10 @@ struct SceneMaterialVisualizationPush {
     uint32_t height = 1;
     uint32_t mode = kSceneMaterialVisualizationModeMaterial;
     uint32_t materialTextureCount = 0;
+    float bitangentFlip = 1.0f;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
 };
 
 struct ScenePathTracePush {
@@ -315,6 +326,7 @@ struct ScenePathTracePush {
     uint32_t hasHistory = 0;
     uint32_t enableAccumulation = 1;
     uint32_t materialTextureCount = 0;
+    float bitangentFlip = 1.0f;
     uint32_t padding0 = 0;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;

@@ -2,12 +2,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -80,6 +82,28 @@ void writeSceneBinary(const std::filesystem::path& path)
 
     std::ofstream file(path, std::ios::binary);
     file.write(reinterpret_cast<const char*>(kPositions.data()), sizeof(float) * kPositions.size());
+    file.write(reinterpret_cast<const char*>(kIndices.data()), sizeof(uint16_t) * kIndices.size());
+}
+
+void writeGeneratedTangentSceneBinary(const std::filesystem::path& path)
+{
+    constexpr std::array<float, 9> kPositions{
+        0.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+    };
+    constexpr std::array<float, 9> kNormals{
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+    };
+    constexpr std::array<float, 6> kTexcoords{0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f};
+    constexpr std::array<uint16_t, 3> kIndices{0, 1, 2};
+
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(kPositions.data()), sizeof(float) * kPositions.size());
+    file.write(reinterpret_cast<const char*>(kNormals.data()), sizeof(float) * kNormals.size());
+    file.write(reinterpret_cast<const char*>(kTexcoords.data()), sizeof(float) * kTexcoords.size());
     file.write(reinterpret_cast<const char*>(kIndices.data()), sizeof(uint16_t) * kIndices.size());
 }
 
@@ -230,6 +254,74 @@ std::filesystem::path writeFullScene(const std::filesystem::path& directory)
   ],
   "scenes": [
     { "name": "Default Scene", "nodes": [0] }
+  ]
+}
+)json");
+    return gltfPath;
+}
+
+std::filesystem::path writeGeneratedTangentScene(const std::filesystem::path& directory)
+{
+    writeGeneratedTangentSceneBinary(directory / "generated_tangent.bin");
+    const std::filesystem::path gltfPath = directory / "generated_tangent.gltf";
+    writeTextFile(gltfPath, R"json(
+{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "buffers": [
+    { "uri": "generated_tangent.bin", "byteLength": 102 }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 72, "byteLength": 24, "target": 34962 },
+    { "buffer": 0, "byteOffset": 96, "byteLength": 6, "target": 34963 }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [0.0, 0.0, 0.0],
+      "max": [1.0, 1.0, 0.0]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR"
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Generated Tangent Mesh",
+      "primitives": [
+        {
+          "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 },
+          "indices": 3,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    { "name": "Mesh Node", "mesh": 0 }
+  ],
+  "scenes": [
+    { "name": "Generated Tangent Scene", "nodes": [0] }
   ]
 }
 )json");
@@ -750,6 +842,8 @@ void testABeautifulGameMaterialImport()
     EXPECT_FALSE(scene.renderPrimitives().empty());
 
     for (const metallic::scene::RenderPrimitive& primitive : scene.renderPrimitives()) {
+        EXPECT_FALSE(primitive.hasAuthoredTangents) << primitive.name;
+        EXPECT_EQ(primitive.tangents.size(), primitive.positions.size()) << primitive.name;
         EXPECT_GE(primitive.materialIndex, 0) << primitive.name;
         EXPECT_LT(static_cast<size_t>(primitive.materialIndex), scene.materials().size()) << primitive.name;
     }
@@ -826,6 +920,87 @@ void testABeautifulGameMaterialImport()
     EXPECT_EQ(scene.images()[32].uri, "bishop_white_base_color.jpg");
 }
 
+float vectorLength(const float3& value)
+{
+    return std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
+}
+
+float normalAngleDegrees(const float3& lhs, const float3& rhs)
+{
+    const float lhsLength = std::max(vectorLength(lhs), 0.000001f);
+    const float rhsLength = std::max(vectorLength(rhs), 0.000001f);
+    const float normalDot = std::clamp(
+        (lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z) / (lhsLength * rhsLength),
+        -1.0f,
+        1.0f);
+    constexpr float kRadiansToDegrees = 57.29577951308232f;
+    return std::acos(normalDot) * kRadiansToDegrees;
+}
+
+std::string quantizedPositionKey(const float3& position)
+{
+    constexpr double kScale = 1000000.0;
+    return std::to_string(static_cast<int64_t>(std::llround(static_cast<double>(position.x) * kScale))) + "," +
+        std::to_string(static_cast<int64_t>(std::llround(static_cast<double>(position.y) * kScale))) + "," +
+        std::to_string(static_cast<int64_t>(std::llround(static_cast<double>(position.z) * kScale)));
+}
+
+float maxDuplicatePositionNormalAngle(const metallic::scene::RenderPrimitive& primitive)
+{
+    std::unordered_map<std::string, std::vector<size_t>> positionGroups;
+    positionGroups.reserve(primitive.positions.size());
+    for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
+        positionGroups[quantizedPositionKey(primitive.positions[vertexIndex])].push_back(vertexIndex);
+    }
+
+    float maxAngle = 0.0f;
+    for (const auto& [_, indices] : positionGroups) {
+        for (size_t first = 0; first < indices.size(); ++first) {
+            for (size_t second = first + 1; second < indices.size(); ++second) {
+                maxAngle = std::max(
+                    maxAngle,
+                    normalAngleDegrees(
+                        primitive.normals[indices[first]],
+                        primitive.normals[indices[second]]));
+            }
+        }
+    }
+    return maxAngle;
+}
+
+void testABeautifulGameNormalData()
+{
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"))
+        << scene.lastLoadResult().error;
+
+    ASSERT_FALSE(scene.renderPrimitives().empty());
+    size_t authoredNormalPrimitiveCount = 0;
+    size_t pawnBodyPrimitiveCount = 0;
+    float pawnBodyMaxDuplicateNormalAngle = 0.0f;
+    for (const metallic::scene::RenderPrimitive& primitive : scene.renderPrimitives()) {
+        EXPECT_TRUE(primitive.hasAuthoredNormals) << primitive.name;
+        ASSERT_EQ(primitive.normals.size(), primitive.positions.size()) << primitive.name;
+        for (const float3& normal : primitive.normals) {
+            EXPECT_TRUE(nearlyEqual(vectorLength(normal), 1.0f, 0.001f)) << primitive.name;
+        }
+        if (primitive.hasAuthoredNormals) {
+            ++authoredNormalPrimitiveCount;
+        }
+        if (primitive.name == "Pawn_Body_Shared") {
+            ++pawnBodyPrimitiveCount;
+            pawnBodyMaxDuplicateNormalAngle = std::max(
+                pawnBodyMaxDuplicateNormalAngle,
+                maxDuplicatePositionNormalAngle(primitive));
+        }
+    }
+
+    EXPECT_EQ(authoredNormalPrimitiveCount, scene.renderPrimitives().size());
+    EXPECT_GT(pawnBodyPrimitiveCount, 0u);
+    EXPECT_LT(pawnBodyMaxDuplicateNormalAngle, 0.25f)
+        << "Pawn body duplicate-position normals should be continuous across authored smoothing splits";
+}
+
 void testGlbImport(const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
@@ -881,6 +1056,26 @@ void testUnsupportedRequiredExtension(const std::filesystem::path& directory)
     }
 }
 
+void testGeneratedTangentHandedness(const std::filesystem::path& directory)
+{
+    metallic::scene::Scene scene;
+    const std::filesystem::path gltfPath = writeGeneratedTangentScene(directory);
+    ASSERT_TRUE(scene.load(gltfPath)) << scene.lastLoadResult().error;
+
+    ASSERT_EQ(scene.renderPrimitives().size(), 1u);
+    const metallic::scene::RenderPrimitive& primitive = scene.renderPrimitives().front();
+    EXPECT_FALSE(primitive.hasAuthoredTangents);
+    ASSERT_EQ(primitive.tangents.size(), 3u);
+
+    for (const float4& tangent : primitive.tangents) {
+        expectVec3(
+            float3(tangent.x, tangent.y, tangent.z),
+            float3(0.0f, 1.0f, 0.0f),
+            "generated tangent direction");
+        EXPECT_LT(tangent.w, 0.0f) << "generated tangent handedness";
+    }
+}
+
 } // namespace
 
 TEST(SceneImport, FullScene)
@@ -896,6 +1091,16 @@ TEST(SceneImport, Materials)
 TEST(SceneImport, ABeautifulGameMaterials)
 {
     testABeautifulGameMaterialImport();
+}
+
+TEST(SceneImport, ABeautifulGameNormalData)
+{
+    testABeautifulGameNormalData();
+}
+
+TEST(SceneImport, GeneratedTangentHandedness)
+{
+    testGeneratedTangentHandedness(prepareOutputDirectory());
 }
 
 TEST(SceneImport, Glb)

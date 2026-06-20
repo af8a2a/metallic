@@ -27,11 +27,19 @@ public:
                 {
                     {"Material", "material"},
                     {"Base Color", "baseColor"},
-                    {"Normal", "normal"},
+                    {"World Normal RGB", "normal"},
                     {"Roughness", "roughness"},
                     {"Metallic", "metallic"},
                     {"AO", "ao"},
+                    {"Geometry Normal RGB", "geometryNormal"},
+                    {"Vertex Normal RGB", "vertexNormal"},
+                    {"Normal Texture RGB", "normalTexture"},
+                    {"Tangent RGB", "tangent"},
+                    {"Bitangent RGB", "bitangent"},
+                    {"NRD Packed Normal", "nrdNormalRoughness"},
+                    {"Normal Deviation", "normalDeviation"},
                 }),
+            runtimeBoolSetting("flipBitangent", "Flip Bitangent", false),
         };
         appendCameraRuntimeSettings(
             settings,
@@ -307,6 +315,31 @@ private:
         if (mode == "ao" || mode == "AO" || mode == "occlusion") {
             return kSceneMaterialVisualizationModeAo;
         }
+        if (mode == "geometryNormal" || mode == "geometry normal" || mode == "geometricNormal") {
+            return kSceneMaterialVisualizationModeGeometryNormal;
+        }
+        if (mode == "vertexNormal" || mode == "vertex normal" || mode == "shadingNormal" || mode == "shading normal") {
+            return kSceneMaterialVisualizationModeVertexNormal;
+        }
+        if (mode == "normalTexture" || mode == "normal texture" || mode == "normalMap" || mode == "normal map") {
+            return kSceneMaterialVisualizationModeNormalTexture;
+        }
+        if (mode == "tangent") {
+            return kSceneMaterialVisualizationModeTangent;
+        }
+        if (mode == "bitangent") {
+            return kSceneMaterialVisualizationModeBitangent;
+        }
+        if (
+            mode == "nrdNormalRoughness" ||
+            mode == "nrd normal roughness" ||
+            mode == "normalRoughness" ||
+            mode == "normal roughness") {
+            return kSceneMaterialVisualizationModeNrdNormalRoughness;
+        }
+        if (mode == "normalDeviation" || mode == "normal deviation") {
+            return kSceneMaterialVisualizationModeNormalDeviation;
+        }
         return kSceneMaterialVisualizationModeMaterial;
     }
 
@@ -371,6 +404,9 @@ private:
         outPush.width = width;
         outPush.height = height;
         outPush.mode = visualizationModeFromProperties(properties);
+        outPush.bitangentFlip = metallic::render::builtin_pass::boolProperty(&properties, "flipBitangent", false)
+            ? -1.0f
+            : 1.0f;
     }
 
     ScenePathTraceResources sceneResources_;

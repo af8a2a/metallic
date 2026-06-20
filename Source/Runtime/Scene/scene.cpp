@@ -588,7 +588,8 @@ void generateTangents(RenderPrimitive& primitive)
         return;
     }
 
-    std::vector<float3> accumulated(primitive.positions.size(), float3(0.0f, 0.0f, 0.0f));
+    std::vector<float3> accumulatedTangents(primitive.positions.size(), float3(0.0f, 0.0f, 0.0f));
+    std::vector<float3> accumulatedBitangents(primitive.positions.size(), float3(0.0f, 0.0f, 0.0f));
     const size_t indexCount = primitive.indices.empty()
         ? (primitive.positions.size() / 3) * 3
         : (primitive.indices.size() / 3) * 3;
@@ -611,18 +612,24 @@ void generateTangents(RenderPrimitive& primitive)
 
         const float invDeterminant = 1.0f / determinant;
         const float3 tangent = (edge1 * uv2.y - edge2 * uv1.y) * invDeterminant;
-        accumulated[i0] = accumulated[i0] + tangent;
-        accumulated[i1] = accumulated[i1] + tangent;
-        accumulated[i2] = accumulated[i2] + tangent;
+        const float3 bitangent = (edge2 * uv1.x - edge1 * uv2.x) * invDeterminant;
+        accumulatedTangents[i0] = accumulatedTangents[i0] + tangent;
+        accumulatedTangents[i1] = accumulatedTangents[i1] + tangent;
+        accumulatedTangents[i2] = accumulatedTangents[i2] + tangent;
+        accumulatedBitangents[i0] = accumulatedBitangents[i0] + bitangent;
+        accumulatedBitangents[i1] = accumulatedBitangents[i1] + bitangent;
+        accumulatedBitangents[i2] = accumulatedBitangents[i2] + bitangent;
     }
 
     primitive.tangents.clear();
     primitive.tangents.reserve(primitive.positions.size());
     for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
         const float3 normal = normalizedOr(primitive.normals[vertexIndex], float3(0.0f, 1.0f, 0.0f));
-        float3 tangent = accumulated[vertexIndex] - normal * dot(normal, accumulated[vertexIndex]);
+        float3 tangent = accumulatedTangents[vertexIndex] - normal * dot(normal, accumulatedTangents[vertexIndex]);
         tangent = normalizedOr(tangent, fallbackTangentForNormal(normal));
-        primitive.tangents.emplace_back(tangent.x, tangent.y, tangent.z, 1.0f);
+        const float3 bitangent = accumulatedBitangents[vertexIndex];
+        const float handedness = dot(cross(normal, tangent), bitangent) < 0.0f ? -1.0f : 1.0f;
+        primitive.tangents.emplace_back(tangent.x, tangent.y, tangent.z, handedness);
     }
 }
 
@@ -1062,6 +1069,8 @@ bool Scene::load(const std::filesystem::path& filename)
                         model.accessors[static_cast<size_t>(normalAccessorIter->second)]);
                     if (primitive.normals.size() != primitive.positions.size()) {
                         primitive.normals.clear();
+                    } else {
+                        primitive.hasAuthoredNormals = true;
                     }
                 }
 
@@ -1073,6 +1082,8 @@ bool Scene::load(const std::filesystem::path& filename)
                         model.accessors[static_cast<size_t>(tangentAccessorIter->second)]);
                     if (primitive.tangents.size() != primitive.positions.size()) {
                         primitive.tangents.clear();
+                    } else {
+                        primitive.hasAuthoredTangents = true;
                     }
                 }
 

@@ -18,6 +18,10 @@ struct MaterialVisualizePrimitive
     uint vertexCount;
     uint firstIndex;
     uint indexCount;
+    uint flags;
+    uint padding0;
+    uint padding1;
+    uint padding2;
 };
 
 struct MaterialVisualizeInstance
@@ -84,6 +88,14 @@ static const uint kModeNormal = 2u;
 static const uint kModeRoughness = 3u;
 static const uint kModeMetallic = 4u;
 static const uint kModeAo = 5u;
+static const uint kModeGeometryNormal = 6u;
+static const uint kModeVertexNormal = 7u;
+static const uint kModeNormalTexture = 8u;
+static const uint kModeTangent = 9u;
+static const uint kModeBitangent = 10u;
+static const uint kModeNrdNormalRoughness = 11u;
+static const uint kModeNormalDeviation = 12u;
+static const uint kPrimitiveHasAuthoredTangents = 1u;
 
 struct SceneMaterialVisualizationPush
 {
@@ -96,6 +108,10 @@ struct SceneMaterialVisualizationPush
     uint height;
     uint mode;
     uint materialTextureCount;
+    float bitangentFlip;
+    uint padding0;
+    uint padding1;
+    uint padding2;
 };
 
 struct Ray
@@ -111,6 +127,7 @@ struct HitInfo
     float3 normal;
     float3 geometryNormal;
     float4 tangent;
+    float3 bitangent;
     float2 texcoord;
     uint materialIndex;
     bool frontFace;
@@ -135,6 +152,22 @@ float3 hashColor(uint value)
         float((value >> 8) & 255u),
         float((value >> 16) & 255u)) / 255.0;
     return lerp(float3(0.16, 0.20, 0.26), color, 0.82);
+}
+
+float3 packNrdNormalRoughnessForDisplay(float3 normal, float roughness)
+{
+    float3 n = safeNormalize(normal, float3(0.0, 1.0, 0.0));
+    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 0.000001);
+
+    float3 packed;
+    packed.y = n.y * 0.5 + 0.5;
+    packed.x = n.x * 0.5 + packed.y;
+    packed.y -= n.x * 0.5;
+
+    roughness = max(saturate(roughness), 1.5 / 512.0);
+    float signedRoughness = n.z < 0.0 ? -roughness : roughness;
+    packed.z = signedRoughness * 0.5 + 0.5;
+    return saturate(packed);
 }
 
 float3 srgbToLinear(float3 color)
@@ -253,6 +286,40 @@ bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, Sc
     return saturate(alpha) >= saturate(material.params.z);
 }
 
+void computeTriangleTangentSpace(
+    float3 p0,
+    float3 p1,
+    float3 p2,
+    float2 uv0,
+    float2 uv1,
+    float2 uv2,
+    float3 normal,
+    out float3 tangent,
+    out float3 bitangent)
+{
+    float3 edge1 = p1 - p0;
+    float3 edge2 = p2 - p0;
+    float2 deltaUv1 = uv1 - uv0;
+    float2 deltaUv2 = uv2 - uv0;
+    float determinant = deltaUv1.x * deltaUv2.y - deltaUv1.y * deltaUv2.x;
+
+    if (abs(determinant) <= 0.0000001) {
+        float3 referenceAxis = abs(normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+        tangent = safeNormalize(cross(referenceAxis, normal), float3(1.0, 0.0, 0.0));
+        bitangent = safeNormalize(cross(normal, tangent), float3(0.0, 1.0, 0.0));
+        return;
+    }
+
+    float invDeterminant = 1.0 / determinant;
+    tangent = (edge1 * deltaUv2.y - edge2 * deltaUv1.y) * invDeterminant;
+    bitangent = (edge2 * deltaUv1.x - edge1 * deltaUv2.x) * invDeterminant;
+}
+
+float3 transformObjectNormalToWorld(float3 normal, float3x4 worldToObject)
+{
+    return mul(normal, worldToObject).xyz;
+}
+
 bool traceClosest(Ray ray, SceneMaterialVisualizationPush push, out HitInfo hit)
 {
     hit = HitInfo();
@@ -261,6 +328,7 @@ bool traceClosest(Ray ray, SceneMaterialVisualizationPush push, out HitInfo hit)
     hit.normal = float3(0.0, 1.0, 0.0);
     hit.geometryNormal = hit.normal;
     hit.tangent = float4(1.0, 0.0, 0.0, 1.0);
+    hit.bitangent = float3(0.0, 0.0, 1.0);
     hit.texcoord = float2(0.0, 0.0);
     hit.materialIndex = 0u;
     hit.frontFace = true;
@@ -307,6 +375,9 @@ bool traceClosest(Ray ray, SceneMaterialVisualizationPush push, out HitInfo hit)
     float3 p0 = v0.position.xyz;
     float3 p1 = v1.position.xyz;
     float3 p2 = v2.position.xyz;
+    float2 uv0 = v0.texcoord.xy;
+    float2 uv1 = v1.texcoord.xy;
+    float2 uv2 = v2.texcoord.xy;
     float3 localPosition = p0 * weights.x + p1 * weights.y + p2 * weights.z;
     float3 localGeometryNormal = safeNormalize(cross(p1 - p0, p2 - p0), float3(0.0, 1.0, 0.0));
     float3 localNormal = v0.normal.xyz * weights.x + v1.normal.xyz * weights.y + v2.normal.xyz * weights.z;
@@ -316,24 +387,38 @@ bool traceClosest(Ray ray, SceneMaterialVisualizationPush push, out HitInfo hit)
         ? safeNormalize(localTangent.xyz, float3(1.0, 0.0, 0.0))
         : float3(1.0, 0.0, 0.0);
     float tangentSign = localTangent.w >= 0.0 ? 1.0 : -1.0;
-    hit.texcoord = v0.texcoord.xy * weights.x + v1.texcoord.xy * weights.y + v2.texcoord.xy * weights.z;
+    hit.texcoord = uv0 * weights.x + uv1 * weights.y + uv2 * weights.z;
+
+    float3 localTriangleTangent;
+    float3 localTriangleBitangent;
+    computeTriangleTangentSpace(p0, p1, p2, uv0, uv1, uv2, localNormal, localTriangleTangent, localTriangleBitangent);
 
     float4x3 objectToWorld = query.CommittedObjectToWorld4x3();
-    float4x3 worldToObject = query.CommittedWorldToObject4x3();
+    float3x4 worldToObject = query.CommittedWorldToObject3x4();
     hit.position = float3(mul(float4(localPosition, 1.0), objectToWorld));
-    hit.geometryNormal = safeNormalize(float3(mul(worldToObject, localGeometryNormal).xyz), localGeometryNormal);
-    hit.normal = safeNormalize(float3(mul(worldToObject, localNormal).xyz), hit.geometryNormal);
-    float3 worldTangent = safeNormalize(float3(mul(float4(localTangentDirection, 0.0), objectToWorld)), float3(1.0, 0.0, 0.0));
-    hit.tangent = float4(worldTangent, tangentSign);
+    hit.geometryNormal = safeNormalize(transformObjectNormalToWorld(localGeometryNormal, worldToObject), localGeometryNormal);
+    hit.normal = safeNormalize(transformObjectNormalToWorld(localNormal, worldToObject), hit.geometryNormal);
+    hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
 
-    float3 view = -ray.direction;
-    hit.frontFace = dot(hit.geometryNormal, view) >= 0.0;
-    if (!hit.frontFace) {
-        hit.geometryNormal = -hit.geometryNormal;
+    float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+    float3 fallbackTangent = safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
+    if ((primitive.flags & kPrimitiveHasAuthoredTangents) != 0u) {
+        float3 worldTangent = safeNormalize(mul(localTangentDirection, worldToObject).xyz, fallbackTangent);
+        worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
+        hit.tangent = float4(worldTangent, tangentSign);
+        hit.bitangent = safeNormalize(cross(hit.normal, worldTangent) * tangentSign, cross(hit.normal, fallbackTangent));
+    } else {
+        float3 worldTangent = safeNormalize(mul(localTriangleTangent, worldToObject).xyz, fallbackTangent);
+        worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
+        float3 worldBitangent = safeNormalize(mul(localTriangleBitangent, worldToObject).xyz, cross(hit.normal, worldTangent));
+        worldBitangent = safeNormalize(worldBitangent - hit.normal * dot(hit.normal, worldBitangent), cross(hit.normal, worldTangent));
+        tangentSign = dot(cross(hit.normal, worldTangent), worldBitangent) < 0.0 ? -1.0 : 1.0;
+        hit.tangent = float4(worldTangent, tangentSign);
+        hit.bitangent = worldBitangent;
     }
-    if (dot(hit.normal, hit.geometryNormal) < 0.0) {
-        hit.normal = -hit.normal;
-    }
+
+    hit.tangent.w *= push.bitangentFlip;
+    hit.bitangent *= push.bitangentFlip;
 
     hit.t = query.CommittedRayT();
     hit.materialIndex = instance.materialIndex;
@@ -344,6 +429,7 @@ float3 applyNormalMap(
     float3 normal,
     float3 geometryNormal,
     float4 tangent,
+    float3 bitangent,
     float4 normalSample,
     float normalScale)
 {
@@ -353,7 +439,8 @@ float3 applyNormalMap(
     float3 tangentDirection = tangent.xyz - normal * dot(normal, tangent.xyz);
     tangentDirection = safeNormalize(tangentDirection, fallbackTangent);
     float tangentSign = tangent.w >= 0.0 ? 1.0 : -1.0;
-    float3 bitangentDirection = safeNormalize(cross(normal, tangentDirection) * tangentSign, cross(normal, fallbackTangent));
+    float3 bitangentFallback = cross(normal, tangentDirection) * tangentSign;
+    float3 bitangentDirection = safeNormalize(bitangent - normal * dot(normal, bitangent), bitangentFallback);
 
     float3 tangentNormal = float3(normalSample.xy * 2.0 - 1.0, normalSample.z * 2.0 - 1.0);
     tangentNormal.xy *= max(normalScale, 0.0);
@@ -393,8 +480,35 @@ float3 visualizeHit(HitInfo hit, SceneMaterialVisualizationPush push)
         return saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
     }
     if (push.mode == kModeNormal) {
-        float3 normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, normalSample, material.textureParams.x);
+        float3 normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
         return saturate(normal * 0.5 + 0.5);
+    }
+    if (push.mode == kModeGeometryNormal) {
+        return saturate(hit.geometryNormal * 0.5 + 0.5);
+    }
+    if (push.mode == kModeVertexNormal) {
+        return saturate(hit.normal * 0.5 + 0.5);
+    }
+    if (push.mode == kModeNormalTexture) {
+        return saturate(normalSample.rgb);
+    }
+    if (push.mode == kModeTangent) {
+        return saturate(safeNormalize(hit.tangent.xyz, float3(1.0, 0.0, 0.0)) * 0.5 + 0.5);
+    }
+    if (push.mode == kModeBitangent) {
+        return saturate(safeNormalize(hit.bitangent, float3(0.0, 1.0, 0.0)) * 0.5 + 0.5);
+    }
+    if (push.mode == kModeNrdNormalRoughness) {
+        float3 normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
+        float roughness = saturate(material.params.y * metallicRoughnessSample.g);
+        return packNrdNormalRoughnessForDisplay(normal, roughness);
+    }
+    if (push.mode == kModeNormalDeviation) {
+        float normalDot = dot(safeNormalize(hit.normal, hit.geometryNormal), safeNormalize(hit.geometryNormal, hit.normal));
+        float deviation = saturate(acos(clamp(normalDot, -1.0, 1.0)) / 3.141592653589793);
+        return normalDot < 0.0
+            ? lerp(float3(0.02, 0.04, 0.18), float3(0.08, 0.35, 1.0), deviation)
+            : lerp(float3(0.02, 0.14, 0.03), float3(1.0, 0.08, 0.02), deviation * 2.0);
     }
     if (push.mode == kModeRoughness) {
         float roughness = saturate(material.params.y * metallicRoughnessSample.g);
