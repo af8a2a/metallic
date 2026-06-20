@@ -557,7 +557,7 @@ float3 volumeTransmittance(float3 baseColor, float transmission, float thickness
     }
 
     float3 attenuation = powColor(max(attenuationColor, float3(0.001, 0.001, 0.001)), exponent);
-    float3 baseTint = lerp(float3(1.0, 1.0, 1.0), max(baseColor, float3(0.001, 0.001, 0.001)), transmission * 0.35);
+    float3 baseTint = lerp(float3(1.0, 1.0, 1.0), powColor(baseColor, 0.5), transmission);
     return saturate(attenuation * baseTint);
 }
 
@@ -601,7 +601,7 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
-    uint maxDepth = clamp(push.maxDepth, 1u, 12u);
+    uint maxDepth = clamp(push.maxDepth, 1u, 32u);
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;

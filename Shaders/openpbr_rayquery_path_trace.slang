@@ -3,7 +3,7 @@
 #define OPENPBR_ENERGY_TABLES_USE_UINT16 0
 #define OPENPBR_FEATURE_EnableSheenAndCoat false
 #define OPENPBR_FEATURE_EnableDispersion false
-#define OPENPBR_FEATURE_EnableTranslucency false
+#define OPENPBR_FEATURE_EnableTranslucency true
 #define OPENPBR_FEATURE_EnableMetallic true
 #define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 
@@ -164,9 +164,13 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(HitInfo hit, PathTraceMaterial mater
     result.inputs.specular_ior = ior;
     result.inputs.specular_anisotropy_rotation_cos_sin = float2(1.0, 0.0);
 
+    float3 transmissionTint = max(baseColor, float3(0.001, 0.001, 0.001));
+    if (attenuationDistance > 0.0001 && thickness > 0.0001) {
+        transmissionTint *= powColor(attenuationColor, thickness / attenuationDistance);
+    }
     result.inputs.transmission_weight = transmission;
-    result.inputs.transmission_color = attenuationDistance > 0.0 ? attenuationColor : max(baseColor, float3(0.001, 0.001, 0.001));
-    result.inputs.transmission_depth = attenuationDistance > 0.0 ? attenuationDistance : thickness;
+    result.inputs.transmission_color = powColor(transmissionTint, 0.5);
+    result.inputs.transmission_depth = 0.0;
     result.inputs.transmission_scatter = float3(0.0, 0.0, 0.0);
     result.inputs.transmission_scatter_anisotropy = 0.0;
 
@@ -199,7 +203,7 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
-    uint maxDepth = clamp(push.maxDepth, 1u, 12u);
+    uint maxDepth = clamp(push.maxDepth, 1u, 32u);
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
@@ -215,7 +219,6 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
             float4(0.5, 0.5, 1.0, 1.0),
             push);
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
-        hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
 
         OpenPBRMaterialEval materialEval = evaluateOpenPBRMaterial(hit, material, push);
         float3 viewDirection = safeNormalize(-ray.direction, hit.normal);

@@ -41,7 +41,7 @@
                     "rotationDegrees": 0.0,
                     "visible": true
                 },
-                "maxDepth": 4,
+                "maxDepth": 12,
                 "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
                 "samples": 2
             },

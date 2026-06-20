@@ -462,8 +462,20 @@ public:
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         std::vector<RenderGraphRuntimeSetting> settings{
-            runtimeIntSetting("maxDepth", "Max Depth", static_cast<int32_t>(kDefaultPathTraceMaxDepth), 1, 12, true),
-            runtimeIntSetting("samples", "Samples", static_cast<int32_t>(kDefaultPathTraceSamples), 1, 16, true),
+            runtimeIntSetting(
+                "maxDepth",
+                "Max Depth",
+                static_cast<int32_t>(kDefaultPathTraceMaxDepth),
+                1,
+                static_cast<int32_t>(kMaxPathTraceMaxDepth),
+                true),
+            runtimeIntSetting(
+                "samples",
+                "Samples",
+                static_cast<int32_t>(kDefaultPathTraceSamples),
+                1,
+                static_cast<int32_t>(kMaxPathTraceSamples),
+                true),
             runtimeBoolSetting("accumulate", "Accumulate", true, true),
             runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
         };
@@ -1071,8 +1083,8 @@ private:
         outPush.clipOrtho[3] = 0.0f;
         outPush.width = width;
         outPush.height = height;
-        outPush.maxDepth = uintProperty(properties, "maxDepth", kDefaultPathTraceMaxDepth, 1, 12);
-        outPush.samples = uintProperty(properties, "samples", kDefaultPathTraceSamples, 1, 16);
+        outPush.maxDepth = uintProperty(properties, "maxDepth", kDefaultPathTraceMaxDepth, 1, kMaxPathTraceMaxDepth);
+        outPush.samples = uintProperty(properties, "samples", kDefaultPathTraceSamples, 1, kMaxPathTraceSamples);
         outPush.bitangentFlip = metallic::render::builtin_pass::boolProperty(&properties, "flipBitangent", false)
             ? -1.0f
             : 1.0f;

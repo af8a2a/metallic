@@ -1581,9 +1581,11 @@ public:
         if (pathTrace == nullptr) {
             return RhiTestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
         }
-        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "maxDepth", 1) ||
+        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "maxDepth", 8) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "samples", 1) ||
-            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", false)) {
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", false) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.eye", {-0.028353f, 0.083254f, 0.142950f}) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.center", {0.0f, 0.075f, 0.0f})) {
             return RhiTestResult::fail("failed to set OpenPBR PathTracingSample preview runtime properties");
         }
 
@@ -1593,7 +1595,7 @@ public:
             return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
-        result = preview.render(sample.graph, 64, 64, sample.desc.previewOutput);
+        result = preview.render(sample.graph, 128, 128, sample.desc.previewOutput);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(
