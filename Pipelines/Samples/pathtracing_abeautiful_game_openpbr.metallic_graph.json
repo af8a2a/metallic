@@ -1,0 +1,55 @@
+{
+    "edges": [],
+    "name": "PathTracingSample",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "PathTrace",
+            "position": {
+                "x": 335.0,
+                "y": 281.0
+            },
+            "properties": {
+                "accumulate": true,
+                "bsdf": "openpbr",
+                "camera": {
+                    "center": [
+                        0.0,
+                        0.07500000298023224,
+                        0.0
+                    ],
+                    "eye": [
+                        0.0,
+                        0.41999998688697815,
+                        1.149999976158142
+                    ],
+                    "fovDegrees": 45.0,
+                    "projection": "perspective",
+                    "reversedZ": true,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 10000.0,
+                    "znear": 0.0010000000474974513
+                },
+                "environment": {
+                    "enabled": true,
+                    "intensity": 1.0,
+                    "path": "Asset/ABeautifulGame/environment.hdr",
+                    "rotationDegrees": 0.0,
+                    "visible": true
+                },
+                "maxDepth": 4,
+                "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
+                "samples": 2
+            },
+            "type": "ScenePathTracePass"
+        }
+    ],
+    "outputs": [
+        "PathTrace.color"
+    ],
+    "version": 1
+}

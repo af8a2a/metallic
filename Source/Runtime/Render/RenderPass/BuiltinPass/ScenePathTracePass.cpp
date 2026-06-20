@@ -1,8 +1,450 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
+#include "openpbr_data_constants.h"
+
 namespace metallic::render::builtin_pass {
 namespace {
+
+using OpenPBRLutScalar = uint16_t;
+
+struct OpenPBRVec3 {
+    float x;
+    float y;
+    float z;
+};
+
+constexpr OpenPBRVec3 vec3(float x, float y, float z)
+{
+    return OpenPBRVec3{x, y, z};
+}
+
+static constexpr OpenPBRLutScalar kOpenPBRIdealDielectricEnergyComplement[] = {
+#include "impl/data/openpbr_ideal_dielectric_energy_complement_data.h"
+};
+
+static constexpr OpenPBRLutScalar kOpenPBRIdealDielectricAverageEnergyComplement[] = {
+#include "impl/data/openpbr_ideal_dielectric_avg_energy_complement_data.h"
+};
+
+static constexpr OpenPBRLutScalar kOpenPBRIdealDielectricReflectionRatio[] = {
+#include "impl/data/openpbr_ideal_dielectric_reflection_ratio_data.h"
+};
+
+static constexpr OpenPBRLutScalar kOpenPBROpaqueDielectricEnergyComplement[] = {
+#include "impl/data/openpbr_opaque_dielectric_energy_complement_data.h"
+};
+
+static constexpr OpenPBRLutScalar kOpenPBROpaqueDielectricAverageEnergyComplement[] = {
+#include "impl/data/openpbr_opaque_dielectric_avg_energy_complement_data.h"
+};
+
+static constexpr OpenPBRLutScalar kOpenPBRIdealMetalEnergyComplement[] = {
+#include "impl/data/openpbr_ideal_metal_energy_complement_data.h"
+};
+
+static constexpr OpenPBRLutScalar kOpenPBRIdealMetalAverageEnergyComplement[] = {
+#include "impl/data/openpbr_ideal_metal_avg_energy_complement_data.h"
+};
+
+static constexpr OpenPBRVec3 kOpenPBRLtc[] = {
+#include "impl/data/openpbr_ltc_data.h"
+};
+
+constexpr uint32_t kOpenPBRLut2DBinding = 11;
+constexpr uint32_t kOpenPBRLut3DBinding = 12;
+constexpr uint32_t kOpenPBRLut2DCount = 6;
+constexpr uint32_t kOpenPBRLut3DCount = 2;
+constexpr uint32_t kOpenPBRLutSize = OpenPBR_EnergyTableSize;
+constexpr uint32_t kOpenPBRLtcSize = OpenPBR_LTCTableSize;
+constexpr float kOpenPBRLutScalarScale = 1.0f / 65535.0f;
+
+static_assert(std::size(kOpenPBRIdealDielectricEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize * kOpenPBRLutSize);
+static_assert(std::size(kOpenPBRIdealDielectricAverageEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize);
+static_assert(std::size(kOpenPBRIdealDielectricReflectionRatio) == kOpenPBRLutSize * kOpenPBRLutSize);
+static_assert(std::size(kOpenPBROpaqueDielectricEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize * kOpenPBRLutSize);
+static_assert(std::size(kOpenPBROpaqueDielectricAverageEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize);
+static_assert(std::size(kOpenPBRIdealMetalEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize);
+static_assert(std::size(kOpenPBRIdealMetalAverageEnergyComplement) == kOpenPBRLutSize);
+static_assert(std::size(kOpenPBRLtc) == kOpenPBRLtcSize * kOpenPBRLtcSize);
+
+struct OpenPBRLutTexture {
+    std::unique_ptr<Buffer> uploadBuffer;
+    std::unique_ptr<Texture> texture;
+    std::unique_ptr<TextureView> view;
+    ResourceState state = ResourceState::Undefined;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t depth = 1;
+    bool uploaded = false;
+};
+
+class OpenPBRLutResources final {
+public:
+    Result prepare(Device& device, std::string& log)
+    {
+        if (valid()) {
+            return {};
+        }
+
+        clear();
+        Result result = createScalarLut(
+            device,
+            kOpenPBRIdealDielectricAverageEnergyComplement,
+            kOpenPBRLutSize,
+            kOpenPBRLutSize,
+            1,
+            "OpenPBR ideal dielectric average energy complement LUT",
+            lut2D_[0],
+            log);
+        if (!result) {
+            clear();
+            return result;
+        }
+        result = createScalarLut(
+            device,
+            kOpenPBRIdealDielectricReflectionRatio,
+            kOpenPBRLutSize,
+            kOpenPBRLutSize,
+            1,
+            "OpenPBR ideal dielectric reflection ratio LUT",
+            lut2D_[1],
+            log);
+        if (!result) {
+            clear();
+            return result;
+        }
+        result = createScalarLut(
+            device,
+            kOpenPBROpaqueDielectricAverageEnergyComplement,
+            kOpenPBRLutSize,
+            kOpenPBRLutSize,
+            1,
+            "OpenPBR opaque dielectric average energy complement LUT",
+            lut2D_[2],
+            log);
+        if (!result) {
+            clear();
+            return result;
+        }
+        result = createScalarLut(
+            device,
+            kOpenPBRIdealMetalEnergyComplement,
+            kOpenPBRLutSize,
+            kOpenPBRLutSize,
+            1,
+            "OpenPBR ideal metal energy complement LUT",
+            lut2D_[3],
+            log);
+        if (!result) {
+            clear();
+            return result;
+        }
+        result = createScalarLut(
+            device,
+            kOpenPBRIdealMetalAverageEnergyComplement,
+            kOpenPBRLutSize,
+            1,
+            1,
+            "OpenPBR ideal metal average energy complement LUT",
+            lut2D_[4],
+            log);
+        if (!result) {
+            clear();
+            return result;
+        }
+        result = createLtcLut(device, lut2D_[5], log);
+        if (!result) {
+            clear();
+            return result;
+        }
+        result = createScalarLut(
+            device,
+            kOpenPBRIdealDielectricEnergyComplement,
+            kOpenPBRLutSize,
+            kOpenPBRLutSize,
+            kOpenPBRLutSize,
+            "OpenPBR ideal dielectric energy complement LUT",
+            lut3D_[0],
+            log);
+        if (!result) {
+            clear();
+            return result;
+        }
+        result = createScalarLut(
+            device,
+            kOpenPBROpaqueDielectricEnergyComplement,
+            kOpenPBRLutSize,
+            kOpenPBRLutSize,
+            kOpenPBRLutSize,
+            "OpenPBR opaque dielectric energy complement LUT",
+            lut3D_[1],
+            log);
+        if (!result) {
+            clear();
+            return result;
+        }
+
+        refreshViews();
+        return {};
+    }
+
+    Result upload(CommandBuffer& commandBuffer)
+    {
+        for (OpenPBRLutTexture& texture : lut2D_) {
+            Result result = uploadTexture(commandBuffer, texture);
+            if (!result) {
+                return result;
+            }
+        }
+        for (OpenPBRLutTexture& texture : lut3D_) {
+            Result result = uploadTexture(commandBuffer, texture);
+            if (!result) {
+                return result;
+            }
+        }
+        return {};
+    }
+
+    bool valid() const
+    {
+        return std::all_of(
+            lut2D_.begin(),
+            lut2D_.end(),
+            [](const OpenPBRLutTexture& texture) {
+                return texture.texture != nullptr && texture.view != nullptr;
+            }) &&
+            std::all_of(
+                lut3D_.begin(),
+                lut3D_.end(),
+                [](const OpenPBRLutTexture& texture) {
+                    return texture.texture != nullptr && texture.view != nullptr;
+                });
+    }
+
+    const std::array<TextureView*, kOpenPBRLut2DCount>& lut2DViews() const
+    {
+        return lut2DViews_;
+    }
+
+    const std::array<TextureView*, kOpenPBRLut3DCount>& lut3DViews() const
+    {
+        return lut3DViews_;
+    }
+
+private:
+    void clear()
+    {
+        for (OpenPBRLutTexture& texture : lut2D_) {
+            texture = OpenPBRLutTexture{};
+        }
+        for (OpenPBRLutTexture& texture : lut3D_) {
+            texture = OpenPBRLutTexture{};
+        }
+        lut2DViews_.fill(nullptr);
+        lut3DViews_.fill(nullptr);
+    }
+
+    void refreshViews()
+    {
+        for (size_t index = 0; index < lut2D_.size(); ++index) {
+            lut2DViews_[index] = lut2D_[index].view.get();
+        }
+        for (size_t index = 0; index < lut3D_.size(); ++index) {
+            lut3DViews_[index] = lut3D_[index].view.get();
+        }
+    }
+
+    template <size_t ValueCount>
+    static Result createScalarLut(
+        Device& device,
+        const OpenPBRLutScalar (&values)[ValueCount],
+        uint32_t width,
+        uint32_t height,
+        uint32_t depth,
+        std::string_view label,
+        OpenPBRLutTexture& outTexture,
+        std::string& log)
+    {
+        const uint64_t texelCount =
+            static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * static_cast<uint64_t>(depth);
+        if (texelCount != ValueCount) {
+            log += "OpenPBR LUT dimensions do not match table data: ";
+            log += label;
+            log += '\n';
+            return makeError(Error::InvalidArgument);
+        }
+
+        std::vector<float> pixels(static_cast<size_t>(texelCount) * 4u, 0.0f);
+        for (size_t index = 0; index < static_cast<size_t>(texelCount); ++index) {
+            pixels[index * 4u] = static_cast<float>(values[index]) * kOpenPBRLutScalarScale;
+            pixels[index * 4u + 3u] = 1.0f;
+        }
+        return createRgbaLutTexture(device, pixels.data(), width, height, depth, label, outTexture, log);
+    }
+
+    static Result createLtcLut(Device& device, OpenPBRLutTexture& outTexture, std::string& log)
+    {
+        std::vector<float> pixels(std::size(kOpenPBRLtc) * 4u, 0.0f);
+        for (size_t index = 0; index < std::size(kOpenPBRLtc); ++index) {
+            pixels[index * 4u] = kOpenPBRLtc[index].x;
+            pixels[index * 4u + 1u] = kOpenPBRLtc[index].y;
+            pixels[index * 4u + 2u] = kOpenPBRLtc[index].z;
+            pixels[index * 4u + 3u] = 1.0f;
+        }
+        return createRgbaLutTexture(
+            device,
+            pixels.data(),
+            kOpenPBRLtcSize,
+            kOpenPBRLtcSize,
+            1,
+            "OpenPBR LTC LUT",
+            outTexture,
+            log);
+    }
+
+    static Result createRgbaLutTexture(
+        Device& device,
+        const float* pixels,
+        uint32_t width,
+        uint32_t height,
+        uint32_t depth,
+        std::string_view label,
+        OpenPBRLutTexture& outTexture,
+        std::string& log)
+    {
+        if (pixels == nullptr || width == 0 || height == 0 || depth == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        outTexture = OpenPBRLutTexture{};
+        outTexture.width = width;
+        outTexture.height = height;
+        outTexture.depth = depth;
+        const uint64_t byteSize =
+            static_cast<uint64_t>(width) *
+            static_cast<uint64_t>(height) *
+            static_cast<uint64_t>(depth) *
+            4ull *
+            sizeof(float);
+        Result result = device.createBuffer(
+            BufferDesc{
+                .size = byteSize,
+                .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload,
+            },
+            outTexture.uploadBuffer);
+        if (!result || outTexture.uploadBuffer == nullptr) {
+            log += resultMessage(std::string("createBuffer(") + std::string(label) + " upload)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        void* mapped = outTexture.uploadBuffer->map();
+        if (mapped == nullptr) {
+            log += "OpenPBR LUT upload buffer map failed: ";
+            log += label;
+            log += '\n';
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, pixels, static_cast<size_t>(byteSize));
+        outTexture.uploadBuffer->flush(0, byteSize);
+        outTexture.uploadBuffer->unmap();
+
+        result = device.createTexture(
+            TextureDesc{
+                .type = depth > 1 ? TextureType::Texture3D : TextureType::Texture2D,
+                .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+                .format = Format::Rgba32Sfloat,
+                .width = width,
+                .height = height,
+                .depth = depth,
+                .mipCount = 1,
+                .layerCount = 1,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            outTexture.texture);
+        if (!result || outTexture.texture == nullptr) {
+            log += resultMessage(std::string("createTexture(") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = device.createTextureView(
+            *outTexture.texture,
+            TextureViewDesc{
+                .format = Format::Rgba32Sfloat,
+                .baseMip = 0,
+                .mipCount = 1,
+                .baseLayer = 0,
+                .layerCount = 1,
+            },
+            outTexture.view);
+        if (!result || outTexture.view == nullptr) {
+            log += resultMessage(std::string("createTextureView(") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
+    }
+
+    static Result uploadTexture(CommandBuffer& commandBuffer, OpenPBRLutTexture& texture)
+    {
+        if (texture.uploaded) {
+            return {};
+        }
+        if (texture.uploadBuffer == nullptr || texture.texture == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        TextureBarrierDesc toTransfer{
+            .texture = texture.texture.get(),
+            .before = texture.state,
+            .after = ResourceState::TransferDestination,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .textures = &toTransfer,
+            .textureCount = 1,
+        });
+        texture.state = ResourceState::TransferDestination;
+
+        commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
+            .buffer = texture.uploadBuffer.get(),
+            .texture = texture.texture.get(),
+            .width = texture.width,
+            .height = texture.height,
+            .depth = texture.depth,
+            .mipLevel = 0,
+            .baseLayer = 0,
+        });
+
+        TextureBarrierDesc toShaderRead{
+            .texture = texture.texture.get(),
+            .before = texture.state,
+            .after = ResourceState::ShaderRead,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .textures = &toShaderRead,
+            .textureCount = 1,
+        });
+        texture.state = ResourceState::ShaderRead;
+        texture.uploaded = true;
+        return {};
+    }
+
+    std::array<OpenPBRLutTexture, kOpenPBRLut2DCount> lut2D_;
+    std::array<OpenPBRLutTexture, kOpenPBRLut3DCount> lut3D_;
+    std::array<TextureView*, kOpenPBRLut2DCount> lut2DViews_{};
+    std::array<TextureView*, kOpenPBRLut3DCount> lut3DViews_{};
+};
 
 class ScenePathTracePass final : public ComputePass {
 public:
@@ -54,6 +496,28 @@ public:
             sceneResourceRevision_ = resourceRevision;
             resetAccumulation_ = true;
         }
+        const std::string bsdf = stringProperty(properties(), "bsdf", "standard");
+        const bool useOpenPBR = bsdf == "openpbr" || bsdf == "OpenPBR";
+        const char* moduleName = useOpenPBR
+            ? kOpenPBRRayQueryPathTraceShaderModuleName
+            : kScenePathTraceShaderModuleName;
+        const char* entryPointName = useOpenPBR
+            ? kOpenPBRRayQueryPathTraceEntryPoint
+            : kScenePathTraceEntryPoint;
+        const std::string shaderKey = std::string(moduleName) + "." + entryPointName;
+        if (useOpenPBR) {
+            result = openPBRLuts_.prepare(*context.device, log);
+            if (!result) {
+                rayQueryProgram_.clear();
+                compiledShaderKey_.clear();
+                return result;
+            }
+        }
+        if (compiledShaderKey_ != shaderKey) {
+            rayQueryProgram_.clear();
+            compiledShaderKey_.clear();
+            resetAccumulation_ = true;
+        }
         if (rayQueryProgram_.valid()) {
             return {};
         }
@@ -62,8 +526,8 @@ public:
         const char* capabilities[] = {"spvRayQueryKHR"};
         result = compileSlangShaderToSpirv(
             SlangShaderDesc{
-                .moduleName = kScenePathTraceShaderModuleName,
-                .entryPointName = kScenePathTraceEntryPoint,
+                .moduleName = moduleName,
+                .entryPointName = entryPointName,
                 .searchPath = kTriangleShaderSearchPath,
                 .profileName = "glsl_460",
                 .capabilities = capabilities,
@@ -72,9 +536,9 @@ public:
             computeCompile);
         if (!result) {
             log += "compileSlangShaderToSpirv(";
-            log += kScenePathTraceShaderModuleName;
+            log += moduleName;
             log += ".";
-            log += kScenePathTraceEntryPoint;
+            log += entryPointName;
             log += ") returned ";
             log += resultToString(result);
             if (!computeCompile.diagnostics.empty()) {
@@ -86,7 +550,7 @@ public:
             return result;
         }
 
-        const SceneRayQueryBindingDesc bindings[] = {
+        std::vector<SceneRayQueryBindingDesc> bindings{
             SceneRayQueryBindingDesc{
                 .binding = 0,
                 .kind = SceneRayQueryBindingKind::AccelerationStructure,
@@ -133,6 +597,18 @@ public:
                 .kind = SceneRayQueryBindingKind::SampledImage,
             },
         };
+        if (useOpenPBR) {
+            bindings.push_back(SceneRayQueryBindingDesc{
+                .binding = kOpenPBRLut2DBinding,
+                .kind = SceneRayQueryBindingKind::SampledImage,
+                .descriptorCount = kOpenPBRLut2DCount,
+            });
+            bindings.push_back(SceneRayQueryBindingDesc{
+                .binding = kOpenPBRLut3DBinding,
+                .kind = SceneRayQueryBindingKind::SampledImage,
+                .descriptorCount = kOpenPBRLut3DCount,
+            });
+        }
         std::string programLog;
         result = rayQueryProgram_.initialize(
             *context.device,
@@ -140,9 +616,9 @@ public:
                 .spirv = computeCompile.spirv.data(),
                 .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
                 .pushConstantSize = sizeof(ScenePathTracePush),
-                .bindings = bindings,
-                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
-                .debugName = "ScenePathTracePass",
+                .bindings = bindings.data(),
+                .bindingCount = static_cast<uint32_t>(bindings.size()),
+                .debugName = useOpenPBR ? "ScenePathTracePass.OpenPBR" : "ScenePathTracePass",
             },
             programLog);
         if (!programLog.empty()) {
@@ -155,6 +631,7 @@ public:
             rayQueryProgram_.clear();
             return result;
         }
+        compiledShaderKey_ = shaderKey;
         return {};
     }
 
@@ -164,12 +641,14 @@ public:
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         TextureView* environmentTextureView = sceneResources_.environmentTextureView();
         TextureView* const environmentTextureViews[] = {environmentTextureView};
+        const bool useOpenPBR = useOpenPBRBsdf(properties());
         if (!color.valid() ||
             color.view() == nullptr ||
             !rayQueryProgram_.valid() ||
             !sceneResources_.valid() ||
             materialTextureViews[0] == nullptr ||
-            environmentTextureView == nullptr) {
+            environmentTextureView == nullptr ||
+            (useOpenPBR && !openPBRLuts_.valid())) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -206,8 +685,14 @@ public:
         if (!result) {
             return result;
         }
+        if (useOpenPBR) {
+            result = openPBRLuts_.upload(context.commandBuffer());
+            if (!result) {
+                return result;
+            }
+        }
 
-        const SceneRayQueryDispatchBinding bindings[] = {
+        std::vector<SceneRayQueryDispatchBinding> bindings{
             SceneRayQueryDispatchBinding{
                 .binding = 0,
                 .accelerationStructure = &sceneResources_.accelerationStructure(),
@@ -255,10 +740,24 @@ public:
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
             },
         };
+        if (useOpenPBR) {
+            const auto& lut2DViews = openPBRLuts_.lut2DViews();
+            const auto& lut3DViews = openPBRLuts_.lut3DViews();
+            bindings.push_back(SceneRayQueryDispatchBinding{
+                .binding = kOpenPBRLut2DBinding,
+                .textureViews = lut2DViews.data(),
+                .textureViewCount = static_cast<uint32_t>(lut2DViews.size()),
+            });
+            bindings.push_back(SceneRayQueryDispatchBinding{
+                .binding = kOpenPBRLut3DBinding,
+                .textureViews = lut3DViews.data(),
+                .textureViewCount = static_cast<uint32_t>(lut3DViews.size()),
+            });
+        }
         result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .bindings = bindings.data(),
+            .bindingCount = static_cast<uint32_t>(bindings.size()),
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = (context.width() + 7) / 8,
@@ -403,6 +902,27 @@ private:
             return fallback;
         }
         return finiteOr(iter->get<float>(), fallback);
+    }
+
+    static std::string stringProperty(
+        const RenderGraphProperties& properties,
+        const char* key,
+        std::string_view fallback)
+    {
+        if (!properties.is_object()) {
+            return std::string(fallback);
+        }
+        auto iter = properties.find(key);
+        if (iter == properties.end() || !iter->is_string()) {
+            return std::string(fallback);
+        }
+        return iter->get<std::string>();
+    }
+
+    static bool useOpenPBRBsdf(const RenderGraphProperties& properties)
+    {
+        const std::string bsdf = stringProperty(properties, "bsdf", "standard");
+        return bsdf == "openpbr" || bsdf == "OpenPBR";
     }
 
     static std::string historyNameForContext(const RenderGraphExecutionContext& context)
@@ -577,7 +1097,9 @@ private:
     }
 
     ScenePathTraceResources sceneResources_;
+    OpenPBRLutResources openPBRLuts_;
     SceneRayQueryProgram rayQueryProgram_;
+    std::string compiledShaderKey_;
     uint64_t sceneResourceRevision_ = 0;
     uint32_t accumulationFrame_ = 0;
     bool resetAccumulation_ = false;

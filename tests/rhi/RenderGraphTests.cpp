@@ -933,6 +933,36 @@ public:
             return RhiTestResult::fail("Sample graph first output changed");
         }
 
+        render::RenderSampleLoadResult pathTracingSample;
+        if (!render::loadBuiltInRenderSample("pathtracing-sample", pathTracingSample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (pathTracingSample.desc.id != "pathtracing-sample" ||
+            pathTracingSample.desc.name != "PathTracingSample" ||
+            pathTracingSample.desc.category != "PathTracing" ||
+            pathTracingSample.desc.scenePath != "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf" ||
+            pathTracingSample.desc.graphPath != "Pipelines/Samples/pathtracing_abeautiful_game_openpbr.metallic_graph.json" ||
+            pathTracingSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||
+            pathTracingSample.desc.previewOutput != "PathTrace.color") {
+            return RhiTestResult::fail("OpenPBR PathTracingSample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* openPBRPathTrace = pathTracingSample.graph.findNode("PathTrace");
+        if (openPBRPathTrace == nullptr ||
+            !openPBRPathTrace->properties.is_object() ||
+            openPBRPathTrace->properties.value("path", "") != pathTracingSample.desc.scenePath ||
+            openPBRPathTrace->properties.value("bsdf", "") != "openpbr" ||
+            !openPBRPathTrace->properties.contains("environment") ||
+            !openPBRPathTrace->properties["environment"].is_object() ||
+            openPBRPathTrace->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr") {
+            return RhiTestResult::fail("OpenPBR PathTracingSample did not apply scene, BSDF, and environment properties");
+        }
+        if (!pathTracingSample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (pathTracingSample.graph.firstOutputName() != "PathTrace.color") {
+            return RhiTestResult::fail("OpenPBR PathTracingSample graph first output changed");
+        }
+
         render::RenderSampleLoadResult materialSample;
         if (!render::loadBuiltInRenderSample("material-visualization-abeautiful-game", materialSample, message)) {
             return RhiTestResult::fail(message);
@@ -960,13 +990,15 @@ public:
         }
 
         bool listedPathTrace = false;
+        bool listedOpenPBRPathTrace = false;
         bool listedMaterialVisualization = false;
         for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
             listedPathTrace = listedPathTrace || desc.id == "pathtracing-meet-mat";
+            listedOpenPBRPathTrace = listedOpenPBRPathTrace || desc.id == "pathtracing-sample";
             listedMaterialVisualization = listedMaterialVisualization ||
                 desc.id == "material-visualization-abeautiful-game";
         }
-        if (!listedPathTrace || !listedMaterialVisualization) {
+        if (!listedPathTrace || !listedOpenPBRPathTrace || !listedMaterialVisualization) {
             return RhiTestResult::fail("built-in Sample list did not contain expected samples");
         }
         return RhiTestResult::pass();
@@ -1485,6 +1517,115 @@ public:
             context.outputDirectory / "render_graph_scene_path_trace_preview.png";
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), outputMessage)) {
             return RhiTestResult::fail(outputMessage);
+        }
+
+        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+    }
+};
+
+class RenderGraphOpenPBRPathTracingShaderCompileTest : public RhiTest {
+public:
+    RenderGraphOpenPBRPathTracingShaderCompileTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_openpbr_pathtracing_shader_compile";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::ShaderCompileResult compileResult;
+        const char* capabilities[] = {"spvRayQueryKHR"};
+        render::Result result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "openpbr_rayquery_path_trace",
+                .entryPointName = "openPbrRayQueryPathTraceMain",
+                .searchPath = kShaderSearchPath,
+                .profileName = "glsl_460",
+                .capabilities = capabilities,
+                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+            },
+            compileResult);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("OpenPBR RayQuery path tracing shader compile returned ") +
+                toString(result) +
+                ": " +
+                compileResult.diagnostics);
+        }
+        if (compileResult.spirv.empty()) {
+            return RhiTestResult::fail("OpenPBR RayQuery path tracing shader produced empty SPIR-V");
+        }
+        return RhiTestResult::pass(
+            std::string("compiled OpenPBR RayQuery path tracing shader, words=") +
+            std::to_string(compileResult.spirv.size()));
+    }
+};
+
+class RenderGraphOpenPBRPathTracingSamplePreviewTest : public RhiTest {
+public:
+    RenderGraphOpenPBRPathTracingSamplePreviewTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_openpbr_pathtracing_sample_preview";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string message;
+        if (!render::loadBuiltInRenderSample("pathtracing-sample", sample, message)) {
+            return RhiTestResult::fail(message);
+        }
+
+        render::RenderGraphNode* pathTrace = sample.graph.findNode("PathTrace");
+        if (pathTrace == nullptr) {
+            return RhiTestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
+        }
+        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "maxDepth", 1) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "samples", 1) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", false)) {
+            return RhiTestResult::fail("failed to set OpenPBR PathTracingSample preview runtime properties");
+        }
+
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        result = preview.render(sample.graph, 64, 64, sample.desc.previewOutput);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("OpenPBR PathTracingSample is unsupported on this device: ") +
+                    preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("OpenPBR PathTracingSample render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        if (preview.lastLog().find("environment map does not exist") != std::string::npos ||
+            preview.lastLog().find("failed to decode environment map") != std::string::npos ||
+            preview.lastLog().find("decoded environment map is too large") != std::string::npos) {
+            return RhiTestResult::fail(
+                std::string("OpenPBR PathTracingSample did not load the HDRI environment: ") +
+                preview.lastLog());
+        }
+
+        const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
+        if (visiblePixelCount < 64) {
+            return RhiTestResult::fail(
+                std::string("OpenPBR PathTracingSample produced too few visible pixels: ") +
+                std::to_string(visiblePixelCount));
+        }
+
+        const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const std::filesystem::path outputPath =
+            context.outputDirectory / "render_graph_openpbr_pathtracing_sample_preview.png";
+        if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
+            return RhiTestResult::fail(message);
         }
 
         return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
@@ -2265,6 +2406,8 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneMaterialVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingSamplePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceTransmissionTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceAlphaMaskPreviewTest);

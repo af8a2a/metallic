@@ -34,6 +34,7 @@ target_include_directories(MetallicRuntimeRender PUBLIC
 )
 
 target_include_directories(MetallicRuntimeRender SYSTEM PRIVATE
+    "${CMAKE_SOURCE_DIR}/External/openpbr-bsdf"
     "${CMAKE_SOURCE_DIR}/External/stb"
     "${CMAKE_SOURCE_DIR}/External/VulkanMemoryAllocator/include"
 )
@@ -144,49 +145,62 @@ if(WIN32)
     endif()
 endif()
 
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
+function(configure_metallic_editor_sample target_name)
+    target_include_directories(${target_name} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+
+    target_link_libraries(${target_name} PRIVATE
+        imgui
+        imnodes
+        metallic::sdl3
+        MetallicRuntimeRender
+        MetallicRuntimeScene
+    )
+
+    target_compile_definitions(${target_name} PRIVATE
+        PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    )
+
+    set_target_properties(${target_name} PROPERTIES FOLDER "Samples")
+
+    if(WIN32)
+        target_compile_definitions(${target_name} PRIVATE NOMINMAX)
+
+        foreach(METALLIC_SLANG_RUNTIME_DLL IN LISTS METALLIC_SLANG_RUNTIME_DLLS)
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${METALLIC_SLANG_RUNTIME_DLL}"
+                    "$<TARGET_FILE_DIR:${target_name}>"
+            )
+        endforeach()
+
+        if(TARGET SDL3-shared)
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:SDL3-shared>"
+                    "$<TARGET_FILE_DIR:${target_name}>"
+            )
+        elseif(TARGET SDL3::SDL3-shared)
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:SDL3::SDL3-shared>"
+                    "$<TARGET_FILE_DIR:${target_name}>"
+            )
+        endif()
+    endif()
+endfunction()
+
 add_executable(MetallicMaterialVisualizationSample
     Samples/MaterialVisualizationSampleMain.cpp
     Editor/EditorApplication.cpp
 )
+configure_metallic_editor_sample(MetallicMaterialVisualizationSample)
 
-target_include_directories(MetallicMaterialVisualizationSample PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}"
+add_executable(MetallicPathTracingSample
+    Samples/PathTracingSampleMain.cpp
+    Editor/EditorApplication.cpp
 )
-
-target_link_libraries(MetallicMaterialVisualizationSample PRIVATE
-    imgui
-    imnodes
-    metallic::sdl3
-    MetallicRuntimeRender
-    MetallicRuntimeScene
-)
-
-target_compile_definitions(MetallicMaterialVisualizationSample PRIVATE
-    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-
-if(WIN32)
-    target_compile_definitions(MetallicMaterialVisualizationSample PRIVATE NOMINMAX)
-
-    foreach(METALLIC_SLANG_RUNTIME_DLL IN LISTS METALLIC_SLANG_RUNTIME_DLLS)
-        add_custom_command(TARGET MetallicMaterialVisualizationSample POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${METALLIC_SLANG_RUNTIME_DLL}"
-                "$<TARGET_FILE_DIR:MetallicMaterialVisualizationSample>"
-        )
-    endforeach()
-
-    if(TARGET SDL3-shared)
-        add_custom_command(TARGET MetallicMaterialVisualizationSample POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:SDL3-shared>"
-                "$<TARGET_FILE_DIR:MetallicMaterialVisualizationSample>"
-        )
-    elseif(TARGET SDL3::SDL3-shared)
-        add_custom_command(TARGET MetallicMaterialVisualizationSample POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:SDL3::SDL3-shared>"
-                "$<TARGET_FILE_DIR:MetallicMaterialVisualizationSample>"
-        )
-    endif()
-endif()
+configure_metallic_editor_sample(MetallicPathTracingSample)
