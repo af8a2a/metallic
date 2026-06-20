@@ -203,12 +203,17 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
+    float previousBsdfPdf = 0.0;
+    bool previousScatterDelta = true;
     uint maxDepth = clamp(push.maxDepth, 1u, 32u);
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         if (!traceClosest(ray, push, hit)) {
-            radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u);
+            float misWeight = depth == 0u
+                ? 1.0
+                : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
+            radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u) * misWeight;
             break;
         }
 
@@ -237,10 +242,14 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
             if (!occluded) {
                 OpenPBR_DiffuseSpecular lightBsdf = openpbr_eval(prepared, lightSample.direction);
                 float3 lightWeight = openpbr_get_sum_of_diffuse_specular(lightBsdf);
+                float lightMisWeight = environmentLightMisWeight(
+                    push,
+                    lightSample.pdfSolidAngle,
+                    openpbr_pdf(prepared, lightSample.direction));
                 radiance += throughput *
                     lightWeight *
                     materialEval.occlusion *
-                    (lightSample.radiance / max(lightSample.pdfSolidAngle, 0.000001));
+                    (lightSample.radiance * lightMisWeight / max(lightSample.pdfSolidAngle, 0.000001));
             }
         }
 
@@ -262,6 +271,8 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
 
         sampledDirection = safeNormalize(sampledDirection, hit.normal);
         throughput *= max(openpbr_get_sum_of_diffuse_specular(sampledWeight), float3(0.0, 0.0, 0.0));
+        previousBsdfPdf = sampledPdf;
+        previousScatterDelta = bool(sampledType & OpenPBR_BsdfLobeTypeSpecular);
         ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(sampledDirection, hit.geometryNormal));
         ray.direction = sampledDirection;
 

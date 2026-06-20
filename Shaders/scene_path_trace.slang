@@ -247,6 +247,22 @@ float3 environmentLocalDirectionFromUv(float2 uv)
     return float3(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
 }
 
+float environmentTexelSolidAngle(uint y, uint width, uint height)
+{
+    float centerTheta = (float(y) + 0.5) * (kPi / float(max(height, 1u)));
+    return max((2.0 * kPi / float(max(width, 1u))) * (kPi / float(max(height, 1u))) * sin(centerTheta), 0.0000001);
+}
+
+float misPowerHeuristic(float pdfA, float pdfB)
+{
+    float a = max(pdfA, 0.0);
+    float b = max(pdfB, 0.0);
+    a *= a;
+    b *= b;
+    float sum = a + b;
+    return sum > 0.0 ? a / sum : 1.0;
+}
+
 struct EnvironmentLightSample
 {
     float3 direction;
@@ -299,8 +315,7 @@ bool sampleEnvironmentLight(ScenePathTracePush push, inout uint seed, out Enviro
     uint y = texelIndex / width;
 
     float2 uv = (float2(x, y) + float2(rand(seed), rand(seed))) / float2(width, height);
-    float centerTheta = (float(y) + 0.5) * (kPi / float(height));
-    float texelSolidAngle = max((2.0 * kPi / float(width)) * (kPi / float(height)) * sin(centerTheta), 0.0000001);
+    float texelSolidAngle = environmentTexelSolidAngle(y, width, height);
 
     float3 localDirection = environmentLocalDirectionFromUv(uv);
     sample.direction = safeNormalize(
@@ -330,6 +345,49 @@ float2 environmentUvFromDirection(float3 direction, float rotationRadians)
     float u = frac(phi / (2.0 * kPi) + 0.5);
     float v = acos(clamp(direction.y, -1.0, 1.0)) / kPi;
     return float2(u, v);
+}
+
+float environmentPdfSolidAngle(float3 direction, ScenePathTracePush push)
+{
+    if (push.environmentMode != kEnvironmentModeMap || push.environmentIntensity <= 0.0) {
+        return 0.0;
+    }
+
+    uint width = 1u;
+    uint height = 1u;
+    gEnvironmentMap.GetDimensions(width, height);
+    uint textureTexelCount = width * height;
+    uint texelCount = min(max(push.environmentImportanceTexelCount, 1u), max(textureTexelCount, 1u));
+    if (width == 0u || height == 0u || texelCount == 0u) {
+        return 0.0;
+    }
+
+    float2 uv = environmentUvFromDirection(direction, push.environmentRotationRadians);
+    uint2 texel = min(uint2(uv * float2(width, height)), uint2(width - 1u, height - 1u));
+    uint texelIndex = texel.y * width + texel.x;
+    if (texelIndex >= texelCount) {
+        return 0.0;
+    }
+
+    float previousCdf = texelIndex == 0u ? 0.0 : gEnvironmentImportanceCdf[texelIndex - 1u];
+    float currentCdf = gEnvironmentImportanceCdf[texelIndex];
+    float texelProbability = max(currentCdf - previousCdf, 0.0);
+    return texelProbability / environmentTexelSolidAngle(texel.y, width, height);
+}
+
+float environmentLightMisWeight(ScenePathTracePush push, float environmentPdf, float bsdfPdf)
+{
+    return push.environmentMode == kEnvironmentModeMap
+        ? misPowerHeuristic(environmentPdf, bsdfPdf)
+        : 1.0;
+}
+
+float environmentBsdfMisWeight(ScenePathTracePush push, float bsdfPdf, float3 direction, bool sampledDelta)
+{
+    if (push.environmentMode != kEnvironmentModeMap || sampledDelta) {
+        return 1.0;
+    }
+    return misPowerHeuristic(bsdfPdf, environmentPdfSolidAngle(direction, push));
 }
 
 float3 environmentMapRadiance(float3 direction, ScenePathTracePush push)
@@ -675,6 +733,30 @@ float3 srgbToLinear(float3 color)
         color.b <= 0.04045 ? color.b / 12.92 : pow((color.b + 0.055) / 1.055, 2.4));
 }
 
+float fallbackBsdfPdf(
+    float3 incidentDirection,
+    float3 normal,
+    float3 sampledDirection,
+    float metallic,
+    float roughness,
+    float diffuseTransmission)
+{
+    float specularChance = saturate(0.08 + metallic * 0.72 + (1.0 - roughness) * 0.18);
+    float transmissionChance = saturate(diffuseTransmission * (1.0 - metallic));
+    float frontCos = saturate(dot(normal, sampledDirection));
+    float backCos = saturate(dot(-normal, sampledDirection));
+    float diffusePdf = frontCos / kPi;
+    float transmissionPdf = backCos / kPi;
+
+    float3 reflectedDirection = safeNormalize(reflect(incidentDirection, normal), normal);
+    float specularPower = lerp(96.0, 8.0, roughness);
+    float specularPdf = ((specularPower + 1.0) / (2.0 * kPi)) *
+        pow(saturate(dot(reflectedDirection, sampledDirection)), specularPower);
+    return specularChance * specularPdf +
+        (1.0 - specularChance) *
+            ((1.0 - transmissionChance) * diffusePdf + transmissionChance * transmissionPdf);
+}
+
 
 float3 applyNormalMap(
     float3 normal,
@@ -707,12 +789,17 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
+    float previousBsdfPdf = 0.0;
+    bool previousScatterDelta = true;
     uint maxDepth = clamp(push.maxDepth, 1u, 32u);
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         if (!traceClosest(ray, push, hit)) {
-            radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u);
+            float misWeight = depth == 0u
+                ? 1.0
+                : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
+            radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u) * misWeight;
             break;
         }
 
@@ -804,6 +891,8 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
                     attenuationColor,
                     max(thickness, 0.001)) * transmission;
             }
+            previousBsdfPdf = 1.0;
+            previousScatterDelta = true;
             ray.origin = offsetRay(hit.position, dot(ray.direction, hit.geometryNormal) > 0.0 ? hit.geometryNormal : -hit.geometryNormal);
             continue;
         }
@@ -811,7 +900,12 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
         EnvironmentLightSample lightSample;
         if (sampleEnvironmentLight(push, seed, lightSample)) {
             float3 lightDirection = lightSample.direction;
-            float3 lightRadianceOverPdf = lightSample.radiance / max(lightSample.pdfSolidAngle, 0.000001);
+            float lightMisWeight = environmentLightMisWeight(
+                push,
+                lightSample.pdfSolidAngle,
+                fallbackBsdfPdf(ray.direction, hit.normal, lightDirection, metallic, roughness, diffuseTransmission));
+            float3 lightRadianceOverPdf =
+                lightSample.radiance * lightMisWeight / max(lightSample.pdfSolidAngle, 0.000001);
             float nDotL = saturate(dot(hit.normal, lightDirection));
             if (nDotL > 0.0) {
                 bool occluded = traceShadow(offsetRay(hit.position, hit.geometryNormal), lightDirection, 10000.0, push);
@@ -846,7 +940,8 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
         }
 
         float3 diffuseDirection = sampleCosineHemisphere(hit.normal, seed);
-        float3 reflectedDirection = reflect(ray.direction, hit.normal);
+        float3 incidentDirection = ray.direction;
+        float3 reflectedDirection = reflect(incidentDirection, hit.normal);
         float specularChance = saturate(0.08 + metallic * 0.72 + (1.0 - roughness) * 0.18);
         if (rand(seed) < specularChance) {
             float glossMix = roughness * roughness;
@@ -869,6 +964,10 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
             ray.direction = diffuseDirection;
             throughput *= baseColor * occlusion * (1.0 - metallic) * (1.0 - diffuseTransmission);
         }
+        previousBsdfPdf = max(
+            fallbackBsdfPdf(incidentDirection, hit.normal, ray.direction, metallic, roughness, diffuseTransmission),
+            0.000001);
+        previousScatterDelta = false;
         ray.origin = offsetRay(hit.position, dot(ray.direction, hit.geometryNormal) > 0.0 ? hit.geometryNormal : -hit.geometryNormal);
 
         if (depth >= 2u) {
