@@ -141,6 +141,8 @@ struct HitInfo
 };
 
 static const float kPi = 3.14159265358979323846;
+static const float3 kEnvironmentKeyLightDirection = float3(0.35, 0.88, 0.22);
+static const float3 kEnvironmentKeyLightRadiance = float3(5.2, 4.8, 4.2);
 
 float3 safeNormalize(float3 value, float3 fallback)
 {
@@ -209,12 +211,40 @@ float3 offsetRay(float3 position, float3 normal)
     return position + normal * 0.001;
 }
 
-float3 proceduralSkyRadiance(float3 direction)
+float3 environmentLocalDirectionToWorld(float3 direction, float rotationRadians)
+{
+    float sine = sin(rotationRadians);
+    float cosine = cos(rotationRadians);
+    return float3(
+        direction.x * cosine + direction.z * sine,
+        direction.y,
+        -direction.x * sine + direction.z * cosine);
+}
+
+float3 environmentKeyLightDirection(ScenePathTracePush push)
+{
+    return safeNormalize(
+        environmentLocalDirectionToWorld(kEnvironmentKeyLightDirection, push.environmentRotationRadians),
+        float3(0.0, 1.0, 0.0));
+}
+
+float3 environmentKeyLightRadiance(ScenePathTracePush push)
+{
+    if (push.environmentMode == kEnvironmentModeDisabled) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    return kEnvironmentKeyLightRadiance * max(push.environmentIntensity, 0.0);
+}
+
+float3 proceduralSkyRadiance(float3 direction, float rotationRadians)
 {
     float t = saturate(direction.y * 0.5 + 0.5);
     float3 horizon = float3(0.62, 0.70, 0.78);
     float3 zenith = float3(0.12, 0.24, 0.48);
-    float sun = pow(saturate(dot(direction, safeNormalize(float3(0.35, 0.88, 0.22), float3(0.0, 1.0, 0.0)))), 256.0);
+    float3 sunDirection = safeNormalize(
+        environmentLocalDirectionToWorld(kEnvironmentKeyLightDirection, rotationRadians),
+        float3(0.0, 1.0, 0.0));
+    float sun = pow(saturate(dot(direction, sunDirection)), 256.0);
     return lerp(horizon, zenith, t) * 0.45 + sun * float3(7.0, 6.4, 5.3);
 }
 
@@ -251,7 +281,7 @@ float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool prima
 
     float3 radiance = push.environmentMode == kEnvironmentModeMap
         ? environmentMapRadiance(direction, push)
-        : proceduralSkyRadiance(direction);
+        : proceduralSkyRadiance(direction, push.environmentRotationRadians);
     return radiance * max(push.environmentIntensity, 0.0);
 }
 
@@ -702,9 +732,10 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
             continue;
         }
 
-        float3 sunDirection = safeNormalize(float3(0.35, 0.88, 0.22), float3(0.0, 1.0, 0.0));
+        float3 sunDirection = environmentKeyLightDirection(push);
+        float3 sunRadiance = environmentKeyLightRadiance(push);
         float nDotL = saturate(dot(hit.normal, sunDirection));
-        if (nDotL > 0.0) {
+        if (max(sunRadiance.x, max(sunRadiance.y, sunRadiance.z)) > 0.0 && nDotL > 0.0) {
             bool occluded = traceShadow(offsetRay(hit.position, hit.geometryNormal), sunDirection, 10000.0, push);
             if (!occluded) {
                 float3 viewDirection = -ray.direction;
@@ -713,7 +744,7 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
                 float specularPower = lerp(96.0, 8.0, roughness);
                 float3 diffuse = baseColor * occlusion * (1.0 - metallic) * (1.0 - diffuseTransmission) * (nDotL / kPi);
                 float3 specular = f0 * pow(nDotH, specularPower) * nDotL;
-                radiance += throughput * (diffuse + specular) * float3(5.2, 4.8, 4.2);
+                radiance += throughput * (diffuse + specular) * sunRadiance;
             }
         }
         if (diffuseTransmission > 0.01) {
@@ -731,7 +762,7 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
                         attenuationColor,
                         max(thickness, 0.01)) *
                     (backNDotL / kPi);
-                radiance += throughput * transmittedDiffuse * float3(5.2, 4.8, 4.2);
+                radiance += throughput * transmittedDiffuse * sunRadiance;
             }
         }
 
