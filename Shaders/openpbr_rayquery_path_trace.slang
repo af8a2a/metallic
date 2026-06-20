@@ -93,6 +93,127 @@ struct OpenPBRMaterialEval
     float occlusion;
 };
 
+static const uint kOpenPBRInteriorStackCapacity = 8u;
+
+struct OpenPBRInteriorStackEntry
+{
+    uint materialIndex;
+    float ior;
+};
+
+struct OpenPBRInteriorStack
+{
+    OpenPBRInteriorStackEntry entries[kOpenPBRInteriorStackCapacity];
+    uint count;
+};
+
+OpenPBRInteriorStack makeOpenPBRInteriorStack()
+{
+    OpenPBRInteriorStack stack;
+    stack.count = 0u;
+    return stack;
+}
+
+float openPbrMaterialIor(PathTraceMaterial material)
+{
+    return clamp(material.glassParams.y, 1.0, 3.0);
+}
+
+float openPbrInteriorStackTopIor(OpenPBRInteriorStack stack)
+{
+    return stack.count > 0u ? stack.entries[stack.count - 1u].ior : OpenPBR_VacuumIor;
+}
+
+float openPbrInteriorStackNextIor(OpenPBRInteriorStack stack)
+{
+    return stack.count > 1u ? stack.entries[stack.count - 2u].ior : OpenPBR_VacuumIor;
+}
+
+float openPbrExteriorIorForHit(OpenPBRInteriorStack stack, HitInfo hit)
+{
+    if (hit.frontFace) {
+        return openPbrInteriorStackTopIor(stack);
+    }
+    if (stack.count > 0u && stack.entries[stack.count - 1u].materialIndex == hit.materialIndex) {
+        return openPbrInteriorStackNextIor(stack);
+    }
+    return openPbrInteriorStackTopIor(stack);
+}
+
+float3 openPbrVolumeTransmittance(OpenPBRInteriorStack stack, float distance)
+{
+    if (stack.count == 0u || distance <= 0.0) {
+        return float3(1.0, 1.0, 1.0);
+    }
+
+    PathTraceMaterial mediumMaterial = gMaterials[stack.entries[stack.count - 1u].materialIndex];
+    float attenuationDistance = max(mediumMaterial.glassParams.w, 0.0);
+    if (attenuationDistance <= 0.0001) {
+        return float3(1.0, 1.0, 1.0);
+    }
+
+    float3 attenuationColor = clamp(
+        mediumMaterial.attenuationColor.rgb,
+        float3(0.0000001, 0.0000001, 0.0000001),
+        float3(1.0, 1.0, 1.0));
+    float exponent = max(distance, 0.0) / attenuationDistance;
+    return float3(
+        pow(attenuationColor.x, exponent),
+        pow(attenuationColor.y, exponent),
+        pow(attenuationColor.z, exponent));
+}
+
+void openPbrInteriorStackPush(inout OpenPBRInteriorStack stack, uint materialIndex, float ior)
+{
+    if (stack.count > 0u && stack.entries[stack.count - 1u].materialIndex == materialIndex) {
+        stack.entries[stack.count - 1u].ior = ior;
+        return;
+    }
+    if (stack.count >= kOpenPBRInteriorStackCapacity) {
+        stack.entries[kOpenPBRInteriorStackCapacity - 1u].materialIndex = materialIndex;
+        stack.entries[kOpenPBRInteriorStackCapacity - 1u].ior = ior;
+        return;
+    }
+
+    stack.entries[stack.count].materialIndex = materialIndex;
+    stack.entries[stack.count].ior = ior;
+    stack.count += 1u;
+}
+
+void openPbrInteriorStackPopMaterial(inout OpenPBRInteriorStack stack, uint materialIndex)
+{
+    if (stack.count == 0u) {
+        return;
+    }
+    if (stack.entries[stack.count - 1u].materialIndex == materialIndex) {
+        stack.count -= 1u;
+        return;
+    }
+
+    for (uint i = stack.count; i > 0u; --i) {
+        uint entryIndex = i - 1u;
+        if (stack.entries[entryIndex].materialIndex == materialIndex) {
+            for (uint j = entryIndex; j + 1u < stack.count; ++j) {
+                stack.entries[j] = stack.entries[j + 1u];
+            }
+            stack.count -= 1u;
+            return;
+        }
+    }
+}
+
+void openPbrUpdateInteriorStackAfterTransmission(
+    inout OpenPBRInteriorStack stack,
+    HitInfo hit,
+    PathTraceMaterial material)
+{
+    if (hit.frontFace) {
+        openPbrInteriorStackPush(stack, hit.materialIndex, openPbrMaterialIor(material));
+    } else {
+        openPbrInteriorStackPopMaterial(stack, hit.materialIndex);
+    }
+}
+
 OpenPBRMaterialEval evaluateOpenPBRMaterial(HitInfo hit, PathTraceMaterial material, ScenePathTracePush push)
 {
     float4 baseColorSample = loadMaterialTexture(
@@ -177,6 +298,7 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
     float previousBsdfPdf = 0.0;
     bool previousScatterDelta = true;
     uint maxDepth = clamp(push.maxDepth, 1u, 32u);
+    OpenPBRInteriorStack interiorStack = makeOpenPBRInteriorStack();
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
@@ -185,6 +307,11 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
                 ? 1.0
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
             radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u) * misWeight;
+            break;
+        }
+
+        throughput *= openPbrVolumeTransmittance(interiorStack, hit.t);
+        if (luminanceMax(throughput) <= 0.000001) {
             break;
         }
 
@@ -202,7 +329,7 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
             materialEval.inputs,
             throughput,
             OpenPBR_BaseRgbWavelengths_nm,
-            OpenPBR_VacuumIor,
+            openPbrExteriorIorForHit(interiorStack, hit),
             viewDirection);
 
         radiance += throughput * max(prepared.emission, float3(0.0, 0.0, 0.0));
@@ -244,6 +371,9 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
         throughput *= max(openpbr_get_sum_of_diffuse_specular(sampledWeight), float3(0.0, 0.0, 0.0));
         previousBsdfPdf = sampledPdf;
         previousScatterDelta = bool(sampledType & OpenPBR_BsdfLobeTypeSpecular);
+        if (bool(sampledType & OpenPBR_BsdfLobeTypeTransmission)) {
+            openPbrUpdateInteriorStackAfterTransmission(interiorStack, hit, material);
+        }
         ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(sampledDirection, hit.geometryNormal));
         ray.direction = sampledDirection;
 
