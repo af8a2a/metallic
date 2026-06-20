@@ -231,14 +231,16 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
 
         radiance += throughput * max(prepared.emission, float3(0.0, 0.0, 0.0));
 
-        float3 sunDirection = environmentKeyLightDirection(push);
-        float3 sunRadiance = environmentKeyLightRadiance(push);
-        if (max(sunRadiance.x, max(sunRadiance.y, sunRadiance.z)) > 0.0 && dot(hit.geometryNormal, sunDirection) > 0.0) {
-            bool occluded = traceShadow(offsetRay(hit.position, hit.geometryNormal), sunDirection, 10000.0, push);
+        EnvironmentLightSample lightSample;
+        if (sampleEnvironmentLight(push, seed, lightSample) && dot(hit.geometryNormal, lightSample.direction) > 0.0) {
+            bool occluded = traceShadow(offsetRay(hit.position, hit.geometryNormal), lightSample.direction, 10000.0, push);
             if (!occluded) {
-                OpenPBR_DiffuseSpecular sunBsdf = openpbr_eval(prepared, sunDirection);
-                float3 sunWeight = openpbr_get_sum_of_diffuse_specular(sunBsdf);
-                radiance += throughput * sunWeight * materialEval.occlusion * sunRadiance;
+                OpenPBR_DiffuseSpecular lightBsdf = openpbr_eval(prepared, lightSample.direction);
+                float3 lightWeight = openpbr_get_sum_of_diffuse_specular(lightBsdf);
+                radiance += throughput *
+                    lightWeight *
+                    materialEval.occlusion *
+                    (lightSample.radiance / max(lightSample.pdfSolidAngle, 0.000001));
             }
         }
 

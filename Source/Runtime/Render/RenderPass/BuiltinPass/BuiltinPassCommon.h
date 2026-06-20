@@ -338,7 +338,7 @@ struct ScenePathTracePush {
     float environmentRotationRadians = 0.0f;
     uint32_t environmentMode = kScenePathTraceEnvironmentModeProcedural;
     uint32_t environmentVisible = 1;
-    uint32_t padding0 = 0;
+    uint32_t environmentImportanceTexelCount = 1;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
 };

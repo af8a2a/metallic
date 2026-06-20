@@ -53,6 +53,7 @@ static constexpr OpenPBRVec3 kOpenPBRLtc[] = {
 
 constexpr uint32_t kOpenPBRLut2DBinding = 11;
 constexpr uint32_t kOpenPBRLut3DBinding = 12;
+constexpr uint32_t kEnvironmentImportanceCdfBinding = 13;
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
 constexpr uint32_t kOpenPBRLutSize = OpenPBR_EnergyTableSize;
@@ -608,6 +609,10 @@ public:
                 .binding = 10,
                 .kind = SceneRayQueryBindingKind::SampledImage,
             },
+            SceneRayQueryBindingDesc{
+                .binding = kEnvironmentImportanceCdfBinding,
+                .kind = SceneRayQueryBindingKind::StorageBuffer,
+            },
         };
         if (useOpenPBR) {
             bindings.push_back(SceneRayQueryBindingDesc{
@@ -652,6 +657,7 @@ public:
         TextureHandle color = context.outputTexture("color");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         TextureView* environmentTextureView = sceneResources_.environmentTextureView();
+        Buffer* environmentImportanceBuffer = sceneResources_.environmentImportanceBuffer();
         TextureView* const environmentTextureViews[] = {environmentTextureView};
         const bool useOpenPBR = useOpenPBRBsdf(properties());
         if (!color.valid() ||
@@ -660,6 +666,7 @@ public:
             !sceneResources_.valid() ||
             materialTextureViews[0] == nullptr ||
             environmentTextureView == nullptr ||
+            environmentImportanceBuffer == nullptr ||
             (useOpenPBR && !openPBRLuts_.valid())) {
             return makeError(Error::InvalidArgument);
         }
@@ -673,6 +680,7 @@ public:
             sceneResources_.environmentMapAvailable(),
             push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
+        push.environmentImportanceTexelCount = sceneResources_.environmentImportanceTexelCount();
 
         TextureView* historyCurrentView = color.view();
         TextureView* historyPreviousView = color.view();
@@ -750,6 +758,10 @@ public:
                 .binding = 10,
                 .textureViews = environmentTextureViews,
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = kEnvironmentImportanceCdfBinding,
+                .buffer = environmentImportanceBuffer,
             },
         };
         if (useOpenPBR) {

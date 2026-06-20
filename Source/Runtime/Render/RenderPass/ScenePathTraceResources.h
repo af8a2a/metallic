@@ -47,6 +47,8 @@ public:
     const std::array<TextureView*, kScenePathTraceMaxMaterialTextures>& materialTextureViews() const;
     uint32_t materialTextureCount() const;
     TextureView* environmentTextureView() const;
+    Buffer* environmentImportanceBuffer() const;
+    uint32_t environmentImportanceTexelCount() const;
     bool environmentMapAvailable() const;
 
 private:

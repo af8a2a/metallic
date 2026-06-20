@@ -89,6 +89,9 @@ Texture2D<float4> gMaterialTextures[256];
 [[vk::binding(10, 0)]]
 Texture2D<float4> gEnvironmentMap;
 
+[[vk::binding(13, 0)]]
+StructuredBuffer<float> gEnvironmentImportanceCdf;
+
 static const uint kMaxMaterialTextures = 256u;
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
@@ -116,7 +119,7 @@ struct ScenePathTracePush
     float environmentRotationRadians;
     uint environmentMode;
     uint environmentVisible;
-    uint padding0;
+    uint environmentImportanceTexelCount;
     uint padding1;
     uint padding2;
 };
@@ -234,6 +237,79 @@ float3 environmentKeyLightRadiance(ScenePathTracePush push)
         return float3(0.0, 0.0, 0.0);
     }
     return kEnvironmentKeyLightRadiance * max(push.environmentIntensity, 0.0);
+}
+
+float3 environmentLocalDirectionFromUv(float2 uv)
+{
+    float phi = (uv.x - 0.5) * (2.0 * kPi);
+    float theta = uv.y * kPi;
+    float sinTheta = sin(theta);
+    return float3(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
+}
+
+struct EnvironmentLightSample
+{
+    float3 direction;
+    float3 radiance;
+    float pdfSolidAngle;
+};
+
+bool sampleEnvironmentLight(ScenePathTracePush push, inout uint seed, out EnvironmentLightSample sample)
+{
+    sample.direction = float3(0.0, 1.0, 0.0);
+    sample.radiance = float3(0.0, 0.0, 0.0);
+    sample.pdfSolidAngle = 1.0;
+
+    if (push.environmentMode == kEnvironmentModeDisabled || push.environmentIntensity <= 0.0) {
+        return false;
+    }
+
+    if (push.environmentMode != kEnvironmentModeMap) {
+        sample.direction = environmentKeyLightDirection(push);
+        sample.radiance = environmentKeyLightRadiance(push);
+        return max(sample.radiance.x, max(sample.radiance.y, sample.radiance.z)) > 0.0;
+    }
+
+    uint width = 1u;
+    uint height = 1u;
+    gEnvironmentMap.GetDimensions(width, height);
+    uint textureTexelCount = width * height;
+    uint texelCount = min(max(push.environmentImportanceTexelCount, 1u), max(textureTexelCount, 1u));
+    if (width == 0u || height == 0u || texelCount == 0u) {
+        return false;
+    }
+
+    float xi = rand(seed);
+    uint low = 0u;
+    uint high = texelCount;
+    while (low < high) {
+        uint mid = low + (high - low) / 2u;
+        if (gEnvironmentImportanceCdf[mid] < xi) {
+            low = mid + 1u;
+        } else {
+            high = mid;
+        }
+    }
+
+    uint texelIndex = min(low, texelCount - 1u);
+    float previousCdf = texelIndex == 0u ? 0.0 : gEnvironmentImportanceCdf[texelIndex - 1u];
+    float currentCdf = gEnvironmentImportanceCdf[texelIndex];
+    float texelProbability = max(currentCdf - previousCdf, 0.0000001);
+    uint x = texelIndex % width;
+    uint y = texelIndex / width;
+
+    float2 uv = (float2(x, y) + float2(rand(seed), rand(seed))) / float2(width, height);
+    float centerTheta = (float(y) + 0.5) * (kPi / float(height));
+    float texelSolidAngle = max((2.0 * kPi / float(width)) * (kPi / float(height)) * sin(centerTheta), 0.0000001);
+
+    float3 localDirection = environmentLocalDirectionFromUv(uv);
+    sample.direction = safeNormalize(
+        environmentLocalDirectionToWorld(localDirection, push.environmentRotationRadians),
+        float3(0.0, 1.0, 0.0));
+    sample.radiance = max(gEnvironmentMap.Load(int3(int2(x, y), 0)).rgb, float3(0.0, 0.0, 0.0)) *
+        max(push.environmentIntensity, 0.0);
+    sample.pdfSolidAngle = texelProbability / texelSolidAngle;
+    return max(sample.radiance.x, max(sample.radiance.y, sample.radiance.z)) > 0.0 && sample.pdfSolidAngle > 0.0;
 }
 
 float3 proceduralSkyRadiance(float3 direction, float rotationRadians)
@@ -732,37 +808,40 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
             continue;
         }
 
-        float3 sunDirection = environmentKeyLightDirection(push);
-        float3 sunRadiance = environmentKeyLightRadiance(push);
-        float nDotL = saturate(dot(hit.normal, sunDirection));
-        if (max(sunRadiance.x, max(sunRadiance.y, sunRadiance.z)) > 0.0 && nDotL > 0.0) {
-            bool occluded = traceShadow(offsetRay(hit.position, hit.geometryNormal), sunDirection, 10000.0, push);
-            if (!occluded) {
-                float3 viewDirection = -ray.direction;
-                float3 halfVector = safeNormalize(sunDirection + viewDirection, hit.normal);
-                float nDotH = saturate(dot(hit.normal, halfVector));
-                float specularPower = lerp(96.0, 8.0, roughness);
-                float3 diffuse = baseColor * occlusion * (1.0 - metallic) * (1.0 - diffuseTransmission) * (nDotL / kPi);
-                float3 specular = f0 * pow(nDotH, specularPower) * nDotL;
-                radiance += throughput * (diffuse + specular) * sunRadiance;
+        EnvironmentLightSample lightSample;
+        if (sampleEnvironmentLight(push, seed, lightSample)) {
+            float3 lightDirection = lightSample.direction;
+            float3 lightRadianceOverPdf = lightSample.radiance / max(lightSample.pdfSolidAngle, 0.000001);
+            float nDotL = saturate(dot(hit.normal, lightDirection));
+            if (nDotL > 0.0) {
+                bool occluded = traceShadow(offsetRay(hit.position, hit.geometryNormal), lightDirection, 10000.0, push);
+                if (!occluded) {
+                    float3 viewDirection = -ray.direction;
+                    float3 halfVector = safeNormalize(lightDirection + viewDirection, hit.normal);
+                    float nDotH = saturate(dot(hit.normal, halfVector));
+                    float specularPower = lerp(96.0, 8.0, roughness);
+                    float3 diffuse = baseColor * occlusion * (1.0 - metallic) * (1.0 - diffuseTransmission) * (nDotL / kPi);
+                    float3 specular = f0 * pow(nDotH, specularPower) * nDotL;
+                    radiance += throughput * (diffuse + specular) * lightRadianceOverPdf;
+                }
             }
-        }
-        if (diffuseTransmission > 0.01) {
-            float backNDotL = saturate(dot(-hit.normal, sunDirection));
-            if (backNDotL > 0.0) {
-                float3 transmittedDiffuse =
-                    baseColor *
-                    diffuseTransmissionColor *
-                    diffuseTransmission *
-                    volumeTransmittance(
-                        baseColor,
-                        transmission,
-                        thickness,
-                        attenuationDistance,
-                        attenuationColor,
-                        max(thickness, 0.01)) *
-                    (backNDotL / kPi);
-                radiance += throughput * transmittedDiffuse * sunRadiance;
+            if (diffuseTransmission > 0.01) {
+                float backNDotL = saturate(dot(-hit.normal, lightDirection));
+                if (backNDotL > 0.0) {
+                    float3 transmittedDiffuse =
+                        baseColor *
+                        diffuseTransmissionColor *
+                        diffuseTransmission *
+                        volumeTransmittance(
+                            baseColor,
+                            transmission,
+                            thickness,
+                            attenuationDistance,
+                            attenuationColor,
+                            max(thickness, 0.01)) *
+                        (backNDotL / kPi);
+                    radiance += throughput * transmittedDiffuse * lightRadianceOverPdf;
+                }
             }
         }
 

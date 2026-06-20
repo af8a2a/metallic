@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -280,6 +281,22 @@ uint32_t countDistinctVisibleColorBins(const std::vector<uint32_t>& pixels)
         }
     }
     return static_cast<uint32_t>(bins.size());
+}
+
+uint64_t sumAbsoluteRgbDifference(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b)
+{
+    const size_t count = std::min(a.size(), b.size());
+    uint64_t totalDifference = 0;
+    for (size_t index = 0; index < count; ++index) {
+        const uint32_t left = a[index];
+        const uint32_t right = b[index];
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            const int32_t leftValue = static_cast<int32_t>((left >> (channel * 8u)) & 0xffu);
+            const int32_t rightValue = static_cast<int32_t>((right >> (channel * 8u)) & 0xffu);
+            totalDifference += static_cast<uint64_t>(std::abs(leftValue - rightValue));
+        }
+    }
+    return totalDifference;
 }
 
 uint32_t packRgba8(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
@@ -1634,6 +1651,77 @@ public:
     }
 };
 
+class RenderGraphOpenPBRPathTracingEnvironmentRotationTest : public RhiTest {
+public:
+    RenderGraphOpenPBRPathTracingEnvironmentRotationTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_openpbr_pathtracing_environment_rotation";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string message;
+        if (!render::loadBuiltInRenderSample("pathtracing-sample", sample, message)) {
+            return RhiTestResult::fail(message);
+        }
+
+        render::RenderGraphNode* pathTrace = sample.graph.findNode("PathTrace");
+        if (pathTrace == nullptr) {
+            return RhiTestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
+        }
+        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "maxDepth", 4) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "samples", 1) ||
+            !sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", false)) {
+            return RhiTestResult::fail("failed to set OpenPBR environment rotation test runtime properties");
+        }
+
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "environment.rotationDegrees", 0.0f)) {
+            return RhiTestResult::fail("failed to set initial environment rotation");
+        }
+        result = preview.render(sample.graph, 96, 96, sample.desc.previewOutput);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("OpenPBR PathTracingSample is unsupported on this device: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("initial OpenPBR rotation render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const std::vector<uint32_t> rotation0Pixels = preview.pixels();
+
+        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "environment.rotationDegrees", 90.0f)) {
+            return RhiTestResult::fail("failed to set rotated environment");
+        }
+        result = preview.render(sample.graph, 96, 96, sample.desc.previewOutput);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("rotated OpenPBR environment render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const uint64_t difference = sumAbsoluteRgbDifference(rotation0Pixels, preview.pixels());
+        if (difference < 4096) {
+            return RhiTestResult::fail(
+                std::string("environment rotation did not materially affect path tracing output, diff=") +
+                std::to_string(difference));
+        }
+
+        return RhiTestResult::pass(std::string("environment rotation diff=") + std::to_string(difference));
+    }
+};
+
 class RenderGraphScenePathTraceMaterialTexturesPreviewTest : public RhiTest {
 public:
     RenderGraphScenePathTraceMaterialTexturesPreviewTest()
@@ -2410,6 +2498,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphSceneMaterialVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingSamplePreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingEnvironmentRotationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceTransmissionTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceAlphaMaskPreviewTest);

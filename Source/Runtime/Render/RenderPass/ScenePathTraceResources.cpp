@@ -5,6 +5,7 @@
 #include "stb_image.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -109,6 +110,11 @@ struct DecodedEnvironmentTexture {
     uint32_t width = 0;
     uint32_t height = 0;
     std::string label;
+};
+
+struct EnvironmentImportanceData {
+    std::vector<float> cdf;
+    uint32_t texelCount = 1;
 };
 
 std::string resultMessage(std::string_view label, const Result& result)
@@ -410,6 +416,55 @@ bool decodeEnvironmentTexture(
     outTexture.pixels.assign(pixels, pixels + static_cast<size_t>(componentCount));
     stbi_image_free(pixels);
     return true;
+}
+
+float environmentTexelWeight(const float* rgba, uint32_t y, uint32_t height)
+{
+    constexpr float kPi = 3.14159265358979323846f;
+    const float r = std::isfinite(rgba[0]) ? std::max(rgba[0], 0.0f) : 0.0f;
+    const float g = std::isfinite(rgba[1]) ? std::max(rgba[1], 0.0f) : 0.0f;
+    const float b = std::isfinite(rgba[2]) ? std::max(rgba[2], 0.0f) : 0.0f;
+    const float luminance = r * 0.2126f + g * 0.7152f + b * 0.0722f;
+    const float theta = (static_cast<float>(y) + 0.5f) * (kPi / static_cast<float>(std::max(height, 1u)));
+    return luminance * std::max(std::sin(theta), 0.0f);
+}
+
+EnvironmentImportanceData buildEnvironmentImportanceData(const DecodedEnvironmentTexture& texture)
+{
+    EnvironmentImportanceData data;
+    const uint64_t texelCount64 = static_cast<uint64_t>(texture.width) * static_cast<uint64_t>(texture.height);
+    if (texture.pixels.empty() || texture.width == 0 || texture.height == 0 || texelCount64 == 0 ||
+        texelCount64 > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
+        data.cdf = {1.0f};
+        data.texelCount = 1;
+        return data;
+    }
+
+    data.texelCount = static_cast<uint32_t>(texelCount64);
+    data.cdf.resize(data.texelCount);
+    double totalWeight = 0.0;
+    for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
+        const uint32_t y = texelIndex / texture.width;
+        const float weight = environmentTexelWeight(&texture.pixels[static_cast<size_t>(texelIndex) * 4u], y, texture.height);
+        totalWeight += static_cast<double>(weight);
+        data.cdf[texelIndex] = static_cast<float>(totalWeight);
+    }
+
+    if (totalWeight <= 0.0 || !std::isfinite(totalWeight)) {
+        const float reciprocalCount = 1.0f / static_cast<float>(data.texelCount);
+        for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
+            data.cdf[texelIndex] = static_cast<float>(texelIndex + 1u) * reciprocalCount;
+        }
+        data.cdf.back() = 1.0f;
+        return data;
+    }
+
+    const float reciprocalTotalWeight = 1.0f / static_cast<float>(totalWeight);
+    for (float& cdfValue : data.cdf) {
+        cdfValue = std::min(cdfValue * reciprocalTotalWeight, 1.0f);
+    }
+    data.cdf.back() = 1.0f;
+    return data;
 }
 
 Result createEnvironmentTexture(
@@ -834,6 +889,8 @@ struct ScenePathTraceResources::Impl {
         std::string& log)
     {
         environmentTexture = ScenePathTraceMaterialTexture{};
+        environmentImportanceBuffer.reset();
+        environmentImportanceTexelCount = 1;
         environmentMapAvailable = false;
 
         if (!path.empty()) {
@@ -850,13 +907,26 @@ struct ScenePathTraceResources::Impl {
                 if (!result) {
                     return result;
                 }
+                EnvironmentImportanceData importanceData = buildEnvironmentImportanceData(decodedEnvironment);
+                result = uploadStorageBuffer(
+                    device,
+                    importanceData.cdf.data(),
+                    static_cast<uint64_t>(importanceData.cdf.size() * sizeof(float)),
+                    sizeof(float),
+                    environmentImportanceBuffer,
+                    log,
+                    "ScenePathTracePass environment importance CDF");
+                if (!result) {
+                    return result;
+                }
+                environmentImportanceTexelCount = importanceData.texelCount;
                 environmentMapAvailable = true;
                 return {};
             }
         }
 
         const float fallbackPixels[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-        return createEnvironmentTexture(
+        Result result = createEnvironmentTexture(
             device,
             fallbackPixels,
             1,
@@ -864,6 +934,19 @@ struct ScenePathTraceResources::Impl {
             "environment fallback",
             environmentTexture,
             log);
+        if (!result) {
+            return result;
+        }
+
+        const float fallbackCdf[1] = {1.0f};
+        return uploadStorageBuffer(
+            device,
+            fallbackCdf,
+            sizeof(fallbackCdf),
+            sizeof(float),
+            environmentImportanceBuffer,
+            log,
+            "ScenePathTracePass environment fallback importance CDF");
     }
 
     Result uploadTexture(CommandBuffer& commandBuffer, ScenePathTraceMaterialTexture& texture)
@@ -949,6 +1032,8 @@ struct ScenePathTraceResources::Impl {
         materialTextureViews.fill(nullptr);
         materialTextureCount = 0;
         environmentTexture = ScenePathTraceMaterialTexture{};
+        environmentImportanceBuffer.reset();
+        environmentImportanceTexelCount = 1;
         environmentMapAvailable = false;
     }
 
@@ -974,7 +1059,8 @@ struct ScenePathTraceResources::Impl {
             materialBuffer != nullptr &&
             !materialTextures.empty() &&
             materialTextureViews[0] != nullptr &&
-            environmentTexture.view != nullptr;
+            environmentTexture.view != nullptr &&
+            environmentImportanceBuffer != nullptr;
     }
 
     SceneRtxBuilder rtxBuilder;
@@ -992,6 +1078,8 @@ struct ScenePathTraceResources::Impl {
     std::array<TextureView*, kScenePathTraceMaxMaterialTextures> materialTextureViews{};
     uint32_t materialTextureCount = 0;
     ScenePathTraceMaterialTexture environmentTexture;
+    std::unique_ptr<Buffer> environmentImportanceBuffer;
+    uint32_t environmentImportanceTexelCount = 1;
     bool environmentMapAvailable = false;
 };
 ScenePathTraceResources::ScenePathTraceResources() :
@@ -1203,6 +1291,16 @@ uint32_t ScenePathTraceResources::materialTextureCount() const
 TextureView* ScenePathTraceResources::environmentTextureView() const
 {
     return impl_->environmentTexture.view.get();
+}
+
+Buffer* ScenePathTraceResources::environmentImportanceBuffer() const
+{
+    return impl_->environmentImportanceBuffer.get();
+}
+
+uint32_t ScenePathTraceResources::environmentImportanceTexelCount() const
+{
+    return impl_->environmentImportanceTexelCount;
 }
 
 bool ScenePathTraceResources::environmentMapAvailable() const
