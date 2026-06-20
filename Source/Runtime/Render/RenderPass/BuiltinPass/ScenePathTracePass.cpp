@@ -17,6 +17,21 @@ public:
         return reflection;
     }
 
+    std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
+    {
+        std::vector<RenderGraphRuntimeSetting> settings{
+            runtimeIntSetting("maxDepth", "Max Depth", static_cast<int32_t>(kDefaultPathTraceMaxDepth), 1, 12, true),
+            runtimeIntSetting("samples", "Samples", static_cast<int32_t>(kDefaultPathTraceSamples), 1, 16, true),
+            runtimeBoolSetting("accumulate", "Accumulate", true, true),
+        };
+        appendCameraRuntimeSettings(
+            settings,
+            std::array<float, 3>{0.0f, 0.2f, 2.5f},
+            std::array<float, 3>{0.0f, 0.0f, 0.0f},
+            50.0f,
+            true);
+        return settings;
+    }
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr || context.graphicsQueue == nullptr) {

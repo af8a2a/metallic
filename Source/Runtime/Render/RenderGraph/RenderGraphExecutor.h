@@ -9,6 +9,11 @@ struct RenderGraphSubmitDesc {
     Queue* copyQueue = nullptr;
 };
 
+struct RenderGraphCompileOptions {
+    std::vector<std::string> extraOutputs;
+    bool enablePreviewOutputAccess = false;
+};
+
 class RenderGraphExecutor {
 public:
     RenderGraphExecutor();
@@ -26,10 +31,18 @@ public:
         uint32_t width,
         uint32_t height,
         std::string& log);
+    Result compile(
+        Device& device,
+        const RenderGraph& graph,
+        uint32_t width,
+        uint32_t height,
+        const RenderGraphCompileOptions& options,
+        std::string& log);
     Result execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources = nullptr);
     Result execute(const RenderGraphSubmitDesc& desc);
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);
     bool syncProperties(const RenderGraph& graph);
+    bool syncRuntimeProperties(const RenderGraph& graph);
     Result transitionOutput(
         CommandBuffer& commandBuffer,
         std::string_view fullName,
@@ -59,6 +72,7 @@ public:
 
     Result initialize(bool enableValidation = false, bool enableRayQuery = false);
     Result render(RenderGraph& graph, uint32_t width, uint32_t height);
+    Result render(RenderGraph& graph, uint32_t width, uint32_t height, std::string_view outputName);
     const std::vector<uint32_t>& pixels() const;
     uint32_t width() const;
     uint32_t height() const;

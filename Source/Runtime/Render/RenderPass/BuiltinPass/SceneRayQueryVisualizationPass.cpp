@@ -17,6 +17,22 @@ public:
         return reflection;
     }
 
+    std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
+    {
+        std::vector<RenderGraphRuntimeSetting> settings{
+            runtimeEnumSetting(
+                "granularity",
+                "Granularity",
+                "instance",
+                {{"Instance", "instance"}, {"Primitive", "primitive"}}),
+        };
+        appendCameraRuntimeSettings(
+            settings,
+            std::array<float, 3>{0.0f, 0.0f, 3.0f},
+            std::array<float, 3>{0.0f, 0.0f, 0.0f},
+            60.0f);
+        return settings;
+    }
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr || context.graphicsQueue == nullptr) {

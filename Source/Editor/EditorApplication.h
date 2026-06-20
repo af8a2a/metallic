@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <volk.h>
@@ -31,6 +32,11 @@ private:
     void drawScenePanel();
     void drawCameraControls();
     void drawSceneNode(int32_t nodeIndex);
+    render::RenderGraphNode* activePreviewRenderGraphNode();
+    bool drawRuntimeSettingsForNode(
+        render::RenderGraphNode& node,
+        bool hideCameraSettings,
+        bool showEmptyMessage);
     void drawViewportPanel();
     void handleViewportCameraControls(const ImVec2& min, const ImVec2& max);
     void applyRuntimeNodeProperties(uint32_t nodeId, render::RenderGraphProperties properties, const char* status);
@@ -51,6 +57,8 @@ private:
     void clearSceneRtx();
     void addRenderGraphNode(std::string type, ImVec2 screenPosition);
     void markRenderGraphOutput(std::string outputName);
+    void setActivePreviewOutput(std::string outputName);
+    bool bindViewportPreviewOutput(std::string_view outputName);
     bool initializeRhi();
     bool createOrResizeSwapchain(uint32_t width, uint32_t height);
     void destroySwapchainResources();
@@ -112,6 +120,8 @@ private:
     char sceneFilePath_[260] = "Asset/meet_mat.glb";
     char graphNodeNameBuffer_[128] = {};
     char graphOutputBuffer_[128] = "Bunny.color";
+    char previewOutputBuffer_[128] = "Bunny.color";
+    std::string activePreviewOutput_ = "Bunny.color";
     std::string renderGraphStatus_;
     std::string sceneStatus_ = "No scene loaded.";
     std::string sceneRtxStatus_ = "RTX AS not built.";

@@ -42,6 +42,19 @@ public:
         return reflection;
     }
 
+    std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
+    {
+        return {
+            runtimeEnumSetting(
+                "denoiser",
+                "Denoiser",
+                "REBLUR",
+                {{"REBLUR", "REBLUR"}, {"RELAX", "RELAX"}, {"REFERENCE", "REFERENCE"}},
+                true),
+            runtimeBoolSetting("enableValidation", "Validation", true),
+            runtimeActionCounterSetting("resetSerial", "Reset", true),
+        };
+    }
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
     {
 #if !METALLIC_HAS_NRD

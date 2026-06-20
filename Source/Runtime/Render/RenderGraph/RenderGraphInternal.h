@@ -48,5 +48,10 @@ struct ActiveGraph {
 };
 
 bool buildActiveGraph(const RenderGraph& graph, ActiveGraph& activeGraph, std::string& log);
+bool buildActiveGraph(
+    const RenderGraph& graph,
+    const std::vector<std::string>& extraOutputs,
+    ActiveGraph& activeGraph,
+    std::string& log);
 
 } // namespace metallic::render::detail

@@ -56,6 +56,32 @@ enum class RenderGraphPassKind : uint8_t {
     Unsafe,
 };
 
+enum class RenderGraphRuntimeSettingType : uint8_t {
+    Bool,
+    Int,
+    Float,
+    Float3,
+    Color4,
+    Enum,
+    ActionCounter,
+};
+
+struct RenderGraphRuntimeSettingOption {
+    std::string label;
+    RenderGraphProperties value;
+};
+
+struct RenderGraphRuntimeSetting {
+    std::string key;
+    std::string label;
+    RenderGraphRuntimeSettingType type = RenderGraphRuntimeSettingType::Bool;
+    RenderGraphProperties defaultValue;
+    RenderGraphProperties minValue;
+    RenderGraphProperties maxValue;
+    std::vector<RenderGraphRuntimeSettingOption> options;
+    bool invalidateHistory = false;
+};
+
 struct RenderGraphField {
     std::string name;
     std::string description;
@@ -228,6 +254,7 @@ public:
     virtual RenderPassReflection reflect(const RenderGraphCompileContext& context) const = 0;
     virtual RenderGraphPassKind kind() const;
     virtual QueueType queueType() const;
+    virtual std::vector<RenderGraphRuntimeSetting> runtimeSettings() const;
     virtual Result compile(const RenderGraphCompileContext& context, std::string& log);
     virtual Result execute(RenderGraphExecutionContext& context) = 0;
 

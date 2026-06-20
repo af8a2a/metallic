@@ -290,6 +290,11 @@ QueueType RenderGraphPass::queueType() const
     return QueueType::Graphics;
 }
 
+std::vector<RenderGraphRuntimeSetting> RenderGraphPass::runtimeSettings() const
+{
+    return {};
+}
+
 Result RenderGraphPass::compile(const RenderGraphCompileContext&, std::string&)
 {
     return {};
@@ -727,6 +732,49 @@ bool RenderGraph::setNodeProperties(uint32_t id, RenderGraphProperties propertie
     node->properties = std::move(properties);
     markDirty();
     return true;
+}
+
+bool RenderGraph::setNodeRuntimeProperties(uint32_t id, RenderGraphProperties properties)
+{
+    RenderGraphNode* node = findNode(id);
+    if (node == nullptr) {
+        return false;
+    }
+    node->runtimeProperties = std::move(properties);
+    return true;
+}
+
+bool RenderGraph::setNodeRuntimeProperty(uint32_t id, std::string key, RenderGraphProperties value)
+{
+    RenderGraphNode* node = findNode(id);
+    if (node == nullptr || key.empty()) {
+        return false;
+    }
+    if (!node->runtimeProperties.is_object()) {
+        node->runtimeProperties = RenderGraphProperties::object();
+    }
+
+    RenderGraphProperties* object = &node->runtimeProperties;
+    size_t begin = 0;
+    while (begin < key.size()) {
+        const size_t dot = key.find('.', begin);
+        const std::string part = key.substr(begin, dot == std::string::npos ? std::string::npos : dot - begin);
+        if (part.empty()) {
+            return false;
+        }
+        if (dot == std::string::npos) {
+            (*object)[part] = std::move(value);
+            return true;
+        }
+
+        RenderGraphProperties& child = (*object)[part];
+        if (!child.is_object()) {
+            child = RenderGraphProperties::object();
+        }
+        object = &child;
+        begin = dot + 1;
+    }
+    return false;
 }
 
 bool RenderGraph::setNodePosition(uint32_t id, float uiX, float uiY)

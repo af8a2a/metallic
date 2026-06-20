@@ -780,8 +780,25 @@ public:
             return RhiTestResult::fail("default graph did not create Triangle node");
         }
         graph.setNodePosition(node->id, 123.0f, 456.0f);
+        graph.clearDirty();
+        if (!graph.setNodeRuntimeProperty(node->id, "runtimeOnlySentinel", 42) ||
+            !graph.setNodeRuntimeProperty(node->id, "camera.eye", {1.0f, 2.0f, 3.0f})) {
+            return RhiTestResult::fail("setNodeRuntimeProperty failed");
+        }
+        if (graph.dirty()) {
+            return RhiTestResult::fail("runtime property update unexpectedly marked graph dirty");
+        }
+        if (!node->runtimeProperties.is_object() ||
+            !node->runtimeProperties.contains("camera") ||
+            !node->runtimeProperties["camera"].contains("eye")) {
+            return RhiTestResult::fail("nested runtime property was not stored as an overlay object");
+        }
 
         const std::string json = render::serializeRenderGraphToString(graph);
+        if (json.find("runtimeOnlySentinel") != std::string::npos ||
+            json.find("runtimeProperties") != std::string::npos) {
+            return RhiTestResult::fail("runtime properties leaked into serialized graph JSON");
+        }
         render::RenderGraph loaded;
         std::string message;
         if (!render::deserializeRenderGraphFromString(json, loaded, message)) {
@@ -802,6 +819,12 @@ public:
             return RhiTestResult::fail("round-trip changed marked output");
         }
 
+        if (!loadedNode->runtimeProperties.empty()) {
+            return RhiTestResult::fail("round-trip restored runtime overlay from JSON");
+        }
+        if (!graph.setNodeProperties(node->id, node->properties) || !graph.dirty()) {
+            return RhiTestResult::fail("static property update did not mark graph dirty");
+        }
         return RhiTestResult::pass();
     }
 };
@@ -1131,12 +1154,13 @@ public:
             return RhiTestResult::fail("default Bunny graph did not create Bunny node");
         }
 
-        bunnyNode->properties["camera"]["fovDegrees"] = 35.0f;
-        bunnyNode->properties["camera"]["eye"] = {-0.0168404f, 0.110154f, 0.34f};
-        if (graph.dirty()) {
-            return RhiTestResult::fail("direct camera property update unexpectedly marked graph dirty");
+        if (!graph.setNodeRuntimeProperty(bunnyNode->id, "camera.fovDegrees", 35.0f) ||
+            !graph.setNodeRuntimeProperty(bunnyNode->id, "camera.eye", {-0.0168404f, 0.110154f, 0.34f})) {
+            return RhiTestResult::fail("runtime camera property update failed");
         }
-
+        if (graph.dirty()) {
+            return RhiTestResult::fail("runtime camera property update unexpectedly marked graph dirty");
+        }
         result = preview.render(graph, 256, 256);
         if (!result) {
             return RhiTestResult::fail(
@@ -1272,18 +1296,26 @@ public:
             "metallic",
             "ao",
         };
+        const std::string graphOutputBefore = sample.graph.firstOutputName();
+        const size_t graphOutputCountBefore = sample.graph.outputs().size();
+        sample.graph.clearDirty();
         for (const char* mode : modes) {
             render::RenderGraphNode* materialViz = sample.graph.findNode("MaterialViz");
             if (materialViz == nullptr || !materialViz->properties.is_object()) {
                 return RhiTestResult::fail("material visualization Sample graph is missing MaterialViz properties");
             }
-            render::RenderGraphProperties properties = materialViz->properties;
-            properties["mode"] = mode;
-            if (!sample.graph.setNodeProperties(materialViz->id, std::move(properties))) {
-                return RhiTestResult::fail(std::string("failed to set material visualization mode ") + mode);
+            if (!sample.graph.setNodeRuntimeProperty(materialViz->id, "mode", mode)) {
+                return RhiTestResult::fail(std::string("failed to set runtime material visualization mode ") + mode);
+            }
+            if (sample.graph.dirty()) {
+                return RhiTestResult::fail(std::string("runtime material visualization mode dirtied graph: ") + mode);
             }
 
-            result = preview.render(sample.graph, 160, 160);
+            result = preview.render(sample.graph, 160, 160, sample.desc.previewOutput);
+            if (sample.graph.firstOutputName() != graphOutputBefore ||
+                sample.graph.outputs().size() != graphOutputCountBefore) {
+                return RhiTestResult::fail("preview output render modified graph outputs");
+            }
             if (!result) {
                 if (render::hasError(result, render::Error::Unsupported)) {
                     return RhiTestResult::skip(

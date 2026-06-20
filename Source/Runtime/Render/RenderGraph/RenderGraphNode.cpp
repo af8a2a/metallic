@@ -1,6 +1,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
 
 #include <algorithm>
+#include <functional>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
@@ -414,6 +415,16 @@ bool validateAcyclic(
 
 bool buildActiveGraph(const RenderGraph& graph, ActiveGraph& activeGraph, std::string& log)
 {
+    static const std::vector<std::string> kNoExtraOutputs;
+    return buildActiveGraph(graph, kNoExtraOutputs, activeGraph, log);
+}
+
+bool buildActiveGraph(
+    const RenderGraph& graph,
+    const std::vector<std::string>& extraOutputs,
+    ActiveGraph& activeGraph,
+    std::string& log)
+{
     std::unordered_map<std::string, std::vector<std::string>> incoming;
     for (const RenderGraphEdge& edge : graph.edges()) {
         incoming[edge.dstPass].push_back(edge.srcPass);
@@ -430,6 +441,15 @@ bool buildActiveGraph(const RenderGraph& graph, ActiveGraph& activeGraph, std::s
 
     for (const RenderGraphOutput& output : graph.outputs()) {
         visitInputs(output.passName);
+    }
+    for (const std::string& output : extraOutputs) {
+        std::string passName;
+        std::string fieldName;
+        if (!splitRenderGraphFieldName(output, passName, fieldName)) {
+            log = validationPrefix(std::string("invalid extra output '") + output + "'");
+            return false;
+        }
+        visitInputs(passName);
     }
 
     std::unordered_map<std::string, uint32_t> indegree;

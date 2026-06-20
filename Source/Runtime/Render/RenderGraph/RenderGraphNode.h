@@ -10,6 +10,7 @@ struct RenderGraphNode {
     std::string name;
     std::string type;
     RenderGraphProperties properties = RenderGraphProperties::object();
+    RenderGraphProperties runtimeProperties = RenderGraphProperties::object();
     float uiX = 0.0f;
     float uiY = 0.0f;
 };
@@ -53,6 +54,8 @@ public:
     bool removeNode(uint32_t id);
     bool renameNode(uint32_t id, std::string newName);
     bool setNodeProperties(uint32_t id, RenderGraphProperties properties);
+    bool setNodeRuntimeProperties(uint32_t id, RenderGraphProperties properties);
+    bool setNodeRuntimeProperty(uint32_t id, std::string key, RenderGraphProperties value);
     bool setNodePosition(uint32_t id, float uiX, float uiY);
 
     RenderGraphEdge* addEdge(std::string src, std::string dst);

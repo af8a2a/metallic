@@ -17,6 +17,29 @@ public:
         return reflection;
     }
 
+    std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
+    {
+        std::vector<RenderGraphRuntimeSetting> settings{
+            runtimeEnumSetting(
+                "mode",
+                "Mode",
+                "material",
+                {
+                    {"Material", "material"},
+                    {"Base Color", "baseColor"},
+                    {"Normal", "normal"},
+                    {"Roughness", "roughness"},
+                    {"Metallic", "metallic"},
+                    {"AO", "ao"},
+                }),
+        };
+        appendCameraRuntimeSettings(
+            settings,
+            std::array<float, 3>{0.0f, 0.42f, 1.15f},
+            std::array<float, 3>{0.0f, 0.075f, 0.0f},
+            45.0f);
+        return settings;
+    }
     Result compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr || context.graphicsQueue == nullptr) {

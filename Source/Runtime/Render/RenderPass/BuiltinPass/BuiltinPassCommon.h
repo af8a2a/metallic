@@ -13,11 +13,13 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #ifndef PROJECT_SOURCE_DIR
@@ -70,6 +72,144 @@ inline constexpr uint32_t kNrdDenoiserModeRelax = 1;
 inline constexpr uint32_t kNrdDenoiserModeReference = 2;
 inline constexpr const char* kScenePathTraceHistoryPrefix = "ScenePathTracePass.";
 inline constexpr bool kDefaultReversedZ = true;
+
+inline RenderGraphRuntimeSetting runtimeBoolSetting(
+    std::string key,
+    std::string label,
+    bool defaultValue,
+    bool invalidateHistory = false)
+{
+    return RenderGraphRuntimeSetting{
+        .key = std::move(key),
+        .label = std::move(label),
+        .type = RenderGraphRuntimeSettingType::Bool,
+        .defaultValue = defaultValue,
+        .invalidateHistory = invalidateHistory,
+    };
+}
+
+inline RenderGraphRuntimeSetting runtimeIntSetting(
+    std::string key,
+    std::string label,
+    int32_t defaultValue,
+    int32_t minValue,
+    int32_t maxValue,
+    bool invalidateHistory = false)
+{
+    return RenderGraphRuntimeSetting{
+        .key = std::move(key),
+        .label = std::move(label),
+        .type = RenderGraphRuntimeSettingType::Int,
+        .defaultValue = defaultValue,
+        .minValue = minValue,
+        .maxValue = maxValue,
+        .invalidateHistory = invalidateHistory,
+    };
+}
+
+inline RenderGraphRuntimeSetting runtimeFloatSetting(
+    std::string key,
+    std::string label,
+    float defaultValue,
+    float minValue,
+    float maxValue,
+    bool invalidateHistory = false)
+{
+    return RenderGraphRuntimeSetting{
+        .key = std::move(key),
+        .label = std::move(label),
+        .type = RenderGraphRuntimeSettingType::Float,
+        .defaultValue = defaultValue,
+        .minValue = minValue,
+        .maxValue = maxValue,
+        .invalidateHistory = invalidateHistory,
+    };
+}
+
+inline RenderGraphRuntimeSetting runtimeFloat3Setting(
+    std::string key,
+    std::string label,
+    const std::array<float, 3>& defaultValue,
+    bool invalidateHistory = false)
+{
+    return RenderGraphRuntimeSetting{
+        .key = std::move(key),
+        .label = std::move(label),
+        .type = RenderGraphRuntimeSettingType::Float3,
+        .defaultValue = RenderGraphProperties::array({defaultValue[0], defaultValue[1], defaultValue[2]}),
+        .invalidateHistory = invalidateHistory,
+    };
+}
+
+inline RenderGraphRuntimeSetting runtimeColor4Setting(
+    std::string key,
+    std::string label,
+    const std::array<float, 4>& defaultValue,
+    bool invalidateHistory = false)
+{
+    return RenderGraphRuntimeSetting{
+        .key = std::move(key),
+        .label = std::move(label),
+        .type = RenderGraphRuntimeSettingType::Color4,
+        .defaultValue = RenderGraphProperties::array({defaultValue[0], defaultValue[1], defaultValue[2], defaultValue[3]}),
+        .minValue = RenderGraphProperties::array({0.0f, 0.0f, 0.0f, 0.0f}),
+        .maxValue = RenderGraphProperties::array({1.0f, 1.0f, 1.0f, 1.0f}),
+        .invalidateHistory = invalidateHistory,
+    };
+}
+
+inline RenderGraphRuntimeSetting runtimeEnumSetting(
+    std::string key,
+    std::string label,
+    std::string defaultValue,
+    std::initializer_list<std::pair<std::string_view, std::string_view>> options,
+    bool invalidateHistory = false)
+{
+    RenderGraphRuntimeSetting setting{
+        .key = std::move(key),
+        .label = std::move(label),
+        .type = RenderGraphRuntimeSettingType::Enum,
+        .defaultValue = std::move(defaultValue),
+        .invalidateHistory = invalidateHistory,
+    };
+    setting.options.reserve(options.size());
+    for (const auto& [optionLabel, optionValue] : options) {
+        setting.options.push_back(RenderGraphRuntimeSettingOption{
+            .label = std::string(optionLabel),
+            .value = std::string(optionValue),
+        });
+    }
+    return setting;
+}
+
+inline RenderGraphRuntimeSetting runtimeActionCounterSetting(
+    std::string key,
+    std::string label,
+    bool invalidateHistory = false)
+{
+    return RenderGraphRuntimeSetting{
+        .key = std::move(key),
+        .label = std::move(label),
+        .type = RenderGraphRuntimeSettingType::ActionCounter,
+        .defaultValue = 0,
+        .minValue = 0,
+        .maxValue = std::numeric_limits<int32_t>::max(),
+        .invalidateHistory = invalidateHistory,
+    };
+}
+
+inline void appendCameraRuntimeSettings(
+    std::vector<RenderGraphRuntimeSetting>& settings,
+    const std::array<float, 3>& eye,
+    const std::array<float, 3>& center,
+    float fovDegrees,
+    bool invalidateHistory = false)
+{
+    settings.push_back(runtimeFloat3Setting("camera.eye", "Eye", eye, invalidateHistory));
+    settings.push_back(runtimeFloat3Setting("camera.center", "Center", center, invalidateHistory));
+    settings.push_back(runtimeFloat3Setting("camera.up", "Up", {0.0f, 1.0f, 0.0f}, invalidateHistory));
+    settings.push_back(runtimeFloatSetting("camera.fovDegrees", "FOV", fovDegrees, 1.0f, 179.0f, invalidateHistory));
+}
 
 struct RenderGraphBufferUserPush {
     uint32_t inputBuffer = 0;

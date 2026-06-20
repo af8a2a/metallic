@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <functional>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
@@ -14,6 +15,34 @@
 namespace metallic::render {
 
 using namespace detail;
+
+RenderGraphProperties mergeRenderGraphProperties(
+    const RenderGraphProperties& staticProperties,
+    const RenderGraphProperties& runtimeProperties)
+{
+    RenderGraphProperties merged = staticProperties.is_object()
+        ? staticProperties
+        : RenderGraphProperties::object();
+    if (!runtimeProperties.is_object()) {
+        return merged;
+    }
+
+    std::function<void(RenderGraphProperties&, const RenderGraphProperties&)> mergeObject =
+        [&](RenderGraphProperties& destination, const RenderGraphProperties& source) {
+            for (auto iter = source.begin(); iter != source.end(); ++iter) {
+                if (iter.value().is_object() &&
+                    destination.contains(iter.key()) &&
+                    destination[iter.key()].is_object()) {
+                    mergeObject(destination[iter.key()], iter.value());
+                    continue;
+                }
+                destination[iter.key()] = iter.value();
+            }
+        };
+    mergeObject(merged, runtimeProperties);
+    return merged;
+}
+
 struct RenderGraphExecutor::Impl {
     struct ResourceSlot {
         std::unique_ptr<Texture> texture;
@@ -29,7 +58,9 @@ struct RenderGraphExecutor::Impl {
         std::string type;
         RenderGraphPassKind kind = RenderGraphPassKind::Unsafe;
         QueueType queueType = QueueType::Graphics;
-        RenderGraphProperties properties = RenderGraphProperties::object();
+        RenderGraphProperties staticProperties = RenderGraphProperties::object();
+        RenderGraphProperties runtimeProperties = RenderGraphProperties::object();
+        RenderGraphProperties effectiveProperties = RenderGraphProperties::object();
         std::unique_ptr<RenderGraphPass> pass;
         RenderPassReflection reflection;
     };
@@ -325,7 +356,7 @@ struct RenderGraphExecutor::Impl {
             width,
             height,
             node.name,
-            node.properties,
+            node.effectiveProperties,
             std::move(bindings),
             historyResources);
         const std::string markerName = passProfileMarkerName(node.name, node.type);
@@ -365,6 +396,17 @@ Result RenderGraphExecutor::compile(
     uint32_t height,
     std::string& log)
 {
+    return compile(device, graph, width, height, RenderGraphCompileOptions{}, log);
+}
+
+Result RenderGraphExecutor::compile(
+    Device& device,
+    const RenderGraph& graph,
+    uint32_t width,
+    uint32_t height,
+    const RenderGraphCompileOptions& options,
+    std::string& log)
+{
     if (width == 0 || height == 0) {
         log = validationPrefix("invalid default dimensions");
         return makeError(Error::InvalidArgument);
@@ -378,7 +420,7 @@ Result RenderGraphExecutor::compile(
     }
 
     ActiveGraph activeGraph;
-    if (!buildActiveGraph(graph, activeGraph, log)) {
+    if (!buildActiveGraph(graph, options.extraOutputs, activeGraph, log)) {
         impl_->isCompiled = false;
         return makeError(Error::InvalidArgument);
     }
@@ -428,6 +470,8 @@ Result RenderGraphExecutor::compile(
             return makeError(Error::InvalidArgument);
         }
         pass->setProperties(node->properties);
+        const RenderGraphProperties effectiveProperties =
+            mergeRenderGraphProperties(node->properties, node->runtimeProperties);
         const RenderGraphPassKind kind = pass->kind();
         const QueueType queueType = pass->queueType();
         RenderPassReflection reflection = pass->reflect(compileContext);
@@ -437,7 +481,9 @@ Result RenderGraphExecutor::compile(
             .type = node->type,
             .kind = kind,
             .queueType = queueType,
-            .properties = node->properties,
+            .staticProperties = node->properties,
+            .runtimeProperties = node->runtimeProperties,
+            .effectiveProperties = effectiveProperties,
             .pass = std::move(pass),
             .reflection = std::move(reflection),
         });
@@ -498,6 +544,7 @@ Result RenderGraphExecutor::compile(
             impl_->isCompiled = false;
             return result;
         }
+        node.pass->setProperties(node.effectiveProperties);
     }
 
     for (const Impl::CompiledNode& node : impl_->executionList) {
@@ -514,7 +561,7 @@ Result RenderGraphExecutor::compile(
                 if (usage == TextureUsageBits::None) {
                     usage = TextureUsageBits::ColorAttachment;
                 }
-                if (isOutputMarked(graph, fullName)) {
+                if (isOutputMarked(graph, fullName) || options.enablePreviewOutputAccess) {
                     usage = addTextureUsage(usage, TextureUsageBits::TransferSource);
                     usage = addTextureUsage(usage, TextureUsageBits::Sampled);
                 }
@@ -921,6 +968,11 @@ Result RenderGraphExecutor::waitForSubmittedWork(uint64_t timeoutNanoseconds)
 
 bool RenderGraphExecutor::syncProperties(const RenderGraph& graph)
 {
+    return syncRuntimeProperties(graph);
+}
+
+bool RenderGraphExecutor::syncRuntimeProperties(const RenderGraph& graph)
+{
     if (!impl_->isCompiled) {
         return false;
     }
@@ -930,13 +982,17 @@ bool RenderGraphExecutor::syncProperties(const RenderGraph& graph)
         const RenderGraphNode* graphNode = graph.findNode(compiledNode.id);
         if (graphNode == nullptr ||
             graphNode->name != compiledNode.name ||
-            graphNode->type != compiledNode.type) {
+            graphNode->type != compiledNode.type ||
+            graphNode->properties != compiledNode.staticProperties) {
             return false;
         }
 
-        if (compiledNode.properties != graphNode->properties) {
-            compiledNode.properties = graphNode->properties;
-            compiledNode.pass->setProperties(compiledNode.properties);
+        if (compiledNode.runtimeProperties != graphNode->runtimeProperties) {
+            compiledNode.runtimeProperties = graphNode->runtimeProperties;
+            compiledNode.effectiveProperties = mergeRenderGraphProperties(
+                compiledNode.staticProperties,
+                compiledNode.runtimeProperties);
+            compiledNode.pass->setProperties(compiledNode.effectiveProperties);
             synced = true;
         }
     }
@@ -1076,6 +1132,15 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
 
 Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth, uint32_t newHeight)
 {
+    return render(graph, newWidth, newHeight, graph.firstOutputName());
+}
+
+Result RenderGraphPreviewRenderer::render(
+    RenderGraph& graph,
+    uint32_t newWidth,
+    uint32_t newHeight,
+    std::string_view outputName)
+{
     if (impl_->device == nullptr ||
         impl_->graphicsQueue == nullptr ||
         impl_->commandPool == nullptr ||
@@ -1086,16 +1151,27 @@ Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth,
         return makeError(Error::InvalidArgument);
     }
 
+    const std::string resolvedOutputName = outputName.empty()
+        ? graph.firstOutputName()
+        : std::string(outputName);
+    if (resolvedOutputName.empty()) {
+        impl_->lastLog = "RenderGraph preview output resource is missing";
+        return makeError(Error::InvalidArgument);
+    }
+
     Result result = impl_->fence->wait();
     if (!result) {
         return result;
     }
 
+    const bool outputCompiled = impl_->executor.compiled() &&
+        impl_->executor.outputResource(resolvedOutputName) != nullptr;
     const bool needsCompile =
         graph.dirty() ||
         !impl_->executor.compiled() ||
         impl_->executor.width() != newWidth ||
-        impl_->executor.height() != newHeight;
+        impl_->executor.height() != newHeight ||
+        !outputCompiled;
     if (needsCompile) {
         result = impl_->device->waitIdle();
         if (!result) {
@@ -1103,18 +1179,22 @@ Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth,
         }
         impl_->historyResources.invalidateAll();
         impl_->historyFrameIndex = 0;
+        RenderGraphCompileOptions options;
+        options.extraOutputs.push_back(resolvedOutputName);
+        options.enablePreviewOutputAccess = true;
         result = impl_->executor.compile(
             *impl_->device,
             graph,
             newWidth,
             newHeight,
+            options,
             impl_->lastLog);
         if (!result) {
             return result;
         }
         graph.clearDirty();
     } else {
-        impl_->executor.syncProperties(graph);
+        impl_->executor.syncRuntimeProperties(graph);
     }
 
     result = impl_->ensureReadback(newWidth, newHeight);
@@ -1141,19 +1221,18 @@ Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth,
         return result;
     }
 
-    const std::string outputName = graph.firstOutputName();
-    RenderGraphResource* output = impl_->executor.outputResource(outputName);
+    RenderGraphResource* output = impl_->executor.outputResource(resolvedOutputName);
     if (output == nullptr || impl_->readbackBuffer == nullptr) {
-        impl_->lastLog = std::string("RenderGraph preview output resource is missing '") + outputName + "'";
+        impl_->lastLog = std::string("RenderGraph preview output resource is missing '") + resolvedOutputName + "'";
         return makeError(Error::InvalidArgument);
     }
     if (output->type != RenderGraphResourceType::Texture2D || output->texture == nullptr) {
-        impl_->lastLog = std::string("RenderGraph preview output is not a Texture2D '") + outputName + "'";
+        impl_->lastLog = std::string("RenderGraph preview output is not a Texture2D '") + resolvedOutputName + "'";
         return makeError(Error::InvalidArgument);
     }
     result = impl_->executor.transitionOutput(
         *impl_->commandBuffer,
-        outputName,
+        resolvedOutputName,
         ResourceState::TransferSource);
     if (!result) {
         return result;
@@ -1200,7 +1279,6 @@ Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth,
     impl_->height = newHeight;
     return {};
 }
-
 const std::vector<uint32_t>& RenderGraphPreviewRenderer::pixels() const
 {
     return impl_->pixels;

@@ -425,6 +425,268 @@ bool isMarkedRenderGraphOutput(const render::RenderGraph& graph, std::string_vie
     return false;
 }
 
+render::RenderGraphNode* findRenderGraphNodeForOutput(
+    render::RenderGraph& graph,
+    std::string_view outputName)
+{
+    std::string passName;
+    std::string fieldName;
+    if (!render::splitRenderGraphFieldName(outputName, passName, fieldName)) {
+        return nullptr;
+    }
+    return graph.findNode(passName);
+}
+
+bool isCameraRuntimeSetting(const render::RenderGraphRuntimeSetting& setting)
+{
+    return setting.key == "camera" || setting.key.rfind("camera.", 0) == 0;
+}
+
+bool hasVisibleRuntimeSettings(
+    const std::vector<render::RenderGraphRuntimeSetting>& settings,
+    bool hideCameraSettings)
+{
+    for (const render::RenderGraphRuntimeSetting& setting : settings) {
+        if (hideCameraSettings && isCameraRuntimeSetting(setting)) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+const render::RenderGraphProperties* nestedProperty(
+    const render::RenderGraphProperties& properties,
+    std::string_view key)
+{
+    const render::RenderGraphProperties* current = &properties;
+    size_t begin = 0;
+    while (begin < key.size()) {
+        const size_t dot = key.find('.', begin);
+        const std::string part(key.substr(begin, dot == std::string_view::npos ? key.size() - begin : dot - begin));
+        if (part.empty() || !current->is_object()) {
+            return nullptr;
+        }
+        const auto iter = current->find(part);
+        if (iter == current->end()) {
+            return nullptr;
+        }
+        if (dot == std::string_view::npos) {
+            return &(*iter);
+        }
+        current = &(*iter);
+        begin = dot + 1;
+    }
+    return nullptr;
+}
+
+void setNestedProperty(
+    render::RenderGraphProperties& properties,
+    std::string_view key,
+    render::RenderGraphProperties value)
+{
+    if (!properties.is_object()) {
+        properties = render::RenderGraphProperties::object();
+    }
+
+    render::RenderGraphProperties* current = &properties;
+    size_t begin = 0;
+    while (begin < key.size()) {
+        const size_t dot = key.find('.', begin);
+        const std::string part(key.substr(begin, dot == std::string_view::npos ? key.size() - begin : dot - begin));
+        if (part.empty()) {
+            return;
+        }
+        if (dot == std::string_view::npos) {
+            (*current)[part] = std::move(value);
+            return;
+        }
+        render::RenderGraphProperties& child = (*current)[part];
+        if (!child.is_object()) {
+            child = render::RenderGraphProperties::object();
+        }
+        current = &child;
+        begin = dot + 1;
+    }
+}
+
+void mergeRuntimeProperties(
+    render::RenderGraphProperties& destination,
+    const render::RenderGraphProperties& source)
+{
+    if (!source.is_object()) {
+        return;
+    }
+    if (!destination.is_object()) {
+        destination = render::RenderGraphProperties::object();
+    }
+    for (auto iter = source.begin(); iter != source.end(); ++iter) {
+        if (iter.value().is_object() && destination.contains(iter.key()) && destination[iter.key()].is_object()) {
+            mergeRuntimeProperties(destination[iter.key()], iter.value());
+            continue;
+        }
+        destination[iter.key()] = iter.value();
+    }
+}
+
+render::RenderGraphProperties effectiveNodeProperties(const render::RenderGraphNode& node)
+{
+    render::RenderGraphProperties properties = node.properties.is_object()
+        ? node.properties
+        : render::RenderGraphProperties::object();
+    mergeRuntimeProperties(properties, node.runtimeProperties);
+    return properties;
+}
+
+render::RenderGraphProperties runtimeSettingValue(
+    const render::RenderGraphNode& node,
+    const render::RenderGraphRuntimeSetting& setting)
+{
+    if (const render::RenderGraphProperties* value = nestedProperty(node.runtimeProperties, setting.key)) {
+        return *value;
+    }
+    if (const render::RenderGraphProperties* value = nestedProperty(node.properties, setting.key)) {
+        return *value;
+    }
+    return setting.defaultValue;
+}
+
+float floatValueOr(const render::RenderGraphProperties& value, float fallback)
+{
+    if (!value.is_number()) {
+        return fallback;
+    }
+    const float result = value.get<float>();
+    return std::isfinite(result) ? result : fallback;
+}
+
+int intValueOr(const render::RenderGraphProperties& value, int fallback)
+{
+    if (!value.is_number_integer() && !value.is_number_unsigned()) {
+        return fallback;
+    }
+    return value.get<int>();
+}
+
+bool boolValueOr(const render::RenderGraphProperties& value, bool fallback)
+{
+    return value.is_boolean() ? value.get<bool>() : fallback;
+}
+
+void floatArrayValueOr(
+    const render::RenderGraphProperties& value,
+    float* outValues,
+    size_t count,
+    const render::RenderGraphProperties& fallback)
+{
+    for (size_t index = 0; index < count; ++index) {
+        outValues[index] = 0.0f;
+        if (fallback.is_array() && fallback.size() > index && fallback[index].is_number()) {
+            outValues[index] = fallback[index].get<float>();
+        }
+        if (value.is_array() && value.size() > index && value[index].is_number()) {
+            outValues[index] = value[index].get<float>();
+        }
+    }
+}
+
+bool drawRuntimeSettingControl(
+    const render::RenderGraphRuntimeSetting& setting,
+    const render::RenderGraphProperties& currentValue,
+    render::RenderGraphProperties& outValue)
+{
+    const char* label = setting.label.empty() ? setting.key.c_str() : setting.label.c_str();
+    switch (setting.type) {
+    case render::RenderGraphRuntimeSettingType::Bool: {
+        bool value = boolValueOr(currentValue, boolValueOr(setting.defaultValue, false));
+        if (ImGui::Checkbox(label, &value)) {
+            outValue = value;
+            return true;
+        }
+        return false;
+    }
+    case render::RenderGraphRuntimeSettingType::Int: {
+        int value = intValueOr(currentValue, intValueOr(setting.defaultValue, 0));
+        const int minValue = intValueOr(setting.minValue, 0);
+        const int maxValue = std::max(intValueOr(setting.maxValue, 100), minValue);
+        if (ImGui::SliderInt(label, &value, minValue, maxValue)) {
+            outValue = std::clamp(value, minValue, maxValue);
+            return true;
+        }
+        return false;
+    }
+    case render::RenderGraphRuntimeSettingType::Float: {
+        float value = floatValueOr(currentValue, floatValueOr(setting.defaultValue, 0.0f));
+        const float minValue = floatValueOr(setting.minValue, 0.0f);
+        const float maxValue = std::max(floatValueOr(setting.maxValue, 1.0f), minValue);
+        if (ImGui::SliderFloat(label, &value, minValue, maxValue, "%.3f")) {
+            outValue = std::clamp(value, minValue, maxValue);
+            return true;
+        }
+        return false;
+    }
+    case render::RenderGraphRuntimeSettingType::Float3: {
+        float values[3] = {};
+        floatArrayValueOr(currentValue, values, 3, setting.defaultValue);
+        if (ImGui::InputFloat3(label, values, "%.6f")) {
+            outValue = {values[0], values[1], values[2]};
+            return true;
+        }
+        return false;
+    }
+    case render::RenderGraphRuntimeSettingType::Color4: {
+        float values[4] = {};
+        floatArrayValueOr(currentValue, values, 4, setting.defaultValue);
+        if (ImGui::ColorEdit4(label, values)) {
+            outValue = {values[0], values[1], values[2], values[3]};
+            return true;
+        }
+        return false;
+    }
+    case render::RenderGraphRuntimeSettingType::Enum: {
+        if (setting.options.empty()) {
+            return false;
+        }
+        int selectedIndex = 0;
+        for (int index = 0; index < static_cast<int>(setting.options.size()); ++index) {
+            if (setting.options[static_cast<size_t>(index)].value == currentValue) {
+                selectedIndex = index;
+                break;
+            }
+        }
+        const char* preview = setting.options[static_cast<size_t>(selectedIndex)].label.c_str();
+        bool changed = false;
+        if (ImGui::BeginCombo(label, preview)) {
+            for (int index = 0; index < static_cast<int>(setting.options.size()); ++index) {
+                const bool selected = index == selectedIndex;
+                if (ImGui::Selectable(setting.options[static_cast<size_t>(index)].label.c_str(), selected)) {
+                    selectedIndex = index;
+                    changed = true;
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (changed) {
+            outValue = setting.options[static_cast<size_t>(selectedIndex)].value;
+            return true;
+        }
+        return false;
+    }
+    case render::RenderGraphRuntimeSettingType::ActionCounter: {
+        if (ImGui::Button(label)) {
+            const int value = std::max(intValueOr(currentValue, intValueOr(setting.defaultValue, 0)), 0);
+            outValue = value + 1;
+            return true;
+        }
+        return false;
+    }
+    }
+
+    return false;
+}
 ImU32 colorForPassType(const std::string& type)
 {
     uint32_t hash = 2166136261u;
@@ -1415,6 +1677,25 @@ void EditorApplication::drawScenePanel()
     }
 
     ImGui::Separator();
+    if (ImGui::CollapsingHeader("Runtime Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+        render::RenderGraphNode* node = activePreviewRenderGraphNode();
+        if (node == nullptr) {
+            ImGui::TextDisabled("No active preview render pass.");
+        } else {
+            ImGui::TextDisabled(
+                "Active pass: %s (%s)",
+                node->name.c_str(),
+                node->type.c_str());
+            ImGui::PushID("SceneRuntimeSettings");
+            drawRuntimeSettingsForNode(
+                *node,
+                true,
+                true);
+            ImGui::PopID();
+        }
+    }
+
+    ImGui::Separator();
     drawCameraControls();
 
     if (!scene_.valid()) {
@@ -1482,6 +1763,80 @@ void EditorApplication::drawScenePanel()
     ImGui::End();
 }
 
+render::RenderGraphNode* EditorApplication::activePreviewRenderGraphNode()
+{
+    render::RenderGraphNode* node = activePreviewOutput_.empty()
+        ? nullptr
+        : findRenderGraphNodeForOutput(renderGraph_, activePreviewOutput_);
+    if (node != nullptr) {
+        return node;
+    }
+
+    const std::string fallbackOutput = renderGraph_.firstOutputName();
+    if (fallbackOutput.empty() || fallbackOutput == activePreviewOutput_) {
+        return nullptr;
+    }
+    return findRenderGraphNodeForOutput(renderGraph_, fallbackOutput);
+}
+
+bool EditorApplication::drawRuntimeSettingsForNode(
+    render::RenderGraphNode& node,
+    bool hideCameraSettings,
+    bool showEmptyMessage)
+{
+    std::unique_ptr<render::RenderGraphPass> pass = render::createRenderGraphPass(node.type);
+    if (pass == nullptr) {
+        if (showEmptyMessage) {
+            ImGui::TextDisabled("No runtime settings for this pass.");
+        }
+        return false;
+    }
+
+    const std::vector<render::RenderGraphRuntimeSetting> settings = pass->runtimeSettings();
+    if (!hasVisibleRuntimeSettings(settings, hideCameraSettings)) {
+        if (showEmptyMessage) {
+            ImGui::TextDisabled("No runtime settings for this pass.");
+        }
+        return false;
+    }
+
+    render::RenderGraphProperties runtimeProperties = node.runtimeProperties.is_object()
+        ? node.runtimeProperties
+        : render::RenderGraphProperties::object();
+    bool changed = false;
+    bool invalidateHistory = false;
+    ImGui::PushID(static_cast<int>(node.id));
+    for (const render::RenderGraphRuntimeSetting& setting : settings) {
+        if (hideCameraSettings && isCameraRuntimeSetting(setting)) {
+            continue;
+        }
+
+        ImGui::PushID(setting.key.c_str());
+        render::RenderGraphProperties newValue;
+        if (drawRuntimeSettingControl(setting, runtimeSettingValue(node, setting), newValue)) {
+            setNestedProperty(runtimeProperties, setting.key, std::move(newValue));
+            changed = true;
+            invalidateHistory = invalidateHistory || setting.invalidateHistory;
+        }
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+
+    if (changed) {
+        renderGraph_.setNodeRuntimeProperties(node.id, std::move(runtimeProperties));
+        if (invalidateHistory) {
+            historyResources_.invalidateAll();
+        }
+        if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
+            graphExecutor_->syncRuntimeProperties(renderGraph_);
+        }
+        viewportPreviewNeedsRender_ = true;
+        renderGraphStatus_ = "Updated runtime setting";
+    }
+
+    return true;
+}
+
 void EditorApplication::drawCameraControls()
 {
     render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
@@ -1490,7 +1845,7 @@ void EditorApplication::drawCameraControls()
         return;
     }
 
-    render::RenderGraphProperties properties = node->properties;
+    render::RenderGraphProperties properties = effectiveNodeProperties(*node);
     ensureCameraProperties(properties, scene_.bounds());
     render::RenderGraphProperties& camera = properties["camera"];
 
@@ -1608,17 +1963,24 @@ void EditorApplication::applyRuntimeNodeProperties(
         return;
     }
 
-    node->properties = std::move(properties);
+    render::RenderGraphProperties runtimeProperties = node->runtimeProperties.is_object()
+        ? node->runtimeProperties
+        : render::RenderGraphProperties::object();
+    if (properties.is_object() && properties.contains("camera")) {
+        runtimeProperties["camera"] = properties["camera"];
+    } else {
+        runtimeProperties = std::move(properties);
+    }
+    renderGraph_.setNodeRuntimeProperties(nodeId, std::move(runtimeProperties));
     historyResources_.invalidateAll();
     if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
-        graphExecutor_->syncProperties(renderGraph_);
+        graphExecutor_->syncRuntimeProperties(renderGraph_);
     }
     viewportPreviewNeedsRender_ = true;
     if (status != nullptr) {
         renderGraphStatus_ = status;
     }
 }
-
 void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties properties, const char* status)
 {
     render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
@@ -1763,7 +2125,7 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
         viewportCameraDragging_ = false;
     }
 
-    render::RenderGraphProperties properties = node->properties;
+    render::RenderGraphProperties properties = effectiveNodeProperties(*node);
     ensureCameraProperties(properties, scene_.bounds());
     render::RenderGraphProperties& camera = properties["camera"];
     bool changed = false;
@@ -1801,13 +2163,24 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
         return false;
     }
 
+    const std::string previewOutput = activePreviewOutput_.empty()
+        ? renderGraph_.firstOutputName()
+        : activePreviewOutput_;
+    if (previewOutput.empty()) {
+        renderGraphStatus_ = "No active preview output";
+        return false;
+    }
+
     const bool textureSizeMatches =
         viewportDescriptor_ != VK_NULL_HANDLE &&
         viewportTextureWidth_ == width &&
         viewportTextureHeight_ == height;
+    const bool previewResourceAvailable = graphExecutor_->compiled() &&
+        graphExecutor_->outputResource(previewOutput) != nullptr;
 
     if (viewportPreviewValid_ &&
         textureSizeMatches &&
+        previewResourceAvailable &&
         !renderGraph_.dirty()) {
         pendingViewportPreviewWidth_ = width;
         pendingViewportPreviewHeight_ = height;
@@ -1819,6 +2192,7 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     const bool canReusePreviewDuringResize =
         viewportPreviewValid_ &&
         viewportDescriptor_ != VK_NULL_HANDLE &&
+        previewResourceAvailable &&
         !textureSizeMatches &&
         !renderGraph_.dirty();
     if (canReusePreviewDuringResize) {
@@ -1840,7 +2214,10 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     destroyViewportTexture();
 
     std::string log;
-    render::Result result = graphExecutor_->compile(*device_, renderGraph_, width, height, log);
+    render::RenderGraphCompileOptions compileOptions;
+    compileOptions.extraOutputs.push_back(previewOutput);
+    compileOptions.enablePreviewOutputAccess = true;
+    render::Result result = graphExecutor_->compile(*device_, renderGraph_, width, height, compileOptions, log);
     renderGraphStatus_ = log;
     if (!result) {
         std::cerr << "RenderGraph compile failed with Result "
@@ -1848,24 +2225,7 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
         return false;
     }
 
-    render::RenderGraphResource* output = graphExecutor_->outputResource(renderGraph_.firstOutputName());
-    if (output == nullptr || output->view == nullptr) {
-        renderGraphStatus_ = "RenderGraph output texture is not available";
-        return false;
-    }
-
-    const VkImageView imageView = render::vulkan::nativeImageView(*output->view);
-    if (imageView == VK_NULL_HANDLE) {
-        renderGraphStatus_ = "RenderGraph output image view is not available";
-        return false;
-    }
-
-    viewportDescriptor_ = ImGui_ImplVulkan_AddTexture(
-        viewportSampler_,
-        imageView,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    if (viewportDescriptor_ == VK_NULL_HANDLE) {
-        renderGraphStatus_ = "ImGui failed to allocate viewport descriptor";
+    if (!bindViewportPreviewOutput(previewOutput)) {
         return false;
     }
 
@@ -1878,7 +2238,6 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     viewportResizeStableFrameCount_ = 0;
     return true;
 }
-
 void EditorApplication::destroyViewportDescriptor()
 {
     if (viewportDescriptor_ != VK_NULL_HANDLE && imguiRendererInitialized_) {
@@ -1910,7 +2269,7 @@ bool EditorApplication::renderGraphPreview()
     }
 
     if (!renderGraph_.dirty()) {
-        graphExecutor_->syncProperties(renderGraph_);
+        graphExecutor_->syncRuntimeProperties(renderGraph_);
     }
 
     commandBuffer_->beginDebugLabel(render::DebugLabelDesc{
@@ -1929,7 +2288,7 @@ bool EditorApplication::renderGraphPreview()
 
     result = graphExecutor_->transitionOutput(
         *commandBuffer_,
-        renderGraph_.firstOutputName(),
+        activePreviewOutput_.empty() ? renderGraph_.firstOutputName() : activePreviewOutput_,
         render::ResourceState::ShaderRead);
     if (!result) {
         renderGraphStatus_ = std::string("RenderGraph output transition failed: ") + render::resultToString(result);
@@ -2141,7 +2500,9 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     historyResources_.invalidateAll();
     copyToBuffer(sample.desc.graphPath, graphFilePath_, sizeof(graphFilePath_));
     copyToBuffer(sample.desc.scenePath, sceneFilePath_, sizeof(sceneFilePath_));
-    copyToBuffer(sample.desc.previewOutput, graphOutputBuffer_, sizeof(graphOutputBuffer_));
+    copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
+    activePreviewOutput_ = sample.desc.previewOutput;
+    copyToBuffer(activePreviewOutput_, previewOutputBuffer_, sizeof(previewOutputBuffer_));
     renderGraphStatus_ = "Loaded Sample: " + sample.desc.name;
     loadScene();
 }
@@ -2178,6 +2539,8 @@ void EditorApplication::loadRenderGraph()
     viewportPreviewValid_ = false;
     historyResources_.invalidateAll();
     copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
+    activePreviewOutput_ = renderGraph_.firstOutputName();
+    copyToBuffer(activePreviewOutput_, previewOutputBuffer_, sizeof(previewOutputBuffer_));
     renderGraphStatus_ = message;
 }
 
@@ -2284,6 +2647,56 @@ void EditorApplication::markRenderGraphOutput(std::string outputName)
     renderGraphStatus_ = std::string("Graph output set to ") + outputName;
 }
 
+void EditorApplication::setActivePreviewOutput(std::string outputName)
+{
+    if (outputName.empty()) {
+        return;
+    }
+
+    activePreviewOutput_ = std::move(outputName);
+    copyToBuffer(activePreviewOutput_, previewOutputBuffer_, sizeof(previewOutputBuffer_));
+    if (graphExecutor_ != nullptr &&
+        graphExecutor_->compiled() &&
+        graphExecutor_->outputResource(activePreviewOutput_) != nullptr &&
+        bindViewportPreviewOutput(activePreviewOutput_)) {
+        viewportPreviewValid_ = true;
+        viewportPreviewNeedsRender_ = true;
+    } else {
+        destroyViewportDescriptor();
+        viewportPreviewValid_ = false;
+        viewportPreviewNeedsRender_ = true;
+    }
+    renderGraphStatus_ = std::string("Preview output set to ") + activePreviewOutput_;
+}
+
+bool EditorApplication::bindViewportPreviewOutput(std::string_view outputName)
+{
+    if (graphExecutor_ == nullptr || viewportSampler_ == VK_NULL_HANDLE) {
+        return false;
+    }
+    render::RenderGraphResource* output = graphExecutor_->outputResource(outputName);
+    if (output == nullptr || output->view == nullptr) {
+        renderGraphStatus_ = std::string("RenderGraph preview output texture is not available: ") + std::string(outputName);
+        return false;
+    }
+
+    const VkImageView imageView = render::vulkan::nativeImageView(*output->view);
+    if (imageView == VK_NULL_HANDLE) {
+        renderGraphStatus_ = "RenderGraph preview output image view is not available";
+        return false;
+    }
+
+    destroyViewportDescriptor();
+    viewportDescriptor_ = ImGui_ImplVulkan_AddTexture(
+        viewportSampler_,
+        imageView,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (viewportDescriptor_ == VK_NULL_HANDLE) {
+        renderGraphStatus_ = "ImGui failed to allocate viewport descriptor";
+        return false;
+    }
+    return true;
+}
 int EditorApplication::graphInputAttributeId(const render::RenderGraphNode& node, uint32_t fieldIndex) const
 {
     return static_cast<int>(node.id * 100u + 1u + fieldIndex);
@@ -2342,26 +2755,33 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
         if (field.visibility == render::RenderGraphFieldVisibility::Output) {
             const std::string fullName = render::makeRenderGraphFieldName(node.name, field.name);
             const bool markedOutput = isMarkedRenderGraphOutput(renderGraph_, fullName);
+            const bool previewOutput = fullName == activePreviewOutput_;
             const int attributeId = graphOutputAttributeId(node, outputIndex++);
             if (markedOutput) {
                 ImNodes::PushColorStyle(ImNodesCol_Pin, IM_COL32(231, 65, 65, 255));
                 ImNodes::PushColorStyle(ImNodesCol_PinHovered, IM_COL32(255, 112, 112, 255));
+            } else if (previewOutput) {
+                ImNodes::PushColorStyle(ImNodesCol_Pin, IM_COL32(82, 196, 126, 255));
+                ImNodes::PushColorStyle(ImNodesCol_PinHovered, IM_COL32(125, 230, 158, 255));
             }
             ImNodes::BeginOutputAttribute(
                 attributeId,
-                markedOutput ? ImNodesPinShape_QuadFilled : ImNodesPinShape_CircleFilled);
+                markedOutput || previewOutput ? ImNodesPinShape_QuadFilled : ImNodesPinShape_CircleFilled);
             std::string label = field.name;
             label += "  ";
             label += renderGraphFieldTag(field);
             if (markedOutput) {
                 label += "  [Graph Output]";
             }
+            if (previewOutput) {
+                label += "  [Preview]";
+            }
             const float textWidth = ImGui::CalcTextSize(label.c_str()).x;
             ImGui::Indent(std::max(90.0f * mainScale_ - textWidth, 0.0f));
             ImGui::TextUnformatted(label.c_str());
             setRenderGraphFieldTooltip(field);
             ImNodes::EndOutputAttribute();
-            if (markedOutput) {
+            if (markedOutput || previewOutput) {
                 ImNodes::PopColorStyle();
                 ImNodes::PopColorStyle();
             }
@@ -2563,6 +2983,9 @@ void EditorApplication::drawRenderGraphPanel()
     if (ImGui::BeginPopup("RenderGraphOutputPinMenu")) {
         ImGui::TextUnformatted(graphOutputBuffer_);
         ImGui::Separator();
+        if (ImGui::MenuItem("Preview This Output")) {
+            setActivePreviewOutput(graphOutputBuffer_);
+        }
         if (ImGui::MenuItem("Set Graph Output")) {
             markRenderGraphOutput(graphOutputBuffer_);
         }
@@ -2678,22 +3101,34 @@ void EditorApplication::drawRenderGraphSettingsPanel()
     ImGui::PushItemWidth(-1.0f);
     ImGui::InputText("##GraphOutput", graphOutputBuffer_, sizeof(graphOutputBuffer_));
     ImGui::PopItemWidth();
-    if (ImGui::Button("Add Output")) {
+    if (ImGui::Button("Set Graph Output")) {
         markRenderGraphOutput(graphOutputBuffer_);
     }
 
     for (const render::RenderGraphOutput& output : renderGraph_.outputs()) {
         const std::string outputName = render::makeRenderGraphFieldName(output.passName, output.fieldName);
-        const bool selected = outputName == renderGraph_.firstOutputName();
+        ImGui::BulletText("%s", outputName.c_str());
+    }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Preview Output");
+    ImGui::PushItemWidth(-1.0f);
+    ImGui::InputText("##PreviewOutput", previewOutputBuffer_, sizeof(previewOutputBuffer_));
+    ImGui::PopItemWidth();
+    if (ImGui::Button("Set Preview Output")) {
+        setActivePreviewOutput(previewOutputBuffer_);
+    }
+    if (!activePreviewOutput_.empty()) {
+        ImGui::TextDisabled("Active: %s", activePreviewOutput_.c_str());
+    }
+
+    for (const render::RenderGraphOutput& output : renderGraph_.outputs()) {
+        const std::string outputName = render::makeRenderGraphFieldName(output.passName, output.fieldName);
+        const bool selected = outputName == activePreviewOutput_;
         if (ImGui::Selectable(outputName.c_str(), selected)) {
-            markRenderGraphOutput(outputName);
+            setActivePreviewOutput(outputName);
         }
     }
-
-    if (ImGui::Button("Open Preview")) {
-        renderGraphStatus_ = "Viewport previews the current graph output";
-    }
-
     ImGui::Separator();
     ImGui::Text("Nodes: %zu", renderGraph_.nodes().size());
     ImGui::Text("Edges: %zu", renderGraph_.edges().size());
@@ -2807,7 +3242,8 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         : nullptr;
     if (node == nullptr) {
         ImGui::Text("Graph: %s", renderGraph_.name().c_str());
-        ImGui::Text("Output: %s", renderGraph_.firstOutputName().c_str());
+        ImGui::Text("Graph Output: %s", renderGraph_.firstOutputName().c_str());
+        ImGui::Text("Preview Output: %s", activePreviewOutput_.c_str());
         ImGui::Text("Nodes: %zu", renderGraph_.nodes().size());
         ImGui::Text("Edges: %zu", renderGraph_.edges().size());
         return;
@@ -2838,208 +3274,51 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
         }
     }
 
-    if (node->type == "ClearColorPass") {
-        render::RenderGraphProperties properties = node->properties;
-        if (!properties.contains("color") || !properties["color"].is_array() || properties["color"].size() < 4) {
-            properties["color"] = {0.04f, 0.06f, 0.09f, 1.0f};
-        }
-        float color[4] = {
-            properties["color"][0].get<float>(),
-            properties["color"][1].get<float>(),
-            properties["color"][2].get<float>(),
-            properties["color"][3].get<float>(),
-        };
-        if (ImGui::ColorEdit4("Color", color)) {
-            properties["color"] = {color[0], color[1], color[2], color[3]};
-            renderGraph_.setNodeProperties(node->id, std::move(properties));
-            viewportPreviewValid_ = false;
-        }
-    } else if (node->type == "SceneRayQueryVisualizationPass") {
-        static int editingRayQueryNodeId = -1;
-        static char rayQueryScenePathBuffer[260] = {};
-        render::RenderGraphProperties properties = node->properties;
+    const bool hasStaticScenePath =
+        node->type == "SceneRayQueryVisualizationPass" ||
+        node->type == "SceneMaterialVisualizationPass" ||
+        node->type == "ScenePathTracePass";
+    if (hasStaticScenePath) {
+        static int editingScenePathNodeId = -1;
+        static char scenePathBuffer[260] = {};
+        render::RenderGraphProperties properties = node->properties.is_object()
+            ? node->properties
+            : render::RenderGraphProperties::object();
+        render::RenderGraphProperties defaults = defaultPropertiesForPass(node->type);
         if (!properties.contains("path") || !properties["path"].is_string()) {
-            properties["path"] = "Asset/StandfordBunny/scene.gltf";
+            properties["path"] = defaults.contains("path") && defaults["path"].is_string()
+                ? defaults["path"]
+                : "";
         }
-        if (!properties.contains("granularity") || !properties["granularity"].is_string()) {
-            properties["granularity"] = "instance";
-        }
-        if (editingRayQueryNodeId != static_cast<int>(node->id)) {
-            copyToBuffer(properties["path"].get<std::string>(), rayQueryScenePathBuffer, sizeof(rayQueryScenePathBuffer));
-            editingRayQueryNodeId = static_cast<int>(node->id);
+        if (editingScenePathNodeId != static_cast<int>(node->id)) {
+            copyToBuffer(properties["path"].get<std::string>(), scenePathBuffer, sizeof(scenePathBuffer));
+            editingScenePathNodeId = static_cast<int>(node->id);
         }
 
-        ImGui::InputText("Scene Path", rayQueryScenePathBuffer, sizeof(rayQueryScenePathBuffer));
+        ImGui::InputText("Scene Path", scenePathBuffer, sizeof(scenePathBuffer));
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-            properties["path"] = rayQueryScenePathBuffer;
-            renderGraph_.setNodeProperties(node->id, std::move(properties));
-            viewportPreviewValid_ = false;
-        } else {
-            int granularity = properties["granularity"].get<std::string>() == "primitive" ? 1 : 0;
-            ImGui::TextUnformatted("Granularity");
-            ImGui::SameLine();
-            bool changed = false;
-            if (ImGui::RadioButton("Per Instance", granularity == 0)) {
-                granularity = 0;
-                changed = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::RadioButton("Per Primitive", granularity == 1)) {
-                granularity = 1;
-                changed = true;
-            }
-            if (changed) {
-                properties["granularity"] = granularity == 1 ? "primitive" : "instance";
-                renderGraph_.setNodeProperties(node->id, std::move(properties));
-                viewportPreviewValid_ = false;
-            }
-        }
-    } else if (node->type == "SceneMaterialVisualizationPass") {
-        static int editingMaterialVisualizationNodeId = -1;
-        static char materialVisualizationScenePathBuffer[260] = {};
-        render::RenderGraphProperties properties = node->properties;
-        if (!properties.contains("path") || !properties["path"].is_string()) {
-            properties["path"] = "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf";
-        }
-        if (!properties.contains("mode") || !properties["mode"].is_string()) {
-            properties["mode"] = "material";
-        }
-        if (editingMaterialVisualizationNodeId != static_cast<int>(node->id)) {
-            copyToBuffer(
-                properties["path"].get<std::string>(),
-                materialVisualizationScenePathBuffer,
-                sizeof(materialVisualizationScenePathBuffer));
-            editingMaterialVisualizationNodeId = static_cast<int>(node->id);
-        }
-
-        bool changed = false;
-        ImGui::InputText("Scene Path", materialVisualizationScenePathBuffer, sizeof(materialVisualizationScenePathBuffer));
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            properties["path"] = materialVisualizationScenePathBuffer;
-            changed = true;
-        }
-
-        const char* modeItems[] = {"material", "baseColor", "normal", "roughness", "metallic", "ao"};
-        std::string mode = properties["mode"].get<std::string>();
-        int modeIndex = 0;
-        for (int index = 0; index < static_cast<int>(std::size(modeItems)); ++index) {
-            if (mode == modeItems[index]) {
-                modeIndex = index;
-                break;
-            }
-        }
-        if (ImGui::Combo("Mode", &modeIndex, modeItems, static_cast<int>(std::size(modeItems)))) {
-            properties["mode"] = modeItems[modeIndex];
-            changed = true;
-        }
-
-        if (changed) {
-            renderGraph_.setNodeProperties(node->id, std::move(properties));
-            viewportPreviewValid_ = false;
-        }
-    } else if (node->type == "ScenePathTracePass") {
-        static int editingPathTraceNodeId = -1;
-        static char pathTraceScenePathBuffer[260] = {};
-        render::RenderGraphProperties properties = node->properties;
-        if (!properties.contains("path") || !properties["path"].is_string()) {
-            properties["path"] = "Asset/meet_mat.glb";
-        }
-        if (!properties.contains("maxDepth") || !properties["maxDepth"].is_number()) {
-            properties["maxDepth"] = 3;
-        }
-        if (!properties.contains("samples") || !properties["samples"].is_number()) {
-            properties["samples"] = 2;
-        }
-        if (!properties.contains("accumulate") || !properties["accumulate"].is_boolean()) {
-            properties["accumulate"] = true;
-        }
-        if (editingPathTraceNodeId != static_cast<int>(node->id)) {
-            copyToBuffer(
-                properties["path"].get<std::string>(),
-                pathTraceScenePathBuffer,
-                sizeof(pathTraceScenePathBuffer));
-            editingPathTraceNodeId = static_cast<int>(node->id);
-        }
-
-        bool changed = false;
-        ImGui::InputText("Scene Path", pathTraceScenePathBuffer, sizeof(pathTraceScenePathBuffer));
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            properties["path"] = pathTraceScenePathBuffer;
-            changed = true;
-        }
-
-        int maxDepth = std::clamp(properties["maxDepth"].get<int>(), 1, 12);
-        if (ImGui::SliderInt("Max Depth", &maxDepth, 1, 12)) {
-            properties["maxDepth"] = maxDepth;
-            changed = true;
-        }
-
-        int samples = std::clamp(properties["samples"].get<int>(), 1, 16);
-        if (ImGui::SliderInt("Samples", &samples, 1, 16)) {
-            properties["samples"] = samples;
-            changed = true;
-        }
-
-        bool accumulate = properties["accumulate"].get<bool>();
-        if (ImGui::Checkbox("Accumulate", &accumulate)) {
-            properties["accumulate"] = accumulate;
-            changed = true;
-        }
-
-        if (changed) {
+            properties["path"] = scenePathBuffer;
             renderGraph_.setNodeProperties(node->id, std::move(properties));
             historyResources_.invalidateAll();
             viewportPreviewValid_ = false;
+            renderGraphStatus_ = "Updated static scene path";
         }
-    } else if (node->type == "NrdDenoisePass") {
-        render::RenderGraphProperties properties = node->properties;
-        if (!properties.is_object()) {
-            properties = render::RenderGraphProperties::object();
-        }
-        if (!properties.contains("denoiser") || !properties["denoiser"].is_string()) {
-            properties["denoiser"] = "REBLUR";
-        }
-        if (!properties.contains("enableValidation") || !properties["enableValidation"].is_boolean()) {
-            properties["enableValidation"] = true;
-        }
-        if (!properties.contains("resetSerial") || !properties["resetSerial"].is_number_unsigned()) {
-            properties["resetSerial"] = 0;
-        }
+    }
 
-        bool changed = false;
-        const char* denoiserItems[] = {"REBLUR", "RELAX", "REFERENCE"};
-        std::string denoiser = properties["denoiser"].get<std::string>();
-        int denoiserIndex = denoiser == "RELAX" ? 1 : (denoiser == "REFERENCE" ? 2 : 0);
-        if (ImGui::Combo("Denoiser", &denoiserIndex, denoiserItems, static_cast<int>(std::size(denoiserItems)))) {
-            properties["denoiser"] = denoiserItems[denoiserIndex];
-            changed = true;
+    bool drewRuntimeSettings = false;
+    if (pass != nullptr) {
+        const std::vector<render::RenderGraphRuntimeSetting> settings = pass->runtimeSettings();
+        if (!settings.empty()) {
+            ImGui::Separator();
+            ImGui::TextUnformatted("Runtime Settings");
+            drewRuntimeSettings = drawRuntimeSettingsForNode(*node, false, false);
         }
+    }
 
-        bool enableValidation = properties["enableValidation"].get<bool>();
-        if (ImGui::Checkbox("Validation Buffer", &enableValidation)) {
-            properties["enableValidation"] = enableValidation;
-            changed = true;
-        }
-
-        if (ImGui::Button("Reset NRD History")) {
-            uint32_t resetSerial = 0;
-            if (properties["resetSerial"].is_number_unsigned()) {
-                resetSerial = properties["resetSerial"].get<uint32_t>();
-            }
-            properties["resetSerial"] = resetSerial + 1u;
-            changed = true;
-        }
-
-        if (changed) {
-            renderGraph_.setNodeProperties(node->id, std::move(properties));
-            historyResources_.invalidateAll();
-            viewportPreviewValid_ = false;
-        }
-    } else if (!node->properties.empty()) {
+    if (!drewRuntimeSettings && !node->properties.empty()) {
         const std::string propertiesText = node->properties.dump(2);
         ImGui::TextWrapped("%s", propertiesText.c_str());
     }
-
     if (pass != nullptr) {
         pass->setProperties(node->properties);
         const render::RenderPassReflection reflection = pass->reflect(render::RenderGraphCompileContext{});
