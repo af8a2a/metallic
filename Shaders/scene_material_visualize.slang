@@ -504,11 +504,9 @@ float3 visualizeHit(HitInfo hit, SceneMaterialVisualizationPush push)
         return packNrdNormalRoughnessForDisplay(normal, roughness);
     }
     if (push.mode == kModeNormalDeviation) {
-        float normalDot = dot(safeNormalize(hit.normal, hit.geometryNormal), safeNormalize(hit.geometryNormal, hit.normal));
-        float deviation = saturate(acos(clamp(normalDot, -1.0, 1.0)) / 3.141592653589793);
-        return normalDot < 0.0
-            ? lerp(float3(0.02, 0.04, 0.18), float3(0.08, 0.35, 1.0), deviation)
-            : lerp(float3(0.02, 0.14, 0.03), float3(1.0, 0.08, 0.02), deviation * 2.0);
+        float normalDot = abs(dot(safeNormalize(hit.normal, hit.geometryNormal), safeNormalize(hit.geometryNormal, hit.normal)));
+        float deviation = saturate(acos(clamp(normalDot, -1.0, 1.0)) / 0.7853981633974483);
+        return lerp(float3(0.02, 0.14, 0.03), float3(1.0, 0.08, 0.02), deviation);
     }
     if (push.mode == kModeRoughness) {
         float roughness = saturate(material.params.y * metallicRoughnessSample.g);
