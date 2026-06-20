@@ -120,32 +120,11 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(HitInfo hit, PathTraceMaterial mater
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
         push);
-    float4 thicknessSample = loadMaterialTexture(
-        material.thicknessTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push);
-    float4 diffuseTransmissionSample = loadMaterialTexture(
-        material.diffuseTransmissionTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push);
-    float4 diffuseTransmissionColorSample = loadMaterialTexture(
-        material.diffuseTransmissionColorTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push);
-
     float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
     float metallic = saturate(material.params.x * metallicRoughnessSample.b);
     float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.001, 1.0);
     float transmission = saturate(material.glassParams.x * transmissionSample.r);
     float ior = clamp(material.glassParams.y, 1.0, 3.0);
-    float thickness = max(material.glassParams.z * thicknessSample.g, 0.0);
-    float attenuationDistance = max(material.glassParams.w, 0.0);
-    float3 attenuationColor = max(saturate(material.attenuationColor.rgb), float3(0.001, 0.001, 0.001));
-    float diffuseTransmission = saturate(material.diffuseTransmission.a * diffuseTransmissionSample.a);
-    float3 diffuseTransmissionColor = saturate(material.diffuseTransmission.rgb * srgbToLinear(diffuseTransmissionColorSample.rgb));
     float3 emissive = max(material.emissive.rgb * srgbToLinear(emissiveSample.rgb), float3(0.0, 0.0, 0.0));
 
     OpenPBRMaterialEval result;
@@ -164,21 +143,13 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(HitInfo hit, PathTraceMaterial mater
     result.inputs.specular_ior = ior;
     result.inputs.specular_anisotropy_rotation_cos_sin = float2(1.0, 0.0);
 
-    float3 transmissionTint = max(baseColor, float3(0.001, 0.001, 0.001));
-    if (attenuationDistance > 0.0001 && thickness > 0.0001) {
-        transmissionTint *= powColor(attenuationColor, thickness / attenuationDistance);
-    }
-    result.inputs.transmission_weight = transmission;
-    result.inputs.transmission_color = powColor(transmissionTint, 0.5);
+    result.inputs.transmission_weight = transmission * (1.0 - metallic);
+    result.inputs.transmission_color = powColor(baseColor, 0.5);
     result.inputs.transmission_depth = 0.0;
     result.inputs.transmission_scatter = float3(0.0, 0.0, 0.0);
     result.inputs.transmission_scatter_anisotropy = 0.0;
 
-    result.inputs.subsurface_weight = diffuseTransmission;
-    result.inputs.subsurface_color = max(diffuseTransmissionColor, float3(0.001, 0.001, 0.001));
-    result.inputs.subsurface_radius = max(thickness, 0.001);
-    result.inputs.subsurface_radius_scale = float3(1.0, 0.5, 0.25);
-    result.inputs.subsurface_scatter_anisotropy = 0.0;
+    result.inputs.subsurface_weight = 0.0;
 
     float emissionLuminance = luminanceMax(emissive);
     result.inputs.emission_luminance = emissionLuminance;
