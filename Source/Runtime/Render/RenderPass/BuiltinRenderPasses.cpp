@@ -36,6 +36,10 @@ void registerBuiltInRenderGraphPasses()
         "Draw glTF material colors with VK_EXT_shader_object",
         []() { return builtin_pass::createSceneMaterialShaderObjectPass(); });
     registerRenderGraphPassType(
+        "SceneMaterialVisualizationPass",
+        "Visualize glTF material parameters with RayQuery",
+        []() { return builtin_pass::createSceneMaterialVisualizationPass(); });
+    registerRenderGraphPassType(
         "SceneRayQueryVisualizationPass",
         "Visualize a glTF acceleration structure with RayQuery",
         []() { return builtin_pass::createSceneRayQueryVisualizationPass(); });

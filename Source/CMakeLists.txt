@@ -19,6 +19,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/NrdDenoisePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/RenderGraphBufferPasses.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneMaterialShaderObjectPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/SceneMaterialVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
@@ -139,6 +140,53 @@ if(WIN32)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:SDL3::SDL3-shared>"
                 "$<TARGET_FILE_DIR:Metallic>"
+        )
+    endif()
+endif()
+
+add_executable(MetallicMaterialVisualizationSample
+    Samples/MaterialVisualizationSampleMain.cpp
+    Editor/EditorApplication.cpp
+)
+
+target_include_directories(MetallicMaterialVisualizationSample PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+target_link_libraries(MetallicMaterialVisualizationSample PRIVATE
+    imgui
+    imnodes
+    metallic::sdl3
+    MetallicRuntimeRender
+    MetallicRuntimeScene
+)
+
+target_compile_definitions(MetallicMaterialVisualizationSample PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+if(WIN32)
+    target_compile_definitions(MetallicMaterialVisualizationSample PRIVATE NOMINMAX)
+
+    foreach(METALLIC_SLANG_RUNTIME_DLL IN LISTS METALLIC_SLANG_RUNTIME_DLLS)
+        add_custom_command(TARGET MetallicMaterialVisualizationSample POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${METALLIC_SLANG_RUNTIME_DLL}"
+                "$<TARGET_FILE_DIR:MetallicMaterialVisualizationSample>"
+        )
+    endforeach()
+
+    if(TARGET SDL3-shared)
+        add_custom_command(TARGET MetallicMaterialVisualizationSample POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:SDL3-shared>"
+                "$<TARGET_FILE_DIR:MetallicMaterialVisualizationSample>"
+        )
+    elseif(TARGET SDL3::SDL3-shared)
+        add_custom_command(TARGET MetallicMaterialVisualizationSample POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:SDL3::SDL3-shared>"
+                "$<TARGET_FILE_DIR:MetallicMaterialVisualizationSample>"
         )
     endif()
 endif()

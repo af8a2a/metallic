@@ -1,0 +1,45 @@
+{
+    "edges": [],
+    "name": "ABeautifulGameMaterialVisualization",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "MaterialViz",
+            "position": {
+                "x": 335.0,
+                "y": 281.0
+            },
+            "properties": {
+                "camera": {
+                    "center": [
+                        0.0,
+                        0.07500000298023224,
+                        0.0
+                    ],
+                    "eye": [
+                        0.0,
+                        0.41999998688697815,
+                        1.149999976158142
+                    ],
+                    "fovDegrees": 45.0,
+                    "projection": "perspective",
+                    "reversedZ": true,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 10000.0,
+                    "znear": 0.0010000000474974513
+                },
+                "mode": "material",
+                "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"
+            },
+            "type": "SceneMaterialVisualizationPass"
+        }
+    ],
+    "outputs": [
+        "MaterialViz.color"
+    ],
+    "version": 1
+}

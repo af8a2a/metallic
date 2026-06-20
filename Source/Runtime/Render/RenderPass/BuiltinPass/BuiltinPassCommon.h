@@ -43,6 +43,8 @@ inline constexpr const char* kMaterialShaderObjectAlternateFragmentEntryPoint =
     "materialShaderObjectAlternateFragmentMain";
 inline constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "scene_rayquery_visualize";
 inline constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
+inline constexpr const char* kSceneMaterialVisualizationShaderModuleName = "scene_material_visualize";
+inline constexpr const char* kSceneMaterialVisualizationEntryPoint = "sceneMaterialVisualizeMain";
 inline constexpr const char* kScenePathTraceShaderModuleName = "scene_path_trace";
 inline constexpr const char* kScenePathTraceEntryPoint = "scenePathTraceMain";
 inline constexpr const char* kRenderGraphBufferShaderModuleName = "render_graph_buffer";
@@ -55,6 +57,12 @@ inline constexpr uint64_t kRenderGraphBufferByteSize = 16;
 inline constexpr int32_t kGltfTriangleListMode = 4;
 inline constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
 inline constexpr uint32_t kRayQueryVisualizationGranularityPrimitive = 1;
+inline constexpr uint32_t kSceneMaterialVisualizationModeMaterial = 0;
+inline constexpr uint32_t kSceneMaterialVisualizationModeBaseColor = 1;
+inline constexpr uint32_t kSceneMaterialVisualizationModeNormal = 2;
+inline constexpr uint32_t kSceneMaterialVisualizationModeRoughness = 3;
+inline constexpr uint32_t kSceneMaterialVisualizationModeMetallic = 4;
+inline constexpr uint32_t kSceneMaterialVisualizationModeAo = 5;
 inline constexpr uint32_t kDefaultPathTraceMaxDepth = 3;
 inline constexpr uint32_t kDefaultPathTraceSamples = 2;
 inline constexpr uint32_t kNrdDenoiserModeReblur = 0;
@@ -139,6 +147,18 @@ struct SceneRayQueryVisualizationPush {
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t padding = 0;
+};
+
+struct SceneMaterialVisualizationPush {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t mode = kSceneMaterialVisualizationModeMaterial;
+    uint32_t materialTextureCount = 0;
 };
 
 struct ScenePathTracePush {

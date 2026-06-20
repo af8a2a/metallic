@@ -19,7 +19,7 @@ namespace metallic {
 
 class EditorApplication {
 public:
-    int run(bool smokeTest = false, bool waitForGraphicsDebugger = false);
+    int run(bool smokeTest = false, bool waitForGraphicsDebugger = false, const char* startupSampleId = nullptr);
 
 private:
     bool initialize();
@@ -115,6 +115,7 @@ private:
     std::string renderGraphStatus_;
     std::string sceneStatus_ = "No scene loaded.";
     std::string sceneRtxStatus_ = "RTX AS not built.";
+    std::string startupSampleId_;
 };
 
 } // namespace metallic

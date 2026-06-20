@@ -11,6 +11,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -263,6 +264,22 @@ uint32_t countVisiblePixels(const std::vector<uint32_t>& pixels)
         }
     }
     return visiblePixelCount;
+}
+uint32_t countDistinctVisibleColorBins(const std::vector<uint32_t>& pixels)
+{
+    std::unordered_set<uint32_t> bins;
+    for (uint32_t pixel : pixels) {
+        const uint8_t r = static_cast<uint8_t>(pixel & 0xffu);
+        const uint8_t g = static_cast<uint8_t>((pixel >> 8u) & 0xffu);
+        const uint8_t b = static_cast<uint8_t>((pixel >> 16u) & 0xffu);
+        if (r > 8 || g > 8 || b > 8) {
+            bins.insert(
+                (static_cast<uint32_t>(r >> 5u) << 6u) |
+                (static_cast<uint32_t>(g >> 5u) << 3u) |
+                static_cast<uint32_t>(b >> 5u));
+        }
+    }
+    return static_cast<uint32_t>(bins.size());
 }
 
 uint32_t packRgba8(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
@@ -669,6 +686,8 @@ public:
             render::createRenderGraphPass("RenderGraphBufferWritePass");
         const std::unique_ptr<render::RenderGraphPass> pathTrace =
             render::createRenderGraphPass("ScenePathTracePass");
+        const std::unique_ptr<render::RenderGraphPass> materialVisualization =
+            render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> nrdDenoise =
             render::createRenderGraphPass("NrdDenoisePass");
 
@@ -676,6 +695,7 @@ public:
             copy == nullptr ||
             bufferWrite == nullptr ||
             pathTrace == nullptr ||
+            materialVisualization == nullptr ||
             nrdDenoise == nullptr) {
             return RhiTestResult::fail("failed to create built-in render graph passes");
         }
@@ -695,6 +715,10 @@ public:
             pathTrace->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("ScenePathTracePass is not classified as Compute/Compute");
         }
+        if (materialVisualization->kind() != render::RenderGraphPassKind::Compute ||
+            materialVisualization->queueType() != render::QueueType::Compute) {
+            return RhiTestResult::fail("SceneMaterialVisualizationPass is not classified as Compute/Compute");
+        }
         if (nrdDenoise->kind() != render::RenderGraphPassKind::Compute ||
             nrdDenoise->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("NrdDenoisePass is not classified as Compute/Compute");
@@ -704,6 +728,7 @@ public:
         bool foundCopy = false;
         bool foundBufferWrite = false;
         bool foundPathTrace = false;
+        bool foundMaterialVisualization = false;
         bool foundNrdDenoise = false;
         for (const render::RenderGraphPassInfo& passInfo : render::listRenderGraphPassTypes()) {
             if (passInfo.type == "TriangleRasterPass") {
@@ -718,12 +743,20 @@ public:
             } else if (passInfo.type == "ScenePathTracePass") {
                 foundPathTrace = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
+            } else if (passInfo.type == "SceneMaterialVisualizationPass") {
+                foundMaterialVisualization = passInfo.kind == render::RenderGraphPassKind::Compute &&
+                    passInfo.queueType == render::QueueType::Compute;
             } else if (passInfo.type == "NrdDenoisePass") {
                 foundNrdDenoise = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
             }
         }
-        if (!foundTriangle || !foundCopy || !foundBufferWrite || !foundPathTrace || !foundNrdDenoise) {
+        if (!foundTriangle ||
+            !foundCopy ||
+            !foundBufferWrite ||
+            !foundPathTrace ||
+            !foundMaterialVisualization ||
+            !foundNrdDenoise) {
             return RhiTestResult::fail("RenderGraphPassInfo did not preserve pass kind metadata");
         }
 
@@ -839,12 +872,41 @@ public:
             return RhiTestResult::fail("Sample graph first output changed");
         }
 
-        bool listed = false;
-        for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
-            listed = listed || desc.id == "pathtracing-meet-mat";
+        render::RenderSampleLoadResult materialSample;
+        if (!render::loadBuiltInRenderSample("material-visualization-abeautiful-game", materialSample, message)) {
+            return RhiTestResult::fail(message);
         }
-        if (!listed) {
-            return RhiTestResult::fail("built-in Sample list did not contain pathtracing-meet-mat");
+        if (materialSample.desc.id != "material-visualization-abeautiful-game" ||
+            materialSample.desc.name != "Material Visualization / ABeautifulGame" ||
+            materialSample.desc.category != "Material" ||
+            materialSample.desc.scenePath != "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf" ||
+            materialSample.desc.graphPath != "Pipelines/Samples/material_visualization_abeautiful_game.metallic_graph.json" ||
+            materialSample.desc.previewOutput != "MaterialViz.color") {
+            return RhiTestResult::fail("material visualization Sample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* materialViz = materialSample.graph.findNode("MaterialViz");
+        if (materialViz == nullptr ||
+            !materialViz->properties.is_object() ||
+            materialViz->properties.value("path", "") != materialSample.desc.scenePath ||
+            materialViz->properties.value("mode", "") != "material") {
+            return RhiTestResult::fail("material visualization Sample did not apply scene path and defaults");
+        }
+        if (!materialSample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (materialSample.graph.firstOutputName() != "MaterialViz.color") {
+            return RhiTestResult::fail("material visualization Sample graph first output changed");
+        }
+
+        bool listedPathTrace = false;
+        bool listedMaterialVisualization = false;
+        for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
+            listedPathTrace = listedPathTrace || desc.id == "pathtracing-meet-mat";
+            listedMaterialVisualization = listedMaterialVisualization ||
+                desc.id == "material-visualization-abeautiful-game";
+        }
+        if (!listedPathTrace || !listedMaterialVisualization) {
+            return RhiTestResult::fail("built-in Sample list did not contain expected samples");
         }
         return RhiTestResult::pass();
     }
@@ -1180,6 +1242,93 @@ public:
     }
 };
 
+class RenderGraphSceneMaterialVisualizationPreviewTest : public RhiTest {
+public:
+    RenderGraphSceneMaterialVisualizationPreviewTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_scene_material_visualization_preview";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string message;
+        if (!render::loadBuiltInRenderSample("material-visualization-abeautiful-game", sample, message)) {
+            return RhiTestResult::fail(message);
+        }
+
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        const std::array<const char*, 6> modes{
+            "material",
+            "baseColor",
+            "normal",
+            "roughness",
+            "metallic",
+            "ao",
+        };
+        for (const char* mode : modes) {
+            render::RenderGraphNode* materialViz = sample.graph.findNode("MaterialViz");
+            if (materialViz == nullptr || !materialViz->properties.is_object()) {
+                return RhiTestResult::fail("material visualization Sample graph is missing MaterialViz properties");
+            }
+            render::RenderGraphProperties properties = materialViz->properties;
+            properties["mode"] = mode;
+            if (!sample.graph.setNodeProperties(materialViz->id, std::move(properties))) {
+                return RhiTestResult::fail(std::string("failed to set material visualization mode ") + mode);
+            }
+
+            result = preview.render(sample.graph, 160, 160);
+            if (!result) {
+                if (render::hasError(result, render::Error::Unsupported)) {
+                    return RhiTestResult::skip(
+                        std::string("SceneMaterialVisualizationPass is unsupported on this device: ") +
+                        preview.lastLog());
+                }
+                return RhiTestResult::fail(
+                    std::string("SceneMaterialVisualizationPass render returned ") +
+                    toString(result) +
+                    " for mode " +
+                    mode +
+                    ": " +
+                    preview.lastLog());
+            }
+
+            const std::string modeName(mode);
+            const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
+            if (modeName != "metallic" && visiblePixelCount < 512) {
+                return RhiTestResult::fail(
+                    std::string("material visualization mode produced too few visible pixels: ") +
+                    mode +
+                    " visible=" +
+                    std::to_string(visiblePixelCount));
+            }
+            if (modeName == "material") {
+                const uint32_t distinctColorBins = countDistinctVisibleColorBins(preview.pixels());
+                if (distinctColorBins < 4) {
+                    return RhiTestResult::fail(
+                        std::string("material visualization expected multiple material colors, got bins=") +
+                        std::to_string(distinctColorBins));
+                }
+            }
+
+            const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+            const std::filesystem::path outputPath =
+                context.outputDirectory /
+                (std::string("render_graph_scene_material_visualization_") + mode + ".png");
+            if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
+                return RhiTestResult::fail(message);
+            }
+        }
+
+        return RhiTestResult::pass("wrote scene material visualization previews");
+    }
+};
 class RenderGraphScenePathTracePreviewTest : public RhiTest {
 public:
     RenderGraphScenePathTracePreviewTest()
@@ -2036,6 +2185,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyWireframePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphSceneMaterialVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceTransmissionTexturesPreviewTest);

@@ -69,15 +69,39 @@ public:
     std::string previewOutput() const override { return "PathTrace.color"; }
 };
 
+class MaterialVisualizationABeautifulGameSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "material-visualization-abeautiful-game"; }
+    std::string_view name() const override { return "Material Visualization / ABeautifulGame"; }
+    std::string_view category() const override { return "Material"; }
+    std::string_view description() const override
+    {
+        return "RayQuery material parameter visualization for the ABeautifulGame glTF scene.";
+    }
+    std::string scenePath() const override { return "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/material_visualization_abeautiful_game.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"MaterialViz"}; }
+    std::string previewOutput() const override { return "MaterialViz.color"; }
+};
+
 const RenderSample& pathTracingMeetMatSample()
 {
     static const PathTracingMeetMatSample sample;
     return sample;
 }
 
+const RenderSample& materialVisualizationABeautifulGameSample()
+{
+    static const MaterialVisualizationABeautifulGameSample sample;
+    return sample;
+}
+
 std::vector<const RenderSample*> builtInRenderSamples()
 {
-    return {&pathTracingMeetMatSample()};
+    return {&pathTracingMeetMatSample(), &materialVisualizationABeautifulGameSample()};
 }
 
 } // namespace

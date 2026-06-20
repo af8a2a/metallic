@@ -124,6 +124,22 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             }},
         };
     }
+    if (type == "SceneMaterialVisualizationPass") {
+        return render::RenderGraphProperties{
+            {"path", "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"},
+            {"mode", "material"},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 45.0f},
+                {"znear", 0.001f},
+                {"zfar", 10000.0f},
+                {"reversedZ", true},
+                {"eye", {0.0f, 0.42f, 1.15f}},
+                {"center", {0.0f, 0.075f, 0.0f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
+        };
+    }
     if (type == "ScenePathTracePass") {
         return render::RenderGraphProperties{
             {"path", "Asset/meet_mat.glb"},
@@ -157,6 +173,7 @@ render::RenderGraphNode* findBunnyWireframeNode(render::RenderGraph& graph)
     for (const render::RenderGraphNode& node : graph.nodes()) {
         if (node.type == "BunnyWireframePass" ||
             node.type == "SceneRayQueryVisualizationPass" ||
+            node.type == "SceneMaterialVisualizationPass" ||
             node.type == "ScenePathTracePass") {
             return graph.findNode(node.id);
         }
@@ -757,10 +774,11 @@ void applyNvproImNodesStyle()
 
 } // namespace
 
-int EditorApplication::run(bool smokeTest, bool waitForGraphicsDebugger)
+int EditorApplication::run(bool smokeTest, bool waitForGraphicsDebugger, const char* startupSampleId)
 {
     smokeTest_ = smokeTest;
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
+    startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";
 
     if (!initialize()) {
         shutdown();
@@ -857,7 +875,11 @@ bool EditorApplication::initialize()
 
     graphExecutor_ = std::make_unique<render::RenderGraphExecutor>();
     sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
-    resetDefaultRenderGraph();
+    if (!startupSampleId_.empty()) {
+        loadBuiltInSample(startupSampleId_.c_str());
+    } else {
+        resetDefaultRenderGraph();
+    }
 
     return true;
 }
@@ -2640,6 +2662,17 @@ void EditorApplication::drawRenderGraphSettingsPanel()
         renderGraphStatus_ = log;
     }
 
+    if (ImGui::BeginCombo("Built-in Sample", "Load Sample...")) {
+        for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
+            if (ImGui::Selectable(desc.name.c_str())) {
+                loadBuiltInSample(desc.id.c_str());
+            }
+            if (!desc.description.empty() && ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", desc.description.c_str());
+            }
+        }
+        ImGui::EndCombo();
+    }
     ImGui::Separator();
     ImGui::TextUnformatted("Graph Output");
     ImGui::PushItemWidth(-1.0f);
@@ -2860,6 +2893,49 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
                 renderGraph_.setNodeProperties(node->id, std::move(properties));
                 viewportPreviewValid_ = false;
             }
+        }
+    } else if (node->type == "SceneMaterialVisualizationPass") {
+        static int editingMaterialVisualizationNodeId = -1;
+        static char materialVisualizationScenePathBuffer[260] = {};
+        render::RenderGraphProperties properties = node->properties;
+        if (!properties.contains("path") || !properties["path"].is_string()) {
+            properties["path"] = "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf";
+        }
+        if (!properties.contains("mode") || !properties["mode"].is_string()) {
+            properties["mode"] = "material";
+        }
+        if (editingMaterialVisualizationNodeId != static_cast<int>(node->id)) {
+            copyToBuffer(
+                properties["path"].get<std::string>(),
+                materialVisualizationScenePathBuffer,
+                sizeof(materialVisualizationScenePathBuffer));
+            editingMaterialVisualizationNodeId = static_cast<int>(node->id);
+        }
+
+        bool changed = false;
+        ImGui::InputText("Scene Path", materialVisualizationScenePathBuffer, sizeof(materialVisualizationScenePathBuffer));
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            properties["path"] = materialVisualizationScenePathBuffer;
+            changed = true;
+        }
+
+        const char* modeItems[] = {"material", "baseColor", "normal", "roughness", "metallic", "ao"};
+        std::string mode = properties["mode"].get<std::string>();
+        int modeIndex = 0;
+        for (int index = 0; index < static_cast<int>(std::size(modeItems)); ++index) {
+            if (mode == modeItems[index]) {
+                modeIndex = index;
+                break;
+            }
+        }
+        if (ImGui::Combo("Mode", &modeIndex, modeItems, static_cast<int>(std::size(modeItems)))) {
+            properties["mode"] = modeItems[modeIndex];
+            changed = true;
+        }
+
+        if (changed) {
+            renderGraph_.setNodeProperties(node->id, std::move(properties));
+            viewportPreviewValid_ = false;
         }
     } else if (node->type == "ScenePathTracePass") {
         static int editingPathTraceNodeId = -1;
