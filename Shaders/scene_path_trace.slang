@@ -89,8 +89,17 @@ Texture2D<float4> gMaterialTextures[256];
 [[vk::binding(10, 0)]]
 Texture2D<float4> gEnvironmentMap;
 
+struct EnvironmentAliasEntry
+{
+    float probability;
+    uint aliasIndex;
+    float texelProbability;
+    uint padding;
+};
+
 [[vk::binding(13, 0)]]
-StructuredBuffer<float> gEnvironmentImportanceCdf;
+StructuredBuffer<EnvironmentAliasEntry> gEnvironmentImportanceAliasTable;
+
 
 static const uint kMaxMaterialTextures = 256u;
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
@@ -295,22 +304,13 @@ bool sampleEnvironmentLight(ScenePathTracePush push, inout uint seed, out Enviro
         return false;
     }
 
-    float xi = rand(seed);
-    uint low = 0u;
-    uint high = texelCount;
-    while (low < high) {
-        uint mid = low + (high - low) / 2u;
-        if (gEnvironmentImportanceCdf[mid] < xi) {
-            low = mid + 1u;
-        } else {
-            high = mid;
-        }
+    uint texelIndex = min(uint(rand(seed) * float(texelCount)), texelCount - 1u);
+    EnvironmentAliasEntry aliasEntry = gEnvironmentImportanceAliasTable[texelIndex];
+    if (rand(seed) >= aliasEntry.probability) {
+        texelIndex = min(aliasEntry.aliasIndex, texelCount - 1u);
+        aliasEntry = gEnvironmentImportanceAliasTable[texelIndex];
     }
-
-    uint texelIndex = min(low, texelCount - 1u);
-    float previousCdf = texelIndex == 0u ? 0.0 : gEnvironmentImportanceCdf[texelIndex - 1u];
-    float currentCdf = gEnvironmentImportanceCdf[texelIndex];
-    float texelProbability = max(currentCdf - previousCdf, 0.0000001);
+    float texelProbability = max(aliasEntry.texelProbability, 0.0000001);
     uint x = texelIndex % width;
     uint y = texelIndex / width;
 
@@ -369,9 +369,7 @@ float environmentPdfSolidAngle(float3 direction, ScenePathTracePush push)
         return 0.0;
     }
 
-    float previousCdf = texelIndex == 0u ? 0.0 : gEnvironmentImportanceCdf[texelIndex - 1u];
-    float currentCdf = gEnvironmentImportanceCdf[texelIndex];
-    float texelProbability = max(currentCdf - previousCdf, 0.0);
+    float texelProbability = max(gEnvironmentImportanceAliasTable[texelIndex].texelProbability, 0.0);
     return texelProbability / environmentTexelSolidAngle(texel.y, width, height);
 }
 
@@ -716,8 +714,6 @@ float3 volumeTransmittance(float3 baseColor, float transmission, float thickness
     float exponent = 0.0;
     if (attenuationDistance > 0.0001) {
         exponent = max(distance, 0.0) / attenuationDistance;
-    } else if (thickness > 0.0001) {
-        exponent = saturate(max(distance, thickness) * 2.0);
     }
 
     float3 attenuation = powColor(max(attenuationColor, float3(0.001, 0.001, 0.001)), exponent);

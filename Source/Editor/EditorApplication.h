@@ -117,8 +117,8 @@ private:
     float clearColor_[4] = {0.07f, 0.08f, 0.10f, 1.0f};
     int selectedGraphNodeId_ = -1;
     int selectedGraphLinkId_ = -1;
-    char graphFilePath_[260] = "Pipelines/default.metallic_graph.json";
-    char sceneFilePath_[260] = "Asset/meet_mat.glb";
+    char graphFilePath_[260] = "Pipelines/Samples/pathtracing_abeautiful_game_openpbr.metallic_graph.json";
+    char sceneFilePath_[260] = "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf";
     char graphNodeNameBuffer_[128] = {};
     char graphOutputBuffer_[128] = "Bunny.color";
     char previewOutputBuffer_[128] = "Bunny.color";

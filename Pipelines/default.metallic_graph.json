@@ -1,6 +1,6 @@
 {
     "edges": [],
-    "name": "ScenePathTrace",
+    "name": "PathTracingSample",
     "nodes": [
         {
             "id": 1,
@@ -11,18 +11,19 @@
             },
             "properties": {
                 "accumulate": true,
+                "bsdf": "openpbr",
                 "camera": {
                     "center": [
                         0.0,
-                        0.15000000596046448,
+                        0.07500000298023224,
                         0.0
                     ],
                     "eye": [
                         0.0,
-                        0.25,
-                        3.0
+                        0.41999998688697815,
+                        1.149999976158142
                     ],
-                    "fovDegrees": 50.0,
+                    "fovDegrees": 45.0,
                     "projection": "perspective",
                     "reversedZ": true,
                     "up": [
@@ -33,8 +34,15 @@
                     "zfar": 10000.0,
                     "znear": 0.0010000000474974513
                 },
-                "maxDepth": 3,
-                "path": "Asset/meet_mat.glb",
+                "environment": {
+                    "enabled": true,
+                    "intensity": 1.0,
+                    "path": "Asset/ABeautifulGame/environment.hdr",
+                    "rotationDegrees": 0.0,
+                    "visible": true
+                },
+                "maxDepth": 12,
+                "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
                 "samples": 2
             },
             "type": "ScenePathTracePass"

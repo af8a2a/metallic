@@ -112,10 +112,19 @@ struct DecodedEnvironmentTexture {
     std::string label;
 };
 
+struct EnvironmentAliasEntry {
+    float probability = 1.0f;
+    uint32_t aliasIndex = 0;
+    float texelProbability = 1.0f;
+    uint32_t padding = 0;
+};
+
 struct EnvironmentImportanceData {
-    std::vector<float> cdf;
+    std::vector<EnvironmentAliasEntry> aliasTable;
     uint32_t texelCount = 1;
 };
+
+static_assert(sizeof(EnvironmentAliasEntry) == 16);
 
 std::string resultMessage(std::string_view label, const Result& result)
 {
@@ -435,35 +444,74 @@ EnvironmentImportanceData buildEnvironmentImportanceData(const DecodedEnvironmen
     const uint64_t texelCount64 = static_cast<uint64_t>(texture.width) * static_cast<uint64_t>(texture.height);
     if (texture.pixels.empty() || texture.width == 0 || texture.height == 0 || texelCount64 == 0 ||
         texelCount64 > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
-        data.cdf = {1.0f};
+        data.aliasTable = {EnvironmentAliasEntry{}};
         data.texelCount = 1;
         return data;
     }
 
     data.texelCount = static_cast<uint32_t>(texelCount64);
-    data.cdf.resize(data.texelCount);
+    data.aliasTable.resize(data.texelCount);
+    std::vector<double> weights(data.texelCount, 0.0);
     double totalWeight = 0.0;
     for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
         const uint32_t y = texelIndex / texture.width;
         const float weight = environmentTexelWeight(&texture.pixels[static_cast<size_t>(texelIndex) * 4u], y, texture.height);
         totalWeight += static_cast<double>(weight);
-        data.cdf[texelIndex] = static_cast<float>(totalWeight);
+        weights[texelIndex] = static_cast<double>(weight);
     }
 
+    std::vector<double> scaledProbabilities(data.texelCount, 1.0);
     if (totalWeight <= 0.0 || !std::isfinite(totalWeight)) {
-        const float reciprocalCount = 1.0f / static_cast<float>(data.texelCount);
         for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
-            data.cdf[texelIndex] = static_cast<float>(texelIndex + 1u) * reciprocalCount;
+            data.aliasTable[texelIndex].texelProbability = 1.0f / static_cast<float>(data.texelCount);
         }
-        data.cdf.back() = 1.0f;
-        return data;
+    } else {
+        const double reciprocalTotalWeight = 1.0 / totalWeight;
+        for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
+            const double texelProbability = weights[texelIndex] * reciprocalTotalWeight;
+            data.aliasTable[texelIndex].texelProbability = static_cast<float>(texelProbability);
+            scaledProbabilities[texelIndex] = texelProbability * static_cast<double>(data.texelCount);
+        }
     }
 
-    const float reciprocalTotalWeight = 1.0f / static_cast<float>(totalWeight);
-    for (float& cdfValue : data.cdf) {
-        cdfValue = std::min(cdfValue * reciprocalTotalWeight, 1.0f);
+    std::vector<uint32_t> small;
+    std::vector<uint32_t> large;
+    small.reserve(data.texelCount);
+    large.reserve(data.texelCount);
+    for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
+        if (scaledProbabilities[texelIndex] < 1.0) {
+            small.push_back(texelIndex);
+        } else {
+            large.push_back(texelIndex);
+        }
+        data.aliasTable[texelIndex].aliasIndex = texelIndex;
     }
-    data.cdf.back() = 1.0f;
+
+    while (!small.empty() && !large.empty()) {
+        const uint32_t smallIndex = small.back();
+        small.pop_back();
+        const uint32_t largeIndex = large.back();
+
+        data.aliasTable[smallIndex].probability =
+            static_cast<float>(std::clamp(scaledProbabilities[smallIndex], 0.0, 1.0));
+        data.aliasTable[smallIndex].aliasIndex = largeIndex;
+
+        scaledProbabilities[largeIndex] =
+            (scaledProbabilities[largeIndex] + scaledProbabilities[smallIndex]) - 1.0;
+        if (scaledProbabilities[largeIndex] < 1.0) {
+            large.pop_back();
+            small.push_back(largeIndex);
+        }
+    }
+
+    for (uint32_t texelIndex : large) {
+        data.aliasTable[texelIndex].probability = 1.0f;
+        data.aliasTable[texelIndex].aliasIndex = texelIndex;
+    }
+    for (uint32_t texelIndex : small) {
+        data.aliasTable[texelIndex].probability = 1.0f;
+        data.aliasTable[texelIndex].aliasIndex = texelIndex;
+    }
     return data;
 }
 
@@ -910,12 +958,12 @@ struct ScenePathTraceResources::Impl {
                 EnvironmentImportanceData importanceData = buildEnvironmentImportanceData(decodedEnvironment);
                 result = uploadStorageBuffer(
                     device,
-                    importanceData.cdf.data(),
-                    static_cast<uint64_t>(importanceData.cdf.size() * sizeof(float)),
-                    sizeof(float),
+                    importanceData.aliasTable.data(),
+                    static_cast<uint64_t>(importanceData.aliasTable.size() * sizeof(EnvironmentAliasEntry)),
+                    sizeof(EnvironmentAliasEntry),
                     environmentImportanceBuffer,
                     log,
-                    "ScenePathTracePass environment importance CDF");
+                    "ScenePathTracePass environment importance alias table");
                 if (!result) {
                     return result;
                 }
@@ -938,15 +986,15 @@ struct ScenePathTraceResources::Impl {
             return result;
         }
 
-        const float fallbackCdf[1] = {1.0f};
+        const EnvironmentAliasEntry fallbackAliasTable[1] = {EnvironmentAliasEntry{}};
         return uploadStorageBuffer(
             device,
-            fallbackCdf,
-            sizeof(fallbackCdf),
-            sizeof(float),
+            fallbackAliasTable,
+            sizeof(fallbackAliasTable),
+            sizeof(EnvironmentAliasEntry),
             environmentImportanceBuffer,
             log,
-            "ScenePathTracePass environment fallback importance CDF");
+            "ScenePathTracePass environment fallback importance alias table");
     }
 
     Result uploadTexture(CommandBuffer& commandBuffer, ScenePathTraceMaterialTexture& texture)

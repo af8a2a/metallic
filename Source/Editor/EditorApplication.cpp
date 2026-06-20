@@ -33,7 +33,7 @@ constexpr uint32_t kViewportResizeSettleFrames = 3;
 constexpr const char* kRenderPassDragPayload = "METALLIC_RENDER_PASS_TYPE";
 constexpr uint32_t kSwapchainImageCount = 3;
 constexpr uint32_t kMinSwapchainImageCount = 2;
-constexpr const char* kDefaultRenderSampleId = "pathtracing-meet-mat";
+constexpr const char* kDefaultRenderSampleId = "pathtracing-sample";
 
 float getMainDisplayScale()
 {
@@ -142,18 +142,26 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
     }
     if (type == "ScenePathTracePass") {
         return render::RenderGraphProperties{
-            {"path", "Asset/meet_mat.glb"},
-            {"maxDepth", 3},
+            {"path", "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"},
+            {"bsdf", "openpbr"},
+            {"maxDepth", 12},
             {"samples", 2},
             {"accumulate", true},
+            {"environment", {
+                {"enabled", true},
+                {"visible", true},
+                {"path", "Asset/ABeautifulGame/environment.hdr"},
+                {"intensity", 1.0f},
+                {"rotationDegrees", 0.0f},
+            }},
             {"camera", {
                 {"projection", "perspective"},
-                {"fovDegrees", 50.0f},
+                {"fovDegrees", 45.0f},
                 {"znear", 0.001f},
                 {"zfar", 10000.0f},
                 {"reversedZ", true},
-                {"eye", {0.0f, 0.25f, 3.0f}},
-                {"center", {0.0f, 0.15f, 0.0f}},
+                {"eye", {0.0f, 0.42f, 1.15f}},
+                {"center", {0.0f, 0.075f, 0.0f}},
                 {"up", {0.0f, 1.0f, 0.0f}},
             }},
         };

@@ -53,7 +53,7 @@ static constexpr OpenPBRVec3 kOpenPBRLtc[] = {
 
 constexpr uint32_t kOpenPBRLut2DBinding = 11;
 constexpr uint32_t kOpenPBRLut3DBinding = 12;
-constexpr uint32_t kEnvironmentImportanceCdfBinding = 13;
+constexpr uint32_t kEnvironmentImportanceAliasTableBinding = 13;
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
 constexpr uint32_t kOpenPBRLutSize = OpenPBR_EnergyTableSize;
@@ -610,7 +610,7 @@ public:
                 .kind = SceneRayQueryBindingKind::SampledImage,
             },
             SceneRayQueryBindingDesc{
-                .binding = kEnvironmentImportanceCdfBinding,
+                .binding = kEnvironmentImportanceAliasTableBinding,
                 .kind = SceneRayQueryBindingKind::StorageBuffer,
             },
         };
@@ -760,7 +760,7 @@ public:
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
             },
             SceneRayQueryDispatchBinding{
-                .binding = kEnvironmentImportanceCdfBinding,
+                .binding = kEnvironmentImportanceAliasTableBinding,
                 .buffer = environmentImportanceBuffer,
             },
         };
