@@ -215,6 +215,7 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
             float4(0.5, 0.5, 1.0, 1.0),
             push);
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
+        hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
 
         OpenPBRMaterialEval materialEval = evaluateOpenPBRMaterial(hit, material, push);
         float3 viewDirection = safeNormalize(-ray.direction, hit.normal);

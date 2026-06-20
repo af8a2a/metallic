@@ -23,3 +23,6 @@ Recent commits use short imperative subjects such as `Add runtime scene browser 
 
 ## Agent-Specific Instructions
 Avoid broad rewrites in `External/` and generated build directories. Before changing shared render or RHI interfaces, inspect runtime callers and tests so behavior stays consistent across scene, render graph, and Vulkan paths.
+
+### Shader Normal/TBN Pitfall
+For ray-query scene shaders, keep `HitInfo.normal` and `HitInfo.geometryNormal` as stable authored/world-space data when building tangent space and applying normal maps. Do not flip either field toward the current ray inside `traceClosest()` before tangent/bitangent construction; doing so makes the TBN basis view/path dependent and can reintroduce hard color bands or seam-like artifacts in normal visualization and path tracing. If a BSDF needs a same-hemisphere normal, apply a separate face-forward step only to the final shading normal after normal map evaluation, and keep `geometryNormal` available for front-face tests and ray offsets.

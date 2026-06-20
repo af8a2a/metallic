@@ -374,15 +374,15 @@ float3 transformObjectNormalToWorld(float3 normal, float3x4 worldToObject)
     return mul(normal, worldToObject).xyz;
 }
 
-void adjustShadingNormalToRayDir(inout float3 normal, inout float3 geometryNormal, float3 rayDirection)
+float3 faceForwardShadingNormal(float3 normal, float3 geometryNormal, float3 rayDirection)
 {
-    float3 view = -rayDirection;
-    if (dot(geometryNormal, view) < 0.0) {
-        geometryNormal = -geometryNormal;
-    }
-    if (dot(geometryNormal, normal) < 0.0) {
+    float3 facingGeometryNormal = dot(geometryNormal, -rayDirection) < 0.0
+        ? -geometryNormal
+        : geometryNormal;
+    if (dot(normal, facingGeometryNormal) < 0.0) {
         normal = -normal;
     }
+    return safeNormalize(normal, facingGeometryNormal);
 }
 
 bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTracePush push)
@@ -487,7 +487,6 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.geometryNormal = safeNormalize(transformObjectNormalToWorld(localGeometryNormal, worldToObject), localGeometryNormal);
     hit.normal = safeNormalize(transformObjectNormalToWorld(localNormal, worldToObject), hit.geometryNormal);
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
-    adjustShadingNormalToRayDir(hit.normal, hit.geometryNormal, ray.direction);
 
     float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
     float3 fallbackTangent = safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
@@ -658,6 +657,7 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
             float4(1.0, 1.0, 1.0, 1.0),
             push);
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
+        hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
         float occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
 
         float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
