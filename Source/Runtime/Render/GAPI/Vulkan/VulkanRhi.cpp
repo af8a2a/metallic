@@ -171,7 +171,7 @@ std::vector<VkLayerProperties> enumerateInstanceLayers()
     return layers;
 }
 
-bool hasDeviceExtension(VkPhysicalDevice physicalDevice, const char* extensionName)
+std::vector<VkExtensionProperties> enumerateDeviceExtensions(VkPhysicalDevice physicalDevice)
 {
     uint32_t count = 0;
     vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr);
@@ -179,7 +179,7 @@ bool hasDeviceExtension(VkPhysicalDevice physicalDevice, const char* extensionNa
     if (count > 0) {
         vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, extensions.data());
     }
-    return hasName(extensions, extensionName);
+    return extensions;
 }
 
 VkFormat toVkFormat(Format format)
@@ -747,6 +747,11 @@ public:
             return false;
         }
 
+        return hasUsableProperties(physicalDevice);
+    }
+
+    static bool hasUsableProperties(VkPhysicalDevice physicalDevice)
+    {
         VkPhysicalDeviceDescriptorHeapPropertiesEXT heapProperties{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT,
         };
@@ -948,6 +953,316 @@ private:
     VkDeviceSize minSamplerHeapReservedRange_ = 0;
     VkDeviceSize minResourceHeapReservedRange_ = 0;
     VkDeviceSize maxPushDataSize_ = 0;
+};
+
+template <typename T>
+void appendPNext(void**& tail, T& value)
+{
+    value.pNext = nullptr;
+    *tail = &value;
+    tail = &value.pNext;
+}
+
+struct VulkanExtensionSet {
+    std::vector<VkExtensionProperties> properties;
+    bool swapchain = false;
+    bool descriptorHeap = false;
+    bool shaderObject = false;
+    bool accelerationStructure = false;
+    bool deferredHostOperations = false;
+    bool rayQuery = false;
+    bool pushDescriptor = false;
+#ifdef VK_EXT_mesh_shader
+    bool meshShader = false;
+#endif
+#ifdef VK_NV_cluster_acceleration_structure
+    bool clusterAccelerationStructure = false;
+#endif
+
+    static VulkanExtensionSet query(VkPhysicalDevice physicalDevice)
+    {
+        VulkanExtensionSet result;
+        result.properties = enumerateDeviceExtensions(physicalDevice);
+        result.swapchain = result.has(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        result.descriptorHeap = result.has(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+        result.shaderObject = result.has(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+        result.accelerationStructure = result.has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        result.deferredHostOperations = result.has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        result.rayQuery = result.has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        result.pushDescriptor = result.has(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+#ifdef VK_EXT_mesh_shader
+        result.meshShader = result.has(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+#endif
+#ifdef VK_NV_cluster_acceleration_structure
+        result.clusterAccelerationStructure = result.has(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+#endif
+        return result;
+    }
+
+    bool has(const char* extensionName) const
+    {
+        return hasName(properties, extensionName);
+    }
+};
+
+struct VulkanDeviceFeatureRequest {
+    bool bindlessDescriptorHeap = false;
+    bool shaderObject = false;
+    bool rayTracingAccelerationStructure = false;
+    bool rayQuery = false;
+    bool pushDescriptor = false;
+
+    static VulkanDeviceFeatureRequest from(const DeviceDesc& desc)
+    {
+        return VulkanDeviceFeatureRequest{
+            .bindlessDescriptorHeap = desc.enableBindlessDescriptorHeap,
+            .shaderObject = desc.enableShaderObject,
+            .rayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure,
+            .rayQuery = desc.enableRayQuery,
+            .pushDescriptor = desc.enablePushDescriptor,
+        };
+    }
+};
+
+struct VulkanDeviceFeatureProbe {
+    VkPhysicalDeviceVulkan11Features vulkan11Features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+    };
+    VkPhysicalDeviceVulkan12Features vulkan12Features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+    };
+    VkPhysicalDeviceVulkan13Features vulkan13Features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+    };
+    VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
+    };
+    VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
+    };
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+    };
+    VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+    };
+#ifdef VK_EXT_mesh_shader
+    VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+    };
+#endif
+#ifdef VK_NV_cluster_acceleration_structure
+    VkPhysicalDeviceClusterAccelerationStructureFeaturesNV clusterAccelerationStructureFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV,
+    };
+#endif
+    VkPhysicalDeviceFeatures2 features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+    };
+
+    void query(VkPhysicalDevice physicalDevice, const VulkanExtensionSet& extensions)
+    {
+        features.pNext = &vulkan11Features;
+        void** featureTail = &vulkan11Features.pNext;
+        appendPNext(featureTail, vulkan12Features);
+        appendPNext(featureTail, vulkan13Features);
+        if (extensions.descriptorHeap) {
+            appendPNext(featureTail, descriptorHeapFeatures);
+        }
+        if (extensions.shaderObject) {
+            appendPNext(featureTail, shaderObjectFeatures);
+        }
+        if (extensions.accelerationStructure) {
+            appendPNext(featureTail, accelerationStructureFeatures);
+        }
+        if (extensions.rayQuery) {
+            appendPNext(featureTail, rayQueryFeatures);
+        }
+#ifdef VK_EXT_mesh_shader
+        if (extensions.meshShader) {
+            appendPNext(featureTail, meshShaderFeatures);
+        }
+#endif
+#ifdef VK_NV_cluster_acceleration_structure
+        if (extensions.clusterAccelerationStructure) {
+            appendPNext(featureTail, clusterAccelerationStructureFeatures);
+        }
+#endif
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
+    }
+
+    bool supportsRequiredCoreFeatures() const
+    {
+        return vulkan11Features.shaderDrawParameters == VK_TRUE &&
+            vulkan13Features.dynamicRendering == VK_TRUE &&
+            vulkan13Features.synchronization2 == VK_TRUE;
+    }
+
+    bool supportsAccelerationStructure(const VulkanExtensionSet& extensions) const
+    {
+        return extensions.accelerationStructure &&
+            extensions.deferredHostOperations &&
+            accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
+            vulkan12Features.bufferDeviceAddress == VK_TRUE;
+    }
+};
+
+struct VulkanDeviceFeatureSelection {
+    bool bindlessDescriptorHeap = false;
+    bool shaderObject = false;
+    bool rayTracingAccelerationStructure = false;
+    bool rayQuery = false;
+    bool pushDescriptor = false;
+
+    static VulkanDeviceFeatureSelection select(
+        const VulkanDeviceFeatureRequest& request,
+        VkPhysicalDevice physicalDevice,
+        const VulkanExtensionSet& extensions,
+        const VulkanDeviceFeatureProbe& probe)
+    {
+        const bool accelerationStructureSupported = probe.supportsAccelerationStructure(extensions);
+
+        VulkanDeviceFeatureSelection result;
+        result.bindlessDescriptorHeap =
+            request.bindlessDescriptorHeap &&
+            extensions.descriptorHeap &&
+            probe.descriptorHeapFeatures.descriptorHeap == VK_TRUE &&
+            probe.vulkan12Features.descriptorIndexing == VK_TRUE &&
+            probe.vulkan12Features.runtimeDescriptorArray == VK_TRUE &&
+            probe.vulkan12Features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
+            probe.vulkan12Features.bufferDeviceAddress == VK_TRUE &&
+            DescriptorHeapWriter::hasUsableProperties(physicalDevice);
+        result.shaderObject =
+            request.shaderObject &&
+            extensions.shaderObject &&
+            probe.shaderObjectFeatures.shaderObject == VK_TRUE;
+        result.rayTracingAccelerationStructure =
+            (request.rayTracingAccelerationStructure || request.rayQuery) &&
+            accelerationStructureSupported;
+        result.rayQuery =
+            request.rayQuery &&
+            accelerationStructureSupported &&
+            extensions.rayQuery &&
+            probe.rayQueryFeatures.rayQuery == VK_TRUE;
+        result.pushDescriptor = request.pushDescriptor && extensions.pushDescriptor;
+        return result;
+    }
+
+    bool usesBufferDeviceAddress() const
+    {
+        return bindlessDescriptorHeap || rayTracingAccelerationStructure || rayQuery;
+    }
+
+    bool matches(const VulkanDeviceFeatureRequest& request) const
+    {
+        return (!request.bindlessDescriptorHeap || bindlessDescriptorHeap) &&
+            (!request.shaderObject || shaderObject) &&
+            (!request.rayTracingAccelerationStructure || rayTracingAccelerationStructure) &&
+            (!request.rayQuery || rayQuery) &&
+            (!request.pushDescriptor || pushDescriptor);
+    }
+
+    int32_t score() const
+    {
+        return (bindlessDescriptorHeap ? 16 : 0) +
+            (shaderObject ? 8 : 0) +
+            (rayTracingAccelerationStructure ? 4 : 0) +
+            (rayQuery ? 2 : 0) +
+            (pushDescriptor ? 1 : 0);
+    }
+};
+
+struct VulkanEnabledFeatureChain {
+    VkPhysicalDeviceVulkan11Features vulkan11Features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+    };
+    VkPhysicalDeviceVulkan12Features vulkan12Features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+    };
+    VkPhysicalDeviceVulkan13Features vulkan13Features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+    };
+    VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
+    };
+    VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
+    };
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+    };
+    VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+    };
+    VkPhysicalDeviceFeatures2 features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+    };
+
+    explicit VulkanEnabledFeatureChain(const VulkanDeviceFeatureSelection& selection)
+    {
+        vulkan11Features.shaderDrawParameters = VK_TRUE;
+        vulkan12Features.descriptorIndexing = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
+        vulkan12Features.shaderSampledImageArrayNonUniformIndexing =
+            selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
+        vulkan12Features.runtimeDescriptorArray = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
+        vulkan12Features.bufferDeviceAddress = selection.usesBufferDeviceAddress() ? VK_TRUE : VK_FALSE;
+        vulkan13Features.synchronization2 = VK_TRUE;
+        vulkan13Features.dynamicRendering = VK_TRUE;
+        descriptorHeapFeatures.descriptorHeap = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
+        shaderObjectFeatures.shaderObject = selection.shaderObject ? VK_TRUE : VK_FALSE;
+        accelerationStructureFeatures.accelerationStructure =
+            selection.rayTracingAccelerationStructure ? VK_TRUE : VK_FALSE;
+        rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
+
+        features.pNext = &vulkan11Features;
+        void** featureTail = &vulkan11Features.pNext;
+        appendPNext(featureTail, vulkan12Features);
+        appendPNext(featureTail, vulkan13Features);
+        if (selection.bindlessDescriptorHeap) {
+            appendPNext(featureTail, descriptorHeapFeatures);
+        }
+        if (selection.shaderObject) {
+            appendPNext(featureTail, shaderObjectFeatures);
+        }
+        if (selection.rayTracingAccelerationStructure) {
+            appendPNext(featureTail, accelerationStructureFeatures);
+        }
+        if (selection.rayQuery) {
+            appendPNext(featureTail, rayQueryFeatures);
+        }
+    }
+};
+
+std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelection& selection)
+{
+    std::vector<const char*> extensions = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    };
+    if (selection.bindlessDescriptorHeap) {
+        extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+    }
+    if (selection.shaderObject) {
+        extensions.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+    }
+    if (selection.rayTracingAccelerationStructure) {
+        extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+    }
+    if (selection.rayQuery) {
+        extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    }
+    if (selection.pushDescriptor) {
+        extensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+    }
+    return extensions;
+}
+
+struct VulkanPhysicalDeviceCandidate {
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    uint32_t graphicsFamily = 0;
+    uint32_t computeFamily = 0;
+    VulkanDeviceFeatureSelection features;
+    int32_t featureScore = -1;
 };
 
 class DescriptorHeap {
@@ -4171,25 +4486,9 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
     vkEnumeratePhysicalDevices(deviceImpl->instance, &physicalDeviceCount, physicalDevices.data());
 
-    const bool requestBindlessDescriptorHeap = desc.enableBindlessDescriptorHeap;
-    const bool requestShaderObject = desc.enableShaderObject;
-    const bool requestRayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure;
-    const bool requestRayQuery = desc.enableRayQuery;
-    const bool requestPushDescriptor = desc.enablePushDescriptor;
-    VkPhysicalDevice bestPhysicalDevice = VK_NULL_HANDLE;
-    uint32_t bestGraphicsFamily = 0;
-    uint32_t bestComputeFamily = 0;
-    int32_t bestFeatureScore = -1;
-    bool bestBindlessDescriptorHeap = false;
-    bool bestShaderObject = false;
-    bool bestRayTracingAccelerationStructure = false;
-    bool bestRayQuery = false;
-    bool bestPushDescriptor = false;
-    bool selectedBindlessDescriptorHeap = false;
-    bool selectedShaderObject = false;
-    bool selectedRayTracingAccelerationStructure = false;
-    bool selectedRayQuery = false;
-    bool selectedPushDescriptor = false;
+    const VulkanDeviceFeatureRequest requestedFeatures = VulkanDeviceFeatureRequest::from(desc);
+    VulkanPhysicalDeviceCandidate bestCandidate;
+    VulkanDeviceFeatureSelection selectedFeatures;
 
     for (VkPhysicalDevice physicalDevice : physicalDevices) {
         VkPhysicalDeviceProperties properties{};
@@ -4198,90 +4497,16 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             continue;
         }
 
-        const bool swapchainExtensionAvailable = hasDeviceExtension(physicalDevice, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-        const bool descriptorHeapExtensionAvailable =
-            hasDeviceExtension(physicalDevice, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
-        const bool shaderObjectExtensionAvailable =
-            hasDeviceExtension(physicalDevice, VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
-        const bool accelerationStructureExtensionAvailable =
-            hasDeviceExtension(physicalDevice, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-        const bool deferredHostOperationsExtensionAvailable =
-            hasDeviceExtension(physicalDevice, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
-        const bool rayQueryExtensionAvailable =
-            hasDeviceExtension(physicalDevice, VK_KHR_RAY_QUERY_EXTENSION_NAME);
-        const bool pushDescriptorExtensionAvailable =
-            hasDeviceExtension(physicalDevice, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
-        if (!swapchainExtensionAvailable) {
+        const VulkanExtensionSet extensions = VulkanExtensionSet::query(physicalDevice);
+        if (!extensions.swapchain) {
             continue;
         }
 
-        VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
-        };
-        VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
-            .pNext = &accelerationStructureFeatures,
-        };
-        VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-            .pNext = &rayQueryFeatures,
-        };
-        VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
-            .pNext = &shaderObjectFeatures,
-        };
-        VkPhysicalDeviceVulkan13Features vulkan13Features{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-            .pNext = &descriptorHeapFeatures,
-        };
-        VkPhysicalDeviceVulkan12Features vulkan12Features{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-            .pNext = &vulkan13Features,
-        };
-        VkPhysicalDeviceVulkan11Features vulkan11Features{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-            .pNext = &vulkan12Features,
-        };
-        VkPhysicalDeviceFeatures2 features{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-            .pNext = &vulkan11Features,
-        };
-        vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
-        if (vulkan11Features.shaderDrawParameters != VK_TRUE ||
-            vulkan13Features.dynamicRendering != VK_TRUE ||
-            vulkan13Features.synchronization2 != VK_TRUE) {
+        VulkanDeviceFeatureProbe probe;
+        probe.query(physicalDevice, extensions);
+        if (!probe.supportsRequiredCoreFeatures()) {
             continue;
         }
-
-        const bool descriptorHeapSupported =
-            requestBindlessDescriptorHeap &&
-            descriptorHeapExtensionAvailable &&
-            descriptorHeapFeatures.descriptorHeap == VK_TRUE &&
-            vulkan12Features.descriptorIndexing == VK_TRUE &&
-            vulkan12Features.runtimeDescriptorArray == VK_TRUE &&
-            vulkan12Features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
-            vulkan12Features.bufferDeviceAddress == VK_TRUE &&
-            DescriptorHeapWriter::isSupported(physicalDevice);
-        const bool shaderObjectSupported =
-            requestShaderObject &&
-            shaderObjectExtensionAvailable &&
-            shaderObjectFeatures.shaderObject == VK_TRUE;
-        const bool accelerationStructureSupported =
-            accelerationStructureExtensionAvailable &&
-            deferredHostOperationsExtensionAvailable &&
-            accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
-            vulkan12Features.bufferDeviceAddress == VK_TRUE;
-        const bool rayTracingAccelerationStructureSupported =
-            (requestRayTracingAccelerationStructure || requestRayQuery) &&
-            accelerationStructureSupported;
-        const bool rayQuerySupported =
-            requestRayQuery &&
-            accelerationStructureSupported &&
-            rayQueryExtensionAvailable &&
-            rayQueryFeatures.rayQuery == VK_TRUE;
-        const bool pushDescriptorSupported =
-            requestPushDescriptor &&
-            pushDescriptorExtensionAvailable;
 
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
@@ -4316,53 +4541,35 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             continue;
         }
 
-        const bool matchesRequestedFeatures =
-            (!requestBindlessDescriptorHeap || descriptorHeapSupported) &&
-            (!requestShaderObject || shaderObjectSupported) &&
-            (!requestRayTracingAccelerationStructure || rayTracingAccelerationStructureSupported) &&
-            (!requestRayQuery || rayQuerySupported) &&
-            (!requestPushDescriptor || pushDescriptorSupported);
-        const int32_t featureScore =
-            (descriptorHeapSupported ? 16 : 0) +
-            (shaderObjectSupported ? 8 : 0) +
-            (rayTracingAccelerationStructureSupported ? 4 : 0) +
-            (rayQuerySupported ? 2 : 0) +
-            (pushDescriptorSupported ? 1 : 0);
-        if (featureScore > bestFeatureScore) {
-            bestFeatureScore = featureScore;
-            bestPhysicalDevice = physicalDevice;
-            bestGraphicsFamily = graphicsFamily;
-            bestComputeFamily = computeFamily;
-            bestBindlessDescriptorHeap = descriptorHeapSupported;
-            bestShaderObject = shaderObjectSupported;
-            bestRayTracingAccelerationStructure = rayTracingAccelerationStructureSupported;
-            bestRayQuery = rayQuerySupported;
-            bestPushDescriptor = pushDescriptorSupported;
+        const VulkanDeviceFeatureSelection featureSelection = VulkanDeviceFeatureSelection::select(
+            requestedFeatures,
+            physicalDevice,
+            extensions,
+            probe);
+        const int32_t featureScore = featureSelection.score();
+        if (featureScore > bestCandidate.featureScore) {
+            bestCandidate = VulkanPhysicalDeviceCandidate{
+                .physicalDevice = physicalDevice,
+                .graphicsFamily = graphicsFamily,
+                .computeFamily = computeFamily,
+                .features = featureSelection,
+                .featureScore = featureScore,
+            };
         }
-        if (matchesRequestedFeatures) {
+        if (featureSelection.matches(requestedFeatures)) {
             deviceImpl->physicalDevice = physicalDevice;
             deviceImpl->graphicsFamily = graphicsFamily;
             deviceImpl->computeFamily = computeFamily;
-            selectedBindlessDescriptorHeap = descriptorHeapSupported;
-            selectedShaderObject = shaderObjectSupported;
-            selectedRayTracingAccelerationStructure =
-                (requestRayTracingAccelerationStructure || requestRayQuery) &&
-                accelerationStructureSupported;
-            selectedRayQuery = rayQuerySupported;
-            selectedPushDescriptor = pushDescriptorSupported;
+            selectedFeatures = featureSelection;
             break;
         }
     }
 
-    if (deviceImpl->physicalDevice == VK_NULL_HANDLE && bestPhysicalDevice != VK_NULL_HANDLE) {
-        deviceImpl->physicalDevice = bestPhysicalDevice;
-        deviceImpl->graphicsFamily = bestGraphicsFamily;
-        deviceImpl->computeFamily = bestComputeFamily;
-        selectedBindlessDescriptorHeap = bestBindlessDescriptorHeap;
-        selectedShaderObject = bestShaderObject;
-        selectedRayTracingAccelerationStructure = bestRayTracingAccelerationStructure;
-        selectedRayQuery = bestRayQuery;
-        selectedPushDescriptor = bestPushDescriptor;
+    if (deviceImpl->physicalDevice == VK_NULL_HANDLE && bestCandidate.physicalDevice != VK_NULL_HANDLE) {
+        deviceImpl->physicalDevice = bestCandidate.physicalDevice;
+        deviceImpl->graphicsFamily = bestCandidate.graphicsFamily;
+        deviceImpl->computeFamily = bestCandidate.computeFamily;
+        selectedFeatures = bestCandidate.features;
     }
 
     if (deviceImpl->physicalDevice == VK_NULL_HANDLE) {
@@ -4394,87 +4601,11 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         });
     }
 
-    VkPhysicalDeviceVulkan13Features enabledVulkan13Features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-        .synchronization2 = VK_TRUE,
-        .dynamicRendering = VK_TRUE,
-    };
-    VkPhysicalDeviceDescriptorHeapFeaturesEXT enabledDescriptorHeapFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
-        .descriptorHeap = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
-    };
-    VkPhysicalDeviceShaderObjectFeaturesEXT enabledShaderObjectFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-        .shaderObject = selectedShaderObject ? VK_TRUE : VK_FALSE,
-    };
-    VkPhysicalDeviceAccelerationStructureFeaturesKHR enabledAccelerationStructureFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
-        .accelerationStructure = selectedRayTracingAccelerationStructure ? VK_TRUE : VK_FALSE,
-    };
-    VkPhysicalDeviceRayQueryFeaturesKHR enabledRayQueryFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
-        .rayQuery = selectedRayQuery ? VK_TRUE : VK_FALSE,
-    };
-    void** featureTail = &enabledVulkan13Features.pNext;
-    if (selectedBindlessDescriptorHeap) {
-        *featureTail = &enabledDescriptorHeapFeatures;
-        featureTail = &enabledDescriptorHeapFeatures.pNext;
-    }
-    if (selectedShaderObject) {
-        *featureTail = &enabledShaderObjectFeatures;
-        featureTail = &enabledShaderObjectFeatures.pNext;
-    }
-    if (selectedRayTracingAccelerationStructure) {
-        *featureTail = &enabledAccelerationStructureFeatures;
-        featureTail = &enabledAccelerationStructureFeatures.pNext;
-    }
-    if (selectedRayQuery) {
-        *featureTail = &enabledRayQueryFeatures;
-    }
-    VkPhysicalDeviceVulkan12Features enabledVulkan12Features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-        .pNext = &enabledVulkan13Features,
-        .descriptorIndexing = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
-        .shaderSampledImageArrayNonUniformIndexing = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
-        .runtimeDescriptorArray = selectedBindlessDescriptorHeap ? VK_TRUE : VK_FALSE,
-        .bufferDeviceAddress =
-            (selectedBindlessDescriptorHeap || selectedRayTracingAccelerationStructure || selectedRayQuery)
-                ? VK_TRUE
-                : VK_FALSE,
-    };
-    VkPhysicalDeviceVulkan11Features enabledVulkan11Features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-        .pNext = &enabledVulkan12Features,
-        .shaderDrawParameters = VK_TRUE,
-    };
-    VkPhysicalDeviceFeatures2 enabledFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-        .pNext = &enabledVulkan11Features,
-    };
-
-    std::vector<const char*> deviceExtensions = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-    };
-    if (selectedBindlessDescriptorHeap) {
-        deviceExtensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
-    }
-    if (selectedShaderObject) {
-        deviceExtensions.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
-    }
-    if (selectedRayTracingAccelerationStructure) {
-        deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
-        deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-    }
-    if (selectedRayQuery) {
-        deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
-    }
-    if (selectedPushDescriptor) {
-        deviceExtensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
-    }
-
+    VulkanEnabledFeatureChain enabledFeatureChain(selectedFeatures);
+    std::vector<const char*> deviceExtensions = enabledDeviceExtensions(selectedFeatures);
     VkDeviceCreateInfo deviceInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = &enabledFeatures,
+        .pNext = &enabledFeatureChain.features,
         .queueCreateInfoCount = static_cast<uint32_t>(queueInfos.size()),
         .pQueueCreateInfos = queueInfos.data(),
         .enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size()),
@@ -4487,7 +4618,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     }
     activateVolkDevice(deviceImpl->device);
 
-    if (selectedBindlessDescriptorHeap) {
+    if (selectedFeatures.bindlessDescriptorHeap) {
         vkResult = deviceImpl->descriptorHeapWriter.initialize(deviceImpl->physicalDevice, deviceImpl->device);
         if (vkResult != VK_SUCCESS) {
             return resultFromVk(vkResult);
@@ -4520,16 +4651,18 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         };
         deviceImpl->bindlessDescriptorHeapEnabled = true;
     }
-    deviceImpl->capabilities.shaderObject = selectedShaderObject;
-    deviceImpl->shaderObjectEnabled = selectedShaderObject;
-    deviceImpl->capabilities.rayTracingAccelerationStructure = selectedRayTracingAccelerationStructure;
-    deviceImpl->rayTracingAccelerationStructureEnabled = selectedRayTracingAccelerationStructure;
-    deviceImpl->capabilities.rayQuery = selectedRayQuery;
-    deviceImpl->rayQueryEnabled = selectedRayQuery;
-    deviceImpl->capabilities.pushDescriptor = selectedPushDescriptor;
-    deviceImpl->pushDescriptorEnabled = selectedPushDescriptor;
+    deviceImpl->capabilities.shaderObject = selectedFeatures.shaderObject;
+    deviceImpl->shaderObjectEnabled = selectedFeatures.shaderObject;
+    deviceImpl->capabilities.rayTracingAccelerationStructure = selectedFeatures.rayTracingAccelerationStructure;
+    deviceImpl->rayTracingAccelerationStructureEnabled = selectedFeatures.rayTracingAccelerationStructure;
+    deviceImpl->capabilities.rayQuery = selectedFeatures.rayQuery;
+    deviceImpl->rayQueryEnabled = selectedFeatures.rayQuery;
+    deviceImpl->capabilities.pushDescriptor = selectedFeatures.pushDescriptor;
+    deviceImpl->pushDescriptorEnabled = selectedFeatures.pushDescriptor;
     deviceImpl->bufferDeviceAddressEnabled =
-        selectedBindlessDescriptorHeap || selectedRayTracingAccelerationStructure || selectedRayQuery;
+        selectedFeatures.bindlessDescriptorHeap ||
+        selectedFeatures.rayTracingAccelerationStructure ||
+        selectedFeatures.rayQuery;
 
     if (deviceImpl->debugUtilsEnabled) {
         deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
