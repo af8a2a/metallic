@@ -31,6 +31,7 @@ private:
     void drawPanels();
     void drawScenePanel();
     void drawCameraControls();
+    void drawEnvironmentControls();
     void drawSceneNode(int32_t nodeIndex);
     render::RenderGraphNode* activePreviewRenderGraphNode();
     bool drawRuntimeSettingsForNode(

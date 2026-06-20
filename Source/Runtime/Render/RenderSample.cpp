@@ -51,6 +51,42 @@ bool applySampleScenePath(RenderGraph& graph, const RenderSampleDesc& desc, std:
     return true;
 }
 
+RenderGraphProperties environmentProperties(const RenderSampleEnvironmentDesc& environment)
+{
+    return RenderGraphProperties{
+        {"enabled", environment.enabled},
+        {"path", environment.path},
+        {"intensity", environment.intensity},
+        {"rotationDegrees", environment.rotationDegrees},
+        {"visible", environment.visible},
+    };
+}
+
+bool applySampleEnvironment(RenderGraph& graph, const RenderSampleDesc& desc, std::string& outMessage)
+{
+    if (desc.environmentTargets.empty()) {
+        return true;
+    }
+
+    for (const std::string& target : desc.environmentTargets) {
+        RenderGraphNode* node = graph.findNode(target);
+        if (node == nullptr) {
+            outMessage = "Sample environmentTargets node not found: " + target;
+            return false;
+        }
+        RenderGraphProperties properties = node->properties;
+        if (!properties.is_object()) {
+            properties = RenderGraphProperties::object();
+        }
+        properties["environment"] = environmentProperties(desc.environment);
+        if (!graph.setNodeProperties(node->id, std::move(properties))) {
+            outMessage = "Sample failed to update environment properties: " + target;
+            return false;
+        }
+    }
+    return true;
+}
+
 class PathTracingMeetMatSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-meet-mat"; }
@@ -66,6 +102,17 @@ public:
         return "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
+    RenderSampleEnvironmentDesc environment() const override
+    {
+        return RenderSampleEnvironmentDesc{
+            .enabled = true,
+            .path = "Asset/ABeautifulGame/environment.hdr",
+            .intensity = 1.0f,
+            .rotationDegrees = 0.0f,
+            .visible = true,
+        };
+    }
+    std::vector<std::string> environmentTargets() const override { return {"PathTrace"}; }
     std::string previewOutput() const override { return "PathTrace.color"; }
 };
 
@@ -116,6 +163,8 @@ RenderSampleDesc RenderSample::desc() const
         .scenePath = scenePath(),
         .graphPath = graphPath(),
         .scenePathTargets = scenePathTargets(),
+        .environment = environment(),
+        .environmentTargets = environmentTargets(),
         .previewOutput = previewOutput(),
     };
 }
@@ -151,6 +200,9 @@ bool loadRenderSample(
     }
 
     if (!applySampleScenePath(graph, desc, outMessage)) {
+        return false;
+    }
+    if (!applySampleEnvironment(graph, desc, outMessage)) {
         return false;
     }
 

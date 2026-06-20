@@ -128,6 +128,10 @@ public:
                 .kind = SceneRayQueryBindingKind::SampledImage,
                 .descriptorCount = kScenePathTraceMaxMaterialTextures,
             },
+            SceneRayQueryBindingDesc{
+                .binding = 10,
+                .kind = SceneRayQueryBindingKind::SampledImage,
+            },
         };
         std::string programLog;
         result = rayQueryProgram_.initialize(
@@ -158,16 +162,25 @@ public:
     {
         TextureHandle color = context.outputTexture("color");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
+        TextureView* environmentTextureView = sceneResources_.environmentTextureView();
+        TextureView* const environmentTextureViews[] = {environmentTextureView};
         if (!color.valid() ||
             color.view() == nullptr ||
             !rayQueryProgram_.valid() ||
             !sceneResources_.valid() ||
-            materialTextureViews[0] == nullptr) {
+            materialTextureViews[0] == nullptr ||
+            environmentTextureView == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
         ScenePathTracePush push;
-        buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(), push);
+        buildPush(
+            context.width(),
+            context.height(),
+            context.properties(),
+            sceneResources_.bounds(),
+            sceneResources_.environmentMapAvailable(),
+            push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
 
         TextureView* historyCurrentView = color.view();
@@ -186,6 +199,10 @@ public:
         }
 
         result = sceneResources_.uploadMaterialTextures(context.commandBuffer());
+        if (!result) {
+            return result;
+        }
+        result = sceneResources_.uploadEnvironmentTexture(context.commandBuffer());
         if (!result) {
             return result;
         }
@@ -231,6 +248,11 @@ public:
                 .binding = 9,
                 .textureViews = materialTextureViews.data(),
                 .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
+            },
+            SceneRayQueryDispatchBinding{
+                .binding = 10,
+                .textureViews = environmentTextureViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
             },
         };
         result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
@@ -371,6 +393,18 @@ private:
         return iter->get<bool>();
     }
 
+    static float floatProperty(const RenderGraphProperties& properties, const char* key, float fallback)
+    {
+        if (!properties.is_object()) {
+            return fallback;
+        }
+        auto iter = properties.find(key);
+        if (iter == properties.end() || !iter->is_number()) {
+            return fallback;
+        }
+        return finiteOr(iter->get<float>(), fallback);
+    }
+
     static std::string historyNameForContext(const RenderGraphExecutionContext& context)
     {
         std::string name(kScenePathTraceHistoryPrefix);
@@ -390,6 +424,18 @@ private:
             return nullptr;
         }
         auto iter = properties.find("camera");
+        if (iter == properties.end() || !iter->is_object()) {
+            return nullptr;
+        }
+        return &(*iter);
+    }
+
+    static const RenderGraphProperties* environmentPropertiesFrom(const RenderGraphProperties& properties)
+    {
+        if (!properties.is_object()) {
+            return nullptr;
+        }
+        auto iter = properties.find("environment");
         if (iter == properties.end() || !iter->is_object()) {
             return nullptr;
         }
@@ -457,6 +503,7 @@ private:
         uint32_t height,
         const RenderGraphProperties& properties,
         const scene::Bounds& drawBounds,
+        bool environmentMapAvailable,
         ScenePathTracePush& outPush)
     {
         outPush = ScenePathTracePush{};
@@ -509,6 +556,24 @@ private:
         outPush.bitangentFlip = metallic::render::builtin_pass::boolProperty(&properties, "flipBitangent", false)
             ? -1.0f
             : 1.0f;
+
+        const RenderGraphProperties* environmentProperties = environmentPropertiesFrom(properties);
+        outPush.environmentIntensity = 1.0f;
+        outPush.environmentRotationRadians = 0.0f;
+        outPush.environmentMode = kScenePathTraceEnvironmentModeProcedural;
+        outPush.environmentVisible = 1;
+        if (environmentProperties != nullptr) {
+            const bool environmentEnabled = boolProperty(*environmentProperties, "enabled", true);
+            outPush.environmentIntensity = std::max(floatProperty(*environmentProperties, "intensity", 1.0f), 0.0f);
+            outPush.environmentRotationRadians =
+                floatProperty(*environmentProperties, "rotationDegrees", 0.0f) * (kPi / 180.0f);
+            outPush.environmentVisible = boolProperty(*environmentProperties, "visible", true) ? 1u : 0u;
+            if (!environmentEnabled) {
+                outPush.environmentMode = kScenePathTraceEnvironmentModeDisabled;
+            } else if (environmentMapAvailable) {
+                outPush.environmentMode = kScenePathTraceEnvironmentModeMap;
+            }
+        }
     }
 
     ScenePathTraceResources sceneResources_;

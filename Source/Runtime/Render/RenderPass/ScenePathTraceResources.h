@@ -30,6 +30,7 @@ public:
         const RenderGraphProperties& properties,
         std::string& log);
     Result uploadMaterialTextures(CommandBuffer& commandBuffer);
+    Result uploadEnvironmentTexture(CommandBuffer& commandBuffer);
 
     void clear();
     bool valid() const;
@@ -45,6 +46,8 @@ public:
     Buffer* materialBuffer() const;
     const std::array<TextureView*, kScenePathTraceMaxMaterialTextures>& materialTextureViews() const;
     uint32_t materialTextureCount() const;
+    TextureView* environmentTextureView() const;
+    bool environmentMapAvailable() const;
 
 private:
     struct Impl;

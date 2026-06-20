@@ -91,12 +91,21 @@ struct ScenePathTraceMaterialTexture {
     std::unique_ptr<TextureView> view;
     uint32_t width = 1;
     uint32_t height = 1;
+    uint64_t byteSize = 4;
+    Format format = Format::Rgba8Unorm;
     ResourceState state = ResourceState::Undefined;
     bool uploaded = false;
 };
 
 struct DecodedMaterialTexture {
     std::vector<uint8_t> pixels;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::string label;
+};
+
+struct DecodedEnvironmentTexture {
+    std::vector<float> pixels;
     uint32_t width = 0;
     uint32_t height = 0;
     std::string label;
@@ -120,6 +129,26 @@ std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props
         return path;
     }
     return kDefaultPathTraceScenePath;
+}
+
+std::filesystem::path environmentPathFromProperties(const RenderGraphProperties& props)
+{
+    if (!props.contains("environment") || !props["environment"].is_object()) {
+        return {};
+    }
+    const RenderGraphProperties& environment = props["environment"];
+    if (!environment.contains("path") || !environment["path"].is_string()) {
+        return {};
+    }
+
+    std::filesystem::path path = environment["path"].get<std::string>();
+    if (path.empty()) {
+        return {};
+    }
+    if (path.is_relative()) {
+        path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
+    }
+    return path;
 }
 
 void appendScenePathTraceWarning(std::string& log, std::string_view message)
@@ -276,7 +305,9 @@ Result createMaterialTexture(
     outTexture = ScenePathTraceMaterialTexture{};
     outTexture.width = width;
     outTexture.height = height;
+    outTexture.format = Format::Rgba8Unorm;
     const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
+    outTexture.byteSize = byteSize;
     Result result = device.createBuffer(
         BufferDesc{
             .size = byteSize,
@@ -303,7 +334,7 @@ Result createMaterialTexture(
         TextureDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-            .format = Format::Rgba8Unorm,
+            .format = outTexture.format,
             .width = width,
             .height = height,
             .depth = 1,
@@ -321,7 +352,7 @@ Result createMaterialTexture(
     result = device.createTextureView(
         *outTexture.texture,
         TextureViewDesc{
-            .format = Format::Rgba8Unorm,
+            .format = outTexture.format,
             .baseMip = 0,
             .mipCount = 1,
             .baseLayer = 0,
@@ -330,6 +361,128 @@ Result createMaterialTexture(
         outTexture.view);
     if (!result || outTexture.view == nullptr) {
         log += resultMessage(std::string("createTextureView(ScenePathTracePass material texture ") + std::string(label) + ")", result);
+        log += '\n';
+        return result ? makeError(Error::Failure) : result;
+    }
+    return {};
+}
+
+bool decodeEnvironmentTexture(
+    const std::filesystem::path& path,
+    DecodedEnvironmentTexture& outTexture,
+    std::string& log)
+{
+    outTexture = DecodedEnvironmentTexture{};
+    if (path.empty()) {
+        return false;
+    }
+
+    std::error_code existsError;
+    if (!std::filesystem::exists(path, existsError)) {
+        appendScenePathTraceWarning(log, "environment map does not exist: " + path.string());
+        return false;
+    }
+
+    int width = 0;
+    int height = 0;
+    int channelCount = 0;
+    float* pixels = stbi_loadf(path.string().c_str(), &width, &height, &channelCount, 4);
+    if (pixels == nullptr || width <= 0 || height <= 0) {
+        std::string message = "failed to decode environment map '" + path.string() + "'";
+        if (const char* reason = stbi_failure_reason()) {
+            message += ": ";
+            message += reason;
+        }
+        appendScenePathTraceWarning(log, message);
+        return false;
+    }
+
+    const uint64_t componentCount = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
+    if (componentCount > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        stbi_image_free(pixels);
+        appendScenePathTraceWarning(log, "decoded environment map is too large");
+        return false;
+    }
+
+    outTexture.width = static_cast<uint32_t>(width);
+    outTexture.height = static_cast<uint32_t>(height);
+    outTexture.label = path.filename().string();
+    outTexture.pixels.assign(pixels, pixels + static_cast<size_t>(componentCount));
+    stbi_image_free(pixels);
+    return true;
+}
+
+Result createEnvironmentTexture(
+    Device& device,
+    const float* pixels,
+    uint32_t width,
+    uint32_t height,
+    std::string_view label,
+    ScenePathTraceMaterialTexture& outTexture,
+    std::string& log)
+{
+    if (pixels == nullptr || width == 0 || height == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    outTexture = ScenePathTraceMaterialTexture{};
+    outTexture.width = width;
+    outTexture.height = height;
+    outTexture.format = Format::Rgba32Sfloat;
+    outTexture.byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull * sizeof(float);
+    Result result = device.createBuffer(
+        BufferDesc{
+            .size = outTexture.byteSize,
+            .usage = BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::HostUpload,
+        },
+        outTexture.uploadBuffer);
+    if (!result || outTexture.uploadBuffer == nullptr) {
+        log += resultMessage(std::string("createBuffer(ScenePathTracePass environment upload ") + std::string(label) + ")", result);
+        log += '\n';
+        return result ? makeError(Error::Failure) : result;
+    }
+
+    void* mapped = outTexture.uploadBuffer->map();
+    if (mapped == nullptr) {
+        log = "ScenePathTracePass failed to map environment texture upload buffer";
+        return makeError(Error::Failure);
+    }
+    std::memcpy(mapped, pixels, static_cast<size_t>(outTexture.byteSize));
+    outTexture.uploadBuffer->flush(0, outTexture.byteSize);
+    outTexture.uploadBuffer->unmap();
+
+    result = device.createTexture(
+        TextureDesc{
+            .type = TextureType::Texture2D,
+            .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+            .format = outTexture.format,
+            .width = width,
+            .height = height,
+            .depth = 1,
+            .mipCount = 1,
+            .layerCount = 1,
+            .memoryLocation = MemoryLocation::Device,
+        },
+        outTexture.texture);
+    if (!result || outTexture.texture == nullptr) {
+        log += resultMessage(std::string("createTexture(ScenePathTracePass environment texture ") + std::string(label) + ")", result);
+        log += '\n';
+        return result ? makeError(Error::Failure) : result;
+    }
+
+    result = device.createTextureView(
+        *outTexture.texture,
+        TextureViewDesc{
+            .format = outTexture.format,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        },
+        outTexture.view);
+    if (!result || outTexture.view == nullptr) {
+        log += resultMessage(std::string("createTextureView(ScenePathTracePass environment texture ") + std::string(label) + ")", result);
         log += '\n';
         return result ? makeError(Error::Failure) : result;
     }
@@ -609,6 +762,8 @@ struct ScenePathTraceResources::Impl {
         materialTextures.clear();
         materialTextureViews.fill(nullptr);
         materialTextureCount = 0;
+        environmentTexture = ScenePathTraceMaterialTexture{};
+        environmentMapAvailable = false;
         outTextureIndexMap.assign(loadedScene.textures().size(), kInvalidMaterialTextureIndex);
 
         const uint8_t fallbackPixels[4] = {255, 255, 255, 255};
@@ -673,6 +828,96 @@ struct ScenePathTraceResources::Impl {
         return {};
     }
 
+    Result buildEnvironmentTexture(
+        Device& device,
+        const std::filesystem::path& path,
+        std::string& log)
+    {
+        environmentTexture = ScenePathTraceMaterialTexture{};
+        environmentMapAvailable = false;
+
+        if (!path.empty()) {
+            DecodedEnvironmentTexture decodedEnvironment;
+            if (decodeEnvironmentTexture(path, decodedEnvironment, log) && !decodedEnvironment.pixels.empty()) {
+                Result result = createEnvironmentTexture(
+                    device,
+                    decodedEnvironment.pixels.data(),
+                    decodedEnvironment.width,
+                    decodedEnvironment.height,
+                    decodedEnvironment.label,
+                    environmentTexture,
+                    log);
+                if (!result) {
+                    return result;
+                }
+                environmentMapAvailable = true;
+                return {};
+            }
+        }
+
+        const float fallbackPixels[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        return createEnvironmentTexture(
+            device,
+            fallbackPixels,
+            1,
+            1,
+            "environment fallback",
+            environmentTexture,
+            log);
+    }
+
+    Result uploadTexture(CommandBuffer& commandBuffer, ScenePathTraceMaterialTexture& texture)
+    {
+        if (texture.uploaded) {
+            return {};
+        }
+        if (texture.uploadBuffer == nullptr || texture.texture == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        TextureBarrierDesc toTransfer{
+            .texture = texture.texture.get(),
+            .before = texture.state,
+            .after = ResourceState::TransferDestination,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .textures = &toTransfer,
+            .textureCount = 1,
+        });
+        texture.state = ResourceState::TransferDestination;
+
+        commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
+            .buffer = texture.uploadBuffer.get(),
+            .texture = texture.texture.get(),
+            .width = texture.width,
+            .height = texture.height,
+            .depth = 1,
+            .mipLevel = 0,
+            .baseLayer = 0,
+        });
+
+        TextureBarrierDesc toShaderRead{
+            .texture = texture.texture.get(),
+            .before = texture.state,
+            .after = ResourceState::ShaderRead,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .textures = &toShaderRead,
+            .textureCount = 1,
+        });
+        texture.state = ResourceState::ShaderRead;
+        texture.uploaded = true;
+        return {};
+    }
+
     Result uploadMaterialTextures(CommandBuffer& commandBuffer)
     {
         if (materialTextures.empty()) {
@@ -680,55 +925,17 @@ struct ScenePathTraceResources::Impl {
         }
 
         for (ScenePathTraceMaterialTexture& texture : materialTextures) {
-            if (texture.uploaded) {
-                continue;
+            Result result = uploadTexture(commandBuffer, texture);
+            if (!result) {
+                return result;
             }
-            if (texture.uploadBuffer == nullptr || texture.texture == nullptr) {
-                return makeError(Error::InvalidArgument);
-            }
-
-            TextureBarrierDesc toTransfer{
-                .texture = texture.texture.get(),
-                .before = texture.state,
-                .after = ResourceState::TransferDestination,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            };
-            commandBuffer.barrier(BarrierDesc{
-                .textures = &toTransfer,
-                .textureCount = 1,
-            });
-            texture.state = ResourceState::TransferDestination;
-
-            commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
-                .buffer = texture.uploadBuffer.get(),
-                .texture = texture.texture.get(),
-                .width = texture.width,
-                .height = texture.height,
-                .depth = 1,
-                .mipLevel = 0,
-                .baseLayer = 0,
-            });
-
-            TextureBarrierDesc toShaderRead{
-                .texture = texture.texture.get(),
-                .before = texture.state,
-                .after = ResourceState::ShaderRead,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            };
-            commandBuffer.barrier(BarrierDesc{
-                .textures = &toShaderRead,
-                .textureCount = 1,
-            });
-            texture.state = ResourceState::ShaderRead;
-            texture.uploaded = true;
         }
         return {};
+    }
+
+    Result uploadEnvironmentTexture(CommandBuffer& commandBuffer)
+    {
+        return uploadTexture(commandBuffer, environmentTexture);
     }
 
     void resetGpuBuffers()
@@ -741,6 +948,8 @@ struct ScenePathTraceResources::Impl {
         materialTextures.clear();
         materialTextureViews.fill(nullptr);
         materialTextureCount = 0;
+        environmentTexture = ScenePathTraceMaterialTexture{};
+        environmentMapAvailable = false;
     }
 
     void clear()
@@ -749,6 +958,7 @@ struct ScenePathTraceResources::Impl {
         rtxBuilder.clear();
         drawBounds = scene::Bounds{};
         scenePath.clear();
+        environmentPath.clear();
         prepared = false;
     }
 
@@ -763,12 +973,14 @@ struct ScenePathTraceResources::Impl {
             instanceBuffer != nullptr &&
             materialBuffer != nullptr &&
             !materialTextures.empty() &&
-            materialTextureViews[0] != nullptr;
+            materialTextureViews[0] != nullptr &&
+            environmentTexture.view != nullptr;
     }
 
     SceneRtxBuilder rtxBuilder;
     scene::Bounds drawBounds;
     std::filesystem::path scenePath;
+    std::filesystem::path environmentPath;
     bool prepared = false;
     uint64_t revision = 0;
     std::unique_ptr<Buffer> vertexBuffer;
@@ -779,8 +991,9 @@ struct ScenePathTraceResources::Impl {
     std::vector<ScenePathTraceMaterialTexture> materialTextures;
     std::array<TextureView*, kScenePathTraceMaxMaterialTextures> materialTextureViews{};
     uint32_t materialTextureCount = 0;
+    ScenePathTraceMaterialTexture environmentTexture;
+    bool environmentMapAvailable = false;
 };
-
 ScenePathTraceResources::ScenePathTraceResources() :
     impl_(std::make_unique<Impl>())
 {
@@ -799,7 +1012,8 @@ Result ScenePathTraceResources::prepare(
     std::string& log)
 {
     const std::filesystem::path path = scenePathFromProperties(properties);
-    if (impl_->valid() && impl_->scenePath == path) {
+    const std::filesystem::path environmentPath = environmentPathFromProperties(properties);
+    if (impl_->valid() && impl_->scenePath == path && impl_->environmentPath == environmentPath) {
         return {};
     }
 
@@ -817,6 +1031,11 @@ Result ScenePathTraceResources::prepare(
 
     std::vector<uint32_t> textureIndexMap;
     Result result = impl_->buildMaterialTextures(device, loadedScene, textureIndexMap, log);
+    if (!result) {
+        impl_->clear();
+        return result;
+    }
+    result = impl_->buildEnvironmentTexture(device, environmentPath, log);
     if (!result) {
         impl_->clear();
         return result;
@@ -900,6 +1119,7 @@ Result ScenePathTraceResources::prepare(
 
     impl_->drawBounds = loadedScene.bounds();
     impl_->scenePath = path;
+    impl_->environmentPath = environmentPath;
     impl_->prepared = true;
     ++impl_->revision;
     return {};
@@ -908,6 +1128,11 @@ Result ScenePathTraceResources::prepare(
 Result ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuffer)
 {
     return impl_->uploadMaterialTextures(commandBuffer);
+}
+
+Result ScenePathTraceResources::uploadEnvironmentTexture(CommandBuffer& commandBuffer)
+{
+    return impl_->uploadEnvironmentTexture(commandBuffer);
 }
 
 void ScenePathTraceResources::clear()
@@ -973,6 +1198,16 @@ const std::array<TextureView*, kScenePathTraceMaxMaterialTextures>& ScenePathTra
 uint32_t ScenePathTraceResources::materialTextureCount() const
 {
     return impl_->materialTextureCount;
+}
+
+TextureView* ScenePathTraceResources::environmentTextureView() const
+{
+    return impl_->environmentTexture.view.get();
+}
+
+bool ScenePathTraceResources::environmentMapAvailable() const
+{
+    return impl_->environmentMapAvailable;
 }
 
 } // namespace metallic::render

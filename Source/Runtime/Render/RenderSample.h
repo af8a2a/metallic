@@ -9,6 +9,14 @@
 
 namespace metallic::render {
 
+struct RenderSampleEnvironmentDesc {
+    bool enabled = true;
+    std::string path;
+    float intensity = 1.0f;
+    float rotationDegrees = 0.0f;
+    bool visible = true;
+};
+
 struct RenderSampleDesc {
     std::string id;
     std::string name;
@@ -17,6 +25,8 @@ struct RenderSampleDesc {
     std::string scenePath;
     std::string graphPath;
     std::vector<std::string> scenePathTargets;
+    RenderSampleEnvironmentDesc environment;
+    std::vector<std::string> environmentTargets;
     std::string previewOutput;
 };
 
@@ -37,6 +47,8 @@ public:
     virtual std::string scenePath() const = 0;
     virtual std::string graphPath() const = 0;
     virtual std::vector<std::string> scenePathTargets() const = 0;
+    virtual RenderSampleEnvironmentDesc environment() const { return {}; }
+    virtual std::vector<std::string> environmentTargets() const { return {}; }
     virtual std::string previewOutput() const { return {}; }
 
     RenderSampleDesc desc() const;

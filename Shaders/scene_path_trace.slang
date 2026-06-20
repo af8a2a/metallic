@@ -86,9 +86,15 @@ RWTexture2D<float4> gHistoryPrevious;
 [[vk::binding(9, 0)]]
 Texture2D<float4> gMaterialTextures[256];
 
+[[vk::binding(10, 0)]]
+Texture2D<float4> gEnvironmentMap;
+
 static const uint kMaxMaterialTextures = 256u;
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
+static const uint kEnvironmentModeProcedural = 0u;
+static const uint kEnvironmentModeMap = 1u;
+static const uint kEnvironmentModeDisabled = 2u;
 
 struct ScenePathTracePush
 {
@@ -106,6 +112,10 @@ struct ScenePathTracePush
     uint enableAccumulation;
     uint materialTextureCount;
     float bitangentFlip;
+    float environmentIntensity;
+    float environmentRotationRadians;
+    uint environmentMode;
+    uint environmentVisible;
     uint padding0;
     uint padding1;
     uint padding2;
@@ -199,13 +209,50 @@ float3 offsetRay(float3 position, float3 normal)
     return position + normal * 0.001;
 }
 
-float3 skyRadiance(float3 direction)
+float3 proceduralSkyRadiance(float3 direction)
 {
     float t = saturate(direction.y * 0.5 + 0.5);
     float3 horizon = float3(0.62, 0.70, 0.78);
     float3 zenith = float3(0.12, 0.24, 0.48);
     float sun = pow(saturate(dot(direction, safeNormalize(float3(0.35, 0.88, 0.22), float3(0.0, 1.0, 0.0)))), 256.0);
     return lerp(horizon, zenith, t) * 0.45 + sun * float3(7.0, 6.4, 5.3);
+}
+
+float2 environmentUvFromDirection(float3 direction, float rotationRadians)
+{
+    float phi = atan2(direction.z, direction.x) + rotationRadians;
+    float u = frac(phi / (2.0 * kPi) + 0.5);
+    float v = acos(clamp(direction.y, -1.0, 1.0)) / kPi;
+    return float2(u, v);
+}
+
+float3 environmentMapRadiance(float3 direction, ScenePathTracePush push)
+{
+    uint width = 1u;
+    uint height = 1u;
+    gEnvironmentMap.GetDimensions(width, height);
+    if (width == 0u || height == 0u) {
+        return float3(0.0, 0.0, 0.0);
+    }
+
+    float2 uv = environmentUvFromDirection(direction, push.environmentRotationRadians);
+    uint2 texel = min(uint2(uv * float2(width, height)), uint2(width - 1u, height - 1u));
+    return max(gEnvironmentMap.Load(int3(texel, 0)).rgb, float3(0.0, 0.0, 0.0));
+}
+
+float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool primaryMiss)
+{
+    if (push.environmentMode == kEnvironmentModeDisabled) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    if (primaryMiss && push.environmentVisible == 0u) {
+        return float3(0.0, 0.0, 0.0);
+    }
+
+    float3 radiance = push.environmentMode == kEnvironmentModeMap
+        ? environmentMapRadiance(direction, push)
+        : proceduralSkyRadiance(direction);
+    return radiance * max(push.environmentIntensity, 0.0);
 }
 
 float3 sampleCosineHemisphere(float3 normal, inout uint seed)
@@ -560,7 +607,7 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         if (!traceClosest(ray, push, hit)) {
-            radiance += throughput * skyRadiance(ray.direction);
+            radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u);
             break;
         }
 

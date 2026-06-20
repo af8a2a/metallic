@@ -573,6 +573,11 @@ bool boolValueOr(const render::RenderGraphProperties& value, bool fallback)
     return value.is_boolean() ? value.get<bool>() : fallback;
 }
 
+std::string stringValueOr(const render::RenderGraphProperties& value, std::string fallback)
+{
+    return value.is_string() ? value.get<std::string>() : std::move(fallback);
+}
+
 void floatArrayValueOr(
     const render::RenderGraphProperties& value,
     float* outValues,
@@ -1741,6 +1746,9 @@ void EditorApplication::drawScenePanel()
     }
 
     if (ImGui::CollapsingHeader("Lights")) {
+        drawEnvironmentControls();
+        ImGui::Separator();
+
         int lightIndex = 0;
         for (const scene::RenderLight& light : scene_.lights()) {
             ImGui::PushID(lightIndex++);
@@ -1950,6 +1958,98 @@ void EditorApplication::drawCameraControls()
 
     if (changed) {
         applyBunnyCameraProperties(std::move(properties), "Updated render camera");
+    }
+}
+
+void EditorApplication::drawEnvironmentControls()
+{
+    render::RenderGraphNode* node = activePreviewRenderGraphNode();
+    if (node == nullptr) {
+        ImGui::TextDisabled("Environment: no active preview render pass.");
+        return;
+    }
+    if (node->type != "ScenePathTracePass") {
+        ImGui::TextDisabled("Environment: active pass does not consume scene environment.");
+        return;
+    }
+
+    render::RenderGraphProperties properties = node->properties.is_object()
+        ? node->properties
+        : render::RenderGraphProperties::object();
+    render::RenderGraphProperties environment = properties.contains("environment") && properties["environment"].is_object()
+        ? properties["environment"]
+        : render::RenderGraphProperties::object();
+
+    const std::string path = environment.contains("path")
+        ? stringValueOr(environment["path"], "")
+        : std::string();
+    bool enabled = environment.contains("enabled")
+        ? boolValueOr(environment["enabled"], true)
+        : true;
+    bool visible = environment.contains("visible")
+        ? boolValueOr(environment["visible"], true)
+        : true;
+    float intensity = environment.contains("intensity")
+        ? std::max(floatValueOr(environment["intensity"], 1.0f), 0.0f)
+        : 1.0f;
+    float rotationDegrees = environment.contains("rotationDegrees")
+        ? floatValueOr(environment["rotationDegrees"], 0.0f)
+        : 0.0f;
+
+    static int editingEnvironmentNodeId = -1;
+    static std::string editingEnvironmentPath;
+    static char environmentPathBuffer[260] = {};
+    if (editingEnvironmentNodeId != static_cast<int>(node->id) || editingEnvironmentPath != path) {
+        copyToBuffer(path, environmentPathBuffer, sizeof(environmentPathBuffer));
+        editingEnvironmentNodeId = static_cast<int>(node->id);
+        editingEnvironmentPath = path;
+    }
+
+    bool changed = false;
+    ImGui::TextUnformatted("Environment");
+    ImGui::PushID("SceneEnvironment");
+
+    if (ImGui::Checkbox("Enabled", &enabled)) {
+        environment["enabled"] = enabled;
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Visible", &visible)) {
+        environment["visible"] = visible;
+        changed = true;
+    }
+
+    ImGui::PushItemWidth(-1.0f);
+    ImGui::InputText("HDRI Path", environmentPathBuffer, sizeof(environmentPathBuffer));
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        environment["path"] = environmentPathBuffer;
+        editingEnvironmentPath = environmentPathBuffer;
+        changed = true;
+    }
+
+    if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 16.0f, "%.3f")) {
+        environment["intensity"] = std::max(intensity, 0.0f);
+        changed = true;
+    }
+    if (ImGui::SliderFloat("Rotation", &rotationDegrees, -180.0f, 180.0f, "%.1f deg")) {
+        environment["rotationDegrees"] = rotationDegrees;
+        changed = true;
+    }
+    ImGui::PopItemWidth();
+    ImGui::PopID();
+
+    if (!changed) {
+        return;
+    }
+
+    properties["environment"] = std::move(environment);
+    if (renderGraph_.setNodeProperties(node->id, std::move(properties))) {
+        historyResources_.invalidateAll();
+        viewportPreviewValid_ = false;
+        viewportPreviewNeedsRender_ = true;
+        renderGraphStatus_ = "Updated scene environment";
+    } else {
+        renderGraphStatus_ = "Environment update failed";
     }
 }
 
