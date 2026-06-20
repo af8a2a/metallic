@@ -1973,27 +1973,33 @@ void EditorApplication::drawEnvironmentControls()
         return;
     }
 
-    render::RenderGraphProperties properties = node->properties.is_object()
+    render::RenderGraphProperties staticProperties = node->properties.is_object()
         ? node->properties
         : render::RenderGraphProperties::object();
-    render::RenderGraphProperties environment = properties.contains("environment") && properties["environment"].is_object()
-        ? properties["environment"]
+    render::RenderGraphProperties staticEnvironment =
+        staticProperties.contains("environment") && staticProperties["environment"].is_object()
+        ? staticProperties["environment"]
+        : render::RenderGraphProperties::object();
+    render::RenderGraphProperties effectiveProperties = effectiveNodeProperties(*node);
+    render::RenderGraphProperties effectiveEnvironment =
+        effectiveProperties.contains("environment") && effectiveProperties["environment"].is_object()
+        ? effectiveProperties["environment"]
         : render::RenderGraphProperties::object();
 
-    const std::string path = environment.contains("path")
-        ? stringValueOr(environment["path"], "")
+    const std::string path = staticEnvironment.contains("path")
+        ? stringValueOr(staticEnvironment["path"], "")
         : std::string();
-    bool enabled = environment.contains("enabled")
-        ? boolValueOr(environment["enabled"], true)
+    bool enabled = effectiveEnvironment.contains("enabled")
+        ? boolValueOr(effectiveEnvironment["enabled"], true)
         : true;
-    bool visible = environment.contains("visible")
-        ? boolValueOr(environment["visible"], true)
+    bool visible = effectiveEnvironment.contains("visible")
+        ? boolValueOr(effectiveEnvironment["visible"], true)
         : true;
-    float intensity = environment.contains("intensity")
-        ? std::max(floatValueOr(environment["intensity"], 1.0f), 0.0f)
+    float intensity = effectiveEnvironment.contains("intensity")
+        ? std::max(floatValueOr(effectiveEnvironment["intensity"], 1.0f), 0.0f)
         : 1.0f;
-    float rotationDegrees = environment.contains("rotationDegrees")
-        ? floatValueOr(environment["rotationDegrees"], 0.0f)
+    float rotationDegrees = effectiveEnvironment.contains("rotationDegrees")
+        ? floatValueOr(effectiveEnvironment["rotationDegrees"], 0.0f)
         : 0.0f;
 
     static int editingEnvironmentNodeId = -1;
@@ -2005,49 +2011,70 @@ void EditorApplication::drawEnvironmentControls()
         editingEnvironmentPath = path;
     }
 
-    bool changed = false;
+    render::RenderGraphProperties runtimeProperties = node->runtimeProperties.is_object()
+        ? node->runtimeProperties
+        : render::RenderGraphProperties::object();
+    bool changedStatic = false;
+    bool changedRuntime = false;
     ImGui::TextUnformatted("Environment");
     ImGui::PushID("SceneEnvironment");
 
     if (ImGui::Checkbox("Enabled", &enabled)) {
-        environment["enabled"] = enabled;
-        changed = true;
+        setNestedProperty(runtimeProperties, "environment.enabled", enabled);
+        changedRuntime = true;
     }
     ImGui::SameLine();
     if (ImGui::Checkbox("Visible", &visible)) {
-        environment["visible"] = visible;
-        changed = true;
+        setNestedProperty(runtimeProperties, "environment.visible", visible);
+        changedRuntime = true;
     }
 
     ImGui::PushItemWidth(-1.0f);
     ImGui::InputText("HDRI Path", environmentPathBuffer, sizeof(environmentPathBuffer));
     if (ImGui::IsItemDeactivatedAfterEdit()) {
-        environment["path"] = environmentPathBuffer;
+        staticEnvironment["path"] = environmentPathBuffer;
         editingEnvironmentPath = environmentPathBuffer;
-        changed = true;
+        changedStatic = true;
     }
 
     if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 16.0f, "%.3f")) {
-        environment["intensity"] = std::max(intensity, 0.0f);
-        changed = true;
+        setNestedProperty(runtimeProperties, "environment.intensity", std::max(intensity, 0.0f));
+        changedRuntime = true;
     }
     if (ImGui::SliderFloat("Rotation", &rotationDegrees, -180.0f, 180.0f, "%.1f deg")) {
-        environment["rotationDegrees"] = rotationDegrees;
-        changed = true;
+        setNestedProperty(runtimeProperties, "environment.rotationDegrees", rotationDegrees);
+        changedRuntime = true;
     }
     ImGui::PopItemWidth();
     ImGui::PopID();
 
-    if (!changed) {
+    if (!changedStatic && !changedRuntime) {
         return;
     }
 
-    properties["environment"] = std::move(environment);
-    if (renderGraph_.setNodeProperties(node->id, std::move(properties))) {
-        historyResources_.invalidateAll();
-        viewportPreviewValid_ = false;
-        viewportPreviewNeedsRender_ = true;
-        renderGraphStatus_ = "Updated scene environment";
+    bool updated = true;
+    if (changedRuntime) {
+        updated = renderGraph_.setNodeRuntimeProperties(node->id, std::move(runtimeProperties));
+        if (updated) {
+            historyResources_.invalidateAll();
+            if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
+                graphExecutor_->syncRuntimeProperties(renderGraph_);
+            }
+            viewportPreviewNeedsRender_ = true;
+        }
+    }
+    if (updated && changedStatic) {
+        staticProperties["environment"] = std::move(staticEnvironment);
+        updated = renderGraph_.setNodeProperties(node->id, std::move(staticProperties));
+        if (updated) {
+            historyResources_.invalidateAll();
+            viewportPreviewValid_ = false;
+            viewportPreviewNeedsRender_ = true;
+        }
+    }
+
+    if (updated) {
+        renderGraphStatus_ = changedStatic ? "Updated scene environment map" : "Updated scene environment";
     } else {
         renderGraphStatus_ = "Environment update failed";
     }
