@@ -70,6 +70,7 @@ inline constexpr uint64_t kRenderGraphBufferByteSize = 16;
 inline constexpr int32_t kGltfTriangleListMode = 4;
 inline constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
 inline constexpr uint32_t kRayQueryVisualizationGranularityPrimitive = 1;
+inline constexpr uint32_t kRayQueryVisualizationGranularityClusterId = 2;
 inline constexpr uint32_t kGPUDrivenPreviewModeMeshlet = 0;
 inline constexpr uint32_t kGPUDrivenPreviewModePrimitive = 1;
 inline constexpr uint32_t kGPUDrivenPreviewModeLod = 2;

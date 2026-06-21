@@ -1757,6 +1757,7 @@ bool EditorApplication::initializeRhi()
             .enableRayTracingAccelerationStructure = true,
             .enableRayQuery = true,
             .enablePushDescriptor = true,
+            .enableClusterAccelerationStructure = true,
             .enableStreamline = true,
             .enableAftermath = true,
         },

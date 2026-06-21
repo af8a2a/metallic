@@ -1185,7 +1185,7 @@ public:
             gpuDrivenRtas->type != "SceneRayQueryVisualizationPass" ||
             !gpuDrivenRtas->properties.is_object() ||
             gpuDrivenRtas->properties.value("path", "") != gpuDrivenRtasSample.desc.scenePath ||
-            gpuDrivenRtas->properties.value("granularity", "") != "instance" ||
+            gpuDrivenRtas->properties.value("granularity", "") != "cluster-id" ||
             gpuDrivenRtas->properties.value("mode", "") != "meshlet" ||
             !gpuDrivenRtas->properties.contains("environment") ||
             !gpuDrivenRtas->properties["environment"].is_object() ||
@@ -1547,6 +1547,33 @@ public:
                 std::to_string(visiblePixelCount));
         }
 
+        std::string resultMessage;
+        properties["granularity"] = "cluster-id";
+        node = graph.findNode("RayQuery");
+        if (node == nullptr || !graph.setNodeProperties(node->id, properties)) {
+            return RhiTestResult::fail("failed to switch RayQuery visualization to cluster-id granularity");
+        }
+
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                resultMessage = std::string("cluster-id visualization unsupported: ") + preview.lastLog() + "; ";
+            } else {
+                return RhiTestResult::fail(
+                    std::string("RayQuery cluster-id visualization render returned ") +
+                    toString(result) +
+                    ": " +
+                    preview.lastLog());
+            }
+        } else {
+            visiblePixelCount = countVisiblePixels(preview.pixels());
+            if (visiblePixelCount < 512) {
+                return RhiTestResult::fail(
+                    std::string("RayQuery cluster-id visualization produced too few visible pixels: ") +
+                    std::to_string(visiblePixelCount));
+            }
+        }
+
         std::string outputMessage;
         const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
         const std::filesystem::path outputPath =
@@ -1555,7 +1582,7 @@ public:
             return RhiTestResult::fail(outputMessage);
         }
 
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RhiTestResult::pass(resultMessage + "wrote " + outputPath.string());
     }
 };
 

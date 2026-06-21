@@ -94,6 +94,8 @@ public:
     const SceneClusterRtxStats& stats() const;
 
 private:
+    friend class SceneRayQueryProgram;
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -148,6 +150,7 @@ struct SceneRayQueryProgramDesc {
 struct SceneRayQueryDispatchBinding {
     uint32_t binding = 0;
     SceneRtxBuilder* accelerationStructure = nullptr;
+    SceneClusterRtxBuilder* clusterAccelerationStructure = nullptr;
     ScenePartitionedRtxBuilder* partitionedAccelerationStructure = nullptr;
     TextureView* textureView = nullptr;
     TextureView* const* textureViews = nullptr;

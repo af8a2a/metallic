@@ -7,6 +7,11 @@
 
 namespace metallic::render {
 
+struct SlangMacroDefine {
+    const char* name = nullptr;
+    const char* value = "1";
+};
+
 struct SlangShaderDesc {
     const char* moduleName = nullptr;
     const char* entryPointName = nullptr;
@@ -14,6 +19,8 @@ struct SlangShaderDesc {
     const char* profileName = "glsl_450";
     const char* const* capabilities = nullptr;
     uint32_t capabilityCount = 0;
+    const SlangMacroDefine* macroDefines = nullptr;
+    uint32_t macroDefineCount = 0;
 };
 
 struct ShaderCompileResult {

@@ -4,6 +4,14 @@ RaytracingAccelerationStructure gScene;
 [[vk::binding(1, 0)]]
 RWTexture2D<float4> gOutput;
 
+#ifndef SCENE_RAYQUERY_ENABLE_CLUSTER_ID
+#define SCENE_RAYQUERY_ENABLE_CLUSTER_ID 0
+#endif
+
+static const uint kRayQueryVisualizationModeInstance = 0u;
+static const uint kRayQueryVisualizationModePrimitive = 1u;
+static const uint kRayQueryVisualizationModeClusterId = 2u;
+
 struct SceneRayQueryVisualizationPush
 {
     float4 eye;
@@ -37,6 +45,22 @@ float3 hashColor(uint value)
         float((value >> 16) & 255u)) / 255.0;
     return lerp(float3(0.16, 0.20, 0.26), color, 0.82);
 }
+
+#if SCENE_RAYQUERY_ENABLE_CLUSTER_ID
+int committedClusterId(inout RayQuery<RAY_FLAG_FORCE_OPAQUE> query)
+{
+    return spirv_asm {
+        OpCapability RayTracingClusterAccelerationStructureNV;
+        OpExtension "SPV_NV_cluster_acceleration_structure";
+        OpRayQueryGetIntersectionClusterIdNV $$int result &query $(1);
+    };
+}
+#else
+int committedClusterId(inout RayQuery<RAY_FLAG_FORCE_OPAQUE> query)
+{
+    return -1;
+}
+#endif
 
 float3 rayDirectionFromPixel(uint2 pixel, SceneRayQueryVisualizationPush push)
 {
@@ -103,9 +127,15 @@ void sceneRayQueryVisualizeMain(uint3 dispatchThreadId : SV_DispatchThreadID,
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
         uint instanceIndex = query.CommittedInstanceIndex();
         uint primitiveIndex = query.CommittedPrimitiveIndex();
-        uint colorId = push.mode == 0u
-            ? instanceIndex + 1u
-            : ((instanceIndex + 1u) * 16777619u) ^ (primitiveIndex + 1u);
+        uint colorId = 0u;
+        if (push.mode == kRayQueryVisualizationModeInstance) {
+            colorId = instanceIndex + 1u;
+        } else if (push.mode == kRayQueryVisualizationModeClusterId) {
+            int clusterId = committedClusterId(query);
+            colorId = clusterId >= 0 ? uint(clusterId) + 1u : 0x7fffffffu;
+        } else {
+            colorId = ((instanceIndex + 1u) * 16777619u) ^ (primitiveIndex + 1u);
+        }
         float distanceFade = saturate(1.0 - query.CommittedRayT() / max(push.clipOrtho.y, 0.0001));
         color = hashColor(colorId) * (0.55 + distanceFade * 0.45);
     }

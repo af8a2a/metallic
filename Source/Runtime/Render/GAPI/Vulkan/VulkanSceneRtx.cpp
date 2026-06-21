@@ -3014,15 +3014,24 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
             .descriptorType = descriptorTypeFor(expectedBinding.kind),
         };
         switch (expectedBinding.kind) {
-        case SceneRayQueryBindingKind::AccelerationStructure:
-            if (binding->accelerationStructure == nullptr ||
-                !binding->accelerationStructure->valid() ||
-                binding->accelerationStructure->impl_ == nullptr ||
-                binding->accelerationStructure->impl_->tlas == VK_NULL_HANDLE) {
+        case SceneRayQueryBindingKind::AccelerationStructure: {
+            VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
+            if (binding->accelerationStructure != nullptr &&
+                binding->accelerationStructure->valid() &&
+                binding->accelerationStructure->impl_ != nullptr &&
+                binding->accelerationStructure->impl_->tlas != VK_NULL_HANDLE) {
+                accelerationStructure = binding->accelerationStructure->impl_->tlas;
+            } else if (binding->clusterAccelerationStructure != nullptr &&
+                binding->clusterAccelerationStructure->valid() &&
+                binding->clusterAccelerationStructure->impl_ != nullptr &&
+                binding->clusterAccelerationStructure->impl_->tlas != VK_NULL_HANDLE) {
+                accelerationStructure = binding->clusterAccelerationStructure->impl_->tlas;
+            }
+            if (accelerationStructure == VK_NULL_HANDLE) {
                 return makeError(Error::InvalidArgument);
             }
             write.descriptorCount = 1;
-            accelerationStructures.push_back(binding->accelerationStructure->impl_->tlas);
+            accelerationStructures.push_back(accelerationStructure);
             accelerationInfos.push_back(VkWriteDescriptorSetAccelerationStructureKHR{
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
                 .accelerationStructureCount = 1,
@@ -3030,6 +3039,7 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
             });
             write.pNext = &accelerationInfos.back();
             break;
+        }
         case SceneRayQueryBindingKind::PartitionedAccelerationStructure:
             if (binding->partitionedAccelerationStructure == nullptr ||
                 !binding->partitionedAccelerationStructure->valid() ||

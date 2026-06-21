@@ -45,8 +45,10 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
 
     const char* searchPaths[] = {desc.searchPath};
     std::vector<slang::CompilerOptionEntry> compilerOptions;
-    compilerOptions.reserve(desc.capabilityCount);
-    for (uint32_t capabilityIndex = 0; capabilityIndex < desc.capabilityCount; ++capabilityIndex) {
+    compilerOptions.reserve(desc.capabilityCount + desc.macroDefineCount);
+    for (uint32_t capabilityIndex = 0;
+         desc.capabilities != nullptr && capabilityIndex < desc.capabilityCount;
+         ++capabilityIndex) {
         const char* capability = desc.capabilities[capabilityIndex];
         if (capability == nullptr || capability[0] == '\0') {
             continue;
@@ -56,6 +58,22 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
             .value = slang::CompilerOptionValue{
                 .kind = slang::CompilerOptionValueKind::String,
                 .stringValue0 = capability,
+            },
+        });
+    }
+    for (uint32_t macroIndex = 0;
+         desc.macroDefines != nullptr && macroIndex < desc.macroDefineCount;
+         ++macroIndex) {
+        const SlangMacroDefine& macro = desc.macroDefines[macroIndex];
+        if (macro.name == nullptr || macro.name[0] == '\0') {
+            continue;
+        }
+        compilerOptions.push_back(slang::CompilerOptionEntry{
+            .name = slang::CompilerOptionName::MacroDefine,
+            .value = slang::CompilerOptionValue{
+                .kind = slang::CompilerOptionValueKind::String,
+                .stringValue0 = macro.name,
+                .stringValue1 = macro.value != nullptr ? macro.value : "1",
             },
         });
     }

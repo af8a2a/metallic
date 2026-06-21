@@ -24,7 +24,7 @@ public:
                 "granularity",
                 "Granularity",
                 "instance",
-                {{"Instance", "instance"}, {"Primitive", "primitive"}}),
+                {{"Instance", "instance"}, {"Primitive", "primitive"}, {"Cluster ID", "cluster-id"}}),
         };
         appendCameraRuntimeSettings(
             settings,
@@ -44,7 +44,17 @@ public:
             log = "SceneRayQueryVisualizationPass requires rayTracingAccelerationStructure and rayQuery capabilities";
             return makeError(Error::Unsupported);
         }
-        if (rayQueryProgram_.valid() && rtxBuilder_.valid()) {
+        const uint32_t requestedMode = visualizationModeFromProperties(properties());
+        const bool clusterIdRequested = requestedMode == kRayQueryVisualizationGranularityClusterId;
+        const bool clusterIdSupported = context.device->capabilities().clusterAccelerationStructure;
+        if (clusterIdRequested && !clusterIdSupported) {
+            log = "SceneRayQueryVisualizationPass cluster-id granularity requires clusterAccelerationStructure capability";
+            return makeError(Error::Unsupported);
+        }
+        if (rayQueryProgram_.valid() &&
+            rtxBuilder_.valid() &&
+            clusterIdShaderEnabled_ == clusterIdSupported &&
+            (!clusterIdSupported || clusterRtxBuilder_.valid())) {
             return {};
         }
 
@@ -60,13 +70,43 @@ public:
         }
 
         drawBounds_ = loadedScene.bounds();
+        rtxBuilder_.clear();
+        clusterRtxBuilder_.clear();
+        rayQueryProgram_.clear();
+
         Result result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
         if (!result) {
             return result;
         }
+        const std::string rtxBuildLog = log;
+        if (clusterIdSupported) {
+            result = clusterRtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
+            if (!result) {
+                if (clusterIdRequested) {
+                    return result;
+                }
+                clusterRtxBuilder_.clear();
+                log = rtxBuildLog;
+            }
+        }
 
         ShaderCompileResult computeCompile;
-        const char* capabilities[] = {"spvRayQueryKHR"};
+        const char* rayQueryCapabilities[] = {"spvRayQueryKHR"};
+        const char* clusterIdCapabilities[] = {
+            "spirv_1_4",
+            "spvRayQueryKHR",
+            "SPV_NV_cluster_acceleration_structure",
+        };
+        const SlangMacroDefine clusterIdMacros[] = {
+            SlangMacroDefine{
+                .name = "SCENE_RAYQUERY_ENABLE_CLUSTER_ID",
+                .value = "1",
+            },
+        };
+        const char* const* capabilities = clusterIdSupported ? clusterIdCapabilities : rayQueryCapabilities;
+        const uint32_t capabilityCount = clusterIdSupported
+            ? static_cast<uint32_t>(std::size(clusterIdCapabilities))
+            : static_cast<uint32_t>(std::size(rayQueryCapabilities));
         result = compileSlangShaderToSpirv(
             SlangShaderDesc{
                 .moduleName = kSceneRayQueryVisualizationShaderModuleName,
@@ -74,7 +114,9 @@ public:
                 .searchPath = kTriangleShaderSearchPath,
                 .profileName = "glsl_460",
                 .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                .capabilityCount = capabilityCount,
+                .macroDefines = clusterIdSupported ? clusterIdMacros : nullptr,
+                .macroDefineCount = clusterIdSupported ? static_cast<uint32_t>(std::size(clusterIdMacros)) : 0u,
             },
             computeCompile);
         if (!result) {
@@ -117,6 +159,7 @@ public:
             rayQueryProgram_.clear();
             return result;
         }
+        clusterIdShaderEnabled_ = clusterIdSupported;
 
         return {};
     }
@@ -134,11 +177,16 @@ public:
 
         SceneRayQueryVisualizationPush push;
         buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
+        const bool useClusterId = push.mode == kRayQueryVisualizationGranularityClusterId;
+        if (useClusterId && !clusterRtxBuilder_.valid()) {
+            return makeError(Error::Unsupported);
+        }
 
         const SceneRayQueryDispatchBinding bindings[] = {
             SceneRayQueryDispatchBinding{
                 .binding = 0,
-                .accelerationStructure = &rtxBuilder_,
+                .accelerationStructure = useClusterId ? nullptr : &rtxBuilder_,
+                .clusterAccelerationStructure = useClusterId ? &clusterRtxBuilder_ : nullptr,
             },
             SceneRayQueryDispatchBinding{
                 .binding = 1,
@@ -245,9 +293,17 @@ private:
             return kRayQueryVisualizationGranularityInstance;
         }
         const std::string value = iter->get<std::string>();
-        return value == "primitive" || value == "per primitive" || value == "perPrimitive"
-            ? kRayQueryVisualizationGranularityPrimitive
-            : kRayQueryVisualizationGranularityInstance;
+        if (value == "primitive" || value == "per primitive" || value == "perPrimitive") {
+            return kRayQueryVisualizationGranularityPrimitive;
+        }
+        if (value == "cluster" ||
+            value == "cluster-id" ||
+            value == "clusterId" ||
+            value == "cluster id" ||
+            value == "ClusterIDNV") {
+            return kRayQueryVisualizationGranularityClusterId;
+        }
+        return kRayQueryVisualizationGranularityInstance;
     }
 
     static void writeParamVec3(const float3& value, float out[4], float w)
@@ -314,8 +370,10 @@ private:
     }
 
     SceneRtxBuilder rtxBuilder_;
+    SceneClusterRtxBuilder clusterRtxBuilder_;
     SceneRayQueryProgram rayQueryProgram_;
     scene::Bounds drawBounds_;
+    bool clusterIdShaderEnabled_ = false;
 };
 
 } // namespace
