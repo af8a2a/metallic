@@ -23,10 +23,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <fstream>
 #include <functional>
+#include <ios>
 #include <limits>
 #include <sstream>
 #include <string_view>
+#include <system_error>
+#include <type_traits>
 #include <unordered_set>
 
 namespace metallic::scene {
@@ -48,6 +52,99 @@ constexpr size_t kMeshletLodGroupSize = 32;
 constexpr float kMeshletClusterFillWeight = 0.5f;
 constexpr float kMeshletLodErrorMergePrevious = 1.5f;
 constexpr float kMeshletLodErrorMergeAdditive = 0.0f;
+constexpr std::array<char, 8> kMeshletCacheMagic{'M', 'T', 'L', 'M', 'S', 'H', 'L', 'T'};
+constexpr uint32_t kMeshletCacheVersion = 1;
+constexpr uint32_t kMeshletCacheEndian = 0x01020304;
+constexpr const char* kMeshletCacheSuffix = ".meshlets.bin";
+constexpr uint64_t kFnvOffset = 14695981039346656037ull;
+constexpr uint64_t kFnvPrime = 1099511628211ull;
+
+struct MeshletCacheHeader {
+    char magic[8]{};
+    uint32_t version = 0;
+    uint32_t endian = 0;
+    uint64_t sourceFileSize = 0;
+    int64_t sourceWriteTime = 0;
+    uint32_t primitiveCount = 0;
+    uint32_t maxVertices = 0;
+    uint32_t minTriangles = 0;
+    uint32_t maxTriangles = 0;
+    uint32_t lodGroupSize = 0;
+    float fillWeight = 0.0f;
+    float lodErrorMergePrevious = 0.0f;
+    float lodErrorMergeAdditive = 0.0f;
+    uint32_t reserved = 0;
+};
+
+struct MeshletCachePrimitiveHeader {
+    int32_t meshIndex = kInvalidSceneIndex;
+    int32_t primitiveIndex = kInvalidSceneIndex;
+    int32_t materialIndex = kInvalidSceneIndex;
+    int32_t mode = 0;
+    uint64_t vertexCount = 0;
+    uint64_t indexCount = 0;
+    uint64_t triangleCount = 0;
+    uint64_t geometryHash = 0;
+    uint64_t meshletClusterCount = 0;
+    uint64_t meshletVertexCount = 0;
+    uint64_t meshletTriangleCount = 0;
+    uint64_t meshletLodLevelCount = 0;
+    uint64_t meshletLodGroupCount = 0;
+    uint64_t meshletLodClusterCount = 0;
+    uint64_t meshletLodVertexCount = 0;
+    uint64_t meshletLodTriangleCount = 0;
+};
+
+struct CachedBounds {
+    float min[3]{};
+    float max[3]{};
+    uint32_t valid = 0;
+};
+
+struct CachedMeshletCluster {
+    uint32_t vertexOffset = 0;
+    uint32_t vertexCount = 0;
+    uint32_t triangleOffset = 0;
+    uint32_t triangleCount = 0;
+    uint32_t lodLevel = 0;
+    uint32_t lodGroupChildIndex = 0;
+    int32_t lodGroupIndex = kInvalidSceneIndex;
+    int32_t refinedGroupIndex = kInvalidSceneIndex;
+    float lodError = 0.0f;
+    CachedBounds bounds;
+    float boundingSphereCenter[3]{};
+    float boundingSphereRadius = 0.0f;
+    float coneApex[3]{};
+    float coneAxis[3]{};
+    float coneCutoff = 1.0f;
+    int8_t packedCone[4]{0, 0, 127, 127};
+};
+
+struct CachedMeshletLodGroup {
+    uint32_t clusterOffset = 0;
+    uint32_t clusterCount = 0;
+    uint32_t lodLevel = 0;
+    CachedBounds bounds;
+    float boundingSphereCenter[3]{};
+    float boundingSphereRadius = 0.0f;
+    float maxQuadricError = 0.0f;
+};
+
+struct CachedMeshletLodLevel {
+    uint32_t groupOffset = 0;
+    uint32_t groupCount = 0;
+    uint32_t clusterOffset = 0;
+    uint32_t clusterCount = 0;
+    float minBoundingSphereRadius = 0.0f;
+    float minMaxQuadricError = 0.0f;
+};
+
+static_assert(std::is_trivially_copyable_v<MeshletCacheHeader>);
+static_assert(std::is_trivially_copyable_v<MeshletCachePrimitiveHeader>);
+static_assert(std::is_trivially_copyable_v<CachedBounds>);
+static_assert(std::is_trivially_copyable_v<CachedMeshletCluster>);
+static_assert(std::is_trivially_copyable_v<CachedMeshletLodGroup>);
+static_assert(std::is_trivially_copyable_v<CachedMeshletLodLevel>);
 
 const std::unordered_set<std::string>& supportedRequiredExtensions()
 {
@@ -1004,6 +1101,755 @@ bool buildMeshletLods(RenderPrimitive& primitive)
     return true;
 }
 
+std::filesystem::path meshletCachePathFor(const std::filesystem::path& sourcePath)
+{
+    std::filesystem::path cachePath = sourcePath;
+    cachePath += kMeshletCacheSuffix;
+    return cachePath;
+}
+
+uint64_t sourceFileSize(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const uint64_t size = std::filesystem::file_size(path, error);
+    return error ? 0 : size;
+}
+
+int64_t sourceWriteTime(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const auto writeTime = std::filesystem::last_write_time(path, error);
+    if (error) {
+        return 0;
+    }
+    return static_cast<int64_t>(writeTime.time_since_epoch().count());
+}
+
+uint64_t hashBytes(uint64_t hash, const void* data, size_t byteSize)
+{
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    for (size_t byteIndex = 0; byteIndex < byteSize; ++byteIndex) {
+        hash ^= bytes[byteIndex];
+        hash *= kFnvPrime;
+    }
+    return hash;
+}
+
+template <typename T>
+uint64_t hashValue(uint64_t hash, const T& value)
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+    return hashBytes(hash, &value, sizeof(T));
+}
+
+uint64_t hashFloat3Vector(uint64_t hash, const std::vector<float3>& values)
+{
+    hash = hashValue(hash, static_cast<uint64_t>(values.size()));
+    for (const float3& value : values) {
+        hash = hashValue(hash, value.x);
+        hash = hashValue(hash, value.y);
+        hash = hashValue(hash, value.z);
+    }
+    return hash;
+}
+
+uint64_t hashIndexVector(uint64_t hash, const std::vector<uint32_t>& values)
+{
+    hash = hashValue(hash, static_cast<uint64_t>(values.size()));
+    if (!values.empty()) {
+        hash = hashBytes(hash, values.data(), values.size() * sizeof(uint32_t));
+    }
+    return hash;
+}
+
+uint64_t hashPrimitiveGeometry(const RenderPrimitive& primitive)
+{
+    uint64_t hash = kFnvOffset;
+    hash = hashValue(hash, primitive.meshIndex);
+    hash = hashValue(hash, primitive.primitiveIndex);
+    hash = hashValue(hash, primitive.mode);
+    hash = hashValue(hash, primitive.vertexCount);
+    hash = hashValue(hash, primitive.indexCount);
+    hash = hashValue(hash, primitive.triangleCount);
+    hash = hashFloat3Vector(hash, primitive.positions);
+    hash = hashFloat3Vector(hash, primitive.normals);
+    hash = hashIndexVector(hash, primitive.indices);
+    return hash;
+}
+
+CachedBounds makeCachedBounds(const Bounds& bounds)
+{
+    CachedBounds cached;
+    cached.min[0] = bounds.min.x;
+    cached.min[1] = bounds.min.y;
+    cached.min[2] = bounds.min.z;
+    cached.max[0] = bounds.max.x;
+    cached.max[1] = bounds.max.y;
+    cached.max[2] = bounds.max.z;
+    cached.valid = bounds.valid ? 1u : 0u;
+    return cached;
+}
+
+Bounds makeBounds(const CachedBounds& cached)
+{
+    Bounds bounds;
+    bounds.min = float3(cached.min[0], cached.min[1], cached.min[2]);
+    bounds.max = float3(cached.max[0], cached.max[1], cached.max[2]);
+    bounds.valid = cached.valid != 0;
+    return bounds;
+}
+
+CachedMeshletCluster makeCachedCluster(const MeshletCluster& cluster)
+{
+    CachedMeshletCluster cached;
+    cached.vertexOffset = cluster.vertexOffset;
+    cached.vertexCount = cluster.vertexCount;
+    cached.triangleOffset = cluster.triangleOffset;
+    cached.triangleCount = cluster.triangleCount;
+    cached.lodLevel = cluster.lodLevel;
+    cached.lodGroupChildIndex = cluster.lodGroupChildIndex;
+    cached.lodGroupIndex = cluster.lodGroupIndex;
+    cached.refinedGroupIndex = cluster.refinedGroupIndex;
+    cached.lodError = cluster.lodError;
+    cached.bounds = makeCachedBounds(cluster.bounds);
+    cached.boundingSphereCenter[0] = cluster.boundingSphereCenter.x;
+    cached.boundingSphereCenter[1] = cluster.boundingSphereCenter.y;
+    cached.boundingSphereCenter[2] = cluster.boundingSphereCenter.z;
+    cached.boundingSphereRadius = cluster.boundingSphereRadius;
+    cached.coneApex[0] = cluster.coneApex.x;
+    cached.coneApex[1] = cluster.coneApex.y;
+    cached.coneApex[2] = cluster.coneApex.z;
+    cached.coneAxis[0] = cluster.coneAxis.x;
+    cached.coneAxis[1] = cluster.coneAxis.y;
+    cached.coneAxis[2] = cluster.coneAxis.z;
+    cached.coneCutoff = cluster.coneCutoff;
+    for (size_t index = 0; index < 4; ++index) {
+        cached.packedCone[index] = cluster.packedCone[index];
+    }
+    return cached;
+}
+
+MeshletCluster makeCluster(const CachedMeshletCluster& cached)
+{
+    MeshletCluster cluster;
+    cluster.vertexOffset = cached.vertexOffset;
+    cluster.vertexCount = cached.vertexCount;
+    cluster.triangleOffset = cached.triangleOffset;
+    cluster.triangleCount = cached.triangleCount;
+    cluster.lodLevel = cached.lodLevel;
+    cluster.lodGroupChildIndex = cached.lodGroupChildIndex;
+    cluster.lodGroupIndex = cached.lodGroupIndex;
+    cluster.refinedGroupIndex = cached.refinedGroupIndex;
+    cluster.lodError = cached.lodError;
+    cluster.bounds = makeBounds(cached.bounds);
+    cluster.boundingSphereCenter = float3(
+        cached.boundingSphereCenter[0],
+        cached.boundingSphereCenter[1],
+        cached.boundingSphereCenter[2]);
+    cluster.boundingSphereRadius = cached.boundingSphereRadius;
+    cluster.coneApex = float3(cached.coneApex[0], cached.coneApex[1], cached.coneApex[2]);
+    cluster.coneAxis = float3(cached.coneAxis[0], cached.coneAxis[1], cached.coneAxis[2]);
+    cluster.coneCutoff = cached.coneCutoff;
+    for (size_t index = 0; index < cluster.packedCone.size(); ++index) {
+        cluster.packedCone[index] = cached.packedCone[index];
+    }
+    return cluster;
+}
+
+CachedMeshletLodGroup makeCachedLodGroup(const MeshletLodGroup& group)
+{
+    CachedMeshletLodGroup cached;
+    cached.clusterOffset = group.clusterOffset;
+    cached.clusterCount = group.clusterCount;
+    cached.lodLevel = group.lodLevel;
+    cached.bounds = makeCachedBounds(group.bounds);
+    cached.boundingSphereCenter[0] = group.boundingSphereCenter.x;
+    cached.boundingSphereCenter[1] = group.boundingSphereCenter.y;
+    cached.boundingSphereCenter[2] = group.boundingSphereCenter.z;
+    cached.boundingSphereRadius = group.boundingSphereRadius;
+    cached.maxQuadricError = group.maxQuadricError;
+    return cached;
+}
+
+MeshletLodGroup makeLodGroup(const CachedMeshletLodGroup& cached)
+{
+    MeshletLodGroup group;
+    group.clusterOffset = cached.clusterOffset;
+    group.clusterCount = cached.clusterCount;
+    group.lodLevel = cached.lodLevel;
+    group.bounds = makeBounds(cached.bounds);
+    group.boundingSphereCenter = float3(
+        cached.boundingSphereCenter[0],
+        cached.boundingSphereCenter[1],
+        cached.boundingSphereCenter[2]);
+    group.boundingSphereRadius = cached.boundingSphereRadius;
+    group.maxQuadricError = cached.maxQuadricError;
+    return group;
+}
+
+CachedMeshletLodLevel makeCachedLodLevel(const MeshletLodLevel& level)
+{
+    CachedMeshletLodLevel cached;
+    cached.groupOffset = level.groupOffset;
+    cached.groupCount = level.groupCount;
+    cached.clusterOffset = level.clusterOffset;
+    cached.clusterCount = level.clusterCount;
+    cached.minBoundingSphereRadius = level.minBoundingSphereRadius;
+    cached.minMaxQuadricError = level.minMaxQuadricError;
+    return cached;
+}
+
+MeshletLodLevel makeLodLevel(const CachedMeshletLodLevel& cached)
+{
+    MeshletLodLevel level;
+    level.groupOffset = cached.groupOffset;
+    level.groupCount = cached.groupCount;
+    level.clusterOffset = cached.clusterOffset;
+    level.clusterCount = cached.clusterCount;
+    level.minBoundingSphereRadius = cached.minBoundingSphereRadius;
+    level.minMaxQuadricError = cached.minMaxQuadricError;
+    return level;
+}
+
+bool readExact(std::istream& stream, void* data, uint64_t byteSize)
+{
+    if (byteSize == 0) {
+        return true;
+    }
+    if (byteSize > static_cast<uint64_t>(std::numeric_limits<std::streamsize>::max())) {
+        return false;
+    }
+    stream.read(static_cast<char*>(data), static_cast<std::streamsize>(byteSize));
+    return static_cast<uint64_t>(stream.gcount()) == byteSize;
+}
+
+bool writeExact(std::ostream& stream, const void* data, uint64_t byteSize)
+{
+    if (byteSize == 0) {
+        return true;
+    }
+    if (byteSize > static_cast<uint64_t>(std::numeric_limits<std::streamsize>::max())) {
+        return false;
+    }
+    stream.write(static_cast<const char*>(data), static_cast<std::streamsize>(byteSize));
+    return stream.good();
+}
+
+template <typename T>
+bool readPod(std::istream& stream, T& value)
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+    return readExact(stream, &value, sizeof(T));
+}
+
+template <typename T>
+bool writePod(std::ostream& stream, const T& value)
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+    return writeExact(stream, &value, sizeof(T));
+}
+
+template <typename T>
+bool readArray(std::istream& stream, uint64_t count, std::vector<T>& values)
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+    if (count > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        return false;
+    }
+    const size_t size = static_cast<size_t>(count);
+    if (size > std::numeric_limits<size_t>::max() / sizeof(T)) {
+        return false;
+    }
+
+    values.resize(size);
+    return values.empty() || readExact(stream, values.data(), values.size() * sizeof(T));
+}
+
+template <typename T>
+bool writeArray(std::ostream& stream, const std::vector<T>& values)
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+    return values.empty() || writeExact(stream, values.data(), values.size() * sizeof(T));
+}
+
+bool addArrayByteSize(uint64_t& total, uint64_t count, uint64_t elementSize)
+{
+    if (count > std::numeric_limits<uint64_t>::max() / elementSize) {
+        return false;
+    }
+    const uint64_t byteSize = count * elementSize;
+    if (byteSize > std::numeric_limits<uint64_t>::max() - total) {
+        return false;
+    }
+    total += byteSize;
+    return true;
+}
+
+bool meshletCachePrimitivePayloadByteSize(const MeshletCachePrimitiveHeader& header, uint64_t& byteSize)
+{
+    byteSize = 0;
+    return addArrayByteSize(byteSize, header.meshletClusterCount, sizeof(CachedMeshletCluster)) &&
+        addArrayByteSize(byteSize, header.meshletVertexCount, sizeof(uint32_t)) &&
+        addArrayByteSize(byteSize, header.meshletTriangleCount, sizeof(uint8_t)) &&
+        addArrayByteSize(byteSize, header.meshletLodLevelCount, sizeof(CachedMeshletLodLevel)) &&
+        addArrayByteSize(byteSize, header.meshletLodGroupCount, sizeof(CachedMeshletLodGroup)) &&
+        addArrayByteSize(byteSize, header.meshletLodClusterCount, sizeof(CachedMeshletCluster)) &&
+        addArrayByteSize(byteSize, header.meshletLodVertexCount, sizeof(uint32_t)) &&
+        addArrayByteSize(byteSize, header.meshletLodTriangleCount, sizeof(uint8_t));
+}
+
+bool rangeWithin(uint64_t offset, uint64_t count, size_t size)
+{
+    return offset <= size && count <= size - static_cast<size_t>(offset);
+}
+
+bool validateClusterData(
+    const RenderPrimitive& primitive,
+    const std::vector<MeshletCluster>& clusters,
+    const std::vector<uint32_t>& vertices,
+    const std::vector<uint8_t>& triangles,
+    size_t lodGroupCount)
+{
+    if (clusters.empty()) {
+        return vertices.empty() && triangles.empty();
+    }
+
+    for (const MeshletCluster& cluster : clusters) {
+        if (cluster.vertexCount == 0 ||
+            cluster.triangleCount == 0 ||
+            cluster.vertexCount > kMeshletClusterMaxVertices ||
+            cluster.triangleCount > kMeshletClusterMaxTriangles ||
+            !rangeWithin(cluster.vertexOffset, cluster.vertexCount, vertices.size()) ||
+            !rangeWithin(
+                cluster.triangleOffset,
+                static_cast<uint64_t>(cluster.triangleCount) * 3u,
+                triangles.size())) {
+            return false;
+        }
+
+        if (cluster.lodGroupIndex != kInvalidSceneIndex &&
+            (cluster.lodGroupIndex < 0 || static_cast<size_t>(cluster.lodGroupIndex) >= lodGroupCount)) {
+            return false;
+        }
+        if (cluster.refinedGroupIndex != kInvalidSceneIndex &&
+            (cluster.refinedGroupIndex < 0 || static_cast<size_t>(cluster.refinedGroupIndex) >= lodGroupCount)) {
+            return false;
+        }
+
+        for (uint32_t vertex = 0; vertex < cluster.vertexCount; ++vertex) {
+            const size_t index = static_cast<size_t>(cluster.vertexOffset) + vertex;
+            if (vertices[index] >= primitive.positions.size()) {
+                return false;
+            }
+        }
+
+        for (uint32_t index = 0; index < cluster.triangleCount * 3u; ++index) {
+            const size_t triangleIndex = static_cast<size_t>(cluster.triangleOffset) + index;
+            if (triangles[triangleIndex] >= cluster.vertexCount) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool validateLodData(
+    const RenderPrimitive& primitive,
+    const std::vector<MeshletLodLevel>& levels,
+    const std::vector<MeshletLodGroup>& groups,
+    const std::vector<MeshletCluster>& clusters,
+    const std::vector<uint32_t>& vertices,
+    const std::vector<uint8_t>& triangles)
+{
+    if (levels.empty()) {
+        return groups.empty() && clusters.empty() && vertices.empty() && triangles.empty();
+    }
+    if (groups.empty() || clusters.empty()) {
+        return false;
+    }
+
+    for (const MeshletLodLevel& level : levels) {
+        if (level.groupCount == 0 ||
+            level.clusterCount == 0 ||
+            !rangeWithin(level.groupOffset, level.groupCount, groups.size()) ||
+            !rangeWithin(level.clusterOffset, level.clusterCount, clusters.size())) {
+            return false;
+        }
+    }
+
+    for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        const MeshletLodGroup& group = groups[groupIndex];
+        if (group.clusterCount == 0 ||
+            group.lodLevel >= levels.size() ||
+            !rangeWithin(group.clusterOffset, group.clusterCount, clusters.size())) {
+            return false;
+        }
+
+        const MeshletLodLevel& level = levels[group.lodLevel];
+        if (groupIndex < level.groupOffset ||
+            groupIndex >= static_cast<size_t>(level.groupOffset) + level.groupCount) {
+            return false;
+        }
+    }
+
+    return validateClusterData(primitive, clusters, vertices, triangles, groups.size());
+}
+
+bool validateMeshletData(
+    const RenderPrimitive& primitive,
+    const std::vector<MeshletCluster>& clusters,
+    const std::vector<uint32_t>& vertices,
+    const std::vector<uint8_t>& triangles,
+    const std::vector<MeshletLodLevel>& lodLevels,
+    const std::vector<MeshletLodGroup>& lodGroups,
+    const std::vector<MeshletCluster>& lodClusters,
+    const std::vector<uint32_t>& lodVertices,
+    const std::vector<uint8_t>& lodTriangles)
+{
+    return validateClusterData(primitive, clusters, vertices, triangles, lodGroups.size()) &&
+        validateLodData(primitive, lodLevels, lodGroups, lodClusters, lodVertices, lodTriangles);
+}
+
+MeshletCacheHeader makeMeshletCacheHeader(
+    const std::filesystem::path& sourcePath,
+    const std::vector<RenderPrimitive>& primitives)
+{
+    MeshletCacheHeader header;
+    std::memcpy(header.magic, kMeshletCacheMagic.data(), kMeshletCacheMagic.size());
+    header.version = kMeshletCacheVersion;
+    header.endian = kMeshletCacheEndian;
+    header.sourceFileSize = sourceFileSize(sourcePath);
+    header.sourceWriteTime = sourceWriteTime(sourcePath);
+    header.primitiveCount = static_cast<uint32_t>(primitives.size());
+    header.maxVertices = static_cast<uint32_t>(kMeshletClusterMaxVertices);
+    header.minTriangles = static_cast<uint32_t>(kMeshletClusterMinTriangles);
+    header.maxTriangles = static_cast<uint32_t>(kMeshletClusterMaxTriangles);
+    header.lodGroupSize = static_cast<uint32_t>(kMeshletLodGroupSize);
+    header.fillWeight = kMeshletClusterFillWeight;
+    header.lodErrorMergePrevious = kMeshletLodErrorMergePrevious;
+    header.lodErrorMergeAdditive = kMeshletLodErrorMergeAdditive;
+    return header;
+}
+
+bool meshletCacheHeaderMatches(const MeshletCacheHeader& header, const MeshletCacheHeader& expected)
+{
+    return std::memcmp(header.magic, kMeshletCacheMagic.data(), kMeshletCacheMagic.size()) == 0 &&
+        header.version == expected.version &&
+        header.endian == expected.endian &&
+        header.sourceFileSize == expected.sourceFileSize &&
+        header.sourceWriteTime == expected.sourceWriteTime &&
+        header.primitiveCount == expected.primitiveCount &&
+        header.maxVertices == expected.maxVertices &&
+        header.minTriangles == expected.minTriangles &&
+        header.maxTriangles == expected.maxTriangles &&
+        header.lodGroupSize == expected.lodGroupSize &&
+        header.fillWeight == expected.fillWeight &&
+        header.lodErrorMergePrevious == expected.lodErrorMergePrevious &&
+        header.lodErrorMergeAdditive == expected.lodErrorMergeAdditive;
+}
+
+MeshletCachePrimitiveHeader makeMeshletCachePrimitiveHeader(const RenderPrimitive& primitive)
+{
+    MeshletCachePrimitiveHeader header;
+    header.meshIndex = primitive.meshIndex;
+    header.primitiveIndex = primitive.primitiveIndex;
+    header.materialIndex = primitive.materialIndex;
+    header.mode = primitive.mode;
+    header.vertexCount = primitive.vertexCount;
+    header.indexCount = primitive.indexCount;
+    header.triangleCount = primitive.triangleCount;
+    header.geometryHash = hashPrimitiveGeometry(primitive);
+    header.meshletClusterCount = primitive.meshletClusters.size();
+    header.meshletVertexCount = primitive.meshletVertices.size();
+    header.meshletTriangleCount = primitive.meshletTriangles.size();
+    header.meshletLodLevelCount = primitive.meshletLodLevels.size();
+    header.meshletLodGroupCount = primitive.meshletLodGroups.size();
+    header.meshletLodClusterCount = primitive.meshletLodClusters.size();
+    header.meshletLodVertexCount = primitive.meshletLodVertices.size();
+    header.meshletLodTriangleCount = primitive.meshletLodTriangles.size();
+    return header;
+}
+
+bool meshletCachePrimitiveHeaderMatches(
+    const MeshletCachePrimitiveHeader& header,
+    const RenderPrimitive& primitive)
+{
+    return header.meshIndex == primitive.meshIndex &&
+        header.primitiveIndex == primitive.primitiveIndex &&
+        header.materialIndex == primitive.materialIndex &&
+        header.mode == primitive.mode &&
+        header.vertexCount == primitive.vertexCount &&
+        header.indexCount == primitive.indexCount &&
+        header.triangleCount == primitive.triangleCount &&
+        header.geometryHash == hashPrimitiveGeometry(primitive);
+}
+
+template <typename SourceT, typename CachedT, typename ConvertT>
+bool writeConvertedArray(std::ostream& stream, const std::vector<SourceT>& values, ConvertT convert)
+{
+    std::vector<CachedT> cached;
+    cached.reserve(values.size());
+    for (const SourceT& value : values) {
+        cached.push_back(convert(value));
+    }
+    return writeArray(stream, cached);
+}
+
+template <typename RuntimeT, typename CachedT, typename ConvertT>
+bool readConvertedArray(
+    std::istream& stream,
+    uint64_t count,
+    std::vector<RuntimeT>& values,
+    ConvertT convert)
+{
+    std::vector<CachedT> cached;
+    if (!readArray(stream, count, cached)) {
+        return false;
+    }
+
+    values.clear();
+    values.reserve(cached.size());
+    for (const CachedT& value : cached) {
+        values.push_back(convert(value));
+    }
+    return true;
+}
+
+struct MeshletCachePrimitiveData {
+    std::vector<MeshletCluster> meshletClusters;
+    std::vector<uint32_t> meshletVertices;
+    std::vector<uint8_t> meshletTriangles;
+    std::vector<MeshletLodLevel> meshletLodLevels;
+    std::vector<MeshletLodGroup> meshletLodGroups;
+    std::vector<MeshletCluster> meshletLodClusters;
+    std::vector<uint32_t> meshletLodVertices;
+    std::vector<uint8_t> meshletLodTriangles;
+};
+
+bool readMeshletCachePrimitive(
+    std::istream& stream,
+    const RenderPrimitive& primitive,
+    MeshletCachePrimitiveData& data,
+    uint64_t cacheByteSize,
+    std::string& reason)
+{
+    MeshletCachePrimitiveHeader header;
+    if (!readPod(stream, header)) {
+        reason = "primitive header is truncated";
+        return false;
+    }
+
+    if (!meshletCachePrimitiveHeaderMatches(header, primitive)) {
+        reason = "primitive geometry metadata changed";
+        return false;
+    }
+
+    uint64_t payloadByteSize = 0;
+    if (!meshletCachePrimitivePayloadByteSize(header, payloadByteSize)) {
+        reason = "primitive payload size overflows";
+        return false;
+    }
+
+    const std::streampos payloadStart = stream.tellg();
+    if (payloadStart == std::streampos(-1)) {
+        reason = "primitive payload offset is invalid";
+        return false;
+    }
+    const uint64_t payloadOffset = static_cast<uint64_t>(payloadStart);
+    if (payloadOffset > cacheByteSize || payloadByteSize > cacheByteSize - payloadOffset) {
+        reason = "primitive payload exceeds cache file";
+        return false;
+    }
+
+    if (!readConvertedArray<MeshletCluster, CachedMeshletCluster>(
+            stream,
+            header.meshletClusterCount,
+            data.meshletClusters,
+            makeCluster) ||
+        !readArray(stream, header.meshletVertexCount, data.meshletVertices) ||
+        !readArray(stream, header.meshletTriangleCount, data.meshletTriangles) ||
+        !readConvertedArray<MeshletLodLevel, CachedMeshletLodLevel>(
+            stream,
+            header.meshletLodLevelCount,
+            data.meshletLodLevels,
+            makeLodLevel) ||
+        !readConvertedArray<MeshletLodGroup, CachedMeshletLodGroup>(
+            stream,
+            header.meshletLodGroupCount,
+            data.meshletLodGroups,
+            makeLodGroup) ||
+        !readConvertedArray<MeshletCluster, CachedMeshletCluster>(
+            stream,
+            header.meshletLodClusterCount,
+            data.meshletLodClusters,
+            makeCluster) ||
+        !readArray(stream, header.meshletLodVertexCount, data.meshletLodVertices) ||
+        !readArray(stream, header.meshletLodTriangleCount, data.meshletLodTriangles)) {
+        reason = "primitive payload is truncated";
+        return false;
+    }
+
+    if (!validateMeshletData(
+            primitive,
+            data.meshletClusters,
+            data.meshletVertices,
+            data.meshletTriangles,
+            data.meshletLodLevels,
+            data.meshletLodGroups,
+            data.meshletLodClusters,
+            data.meshletLodVertices,
+            data.meshletLodTriangles)) {
+        reason = "primitive payload failed validation";
+        return false;
+    }
+
+    return true;
+}
+
+bool writeMeshletCachePrimitive(std::ostream& stream, const RenderPrimitive& primitive)
+{
+    const MeshletCachePrimitiveHeader header = makeMeshletCachePrimitiveHeader(primitive);
+    return writePod(stream, header) &&
+        writeConvertedArray<MeshletCluster, CachedMeshletCluster>(
+            stream,
+            primitive.meshletClusters,
+            makeCachedCluster) &&
+        writeArray(stream, primitive.meshletVertices) &&
+        writeArray(stream, primitive.meshletTriangles) &&
+        writeConvertedArray<MeshletLodLevel, CachedMeshletLodLevel>(
+            stream,
+            primitive.meshletLodLevels,
+            makeCachedLodLevel) &&
+        writeConvertedArray<MeshletLodGroup, CachedMeshletLodGroup>(
+            stream,
+            primitive.meshletLodGroups,
+            makeCachedLodGroup) &&
+        writeConvertedArray<MeshletCluster, CachedMeshletCluster>(
+            stream,
+            primitive.meshletLodClusters,
+            makeCachedCluster) &&
+        writeArray(stream, primitive.meshletLodVertices) &&
+        writeArray(stream, primitive.meshletLodTriangles);
+}
+
+bool loadMeshletCache(
+    const std::filesystem::path& cachePath,
+    const std::filesystem::path& sourcePath,
+    std::vector<RenderPrimitive>& primitives,
+    std::string& reason)
+{
+    reason.clear();
+
+    std::error_code existsError;
+    if (!std::filesystem::exists(cachePath, existsError)) {
+        return false;
+    }
+
+    std::ifstream stream(cachePath, std::ios::binary);
+    if (!stream) {
+        reason = "cache file cannot be opened";
+        return false;
+    }
+
+    MeshletCacheHeader header;
+    if (!readPod(stream, header)) {
+        reason = "cache header is truncated";
+        return false;
+    }
+
+    const MeshletCacheHeader expectedHeader = makeMeshletCacheHeader(sourcePath, primitives);
+    if (!meshletCacheHeaderMatches(header, expectedHeader)) {
+        reason = "cache header does not match source or meshlet settings";
+        return false;
+    }
+
+    const uint64_t cacheByteSize = sourceFileSize(cachePath);
+    std::vector<MeshletCachePrimitiveData> cachedPrimitives(primitives.size());
+    for (size_t primitiveIndex = 0; primitiveIndex < primitives.size(); ++primitiveIndex) {
+        if (!readMeshletCachePrimitive(
+                stream,
+                primitives[primitiveIndex],
+                cachedPrimitives[primitiveIndex],
+                cacheByteSize,
+                reason)) {
+            return false;
+        }
+    }
+
+    for (size_t primitiveIndex = 0; primitiveIndex < primitives.size(); ++primitiveIndex) {
+        MeshletCachePrimitiveData& cached = cachedPrimitives[primitiveIndex];
+        RenderPrimitive& primitive = primitives[primitiveIndex];
+        primitive.meshletClusters = std::move(cached.meshletClusters);
+        primitive.meshletVertices = std::move(cached.meshletVertices);
+        primitive.meshletTriangles = std::move(cached.meshletTriangles);
+        primitive.meshletLodLevels = std::move(cached.meshletLodLevels);
+        primitive.meshletLodGroups = std::move(cached.meshletLodGroups);
+        primitive.meshletLodClusters = std::move(cached.meshletLodClusters);
+        primitive.meshletLodVertices = std::move(cached.meshletLodVertices);
+        primitive.meshletLodTriangles = std::move(cached.meshletLodTriangles);
+    }
+
+    return true;
+}
+
+bool saveMeshletCache(
+    const std::filesystem::path& cachePath,
+    const std::filesystem::path& sourcePath,
+    const std::vector<RenderPrimitive>& primitives,
+    std::string& reason)
+{
+    reason.clear();
+
+    if (primitives.size() > std::numeric_limits<uint32_t>::max()) {
+        reason = "too many render primitives";
+        return false;
+    }
+
+    std::ofstream stream(cachePath, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        reason = "cache file cannot be opened for writing";
+        return false;
+    }
+
+    const MeshletCacheHeader header = makeMeshletCacheHeader(sourcePath, primitives);
+    if (!writePod(stream, header)) {
+        reason = "cache header write failed";
+        return false;
+    }
+
+    for (const RenderPrimitive& primitive : primitives) {
+        if (!writeMeshletCachePrimitive(stream, primitive)) {
+            reason = "primitive payload write failed";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void buildMeshletsForPrimitives(std::vector<RenderPrimitive>& primitives)
+{
+    for (RenderPrimitive& primitive : primitives) {
+        buildMeshletClusters(primitive);
+        buildMeshletLods(primitive);
+    }
+}
+
+void accumulateMeshletStats(const std::vector<RenderPrimitive>& primitives, SceneStats& stats)
+{
+    for (const RenderPrimitive& primitive : primitives) {
+        stats.meshletClusterCount += primitive.meshletClusters.size();
+        stats.meshletVertexReferenceCount += primitive.meshletVertices.size();
+        stats.meshletTriangleIndexCount += primitive.meshletTriangles.size();
+        stats.meshletLodLevelCount += primitive.meshletLodLevels.size();
+        stats.meshletLodGroupCount += primitive.meshletLodGroups.size();
+        stats.meshletLodClusterCount += primitive.meshletLodClusters.size();
+        stats.meshletLodVertexReferenceCount += primitive.meshletLodVertices.size();
+        stats.meshletLodTriangleIndexCount += primitive.meshletLodTriangles.size();
+    }
+}
+
 RenderCamera makeRenderCamera(
     const tinygltf::Camera& camera,
     const tinygltf::Node& node,
@@ -1502,8 +2348,6 @@ bool Scene::load(const std::filesystem::path& filename)
                 if (primitive.tangents.empty()) {
                     generateTangents(primitive);
                 }
-                buildMeshletClusters(primitive);
-                buildMeshletLods(primitive);
 
                 RenderNode renderNode;
                 renderNode.nodeIndex = nodeIndex;
@@ -1514,14 +2358,6 @@ bool Scene::load(const std::filesystem::path& filename)
 
                 bounds_.include(transformBounds(primitive.localBounds, node.worldMatrix));
                 stats_.triangleCount += primitive.triangleCount;
-                stats_.meshletClusterCount += primitive.meshletClusters.size();
-                stats_.meshletVertexReferenceCount += primitive.meshletVertices.size();
-                stats_.meshletTriangleIndexCount += primitive.meshletTriangles.size();
-                stats_.meshletLodLevelCount += primitive.meshletLodLevels.size();
-                stats_.meshletLodGroupCount += primitive.meshletLodGroups.size();
-                stats_.meshletLodClusterCount += primitive.meshletLodClusters.size();
-                stats_.meshletLodVertexReferenceCount += primitive.meshletLodVertices.size();
-                stats_.meshletLodTriangleIndexCount += primitive.meshletLodTriangles.size();
                 renderPrimitives_.push_back(primitive);
                 renderNodes_.push_back(renderNode);
             }
@@ -1537,6 +2373,26 @@ bool Scene::load(const std::filesystem::path& filename)
     for (const int32_t rootNodeIndex : rootNodeIndices_) {
         traverseNode(rootNodeIndex, float4x4::Identity(), true);
     }
+
+    const std::filesystem::path meshletCachePath = meshletCachePathFor(filename_);
+    lastLoadResult_.meshletCachePath = meshletCachePath;
+
+    std::string meshletCacheReason;
+    if (loadMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
+        lastLoadResult_.meshletCacheLoaded = true;
+    } else {
+        if (!meshletCacheReason.empty()) {
+            appendWarning(lastLoadResult_.warning, "Meshlet cache ignored: " + meshletCacheReason);
+        }
+
+        buildMeshletsForPrimitives(renderPrimitives_);
+        if (saveMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
+            lastLoadResult_.meshletCacheSaved = true;
+        } else if (!meshletCacheReason.empty()) {
+            appendWarning(lastLoadResult_.warning, "Meshlet cache save failed: " + meshletCacheReason);
+        }
+    }
+    accumulateMeshletStats(renderPrimitives_, stats_);
 
     if (cameras_.empty()) {
         cameras_.push_back(makeFallbackCamera(bounds_));

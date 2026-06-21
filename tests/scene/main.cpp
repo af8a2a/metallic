@@ -923,6 +923,67 @@ void testMeshletLodPartition(const std::filesystem::path& directory)
     }
 }
 
+void expectClusterMetadataEqual(
+    const metallic::scene::MeshletCluster& actual,
+    const metallic::scene::MeshletCluster& expected,
+    const std::string& label)
+{
+    EXPECT_EQ(actual.vertexOffset, expected.vertexOffset) << label;
+    EXPECT_EQ(actual.vertexCount, expected.vertexCount) << label;
+    EXPECT_EQ(actual.triangleOffset, expected.triangleOffset) << label;
+    EXPECT_EQ(actual.triangleCount, expected.triangleCount) << label;
+    EXPECT_EQ(actual.lodLevel, expected.lodLevel) << label;
+    EXPECT_EQ(actual.lodGroupChildIndex, expected.lodGroupChildIndex) << label;
+    EXPECT_EQ(actual.lodGroupIndex, expected.lodGroupIndex) << label;
+    EXPECT_EQ(actual.refinedGroupIndex, expected.refinedGroupIndex) << label;
+    EXPECT_TRUE(actual.bounds.valid == expected.bounds.valid) << label;
+    expectVec3(actual.boundingSphereCenter, expected.boundingSphereCenter, label + " center");
+    EXPECT_TRUE(nearlyEqual(actual.boundingSphereRadius, expected.boundingSphereRadius)) << label;
+}
+
+void testMeshletPersistence(const std::filesystem::path& directory)
+{
+    const std::filesystem::path persistenceDirectory = directory / "meshlet_persistence";
+    std::filesystem::create_directories(persistenceDirectory);
+    const std::filesystem::path gltfPath = writeMeshletLodGridScene(persistenceDirectory);
+    std::filesystem::path cachePath = gltfPath;
+    cachePath += ".meshlets.bin";
+    std::filesystem::remove(cachePath);
+
+    metallic::scene::Scene generatedScene;
+    ASSERT_TRUE(generatedScene.load(gltfPath)) << generatedScene.lastLoadResult().error;
+    EXPECT_FALSE(generatedScene.lastLoadResult().meshletCacheLoaded);
+    EXPECT_TRUE(generatedScene.lastLoadResult().meshletCacheSaved);
+    EXPECT_EQ(generatedScene.lastLoadResult().meshletCachePath, cachePath);
+    ASSERT_TRUE(std::filesystem::exists(cachePath));
+    EXPECT_GT(std::filesystem::file_size(cachePath), 0u);
+
+    metallic::scene::Scene cachedScene;
+    ASSERT_TRUE(cachedScene.load(gltfPath)) << cachedScene.lastLoadResult().error;
+    EXPECT_TRUE(cachedScene.lastLoadResult().meshletCacheLoaded);
+    EXPECT_FALSE(cachedScene.lastLoadResult().meshletCacheSaved);
+    EXPECT_EQ(cachedScene.lastLoadResult().meshletCachePath, cachePath);
+
+    EXPECT_EQ(cachedScene.stats().meshletClusterCount, generatedScene.stats().meshletClusterCount);
+    EXPECT_EQ(cachedScene.stats().meshletVertexReferenceCount, generatedScene.stats().meshletVertexReferenceCount);
+    EXPECT_EQ(cachedScene.stats().meshletTriangleIndexCount, generatedScene.stats().meshletTriangleIndexCount);
+    EXPECT_EQ(cachedScene.stats().meshletLodLevelCount, generatedScene.stats().meshletLodLevelCount);
+    EXPECT_EQ(cachedScene.stats().meshletLodGroupCount, generatedScene.stats().meshletLodGroupCount);
+    EXPECT_EQ(cachedScene.stats().meshletLodClusterCount, generatedScene.stats().meshletLodClusterCount);
+    ASSERT_EQ(cachedScene.renderPrimitives().size(), generatedScene.renderPrimitives().size());
+
+    const metallic::scene::RenderPrimitive& generated = generatedScene.renderPrimitives().front();
+    const metallic::scene::RenderPrimitive& cached = cachedScene.renderPrimitives().front();
+    EXPECT_EQ(cached.meshletVertices, generated.meshletVertices);
+    EXPECT_EQ(cached.meshletTriangles, generated.meshletTriangles);
+    EXPECT_EQ(cached.meshletLodVertices, generated.meshletLodVertices);
+    EXPECT_EQ(cached.meshletLodTriangles, generated.meshletLodTriangles);
+    ASSERT_EQ(cached.meshletClusters.size(), generated.meshletClusters.size());
+    ASSERT_EQ(cached.meshletLodClusters.size(), generated.meshletLodClusters.size());
+    expectClusterMetadataEqual(cached.meshletClusters.front(), generated.meshletClusters.front(), "first meshlet");
+    expectClusterMetadataEqual(cached.meshletLodClusters.back(), generated.meshletLodClusters.back(), "last LOD meshlet");
+}
+
 void testMaterialImport(const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
@@ -1327,6 +1388,11 @@ TEST(SceneImport, FullScene)
 TEST(SceneImport, MeshletLodPartition)
 {
     testMeshletLodPartition(prepareOutputDirectory());
+}
+
+TEST(SceneImport, MeshletPersistence)
+{
+    testMeshletPersistence(prepareOutputDirectory());
 }
 
 TEST(SceneImport, Materials)

@@ -35,6 +35,9 @@ struct LoadResult {
     std::string warning;
     std::string error;
     int32_t sceneIndex = kInvalidSceneIndex;
+    bool meshletCacheLoaded = false;
+    bool meshletCacheSaved = false;
+    std::filesystem::path meshletCachePath;
 };
 
 struct SceneStats {
