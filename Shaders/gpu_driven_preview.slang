@@ -23,8 +23,8 @@ struct GPUDrivenPreviewMeshlet
     uint triangleCount;
     uint primitiveIndex;
     uint materialIndex;
-    uint padding0;
-    uint padding1;
+    uint lodLevel;
+    uint lodGroupIndex;
 };
 
 struct GPUDrivenPreviewParams
@@ -36,9 +36,9 @@ struct GPUDrivenPreviewParams
     float4 clipOrtho;
     float4 clearColor;
     uint mode;
+    uint meshletOffset;
     uint meshletCount;
-    uint padding0;
-    uint padding1;
+    uint selectedLodLevel;
 };
 
 struct GPUDrivenPreviewVertexOutput
@@ -126,18 +126,24 @@ void gpuDrivenPreviewMeshMain(
     StructuredBuffer<GPUDrivenPreviewParams> paramsBuffer = paramsHandle;
 
     GPUDrivenPreviewParams params = paramsBuffer[0];
-    uint meshletIndex = groupID.x;
-    if (meshletIndex >= params.meshletCount) {
+    uint localMeshletIndex = groupID.x;
+    if (localMeshletIndex >= params.meshletCount) {
         SetMeshOutputCounts(0, 0);
         return;
     }
 
+    uint meshletIndex = params.meshletOffset + localMeshletIndex;
     GPUDrivenPreviewMeshlet meshlet = meshlets[meshletIndex];
     uint vertexCount = min(meshlet.vertexCount, kMaxMeshletVertices);
     uint triangleCount = min(meshlet.triangleCount, kMaxMeshletTriangles);
     SetMeshOutputCounts(vertexCount, triangleCount);
 
-    uint colorSeed = params.mode == 1 ? meshlet.primitiveIndex : meshletIndex;
+    uint colorSeed = meshletIndex;
+    if (params.mode == 1) {
+        colorSeed = meshlet.primitiveIndex;
+    } else if (params.mode == 2) {
+        colorSeed = meshlet.primitiveIndex * 1009u + meshlet.lodGroupIndex * 131u + meshlet.lodLevel * 17u + 1u;
+    }
     float3 color = hashColor(colorSeed + 1u);
 
     for (uint vertexIndex = 0; vertexIndex < kMaxMeshletVertices; ++vertexIndex) {

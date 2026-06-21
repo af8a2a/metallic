@@ -72,6 +72,7 @@ inline constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
 inline constexpr uint32_t kRayQueryVisualizationGranularityPrimitive = 1;
 inline constexpr uint32_t kGPUDrivenPreviewModeMeshlet = 0;
 inline constexpr uint32_t kGPUDrivenPreviewModePrimitive = 1;
+inline constexpr uint32_t kGPUDrivenPreviewModeLod = 2;
 inline constexpr uint32_t kSceneMaterialVisualizationModeMaterial = 0;
 inline constexpr uint32_t kSceneMaterialVisualizationModeBaseColor = 1;
 inline constexpr uint32_t kSceneMaterialVisualizationModeNormal = 2;
@@ -328,8 +329,8 @@ struct GPUDrivenPreviewGpuMeshlet {
     uint32_t triangleCount = 0;
     uint32_t primitiveIndex = 0;
     uint32_t materialIndex = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
+    uint32_t lodLevel = 0;
+    uint32_t lodGroupIndex = 0;
 };
 
 struct GPUDrivenPreviewGpuParams {
@@ -340,9 +341,9 @@ struct GPUDrivenPreviewGpuParams {
     float clipOrtho[4] = {};
     float clearColor[4] = {};
     uint32_t mode = kGPUDrivenPreviewModeMeshlet;
+    uint32_t meshletOffset = 0;
     uint32_t meshletCount = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
+    uint32_t selectedLodLevel = 0;
 };
 
 struct GPUDrivenPreviewUserPush {

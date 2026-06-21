@@ -2970,6 +2970,48 @@ public:
                 std::to_string(visiblePixelCount));
         }
 
+        render::RenderGraph lodGraph;
+        lodGraph.setName("GPUDrivenPreviewLodRender");
+        lodGraph.addNode(
+            "GPUDrivenPreviewPass",
+            "GPUDriven",
+            render::RenderGraphProperties{
+                {"path", "Asset/StandfordBunny/scene.gltf"},
+                {"mode", "lod"},
+                {"lodLevel", 0},
+                {"camera", {
+                    {"projection", "perspective"},
+                    {"fovDegrees", 60.0f},
+                    {"znear", 0.1f},
+                    {"zfar", 10000.0f},
+                    {"reversedZ", true},
+                    {"eye", {-0.0168404f, 0.110154f, 0.22f}},
+                    {"center", {-0.0168404f, 0.110154f, -0.00153695f}},
+                    {"up", {0.0f, 1.0f, 0.0f}},
+                }},
+            });
+        lodGraph.markOutput("GPUDriven.color");
+
+        result = preview.render(lodGraph, 192, 192);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("GPUDrivenPreviewPass LOD mode is unsupported on this device: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass LOD render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        const uint32_t lodVisiblePixelCount = countVisiblePixels(preview.pixels());
+        if (lodVisiblePixelCount < 512) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass LOD mode produced too few visible pixels: ") +
+                std::to_string(lodVisiblePixelCount));
+        }
+
         return RhiTestResult::pass();
     }
 };

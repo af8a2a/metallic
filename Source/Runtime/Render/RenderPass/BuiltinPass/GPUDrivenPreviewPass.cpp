@@ -4,6 +4,11 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
+struct GPUDrivenPreviewMeshletRange {
+    uint32_t offset = 0;
+    uint32_t count = 0;
+};
+
 class GPUDrivenPreviewPass final : public RasterPass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
@@ -23,7 +28,8 @@ public:
                 "mode",
                 "Mode",
                 "meshlet",
-                {{"Meshlet", "meshlet"}, {"Primitive", "primitive"}}),
+                {{"Meshlet", "meshlet"}, {"Primitive", "primitive"}, {"LOD Group", "lod"}}),
+            runtimeIntSetting("lodLevel", "LOD Level", 0, 0, 31),
         };
         appendCameraRuntimeSettings(
             settings,
@@ -43,7 +49,7 @@ public:
             log = "GPUDrivenPreviewPass requires meshShader and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
-        if (pipeline_ != nullptr && meshletCount_ > 0) {
+        if (pipeline_ != nullptr && drawTaskCount_ > 0) {
             return {};
         }
 
@@ -51,9 +57,24 @@ public:
         std::vector<GPUDrivenPreviewGpuMeshlet> meshlets;
         std::vector<uint32_t> meshletVertices;
         std::vector<uint32_t> meshletTriangles;
-        if (!loadMeshletScene(properties(), positions, meshlets, meshletVertices, meshletTriangles, drawBounds_, log)) {
+        std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges;
+        GPUDrivenPreviewMeshletRange baseMeshletRange;
+        if (!loadMeshletScene(
+                properties(),
+                positions,
+                meshlets,
+                meshletVertices,
+                meshletTriangles,
+                drawBounds_,
+                baseMeshletRange,
+                lodLevelRanges,
+                log)) {
             return makeError(Error::Failure);
         }
+
+        baseMeshletRange_ = baseMeshletRange;
+        lodLevelRanges_ = std::move(lodLevelRanges);
+        drawTaskCount_ = maxMeshletRangeCount(baseMeshletRange_, lodLevelRanges_);
 
         GPUDrivenPreviewGpuParams params;
         buildParams(
@@ -61,7 +82,8 @@ public:
             context.height,
             properties(),
             drawBounds_,
-            static_cast<uint32_t>(meshlets.size()),
+            baseMeshletRange_,
+            lodLevelRanges_,
             params);
 
         Result result = uploadStorageBuffer(
@@ -227,7 +249,6 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
 
-        meshletCount_ = static_cast<uint32_t>(meshlets.size());
         return {};
     }
 
@@ -239,7 +260,7 @@ public:
             !depth.valid() ||
             bindlessHeap_ == nullptr ||
             pipeline_ == nullptr ||
-            meshletCount_ == 0) {
+            drawTaskCount_ == 0) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -293,7 +314,7 @@ public:
             .paramsBuffer = paramsHandle_.index,
         };
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
-        context.commandBuffer().drawMeshTasks(meshletCount_);
+        context.commandBuffer().drawMeshTasks(drawTaskCount_);
         context.commandBuffer().endRendering();
         return {};
     }
@@ -449,9 +470,74 @@ private:
             return kGPUDrivenPreviewModeMeshlet;
         }
         const std::string value = iter->get<std::string>();
-        return value == "primitive" || value == "perPrimitive" || value == "per primitive"
-            ? kGPUDrivenPreviewModePrimitive
-            : kGPUDrivenPreviewModeMeshlet;
+        if (value == "primitive" || value == "perPrimitive" || value == "per primitive") {
+            return kGPUDrivenPreviewModePrimitive;
+        }
+        if (value == "lod" || value == "lodLevel" || value == "lod level" || value == "LOD") {
+            return kGPUDrivenPreviewModeLod;
+        }
+        return kGPUDrivenPreviewModeMeshlet;
+    }
+
+    static uint32_t lodLevelFromProperties(const RenderGraphProperties& properties)
+    {
+        if (!properties.is_object()) {
+            return 0;
+        }
+        auto iter = properties.find("lodLevel");
+        if (iter == properties.end() || !iter->is_number_integer()) {
+            return 0;
+        }
+        return static_cast<uint32_t>(std::clamp(iter->get<int32_t>(), 0, 31));
+    }
+
+    static GPUDrivenPreviewMeshletRange selectedMeshletRange(
+        uint32_t mode,
+        uint32_t requestedLodLevel,
+        const GPUDrivenPreviewMeshletRange& baseRange,
+        const std::vector<GPUDrivenPreviewMeshletRange>& lodLevelRanges,
+        uint32_t& outSelectedLodLevel)
+    {
+        outSelectedLodLevel = 0;
+        if (mode != kGPUDrivenPreviewModeLod || lodLevelRanges.empty()) {
+            return baseRange;
+        }
+
+        uint32_t lodLevel = std::min<uint32_t>(
+            requestedLodLevel,
+            static_cast<uint32_t>(lodLevelRanges.size() - 1u));
+        if (lodLevelRanges[lodLevel].count == 0) {
+            uint32_t fallback = lodLevel;
+            while (fallback > 0 && lodLevelRanges[fallback].count == 0) {
+                --fallback;
+            }
+            if (lodLevelRanges[fallback].count == 0) {
+                for (uint32_t index = lodLevel + 1u; index < lodLevelRanges.size(); ++index) {
+                    if (lodLevelRanges[index].count != 0) {
+                        fallback = index;
+                        break;
+                    }
+                }
+            }
+            lodLevel = fallback;
+        }
+
+        if (lodLevelRanges[lodLevel].count == 0) {
+            return baseRange;
+        }
+        outSelectedLodLevel = lodLevel;
+        return lodLevelRanges[lodLevel];
+    }
+
+    static uint32_t maxMeshletRangeCount(
+        const GPUDrivenPreviewMeshletRange& baseRange,
+        const std::vector<GPUDrivenPreviewMeshletRange>& lodLevelRanges)
+    {
+        uint32_t result = baseRange.count;
+        for (const GPUDrivenPreviewMeshletRange& range : lodLevelRanges) {
+            result = std::max(result, range.count);
+        }
+        return result;
     }
 
     static void writeParamVec3(const float3& value, float out[4], float w)
@@ -462,29 +548,29 @@ private:
         out[3] = w;
     }
 
-    static bool appendPrimitiveInstance(
-        const scene::RenderNode& renderNode,
+    struct PrimitiveInstanceRef {
+        const scene::RenderPrimitive* primitive = nullptr;
+        uint32_t positionBase = 0;
+        uint32_t primitiveIndex = 0;
+        uint32_t materialIndex = 0;
+    };
+
+    static bool appendPrimitivePositions(
+        const float4x4& worldMatrix,
         const scene::RenderPrimitive& primitive,
         std::vector<GPUDrivenPreviewGpuPosition>& outPositions,
-        std::vector<GPUDrivenPreviewGpuMeshlet>& outMeshlets,
-        std::vector<uint32_t>& outMeshletVertices,
-        std::vector<uint32_t>& outMeshletTriangles,
+        uint32_t& outPositionBase,
         std::string& log)
     {
-        if (primitive.mode != kGltfTriangleListMode ||
-            primitive.positions.empty() ||
-            primitive.meshletClusters.empty()) {
-            return true;
-        }
         if (outPositions.size() + primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
             log = "GPUDrivenPreviewPass scene is too large to address with uint32 vertex indices";
             return false;
         }
 
-        const uint32_t positionBase = static_cast<uint32_t>(outPositions.size());
+        outPositionBase = static_cast<uint32_t>(outPositions.size());
         outPositions.reserve(outPositions.size() + primitive.positions.size());
         for (const float3& localPosition : primitive.positions) {
-            const float3 world = renderNode.worldMatrix * localPosition;
+            const float3 world = worldMatrix * localPosition;
             outPositions.push_back(GPUDrivenPreviewGpuPosition{
                 .x = world.x,
                 .y = world.y,
@@ -492,15 +578,38 @@ private:
                 .w = 1.0f,
             });
         }
+        return true;
+    }
 
-        for (const scene::MeshletCluster& cluster : primitive.meshletClusters) {
+    static bool appendPrimitiveClusters(
+        const scene::RenderPrimitive& primitive,
+        const std::vector<scene::MeshletCluster>& clusters,
+        const std::vector<uint32_t>& clusterVertices,
+        const std::vector<uint8_t>& clusterTriangles,
+        uint32_t firstCluster,
+        uint32_t clusterCount,
+        uint32_t positionBase,
+        uint32_t primitiveIndex,
+        uint32_t materialIndex,
+        std::vector<GPUDrivenPreviewGpuMeshlet>& outMeshlets,
+        std::vector<uint32_t>& outMeshletVertices,
+        std::vector<uint32_t>& outMeshletTriangles,
+        std::string& log)
+    {
+        if (static_cast<size_t>(firstCluster) + clusterCount > clusters.size()) {
+            log = "GPUDrivenPreviewPass found invalid meshlet cluster range";
+            return false;
+        }
+
+        for (uint32_t clusterIndex = 0; clusterIndex < clusterCount; ++clusterIndex) {
+            const scene::MeshletCluster& cluster = clusters[static_cast<size_t>(firstCluster) + clusterIndex];
             if (cluster.vertexCount == 0 ||
                 cluster.triangleCount == 0 ||
                 cluster.vertexCount > 128 ||
                 cluster.triangleCount > 128 ||
-                static_cast<size_t>(cluster.vertexOffset) + cluster.vertexCount > primitive.meshletVertices.size() ||
+                static_cast<size_t>(cluster.vertexOffset) + cluster.vertexCount > clusterVertices.size() ||
                 static_cast<size_t>(cluster.triangleOffset) + static_cast<size_t>(cluster.triangleCount) * 3u >
-                    primitive.meshletTriangles.size()) {
+                    clusterTriangles.size()) {
                 log = "GPUDrivenPreviewPass found invalid meshlet cluster data";
                 return false;
             }
@@ -510,7 +619,7 @@ private:
 
             for (uint32_t vertexIndex = 0; vertexIndex < cluster.vertexCount; ++vertexIndex) {
                 const uint32_t localVertex =
-                    primitive.meshletVertices[static_cast<size_t>(cluster.vertexOffset) + vertexIndex];
+                    clusterVertices[static_cast<size_t>(cluster.vertexOffset) + vertexIndex];
                 if (localVertex >= primitive.positions.size()) {
                     log = "GPUDrivenPreviewPass found out-of-range meshlet vertex reference";
                     return false;
@@ -520,7 +629,7 @@ private:
 
             for (uint32_t triangleIndex = 0; triangleIndex < cluster.triangleCount * 3u; ++triangleIndex) {
                 const uint32_t localVertex =
-                    primitive.meshletTriangles[static_cast<size_t>(cluster.triangleOffset) + triangleIndex];
+                    clusterTriangles[static_cast<size_t>(cluster.triangleOffset) + triangleIndex];
                 if (localVertex >= cluster.vertexCount) {
                     log = "GPUDrivenPreviewPass found out-of-range meshlet triangle index";
                     return false;
@@ -533,8 +642,10 @@ private:
                 .vertexCount = cluster.vertexCount,
                 .triangleOffset = meshletTriangleOffset,
                 .triangleCount = cluster.triangleCount,
-                .primitiveIndex = static_cast<uint32_t>(std::max(renderNode.renderPrimitiveIndex, 0)),
-                .materialIndex = static_cast<uint32_t>(std::max(renderNode.materialIndex, 0)),
+                .primitiveIndex = primitiveIndex,
+                .materialIndex = materialIndex,
+                .lodLevel = cluster.lodLevel,
+                .lodGroupIndex = static_cast<uint32_t>(std::max(cluster.lodGroupIndex, 0)),
             });
         }
 
@@ -548,6 +659,8 @@ private:
         std::vector<uint32_t>& outMeshletVertices,
         std::vector<uint32_t>& outMeshletTriangles,
         scene::Bounds& outBounds,
+        GPUDrivenPreviewMeshletRange& outBaseMeshletRange,
+        std::vector<GPUDrivenPreviewMeshletRange>& outLodLevelRanges,
         std::string& log)
     {
         scene::Scene loadedScene;
@@ -565,8 +678,13 @@ private:
         outMeshlets.clear();
         outMeshletVertices.clear();
         outMeshletTriangles.clear();
+        outBaseMeshletRange = GPUDrivenPreviewMeshletRange{};
+        outLodLevelRanges.clear();
         outBounds = loadedScene.bounds();
 
+        std::vector<PrimitiveInstanceRef> primitiveInstances;
+        primitiveInstances.reserve(loadedScene.renderNodes().size());
+        size_t maxLodLevelCount = 0;
         for (const scene::RenderNode& renderNode : loadedScene.renderNodes()) {
             if (!renderNode.visible ||
                 renderNode.renderPrimitiveIndex < 0 ||
@@ -576,16 +694,78 @@ private:
 
             const scene::RenderPrimitive& primitive =
                 loadedScene.renderPrimitives()[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
-            if (!appendPrimitiveInstance(
-                    renderNode,
+            if (primitive.mode != kGltfTriangleListMode ||
+                primitive.positions.empty() ||
+                primitive.meshletClusters.empty()) {
+                continue;
+            }
+
+            uint32_t positionBase = 0;
+            if (!appendPrimitivePositions(renderNode.worldMatrix, primitive, outPositions, positionBase, log)) {
+                return false;
+            }
+            primitiveInstances.push_back(PrimitiveInstanceRef{
+                .primitive = &primitive,
+                .positionBase = positionBase,
+                .primitiveIndex = static_cast<uint32_t>(std::max(renderNode.renderPrimitiveIndex, 0)),
+                .materialIndex = static_cast<uint32_t>(std::max(renderNode.materialIndex, 0)),
+            });
+            maxLodLevelCount = std::max(maxLodLevelCount, primitive.meshletLodLevels.size());
+        }
+
+        outBaseMeshletRange.offset = static_cast<uint32_t>(outMeshlets.size());
+        for (const PrimitiveInstanceRef& instance : primitiveInstances) {
+            const scene::RenderPrimitive& primitive = *instance.primitive;
+            if (!appendPrimitiveClusters(
                     primitive,
-                    outPositions,
+                    primitive.meshletClusters,
+                    primitive.meshletVertices,
+                    primitive.meshletTriangles,
+                    0,
+                    static_cast<uint32_t>(primitive.meshletClusters.size()),
+                    instance.positionBase,
+                    instance.primitiveIndex,
+                    instance.materialIndex,
                     outMeshlets,
                     outMeshletVertices,
                     outMeshletTriangles,
                     log)) {
                 return false;
             }
+        }
+        outBaseMeshletRange.count = static_cast<uint32_t>(outMeshlets.size()) - outBaseMeshletRange.offset;
+
+        outLodLevelRanges.resize(maxLodLevelCount);
+        for (uint32_t lodLevel = 0; lodLevel < maxLodLevelCount; ++lodLevel) {
+            GPUDrivenPreviewMeshletRange range;
+            range.offset = static_cast<uint32_t>(outMeshlets.size());
+
+            for (const PrimitiveInstanceRef& instance : primitiveInstances) {
+                const scene::RenderPrimitive& primitive = *instance.primitive;
+                if (lodLevel >= primitive.meshletLodLevels.size()) {
+                    continue;
+                }
+                const scene::MeshletLodLevel& level = primitive.meshletLodLevels[lodLevel];
+                if (!appendPrimitiveClusters(
+                        primitive,
+                        primitive.meshletLodClusters,
+                        primitive.meshletLodVertices,
+                        primitive.meshletLodTriangles,
+                        level.clusterOffset,
+                        level.clusterCount,
+                        instance.positionBase,
+                        instance.primitiveIndex,
+                        instance.materialIndex,
+                        outMeshlets,
+                        outMeshletVertices,
+                        outMeshletTriangles,
+                        log)) {
+                    return false;
+                }
+            }
+
+            range.count = static_cast<uint32_t>(outMeshlets.size()) - range.offset;
+            outLodLevelRanges[lodLevel] = range;
         }
 
         if (outPositions.empty() ||
@@ -599,6 +779,10 @@ private:
             log = "GPUDrivenPreviewPass scene has too many meshlets";
             return false;
         }
+        if (outBaseMeshletRange.count == 0) {
+            log = "GPUDrivenPreviewPass found no base meshlet geometry in " + path.string();
+            return false;
+        }
         return true;
     }
 
@@ -607,7 +791,8 @@ private:
         uint32_t height,
         const RenderGraphProperties& properties,
         const scene::Bounds& drawBounds,
-        uint32_t meshletCount,
+        const GPUDrivenPreviewMeshletRange& baseMeshletRange,
+        const std::vector<GPUDrivenPreviewMeshletRange>& lodLevelRanges,
         GPUDrivenPreviewGpuParams& outParams)
     {
         outParams = GPUDrivenPreviewGpuParams{};
@@ -657,8 +842,18 @@ private:
         outParams.clearColor[1] = 0.018f;
         outParams.clearColor[2] = 0.024f;
         outParams.clearColor[3] = 1.0f;
-        outParams.mode = previewModeFromProperties(properties);
-        outParams.meshletCount = meshletCount;
+        const uint32_t mode = previewModeFromProperties(properties);
+        uint32_t selectedLodLevel = 0;
+        const GPUDrivenPreviewMeshletRange meshletRange = selectedMeshletRange(
+            mode,
+            lodLevelFromProperties(properties),
+            baseMeshletRange,
+            lodLevelRanges,
+            selectedLodLevel);
+        outParams.mode = mode;
+        outParams.meshletOffset = meshletRange.offset;
+        outParams.meshletCount = meshletRange.count;
+        outParams.selectedLodLevel = selectedLodLevel;
     }
 
     Result updateParamsBuffer(
@@ -671,7 +866,7 @@ private:
         }
 
         GPUDrivenPreviewGpuParams params;
-        buildParams(width, height, properties, drawBounds_, meshletCount_, params);
+        buildParams(width, height, properties, drawBounds_, baseMeshletRange_, lodLevelRanges_, params);
 
         void* mapped = paramsBuffer_->map();
         if (mapped == nullptr) {
@@ -698,7 +893,9 @@ private:
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
     scene::Bounds drawBounds_;
-    uint32_t meshletCount_ = 0;
+    GPUDrivenPreviewMeshletRange baseMeshletRange_;
+    std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges_;
+    uint32_t drawTaskCount_ = 0;
 };
 
 } // namespace
