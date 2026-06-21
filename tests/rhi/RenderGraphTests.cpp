@@ -1124,18 +1124,54 @@ public:
             return RhiTestResult::fail("material visualization Sample graph first output changed");
         }
 
+        render::RenderSampleLoadResult gpuDrivenSample;
+        if (!render::loadBuiltInRenderSample("gpu-driven-sample", gpuDrivenSample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (gpuDrivenSample.desc.id != "gpu-driven-sample" ||
+            gpuDrivenSample.desc.name != "GPUDrivenSample" ||
+            gpuDrivenSample.desc.category != "GPUDriven" ||
+            gpuDrivenSample.desc.scenePath != "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf" ||
+            gpuDrivenSample.desc.graphPath != "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json" ||
+            gpuDrivenSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||
+            gpuDrivenSample.desc.previewOutput != "GPUDriven.color") {
+            return RhiTestResult::fail("GPUDrivenSample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* gpuDriven = gpuDrivenSample.graph.findNode("GPUDriven");
+        if (gpuDriven == nullptr ||
+            gpuDriven->type != "SceneRayQueryVisualizationPass" ||
+            !gpuDriven->properties.is_object() ||
+            gpuDriven->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
+            !gpuDriven->properties.contains("environment") ||
+            !gpuDriven->properties["environment"].is_object() ||
+            gpuDriven->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr") {
+            return RhiTestResult::fail("GPUDrivenSample did not apply scene, environment, and pass defaults");
+        }
+        if (!gpuDrivenSample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (gpuDrivenSample.graph.firstOutputName() != "GPUDriven.color") {
+            return RhiTestResult::fail("GPUDrivenSample graph first output changed");
+        }
+
         bool listedPathTrace = false;
         bool listedOpenPBRPathTrace = false;
         bool listedDlssRrPathTrace = false;
         bool listedMaterialVisualization = false;
+        bool listedGPUDriven = false;
         for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
             listedPathTrace = listedPathTrace || desc.id == "pathtracing-meet-mat";
             listedOpenPBRPathTrace = listedOpenPBRPathTrace || desc.id == "pathtracing-sample";
             listedDlssRrPathTrace = listedDlssRrPathTrace || desc.id == "pathtracing-sample-dlss-rr";
             listedMaterialVisualization = listedMaterialVisualization ||
                 desc.id == "material-visualization-abeautiful-game";
+            listedGPUDriven = listedGPUDriven || desc.id == "gpu-driven-sample";
         }
-        if (!listedPathTrace || !listedOpenPBRPathTrace || !listedDlssRrPathTrace || !listedMaterialVisualization) {
+        if (!listedPathTrace ||
+            !listedOpenPBRPathTrace ||
+            !listedDlssRrPathTrace ||
+            !listedMaterialVisualization ||
+            !listedGPUDriven) {
             return RhiTestResult::fail("built-in Sample list did not contain expected samples");
         }
         return RhiTestResult::pass();

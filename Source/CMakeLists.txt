@@ -223,3 +223,9 @@ add_executable(MetallicPathTracingSample
     ${METALLIC_EDITOR_SOURCES}
 )
 configure_metallic_editor_sample(MetallicPathTracingSample)
+
+add_executable(MetallicGPUDrivenSample
+    Samples/GPUDrivenSampleMain.cpp
+    ${METALLIC_EDITOR_SOURCES}
+)
+configure_metallic_editor_sample(MetallicGPUDrivenSample)
