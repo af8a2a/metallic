@@ -34,6 +34,11 @@ constexpr uint32_t kViewportResizeSettleFrames = 3;
 constexpr const char* kRenderPassDragPayload = "METALLIC_RENDER_PASS_TYPE";
 constexpr uint32_t kSwapchainImageCount = 3;
 constexpr uint32_t kMinSwapchainImageCount = 2;
+constexpr int kNoViewportCameraDragButton = -1;
+constexpr float kKeyboardMoveRate = 2.5f;
+constexpr float kFastCameraMoveMultiplier = 5.0f;
+constexpr float kSlowCameraMoveMultiplier = 0.1f;
+constexpr float kMaxDollyDisplacement = 0.99f;
 constexpr const char* kDefaultRenderSampleId = "pathtracing-sample";
 constexpr const char* kDefaultImGuiIni = R"ini([Window][Viewport]
 Pos=0,28
@@ -270,12 +275,24 @@ void storeVec3Property(render::RenderGraphProperties& object, const char* key, c
     object[key] = {values[0], values[1], values[2]};
 }
 
+void storeVec3Property(render::RenderGraphProperties& object, const char* key, const float3& values)
+{
+    object[key] = {values.x, values.y, values.z};
+}
+
 void readVec3Property(const render::RenderGraphProperties& object, const char* key, float outValues[3])
 {
     const render::RenderGraphProperties& value = object.at(key);
     outValues[0] = value[0].get<float>();
     outValues[1] = value[1].get<float>();
     outValues[2] = value[2].get<float>();
+}
+
+float3 readVec3Property3(const render::RenderGraphProperties& object, const char* key)
+{
+    float values[3] = {};
+    readVec3Property(object, key, values);
+    return float3(values[0], values[1], values[2]);
 }
 
 void cameraDefaultsFromBounds(const scene::Bounds& bounds, float eye[3], float center[3])
@@ -390,6 +407,83 @@ float3 perpendicularTo(const float3& axis)
     return normalizedOr(reference - axis * dot(reference, axis), float3(1.0f, 0.0f, 0.0f));
 }
 
+struct CameraFrame {
+    float3 eye{0.0f};
+    float3 center{0.0f};
+    float3 up{0.0f, 1.0f, 0.0f};
+    float3 forward{0.0f, 0.0f, -1.0f};
+    float3 right{1.0f, 0.0f, 0.0f};
+    float3 viewUp{0.0f, 1.0f, 0.0f};
+    float distance = 1.0f;
+};
+
+struct CameraViewDimensions {
+    float width = 1.0f;
+    float height = 1.0f;
+};
+
+float cameraDefaultOrthoHeight(const render::RenderGraphProperties& camera, float distance)
+{
+    constexpr float kPi = 3.14159265358979323846f;
+    const float fovRadians = std::clamp(
+        propertyFloatOr(camera, "fovDegrees", 60.0f),
+        1.0f,
+        179.0f) * (kPi / 180.0f);
+    return std::max(2.0f * std::max(distance, 0.001f) * std::tan(fovRadians * 0.5f), 0.0001f);
+}
+
+float cameraOrthoHeight(const render::RenderGraphProperties& camera, float distance)
+{
+    return std::max(
+        propertyFloatOr(camera, "orthoHeight", cameraDefaultOrthoHeight(camera, distance)),
+        0.0001f);
+}
+
+CameraFrame cameraFrameFrom(const render::RenderGraphProperties& camera)
+{
+    CameraFrame frame;
+    frame.eye = readVec3Property3(camera, "eye");
+    frame.center = readVec3Property3(camera, "center");
+    frame.up = normalizedOr(readVec3Property3(camera, "up"), float3(0.0f, 1.0f, 0.0f));
+    const float3 view = frame.center - frame.eye;
+    frame.distance = length(view);
+    frame.forward = normalizedOr(view, float3(0.0f, 0.0f, -1.0f));
+    frame.right = normalizedOr(cross(frame.forward, frame.up), perpendicularTo(frame.forward));
+    frame.viewUp = normalizedOr(cross(frame.right, frame.forward), frame.up);
+    return frame;
+}
+
+CameraViewDimensions cameraViewDimensions(
+    const render::RenderGraphProperties& camera,
+    const CameraFrame& frame,
+    float viewportWidth,
+    float viewportHeight)
+{
+    const float aspect = std::max(viewportWidth / std::max(viewportHeight, 1.0f), 0.001f);
+    const std::string projection = camera["projection"].get<std::string>();
+    const float height = projection == "orthographic"
+        ? cameraOrthoHeight(camera, frame.distance)
+        : cameraDefaultOrthoHeight(camera, frame.distance);
+    return CameraViewDimensions{
+        .width = std::max(height * aspect, 0.0001f),
+        .height = height,
+    };
+}
+
+bool translateCamera(render::RenderGraphProperties& camera, const float3& offset)
+{
+    const float amount = length(offset);
+    if (amount <= 0.000001f || !std::isfinite(amount)) {
+        return false;
+    }
+
+    CameraFrame frame = cameraFrameFrom(camera);
+    storeVec3Property(camera, "eye", frame.eye + offset);
+    storeVec3Property(camera, "center", frame.center + offset);
+    storeVec3Property(camera, "up", frame.up);
+    return true;
+}
+
 bool orbitCamera(float deltaX, float deltaY, float width, float height, float eye[3], const float center[3], float up[3])
 {
     if (deltaX == 0.0f && deltaY == 0.0f) {
@@ -479,6 +573,84 @@ bool dollyCamera(float wheel, render::RenderGraphProperties& camera)
     eye[2] = newEye.z;
     storeVec3Property(camera, "eye", eye);
     return true;
+}
+
+bool dragDollyCamera(
+    float deltaX,
+    float deltaY,
+    float width,
+    float height,
+    render::RenderGraphProperties& camera)
+{
+    if (deltaX == 0.0f && deltaY == 0.0f) {
+        return false;
+    }
+
+    const float2 displacement(
+        deltaX / std::max(width, 1.0f),
+        deltaY / std::max(height, 1.0f));
+    const float amount = std::abs(displacement.x) > std::abs(displacement.y)
+        ? displacement.x
+        : -displacement.y;
+    if (amount == 0.0f) {
+        return false;
+    }
+
+    const std::string projection = camera["projection"].get<std::string>();
+    if (projection == "orthographic") {
+        const CameraFrame frame = cameraFrameFrom(camera);
+        const float currentHeight = cameraOrthoHeight(camera, frame.distance);
+        camera["orthoHeight"] = std::max(currentHeight * std::max(1.0f - amount, 0.0001f), 0.0001f);
+        return true;
+    }
+
+    CameraFrame frame = cameraFrameFrom(camera);
+    if (frame.distance <= 0.000001f || !std::isfinite(frame.distance) || amount >= kMaxDollyDisplacement) {
+        return false;
+    }
+
+    const float3 movement = (frame.center - frame.eye) * amount;
+    const float movementLength = length(movement);
+    if (movementLength <= 0.000001f || !std::isfinite(movementLength)) {
+        return false;
+    }
+
+    storeVec3Property(camera, "eye", frame.eye + movement);
+    storeVec3Property(camera, "up", frame.up);
+    return true;
+}
+
+bool panCamera(
+    float deltaX,
+    float deltaY,
+    float width,
+    float height,
+    render::RenderGraphProperties& camera)
+{
+    if (deltaX == 0.0f && deltaY == 0.0f) {
+        return false;
+    }
+
+    const CameraFrame frame = cameraFrameFrom(camera);
+    const CameraViewDimensions view = cameraViewDimensions(camera, frame, width, height);
+    const float2 displacement(
+        deltaX / std::max(width, 1.0f),
+        deltaY / std::max(height, 1.0f));
+    const float3 offset =
+        frame.right * (-displacement.x * view.width) +
+        frame.viewUp * (displacement.y * view.height);
+    return translateCamera(camera, offset);
+}
+
+bool keyboardMoveCamera(float rightAmount, float forwardAmount, render::RenderGraphProperties& camera)
+{
+    if (rightAmount == 0.0f && forwardAmount == 0.0f) {
+        return false;
+    }
+
+    const CameraFrame frame = cameraFrameFrom(camera);
+    const float3 offset = frame.right * rightAmount + frame.forward * forwardAmount;
+    return translateCamera(camera, offset);
 }
 
 void copyToBuffer(const std::string& value, char* buffer, size_t bufferSize)
@@ -2379,7 +2551,7 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
 {
     render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
     if (node == nullptr) {
-        viewportCameraDragging_ = false;
+        viewportCameraDragButton_ = kNoViewportCameraDragButton;
         return;
     }
 
@@ -2387,11 +2559,19 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
     const ImVec2 size(max.x - min.x, max.y - min.y);
     ImGuiIO& io = ImGui::GetIO();
 
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
-        viewportCameraDragging_ = true;
+    if (hovered) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            viewportCameraDragButton_ = ImGuiMouseButton_Left;
+        } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            viewportCameraDragButton_ = ImGuiMouseButton_Right;
+        } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
+            viewportCameraDragButton_ = ImGuiMouseButton_Middle;
+        }
     }
-    if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
-        viewportCameraDragging_ = false;
+
+    if (viewportCameraDragButton_ != kNoViewportCameraDragButton &&
+        !ImGui::IsMouseDown(viewportCameraDragButton_)) {
+        viewportCameraDragButton_ = kNoViewportCameraDragButton;
     }
 
     render::RenderGraphProperties properties = effectiveNodeProperties(*node);
@@ -2403,19 +2583,59 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
         changed = dollyCamera(io.MouseWheel, camera) || changed;
     }
 
-    if (viewportCameraDragging_) {
+    if (hovered && !io.WantTextInput) {
+        const bool alt = ImGui::IsKeyDown(ImGuiKey_LeftAlt) || ImGui::IsKeyDown(ImGuiKey_RightAlt);
+        if (!alt) {
+            const bool shift = ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
+            const bool ctrl = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
+            float speedMultiplier = 1.0f;
+            if (shift) {
+                speedMultiplier *= kFastCameraMoveMultiplier;
+            }
+            if (ctrl) {
+                speedMultiplier *= kSlowCameraMoveMultiplier;
+            }
+
+            const CameraFrame frame = cameraFrameFrom(camera);
+            const float baseSpeed = std::max(frame.distance, 0.1f) * kKeyboardMoveRate * speedMultiplier;
+            const float step = baseSpeed * std::max(io.DeltaTime, 0.0f);
+            float forwardAmount = 0.0f;
+            float rightAmount = 0.0f;
+            if (ImGui::IsKeyDown(ImGuiKey_W)) {
+                forwardAmount += step;
+            }
+            if (ImGui::IsKeyDown(ImGuiKey_S)) {
+                forwardAmount -= step;
+            }
+            if (ImGui::IsKeyDown(ImGuiKey_D)) {
+                rightAmount += step;
+            }
+            if (ImGui::IsKeyDown(ImGuiKey_A)) {
+                rightAmount -= step;
+            }
+            changed = keyboardMoveCamera(rightAmount, forwardAmount, camera) || changed;
+        }
+    }
+
+    if (viewportCameraDragButton_ != kNoViewportCameraDragButton) {
         const ImVec2 delta = io.MouseDelta;
         if (delta.x != 0.0f || delta.y != 0.0f) {
-            float eye[3] = {};
-            float center[3] = {};
-            float up[3] = {};
-            readVec3Property(camera, "eye", eye);
-            readVec3Property(camera, "center", center);
-            readVec3Property(camera, "up", up);
-            if (orbitCamera(delta.x, delta.y, size.x, size.y, eye, center, up)) {
-                storeVec3Property(camera, "eye", eye);
-                storeVec3Property(camera, "up", up);
-                changed = true;
+            if (viewportCameraDragButton_ == ImGuiMouseButton_Left) {
+                float eye[3] = {};
+                float center[3] = {};
+                float up[3] = {};
+                readVec3Property(camera, "eye", eye);
+                readVec3Property(camera, "center", center);
+                readVec3Property(camera, "up", up);
+                if (orbitCamera(delta.x, delta.y, size.x, size.y, eye, center, up)) {
+                    storeVec3Property(camera, "eye", eye);
+                    storeVec3Property(camera, "up", up);
+                    changed = true;
+                }
+            } else if (viewportCameraDragButton_ == ImGuiMouseButton_Right) {
+                changed = dragDollyCamera(delta.x, delta.y, size.x, size.y, camera) || changed;
+            } else if (viewportCameraDragButton_ == ImGuiMouseButton_Middle) {
+                changed = panCamera(delta.x, delta.y, size.x, size.y, camera) || changed;
             }
         }
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);

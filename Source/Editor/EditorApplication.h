@@ -118,7 +118,7 @@ private:
     bool profilerOpen_ = true;
     bool nvmlMonitorOpen_ = true;
     bool graphEditorPositionsInitialized_ = false;
-    bool viewportCameraDragging_ = false;
+    int viewportCameraDragButton_ = -1;
     float mainScale_ = 1.0f;
     float clearColor_[4] = {0.07f, 0.08f, 0.10f, 1.0f};
     int selectedGraphNodeId_ = -1;
