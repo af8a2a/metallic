@@ -616,6 +616,29 @@ float4 loadMaterialTexture(
         mipLevel);
 }
 
+float4 loadMaterialTextureForMaterial(
+    PathTraceTextureInfo textureInfo,
+    float2 uv,
+    float4 fallback,
+    ScenePathTracePush push,
+    RayCone rayCone,
+    HitInfo hit,
+    float3 rayDirection,
+    bool deterministicMip0,
+    inout uint seed)
+{
+    if (deterministicMip0) {
+        return loadMaterialTextureMip0(textureInfo, uv, fallback, push);
+    }
+    return loadMaterialTexture(textureInfo, uv, fallback, push, rayCone, hit, rayDirection, seed);
+}
+
+bool materialNeedsDeterministicTextureMip0(PathTraceMaterial material)
+{
+    // Specular transmission magnifies stochastic/material-unaware mips into hard surface bands.
+    return material.glassParams.x > 0.01;
+}
+
 float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
 {
     PathTraceInstance instance = gInstances[instanceIndex];
@@ -948,7 +971,8 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
 
         rayCone = propagateRayCone(rayCone, hit.t);
         PathTraceMaterial material = gMaterials[hit.materialIndex];
-        float4 baseColorSample = loadMaterialTexture(
+        bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
+        float4 baseColorSample = loadMaterialTextureForMaterial(
             material.baseColorTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
@@ -956,8 +980,9 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             rayCone,
             hit,
             ray.direction,
+            deterministicGlassTextures,
             seed);
-        float4 metallicRoughnessSample = loadMaterialTexture(
+        float4 metallicRoughnessSample = loadMaterialTextureForMaterial(
             material.metallicRoughnessTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
@@ -965,8 +990,9 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             rayCone,
             hit,
             ray.direction,
+            deterministicGlassTextures,
             seed);
-        float4 emissiveSample = loadMaterialTexture(
+        float4 emissiveSample = loadMaterialTextureForMaterial(
             material.emissiveTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
@@ -974,8 +1000,9 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             rayCone,
             hit,
             ray.direction,
+            deterministicGlassTextures,
             seed);
-        float4 normalSample = loadMaterialTexture(
+        float4 normalSample = loadMaterialTextureForMaterial(
             material.normalTexture,
             hit.texcoord,
             float4(0.5, 0.5, 1.0, 1.0),
@@ -983,8 +1010,9 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             rayCone,
             hit,
             ray.direction,
+            deterministicGlassTextures,
             seed);
-        float4 occlusionSample = loadMaterialTexture(
+        float4 occlusionSample = loadMaterialTextureForMaterial(
             material.occlusionTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
@@ -992,8 +1020,9 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             rayCone,
             hit,
             ray.direction,
+            deterministicGlassTextures,
             seed);
-        float4 transmissionSample = loadMaterialTexture(
+        float4 transmissionSample = loadMaterialTextureForMaterial(
             material.transmissionTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
@@ -1001,8 +1030,9 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             rayCone,
             hit,
             ray.direction,
+            deterministicGlassTextures,
             seed);
-        float4 thicknessSample = loadMaterialTexture(
+        float4 thicknessSample = loadMaterialTextureForMaterial(
             material.thicknessTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
@@ -1010,8 +1040,9 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             rayCone,
             hit,
             ray.direction,
+            deterministicGlassTextures,
             seed);
-        float4 diffuseTransmissionSample = loadMaterialTexture(
+        float4 diffuseTransmissionSample = loadMaterialTextureForMaterial(
             material.diffuseTransmissionTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
@@ -1019,8 +1050,9 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             rayCone,
             hit,
             ray.direction,
+            deterministicGlassTextures,
             seed);
-        float4 diffuseTransmissionColorSample = loadMaterialTexture(
+        float4 diffuseTransmissionColorSample = loadMaterialTextureForMaterial(
             material.diffuseTransmissionColorTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
@@ -1028,6 +1060,7 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             rayCone,
             hit,
             ray.direction,
+            deterministicGlassTextures,
             seed);
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
         hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);

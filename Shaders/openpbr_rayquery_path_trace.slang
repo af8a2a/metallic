@@ -222,7 +222,8 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
     float3 rayDirection,
     inout uint seed)
 {
-    float4 baseColorSample = loadMaterialTexture(
+    bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
+    float4 baseColorSample = loadMaterialTextureForMaterial(
         material.baseColorTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -230,8 +231,9 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         rayCone,
         hit,
         rayDirection,
+        deterministicGlassTextures,
         seed);
-    float4 metallicRoughnessSample = loadMaterialTexture(
+    float4 metallicRoughnessSample = loadMaterialTextureForMaterial(
         material.metallicRoughnessTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -239,8 +241,9 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         rayCone,
         hit,
         rayDirection,
+        deterministicGlassTextures,
         seed);
-    float4 emissiveSample = loadMaterialTexture(
+    float4 emissiveSample = loadMaterialTextureForMaterial(
         material.emissiveTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -248,8 +251,9 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         rayCone,
         hit,
         rayDirection,
+        deterministicGlassTextures,
         seed);
-    float4 occlusionSample = loadMaterialTexture(
+    float4 occlusionSample = loadMaterialTextureForMaterial(
         material.occlusionTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -257,8 +261,9 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         rayCone,
         hit,
         rayDirection,
+        deterministicGlassTextures,
         seed);
-    float4 transmissionSample = loadMaterialTexture(
+    float4 transmissionSample = loadMaterialTextureForMaterial(
         material.transmissionTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -266,6 +271,7 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         rayCone,
         hit,
         rayDirection,
+        deterministicGlassTextures,
         seed);
     float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
     float metallic = saturate(material.params.x * metallicRoughnessSample.b);
@@ -343,7 +349,7 @@ float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push, inout
         }
 
         PathTraceMaterial material = gMaterials[hit.materialIndex];
-        float4 normalSample = loadMaterialTexture(
+        float4 normalSample = loadMaterialTextureForMaterial(
             material.normalTexture,
             hit.texcoord,
             float4(0.5, 0.5, 1.0, 1.0),
@@ -351,6 +357,7 @@ float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push, inout
             rayCone,
             hit,
             ray.direction,
+            materialNeedsDeterministicTextureMip0(material),
             seed);
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
 
