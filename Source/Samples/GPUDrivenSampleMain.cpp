@@ -6,13 +6,15 @@
 namespace {
 
 constexpr const char* kGPUDrivenSampleId = "gpu-driven-sample";
+constexpr const char* kGPUDrivenRtasVisualizationSampleId = "gpu-driven-rtas-visualization";
 
 void printUsage()
 {
     std::cout
         << "MetallicGPUDrivenSample options:\n"
         << "  --smoke-test                 Render one frame and exit\n"
-        << "  --wait-for-graphics-debugger Wait before Vulkan initialization\n";
+        << "  --wait-for-graphics-debugger Wait before Vulkan initialization\n"
+        << "  --rtas-visualization         Load the RTAS visualization variant\n";
 }
 
 } // namespace
@@ -21,6 +23,7 @@ int main(int argc, char** argv)
 {
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
+    const char* sampleId = kGPUDrivenSampleId;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--help" || argument == "-h") {
@@ -35,6 +38,10 @@ int main(int argc, char** argv)
             waitForGraphicsDebugger = true;
             continue;
         }
+        if (argument == "--rtas-visualization") {
+            sampleId = kGPUDrivenRtasVisualizationSampleId;
+            continue;
+        }
 
         std::cerr << "Unknown argument: " << argument << '\n';
         printUsage();
@@ -42,5 +49,5 @@ int main(int argc, char** argv)
     }
 
     metallic::EditorApplication app;
-    return app.run(smokeTest, waitForGraphicsDebugger, kGPUDrivenSampleId);
+    return app.run(smokeTest, waitForGraphicsDebugger, sampleId);
 }

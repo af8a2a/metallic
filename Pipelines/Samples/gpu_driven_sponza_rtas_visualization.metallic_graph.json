@@ -1,0 +1,31 @@
+{
+    "edges": [],
+    "name": "GPUDrivenSampleRTASVisualization",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "GPUDriven",
+            "position": {
+                "x": 335.0,
+                "y": 281.0
+            },
+            "properties": {
+                "environment": {
+                    "enabled": true,
+                    "intensity": 1.0,
+                    "path": "Asset/ABeautifulGame/environment.hdr",
+                    "rotationDegrees": 0.0,
+                    "visible": true
+                },
+                "granularity": "instance",
+                "mode": "meshlet",
+                "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"
+            },
+            "type": "SceneRayQueryVisualizationPass"
+        }
+    ],
+    "outputs": [
+        "GPUDriven.color"
+    ],
+    "version": 1
+}

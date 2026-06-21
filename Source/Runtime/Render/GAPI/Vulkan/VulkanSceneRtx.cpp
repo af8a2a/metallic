@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <string>
 #include <utility>
@@ -42,6 +43,35 @@ struct PrimitiveInput {
     bool opaque = true;
 };
 
+struct ClusterPrimitiveRange {
+    uint32_t firstCluster = 0;
+    uint32_t clusterCount = 0;
+};
+
+struct ClusterBuildInput {
+    uint32_t renderPrimitiveIndex = 0;
+    uint32_t firstVertex = 0;
+    uint32_t vertexCount = 0;
+    uint32_t firstIndex = 0;
+    uint32_t triangleCount = 0;
+    bool opaque = true;
+};
+
+struct ClusterBlasInstanceInput {
+    uint32_t renderPrimitiveIndex = 0;
+    ClusterPrimitiveRange clusters;
+    float4x4 worldMatrix = float4x4::Identity();
+};
+
+struct ClusterSceneInputs {
+    std::vector<RtxVertex> vertices;
+    std::vector<uint8_t> indices;
+    std::vector<ClusterBuildInput> clusters;
+    std::vector<ClusterBlasInstanceInput> instances;
+    std::vector<ClusterPrimitiveRange> primitiveSelectedRanges;
+    uint64_t triangleCount = 0;
+};
+
 struct BuiltBlas {
     std::unique_ptr<Buffer> storage;
     VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
@@ -57,6 +87,14 @@ uint64_t alignUp(uint64_t value, uint64_t alignment)
         return value;
     }
     return (value + alignment - 1) & ~(alignment - 1);
+}
+
+uint64_t checkedByteSize(uint64_t count, uint64_t stride)
+{
+    if (count == 0 || stride == 0 || count > std::numeric_limits<uint64_t>::max() / stride) {
+        return 0;
+    }
+    return count * stride;
 }
 
 std::string resultMessage(const char* action, Result result)
@@ -117,6 +155,28 @@ void accelerationStructureBarrier(VkCommandBuffer commandBuffer)
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
 }
 
+void memoryBarrier(
+    VkCommandBuffer commandBuffer,
+    VkPipelineStageFlags2 srcStage,
+    VkAccessFlags2 srcAccess,
+    VkPipelineStageFlags2 dstStage,
+    VkAccessFlags2 dstAccess)
+{
+    VkMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = srcStage,
+        .srcAccessMask = srcAccess,
+        .dstStageMask = dstStage,
+        .dstAccessMask = dstAccess,
+    };
+    VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
 Result createBuffer(
     Device& device,
     const char* label,
@@ -155,6 +215,33 @@ Result uploadVector(Buffer& buffer, const std::vector<T>& values, const char* la
     const uint64_t byteSize = static_cast<uint64_t>(values.size() * sizeof(T));
     std::memcpy(mapped, values.data(), static_cast<size_t>(byteSize));
     buffer.flush(0, byteSize);
+    buffer.unmap();
+    return {};
+}
+
+template <typename T>
+Result readbackVector(Buffer& buffer, size_t count, const char* label, std::vector<T>& outValues, std::string& log)
+{
+    outValues.clear();
+    if (count == 0) {
+        return {};
+    }
+
+    const uint64_t byteSize = checkedByteSize(count, sizeof(T));
+    if (byteSize == 0 || byteSize > buffer.desc().size) {
+        log = std::string(label) + " readback size is invalid";
+        return makeError(Error::InvalidArgument);
+    }
+
+    buffer.invalidate(0, byteSize);
+    void* mapped = buffer.map();
+    if (mapped == nullptr) {
+        log = std::string(label) + " map failed";
+        return makeError(Error::Failure);
+    }
+
+    outValues.resize(count);
+    std::memcpy(outValues.data(), mapped, static_cast<size_t>(byteSize));
     buffer.unmap();
     return {};
 }
@@ -278,6 +365,111 @@ VkDeviceSize scratchAlignment(VkPhysicalDevice physicalDevice)
         : kDefaultScratchAlignment;
 }
 
+VkDeviceSize clusterScratchAlignment(VkPhysicalDevice physicalDevice)
+{
+#ifdef VK_NV_cluster_acceleration_structure
+    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV clusterProperties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
+    };
+    VkPhysicalDeviceProperties2 properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &clusterProperties,
+    };
+    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+    return clusterProperties.clusterScratchByteAlignment != 0
+        ? clusterProperties.clusterScratchByteAlignment
+        : kDefaultScratchAlignment;
+#else
+    (void)physicalDevice;
+    return kDefaultScratchAlignment;
+#endif
+}
+
+VkDeviceSize clusterStorageAlignment(VkPhysicalDevice physicalDevice)
+{
+#ifdef VK_NV_cluster_acceleration_structure
+    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV clusterProperties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
+    };
+    VkPhysicalDeviceProperties2 properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &clusterProperties,
+    };
+    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+    return clusterProperties.clusterByteAlignment != 0
+        ? clusterProperties.clusterByteAlignment
+        : 1;
+#else
+    (void)physicalDevice;
+    return 1;
+#endif
+}
+
+Result recordSubmitWait(
+    Device& device,
+    Queue& queue,
+    CommandPool& commandPool,
+    const char* label,
+    const std::function<void(VkCommandBuffer)>& record,
+    std::string& log)
+{
+    std::unique_ptr<CommandBuffer> commandBuffer;
+    Result result = commandPool.createCommandBuffer(commandBuffer);
+    if (!result) {
+        const std::string action = std::string("createCommandBuffer(") + label + ")";
+        log = resultMessage(action.c_str(), result);
+        return result;
+    }
+
+    std::unique_ptr<Fence> fence;
+    result = device.createFence(false, fence);
+    if (!result) {
+        const std::string action = std::string("createFence(") + label + ")";
+        log = resultMessage(action.c_str(), result);
+        return result;
+    }
+
+    result = commandBuffer->begin();
+    if (!result) {
+        const std::string action = std::string("CommandBuffer::begin(") + label + ")";
+        log = resultMessage(action.c_str(), result);
+        return result;
+    }
+
+    VkCommandBuffer vkCommandBuffer = nativeCommandBuffer(*commandBuffer);
+    if (vkCommandBuffer == VK_NULL_HANDLE) {
+        log = std::string(label) + " command buffer is unavailable";
+        return makeError(Error::Failure);
+    }
+    record(vkCommandBuffer);
+
+    result = commandBuffer->end();
+    if (!result) {
+        const std::string action = std::string("CommandBuffer::end(") + label + ")";
+        log = resultMessage(action.c_str(), result);
+        return result;
+    }
+
+    CommandBuffer* submittedCommandBuffers[] = {commandBuffer.get()};
+    result = queue.submit(QueueSubmitDesc{
+        .commandBuffers = submittedCommandBuffers,
+        .commandBufferCount = 1,
+        .signalFence = fence.get(),
+    });
+    if (!result) {
+        const std::string action = std::string("Queue::submit(") + label + ")";
+        log = resultMessage(action.c_str(), result);
+        return result;
+    }
+
+    result = fence->wait();
+    if (!result) {
+        const std::string action = std::string("Fence::wait(") + label + ")";
+        log = resultMessage(action.c_str(), result);
+    }
+    return result;
+}
+
 Result createAccelerationStructure(
     Device& device,
     VkDevice vkDevice,
@@ -323,6 +515,169 @@ Result createAccelerationStructure(
     }
 
     return {};
+}
+
+bool appendClusterInput(
+    const scene::RenderPrimitive& primitive,
+    uint32_t renderPrimitiveIndex,
+    const scene::MeshletCluster& cluster,
+    const std::vector<uint32_t>& meshletVertices,
+    const std::vector<uint8_t>& meshletTriangles,
+    bool opaque,
+    ClusterSceneInputs& outInputs)
+{
+    if (cluster.vertexCount == 0 ||
+        cluster.triangleCount == 0 ||
+        cluster.vertexOffset > meshletVertices.size() ||
+        cluster.triangleOffset > meshletTriangles.size() ||
+        static_cast<size_t>(cluster.vertexOffset) + cluster.vertexCount > meshletVertices.size() ||
+        static_cast<size_t>(cluster.triangleOffset) + static_cast<size_t>(cluster.triangleCount) * 3u >
+            meshletTriangles.size() ||
+        outInputs.vertices.size() + cluster.vertexCount > std::numeric_limits<uint32_t>::max() ||
+        outInputs.indices.size() + static_cast<size_t>(cluster.triangleCount) * 3u >
+            std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
+
+    const uint32_t firstVertex = static_cast<uint32_t>(outInputs.vertices.size());
+    const uint32_t firstIndex = static_cast<uint32_t>(outInputs.indices.size());
+    for (uint32_t vertexIndex = 0; vertexIndex < cluster.vertexCount; ++vertexIndex) {
+        const uint32_t sourceVertexIndex = meshletVertices[static_cast<size_t>(cluster.vertexOffset) + vertexIndex];
+        if (sourceVertexIndex >= primitive.positions.size()) {
+            return false;
+        }
+        const float3& position = primitive.positions[sourceVertexIndex];
+        outInputs.vertices.push_back(RtxVertex{position.x, position.y, position.z});
+    }
+
+    for (uint32_t index = 0; index < cluster.triangleCount * 3u; ++index) {
+        const uint8_t localVertexIndex = meshletTriangles[static_cast<size_t>(cluster.triangleOffset) + index];
+        if (localVertexIndex >= cluster.vertexCount) {
+            return false;
+        }
+        outInputs.indices.push_back(localVertexIndex);
+    }
+
+    outInputs.clusters.push_back(ClusterBuildInput{
+        .renderPrimitiveIndex = renderPrimitiveIndex,
+        .firstVertex = firstVertex,
+        .vertexCount = cluster.vertexCount,
+        .firstIndex = firstIndex,
+        .triangleCount = cluster.triangleCount,
+        .opaque = opaque,
+    });
+    outInputs.triangleCount += cluster.triangleCount;
+    return true;
+}
+
+ClusterPrimitiveRange selectLowestLodRange(
+    uint32_t firstPrimitiveCluster,
+    const scene::RenderPrimitive& primitive,
+    bool usingLodClusters)
+{
+    if (!usingLodClusters) {
+        return ClusterPrimitiveRange{
+            .firstCluster = firstPrimitiveCluster,
+            .clusterCount = static_cast<uint32_t>(primitive.meshletClusters.size()),
+        };
+    }
+
+    for (size_t reverseIndex = primitive.meshletLodLevels.size(); reverseIndex > 0; --reverseIndex) {
+        const scene::MeshletLodLevel& level = primitive.meshletLodLevels[reverseIndex - 1u];
+        if (level.clusterCount != 0) {
+            return ClusterPrimitiveRange{
+                .firstCluster = firstPrimitiveCluster + level.clusterOffset,
+                .clusterCount = level.clusterCount,
+            };
+        }
+    }
+    return ClusterPrimitiveRange{
+        .firstCluster = firstPrimitiveCluster,
+        .clusterCount = static_cast<uint32_t>(primitive.meshletLodClusters.size()),
+    };
+}
+
+bool buildClusterSceneInputs(const scene::Scene& scene, ClusterSceneInputs& outInputs, std::string& log)
+{
+    outInputs = {};
+    const std::vector<scene::RenderPrimitive>& renderPrimitives = scene.renderPrimitives();
+    outInputs.primitiveSelectedRanges.resize(renderPrimitives.size());
+
+    for (uint32_t primitiveIndex = 0; primitiveIndex < renderPrimitives.size(); ++primitiveIndex) {
+        const scene::RenderPrimitive& primitive = renderPrimitives[primitiveIndex];
+        if (primitive.mode != 4 || primitive.positions.empty()) {
+            continue;
+        }
+
+        const bool usingLodClusters =
+            !primitive.meshletLodClusters.empty() &&
+            !primitive.meshletLodVertices.empty() &&
+            !primitive.meshletLodTriangles.empty();
+        const std::vector<scene::MeshletCluster>& clusters = usingLodClusters
+            ? primitive.meshletLodClusters
+            : primitive.meshletClusters;
+        const std::vector<uint32_t>& vertices = usingLodClusters
+            ? primitive.meshletLodVertices
+            : primitive.meshletVertices;
+        const std::vector<uint8_t>& triangles = usingLodClusters
+            ? primitive.meshletLodTriangles
+            : primitive.meshletTriangles;
+        if (clusters.empty() || vertices.empty() || triangles.empty()) {
+            continue;
+        }
+
+        const uint32_t firstPrimitiveCluster = static_cast<uint32_t>(outInputs.clusters.size());
+        const bool opaque = !primitiveUsesAlphaMask(scene, primitive);
+        for (const scene::MeshletCluster& cluster : clusters) {
+            if (!appendClusterInput(
+                    primitive,
+                    primitiveIndex,
+                    cluster,
+                    vertices,
+                    triangles,
+                    opaque,
+                    outInputs)) {
+                log = "Scene meshlet cluster data is invalid for CLAS build.";
+                return false;
+            }
+        }
+
+        const uint32_t primitiveClusterCount =
+            static_cast<uint32_t>(outInputs.clusters.size()) - firstPrimitiveCluster;
+        if (primitiveClusterCount != 0) {
+            outInputs.primitiveSelectedRanges[primitiveIndex] =
+                selectLowestLodRange(firstPrimitiveCluster, primitive, usingLodClusters);
+        }
+    }
+
+    for (const scene::RenderNode& renderNode : scene.renderNodes()) {
+        if (!renderNode.visible ||
+            renderNode.renderPrimitiveIndex < 0 ||
+            static_cast<size_t>(renderNode.renderPrimitiveIndex) >= outInputs.primitiveSelectedRanges.size()) {
+            continue;
+        }
+
+        const ClusterPrimitiveRange& selectedRange =
+            outInputs.primitiveSelectedRanges[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
+        if (selectedRange.clusterCount == 0) {
+            continue;
+        }
+        outInputs.instances.push_back(ClusterBlasInstanceInput{
+            .renderPrimitiveIndex = static_cast<uint32_t>(renderNode.renderPrimitiveIndex),
+            .clusters = selectedRange,
+            .worldMatrix = renderNode.worldMatrix,
+        });
+    }
+
+    if (outInputs.clusters.empty() || outInputs.vertices.empty() || outInputs.indices.empty()) {
+        log = "Scene contains no meshlet clusters suitable for CLAS build.";
+        return false;
+    }
+    if (outInputs.instances.empty()) {
+        log = "Scene contains no visible meshlet cluster instances.";
+        return false;
+    }
+    return true;
 }
 
 VkDescriptorType descriptorTypeFor(SceneRayQueryBindingKind kind)
@@ -849,6 +1204,882 @@ bool SceneRtxBuilder::valid() const
 const SceneRtxStats& SceneRtxBuilder::stats() const
 {
     static const SceneRtxStats kEmptyStats;
+    return impl_ != nullptr ? impl_->stats : kEmptyStats;
+}
+
+struct SceneClusterRtxBuilder::Impl {
+    VkDevice device = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
+    VkDeviceAddress tlasAddress = 0;
+    SceneClusterRtxStats stats;
+    std::unique_ptr<Buffer> clusterVertexBuffer;
+    std::unique_ptr<Buffer> clusterIndexBuffer;
+    std::unique_ptr<Buffer> clasBuildInfoBuffer;
+    std::unique_ptr<Buffer> clasSizeBuffer;
+    std::unique_ptr<Buffer> clasSizeReadbackBuffer;
+    std::unique_ptr<Buffer> clasAddressBuffer;
+    std::unique_ptr<Buffer> clasStorageBuffer;
+    std::unique_ptr<Buffer> clusterBlasBuildInfoBuffer;
+    std::unique_ptr<Buffer> clusterBlasStorageBuffer;
+    std::unique_ptr<Buffer> clusterBlasAddressBuffer;
+    std::unique_ptr<Buffer> clusterBlasAddressReadbackBuffer;
+    std::unique_ptr<Buffer> clusterBlasSizeBuffer;
+    std::unique_ptr<Buffer> instanceBuffer;
+    std::unique_ptr<Buffer> scratchBuffer;
+    std::unique_ptr<Buffer> tlasStorage;
+
+    ~Impl()
+    {
+        destroy();
+    }
+
+    void destroy()
+    {
+        if (device != VK_NULL_HANDLE && tlas != VK_NULL_HANDLE) {
+            volkLoadDevice(device);
+            vkDestroyAccelerationStructureKHR(device, tlas, nullptr);
+            tlas = VK_NULL_HANDLE;
+        }
+
+        tlasAddress = 0;
+        stats = {};
+        tlasStorage.reset();
+        scratchBuffer.reset();
+        instanceBuffer.reset();
+        clusterBlasSizeBuffer.reset();
+        clusterBlasAddressReadbackBuffer.reset();
+        clusterBlasAddressBuffer.reset();
+        clusterBlasStorageBuffer.reset();
+        clusterBlasBuildInfoBuffer.reset();
+        clasStorageBuffer.reset();
+        clasAddressBuffer.reset();
+        clasSizeReadbackBuffer.reset();
+        clasSizeBuffer.reset();
+        clasBuildInfoBuffer.reset();
+        clusterIndexBuffer.reset();
+        clusterVertexBuffer.reset();
+        device = VK_NULL_HANDLE;
+    }
+};
+
+SceneClusterRtxBuilder::SceneClusterRtxBuilder()
+    : impl_(std::make_unique<Impl>())
+{
+}
+
+SceneClusterRtxBuilder::~SceneClusterRtxBuilder() = default;
+SceneClusterRtxBuilder::SceneClusterRtxBuilder(SceneClusterRtxBuilder&&) noexcept = default;
+SceneClusterRtxBuilder& SceneClusterRtxBuilder::operator=(SceneClusterRtxBuilder&&) noexcept = default;
+
+Result SceneClusterRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log)
+{
+    log.clear();
+#ifndef VK_NV_cluster_acceleration_structure
+    (void)device;
+    (void)queue;
+    (void)scene;
+    log = "VK_NV_cluster_acceleration_structure is unavailable in this Vulkan header.";
+    return makeError(Error::Unsupported);
+#else
+    if (!scene.valid()) {
+        log = "Scene is not loaded.";
+        return makeError(Error::InvalidArgument);
+    }
+    if (!device.capabilities().clusterAccelerationStructure) {
+        log = "Vulkan cluster acceleration structure capability is unavailable.";
+        return makeError(Error::Unsupported);
+    }
+
+    NativeDevice nativeDeviceInfo = nativeDevice(device);
+    NativeQueue nativeQueueInfo = nativeQueue(queue);
+    if (nativeDeviceInfo.device == VK_NULL_HANDLE || nativeQueueInfo.queue == VK_NULL_HANDLE) {
+        log = "Vulkan native device or queue is unavailable.";
+        return makeError(Error::InvalidArgument);
+    }
+    volkLoadDevice(nativeDeviceInfo.device);
+    if (vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr ||
+        vkGetClusterAccelerationStructureBuildSizesNV == nullptr) {
+        log = "VK_NV_cluster_acceleration_structure entry points are unavailable.";
+        return makeError(Error::Unsupported);
+    }
+
+    clear();
+    impl_->device = nativeDeviceInfo.device;
+
+    ClusterSceneInputs sceneInputs;
+    if (!buildClusterSceneInputs(scene, sceneInputs, log)) {
+        clear();
+        return makeError(Error::Unsupported);
+    }
+
+    if (sceneInputs.clusters.size() > std::numeric_limits<uint32_t>::max() ||
+        sceneInputs.vertices.size() > std::numeric_limits<uint32_t>::max() ||
+        sceneInputs.triangleCount > std::numeric_limits<uint32_t>::max() ||
+        sceneInputs.instances.size() > std::numeric_limits<uint32_t>::max()) {
+        log = "Scene meshlet CLAS build inputs exceed Vulkan 32-bit count limits.";
+        clear();
+        return makeError(Error::Unsupported);
+    }
+
+    uint32_t maxClusterTriangleCount = 0;
+    uint32_t maxClusterVertexCount = 0;
+    uint32_t maxClusterCountPerBlas = 0;
+    uint64_t selectedClusterReferenceCount = 0;
+    for (const ClusterBuildInput& cluster : sceneInputs.clusters) {
+        maxClusterTriangleCount = std::max(maxClusterTriangleCount, cluster.triangleCount);
+        maxClusterVertexCount = std::max(maxClusterVertexCount, cluster.vertexCount);
+    }
+    for (const ClusterBlasInstanceInput& instance : sceneInputs.instances) {
+        maxClusterCountPerBlas = std::max(maxClusterCountPerBlas, instance.clusters.clusterCount);
+        selectedClusterReferenceCount += instance.clusters.clusterCount;
+    }
+    if (maxClusterTriangleCount == 0 ||
+        maxClusterVertexCount == 0 ||
+        maxClusterCountPerBlas == 0 ||
+        selectedClusterReferenceCount == 0 ||
+        selectedClusterReferenceCount > std::numeric_limits<uint32_t>::max()) {
+        log = "Scene meshlet CLAS build produced empty cluster ranges.";
+        clear();
+        return makeError(Error::Unsupported);
+    }
+
+    Result result = createBuffer(
+        device,
+        "createBuffer(CLAS vertices)",
+        checkedByteSize(sceneInputs.vertices.size(), sizeof(RtxVertex)),
+        BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::HostUpload,
+        impl_->clusterVertexBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->clusterVertexBuffer, sceneInputs.vertices, "CLAS vertices", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    result = createBuffer(
+        device,
+        "createBuffer(CLAS indices)",
+        checkedByteSize(sceneInputs.indices.size(), sizeof(uint8_t)),
+        BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::HostUpload,
+        impl_->clusterIndexBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->clusterIndexBuffer, sceneInputs.indices, "CLAS indices", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    const NativeBuffer nativeVertexBuffer = nativeBuffer(*impl_->clusterVertexBuffer);
+    const NativeBuffer nativeIndexBuffer = nativeBuffer(*impl_->clusterIndexBuffer);
+    if (nativeVertexBuffer.address == 0 || nativeIndexBuffer.address == 0) {
+        log = "CLAS geometry buffers do not have device addresses.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    std::vector<VkClusterAccelerationStructureBuildTriangleClusterInfoNV> clasBuildInfos;
+    clasBuildInfos.reserve(sceneInputs.clusters.size());
+    for (uint32_t clusterIndex = 0; clusterIndex < sceneInputs.clusters.size(); ++clusterIndex) {
+        const ClusterBuildInput& cluster = sceneInputs.clusters[clusterIndex];
+        VkClusterAccelerationStructureBuildTriangleClusterInfoNV buildInfo{};
+        buildInfo.clusterID = clusterIndex;
+        buildInfo.triangleCount = cluster.triangleCount;
+        buildInfo.vertexCount = cluster.vertexCount;
+        buildInfo.indexType = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
+        buildInfo.indexBufferStride = 1;
+        buildInfo.vertexBufferStride = sizeof(RtxVertex);
+        buildInfo.indexBuffer =
+            nativeIndexBuffer.address + static_cast<VkDeviceAddress>(cluster.firstIndex) * sizeof(uint8_t);
+        buildInfo.vertexBuffer =
+            nativeVertexBuffer.address + static_cast<VkDeviceAddress>(cluster.firstVertex) * sizeof(RtxVertex);
+        buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags =
+            cluster.opaque ? VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV : 0;
+        clasBuildInfos.push_back(buildInfo);
+    }
+
+    result = createBuffer(
+        device,
+        "createBuffer(CLAS build infos)",
+        checkedByteSize(clasBuildInfos.size(), sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV)),
+        BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::HostUpload,
+        impl_->clasBuildInfoBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->clasBuildInfoBuffer, clasBuildInfos, "CLAS build infos", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    const NativeBuffer nativeClasBuildInfoBuffer = nativeBuffer(*impl_->clasBuildInfoBuffer);
+    if (nativeClasBuildInfoBuffer.address == 0) {
+        log = "CLAS build info buffer does not have a device address.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    ClusterAccelerationStructureBuildSizes clasSizes;
+    result = queryClusterAccelerationStructureTriangleBuildSizes(
+        device,
+        ClusterAccelerationStructureTriangleBuildSizesDesc{
+            .flags = kBuildFlags,
+            .maxClusterTriangleCount = maxClusterTriangleCount,
+            .maxClusterVertexCount = maxClusterVertexCount,
+            .maxClusterUniqueGeometryCount = 1,
+            .maxGeometryIndexValue = 0,
+            .minPositionTruncateBitCount = 0,
+            .maxTotalTriangleCount = static_cast<uint32_t>(sceneInputs.triangleCount),
+            .maxTotalVertexCount = static_cast<uint32_t>(sceneInputs.vertices.size()),
+            .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
+            .maxAccelerationStructureCount = static_cast<uint32_t>(sceneInputs.clusters.size()),
+        },
+        clasSizes);
+    if (!result) {
+        log = resultMessage("queryClusterAccelerationStructureTriangleBuildSizes(CLAS)", result);
+        clear();
+        return result;
+    }
+
+    ClusterAccelerationStructureBuildSizes clusterBlasSizes;
+    result = queryClusterAccelerationStructureBottomLevelBuildSizes(
+        device,
+        ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+            .flags = kBuildFlags,
+            .maxClusterCountPerAccelerationStructure = maxClusterCountPerBlas,
+            .maxTotalClusterCount = static_cast<uint32_t>(selectedClusterReferenceCount),
+            .maxAccelerationStructureCount = static_cast<uint32_t>(sceneInputs.instances.size()),
+        },
+        clusterBlasSizes);
+    if (!result) {
+        log = resultMessage("queryClusterAccelerationStructureBottomLevelBuildSizes(cluster BLAS)", result);
+        clear();
+        return result;
+    }
+
+    VkAccelerationStructureGeometryInstancesDataKHR dummyInstancesData{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+        .arrayOfPointers = VK_FALSE,
+    };
+    VkAccelerationStructureGeometryKHR tlasGeometry{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+        .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR,
+    };
+    tlasGeometry.geometry.instances = dummyInstancesData;
+    VkAccelerationStructureBuildGeometryInfoKHR tlasBuildInfo = makeBuildInfo(
+        VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        tlasGeometry);
+    VkAccelerationStructureBuildSizesInfoKHR tlasSizeInfo = queryBuildSize(
+        nativeDeviceInfo.device,
+        tlasBuildInfo,
+        static_cast<uint32_t>(sceneInputs.instances.size()));
+
+    const VkDeviceSize scratchAlign = std::max(
+        scratchAlignment(nativeDeviceInfo.physicalDevice),
+        clusterScratchAlignment(nativeDeviceInfo.physicalDevice));
+    const VkDeviceSize maxScratchSize = std::max<VkDeviceSize>(
+        static_cast<VkDeviceSize>(clasSizes.buildScratchSize),
+        std::max<VkDeviceSize>(
+            static_cast<VkDeviceSize>(clusterBlasSizes.buildScratchSize),
+            tlasSizeInfo.buildScratchSize));
+    const VkDeviceSize scratchSize = maxScratchSize + scratchAlign - 1;
+    result = createBuffer(
+        device,
+        "createBuffer(CLAS scratch)",
+        scratchSize,
+        BufferUsageBits::Storage |
+            BufferUsageBits::AccelerationStructureStorage |
+            BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::Device,
+        impl_->scratchBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    const NativeBuffer nativeScratchBuffer = nativeBuffer(*impl_->scratchBuffer);
+    const VkDeviceAddress scratchAddress = alignUp(nativeScratchBuffer.address, scratchAlign);
+    if (nativeScratchBuffer.address == 0 ||
+        scratchAddress == 0 ||
+        scratchAddress + maxScratchSize > nativeScratchBuffer.address + nativeScratchBuffer.size) {
+        log = "CLAS scratch buffer does not provide a valid aligned device address.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    const uint64_t clasCount = sceneInputs.clusters.size();
+    const uint64_t instanceCount = sceneInputs.instances.size();
+    result = createBuffer(
+        device,
+        "createBuffer(CLAS size device)",
+        checkedByteSize(clasCount, sizeof(uint32_t)),
+        BufferUsageBits::Storage |
+            BufferUsageBits::TransferSource |
+            BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::Device,
+        impl_->clasSizeBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = createBuffer(
+        device,
+        "createBuffer(CLAS size readback)",
+        checkedByteSize(clasCount, sizeof(uint32_t)),
+        BufferUsageBits::TransferDestination,
+        MemoryLocation::HostReadback,
+        impl_->clasSizeReadbackBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    std::unique_ptr<CommandPool> commandPool;
+    result = device.createCommandPool(queue, commandPool);
+    if (!result) {
+        log = resultMessage("createCommandPool(CLAS build)", result);
+        clear();
+        return result;
+    }
+
+    VkClusterAccelerationStructureTriangleClusterInputNV triangleInput{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV,
+        .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
+        .maxGeometryIndexValue = 0,
+        .maxClusterUniqueGeometryCount = 1,
+        .maxClusterTriangleCount = maxClusterTriangleCount,
+        .maxClusterVertexCount = maxClusterVertexCount,
+        .maxTotalTriangleCount = static_cast<uint32_t>(sceneInputs.triangleCount),
+        .maxTotalVertexCount = static_cast<uint32_t>(sceneInputs.vertices.size()),
+        .minPositionTruncateBitCount = 0,
+    };
+    VkClusterAccelerationStructureInputInfoNV clasInputInfo{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+        .maxAccelerationStructureCount = static_cast<uint32_t>(sceneInputs.clusters.size()),
+        .flags = kBuildFlags,
+        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV,
+        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV,
+        .opInput = {.pTriangleClusters = &triangleInput},
+    };
+
+    const NativeBuffer nativeClasSizeBuffer = nativeBuffer(*impl_->clasSizeBuffer);
+    const NativeBuffer nativeClasSizeReadbackBuffer = nativeBuffer(*impl_->clasSizeReadbackBuffer);
+    if (nativeClasSizeBuffer.address == 0 ||
+        nativeClasSizeBuffer.buffer == VK_NULL_HANDLE ||
+        nativeClasSizeReadbackBuffer.buffer == VK_NULL_HANDLE) {
+        log = "CLAS size buffers are unavailable.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    result = recordSubmitWait(
+        device,
+        queue,
+        *commandPool,
+        "CLAS size build",
+        [&](VkCommandBuffer commandBuffer) {
+            VkClusterAccelerationStructureCommandsInfoNV cmdInfo{
+                .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+                .input = clasInputInfo,
+                .scratchData = scratchAddress,
+                .dstSizesArray = VkStridedDeviceAddressRegionKHR{
+                    .deviceAddress = nativeClasSizeBuffer.address,
+                    .stride = sizeof(uint32_t),
+                    .size = nativeClasSizeBuffer.size,
+                },
+                .srcInfosArray = VkStridedDeviceAddressRegionKHR{
+                    .deviceAddress = nativeClasBuildInfoBuffer.address,
+                    .stride = sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV),
+                    .size = nativeClasBuildInfoBuffer.size,
+                },
+            };
+            vkCmdBuildClusterAccelerationStructureIndirectNV(commandBuffer, &cmdInfo);
+            memoryBarrier(
+                commandBuffer,
+                VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+            VkBufferCopy copy{
+                .srcOffset = 0,
+                .dstOffset = 0,
+                .size = nativeClasSizeBuffer.size,
+            };
+            vkCmdCopyBuffer(
+                commandBuffer,
+                nativeClasSizeBuffer.buffer,
+                nativeClasSizeReadbackBuffer.buffer,
+                1,
+                &copy);
+        },
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    std::vector<uint32_t> clasSizeValues;
+    result = readbackVector(
+        *impl_->clasSizeReadbackBuffer,
+        sceneInputs.clusters.size(),
+        "CLAS sizes",
+        clasSizeValues,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    const VkDeviceSize clasAlignment = clusterStorageAlignment(nativeDeviceInfo.physicalDevice);
+    uint64_t clasStorageSize = 0;
+    std::vector<uint64_t> clasAddresses(sceneInputs.clusters.size());
+    for (size_t clusterIndex = 0; clusterIndex < clasSizeValues.size(); ++clusterIndex) {
+        if (clasSizeValues[clusterIndex] == 0) {
+            log = "VK_NV_cluster_acceleration_structure reported a zero CLAS size.";
+            clear();
+            return makeError(Error::Failure);
+        }
+        clasStorageSize = alignUp(clasStorageSize, clasAlignment);
+        clasAddresses[clusterIndex] = clasStorageSize;
+        clasStorageSize += clasSizeValues[clusterIndex];
+    }
+    if (clasStorageSize == 0) {
+        log = "CLAS storage size is zero.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    result = createBuffer(
+        device,
+        "createBuffer(CLAS storage)",
+        clasStorageSize,
+        BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::Device,
+        impl_->clasStorageBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    const NativeBuffer nativeClasStorageBuffer = nativeBuffer(*impl_->clasStorageBuffer);
+    if (nativeClasStorageBuffer.address == 0) {
+        log = "CLAS storage buffer does not have a device address.";
+        clear();
+        return makeError(Error::Failure);
+    }
+    for (uint64_t& address : clasAddresses) {
+        address += nativeClasStorageBuffer.address;
+    }
+
+    result = createBuffer(
+        device,
+        "createBuffer(CLAS addresses)",
+        checkedByteSize(clasAddresses.size(), sizeof(uint64_t)),
+        BufferUsageBits::Storage |
+            BufferUsageBits::AccelerationStructureBuildInput |
+            BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::HostUpload,
+        impl_->clasAddressBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->clasAddressBuffer, clasAddresses, "CLAS addresses", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    const NativeBuffer nativeClasAddressBuffer = nativeBuffer(*impl_->clasAddressBuffer);
+    if (nativeClasAddressBuffer.address == 0) {
+        log = "CLAS address buffer does not have a device address.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    std::vector<VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV> clusterBlasBuildInfos;
+    clusterBlasBuildInfos.reserve(sceneInputs.instances.size());
+    for (const ClusterBlasInstanceInput& instance : sceneInputs.instances) {
+        clusterBlasBuildInfos.push_back(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV{
+            .clusterReferencesCount = instance.clusters.clusterCount,
+            .clusterReferencesStride = sizeof(uint64_t),
+            .clusterReferences =
+                nativeClasAddressBuffer.address +
+                static_cast<VkDeviceAddress>(instance.clusters.firstCluster) * sizeof(uint64_t),
+        });
+    }
+    result = createBuffer(
+        device,
+        "createBuffer(cluster BLAS build infos)",
+        checkedByteSize(
+            clusterBlasBuildInfos.size(),
+            sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV)),
+        BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::HostUpload,
+        impl_->clusterBlasBuildInfoBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->clusterBlasBuildInfoBuffer, clusterBlasBuildInfos, "cluster BLAS build infos", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    const NativeBuffer nativeClusterBlasBuildInfoBuffer = nativeBuffer(*impl_->clusterBlasBuildInfoBuffer);
+    if (nativeClusterBlasBuildInfoBuffer.address == 0) {
+        log = "cluster BLAS build info buffer does not have a device address.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    result = createBuffer(
+        device,
+        "createBuffer(cluster BLAS storage)",
+        clusterBlasSizes.accelerationStructureSize,
+        BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::Device,
+        impl_->clusterBlasStorageBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    const NativeBuffer nativeClusterBlasStorageBuffer = nativeBuffer(*impl_->clusterBlasStorageBuffer);
+    if (nativeClusterBlasStorageBuffer.address == 0) {
+        log = "cluster BLAS storage buffer does not have a device address.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    const uint64_t clusterBlasArrayByteSize = checkedByteSize(instanceCount, sizeof(uint64_t));
+    const uint64_t clusterBlasSizeArrayByteSize = checkedByteSize(instanceCount, sizeof(uint32_t));
+    result = createBuffer(
+        device,
+        "createBuffer(cluster BLAS addresses device)",
+        clusterBlasArrayByteSize,
+        BufferUsageBits::Storage |
+            BufferUsageBits::TransferSource |
+            BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::Device,
+        impl_->clusterBlasAddressBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = createBuffer(
+        device,
+        "createBuffer(cluster BLAS addresses readback)",
+        clusterBlasArrayByteSize,
+        BufferUsageBits::TransferDestination,
+        MemoryLocation::HostReadback,
+        impl_->clusterBlasAddressReadbackBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = createBuffer(
+        device,
+        "createBuffer(cluster BLAS sizes device)",
+        clusterBlasSizeArrayByteSize,
+        BufferUsageBits::Storage |
+            BufferUsageBits::TransferSource |
+            BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::Device,
+        impl_->clusterBlasSizeBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    const NativeBuffer nativeClusterBlasAddressBuffer = nativeBuffer(*impl_->clusterBlasAddressBuffer);
+    const NativeBuffer nativeClusterBlasAddressReadbackBuffer = nativeBuffer(*impl_->clusterBlasAddressReadbackBuffer);
+    const NativeBuffer nativeClusterBlasSizeBuffer = nativeBuffer(*impl_->clusterBlasSizeBuffer);
+    if (nativeClusterBlasAddressBuffer.address == 0 ||
+        nativeClusterBlasSizeBuffer.address == 0 ||
+        nativeClusterBlasAddressBuffer.buffer == VK_NULL_HANDLE ||
+        nativeClusterBlasAddressReadbackBuffer.buffer == VK_NULL_HANDLE) {
+        log = "cluster BLAS output buffers are unavailable.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    VkClusterAccelerationStructureClustersBottomLevelInputNV clusterBlasInput{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
+        .maxTotalClusterCount = static_cast<uint32_t>(selectedClusterReferenceCount),
+        .maxClusterCountPerAccelerationStructure = maxClusterCountPerBlas,
+    };
+    VkClusterAccelerationStructureInputInfoNV clusterBlasInputInfo{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+        .maxAccelerationStructureCount = static_cast<uint32_t>(sceneInputs.instances.size()),
+        .flags = kBuildFlags,
+        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV,
+        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV,
+        .opInput = {.pClustersBottomLevel = &clusterBlasInput},
+    };
+
+    result = recordSubmitWait(
+        device,
+        queue,
+        *commandPool,
+        "CLAS and cluster BLAS build",
+        [&](VkCommandBuffer commandBuffer) {
+            VkClusterAccelerationStructureInputInfoNV explicitClasInput = clasInputInfo;
+            explicitClasInput.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
+            VkClusterAccelerationStructureCommandsInfoNV clasCmdInfo{
+                .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+                .input = explicitClasInput,
+                .scratchData = scratchAddress,
+                .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
+                    .deviceAddress = nativeClasAddressBuffer.address,
+                    .stride = sizeof(uint64_t),
+                    .size = nativeClasAddressBuffer.size,
+                },
+                .srcInfosArray = VkStridedDeviceAddressRegionKHR{
+                    .deviceAddress = nativeClasBuildInfoBuffer.address,
+                    .stride = sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV),
+                    .size = nativeClasBuildInfoBuffer.size,
+                },
+            };
+            vkCmdBuildClusterAccelerationStructureIndirectNV(commandBuffer, &clasCmdInfo);
+            memoryBarrier(
+                commandBuffer,
+                VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                    VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+
+            VkClusterAccelerationStructureCommandsInfoNV blasCmdInfo{
+                .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+                .input = clusterBlasInputInfo,
+                .dstImplicitData = nativeClusterBlasStorageBuffer.address,
+                .scratchData = scratchAddress,
+                .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
+                    .deviceAddress = nativeClusterBlasAddressBuffer.address,
+                    .stride = sizeof(uint64_t),
+                    .size = nativeClusterBlasAddressBuffer.size,
+                },
+                .dstSizesArray = VkStridedDeviceAddressRegionKHR{
+                    .deviceAddress = nativeClusterBlasSizeBuffer.address,
+                    .stride = sizeof(uint32_t),
+                    .size = nativeClusterBlasSizeBuffer.size,
+                },
+                .srcInfosArray = VkStridedDeviceAddressRegionKHR{
+                    .deviceAddress = nativeClusterBlasBuildInfoBuffer.address,
+                    .stride = sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV),
+                    .size = nativeClusterBlasBuildInfoBuffer.size,
+                },
+            };
+            vkCmdBuildClusterAccelerationStructureIndirectNV(commandBuffer, &blasCmdInfo);
+            memoryBarrier(
+                commandBuffer,
+                VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+            VkBufferCopy copy{
+                .srcOffset = 0,
+                .dstOffset = 0,
+                .size = nativeClusterBlasAddressBuffer.size,
+            };
+            vkCmdCopyBuffer(
+                commandBuffer,
+                nativeClusterBlasAddressBuffer.buffer,
+                nativeClusterBlasAddressReadbackBuffer.buffer,
+                1,
+                &copy);
+        },
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    std::vector<uint64_t> clusterBlasAddresses;
+    result = readbackVector(
+        *impl_->clusterBlasAddressReadbackBuffer,
+        sceneInputs.instances.size(),
+        "cluster BLAS addresses",
+        clusterBlasAddresses,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    for (uint64_t address : clusterBlasAddresses) {
+        if (address == 0) {
+            log = "VK_NV_cluster_acceleration_structure reported a zero cluster BLAS address.";
+            clear();
+            return makeError(Error::Failure);
+        }
+    }
+
+    std::vector<VkAccelerationStructureInstanceKHR> tlasInstances;
+    tlasInstances.reserve(sceneInputs.instances.size());
+    for (size_t instanceIndex = 0; instanceIndex < sceneInputs.instances.size(); ++instanceIndex) {
+        const ClusterBlasInstanceInput& sourceInstance = sceneInputs.instances[instanceIndex];
+        VkAccelerationStructureInstanceKHR instance{};
+        instance.transform = toVkTransform(sourceInstance.worldMatrix);
+        instance.instanceCustomIndex = sourceInstance.renderPrimitiveIndex & 0x00ffffffu;
+        instance.mask = 0xff;
+        instance.instanceShaderBindingTableRecordOffset = 0;
+        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        instance.accelerationStructureReference = clusterBlasAddresses[instanceIndex];
+        tlasInstances.push_back(instance);
+    }
+
+    result = createBuffer(
+        device,
+        "createBuffer(cluster TLAS instances)",
+        checkedByteSize(tlasInstances.size(), sizeof(VkAccelerationStructureInstanceKHR)),
+        BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::HostUpload,
+        impl_->instanceBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->instanceBuffer, tlasInstances, "cluster TLAS instances", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    const NativeBuffer nativeInstanceBuffer = nativeBuffer(*impl_->instanceBuffer);
+    if (nativeInstanceBuffer.address == 0) {
+        log = "cluster TLAS instance buffer does not have a device address.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    VkAccelerationStructureGeometryInstancesDataKHR instancesData{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+        .arrayOfPointers = VK_FALSE,
+        .data = VkDeviceOrHostAddressConstKHR{
+            .deviceAddress = nativeInstanceBuffer.address,
+        },
+    };
+    tlasGeometry.geometry.instances = instancesData;
+    tlasBuildInfo = makeBuildInfo(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, tlasGeometry);
+    tlasSizeInfo = queryBuildSize(
+        nativeDeviceInfo.device,
+        tlasBuildInfo,
+        static_cast<uint32_t>(tlasInstances.size()));
+    if (tlasSizeInfo.buildScratchSize > maxScratchSize) {
+        log = "cluster TLAS scratch size exceeded the precomputed CLAS scratch budget.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    result = createAccelerationStructure(
+        device,
+        nativeDeviceInfo.device,
+        VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        tlasSizeInfo,
+        impl_->tlasStorage,
+        impl_->tlas,
+        impl_->tlasAddress,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    result = recordSubmitWait(
+        device,
+        queue,
+        *commandPool,
+        "cluster TLAS build",
+        [&](VkCommandBuffer commandBuffer) {
+            VkAccelerationStructureBuildRangeInfoKHR tlasRange =
+                makeBuildRange(static_cast<uint32_t>(tlasInstances.size()));
+            VkAccelerationStructureBuildGeometryInfoKHR buildInfo = makeBuildInfo(
+                VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+                tlasGeometry);
+            buildInfo.dstAccelerationStructure = impl_->tlas;
+            buildInfo.scratchData.deviceAddress = scratchAddress;
+            const VkAccelerationStructureBuildRangeInfoKHR* rangeInfos[] = {&tlasRange};
+            vkCmdBuildAccelerationStructuresKHR(commandBuffer, 1, &buildInfo, rangeInfos);
+            accelerationStructureBarrier(commandBuffer);
+        },
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    impl_->stats = SceneClusterRtxStats{
+        .clasCount = static_cast<uint32_t>(sceneInputs.clusters.size()),
+        .clusterBlasCount = static_cast<uint32_t>(sceneInputs.instances.size()),
+        .instanceCount = static_cast<uint32_t>(tlasInstances.size()),
+        .clusterTriangleCount = sceneInputs.triangleCount,
+        .clusterVertexCount = sceneInputs.vertices.size(),
+        .clusterIndexBytes = sceneInputs.indices.size(),
+        .selectedClusterReferenceCount = selectedClusterReferenceCount,
+        .geometryBytes =
+            sceneInputs.vertices.size() * sizeof(RtxVertex) +
+            sceneInputs.indices.size() * sizeof(uint8_t) +
+            clasBuildInfos.size() * sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV) +
+            clusterBlasBuildInfos.size() * sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV) +
+            tlasInstances.size() * sizeof(VkAccelerationStructureInstanceKHR),
+        .clasBytes = clasStorageSize,
+        .clusterBlasBytes = clusterBlasSizes.accelerationStructureSize,
+        .tlasBytes = tlasSizeInfo.accelerationStructureSize,
+        .accelerationStructureBytes =
+            clasStorageSize +
+            clusterBlasSizes.accelerationStructureSize +
+            tlasSizeInfo.accelerationStructureSize,
+        .scratchBytes = scratchSize,
+    };
+
+    log = "Built Vulkan cluster acceleration structures: " +
+        std::to_string(impl_->stats.clasCount) +
+        " CLAS, " +
+        std::to_string(impl_->stats.clusterBlasCount) +
+        " cluster BLAS, " +
+        std::to_string(impl_->stats.instanceCount) +
+        " TLAS instances.";
+    return {};
+#endif
+}
+
+void SceneClusterRtxBuilder::clear()
+{
+    if (impl_ != nullptr) {
+        impl_->destroy();
+    }
+}
+
+bool SceneClusterRtxBuilder::valid() const
+{
+    return impl_ != nullptr &&
+        impl_->tlas != VK_NULL_HANDLE &&
+        impl_->tlasAddress != 0 &&
+        impl_->stats.clasCount != 0;
+}
+
+const SceneClusterRtxStats& SceneClusterRtxBuilder::stats() const
+{
+    static const SceneClusterRtxStats kEmptyStats;
     return impl_ != nullptr ? impl_->stats : kEmptyStats;
 }
 

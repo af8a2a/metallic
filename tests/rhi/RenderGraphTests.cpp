@@ -1166,11 +1166,46 @@ public:
             return RhiTestResult::fail("GPUDrivenSample graph first output changed");
         }
 
+        render::RenderSampleLoadResult gpuDrivenRtasSample;
+        if (!render::loadBuiltInRenderSample("gpu-driven-rtas-visualization", gpuDrivenRtasSample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (gpuDrivenRtasSample.desc.id != "gpu-driven-rtas-visualization" ||
+            gpuDrivenRtasSample.desc.name != "GPUDrivenSample / RTAS Visualization" ||
+            gpuDrivenRtasSample.desc.category != "GPUDriven" ||
+            gpuDrivenRtasSample.desc.scenePath != "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf" ||
+            gpuDrivenRtasSample.desc.graphPath !=
+                "Pipelines/Samples/gpu_driven_sponza_rtas_visualization.metallic_graph.json" ||
+            gpuDrivenRtasSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||
+            gpuDrivenRtasSample.desc.previewOutput != "GPUDriven.color") {
+            return RhiTestResult::fail("GPUDriven RTAS visualization sample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* gpuDrivenRtas = gpuDrivenRtasSample.graph.findNode("GPUDriven");
+        if (gpuDrivenRtas == nullptr ||
+            gpuDrivenRtas->type != "SceneRayQueryVisualizationPass" ||
+            !gpuDrivenRtas->properties.is_object() ||
+            gpuDrivenRtas->properties.value("path", "") != gpuDrivenRtasSample.desc.scenePath ||
+            gpuDrivenRtas->properties.value("granularity", "") != "instance" ||
+            gpuDrivenRtas->properties.value("mode", "") != "meshlet" ||
+            !gpuDrivenRtas->properties.contains("environment") ||
+            !gpuDrivenRtas->properties["environment"].is_object() ||
+            gpuDrivenRtas->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr") {
+            return RhiTestResult::fail(
+                "GPUDriven RTAS visualization sample did not preserve scene/environment defaults");
+        }
+        if (!gpuDrivenRtasSample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (gpuDrivenRtasSample.graph.firstOutputName() != "GPUDriven.color") {
+            return RhiTestResult::fail("GPUDriven RTAS visualization graph first output changed");
+        }
+
         bool listedPathTrace = false;
         bool listedOpenPBRPathTrace = false;
         bool listedDlssRrPathTrace = false;
         bool listedMaterialVisualization = false;
         bool listedGPUDriven = false;
+        bool listedGPUDrivenRtasVisualization = false;
         for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
             listedPathTrace = listedPathTrace || desc.id == "pathtracing-meet-mat";
             listedOpenPBRPathTrace = listedOpenPBRPathTrace || desc.id == "pathtracing-sample";
@@ -1178,12 +1213,15 @@ public:
             listedMaterialVisualization = listedMaterialVisualization ||
                 desc.id == "material-visualization-abeautiful-game";
             listedGPUDriven = listedGPUDriven || desc.id == "gpu-driven-sample";
+            listedGPUDrivenRtasVisualization = listedGPUDrivenRtasVisualization ||
+                desc.id == "gpu-driven-rtas-visualization";
         }
         if (!listedPathTrace ||
             !listedOpenPBRPathTrace ||
             !listedDlssRrPathTrace ||
             !listedMaterialVisualization ||
-            !listedGPUDriven) {
+            !listedGPUDriven ||
+            !listedGPUDrivenRtasVisualization) {
             return RhiTestResult::fail("built-in Sample list did not contain expected samples");
         }
         return RhiTestResult::pass();
