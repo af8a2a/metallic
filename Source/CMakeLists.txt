@@ -86,6 +86,7 @@ target_include_directories(MetallicRuntimeScene SYSTEM PRIVATE
 
 target_link_libraries(MetallicRuntimeScene PUBLIC
     MathLib
+    meshoptimizer
     nlohmann_json
     tinygltf
 )

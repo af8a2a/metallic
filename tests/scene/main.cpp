@@ -623,6 +623,9 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(stats.primitiveCount == 1, "primitive count");
     expect(stats.renderNodeCount == 1, "render node count");
     expect(stats.triangleCount == 1, "triangle count");
+    expect(stats.meshletClusterCount == 1, "meshlet cluster count");
+    expect(stats.meshletVertexReferenceCount == 3, "meshlet vertex reference count");
+    expect(stats.meshletTriangleIndexCount == 3, "meshlet triangle index count");
 
     expect(scene.meshes().size() == 1, "mesh info vector size");
     expect(scene.meshes()[0].name == "Triangle Mesh", "mesh info name");
@@ -637,6 +640,24 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(primitive.indices.size() == 3, "primitive index data count");
     expectVec3(primitive.positions[2], float3(1.0f, 1.0f, 0.0f), "primitive position data");
     expect(primitive.indices[2] == 2, "primitive index data");
+    expect(primitive.meshletClusters.size() == 1, "primitive meshlet cluster count");
+    expect(primitive.meshletVertices.size() == 3, "primitive meshlet vertex reference count");
+    expect(primitive.meshletTriangles.size() == 3, "primitive meshlet triangle index count");
+    const metallic::scene::MeshletCluster& meshletCluster = primitive.meshletClusters.front();
+    expect(meshletCluster.vertexOffset == 0, "meshlet vertex offset");
+    expect(meshletCluster.vertexCount == 3, "meshlet vertex count");
+    expect(meshletCluster.triangleOffset == 0, "meshlet triangle offset");
+    expect(meshletCluster.triangleCount == 1, "meshlet triangle count");
+    expect(meshletCluster.bounds.valid, "meshlet bounds valid");
+    expectVec3(meshletCluster.bounds.min, float3(0.0f, 0.0f, 0.0f), "meshlet bounds min");
+    expectVec3(meshletCluster.bounds.max, float3(1.0f, 1.0f, 0.0f), "meshlet bounds max");
+    expect(meshletCluster.boundingSphereRadius > 0.0f, "meshlet sphere radius");
+    for (const uint32_t vertexIndex : primitive.meshletVertices) {
+        expect(vertexIndex < primitive.positions.size(), "meshlet vertex reference range");
+    }
+    for (const uint8_t localVertexIndex : primitive.meshletTriangles) {
+        expect(localVertexIndex < meshletCluster.vertexCount, "meshlet triangle local index range");
+    }
 
     expect(scene.materials().size() == 2, "material vector size");
     expect(scene.materials()[0].name == "Test Material", "default material name");

@@ -2643,6 +2643,9 @@ void EditorApplication::drawInspectorPanel()
         ImGui::Text("Vertices: %llu", static_cast<unsigned long long>(primitive.vertexCount));
         ImGui::Text("Indices: %llu", static_cast<unsigned long long>(primitive.indexCount));
         ImGui::Text("Triangles: %llu", static_cast<unsigned long long>(primitive.triangleCount));
+        ImGui::Text("Meshlet Clusters: %zu", primitive.meshletClusters.size());
+        ImGui::Text("Meshlet Vertex References: %zu", primitive.meshletVertices.size());
+        ImGui::Text("Meshlet Triangle Indices: %zu", primitive.meshletTriangles.size());
         if (primitive.localBounds.valid) {
             ImGui::Text("Bounds min: %s", scene::formatVec3(primitive.localBounds.min).c_str());
             ImGui::Text("Bounds max: %s", scene::formatVec3(primitive.localBounds.max).c_str());
@@ -2769,6 +2772,9 @@ void EditorApplication::drawStatisticsPanel()
         addStat("Render Primitives", stats.primitiveCount);
         addStat("Materials", stats.materialCount);
         addStat("Triangles", stats.triangleCount);
+        addStat("Meshlet Clusters", stats.meshletClusterCount);
+        addStat("Meshlet Vertex References", stats.meshletVertexReferenceCount);
+        addStat("Meshlet Triangle Indices", stats.meshletTriangleIndexCount);
         addStat("Lights", scene_.lights().size());
         addStat("Textures", stats.textureCount);
         addStat("Images", stats.imageCount);
@@ -2808,6 +2814,13 @@ void EditorApplication::drawStatisticsPanel()
         ImGui::LogText("Render Primitives: %llu\n", static_cast<unsigned long long>(stats.primitiveCount));
         ImGui::LogText("Materials: %llu\n", static_cast<unsigned long long>(stats.materialCount));
         ImGui::LogText("Triangles: %llu\n", static_cast<unsigned long long>(stats.triangleCount));
+        ImGui::LogText("Meshlet Clusters: %llu\n", static_cast<unsigned long long>(stats.meshletClusterCount));
+        ImGui::LogText(
+            "Meshlet Vertex References: %llu\n",
+            static_cast<unsigned long long>(stats.meshletVertexReferenceCount));
+        ImGui::LogText(
+            "Meshlet Triangle Indices: %llu\n",
+            static_cast<unsigned long long>(stats.meshletTriangleIndexCount));
         ImGui::LogText("Lights: %zu\n", scene_.lights().size());
         ImGui::LogText("Textures: %llu\n", static_cast<unsigned long long>(stats.textureCount));
         ImGui::LogText("Images: %llu\n", static_cast<unsigned long long>(stats.imageCount));

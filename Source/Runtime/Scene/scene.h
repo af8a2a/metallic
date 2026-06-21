@@ -45,6 +45,9 @@ struct SceneStats {
     uint64_t primitiveCount = 0;
     uint64_t renderNodeCount = 0;
     uint64_t triangleCount = 0;
+    uint64_t meshletClusterCount = 0;
+    uint64_t meshletVertexReferenceCount = 0;
+    uint64_t meshletTriangleIndexCount = 0;
 };
 
 struct SceneAssetInfo {
@@ -57,6 +60,20 @@ struct SceneAssetInfo {
 struct SceneMesh {
     std::string name;
     uint64_t primitiveCount = 0;
+};
+
+struct MeshletCluster {
+    uint32_t vertexOffset = 0;
+    uint32_t vertexCount = 0;
+    uint32_t triangleOffset = 0;
+    uint32_t triangleCount = 0;
+    Bounds bounds;
+    float3 boundingSphereCenter{0.0f, 0.0f, 0.0f};
+    float boundingSphereRadius = 0.0f;
+    float3 coneApex{0.0f, 0.0f, 0.0f};
+    float3 coneAxis{0.0f, 0.0f, 1.0f};
+    float coneCutoff = 1.0f;
+    std::array<int8_t, 4> packedCone{0, 0, 127, 127};
 };
 
 struct SceneNode {
@@ -88,6 +105,9 @@ struct RenderPrimitive {
     bool hasAuthoredNormals = false;
     bool hasAuthoredTangents = false;
     std::vector<uint32_t> indices;
+    std::vector<MeshletCluster> meshletClusters;
+    std::vector<uint32_t> meshletVertices;
+    std::vector<uint8_t> meshletTriangles;
 };
 
 struct RenderImage {

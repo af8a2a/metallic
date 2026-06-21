@@ -8,6 +8,7 @@
 
 #include "Runtime/Scene/Scene.h"
 
+#include "meshoptimizer.h"
 #include "json.hpp"
 #include "tiny_gltf.h"
 
@@ -34,6 +35,10 @@ constexpr const char* kExtensionMaterialsVolume = "KHR_materials_volume";
 constexpr const char* kExtensionNodeVisibility = "KHR_node_visibility";
 constexpr const char* kExtensionTextureTransform = "KHR_texture_transform";
 constexpr double kFallbackCameraYFov = 0.7853981633974483;
+constexpr size_t kMeshletClusterMaxVertices = 128;
+constexpr size_t kMeshletClusterMinTriangles = 32;
+constexpr size_t kMeshletClusterMaxTriangles = 128;
+constexpr float kMeshletClusterFillWeight = 0.5f;
 
 const std::unordered_set<std::string>& supportedRequiredExtensions()
 {
@@ -633,6 +638,137 @@ void generateTangents(RenderPrimitive& primitive)
     }
 }
 
+bool buildMeshletClusters(RenderPrimitive& primitive)
+{
+    primitive.meshletClusters.clear();
+    primitive.meshletVertices.clear();
+    primitive.meshletTriangles.clear();
+
+    if (primitive.mode != TINYGLTF_MODE_TRIANGLES ||
+        primitive.positions.size() < 3 ||
+        primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
+
+    const size_t indexCount = primitive.indices.empty()
+        ? (primitive.positions.size() / 3) * 3
+        : (primitive.indices.size() / 3) * 3;
+    if (indexCount < 3) {
+        return false;
+    }
+
+    std::vector<uint32_t> clusterIndices;
+    clusterIndices.reserve(indexCount);
+    if (primitive.indices.empty()) {
+        for (uint32_t index = 0; index < static_cast<uint32_t>(indexCount); ++index) {
+            clusterIndices.push_back(index);
+        }
+    } else {
+        for (size_t index = 0; index < indexCount; ++index) {
+            const uint32_t vertexIndex = primitive.indices[index];
+            if (vertexIndex >= primitive.positions.size()) {
+                primitive.meshletClusters.clear();
+                primitive.meshletVertices.clear();
+                primitive.meshletTriangles.clear();
+                return false;
+            }
+            clusterIndices.push_back(vertexIndex);
+        }
+    }
+
+    const size_t meshletBound =
+        meshopt_buildMeshletsBound(indexCount, kMeshletClusterMaxVertices, kMeshletClusterMinTriangles);
+    if (meshletBound == 0) {
+        return false;
+    }
+
+    std::vector<meshopt_Meshlet> meshlets(meshletBound);
+    std::vector<uint32_t> meshletVertices(indexCount);
+    std::vector<uint8_t> meshletTriangles(indexCount);
+
+    const float* positions = reinterpret_cast<const float*>(primitive.positions.data());
+    const size_t meshletCount = meshopt_buildMeshletsSpatial(
+        meshlets.data(),
+        meshletVertices.data(),
+        meshletTriangles.data(),
+        clusterIndices.data(),
+        indexCount,
+        positions,
+        primitive.positions.size(),
+        sizeof(float3),
+        kMeshletClusterMaxVertices,
+        kMeshletClusterMinTriangles,
+        kMeshletClusterMaxTriangles,
+        kMeshletClusterFillWeight);
+
+    meshlets.resize(meshletCount);
+    primitive.meshletClusters.reserve(meshletCount);
+    primitive.meshletVertices.reserve(indexCount);
+    primitive.meshletTriangles.reserve(indexCount);
+
+    for (const meshopt_Meshlet& meshlet : meshlets) {
+        if (meshlet.vertex_count == 0 || meshlet.triangle_count == 0) {
+            continue;
+        }
+
+        uint32_t* const vertices = meshletVertices.data() + meshlet.vertex_offset;
+        uint8_t* const triangles = meshletTriangles.data() + meshlet.triangle_offset;
+        meshopt_optimizeMeshlet(vertices, triangles, meshlet.triangle_count, meshlet.vertex_count);
+
+        const uint32_t vertexOffset = static_cast<uint32_t>(primitive.meshletVertices.size());
+        const uint32_t triangleOffset = static_cast<uint32_t>(primitive.meshletTriangles.size());
+        primitive.meshletVertices.insert(
+            primitive.meshletVertices.end(),
+            vertices,
+            vertices + meshlet.vertex_count);
+        primitive.meshletTriangles.insert(
+            primitive.meshletTriangles.end(),
+            triangles,
+            triangles + static_cast<size_t>(meshlet.triangle_count) * 3u);
+
+        MeshletCluster cluster;
+        cluster.vertexOffset = vertexOffset;
+        cluster.vertexCount = meshlet.vertex_count;
+        cluster.triangleOffset = triangleOffset;
+        cluster.triangleCount = meshlet.triangle_count;
+
+        const meshopt_Bounds bounds = meshopt_computeMeshletBounds(
+            vertices,
+            triangles,
+            meshlet.triangle_count,
+            positions,
+            primitive.positions.size(),
+            sizeof(float3));
+        cluster.boundingSphereCenter = float3(bounds.center[0], bounds.center[1], bounds.center[2]);
+        cluster.boundingSphereRadius = bounds.radius;
+        cluster.coneApex = float3(bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2]);
+        cluster.coneAxis = float3(bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2]);
+        cluster.coneCutoff = bounds.cone_cutoff;
+        cluster.packedCone = {
+            bounds.cone_axis_s8[0],
+            bounds.cone_axis_s8[1],
+            bounds.cone_axis_s8[2],
+            bounds.cone_cutoff_s8,
+        };
+
+        for (uint32_t localVertexIndex = 0; localVertexIndex < meshlet.vertex_count; ++localVertexIndex) {
+            const uint32_t sourceVertexIndex = vertices[localVertexIndex];
+            if (sourceVertexIndex < primitive.positions.size()) {
+                cluster.bounds.include(primitive.positions[sourceVertexIndex]);
+            }
+        }
+
+        primitive.meshletClusters.push_back(cluster);
+    }
+
+    if (primitive.meshletClusters.empty()) {
+        primitive.meshletVertices.clear();
+        primitive.meshletTriangles.clear();
+        return false;
+    }
+    return true;
+}
+
 RenderCamera makeRenderCamera(
     const tinygltf::Camera& camera,
     const tinygltf::Node& node,
@@ -1131,6 +1267,7 @@ bool Scene::load(const std::filesystem::path& filename)
                 if (primitive.tangents.empty()) {
                     generateTangents(primitive);
                 }
+                buildMeshletClusters(primitive);
 
                 RenderNode renderNode;
                 renderNode.nodeIndex = nodeIndex;
@@ -1141,6 +1278,9 @@ bool Scene::load(const std::filesystem::path& filename)
 
                 bounds_.include(transformBounds(primitive.localBounds, node.worldMatrix));
                 stats_.triangleCount += primitive.triangleCount;
+                stats_.meshletClusterCount += primitive.meshletClusters.size();
+                stats_.meshletVertexReferenceCount += primitive.meshletVertices.size();
+                stats_.meshletTriangleIndexCount += primitive.meshletTriangles.size();
                 renderPrimitives_.push_back(primitive);
                 renderNodes_.push_back(renderNode);
             }
