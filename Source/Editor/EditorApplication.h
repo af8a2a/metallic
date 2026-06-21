@@ -62,12 +62,14 @@ private:
     void saveRenderGraph();
     void loadRenderGraph();
     void chooseSceneFile();
+    void chooseEnvironmentFile();
     void loadScene();
     void loadDroppedScene(const std::filesystem::path& path);
     void loadDroppedRenderGraph(const std::filesystem::path& path);
     void addRecentScenePath(const std::filesystem::path& path);
     void applyLoadedSceneToRenderGraph(const std::filesystem::path& path);
     void applyLoadedSceneCamera();
+    void applyEnvironmentToRenderGraph(const std::filesystem::path& path);
     void buildSceneRtx();
     void clearSceneRtx();
     void addRenderGraphNode(std::string type, ImVec2 screenPosition);

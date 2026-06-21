@@ -206,6 +206,24 @@ std::string firstScenePathFromGraph(const render::RenderGraph& graph)
     return {};
 }
 
+std::string firstEnvironmentPathFromGraph(const render::RenderGraph& graph)
+{
+    for (const render::RenderGraphNode& node : graph.nodes()) {
+        if (node.type != "ScenePathTracePass" || !node.properties.is_object()) {
+            continue;
+        }
+        auto environmentIter = node.properties.find("environment");
+        if (environmentIter == node.properties.end() || !environmentIter->is_object()) {
+            continue;
+        }
+        auto pathIter = environmentIter->find("path");
+        if (pathIter != environmentIter->end() && pathIter->is_string()) {
+            return pathIter->get<std::string>();
+        }
+    }
+    return {};
+}
+
 std::string displayPathForProperty(const std::filesystem::path& path)
 {
     std::error_code relativeError;
@@ -356,6 +374,66 @@ std::filesystem::path openSceneFileDialog(
     (void)window;
     (void)initialPath;
     error = "Native scene file dialog is only implemented on Windows.";
+    return {};
+#endif
+}
+
+std::filesystem::path openEnvironmentFileDialog(
+    SDL_Window* window,
+    const std::filesystem::path& initialPath,
+    std::string& error)
+{
+#if defined(_WIN32)
+    HWND owner = nullptr;
+    if (window != nullptr) {
+        const SDL_PropertiesID properties = SDL_GetWindowProperties(window);
+        owner = static_cast<HWND>(
+            SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+    }
+
+    std::array<wchar_t, 32768> filename{};
+    std::array<wchar_t, 32768> initialDirectory{};
+    if (!initialPath.empty()) {
+        const std::filesystem::path dialogInitialPath = normalizeDialogPath(initialPath);
+        if (dialogInitialPath.has_extension()) {
+            copyWideToBuffer(dialogInitialPath.filename().wstring(), filename.data(), filename.size());
+            copyWideToBuffer(
+                dialogInitialPath.parent_path().wstring(),
+                initialDirectory.data(),
+                initialDirectory.size());
+        } else {
+            copyWideToBuffer(dialogInitialPath.wstring(), initialDirectory.data(), initialDirectory.size());
+        }
+    }
+
+    OPENFILENAMEW openFilename{};
+    openFilename.lStructSize = sizeof(openFilename);
+    openFilename.hwndOwner = owner;
+    openFilename.lpstrFilter =
+        L"HDR Environment (*.hdr)\0*.hdr\0"
+        L"All Files (*.*)\0*.*\0";
+    openFilename.nFilterIndex = 1;
+    openFilename.lpstrFile = filename.data();
+    openFilename.nMaxFile = static_cast<DWORD>(filename.size());
+    openFilename.lpstrInitialDir = initialDirectory[0] != L'\0' ? initialDirectory.data() : nullptr;
+    openFilename.lpstrTitle = L"Load Environment";
+    openFilename.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (GetOpenFileNameW(&openFilename) != FALSE) {
+        error.clear();
+        return std::filesystem::path(filename.data());
+    }
+
+    const DWORD dialogError = CommDlgExtendedError();
+    if (dialogError != 0) {
+        error = "Open environment dialog failed: " + std::string(commonDialogErrorName(dialogError)) +
+            " (" + std::to_string(dialogError) + ")";
+    }
+    return {};
+#else
+    (void)window;
+    (void)initialPath;
+    error = "Native environment file dialog is only implemented on Windows.";
     return {};
 #endif
 }
@@ -2103,8 +2181,12 @@ void EditorApplication::drawDockspace()
     setupDefaultDockLayout();
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
 
-    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
-        chooseSceneFile();
+    if (!ImGui::GetIO().WantTextInput) {
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O)) {
+            chooseEnvironmentFile();
+        } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
+            chooseSceneFile();
+        }
     }
 
     if (ImGui::BeginMenuBar()) {
@@ -2121,6 +2203,9 @@ void EditorApplication::drawDockspace()
             ImGui::Separator();
             if (ImGui::MenuItem("Open Scene...", "Ctrl+O")) {
                 chooseSceneFile();
+            }
+            if (ImGui::MenuItem("Load Environment...", "Ctrl+Shift+O")) {
+                chooseEnvironmentFile();
             }
             if (ImGui::BeginMenu("Open Recent")) {
                 if (recentScenePaths_.empty()) {
@@ -2963,19 +3048,9 @@ void EditorApplication::drawEnvironmentControls()
         ? floatValueOr(effectiveEnvironment["rotationDegrees"], 0.0f)
         : 0.0f;
 
-    static int editingEnvironmentNodeId = -1;
-    static std::string editingEnvironmentPath;
-    static char environmentPathBuffer[260] = {};
-    if (editingEnvironmentNodeId != static_cast<int>(node->id) || editingEnvironmentPath != path) {
-        copyToBuffer(path, environmentPathBuffer, sizeof(environmentPathBuffer));
-        editingEnvironmentNodeId = static_cast<int>(node->id);
-        editingEnvironmentPath = path;
-    }
-
     render::RenderGraphProperties runtimeProperties = node->runtimeProperties.is_object()
         ? node->runtimeProperties
         : render::RenderGraphProperties::object();
-    bool changedStatic = false;
     bool changedRuntime = false;
     ImGui::TextUnformatted("Environment");
     ImGui::PushID("SceneEnvironment");
@@ -2990,14 +3065,9 @@ void EditorApplication::drawEnvironmentControls()
         changedRuntime = true;
     }
 
-    ImGui::PushItemWidth(-1.0f);
-    ImGui::InputText("HDRI Path", environmentPathBuffer, sizeof(environmentPathBuffer));
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        staticEnvironment["path"] = environmentPathBuffer;
-        editingEnvironmentPath = environmentPathBuffer;
-        changedStatic = true;
-    }
+    ImGui::TextWrapped("HDRI: %s", path.empty() ? "-" : path.c_str());
 
+    ImGui::PushItemWidth(-1.0f);
     if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 16.0f, "%.3f")) {
         setNestedProperty(runtimeProperties, "environment.intensity", std::max(intensity, 0.0f));
         changedRuntime = true;
@@ -3009,33 +3079,22 @@ void EditorApplication::drawEnvironmentControls()
     ImGui::PopItemWidth();
     ImGui::PopID();
 
-    if (!changedStatic && !changedRuntime) {
+    if (!changedRuntime) {
         return;
     }
 
     bool updated = true;
-    if (changedRuntime) {
-        updated = renderGraph_.setNodeRuntimeProperties(node->id, std::move(runtimeProperties));
-        if (updated) {
-            historyResources_.invalidateAll();
-            if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
-                graphExecutor_->syncRuntimeProperties(renderGraph_);
-            }
-            viewportPreviewNeedsRender_ = true;
+    updated = renderGraph_.setNodeRuntimeProperties(node->id, std::move(runtimeProperties));
+    if (updated) {
+        historyResources_.invalidateAll();
+        if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
+            graphExecutor_->syncRuntimeProperties(renderGraph_);
         }
-    }
-    if (updated && changedStatic) {
-        staticProperties["environment"] = std::move(staticEnvironment);
-        updated = renderGraph_.setNodeProperties(node->id, std::move(staticProperties));
-        if (updated) {
-            historyResources_.invalidateAll();
-            viewportPreviewValid_ = false;
-            viewportPreviewNeedsRender_ = true;
-        }
+        viewportPreviewNeedsRender_ = true;
     }
 
     if (updated) {
-        renderGraphStatus_ = changedStatic ? "Updated scene environment map" : "Updated scene environment";
+        renderGraphStatus_ = "Updated scene environment";
     } else {
         renderGraphStatus_ = "Environment update failed";
     }
@@ -3757,6 +3816,24 @@ void EditorApplication::chooseSceneFile()
     loadDroppedScene(selectedPath);
 }
 
+void EditorApplication::chooseEnvironmentFile()
+{
+    const std::string currentEnvironmentPath = firstEnvironmentPathFromGraph(renderGraph_);
+    std::filesystem::path initialPath = currentEnvironmentPath.empty()
+        ? std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset"
+        : resolveSceneAssetPath(currentEnvironmentPath.c_str());
+    std::string dialogError;
+    const std::filesystem::path selectedPath = openEnvironmentFileDialog(window_, initialPath, dialogError);
+    if (selectedPath.empty()) {
+        if (!dialogError.empty()) {
+            renderGraphStatus_ = dialogError;
+        }
+        return;
+    }
+
+    applyEnvironmentToRenderGraph(selectedPath);
+}
+
 void EditorApplication::addRecentScenePath(const std::filesystem::path& path)
 {
     if (path.empty()) {
@@ -3905,6 +3982,72 @@ void EditorApplication::applyLoadedSceneCamera()
     }
     viewportPreviewNeedsRender_ = true;
     renderGraphStatus_ = "Applied glTF camera: " + selectedCamera->name;
+}
+
+void EditorApplication::applyEnvironmentToRenderGraph(const std::filesystem::path& path)
+{
+    if (path.empty()) {
+        renderGraphStatus_ = "Environment path is empty.";
+        return;
+    }
+
+    const std::string graphEnvironmentPath = displayPathForProperty(path);
+    std::vector<uint32_t> environmentNodeIds;
+    for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
+        if (node.type == "ScenePathTracePass") {
+            environmentNodeIds.push_back(node.id);
+        }
+    }
+
+    if (environmentNodeIds.empty()) {
+        renderGraphStatus_ = "No ScenePathTracePass found for environment map.";
+        return;
+    }
+
+    size_t updatedCount = 0;
+    for (const uint32_t nodeId : environmentNodeIds) {
+        render::RenderGraphNode* node = renderGraph_.findNode(nodeId);
+        if (node == nullptr) {
+            continue;
+        }
+
+        render::RenderGraphProperties properties = node->properties.is_object()
+            ? node->properties
+            : render::RenderGraphProperties::object();
+        render::RenderGraphProperties environment = properties.contains("environment") &&
+            properties["environment"].is_object()
+            ? properties["environment"]
+            : render::RenderGraphProperties::object();
+        if (!environment.contains("enabled")) {
+            environment["enabled"] = true;
+        }
+        if (!environment.contains("visible")) {
+            environment["visible"] = true;
+        }
+        if (!environment.contains("intensity")) {
+            environment["intensity"] = 1.0f;
+        }
+        if (!environment.contains("rotationDegrees")) {
+            environment["rotationDegrees"] = 0.0f;
+        }
+        environment["path"] = graphEnvironmentPath;
+        properties["environment"] = std::move(environment);
+        if (renderGraph_.setNodeProperties(node->id, std::move(properties))) {
+            ++updatedCount;
+        }
+    }
+
+    if (updatedCount == 0) {
+        renderGraphStatus_ = "Environment update failed.";
+        return;
+    }
+
+    historyResources_.invalidateAll();
+    viewportPreviewValid_ = false;
+    viewportPreviewNeedsRender_ = true;
+    renderGraphStatus_ = "Loaded environment: " + graphEnvironmentPath +
+        " (" + std::to_string(updatedCount) + " path trace pass" +
+        (updatedCount == 1 ? ")" : "es)");
 }
 
 void EditorApplication::loadScene()
