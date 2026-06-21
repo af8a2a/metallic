@@ -7,10 +7,22 @@ endif()
 add_library(meshoptimizer STATIC
     ../meshoptimizer/src/allocator.cpp
     ../meshoptimizer/src/clusterizer.cpp
+    ../meshoptimizer/src/indexanalyzer.cpp
+    ../meshoptimizer/src/indexcodec.cpp
     ../meshoptimizer/src/indexgenerator.cpp
+    ../meshoptimizer/src/meshletcodec.cpp
+    ../meshoptimizer/src/meshletutils.cpp
+    ../meshoptimizer/src/opacitymap.cpp
+    ../meshoptimizer/src/overdrawoptimizer.cpp
     ../meshoptimizer/src/partition.cpp
+    ../meshoptimizer/src/quantization.cpp
+    ../meshoptimizer/src/rasterizer.cpp
     ../meshoptimizer/src/simplifier.cpp
+    ../meshoptimizer/src/spatialorder.cpp
+    ../meshoptimizer/src/stripifier.cpp
     ../meshoptimizer/src/vcacheoptimizer.cpp
+    ../meshoptimizer/src/vertexcodec.cpp
+    ../meshoptimizer/src/vertexfilter.cpp
     ../meshoptimizer/src/vfetchoptimizer.cpp
 )
 target_include_directories(meshoptimizer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../meshoptimizer/src)
