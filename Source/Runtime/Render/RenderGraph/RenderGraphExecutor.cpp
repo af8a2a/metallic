@@ -78,6 +78,13 @@ struct RenderGraphExecutor::Impl {
         CommandBuffer* commandBuffer = nullptr;
     };
 
+    struct BindlessResourcePlan {
+        std::vector<std::string> sampledImageResources;
+        std::vector<std::string> bufferResources;
+        std::unordered_set<std::string> sampledImageResourceSet;
+        std::unordered_set<std::string> bufferResourceSet;
+    };
+
     Device* device = nullptr;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -138,6 +145,377 @@ struct RenderGraphExecutor::Impl {
             [](const RenderGraphField& field) {
                 return isBindlessField(field);
             });
+    }
+
+    bool canReuseCompiledPasses(
+        Device& newDevice,
+        const RenderGraph& graph,
+        const ActiveGraph& activeGraph) const
+    {
+        if (!isCompiled ||
+            device != &newDevice ||
+            executionList.size() != activeGraph.executionOrder.size()) {
+            return false;
+        }
+
+        for (size_t index = 0; index < activeGraph.executionOrder.size(); ++index) {
+            const std::string& passName = activeGraph.executionOrder[index];
+            const RenderGraphNode* graphNode = graph.findNode(passName);
+            if (graphNode == nullptr) {
+                return false;
+            }
+
+            const CompiledNode& compiledNode = executionList[index];
+            if (compiledNode.pass == nullptr ||
+                compiledNode.id != graphNode->id ||
+                compiledNode.name != graphNode->name ||
+                compiledNode.type != graphNode->type ||
+                compiledNode.staticProperties != graphNode->properties) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    void rebuildInputAliases(const RenderGraph& graph, const ActiveGraph& activeGraph)
+    {
+        inputAliases.clear();
+        for (const RenderGraphEdge& edge : graph.edges()) {
+            if (!activeGraph.activePasses.contains(edge.srcPass) ||
+                !activeGraph.activePasses.contains(edge.dstPass)) {
+                continue;
+            }
+            inputAliases.emplace(
+                makeRenderGraphFieldName(edge.dstPass, edge.dstField),
+                makeRenderGraphFieldName(edge.srcPass, edge.srcField));
+        }
+    }
+
+    Result refreshReusablePasses(
+        const RenderGraph& graph,
+        const ActiveGraph& activeGraph,
+        const RenderGraphCompileContext& compileContext,
+        std::string& log)
+    {
+        if (executionList.size() != activeGraph.executionOrder.size()) {
+            log = validationPrefix("compiled pass list does not match active graph");
+            return makeError(Error::InvalidArgument);
+        }
+
+        for (size_t index = 0; index < activeGraph.executionOrder.size(); ++index) {
+            const std::string& passName = activeGraph.executionOrder[index];
+            const RenderGraphNode* graphNode = graph.findNode(passName);
+            if (graphNode == nullptr) {
+                log = validationPrefix(std::string("active pass is missing '") + passName + "'");
+                return makeError(Error::InvalidArgument);
+            }
+
+            CompiledNode& compiledNode = executionList[index];
+            if (compiledNode.pass == nullptr ||
+                compiledNode.id != graphNode->id ||
+                compiledNode.name != graphNode->name ||
+                compiledNode.type != graphNode->type ||
+                compiledNode.staticProperties != graphNode->properties) {
+                log = validationPrefix("compiled pass reuse rejected by graph mismatch");
+                return makeError(Error::InvalidArgument);
+            }
+
+            compiledNode.runtimeProperties = graphNode->runtimeProperties;
+            compiledNode.effectiveProperties = mergeRenderGraphProperties(
+                compiledNode.staticProperties,
+                compiledNode.runtimeProperties);
+
+            compiledNode.pass->setProperties(compiledNode.staticProperties);
+            compiledNode.kind = compiledNode.pass->kind();
+            compiledNode.queueType = compiledNode.pass->queueType();
+            compiledNode.reflection = compiledNode.pass->reflect(compileContext);
+            compiledNode.pass->setProperties(compiledNode.effectiveProperties);
+        }
+
+        return {};
+    }
+
+    BindlessResourcePlan collectBindlessResourcePlan() const
+    {
+        BindlessResourcePlan plan;
+        for (const CompiledNode& node : executionList) {
+            for (const RenderGraphField& field : node.reflection.fields()) {
+                if (!isBindlessField(field)) {
+                    continue;
+                }
+
+                const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
+                std::string resourceName = fullName;
+                if (field.visibility == RenderGraphFieldVisibility::Input) {
+                    const auto alias = inputAliases.find(fullName);
+                    if (alias == inputAliases.end()) {
+                        continue;
+                    }
+                    resourceName = alias->second;
+                }
+
+                if (isBindlessSampledImageField(field) &&
+                    plan.sampledImageResourceSet.insert(resourceName).second) {
+                    plan.sampledImageResources.push_back(std::move(resourceName));
+                    continue;
+                }
+                if (isBindlessBufferField(field) &&
+                    plan.bufferResourceSet.insert(resourceName).second) {
+                    plan.bufferResources.push_back(std::move(resourceName));
+                }
+            }
+        }
+        return plan;
+    }
+
+    Result allocateGraphResources(
+        Device& graphDevice,
+        const RenderGraph& graph,
+        const ActiveGraph& activeGraph,
+        const RenderGraphCompileOptions& options,
+        const BindlessResourcePlan& bindlessPlan,
+        std::string& log)
+    {
+        resources.clear();
+        bindlessHeap.reset();
+
+        for (const CompiledNode& node : executionList) {
+            for (const RenderGraphField& field : node.reflection.fields()) {
+                if (field.visibility != RenderGraphFieldVisibility::Output) {
+                    continue;
+                }
+
+                const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
+                ResourceSlot slot;
+
+                if (field.resourceType == RenderGraphResourceType::Texture2D) {
+                    TextureUsageBits usage = textureUsageForField(field);
+                    if (usage == TextureUsageBits::None) {
+                        usage = TextureUsageBits::ColorAttachment;
+                    }
+                    if (isOutputMarked(graph, fullName) || options.enablePreviewOutputAccess) {
+                        usage = addTextureUsage(usage, TextureUsageBits::TransferSource);
+                        usage = addTextureUsage(usage, TextureUsageBits::Sampled);
+                    }
+                    for (const RenderGraphEdge& edge : graph.edges()) {
+                        if (edge.srcPass != node.name ||
+                            edge.srcField != field.name ||
+                            !activeGraph.activePasses.contains(edge.dstPass)) {
+                            continue;
+                        }
+
+                        const RenderGraphField* dstField = reflectedField(
+                            edge.dstPass,
+                            edge.dstField,
+                            RenderGraphFieldVisibility::Input);
+                        if (dstField != nullptr) {
+                            usage = addTextureUsage(usage, textureUsageForField(*dstField));
+                        }
+                    }
+
+                    TextureDesc desc{
+                        .type = TextureType::Texture2D,
+                        .usage = usage,
+                        .format = resolveFormat(field.format, defaultFormat),
+                        .width = field.width == 0 ? width : field.width,
+                        .height = field.height == 0 ? height : field.height,
+                        .depth = 1,
+                        .mipCount = 1,
+                        .layerCount = 1,
+                        .memoryLocation = MemoryLocation::Device,
+                    };
+
+                    Result result = graphDevice.createTexture(desc, slot.texture);
+                    if (!result || slot.texture == nullptr) {
+                        log += resultMessage(std::string("createTexture(") + fullName + ")", result);
+                        log += '\n';
+                        return result ? makeError(Error::Failure) : result;
+                    }
+                    result = graphDevice.createTextureView(
+                        *slot.texture,
+                        TextureViewDesc{
+                            .format = desc.format,
+                            .baseMip = 0,
+                            .mipCount = 1,
+                            .baseLayer = 0,
+                            .layerCount = 1,
+                        },
+                        slot.textureView);
+                    if (!result || slot.textureView == nullptr) {
+                        log += resultMessage(std::string("createTextureView(") + fullName + ")", result);
+                        log += '\n';
+                        return result ? makeError(Error::Failure) : result;
+                    }
+                    slot.resource = RenderGraphResource{
+                        .type = RenderGraphResourceType::Texture2D,
+                        .texture = slot.texture.get(),
+                        .view = slot.textureView.get(),
+                        .desc = desc,
+                        .state = ResourceState::Undefined,
+                    };
+                } else {
+                    BufferUsageBits usage = bufferUsageForField(field);
+                    if (usage == BufferUsageBits::None) {
+                        usage = BufferUsageBits::Storage;
+                    }
+                    BufferViewType viewType = bufferViewTypeForField(field);
+                    for (const RenderGraphEdge& edge : graph.edges()) {
+                        if (edge.srcPass != node.name ||
+                            edge.srcField != field.name ||
+                            !activeGraph.activePasses.contains(edge.dstPass)) {
+                            continue;
+                        }
+
+                        const RenderGraphField* dstField = reflectedField(
+                            edge.dstPass,
+                            edge.dstField,
+                            RenderGraphFieldVisibility::Input);
+                        if (dstField == nullptr) {
+                            continue;
+                        }
+                        usage = addBufferUsage(usage, bufferUsageForField(*dstField));
+                        if (dstField->access == RenderGraphResourceAccess::BufferStorageReadWrite) {
+                            viewType = dstField->structureStride == 0
+                                ? BufferViewType::ReadWriteRaw
+                                : BufferViewType::ReadWriteStructured;
+                        }
+                    }
+
+                    const bool markedBufferOutput = isOutputMarked(graph, fullName);
+                    BufferDesc desc{
+                        .size = field.size,
+                        .structureStride = field.structureStride,
+                        .usage = usage,
+                        .memoryLocation = markedBufferOutput
+                            ? MemoryLocation::HostReadback
+                            : field.memoryLocation,
+                    };
+
+                    Result result = graphDevice.createBuffer(desc, slot.buffer);
+                    if (!result || slot.buffer == nullptr) {
+                        log += resultMessage(std::string("createBuffer(") + fullName + ")", result);
+                        log += '\n';
+                        return result ? makeError(Error::Failure) : result;
+                    }
+
+                    BufferViewDesc viewDesc{
+                        .type = viewType,
+                        .offset = 0,
+                        .size = desc.size,
+                        .structureStride = desc.structureStride,
+                    };
+                    const bool needsBindlessBuffer = bindlessPlan.bufferResourceSet.contains(fullName);
+                    if (needsBindlessBuffer) {
+                        result = graphDevice.createBufferView(*slot.buffer, viewDesc, slot.bufferView);
+                        if (!result || slot.bufferView == nullptr) {
+                            log += resultMessage(std::string("createBufferView(") + fullName + ")", result);
+                            log += '\n';
+                            return result ? makeError(Error::Failure) : result;
+                        }
+                        viewDesc = slot.bufferView->desc();
+                    }
+
+                    slot.resource = RenderGraphResource{
+                        .type = RenderGraphResourceType::Buffer,
+                        .buffer = slot.buffer.get(),
+                        .bufferView = slot.bufferView.get(),
+                        .bufferDesc = desc,
+                        .bufferViewDesc = viewDesc,
+                        .state = ResourceState::Undefined,
+                    };
+                }
+
+                resources.emplace(fullName, std::move(slot));
+            }
+        }
+
+        if (!bindlessPlan.sampledImageResources.empty() || !bindlessPlan.bufferResources.empty()) {
+            Result result = graphDevice.createBindlessHeap(
+                BindlessHeapDesc{
+                    .maxSampledImages = static_cast<uint32_t>(bindlessPlan.sampledImageResources.size()),
+                    .maxBuffers = static_cast<uint32_t>(bindlessPlan.bufferResources.size()),
+                },
+                bindlessHeap);
+            if (!result || bindlessHeap == nullptr) {
+                log += resultMessage("createBindlessHeap(RenderGraph)", result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
+
+            for (const std::string& fullName : bindlessPlan.sampledImageResources) {
+                RenderGraphResource* graphResource = resource(fullName);
+                if (graphResource == nullptr || graphResource->view == nullptr) {
+                    log = validationPrefix(std::string("bindless sampled image resource is missing '") + fullName + "'");
+                    return makeError(Error::InvalidArgument);
+                }
+
+                BindlessHandle handle;
+                result = bindlessHeap->allocateSampledImage(handle);
+                if (!result) {
+                    log += resultMessage(std::string("allocateSampledImage(") + fullName + ")", result);
+                    log += '\n';
+                    return result;
+                }
+
+                result = bindlessHeap->writeSampledImage(
+                    handle,
+                    *graphResource->view,
+                    ResourceState::ShaderRead);
+                if (!result) {
+                    log += resultMessage(std::string("writeSampledImage(") + fullName + ")", result);
+                    log += '\n';
+                    return result;
+                }
+                graphResource->bindlessHandle = handle;
+                graphResource->sampledImageBindlessHandle = handle;
+            }
+
+            for (const std::string& fullName : bindlessPlan.bufferResources) {
+                RenderGraphResource* graphResource = resource(fullName);
+                if (graphResource == nullptr || graphResource->bufferView == nullptr) {
+                    log = validationPrefix(std::string("bindless buffer resource is missing '") + fullName + "'");
+                    return makeError(Error::InvalidArgument);
+                }
+
+                BindlessHandle handle;
+                result = bindlessHeap->allocateBuffer(handle);
+                if (!result) {
+                    log += resultMessage(std::string("allocateBuffer(") + fullName + ")", result);
+                    log += '\n';
+                    return result;
+                }
+
+                result = bindlessHeap->writeBufferView(handle, *graphResource->bufferView);
+                if (!result) {
+                    log += resultMessage(std::string("writeBufferView(") + fullName + ")", result);
+                    log += '\n';
+                    return result;
+                }
+                graphResource->bindlessHandle = handle;
+            }
+        }
+
+        return {};
+    }
+
+    Result rebuildGraphResources(
+        Device& graphDevice,
+        const RenderGraph& graph,
+        const ActiveGraph& activeGraph,
+        const RenderGraphCompileOptions& options,
+        std::string& log)
+    {
+        rebuildInputAliases(graph, activeGraph);
+        BindlessResourcePlan bindlessPlan = collectBindlessResourcePlan();
+        if ((!bindlessPlan.sampledImageResources.empty() || !bindlessPlan.bufferResources.empty()) &&
+            !graphDevice.capabilities().bindlessDescriptorHeap) {
+            log = "RenderGraph compile failed: bindless resources require "
+                "DeviceCapabilities::bindlessDescriptorHeap";
+            return makeError(Error::Unsupported);
+        }
+
+        return allocateGraphResources(graphDevice, graph, activeGraph, options, bindlessPlan, log);
     }
 
     static size_t queueContextIndex(QueueType type)
@@ -450,14 +828,12 @@ Result RenderGraphExecutor::compile(
         }
     }
 
+    const bool dimensionsChanged = impl_->width != width || impl_->height != height;
+    const bool canReuseCompiledPasses = impl_->canReuseCompiledPasses(device, graph, activeGraph);
+
     impl_->device = &device;
     impl_->width = width;
     impl_->height = height;
-    impl_->executionList.clear();
-    impl_->resources.clear();
-    impl_->inputAliases.clear();
-    impl_->bindlessHeap.reset();
-    impl_->isCompiled = false;
 
     const RenderGraphCompileContext compileContext{
         .device = &device,
@@ -466,6 +842,29 @@ Result RenderGraphExecutor::compile(
         .height = height,
         .defaultFormat = impl_->defaultFormat,
     };
+
+    if (canReuseCompiledPasses) {
+        impl_->isCompiled = false;
+        Result refreshResult = impl_->refreshReusablePasses(graph, activeGraph, compileContext, log);
+        if (!refreshResult) {
+            return refreshResult;
+        }
+
+        Result resourceResult = impl_->rebuildGraphResources(device, graph, activeGraph, options, log);
+        if (!resourceResult) {
+            return resourceResult;
+        }
+
+        impl_->isCompiled = true;
+        log = dimensionsChanged ? "RenderGraph resized" : "RenderGraph resources rebuilt";
+        return {};
+    }
+
+    impl_->executionList.clear();
+    impl_->resources.clear();
+    impl_->inputAliases.clear();
+    impl_->bindlessHeap.reset();
+    impl_->isCompiled = false;
 
     for (const std::string& passName : activeGraph.executionOrder) {
         const RenderGraphNode* node = graph.findNode(passName);
@@ -499,49 +898,9 @@ Result RenderGraphExecutor::compile(
         });
     }
 
-    for (const RenderGraphEdge& edge : graph.edges()) {
-        if (!activeGraph.activePasses.contains(edge.srcPass) ||
-            !activeGraph.activePasses.contains(edge.dstPass)) {
-            continue;
-        }
-        impl_->inputAliases.emplace(
-            makeRenderGraphFieldName(edge.dstPass, edge.dstField),
-            makeRenderGraphFieldName(edge.srcPass, edge.srcField));
-    }
-
-    std::vector<std::string> bindlessSampledImageResources;
-    std::vector<std::string> bindlessBufferResources;
-    std::unordered_set<std::string> bindlessSampledImageResourceSet;
-    std::unordered_set<std::string> bindlessBufferResourceSet;
-    for (const Impl::CompiledNode& node : impl_->executionList) {
-        for (const RenderGraphField& field : node.reflection.fields()) {
-            if (!isBindlessField(field)) {
-                continue;
-            }
-
-            const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
-            std::string resourceName = fullName;
-            if (field.visibility == RenderGraphFieldVisibility::Input) {
-                const auto alias = impl_->inputAliases.find(fullName);
-                if (alias == impl_->inputAliases.end()) {
-                    continue;
-                }
-                resourceName = alias->second;
-            }
-
-            if (isBindlessSampledImageField(field) &&
-                bindlessSampledImageResourceSet.insert(resourceName).second) {
-                bindlessSampledImageResources.push_back(std::move(resourceName));
-                continue;
-            }
-            if (isBindlessBufferField(field) &&
-                bindlessBufferResourceSet.insert(resourceName).second) {
-                bindlessBufferResources.push_back(std::move(resourceName));
-            }
-        }
-    }
-
-    if ((!bindlessSampledImageResources.empty() || !bindlessBufferResources.empty()) &&
+    impl_->rebuildInputAliases(graph, activeGraph);
+    Impl::BindlessResourcePlan bindlessPlan = impl_->collectBindlessResourcePlan();
+    if ((!bindlessPlan.sampledImageResources.empty() || !bindlessPlan.bufferResources.empty()) &&
         !device.capabilities().bindlessDescriptorHeap) {
         log = "RenderGraph compile failed: bindless resources require "
             "DeviceCapabilities::bindlessDescriptorHeap";
@@ -557,220 +916,16 @@ Result RenderGraphExecutor::compile(
         node.pass->setProperties(node.effectiveProperties);
     }
 
-    for (const Impl::CompiledNode& node : impl_->executionList) {
-        for (const RenderGraphField& field : node.reflection.fields()) {
-            if (field.visibility != RenderGraphFieldVisibility::Output) {
-                continue;
-            }
-
-            const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
-            Impl::ResourceSlot slot;
-
-            if (field.resourceType == RenderGraphResourceType::Texture2D) {
-                TextureUsageBits usage = textureUsageForField(field);
-                if (usage == TextureUsageBits::None) {
-                    usage = TextureUsageBits::ColorAttachment;
-                }
-                if (isOutputMarked(graph, fullName) || options.enablePreviewOutputAccess) {
-                    usage = addTextureUsage(usage, TextureUsageBits::TransferSource);
-                    usage = addTextureUsage(usage, TextureUsageBits::Sampled);
-                }
-                for (const RenderGraphEdge& edge : graph.edges()) {
-                    if (edge.srcPass != node.name ||
-                        edge.srcField != field.name ||
-                        !activeGraph.activePasses.contains(edge.dstPass)) {
-                        continue;
-                    }
-
-                    const RenderGraphField* dstField = impl_->reflectedField(
-                        edge.dstPass,
-                        edge.dstField,
-                        RenderGraphFieldVisibility::Input);
-                    if (dstField != nullptr) {
-                        usage = addTextureUsage(usage, textureUsageForField(*dstField));
-                    }
-                }
-
-                TextureDesc desc{
-                    .type = TextureType::Texture2D,
-                    .usage = usage,
-                    .format = resolveFormat(field.format, impl_->defaultFormat),
-                    .width = field.width == 0 ? width : field.width,
-                    .height = field.height == 0 ? height : field.height,
-                    .depth = 1,
-                    .mipCount = 1,
-                    .layerCount = 1,
-                    .memoryLocation = MemoryLocation::Device,
-                };
-
-                Result result = device.createTexture(desc, slot.texture);
-                if (!result || slot.texture == nullptr) {
-                    log += resultMessage(std::string("createTexture(") + fullName + ")", result);
-                    log += '\n';
-                    return result ? makeError(Error::Failure) : result;
-                }
-                result = device.createTextureView(
-                    *slot.texture,
-                    TextureViewDesc{
-                        .format = desc.format,
-                        .baseMip = 0,
-                        .mipCount = 1,
-                        .baseLayer = 0,
-                        .layerCount = 1,
-                    },
-                    slot.textureView);
-                if (!result || slot.textureView == nullptr) {
-                    log += resultMessage(std::string("createTextureView(") + fullName + ")", result);
-                    log += '\n';
-                    return result ? makeError(Error::Failure) : result;
-                }
-                slot.resource = RenderGraphResource{
-                    .type = RenderGraphResourceType::Texture2D,
-                    .texture = slot.texture.get(),
-                    .view = slot.textureView.get(),
-                    .desc = desc,
-                    .state = ResourceState::Undefined,
-                };
-            } else {
-                BufferUsageBits usage = bufferUsageForField(field);
-                if (usage == BufferUsageBits::None) {
-                    usage = BufferUsageBits::Storage;
-                }
-                BufferViewType viewType = bufferViewTypeForField(field);
-                for (const RenderGraphEdge& edge : graph.edges()) {
-                    if (edge.srcPass != node.name ||
-                        edge.srcField != field.name ||
-                        !activeGraph.activePasses.contains(edge.dstPass)) {
-                        continue;
-                    }
-
-                    const RenderGraphField* dstField = impl_->reflectedField(
-                        edge.dstPass,
-                        edge.dstField,
-                        RenderGraphFieldVisibility::Input);
-                    if (dstField == nullptr) {
-                        continue;
-                    }
-                    usage = addBufferUsage(usage, bufferUsageForField(*dstField));
-                    if (dstField->access == RenderGraphResourceAccess::BufferStorageReadWrite) {
-                        viewType = dstField->structureStride == 0
-                            ? BufferViewType::ReadWriteRaw
-                            : BufferViewType::ReadWriteStructured;
-                    }
-                }
-
-                const bool markedBufferOutput = isOutputMarked(graph, fullName);
-                BufferDesc desc{
-                    .size = field.size,
-                    .structureStride = field.structureStride,
-                    .usage = usage,
-                    .memoryLocation = markedBufferOutput
-                        ? MemoryLocation::HostReadback
-                        : field.memoryLocation,
-                };
-
-                Result result = device.createBuffer(desc, slot.buffer);
-                if (!result || slot.buffer == nullptr) {
-                    log += resultMessage(std::string("createBuffer(") + fullName + ")", result);
-                    log += '\n';
-                    return result ? makeError(Error::Failure) : result;
-                }
-
-                BufferViewDesc viewDesc{
-                    .type = viewType,
-                    .offset = 0,
-                    .size = desc.size,
-                    .structureStride = desc.structureStride,
-                };
-                const bool needsBindlessBuffer = bindlessBufferResourceSet.contains(fullName);
-                if (needsBindlessBuffer) {
-                    result = device.createBufferView(*slot.buffer, viewDesc, slot.bufferView);
-                    if (!result || slot.bufferView == nullptr) {
-                        log += resultMessage(std::string("createBufferView(") + fullName + ")", result);
-                        log += '\n';
-                        return result ? makeError(Error::Failure) : result;
-                    }
-                    viewDesc = slot.bufferView->desc();
-                }
-
-                slot.resource = RenderGraphResource{
-                    .type = RenderGraphResourceType::Buffer,
-                    .buffer = slot.buffer.get(),
-                    .bufferView = slot.bufferView.get(),
-                    .bufferDesc = desc,
-                    .bufferViewDesc = viewDesc,
-                    .state = ResourceState::Undefined,
-                };
-            }
-
-            impl_->resources.emplace(fullName, std::move(slot));
-        }
-    }
-
-    if (!bindlessSampledImageResources.empty() || !bindlessBufferResources.empty()) {
-        Result result = device.createBindlessHeap(
-            BindlessHeapDesc{
-                .maxSampledImages = static_cast<uint32_t>(bindlessSampledImageResources.size()),
-                .maxBuffers = static_cast<uint32_t>(bindlessBufferResources.size()),
-            },
-            impl_->bindlessHeap);
-        if (!result || impl_->bindlessHeap == nullptr) {
-            log += resultMessage("createBindlessHeap(RenderGraph)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        for (const std::string& fullName : bindlessSampledImageResources) {
-            RenderGraphResource* resource = impl_->resource(fullName);
-            if (resource == nullptr || resource->view == nullptr) {
-                log = validationPrefix(std::string("bindless sampled image resource is missing '") + fullName + "'");
-                return makeError(Error::InvalidArgument);
-            }
-
-            BindlessHandle handle;
-            result = impl_->bindlessHeap->allocateSampledImage(handle);
-            if (!result) {
-                log += resultMessage(std::string("allocateSampledImage(") + fullName + ")", result);
-                log += '\n';
-                return result;
-            }
-
-            result = impl_->bindlessHeap->writeSampledImage(
-                handle,
-                *resource->view,
-                ResourceState::ShaderRead);
-            if (!result) {
-                log += resultMessage(std::string("writeSampledImage(") + fullName + ")", result);
-                log += '\n';
-                return result;
-            }
-            resource->bindlessHandle = handle;
-            resource->sampledImageBindlessHandle = handle;
-        }
-
-        for (const std::string& fullName : bindlessBufferResources) {
-            RenderGraphResource* resource = impl_->resource(fullName);
-            if (resource == nullptr || resource->bufferView == nullptr) {
-                log = validationPrefix(std::string("bindless buffer resource is missing '") + fullName + "'");
-                return makeError(Error::InvalidArgument);
-            }
-
-            BindlessHandle handle;
-            result = impl_->bindlessHeap->allocateBuffer(handle);
-            if (!result) {
-                log += resultMessage(std::string("allocateBuffer(") + fullName + ")", result);
-                log += '\n';
-                return result;
-            }
-
-            result = impl_->bindlessHeap->writeBufferView(handle, *resource->bufferView);
-            if (!result) {
-                log += resultMessage(std::string("writeBufferView(") + fullName + ")", result);
-                log += '\n';
-                return result;
-            }
-            resource->bindlessHandle = handle;
-        }
+    Result resourceResult = impl_->allocateGraphResources(
+        device,
+        graph,
+        activeGraph,
+        options,
+        bindlessPlan,
+        log);
+    if (!resourceResult) {
+        impl_->isCompiled = false;
+        return resourceResult;
     }
 
     impl_->isCompiled = true;

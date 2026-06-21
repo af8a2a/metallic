@@ -214,6 +214,33 @@ private:
     std::unique_ptr<render::GraphicsPipeline> pipeline_;
 };
 
+uint32_t& testResizeCompileCount()
+{
+    static uint32_t count = 0;
+    return count;
+}
+
+class TestResizeCompilePass final : public render::RasterPass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addOutput("color", "Resize output color");
+        return reflection;
+    }
+
+    render::Result compile(const render::RenderGraphCompileContext&, std::string&) override
+    {
+        ++testResizeCompileCount();
+        return {};
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext&) override
+    {
+        return {};
+    }
+};
+
 void registerTestPass()
 {
     static bool registered = false;
@@ -237,6 +264,10 @@ void registerTestPass()
         "TestBindlessSamplePass",
         "Test-only pass that samples a RenderGraph input through bindless",
         []() { return std::make_unique<TestBindlessSamplePass>(); });
+    render::registerRenderGraphPassType(
+        "TestResizeCompilePass",
+        "Test-only pass that counts RenderGraph compile calls",
+        []() { return std::make_unique<TestResizeCompilePass>(); });
 }
 
 uint32_t countBrightPixels(const std::vector<uint32_t>& pixels)
@@ -2093,6 +2124,81 @@ public:
     }
 };
 
+class RenderGraphResizeReusesCompiledPassesTest : public RhiTest {
+public:
+    RenderGraphResizeReusesCompiledPassesTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_graph_resize_reuses_compiled_passes";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        registerTestPass();
+
+        render::RenderGraph graph;
+        graph.setName("ResizeReuse");
+        render::RenderGraphNode* node = graph.addNode("TestResizeCompilePass", "Resize");
+        if (node == nullptr) {
+            return RhiTestResult::fail("failed to add resize test pass node");
+        }
+        graph.markOutput("Resize.color");
+
+        uint32_t& compileCount = testResizeCompileCount();
+        compileCount = 0;
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        render::Result result = executor.compile(context.device, graph, 64, 48, log);
+        if (!result) {
+            return RhiTestResult::fail(std::string("initial RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+        }
+        if (compileCount != 1) {
+            return RhiTestResult::fail(
+                std::string("expected one pass compile after initial compile, got ") +
+                std::to_string(compileCount));
+        }
+
+        const render::RenderGraphResource* output = executor.outputResource("Resize.color");
+        if (output == nullptr || output->desc.width != 64 || output->desc.height != 48) {
+            return RhiTestResult::fail("initial resize test output dimensions are invalid");
+        }
+
+        result = executor.compile(context.device, graph, 128, 96, log);
+        if (!result) {
+            return RhiTestResult::fail(std::string("resize RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+        }
+        if (compileCount != 1) {
+            return RhiTestResult::fail(
+                std::string("resize recompiled pass PSO path; compile count is ") +
+                std::to_string(compileCount));
+        }
+
+        output = executor.outputResource("Resize.color");
+        if (output == nullptr || output->desc.width != 128 || output->desc.height != 96) {
+            return RhiTestResult::fail("resized graph output dimensions were not rebuilt");
+        }
+
+        render::RenderGraphProperties properties = render::RenderGraphProperties::object();
+        properties["variant"] = 1;
+        if (!graph.setNodeProperties(node->id, std::move(properties))) {
+            return RhiTestResult::fail("failed to update resize test pass static properties");
+        }
+
+        result = executor.compile(context.device, graph, 128, 96, log);
+        if (!result) {
+            return RhiTestResult::fail(std::string("static property RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+        }
+        if (compileCount != 2) {
+            return RhiTestResult::fail(
+                std::string("static property change did not force full pass compile; compile count is ") +
+                std::to_string(compileCount));
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 class RenderGraphCopyColorWorkflowTest : public RhiTest {
 public:
     RenderGraphCopyColorWorkflowTest()
@@ -2647,6 +2753,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingEnvironmentRotationTest)
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceTransmissionTexturesPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceAlphaMaskPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphResizeReusesCompiledPassesTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);
