@@ -2122,9 +2122,6 @@ void EditorApplication::drawDockspace()
             if (ImGui::MenuItem("Open Scene...", "Ctrl+O")) {
                 chooseSceneFile();
             }
-            if (ImGui::MenuItem("Load Scene Path")) {
-                loadScene();
-            }
             if (ImGui::BeginMenu("Open Recent")) {
                 if (recentScenePaths_.empty()) {
                     ImGui::TextDisabled("No recent scenes");
@@ -2218,18 +2215,12 @@ void EditorApplication::drawScenePanel()
     ImGui::Begin("Scene Browser");
 
     ImGui::TextUnformatted("glTF Scene");
-    ImGui::PushItemWidth(-96.0f * mainScale_);
-    ImGui::InputText("##ScenePath", sceneFilePath_, sizeof(sceneFilePath_));
-    ImGui::PopItemWidth();
-    ImGui::SameLine();
-    if (ImGui::Button("Browse...")) {
-        chooseSceneFile();
+    if (scene_.valid()) {
+        ImGui::TextWrapped("Path: %s", scene_.filename().string().c_str());
+    } else {
+        ImGui::TextDisabled("No scene loaded.");
     }
 
-    if (ImGui::Button("Load")) {
-        loadScene();
-    }
-    ImGui::SameLine();
     if (ImGui::Button("Clear")) {
         clearSceneRtx();
         scene_.clear();
