@@ -707,13 +707,16 @@ public:
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> nrdDenoise =
             render::createRenderGraphPass("NrdDenoisePass");
+        const std::unique_ptr<render::RenderGraphPass> streamlineDlssRr =
+            render::createRenderGraphPass("StreamlineDlssRrPass");
 
         if (triangle == nullptr ||
             copy == nullptr ||
             bufferWrite == nullptr ||
             pathTrace == nullptr ||
             materialVisualization == nullptr ||
-            nrdDenoise == nullptr) {
+            nrdDenoise == nullptr ||
+            streamlineDlssRr == nullptr) {
             return RhiTestResult::fail("failed to create built-in render graph passes");
         }
         if (triangle->kind() != render::RenderGraphPassKind::Raster ||
@@ -740,6 +743,10 @@ public:
             nrdDenoise->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("NrdDenoisePass is not classified as Compute/Compute");
         }
+        if (streamlineDlssRr->kind() != render::RenderGraphPassKind::Unsafe ||
+            streamlineDlssRr->queueType() != render::QueueType::Graphics) {
+            return RhiTestResult::fail("StreamlineDlssRrPass is not classified as Unsafe/Graphics");
+        }
 
         bool foundTriangle = false;
         bool foundCopy = false;
@@ -747,6 +754,7 @@ public:
         bool foundPathTrace = false;
         bool foundMaterialVisualization = false;
         bool foundNrdDenoise = false;
+        bool foundStreamlineDlssRr = false;
         for (const render::RenderGraphPassInfo& passInfo : render::listRenderGraphPassTypes()) {
             if (passInfo.type == "TriangleRasterPass") {
                 foundTriangle = passInfo.kind == render::RenderGraphPassKind::Raster &&
@@ -766,6 +774,9 @@ public:
             } else if (passInfo.type == "NrdDenoisePass") {
                 foundNrdDenoise = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
+            } else if (passInfo.type == "StreamlineDlssRrPass") {
+                foundStreamlineDlssRr = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
+                    passInfo.queueType == render::QueueType::Graphics;
             }
         }
         if (!foundTriangle ||
@@ -773,7 +784,8 @@ public:
             !foundBufferWrite ||
             !foundPathTrace ||
             !foundMaterialVisualization ||
-            !foundNrdDenoise) {
+            !foundNrdDenoise ||
+            !foundStreamlineDlssRr) {
             return RhiTestResult::fail("RenderGraphPassInfo did not preserve pass kind metadata");
         }
 
@@ -980,6 +992,35 @@ public:
             return RhiTestResult::fail("OpenPBR PathTracingSample graph first output changed");
         }
 
+        render::RenderSampleLoadResult dlssRrSample;
+        if (!render::loadBuiltInRenderSample("pathtracing-sample-dlss-rr", dlssRrSample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (dlssRrSample.desc.id != "pathtracing-sample-dlss-rr" ||
+            dlssRrSample.desc.name != "PathTracingSample / DLSS-RR" ||
+            dlssRrSample.desc.category != "PathTracing" ||
+            dlssRrSample.desc.scenePath != "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf" ||
+            dlssRrSample.desc.graphPath != "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json" ||
+            dlssRrSample.desc.previewOutput != "DlssRr.color") {
+            return RhiTestResult::fail("DLSS-RR PathTracingSample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* dlssRrPathTrace = dlssRrSample.graph.findNode("PathTrace");
+        const render::RenderGraphNode* dlssRrPass = dlssRrSample.graph.findNode("DlssRr");
+        if (dlssRrPathTrace == nullptr ||
+            dlssRrPass == nullptr ||
+            !dlssRrPathTrace->properties.is_object() ||
+            dlssRrPathTrace->properties.value("path", "") != dlssRrSample.desc.scenePath ||
+            !dlssRrPathTrace->properties.value("exportDenoiserGuides", false) ||
+            dlssRrPass->type != "StreamlineDlssRrPass") {
+            return RhiTestResult::fail("DLSS-RR PathTracingSample did not apply expected graph defaults");
+        }
+        if (!dlssRrSample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (dlssRrSample.graph.firstOutputName() != "DlssRr.color") {
+            return RhiTestResult::fail("DLSS-RR PathTracingSample graph first output changed");
+        }
+
         render::RenderSampleLoadResult materialSample;
         if (!render::loadBuiltInRenderSample("material-visualization-abeautiful-game", materialSample, message)) {
             return RhiTestResult::fail(message);
@@ -1008,14 +1049,16 @@ public:
 
         bool listedPathTrace = false;
         bool listedOpenPBRPathTrace = false;
+        bool listedDlssRrPathTrace = false;
         bool listedMaterialVisualization = false;
         for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
             listedPathTrace = listedPathTrace || desc.id == "pathtracing-meet-mat";
             listedOpenPBRPathTrace = listedOpenPBRPathTrace || desc.id == "pathtracing-sample";
+            listedDlssRrPathTrace = listedDlssRrPathTrace || desc.id == "pathtracing-sample-dlss-rr";
             listedMaterialVisualization = listedMaterialVisualization ||
                 desc.id == "material-visualization-abeautiful-game";
         }
-        if (!listedPathTrace || !listedOpenPBRPathTrace || !listedMaterialVisualization) {
+        if (!listedPathTrace || !listedOpenPBRPathTrace || !listedDlssRrPathTrace || !listedMaterialVisualization) {
             return RhiTestResult::fail("built-in Sample list did not contain expected samples");
         }
         return RhiTestResult::pass();
@@ -1575,6 +1618,61 @@ public:
         return RhiTestResult::pass(
             std::string("compiled OpenPBR RayQuery path tracing shader, words=") +
             std::to_string(compileResult.spirv.size()));
+    }
+};
+
+class RenderGraphPathTracingGuidesShaderCompileTest : public RhiTest {
+public:
+    RenderGraphPathTracingGuidesShaderCompileTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_pathtracing_guides_shader_compile";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const char* capabilities[] = {"spvRayQueryKHR"};
+        const struct ShaderEntry {
+            const char* moduleName;
+            const char* entryPointName;
+        } entries[] = {
+            {"scene_path_trace_guides", "scenePathTraceGuidesMain"},
+            {"openpbr_rayquery_path_trace_guides", "openPbrRayQueryPathTraceGuidesMain"},
+        };
+
+        for (const ShaderEntry& entry : entries) {
+            render::ShaderCompileResult compileResult;
+            render::Result result = render::compileSlangShaderToSpirv(
+                render::SlangShaderDesc{
+                    .moduleName = entry.moduleName,
+                    .entryPointName = entry.entryPointName,
+                    .searchPath = kShaderSearchPath,
+                    .profileName = "glsl_460",
+                    .capabilities = capabilities,
+                    .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                },
+                compileResult);
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("Path tracing guide shader compile returned ") +
+                    toString(result) +
+                    " for " +
+                    entry.moduleName +
+                    "." +
+                    entry.entryPointName +
+                    ": " +
+                    compileResult.diagnostics);
+            }
+            if (compileResult.spirv.empty()) {
+                return RhiTestResult::fail(
+                    std::string("Path tracing guide shader produced empty SPIR-V for ") +
+                    entry.moduleName +
+                    "." +
+                    entry.entryPointName);
+            }
+        }
+
+        return RhiTestResult::pass("compiled path tracing guide shaders");
     }
 };
 
@@ -2497,6 +2595,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneMaterialVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphPathTracingGuidesShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingSamplePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingEnvironmentRotationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);

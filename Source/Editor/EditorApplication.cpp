@@ -1170,6 +1170,7 @@ bool EditorApplication::initializeRhi()
             .enableRayTracingAccelerationStructure = true,
             .enableRayQuery = true,
             .enablePushDescriptor = true,
+            .enableStreamline = true,
         },
         device_);
     if (!result || device_ == nullptr) {

@@ -1,8 +1,10 @@
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_vulkan.h>
 
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
@@ -88,11 +90,11 @@ uint32_t& sdlVulkanLibraryRefCount()
     return refCount;
 }
 
-bool acquireSdlVulkanLibrary()
+bool acquireSdlVulkanLibrary(const char* libraryPath = nullptr)
 {
     std::lock_guard lock(sdlVulkanLibraryMutex());
     uint32_t& refCount = sdlVulkanLibraryRefCount();
-    if (refCount == 0 && !SDL_Vulkan_LoadLibrary(nullptr)) {
+    if (refCount == 0 && !SDL_Vulkan_LoadLibrary(libraryPath)) {
         return false;
     }
 
@@ -112,6 +114,27 @@ void releaseSdlVulkanLibrary()
     if (refCount == 0) {
         SDL_Vulkan_UnloadLibrary();
     }
+}
+
+PFN_vkGetInstanceProcAddr loadVulkanLoaderProcAddr(
+    const char* libraryName,
+    SDL_SharedObject*& outLibraryHandle)
+{
+    outLibraryHandle = nullptr;
+
+    SDL_SharedObject* const libraryHandle = SDL_LoadObject(libraryName);
+    if (libraryHandle == nullptr) {
+        return nullptr;
+    }
+
+    SDL_FunctionPointer const procAddr = SDL_LoadFunction(libraryHandle, "vkGetInstanceProcAddr");
+    if (procAddr == nullptr) {
+        SDL_UnloadObject(libraryHandle);
+        return nullptr;
+    }
+
+    outLibraryHandle = libraryHandle;
+    return reinterpret_cast<PFN_vkGetInstanceProcAddr>(procAddr);
 }
 
 std::mutex& volkDeviceMutex()
@@ -971,7 +994,11 @@ struct VulkanExtensionSet {
     bool accelerationStructure = false;
     bool deferredHostOperations = false;
     bool rayQuery = false;
+    bool rayTracingPipeline = false;
+    bool pipelineLibrary = false;
     bool pushDescriptor = false;
+    bool streamlineBinaryImport = false;
+    bool streamlineImageViewHandle = false;
 #ifdef VK_EXT_mesh_shader
     bool meshShader = false;
 #endif
@@ -989,7 +1016,15 @@ struct VulkanExtensionSet {
         result.accelerationStructure = result.has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         result.deferredHostOperations = result.has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         result.rayQuery = result.has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        result.rayTracingPipeline = result.has(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+        result.pipelineLibrary = result.has(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
         result.pushDescriptor = result.has(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+#ifdef VK_NVX_binary_import
+        result.streamlineBinaryImport = result.has(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
+#endif
+#ifdef VK_NVX_image_view_handle
+        result.streamlineImageViewHandle = result.has(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME);
+#endif
 #ifdef VK_EXT_mesh_shader
         result.meshShader = result.has(VK_EXT_MESH_SHADER_EXTENSION_NAME);
 #endif
@@ -1011,6 +1046,7 @@ struct VulkanDeviceFeatureRequest {
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
+    bool streamline = false;
 
     static VulkanDeviceFeatureRequest from(const DeviceDesc& desc)
     {
@@ -1020,6 +1056,7 @@ struct VulkanDeviceFeatureRequest {
             .rayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure,
             .rayQuery = desc.enableRayQuery,
             .pushDescriptor = desc.enablePushDescriptor,
+            .streamline = desc.enableStreamline,
         };
     }
 };
@@ -1045,6 +1082,9 @@ struct VulkanDeviceFeatureProbe {
     };
     VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+    };
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
     };
 #ifdef VK_EXT_mesh_shader
     VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{
@@ -1078,6 +1118,9 @@ struct VulkanDeviceFeatureProbe {
         if (extensions.rayQuery) {
             appendPNext(featureTail, rayQueryFeatures);
         }
+        if (extensions.rayTracingPipeline) {
+            appendPNext(featureTail, rayTracingPipelineFeatures);
+        }
 #ifdef VK_EXT_mesh_shader
         if (extensions.meshShader) {
             appendPNext(featureTail, meshShaderFeatures);
@@ -1105,6 +1148,19 @@ struct VulkanDeviceFeatureProbe {
             accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
             vulkan12Features.bufferDeviceAddress == VK_TRUE;
     }
+
+    bool supportsStreamline(const VulkanExtensionSet& extensions, bool accelerationStructureSupported) const
+    {
+        return accelerationStructureSupported &&
+            extensions.rayQuery &&
+            rayQueryFeatures.rayQuery == VK_TRUE &&
+            extensions.rayTracingPipeline &&
+            rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE &&
+            extensions.pipelineLibrary &&
+            extensions.pushDescriptor &&
+            extensions.streamlineBinaryImport &&
+            extensions.streamlineImageViewHandle;
+    }
 };
 
 struct VulkanDeviceFeatureSelection {
@@ -1113,6 +1169,7 @@ struct VulkanDeviceFeatureSelection {
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
+    bool streamline = false;
 
     static VulkanDeviceFeatureSelection select(
         const VulkanDeviceFeatureRequest& request,
@@ -1121,6 +1178,7 @@ struct VulkanDeviceFeatureSelection {
         const VulkanDeviceFeatureProbe& probe)
     {
         const bool accelerationStructureSupported = probe.supportsAccelerationStructure(extensions);
+        const bool streamlineSupported = probe.supportsStreamline(extensions, accelerationStructureSupported);
 
         VulkanDeviceFeatureSelection result;
         result.bindlessDescriptorHeap =
@@ -1137,20 +1195,26 @@ struct VulkanDeviceFeatureSelection {
             extensions.shaderObject &&
             probe.shaderObjectFeatures.shaderObject == VK_TRUE;
         result.rayTracingAccelerationStructure =
-            (request.rayTracingAccelerationStructure || request.rayQuery) &&
+            (request.rayTracingAccelerationStructure || request.rayQuery || request.streamline) &&
             accelerationStructureSupported;
         result.rayQuery =
-            request.rayQuery &&
+            (request.rayQuery || request.streamline) &&
             accelerationStructureSupported &&
             extensions.rayQuery &&
             probe.rayQueryFeatures.rayQuery == VK_TRUE;
-        result.pushDescriptor = request.pushDescriptor && extensions.pushDescriptor;
+        result.pushDescriptor = (request.pushDescriptor || request.streamline) && extensions.pushDescriptor;
+        result.streamline =
+            request.streamline &&
+            streamlineSupported &&
+            result.rayTracingAccelerationStructure &&
+            result.rayQuery &&
+            result.pushDescriptor;
         return result;
     }
 
     bool usesBufferDeviceAddress() const
     {
-        return bindlessDescriptorHeap || rayTracingAccelerationStructure || rayQuery;
+        return bindlessDescriptorHeap || rayTracingAccelerationStructure || rayQuery || streamline;
     }
 
     bool matches(const VulkanDeviceFeatureRequest& request) const
@@ -1165,6 +1229,7 @@ struct VulkanDeviceFeatureSelection {
     int32_t score() const
     {
         return (bindlessDescriptorHeap ? 16 : 0) +
+            (streamline ? 32 : 0) +
             (shaderObject ? 8 : 0) +
             (rayTracingAccelerationStructure ? 4 : 0) +
             (rayQuery ? 2 : 0) +
@@ -1194,6 +1259,9 @@ struct VulkanEnabledFeatureChain {
     VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
     };
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
+    };
     VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
     };
@@ -1213,6 +1281,7 @@ struct VulkanEnabledFeatureChain {
         accelerationStructureFeatures.accelerationStructure =
             selection.rayTracingAccelerationStructure ? VK_TRUE : VK_FALSE;
         rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
+        rayTracingPipelineFeatures.rayTracingPipeline = selection.streamline ? VK_TRUE : VK_FALSE;
 
         features.pNext = &vulkan11Features;
         void** featureTail = &vulkan11Features.pNext;
@@ -1229,6 +1298,9 @@ struct VulkanEnabledFeatureChain {
         }
         if (selection.rayQuery) {
             appendPNext(featureTail, rayQueryFeatures);
+        }
+        if (selection.streamline) {
+            appendPNext(featureTail, rayTracingPipelineFeatures);
         }
     }
 };
@@ -1253,6 +1325,16 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
     }
     if (selection.pushDescriptor) {
         extensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+    }
+    if (selection.streamline) {
+        extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+        extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+#ifdef VK_NVX_binary_import
+        extensions.push_back(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
+#endif
+#ifdef VK_NVX_image_view_handle
+        extensions.push_back(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME);
+#endif
     }
     return extensions;
 }
@@ -1643,7 +1725,10 @@ struct TextureImpl {
     DeviceImpl* device = nullptr;
     TextureDesc desc;
     VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
+    VkImageCreateFlags flags = 0;
+    VkImageUsageFlags usage = 0;
     bool ownsImage = false;
 };
 
@@ -1754,6 +1839,7 @@ struct DeviceImpl {
     DescriptorHeapWriter descriptorHeapWriter;
     uint32_t graphicsFamily = 0;
     uint32_t computeFamily = 0;
+    SDL_SharedObject* vulkanLoaderHandle = nullptr;
     bool sdlVulkanLoaded = false;
     bool validationEnabled = false;
     bool debugUtilsEnabled = false;
@@ -1763,6 +1849,7 @@ struct DeviceImpl {
     bool rayTracingAccelerationStructureEnabled = false;
     bool rayQueryEnabled = false;
     bool pushDescriptorEnabled = false;
+    bool streamlineInitialized = false;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
     std::vector<std::unique_ptr<Queue>> queues;
@@ -1778,6 +1865,11 @@ DeviceImpl::~DeviceImpl()
     if (device != VK_NULL_HANDLE) {
         activateVolkDevice(device);
         vkDeviceWaitIdle(device);
+    }
+
+    if (streamlineInitialized) {
+        vulkan::shutdownStreamline();
+        streamlineInitialized = false;
     }
 
     if (allocator != VK_NULL_HANDLE) {
@@ -1805,6 +1897,11 @@ DeviceImpl::~DeviceImpl()
     if (sdlVulkanLoaded) {
         releaseSdlVulkanLibrary();
         sdlVulkanLoaded = false;
+    }
+
+    if (vulkanLoaderHandle != nullptr) {
+        SDL_UnloadObject(vulkanLoaderHandle);
+        vulkanLoaderHandle = nullptr;
     }
 }
 
@@ -2001,6 +2098,7 @@ void SwapchainImpl::wrapImages(const std::vector<VkImage>& images, TextureUsageB
         textureImpl->device = device;
         textureImpl->desc = textureDesc;
         textureImpl->image = image;
+        textureImpl->usage = toVkImageUsage(textureDesc.usage);
         textureImpl->ownsImage = false;
         textures.emplace_back(new Texture(std::move(textureImpl)));
     }
@@ -3848,6 +3946,7 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     };
 
     VmaAllocationCreateInfo allocationInfo = allocationInfoForMemory(desc.memoryLocation);
+    VmaAllocationInfo allocatedInfo{};
     VkImage image = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
     const VkResult result = vmaCreateImage(
@@ -3856,7 +3955,7 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
         &allocationInfo,
         &image,
         &allocation,
-        nullptr);
+        &allocatedInfo);
     if (result != VK_SUCCESS) {
         return resultFromVk(result);
     }
@@ -3865,7 +3964,10 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     textureImpl->device = impl_.get();
     textureImpl->desc = desc;
     textureImpl->image = image;
+    textureImpl->memory = allocatedInfo.deviceMemory;
     textureImpl->allocation = allocation;
+    textureImpl->flags = imageInfo.flags;
+    textureImpl->usage = imageInfo.usage;
     textureImpl->ownsImage = true;
     outTexture.reset(new Texture(std::move(textureImpl)));
     return {};
@@ -4405,16 +4507,48 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     outDevice.reset();
 
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
-    if (!acquireSdlVulkanLibrary()) {
-        std::cerr << "SDL_Vulkan_LoadLibrary failed: " << SDL_GetError() << '\n';
-        return makeError(Error::Unsupported);
+    PFN_vkGetInstanceProcAddr streamlineVkGetInstanceProcAddr = nullptr;
+    if (desc.enableStreamline && vulkan::streamlineSdkAvailable()) {
+        const char* const vulkanLibraryName = vulkan::streamlineVulkanLibraryName();
+        streamlineVkGetInstanceProcAddr =
+            loadVulkanLoaderProcAddr(vulkanLibraryName, deviceImpl->vulkanLoaderHandle);
+        if (streamlineVkGetInstanceProcAddr != nullptr) {
+            std::string streamlineLog;
+            Result streamlineResult = vulkan::initializeStreamlinePreDevice(streamlineLog);
+            if (streamlineResult) {
+                deviceImpl->streamlineInitialized = true;
+            } else {
+                std::cerr << "NVIDIA Streamline initialization skipped: "
+                          << (streamlineLog.empty() ? resultToString(streamlineResult) : streamlineLog)
+                          << '\n';
+                vulkan::shutdownStreamline();
+                SDL_UnloadObject(deviceImpl->vulkanLoaderHandle);
+                deviceImpl->vulkanLoaderHandle = nullptr;
+                streamlineVkGetInstanceProcAddr = nullptr;
+            }
+        } else {
+            std::cerr << "SDL_LoadObject(" << vulkanLibraryName << ") failed: " << SDL_GetError()
+                      << "; retrying without Streamline.\n";
+        }
     }
-    deviceImpl->sdlVulkanLoaded = true;
 
-    VkResult vkResult = volkInitialize();
-    if (vkResult != VK_SUCCESS) {
-        std::cerr << "volkInitialize failed with VkResult " << static_cast<int>(vkResult) << '\n';
-        return resultFromVk(vkResult);
+    if (streamlineVkGetInstanceProcAddr == nullptr) {
+        if (!acquireSdlVulkanLibrary()) {
+            std::cerr << "SDL_Vulkan_LoadLibrary failed: " << SDL_GetError() << '\n';
+            return makeError(Error::Unsupported);
+        }
+        deviceImpl->sdlVulkanLoaded = true;
+    }
+
+    VkResult vkResult = VK_SUCCESS;
+    if (streamlineVkGetInstanceProcAddr != nullptr) {
+        volkInitializeCustom(streamlineVkGetInstanceProcAddr);
+    } else {
+        vkResult = volkInitialize();
+        if (vkResult != VK_SUCCESS) {
+            std::cerr << "volkInitialize failed with VkResult " << static_cast<int>(vkResult) << '\n';
+            return resultFromVk(vkResult);
+        }
     }
 
     Uint32 sdlExtensionCount = 0;
@@ -4556,7 +4690,8 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
                 .featureScore = featureScore,
             };
         }
-        if (featureSelection.matches(requestedFeatures)) {
+        if (featureSelection.matches(requestedFeatures) &&
+            (!requestedFeatures.streamline || featureSelection.streamline)) {
             deviceImpl->physicalDevice = physicalDevice;
             deviceImpl->graphicsFamily = graphicsFamily;
             deviceImpl->computeFamily = computeFamily;
@@ -4698,6 +4833,39 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     vkGetDeviceQueue(deviceImpl->device, deviceImpl->computeFamily, 0, &computeQueue);
     deviceImpl->addQueue(computeQueue, deviceImpl->computeFamily, QueueType::Compute);
 
+    if (deviceImpl->streamlineInitialized && selectedFeatures.streamline) {
+        std::string streamlineLog;
+        Result streamlineResult = setStreamlineVulkanDevice(
+            vulkan::NativeDevice{
+                .instance = deviceImpl->instance,
+                .physicalDevice = deviceImpl->physicalDevice,
+                .device = deviceImpl->device,
+                .apiVersion = kVulkanApiVersion,
+            },
+            vulkan::NativeQueue{
+                .queue = graphicsQueue,
+                .familyIndex = deviceImpl->graphicsFamily,
+            },
+            vulkan::NativeQueue{
+                .queue = computeQueue,
+                .familyIndex = deviceImpl->computeFamily,
+            },
+            streamlineLog);
+        if (streamlineResult) {
+            deviceImpl->capabilities.streamline = true;
+            deviceImpl->capabilities.streamlineDlssRr = vulkan::streamlineDlssRrSupported();
+            if (!deviceImpl->capabilities.streamlineDlssRr && !streamlineLog.empty()) {
+                std::cerr << "NVIDIA Streamline DLSS-RR unsupported: " << streamlineLog << '\n';
+            }
+        } else {
+            std::cerr << "NVIDIA Streamline Vulkan setup failed: "
+                      << (streamlineLog.empty() ? resultToString(streamlineResult) : streamlineLog)
+                      << '\n';
+        }
+    } else if (deviceImpl->streamlineInitialized && desc.enableStreamline) {
+        std::cerr << "NVIDIA Streamline initialized, but the selected Vulkan device is missing required extensions.\n";
+    }
+
     outDevice.reset(new Device(std::move(deviceImpl)));
     return {};
 }
@@ -4771,10 +4939,15 @@ struct VulkanNativeAccess {
         const TextureDesc& desc = texture.impl_->desc;
         return vulkan::NativeTexture{
             .image = texture.impl_->image,
+            .memory = texture.impl_->memory,
             .format = toVkFormat(desc.format),
             .width = desc.width,
             .height = desc.height,
             .depth = desc.depth,
+            .mipCount = desc.mipCount,
+            .layerCount = desc.layerCount,
+            .flags = texture.impl_->flags,
+            .usage = texture.impl_->usage,
         };
     }
 

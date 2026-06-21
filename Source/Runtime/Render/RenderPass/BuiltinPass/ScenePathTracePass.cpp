@@ -54,6 +54,12 @@ static constexpr OpenPBRVec3 kOpenPBRLtc[] = {
 constexpr uint32_t kOpenPBRLut2DBinding = 11;
 constexpr uint32_t kOpenPBRLut3DBinding = 12;
 constexpr uint32_t kEnvironmentImportanceAliasTableBinding = 13;
+constexpr uint32_t kDlssRrAlbedoBinding = 14;
+constexpr uint32_t kDlssRrSpecularAlbedoBinding = 15;
+constexpr uint32_t kDlssRrNormalRoughnessBinding = 16;
+constexpr uint32_t kDlssRrMotionVectorsBinding = 17;
+constexpr uint32_t kDlssRrLinearDepthBinding = 18;
+constexpr uint32_t kDlssRrSpecularHitDistanceBinding = 19;
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
 constexpr uint32_t kOpenPBRLutSize = OpenPBR_EnergyTableSize;
@@ -453,10 +459,31 @@ public:
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
+        const bool exportGuides = exportDenoiserGuides(properties());
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "Path-traced glTF scene")
             .storageReadWrite()
-            .format = Format::Rgba8Unorm;
+            .format = exportGuides ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
+        if (exportGuides) {
+            reflection.addTextureOutput("albedo", "DLSS-RR diffuse albedo guide")
+                .storageReadWrite()
+                .format = Format::Rgba16Sfloat;
+            reflection.addTextureOutput("specularAlbedo", "DLSS-RR specular albedo guide")
+                .storageReadWrite()
+                .format = Format::Rgba16Sfloat;
+            reflection.addTextureOutput("normalRoughness", "DLSS-RR packed normal and roughness guide")
+                .storageReadWrite()
+                .format = Format::Rgba16Sfloat;
+            reflection.addTextureOutput("motionVectors", "DLSS-RR motion vector guide")
+                .storageReadWrite()
+                .format = Format::Rgba16Sfloat;
+            reflection.addTextureOutput("linearDepth", "DLSS-RR linear depth guide")
+                .storageReadWrite()
+                .format = Format::R32Sfloat;
+            reflection.addTextureOutput("specularHitDistance", "DLSS-RR specular hit distance guide")
+                .storageReadWrite()
+                .format = Format::R32Sfloat;
+        }
         return reflection;
     }
 
@@ -511,12 +538,24 @@ public:
         }
         const std::string bsdf = stringProperty(properties(), "bsdf", "standard");
         const bool useOpenPBR = bsdf == "openpbr" || bsdf == "OpenPBR";
-        const char* moduleName = useOpenPBR
-            ? kOpenPBRRayQueryPathTraceShaderModuleName
-            : kScenePathTraceShaderModuleName;
-        const char* entryPointName = useOpenPBR
-            ? kOpenPBRRayQueryPathTraceEntryPoint
-            : kScenePathTraceEntryPoint;
+        const bool exportGuides = exportDenoiserGuides(properties());
+        const char* moduleName = nullptr;
+        const char* entryPointName = nullptr;
+        if (useOpenPBR) {
+            moduleName = exportGuides
+                ? kOpenPBRRayQueryPathTraceGuidesShaderModuleName
+                : kOpenPBRRayQueryPathTraceShaderModuleName;
+            entryPointName = exportGuides
+                ? kOpenPBRRayQueryPathTraceGuidesEntryPoint
+                : kOpenPBRRayQueryPathTraceEntryPoint;
+        } else {
+            moduleName = exportGuides
+                ? kScenePathTraceGuidesShaderModuleName
+                : kScenePathTraceShaderModuleName;
+            entryPointName = exportGuides
+                ? kScenePathTraceGuidesEntryPoint
+                : kScenePathTraceEntryPoint;
+        }
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName;
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
@@ -626,6 +665,32 @@ public:
                 .descriptorCount = kOpenPBRLut3DCount,
             });
         }
+        if (exportGuides) {
+            bindings.push_back(SceneRayQueryBindingDesc{
+                .binding = kDlssRrAlbedoBinding,
+                .kind = SceneRayQueryBindingKind::StorageImage,
+            });
+            bindings.push_back(SceneRayQueryBindingDesc{
+                .binding = kDlssRrSpecularAlbedoBinding,
+                .kind = SceneRayQueryBindingKind::StorageImage,
+            });
+            bindings.push_back(SceneRayQueryBindingDesc{
+                .binding = kDlssRrNormalRoughnessBinding,
+                .kind = SceneRayQueryBindingKind::StorageImage,
+            });
+            bindings.push_back(SceneRayQueryBindingDesc{
+                .binding = kDlssRrMotionVectorsBinding,
+                .kind = SceneRayQueryBindingKind::StorageImage,
+            });
+            bindings.push_back(SceneRayQueryBindingDesc{
+                .binding = kDlssRrLinearDepthBinding,
+                .kind = SceneRayQueryBindingKind::StorageImage,
+            });
+            bindings.push_back(SceneRayQueryBindingDesc{
+                .binding = kDlssRrSpecularHitDistanceBinding,
+                .kind = SceneRayQueryBindingKind::StorageImage,
+            });
+        }
         std::string programLog;
         result = rayQueryProgram_.initialize(
             *context.device,
@@ -660,6 +725,13 @@ public:
         Buffer* environmentImportanceBuffer = sceneResources_.environmentImportanceBuffer();
         TextureView* const environmentTextureViews[] = {environmentTextureView};
         const bool useOpenPBR = useOpenPBRBsdf(properties());
+        const bool exportGuides = exportDenoiserGuides(properties());
+        TextureHandle albedo = exportGuides ? context.outputTexture("albedo") : TextureHandle{};
+        TextureHandle specularAlbedo = exportGuides ? context.outputTexture("specularAlbedo") : TextureHandle{};
+        TextureHandle normalRoughness = exportGuides ? context.outputTexture("normalRoughness") : TextureHandle{};
+        TextureHandle motionVectors = exportGuides ? context.outputTexture("motionVectors") : TextureHandle{};
+        TextureHandle linearDepth = exportGuides ? context.outputTexture("linearDepth") : TextureHandle{};
+        TextureHandle specularHitDistance = exportGuides ? context.outputTexture("specularHitDistance") : TextureHandle{};
         if (!color.valid() ||
             color.view() == nullptr ||
             !rayQueryProgram_.valid() ||
@@ -667,7 +739,14 @@ public:
             materialTextureViews[0] == nullptr ||
             environmentTextureView == nullptr ||
             environmentImportanceBuffer == nullptr ||
-            (useOpenPBR && !openPBRLuts_.valid())) {
+            (useOpenPBR && !openPBRLuts_.valid()) ||
+            (exportGuides &&
+                (!validTexture(albedo) ||
+                    !validTexture(specularAlbedo) ||
+                    !validTexture(normalRoughness) ||
+                    !validTexture(motionVectors) ||
+                    !validTexture(linearDepth) ||
+                    !validTexture(specularHitDistance)))) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -778,6 +857,32 @@ public:
                 .textureViewCount = static_cast<uint32_t>(lut3DViews.size()),
             });
         }
+        if (exportGuides) {
+            bindings.push_back(SceneRayQueryDispatchBinding{
+                .binding = kDlssRrAlbedoBinding,
+                .textureView = albedo.view(),
+            });
+            bindings.push_back(SceneRayQueryDispatchBinding{
+                .binding = kDlssRrSpecularAlbedoBinding,
+                .textureView = specularAlbedo.view(),
+            });
+            bindings.push_back(SceneRayQueryDispatchBinding{
+                .binding = kDlssRrNormalRoughnessBinding,
+                .textureView = normalRoughness.view(),
+            });
+            bindings.push_back(SceneRayQueryDispatchBinding{
+                .binding = kDlssRrMotionVectorsBinding,
+                .textureView = motionVectors.view(),
+            });
+            bindings.push_back(SceneRayQueryDispatchBinding{
+                .binding = kDlssRrLinearDepthBinding,
+                .textureView = linearDepth.view(),
+            });
+            bindings.push_back(SceneRayQueryDispatchBinding{
+                .binding = kDlssRrSpecularHitDistanceBinding,
+                .textureView = specularHitDistance.view(),
+            });
+        }
         result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
             .bindings = bindings.data(),
@@ -798,6 +903,16 @@ public:
     }
 
 private:
+    static bool validTexture(TextureHandle texture)
+    {
+        return texture.valid() && texture.texture() != nullptr && texture.view() != nullptr;
+    }
+
+    static bool exportDenoiserGuides(const RenderGraphProperties& properties)
+    {
+        return boolProperty(properties, "exportDenoiserGuides", false);
+    }
+
     Result prepareHistoryTextures(
         RenderGraphExecutionContext& context,
         TextureView& fallbackView,
@@ -818,12 +933,15 @@ private:
             return {};
         }
 
+        const Format historyFormat = exportDenoiserGuides(context.properties())
+            ? Format::Rgba16Sfloat
+            : Format::Rgba8Unorm;
         const TextureDesc historyDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled |
                 TextureUsageBits::Storage |
                 TextureUsageBits::TransferSource,
-            .format = Format::Rgba8Unorm,
+            .format = historyFormat,
             .width = context.width(),
             .height = context.height(),
             .depth = 1,
@@ -835,7 +953,7 @@ private:
         Result result = history->ensureTexture(
             historyName,
             historyDesc,
-            TextureViewDesc{.format = Format::Rgba8Unorm});
+            TextureViewDesc{.format = historyFormat});
         if (!result) {
             return result;
         }

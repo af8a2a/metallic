@@ -260,6 +260,7 @@ struct DeviceDesc {
     bool enableRayTracingAccelerationStructure = false;
     bool enableRayQuery = false;
     bool enablePushDescriptor = false;
+    bool enableStreamline = false;
 };
 
 struct DeviceCapabilities {
@@ -268,6 +269,8 @@ struct DeviceCapabilities {
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
+    bool streamline = false;
+    bool streamlineDlssRr = false;
     uint32_t maxBindlessSamplers = 0;
     uint32_t maxBindlessSampledImages = 0;
     uint32_t maxBindlessBuffers = 0;

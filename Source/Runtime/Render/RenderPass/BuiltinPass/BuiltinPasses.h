@@ -18,6 +18,7 @@ std::unique_ptr<RenderGraphPass> createSceneMaterialVisualizationPass();
 std::unique_ptr<RenderGraphPass> createSceneRayQueryVisualizationPass();
 std::unique_ptr<RenderGraphPass> createScenePathTracePass();
 std::unique_ptr<RenderGraphPass> createNrdDenoisePass();
+std::unique_ptr<RenderGraphPass> createStreamlineDlssRrPass();
 std::unique_ptr<RenderGraphPass> createRenderGraphBufferWritePass();
 std::unique_ptr<RenderGraphPass> createRenderGraphBufferCopyPass();
 

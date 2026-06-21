@@ -22,11 +22,13 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/SceneMaterialVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/StreamlineDlssRrPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
     Runtime/Render/RenderPass/ScenePathTraceResources.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.cpp
     Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp
 )
 
 target_include_directories(MetallicRuntimeRender PUBLIC
@@ -43,6 +45,7 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     metallic::volk
     metallic::sdl3
     metallic::nsight_events
+    metallic::streamline
     nlohmann_json
     slang::slang
 )
@@ -143,6 +146,8 @@ if(WIN32)
                 "$<TARGET_FILE_DIR:Metallic>"
         )
     endif()
+
+    metallic_copy_streamline_runtime(Metallic)
 endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -190,6 +195,8 @@ function(configure_metallic_editor_sample target_name)
                     "$<TARGET_FILE_DIR:${target_name}>"
             )
         endif()
+
+        metallic_copy_streamline_runtime(${target_name})
     endif()
 endfunction()
 

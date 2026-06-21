@@ -145,6 +145,35 @@ public:
     std::string previewOutput() const override { return "PathTrace.color"; }
 };
 
+class PathTracingDlssRrSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "pathtracing-sample-dlss-rr"; }
+    std::string_view name() const override { return "PathTracingSample / DLSS-RR"; }
+    std::string_view category() const override { return "PathTracing"; }
+    std::string_view description() const override
+    {
+        return "OpenPBR RayQuery path tracing sample using NVIDIA DLSS Ray Reconstruction as the denoiser.";
+    }
+    std::string scenePath() const override { return "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf"; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
+    RenderSampleEnvironmentDesc environment() const override
+    {
+        return RenderSampleEnvironmentDesc{
+            .enabled = true,
+            .path = "Asset/ABeautifulGame/environment.hdr",
+            .intensity = 1.0f,
+            .rotationDegrees = 0.0f,
+            .visible = true,
+        };
+    }
+    std::vector<std::string> environmentTargets() const override { return {"PathTrace"}; }
+    std::string previewOutput() const override { return "DlssRr.color"; }
+};
+
 class MaterialVisualizationABeautifulGameSample final : public RenderSample {
 public:
     std::string_view id() const override { return "material-visualization-abeautiful-game"; }
@@ -175,6 +204,12 @@ const RenderSample& pathTracingSample()
     return sample;
 }
 
+const RenderSample& pathTracingDlssRrSample()
+{
+    static const PathTracingDlssRrSample sample;
+    return sample;
+}
+
 const RenderSample& materialVisualizationABeautifulGameSample()
 {
     static const MaterialVisualizationABeautifulGameSample sample;
@@ -186,6 +221,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     return {
         &pathTracingMeetMatSample(),
         &pathTracingSample(),
+        &pathTracingDlssRrSample(),
         &materialVisualizationABeautifulGameSample(),
     };
 }

@@ -71,9 +71,6 @@ Testing/
 .cache/
 # Slang (downloaded binary)
 External/slang/
-# Streamline SDK (downloaded binary)
-External/streamline/
-
 #Apple Specifc
 .DS_Store
 Issue

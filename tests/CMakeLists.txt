@@ -88,6 +88,8 @@ if(WIN32)
                 "$<TARGET_FILE_DIR:MetallicRhiTests>"
         )
     endif()
+
+    metallic_copy_streamline_runtime(MetallicRhiTests)
 endif()
 
 add_test(

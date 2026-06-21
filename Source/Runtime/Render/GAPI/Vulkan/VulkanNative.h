@@ -26,10 +26,15 @@ struct NativeBuffer {
 
 struct NativeTexture {
     VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t depth = 0;
+    uint32_t mipCount = 0;
+    uint32_t layerCount = 0;
+    VkImageCreateFlags flags = 0;
+    VkImageUsageFlags usage = 0;
 };
 
 NativeDevice nativeDevice(Device& device);

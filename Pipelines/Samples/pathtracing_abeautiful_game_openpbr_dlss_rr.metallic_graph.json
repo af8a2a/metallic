@@ -1,0 +1,98 @@
+{
+    "edges": [
+        {
+            "dst": "DlssRr.inputColor",
+            "src": "PathTrace.color"
+        },
+        {
+            "dst": "DlssRr.albedo",
+            "src": "PathTrace.albedo"
+        },
+        {
+            "dst": "DlssRr.specularAlbedo",
+            "src": "PathTrace.specularAlbedo"
+        },
+        {
+            "dst": "DlssRr.normalRoughness",
+            "src": "PathTrace.normalRoughness"
+        },
+        {
+            "dst": "DlssRr.motionVectors",
+            "src": "PathTrace.motionVectors"
+        },
+        {
+            "dst": "DlssRr.linearDepth",
+            "src": "PathTrace.linearDepth"
+        },
+        {
+            "dst": "DlssRr.specularHitDistance",
+            "src": "PathTrace.specularHitDistance"
+        }
+    ],
+    "name": "PathTracingSampleDLSSRR",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "PathTrace",
+            "position": {
+                "x": 160.0,
+                "y": 280.0
+            },
+            "properties": {
+                "accumulate": false,
+                "bsdf": "openpbr",
+                "camera": {
+                    "center": [
+                        0.0,
+                        0.07500000298023224,
+                        0.0
+                    ],
+                    "eye": [
+                        0.0,
+                        0.41999998688697815,
+                        1.149999976158142
+                    ],
+                    "fovDegrees": 45.0,
+                    "projection": "perspective",
+                    "reversedZ": true,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 10000.0,
+                    "znear": 0.0010000000474974513
+                },
+                "environment": {
+                    "enabled": true,
+                    "intensity": 1.0,
+                    "path": "Asset/ABeautifulGame/environment.hdr",
+                    "rotationDegrees": 0.0,
+                    "visible": true
+                },
+                "exportDenoiserGuides": true,
+                "maxDepth": 12,
+                "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
+                "samples": 2
+            },
+            "type": "ScenePathTracePass"
+        },
+        {
+            "id": 2,
+            "name": "DlssRr",
+            "position": {
+                "x": 540.0,
+                "y": 280.0
+            },
+            "properties": {
+                "mode": "Balanced",
+                "resetSerial": 0
+            },
+            "type": "StreamlineDlssRrPass"
+        }
+    ],
+    "outputs": [
+        "DlssRr.color"
+    ],
+    "version": 1
+}
