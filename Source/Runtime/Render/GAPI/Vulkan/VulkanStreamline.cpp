@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -183,6 +184,13 @@ Result resultFromSl(sl::Result result, const char* label, std::string& log)
     return makeError(errorFromSl(result));
 }
 
+bool isUnsupportedStateTrackingHookWarning(const char* message)
+{
+    return std::strstr(message, "Hook sl.common:Vulkan:CmdBindPipeline is NOT supported") != nullptr ||
+        std::strstr(message, "Hook sl.common:Vulkan:CmdBindDescriptorSets is NOT supported") != nullptr ||
+        std::strstr(message, "Hook sl.common:Vulkan:BeginCommandBuffer is NOT supported") != nullptr;
+}
+
 void streamlineLogCallback(sl::LogType type, const char* message)
 {
     if (message == nullptr) {
@@ -190,6 +198,9 @@ void streamlineLogCallback(sl::LogType type, const char* message)
     }
 
     const char* level = "info";
+    if (type == sl::LogType::eWarn && isUnsupportedStateTrackingHookWarning(message)) {
+        return;
+    }
     if (type == sl::LogType::eWarn) {
         level = "warn";
     } else if (type == sl::LogType::eError) {
