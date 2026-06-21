@@ -197,15 +197,17 @@ void streamlineLogCallback(sl::LogType type, const char* message)
         return;
     }
 
-    const char* level = "info";
+    if (type == sl::LogType::eInfo) {
+        return;
+    }
     if (type == sl::LogType::eWarn && isUnsupportedStateTrackingHookWarning(message)) {
         return;
     }
-    if (type == sl::LogType::eWarn) {
-        level = "warn";
-    } else if (type == sl::LogType::eError) {
-        level = "error";
+    if (type != sl::LogType::eWarn && type != sl::LogType::eError) {
+        return;
     }
+
+    const char* level = type == sl::LogType::eWarn ? "warn" : "error";
     std::cerr << "[Streamline][" << level << "] " << message << '\n';
 }
 
