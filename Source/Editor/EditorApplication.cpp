@@ -1272,6 +1272,7 @@ bool EditorApplication::initializeRhi()
             .enableRayQuery = true,
             .enablePushDescriptor = true,
             .enableStreamline = true,
+            .enableAftermath = true,
         },
         device_);
     if (!result || device_ == nullptr) {

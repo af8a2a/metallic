@@ -25,6 +25,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/StreamlineDlssRrPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
     Runtime/Render/RenderPass/ScenePathTraceResources.cpp
+    Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.cpp
     Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.cpp
@@ -44,6 +45,7 @@ target_include_directories(MetallicRuntimeRender SYSTEM PRIVATE
 target_link_libraries(MetallicRuntimeRender PUBLIC
     metallic::volk
     metallic::sdl3
+    metallic::aftermath
     metallic::nsight_events
     metallic::streamline
     nlohmann_json
@@ -154,6 +156,7 @@ if(WIN32)
     endif()
 
     metallic_copy_streamline_runtime(Metallic)
+    metallic_copy_aftermath_runtime(Metallic)
 endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -203,6 +206,7 @@ function(configure_metallic_editor_sample target_name)
         endif()
 
         metallic_copy_streamline_runtime(${target_name})
+        metallic_copy_aftermath_runtime(${target_name})
     endif()
 endfunction()
 

@@ -1,6 +1,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.h"
 
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/Profiling/NsightAftermath.h"
 
 #include <volk.h>
 
@@ -52,6 +53,7 @@ Result resultFromVk(VkResult result)
         return makeError(Error::OutOfMemory);
     }
     if (result == VK_ERROR_DEVICE_LOST) {
+        profiling::handleNsightAftermathDeviceLost();
         return makeError(Error::DeviceLost);
     }
     return makeError(Error::Failure);
@@ -901,6 +903,9 @@ Result NrdDenoiser::createPipelines(std::string& log)
             log = vkResultMessage("vkCreateShaderModule(NRD)", vkResult);
             return resultFromVk(vkResult);
         }
+        profiling::registerNsightAftermathShaderBinary(
+            static_cast<const uint32_t*>(pipelineDesc.computeShaderSPIRV.bytecode),
+            static_cast<uint64_t>(pipelineDesc.computeShaderSPIRV.size));
 
         VkPipelineShaderStageCreateInfo stageInfo{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,

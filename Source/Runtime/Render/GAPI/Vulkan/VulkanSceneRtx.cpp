@@ -9,6 +9,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.h"
 
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/Profiling/NsightAftermath.h"
 
 #include <algorithm>
 #include <array>
@@ -61,6 +62,22 @@ uint64_t alignUp(uint64_t value, uint64_t alignment)
 std::string resultMessage(const char* action, Result result)
 {
     return std::string(action) + " returned " + resultToString(result);
+}
+
+Result resultFromVk(VkResult result)
+{
+    switch (result) {
+    case VK_SUCCESS:
+        return {};
+    case VK_ERROR_OUT_OF_HOST_MEMORY:
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+        return makeError(Error::OutOfMemory);
+    case VK_ERROR_DEVICE_LOST:
+        profiling::handleNsightAftermathDeviceLost();
+        return makeError(Error::DeviceLost);
+    default:
+        return makeError(Error::Failure);
+    }
 }
 
 VkTransformMatrixKHR toVkTransform(const float4x4& matrix)
@@ -296,7 +313,7 @@ Result createAccelerationStructure(
     const VkResult vkResult = vkCreateAccelerationStructureKHR(vkDevice, &createInfo, nullptr, &outHandle);
     if (vkResult != VK_SUCCESS) {
         log = std::string("vkCreateAccelerationStructureKHR returned ") + std::to_string(static_cast<int>(vkResult));
-        return makeError(Error::Failure);
+        return resultFromVk(vkResult);
     }
 
     outAddress = accelerationStructureAddress(vkDevice, outHandle);
@@ -962,7 +979,7 @@ Result SceneRayQueryProgram::initialize(
         log = "vkCreateDescriptorSetLayout(" + impl_->debugName + ") returned " +
             std::to_string(static_cast<int>(vkResult));
         clear();
-        return makeError(Error::Failure);
+        return resultFromVk(vkResult);
     }
 
     VkDescriptorPoolCreateInfo poolInfo{
@@ -976,7 +993,7 @@ Result SceneRayQueryProgram::initialize(
         log = "vkCreateDescriptorPool(" + impl_->debugName + ") returned " +
             std::to_string(static_cast<int>(vkResult));
         clear();
-        return makeError(Error::Failure);
+        return resultFromVk(vkResult);
     }
 
     VkDescriptorSetAllocateInfo allocateInfo{
@@ -990,7 +1007,7 @@ Result SceneRayQueryProgram::initialize(
         log = "vkAllocateDescriptorSets(" + impl_->debugName + ") returned " +
             std::to_string(static_cast<int>(vkResult));
         clear();
-        return makeError(Error::Failure);
+        return resultFromVk(vkResult);
     }
 
     VkPushConstantRange pushRange{
@@ -1010,7 +1027,7 @@ Result SceneRayQueryProgram::initialize(
         log = "vkCreatePipelineLayout(" + impl_->debugName + ") returned " +
             std::to_string(static_cast<int>(vkResult));
         clear();
-        return makeError(Error::Failure);
+        return resultFromVk(vkResult);
     }
 
     VkShaderModuleCreateInfo shaderInfo{
@@ -1023,8 +1040,9 @@ Result SceneRayQueryProgram::initialize(
         log = "vkCreateShaderModule(" + impl_->debugName + ") returned " +
             std::to_string(static_cast<int>(vkResult));
         clear();
-        return makeError(Error::Failure);
+        return resultFromVk(vkResult);
     }
+    profiling::registerNsightAftermathShaderBinary(desc.spirv, desc.byteSize);
 
     VkPipelineShaderStageCreateInfo stageInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1048,7 +1066,7 @@ Result SceneRayQueryProgram::initialize(
         log = "vkCreateComputePipelines(" + impl_->debugName + ") returned " +
             std::to_string(static_cast<int>(vkResult));
         clear();
-        return makeError(Error::Failure);
+        return resultFromVk(vkResult);
     }
 
     return {};

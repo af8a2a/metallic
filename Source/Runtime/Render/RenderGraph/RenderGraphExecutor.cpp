@@ -1141,6 +1141,7 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
             .enableRayTracingAccelerationStructure = enableRayQuery,
             .enableRayQuery = enableRayQuery,
             .enablePushDescriptor = enableRayQuery,
+            .enableAftermath = true,
         },
         impl_->device);
     if (!result) {

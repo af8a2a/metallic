@@ -1,6 +1,7 @@
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
+#include "Runtime/Render/Profiling/NsightAftermath.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <SDL3/SDL.h>
@@ -49,6 +50,7 @@ Result resultFromVk(VkResult result)
     case VK_ERROR_OUT_OF_DEVICE_MEMORY:
         return makeError(Error::OutOfMemory);
     case VK_ERROR_DEVICE_LOST:
+        profiling::handleNsightAftermathDeviceLost();
         return makeError(Error::DeviceLost);
     case VK_ERROR_OUT_OF_DATE_KHR:
     case VK_ERROR_SURFACE_LOST_KHR:
@@ -997,6 +999,8 @@ struct VulkanExtensionSet {
     bool rayTracingPipeline = false;
     bool pipelineLibrary = false;
     bool pushDescriptor = false;
+    bool aftermathDiagnosticCheckpoints = false;
+    bool aftermathDiagnosticsConfig = false;
     bool streamlineBinaryImport = false;
     bool streamlineImageViewHandle = false;
 #ifdef VK_EXT_mesh_shader
@@ -1019,6 +1023,12 @@ struct VulkanExtensionSet {
         result.rayTracingPipeline = result.has(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
         result.pipelineLibrary = result.has(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
         result.pushDescriptor = result.has(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+#if defined(VK_NV_device_diagnostic_checkpoints)
+        result.aftermathDiagnosticCheckpoints = result.has(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+#endif
+#if defined(VK_NV_device_diagnostics_config)
+        result.aftermathDiagnosticsConfig = result.has(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+#endif
 #ifdef VK_NVX_binary_import
         result.streamlineBinaryImport = result.has(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
 #endif
@@ -1047,6 +1057,7 @@ struct VulkanDeviceFeatureRequest {
     bool rayQuery = false;
     bool pushDescriptor = false;
     bool streamline = false;
+    bool aftermath = false;
 
     static VulkanDeviceFeatureRequest from(const DeviceDesc& desc)
     {
@@ -1057,6 +1068,7 @@ struct VulkanDeviceFeatureRequest {
             .rayQuery = desc.enableRayQuery,
             .pushDescriptor = desc.enablePushDescriptor,
             .streamline = desc.enableStreamline,
+            .aftermath = desc.enableAftermath && profiling::nsightAftermathInitialized(),
         };
     }
 };
@@ -1086,6 +1098,11 @@ struct VulkanDeviceFeatureProbe {
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
     };
+#if defined(VK_NV_device_diagnostics_config)
+    VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsConfigFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV,
+    };
+#endif
 #ifdef VK_EXT_mesh_shader
     VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
@@ -1121,6 +1138,11 @@ struct VulkanDeviceFeatureProbe {
         if (extensions.rayTracingPipeline) {
             appendPNext(featureTail, rayTracingPipelineFeatures);
         }
+#if defined(VK_NV_device_diagnostics_config)
+        if (extensions.aftermathDiagnosticsConfig) {
+            appendPNext(featureTail, diagnosticsConfigFeatures);
+        }
+#endif
 #ifdef VK_EXT_mesh_shader
         if (extensions.meshShader) {
             appendPNext(featureTail, meshShaderFeatures);
@@ -1161,6 +1183,19 @@ struct VulkanDeviceFeatureProbe {
             extensions.streamlineBinaryImport &&
             extensions.streamlineImageViewHandle;
     }
+
+    bool supportsAftermath(const VulkanExtensionSet& extensions) const
+    {
+#if defined(VK_NV_device_diagnostic_checkpoints) && defined(VK_NV_device_diagnostics_config)
+        return profiling::nsightAftermathInitialized() &&
+            extensions.aftermathDiagnosticCheckpoints &&
+            extensions.aftermathDiagnosticsConfig &&
+            diagnosticsConfigFeatures.diagnosticsConfig == VK_TRUE;
+#else
+        (void)extensions;
+        return false;
+#endif
+    }
 };
 
 struct VulkanDeviceFeatureSelection {
@@ -1170,6 +1205,7 @@ struct VulkanDeviceFeatureSelection {
     bool rayQuery = false;
     bool pushDescriptor = false;
     bool streamline = false;
+    bool aftermath = false;
 
     static VulkanDeviceFeatureSelection select(
         const VulkanDeviceFeatureRequest& request,
@@ -1179,6 +1215,7 @@ struct VulkanDeviceFeatureSelection {
     {
         const bool accelerationStructureSupported = probe.supportsAccelerationStructure(extensions);
         const bool streamlineSupported = probe.supportsStreamline(extensions, accelerationStructureSupported);
+        const bool aftermathSupported = probe.supportsAftermath(extensions);
 
         VulkanDeviceFeatureSelection result;
         result.bindlessDescriptorHeap =
@@ -1209,6 +1246,7 @@ struct VulkanDeviceFeatureSelection {
             result.rayTracingAccelerationStructure &&
             result.rayQuery &&
             result.pushDescriptor;
+        result.aftermath = request.aftermath && aftermathSupported;
         return result;
     }
 
@@ -1262,6 +1300,18 @@ struct VulkanEnabledFeatureChain {
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
     };
+#if defined(VK_NV_device_diagnostics_config)
+    VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsConfigFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV,
+    };
+    VkDeviceDiagnosticsConfigCreateInfoNV diagnosticsConfigCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV,
+        .flags =
+            VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV |
+            VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV |
+            VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV,
+    };
+#endif
     VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
     };
@@ -1282,6 +1332,9 @@ struct VulkanEnabledFeatureChain {
             selection.rayTracingAccelerationStructure ? VK_TRUE : VK_FALSE;
         rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
         rayTracingPipelineFeatures.rayTracingPipeline = selection.streamline ? VK_TRUE : VK_FALSE;
+#if defined(VK_NV_device_diagnostics_config)
+        diagnosticsConfigFeatures.diagnosticsConfig = selection.aftermath ? VK_TRUE : VK_FALSE;
+#endif
 
         features.pNext = &vulkan11Features;
         void** featureTail = &vulkan11Features.pNext;
@@ -1302,6 +1355,13 @@ struct VulkanEnabledFeatureChain {
         if (selection.streamline) {
             appendPNext(featureTail, rayTracingPipelineFeatures);
         }
+#if defined(VK_NV_device_diagnostics_config)
+        if (selection.aftermath) {
+            appendPNext(featureTail, diagnosticsConfigFeatures);
+            diagnosticsConfigCreateInfo.pNext = nullptr;
+            *featureTail = &diagnosticsConfigCreateInfo;
+        }
+#endif
     }
 };
 
@@ -1334,6 +1394,14 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
 #endif
 #ifdef VK_NVX_image_view_handle
         extensions.push_back(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME);
+#endif
+    }
+    if (selection.aftermath) {
+#if defined(VK_NV_device_diagnostic_checkpoints)
+        extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+#endif
+#if defined(VK_NV_device_diagnostics_config)
+        extensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
 #endif
     }
     return extensions;
@@ -1864,7 +1932,10 @@ DeviceImpl::~DeviceImpl()
 
     if (device != VK_NULL_HANDLE) {
         activateVolkDevice(device);
-        vkDeviceWaitIdle(device);
+        const VkResult waitResult = vkDeviceWaitIdle(device);
+        if (waitResult == VK_ERROR_DEVICE_LOST) {
+            profiling::handleNsightAftermathDeviceLost();
+        }
     }
 
     if (streamlineInitialized) {
@@ -4035,6 +4106,7 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
     if (result != VK_SUCCESS) {
         return resultFromVk(result);
     }
+    profiling::registerNsightAftermathShaderBinary(desc.code, desc.byteSize);
 
     auto shaderImpl = std::make_unique<detail::ShaderModuleImpl>();
     shaderImpl->device = impl_.get();
@@ -4471,6 +4543,8 @@ Result Device::createGraphicsShaderObjectProgram(
         }
         return resultFromVk(result);
     }
+    profiling::registerNsightAftermathShaderBinary(desc.vertexCode, desc.vertexByteSize);
+    profiling::registerNsightAftermathShaderBinary(desc.fragmentCode, desc.fragmentByteSize);
 
     auto programImpl = std::make_unique<detail::GraphicsShaderObjectProgramImpl>();
     programImpl->device = impl_.get();
@@ -4507,6 +4581,10 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     outDevice.reset();
 
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
+    if (desc.enableAftermath && profiling::nsightAftermathSdkAvailable()) {
+        profiling::initializeNsightAftermath(desc.applicationName);
+    }
+
     PFN_vkGetInstanceProcAddr streamlineVkGetInstanceProcAddr = nullptr;
     if (desc.enableStreamline && vulkan::streamlineSdkAvailable()) {
         const char* const vulkanLibraryName = vulkan::streamlineVulkanLibraryName();
@@ -4794,6 +4872,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->rayQueryEnabled = selectedFeatures.rayQuery;
     deviceImpl->capabilities.pushDescriptor = selectedFeatures.pushDescriptor;
     deviceImpl->pushDescriptorEnabled = selectedFeatures.pushDescriptor;
+    deviceImpl->capabilities.aftermath = selectedFeatures.aftermath;
     deviceImpl->bufferDeviceAddressEnabled =
         selectedFeatures.bindlessDescriptorHeap ||
         selectedFeatures.rayTracingAccelerationStructure ||
@@ -4864,6 +4943,11 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         }
     } else if (deviceImpl->streamlineInitialized && desc.enableStreamline) {
         std::cerr << "NVIDIA Streamline initialized, but the selected Vulkan device is missing required extensions.\n";
+    }
+    if (desc.enableAftermath &&
+        profiling::nsightAftermathInitialized() &&
+        !selectedFeatures.aftermath) {
+        std::cerr << "NVIDIA Nsight Aftermath initialized, but the selected Vulkan device is missing required diagnostics support.\n";
     }
 
     outDevice.reset(new Device(std::move(deviceImpl)));
@@ -5102,6 +5186,7 @@ Result TrianglePreviewRendererImpl::initialize(bool enableValidation)
         DeviceDesc{
             .applicationName = "Metallic Triangle Preview",
             .enableValidation = enableValidation,
+            .enableAftermath = true,
         },
         device);
     if (!result) {
@@ -5449,6 +5534,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                 .applicationName = "Metallic RHI Bindless Descriptor Heap Smoke Test",
                 .enableValidation = enableValidation,
                 .enableBindlessDescriptorHeap = true,
+                .enableAftermath = true,
             },
             device);
         if (!checkResult(result, "createDevice")) {
@@ -5879,6 +5965,7 @@ int runRhiSmokeTest(bool enableValidation)
         DeviceDesc{
             .applicationName = "Metallic RHI Smoke Test",
             .enableValidation = enableValidation,
+            .enableAftermath = true,
         },
         device);
     if (!checkResult(result, "createDevice")) {

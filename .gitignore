@@ -71,6 +71,9 @@ Testing/
 .cache/
 # Slang (downloaded binary)
 External/slang/
+# NVIDIA Nsight Aftermath SDK (local/vendored binary SDK)
+External/NsightAftermathSDK/
+External/NsightAftermath/
 #Apple Specifc
 .DS_Store
 Issue
