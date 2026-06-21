@@ -2,7 +2,9 @@
 
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -18,6 +20,7 @@
 #include <sl.h>
 #include <sl_dlss_d.h>
 #include <sl_helpers_vk.h>
+#include <sl_matrix_helpers.h>
 #endif
 
 namespace metallic::render::vulkan {
@@ -224,31 +227,182 @@ void setIdentity(sl::float4x4& matrix)
     matrix[3] = sl::float4(0.0f, 0.0f, 0.0f, 1.0f);
 }
 
+float dot3(sl::float3 a, sl::float3 b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+sl::float3 cross3(sl::float3 a, sl::float3 b)
+{
+    return sl::float3(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x);
+}
+
+sl::float3 subtract3(sl::float3 a, sl::float3 b)
+{
+    return sl::float3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+sl::float3 normalizeOr(sl::float3 value, sl::float3 fallback)
+{
+    const float lengthSquared = dot3(value, value);
+    if (lengthSquared <= 0.00000001f) {
+        return fallback;
+    }
+    const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+    return sl::float3(value.x * inverseLength, value.y * inverseLength, value.z * inverseLength);
+}
+
+sl::float3 cameraArrayToFloat3(const float values[3])
+{
+    return sl::float3(values[0], values[1], values[2]);
+}
+
+void cameraBasis(
+    const StreamlineDlssRrCamera& camera,
+    bool previous,
+    sl::float3& outPosition,
+    sl::float3& outRight,
+    sl::float3& outUp,
+    sl::float3& outForward)
+{
+    outPosition = cameraArrayToFloat3(previous ? camera.previousEye : camera.eye);
+    const sl::float3 center = cameraArrayToFloat3(previous ? camera.previousCenter : camera.center);
+    const sl::float3 upInput = cameraArrayToFloat3(previous ? camera.previousUp : camera.up);
+    outForward = normalizeOr(subtract3(center, outPosition), sl::float3(0.0f, 0.0f, -1.0f));
+    outRight = normalizeOr(cross3(outForward, upInput), sl::float3(1.0f, 0.0f, 0.0f));
+    outUp = normalizeOr(cross3(outRight, outForward), sl::float3(0.0f, 1.0f, 0.0f));
+}
+
+sl::float4x4 makeCameraViewToWorld(
+    sl::float3 position,
+    sl::float3 right,
+    sl::float3 up,
+    sl::float3 forward)
+{
+    sl::float4x4 matrix;
+    matrix[0] = sl::float4(right.x, right.y, right.z, 0.0f);
+    matrix[1] = sl::float4(up.x, up.y, up.z, 0.0f);
+    matrix[2] = sl::float4(forward.x, forward.y, forward.z, 0.0f);
+    matrix[3] = sl::float4(position.x, position.y, position.z, 1.0f);
+    return matrix;
+}
+
+sl::float4x4 makeCameraViewToClip(
+    float fovRadians,
+    float aspectRatio,
+    float zNear,
+    float zFar,
+    float orthoHeight,
+    bool orthographic)
+{
+    sl::float4x4 matrix;
+    setIdentity(matrix);
+    const float safeAspect = std::max(aspectRatio, 0.001f);
+    const float safeNear = std::max(zNear, 0.0001f);
+    const float safeFar = std::max(zFar, safeNear + 0.001f);
+    if (orthographic) {
+        const float height = std::max(orthoHeight, 0.0001f);
+        const float width = std::max(height * safeAspect, 0.0001f);
+        matrix[0] = sl::float4(2.0f / width, 0.0f, 0.0f, 0.0f);
+        matrix[1] = sl::float4(0.0f, 2.0f / height, 0.0f, 0.0f);
+        matrix[2] = sl::float4(0.0f, 0.0f, 1.0f / (safeFar - safeNear), 0.0f);
+        matrix[3] = sl::float4(0.0f, 0.0f, -safeNear / (safeFar - safeNear), 1.0f);
+        return matrix;
+    }
+
+    const float safeFov = std::clamp(fovRadians, 0.017453292f, 3.12413936f);
+    const float yScale = 1.0f / std::tan(safeFov * 0.5f);
+    const float xScale = yScale / safeAspect;
+    matrix[0] = sl::float4(xScale, 0.0f, 0.0f, 0.0f);
+    matrix[1] = sl::float4(0.0f, yScale, 0.0f, 0.0f);
+    matrix[2] = sl::float4(0.0f, 0.0f, safeFar / (safeFar - safeNear), 1.0f);
+    matrix[3] = sl::float4(0.0f, 0.0f, -(safeNear * safeFar) / (safeFar - safeNear), 0.0f);
+    return matrix;
+}
+
+struct SlCameraMatrices {
+    sl::float4x4 cameraViewToWorld;
+    sl::float4x4 worldToCameraView;
+    sl::float4x4 cameraViewToClip;
+    sl::float4x4 clipToCameraView;
+    sl::float3 position;
+    sl::float3 right;
+    sl::float3 up;
+    sl::float3 forward;
+    float fovRadians = 0.87266463f;
+    float aspectRatio = 1.0f;
+    float zNear = 0.001f;
+    float zFar = 10000.0f;
+    bool orthographic = false;
+};
+
+SlCameraMatrices makeCameraMatrices(const StreamlineDlssRrCamera& camera, bool previous)
+{
+    SlCameraMatrices matrices;
+    cameraBasis(camera, previous, matrices.position, matrices.right, matrices.up, matrices.forward);
+    matrices.fovRadians = previous ? camera.previousFovRadians : camera.fovRadians;
+    matrices.aspectRatio = previous ? camera.previousAspectRatio : camera.aspectRatio;
+    matrices.zNear = previous ? camera.previousZNear : camera.zNear;
+    matrices.zFar = previous ? camera.previousZFar : camera.zFar;
+    const float orthoHeight = previous ? camera.previousOrthoHeight : camera.orthoHeight;
+    matrices.orthographic = previous ? camera.previousOrthographic : camera.orthographic;
+    matrices.cameraViewToWorld = makeCameraViewToWorld(
+        matrices.position,
+        matrices.right,
+        matrices.up,
+        matrices.forward);
+    sl::matrixOrthoNormalInvert(matrices.worldToCameraView, matrices.cameraViewToWorld);
+    matrices.cameraViewToClip = makeCameraViewToClip(
+        matrices.fovRadians,
+        matrices.aspectRatio,
+        matrices.zNear,
+        matrices.zFar,
+        orthoHeight,
+        matrices.orthographic);
+    sl::matrixFullInvert(matrices.clipToCameraView, matrices.cameraViewToClip);
+    return matrices;
+}
+
 sl::Constants makeConstants(const StreamlineDlssRrDesc& desc)
 {
+    const SlCameraMatrices currentCamera = makeCameraMatrices(desc.camera, false);
+    const SlCameraMatrices previousCamera = desc.camera.previousValid
+        ? makeCameraMatrices(desc.camera, true)
+        : currentCamera;
+
     sl::Constants constants;
-    setIdentity(constants.cameraViewToClip);
-    setIdentity(constants.clipToCameraView);
+    constants.cameraViewToClip = currentCamera.cameraViewToClip;
+    constants.clipToCameraView = currentCamera.clipToCameraView;
     setIdentity(constants.clipToLensClip);
-    setIdentity(constants.clipToPrevClip);
-    setIdentity(constants.prevClipToClip);
+    sl::float4x4 cameraViewToPrevCameraView;
+    sl::calcCameraToPrevCamera(
+        cameraViewToPrevCameraView,
+        currentCamera.cameraViewToWorld,
+        previousCamera.cameraViewToWorld);
+    sl::float4x4 clipToPrevCameraView;
+    sl::matrixMul(clipToPrevCameraView, currentCamera.clipToCameraView, cameraViewToPrevCameraView);
+    sl::matrixMul(constants.clipToPrevClip, clipToPrevCameraView, previousCamera.cameraViewToClip);
+    sl::matrixFullInvert(constants.prevClipToClip, constants.clipToPrevClip);
     constants.jitterOffset = sl::float2(0.0f, 0.0f);
     constants.mvecScale = sl::float2(1.0f, 1.0f);
     constants.cameraPinholeOffset = sl::float2(0.0f, 0.0f);
-    constants.cameraPos = sl::float3(0.0f, 0.0f, 0.0f);
-    constants.cameraUp = sl::float3(0.0f, 1.0f, 0.0f);
-    constants.cameraRight = sl::float3(1.0f, 0.0f, 0.0f);
-    constants.cameraFwd = sl::float3(0.0f, 0.0f, -1.0f);
-    constants.cameraNear = 0.001f;
-    constants.cameraFar = 10000.0f;
-    constants.cameraFOV = 0.87266463f;
-    constants.cameraAspectRatio = desc.height == 0 ? 1.0f : static_cast<float>(desc.width) / static_cast<float>(desc.height);
+    constants.cameraPos = currentCamera.position;
+    constants.cameraUp = currentCamera.up;
+    constants.cameraRight = currentCamera.right;
+    constants.cameraFwd = currentCamera.forward;
+    constants.cameraNear = currentCamera.zNear;
+    constants.cameraFar = currentCamera.zFar;
+    constants.cameraFOV = currentCamera.fovRadians;
+    constants.cameraAspectRatio = currentCamera.aspectRatio;
     constants.motionVectorsInvalidValue = 0.0f;
     constants.depthInverted = sl::Boolean::eFalse;
     constants.cameraMotionIncluded = sl::Boolean::eTrue;
     constants.motionVectors3D = sl::Boolean::eFalse;
-    constants.reset = desc.reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
-    constants.orthographicProjection = sl::Boolean::eFalse;
+    constants.reset = (desc.reset || !desc.camera.previousValid) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    constants.orthographicProjection = currentCamera.orthographic ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     constants.motionVectorsDilated = sl::Boolean::eFalse;
     constants.motionVectorsJittered = sl::Boolean::eFalse;
     return constants;
@@ -263,8 +417,9 @@ sl::DLSSDOptions makeDlssRrOptions(const StreamlineDlssRrDesc& desc)
     options.colorBuffersHDR = sl::Boolean::eTrue;
     options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
     options.alphaUpscalingEnabled = sl::Boolean::eFalse;
-    setIdentity(options.worldToCameraView);
-    setIdentity(options.cameraViewToWorld);
+    const SlCameraMatrices currentCamera = makeCameraMatrices(desc.camera, false);
+    options.worldToCameraView = currentCamera.worldToCameraView;
+    options.cameraViewToWorld = currentCamera.cameraViewToWorld;
     return options;
 }
 

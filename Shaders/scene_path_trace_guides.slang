@@ -24,6 +24,7 @@ struct DlssRrGuideData
     float3 specularAlbedo;
     float3 normal;
     float roughness;
+    float2 motionVector;
     float linearDepth;
     float specularHitDistance;
 };
@@ -35,6 +36,7 @@ DlssRrGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
     data.specularAlbedo = float3(0.0, 0.0, 0.0);
     data.normal = float3(0.0, 1.0, 0.0);
     data.roughness = 1.0;
+    data.motionVector = float2(0.0, 0.0);
     data.linearDepth = max(push.clipOrtho.y, 0.0);
     data.specularHitDistance = 0.0;
     return data;
@@ -42,11 +44,10 @@ DlssRrGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
 
 void writeDlssRrGuides(uint2 pixel, DlssRrGuideData data)
 {
-    float3 packedNormal = saturate(data.normal * 0.5 + 0.5);
     gDlssRrAlbedo[pixel] = float4(saturate(data.albedo), 1.0);
     gDlssRrSpecularAlbedo[pixel] = float4(saturate(data.specularAlbedo), 1.0);
-    gDlssRrNormalRoughness[pixel] = float4(packedNormal, saturate(data.roughness));
-    gDlssRrMotionVectors[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+    gDlssRrNormalRoughness[pixel] = float4(safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
+    gDlssRrMotionVectors[pixel] = float4(data.motionVector, 0.0, 0.0);
     gDlssRrLinearDepth[pixel] = max(data.linearDepth, 0.0);
     gDlssRrSpecularHitDistance[pixel] = max(data.specularHitDistance, 0.0);
 }
@@ -54,6 +55,7 @@ void writeDlssRrGuides(uint2 pixel, DlssRrGuideData data)
 DlssRrGuideData evaluateStandardDlssRrGuides(
     Ray ray,
     RayCone rayCone,
+    float2 samplePixel,
     ScenePathTracePush push,
     inout uint seed)
 {
@@ -61,6 +63,10 @@ DlssRrGuideData evaluateStandardDlssRrGuides(
 
     HitInfo hit;
     if (!traceClosest(ray, push, hit)) {
+        data.motionVector = motionVectorToPrevious(
+            ray.origin + ray.direction * max(push.clipOrtho.y, 1.0),
+            samplePixel,
+            push);
         return data;
     }
 
@@ -109,10 +115,13 @@ DlssRrGuideData evaluateStandardDlssRrGuides(
     dielectricF0 *= dielectricF0;
 
     data.albedo = baseColor * (1.0 - metallic);
-    data.specularAlbedo = lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metallic);
     data.normal = safeNormalize(hit.normal, hit.geometryNormal);
+    float nDotV = saturate(dot(data.normal, -ray.direction));
+    float3 specularReflectance = lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metallic);
+    data.specularAlbedo = saturate(approxSpecularIntegralGGX(specularReflectance, roughness * roughness, nDotV));
     data.roughness = roughness;
-    data.linearDepth = hit.t;
+    data.motionVector = motionVectorToPrevious(hit.position, samplePixel, push);
+    data.linearDepth = cameraLinearDepth(hit.position, push);
     data.specularHitDistance = hit.t;
     return data;
 }
@@ -145,7 +154,7 @@ void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         color += pathTrace(ray, rayCone, push, seed);
 
         if (sampleIndex == 0u) {
-            guides = evaluateStandardDlssRrGuides(ray, rayCone, push, seed);
+            guides = evaluateStandardDlssRrGuides(ray, rayCone, samplePixel, push, seed);
         }
     }
     color /= float(samples);

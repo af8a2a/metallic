@@ -329,6 +329,11 @@ struct ScenePathTracePush {
     float upProjection[4] = {};
     float viewport[4] = {};
     float clipOrtho[4] = {};
+    float previousEye[4] = {};
+    float previousCenter[4] = {};
+    float previousUpProjection[4] = {};
+    float previousViewport[4] = {};
+    float previousClipOrtho[4] = {};
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t maxDepth = kDefaultPathTraceMaxDepth;
@@ -336,6 +341,7 @@ struct ScenePathTracePush {
     uint32_t accumulationFrame = 0;
     uint32_t hasHistory = 0;
     uint32_t enableAccumulation = 1;
+    uint32_t previousCameraValid = 0;
     uint32_t materialTextureCount = 0;
     float bitangentFlip = 1.0f;
     float environmentIntensity = 1.0f;

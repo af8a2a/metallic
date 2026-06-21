@@ -129,6 +129,11 @@ struct ScenePathTracePush
     float4 upProjection;
     float4 viewport;
     float4 clipOrtho;
+    float4 previousEye;
+    float4 previousCenter;
+    float4 previousUpProjection;
+    float4 previousViewport;
+    float4 previousClipOrtho;
     uint width;
     uint height;
     uint maxDepth;
@@ -136,6 +141,7 @@ struct ScenePathTracePush
     uint accumulationFrame;
     uint hasHistory;
     uint enableAccumulation;
+    uint previousCameraValid;
     uint materialTextureCount;
     float bitangentFlip;
     float environmentIntensity;
@@ -299,6 +305,111 @@ RayCone primaryRayConeFromPixel(float2 pixel, ScenePathTracePush push)
 float3 offsetRay(float3 position, float3 normal)
 {
     return position + normal * 0.001;
+}
+
+float3 cameraForwardFrom(float4 eye, float4 center)
+{
+    return safeNormalize(center.xyz - eye.xyz, float3(0.0, 0.0, -1.0));
+}
+
+float3 cameraRightFrom(float3 forward, float3 cameraUp)
+{
+    return safeNormalize(cross(forward, safeNormalize(cameraUp, float3(0.0, 1.0, 0.0))), float3(1.0, 0.0, 0.0));
+}
+
+float3 cameraUpFrom(float3 forward, float3 right)
+{
+    return safeNormalize(cross(right, forward), float3(0.0, 1.0, 0.0));
+}
+
+bool projectWorldToUv(
+    float3 worldPosition,
+    float4 eye,
+    float4 center,
+    float4 upProjection,
+    float4 viewport,
+    float4 clipOrtho,
+    out float2 uv)
+{
+    float3 forward = cameraForwardFrom(eye, center);
+    float3 right = cameraRightFrom(forward, upProjection.xyz);
+    float3 up = cameraUpFrom(forward, right);
+    float3 view = worldPosition - eye.xyz;
+    float aspect = max(viewport.x, 0.001);
+    float2 ndc;
+    if (upProjection.w > 0.5) {
+        float halfHeight = max(clipOrtho.z * 0.5, 0.0001);
+        ndc = float2(
+            dot(view, right) / max(halfHeight * aspect, 0.0001),
+            dot(view, up) / halfHeight);
+    } else {
+        float viewZ = dot(view, forward);
+        if (viewZ <= max(clipOrtho.x, 0.0001)) {
+            uv = float2(0.0, 0.0);
+            return false;
+        }
+        float fovRadians = clamp(viewport.w, 0.017453292, 3.12413936);
+        float halfHeight = max(tan(fovRadians * 0.5), 0.0001);
+        ndc = float2(
+            dot(view, right) / max(viewZ * aspect * halfHeight, 0.0001),
+            dot(view, up) / max(viewZ * halfHeight, 0.0001));
+    }
+    uv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    return true;
+}
+
+float cameraLinearDepth(float3 worldPosition, ScenePathTracePush push)
+{
+    float3 forward = cameraForwardFrom(push.eye, push.center);
+    return max(dot(worldPosition - push.eye.xyz, forward), 0.0);
+}
+
+float2 motionVectorToPrevious(float3 worldPosition, float2 currentSamplePixel, ScenePathTracePush push)
+{
+    if (push.previousCameraValid == 0u) {
+        return float2(0.0, 0.0);
+    }
+
+    float2 previousUv;
+    if (!projectWorldToUv(
+        worldPosition,
+        push.previousEye,
+        push.previousCenter,
+        push.previousUpProjection,
+        push.previousViewport,
+        push.previousClipOrtho,
+        previousUv)) {
+        return float2(0.0, 0.0);
+    }
+    float2 currentUv = currentSamplePixel / float2(max(push.width, 1u), max(push.height, 1u));
+    return previousUv - currentUv;
+}
+
+float3 approxSpecularIntegralGGX(float3 specularReflectance, float alpha, float cosTheta)
+{
+    cosTheta = abs(cosTheta);
+
+    float4 x = float4(1.0, cosTheta, cosTheta * cosTheta, cosTheta * cosTheta * cosTheta);
+    float4 y = float4(1.0, alpha, alpha * alpha, alpha * alpha * alpha);
+    float2x2 m1 = float2x2(
+        0.995367, -1.38839,
+        -0.24751, 1.97442);
+    float3x3 m2 = float3x3(
+        1.0, 2.68132, 52.366,
+        16.0932, -3.98452, 59.3013,
+        -5.18731, 255.259, 2544.07);
+    float2x2 m3 = float2x2(
+        -0.0564526, 3.82901,
+        16.91, -11.0303);
+    float3x3 m4 = float3x3(
+        1.0, 4.11118, -1.37886,
+        19.3254, -28.9947, 16.9514,
+        0.545386, 96.0994, -79.4492);
+
+    float bias = dot(mul(m1, x.xy), y.xy) / max(dot(mul(m2, x.xyw), y.xyw), 0.000001);
+    float scale = dot(mul(m3, x.xy), y.xy) / max(dot(mul(m4, x.xzw), y.xyw), 0.000001);
+    bias *= saturate(dot(specularReflectance, float3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)) * 50.0);
+    return specularReflectance * max(scale, 0.0) + max(bias, 0.0);
 }
 
 float3 environmentLocalDirectionToWorld(float3 direction, float rotationRadians)

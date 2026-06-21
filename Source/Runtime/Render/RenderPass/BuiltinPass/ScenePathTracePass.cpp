@@ -453,6 +453,14 @@ private:
     std::array<TextureView*, kOpenPBRLut3DCount> lut3DViews_{};
 };
 
+struct ScenePathTraceCameraSnapshot {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+};
+
 class ScenePathTracePass final : public ComputePass {
 public:
     ~ScenePathTracePass() override = default;
@@ -535,6 +543,7 @@ public:
         if (resourceRevision != sceneResourceRevision_) {
             sceneResourceRevision_ = resourceRevision;
             resetAccumulation_ = true;
+            hasPreviousCamera_ = false;
         }
         const std::string bsdf = stringProperty(properties(), "bsdf", "standard");
         const bool useOpenPBR = bsdf == "openpbr" || bsdf == "OpenPBR";
@@ -569,6 +578,7 @@ public:
             rayQueryProgram_.clear();
             compiledShaderKey_.clear();
             resetAccumulation_ = true;
+            hasPreviousCamera_ = false;
         }
         if (rayQueryProgram_.valid()) {
             return {};
@@ -760,6 +770,13 @@ public:
             push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
         push.environmentImportanceTexelCount = sceneResources_.environmentImportanceTexelCount();
+        const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
+        const bool previousCameraValid =
+            hasPreviousCamera_ &&
+            previousCameraWidth_ == context.width() &&
+            previousCameraHeight_ == context.height();
+        applyPreviousCameraSnapshot(previousCameraValid ? previousCamera_ : currentCamera, push);
+        push.previousCameraValid = previousCameraValid ? 1u : 0u;
 
         TextureView* historyCurrentView = color.view();
         TextureView* historyPreviousView = color.view();
@@ -899,6 +916,10 @@ public:
         if (push.enableAccumulation != 0 && context.historyResources() != nullptr) {
             context.historyResources()->markWritten(historyNameForContext(context));
         }
+        previousCamera_ = currentCamera;
+        previousCameraWidth_ = context.width();
+        previousCameraHeight_ = context.height();
+        hasPreviousCamera_ = true;
         return {};
     }
 
@@ -1160,6 +1181,33 @@ private:
         out[3] = w;
     }
 
+    static void copyFloat4(const float source[4], float target[4])
+    {
+        std::copy(source, source + 4, target);
+    }
+
+    static ScenePathTraceCameraSnapshot cameraSnapshotFromPush(const ScenePathTracePush& push)
+    {
+        ScenePathTraceCameraSnapshot snapshot;
+        copyFloat4(push.eye, snapshot.eye);
+        copyFloat4(push.center, snapshot.center);
+        copyFloat4(push.upProjection, snapshot.upProjection);
+        copyFloat4(push.viewport, snapshot.viewport);
+        copyFloat4(push.clipOrtho, snapshot.clipOrtho);
+        return snapshot;
+    }
+
+    static void applyPreviousCameraSnapshot(
+        const ScenePathTraceCameraSnapshot& snapshot,
+        ScenePathTracePush& push)
+    {
+        copyFloat4(snapshot.eye, push.previousEye);
+        copyFloat4(snapshot.center, push.previousCenter);
+        copyFloat4(snapshot.upProjection, push.previousUpProjection);
+        copyFloat4(snapshot.viewport, push.previousViewport);
+        copyFloat4(snapshot.clipOrtho, push.previousClipOrtho);
+    }
+
     static void buildPush(
         uint32_t width,
         uint32_t height,
@@ -1244,6 +1292,10 @@ private:
     std::string compiledShaderKey_;
     uint64_t sceneResourceRevision_ = 0;
     uint32_t accumulationFrame_ = 0;
+    ScenePathTraceCameraSnapshot previousCamera_;
+    uint32_t previousCameraWidth_ = 0;
+    uint32_t previousCameraHeight_ = 0;
+    bool hasPreviousCamera_ = false;
     bool resetAccumulation_ = false;
 };
 
