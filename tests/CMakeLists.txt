@@ -90,6 +90,7 @@ if(WIN32)
     endif()
 
     metallic_copy_streamline_runtime(MetallicRhiTests)
+    metallic_copy_aftermath_runtime(MetallicRhiTests)
 endif()
 
 add_test(
