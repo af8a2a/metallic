@@ -1293,6 +1293,7 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
             .enableValidation = enableValidation,
             .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true,
+            .enableMeshShader = true,
             .enableRayTracingAccelerationStructure = enableRayQuery,
             .enableRayQuery = enableRayQuery,
             .enablePushDescriptor = enableRayQuery,

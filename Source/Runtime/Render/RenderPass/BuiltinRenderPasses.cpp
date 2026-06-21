@@ -44,6 +44,10 @@ void registerBuiltInRenderGraphPasses()
         "Visualize a glTF acceleration structure with RayQuery",
         []() { return builtin_pass::createSceneRayQueryVisualizationPass(); });
     registerRenderGraphPassType(
+        "GPUDrivenPreviewPass",
+        "Visualize glTF meshlet clusters with mesh shaders",
+        []() { return builtin_pass::createGPUDrivenPreviewPass(); });
+    registerRenderGraphPassType(
         "ScenePathTracePass",
         "Path trace a glTF scene with RayQuery",
         []() { return builtin_pass::createScenePathTracePass(); });

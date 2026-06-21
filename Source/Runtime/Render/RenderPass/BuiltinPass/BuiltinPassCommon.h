@@ -45,6 +45,9 @@ inline constexpr const char* kMaterialShaderObjectAlternateFragmentEntryPoint =
     "materialShaderObjectAlternateFragmentMain";
 inline constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "scene_rayquery_visualize";
 inline constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
+inline constexpr const char* kGPUDrivenPreviewShaderModuleName = "gpu_driven_preview";
+inline constexpr const char* kGPUDrivenPreviewMeshEntryPoint = "gpuDrivenPreviewMeshMain";
+inline constexpr const char* kGPUDrivenPreviewFragmentEntryPoint = "gpuDrivenPreviewFragmentMain";
 inline constexpr const char* kSceneMaterialVisualizationShaderModuleName = "scene_material_visualize";
 inline constexpr const char* kSceneMaterialVisualizationEntryPoint = "sceneMaterialVisualizeMain";
 inline constexpr const char* kScenePathTraceShaderModuleName = "scene_path_trace";
@@ -61,10 +64,14 @@ inline constexpr const char* kRenderGraphBufferCopyEntryPoint = "renderGraphBuff
 inline constexpr const char* kDefaultImageSamplePath = PROJECT_SOURCE_DIR "/Asset/statue-1275469_1280.jpg";
 inline constexpr const char* kDefaultBunnyScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
 inline constexpr const char* kDefaultMaterialScenePath = PROJECT_SOURCE_DIR "/Asset/StandfordBunny/scene.gltf";
+inline constexpr const char* kDefaultGPUDrivenScenePath =
+    PROJECT_SOURCE_DIR "/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf";
 inline constexpr uint64_t kRenderGraphBufferByteSize = 16;
 inline constexpr int32_t kGltfTriangleListMode = 4;
 inline constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
 inline constexpr uint32_t kRayQueryVisualizationGranularityPrimitive = 1;
+inline constexpr uint32_t kGPUDrivenPreviewModeMeshlet = 0;
+inline constexpr uint32_t kGPUDrivenPreviewModePrimitive = 1;
 inline constexpr uint32_t kSceneMaterialVisualizationModeMaterial = 0;
 inline constexpr uint32_t kSceneMaterialVisualizationModeBaseColor = 1;
 inline constexpr uint32_t kSceneMaterialVisualizationModeNormal = 2;
@@ -305,6 +312,48 @@ struct SceneRayQueryVisualizationPush {
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t padding = 0;
+};
+
+struct GPUDrivenPreviewGpuPosition {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float w = 1.0f;
+};
+
+struct GPUDrivenPreviewGpuMeshlet {
+    uint32_t vertexOffset = 0;
+    uint32_t vertexCount = 0;
+    uint32_t triangleOffset = 0;
+    uint32_t triangleCount = 0;
+    uint32_t primitiveIndex = 0;
+    uint32_t materialIndex = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+};
+
+struct GPUDrivenPreviewGpuParams {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+    float clearColor[4] = {};
+    uint32_t mode = kGPUDrivenPreviewModeMeshlet;
+    uint32_t meshletCount = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+};
+
+struct GPUDrivenPreviewUserPush {
+    uint32_t positionBuffer = 0;
+    uint32_t meshletBuffer = 0;
+    uint32_t meshletVertexBuffer = 0;
+    uint32_t meshletTriangleBuffer = 0;
+    uint32_t paramsBuffer = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
 };
 
 struct SceneMaterialVisualizationPush {

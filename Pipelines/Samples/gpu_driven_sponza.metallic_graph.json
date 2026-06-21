@@ -17,10 +17,10 @@
                     "rotationDegrees": 0.0,
                     "visible": true
                 },
-                "granularity": "instance",
+                "mode": "meshlet",
                 "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"
             },
-            "type": "SceneRayQueryVisualizationPass"
+            "type": "GPUDrivenPreviewPass"
         }
     ],
     "outputs": [

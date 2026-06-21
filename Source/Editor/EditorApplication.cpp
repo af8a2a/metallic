@@ -187,6 +187,7 @@ bool isRenderGraphFilePath(const std::filesystem::path& path)
 bool isSceneAwareRenderPassType(const std::string& type)
 {
     return type == "BunnyWireframePass" ||
+        type == "GPUDrivenPreviewPass" ||
         type == "SceneRayQueryVisualizationPass" ||
         type == "SceneMaterialVisualizationPass" ||
         type == "ScenePathTracePass";
@@ -508,6 +509,22 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
                 {"reversedZ", true},
                 {"eye", {0.0f, 0.42f, 1.15f}},
                 {"center", {0.0f, 0.075f, 0.0f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
+        };
+    }
+    if (type == "GPUDrivenPreviewPass") {
+        return render::RenderGraphProperties{
+            {"path", "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"},
+            {"mode", "meshlet"},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 60.0f},
+                {"znear", 0.1f},
+                {"zfar", 10000.0f},
+                {"reversedZ", true},
+                {"eye", {0.0f, 2.0f, 8.0f}},
+                {"center", {0.0f, 1.0f, 0.0f}},
                 {"up", {0.0f, 1.0f, 0.0f}},
             }},
         };
@@ -1736,6 +1753,7 @@ bool EditorApplication::initializeRhi()
             .enableValidation = false,
             .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true,
+            .enableMeshShader = true,
             .enableRayTracingAccelerationStructure = true,
             .enableRayQuery = true,
             .enablePushDescriptor = true,
@@ -4801,6 +4819,7 @@ void EditorApplication::drawRenderGraphRenderUiPanel()
     }
 
     const bool hasStaticScenePath =
+        node->type == "GPUDrivenPreviewPass" ||
         node->type == "SceneRayQueryVisualizationPass" ||
         node->type == "SceneMaterialVisualizationPass" ||
         node->type == "ScenePathTracePass";

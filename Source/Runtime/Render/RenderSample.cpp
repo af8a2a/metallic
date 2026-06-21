@@ -199,7 +199,7 @@ public:
     std::string_view category() const override { return "GPUDriven"; }
     std::string_view description() const override
     {
-        return "GPU-driven sample scaffold using SuperSponza and a temporary RayQuery visualization pass.";
+        return "GPU-driven sample scaffold using SuperSponza and a mesh shader meshlet preview pass.";
     }
     std::string scenePath() const override { return "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"; }
     std::string graphPath() const override
