@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace metallic::render {
@@ -912,6 +913,7 @@ bool RenderGraph::validate(std::string& log) const
     }
 
     std::unordered_set<uint32_t> ids;
+    std::unordered_set<uint32_t> edgeIds;
     std::unordered_set<std::string> names;
     std::unordered_map<std::string, RenderPassReflection> reflections;
     const RenderGraphCompileContext reflectContext{};
@@ -982,6 +984,10 @@ bool RenderGraph::validate(std::string& log) const
     }
 
     for (const RenderGraphEdge& edge : edges_) {
+        if (edge.id == 0 || !edgeIds.insert(edge.id).second) {
+            log = validationPrefix("duplicate edge id");
+            return false;
+        }
         const auto src = reflections.find(edge.srcPass);
         const auto dst = reflections.find(edge.dstPass);
         const RenderGraphField* srcField = src == reflections.end()
@@ -1194,9 +1200,24 @@ bool deserializeRenderGraphFromString(
             graph.nodes_.push_back(std::move(node));
         }
 
-        for (const nlohmann::json& edgeJson : root.value("edges", nlohmann::json::array())) {
+        const nlohmann::json edgesJson = root.value("edges", nlohmann::json::array());
+        for (const nlohmann::json& edgeJson : edgesJson) {
+            maxEdgeId = std::max(maxEdgeId, edgeJson.value("id", 0u));
+        }
+        uint32_t generatedEdgeId = maxEdgeId + 1u;
+        std::unordered_set<uint32_t> usedEdgeIds;
+        for (const nlohmann::json& edgeJson : edgesJson) {
             RenderGraphEdge edge;
-            edge.id = edgeJson.value("id", 0u);
+            const uint32_t requestedEdgeId = edgeJson.value("id", 0u);
+            if (requestedEdgeId != 0u && usedEdgeIds.insert(requestedEdgeId).second) {
+                edge.id = requestedEdgeId;
+            } else {
+                while (generatedEdgeId == 0u || usedEdgeIds.contains(generatedEdgeId)) {
+                    ++generatedEdgeId;
+                }
+                edge.id = generatedEdgeId++;
+                usedEdgeIds.insert(edge.id);
+            }
             const std::string src = edgeJson.value("src", "");
             const std::string dst = edgeJson.value("dst", "");
             if (!splitRenderGraphFieldName(src, edge.srcPass, edge.srcField) ||

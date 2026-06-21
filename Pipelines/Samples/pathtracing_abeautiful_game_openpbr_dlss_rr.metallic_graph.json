@@ -2,30 +2,37 @@
     "edges": [
         {
             "dst": "DlssRr.inputColor",
+            "id": 1,
             "src": "PathTrace.color"
         },
         {
             "dst": "DlssRr.albedo",
+            "id": 2,
             "src": "PathTrace.albedo"
         },
         {
             "dst": "DlssRr.specularAlbedo",
+            "id": 3,
             "src": "PathTrace.specularAlbedo"
         },
         {
             "dst": "DlssRr.normalRoughness",
+            "id": 4,
             "src": "PathTrace.normalRoughness"
         },
         {
             "dst": "DlssRr.motionVectors",
+            "id": 5,
             "src": "PathTrace.motionVectors"
         },
         {
             "dst": "DlssRr.linearDepth",
+            "id": 6,
             "src": "PathTrace.linearDepth"
         },
         {
             "dst": "DlssRr.specularHitDistance",
+            "id": 7,
             "src": "PathTrace.specularHitDistance"
         }
     ],

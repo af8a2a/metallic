@@ -892,6 +892,52 @@ public:
         if (!graph.setNodeProperties(node->id, node->properties) || !graph.dirty()) {
             return RhiTestResult::fail("static property update did not mark graph dirty");
         }
+
+        const std::string legacyJson = R"json({
+            "version": 1,
+            "name": "LegacyMissingEdgeIds",
+            "nodes": [
+                {
+                    "id": 1,
+                    "name": "PathTrace",
+                    "type": "ScenePathTracePass",
+                    "properties": {
+                        "exportDenoiserGuides": true
+                    }
+                },
+                {
+                    "id": 2,
+                    "name": "DlssRr",
+                    "type": "StreamlineDlssRrPass",
+                    "properties": {}
+                }
+            ],
+            "edges": [
+                {"src": "PathTrace.color", "dst": "DlssRr.inputColor"},
+                {"src": "PathTrace.albedo", "dst": "DlssRr.albedo"},
+                {"src": "PathTrace.specularAlbedo", "dst": "DlssRr.specularAlbedo"},
+                {"src": "PathTrace.normalRoughness", "dst": "DlssRr.normalRoughness"},
+                {"src": "PathTrace.motionVectors", "dst": "DlssRr.motionVectors"},
+                {"src": "PathTrace.linearDepth", "dst": "DlssRr.linearDepth"},
+                {"src": "PathTrace.specularHitDistance", "dst": "DlssRr.specularHitDistance"}
+            ],
+            "outputs": [
+                "DlssRr.color"
+            ]
+        })json";
+        render::RenderGraph legacyLoaded;
+        if (!render::deserializeRenderGraphFromString(legacyJson, legacyLoaded, message)) {
+            return RhiTestResult::fail(message);
+        }
+        std::unordered_set<uint32_t> legacyEdgeIds;
+        for (const render::RenderGraphEdge& edge : legacyLoaded.edges()) {
+            if (edge.id == 0u || !legacyEdgeIds.insert(edge.id).second) {
+                return RhiTestResult::fail("legacy graph edges did not receive unique ids");
+            }
+        }
+        if (legacyEdgeIds.size() != 7u) {
+            return RhiTestResult::fail("legacy graph changed edge count");
+        }
         return RhiTestResult::pass();
     }
 };
