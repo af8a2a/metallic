@@ -37,6 +37,32 @@ struct NativeTexture {
     VkImageUsageFlags usage = 0;
 };
 
+struct ClusterAccelerationStructureBuildSizes {
+    uint64_t accelerationStructureSize = 0;
+    uint64_t updateScratchSize = 0;
+    uint64_t buildScratchSize = 0;
+};
+
+struct ClusterAccelerationStructureTriangleBuildSizesDesc {
+    VkBuildAccelerationStructureFlagsKHR flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    uint32_t maxClusterTriangleCount = 0;
+    uint32_t maxClusterVertexCount = 0;
+    uint32_t maxClusterUniqueGeometryCount = 1;
+    uint32_t maxGeometryIndexValue = 0;
+    uint32_t minPositionTruncateBitCount = 0;
+    uint32_t maxTotalTriangleCount = 0;
+    uint32_t maxTotalVertexCount = 0;
+    VkFormat vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    uint32_t maxAccelerationStructureCount = 1;
+};
+
+struct ClusterAccelerationStructureBottomLevelBuildSizesDesc {
+    VkBuildAccelerationStructureFlagsKHR flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    uint32_t maxClusterCountPerAccelerationStructure = 0;
+    uint32_t maxTotalClusterCount = 0;
+    uint32_t maxAccelerationStructureCount = 1;
+};
+
 NativeDevice nativeDevice(Device& device);
 NativeQueue nativeQueue(Queue& queue);
 NativeBuffer nativeBuffer(Buffer& buffer);
@@ -44,5 +70,13 @@ NativeTexture nativeTexture(Texture& texture);
 VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer);
 VkFormat nativeSwapchainFormat(Swapchain& swapchain);
 VkImageView nativeImageView(TextureView& view);
+Result queryClusterAccelerationStructureTriangleBuildSizes(
+    Device& device,
+    const ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
+    ClusterAccelerationStructureBuildSizes& outSizes);
+Result queryClusterAccelerationStructureBottomLevelBuildSizes(
+    Device& device,
+    const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,
+    ClusterAccelerationStructureBuildSizes& outSizes);
 
 } // namespace metallic::render::vulkan

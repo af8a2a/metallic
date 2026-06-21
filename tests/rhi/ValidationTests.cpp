@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
 namespace metallic::tests {
 namespace {
@@ -50,6 +51,7 @@ public:
                 .enableRayTracingAccelerationStructure = true,
                 .enableRayQuery = true,
                 .enablePushDescriptor = true,
+                .enableClusterAccelerationStructure = true,
             },
             device);
         if (!result) {
@@ -63,6 +65,10 @@ public:
         const render::DeviceCapabilities& capabilities = device->capabilities();
         if (capabilities.rayQuery && !capabilities.rayTracingAccelerationStructure) {
             return RhiTestResult::fail("rayQuery capability was enabled without acceleration structure support");
+        }
+        if (capabilities.clusterAccelerationStructure && !capabilities.rayTracingAccelerationStructure) {
+            return RhiTestResult::fail(
+                "clusterAccelerationStructure capability was enabled without acceleration structure support");
         }
         if (capabilities.bindlessDescriptorHeap &&
             (capabilities.maxBindlessSamplers == 0 ||
@@ -81,8 +87,86 @@ public:
     }
 };
 
+class ClusterAccelerationStructureSupportTest : public RhiTest {
+public:
+    ClusterAccelerationStructureSupportTest()
+    {
+        type = RhiTestType::Validation;
+        name = "cluster_acceleration_structure_support";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        render::Result result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic RHI Cluster Acceleration Structure Test",
+                .enableValidation = context.enableValidation,
+                .enableClusterAccelerationStructure = true,
+            },
+            device);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("createDevice(cluster acceleration structure) returned ") + toString(result));
+        }
+        if (device == nullptr) {
+            return RhiTestResult::fail("createDevice(cluster acceleration structure) returned a null device");
+        }
+
+        render::vulkan::ClusterAccelerationStructureBuildSizes triangleSizes;
+        result = render::vulkan::queryClusterAccelerationStructureTriangleBuildSizes(
+            *device,
+            render::vulkan::ClusterAccelerationStructureTriangleBuildSizesDesc{
+                .maxClusterTriangleCount = 1,
+                .maxClusterVertexCount = 3,
+                .maxTotalTriangleCount = 1,
+                .maxTotalVertexCount = 3,
+            },
+            triangleSizes);
+
+        const render::DeviceCapabilities& capabilities = device->capabilities();
+        if (!capabilities.clusterAccelerationStructure) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::pass();
+            }
+            return RhiTestResult::fail(
+                std::string("CLAS size query without capability returned ") + toString(result));
+        }
+        if (!capabilities.rayTracingAccelerationStructure) {
+            return RhiTestResult::fail(
+                "clusterAccelerationStructure capability was enabled without acceleration structure support");
+        }
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("queryClusterAccelerationStructureTriangleBuildSizes returned ") + toString(result));
+        }
+        if (triangleSizes.accelerationStructureSize == 0 || triangleSizes.buildScratchSize == 0) {
+            return RhiTestResult::fail("triangle CLAS size query returned zero build size");
+        }
+
+        render::vulkan::ClusterAccelerationStructureBuildSizes bottomLevelSizes;
+        result = render::vulkan::queryClusterAccelerationStructureBottomLevelBuildSizes(
+            *device,
+            render::vulkan::ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+                .maxClusterCountPerAccelerationStructure = 1,
+                .maxTotalClusterCount = 1,
+            },
+            bottomLevelSizes);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("queryClusterAccelerationStructureBottomLevelBuildSizes returned ") + toString(result));
+        }
+        if (bottomLevelSizes.accelerationStructureSize == 0 || bottomLevelSizes.buildScratchSize == 0) {
+            return RhiTestResult::fail("bottom-level CLAS size query returned zero build size");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(ValidateDeviceTest);
 METALLIC_REGISTER_RHI_TEST(OptionalFeatureSoftRequestTest);
+METALLIC_REGISTER_RHI_TEST(ClusterAccelerationStructureSupportTest);
 
 } // namespace
 } // namespace metallic::tests

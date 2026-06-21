@@ -1056,6 +1056,7 @@ struct VulkanDeviceFeatureRequest {
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
+    bool clusterAccelerationStructure = false;
     bool streamline = false;
     bool aftermath = false;
 
@@ -1067,6 +1068,7 @@ struct VulkanDeviceFeatureRequest {
             .rayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure,
             .rayQuery = desc.enableRayQuery,
             .pushDescriptor = desc.enablePushDescriptor,
+            .clusterAccelerationStructure = desc.enableClusterAccelerationStructure,
             .streamline = desc.enableStreamline,
             .aftermath = desc.enableAftermath && profiling::nsightAftermathInitialized(),
         };
@@ -1171,6 +1173,21 @@ struct VulkanDeviceFeatureProbe {
             vulkan12Features.bufferDeviceAddress == VK_TRUE;
     }
 
+    bool supportsClusterAccelerationStructure(
+        const VulkanExtensionSet& extensions,
+        bool accelerationStructureSupported) const
+    {
+#ifdef VK_NV_cluster_acceleration_structure
+        return accelerationStructureSupported &&
+            extensions.clusterAccelerationStructure &&
+            clusterAccelerationStructureFeatures.clusterAccelerationStructure == VK_TRUE;
+#else
+        (void)extensions;
+        (void)accelerationStructureSupported;
+        return false;
+#endif
+    }
+
     bool supportsStreamline(const VulkanExtensionSet& extensions, bool accelerationStructureSupported) const
     {
         return accelerationStructureSupported &&
@@ -1204,6 +1221,7 @@ struct VulkanDeviceFeatureSelection {
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool pushDescriptor = false;
+    bool clusterAccelerationStructure = false;
     bool streamline = false;
     bool aftermath = false;
 
@@ -1214,6 +1232,8 @@ struct VulkanDeviceFeatureSelection {
         const VulkanDeviceFeatureProbe& probe)
     {
         const bool accelerationStructureSupported = probe.supportsAccelerationStructure(extensions);
+        const bool clusterAccelerationStructureSupported =
+            probe.supportsClusterAccelerationStructure(extensions, accelerationStructureSupported);
         const bool streamlineSupported = probe.supportsStreamline(extensions, accelerationStructureSupported);
         const bool aftermathSupported = probe.supportsAftermath(extensions);
 
@@ -1232,7 +1252,10 @@ struct VulkanDeviceFeatureSelection {
             extensions.shaderObject &&
             probe.shaderObjectFeatures.shaderObject == VK_TRUE;
         result.rayTracingAccelerationStructure =
-            (request.rayTracingAccelerationStructure || request.rayQuery || request.streamline) &&
+            (request.rayTracingAccelerationStructure ||
+                request.rayQuery ||
+                request.clusterAccelerationStructure ||
+                request.streamline) &&
             accelerationStructureSupported;
         result.rayQuery =
             (request.rayQuery || request.streamline) &&
@@ -1240,6 +1263,10 @@ struct VulkanDeviceFeatureSelection {
             extensions.rayQuery &&
             probe.rayQueryFeatures.rayQuery == VK_TRUE;
         result.pushDescriptor = (request.pushDescriptor || request.streamline) && extensions.pushDescriptor;
+        result.clusterAccelerationStructure =
+            request.clusterAccelerationStructure &&
+            clusterAccelerationStructureSupported &&
+            result.rayTracingAccelerationStructure;
         result.streamline =
             request.streamline &&
             streamlineSupported &&
@@ -1252,7 +1279,11 @@ struct VulkanDeviceFeatureSelection {
 
     bool usesBufferDeviceAddress() const
     {
-        return bindlessDescriptorHeap || rayTracingAccelerationStructure || rayQuery || streamline;
+        return bindlessDescriptorHeap ||
+            rayTracingAccelerationStructure ||
+            rayQuery ||
+            clusterAccelerationStructure ||
+            streamline;
     }
 
     bool matches(const VulkanDeviceFeatureRequest& request) const
@@ -1261,12 +1292,14 @@ struct VulkanDeviceFeatureSelection {
             (!request.shaderObject || shaderObject) &&
             (!request.rayTracingAccelerationStructure || rayTracingAccelerationStructure) &&
             (!request.rayQuery || rayQuery) &&
-            (!request.pushDescriptor || pushDescriptor);
+            (!request.pushDescriptor || pushDescriptor) &&
+            (!request.clusterAccelerationStructure || clusterAccelerationStructure);
     }
 
     int32_t score() const
     {
         return (bindlessDescriptorHeap ? 16 : 0) +
+            (clusterAccelerationStructure ? 64 : 0) +
             (streamline ? 32 : 0) +
             (shaderObject ? 8 : 0) +
             (rayTracingAccelerationStructure ? 4 : 0) +
@@ -1300,6 +1333,11 @@ struct VulkanEnabledFeatureChain {
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
     };
+#ifdef VK_NV_cluster_acceleration_structure
+    VkPhysicalDeviceClusterAccelerationStructureFeaturesNV clusterAccelerationStructureFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV,
+    };
+#endif
 #if defined(VK_NV_device_diagnostics_config)
     VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsConfigFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV,
@@ -1332,6 +1370,10 @@ struct VulkanEnabledFeatureChain {
             selection.rayTracingAccelerationStructure ? VK_TRUE : VK_FALSE;
         rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
         rayTracingPipelineFeatures.rayTracingPipeline = selection.streamline ? VK_TRUE : VK_FALSE;
+#ifdef VK_NV_cluster_acceleration_structure
+        clusterAccelerationStructureFeatures.clusterAccelerationStructure =
+            selection.clusterAccelerationStructure ? VK_TRUE : VK_FALSE;
+#endif
 #if defined(VK_NV_device_diagnostics_config)
         diagnosticsConfigFeatures.diagnosticsConfig = selection.aftermath ? VK_TRUE : VK_FALSE;
 #endif
@@ -1355,6 +1397,11 @@ struct VulkanEnabledFeatureChain {
         if (selection.streamline) {
             appendPNext(featureTail, rayTracingPipelineFeatures);
         }
+#ifdef VK_NV_cluster_acceleration_structure
+        if (selection.clusterAccelerationStructure) {
+            appendPNext(featureTail, clusterAccelerationStructureFeatures);
+        }
+#endif
 #if defined(VK_NV_device_diagnostics_config)
         if (selection.aftermath) {
             appendPNext(featureTail, diagnosticsConfigFeatures);
@@ -1386,6 +1433,11 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
     if (selection.pushDescriptor) {
         extensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
     }
+#ifdef VK_NV_cluster_acceleration_structure
+    if (selection.clusterAccelerationStructure) {
+        extensions.push_back(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+    }
+#endif
     if (selection.streamline) {
         extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
         extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
@@ -1917,6 +1969,7 @@ struct DeviceImpl {
     bool rayTracingAccelerationStructureEnabled = false;
     bool rayQueryEnabled = false;
     bool pushDescriptorEnabled = false;
+    bool clusterAccelerationStructureEnabled = false;
     bool streamlineInitialized = false;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
@@ -4872,11 +4925,14 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->rayQueryEnabled = selectedFeatures.rayQuery;
     deviceImpl->capabilities.pushDescriptor = selectedFeatures.pushDescriptor;
     deviceImpl->pushDescriptorEnabled = selectedFeatures.pushDescriptor;
+    deviceImpl->capabilities.clusterAccelerationStructure = selectedFeatures.clusterAccelerationStructure;
+    deviceImpl->clusterAccelerationStructureEnabled = selectedFeatures.clusterAccelerationStructure;
     deviceImpl->capabilities.aftermath = selectedFeatures.aftermath;
     deviceImpl->bufferDeviceAddressEnabled =
         selectedFeatures.bindlessDescriptorHeap ||
         selectedFeatures.rayTracingAccelerationStructure ||
-        selectedFeatures.rayQuery;
+        selectedFeatures.rayQuery ||
+        selectedFeatures.clusterAccelerationStructure;
 
     if (deviceImpl->debugUtilsEnabled) {
         deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
@@ -5049,6 +5105,114 @@ struct VulkanNativeAccess {
     {
         return view.impl_ != nullptr ? view.impl_->view : VK_NULL_HANDLE;
     }
+
+    static Result queryClusterAccelerationStructureTriangleBuildSizes(
+        Device& device,
+        const vulkan::ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
+        vulkan::ClusterAccelerationStructureBuildSizes& outSizes)
+    {
+        outSizes = {};
+        if (device.impl_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (!device.impl_->clusterAccelerationStructureEnabled ||
+            !device.impl_->capabilities.clusterAccelerationStructure) {
+            return makeError(Error::Unsupported);
+        }
+        if (desc.maxClusterTriangleCount == 0 ||
+            desc.maxClusterVertexCount == 0 ||
+            desc.maxClusterUniqueGeometryCount == 0 ||
+            desc.maxTotalTriangleCount == 0 ||
+            desc.maxTotalVertexCount == 0 ||
+            desc.maxAccelerationStructureCount == 0 ||
+            desc.vertexFormat == VK_FORMAT_UNDEFINED) {
+            return makeError(Error::InvalidArgument);
+        }
+
+#ifdef VK_NV_cluster_acceleration_structure
+        activateVolkDevice(device.impl_->device);
+        VkClusterAccelerationStructureTriangleClusterInputNV triangleInput{
+            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV,
+            .vertexFormat = desc.vertexFormat,
+            .maxGeometryIndexValue = desc.maxGeometryIndexValue,
+            .maxClusterUniqueGeometryCount = desc.maxClusterUniqueGeometryCount,
+            .maxClusterTriangleCount = desc.maxClusterTriangleCount,
+            .maxClusterVertexCount = desc.maxClusterVertexCount,
+            .maxTotalTriangleCount = desc.maxTotalTriangleCount,
+            .maxTotalVertexCount = desc.maxTotalVertexCount,
+            .minPositionTruncateBitCount = desc.minPositionTruncateBitCount,
+        };
+        VkClusterAccelerationStructureInputInfoNV inputInfo{
+            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+            .maxAccelerationStructureCount = desc.maxAccelerationStructureCount,
+            .flags = desc.flags,
+            .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV,
+            .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
+            .opInput = {.pTriangleClusters = &triangleInput},
+        };
+        VkAccelerationStructureBuildSizesInfoKHR sizeInfo{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+        };
+        vkGetClusterAccelerationStructureBuildSizesNV(device.impl_->device, &inputInfo, &sizeInfo);
+        outSizes = vulkan::ClusterAccelerationStructureBuildSizes{
+            .accelerationStructureSize = sizeInfo.accelerationStructureSize,
+            .updateScratchSize = sizeInfo.updateScratchSize,
+            .buildScratchSize = sizeInfo.buildScratchSize,
+        };
+        return {};
+#else
+        return makeError(Error::Unsupported);
+#endif
+    }
+
+    static Result queryClusterAccelerationStructureBottomLevelBuildSizes(
+        Device& device,
+        const vulkan::ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,
+        vulkan::ClusterAccelerationStructureBuildSizes& outSizes)
+    {
+        outSizes = {};
+        if (device.impl_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (!device.impl_->clusterAccelerationStructureEnabled ||
+            !device.impl_->capabilities.clusterAccelerationStructure) {
+            return makeError(Error::Unsupported);
+        }
+        if (desc.maxClusterCountPerAccelerationStructure == 0 ||
+            desc.maxTotalClusterCount == 0 ||
+            desc.maxAccelerationStructureCount == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+
+#ifdef VK_NV_cluster_acceleration_structure
+        activateVolkDevice(device.impl_->device);
+        VkClusterAccelerationStructureClustersBottomLevelInputNV bottomLevelInput{
+            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
+            .maxTotalClusterCount = desc.maxTotalClusterCount,
+            .maxClusterCountPerAccelerationStructure = desc.maxClusterCountPerAccelerationStructure,
+        };
+        VkClusterAccelerationStructureInputInfoNV inputInfo{
+            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+            .maxAccelerationStructureCount = desc.maxAccelerationStructureCount,
+            .flags = desc.flags,
+            .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV,
+            .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV,
+            .opInput = {.pClustersBottomLevel = &bottomLevelInput},
+        };
+        VkAccelerationStructureBuildSizesInfoKHR sizeInfo{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+        };
+        vkGetClusterAccelerationStructureBuildSizesNV(device.impl_->device, &inputInfo, &sizeInfo);
+        outSizes = vulkan::ClusterAccelerationStructureBuildSizes{
+            .accelerationStructureSize = sizeInfo.accelerationStructureSize,
+            .updateScratchSize = sizeInfo.updateScratchSize,
+            .buildScratchSize = sizeInfo.buildScratchSize,
+        };
+        return {};
+#else
+        return makeError(Error::Unsupported);
+#endif
+    }
 };
 
 } // namespace detail
@@ -5088,6 +5252,28 @@ VkFormat nativeSwapchainFormat(Swapchain& swapchain)
 VkImageView nativeImageView(TextureView& view)
 {
     return detail::VulkanNativeAccess::nativeImageView(view);
+}
+
+Result queryClusterAccelerationStructureTriangleBuildSizes(
+    Device& device,
+    const ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
+    ClusterAccelerationStructureBuildSizes& outSizes)
+{
+    return detail::VulkanNativeAccess::queryClusterAccelerationStructureTriangleBuildSizes(
+        device,
+        desc,
+        outSizes);
+}
+
+Result queryClusterAccelerationStructureBottomLevelBuildSizes(
+    Device& device,
+    const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,
+    ClusterAccelerationStructureBuildSizes& outSizes)
+{
+    return detail::VulkanNativeAccess::queryClusterAccelerationStructureBottomLevelBuildSizes(
+        device,
+        desc,
+        outSizes);
 }
 
 } // namespace vulkan
