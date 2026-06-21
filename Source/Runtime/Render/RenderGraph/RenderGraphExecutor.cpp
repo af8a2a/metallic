@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <queue>
@@ -90,6 +91,7 @@ struct RenderGraphExecutor::Impl {
     std::vector<std::unique_ptr<CommandBuffer>> submittedCommandBuffers;
     std::vector<std::unique_ptr<Semaphore>> submittedSemaphores;
     std::vector<std::unique_ptr<Fence>> submittedFences;
+    RenderGraphExecutionStats lastExecutionStats;
     bool hasSubmittedWork = false;
     bool isCompiled = false;
 
@@ -369,8 +371,16 @@ struct RenderGraphExecutor::Impl {
             .name = markerName.c_str(),
             .color = debugLabelColorFromArgb(markerColor),
         });
+        const auto cpuBegin = std::chrono::steady_clock::now();
         Result result = node.pass->execute(context);
+        const auto cpuEnd = std::chrono::steady_clock::now();
         commandBuffer.endDebugLabel();
+        lastExecutionStats.nodes.push_back(RenderGraphNodeExecutionStat{
+            .id = node.id,
+            .name = node.name,
+            .type = node.type,
+            .cpuMilliseconds = std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count(),
+        });
         return result;
     }
 };
@@ -775,13 +785,21 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     }
 
     impl_->historyResources = historyResources;
+    impl_->lastExecutionStats = {};
+    const auto cpuBegin = std::chrono::steady_clock::now();
     for (Impl::CompiledNode& node : impl_->executionList) {
         Result result = impl_->executeNode(commandBuffer, node);
         if (!result) {
+            const auto cpuEnd = std::chrono::steady_clock::now();
+            impl_->lastExecutionStats.cpuMilliseconds =
+                std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
             impl_->historyResources = nullptr;
             return result;
         }
     }
+    const auto cpuEnd = std::chrono::steady_clock::now();
+    impl_->lastExecutionStats.cpuMilliseconds =
+        std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
 
     impl_->historyResources = nullptr;
     return {};
@@ -811,6 +829,8 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         queueContext.resetForCurrentSubmit = false;
     }
 
+    impl_->lastExecutionStats = {};
+    const auto cpuBegin = std::chrono::steady_clock::now();
     std::vector<Impl::SubmissionSegment> segments;
     CommandBuffer* currentCommandBuffer = nullptr;
     QueueType currentQueueType = QueueType::Graphics;
@@ -879,12 +899,18 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 
         result = impl_->executeNode(*currentCommandBuffer, node);
         if (!result) {
+            const auto cpuEnd = std::chrono::steady_clock::now();
+            impl_->lastExecutionStats.cpuMilliseconds =
+                std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
             return result;
         }
     }
 
     result = endCurrentSegment();
     if (!result) {
+        const auto cpuEnd = std::chrono::steady_clock::now();
+        impl_->lastExecutionStats.cpuMilliseconds =
+            std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
         return result;
     }
 
@@ -953,11 +979,17 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 impl_->submittedSemaphores.clear();
                 impl_->submittedFences.clear();
             }
+            const auto cpuEnd = std::chrono::steady_clock::now();
+            impl_->lastExecutionStats.cpuMilliseconds =
+                std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
             return result;
         }
         impl_->hasSubmittedWork = true;
     }
 
+    const auto cpuEnd = std::chrono::steady_clock::now();
+    impl_->lastExecutionStats.cpuMilliseconds =
+        std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
     return {};
 }
 
@@ -1023,6 +1055,11 @@ RenderGraphResource* RenderGraphExecutor::outputResource(std::string_view fullNa
 const RenderGraphResource* RenderGraphExecutor::outputResource(std::string_view fullName) const
 {
     return impl_->resource(fullName);
+}
+
+const RenderGraphExecutionStats& RenderGraphExecutor::executionStats() const
+{
+    return impl_->lastExecutionStats;
 }
 
 bool RenderGraphExecutor::compiled() const

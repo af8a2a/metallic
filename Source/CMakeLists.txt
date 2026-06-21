@@ -100,9 +100,15 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     MetallicRuntimeScene
 )
 
+set(METALLIC_EDITOR_SOURCES
+    Editor/EditorApplication.cpp
+    Editor/EditorProfiler.cpp
+    Editor/NvmlMonitor.cpp
+)
+
 add_executable(Metallic
     Main.cpp
-    Editor/EditorApplication.cpp
+    ${METALLIC_EDITOR_SOURCES}
 )
 
 target_include_directories(Metallic PRIVATE
@@ -202,12 +208,12 @@ endfunction()
 
 add_executable(MetallicMaterialVisualizationSample
     Samples/MaterialVisualizationSampleMain.cpp
-    Editor/EditorApplication.cpp
+    ${METALLIC_EDITOR_SOURCES}
 )
 configure_metallic_editor_sample(MetallicMaterialVisualizationSample)
 
 add_executable(MetallicPathTracingSample
     Samples/PathTracingSampleMain.cpp
-    Editor/EditorApplication.cpp
+    ${METALLIC_EDITOR_SOURCES}
 )
 configure_metallic_editor_sample(MetallicPathTracingSample)

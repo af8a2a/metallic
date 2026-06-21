@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Editor/EditorProfiler.h"
+#include "Editor/NvmlMonitor.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.h"
 #include "Runtime/Render/HistoryResources.h"
@@ -87,6 +89,8 @@ private:
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
     render::HistoryResourceManager historyResources_;
     std::unique_ptr<render::vulkan::SceneRtxBuilder> sceneRtx_;
+    EditorProfiler profiler_;
+    NvmlMonitor nvmlMonitor_;
     render::RenderGraph renderGraph_;
     scene::Scene scene_;
     VkSampler viewportSampler_ = VK_NULL_HANDLE;
@@ -111,6 +115,8 @@ private:
     bool swapchainOutOfDate_ = false;
     bool dockLayoutInitialized_ = false;
     bool renderGraphEditorOpen_ = false;
+    bool profilerOpen_ = true;
+    bool nvmlMonitorOpen_ = true;
     bool graphEditorPositionsInitialized_ = false;
     bool viewportCameraDragging_ = false;
     float mainScale_ = 1.0f;

@@ -14,6 +14,18 @@ struct RenderGraphCompileOptions {
     bool enablePreviewOutputAccess = false;
 };
 
+struct RenderGraphNodeExecutionStat {
+    uint32_t id = 0;
+    std::string name;
+    std::string type;
+    double cpuMilliseconds = 0.0;
+};
+
+struct RenderGraphExecutionStats {
+    double cpuMilliseconds = 0.0;
+    std::vector<RenderGraphNodeExecutionStat> nodes;
+};
+
 class RenderGraphExecutor {
 public:
     RenderGraphExecutor();
@@ -50,6 +62,7 @@ public:
 
     RenderGraphResource* outputResource(std::string_view fullName);
     const RenderGraphResource* outputResource(std::string_view fullName) const;
+    const RenderGraphExecutionStats& executionStats() const;
     bool compiled() const;
     uint32_t width() const;
     uint32_t height() const;

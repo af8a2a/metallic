@@ -20,6 +20,7 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <vector>
 
@@ -34,6 +35,73 @@ constexpr const char* kRenderPassDragPayload = "METALLIC_RENDER_PASS_TYPE";
 constexpr uint32_t kSwapchainImageCount = 3;
 constexpr uint32_t kMinSwapchainImageCount = 2;
 constexpr const char* kDefaultRenderSampleId = "pathtracing-sample";
+constexpr const char* kDefaultImGuiIni = R"ini([Window][Viewport]
+Pos=0,28
+Size=1821,794
+Collapsed=0
+DockId=0x00000003,0
+
+[Window][Scene]
+Pos=1824,28
+Size=576,1322
+Collapsed=0
+DockId=0x00000002,0
+
+[Window][Assets]
+Pos=0,825
+Size=1821,525
+Collapsed=0
+DockId=0x00000004,0
+
+[Window][Console]
+Pos=0,825
+Size=1821,525
+Collapsed=0
+DockId=0x00000004,1
+
+[Window][MetallicEditorDockspace]
+Pos=0,0
+Size=2400,1350
+Collapsed=0
+
+[Window][Debug##Default]
+Pos=60,60
+Size=400,400
+Collapsed=0
+
+[Window][Render Graph Editor]
+Pos=504,153
+Size=1830,1140
+Collapsed=0
+
+[Window][Profiler]
+Pos=0,825
+Size=1821,525
+Collapsed=0
+DockId=0x00000004,3
+
+[Window][NVML Monitor]
+Pos=0,825
+Size=1821,525
+Collapsed=0
+DockId=0x00000004,2
+
+[Table][0x331D395F,5]
+RefScale=20
+Column 0  Weight=1.0000
+Column 1  Width=92
+Column 2  Width=72
+Column 3  Width=72
+Column 4  Width=72
+
+[Docking][Data]
+DockSpace     ID=0xB0446515 Window=0x3660BDC2 Pos=0,28 Size=2400,1322 Split=X
+  DockNode    ID=0x00000001 Parent=0xB0446515 SizeRef=1821,1350 Split=Y
+    DockNode  ID=0x00000003 Parent=0x00000001 SizeRef=1821,794 CentralNode=1 Selected=0xC450F867
+    DockNode  ID=0x00000004 Parent=0x00000001 SizeRef=1821,525 Selected=0x9B5D3198
+  DockNode    ID=0x00000002 Parent=0xB0446515 SizeRef=576,1350 Selected=0xE601B12F
+
+)ini";
 
 float getMainDisplayScale()
 {
@@ -431,6 +499,21 @@ bool isMarkedRenderGraphOutput(const render::RenderGraph& graph, std::string_vie
         }
     }
     return false;
+}
+
+void loadDefaultImGuiLayoutIfMissing()
+{
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.IniFilename == nullptr || io.IniFilename[0] == '\0') {
+        return;
+    }
+
+    std::error_code error;
+    if (std::filesystem::exists(io.IniFilename, error)) {
+        return;
+    }
+
+    ImGui::LoadIniSettingsFromMemory(kDefaultImGuiIni, std::strlen(kDefaultImGuiIni));
 }
 
 render::RenderGraphNode* findRenderGraphNodeForOutput(
@@ -1061,21 +1144,36 @@ int EditorApplication::run(bool smokeTest, bool waitForGraphicsDebugger, const c
     }
 
     if (smokeTest) {
-        pollEvents();
-        renderFrame();
+        auto profileFrame = profiler_.beginFrame();
+        {
+            auto profileScope = profiler_.scope("Poll Events");
+            pollEvents();
+        }
+        {
+            auto profileScope = profiler_.scope("Render Frame");
+            renderFrame();
+        }
         shutdown();
         return 0;
     }
 
     while (running_) {
-        pollEvents();
+        auto profileFrame = profiler_.beginFrame();
+        {
+            auto profileScope = profiler_.scope("Poll Events");
+            pollEvents();
+        }
 
         if ((SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) != 0) {
+            auto profileScope = profiler_.scope("Minimized Wait");
             SDL_Delay(10);
             continue;
         }
 
-        renderFrame();
+        {
+            auto profileScope = profiler_.scope("Render Frame");
+            renderFrame();
+        }
     }
 
     shutdown();
@@ -1134,6 +1232,7 @@ bool EditorApplication::initialize()
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    loadDefaultImGuiLayoutIfMissing();
 
     applyNvproImGuiStyle();
     ImGuiStyle& style = ImGui::GetStyle();
@@ -1147,6 +1246,8 @@ bool EditorApplication::initialize()
     if (!initializeImGuiBackends()) {
         return false;
     }
+
+    nvmlMonitor_.initialize();
 
     graphExecutor_ = std::make_unique<render::RenderGraphExecutor>();
     sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
@@ -1396,6 +1497,7 @@ void EditorApplication::shutdown()
 
     destroyViewportTexture();
     historyResources_.reset();
+    nvmlMonitor_.shutdown();
 
     if (imguiRendererInitialized_) {
         ImGui_ImplVulkan_Shutdown();
@@ -1476,6 +1578,7 @@ void EditorApplication::renderFrame()
     }
 
     if (frameFence_ != nullptr) {
+        auto profileScope = profiler_.scope("Wait Frame Fence");
         render::Result result = frameFence_->wait();
         if (!result) {
             std::cerr << "frameFence wait before UI failed with Result " << render::resultToString(result) << '\n';
@@ -1488,6 +1591,7 @@ void EditorApplication::renderFrame()
         swapchain_ == nullptr ||
         swapchainWidth_ != static_cast<uint32_t>(framebufferWidth) ||
         swapchainHeight_ != static_cast<uint32_t>(framebufferHeight)) {
+        auto profileScope = profiler_.scope("Resize Swapchain");
         if (!createOrResizeSwapchain(
                 static_cast<uint32_t>(framebufferWidth),
                 static_cast<uint32_t>(framebufferHeight))) {
@@ -1496,14 +1600,26 @@ void EditorApplication::renderFrame()
         }
     }
 
-    ImGui_ImplVulkan_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
+    {
+        auto profileScope = profiler_.scope("ImGui NewFrame");
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        ImGui::NewFrame();
+    }
 
-    drawDockspace();
-    drawPanels();
+    {
+        auto profileScope = profiler_.scope("Dockspace");
+        drawDockspace();
+    }
+    {
+        auto profileScope = profiler_.scope("Panels");
+        drawPanels();
+    }
 
-    ImGui::Render();
+    {
+        auto profileScope = profiler_.scope("ImGui Render");
+        ImGui::Render();
+    }
     if (!renderVulkanFrame()) {
         running_ = false;
     }
@@ -1535,7 +1651,7 @@ void EditorApplication::setupDefaultDockLayout()
     ImGuiID bottomDockId = ImGui::DockBuilderSplitNode(
         viewportDockId,
         ImGuiDir_Down,
-        0.28f,
+        0.40f,
         nullptr,
         &viewportDockId);
 
@@ -1543,6 +1659,8 @@ void EditorApplication::setupDefaultDockLayout()
     ImGui::DockBuilderDockWindow("Scene", sideDockId);
     ImGui::DockBuilderDockWindow("Assets", bottomDockId);
     ImGui::DockBuilderDockWindow("Console", bottomDockId);
+    ImGui::DockBuilderDockWindow("NVML Monitor", bottomDockId);
+    ImGui::DockBuilderDockWindow("Profiler", bottomDockId);
     ImGui::DockBuilderFinish(dockspaceId);
 }
 
@@ -1604,6 +1722,8 @@ void EditorApplication::drawDockspace()
             ImGui::MenuItem("Viewport");
             ImGui::MenuItem("Assets");
             ImGui::MenuItem("Console");
+            ImGui::MenuItem("Profiler", nullptr, &profilerOpen_);
+            ImGui::MenuItem("NVML Monitor", nullptr, &nvmlMonitorOpen_);
             ImGui::EndMenu();
         }
 
@@ -1619,9 +1739,18 @@ void EditorApplication::drawDockspace()
 
 void EditorApplication::drawPanels()
 {
-    drawScenePanel();
-    drawViewportPanel();
-    drawRenderGraphEditorWindow();
+    {
+        auto profileScope = profiler_.scope("Scene Panel");
+        drawScenePanel();
+    }
+    {
+        auto profileScope = profiler_.scope("Viewport Panel");
+        drawViewportPanel();
+    }
+    {
+        auto profileScope = profiler_.scope("Render Graph Editor");
+        drawRenderGraphEditorWindow();
+    }
 
     ImGui::Begin("Assets");
     ImGui::TextUnformatted(PROJECT_SOURCE_DIR);
@@ -1634,6 +1763,9 @@ void EditorApplication::drawPanels()
         ImGui::TextWrapped("%s", renderGraphStatus_.c_str());
     }
     ImGui::End();
+
+    profiler_.drawWindow(&profilerOpen_);
+    nvmlMonitor_.drawWindow(&nvmlMonitorOpen_);
 }
 
 void EditorApplication::drawScenePanel()
@@ -2404,6 +2536,7 @@ bool EditorApplication::renderGraphPreview()
         return false;
     }
 
+    auto profileScope = profiler_.scope("RenderGraph Preview");
     if (!renderGraph_.dirty()) {
         graphExecutor_->syncRuntimeProperties(renderGraph_);
     }
@@ -2413,6 +2546,7 @@ bool EditorApplication::renderGraphPreview()
         .color = render::ColorValue{0.78f, 0.36f, 0.92f, 1.0f},
     });
     render::Result result = graphExecutor_->execute(*commandBuffer_, &historyResources_);
+    profiler_.addRenderGraphStats(graphExecutor_->executionStats());
     commandBuffer_->endDebugLabel();
     if (!result) {
         renderGraphStatus_ = std::string("RenderGraph execute failed: ") + render::resultToString(result);
@@ -2458,7 +2592,10 @@ bool EditorApplication::renderVulkanFrame()
     }
 
     uint32_t imageIndex = 0;
-    result = swapchain_->acquireNextImage(*imageAvailableSemaphore_, imageIndex);
+    {
+        auto profileScope = profiler_.scope("Acquire Swapchain Image");
+        result = swapchain_->acquireNextImage(*imageAvailableSemaphore_, imageIndex);
+    }
     if (!result) {
         if (render::hasError(result, render::Error::OutOfDate)) {
             swapchainOutOfDate_ = true;
@@ -2472,22 +2609,25 @@ bool EditorApplication::renderVulkanFrame()
         return false;
     }
 
-    result = frameFence_->reset();
-    if (!result) {
-        std::cerr << "frameFence reset failed with Result " << render::resultToString(result) << '\n';
-        return false;
+    {
+        auto profileScope = profiler_.scope("Begin Command Buffer");
+        result = frameFence_->reset();
+        if (!result) {
+            std::cerr << "frameFence reset failed with Result " << render::resultToString(result) << '\n';
+            return false;
+        }
+        result = commandPool_->reset();
+        if (!result) {
+            std::cerr << "commandPool reset failed with Result " << render::resultToString(result) << '\n';
+            return false;
+        }
+        result = commandBuffer_->begin();
+        if (!result) {
+            std::cerr << "commandBuffer begin failed with Result " << render::resultToString(result) << '\n';
+            return false;
+        }
+        historyResources_.beginFrame(historyFrameIndex_++);
     }
-    result = commandPool_->reset();
-    if (!result) {
-        std::cerr << "commandPool reset failed with Result " << render::resultToString(result) << '\n';
-        return false;
-    }
-    result = commandBuffer_->begin();
-    if (!result) {
-        std::cerr << "commandBuffer begin failed with Result " << render::resultToString(result) << '\n';
-        return false;
-    }
-    historyResources_.beginFrame(historyFrameIndex_++);
 
     bool frameLabelOpen = true;
     commandBuffer_->beginDebugLabel(render::DebugLabelDesc{
@@ -2501,9 +2641,12 @@ bool EditorApplication::renderVulkanFrame()
         }
     };
 
-    if (!renderGraphPreview()) {
-        endFrameLabel();
-        return false;
+    {
+        auto profileScope = profiler_.scope("Record RenderGraph");
+        if (!renderGraphPreview()) {
+            endFrameLabel();
+            return false;
+        }
     }
 
     render::Texture* swapchainTexture = swapchain_->texture(imageIndex);
@@ -2555,9 +2698,12 @@ bool EditorApplication::renderVulkanFrame()
         .colorAttachmentCount = 1,
     });
 
-    ImGui_ImplVulkan_RenderDrawData(
-        ImGui::GetDrawData(),
-        render::vulkan::nativeCommandBuffer(*commandBuffer_));
+    {
+        auto profileScope = profiler_.scope("Record ImGui Draw");
+        ImGui_ImplVulkan_RenderDrawData(
+            ImGui::GetDrawData(),
+            render::vulkan::nativeCommandBuffer(*commandBuffer_));
+    }
 
     commandBuffer_->endRendering();
     commandBuffer_->endDebugLabel();
@@ -2578,10 +2724,13 @@ bool EditorApplication::renderVulkanFrame()
     swapchainImageStates_[imageIndex] = render::ResourceState::Present;
 
     endFrameLabel();
-    result = commandBuffer_->end();
-    if (!result) {
-        std::cerr << "commandBuffer end failed with Result " << render::resultToString(result) << '\n';
-        return false;
+    {
+        auto profileScope = profiler_.scope("End Command Buffer");
+        result = commandBuffer_->end();
+        if (!result) {
+            std::cerr << "commandBuffer end failed with Result " << render::resultToString(result) << '\n';
+            return false;
+        }
     }
 
     render::CommandBuffer* commandBuffers[] = {commandBuffer_.get()};
@@ -2593,20 +2742,26 @@ bool EditorApplication::renderVulkanFrame()
         .semaphore = renderFinishedSemaphore_.get(),
         .stages = render::PipelineStageBits::AllCommands,
     };
-    result = graphicsQueue_->submit(render::QueueSubmitDesc{
-        .waitSemaphores = &waitSemaphore,
-        .waitSemaphoreCount = 1,
-        .commandBuffers = commandBuffers,
-        .commandBufferCount = 1,
-        .signalSemaphores = &signalSemaphore,
-        .signalSemaphoreCount = 1,
-        .signalFence = frameFence_.get(),
-    });
+    {
+        auto profileScope = profiler_.scope("Submit Frame");
+        result = graphicsQueue_->submit(render::QueueSubmitDesc{
+            .waitSemaphores = &waitSemaphore,
+            .waitSemaphoreCount = 1,
+            .commandBuffers = commandBuffers,
+            .commandBufferCount = 1,
+            .signalSemaphores = &signalSemaphore,
+            .signalSemaphoreCount = 1,
+            .signalFence = frameFence_.get(),
+        });
+    }
     if (!result) {
         std::cerr << "graphicsQueue submit failed with Result " << render::resultToString(result) << '\n';
         return false;
     }
-    result = swapchain_->present(*graphicsQueue_, imageIndex, *renderFinishedSemaphore_);
+    {
+        auto profileScope = profiler_.scope("Present");
+        result = swapchain_->present(*graphicsQueue_, imageIndex, *renderFinishedSemaphore_);
+    }
     if (!result) {
         if (render::hasError(result, render::Error::OutOfDate)) {
             swapchainOutOfDate_ = true;
