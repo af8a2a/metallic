@@ -2,13 +2,14 @@
 
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <iostream>
 #include <mutex>
 #include <type_traits>
 #include <vector>
@@ -208,7 +209,11 @@ void streamlineLogCallback(sl::LogType type, const char* message)
     }
 
     const char* level = type == sl::LogType::eWarn ? "warn" : "error";
-    std::cerr << "[Streamline][" << level << "] " << message << '\n';
+    spdlog::log(
+        type == sl::LogType::eWarn ? spdlog::level::warn : spdlog::level::err,
+        "[Streamline][{}] {}",
+        level,
+        message);
 }
 
 sl::DLSSMode slMode(StreamlineDlssRrMode mode)

@@ -1,6 +1,7 @@
 #include "Editor/EditorApplication.h"
 
-#include <iostream>
+#include <spdlog/spdlog.h>
+
 #include <string_view>
 
 namespace {
@@ -10,11 +11,11 @@ constexpr const char* kPathTracingDlssRrSampleId = "pathtracing-sample-dlss-rr";
 
 void printUsage()
 {
-    std::cout
-        << "MetallicPathTracingSample options:\n"
-        << "  --dlss-rr                   Use the NVIDIA DLSS-RR denoiser graph\n"
-        << "  --smoke-test                 Render one frame and exit\n"
-        << "  --wait-for-graphics-debugger Wait before Vulkan initialization\n";
+    spdlog::info(
+        "MetallicPathTracingSample options:\n"
+        "  --dlss-rr                   Use the NVIDIA DLSS-RR denoiser graph\n"
+        "  --smoke-test                 Render one frame and exit\n"
+        "  --wait-for-graphics-debugger Wait before Vulkan initialization");
 }
 
 } // namespace
@@ -43,7 +44,7 @@ int main(int argc, char** argv)
             continue;
         }
 
-        std::cerr << "Unknown argument: " << argument << '\n';
+        spdlog::error("Unknown argument: {}", argument);
         printUsage();
         return 1;
     }

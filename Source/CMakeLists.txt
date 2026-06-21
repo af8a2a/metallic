@@ -51,6 +51,7 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     metallic::streamline
     nlohmann_json
     slang::slang
+    spdlog::spdlog
 )
 
 if(TARGET NRD)

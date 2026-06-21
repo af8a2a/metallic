@@ -1,6 +1,7 @@
 #include "Editor/EditorApplication.h"
 
-#include <iostream>
+#include <spdlog/spdlog.h>
+
 #include <string_view>
 
 namespace {
@@ -9,10 +10,10 @@ constexpr const char* kMaterialVisualizationSampleId = "material-visualization-a
 
 void printUsage()
 {
-    std::cout
-        << "MetallicMaterialVisualizationSample options:\n"
-        << "  --smoke-test                 Render one frame and exit\n"
-        << "  --wait-for-graphics-debugger Wait before Vulkan initialization\n";
+    spdlog::info(
+        "MetallicMaterialVisualizationSample options:\n"
+        "  --smoke-test                 Render one frame and exit\n"
+        "  --wait-for-graphics-debugger Wait before Vulkan initialization");
 }
 
 } // namespace
@@ -36,7 +37,7 @@ int main(int argc, char** argv)
             continue;
         }
 
-        std::cerr << "Unknown argument: " << argument << '\n';
+        spdlog::error("Unknown argument: {}", argument);
         printUsage();
         return 1;
     }

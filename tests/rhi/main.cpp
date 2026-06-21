@@ -2,10 +2,10 @@
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
+#include <spdlog/spdlog.h>
 
 #include <exception>
 #include <filesystem>
-#include <iostream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -48,14 +48,15 @@ struct Options {
 
 void printRhiUsage()
 {
-    std::cout << "Metallic RHI options:\n"
-              << "  --output-dir <path>      Write generated images to <path>\n"
-              << "  --rhi-no-validation      Disable Vulkan validation for RHI tests\n"
-              << "  --rhi-validation         Enable Vulkan validation for RHI tests\n"
-              << "\n"
-              << "GoogleTest options replace the old custom runner flags:\n"
-              << "  --gtest_list_tests       List registered tests\n"
-              << "  --gtest_filter=<filter>  Run a subset of tests\n";
+    spdlog::info(
+        "Metallic RHI options:\n"
+        "  --output-dir <path>      Write generated images to <path>\n"
+        "  --rhi-no-validation      Disable Vulkan validation for RHI tests\n"
+        "  --rhi-validation         Enable Vulkan validation for RHI tests\n"
+        "\n"
+        "GoogleTest options replace the old custom runner flags:\n"
+        "  --gtest_list_tests       List registered tests\n"
+        "  --gtest_filter=<filter>  Run a subset of tests");
 }
 
 bool parseArguments(int argc, char** argv, Options& options, std::vector<std::string>& gtestArguments)
@@ -75,7 +76,7 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
         }
         if (argument == "--output-dir") {
             if (index + 1 >= argc) {
-                std::cerr << "--output-dir requires a value\n";
+                spdlog::error("--output-dir requires a value");
                 return false;
             }
             options.outputDirectory = argv[++index];
@@ -92,7 +93,7 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
         }
         if (argument == "--filter") {
             if (index + 1 >= argc) {
-                std::cerr << "--filter requires a value\n";
+                spdlog::error("--filter requires a value");
                 return false;
             }
             gtestArguments.emplace_back(std::string("--gtest_filter=*") + argv[++index] + "*");

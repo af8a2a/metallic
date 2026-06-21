@@ -7,6 +7,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_vulkan.h>
+#include <spdlog/spdlog.h>
 
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
@@ -18,7 +19,6 @@
 #include <array>
 #include <cassert>
 #include <cstring>
-#include <iostream>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -687,7 +687,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 {
     if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0 ||
         (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
-        std::cerr << "Vulkan validation: " << callbackData->pMessage << '\n';
+        spdlog::warn("Vulkan validation: {}", callbackData->pMessage);
     }
     return VK_FALSE;
 }
@@ -2346,7 +2346,7 @@ Result SwapchainImpl::initialize(const SwapchainDesc& desc)
 
     auto* window = static_cast<SDL_Window*>(desc.window.nativeWindow);
     if (!SDL_Vulkan_CreateSurface(window, device->instance, nullptr, &surface)) {
-        std::cerr << "SDL_Vulkan_CreateSurface failed: " << SDL_GetError() << '\n';
+        spdlog::error("SDL_Vulkan_CreateSurface failed: {}", SDL_GetError());
         return makeError(Error::Failure);
     }
 
@@ -4928,23 +4928,25 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             if (streamlineResult) {
                 deviceImpl->streamlineInitialized = true;
             } else {
-                std::cerr << "NVIDIA Streamline initialization skipped: "
-                          << (streamlineLog.empty() ? resultToString(streamlineResult) : streamlineLog)
-                          << '\n';
+                spdlog::warn(
+                    "NVIDIA Streamline initialization skipped: {}",
+                    streamlineLog.empty() ? resultToString(streamlineResult) : streamlineLog);
                 vulkan::shutdownStreamline();
                 SDL_UnloadObject(deviceImpl->vulkanLoaderHandle);
                 deviceImpl->vulkanLoaderHandle = nullptr;
                 streamlineVkGetInstanceProcAddr = nullptr;
             }
         } else {
-            std::cerr << "SDL_LoadObject(" << vulkanLibraryName << ") failed: " << SDL_GetError()
-                      << "; retrying without Streamline.\n";
+            spdlog::warn(
+                "SDL_LoadObject({}) failed: {}; retrying without Streamline.",
+                vulkanLibraryName,
+                SDL_GetError());
         }
     }
 
     if (streamlineVkGetInstanceProcAddr == nullptr) {
         if (!acquireSdlVulkanLibrary()) {
-            std::cerr << "SDL_Vulkan_LoadLibrary failed: " << SDL_GetError() << '\n';
+            spdlog::error("SDL_Vulkan_LoadLibrary failed: {}", SDL_GetError());
             return makeError(Error::Unsupported);
         }
         deviceImpl->sdlVulkanLoaded = true;
@@ -4956,7 +4958,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     } else {
         vkResult = volkInitialize();
         if (vkResult != VK_SUCCESS) {
-            std::cerr << "volkInitialize failed with VkResult " << static_cast<int>(vkResult) << '\n';
+            spdlog::error("volkInitialize failed with VkResult {}", static_cast<int>(vkResult));
             return resultFromVk(vkResult);
         }
     }
@@ -4964,7 +4966,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     Uint32 sdlExtensionCount = 0;
     const char* const* sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
     if (sdlExtensions == nullptr || sdlExtensionCount == 0) {
-        std::cerr << "SDL_Vulkan_GetInstanceExtensions failed: " << SDL_GetError() << '\n';
+        spdlog::error("SDL_Vulkan_GetInstanceExtensions failed: {}", SDL_GetError());
         return makeError(Error::Unsupported);
     }
 
@@ -4987,7 +4989,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         instanceLayers.push_back("VK_LAYER_KHRONOS_validation");
         deviceImpl->validationEnabled = true;
     } else if (desc.enableValidation) {
-        std::cerr << "Vulkan validation requested but VK_LAYER_KHRONOS_validation is not available.\n";
+        spdlog::warn("Vulkan validation requested but VK_LAYER_KHRONOS_validation is not available.");
     }
 
     VkApplicationInfo applicationInfo{
@@ -5275,20 +5277,21 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             deviceImpl->capabilities.streamline = true;
             deviceImpl->capabilities.streamlineDlssRr = vulkan::streamlineDlssRrSupported();
             if (!deviceImpl->capabilities.streamlineDlssRr && !streamlineLog.empty()) {
-                std::cerr << "NVIDIA Streamline DLSS-RR unsupported: " << streamlineLog << '\n';
+                spdlog::warn("NVIDIA Streamline DLSS-RR unsupported: {}", streamlineLog);
             }
         } else {
-            std::cerr << "NVIDIA Streamline Vulkan setup failed: "
-                      << (streamlineLog.empty() ? resultToString(streamlineResult) : streamlineLog)
-                      << '\n';
+            spdlog::error(
+                "NVIDIA Streamline Vulkan setup failed: {}",
+                streamlineLog.empty() ? resultToString(streamlineResult) : streamlineLog);
         }
     } else if (deviceImpl->streamlineInitialized && desc.enableStreamline) {
-        std::cerr << "NVIDIA Streamline initialized, but the selected Vulkan device is missing required extensions.\n";
+        spdlog::warn("NVIDIA Streamline initialized, but the selected Vulkan device is missing required extensions.");
     }
     if (desc.enableAftermath &&
         profiling::nsightAftermathInitialized() &&
         !selectedFeatures.aftermath) {
-        std::cerr << "NVIDIA Nsight Aftermath initialized, but the selected Vulkan device is missing required diagnostics support.\n";
+        spdlog::warn(
+            "NVIDIA Nsight Aftermath initialized, but the selected Vulkan device is missing required diagnostics support.");
     }
 
     outDevice.reset(new Device(std::move(deviceImpl)));
@@ -5652,7 +5655,7 @@ bool checkResult(Result result, const char* label)
         return true;
     }
 
-    std::cerr << label << " failed with Result " << resultToString(result) << '\n';
+    spdlog::error("{} failed with Result {}", label, resultToString(result));
     return false;
 }
 
@@ -5679,14 +5682,14 @@ Result createSlangShaderModule(
         },
         compileResult);
     if (!result) {
-        std::cerr << "Slang compile failed for " << moduleName << "." << entryPointName << '\n';
+        spdlog::error("Slang compile failed for {}.{}", moduleName, entryPointName);
         if (!compileResult.diagnostics.empty()) {
-            std::cerr << compileResult.diagnostics << '\n';
+            spdlog::error("{}", compileResult.diagnostics);
         }
         return result;
     }
     if (!compileResult.diagnostics.empty()) {
-        std::cerr << compileResult.diagnostics << '\n';
+        spdlog::warn("{}", compileResult.diagnostics);
     }
 
     return device.createShaderModule(
@@ -6009,7 +6012,7 @@ uint32_t TrianglePreviewRenderer::height() const
 int runRhiTrianglePreviewTest(bool enableValidation)
 {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
-        std::cerr << "SDL_Init failed: " << SDL_GetError() << '\n';
+        spdlog::error("SDL_Init failed: {}", SDL_GetError());
         return 1;
     }
 
@@ -6037,8 +6040,9 @@ int runRhiTrianglePreviewTest(bool enableValidation)
                 }
 
                 if (brightPixelCount < 256) {
-                    std::cerr << "Triangle preview pixel check failed: only "
-                              << brightPixelCount << " bright pixels found.\n";
+                    spdlog::error(
+                        "Triangle preview pixel check failed: only {} bright pixels found.",
+                        brightPixelCount);
                     exitCode = 1;
                 }
             }
@@ -6052,7 +6056,7 @@ int runRhiTrianglePreviewTest(bool enableValidation)
 int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
 {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
-        std::cerr << "SDL_Init failed: " << SDL_GetError() << '\n';
+        spdlog::error("SDL_Init failed: {}", SDL_GetError());
         return 1;
     }
 
@@ -6093,10 +6097,11 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
             result = device->createBindlessHeap(bindlessHeapDesc, bindlessHeap);
             if (!device->capabilities().bindlessDescriptorHeap) {
                 if (hasError(result, Error::Unsupported)) {
-                    std::cout << "VK_EXT_descriptor_heap unsupported; bindless smoke test skipped.\n";
+                    spdlog::info("VK_EXT_descriptor_heap unsupported; bindless smoke test skipped.");
                 } else {
-                    std::cerr << "createBindlessHeap was expected to return Unsupported, got "
-                              << resultToString(result) << '\n';
+                    spdlog::error(
+                        "createBindlessHeap was expected to return Unsupported, got {}",
+                        resultToString(result));
                     exitCode = 1;
                 }
             } else if (!checkResult(result, "createBindlessHeap")) {
@@ -6104,7 +6109,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
             } else {
                 Queue* graphicsQueue = device->getQueue(QueueType::Graphics);
                 if (graphicsQueue == nullptr) {
-                    std::cerr << "No graphics queue available.\n";
+                    spdlog::error("No graphics queue available.");
                     exitCode = 1;
                 }
 
@@ -6409,7 +6414,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                     std::vector<uint32_t> pixels(static_cast<size_t>(kWidth) * kHeight);
                     void* mapped = readbackBuffer->map();
                     if (mapped == nullptr) {
-                        std::cerr << "Failed to map bindless smoke readback buffer.\n";
+                        spdlog::error("Failed to map bindless smoke readback buffer.");
                         exitCode = 1;
                     } else {
                         std::memcpy(pixels.data(), mapped, static_cast<size_t>(kReadbackByteSize));
@@ -6432,12 +6437,13 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                             const uint8_t g = bytes[1];
                             const uint8_t b = bytes[2];
                             const uint8_t a = bytes[3];
-                            std::cerr << "Bindless descriptor heap pixel check failed: "
-                                      << matchedPixelCount << " matching pixels. First pixel RGBA=("
-                                      << static_cast<uint32_t>(r) << ", "
-                                      << static_cast<uint32_t>(g) << ", "
-                                      << static_cast<uint32_t>(b) << ", "
-                                      << static_cast<uint32_t>(a) << ").\n";
+                            spdlog::error(
+                                "Bindless descriptor heap pixel check failed: {} matching pixels. First pixel RGBA=({}, {}, {}, {}).",
+                                matchedPixelCount,
+                                static_cast<uint32_t>(r),
+                                static_cast<uint32_t>(g),
+                                static_cast<uint32_t>(b),
+                                static_cast<uint32_t>(a));
                             exitCode = 1;
                         }
                     }
@@ -6457,7 +6463,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
 int runRhiSmokeTest(bool enableValidation)
 {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
-        std::cerr << "SDL_Init failed: " << SDL_GetError() << '\n';
+        spdlog::error("SDL_Init failed: {}", SDL_GetError());
         return 1;
     }
 
@@ -6465,7 +6471,7 @@ int runRhiSmokeTest(bool enableValidation)
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     SDL_Window* window = SDL_CreateWindow("Metallic RHI Smoke Test", 1280, 720, windowFlags);
     if (window == nullptr) {
-        std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << '\n';
+        spdlog::error("SDL_CreateWindow failed: {}", SDL_GetError());
         SDL_Quit();
         return 1;
     }
@@ -6503,7 +6509,7 @@ int runRhiSmokeTest(bool enableValidation)
     int pixelWidth = 0;
     int pixelHeight = 0;
     if (!SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight)) {
-        std::cerr << "SDL_GetWindowSizeInPixels failed: " << SDL_GetError() << '\n';
+        spdlog::error("SDL_GetWindowSizeInPixels failed: {}", SDL_GetError());
         cleanup();
         return 1;
     }
@@ -6522,7 +6528,7 @@ int runRhiSmokeTest(bool enableValidation)
 
     Queue* graphicsQueue = device->getQueue(QueueType::Graphics);
     if (graphicsQueue == nullptr) {
-        std::cerr << "No graphics queue available.\n";
+        spdlog::error("No graphics queue available.");
         cleanup();
         return 1;
     }
@@ -6600,7 +6606,7 @@ int runRhiSmokeTest(bool enableValidation)
         return resultToExitCode(result);
     }
     if (imageIndex >= renderFinishedSemaphores.size() || renderFinishedSemaphores[imageIndex] == nullptr) {
-        std::cerr << "acquireNextImage returned invalid image index.\n";
+        spdlog::error("acquireNextImage returned invalid image index.");
         cleanup();
         return 1;
     }

@@ -1,12 +1,12 @@
 #include "Runtime/Render/Profiling/NsightAftermath.h"
 
+#include <spdlog/spdlog.h>
 #include <volk.h>
 
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -65,7 +65,7 @@ bool checkAftermath(GFSDK_Aftermath_Result result, const char* label)
         return true;
     }
 
-    std::cerr << label << " failed: " << aftermathResultMessage(result) << '\n';
+    spdlog::error("{} failed: {}", label, aftermathResultMessage(result));
     return false;
 }
 
@@ -186,7 +186,7 @@ public:
             deviceLostHandled_ = true;
         }
 
-        std::cerr << "VK_ERROR_DEVICE_LOST detected; waiting for Nsight Aftermath crash dump capture.\n";
+        spdlog::warn("VK_ERROR_DEVICE_LOST detected; waiting for Nsight Aftermath crash dump capture.");
 
         GFSDK_Aftermath_CrashDump_Status status = GFSDK_Aftermath_CrashDump_Status_Unknown;
         if (!checkAftermath(GFSDK_Aftermath_GetCrashDumpStatus(&status), "GFSDK_Aftermath_GetCrashDumpStatus")) {
@@ -205,10 +205,11 @@ public:
         }
 
         if (status == GFSDK_Aftermath_CrashDump_Status_Finished) {
-            std::cerr << "Nsight Aftermath dump written under: " << outputDirectory_.string() << '\n';
+            spdlog::info("Nsight Aftermath dump written under: {}", outputDirectory_.string());
         } else {
-            std::cerr << "Nsight Aftermath crash dump capture did not finish; status "
-                      << static_cast<int>(status) << '\n';
+            spdlog::warn(
+                "Nsight Aftermath crash dump capture did not finish; status {}",
+                static_cast<int>(status));
         }
     }
 
@@ -332,7 +333,7 @@ private:
             std::to_string(++dumpCount_);
         const std::filesystem::path dumpPath = outputDirectory_ / (baseFileName + ".nv-gpudmp");
         writeBinaryFile(dumpPath, crashDump, crashDumpSize);
-        std::cerr << "Writing Nsight Aftermath GPU crash dump: " << dumpPath.string() << '\n';
+        spdlog::info("Writing Nsight Aftermath GPU crash dump: {}", dumpPath.string());
 
         if (decoderCreated) {
             writeJsonDump(decoder, outputDirectory_ / (baseFileName + ".json"));
@@ -368,7 +369,7 @@ private:
         }
 
         writeBinaryFile(path, json.data(), json.size() > 0 ? json.size() - 1 : 0);
-        std::cerr << "Writing Nsight Aftermath JSON dump: " << path.string() << '\n';
+        spdlog::info("Writing Nsight Aftermath JSON dump: {}", path.string());
     }
 
     void writeBinaryFile(const std::filesystem::path& path, const void* data, size_t size) const
@@ -376,7 +377,7 @@ private:
         std::filesystem::create_directories(path.parent_path());
         std::ofstream file(path, std::ios::binary);
         if (!file) {
-            std::cerr << "Failed to open Nsight Aftermath output file: " << path.string() << '\n';
+            spdlog::error("Failed to open Nsight Aftermath output file: {}", path.string());
             return;
         }
         file.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));

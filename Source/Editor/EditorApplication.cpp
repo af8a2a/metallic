@@ -11,6 +11,7 @@
 #include "imgui_internal.h"
 
 #include <SDL3/SDL.h>
+#include <spdlog/spdlog.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -27,7 +28,6 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
-#include <iostream>
 #include <iterator>
 #include <string>
 #include <system_error>
@@ -1506,7 +1506,7 @@ void setRenderGraphFieldTooltip(const render::RenderGraphField& field)
 void checkVkResult(VkResult result)
 {
     if (result < 0) {
-        std::cerr << "Vulkan error: " << static_cast<int>(result) << '\n';
+        spdlog::error("Vulkan error: {}", static_cast<int>(result));
     }
 }
 
@@ -1668,7 +1668,7 @@ int EditorApplication::run(bool smokeTest, bool waitForGraphicsDebugger, const c
 bool EditorApplication::initialize()
 {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        SDL_Log("SDL_Init failed: %s", SDL_GetError());
+        spdlog::error("SDL_Init failed: {}", SDL_GetError());
         return false;
     }
 
@@ -1686,7 +1686,7 @@ bool EditorApplication::initialize()
         static_cast<int>(kBaseWindowHeight * mainScale_),
         windowFlags);
     if (window_ == nullptr) {
-        SDL_Log("SDL_CreateWindow failed: %s", SDL_GetError());
+        spdlog::error("SDL_CreateWindow failed: {}", SDL_GetError());
         return false;
     }
 
@@ -1763,48 +1763,49 @@ bool EditorApplication::initializeRhi()
         },
         device_);
     if (!result || device_ == nullptr) {
-        std::cerr << "createDevice failed with Result " << render::resultToString(result) << '\n';
+        spdlog::error("createDevice failed with Result {}", render::resultToString(result));
         return false;
     }
 
     graphicsQueue_ = device_->getQueue(render::QueueType::Graphics);
     if (graphicsQueue_ == nullptr) {
-        std::cerr << "RHI graphics queue is not available\n";
+        spdlog::error("RHI graphics queue is not available");
         return false;
     }
 
     result = historyResources_.initialize(*device_);
     if (!result) {
-        std::cerr << "HistoryResourceManager initialize failed with Result " << render::resultToString(result) << '\n';
+        spdlog::error("HistoryResourceManager initialize failed with Result {}", render::resultToString(result));
         return false;
     }
 
     result = device_->createCommandPool(*graphicsQueue_, commandPool_);
     if (!result) {
-        std::cerr << "createCommandPool failed with Result " << render::resultToString(result) << '\n';
+        spdlog::error("createCommandPool failed with Result {}", render::resultToString(result));
         return false;
     }
     result = commandPool_->createCommandBuffer(commandBuffer_);
     if (!result) {
-        std::cerr << "createCommandBuffer failed with Result " << render::resultToString(result) << '\n';
+        spdlog::error("createCommandBuffer failed with Result {}", render::resultToString(result));
         return false;
     }
     result = device_->createFence(true, frameFence_);
     if (!result) {
-        std::cerr << "createFence failed with Result " << render::resultToString(result) << '\n';
+        spdlog::error("createFence failed with Result {}", render::resultToString(result));
         return false;
     }
     result = device_->createSwapchainSemaphore(imageAvailableSemaphore_);
     if (!result) {
-        std::cerr << "createSwapchainSemaphore(imageAvailable) failed with Result "
-                  << render::resultToString(result) << '\n';
+        spdlog::error(
+            "createSwapchainSemaphore(imageAvailable) failed with Result {}",
+            render::resultToString(result));
         return false;
     }
 
     int width = 0;
     int height = 0;
     if (!SDL_GetWindowSizeInPixels(window_, &width, &height)) {
-        SDL_Log("SDL_GetWindowSizeInPixels failed: %s", SDL_GetError());
+        spdlog::error("SDL_GetWindowSizeInPixels failed: {}", SDL_GetError());
         return false;
     }
     if (!createOrResizeSwapchain(
@@ -1844,7 +1845,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
         },
         swapchain_);
     if (!result || swapchain_ == nullptr) {
-        std::cerr << "createSwapchain failed with Result " << render::resultToString(result) << '\n';
+        spdlog::error("createSwapchain failed with Result {}", render::resultToString(result));
         return false;
     }
 
@@ -1854,7 +1855,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
     for (uint32_t imageIndex = 0; imageIndex < swapchain_->imageCount(); ++imageIndex) {
         render::Texture* texture = swapchain_->texture(imageIndex);
         if (texture == nullptr) {
-            std::cerr << "swapchain texture is missing at image " << imageIndex << '\n';
+            spdlog::error("swapchain texture is missing at image {}", imageIndex);
             return false;
         }
 
@@ -1870,7 +1871,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             },
             view);
         if (!result || view == nullptr) {
-            std::cerr << "createTextureView(swapchain) failed with Result " << render::resultToString(result) << '\n';
+            spdlog::error("createTextureView(swapchain) failed with Result {}", render::resultToString(result));
             return false;
         }
         swapchainImageViews_.push_back(std::move(view));
@@ -1878,8 +1879,9 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
         std::unique_ptr<render::SwapchainSemaphore> renderFinished;
         result = device_->createSwapchainSemaphore(renderFinished);
         if (!result || renderFinished == nullptr) {
-            std::cerr << "createSwapchainSemaphore(renderFinished) failed with Result "
-                      << render::resultToString(result) << '\n';
+            spdlog::error(
+                "createSwapchainSemaphore(renderFinished) failed with Result {}",
+                render::resultToString(result));
             return false;
         }
         renderFinishedSemaphores_.push_back(std::move(renderFinished));
@@ -1909,7 +1911,7 @@ bool EditorApplication::initializeImGuiBackends()
 {
     imguiPlatformInitialized_ = ImGui_ImplSDL3_InitForVulkan(window_);
     if (!imguiPlatformInitialized_) {
-        SDL_Log("ImGui SDL3 Vulkan platform backend initialization failed");
+        spdlog::error("ImGui SDL3 Vulkan platform backend initialization failed");
         return false;
     }
 
@@ -1921,7 +1923,7 @@ bool EditorApplication::initializeImGuiBackends()
         nativeDevice.device == VK_NULL_HANDLE ||
         nativeQueue.queue == VK_NULL_HANDLE ||
         colorFormat == VK_FORMAT_UNDEFINED) {
-        std::cerr << "Invalid Vulkan native handles for ImGui backend\n";
+        spdlog::error("Invalid Vulkan native handles for ImGui backend");
         return false;
     }
 
@@ -1950,7 +1952,7 @@ bool EditorApplication::initializeImGuiBackends()
 
     imguiRendererInitialized_ = ImGui_ImplVulkan_Init(&initInfo);
     if (!imguiRendererInitialized_) {
-        SDL_Log("ImGui Vulkan renderer backend initialization failed");
+        spdlog::error("ImGui Vulkan renderer backend initialization failed");
         return false;
     }
     return true;
@@ -1978,7 +1980,7 @@ bool EditorApplication::createViewportSampler()
     };
     const VkResult result = vkCreateSampler(nativeDevice.device, &samplerInfo, nullptr, &viewportSampler_);
     if (result != VK_SUCCESS) {
-        std::cerr << "vkCreateSampler(viewport) failed with VkResult " << static_cast<int>(result) << '\n';
+        spdlog::error("vkCreateSampler(viewport) failed with VkResult {}", static_cast<int>(result));
         return false;
     }
     return true;
@@ -2075,7 +2077,7 @@ void EditorApplication::renderFrame()
     int framebufferWidth = 0;
     int framebufferHeight = 0;
     if (!SDL_GetWindowSizeInPixels(window_, &framebufferWidth, &framebufferHeight)) {
-        SDL_Log("SDL_GetWindowSizeInPixels failed: %s", SDL_GetError());
+        spdlog::error("SDL_GetWindowSizeInPixels failed: {}", SDL_GetError());
         running_ = false;
         return;
     }
@@ -2087,7 +2089,7 @@ void EditorApplication::renderFrame()
         auto profileScope = profiler_.scope("Wait Frame Fence");
         render::Result result = frameFence_->wait();
         if (!result) {
-            std::cerr << "frameFence wait before UI failed with Result " << render::resultToString(result) << '\n';
+            spdlog::error("frameFence wait before UI failed with Result {}", render::resultToString(result));
             running_ = false;
             return;
         }
@@ -3493,8 +3495,7 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     render::Result result = graphExecutor_->compile(*device_, renderGraph_, width, height, compileOptions, log);
     renderGraphStatus_ = log;
     if (!result) {
-        std::cerr << "RenderGraph compile failed with Result "
-                  << render::resultToString(result) << '\n';
+        spdlog::error("RenderGraph compile failed with Result {}", render::resultToString(result));
         return false;
     }
 
@@ -3555,7 +3556,7 @@ bool EditorApplication::renderGraphPreview()
     commandBuffer_->endDebugLabel();
     if (!result) {
         renderGraphStatus_ = std::string("RenderGraph execute failed: ") + render::resultToString(result);
-        std::cerr << renderGraphStatus_ << '\n';
+        spdlog::error("{}", renderGraphStatus_);
         viewportPreviewValid_ = false;
         viewportPreviewNeedsRender_ = false;
         return false;
@@ -3567,7 +3568,7 @@ bool EditorApplication::renderGraphPreview()
         render::ResourceState::ShaderRead);
     if (!result) {
         renderGraphStatus_ = std::string("RenderGraph output transition failed: ") + render::resultToString(result);
-        std::cerr << renderGraphStatus_ << '\n';
+        spdlog::error("{}", renderGraphStatus_);
         viewportPreviewValid_ = false;
         viewportPreviewNeedsRender_ = false;
         return false;
@@ -3591,7 +3592,7 @@ bool EditorApplication::renderVulkanFrame()
 
     render::Result result = frameFence_->wait();
     if (!result) {
-        std::cerr << "frameFence wait failed with Result " << render::resultToString(result) << '\n';
+        spdlog::error("frameFence wait failed with Result {}", render::resultToString(result));
         return false;
     }
 
@@ -3605,14 +3606,14 @@ bool EditorApplication::renderVulkanFrame()
             swapchainOutOfDate_ = true;
             return true;
         }
-        std::cerr << "acquireNextImage failed with Result " << render::resultToString(result) << '\n';
+        spdlog::error("acquireNextImage failed with Result {}", render::resultToString(result));
         return false;
     }
     if (imageIndex >= swapchainImageViews_.size() ||
         imageIndex >= swapchainImageStates_.size() ||
         imageIndex >= renderFinishedSemaphores_.size() ||
         renderFinishedSemaphores_[imageIndex] == nullptr) {
-        std::cerr << "acquireNextImage returned invalid image index " << imageIndex << '\n';
+        spdlog::error("acquireNextImage returned invalid image index {}", imageIndex);
         return false;
     }
 
@@ -3620,17 +3621,17 @@ bool EditorApplication::renderVulkanFrame()
         auto profileScope = profiler_.scope("Begin Command Buffer");
         result = frameFence_->reset();
         if (!result) {
-            std::cerr << "frameFence reset failed with Result " << render::resultToString(result) << '\n';
+            spdlog::error("frameFence reset failed with Result {}", render::resultToString(result));
             return false;
         }
         result = commandPool_->reset();
         if (!result) {
-            std::cerr << "commandPool reset failed with Result " << render::resultToString(result) << '\n';
+            spdlog::error("commandPool reset failed with Result {}", render::resultToString(result));
             return false;
         }
         result = commandBuffer_->begin();
         if (!result) {
-            std::cerr << "commandBuffer begin failed with Result " << render::resultToString(result) << '\n';
+            spdlog::error("commandBuffer begin failed with Result {}", render::resultToString(result));
             return false;
         }
         historyResources_.beginFrame(historyFrameIndex_++);
@@ -3735,7 +3736,7 @@ bool EditorApplication::renderVulkanFrame()
         auto profileScope = profiler_.scope("End Command Buffer");
         result = commandBuffer_->end();
         if (!result) {
-            std::cerr << "commandBuffer end failed with Result " << render::resultToString(result) << '\n';
+            spdlog::error("commandBuffer end failed with Result {}", render::resultToString(result));
             return false;
         }
     }
@@ -3762,7 +3763,7 @@ bool EditorApplication::renderVulkanFrame()
         });
     }
     if (!result) {
-        std::cerr << "graphicsQueue submit failed with Result " << render::resultToString(result) << '\n';
+        spdlog::error("graphicsQueue submit failed with Result {}", render::resultToString(result));
         return false;
     }
     {
@@ -3774,7 +3775,7 @@ bool EditorApplication::renderVulkanFrame()
             swapchainOutOfDate_ = true;
             return true;
         }
-        std::cerr << "swapchain present failed with Result " << render::resultToString(result) << '\n';
+        spdlog::error("swapchain present failed with Result {}", render::resultToString(result));
         return false;
     }
 
