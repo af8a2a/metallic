@@ -82,6 +82,7 @@ target_include_directories(MetallicRuntimeScene PUBLIC
 )
 
 target_include_directories(MetallicRuntimeScene SYSTEM PRIVATE
+    "${CMAKE_SOURCE_DIR}/External/meshoptimizer/demo"
     "${CMAKE_SOURCE_DIR}/External/stb"
 )
 

@@ -48,6 +48,11 @@ struct SceneStats {
     uint64_t meshletClusterCount = 0;
     uint64_t meshletVertexReferenceCount = 0;
     uint64_t meshletTriangleIndexCount = 0;
+    uint64_t meshletLodLevelCount = 0;
+    uint64_t meshletLodGroupCount = 0;
+    uint64_t meshletLodClusterCount = 0;
+    uint64_t meshletLodVertexReferenceCount = 0;
+    uint64_t meshletLodTriangleIndexCount = 0;
 };
 
 struct SceneAssetInfo {
@@ -67,6 +72,11 @@ struct MeshletCluster {
     uint32_t vertexCount = 0;
     uint32_t triangleOffset = 0;
     uint32_t triangleCount = 0;
+    uint32_t lodLevel = 0;
+    uint32_t lodGroupChildIndex = 0;
+    int32_t lodGroupIndex = kInvalidSceneIndex;
+    int32_t refinedGroupIndex = kInvalidSceneIndex;
+    float lodError = 0.0f;
     Bounds bounds;
     float3 boundingSphereCenter{0.0f, 0.0f, 0.0f};
     float boundingSphereRadius = 0.0f;
@@ -74,6 +84,25 @@ struct MeshletCluster {
     float3 coneAxis{0.0f, 0.0f, 1.0f};
     float coneCutoff = 1.0f;
     std::array<int8_t, 4> packedCone{0, 0, 127, 127};
+};
+
+struct MeshletLodGroup {
+    uint32_t clusterOffset = 0;
+    uint32_t clusterCount = 0;
+    uint32_t lodLevel = 0;
+    Bounds bounds;
+    float3 boundingSphereCenter{0.0f, 0.0f, 0.0f};
+    float boundingSphereRadius = 0.0f;
+    float maxQuadricError = 0.0f;
+};
+
+struct MeshletLodLevel {
+    uint32_t groupOffset = 0;
+    uint32_t groupCount = 0;
+    uint32_t clusterOffset = 0;
+    uint32_t clusterCount = 0;
+    float minBoundingSphereRadius = 0.0f;
+    float minMaxQuadricError = 0.0f;
 };
 
 struct SceneNode {
@@ -108,6 +137,11 @@ struct RenderPrimitive {
     std::vector<MeshletCluster> meshletClusters;
     std::vector<uint32_t> meshletVertices;
     std::vector<uint8_t> meshletTriangles;
+    std::vector<MeshletLodLevel> meshletLodLevels;
+    std::vector<MeshletLodGroup> meshletLodGroups;
+    std::vector<MeshletCluster> meshletLodClusters;
+    std::vector<uint32_t> meshletLodVertices;
+    std::vector<uint8_t> meshletLodTriangles;
 };
 
 struct RenderImage {

@@ -9,16 +9,22 @@
 #include "Runtime/Scene/Scene.h"
 
 #include "meshoptimizer.h"
+#define CLUSTERLOD_IMPLEMENTATION
+#include "clusterlod.h"
+#undef CLUSTERLOD_IMPLEMENTATION
 #include "json.hpp"
 #include "tiny_gltf.h"
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <sstream>
 #include <string_view>
 #include <unordered_set>
@@ -38,7 +44,10 @@ constexpr double kFallbackCameraYFov = 0.7853981633974483;
 constexpr size_t kMeshletClusterMaxVertices = 128;
 constexpr size_t kMeshletClusterMinTriangles = 32;
 constexpr size_t kMeshletClusterMaxTriangles = 128;
+constexpr size_t kMeshletLodGroupSize = 32;
 constexpr float kMeshletClusterFillWeight = 0.5f;
+constexpr float kMeshletLodErrorMergePrevious = 1.5f;
+constexpr float kMeshletLodErrorMergeAdditive = 0.0f;
 
 const std::unordered_set<std::string>& supportedRequiredExtensions()
 {
@@ -638,12 +647,25 @@ void generateTangents(RenderPrimitive& primitive)
     }
 }
 
-bool buildMeshletClusters(RenderPrimitive& primitive)
+void clearMeshletClusters(RenderPrimitive& primitive)
 {
     primitive.meshletClusters.clear();
     primitive.meshletVertices.clear();
     primitive.meshletTriangles.clear();
+}
 
+void clearMeshletLods(RenderPrimitive& primitive)
+{
+    primitive.meshletLodLevels.clear();
+    primitive.meshletLodGroups.clear();
+    primitive.meshletLodClusters.clear();
+    primitive.meshletLodVertices.clear();
+    primitive.meshletLodTriangles.clear();
+}
+
+bool buildTriangleIndexBuffer(const RenderPrimitive& primitive, std::vector<uint32_t>& outIndices)
+{
+    outIndices.clear();
     if (primitive.mode != TINYGLTF_MODE_TRIANGLES ||
         primitive.positions.size() < 3 ||
         primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
@@ -657,34 +679,142 @@ bool buildMeshletClusters(RenderPrimitive& primitive)
         return false;
     }
 
-    std::vector<uint32_t> clusterIndices;
-    clusterIndices.reserve(indexCount);
+    outIndices.reserve(indexCount);
     if (primitive.indices.empty()) {
         for (uint32_t index = 0; index < static_cast<uint32_t>(indexCount); ++index) {
-            clusterIndices.push_back(index);
+            outIndices.push_back(index);
         }
     } else {
         for (size_t index = 0; index < indexCount; ++index) {
             const uint32_t vertexIndex = primitive.indices[index];
             if (vertexIndex >= primitive.positions.size()) {
-                primitive.meshletClusters.clear();
-                primitive.meshletVertices.clear();
-                primitive.meshletTriangles.clear();
+                outIndices.clear();
                 return false;
             }
-            clusterIndices.push_back(vertexIndex);
+            outIndices.push_back(vertexIndex);
         }
     }
 
+    return true;
+}
+
+bool appendMeshletCluster(
+    const RenderPrimitive& primitive,
+    std::vector<MeshletCluster>& outClusters,
+    std::vector<uint32_t>& outVertices,
+    std::vector<uint8_t>& outTriangles,
+    const uint32_t* vertices,
+    uint32_t vertexCount,
+    const uint8_t* triangles,
+    uint32_t triangleCount,
+    uint32_t lodLevel,
+    int32_t lodGroupIndex,
+    uint32_t lodGroupChildIndex,
+    int32_t refinedGroupIndex,
+    float lodError)
+{
+    if (vertexCount == 0 ||
+        triangleCount == 0 ||
+        vertexCount > kMeshletClusterMaxVertices ||
+        triangleCount > kMeshletClusterMaxTriangles ||
+        outVertices.size() + vertexCount > std::numeric_limits<uint32_t>::max() ||
+        outTriangles.size() + static_cast<size_t>(triangleCount) * 3u > std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
+
+    for (uint32_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex) {
+        if (vertices[vertexIndex] >= primitive.positions.size()) {
+            return false;
+        }
+    }
+    for (uint32_t index = 0; index < triangleCount * 3u; ++index) {
+        if (triangles[index] >= vertexCount) {
+            return false;
+        }
+    }
+
+    const uint32_t vertexOffset = static_cast<uint32_t>(outVertices.size());
+    const uint32_t triangleOffset = static_cast<uint32_t>(outTriangles.size());
+    outVertices.insert(outVertices.end(), vertices, vertices + vertexCount);
+    outTriangles.insert(outTriangles.end(), triangles, triangles + static_cast<size_t>(triangleCount) * 3u);
+
+    MeshletCluster cluster;
+    cluster.vertexOffset = vertexOffset;
+    cluster.vertexCount = vertexCount;
+    cluster.triangleOffset = triangleOffset;
+    cluster.triangleCount = triangleCount;
+    cluster.lodLevel = lodLevel;
+    cluster.lodGroupChildIndex = lodGroupChildIndex;
+    cluster.lodGroupIndex = lodGroupIndex;
+    cluster.refinedGroupIndex = refinedGroupIndex;
+    cluster.lodError = lodError;
+
+    const float* positions = reinterpret_cast<const float*>(primitive.positions.data());
+    const meshopt_Bounds bounds = meshopt_computeMeshletBounds(
+        vertices,
+        triangles,
+        triangleCount,
+        positions,
+        primitive.positions.size(),
+        sizeof(float3));
+    cluster.boundingSphereCenter = float3(bounds.center[0], bounds.center[1], bounds.center[2]);
+    cluster.boundingSphereRadius = bounds.radius;
+    cluster.coneApex = float3(bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2]);
+    cluster.coneAxis = float3(bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2]);
+    cluster.coneCutoff = bounds.cone_cutoff;
+    cluster.packedCone = {
+        bounds.cone_axis_s8[0],
+        bounds.cone_axis_s8[1],
+        bounds.cone_axis_s8[2],
+        bounds.cone_cutoff_s8,
+    };
+
+    for (uint32_t localVertexIndex = 0; localVertexIndex < vertexCount; ++localVertexIndex) {
+        cluster.bounds.include(primitive.positions[vertices[localVertexIndex]]);
+    }
+
+    outClusters.push_back(cluster);
+    return true;
+}
+
+clodConfig makeMeshletLodConfig()
+{
+    clodConfig config = clodDefaultConfigRT(kMeshletClusterMaxTriangles);
+    config.max_vertices = kMeshletClusterMaxVertices;
+    config.partition_size = kMeshletLodGroupSize;
+    config.partition_spatial = true;
+    config.partition_sort = true;
+    config.cluster_fill_weight = kMeshletClusterFillWeight;
+    config.optimize_clusters = true;
+    config.optimize_clusters_level = 1;
+    config.simplify_error_merge_previous = kMeshletLodErrorMergePrevious;
+    config.simplify_error_merge_additive = kMeshletLodErrorMergeAdditive;
+
+    while (config.partition_size > 1 &&
+        config.partition_size + config.partition_size / 3u > kMeshletLodGroupSize) {
+        --config.partition_size;
+    }
+    return config;
+}
+
+bool buildMeshletClusters(RenderPrimitive& primitive)
+{
+    clearMeshletClusters(primitive);
+
+    std::vector<uint32_t> clusterIndices;
+    if (!buildTriangleIndexBuffer(primitive, clusterIndices)) {
+        return false;
+    }
+
     const size_t meshletBound =
-        meshopt_buildMeshletsBound(indexCount, kMeshletClusterMaxVertices, kMeshletClusterMinTriangles);
+        meshopt_buildMeshletsBound(clusterIndices.size(), kMeshletClusterMaxVertices, kMeshletClusterMinTriangles);
     if (meshletBound == 0) {
         return false;
     }
 
     std::vector<meshopt_Meshlet> meshlets(meshletBound);
-    std::vector<uint32_t> meshletVertices(indexCount);
-    std::vector<uint8_t> meshletTriangles(indexCount);
+    std::vector<uint32_t> meshletVertices(clusterIndices.size());
+    std::vector<uint8_t> meshletTriangles(clusterIndices.size());
 
     const float* positions = reinterpret_cast<const float*>(primitive.positions.data());
     const size_t meshletCount = meshopt_buildMeshletsSpatial(
@@ -692,7 +822,7 @@ bool buildMeshletClusters(RenderPrimitive& primitive)
         meshletVertices.data(),
         meshletTriangles.data(),
         clusterIndices.data(),
-        indexCount,
+        clusterIndices.size(),
         positions,
         primitive.positions.size(),
         sizeof(float3),
@@ -703,8 +833,8 @@ bool buildMeshletClusters(RenderPrimitive& primitive)
 
     meshlets.resize(meshletCount);
     primitive.meshletClusters.reserve(meshletCount);
-    primitive.meshletVertices.reserve(indexCount);
-    primitive.meshletTriangles.reserve(indexCount);
+    primitive.meshletVertices.reserve(clusterIndices.size());
+    primitive.meshletTriangles.reserve(clusterIndices.size());
 
     for (const meshopt_Meshlet& meshlet : meshlets) {
         if (meshlet.vertex_count == 0 || meshlet.triangle_count == 0) {
@@ -715,57 +845,162 @@ bool buildMeshletClusters(RenderPrimitive& primitive)
         uint8_t* const triangles = meshletTriangles.data() + meshlet.triangle_offset;
         meshopt_optimizeMeshlet(vertices, triangles, meshlet.triangle_count, meshlet.vertex_count);
 
-        const uint32_t vertexOffset = static_cast<uint32_t>(primitive.meshletVertices.size());
-        const uint32_t triangleOffset = static_cast<uint32_t>(primitive.meshletTriangles.size());
-        primitive.meshletVertices.insert(
-            primitive.meshletVertices.end(),
-            vertices,
-            vertices + meshlet.vertex_count);
-        primitive.meshletTriangles.insert(
-            primitive.meshletTriangles.end(),
-            triangles,
-            triangles + static_cast<size_t>(meshlet.triangle_count) * 3u);
-
-        MeshletCluster cluster;
-        cluster.vertexOffset = vertexOffset;
-        cluster.vertexCount = meshlet.vertex_count;
-        cluster.triangleOffset = triangleOffset;
-        cluster.triangleCount = meshlet.triangle_count;
-
-        const meshopt_Bounds bounds = meshopt_computeMeshletBounds(
-            vertices,
-            triangles,
-            meshlet.triangle_count,
-            positions,
-            primitive.positions.size(),
-            sizeof(float3));
-        cluster.boundingSphereCenter = float3(bounds.center[0], bounds.center[1], bounds.center[2]);
-        cluster.boundingSphereRadius = bounds.radius;
-        cluster.coneApex = float3(bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2]);
-        cluster.coneAxis = float3(bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2]);
-        cluster.coneCutoff = bounds.cone_cutoff;
-        cluster.packedCone = {
-            bounds.cone_axis_s8[0],
-            bounds.cone_axis_s8[1],
-            bounds.cone_axis_s8[2],
-            bounds.cone_cutoff_s8,
-        };
-
-        for (uint32_t localVertexIndex = 0; localVertexIndex < meshlet.vertex_count; ++localVertexIndex) {
-            const uint32_t sourceVertexIndex = vertices[localVertexIndex];
-            if (sourceVertexIndex < primitive.positions.size()) {
-                cluster.bounds.include(primitive.positions[sourceVertexIndex]);
-            }
+        if (!appendMeshletCluster(
+                primitive,
+                primitive.meshletClusters,
+                primitive.meshletVertices,
+                primitive.meshletTriangles,
+                vertices,
+                meshlet.vertex_count,
+                triangles,
+                meshlet.triangle_count,
+                0,
+                kInvalidSceneIndex,
+                0,
+                kInvalidSceneIndex,
+                0.0f)) {
+            clearMeshletClusters(primitive);
+            return false;
         }
-
-        primitive.meshletClusters.push_back(cluster);
     }
 
     if (primitive.meshletClusters.empty()) {
-        primitive.meshletVertices.clear();
-        primitive.meshletTriangles.clear();
+        clearMeshletClusters(primitive);
         return false;
     }
+    return true;
+}
+
+bool buildMeshletLods(RenderPrimitive& primitive)
+{
+    clearMeshletLods(primitive);
+
+    std::vector<uint32_t> clusterIndices;
+    if (!buildTriangleIndexBuffer(primitive, clusterIndices)) {
+        return false;
+    }
+
+    clodConfig config = makeMeshletLodConfig();
+    const std::array<float, 3> normalWeights{0.5f, 0.5f, 0.5f};
+
+    clodMesh mesh{};
+    mesh.indices = clusterIndices.data();
+    mesh.index_count = clusterIndices.size();
+    mesh.vertex_count = primitive.positions.size();
+    mesh.vertex_positions = reinterpret_cast<const float*>(primitive.positions.data());
+    mesh.vertex_positions_stride = sizeof(float3);
+    if (primitive.normals.size() == primitive.positions.size()) {
+        mesh.vertex_attributes = reinterpret_cast<const float*>(primitive.normals.data());
+        mesh.vertex_attributes_stride = sizeof(float3);
+        mesh.attribute_weights = normalWeights.data();
+        mesh.attribute_count = normalWeights.size();
+    }
+
+    primitive.meshletLodLevels.reserve(16);
+    primitive.meshletLodGroups.reserve(std::max<size_t>(1, primitive.meshletClusters.size()));
+    primitive.meshletLodClusters.reserve(std::max<size_t>(1, primitive.meshletClusters.size() * 2u));
+    primitive.meshletLodVertices.reserve(std::max<size_t>(clusterIndices.size(), primitive.meshletVertices.size() * 2u));
+    primitive.meshletLodTriangles.reserve(std::max<size_t>(clusterIndices.size(), primitive.meshletTriangles.size() * 2u));
+
+    bool success = true;
+    auto outputGroup = [&](clodGroup group, const clodCluster* clusters, size_t clusterCount) -> int {
+        if (!success ||
+            group.depth < 0 ||
+            clusterCount == 0 ||
+            primitive.meshletLodGroups.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+            success = false;
+            return kInvalidSceneIndex;
+        }
+
+        const uint32_t lodLevel = static_cast<uint32_t>(group.depth);
+        while (primitive.meshletLodLevels.size() <= lodLevel) {
+            MeshletLodLevel level;
+            level.groupOffset = static_cast<uint32_t>(primitive.meshletLodGroups.size());
+            level.clusterOffset = static_cast<uint32_t>(primitive.meshletLodClusters.size());
+            level.minBoundingSphereRadius = std::numeric_limits<float>::max();
+            level.minMaxQuadricError = std::numeric_limits<float>::max();
+            primitive.meshletLodLevels.push_back(level);
+        }
+
+        const int32_t groupIndex = static_cast<int32_t>(primitive.meshletLodGroups.size());
+        MeshletLodGroup lodGroup;
+        lodGroup.clusterOffset = static_cast<uint32_t>(primitive.meshletLodClusters.size());
+        lodGroup.clusterCount = static_cast<uint32_t>(clusterCount);
+        lodGroup.lodLevel = lodLevel;
+        lodGroup.boundingSphereCenter = float3(
+            group.simplified.center[0],
+            group.simplified.center[1],
+            group.simplified.center[2]);
+        lodGroup.boundingSphereRadius = group.simplified.radius;
+        lodGroup.maxQuadricError = group.simplified.error;
+
+        for (size_t clusterIndex = 0; clusterIndex < clusterCount; ++clusterIndex) {
+            const clodCluster& cluster = clusters[clusterIndex];
+            if (cluster.index_count == 0 ||
+                cluster.index_count % 3u != 0 ||
+                cluster.index_count / 3u > kMeshletClusterMaxTriangles ||
+                cluster.vertex_count > kMeshletClusterMaxVertices) {
+                success = false;
+                return kInvalidSceneIndex;
+            }
+
+            std::vector<uint32_t> localVertices(cluster.index_count);
+            std::vector<uint8_t> localTriangles(cluster.index_count);
+            const size_t localVertexCount = clodLocalIndices(
+                localVertices.data(),
+                localTriangles.data(),
+                cluster.indices,
+                cluster.index_count);
+            const uint32_t vertexCount = static_cast<uint32_t>(localVertexCount);
+            const uint32_t triangleCount = static_cast<uint32_t>(cluster.index_count / 3u);
+            if (vertexCount == 0 ||
+                vertexCount > kMeshletClusterMaxVertices ||
+                vertexCount != cluster.vertex_count) {
+                success = false;
+                return kInvalidSceneIndex;
+            }
+
+            meshopt_optimizeMeshlet(localVertices.data(), localTriangles.data(), triangleCount, vertexCount);
+            if (!appendMeshletCluster(
+                    primitive,
+                    primitive.meshletLodClusters,
+                    primitive.meshletLodVertices,
+                    primitive.meshletLodTriangles,
+                    localVertices.data(),
+                    vertexCount,
+                    localTriangles.data(),
+                    triangleCount,
+                    lodLevel,
+                    groupIndex,
+                    static_cast<uint32_t>(clusterIndex),
+                    cluster.refined,
+                    cluster.bounds.error)) {
+                success = false;
+                return kInvalidSceneIndex;
+            }
+
+            lodGroup.bounds.include(primitive.meshletLodClusters.back().bounds);
+        }
+
+        MeshletLodLevel& level = primitive.meshletLodLevels[lodLevel];
+        ++level.groupCount;
+        level.clusterCount += lodGroup.clusterCount;
+        level.minBoundingSphereRadius = std::min(level.minBoundingSphereRadius, lodGroup.boundingSphereRadius);
+        level.minMaxQuadricError = std::min(level.minMaxQuadricError, lodGroup.maxQuadricError);
+
+        primitive.meshletLodGroups.push_back(lodGroup);
+        return groupIndex;
+    };
+
+    clodBuild(config, mesh, outputGroup);
+    if (!success ||
+        primitive.meshletLodLevels.empty() ||
+        primitive.meshletLodGroups.empty() ||
+        primitive.meshletLodClusters.empty()) {
+        clearMeshletLods(primitive);
+        return false;
+    }
+
     return true;
 }
 
@@ -1268,6 +1503,7 @@ bool Scene::load(const std::filesystem::path& filename)
                     generateTangents(primitive);
                 }
                 buildMeshletClusters(primitive);
+                buildMeshletLods(primitive);
 
                 RenderNode renderNode;
                 renderNode.nodeIndex = nodeIndex;
@@ -1281,6 +1517,11 @@ bool Scene::load(const std::filesystem::path& filename)
                 stats_.meshletClusterCount += primitive.meshletClusters.size();
                 stats_.meshletVertexReferenceCount += primitive.meshletVertices.size();
                 stats_.meshletTriangleIndexCount += primitive.meshletTriangles.size();
+                stats_.meshletLodLevelCount += primitive.meshletLodLevels.size();
+                stats_.meshletLodGroupCount += primitive.meshletLodGroups.size();
+                stats_.meshletLodClusterCount += primitive.meshletLodClusters.size();
+                stats_.meshletLodVertexReferenceCount += primitive.meshletLodVertices.size();
+                stats_.meshletLodTriangleIndexCount += primitive.meshletLodTriangles.size();
                 renderPrimitives_.push_back(primitive);
                 renderNodes_.push_back(renderNode);
             }

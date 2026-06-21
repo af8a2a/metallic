@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -105,6 +107,104 @@ void writeGeneratedTangentSceneBinary(const std::filesystem::path& path)
     file.write(reinterpret_cast<const char*>(kNormals.data()), sizeof(float) * kNormals.size());
     file.write(reinterpret_cast<const char*>(kTexcoords.data()), sizeof(float) * kTexcoords.size());
     file.write(reinterpret_cast<const char*>(kIndices.data()), sizeof(uint16_t) * kIndices.size());
+}
+
+std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& directory)
+{
+    constexpr uint32_t kGridCells = 32;
+    constexpr uint32_t kGridVertices = (kGridCells + 1) * (kGridCells + 1);
+    constexpr uint32_t kGridTriangles = kGridCells * kGridCells * 2;
+
+    std::vector<float> positions;
+    std::vector<float> normals;
+    std::vector<uint32_t> indices;
+    positions.reserve(static_cast<size_t>(kGridVertices) * 3u);
+    normals.reserve(static_cast<size_t>(kGridVertices) * 3u);
+    indices.reserve(static_cast<size_t>(kGridTriangles) * 3u);
+
+    float3 minBounds(std::numeric_limits<float>::max());
+    float3 maxBounds(-std::numeric_limits<float>::max());
+    for (uint32_t y = 0; y <= kGridCells; ++y) {
+        for (uint32_t x = 0; x <= kGridCells; ++x) {
+            const float fx = static_cast<float>(x);
+            const float fy = static_cast<float>(y);
+            const float fz = std::sin(fx * 0.35f) * std::cos(fy * 0.27f) * 0.08f;
+            positions.insert(positions.end(), {fx, fy, fz});
+            normals.insert(normals.end(), {0.0f, 0.0f, 1.0f});
+            minBounds.x = std::min(minBounds.x, fx);
+            minBounds.y = std::min(minBounds.y, fy);
+            minBounds.z = std::min(minBounds.z, fz);
+            maxBounds.x = std::max(maxBounds.x, fx);
+            maxBounds.y = std::max(maxBounds.y, fy);
+            maxBounds.z = std::max(maxBounds.z, fz);
+        }
+    }
+
+    const auto vertexIndex = [](uint32_t x, uint32_t y) {
+        return y * (kGridCells + 1) + x;
+    };
+    for (uint32_t y = 0; y < kGridCells; ++y) {
+        for (uint32_t x = 0; x < kGridCells; ++x) {
+            const uint32_t i0 = vertexIndex(x, y);
+            const uint32_t i1 = vertexIndex(x + 1, y);
+            const uint32_t i2 = vertexIndex(x, y + 1);
+            const uint32_t i3 = vertexIndex(x + 1, y + 1);
+            indices.insert(indices.end(), {i0, i1, i2, i2, i1, i3});
+        }
+    }
+
+    const std::filesystem::path binaryPath = directory / "meshlet_lod_grid.bin";
+    std::ofstream binary(binaryPath, std::ios::binary);
+    binary.write(
+        reinterpret_cast<const char*>(positions.data()),
+        static_cast<std::streamsize>(positions.size() * sizeof(float)));
+    binary.write(
+        reinterpret_cast<const char*>(normals.data()),
+        static_cast<std::streamsize>(normals.size() * sizeof(float)));
+    binary.write(
+        reinterpret_cast<const char*>(indices.data()),
+        static_cast<std::streamsize>(indices.size() * sizeof(uint32_t)));
+
+    const size_t positionBytes = positions.size() * sizeof(float);
+    const size_t normalBytes = normals.size() * sizeof(float);
+    const size_t indexBytes = indices.size() * sizeof(uint32_t);
+    const std::filesystem::path gltfPath = directory / "meshlet_lod_grid.gltf";
+    std::ostringstream gltf;
+    gltf << R"json({
+  "asset": { "version": "2.0" },
+  "buffers": [
+    { "uri": "meshlet_lod_grid.bin", "byteLength": )json"
+         << (positionBytes + normalBytes + indexBytes) << R"json( }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": )json"
+         << positionBytes << R"json(, "target": 34962 },
+    { "buffer": 0, "byteOffset": )json"
+         << positionBytes << R"json(, "byteLength": )json" << normalBytes << R"json(, "target": 34962 },
+    { "buffer": 0, "byteOffset": )json"
+         << (positionBytes + normalBytes) << R"json(, "byteLength": )json" << indexBytes << R"json(, "target": 34963 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": )json"
+         << kGridVertices << R"json(, "type": "VEC3", "min": [)json"
+         << minBounds.x << ", " << minBounds.y << ", " << minBounds.z << R"json(], "max": [)json"
+         << maxBounds.x << ", " << maxBounds.y << ", " << maxBounds.z << R"json(] },
+    { "bufferView": 1, "componentType": 5126, "count": )json"
+         << kGridVertices << R"json(, "type": "VEC3" },
+    { "bufferView": 2, "componentType": 5125, "count": )json"
+         << indices.size() << R"json(, "type": "SCALAR" }
+  ],
+  "meshes": [
+    { "name": "Meshlet LOD Grid", "primitives": [
+      { "attributes": { "POSITION": 0, "NORMAL": 1 }, "indices": 2, "mode": 4 }
+    ] }
+  ],
+  "nodes": [ { "name": "Grid", "mesh": 0 } ],
+  "scenes": [ { "name": "Grid Scene", "nodes": [0] } ],
+  "scene": 0
+})json";
+    writeTextFile(gltfPath, gltf.str());
+    return gltfPath;
 }
 
 void writeUint32(std::ofstream& file, uint32_t value)
@@ -626,6 +726,11 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(stats.meshletClusterCount == 1, "meshlet cluster count");
     expect(stats.meshletVertexReferenceCount == 3, "meshlet vertex reference count");
     expect(stats.meshletTriangleIndexCount == 3, "meshlet triangle index count");
+    expect(stats.meshletLodLevelCount == 1, "meshlet lod level count");
+    expect(stats.meshletLodGroupCount == 1, "meshlet lod group count");
+    expect(stats.meshletLodClusterCount == 1, "meshlet lod cluster count");
+    expect(stats.meshletLodVertexReferenceCount == 3, "meshlet lod vertex reference count");
+    expect(stats.meshletLodTriangleIndexCount == 3, "meshlet lod triangle index count");
 
     expect(scene.meshes().size() == 1, "mesh info vector size");
     expect(scene.meshes()[0].name == "Triangle Mesh", "mesh info name");
@@ -657,6 +762,34 @@ void testFullSceneImport(const std::filesystem::path& directory)
     }
     for (const uint8_t localVertexIndex : primitive.meshletTriangles) {
         expect(localVertexIndex < meshletCluster.vertexCount, "meshlet triangle local index range");
+    }
+    expect(primitive.meshletLodLevels.size() == 1, "primitive meshlet lod level count");
+    expect(primitive.meshletLodGroups.size() == 1, "primitive meshlet lod group count");
+    expect(primitive.meshletLodClusters.size() == 1, "primitive meshlet lod cluster count");
+    expect(primitive.meshletLodVertices.size() == 3, "primitive meshlet lod vertex reference count");
+    expect(primitive.meshletLodTriangles.size() == 3, "primitive meshlet lod triangle index count");
+    const metallic::scene::MeshletLodLevel& meshletLodLevel = primitive.meshletLodLevels.front();
+    expect(meshletLodLevel.groupOffset == 0, "meshlet lod level group offset");
+    expect(meshletLodLevel.groupCount == 1, "meshlet lod level group count");
+    expect(meshletLodLevel.clusterOffset == 0, "meshlet lod level cluster offset");
+    expect(meshletLodLevel.clusterCount == 1, "meshlet lod level cluster count");
+    const metallic::scene::MeshletLodGroup& meshletLodGroup = primitive.meshletLodGroups.front();
+    expect(meshletLodGroup.clusterOffset == 0, "meshlet lod group cluster offset");
+    expect(meshletLodGroup.clusterCount == 1, "meshlet lod group cluster count");
+    expect(meshletLodGroup.lodLevel == 0, "meshlet lod group level");
+    expect(meshletLodGroup.bounds.valid, "meshlet lod group bounds valid");
+    const metallic::scene::MeshletCluster& meshletLodCluster = primitive.meshletLodClusters.front();
+    expect(meshletLodCluster.lodLevel == 0, "meshlet lod cluster level");
+    expect(meshletLodCluster.lodGroupIndex == 0, "meshlet lod cluster group index");
+    expect(meshletLodCluster.lodGroupChildIndex == 0, "meshlet lod cluster group child index");
+    expect(meshletLodCluster.refinedGroupIndex == metallic::scene::kInvalidSceneIndex, "meshlet lod cluster refined group");
+    expect(meshletLodCluster.vertexCount == 3, "meshlet lod cluster vertex count");
+    expect(meshletLodCluster.triangleCount == 1, "meshlet lod cluster triangle count");
+    for (const uint32_t vertexIndex : primitive.meshletLodVertices) {
+        expect(vertexIndex < primitive.positions.size(), "meshlet lod vertex reference range");
+    }
+    for (const uint8_t localVertexIndex : primitive.meshletLodTriangles) {
+        expect(localVertexIndex < meshletLodCluster.vertexCount, "meshlet lod triangle local index range");
     }
 
     expect(scene.materials().size() == 2, "material vector size");
@@ -708,6 +841,86 @@ void testFullSceneImport(const std::filesystem::path& directory)
 
     expect(scene.lights().size() == 1, "punctual light count");
     expect(scene.lights().front().type == "directional", "punctual light type");
+}
+
+void testMeshletLodPartition(const std::filesystem::path& directory)
+{
+    metallic::scene::Scene scene;
+    const std::filesystem::path gltfPath = writeMeshletLodGridScene(directory);
+    ASSERT_TRUE(scene.load(gltfPath)) << scene.lastLoadResult().error;
+    ASSERT_EQ(scene.renderPrimitives().size(), 1u);
+
+    const metallic::scene::RenderPrimitive& primitive = scene.renderPrimitives().front();
+    EXPECT_GT(primitive.meshletClusters.size(), 1u);
+    EXPECT_GT(primitive.meshletLodLevels.size(), 1u);
+    EXPECT_GT(primitive.meshletLodGroups.size(), 1u);
+    EXPECT_GT(primitive.meshletLodClusters.size(), primitive.meshletClusters.size());
+    EXPECT_EQ(scene.stats().meshletLodLevelCount, primitive.meshletLodLevels.size());
+    EXPECT_EQ(scene.stats().meshletLodGroupCount, primitive.meshletLodGroups.size());
+    EXPECT_EQ(scene.stats().meshletLodClusterCount, primitive.meshletLodClusters.size());
+    EXPECT_EQ(scene.stats().meshletLodVertexReferenceCount, primitive.meshletLodVertices.size());
+    EXPECT_EQ(scene.stats().meshletLodTriangleIndexCount, primitive.meshletLodTriangles.size());
+
+    uint32_t expectedGroupOffset = 0;
+    uint32_t expectedClusterOffset = 0;
+    for (size_t levelIndex = 0; levelIndex < primitive.meshletLodLevels.size(); ++levelIndex) {
+        const metallic::scene::MeshletLodLevel& level = primitive.meshletLodLevels[levelIndex];
+        EXPECT_EQ(level.groupOffset, expectedGroupOffset);
+        EXPECT_EQ(level.clusterOffset, expectedClusterOffset);
+        EXPECT_GT(level.groupCount, 0u);
+        EXPECT_GT(level.clusterCount, 0u);
+        EXPECT_GT(level.minBoundingSphereRadius, 0.0f);
+        expectedGroupOffset += level.groupCount;
+        expectedClusterOffset += level.clusterCount;
+    }
+    EXPECT_EQ(expectedGroupOffset, primitive.meshletLodGroups.size());
+    EXPECT_EQ(expectedClusterOffset, primitive.meshletLodClusters.size());
+
+    for (size_t groupIndex = 0; groupIndex < primitive.meshletLodGroups.size(); ++groupIndex) {
+        const metallic::scene::MeshletLodGroup& group = primitive.meshletLodGroups[groupIndex];
+        ASSERT_LT(group.lodLevel, primitive.meshletLodLevels.size());
+        EXPECT_TRUE(group.bounds.valid);
+        EXPECT_GT(group.boundingSphereRadius, 0.0f);
+        ASSERT_LE(
+            static_cast<size_t>(group.clusterOffset) + group.clusterCount,
+            primitive.meshletLodClusters.size());
+
+        const metallic::scene::MeshletLodLevel& level = primitive.meshletLodLevels[group.lodLevel];
+        EXPECT_GE(groupIndex, level.groupOffset);
+        EXPECT_LT(groupIndex, static_cast<size_t>(level.groupOffset) + level.groupCount);
+
+        for (uint32_t childIndex = 0; childIndex < group.clusterCount; ++childIndex) {
+            const metallic::scene::MeshletCluster& cluster =
+                primitive.meshletLodClusters[static_cast<size_t>(group.clusterOffset) + childIndex];
+            EXPECT_EQ(cluster.lodLevel, group.lodLevel);
+            EXPECT_EQ(cluster.lodGroupIndex, static_cast<int32_t>(groupIndex));
+            EXPECT_EQ(cluster.lodGroupChildIndex, childIndex);
+            EXPECT_GT(cluster.vertexCount, 0u);
+            EXPECT_GT(cluster.triangleCount, 0u);
+            EXPECT_LE(cluster.vertexCount, 128u);
+            EXPECT_LE(cluster.triangleCount, 128u);
+            EXPECT_TRUE(cluster.bounds.valid);
+            EXPECT_TRUE(
+                cluster.refinedGroupIndex == metallic::scene::kInvalidSceneIndex ||
+                static_cast<size_t>(cluster.refinedGroupIndex) < primitive.meshletLodGroups.size());
+            ASSERT_LE(
+                static_cast<size_t>(cluster.vertexOffset) + cluster.vertexCount,
+                primitive.meshletLodVertices.size());
+            ASSERT_LE(
+                static_cast<size_t>(cluster.triangleOffset) + static_cast<size_t>(cluster.triangleCount) * 3u,
+                primitive.meshletLodTriangles.size());
+            for (uint32_t vertex = 0; vertex < cluster.vertexCount; ++vertex) {
+                EXPECT_LT(
+                    primitive.meshletLodVertices[static_cast<size_t>(cluster.vertexOffset) + vertex],
+                    primitive.positions.size());
+            }
+            for (uint32_t index = 0; index < cluster.triangleCount * 3u; ++index) {
+                EXPECT_LT(
+                    primitive.meshletLodTriangles[static_cast<size_t>(cluster.triangleOffset) + index],
+                    cluster.vertexCount);
+            }
+        }
+    }
 }
 
 void testMaterialImport(const std::filesystem::path& directory)
@@ -1109,6 +1322,11 @@ void testGeneratedTangentHandedness(const std::filesystem::path& directory)
 TEST(SceneImport, FullScene)
 {
     testFullSceneImport(prepareOutputDirectory());
+}
+
+TEST(SceneImport, MeshletLodPartition)
+{
+    testMeshletLodPartition(prepareOutputDirectory());
 }
 
 TEST(SceneImport, Materials)

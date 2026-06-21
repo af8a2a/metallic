@@ -2664,6 +2664,11 @@ void EditorApplication::drawInspectorPanel()
         ImGui::Text("Meshlet Clusters: %zu", primitive.meshletClusters.size());
         ImGui::Text("Meshlet Vertex References: %zu", primitive.meshletVertices.size());
         ImGui::Text("Meshlet Triangle Indices: %zu", primitive.meshletTriangles.size());
+        ImGui::Text("Meshlet LOD Levels: %zu", primitive.meshletLodLevels.size());
+        ImGui::Text("Meshlet LOD Groups: %zu", primitive.meshletLodGroups.size());
+        ImGui::Text("Meshlet LOD Clusters: %zu", primitive.meshletLodClusters.size());
+        ImGui::Text("Meshlet LOD Vertex References: %zu", primitive.meshletLodVertices.size());
+        ImGui::Text("Meshlet LOD Triangle Indices: %zu", primitive.meshletLodTriangles.size());
         if (primitive.localBounds.valid) {
             ImGui::Text("Bounds min: %s", scene::formatVec3(primitive.localBounds.min).c_str());
             ImGui::Text("Bounds max: %s", scene::formatVec3(primitive.localBounds.max).c_str());
@@ -2793,6 +2798,11 @@ void EditorApplication::drawStatisticsPanel()
         addStat("Meshlet Clusters", stats.meshletClusterCount);
         addStat("Meshlet Vertex References", stats.meshletVertexReferenceCount);
         addStat("Meshlet Triangle Indices", stats.meshletTriangleIndexCount);
+        addStat("Meshlet LOD Levels", stats.meshletLodLevelCount);
+        addStat("Meshlet LOD Groups", stats.meshletLodGroupCount);
+        addStat("Meshlet LOD Clusters", stats.meshletLodClusterCount);
+        addStat("Meshlet LOD Vertex References", stats.meshletLodVertexReferenceCount);
+        addStat("Meshlet LOD Triangle Indices", stats.meshletLodTriangleIndexCount);
         addStat("Lights", scene_.lights().size());
         addStat("Textures", stats.textureCount);
         addStat("Images", stats.imageCount);
@@ -2839,6 +2849,15 @@ void EditorApplication::drawStatisticsPanel()
         ImGui::LogText(
             "Meshlet Triangle Indices: %llu\n",
             static_cast<unsigned long long>(stats.meshletTriangleIndexCount));
+        ImGui::LogText("Meshlet LOD Levels: %llu\n", static_cast<unsigned long long>(stats.meshletLodLevelCount));
+        ImGui::LogText("Meshlet LOD Groups: %llu\n", static_cast<unsigned long long>(stats.meshletLodGroupCount));
+        ImGui::LogText("Meshlet LOD Clusters: %llu\n", static_cast<unsigned long long>(stats.meshletLodClusterCount));
+        ImGui::LogText(
+            "Meshlet LOD Vertex References: %llu\n",
+            static_cast<unsigned long long>(stats.meshletLodVertexReferenceCount));
+        ImGui::LogText(
+            "Meshlet LOD Triangle Indices: %llu\n",
+            static_cast<unsigned long long>(stats.meshletLodTriangleIndexCount));
         ImGui::LogText("Lights: %zu\n", scene_.lights().size());
         ImGui::LogText("Textures: %llu\n", static_cast<unsigned long long>(stats.textureCount));
         ImGui::LogText("Images: %llu\n", static_cast<unsigned long long>(stats.imageCount));
