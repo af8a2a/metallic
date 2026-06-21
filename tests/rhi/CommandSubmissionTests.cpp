@@ -42,11 +42,24 @@ public:
             return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
         }
 
+        std::unique_ptr<render::Semaphore> semaphore;
+        result = context.device.createSemaphore(semaphore);
+        if (!result || semaphore == nullptr) {
+            return RhiTestResult::fail(std::string("createSemaphore returned ") + toString(result));
+        }
+
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+        render::SemaphoreSubmitDesc signalSemaphore{
+            .semaphore = semaphore.get(),
+            .value = 1,
+            .stages = render::PipelineStageBits::AllCommands,
+        };
         result = context.graphicsQueue.submit(
             render::QueueSubmitDesc{
                 .commandBuffers = commandBuffers,
                 .commandBufferCount = 1,
+                .signalSemaphores = &signalSemaphore,
+                .signalSemaphoreCount = 1,
                 .signalFence = fence.get(),
             });
         if (!result) {
@@ -59,6 +72,13 @@ public:
         }
         if (!fence->isSignaled()) {
             return RhiTestResult::fail("submitted fence reported unsignaled after wait");
+        }
+        result = semaphore->wait(1, 5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(std::string("Semaphore::wait returned ") + toString(result));
+        }
+        if (semaphore->currentValue() != 1) {
+            return RhiTestResult::fail("submitted timeline semaphore did not reach signal value");
         }
 
         result = context.graphicsQueue.waitIdle();

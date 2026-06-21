@@ -121,9 +121,29 @@ public:
         }
 
         std::unique_ptr<render::Semaphore> semaphore;
-        result = context.device.createSemaphore(semaphore);
+        result = context.device.createSemaphore(render::SemaphoreDesc{.initialValue = 2}, semaphore);
         if (!result || semaphore == nullptr) {
             return RhiTestResult::fail(std::string("createSemaphore returned ") + toString(result));
+        }
+        if (semaphore->currentValue() != 2) {
+            return RhiTestResult::fail("timeline semaphore initial value does not match request");
+        }
+        result = semaphore->wait(2, 1'000'000);
+        if (!result) {
+            return RhiTestResult::fail(std::string("Semaphore::wait returned ") + toString(result));
+        }
+        result = semaphore->signal(3);
+        if (!result) {
+            return RhiTestResult::fail(std::string("Semaphore::signal returned ") + toString(result));
+        }
+        if (semaphore->currentValue() != 3) {
+            return RhiTestResult::fail("timeline semaphore host signal did not update value");
+        }
+
+        std::unique_ptr<render::SwapchainSemaphore> swapchainSemaphore;
+        result = context.device.createSwapchainSemaphore(swapchainSemaphore);
+        if (!result || swapchainSemaphore == nullptr) {
+            return RhiTestResult::fail(std::string("createSwapchainSemaphore returned ") + toString(result));
         }
 
         return RhiTestResult::pass();

@@ -359,6 +359,10 @@ struct BarrierDesc {
     uint32_t bufferCount = 0;
 };
 
+struct SemaphoreDesc {
+    uint64_t initialValue = 0;
+};
+
 struct RenderingAttachmentDesc {
     class TextureView* view = nullptr;
     ResourceState state = ResourceState::ColorAttachment;
@@ -378,16 +382,26 @@ struct RenderingDesc {
 
 struct SemaphoreSubmitDesc {
     class Semaphore* semaphore = nullptr;
+    uint64_t value = 0;
+    PipelineStageBits stages = PipelineStageBits::AllCommands;
+};
+
+struct SwapchainSemaphoreSubmitDesc {
+    class SwapchainSemaphore* semaphore = nullptr;
     PipelineStageBits stages = PipelineStageBits::AllCommands;
 };
 
 struct QueueSubmitDesc {
     const SemaphoreSubmitDesc* waitSemaphores = nullptr;
     uint32_t waitSemaphoreCount = 0;
+    const SwapchainSemaphoreSubmitDesc* waitSwapchainSemaphores = nullptr;
+    uint32_t waitSwapchainSemaphoreCount = 0;
     class CommandBuffer* const* commandBuffers = nullptr;
     uint32_t commandBufferCount = 0;
     const SemaphoreSubmitDesc* signalSemaphores = nullptr;
     uint32_t signalSemaphoreCount = 0;
+    const SwapchainSemaphoreSubmitDesc* signalSwapchainSemaphores = nullptr;
+    uint32_t signalSwapchainSemaphoreCount = 0;
     class Fence* signalFence = nullptr;
 };
 
@@ -504,6 +518,7 @@ struct CommandPoolImpl;
 struct CommandBufferImpl;
 struct FenceImpl;
 struct SemaphoreImpl;
+struct SwapchainSemaphoreImpl;
 struct BufferImpl;
 struct BufferViewImpl;
 struct TextureImpl;
@@ -577,10 +592,36 @@ public:
     Semaphore(const Semaphore&) = delete;
     Semaphore& operator=(const Semaphore&) = delete;
 
+    Result wait(uint64_t value, uint64_t timeoutNanoseconds = UINT64_MAX);
+    Result signal(uint64_t value);
+    uint64_t currentValue() const;
+
 private:
     explicit Semaphore(std::unique_ptr<detail::SemaphoreImpl> impl);
 
     std::unique_ptr<detail::SemaphoreImpl> impl_;
+
+    friend class Device;
+    friend class Queue;
+    friend class Swapchain;
+    friend struct detail::DeviceImpl;
+    friend struct detail::VulkanNativeAccess;
+};
+
+class SwapchainSemaphore {
+public:
+    SwapchainSemaphore() = default;
+    ~SwapchainSemaphore();
+    SwapchainSemaphore(SwapchainSemaphore&&) noexcept;
+    SwapchainSemaphore& operator=(SwapchainSemaphore&&) noexcept;
+
+    SwapchainSemaphore(const SwapchainSemaphore&) = delete;
+    SwapchainSemaphore& operator=(const SwapchainSemaphore&) = delete;
+
+private:
+    explicit SwapchainSemaphore(std::unique_ptr<detail::SwapchainSemaphoreImpl> impl);
+
+    std::unique_ptr<detail::SwapchainSemaphoreImpl> impl_;
 
     friend class Device;
     friend class Queue;
@@ -884,8 +925,8 @@ public:
     uint32_t height() const;
     Format format() const;
     Texture* texture(uint32_t imageIndex);
-    Result acquireNextImage(Semaphore& semaphore, uint32_t& imageIndex);
-    Result present(Queue& queue, uint32_t imageIndex, Semaphore& waitSemaphore);
+    Result acquireNextImage(SwapchainSemaphore& semaphore, uint32_t& imageIndex);
+    Result present(Queue& queue, uint32_t imageIndex, SwapchainSemaphore& waitSemaphore);
 
 private:
     explicit Swapchain(std::unique_ptr<detail::SwapchainImpl> impl);
@@ -913,7 +954,9 @@ public:
     Result createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapchain>& outSwapchain);
     Result createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& outCommandPool);
     Result createFence(bool signaled, std::unique_ptr<Fence>& outFence);
+    Result createSemaphore(const SemaphoreDesc& desc, std::unique_ptr<Semaphore>& outSemaphore);
     Result createSemaphore(std::unique_ptr<Semaphore>& outSemaphore);
+    Result createSwapchainSemaphore(std::unique_ptr<SwapchainSemaphore>& outSemaphore);
     Result createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& outBuffer);
     Result createBufferView(Buffer& buffer, const BufferViewDesc& desc, std::unique_ptr<BufferView>& outBufferView);
     Result createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& outTexture);

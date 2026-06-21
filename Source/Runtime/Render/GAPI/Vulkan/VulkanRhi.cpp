@@ -1163,6 +1163,7 @@ struct VulkanDeviceFeatureProbe {
     bool supportsRequiredCoreFeatures() const
     {
         return vulkan11Features.shaderDrawParameters == VK_TRUE &&
+            vulkan12Features.timelineSemaphore == VK_TRUE &&
             vulkan13Features.dynamicRendering == VK_TRUE &&
             vulkan13Features.synchronization2 == VK_TRUE;
     }
@@ -1384,6 +1385,7 @@ struct VulkanEnabledFeatureChain {
             selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.runtimeDescriptorArray = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.bufferDeviceAddress = selection.usesBufferDeviceAddress() ? VK_TRUE : VK_FALSE;
+        vulkan12Features.timelineSemaphore = VK_TRUE;
         vulkan13Features.synchronization2 = VK_TRUE;
         vulkan13Features.dynamicRendering = VK_TRUE;
         descriptorHeapFeatures.descriptorHeap = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
@@ -1855,6 +1857,11 @@ struct FenceImpl {
 };
 
 struct SemaphoreImpl {
+    DeviceImpl* device = nullptr;
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+};
+
+struct SwapchainSemaphoreImpl {
     DeviceImpl* device = nullptr;
     VkSemaphore semaphore = VK_NULL_HANDLE;
 };
@@ -2416,15 +2423,29 @@ Result Queue::submit(const QueueSubmitDesc& desc)
         return makeError(Error::InvalidArgument);
     }
     if ((desc.waitSemaphoreCount > 0 && desc.waitSemaphores == nullptr) ||
+        (desc.waitSwapchainSemaphoreCount > 0 && desc.waitSwapchainSemaphores == nullptr) ||
         (desc.commandBufferCount > 0 && desc.commandBuffers == nullptr) ||
-        (desc.signalSemaphoreCount > 0 && desc.signalSemaphores == nullptr)) {
+        (desc.signalSemaphoreCount > 0 && desc.signalSemaphores == nullptr) ||
+        (desc.signalSwapchainSemaphoreCount > 0 && desc.signalSwapchainSemaphores == nullptr)) {
         return makeError(Error::InvalidArgument);
     }
 
     std::vector<VkSemaphoreSubmitInfo> waitSemaphores;
-    waitSemaphores.reserve(desc.waitSemaphoreCount);
+    waitSemaphores.reserve(desc.waitSemaphoreCount + desc.waitSwapchainSemaphoreCount);
     for (uint32_t index = 0; index < desc.waitSemaphoreCount; ++index) {
         const SemaphoreSubmitDesc& wait = desc.waitSemaphores[index];
+        if (wait.semaphore == nullptr || wait.semaphore->impl_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        waitSemaphores.push_back({
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = wait.semaphore->impl_->semaphore,
+            .value = wait.value,
+            .stageMask = toVkPipelineStages(wait.stages),
+        });
+    }
+    for (uint32_t index = 0; index < desc.waitSwapchainSemaphoreCount; ++index) {
+        const SwapchainSemaphoreSubmitDesc& wait = desc.waitSwapchainSemaphores[index];
         if (wait.semaphore == nullptr || wait.semaphore->impl_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
@@ -2449,9 +2470,21 @@ Result Queue::submit(const QueueSubmitDesc& desc)
     }
 
     std::vector<VkSemaphoreSubmitInfo> signalSemaphores;
-    signalSemaphores.reserve(desc.signalSemaphoreCount);
+    signalSemaphores.reserve(desc.signalSemaphoreCount + desc.signalSwapchainSemaphoreCount);
     for (uint32_t index = 0; index < desc.signalSemaphoreCount; ++index) {
         const SemaphoreSubmitDesc& signal = desc.signalSemaphores[index];
+        if (signal.semaphore == nullptr || signal.semaphore->impl_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        signalSemaphores.push_back({
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = signal.semaphore->impl_->semaphore,
+            .value = signal.value,
+            .stageMask = toVkPipelineStages(signal.stages),
+        });
+    }
+    for (uint32_t index = 0; index < desc.signalSwapchainSemaphoreCount; ++index) {
+        const SwapchainSemaphoreSubmitDesc& signal = desc.signalSwapchainSemaphores[index];
         if (signal.semaphore == nullptr || signal.semaphore->impl_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
@@ -2559,6 +2592,69 @@ Semaphore::~Semaphore()
 
 Semaphore::Semaphore(Semaphore&&) noexcept = default;
 Semaphore& Semaphore::operator=(Semaphore&&) noexcept = default;
+
+Result Semaphore::wait(uint64_t value, uint64_t timeoutNanoseconds)
+{
+    if (impl_ == nullptr || impl_->semaphore == VK_NULL_HANDLE) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    VkSemaphoreWaitInfo waitInfo{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+        .semaphoreCount = 1,
+        .pSemaphores = &impl_->semaphore,
+        .pValues = &value,
+    };
+    const VkResult result = vkWaitSemaphores(impl_->device->device, &waitInfo, timeoutNanoseconds);
+    if (result == VK_TIMEOUT) {
+        return makeError(Error::Failure);
+    }
+    return resultFromVk(result);
+}
+
+Result Semaphore::signal(uint64_t value)
+{
+    if (impl_ == nullptr || impl_->semaphore == VK_NULL_HANDLE) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    VkSemaphoreSignalInfo signalInfo{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+        .semaphore = impl_->semaphore,
+        .value = value,
+    };
+    return resultFromVk(vkSignalSemaphore(impl_->device->device, &signalInfo));
+}
+
+uint64_t Semaphore::currentValue() const
+{
+    if (impl_ == nullptr || impl_->semaphore == VK_NULL_HANDLE) {
+        return 0;
+    }
+
+    uint64_t value = 0;
+    const VkResult result = vkGetSemaphoreCounterValue(impl_->device->device, impl_->semaphore, &value);
+    if (result != VK_SUCCESS) {
+        return 0;
+    }
+    return value;
+}
+
+SwapchainSemaphore::SwapchainSemaphore(std::unique_ptr<detail::SwapchainSemaphoreImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+SwapchainSemaphore::~SwapchainSemaphore()
+{
+    if (impl_ != nullptr && impl_->semaphore != VK_NULL_HANDLE) {
+        vkDestroySemaphore(impl_->device->device, impl_->semaphore, nullptr);
+        impl_->semaphore = VK_NULL_HANDLE;
+    }
+}
+
+SwapchainSemaphore::SwapchainSemaphore(SwapchainSemaphore&&) noexcept = default;
+SwapchainSemaphore& SwapchainSemaphore::operator=(SwapchainSemaphore&&) noexcept = default;
 
 Buffer::Buffer(std::unique_ptr<detail::BufferImpl> impl)
     : impl_(std::move(impl))
@@ -3791,7 +3887,7 @@ Texture* Swapchain::texture(uint32_t imageIndex)
     return impl_->textures[imageIndex].get();
 }
 
-Result Swapchain::acquireNextImage(Semaphore& semaphore, uint32_t& imageIndex)
+Result Swapchain::acquireNextImage(SwapchainSemaphore& semaphore, uint32_t& imageIndex)
 {
     if (impl_ == nullptr || semaphore.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -3810,7 +3906,7 @@ Result Swapchain::acquireNextImage(Semaphore& semaphore, uint32_t& imageIndex)
     return resultFromVk(result);
 }
 
-Result Swapchain::present(Queue& queue, uint32_t imageIndex, Semaphore& waitSemaphore)
+Result Swapchain::present(Queue& queue, uint32_t imageIndex, SwapchainSemaphore& waitSemaphore)
 {
     if (impl_ == nullptr || queue.impl_ == nullptr || waitSemaphore.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -3950,6 +4046,42 @@ Result Device::createFence(bool signaled, std::unique_ptr<Fence>& outFence)
 
 Result Device::createSemaphore(std::unique_ptr<Semaphore>& outSemaphore)
 {
+    return createSemaphore(SemaphoreDesc{}, outSemaphore);
+}
+
+Result Device::createSemaphore(const SemaphoreDesc& desc, std::unique_ptr<Semaphore>& outSemaphore)
+{
+    outSemaphore.reset();
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    activateVolkDevice(impl_->device);
+
+    VkSemaphoreTypeCreateInfo typeCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+        .initialValue = desc.initialValue,
+    };
+    VkSemaphoreCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = &typeCreateInfo,
+    };
+
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    const VkResult result = vkCreateSemaphore(impl_->device, &createInfo, nullptr, &semaphore);
+    if (result != VK_SUCCESS) {
+        return resultFromVk(result);
+    }
+
+    auto semaphoreImpl = std::make_unique<detail::SemaphoreImpl>();
+    semaphoreImpl->device = impl_.get();
+    semaphoreImpl->semaphore = semaphore;
+    outSemaphore.reset(new Semaphore(std::move(semaphoreImpl)));
+    return {};
+}
+
+Result Device::createSwapchainSemaphore(std::unique_ptr<SwapchainSemaphore>& outSemaphore)
+{
     outSemaphore.reset();
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -3966,10 +4098,10 @@ Result Device::createSemaphore(std::unique_ptr<Semaphore>& outSemaphore)
         return resultFromVk(result);
     }
 
-    auto semaphoreImpl = std::make_unique<detail::SemaphoreImpl>();
+    auto semaphoreImpl = std::make_unique<detail::SwapchainSemaphoreImpl>();
     semaphoreImpl->device = impl_.get();
     semaphoreImpl->semaphore = semaphore;
-    outSemaphore.reset(new Semaphore(std::move(semaphoreImpl)));
+    outSemaphore.reset(new SwapchainSemaphore(std::move(semaphoreImpl)));
     return {};
 }
 
@@ -6197,8 +6329,8 @@ int runRhiSmokeTest(bool enableValidation)
     std::vector<std::unique_ptr<TextureView>> swapchainViews;
     std::unique_ptr<CommandPool> commandPool;
     std::unique_ptr<CommandBuffer> commandBuffer;
-    std::unique_ptr<Semaphore> imageAvailable;
-    std::unique_ptr<Semaphore> renderFinished;
+    std::unique_ptr<SwapchainSemaphore> imageAvailable;
+    std::vector<std::unique_ptr<SwapchainSemaphore>> renderFinishedSemaphores;
     std::unique_ptr<Fence> frameFence;
 
     auto cleanup = [&]() {
@@ -6207,10 +6339,10 @@ int runRhiSmokeTest(bool enableValidation)
         }
 
         swapchainViews.clear();
+        renderFinishedSemaphores.clear();
         commandBuffer.reset();
         commandPool.reset();
         imageAvailable.reset();
-        renderFinished.reset();
         frameFence.reset();
         swapchain.reset();
         device.reset();
@@ -6269,6 +6401,7 @@ int runRhiSmokeTest(bool enableValidation)
     }
 
     swapchainViews.reserve(swapchain->imageCount());
+    renderFinishedSemaphores.reserve(swapchain->imageCount());
     for (uint32_t imageIndex = 0; imageIndex < swapchain->imageCount(); ++imageIndex) {
         std::unique_ptr<TextureView> view;
         result = device->createTextureView(
@@ -6286,6 +6419,14 @@ int runRhiSmokeTest(bool enableValidation)
             return resultToExitCode(result);
         }
         swapchainViews.push_back(std::move(view));
+
+        std::unique_ptr<SwapchainSemaphore> renderFinished;
+        result = device->createSwapchainSemaphore(renderFinished);
+        if (!checkResult(result, "createSwapchainSemaphore(renderFinished)")) {
+            cleanup();
+            return resultToExitCode(result);
+        }
+        renderFinishedSemaphores.push_back(std::move(renderFinished));
     }
 
     result = device->createCommandPool(*graphicsQueue, commandPool);
@@ -6300,8 +6441,7 @@ int runRhiSmokeTest(bool enableValidation)
         return resultToExitCode(result);
     }
 
-    if (!checkResult(device->createSemaphore(imageAvailable), "createSemaphore(imageAvailable)") ||
-        !checkResult(device->createSemaphore(renderFinished), "createSemaphore(renderFinished)") ||
+    if (!checkResult(device->createSwapchainSemaphore(imageAvailable), "createSwapchainSemaphore(imageAvailable)") ||
         !checkResult(device->createFence(false, frameFence), "createFence")) {
         cleanup();
         return 1;
@@ -6312,6 +6452,11 @@ int runRhiSmokeTest(bool enableValidation)
     if (!checkResult(result, "acquireNextImage")) {
         cleanup();
         return resultToExitCode(result);
+    }
+    if (imageIndex >= renderFinishedSemaphores.size() || renderFinishedSemaphores[imageIndex] == nullptr) {
+        std::cerr << "acquireNextImage returned invalid image index.\n";
+        cleanup();
+        return 1;
     }
 
     result = commandBuffer->begin();
@@ -6371,21 +6516,21 @@ int runRhiSmokeTest(bool enableValidation)
     }
 
     CommandBuffer* commandBuffers[] = {commandBuffer.get()};
-    SemaphoreSubmitDesc waitSemaphore{
+    SwapchainSemaphoreSubmitDesc waitSemaphore{
         .semaphore = imageAvailable.get(),
         .stages = PipelineStageBits::ColorAttachment,
     };
-    SemaphoreSubmitDesc signalSemaphore{
-        .semaphore = renderFinished.get(),
+    SwapchainSemaphoreSubmitDesc signalSemaphore{
+        .semaphore = renderFinishedSemaphores[imageIndex].get(),
         .stages = PipelineStageBits::AllCommands,
     };
     result = graphicsQueue->submit(QueueSubmitDesc{
-        .waitSemaphores = &waitSemaphore,
-        .waitSemaphoreCount = 1,
+        .waitSwapchainSemaphores = &waitSemaphore,
+        .waitSwapchainSemaphoreCount = 1,
         .commandBuffers = commandBuffers,
         .commandBufferCount = 1,
-        .signalSemaphores = &signalSemaphore,
-        .signalSemaphoreCount = 1,
+        .signalSwapchainSemaphores = &signalSemaphore,
+        .signalSwapchainSemaphoreCount = 1,
         .signalFence = frameFence.get(),
     });
     if (!checkResult(result, "Queue::submit")) {
@@ -6393,7 +6538,7 @@ int runRhiSmokeTest(bool enableValidation)
         return resultToExitCode(result);
     }
 
-    result = swapchain->present(*graphicsQueue, imageIndex, *renderFinished);
+    result = swapchain->present(*graphicsQueue, imageIndex, *renderFinishedSemaphores[imageIndex]);
     if (!checkResult(result, "Swapchain::present")) {
         cleanup();
         return resultToExitCode(result);

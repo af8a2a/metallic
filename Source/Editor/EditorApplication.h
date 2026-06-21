@@ -118,8 +118,8 @@ private:
     std::unique_ptr<render::CommandPool> commandPool_;
     std::unique_ptr<render::CommandBuffer> commandBuffer_;
     std::unique_ptr<render::Fence> frameFence_;
-    std::unique_ptr<render::Semaphore> imageAvailableSemaphore_;
-    std::unique_ptr<render::Semaphore> renderFinishedSemaphore_;
+    std::unique_ptr<render::SwapchainSemaphore> imageAvailableSemaphore_;
+    std::vector<std::unique_ptr<render::SwapchainSemaphore>> renderFinishedSemaphores_;
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
     render::HistoryResourceManager historyResources_;
     std::unique_ptr<render::vulkan::SceneRtxBuilder> sceneRtx_;

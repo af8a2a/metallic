@@ -1793,14 +1793,10 @@ bool EditorApplication::initializeRhi()
         std::cerr << "createFence failed with Result " << render::resultToString(result) << '\n';
         return false;
     }
-    result = device_->createSemaphore(imageAvailableSemaphore_);
+    result = device_->createSwapchainSemaphore(imageAvailableSemaphore_);
     if (!result) {
-        std::cerr << "createSemaphore(imageAvailable) failed with Result " << render::resultToString(result) << '\n';
-        return false;
-    }
-    result = device_->createSemaphore(renderFinishedSemaphore_);
-    if (!result) {
-        std::cerr << "createSemaphore(renderFinished) failed with Result " << render::resultToString(result) << '\n';
+        std::cerr << "createSwapchainSemaphore(imageAvailable) failed with Result "
+                  << render::resultToString(result) << '\n';
         return false;
     }
 
@@ -1852,6 +1848,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
     }
 
     swapchainImageViews_.reserve(swapchain_->imageCount());
+    renderFinishedSemaphores_.reserve(swapchain_->imageCount());
     swapchainImageStates_.assign(swapchain_->imageCount(), render::ResourceState::Undefined);
     for (uint32_t imageIndex = 0; imageIndex < swapchain_->imageCount(); ++imageIndex) {
         render::Texture* texture = swapchain_->texture(imageIndex);
@@ -1876,6 +1873,15 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             return false;
         }
         swapchainImageViews_.push_back(std::move(view));
+
+        std::unique_ptr<render::SwapchainSemaphore> renderFinished;
+        result = device_->createSwapchainSemaphore(renderFinished);
+        if (!result || renderFinished == nullptr) {
+            std::cerr << "createSwapchainSemaphore(renderFinished) failed with Result "
+                      << render::resultToString(result) << '\n';
+            return false;
+        }
+        renderFinishedSemaphores_.push_back(std::move(renderFinished));
     }
 
     swapchainWidth_ = swapchain_->width();
@@ -1892,6 +1898,7 @@ void EditorApplication::destroySwapchainResources()
 {
     swapchainImageViews_.clear();
     swapchainImageStates_.clear();
+    renderFinishedSemaphores_.clear();
     swapchain_.reset();
     swapchainWidth_ = 0;
     swapchainHeight_ = 0;
@@ -2021,7 +2028,6 @@ void EditorApplication::shutdown()
     commandPool_.reset();
     frameFence_.reset();
     imageAvailableSemaphore_.reset();
-    renderFinishedSemaphore_.reset();
     destroySwapchainResources();
     graphicsQueue_ = nullptr;
     device_.reset();
@@ -3578,7 +3584,6 @@ bool EditorApplication::renderVulkanFrame()
         commandBuffer_ == nullptr ||
         frameFence_ == nullptr ||
         imageAvailableSemaphore_ == nullptr ||
-        renderFinishedSemaphore_ == nullptr ||
         graphicsQueue_ == nullptr) {
         return false;
     }
@@ -3602,7 +3607,10 @@ bool EditorApplication::renderVulkanFrame()
         std::cerr << "acquireNextImage failed with Result " << render::resultToString(result) << '\n';
         return false;
     }
-    if (imageIndex >= swapchainImageViews_.size() || imageIndex >= swapchainImageStates_.size()) {
+    if (imageIndex >= swapchainImageViews_.size() ||
+        imageIndex >= swapchainImageStates_.size() ||
+        imageIndex >= renderFinishedSemaphores_.size() ||
+        renderFinishedSemaphores_[imageIndex] == nullptr) {
         std::cerr << "acquireNextImage returned invalid image index " << imageIndex << '\n';
         return false;
     }
@@ -3732,23 +3740,23 @@ bool EditorApplication::renderVulkanFrame()
     }
 
     render::CommandBuffer* commandBuffers[] = {commandBuffer_.get()};
-    render::SemaphoreSubmitDesc waitSemaphore{
+    render::SwapchainSemaphoreSubmitDesc waitSemaphore{
         .semaphore = imageAvailableSemaphore_.get(),
         .stages = render::PipelineStageBits::ColorAttachment,
     };
-    render::SemaphoreSubmitDesc signalSemaphore{
-        .semaphore = renderFinishedSemaphore_.get(),
+    render::SwapchainSemaphoreSubmitDesc signalSemaphore{
+        .semaphore = renderFinishedSemaphores_[imageIndex].get(),
         .stages = render::PipelineStageBits::AllCommands,
     };
     {
         auto profileScope = profiler_.scope("Submit Frame");
         result = graphicsQueue_->submit(render::QueueSubmitDesc{
-            .waitSemaphores = &waitSemaphore,
-            .waitSemaphoreCount = 1,
+            .waitSwapchainSemaphores = &waitSemaphore,
+            .waitSwapchainSemaphoreCount = 1,
             .commandBuffers = commandBuffers,
             .commandBufferCount = 1,
-            .signalSemaphores = &signalSemaphore,
-            .signalSemaphoreCount = 1,
+            .signalSwapchainSemaphores = &signalSemaphore,
+            .signalSwapchainSemaphoreCount = 1,
             .signalFence = frameFence_.get(),
         });
     }
@@ -3758,7 +3766,7 @@ bool EditorApplication::renderVulkanFrame()
     }
     {
         auto profileScope = profiler_.scope("Present");
-        result = swapchain_->present(*graphicsQueue_, imageIndex, *renderFinishedSemaphore_);
+        result = swapchain_->present(*graphicsQueue_, imageIndex, *renderFinishedSemaphores_[imageIndex]);
     }
     if (!result) {
         if (render::hasError(result, render::Error::OutOfDate)) {

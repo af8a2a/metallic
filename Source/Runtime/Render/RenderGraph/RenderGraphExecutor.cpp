@@ -96,8 +96,8 @@ struct RenderGraphExecutor::Impl {
     std::unique_ptr<BindlessHeap> bindlessHeap;
     std::array<QueueCommandContext, 3> queueCommandContexts;
     std::vector<std::unique_ptr<CommandBuffer>> submittedCommandBuffers;
-    std::vector<std::unique_ptr<Semaphore>> submittedSemaphores;
-    std::vector<std::unique_ptr<Fence>> submittedFences;
+    std::unique_ptr<Semaphore> submittedTimelineSemaphore;
+    uint64_t submittedTimelineValue = 0;
     RenderGraphExecutionStats lastExecutionStats;
     bool hasSubmittedWork = false;
     bool isCompiled = false;
@@ -543,20 +543,17 @@ struct RenderGraphExecutor::Impl {
             return {};
         }
 
-        for (const std::unique_ptr<Fence>& fence : submittedFences) {
-            if (fence == nullptr) {
-                continue;
-            }
-            Result result = fence->wait(timeoutNanoseconds);
+        if (submittedTimelineSemaphore != nullptr) {
+            Result result = submittedTimelineSemaphore->wait(submittedTimelineValue, timeoutNanoseconds);
             if (!result) {
                 return result;
             }
         }
 
         hasSubmittedWork = false;
+        submittedTimelineValue = 0;
         submittedCommandBuffers.clear();
-        submittedSemaphores.clear();
-        submittedFences.clear();
+        submittedTimelineSemaphore.reset();
         return {};
     }
 
@@ -972,8 +969,8 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         return result;
     }
     impl_->submittedCommandBuffers.clear();
-    impl_->submittedSemaphores.clear();
-    impl_->submittedFences.clear();
+    impl_->submittedTimelineSemaphore.reset();
+    impl_->submittedTimelineValue = 0;
 
     std::string crossQueueLog;
     if (impl_->hasCrossQueueResourceEdges(crossQueueLog)) {
@@ -1073,26 +1070,9 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         return makeError(Error::InvalidArgument);
     }
 
-    if (segments.size() > 1) {
-        impl_->submittedSemaphores.reserve(segments.size() - 1);
-        for (size_t index = 0; index + 1 < segments.size(); ++index) {
-            std::unique_ptr<Semaphore> semaphore;
-            result = impl_->device->createSemaphore(semaphore);
-            if (!result || semaphore == nullptr) {
-                return result ? makeError(Error::Failure) : result;
-            }
-            impl_->submittedSemaphores.push_back(std::move(semaphore));
-        }
-    }
-
-    impl_->submittedFences.reserve(segments.size());
-    for (size_t index = 0; index < segments.size(); ++index) {
-        std::unique_ptr<Fence> fence;
-        result = impl_->device->createFence(false, fence);
-        if (!result || fence == nullptr) {
-            return result ? makeError(Error::Failure) : result;
-        }
-        impl_->submittedFences.push_back(std::move(fence));
+    result = impl_->device->createSemaphore(impl_->submittedTimelineSemaphore);
+    if (!result || impl_->submittedTimelineSemaphore == nullptr) {
+        return result ? makeError(Error::Failure) : result;
     }
 
     for (size_t index = 0; index < segments.size(); ++index) {
@@ -1103,36 +1083,33 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         const bool waitsOnPrevious = index > 0;
         if (waitsOnPrevious) {
             waitSemaphore = SemaphoreSubmitDesc{
-                .semaphore = impl_->submittedSemaphores[index - 1].get(),
+                .semaphore = impl_->submittedTimelineSemaphore.get(),
+                .value = static_cast<uint64_t>(index),
                 .stages = PipelineStageBits::AllCommands,
             };
         }
 
-        SemaphoreSubmitDesc signalSemaphore{};
-        const bool signalsNext = index + 1 < segments.size();
-        if (signalsNext) {
-            signalSemaphore = SemaphoreSubmitDesc{
-                .semaphore = impl_->submittedSemaphores[index].get(),
-                .stages = PipelineStageBits::AllCommands,
-            };
-        }
+        SemaphoreSubmitDesc signalSemaphore{
+            .semaphore = impl_->submittedTimelineSemaphore.get(),
+            .value = static_cast<uint64_t>(index + 1),
+            .stages = PipelineStageBits::AllCommands,
+        };
 
         result = segment.queue->submit(QueueSubmitDesc{
             .waitSemaphores = waitsOnPrevious ? &waitSemaphore : nullptr,
             .waitSemaphoreCount = waitsOnPrevious ? 1u : 0u,
             .commandBuffers = commandBuffers,
             .commandBufferCount = 1,
-            .signalSemaphores = signalsNext ? &signalSemaphore : nullptr,
-            .signalSemaphoreCount = signalsNext ? 1u : 0u,
-            .signalFence = impl_->submittedFences[index].get(),
+            .signalSemaphores = &signalSemaphore,
+            .signalSemaphoreCount = 1,
         });
         if (!result) {
-            impl_->submittedFences.resize(index);
             impl_->hasSubmittedWork = index > 0;
+            impl_->submittedTimelineValue = static_cast<uint64_t>(index);
             if (!impl_->hasSubmittedWork) {
                 impl_->submittedCommandBuffers.clear();
-                impl_->submittedSemaphores.clear();
-                impl_->submittedFences.clear();
+                impl_->submittedTimelineSemaphore.reset();
+                impl_->submittedTimelineValue = 0;
             }
             const auto cpuEnd = std::chrono::steady_clock::now();
             impl_->lastExecutionStats.cpuMilliseconds =
@@ -1140,6 +1117,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             return result;
         }
         impl_->hasSubmittedWork = true;
+        impl_->submittedTimelineValue = static_cast<uint64_t>(index + 1);
     }
 
     const auto cpuEnd = std::chrono::steady_clock::now();
