@@ -64,6 +64,12 @@ ensure_git_submodule(
     "${CMAKE_SOURCE_DIR}/External/googletest/googletest/include/gtest/gtest.h"
     "GoogleTest"
 )
+
+ensure_git_submodule(
+    "External/Rtxtf"
+    "${CMAKE_SOURCE_DIR}/External/Rtxtf/STFSamplerState.hlsli"
+    "RTXTF-Library"
+)
 add_subdirectory(External)
 add_subdirectory(Source)
 

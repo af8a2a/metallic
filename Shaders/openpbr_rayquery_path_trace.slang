@@ -214,33 +214,59 @@ void openPbrUpdateInteriorStackAfterTransmission(
     }
 }
 
-OpenPBRMaterialEval evaluateOpenPBRMaterial(HitInfo hit, PathTraceMaterial material, ScenePathTracePush push)
+OpenPBRMaterialEval evaluateOpenPBRMaterial(
+    HitInfo hit,
+    PathTraceMaterial material,
+    ScenePathTracePush push,
+    RayCone rayCone,
+    float3 rayDirection,
+    inout uint seed)
 {
     float4 baseColorSample = loadMaterialTexture(
         material.baseColorTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
-        push);
+        push,
+        rayCone,
+        hit,
+        rayDirection,
+        seed);
     float4 metallicRoughnessSample = loadMaterialTexture(
         material.metallicRoughnessTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
-        push);
+        push,
+        rayCone,
+        hit,
+        rayDirection,
+        seed);
     float4 emissiveSample = loadMaterialTexture(
         material.emissiveTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
-        push);
+        push,
+        rayCone,
+        hit,
+        rayDirection,
+        seed);
     float4 occlusionSample = loadMaterialTexture(
         material.occlusionTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
-        push);
+        push,
+        rayCone,
+        hit,
+        rayDirection,
+        seed);
     float4 transmissionSample = loadMaterialTexture(
         material.transmissionTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
-        push);
+        push,
+        rayCone,
+        hit,
+        rayDirection,
+        seed);
     float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
     float metallic = saturate(material.params.x * metallicRoughnessSample.b);
     float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.001, 1.0);
@@ -291,7 +317,7 @@ float3 openPbrRayOffsetNormal(float3 direction, float3 geometryNormal)
     return dot(direction, geometryNormal) >= 0.0 ? geometryNormal : -geometryNormal;
 }
 
-float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
+float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint seed)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
@@ -310,6 +336,7 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
             break;
         }
 
+        rayCone = propagateRayCone(rayCone, hit.t);
         throughput *= openPbrVolumeTransmittance(interiorStack, hit.t);
         if (luminanceMax(throughput) <= 0.000001) {
             break;
@@ -320,10 +347,20 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
             material.normalTexture,
             hit.texcoord,
             float4(0.5, 0.5, 1.0, 1.0),
-            push);
+            push,
+            rayCone,
+            hit,
+            ray.direction,
+            seed);
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
 
-        OpenPBRMaterialEval materialEval = evaluateOpenPBRMaterial(hit, material, push);
+        OpenPBRMaterialEval materialEval = evaluateOpenPBRMaterial(
+            hit,
+            material,
+            push,
+            rayCone,
+            ray.direction,
+            seed);
         float3 viewDirection = safeNormalize(-ray.direction, hit.normal);
         OpenPBR_PreparedBsdf prepared = openpbr_prepare(
             materialEval.inputs,
@@ -378,6 +415,9 @@ float3 pathTraceOpenPBR(Ray ray, ScenePathTracePush push, inout uint seed)
         throughput *= max(openpbr_get_sum_of_diffuse_specular(sampledWeight), float3(0.0, 0.0, 0.0));
         previousBsdfPdf = sampledPdf;
         previousScatterDelta = bool(sampledType & OpenPBR_BsdfLobeTypeSpecular);
+        if (!previousScatterDelta) {
+            rayCone = expandRayConeAfterScatter(rayCone, previousBsdfPdf);
+        }
         if (bool(sampledType & OpenPBR_BsdfLobeTypeTransmission)) {
             openPbrUpdateInteriorStackAfterTransmission(interiorStack, hit, material);
         }
@@ -419,7 +459,8 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         Ray ray;
         ray.origin = rayOriginFromPixel(samplePixel, push);
         ray.direction = rayDirectionFromPixel(samplePixel, push);
-        color += pathTraceOpenPBR(ray, push, seed);
+        RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
+        color += pathTraceOpenPBR(ray, rayCone, push, seed);
     }
     color /= float(samples);
 

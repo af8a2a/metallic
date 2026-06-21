@@ -1,3 +1,17 @@
+#ifndef STF_SHADER_STAGE
+#define STF_SHADER_STAGE 6
+#endif
+#ifndef STF_SHADER_MODEL_MAJOR
+#define STF_SHADER_MODEL_MAJOR 6
+#endif
+#ifndef STF_SHADER_MODEL_MINOR
+#define STF_SHADER_MODEL_MINOR 6
+#endif
+#ifndef STF_ALLOW_WAVE_READ
+#define STF_ALLOW_WAVE_READ 0
+#endif
+#include "../External/Rtxtf/STFSamplerState.hlsli"
+
 [[vk::binding(0, 0)]]
 RaytracingAccelerationStructure gScene;
 
@@ -29,7 +43,7 @@ struct PathTraceInstance
     uint primitiveIndex;
     uint materialIndex;
     uint flags;
-    uint padding;
+    float rayConeLodConstant;
 };
 
 struct PathTraceTextureInfo
@@ -139,6 +153,12 @@ struct Ray
     float3 direction;
 };
 
+struct RayCone
+{
+    float width;
+    float spreadAngle;
+};
+
 struct HitInfo
 {
     float t;
@@ -149,6 +169,7 @@ struct HitInfo
     float3 bitangent;
     float2 texcoord;
     uint materialIndex;
+    float rayConeLodConstant;
     bool frontFace;
 };
 
@@ -176,6 +197,44 @@ float rand(inout uint state)
 {
     state = hash(state);
     return float(state & 0x00ffffffu) / 16777216.0;
+}
+
+float4 rand4(inout uint state)
+{
+    return float4(rand(state), rand(state), rand(state), rand(state));
+}
+
+float safeLog2(float value)
+{
+    return log2(max(value, 0.0000001));
+}
+
+RayCone makeRayCone(float width, float spreadAngle)
+{
+    RayCone rayCone;
+    rayCone.width = width;
+    rayCone.spreadAngle = spreadAngle;
+    return rayCone;
+}
+
+RayCone propagateRayCone(RayCone rayCone, float distance)
+{
+    rayCone.width = abs(rayCone.width) + abs(rayCone.spreadAngle) * max(distance, 0.0);
+    return rayCone;
+}
+
+float rayConeSpreadAngleExpansionByScatterPdf(float bsdfScatterPdf)
+{
+    float inversePdfSolidAngle = (1.0 / max(bsdfScatterPdf, 0.000001)) / (2.0 * kPi);
+    return 0.3 * 2.0 * acos(max(-1.0, 1.0 - inversePdfSolidAngle));
+}
+
+RayCone expandRayConeAfterScatter(RayCone rayCone, float bsdfScatterPdf)
+{
+    rayCone.spreadAngle = min(
+        rayCone.spreadAngle + rayConeSpreadAngleExpansionByScatterPdf(bsdfScatterPdf),
+        2.0 * kPi);
+    return rayCone;
 }
 
 float3 rayDirectionFromPixel(float2 pixel, ScenePathTracePush push)
@@ -216,6 +275,25 @@ float3 rayOriginFromPixel(float2 pixel, ScenePathTracePush push)
     float3 up = safeNormalize(cross(right, forward), float3(0.0, 1.0, 0.0));
     float halfHeight = max(push.clipOrtho.z * 0.5, 0.0001);
     return push.eye.xyz + right * (ndc.x * halfHeight * aspect) + up * (ndc.y * halfHeight);
+}
+
+RayCone primaryRayConeFromPixel(float2 pixel, ScenePathTracePush push)
+{
+    if (push.upProjection.w > 0.5) {
+        float aspect = max(push.viewport.x, 0.001);
+        float halfHeight = max(push.clipOrtho.z * 0.5, 0.0001);
+        float pixelWidth = halfHeight * 2.0 * aspect / float(max(push.width, 1u));
+        float pixelHeight = halfHeight * 2.0 / float(max(push.height, 1u));
+        return makeRayCone(max(pixelWidth, pixelHeight), 0.0);
+    }
+
+    float3 centerDirection = rayDirectionFromPixel(pixel, push);
+    float3 xDirection = rayDirectionFromPixel(pixel + float2(1.0, 0.0), push);
+    float3 yDirection = rayDirectionFromPixel(pixel + float2(0.0, 1.0), push);
+    float spreadAngle = max(
+        acos(clamp(dot(centerDirection, xDirection), -1.0, 1.0)),
+        acos(clamp(dot(centerDirection, yDirection), -1.0, 1.0))) * 2.0;
+    return makeRayCone(0.0, spreadAngle);
 }
 
 float3 offsetRay(float3 position, float3 normal)
@@ -448,7 +526,43 @@ float2 transformMaterialUv(PathTraceTextureInfo textureInfo, float2 uv)
         dot(textureInfo.transform1.xy, uv) + textureInfo.transform1.z);
 }
 
-float4 loadMaterialTexture(
+float textureTransformLodBias(PathTraceTextureInfo textureInfo)
+{
+    float determinant =
+        textureInfo.transform0.x * textureInfo.transform1.y -
+        textureInfo.transform0.y * textureInfo.transform1.x;
+    return 0.5 * safeLog2(abs(determinant));
+}
+
+float rayConeTextureLod(
+    PathTraceTextureInfo textureInfo,
+    RayCone rayCone,
+    HitInfo hit,
+    float3 rayDirection,
+    uint width,
+    uint height,
+    uint mipCount)
+{
+    float textureDimensionLod = 0.5 * safeLog2(float(max(width, 1u)) * float(max(height, 1u)));
+    float normalTerm = sqrt(max(abs(dot(rayDirection, hit.geometryNormal)), 0.000001));
+    float footprintLod = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
+    float mipLevel = footprintLod + textureDimensionLod + textureTransformLodBias(textureInfo);
+    return clamp(mipLevel, 0.0, float(max(mipCount, 1u) - 1u));
+}
+
+STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout uint seed)
+{
+    STF_SamplerState samplerState = STF_SamplerState::Create(rand4(seed));
+    samplerState.SetFrameIndex(push.accumulationFrame);
+    samplerState.SetFilterType(STF_FILTER_TYPE_LINEAR);
+    samplerState.SetMagMethod(STF_MAGNIFICATION_METHOD_NONE);
+    samplerState.SetAnisoMethod(STF_ANISO_LOD_METHOD_NONE);
+    samplerState.SetAddressingModes(uint3(STF_ADDRESS_MODE_WRAP, STF_ADDRESS_MODE_WRAP, STF_ADDRESS_MODE_WRAP));
+    samplerState.SetReseedOnSample(false);
+    return samplerState;
+}
+
+float4 loadMaterialTextureMip0(
     PathTraceTextureInfo textureInfo,
     float2 uv,
     float4 fallback,
@@ -469,6 +583,37 @@ float4 loadMaterialTexture(
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
     return gMaterialTextures[textureIndex].Load(int3(texel, 0));
+}
+
+float4 loadMaterialTexture(
+    PathTraceTextureInfo textureInfo,
+    float2 uv,
+    float4 fallback,
+    ScenePathTracePush push,
+    RayCone rayCone,
+    HitInfo hit,
+    float3 rayDirection,
+    inout uint seed)
+{
+    if (!hasMaterialTexture(textureInfo, push)) {
+        return fallback;
+    }
+
+    uint width = 1u;
+    uint height = 1u;
+    uint mipCount = 1u;
+    uint textureIndex = textureInfo.textureIndex;
+    gMaterialTextures[textureIndex].GetDimensions(0, width, height, mipCount);
+    if (width == 0u || height == 0u || mipCount == 0u) {
+        return fallback;
+    }
+
+    float mipLevel = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection, width, height, mipCount);
+    STF_SamplerState samplerState = makeMaterialStfSampler(push, seed);
+    return samplerState.Texture2DLoadLevel(
+        gMaterialTextures[textureIndex],
+        transformMaterialUv(textureInfo, uv),
+        mipLevel);
 }
 
 float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
@@ -494,7 +639,7 @@ bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, Sc
     }
 
     float2 uv = triangleTexcoord(instanceIndex, triangleIndex, bary);
-    float alpha = material.baseColor.a * loadMaterialTexture(
+    float alpha = material.baseColor.a * loadMaterialTextureMip0(
         material.baseColorTexture,
         uv,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -581,6 +726,7 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.bitangent = float3(0.0, 0.0, 1.0);
     hit.texcoord = float2(0.0, 0.0);
     hit.materialIndex = 0u;
+    hit.rayConeLodConstant = 0.0;
     hit.frontFace = true;
 
     RayDesc rayDesc;
@@ -672,6 +818,7 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
 
     hit.t = query.CommittedRayT();
     hit.materialIndex = instance.materialIndex;
+    hit.rayConeLodConstant = instance.rayConeLodConstant;
     return true;
 }
 
@@ -781,7 +928,7 @@ float3 applyNormalMap(
         normal);
 }
 
-float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
+float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint seed)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
@@ -799,52 +946,89 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
             break;
         }
 
+        rayCone = propagateRayCone(rayCone, hit.t);
         PathTraceMaterial material = gMaterials[hit.materialIndex];
         float4 baseColorSample = loadMaterialTexture(
             material.baseColorTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
-            push);
+            push,
+            rayCone,
+            hit,
+            ray.direction,
+            seed);
         float4 metallicRoughnessSample = loadMaterialTexture(
             material.metallicRoughnessTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
-            push);
+            push,
+            rayCone,
+            hit,
+            ray.direction,
+            seed);
         float4 emissiveSample = loadMaterialTexture(
             material.emissiveTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
-            push);
+            push,
+            rayCone,
+            hit,
+            ray.direction,
+            seed);
         float4 normalSample = loadMaterialTexture(
             material.normalTexture,
             hit.texcoord,
             float4(0.5, 0.5, 1.0, 1.0),
-            push);
+            push,
+            rayCone,
+            hit,
+            ray.direction,
+            seed);
         float4 occlusionSample = loadMaterialTexture(
             material.occlusionTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
-            push);
+            push,
+            rayCone,
+            hit,
+            ray.direction,
+            seed);
         float4 transmissionSample = loadMaterialTexture(
             material.transmissionTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
-            push);
+            push,
+            rayCone,
+            hit,
+            ray.direction,
+            seed);
         float4 thicknessSample = loadMaterialTexture(
             material.thicknessTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
-            push);
+            push,
+            rayCone,
+            hit,
+            ray.direction,
+            seed);
         float4 diffuseTransmissionSample = loadMaterialTexture(
             material.diffuseTransmissionTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
-            push);
+            push,
+            rayCone,
+            hit,
+            ray.direction,
+            seed);
         float4 diffuseTransmissionColorSample = loadMaterialTexture(
             material.diffuseTransmissionColorTexture,
             hit.texcoord,
             float4(1.0, 1.0, 1.0, 1.0),
-            push);
+            push,
+            rayCone,
+            hit,
+            ray.direction,
+            seed);
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
         hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
         float occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
@@ -964,6 +1148,7 @@ float3 pathTrace(Ray ray, ScenePathTracePush push, inout uint seed)
             fallbackBsdfPdf(incidentDirection, hit.normal, ray.direction, metallic, roughness, diffuseTransmission),
             0.000001);
         previousScatterDelta = false;
+        rayCone = expandRayConeAfterScatter(rayCone, previousBsdfPdf);
         ray.origin = offsetRay(hit.position, dot(ray.direction, hit.geometryNormal) > 0.0 ? hit.geometryNormal : -hit.geometryNormal);
 
         if (depth >= 2u) {
@@ -1001,7 +1186,8 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID,
         Ray ray;
         ray.origin = rayOriginFromPixel(samplePixel, push);
         ray.direction = rayDirectionFromPixel(samplePixel, push);
-        color += pathTrace(ray, push, seed);
+        RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
+        color += pathTrace(ray, rayCone, push, seed);
     }
     color /= float(samples);
 

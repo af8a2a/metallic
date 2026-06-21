@@ -48,7 +48,7 @@ struct ScenePathTraceGpuInstance {
     uint32_t primitiveIndex = 0;
     uint32_t materialIndex = 0;
     uint32_t flags = 0;
-    uint32_t padding = 0;
+    float rayConeLodConstant = 0.0f;
 };
 
 struct ScenePathTraceGpuMaterial {
@@ -86,12 +86,20 @@ struct ScenePathTraceGpuScene {
     std::vector<ScenePathTraceGpuMaterial> materials;
 };
 
-struct ScenePathTraceMaterialTexture {
+struct ScenePathTraceTextureMipUpload {
     std::unique_ptr<Buffer> uploadBuffer;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint64_t byteSize = 4;
+};
+
+struct ScenePathTraceMaterialTexture {
+    std::vector<ScenePathTraceTextureMipUpload> mipUploads;
     std::unique_ptr<Texture> texture;
     std::unique_ptr<TextureView> view;
     uint32_t width = 1;
     uint32_t height = 1;
+    uint32_t mipCount = 1;
     uint64_t byteSize = 4;
     Format format = Format::Rgba8Unorm;
     ResourceState state = ResourceState::Undefined;
@@ -229,6 +237,126 @@ Result uploadStorageBuffer(
     return {};
 }
 
+Result createTextureUploadBuffer(
+    Device& device,
+    const void* data,
+    uint64_t byteSize,
+    std::unique_ptr<Buffer>& outBuffer,
+    std::string& log,
+    std::string_view label)
+{
+    if (data == nullptr || byteSize == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    Result result = device.createBuffer(
+        BufferDesc{
+            .size = byteSize,
+            .usage = BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::HostUpload,
+        },
+        outBuffer);
+    if (!result || outBuffer == nullptr) {
+        log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
+        log += '\n';
+        return result ? makeError(Error::Failure) : result;
+    }
+
+    void* mapped = outBuffer->map();
+    if (mapped == nullptr) {
+        log = std::string(label) + " failed to map upload buffer";
+        return makeError(Error::Failure);
+    }
+    std::memcpy(mapped, data, static_cast<size_t>(byteSize));
+    outBuffer->flush(0, byteSize);
+    outBuffer->unmap();
+    return {};
+}
+
+uint32_t mipCountForDimensions(uint32_t width, uint32_t height)
+{
+    uint32_t mipCount = 1;
+    while (width > 1 || height > 1) {
+        width = std::max(width / 2u, 1u);
+        height = std::max(height / 2u, 1u);
+        ++mipCount;
+    }
+    return mipCount;
+}
+
+uint64_t rgba8ByteSize(uint32_t width, uint32_t height)
+{
+    return static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
+}
+
+std::vector<uint8_t> buildNextRgba8Mip(
+    const uint8_t* sourcePixels,
+    uint32_t sourceWidth,
+    uint32_t sourceHeight)
+{
+    const uint32_t targetWidth = std::max(sourceWidth / 2u, 1u);
+    const uint32_t targetHeight = std::max(sourceHeight / 2u, 1u);
+    std::vector<uint8_t> target(static_cast<size_t>(rgba8ByteSize(targetWidth, targetHeight)));
+
+    for (uint32_t y = 0; y < targetHeight; ++y) {
+        for (uint32_t x = 0; x < targetWidth; ++x) {
+            uint32_t sums[4] = {};
+            uint32_t sampleCount = 0;
+            for (uint32_t offsetY = 0; offsetY < 2; ++offsetY) {
+                const uint32_t sourceY = std::min(y * 2u + offsetY, sourceHeight - 1u);
+                for (uint32_t offsetX = 0; offsetX < 2; ++offsetX) {
+                    const uint32_t sourceX = std::min(x * 2u + offsetX, sourceWidth - 1u);
+                    const size_t sourceOffset =
+                        static_cast<size_t>(sourceY * sourceWidth + sourceX) * 4u;
+                    for (uint32_t component = 0; component < 4; ++component) {
+                        sums[component] += sourcePixels[sourceOffset + component];
+                    }
+                    ++sampleCount;
+                }
+            }
+
+            const size_t targetOffset = static_cast<size_t>(y * targetWidth + x) * 4u;
+            for (uint32_t component = 0; component < 4; ++component) {
+                target[targetOffset + component] =
+                    static_cast<uint8_t>((sums[component] + sampleCount / 2u) / sampleCount);
+            }
+        }
+    }
+    return target;
+}
+
+std::vector<DecodedMaterialTexture> buildMaterialMipChain(
+    const uint8_t* pixels,
+    uint32_t width,
+    uint32_t height,
+    std::string_view label)
+{
+    std::vector<DecodedMaterialTexture> mipChain;
+    mipChain.reserve(mipCountForDimensions(width, height));
+
+    DecodedMaterialTexture baseMip;
+    baseMip.width = width;
+    baseMip.height = height;
+    baseMip.label = std::string(label);
+    const uint64_t baseByteSize = rgba8ByteSize(width, height);
+    baseMip.pixels.assign(pixels, pixels + static_cast<size_t>(baseByteSize));
+    mipChain.push_back(std::move(baseMip));
+
+    while (mipChain.back().width > 1 || mipChain.back().height > 1) {
+        const DecodedMaterialTexture& sourceMip = mipChain.back();
+        DecodedMaterialTexture nextMip;
+        nextMip.width = std::max(sourceMip.width / 2u, 1u);
+        nextMip.height = std::max(sourceMip.height / 2u, 1u);
+        nextMip.label = std::string(label);
+        nextMip.pixels = buildNextRgba8Mip(
+            sourceMip.pixels.data(),
+            sourceMip.width,
+            sourceMip.height);
+        mipChain.push_back(std::move(nextMip));
+    }
+    return mipChain;
+}
+
 bool decodeSceneTexture(
     const scene::Scene& loadedScene,
     uint32_t textureIndex,
@@ -321,31 +449,36 @@ Result createMaterialTexture(
     outTexture.width = width;
     outTexture.height = height;
     outTexture.format = Format::Rgba8Unorm;
-    const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
-    outTexture.byteSize = byteSize;
-    Result result = device.createBuffer(
-        BufferDesc{
-            .size = byteSize,
-            .usage = BufferUsageBits::TransferSource,
-            .memoryLocation = MemoryLocation::HostUpload,
-        },
-        outTexture.uploadBuffer);
-    if (!result || outTexture.uploadBuffer == nullptr) {
-        log += resultMessage(std::string("createBuffer(ScenePathTracePass texture upload ") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
+    std::vector<DecodedMaterialTexture> mipChain = buildMaterialMipChain(pixels, width, height, label);
+    outTexture.mipCount = static_cast<uint32_t>(mipChain.size());
+    outTexture.mipUploads.reserve(mipChain.size());
+    outTexture.byteSize = 0;
+    for (uint32_t mipIndex = 0; mipIndex < mipChain.size(); ++mipIndex) {
+        const DecodedMaterialTexture& mip = mipChain[mipIndex];
+        ScenePathTraceTextureMipUpload upload;
+        upload.width = mip.width;
+        upload.height = mip.height;
+        upload.byteSize = rgba8ByteSize(mip.width, mip.height);
+        outTexture.byteSize += upload.byteSize;
+
+        std::string mipLabel = "ScenePathTracePass texture upload ";
+        mipLabel += std::string(label);
+        mipLabel += " mip ";
+        mipLabel += std::to_string(mipIndex);
+        Result result = createTextureUploadBuffer(
+            device,
+            mip.pixels.data(),
+            upload.byteSize,
+            upload.uploadBuffer,
+            log,
+            mipLabel);
+        if (!result) {
+            return result;
+        }
+        outTexture.mipUploads.push_back(std::move(upload));
     }
 
-    void* mapped = outTexture.uploadBuffer->map();
-    if (mapped == nullptr) {
-        log = "ScenePathTracePass failed to map material texture upload buffer";
-        return makeError(Error::Failure);
-    }
-    std::memcpy(mapped, pixels, static_cast<size_t>(byteSize));
-    outTexture.uploadBuffer->flush(0, byteSize);
-    outTexture.uploadBuffer->unmap();
-
-    result = device.createTexture(
+    Result result = device.createTexture(
         TextureDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
@@ -353,7 +486,7 @@ Result createMaterialTexture(
             .width = width,
             .height = height,
             .depth = 1,
-            .mipCount = 1,
+            .mipCount = outTexture.mipCount,
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
         },
@@ -369,7 +502,7 @@ Result createMaterialTexture(
         TextureViewDesc{
             .format = outTexture.format,
             .baseMip = 0,
-            .mipCount = 1,
+            .mipCount = outTexture.mipCount,
             .baseLayer = 0,
             .layerCount = 1,
         },
@@ -532,28 +665,25 @@ Result createEnvironmentTexture(
     outTexture.width = width;
     outTexture.height = height;
     outTexture.format = Format::Rgba32Sfloat;
+    outTexture.mipCount = 1;
     outTexture.byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull * sizeof(float);
-    Result result = device.createBuffer(
-        BufferDesc{
-            .size = outTexture.byteSize,
-            .usage = BufferUsageBits::TransferSource,
-            .memoryLocation = MemoryLocation::HostUpload,
-        },
-        outTexture.uploadBuffer);
-    if (!result || outTexture.uploadBuffer == nullptr) {
-        log += resultMessage(std::string("createBuffer(ScenePathTracePass environment upload ") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
+    ScenePathTraceTextureMipUpload upload;
+    upload.width = width;
+    upload.height = height;
+    upload.byteSize = outTexture.byteSize;
+    std::string uploadLabel = "ScenePathTracePass environment upload ";
+    uploadLabel += std::string(label);
+    Result result = createTextureUploadBuffer(
+        device,
+        pixels,
+        upload.byteSize,
+        upload.uploadBuffer,
+        log,
+        uploadLabel);
+    if (!result) {
+        return result;
     }
-
-    void* mapped = outTexture.uploadBuffer->map();
-    if (mapped == nullptr) {
-        log = "ScenePathTracePass failed to map environment texture upload buffer";
-        return makeError(Error::Failure);
-    }
-    std::memcpy(mapped, pixels, static_cast<size_t>(outTexture.byteSize));
-    outTexture.uploadBuffer->flush(0, outTexture.byteSize);
-    outTexture.uploadBuffer->unmap();
+    outTexture.mipUploads.push_back(std::move(upload));
 
     result = device.createTexture(
         TextureDesc{
@@ -721,6 +851,97 @@ uint32_t materialIndexForNode(const scene::RenderNode& renderNode, uint32_t mate
     return 0;
 }
 
+float safeLog2(float value)
+{
+    return std::log2(std::max(value, 0.0000001f));
+}
+
+float3 transformPointForLod(const float4x4& matrix, const float3& point)
+{
+    return matrix * point;
+}
+
+bool primitiveTriangleVertexIndex(
+    const scene::RenderPrimitive& primitive,
+    uint64_t sourceIndex,
+    uint32_t& outVertexIndex)
+{
+    if (primitive.indices.empty()) {
+        if (sourceIndex >= primitive.positions.size()) {
+            return false;
+        }
+        outVertexIndex = static_cast<uint32_t>(sourceIndex);
+        return true;
+    }
+
+    if (sourceIndex >= primitive.indices.size()) {
+        return false;
+    }
+    const uint32_t vertexIndex = primitive.indices[static_cast<size_t>(sourceIndex)];
+    if (vertexIndex >= primitive.positions.size()) {
+        return false;
+    }
+    outVertexIndex = vertexIndex;
+    return true;
+}
+
+float rayConeLodConstantForPrimitive(
+    const scene::RenderPrimitive& primitive,
+    const float4x4& worldMatrix)
+{
+    const uint64_t sourceIndexCount = primitive.indices.empty()
+        ? (primitive.positions.size() / 3) * 3
+        : (primitive.indices.size() / 3) * 3;
+    if (primitive.mode != kGltfTriangleListMode ||
+        primitive.positions.size() < 3 ||
+        primitive.texcoords0.empty() ||
+        sourceIndexCount < 3) {
+        return 0.0f;
+    }
+
+    double weightedLod = 0.0;
+    double totalWeight = 0.0;
+    for (uint64_t sourceIndex = 0; sourceIndex + 2 < sourceIndexCount; sourceIndex += 3) {
+        uint32_t i0 = 0;
+        uint32_t i1 = 0;
+        uint32_t i2 = 0;
+        if (!primitiveTriangleVertexIndex(primitive, sourceIndex + 0, i0) ||
+            !primitiveTriangleVertexIndex(primitive, sourceIndex + 1, i1) ||
+            !primitiveTriangleVertexIndex(primitive, sourceIndex + 2, i2) ||
+            i0 >= primitive.texcoords0.size() ||
+            i1 >= primitive.texcoords0.size() ||
+            i2 >= primitive.texcoords0.size()) {
+            continue;
+        }
+
+        const float3 p0 = transformPointForLod(worldMatrix, primitive.positions[i0]);
+        const float3 p1 = transformPointForLod(worldMatrix, primitive.positions[i1]);
+        const float3 p2 = transformPointForLod(worldMatrix, primitive.positions[i2]);
+        const float2 uv0 = primitive.texcoords0[i0];
+        const float2 uv1 = primitive.texcoords0[i1];
+        const float2 uv2 = primitive.texcoords0[i2];
+
+        const float3 worldEdge0 = p1 - p0;
+        const float3 worldEdge1 = p2 - p0;
+        const float worldArea2 = length(cross(worldEdge0, worldEdge1));
+        const float2 uvEdge0 = uv1 - uv0;
+        const float2 uvEdge1 = uv2 - uv0;
+        const float texcoordArea2 = std::abs(uvEdge0.x * uvEdge1.y - uvEdge0.y * uvEdge1.x);
+        if (worldArea2 <= 0.0000001f || texcoordArea2 <= 0.0000001f) {
+            continue;
+        }
+
+        const float lodConstant = 0.5f * safeLog2(texcoordArea2 / worldArea2);
+        if (!std::isfinite(lodConstant)) {
+            continue;
+        }
+        weightedLod += static_cast<double>(lodConstant) * static_cast<double>(worldArea2);
+        totalWeight += static_cast<double>(worldArea2);
+    }
+
+    return totalWeight > 0.0 ? static_cast<float>(weightedLod / totalWeight) : 0.0f;
+}
+
 bool appendPrimitiveGeometry(
     const scene::RenderPrimitive& primitive,
     ScenePathTraceGpuScene& outScene,
@@ -839,6 +1060,10 @@ bool buildGpuScene(
             .materialIndex = materialIndexForNode(
                 renderNode,
                 static_cast<uint32_t>(outScene.materials.size())),
+            .flags = 0,
+            .rayConeLodConstant = rayConeLodConstantForPrimitive(
+                loadedScene.renderPrimitives()[static_cast<size_t>(renderNode.renderPrimitiveIndex)],
+                renderNode.worldMatrix),
         });
     }
 
@@ -1002,7 +1227,7 @@ struct ScenePathTraceResources::Impl {
         if (texture.uploaded) {
             return {};
         }
-        if (texture.uploadBuffer == nullptr || texture.texture == nullptr) {
+        if (texture.mipUploads.empty() || texture.texture == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -1011,7 +1236,7 @@ struct ScenePathTraceResources::Impl {
             .before = texture.state,
             .after = ResourceState::TransferDestination,
             .baseMip = 0,
-            .mipCount = 1,
+            .mipCount = texture.mipCount,
             .baseLayer = 0,
             .layerCount = 1,
         };
@@ -1021,22 +1246,29 @@ struct ScenePathTraceResources::Impl {
         });
         texture.state = ResourceState::TransferDestination;
 
-        commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
-            .buffer = texture.uploadBuffer.get(),
-            .texture = texture.texture.get(),
-            .width = texture.width,
-            .height = texture.height,
-            .depth = 1,
-            .mipLevel = 0,
-            .baseLayer = 0,
-        });
+        for (uint32_t mipIndex = 0; mipIndex < texture.mipUploads.size(); ++mipIndex) {
+            const ScenePathTraceTextureMipUpload& upload = texture.mipUploads[mipIndex];
+            if (upload.uploadBuffer == nullptr || upload.width == 0 || upload.height == 0) {
+                return makeError(Error::InvalidArgument);
+            }
+
+            commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
+                .buffer = upload.uploadBuffer.get(),
+                .texture = texture.texture.get(),
+                .width = upload.width,
+                .height = upload.height,
+                .depth = 1,
+                .mipLevel = mipIndex,
+                .baseLayer = 0,
+            });
+        }
 
         TextureBarrierDesc toShaderRead{
             .texture = texture.texture.get(),
             .before = texture.state,
             .after = ResourceState::ShaderRead,
             .baseMip = 0,
-            .mipCount = 1,
+            .mipCount = texture.mipCount,
             .baseLayer = 0,
             .layerCount = 1,
         };
