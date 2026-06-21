@@ -68,7 +68,7 @@ float4 projectPosition(float3 worldPosition, GPUDrivenPreviewParams params)
 
     float zNear = max(params.clipOrtho.x, 0.0001);
     float zFar = max(params.clipOrtho.y, zNear + 0.0001);
-    float ndcZ = saturate((viewPosition.z - zNear) / (zFar - zNear));
+    float ndcZ = (viewPosition.z - zNear) / (zFar - zNear);
     if (params.clipOrtho.w > 0.5) {
         ndcZ = 1.0 - ndcZ;
     }
@@ -85,7 +85,7 @@ float4 projectPosition(float3 worldPosition, GPUDrivenPreviewParams params)
 
     float fovRadians = clamp(params.viewport.w, 0.017453292, 3.12413936);
     float yScale = 1.0 / tan(fovRadians * 0.5);
-    float w = max(viewPosition.z, 0.0001);
+    float w = viewPosition.z;
     return float4(
         viewPosition.x * yScale / aspect,
         viewPosition.y * yScale,
@@ -143,7 +143,9 @@ void gpuDrivenPreviewMeshMain(
     for (uint vertexIndex = 0; vertexIndex < kMaxMeshletVertices; ++vertexIndex) {
         if (vertexIndex < vertexCount) {
             uint positionIndex = meshletVertices[meshlet.vertexOffset + vertexIndex];
-            vertices[vertexIndex].position = projectPosition(positions[positionIndex].xyz, params);
+            float4 position = projectPosition(positions[positionIndex].xyz, params);
+            position.y = -position.y;
+            vertices[vertexIndex].position = position;
             vertices[vertexIndex].color = color;
         }
     }
