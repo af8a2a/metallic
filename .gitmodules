@@ -32,3 +32,6 @@
 [submodule "External/streamline"]
 	path = External/streamline
 	url = https://github.com/NVIDIA-RTX/Streamline.git
+[submodule "External/meshoptimizer"]
+	path = External/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer.git
