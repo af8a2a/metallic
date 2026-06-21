@@ -8,6 +8,7 @@
 #include "Runtime/Scene/Scene.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -32,9 +33,14 @@ private:
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();
+    void drawInspectorPanel();
+    void drawStatisticsPanel();
     void drawCameraControls();
     void drawEnvironmentControls();
     void drawSceneNode(int32_t nodeIndex);
+    void drawSceneGraphTab();
+    void drawSceneListTab();
+    void drawSceneListSelectable(const char* label, int32_t index, int32_t type);
     render::RenderGraphNode* activePreviewRenderGraphNode();
     bool drawRuntimeSettingsForNode(
         render::RenderGraphNode& node,
@@ -55,7 +61,13 @@ private:
     void resetDefaultRenderGraph();
     void saveRenderGraph();
     void loadRenderGraph();
+    void chooseSceneFile();
     void loadScene();
+    void loadDroppedScene(const std::filesystem::path& path);
+    void loadDroppedRenderGraph(const std::filesystem::path& path);
+    void addRecentScenePath(const std::filesystem::path& path);
+    void applyLoadedSceneToRenderGraph(const std::filesystem::path& path);
+    void applyLoadedSceneCamera();
     void buildSceneRtx();
     void clearSceneRtx();
     void addRenderGraphNode(std::string type, ImVec2 screenPosition);
@@ -74,6 +86,26 @@ private:
     bool renderVulkanFrame();
     int graphInputAttributeId(const render::RenderGraphNode& node, uint32_t fieldIndex) const;
     int graphOutputAttributeId(const render::RenderGraphNode& node, uint32_t fieldIndex) const;
+
+    enum class SceneSelectionType : int32_t {
+        None,
+        Node,
+        Mesh,
+        RenderPrimitive,
+        Material,
+        Camera,
+        Light,
+        Texture,
+        Image,
+    };
+
+    struct SceneSelection {
+        SceneSelectionType type = SceneSelectionType::None;
+        int32_t index = scene::kInvalidSceneIndex;
+        int32_t nodeIndex = scene::kInvalidSceneIndex;
+        int32_t meshIndex = scene::kInvalidSceneIndex;
+        int32_t primitiveIndex = scene::kInvalidSceneIndex;
+    };
 
     SDL_Window* window_ = nullptr;
     std::unique_ptr<render::Device> device_;
@@ -117,6 +149,8 @@ private:
     bool renderGraphEditorOpen_ = false;
     bool profilerOpen_ = true;
     bool nvmlMonitorOpen_ = true;
+    bool inspectorOpen_ = true;
+    bool statisticsOpen_ = true;
     bool graphEditorPositionsInitialized_ = false;
     int viewportCameraDragButton_ = -1;
     float mainScale_ = 1.0f;
@@ -133,6 +167,8 @@ private:
     std::string sceneStatus_ = "No scene loaded.";
     std::string sceneRtxStatus_ = "RTX AS not built.";
     std::string startupSampleId_;
+    SceneSelection sceneSelection_;
+    std::vector<std::filesystem::path> recentScenePaths_;
 };
 
 } // namespace metallic

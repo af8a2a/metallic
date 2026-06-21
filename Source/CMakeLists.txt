@@ -131,6 +131,7 @@ target_compile_definitions(Metallic PRIVATE
 
 if(WIN32)
     target_compile_definitions(Metallic PRIVATE NOMINMAX)
+    target_link_libraries(Metallic PRIVATE Comdlg32)
 
     file(GLOB METALLIC_SLANG_RUNTIME_DLLS "${METALLIC_SLANG_ROOT}/bin/*.dll")
     foreach(METALLIC_SLANG_RUNTIME_DLL IN LISTS METALLIC_SLANG_RUNTIME_DLLS)
@@ -182,6 +183,7 @@ function(configure_metallic_editor_sample target_name)
 
     if(WIN32)
         target_compile_definitions(${target_name} PRIVATE NOMINMAX)
+        target_link_libraries(${target_name} PRIVATE Comdlg32)
 
         foreach(METALLIC_SLANG_RUNTIME_DLL IN LISTS METALLIC_SLANG_RUNTIME_DLLS)
             add_custom_command(TARGET ${target_name} POST_BUILD

@@ -866,8 +866,25 @@ bool Scene::load(const std::filesystem::path& filename)
     sceneIndex_ = sceneIndex;
     lastLoadResult_.sceneIndex = sceneIndex;
     sceneName_ = defaultName(model.scenes[static_cast<size_t>(sceneIndex)].name, filename.stem().string(), sceneIndex);
+    assetInfo_ = SceneAssetInfo{
+        .version = model.asset.version,
+        .generator = model.asset.generator,
+        .copyright = model.asset.copyright,
+        .minVersion = model.asset.minVersion,
+    };
     stats_.meshCount = model.meshes.size();
     stats_.materialCount = model.materials.size();
+    stats_.textureCount = model.textures.size();
+    stats_.imageCount = model.images.size();
+
+    meshes_.reserve(model.meshes.size());
+    for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
+        const tinygltf::Mesh& gltfMesh = model.meshes[meshIndex];
+        meshes_.push_back(SceneMesh{
+            .name = defaultName(gltfMesh.name, "Mesh", static_cast<int32_t>(meshIndex)),
+            .primitiveCount = gltfMesh.primitives.size(),
+        });
+    }
 
     images_.reserve(model.images.size());
     for (size_t imageIndex = 0; imageIndex < model.images.size(); ++imageIndex) {
@@ -1155,10 +1172,12 @@ void Scene::clearParsedData()
     filename_.clear();
     sceneName_.clear();
     sceneIndex_ = kInvalidSceneIndex;
+    assetInfo_ = {};
     stats_ = {};
     bounds_.reset();
     rootNodeIndices_.clear();
     nodes_.clear();
+    meshes_.clear();
     renderPrimitives_.clear();
     renderNodes_.clear();
     images_.clear();

@@ -12,7 +12,17 @@
 
 #include <SDL3/SDL.h>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+#include <cderr.h>
+#include <commdlg.h>
+#endif
+
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cmath>
 #include <cstring>
@@ -46,11 +56,17 @@ Size=1821,794
 Collapsed=0
 DockId=0x00000003,0
 
-[Window][Scene]
+[Window][Scene Browser]
 Pos=1824,28
 Size=576,1322
 Collapsed=0
 DockId=0x00000002,0
+
+[Window][Inspector]
+Pos=1824,28
+Size=576,1322
+Collapsed=0
+DockId=0x00000002,1
 
 [Window][Assets]
 Pos=0,825
@@ -90,6 +106,12 @@ Pos=0,825
 Size=1821,525
 Collapsed=0
 DockId=0x00000004,2
+
+[Window][Statistics]
+Pos=0,825
+Size=1821,525
+Collapsed=0
+DockId=0x00000004,4
 
 [Table][0x331D395F,5]
 RefScale=20
@@ -137,6 +159,205 @@ std::filesystem::path resolveSceneAssetPath(const char* path)
         assetPath = std::filesystem::path(PROJECT_SOURCE_DIR) / assetPath;
     }
     return assetPath;
+}
+
+std::string lowerPathExtension(const std::filesystem::path& path)
+{
+    std::string extension = path.extension().string();
+    std::transform(
+        extension.begin(),
+        extension.end(),
+        extension.begin(),
+        [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    return extension;
+}
+
+bool isSceneFilePath(const std::filesystem::path& path)
+{
+    const std::string extension = lowerPathExtension(path);
+    return extension == ".gltf" || extension == ".glb";
+}
+
+bool isRenderGraphFilePath(const std::filesystem::path& path)
+{
+    return lowerPathExtension(path) == ".json" &&
+        path.filename().string().find(".metallic_graph") != std::string::npos;
+}
+
+bool isSceneAwareRenderPassType(const std::string& type)
+{
+    return type == "BunnyWireframePass" ||
+        type == "SceneRayQueryVisualizationPass" ||
+        type == "SceneMaterialVisualizationPass" ||
+        type == "ScenePathTracePass";
+}
+
+std::string firstScenePathFromGraph(const render::RenderGraph& graph)
+{
+    for (const render::RenderGraphNode& node : graph.nodes()) {
+        if (!isSceneAwareRenderPassType(node.type) || !node.properties.is_object()) {
+            continue;
+        }
+        auto pathIter = node.properties.find("path");
+        if (pathIter != node.properties.end() && pathIter->is_string()) {
+            return pathIter->get<std::string>();
+        }
+    }
+    return {};
+}
+
+std::string displayPathForProperty(const std::filesystem::path& path)
+{
+    std::error_code relativeError;
+    const std::filesystem::path project = std::filesystem::path(PROJECT_SOURCE_DIR);
+    const std::filesystem::path relative = std::filesystem::relative(path, project, relativeError);
+    const std::string genericRelative = relative.generic_string();
+    if (!relativeError &&
+        !genericRelative.empty() &&
+        genericRelative != "." &&
+        genericRelative.rfind("../", 0) != 0 &&
+        genericRelative.rfind("..\\", 0) != 0 &&
+        genericRelative != "..") {
+        return genericRelative;
+    }
+    return path.string();
+}
+
+#if defined(_WIN32)
+void copyWideToBuffer(const std::wstring& value, wchar_t* buffer, size_t bufferSize)
+{
+    if (buffer == nullptr || bufferSize == 0) {
+        return;
+    }
+    std::fill(buffer, buffer + bufferSize, L'\0');
+    const size_t copySize = std::min(value.size(), bufferSize - 1);
+    std::copy_n(value.data(), copySize, buffer);
+}
+
+std::filesystem::path normalizeDialogPath(const std::filesystem::path& path)
+{
+    if (path.empty()) {
+        return {};
+    }
+
+    std::error_code error;
+    std::filesystem::path normalized = path.is_relative()
+        ? std::filesystem::absolute(path, error)
+        : path;
+    if (error) {
+        normalized = path;
+    }
+
+    std::filesystem::path canonical = std::filesystem::weakly_canonical(normalized, error);
+    if (!error && !canonical.empty()) {
+        normalized = canonical;
+    }
+
+    normalized.make_preferred();
+    return normalized;
+}
+
+const char* commonDialogErrorName(DWORD error)
+{
+    switch (error) {
+    case CDERR_DIALOGFAILURE:
+        return "CDERR_DIALOGFAILURE";
+    case CDERR_STRUCTSIZE:
+        return "CDERR_STRUCTSIZE";
+    case CDERR_INITIALIZATION:
+        return "CDERR_INITIALIZATION";
+    case CDERR_NOTEMPLATE:
+        return "CDERR_NOTEMPLATE";
+    case CDERR_NOHINSTANCE:
+        return "CDERR_NOHINSTANCE";
+    case CDERR_LOADSTRFAILURE:
+        return "CDERR_LOADSTRFAILURE";
+    case CDERR_FINDRESFAILURE:
+        return "CDERR_FINDRESFAILURE";
+    case CDERR_LOADRESFAILURE:
+        return "CDERR_LOADRESFAILURE";
+    case CDERR_LOCKRESFAILURE:
+        return "CDERR_LOCKRESFAILURE";
+    case CDERR_MEMALLOCFAILURE:
+        return "CDERR_MEMALLOCFAILURE";
+    case CDERR_MEMLOCKFAILURE:
+        return "CDERR_MEMLOCKFAILURE";
+    case CDERR_NOHOOK:
+        return "CDERR_NOHOOK";
+    case CDERR_REGISTERMSGFAIL:
+        return "CDERR_REGISTERMSGFAIL";
+    case FNERR_SUBCLASSFAILURE:
+        return "FNERR_SUBCLASSFAILURE";
+    case FNERR_INVALIDFILENAME:
+        return "FNERR_INVALIDFILENAME";
+    case FNERR_BUFFERTOOSMALL:
+        return "FNERR_BUFFERTOOSMALL";
+    default:
+        return "unknown";
+    }
+}
+#endif
+
+std::filesystem::path openSceneFileDialog(
+    SDL_Window* window,
+    const std::filesystem::path& initialPath,
+    std::string& error)
+{
+#if defined(_WIN32)
+    HWND owner = nullptr;
+    if (window != nullptr) {
+        const SDL_PropertiesID properties = SDL_GetWindowProperties(window);
+        owner = static_cast<HWND>(
+            SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+    }
+
+    std::array<wchar_t, 32768> filename{};
+    std::array<wchar_t, 32768> initialDirectory{};
+    if (!initialPath.empty()) {
+        const std::filesystem::path dialogInitialPath = normalizeDialogPath(initialPath);
+        if (dialogInitialPath.has_extension()) {
+            copyWideToBuffer(dialogInitialPath.filename().wstring(), filename.data(), filename.size());
+            copyWideToBuffer(
+                dialogInitialPath.parent_path().wstring(),
+                initialDirectory.data(),
+                initialDirectory.size());
+        } else {
+            copyWideToBuffer(dialogInitialPath.wstring(), initialDirectory.data(), initialDirectory.size());
+        }
+    }
+
+    OPENFILENAMEW openFilename{};
+    openFilename.lStructSize = sizeof(openFilename);
+    openFilename.hwndOwner = owner;
+    openFilename.lpstrFilter =
+        L"3D Scene Files (*.gltf;*.glb)\0*.gltf;*.glb\0"
+        L"glTF Text (*.gltf)\0*.gltf\0"
+        L"glTF Binary (*.glb)\0*.glb\0"
+        L"All Files (*.*)\0*.*\0";
+    openFilename.nFilterIndex = 1;
+    openFilename.lpstrFile = filename.data();
+    openFilename.nMaxFile = static_cast<DWORD>(filename.size());
+    openFilename.lpstrInitialDir = initialDirectory[0] != L'\0' ? initialDirectory.data() : nullptr;
+    openFilename.lpstrTitle = L"Load 3D Scene";
+    openFilename.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (GetOpenFileNameW(&openFilename) != FALSE) {
+        error.clear();
+        return std::filesystem::path(filename.data());
+    }
+
+    const DWORD dialogError = CommDlgExtendedError();
+    if (dialogError != 0) {
+        error = "Open scene dialog failed: " + std::string(commonDialogErrorName(dialogError)) +
+            " (" + std::to_string(dialogError) + ")";
+    }
+    return {};
+#else
+    (void)window;
+    (void)initialPath;
+    error = "Native scene file dialog is only implemented on Windows.";
+    return {};
+#endif
 }
 
 std::string makeUniqueNodeName(const render::RenderGraph& graph, const std::string& type)
@@ -252,10 +473,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
 render::RenderGraphNode* findBunnyWireframeNode(render::RenderGraph& graph)
 {
     for (const render::RenderGraphNode& node : graph.nodes()) {
-        if (node.type == "BunnyWireframePass" ||
-            node.type == "SceneRayQueryVisualizationPass" ||
-            node.type == "SceneMaterialVisualizationPass" ||
-            node.type == "ScenePathTracePass") {
+        if (isSceneAwareRenderPassType(node.type)) {
             return graph.findNode(node.id);
         }
     }
@@ -1734,6 +1952,18 @@ void EditorApplication::pollEvents()
             event.window.windowID == SDL_GetWindowID(window_)) {
             running_ = false;
         }
+
+        if (event.type == SDL_EVENT_DROP_FILE && event.drop.data != nullptr) {
+            const std::filesystem::path droppedPath(event.drop.data);
+            if (isSceneFilePath(droppedPath)) {
+                loadDroppedScene(droppedPath);
+            } else if (isRenderGraphFilePath(droppedPath)) {
+                loadDroppedRenderGraph(droppedPath);
+            } else {
+                sceneStatus_ = "Ignored dropped file: " + droppedPath.string();
+            }
+            SDL_free(const_cast<char*>(event.drop.data));
+        }
     }
 }
 
@@ -1829,11 +2059,20 @@ void EditorApplication::setupDefaultDockLayout()
         &viewportDockId);
 
     ImGui::DockBuilderDockWindow("Viewport", viewportDockId);
-    ImGui::DockBuilderDockWindow("Scene", sideDockId);
+    ImGuiID inspectorDockId = ImGui::DockBuilderSplitNode(
+        sideDockId,
+        ImGuiDir_Down,
+        0.35f,
+        nullptr,
+        &sideDockId);
+
+    ImGui::DockBuilderDockWindow("Scene Browser", sideDockId);
+    ImGui::DockBuilderDockWindow("Inspector", inspectorDockId);
     ImGui::DockBuilderDockWindow("Assets", bottomDockId);
     ImGui::DockBuilderDockWindow("Console", bottomDockId);
     ImGui::DockBuilderDockWindow("NVML Monitor", bottomDockId);
     ImGui::DockBuilderDockWindow("Profiler", bottomDockId);
+    ImGui::DockBuilderDockWindow("Statistics", bottomDockId);
     ImGui::DockBuilderFinish(dockspaceId);
 }
 
@@ -1864,6 +2103,10 @@ void EditorApplication::drawDockspace()
     setupDefaultDockLayout();
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
 
+    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
+        chooseSceneFile();
+    }
+
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Render Graph")) {
@@ -1874,6 +2117,25 @@ void EditorApplication::drawDockspace()
             }
             if (ImGui::MenuItem("Save Render Graph")) {
                 saveRenderGraph();
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Open Scene...", "Ctrl+O")) {
+                chooseSceneFile();
+            }
+            if (ImGui::MenuItem("Load Scene Path")) {
+                loadScene();
+            }
+            if (ImGui::BeginMenu("Open Recent")) {
+                if (recentScenePaths_.empty()) {
+                    ImGui::TextDisabled("No recent scenes");
+                }
+                for (const std::filesystem::path& recentPath : recentScenePaths_) {
+                    if (ImGui::MenuItem(recentPath.string().c_str())) {
+                        copyToBuffer(recentPath.string(), sceneFilePath_, sizeof(sceneFilePath_));
+                        loadScene();
+                    }
+                }
+                ImGui::EndMenu();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
@@ -1891,7 +2153,9 @@ void EditorApplication::drawDockspace()
                 dockLayoutInitialized_ = false;
             }
             ImGui::Separator();
-            ImGui::MenuItem("Scene");
+            ImGui::MenuItem("Scene Browser");
+            ImGui::MenuItem("Inspector", nullptr, &inspectorOpen_);
+            ImGui::MenuItem("Statistics", nullptr, &statisticsOpen_);
             ImGui::MenuItem("Viewport");
             ImGui::MenuItem("Assets");
             ImGui::MenuItem("Console");
@@ -1915,6 +2179,14 @@ void EditorApplication::drawPanels()
     {
         auto profileScope = profiler_.scope("Scene Panel");
         drawScenePanel();
+    }
+    {
+        auto profileScope = profiler_.scope("Inspector Panel");
+        drawInspectorPanel();
+    }
+    {
+        auto profileScope = profiler_.scope("Statistics Panel");
+        drawStatisticsPanel();
     }
     {
         auto profileScope = profiler_.scope("Viewport Panel");
@@ -1943,12 +2215,16 @@ void EditorApplication::drawPanels()
 
 void EditorApplication::drawScenePanel()
 {
-    ImGui::Begin("Scene");
+    ImGui::Begin("Scene Browser");
 
     ImGui::TextUnformatted("glTF Scene");
-    ImGui::PushItemWidth(-1.0f);
+    ImGui::PushItemWidth(-96.0f * mainScale_);
     ImGui::InputText("##ScenePath", sceneFilePath_, sizeof(sceneFilePath_));
     ImGui::PopItemWidth();
+    ImGui::SameLine();
+    if (ImGui::Button("Browse...")) {
+        chooseSceneFile();
+    }
 
     if (ImGui::Button("Load")) {
         loadScene();
@@ -1957,6 +2233,9 @@ void EditorApplication::drawScenePanel()
     if (ImGui::Button("Clear")) {
         clearSceneRtx();
         scene_.clear();
+        sceneSelection_ = SceneSelection{};
+        historyResources_.invalidateAll();
+        viewportPreviewValid_ = false;
         sceneStatus_ = "No scene loaded.";
     }
     ImGui::SameLine();
@@ -2024,21 +2303,404 @@ void EditorApplication::drawScenePanel()
         return;
     }
 
-    const scene::SceneStats& stats = scene_.stats();
     ImGui::Separator();
-    ImGui::Text("Scene: %s", scene_.sceneName().c_str());
-    ImGui::Text("Scene index: %d", scene_.sceneIndex());
-    ImGui::Text(
-        "Meshes: %llu  Primitives: %llu  Render nodes: %llu",
-        static_cast<unsigned long long>(stats.meshCount),
-        static_cast<unsigned long long>(stats.primitiveCount),
-        static_cast<unsigned long long>(stats.renderNodeCount));
-    ImGui::Text(
-        "Materials: %llu  Triangles: %llu",
-        static_cast<unsigned long long>(stats.materialCount),
-        static_cast<unsigned long long>(stats.triangleCount));
+    if (ImGui::CollapsingHeader("Asset Info")) {
+        const scene::SceneAssetInfo& asset = scene_.assetInfo();
+        ImGui::Text("Path: %s", scene_.filename().string().c_str());
+        ImGui::Text("glTF Version: %s", asset.version.empty() ? "-" : asset.version.c_str());
+        if (!asset.generator.empty()) {
+            ImGui::TextWrapped("Generator: %s", asset.generator.c_str());
+        }
+        if (!asset.copyright.empty()) {
+            ImGui::TextWrapped("Copyright: %s", asset.copyright.c_str());
+        }
+        if (!asset.minVersion.empty()) {
+            ImGui::Text("Min Version: %s", asset.minVersion.c_str());
+        }
+    }
+
+    if (ImGui::BeginTabBar("SceneBrowserTabs")) {
+        if (ImGui::BeginTabItem("Scene Graph")) {
+            drawSceneGraphTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Scene List")) {
+            drawSceneListTab();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    ImGui::End();
+}
+
+void EditorApplication::drawSceneGraphTab()
+{
+    if (!scene_.valid()) {
+        ImGui::TextDisabled("No scene loaded.");
+        return;
+    }
+
+    constexpr ImGuiTableFlags tableFlags =
+        ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_BordersOuter |
+        ImGuiTableFlags_BordersV |
+        ImGuiTableFlags_ScrollY |
+        ImGuiTableFlags_Resizable;
+    if (!ImGui::BeginTable("SceneGraphTable", 2, tableFlags, ImVec2(0.0f, 360.0f * mainScale_))) {
+        return;
+    }
+
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Tags", ImGuiTableColumnFlags_WidthFixed, 112.0f * mainScale_);
+    ImGui::TableHeadersRow();
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    const std::string sceneLabel = "Scene-" + std::to_string(scene_.sceneIndex()) + " " + scene_.sceneName();
+    const bool sceneOpen = ImGui::TreeNodeEx(
+        "SceneRoot",
+        ImGuiTreeNodeFlags_DefaultOpen |
+            ImGuiTreeNodeFlags_OpenOnArrow |
+            ImGuiTreeNodeFlags_SpanAvailWidth,
+        "%s",
+        sceneLabel.c_str());
+    ImGui::TableNextColumn();
+    ImGui::Text("%zu roots", scene_.rootNodeIndices().size());
+    if (sceneOpen) {
+        for (const int32_t rootNodeIndex : scene_.rootNodeIndices()) {
+            drawSceneNode(rootNodeIndex);
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::EndTable();
+}
+
+void EditorApplication::drawSceneListSelectable(const char* label, int32_t index, int32_t type)
+{
+    const SceneSelectionType selectionType = static_cast<SceneSelectionType>(type);
+    const bool selected = sceneSelection_.type == selectionType && sceneSelection_.index == index;
+    if (ImGui::Selectable(label, selected)) {
+        sceneSelection_ = SceneSelection{
+            .type = selectionType,
+            .index = index,
+        };
+    }
+}
+
+void EditorApplication::drawSceneListTab()
+{
+    if (!scene_.valid()) {
+        ImGui::TextDisabled("No scene loaded.");
+        return;
+    }
+
+    if (ImGui::CollapsingHeader(("Nodes (" + std::to_string(scene_.nodes().size()) + ")").c_str())) {
+        ImGui::BeginChild("NodesScrollRegion", ImVec2(0, 160.0f * mainScale_), false, ImGuiWindowFlags_HorizontalScrollbar);
+        for (size_t index = 0; index < scene_.nodes().size(); ++index) {
+            const scene::SceneNode& node = scene_.nodes()[index];
+            const std::string label = "[" + std::to_string(index) + "] " + node.name;
+            drawSceneListSelectable(label.c_str(), static_cast<int32_t>(index), static_cast<int32_t>(SceneSelectionType::Node));
+        }
+        ImGui::EndChild();
+    }
+
+    if (ImGui::CollapsingHeader(("Meshes (" + std::to_string(scene_.meshes().size()) + ")").c_str())) {
+        ImGui::BeginChild("MeshesScrollRegion", ImVec2(0, 140.0f * mainScale_), false, ImGuiWindowFlags_HorizontalScrollbar);
+        for (size_t index = 0; index < scene_.meshes().size(); ++index) {
+            const scene::SceneMesh& mesh = scene_.meshes()[index];
+            const std::string label = "[" + std::to_string(index) + "] " + mesh.name +
+                " (" + std::to_string(mesh.primitiveCount) + " primitives)";
+            drawSceneListSelectable(label.c_str(), static_cast<int32_t>(index), static_cast<int32_t>(SceneSelectionType::Mesh));
+        }
+        ImGui::EndChild();
+    }
+
+    if (ImGui::CollapsingHeader(("Render Primitives (" + std::to_string(scene_.renderPrimitives().size()) + ")").c_str())) {
+        ImGui::BeginChild(
+            "RenderPrimitivesScrollRegion",
+            ImVec2(0, 180.0f * mainScale_),
+            false,
+            ImGuiWindowFlags_HorizontalScrollbar);
+        for (size_t index = 0; index < scene_.renderPrimitives().size(); ++index) {
+            const scene::RenderPrimitive& primitive = scene_.renderPrimitives()[index];
+            const bool selected =
+                sceneSelection_.type == SceneSelectionType::RenderPrimitive &&
+                sceneSelection_.index == static_cast<int32_t>(index);
+            const std::string label = "[" + std::to_string(index) + "] " + primitive.name +
+                " / prim " + std::to_string(primitive.primitiveIndex) +
+                " / mat " + std::to_string(primitive.materialIndex);
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                sceneSelection_ = SceneSelection{
+                    .type = SceneSelectionType::RenderPrimitive,
+                    .index = static_cast<int32_t>(index),
+                    .meshIndex = primitive.meshIndex,
+                    .primitiveIndex = primitive.primitiveIndex,
+                };
+            }
+        }
+        ImGui::EndChild();
+    }
+
+    if (ImGui::CollapsingHeader(("Materials (" + std::to_string(scene_.materials().size()) + ")").c_str())) {
+        ImGui::BeginChild("MaterialsScrollRegion", ImVec2(0, 160.0f * mainScale_), false, ImGuiWindowFlags_HorizontalScrollbar);
+        for (size_t index = 0; index < scene_.materials().size(); ++index) {
+            const scene::RenderMaterial& material = scene_.materials()[index];
+            const std::string label = "[" + std::to_string(index) + "] " + material.name;
+            drawSceneListSelectable(label.c_str(), static_cast<int32_t>(index), static_cast<int32_t>(SceneSelectionType::Material));
+        }
+        ImGui::EndChild();
+    }
+
+    if (ImGui::CollapsingHeader(("Cameras (" + std::to_string(scene_.cameras().size()) + ")").c_str())) {
+        ImGui::BeginChild("CamerasScrollRegion", ImVec2(0, 120.0f * mainScale_), false, ImGuiWindowFlags_HorizontalScrollbar);
+        for (size_t index = 0; index < scene_.cameras().size(); ++index) {
+            const scene::RenderCamera& camera = scene_.cameras()[index];
+            const std::string label = "[" + std::to_string(index) + "] " + camera.name;
+            drawSceneListSelectable(label.c_str(), static_cast<int32_t>(index), static_cast<int32_t>(SceneSelectionType::Camera));
+        }
+        ImGui::EndChild();
+    }
+
+    if (ImGui::CollapsingHeader(("Lights (" + std::to_string(scene_.lights().size()) + ")").c_str())) {
+        drawEnvironmentControls();
+        ImGui::Separator();
+        ImGui::BeginChild("LightsScrollRegion", ImVec2(0, 120.0f * mainScale_), false, ImGuiWindowFlags_HorizontalScrollbar);
+        for (size_t index = 0; index < scene_.lights().size(); ++index) {
+            const scene::RenderLight& light = scene_.lights()[index];
+            const std::string label = "[" + std::to_string(index) + "] " + light.name + " (" + light.type + ")";
+            drawSceneListSelectable(label.c_str(), static_cast<int32_t>(index), static_cast<int32_t>(SceneSelectionType::Light));
+        }
+        if (scene_.lights().empty()) {
+            ImGui::TextDisabled("No punctual lights.");
+        }
+        ImGui::EndChild();
+    }
+
+    if (ImGui::CollapsingHeader(("Textures (" + std::to_string(scene_.textures().size()) + ")").c_str())) {
+        ImGui::BeginChild("TexturesScrollRegion", ImVec2(0, 120.0f * mainScale_), false, ImGuiWindowFlags_HorizontalScrollbar);
+        for (size_t index = 0; index < scene_.textures().size(); ++index) {
+            const scene::RenderTexture& texture = scene_.textures()[index];
+            const std::string label = "[" + std::to_string(index) + "] " + texture.name +
+                " -> image " + std::to_string(texture.imageIndex);
+            drawSceneListSelectable(label.c_str(), static_cast<int32_t>(index), static_cast<int32_t>(SceneSelectionType::Texture));
+        }
+        ImGui::EndChild();
+    }
+
+    if (ImGui::CollapsingHeader(("Images (" + std::to_string(scene_.images().size()) + ")").c_str())) {
+        ImGui::BeginChild("ImagesScrollRegion", ImVec2(0, 120.0f * mainScale_), false, ImGuiWindowFlags_HorizontalScrollbar);
+        for (size_t index = 0; index < scene_.images().size(); ++index) {
+            const scene::RenderImage& image = scene_.images()[index];
+            const std::string source = image.uri.empty() ? image.name : image.uri;
+            const std::string label = "[" + std::to_string(index) + "] " + source;
+            drawSceneListSelectable(label.c_str(), static_cast<int32_t>(index), static_cast<int32_t>(SceneSelectionType::Image));
+        }
+        ImGui::EndChild();
+    }
+}
+
+void EditorApplication::drawInspectorPanel()
+{
+    if (!inspectorOpen_) {
+        return;
+    }
+    if (!ImGui::Begin("Inspector", &inspectorOpen_)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!scene_.valid()) {
+        ImGui::TextDisabled("No scene loaded");
+        ImGui::End();
+        return;
+    }
+    if (sceneSelection_.type == SceneSelectionType::None || sceneSelection_.index < 0) {
+        ImGui::TextDisabled("No selection");
+        ImGui::Separator();
+        ImGui::TextWrapped("Select an element in the Scene Browser to view its properties.");
+        ImGui::End();
+        return;
+    }
+
+    switch (sceneSelection_.type) {
+    case SceneSelectionType::Node: {
+        if (static_cast<size_t>(sceneSelection_.index) >= scene_.nodes().size()) {
+            break;
+        }
+        const scene::SceneNode& node = scene_.nodes()[static_cast<size_t>(sceneSelection_.index)];
+        ImGui::Text("Node: %s", node.name.c_str());
+        ImGui::Separator();
+        ImGui::Text("Index: %d", sceneSelection_.index);
+        ImGui::Text("Parent: %d", node.parent);
+        ImGui::Text("Mesh: %d", node.meshIndex);
+        ImGui::Text("Camera: %d", node.cameraIndex);
+        ImGui::Text("Light: %d", node.lightIndex);
+        ImGui::Text("Visible: %s", node.visible ? "true" : "false");
+        const float3 translation(node.worldMatrix.a03, node.worldMatrix.a13, node.worldMatrix.a23);
+        ImGui::Text("World translation: %s", scene::formatVec3(translation).c_str());
+        break;
+    }
+    case SceneSelectionType::Mesh: {
+        if (static_cast<size_t>(sceneSelection_.index) >= scene_.meshes().size()) {
+            break;
+        }
+        const scene::SceneMesh& mesh = scene_.meshes()[static_cast<size_t>(sceneSelection_.index)];
+        ImGui::Text("Mesh: %s", mesh.name.c_str());
+        ImGui::Separator();
+        ImGui::Text("Index: %d", sceneSelection_.index);
+        ImGui::Text("Primitives: %llu", static_cast<unsigned long long>(mesh.primitiveCount));
+        break;
+    }
+    case SceneSelectionType::RenderPrimitive: {
+        if (static_cast<size_t>(sceneSelection_.index) >= scene_.renderPrimitives().size()) {
+            break;
+        }
+        const scene::RenderPrimitive& primitive = scene_.renderPrimitives()[static_cast<size_t>(sceneSelection_.index)];
+        ImGui::Text("Primitive: %s", primitive.name.c_str());
+        ImGui::Separator();
+        ImGui::Text("Mesh: %d", primitive.meshIndex);
+        ImGui::Text("Primitive: %d", primitive.primitiveIndex);
+        ImGui::Text("Material: %d", primitive.materialIndex);
+        ImGui::Text("Vertices: %llu", static_cast<unsigned long long>(primitive.vertexCount));
+        ImGui::Text("Indices: %llu", static_cast<unsigned long long>(primitive.indexCount));
+        ImGui::Text("Triangles: %llu", static_cast<unsigned long long>(primitive.triangleCount));
+        if (primitive.localBounds.valid) {
+            ImGui::Text("Bounds min: %s", scene::formatVec3(primitive.localBounds.min).c_str());
+            ImGui::Text("Bounds max: %s", scene::formatVec3(primitive.localBounds.max).c_str());
+        }
+        break;
+    }
+    case SceneSelectionType::Material: {
+        if (static_cast<size_t>(sceneSelection_.index) >= scene_.materials().size()) {
+            break;
+        }
+        const scene::RenderMaterial& material = scene_.materials()[static_cast<size_t>(sceneSelection_.index)];
+        ImGui::Text("Material: %s", material.name.c_str());
+        ImGui::Separator();
+        ImGui::Text("Base Color: %.3f, %.3f, %.3f, %.3f",
+            material.baseColorFactor.x,
+            material.baseColorFactor.y,
+            material.baseColorFactor.z,
+            material.baseColorFactor.w);
+        ImGui::Text("Metallic: %.3f", material.metallicFactor);
+        ImGui::Text("Roughness: %.3f", material.roughnessFactor);
+        ImGui::Text("Emissive: %s", scene::formatVec3(material.emissiveFactor).c_str());
+        ImGui::Text("Alpha Mode: %s", material.alphaMode.c_str());
+        ImGui::Text("Double Sided: %s", material.doubleSided ? "true" : "false");
+        break;
+    }
+    case SceneSelectionType::Camera: {
+        if (static_cast<size_t>(sceneSelection_.index) >= scene_.cameras().size()) {
+            break;
+        }
+        const scene::RenderCamera& camera = scene_.cameras()[static_cast<size_t>(sceneSelection_.index)];
+        ImGui::Text("Camera: %s", camera.name.c_str());
+        ImGui::Separator();
+        ImGui::Text("Type: %s", scene::cameraTypeName(camera.type));
+        ImGui::Text("Eye: %s", scene::formatVec3(camera.eye).c_str());
+        ImGui::Text("Center: %s", scene::formatVec3(camera.center).c_str());
+        ImGui::Text("Up: %s", scene::formatVec3(camera.up).c_str());
+        ImGui::Text("Z Near: %.6f", camera.znear);
+        ImGui::Text("Z Far: %.6f", camera.zfar);
+        if (camera.type == scene::CameraType::Perspective) {
+            ImGui::Text("Y FOV: %.3f rad", camera.yfov);
+            ImGui::Text("Aspect: %.6f", camera.aspectRatio);
+        } else {
+            ImGui::Text("X Mag: %.6f", camera.xmag);
+            ImGui::Text("Y Mag: %.6f", camera.ymag);
+        }
+        break;
+    }
+    case SceneSelectionType::Light: {
+        if (static_cast<size_t>(sceneSelection_.index) >= scene_.lights().size()) {
+            break;
+        }
+        const scene::RenderLight& light = scene_.lights()[static_cast<size_t>(sceneSelection_.index)];
+        ImGui::Text("Light: %s", light.name.c_str());
+        ImGui::Separator();
+        ImGui::Text("Type: %s", light.type.c_str());
+        ImGui::Text("Color: %s", scene::formatVec3(light.color).c_str());
+        ImGui::Text("Intensity: %.3f", light.intensity);
+        ImGui::Text("Range: %.3f", light.range);
+        break;
+    }
+    case SceneSelectionType::Texture: {
+        if (static_cast<size_t>(sceneSelection_.index) >= scene_.textures().size()) {
+            break;
+        }
+        const scene::RenderTexture& texture = scene_.textures()[static_cast<size_t>(sceneSelection_.index)];
+        ImGui::Text("Texture: %s", texture.name.c_str());
+        ImGui::Separator();
+        ImGui::Text("Image: %d", texture.imageIndex);
+        ImGui::Text("Sampler: %d", texture.samplerIndex);
+        break;
+    }
+    case SceneSelectionType::Image: {
+        if (static_cast<size_t>(sceneSelection_.index) >= scene_.images().size()) {
+            break;
+        }
+        const scene::RenderImage& image = scene_.images()[static_cast<size_t>(sceneSelection_.index)];
+        ImGui::Text("Image: %s", image.name.c_str());
+        ImGui::Separator();
+        ImGui::TextWrapped("URI: %s", image.uri.empty() ? "-" : image.uri.c_str());
+        ImGui::Text("MIME: %s", image.mimeType.empty() ? "-" : image.mimeType.c_str());
+        ImGui::Text("Buffer View: %d", image.bufferView);
+        ImGui::Text("Embedded bytes: %zu", image.encodedData.size());
+        break;
+    }
+    case SceneSelectionType::None:
+        break;
+    }
+
+    ImGui::End();
+}
+
+void EditorApplication::drawStatisticsPanel()
+{
+    if (!statisticsOpen_) {
+        return;
+    }
+    if (!ImGui::Begin("Statistics", &statisticsOpen_)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!scene_.valid()) {
+        ImGui::TextDisabled("No scene loaded");
+        ImGui::End();
+        return;
+    }
+
+    const scene::SceneStats& stats = scene_.stats();
+    if (ImGui::BeginTable("SceneStatisticsTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("Property", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 96.0f * mainScale_);
+        ImGui::TableHeadersRow();
+
+        auto addStat = [](const char* label, uint64_t value) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(label);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%llu", static_cast<unsigned long long>(value));
+        };
+        addStat("Nodes", scene_.nodes().size());
+        addStat("Meshes", stats.meshCount);
+        addStat("Render Nodes", stats.renderNodeCount);
+        addStat("Render Primitives", stats.primitiveCount);
+        addStat("Materials", stats.materialCount);
+        addStat("Triangles", stats.triangleCount);
+        addStat("Lights", scene_.lights().size());
+        addStat("Textures", stats.textureCount);
+        addStat("Images", stats.imageCount);
+        ImGui::EndTable();
+    }
 
     const scene::Bounds& bounds = scene_.bounds();
+    ImGui::Separator();
     if (bounds.valid) {
         ImGui::Text("Bounds min: %s", scene::formatVec3(bounds.min).c_str());
         ImGui::Text("Bounds max: %s", scene::formatVec3(bounds.max).c_str());
@@ -2046,40 +2708,34 @@ void EditorApplication::drawScenePanel()
         ImGui::TextDisabled("Bounds: unavailable");
     }
 
-    if (ImGui::CollapsingHeader("Cameras", ImGuiTreeNodeFlags_DefaultOpen)) {
-        int cameraIndex = 0;
-        for (const scene::RenderCamera& camera : scene_.cameras()) {
-            ImGui::PushID(cameraIndex++);
-            const char* suffix = camera.fallback ? " (fallback)" : "";
-            ImGui::Text("%s%s", camera.name.c_str(), suffix);
-            ImGui::Text("  Type: %s", scene::cameraTypeName(camera.type));
-            ImGui::Text("  Eye: %s", scene::formatVec3(camera.eye).c_str());
-            ImGui::Text("  Center: %s", scene::formatVec3(camera.center).c_str());
-            ImGui::PopID();
-        }
-    }
-
-    if (ImGui::CollapsingHeader("Lights")) {
-        drawEnvironmentControls();
+    if (sceneRtx_ != nullptr && sceneRtx_->valid()) {
+        const render::vulkan::SceneRtxStats& rtxStats = sceneRtx_->stats();
         ImGui::Separator();
-
-        int lightIndex = 0;
-        for (const scene::RenderLight& light : scene_.lights()) {
-            ImGui::PushID(lightIndex++);
-            ImGui::Text("%s  [%s]", light.name.c_str(), light.type.c_str());
-            ImGui::Text("  Color: %s", scene::formatVec3(light.color).c_str());
-            ImGui::Text("  Intensity: %.3f", light.intensity);
-            ImGui::PopID();
-        }
-        if (scene_.lights().empty()) {
-            ImGui::TextDisabled("No punctual lights.");
-        }
+        ImGui::Text(
+            "RTX AS: %u BLAS, %u instances, %llu triangles",
+            rtxStats.blasCount,
+            rtxStats.instanceCount,
+            static_cast<unsigned long long>(rtxStats.triangleCount));
+        ImGui::Text(
+            "RTX memory: geometry %llu bytes, AS %llu bytes, scratch %llu bytes",
+            static_cast<unsigned long long>(rtxStats.geometryBytes),
+            static_cast<unsigned long long>(rtxStats.accelerationStructureBytes),
+            static_cast<unsigned long long>(rtxStats.scratchBytes));
     }
 
-    if (ImGui::CollapsingHeader("Scene Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
-        for (const int32_t rootNodeIndex : scene_.rootNodeIndices()) {
-            drawSceneNode(rootNodeIndex);
-        }
+    if (ImGui::Button("Copy to Clipboard")) {
+        ImGui::LogToClipboard();
+        ImGui::LogText("Scene Statistics:\n");
+        ImGui::LogText("Nodes: %zu\n", scene_.nodes().size());
+        ImGui::LogText("Meshes: %llu\n", static_cast<unsigned long long>(stats.meshCount));
+        ImGui::LogText("Render Nodes: %llu\n", static_cast<unsigned long long>(stats.renderNodeCount));
+        ImGui::LogText("Render Primitives: %llu\n", static_cast<unsigned long long>(stats.primitiveCount));
+        ImGui::LogText("Materials: %llu\n", static_cast<unsigned long long>(stats.materialCount));
+        ImGui::LogText("Triangles: %llu\n", static_cast<unsigned long long>(stats.triangleCount));
+        ImGui::LogText("Lights: %zu\n", scene_.lights().size());
+        ImGui::LogText("Textures: %llu\n", static_cast<unsigned long long>(stats.textureCount));
+        ImGui::LogText("Images: %llu\n", static_cast<unsigned long long>(stats.imageCount));
+        ImGui::LogFinish();
     }
 
     ImGui::End();
@@ -2439,30 +3095,37 @@ void EditorApplication::drawSceneNode(int32_t nodeIndex)
     }
 
     const scene::SceneNode& node = nodes[static_cast<size_t>(nodeIndex)];
-    std::string label = node.name;
+    const std::string label = "[" + std::to_string(nodeIndex) + "] " + node.name;
+    std::string tags;
     if (node.meshIndex >= 0) {
-        label += " [Mesh ";
-        label += std::to_string(node.meshIndex);
-        label += "]";
+        tags += "M";
+        tags += std::to_string(node.meshIndex);
+        tags += " ";
     }
     if (node.cameraIndex >= 0) {
-        label += " [Camera ";
-        label += std::to_string(node.cameraIndex);
-        label += "]";
+        tags += "C";
+        tags += std::to_string(node.cameraIndex);
+        tags += " ";
     }
     if (node.lightIndex >= 0) {
-        label += " [Light ";
-        label += std::to_string(node.lightIndex);
-        label += "]";
+        tags += "L";
+        tags += std::to_string(node.lightIndex);
+        tags += " ";
     }
     if (!node.visible) {
-        label += " [Hidden]";
+        tags += "hidden";
     }
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
     const bool leaf = node.children.empty();
     if (leaf) {
         flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    }
+    if (sceneSelection_.type == SceneSelectionType::Node && sceneSelection_.index == nodeIndex) {
+        flags |= ImGuiTreeNodeFlags_Selected;
     }
 
     const bool open = ImGui::TreeNodeEx(
@@ -2470,6 +3133,14 @@ void EditorApplication::drawSceneNode(int32_t nodeIndex)
         flags,
         "%s",
         label.c_str());
+    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+        sceneSelection_ = SceneSelection{
+            .type = SceneSelectionType::Node,
+            .index = nodeIndex,
+            .nodeIndex = nodeIndex,
+            .meshIndex = node.meshIndex,
+        };
+    }
     if (ImGui::IsItemHovered()) {
         const float3 translation(node.worldMatrix.a03, node.worldMatrix.a13, node.worldMatrix.a23);
         ImGui::SetTooltip(
@@ -2477,6 +3148,12 @@ void EditorApplication::drawSceneNode(int32_t nodeIndex)
             nodeIndex,
             node.parent,
             scene::formatVec3(translation).c_str());
+    }
+    ImGui::TableNextColumn();
+    if (tags.empty()) {
+        ImGui::TextDisabled("-");
+    } else {
+        ImGui::TextUnformatted(tags.c_str());
     }
 
     if (open && !leaf) {
@@ -3054,6 +3731,189 @@ void EditorApplication::loadRenderGraph()
     activePreviewOutput_ = renderGraph_.firstOutputName();
     copyToBuffer(activePreviewOutput_, previewOutputBuffer_, sizeof(previewOutputBuffer_));
     renderGraphStatus_ = message;
+
+    const std::string scenePath = firstScenePathFromGraph(renderGraph_);
+    if (!scenePath.empty()) {
+        copyToBuffer(scenePath, sceneFilePath_, sizeof(sceneFilePath_));
+        loadScene();
+    }
+}
+
+void EditorApplication::loadDroppedScene(const std::filesystem::path& path)
+{
+    copyToBuffer(path.string(), sceneFilePath_, sizeof(sceneFilePath_));
+    loadScene();
+}
+
+void EditorApplication::loadDroppedRenderGraph(const std::filesystem::path& path)
+{
+    copyToBuffer(path.string(), graphFilePath_, sizeof(graphFilePath_));
+    loadRenderGraph();
+}
+
+void EditorApplication::chooseSceneFile()
+{
+    const std::filesystem::path currentPath = resolveSceneAssetPath(sceneFilePath_);
+    std::string dialogError;
+    const std::filesystem::path selectedPath = openSceneFileDialog(window_, currentPath, dialogError);
+    if (selectedPath.empty()) {
+        if (!dialogError.empty()) {
+            sceneStatus_ = dialogError;
+        }
+        return;
+    }
+
+    loadDroppedScene(selectedPath);
+}
+
+void EditorApplication::addRecentScenePath(const std::filesystem::path& path)
+{
+    if (path.empty()) {
+        return;
+    }
+    std::error_code error;
+    std::filesystem::path absolutePath = std::filesystem::weakly_canonical(path, error);
+    if (error) {
+        absolutePath = std::filesystem::absolute(path, error);
+    }
+    if (error) {
+        absolutePath = path;
+    }
+    const std::string normalizedPath = absolutePath.string();
+    recentScenePaths_.erase(
+        std::remove_if(
+            recentScenePaths_.begin(),
+            recentScenePaths_.end(),
+            [&](const std::filesystem::path& existing) {
+                std::error_code existingError;
+                std::filesystem::path normalizedExisting = std::filesystem::weakly_canonical(existing, existingError);
+                if (existingError) {
+                    normalizedExisting = std::filesystem::absolute(existing, existingError);
+                }
+                if (existingError) {
+                    normalizedExisting = existing;
+                }
+                return normalizedExisting.string() == normalizedPath;
+            }),
+        recentScenePaths_.end());
+    recentScenePaths_.insert(recentScenePaths_.begin(), absolutePath);
+    constexpr size_t kMaxRecentScenePaths = 16;
+    if (recentScenePaths_.size() > kMaxRecentScenePaths) {
+        recentScenePaths_.resize(kMaxRecentScenePaths);
+    }
+}
+
+void EditorApplication::applyLoadedSceneToRenderGraph(const std::filesystem::path& path)
+{
+    const std::string graphScenePath = displayPathForProperty(path);
+    bool changed = false;
+
+    std::vector<uint32_t> sceneNodeIds;
+    for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
+        if (isSceneAwareRenderPassType(node.type)) {
+            sceneNodeIds.push_back(node.id);
+        }
+    }
+
+    for (const uint32_t nodeId : sceneNodeIds) {
+        render::RenderGraphNode* node = renderGraph_.findNode(nodeId);
+        if (node == nullptr) {
+            continue;
+        }
+        render::RenderGraphProperties properties = node->properties.is_object()
+            ? node->properties
+            : render::RenderGraphProperties::object();
+        if (!properties.contains("path") || !properties["path"].is_string() || properties["path"] != graphScenePath) {
+            properties["path"] = graphScenePath;
+            changed = renderGraph_.setNodeProperties(node->id, std::move(properties)) || changed;
+        }
+    }
+
+    if (!changed) {
+        return;
+    }
+
+    historyResources_.invalidateAll();
+    viewportPreviewValid_ = false;
+    viewportPreviewNeedsRender_ = true;
+    renderGraphStatus_ = "Synchronized RenderGraph scene path: " + graphScenePath;
+}
+
+void EditorApplication::applyLoadedSceneCamera()
+{
+    if (!scene_.valid() || scene_.cameras().empty()) {
+        return;
+    }
+
+    const scene::RenderCamera* selectedCamera = nullptr;
+    for (const scene::RenderCamera& camera : scene_.cameras()) {
+        if (!camera.fallback) {
+            selectedCamera = &camera;
+            break;
+        }
+    }
+    if (selectedCamera == nullptr) {
+        selectedCamera = &scene_.cameras().front();
+    }
+
+    std::vector<uint32_t> sceneNodeIds;
+    for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
+        if (isSceneAwareRenderPassType(node.type)) {
+            sceneNodeIds.push_back(node.id);
+        }
+    }
+    if (sceneNodeIds.empty()) {
+        return;
+    }
+
+    constexpr double kPi = 3.14159265358979323846;
+    bool changed = false;
+    for (const uint32_t nodeId : sceneNodeIds) {
+        render::RenderGraphNode* node = renderGraph_.findNode(nodeId);
+        if (node == nullptr) {
+            continue;
+        }
+
+        render::RenderGraphProperties runtimeProperties = node->runtimeProperties.is_object()
+            ? node->runtimeProperties
+            : render::RenderGraphProperties::object();
+        render::RenderGraphProperties cameraProperties = runtimeProperties.contains("camera") &&
+            runtimeProperties["camera"].is_object()
+            ? runtimeProperties["camera"]
+            : render::RenderGraphProperties::object();
+        ensureCameraProperties(cameraProperties, scene_.bounds());
+        cameraProperties["projection"] =
+            selectedCamera->type == scene::CameraType::Orthographic ? "orthographic" : "perspective";
+        const double yfov = selectedCamera->yfov > 0.0 ? selectedCamera->yfov : 0.7853981633974483;
+        const double radius = std::max(static_cast<double>(scene_.bounds().radius()), 1.0);
+        const double znear = std::max(selectedCamera->znear, radius * 0.001);
+        const double zfar = selectedCamera->zfar > znear
+            ? selectedCamera->zfar
+            : std::max(znear + 0.001, radius * 100.0);
+        cameraProperties["fovDegrees"] = static_cast<float>(std::clamp(yfov * 180.0 / kPi, 1.0, 179.0));
+        cameraProperties["znear"] = static_cast<float>(znear);
+        cameraProperties["zfar"] = static_cast<float>(zfar);
+        if (selectedCamera->type == scene::CameraType::Orthographic) {
+            cameraProperties["orthoHeight"] =
+                static_cast<float>(std::max(selectedCamera->ymag * 2.0, 0.0001));
+        }
+        storeVec3Property(cameraProperties, "eye", selectedCamera->eye);
+        storeVec3Property(cameraProperties, "center", selectedCamera->center);
+        storeVec3Property(cameraProperties, "up", selectedCamera->up);
+
+        runtimeProperties["camera"] = std::move(cameraProperties);
+        changed = renderGraph_.setNodeRuntimeProperties(node->id, std::move(runtimeProperties)) || changed;
+    }
+
+    if (!changed) {
+        return;
+    }
+    historyResources_.invalidateAll();
+    if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
+        graphExecutor_->syncRuntimeProperties(renderGraph_);
+    }
+    viewportPreviewNeedsRender_ = true;
+    renderGraphStatus_ = "Applied glTF camera: " + selectedCamera->name;
 }
 
 void EditorApplication::loadScene()
@@ -3074,6 +3934,13 @@ void EditorApplication::loadScene()
             : "Failed to load scene: " + loadResult.error;
         return;
     }
+
+    sceneSelection_ = SceneSelection{};
+    copyToBuffer(displayPathForProperty(path), sceneFilePath_, sizeof(sceneFilePath_));
+    addRecentScenePath(path);
+    applyLoadedSceneToRenderGraph(path);
+    applyLoadedSceneCamera();
+    buildSceneRtx();
 
     const scene::SceneStats& stats = scene_.stats();
     sceneStatus_ = "Loaded " + path.string() + " (" + std::to_string(stats.renderNodeCount) +

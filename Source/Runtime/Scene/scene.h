@@ -40,9 +40,23 @@ struct LoadResult {
 struct SceneStats {
     uint64_t meshCount = 0;
     uint64_t materialCount = 0;
+    uint64_t textureCount = 0;
+    uint64_t imageCount = 0;
     uint64_t primitiveCount = 0;
     uint64_t renderNodeCount = 0;
     uint64_t triangleCount = 0;
+};
+
+struct SceneAssetInfo {
+    std::string version;
+    std::string generator;
+    std::string copyright;
+    std::string minVersion;
+};
+
+struct SceneMesh {
+    std::string name;
+    uint64_t primitiveCount = 0;
 };
 
 struct SceneNode {
@@ -173,10 +187,12 @@ public:
     const std::filesystem::path& filename() const { return filename_; }
     const std::string& sceneName() const { return sceneName_; }
     int32_t sceneIndex() const { return sceneIndex_; }
+    const SceneAssetInfo& assetInfo() const { return assetInfo_; }
     const SceneStats& stats() const { return stats_; }
     const Bounds& bounds() const { return bounds_; }
     const std::vector<int32_t>& rootNodeIndices() const { return rootNodeIndices_; }
     const std::vector<SceneNode>& nodes() const { return nodes_; }
+    const std::vector<SceneMesh>& meshes() const { return meshes_; }
     const std::vector<RenderPrimitive>& renderPrimitives() const { return renderPrimitives_; }
     const std::vector<RenderNode>& renderNodes() const { return renderNodes_; }
     const std::vector<RenderImage>& images() const { return images_; }
@@ -192,10 +208,12 @@ private:
     std::filesystem::path filename_;
     std::string sceneName_;
     int32_t sceneIndex_ = kInvalidSceneIndex;
+    SceneAssetInfo assetInfo_;
     SceneStats stats_;
     Bounds bounds_;
     std::vector<int32_t> rootNodeIndices_;
     std::vector<SceneNode> nodes_;
+    std::vector<SceneMesh> meshes_;
     std::vector<RenderPrimitive> renderPrimitives_;
     std::vector<RenderNode> renderNodes_;
     std::vector<RenderImage> images_;

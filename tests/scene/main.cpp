@@ -602,6 +602,7 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(scene.valid(), "loaded scene should be valid");
     expect(scene.sceneIndex() == 0, "default scene index should be 0");
     expect(scene.sceneName() == "Default Scene", "scene name should come from glTF scene");
+    expect(scene.assetInfo().version == "2.0", "asset version should be preserved");
     expect(scene.rootNodeIndices().size() == 1, "scene should expose one root node");
     expect(scene.rootNodeIndices().front() == 0, "root node index should be 0");
     expect(scene.nodes().size() == 5, "scene should load all nodes");
@@ -617,9 +618,15 @@ void testFullSceneImport(const std::filesystem::path& directory)
     const metallic::scene::SceneStats& stats = scene.stats();
     expect(stats.meshCount == 1, "mesh count");
     expect(stats.materialCount == 2, "material count");
+    expect(stats.textureCount == 0, "texture count");
+    expect(stats.imageCount == 0, "image count");
     expect(stats.primitiveCount == 1, "primitive count");
     expect(stats.renderNodeCount == 1, "render node count");
     expect(stats.triangleCount == 1, "triangle count");
+
+    expect(scene.meshes().size() == 1, "mesh info vector size");
+    expect(scene.meshes()[0].name == "Triangle Mesh", "mesh info name");
+    expect(scene.meshes()[0].primitiveCount == 1, "mesh info primitive count");
 
     expect(scene.renderPrimitives().size() == 1, "primitive vector size");
     const metallic::scene::RenderPrimitive& primitive = scene.renderPrimitives().front();
