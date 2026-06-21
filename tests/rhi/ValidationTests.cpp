@@ -52,6 +52,7 @@ public:
                 .enableRayQuery = true,
                 .enablePushDescriptor = true,
                 .enableClusterAccelerationStructure = true,
+                .enablePartitionedAccelerationStructure = true,
             },
             device);
         if (!result) {
@@ -69,6 +70,10 @@ public:
         if (capabilities.clusterAccelerationStructure && !capabilities.rayTracingAccelerationStructure) {
             return RhiTestResult::fail(
                 "clusterAccelerationStructure capability was enabled without acceleration structure support");
+        }
+        if (capabilities.partitionedAccelerationStructure && !capabilities.rayTracingAccelerationStructure) {
+            return RhiTestResult::fail(
+                "partitionedAccelerationStructure capability was enabled without acceleration structure support");
         }
         if (capabilities.bindlessDescriptorHeap &&
             (capabilities.maxBindlessSamplers == 0 ||
@@ -164,9 +169,75 @@ public:
     }
 };
 
+class PartitionedAccelerationStructureSupportTest : public RhiTest {
+public:
+    PartitionedAccelerationStructureSupportTest()
+    {
+        type = RhiTestType::Validation;
+        name = "partitioned_acceleration_structure_support";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        render::Result result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic RHI Partitioned Acceleration Structure Test",
+                .enableValidation = context.enableValidation,
+                .enablePartitionedAccelerationStructure = true,
+            },
+            device);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("createDevice(partitioned acceleration structure) returned ") + toString(result));
+        }
+        if (device == nullptr) {
+            return RhiTestResult::fail("createDevice(partitioned acceleration structure) returned a null device");
+        }
+
+        render::vulkan::PartitionedAccelerationStructureBuildSizes sizes;
+        result = render::vulkan::queryPartitionedAccelerationStructureBuildSizes(
+            *device,
+            render::vulkan::PartitionedAccelerationStructureBuildSizesDesc{
+                .instanceCount = 1,
+                .partitionCount = 1,
+                .maxInstancePerPartitionCount = 1,
+                .maxOperationCount = 1,
+            },
+            sizes);
+
+        const render::DeviceCapabilities& capabilities = device->capabilities();
+        if (!capabilities.partitionedAccelerationStructure) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::pass();
+            }
+            return RhiTestResult::fail(
+                std::string("PTLAS size query without capability returned ") + toString(result));
+        }
+        if (!capabilities.rayTracingAccelerationStructure) {
+            return RhiTestResult::fail(
+                "partitionedAccelerationStructure capability was enabled without acceleration structure support");
+        }
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("queryPartitionedAccelerationStructureBuildSizes returned ") + toString(result));
+        }
+        if (sizes.accelerationStructureSize == 0 ||
+            sizes.buildScratchSize == 0 ||
+            sizes.operationInfoSize == 0 ||
+            sizes.operationCountSize == 0 ||
+            sizes.instanceWriteInfoSize == 0) {
+            return RhiTestResult::fail("PTLAS size query returned zero build size");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(ValidateDeviceTest);
 METALLIC_REGISTER_RHI_TEST(OptionalFeatureSoftRequestTest);
 METALLIC_REGISTER_RHI_TEST(ClusterAccelerationStructureSupportTest);
+METALLIC_REGISTER_RHI_TEST(PartitionedAccelerationStructureSupportTest);
 
 } // namespace
 } // namespace metallic::tests

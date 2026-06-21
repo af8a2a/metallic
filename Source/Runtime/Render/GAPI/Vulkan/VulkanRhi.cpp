@@ -1009,6 +1009,9 @@ struct VulkanExtensionSet {
 #ifdef VK_NV_cluster_acceleration_structure
     bool clusterAccelerationStructure = false;
 #endif
+#ifdef VK_NV_partitioned_acceleration_structure
+    bool partitionedAccelerationStructure = false;
+#endif
 
     static VulkanExtensionSet query(VkPhysicalDevice physicalDevice)
     {
@@ -1041,6 +1044,10 @@ struct VulkanExtensionSet {
 #ifdef VK_NV_cluster_acceleration_structure
         result.clusterAccelerationStructure = result.has(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME);
 #endif
+#ifdef VK_NV_partitioned_acceleration_structure
+        result.partitionedAccelerationStructure =
+            result.has(VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+#endif
         return result;
     }
 
@@ -1058,6 +1065,7 @@ struct VulkanDeviceFeatureRequest {
     bool rayQuery = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
+    bool partitionedAccelerationStructure = false;
     bool streamline = false;
     bool aftermath = false;
 
@@ -1071,6 +1079,7 @@ struct VulkanDeviceFeatureRequest {
             .rayQuery = desc.enableRayQuery,
             .pushDescriptor = desc.enablePushDescriptor,
             .clusterAccelerationStructure = desc.enableClusterAccelerationStructure,
+            .partitionedAccelerationStructure = desc.enablePartitionedAccelerationStructure,
             .streamline = desc.enableStreamline,
             .aftermath = desc.enableAftermath && profiling::nsightAftermathInitialized(),
         };
@@ -1117,6 +1126,11 @@ struct VulkanDeviceFeatureProbe {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV,
     };
 #endif
+#ifdef VK_NV_partitioned_acceleration_structure
+    VkPhysicalDevicePartitionedAccelerationStructureFeaturesNV partitionedAccelerationStructureFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV,
+    };
+#endif
     VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
     };
@@ -1157,6 +1171,11 @@ struct VulkanDeviceFeatureProbe {
             appendPNext(featureTail, clusterAccelerationStructureFeatures);
         }
 #endif
+#ifdef VK_NV_partitioned_acceleration_structure
+        if (extensions.partitionedAccelerationStructure) {
+            appendPNext(featureTail, partitionedAccelerationStructureFeatures);
+        }
+#endif
         vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
     }
 
@@ -1184,6 +1203,21 @@ struct VulkanDeviceFeatureProbe {
         return accelerationStructureSupported &&
             extensions.clusterAccelerationStructure &&
             clusterAccelerationStructureFeatures.clusterAccelerationStructure == VK_TRUE;
+#else
+        (void)extensions;
+        (void)accelerationStructureSupported;
+        return false;
+#endif
+    }
+
+    bool supportsPartitionedAccelerationStructure(
+        const VulkanExtensionSet& extensions,
+        bool accelerationStructureSupported) const
+    {
+#ifdef VK_NV_partitioned_acceleration_structure
+        return accelerationStructureSupported &&
+            extensions.partitionedAccelerationStructure &&
+            partitionedAccelerationStructureFeatures.partitionedAccelerationStructure == VK_TRUE;
 #else
         (void)extensions;
         (void)accelerationStructureSupported;
@@ -1236,6 +1270,7 @@ struct VulkanDeviceFeatureSelection {
     bool rayQuery = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
+    bool partitionedAccelerationStructure = false;
     bool streamline = false;
     bool aftermath = false;
 
@@ -1248,6 +1283,8 @@ struct VulkanDeviceFeatureSelection {
         const bool accelerationStructureSupported = probe.supportsAccelerationStructure(extensions);
         const bool clusterAccelerationStructureSupported =
             probe.supportsClusterAccelerationStructure(extensions, accelerationStructureSupported);
+        const bool partitionedAccelerationStructureSupported =
+            probe.supportsPartitionedAccelerationStructure(extensions, accelerationStructureSupported);
         const bool streamlineSupported = probe.supportsStreamline(extensions, accelerationStructureSupported);
         const bool aftermathSupported = probe.supportsAftermath(extensions);
         const bool meshShaderSupported = probe.supportsMeshShader(extensions);
@@ -1271,6 +1308,7 @@ struct VulkanDeviceFeatureSelection {
             (request.rayTracingAccelerationStructure ||
                 request.rayQuery ||
                 request.clusterAccelerationStructure ||
+                request.partitionedAccelerationStructure ||
                 request.streamline) &&
             accelerationStructureSupported;
         result.rayQuery =
@@ -1282,6 +1320,10 @@ struct VulkanDeviceFeatureSelection {
         result.clusterAccelerationStructure =
             request.clusterAccelerationStructure &&
             clusterAccelerationStructureSupported &&
+            result.rayTracingAccelerationStructure;
+        result.partitionedAccelerationStructure =
+            request.partitionedAccelerationStructure &&
+            partitionedAccelerationStructureSupported &&
             result.rayTracingAccelerationStructure;
         result.streamline =
             request.streamline &&
@@ -1299,6 +1341,7 @@ struct VulkanDeviceFeatureSelection {
             rayTracingAccelerationStructure ||
             rayQuery ||
             clusterAccelerationStructure ||
+            partitionedAccelerationStructure ||
             streamline;
     }
 
@@ -1310,12 +1353,14 @@ struct VulkanDeviceFeatureSelection {
             (!request.rayTracingAccelerationStructure || rayTracingAccelerationStructure) &&
             (!request.rayQuery || rayQuery) &&
             (!request.pushDescriptor || pushDescriptor) &&
-            (!request.clusterAccelerationStructure || clusterAccelerationStructure);
+            (!request.clusterAccelerationStructure || clusterAccelerationStructure) &&
+            (!request.partitionedAccelerationStructure || partitionedAccelerationStructure);
     }
 
     int32_t score() const
     {
         return (bindlessDescriptorHeap ? 16 : 0) +
+            (partitionedAccelerationStructure ? 128 : 0) +
             (clusterAccelerationStructure ? 64 : 0) +
             (streamline ? 32 : 0) +
             (shaderObject ? 8 : 0) +
@@ -1361,6 +1406,11 @@ struct VulkanEnabledFeatureChain {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV,
     };
 #endif
+#ifdef VK_NV_partitioned_acceleration_structure
+    VkPhysicalDevicePartitionedAccelerationStructureFeaturesNV partitionedAccelerationStructureFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV,
+    };
+#endif
 #if defined(VK_NV_device_diagnostics_config)
     VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsConfigFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV,
@@ -1401,6 +1451,10 @@ struct VulkanEnabledFeatureChain {
         clusterAccelerationStructureFeatures.clusterAccelerationStructure =
             selection.clusterAccelerationStructure ? VK_TRUE : VK_FALSE;
 #endif
+#ifdef VK_NV_partitioned_acceleration_structure
+        partitionedAccelerationStructureFeatures.partitionedAccelerationStructure =
+            selection.partitionedAccelerationStructure ? VK_TRUE : VK_FALSE;
+#endif
 #if defined(VK_NV_device_diagnostics_config)
         diagnosticsConfigFeatures.diagnosticsConfig = selection.aftermath ? VK_TRUE : VK_FALSE;
 #endif
@@ -1432,6 +1486,11 @@ struct VulkanEnabledFeatureChain {
 #ifdef VK_NV_cluster_acceleration_structure
         if (selection.clusterAccelerationStructure) {
             appendPNext(featureTail, clusterAccelerationStructureFeatures);
+        }
+#endif
+#ifdef VK_NV_partitioned_acceleration_structure
+        if (selection.partitionedAccelerationStructure) {
+            appendPNext(featureTail, partitionedAccelerationStructureFeatures);
         }
 #endif
 #if defined(VK_NV_device_diagnostics_config)
@@ -1473,6 +1532,11 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
 #ifdef VK_NV_cluster_acceleration_structure
     if (selection.clusterAccelerationStructure) {
         extensions.push_back(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+    }
+#endif
+#ifdef VK_NV_partitioned_acceleration_structure
+    if (selection.partitionedAccelerationStructure) {
+        extensions.push_back(VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME);
     }
 #endif
     if (selection.streamline) {
@@ -2015,6 +2079,7 @@ struct DeviceImpl {
     bool rayQueryEnabled = false;
     bool pushDescriptorEnabled = false;
     bool clusterAccelerationStructureEnabled = false;
+    bool partitionedAccelerationStructureEnabled = false;
     bool streamlineInitialized = false;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
     PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
@@ -5142,12 +5207,17 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->pushDescriptorEnabled = selectedFeatures.pushDescriptor;
     deviceImpl->capabilities.clusterAccelerationStructure = selectedFeatures.clusterAccelerationStructure;
     deviceImpl->clusterAccelerationStructureEnabled = selectedFeatures.clusterAccelerationStructure;
+    deviceImpl->capabilities.partitionedAccelerationStructure =
+        selectedFeatures.partitionedAccelerationStructure;
+    deviceImpl->partitionedAccelerationStructureEnabled =
+        selectedFeatures.partitionedAccelerationStructure;
     deviceImpl->capabilities.aftermath = selectedFeatures.aftermath;
     deviceImpl->bufferDeviceAddressEnabled =
         selectedFeatures.bindlessDescriptorHeap ||
         selectedFeatures.rayTracingAccelerationStructure ||
         selectedFeatures.rayQuery ||
-        selectedFeatures.clusterAccelerationStructure;
+        selectedFeatures.clusterAccelerationStructure ||
+        selectedFeatures.partitionedAccelerationStructure;
 
     if (deviceImpl->debugUtilsEnabled) {
         deviceImpl->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
@@ -5428,6 +5498,71 @@ struct VulkanNativeAccess {
         return makeError(Error::Unsupported);
 #endif
     }
+
+    static Result queryPartitionedAccelerationStructureBuildSizes(
+        Device& device,
+        const vulkan::PartitionedAccelerationStructureBuildSizesDesc& desc,
+        vulkan::PartitionedAccelerationStructureBuildSizes& outSizes)
+    {
+        outSizes = {};
+        if (device.impl_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (!device.impl_->partitionedAccelerationStructureEnabled ||
+            !device.impl_->capabilities.partitionedAccelerationStructure) {
+            return makeError(Error::Unsupported);
+        }
+        if (desc.instanceCount == 0 ||
+            desc.partitionCount == 0 ||
+            desc.maxInstancePerPartitionCount == 0 ||
+            desc.maxOperationCount == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+
+#ifdef VK_NV_partitioned_acceleration_structure
+        activateVolkDevice(device.impl_->device);
+        VkPartitionedAccelerationStructureFlagsNV partitionedFlags{
+            .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_FLAGS_NV,
+            .enablePartitionTranslation = desc.allowPartitionTranslation ? VK_TRUE : VK_FALSE,
+        };
+        VkPartitionedAccelerationStructureInstancesInputNV inputInfo{
+            .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCES_INPUT_NV,
+            .pNext = &partitionedFlags,
+            .flags = desc.flags,
+            .instanceCount = desc.instanceCount,
+            .maxInstancePerPartitionCount = desc.maxInstancePerPartitionCount,
+            .partitionCount = desc.partitionCount,
+            .maxInstanceInGlobalPartitionCount = desc.maxInstanceInGlobalPartitionCount,
+        };
+        VkAccelerationStructureBuildSizesInfoKHR sizeInfo{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+        };
+        vkGetPartitionedAccelerationStructuresBuildSizesNV(device.impl_->device, &inputInfo, &sizeInfo);
+        outSizes = vulkan::PartitionedAccelerationStructureBuildSizes{
+            .accelerationStructureSize = sizeInfo.accelerationStructureSize,
+            .updateScratchSize = sizeInfo.updateScratchSize,
+            .buildScratchSize = sizeInfo.buildScratchSize,
+            .operationInfoSize =
+                static_cast<uint64_t>(desc.maxOperationCount) *
+                sizeof(VkBuildPartitionedAccelerationStructureIndirectCommandNV),
+            .operationCountSize = sizeof(uint32_t),
+            .instanceWriteInfoSize =
+                static_cast<uint64_t>(desc.instanceCount) *
+                sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV),
+            .instanceUpdateInfoSize = desc.allowInstanceUpdate
+                ? static_cast<uint64_t>(desc.instanceCount) *
+                    sizeof(VkPartitionedAccelerationStructureUpdateInstanceDataNV)
+                : 0,
+            .partitionWriteInfoSize = desc.allowPartitionTranslation
+                ? static_cast<uint64_t>(desc.partitionCount + 1u) *
+                    sizeof(VkPartitionedAccelerationStructureWritePartitionTranslationDataNV)
+                : 0,
+        };
+        return {};
+#else
+        return makeError(Error::Unsupported);
+#endif
+    }
 };
 
 } // namespace detail
@@ -5486,6 +5621,17 @@ Result queryClusterAccelerationStructureBottomLevelBuildSizes(
     ClusterAccelerationStructureBuildSizes& outSizes)
 {
     return detail::VulkanNativeAccess::queryClusterAccelerationStructureBottomLevelBuildSizes(
+        device,
+        desc,
+        outSizes);
+}
+
+Result queryPartitionedAccelerationStructureBuildSizes(
+    Device& device,
+    const PartitionedAccelerationStructureBuildSizesDesc& desc,
+    PartitionedAccelerationStructureBuildSizes& outSizes)
+{
+    return detail::VulkanNativeAccess::queryPartitionedAccelerationStructureBuildSizes(
         device,
         desc,
         outSizes);

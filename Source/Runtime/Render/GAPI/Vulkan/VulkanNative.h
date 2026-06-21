@@ -63,6 +63,28 @@ struct ClusterAccelerationStructureBottomLevelBuildSizesDesc {
     uint32_t maxAccelerationStructureCount = 1;
 };
 
+struct PartitionedAccelerationStructureBuildSizes {
+    uint64_t accelerationStructureSize = 0;
+    uint64_t updateScratchSize = 0;
+    uint64_t buildScratchSize = 0;
+    uint64_t operationInfoSize = 0;
+    uint64_t operationCountSize = 0;
+    uint64_t instanceWriteInfoSize = 0;
+    uint64_t instanceUpdateInfoSize = 0;
+    uint64_t partitionWriteInfoSize = 0;
+};
+
+struct PartitionedAccelerationStructureBuildSizesDesc {
+    VkBuildAccelerationStructureFlagsKHR flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    uint32_t instanceCount = 0;
+    uint32_t partitionCount = 1;
+    uint32_t maxInstancePerPartitionCount = 0;
+    uint32_t maxInstanceInGlobalPartitionCount = 0;
+    uint32_t maxOperationCount = 1;
+    bool allowInstanceUpdate = false;
+    bool allowPartitionTranslation = false;
+};
+
 NativeDevice nativeDevice(Device& device);
 NativeQueue nativeQueue(Queue& queue);
 NativeBuffer nativeBuffer(Buffer& buffer);
@@ -78,5 +100,9 @@ Result queryClusterAccelerationStructureBottomLevelBuildSizes(
     Device& device,
     const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,
     ClusterAccelerationStructureBuildSizes& outSizes);
+Result queryPartitionedAccelerationStructureBuildSizes(
+    Device& device,
+    const PartitionedAccelerationStructureBuildSizesDesc& desc,
+    PartitionedAccelerationStructureBuildSizes& outSizes);
 
 } // namespace metallic::render::vulkan

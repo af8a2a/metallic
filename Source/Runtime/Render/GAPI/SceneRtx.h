@@ -5,7 +5,9 @@
 namespace metallic::render {
 
 using SceneRtxStats = vulkan::SceneRtxStats;
+using ScenePartitionedRtxStats = vulkan::ScenePartitionedRtxStats;
 using SceneRtxBuilder = vulkan::SceneRtxBuilder;
+using ScenePartitionedRtxBuilder = vulkan::ScenePartitionedRtxBuilder;
 using SceneRayQueryBindingKind = vulkan::SceneRayQueryBindingKind;
 using SceneRayQueryBindingDesc = vulkan::SceneRayQueryBindingDesc;
 using SceneRayQueryProgramDesc = vulkan::SceneRayQueryProgramDesc;

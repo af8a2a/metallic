@@ -517,6 +517,83 @@ Result createAccelerationStructure(
     return {};
 }
 
+struct PtlasPartitioning {
+    uint32_t partitionCount = 1;
+    uint32_t maxInstancesPerPartition = 0;
+};
+
+uint32_t ptlasPartitionAxis(size_t instanceCount)
+{
+    if (instanceCount >= 16) {
+        return 4;
+    }
+    if (instanceCount >= 4) {
+        return 2;
+    }
+    return 1;
+}
+
+PtlasPartitioning assignPtlasSpatialPartitions(
+    std::vector<VkPartitionedAccelerationStructureWriteInstanceDataNV>& instances,
+    const std::vector<float4x4>& instanceMatrices)
+{
+    if (instances.empty()) {
+        return {};
+    }
+    if (instances.size() != instanceMatrices.size()) {
+        for (VkPartitionedAccelerationStructureWriteInstanceDataNV& instance : instances) {
+            instance.partitionIndex = 0;
+        }
+        return PtlasPartitioning{
+            .partitionCount = 1,
+            .maxInstancesPerPartition = static_cast<uint32_t>(instances.size()),
+        };
+    }
+
+    float minX = instanceMatrices.front().a03;
+    float maxX = minX;
+    float minZ = instanceMatrices.front().a23;
+    float maxZ = minZ;
+    for (const float4x4& matrix : instanceMatrices) {
+        minX = std::min(minX, matrix.a03);
+        maxX = std::max(maxX, matrix.a03);
+        minZ = std::min(minZ, matrix.a23);
+        maxZ = std::max(maxZ, matrix.a23);
+    }
+
+    constexpr float kPartitionEpsilon = 1.0e-5f;
+    const float spanX = maxX - minX;
+    const float spanZ = maxZ - minZ;
+    uint32_t axis = ptlasPartitionAxis(instances.size());
+    if (spanX <= kPartitionEpsilon && spanZ <= kPartitionEpsilon) {
+        axis = 1;
+    }
+
+    const uint32_t partitionCount = axis * axis;
+    std::vector<uint32_t> counts(partitionCount, 0);
+    for (size_t index = 0; index < instances.size(); ++index) {
+        const float4x4& matrix = instanceMatrices[index];
+        const uint32_t x = spanX > kPartitionEpsilon
+            ? std::min(
+                axis - 1u,
+                static_cast<uint32_t>(((matrix.a03 - minX) / spanX) * static_cast<float>(axis)))
+            : 0;
+        const uint32_t z = spanZ > kPartitionEpsilon
+            ? std::min(
+                axis - 1u,
+                static_cast<uint32_t>(((matrix.a23 - minZ) / spanZ) * static_cast<float>(axis)))
+            : 0;
+        const uint32_t partitionIndex = z * axis + x;
+        instances[index].partitionIndex = partitionIndex;
+        ++counts[partitionIndex];
+    }
+
+    return PtlasPartitioning{
+        .partitionCount = partitionCount,
+        .maxInstancesPerPartition = *std::max_element(counts.begin(), counts.end()),
+    };
+}
+
 bool appendClusterInput(
     const scene::RenderPrimitive& primitive,
     uint32_t renderPrimitiveIndex,
@@ -685,6 +762,12 @@ VkDescriptorType descriptorTypeFor(SceneRayQueryBindingKind kind)
     switch (kind) {
     case SceneRayQueryBindingKind::AccelerationStructure:
         return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    case SceneRayQueryBindingKind::PartitionedAccelerationStructure:
+#ifdef VK_NV_partitioned_acceleration_structure
+        return VK_DESCRIPTOR_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_NV;
+#else
+        return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+#endif
     case SceneRayQueryBindingKind::StorageImage:
         return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     case SceneRayQueryBindingKind::StorageBuffer:
@@ -726,7 +809,7 @@ bool hasDuplicateBindings(const SceneRayQueryBindingDesc* bindings, uint32_t bin
 }
 
 void addPoolSize(
-    std::array<VkDescriptorPoolSize, 4>& poolSizes,
+    std::array<VkDescriptorPoolSize, 5>& poolSizes,
     uint32_t& poolSizeCount,
     VkDescriptorType type,
     uint32_t descriptorCount)
@@ -1204,6 +1287,563 @@ bool SceneRtxBuilder::valid() const
 const SceneRtxStats& SceneRtxBuilder::stats() const
 {
     static const SceneRtxStats kEmptyStats;
+    return impl_ != nullptr ? impl_->stats : kEmptyStats;
+}
+
+struct ScenePartitionedRtxBuilder::Impl {
+    VkDevice device = VK_NULL_HANDLE;
+    VkDeviceAddress ptlasAddress = 0;
+    ScenePartitionedRtxStats stats;
+    std::unique_ptr<Buffer> vertexBuffer;
+    std::unique_ptr<Buffer> indexBuffer;
+    std::unique_ptr<Buffer> instanceWriteBuffer;
+    std::unique_ptr<Buffer> operationBuffer;
+    std::unique_ptr<Buffer> operationCountBuffer;
+    std::unique_ptr<Buffer> scratchBuffer;
+    std::unique_ptr<Buffer> ptlasStorage;
+    std::vector<BuiltBlas> blases;
+
+    ~Impl()
+    {
+        destroy();
+    }
+
+    void destroy()
+    {
+        if (device != VK_NULL_HANDLE) {
+            volkLoadDevice(device);
+            for (BuiltBlas& blas : blases) {
+                if (blas.handle != VK_NULL_HANDLE) {
+                    vkDestroyAccelerationStructureKHR(device, blas.handle, nullptr);
+                    blas.handle = VK_NULL_HANDLE;
+                }
+            }
+        }
+
+        ptlasAddress = 0;
+        stats = {};
+        blases.clear();
+        ptlasStorage.reset();
+        scratchBuffer.reset();
+        operationCountBuffer.reset();
+        operationBuffer.reset();
+        instanceWriteBuffer.reset();
+        indexBuffer.reset();
+        vertexBuffer.reset();
+        device = VK_NULL_HANDLE;
+    }
+};
+
+ScenePartitionedRtxBuilder::ScenePartitionedRtxBuilder()
+    : impl_(std::make_unique<Impl>())
+{
+}
+
+ScenePartitionedRtxBuilder::~ScenePartitionedRtxBuilder() = default;
+ScenePartitionedRtxBuilder::ScenePartitionedRtxBuilder(ScenePartitionedRtxBuilder&&) noexcept = default;
+ScenePartitionedRtxBuilder& ScenePartitionedRtxBuilder::operator=(ScenePartitionedRtxBuilder&&) noexcept = default;
+
+Result ScenePartitionedRtxBuilder::build(
+    Device& device,
+    Queue& queue,
+    const scene::Scene& scene,
+    std::string& log)
+{
+    log.clear();
+    if (!scene.valid()) {
+        log = "Scene is not loaded.";
+        return makeError(Error::InvalidArgument);
+    }
+    if (!device.capabilities().partitionedAccelerationStructure) {
+        log = "Vulkan partitioned acceleration structure capability is unavailable.";
+        return makeError(Error::Unsupported);
+    }
+
+    NativeDevice nativeDeviceInfo = nativeDevice(device);
+    NativeQueue nativeQueueInfo = nativeQueue(queue);
+    if (nativeDeviceInfo.device == VK_NULL_HANDLE || nativeQueueInfo.queue == VK_NULL_HANDLE) {
+        log = "Vulkan native device or queue is unavailable.";
+        return makeError(Error::InvalidArgument);
+    }
+    volkLoadDevice(nativeDeviceInfo.device);
+    if (vkCmdBuildPartitionedAccelerationStructuresNV == nullptr ||
+        vkGetPartitionedAccelerationStructuresBuildSizesNV == nullptr) {
+        log = "VK_NV_partitioned_acceleration_structure commands are unavailable.";
+        return makeError(Error::Unsupported);
+    }
+
+    clear();
+    impl_->device = nativeDeviceInfo.device;
+
+    const std::vector<scene::RenderPrimitive>& renderPrimitives = scene.renderPrimitives();
+    std::vector<int32_t> primitiveToBlas(renderPrimitives.size(), -1);
+    std::vector<PrimitiveInput> primitiveInputs;
+    std::vector<RtxVertex> vertices;
+    std::vector<uint32_t> indices;
+
+    for (uint32_t primitiveIndex = 0; primitiveIndex < renderPrimitives.size(); ++primitiveIndex) {
+        const scene::RenderPrimitive& primitive = renderPrimitives[primitiveIndex];
+        if (primitive.mode != 4 || primitive.positions.size() < 3) {
+            continue;
+        }
+
+        const uint64_t sourceIndexCount = primitive.indices.empty()
+            ? (primitive.positions.size() / 3) * 3
+            : (primitive.indices.size() / 3) * 3;
+        if (sourceIndexCount < 3 ||
+            sourceIndexCount > std::numeric_limits<uint32_t>::max() ||
+            primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
+            continue;
+        }
+
+        PrimitiveInput input{
+            .renderPrimitiveIndex = primitiveIndex,
+            .firstVertex = static_cast<uint32_t>(vertices.size()),
+            .vertexCount = static_cast<uint32_t>(primitive.positions.size()),
+            .firstIndex = static_cast<uint32_t>(indices.size()),
+            .indexCount = static_cast<uint32_t>(sourceIndexCount),
+            .triangleCount = static_cast<uint32_t>(sourceIndexCount / 3),
+            .opaque = !primitiveUsesAlphaMask(scene, primitive),
+        };
+
+        for (const float3& position : primitive.positions) {
+            vertices.push_back(RtxVertex{position.x, position.y, position.z});
+        }
+
+        if (primitive.indices.empty()) {
+            for (uint32_t index = 0; index < input.indexCount; ++index) {
+                indices.push_back(index);
+            }
+        } else {
+            bool indicesValid = true;
+            for (uint32_t index = 0; index < input.indexCount; ++index) {
+                const uint32_t sourceIndex = primitive.indices[index];
+                if (sourceIndex >= input.vertexCount) {
+                    indicesValid = false;
+                    break;
+                }
+                indices.push_back(sourceIndex);
+            }
+            if (!indicesValid) {
+                vertices.resize(input.firstVertex);
+                indices.resize(input.firstIndex);
+                continue;
+            }
+        }
+
+        primitiveToBlas[primitiveIndex] = static_cast<int32_t>(primitiveInputs.size());
+        primitiveInputs.push_back(input);
+    }
+
+    if (primitiveInputs.empty() || vertices.empty() || indices.empty()) {
+        log = "Scene contains no triangle primitives suitable for PTLAS acceleration structures.";
+        clear();
+        return makeError(Error::Unsupported);
+    }
+
+    Result result = createBuffer(
+        device,
+        "createBuffer(PTLAS vertices)",
+        vertices.size() * sizeof(RtxVertex),
+        BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::HostUpload,
+        impl_->vertexBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->vertexBuffer, vertices, "PTLAS vertices", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    result = createBuffer(
+        device,
+        "createBuffer(PTLAS indices)",
+        indices.size() * sizeof(uint32_t),
+        BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::HostUpload,
+        impl_->indexBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->indexBuffer, indices, "PTLAS indices", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    const NativeBuffer nativeVertexBuffer = nativeBuffer(*impl_->vertexBuffer);
+    const NativeBuffer nativeIndexBuffer = nativeBuffer(*impl_->indexBuffer);
+    if (nativeVertexBuffer.address == 0 || nativeIndexBuffer.address == 0) {
+        log = "PTLAS geometry buffers do not have device addresses.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    impl_->blases.resize(primitiveInputs.size());
+    VkDeviceSize maxScratchSize = 0;
+    for (size_t blasIndex = 0; blasIndex < primitiveInputs.size(); ++blasIndex) {
+        const PrimitiveInput& input = primitiveInputs[blasIndex];
+        VkAccelerationStructureGeometryKHR geometry = makeBlasGeometry(
+            nativeVertexBuffer.address,
+            nativeIndexBuffer.address,
+            input);
+        VkAccelerationStructureBuildGeometryInfoKHR buildInfo = makeBuildInfo(
+            VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+            geometry);
+        BuiltBlas& blas = impl_->blases[blasIndex];
+        blas.sizeInfo = queryBuildSize(nativeDeviceInfo.device, buildInfo, input.triangleCount);
+        maxScratchSize = std::max(maxScratchSize, blas.sizeInfo.buildScratchSize);
+
+        result = createAccelerationStructure(
+            device,
+            nativeDeviceInfo.device,
+            VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+            blas.sizeInfo,
+            blas.storage,
+            blas.handle,
+            blas.address,
+            log);
+        if (!result) {
+            clear();
+            return result;
+        }
+    }
+
+    std::vector<VkPartitionedAccelerationStructureWriteInstanceDataNV> instances;
+    std::vector<float4x4> instanceMatrices;
+    instances.reserve(scene.renderNodes().size());
+    instanceMatrices.reserve(scene.renderNodes().size());
+    for (const scene::RenderNode& renderNode : scene.renderNodes()) {
+        if (!renderNode.visible ||
+            renderNode.renderPrimitiveIndex < 0 ||
+            static_cast<size_t>(renderNode.renderPrimitiveIndex) >= primitiveToBlas.size()) {
+            continue;
+        }
+
+        const int32_t blasIndex = primitiveToBlas[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
+        if (blasIndex < 0 || static_cast<size_t>(blasIndex) >= impl_->blases.size()) {
+            continue;
+        }
+
+        const NativeBuffer nativeBlasStorage =
+            nativeBuffer(*impl_->blases[static_cast<size_t>(blasIndex)].storage);
+        if (nativeBlasStorage.address == 0) {
+            log = "PTLAS BLAS storage buffer does not have a device address.";
+            clear();
+            return makeError(Error::Failure);
+        }
+
+        const uint32_t instanceIndex = static_cast<uint32_t>(instances.size());
+        VkPartitionedAccelerationStructureWriteInstanceDataNV instance{};
+        instance.transform = toVkTransform(renderNode.worldMatrix);
+        instance.instanceID = static_cast<uint32_t>(renderNode.renderPrimitiveIndex) & 0x00ffffffu;
+        instance.instanceMask = 0xff;
+        instance.instanceContributionToHitGroupIndex = 0;
+        instance.instanceFlags =
+            VK_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE_BIT_NV;
+        instance.instanceIndex = instanceIndex;
+        instance.partitionIndex = 0;
+        instance.accelerationStructure = nativeBlasStorage.address;
+        instances.push_back(instance);
+        instanceMatrices.push_back(renderNode.worldMatrix);
+    }
+
+    if (instances.empty()) {
+        log = "Scene contains no visible PTLAS instances.";
+        clear();
+        return makeError(Error::Unsupported);
+    }
+    if (instances.size() > std::numeric_limits<uint32_t>::max()) {
+        log = "Scene contains too many PTLAS instances.";
+        clear();
+        return makeError(Error::Unsupported);
+    }
+
+    const PtlasPartitioning partitioning = assignPtlasSpatialPartitions(instances, instanceMatrices);
+    if (partitioning.partitionCount == 0 || partitioning.maxInstancesPerPartition == 0) {
+        log = "PTLAS partitioning produced no usable partitions.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    PartitionedAccelerationStructureBuildSizes ptlasSizes;
+    result = queryPartitionedAccelerationStructureBuildSizes(
+        device,
+        PartitionedAccelerationStructureBuildSizesDesc{
+            .flags = kBuildFlags,
+            .instanceCount = static_cast<uint32_t>(instances.size()),
+            .partitionCount = partitioning.partitionCount,
+            .maxInstancePerPartitionCount = partitioning.maxInstancesPerPartition,
+            .maxInstanceInGlobalPartitionCount = 0,
+            .maxOperationCount = 1,
+        },
+        ptlasSizes);
+    if (!result) {
+        log = resultMessage("queryPartitionedAccelerationStructureBuildSizes(PTLAS)", result);
+        clear();
+        return result;
+    }
+    if (ptlasSizes.accelerationStructureSize == 0 ||
+        ptlasSizes.buildScratchSize == 0 ||
+        ptlasSizes.operationInfoSize == 0 ||
+        ptlasSizes.operationCountSize == 0 ||
+        ptlasSizes.instanceWriteInfoSize == 0) {
+        log = "PTLAS size query returned zero build size.";
+        clear();
+        return makeError(Error::Failure);
+    }
+    maxScratchSize = std::max(maxScratchSize, static_cast<VkDeviceSize>(ptlasSizes.buildScratchSize));
+
+    result = createBuffer(
+        device,
+        "createBuffer(PTLAS storage)",
+        ptlasSizes.accelerationStructureSize,
+        BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::Device,
+        impl_->ptlasStorage,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    const NativeBuffer nativePtlasStorage = nativeBuffer(*impl_->ptlasStorage);
+    if (nativePtlasStorage.address == 0) {
+        log = "PTLAS storage buffer does not have a device address.";
+        clear();
+        return makeError(Error::Failure);
+    }
+    impl_->ptlasAddress = nativePtlasStorage.address;
+
+    result = createBuffer(
+        device,
+        "createBuffer(PTLAS instance write info)",
+        ptlasSizes.instanceWriteInfoSize,
+        BufferUsageBits::AccelerationStructureBuildInput |
+            BufferUsageBits::ShaderDeviceAddress |
+            BufferUsageBits::Storage,
+        MemoryLocation::HostUpload,
+        impl_->instanceWriteBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->instanceWriteBuffer, instances, "PTLAS instance write info", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    const NativeBuffer nativeInstanceWriteBuffer = nativeBuffer(*impl_->instanceWriteBuffer);
+    if (nativeInstanceWriteBuffer.address == 0) {
+        log = "PTLAS instance write buffer does not have a device address.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    std::vector<VkBuildPartitionedAccelerationStructureIndirectCommandNV> operations(1);
+    operations[0].opType = VK_PARTITIONED_ACCELERATION_STRUCTURE_OP_TYPE_WRITE_INSTANCE_NV;
+    operations[0].argCount = static_cast<uint32_t>(instances.size());
+    operations[0].argData.startAddress = nativeInstanceWriteBuffer.address;
+    operations[0].argData.strideInBytes =
+        sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV);
+
+    result = createBuffer(
+        device,
+        "createBuffer(PTLAS operations)",
+        ptlasSizes.operationInfoSize,
+        BufferUsageBits::AccelerationStructureBuildInput |
+            BufferUsageBits::ShaderDeviceAddress |
+            BufferUsageBits::Storage,
+        MemoryLocation::HostUpload,
+        impl_->operationBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->operationBuffer, operations, "PTLAS operations", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    const std::vector<uint32_t> operationCounts = {static_cast<uint32_t>(operations.size())};
+    result = createBuffer(
+        device,
+        "createBuffer(PTLAS operation count)",
+        ptlasSizes.operationCountSize,
+        BufferUsageBits::AccelerationStructureBuildInput |
+            BufferUsageBits::ShaderDeviceAddress |
+            BufferUsageBits::Storage,
+        MemoryLocation::HostUpload,
+        impl_->operationCountBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    result = uploadVector(*impl_->operationCountBuffer, operationCounts, "PTLAS operation count", log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    const NativeBuffer nativeOperationBuffer = nativeBuffer(*impl_->operationBuffer);
+    const NativeBuffer nativeOperationCountBuffer = nativeBuffer(*impl_->operationCountBuffer);
+    if (nativeOperationBuffer.address == 0 || nativeOperationCountBuffer.address == 0) {
+        log = "PTLAS operation buffers do not have device addresses.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    const VkDeviceSize alignment = scratchAlignment(nativeDeviceInfo.physicalDevice);
+    const VkDeviceSize scratchSize = maxScratchSize + alignment - 1;
+    result = createBuffer(
+        device,
+        "createBuffer(PTLAS scratch)",
+        scratchSize,
+        BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+        MemoryLocation::Device,
+        impl_->scratchBuffer,
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    const NativeBuffer nativeScratchBuffer = nativeBuffer(*impl_->scratchBuffer);
+    const VkDeviceAddress scratchAddress = alignUp(nativeScratchBuffer.address, alignment);
+    if (nativeScratchBuffer.address == 0 ||
+        scratchAddress == 0 ||
+        scratchAddress + maxScratchSize > nativeScratchBuffer.address + nativeScratchBuffer.size) {
+        log = "PTLAS scratch buffer does not provide a valid aligned device address.";
+        clear();
+        return makeError(Error::Failure);
+    }
+
+    std::unique_ptr<CommandPool> commandPool;
+    result = device.createCommandPool(queue, commandPool);
+    if (!result) {
+        log = resultMessage("createCommandPool(PTLAS AS build)", result);
+        clear();
+        return result;
+    }
+
+    result = recordSubmitWait(
+        device,
+        queue,
+        *commandPool,
+        "PTLAS AS build",
+        [&](VkCommandBuffer vkCommandBuffer) {
+            for (size_t blasIndex = 0; blasIndex < primitiveInputs.size(); ++blasIndex) {
+                const PrimitiveInput& input = primitiveInputs[blasIndex];
+                BuiltBlas& blas = impl_->blases[blasIndex];
+                VkAccelerationStructureGeometryKHR geometry = makeBlasGeometry(
+                    nativeVertexBuffer.address,
+                    nativeIndexBuffer.address,
+                    input);
+                VkAccelerationStructureBuildRangeInfoKHR range = makeBuildRange(input.triangleCount);
+                VkAccelerationStructureBuildGeometryInfoKHR buildInfo = makeBuildInfo(
+                    VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+                    geometry);
+                buildInfo.dstAccelerationStructure = blas.handle;
+                buildInfo.scratchData.deviceAddress = scratchAddress;
+
+                const VkAccelerationStructureBuildRangeInfoKHR* rangeInfos[] = {&range};
+                vkCmdBuildAccelerationStructuresKHR(vkCommandBuffer, 1, &buildInfo, rangeInfos);
+                accelerationStructureBarrier(vkCommandBuffer);
+            }
+
+            VkPartitionedAccelerationStructureFlagsNV partitionedFlags{
+                .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_FLAGS_NV,
+                .enablePartitionTranslation = VK_FALSE,
+            };
+            VkPartitionedAccelerationStructureInstancesInputNV inputInfo{
+                .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCES_INPUT_NV,
+                .pNext = &partitionedFlags,
+                .flags = kBuildFlags,
+                .instanceCount = static_cast<uint32_t>(instances.size()),
+                .maxInstancePerPartitionCount = partitioning.maxInstancesPerPartition,
+                .partitionCount = partitioning.partitionCount,
+                .maxInstanceInGlobalPartitionCount = 0,
+            };
+            VkBuildPartitionedAccelerationStructureInfoNV buildInfo{
+                .sType = VK_STRUCTURE_TYPE_BUILD_PARTITIONED_ACCELERATION_STRUCTURE_INFO_NV,
+                .input = inputInfo,
+                .srcAccelerationStructureData = 0,
+                .dstAccelerationStructureData = impl_->ptlasAddress,
+                .scratchData = scratchAddress,
+                .srcInfos = nativeOperationBuffer.address,
+                .srcInfosCount = nativeOperationCountBuffer.address,
+            };
+            vkCmdBuildPartitionedAccelerationStructuresNV(vkCommandBuffer, &buildInfo);
+            accelerationStructureBarrier(vkCommandBuffer);
+        },
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+
+    uint64_t blasBytes = 0;
+    uint64_t triangleCount = 0;
+    for (size_t blasIndex = 0; blasIndex < primitiveInputs.size(); ++blasIndex) {
+        blasBytes += impl_->blases[blasIndex].sizeInfo.accelerationStructureSize;
+        triangleCount += primitiveInputs[blasIndex].triangleCount;
+    }
+    const uint64_t operationBytes =
+        ptlasSizes.operationInfoSize +
+        ptlasSizes.operationCountSize +
+        ptlasSizes.instanceWriteInfoSize;
+
+    impl_->stats = ScenePartitionedRtxStats{
+        .blasCount = static_cast<uint32_t>(impl_->blases.size()),
+        .instanceCount = static_cast<uint32_t>(instances.size()),
+        .partitionCount = partitioning.partitionCount,
+        .maxInstancesPerPartition = partitioning.maxInstancesPerPartition,
+        .triangleCount = triangleCount,
+        .vertexCount = vertices.size(),
+        .indexCount = indices.size(),
+        .geometryBytes =
+            vertices.size() * sizeof(RtxVertex) +
+            indices.size() * sizeof(uint32_t) +
+            instances.size() * sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV),
+        .blasBytes = blasBytes,
+        .ptlasBytes = ptlasSizes.accelerationStructureSize,
+        .accelerationStructureBytes = blasBytes + ptlasSizes.accelerationStructureSize,
+        .scratchBytes = scratchSize,
+        .operationBytes = operationBytes,
+    };
+
+    log = "Built Vulkan PTLAS acceleration structures: " +
+        std::to_string(impl_->stats.blasCount) +
+        " BLAS, " +
+        std::to_string(impl_->stats.instanceCount) +
+        " PTLAS instances.";
+    return {};
+}
+
+void ScenePartitionedRtxBuilder::clear()
+{
+    if (impl_ != nullptr) {
+        impl_->destroy();
+    }
+}
+
+bool ScenePartitionedRtxBuilder::valid() const
+{
+    return impl_ != nullptr && impl_->ptlasAddress != 0;
+}
+
+const ScenePartitionedRtxStats& ScenePartitionedRtxBuilder::stats() const
+{
+    static const ScenePartitionedRtxStats kEmptyStats;
     return impl_ != nullptr ? impl_->stats : kEmptyStats;
 }
 
@@ -2166,6 +2806,13 @@ Result SceneRayQueryProgram::initialize(
         log = "SceneRayQueryProgram requires rayTracingAccelerationStructure and rayQuery capabilities";
         return makeError(Error::Unsupported);
     }
+    for (uint32_t bindingIndex = 0; bindingIndex < desc.bindingCount; ++bindingIndex) {
+        if (desc.bindings[bindingIndex].kind == SceneRayQueryBindingKind::PartitionedAccelerationStructure &&
+            !device.capabilities().partitionedAccelerationStructure) {
+            log = "SceneRayQueryProgram requires partitionedAccelerationStructure capability";
+            return makeError(Error::Unsupported);
+        }
+    }
 
     NativeDevice nativeDeviceInfo = nativeDevice(device);
     if (nativeDeviceInfo.device == VK_NULL_HANDLE) {
@@ -2182,7 +2829,7 @@ Result SceneRayQueryProgram::initialize(
 
     std::vector<VkDescriptorSetLayoutBinding> vkBindings;
     vkBindings.reserve(desc.bindingCount);
-    std::array<VkDescriptorPoolSize, 4> poolSizes{};
+    std::array<VkDescriptorPoolSize, 5> poolSizes{};
     uint32_t poolSizeCount = 0;
     for (const SceneRayQueryBindingDesc& binding : impl_->bindings) {
         const VkDescriptorType descriptorType = descriptorTypeFor(binding.kind);
@@ -2334,11 +2981,15 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
     std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationInfos;
     std::vector<VkAccelerationStructureKHR> accelerationStructures;
+    std::vector<VkWriteDescriptorSetPartitionedAccelerationStructureNV> partitionedAccelerationInfos;
+    std::vector<VkDeviceAddress> partitionedAccelerationStructures;
     std::vector<VkDescriptorImageInfo> imageInfos;
     std::vector<VkDescriptorBufferInfo> bufferInfos;
     writes.reserve(impl_->bindings.size());
     accelerationInfos.reserve(impl_->bindings.size());
     accelerationStructures.reserve(impl_->bindings.size());
+    partitionedAccelerationInfos.reserve(impl_->bindings.size());
+    partitionedAccelerationStructures.reserve(impl_->bindings.size());
     size_t imageInfoCapacity = 0;
     for (const SceneRayQueryBindingDesc& binding : impl_->bindings) {
         if (binding.kind == SceneRayQueryBindingKind::StorageImage ||
@@ -2378,6 +3029,23 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
                 .pAccelerationStructures = &accelerationStructures.back(),
             });
             write.pNext = &accelerationInfos.back();
+            break;
+        case SceneRayQueryBindingKind::PartitionedAccelerationStructure:
+            if (binding->partitionedAccelerationStructure == nullptr ||
+                !binding->partitionedAccelerationStructure->valid() ||
+                binding->partitionedAccelerationStructure->impl_ == nullptr ||
+                binding->partitionedAccelerationStructure->impl_->ptlasAddress == 0) {
+                return makeError(Error::InvalidArgument);
+            }
+            write.descriptorCount = 1;
+            partitionedAccelerationStructures.push_back(
+                binding->partitionedAccelerationStructure->impl_->ptlasAddress);
+            partitionedAccelerationInfos.push_back(VkWriteDescriptorSetPartitionedAccelerationStructureNV{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_PARTITIONED_ACCELERATION_STRUCTURE_NV,
+                .accelerationStructureCount = 1,
+                .pAccelerationStructures = &partitionedAccelerationStructures.back(),
+            });
+            write.pNext = &partitionedAccelerationInfos.back();
             break;
         case SceneRayQueryBindingKind::StorageImage: {
             if (binding->textureView == nullptr) {

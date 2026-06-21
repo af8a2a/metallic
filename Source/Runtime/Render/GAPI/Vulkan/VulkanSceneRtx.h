@@ -36,6 +36,22 @@ struct SceneClusterRtxStats {
     uint64_t scratchBytes = 0;
 };
 
+struct ScenePartitionedRtxStats {
+    uint32_t blasCount = 0;
+    uint32_t instanceCount = 0;
+    uint32_t partitionCount = 0;
+    uint32_t maxInstancesPerPartition = 0;
+    uint64_t triangleCount = 0;
+    uint64_t vertexCount = 0;
+    uint64_t indexCount = 0;
+    uint64_t geometryBytes = 0;
+    uint64_t blasBytes = 0;
+    uint64_t ptlasBytes = 0;
+    uint64_t accelerationStructureBytes = 0;
+    uint64_t scratchBytes = 0;
+    uint64_t operationBytes = 0;
+};
+
 class SceneRtxBuilder {
 public:
     SceneRtxBuilder();
@@ -82,8 +98,33 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+class ScenePartitionedRtxBuilder {
+public:
+    ScenePartitionedRtxBuilder();
+    ~ScenePartitionedRtxBuilder();
+
+    ScenePartitionedRtxBuilder(ScenePartitionedRtxBuilder&&) noexcept;
+    ScenePartitionedRtxBuilder& operator=(ScenePartitionedRtxBuilder&&) noexcept;
+
+    ScenePartitionedRtxBuilder(const ScenePartitionedRtxBuilder&) = delete;
+    ScenePartitionedRtxBuilder& operator=(const ScenePartitionedRtxBuilder&) = delete;
+
+    Result build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
+    void clear();
+
+    bool valid() const;
+    const ScenePartitionedRtxStats& stats() const;
+
+private:
+    friend class SceneRayQueryProgram;
+
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 enum class SceneRayQueryBindingKind : uint8_t {
     AccelerationStructure,
+    PartitionedAccelerationStructure,
     StorageImage,
     StorageBuffer,
     SampledImage,
@@ -107,6 +148,7 @@ struct SceneRayQueryProgramDesc {
 struct SceneRayQueryDispatchBinding {
     uint32_t binding = 0;
     SceneRtxBuilder* accelerationStructure = nullptr;
+    ScenePartitionedRtxBuilder* partitionedAccelerationStructure = nullptr;
     TextureView* textureView = nullptr;
     TextureView* const* textureViews = nullptr;
     uint32_t textureViewCount = 0;

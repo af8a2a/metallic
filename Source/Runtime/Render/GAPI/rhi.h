@@ -262,6 +262,7 @@ struct DeviceDesc {
     bool enableRayQuery = false;
     bool enablePushDescriptor = false;
     bool enableClusterAccelerationStructure = false;
+    bool enablePartitionedAccelerationStructure = false;
     bool enableStreamline = false;
     bool enableAftermath = false;
 };
@@ -274,6 +275,7 @@ struct DeviceCapabilities {
     bool rayQuery = false;
     bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
+    bool partitionedAccelerationStructure = false;
     bool streamline = false;
     bool streamlineDlssRr = false;
     bool aftermath = false;
