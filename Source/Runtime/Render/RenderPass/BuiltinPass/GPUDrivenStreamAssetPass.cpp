@@ -303,7 +303,7 @@ public:
     {
         return {
             runtimeIntSetting("selectedLodLevel", "LOD", 0, 0, 31),
-            runtimeEnumSetting(
+            runtimeEnumSetting(S
                 "debugColorMode",
                 "Color",
                 "page",

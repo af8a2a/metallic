@@ -1178,6 +1178,37 @@ public:
             return RhiTestResult::fail("GPUDrivenSample graph first output changed");
         }
 
+        render::RenderSampleLoadResult gpuDrivenStreamAssetSample;
+        if (!render::loadBuiltInRenderSample("gpu-driven-streamasset", gpuDrivenStreamAssetSample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (gpuDrivenStreamAssetSample.desc.id != "gpu-driven-streamasset" ||
+            gpuDrivenStreamAssetSample.desc.name != "GPUDrivenSample / StreamAsset" ||
+            gpuDrivenStreamAssetSample.desc.category != "GPUDriven" ||
+            gpuDrivenStreamAssetSample.desc.scenePath != "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf" ||
+            gpuDrivenStreamAssetSample.desc.graphPath !=
+                "Pipelines/Samples/gpu_driven_sponza_streamasset.metallic_graph.json" ||
+            gpuDrivenStreamAssetSample.desc.previewOutput != "GPUDriven.color") {
+            return RhiTestResult::fail("GPUDriven StreamAsset sample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* gpuDrivenStreamAsset =
+            gpuDrivenStreamAssetSample.graph.findNode("GPUDriven");
+        if (gpuDrivenStreamAsset == nullptr ||
+            gpuDrivenStreamAsset->type != "GPUDrivenStreamAssetPass" ||
+            !gpuDrivenStreamAsset->properties.is_object() ||
+            gpuDrivenStreamAsset->properties.value("path", "") != gpuDrivenStreamAssetSample.desc.scenePath ||
+            !gpuDrivenStreamAsset->properties.value("autoBuildStreamAsset", false) ||
+            gpuDrivenStreamAsset->properties.value("debugColorMode", "") != "page" ||
+            gpuDrivenStreamAsset->properties.value("selectedLodLevel", -1) != 0) {
+            return RhiTestResult::fail("GPUDriven StreamAsset sample did not preserve streamasset defaults");
+        }
+        if (!gpuDrivenStreamAssetSample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (gpuDrivenStreamAssetSample.graph.firstOutputName() != "GPUDriven.color") {
+            return RhiTestResult::fail("GPUDriven StreamAsset graph first output changed");
+        }
+
         render::RenderSampleLoadResult gpuDrivenRtasSample;
         if (!render::loadBuiltInRenderSample("gpu-driven-rtas-visualization", gpuDrivenRtasSample, message)) {
             return RhiTestResult::fail(message);
@@ -1217,6 +1248,7 @@ public:
         bool listedDlssRrPathTrace = false;
         bool listedMaterialVisualization = false;
         bool listedGPUDriven = false;
+        bool listedGPUDrivenStreamAsset = false;
         bool listedGPUDrivenRtasVisualization = false;
         for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
             listedPathTrace = listedPathTrace || desc.id == "pathtracing-meet-mat";
@@ -1225,6 +1257,7 @@ public:
             listedMaterialVisualization = listedMaterialVisualization ||
                 desc.id == "material-visualization-abeautiful-game";
             listedGPUDriven = listedGPUDriven || desc.id == "gpu-driven-sample";
+            listedGPUDrivenStreamAsset = listedGPUDrivenStreamAsset || desc.id == "gpu-driven-streamasset";
             listedGPUDrivenRtasVisualization = listedGPUDrivenRtasVisualization ||
                 desc.id == "gpu-driven-rtas-visualization";
         }
@@ -1233,6 +1266,7 @@ public:
             !listedDlssRrPathTrace ||
             !listedMaterialVisualization ||
             !listedGPUDriven ||
+            !listedGPUDrivenStreamAsset ||
             !listedGPUDrivenRtasVisualization) {
             return RhiTestResult::fail("built-in Sample list did not contain expected samples");
         }

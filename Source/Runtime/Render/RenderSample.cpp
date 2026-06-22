@@ -250,6 +250,24 @@ public:
     std::string previewOutput() const override { return "GPUDriven.color"; }
 };
 
+class GPUDrivenStreamAssetSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "gpu-driven-streamasset"; }
+    std::string_view name() const override { return "GPUDrivenSample / StreamAsset"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override
+    {
+        return "GPUDrivenSample variant using GPUDrivenStreamAssetPass and the meshlet streamasset prototype.";
+    }
+    std::string scenePath() const override { return "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/gpu_driven_sponza_streamasset.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
+    std::string previewOutput() const override { return "GPUDriven.color"; }
+};
+
 const RenderSample& pathTracingMeetMatSample()
 {
     static const PathTracingMeetMatSample sample;
@@ -286,6 +304,12 @@ const RenderSample& gpuDrivenRtasVisualizationSample()
     return sample;
 }
 
+const RenderSample& gpuDrivenStreamAssetSample()
+{
+    static const GPUDrivenStreamAssetSample sample;
+    return sample;
+}
+
 std::vector<const RenderSample*> builtInRenderSamples()
 {
     return {
@@ -294,6 +318,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &pathTracingDlssRrSample(),
         &materialVisualizationABeautifulGameSample(),
         &gpuDrivenSample(),
+        &gpuDrivenStreamAssetSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
 }

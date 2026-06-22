@@ -7,6 +7,7 @@
 namespace {
 
 constexpr const char* kGPUDrivenSampleId = "gpu-driven-sample";
+constexpr const char* kGPUDrivenStreamAssetSampleId = "gpu-driven-streamasset";
 constexpr const char* kGPUDrivenRtasVisualizationSampleId = "gpu-driven-rtas-visualization";
 
 void printUsage()
@@ -15,6 +16,7 @@ void printUsage()
         "MetallicGPUDrivenSample options:\n"
         "  --smoke-test                 Render one frame and exit\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization\n"
+        "  --streamasset                Load the meshlet StreamAsset variant\n"
         "  --rtas-visualization         Load the RTAS visualization variant");
 }
 
@@ -37,6 +39,10 @@ int main(int argc, char** argv)
         }
         if (argument == "--wait-for-graphics-debugger") {
             waitForGraphicsDebugger = true;
+            continue;
+        }
+        if (argument == "--streamasset") {
+            sampleId = kGPUDrivenStreamAssetSampleId;
             continue;
         }
         if (argument == "--rtas-visualization") {
