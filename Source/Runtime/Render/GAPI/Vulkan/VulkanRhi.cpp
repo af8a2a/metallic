@@ -478,6 +478,109 @@ VkImageUsageFlags toVkImageUsage(TextureUsageBits usage)
     return flags != 0 ? flags : VK_IMAGE_USAGE_SAMPLED_BIT;
 }
 
+uint32_t formatTexelByteSize(Format format)
+{
+    switch (format) {
+    case Format::R8Unorm:
+    case Format::R8Snorm:
+    case Format::R8Uint:
+    case Format::R8Sint:
+        return 1;
+    case Format::Rg8Unorm:
+    case Format::Rg8Snorm:
+    case Format::Rg8Uint:
+    case Format::Rg8Sint:
+    case Format::R16Unorm:
+    case Format::R16Snorm:
+    case Format::R16Uint:
+    case Format::R16Sint:
+    case Format::R16Sfloat:
+        return 2;
+    case Format::Bgra8Unorm:
+    case Format::Bgra8Srgb:
+    case Format::Rgba8Unorm:
+    case Format::Rgba8Snorm:
+    case Format::Rgba8Srgb:
+    case Format::Rgba8Uint:
+    case Format::Rgba8Sint:
+    case Format::Rg16Unorm:
+    case Format::Rg16Snorm:
+    case Format::Rg16Uint:
+    case Format::Rg16Sint:
+    case Format::Rg16Sfloat:
+    case Format::R32Uint:
+    case Format::R32Sint:
+    case Format::R32Sfloat:
+    case Format::A2B10G10R10UnormPack32:
+    case Format::A2R10G10B10UintPack32:
+    case Format::B10G11R11UfloatPack32:
+    case Format::E5B9G9R9UfloatPack32:
+    case Format::D32Sfloat:
+        return 4;
+    case Format::Rgba16Unorm:
+    case Format::Rgba16Snorm:
+    case Format::Rgba16Uint:
+    case Format::Rgba16Sint:
+    case Format::Rgba16Sfloat:
+    case Format::Rg32Uint:
+    case Format::Rg32Sint:
+    case Format::Rg32Sfloat:
+        return 8;
+    case Format::Rgb32Uint:
+    case Format::Rgb32Sint:
+    case Format::Rgb32Sfloat:
+        return 12;
+    case Format::Rgba32Uint:
+    case Format::Rgba32Sint:
+    case Format::Rgba32Sfloat:
+        return 16;
+    case Format::Unknown:
+        break;
+    }
+    return 0;
+}
+
+bool fillBufferImageLayout(
+    Format format,
+    uint32_t width,
+    uint32_t height,
+    uint32_t bufferRowPitch,
+    uint32_t bufferSlicePitch,
+    uint32_t& outBufferRowLength,
+    uint32_t& outBufferImageHeight)
+{
+    outBufferRowLength = 0;
+    outBufferImageHeight = 0;
+    if (bufferRowPitch == 0 && bufferSlicePitch == 0) {
+        return true;
+    }
+
+    const uint32_t bytesPerTexel = formatTexelByteSize(format);
+    if (bytesPerTexel == 0) {
+        return false;
+    }
+
+    const uint64_t tightRowPitch = static_cast<uint64_t>(width) * bytesPerTexel;
+    const uint64_t rowPitch = bufferRowPitch == 0
+        ? tightRowPitch
+        : static_cast<uint64_t>(bufferRowPitch);
+    if (rowPitch < tightRowPitch || rowPitch % bytesPerTexel != 0) {
+        return false;
+    }
+    outBufferRowLength = bufferRowPitch == 0
+        ? 0
+        : static_cast<uint32_t>(rowPitch / bytesPerTexel);
+
+    if (bufferSlicePitch != 0) {
+        const uint64_t tightSlicePitch = rowPitch * height;
+        if (bufferSlicePitch < tightSlicePitch || bufferSlicePitch % rowPitch != 0) {
+            return false;
+        }
+        outBufferImageHeight = static_cast<uint32_t>(bufferSlicePitch / rowPitch);
+    }
+    return true;
+}
+
 VkImageType toVkImageType(TextureType type)
 {
     switch (type) {
@@ -3257,6 +3360,30 @@ void CommandBuffer::barrier(const BarrierDesc& desc)
     vkCmdPipelineBarrier2(impl_->commandBuffer, &dependencyInfo);
 }
 
+void CommandBuffer::copyBuffer(const BufferCopyDesc& desc)
+{
+    if (impl_ == nullptr ||
+        desc.source == nullptr ||
+        desc.source->impl_ == nullptr ||
+        desc.destination == nullptr ||
+        desc.destination->impl_ == nullptr ||
+        desc.size == 0) {
+        return;
+    }
+
+    VkBufferCopy copyRegion{
+        .srcOffset = desc.sourceOffset,
+        .dstOffset = desc.destinationOffset,
+        .size = desc.size,
+    };
+    vkCmdCopyBuffer(
+        impl_->commandBuffer,
+        desc.source->impl_->buffer,
+        desc.destination->impl_->buffer,
+        1,
+        &copyRegion);
+}
+
 void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
 {
     if (impl_ == nullptr ||
@@ -3313,21 +3440,35 @@ void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
         desc.buffer->impl_ == nullptr ||
         desc.width == 0 ||
         desc.height == 0 ||
-        desc.depth == 0) {
+        desc.depth == 0 ||
+        desc.layerCount == 0) {
+        return;
+    }
+
+    uint32_t bufferRowLength = 0;
+    uint32_t bufferImageHeight = 0;
+    if (!fillBufferImageLayout(
+            desc.texture->impl_->desc.format,
+            desc.width,
+            desc.height,
+            desc.bufferRowPitch,
+            desc.bufferSlicePitch,
+            bufferRowLength,
+            bufferImageHeight)) {
         return;
     }
 
     VkBufferImageCopy copyRegion{
-        .bufferOffset = 0,
-        .bufferRowLength = 0,
-        .bufferImageHeight = 0,
+        .bufferOffset = desc.bufferOffset,
+        .bufferRowLength = bufferRowLength,
+        .bufferImageHeight = bufferImageHeight,
         .imageSubresource = {
             .aspectMask = aspectForFormat(desc.texture->impl_->desc.format),
             .mipLevel = desc.mipLevel,
             .baseArrayLayer = desc.baseLayer,
-            .layerCount = 1,
+            .layerCount = desc.layerCount,
         },
-        .imageOffset = {0, 0, 0},
+        .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
 
@@ -3349,21 +3490,35 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
         desc.texture->impl_ == nullptr ||
         desc.width == 0 ||
         desc.height == 0 ||
-        desc.depth == 0) {
+        desc.depth == 0 ||
+        desc.layerCount == 0) {
+        return;
+    }
+
+    uint32_t bufferRowLength = 0;
+    uint32_t bufferImageHeight = 0;
+    if (!fillBufferImageLayout(
+            desc.texture->impl_->desc.format,
+            desc.width,
+            desc.height,
+            desc.bufferRowPitch,
+            desc.bufferSlicePitch,
+            bufferRowLength,
+            bufferImageHeight)) {
         return;
     }
 
     VkBufferImageCopy copyRegion{
-        .bufferOffset = 0,
-        .bufferRowLength = 0,
-        .bufferImageHeight = 0,
+        .bufferOffset = desc.bufferOffset,
+        .bufferRowLength = bufferRowLength,
+        .bufferImageHeight = bufferImageHeight,
         .imageSubresource = {
             .aspectMask = aspectForFormat(desc.texture->impl_->desc.format),
             .mipLevel = desc.mipLevel,
             .baseArrayLayer = desc.baseLayer,
-            .layerCount = 1,
+            .layerCount = desc.layerCount,
         },
-        .imageOffset = {0, 0, 0},
+        .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
 
@@ -5165,6 +5320,19 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     }
     activateVolkDevice(deviceImpl->device);
 
+    VkPhysicalDeviceProperties selectedProperties{};
+    vkGetPhysicalDeviceProperties(deviceImpl->physicalDevice, &selectedProperties);
+    deviceImpl->capabilities.bufferCopyOffsetAlignment =
+        std::max<uint64_t>(selectedProperties.limits.optimalBufferCopyOffsetAlignment, 1);
+    deviceImpl->capabilities.textureUploadBufferOffsetAlignment =
+        std::max<uint64_t>(selectedProperties.limits.optimalBufferCopyOffsetAlignment, 1);
+    deviceImpl->capabilities.textureUploadRowPitchAlignment =
+        std::max<uint64_t>(selectedProperties.limits.optimalBufferCopyRowPitchAlignment, 1);
+    deviceImpl->capabilities.textureUploadSlicePitchAlignment =
+        std::max<uint64_t>(selectedProperties.limits.optimalBufferCopyRowPitchAlignment, 1);
+    deviceImpl->capabilities.constantBufferOffsetAlignment =
+        std::max<uint64_t>(selectedProperties.limits.minUniformBufferOffsetAlignment, 1);
+
     if (selectedFeatures.bindlessDescriptorHeap) {
         vkResult = deviceImpl->descriptorHeapWriter.initialize(deviceImpl->physicalDevice, deviceImpl->device);
         if (vkResult != VK_SUCCESS) {
@@ -5184,18 +5352,16 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
                 deviceImpl->descriptorHeapWriter.minResourceHeapReservedRange()
             : 0;
 
-        deviceImpl->capabilities = DeviceCapabilities{
-            .bindlessDescriptorHeap = true,
-            .maxBindlessSamplers = capacityFromBytes(
-                samplerCapacityBytes,
-                deviceImpl->descriptorHeapWriter.samplerDescriptorSize()),
-            .maxBindlessSampledImages = capacityFromBytes(
-                resourceCapacityBytes,
-                deviceImpl->descriptorHeapWriter.imageDescriptorSize()),
-            .maxBindlessBuffers = capacityFromBytes(
-                resourceCapacityBytes,
-                deviceImpl->descriptorHeapWriter.bufferDescriptorSize()),
-        };
+        deviceImpl->capabilities.bindlessDescriptorHeap = true;
+        deviceImpl->capabilities.maxBindlessSamplers = capacityFromBytes(
+            samplerCapacityBytes,
+            deviceImpl->descriptorHeapWriter.samplerDescriptorSize());
+        deviceImpl->capabilities.maxBindlessSampledImages = capacityFromBytes(
+            resourceCapacityBytes,
+            deviceImpl->descriptorHeapWriter.imageDescriptorSize());
+        deviceImpl->capabilities.maxBindlessBuffers = capacityFromBytes(
+            resourceCapacityBytes,
+            deviceImpl->descriptorHeapWriter.bufferDescriptorSize());
         deviceImpl->bindlessDescriptorHeapEnabled = true;
     }
     deviceImpl->capabilities.shaderObject = selectedFeatures.shaderObject;

@@ -6,6 +6,7 @@ find_package(slang CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PAT
 
 add_library(MetallicRuntimeRender STATIC
     Runtime/Render/HistoryResources.cpp
+    Runtime/Render/GAPI/Streamer.cpp
     Runtime/Render/RenderSample.cpp
     Runtime/Render/SlangCompiler.cpp
     Runtime/Render/RenderGraph/RenderGraph.cpp

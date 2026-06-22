@@ -204,6 +204,7 @@ public:
     const std::string& passName() const { return passName_; }
     const RenderGraphProperties& properties() const { return properties_; }
     HistoryResourceManager* historyResources() const { return historyResources_; }
+    Streamer* streamer() const { return streamer_; }
 
     RenderGraphResource* resource(std::string_view fieldName) const;
     RenderGraphResource* input(std::string_view fieldName) const;
@@ -234,7 +235,8 @@ private:
         std::string passName,
         const RenderGraphProperties& properties,
         std::vector<Binding> bindings,
-        HistoryResourceManager* historyResources);
+        HistoryResourceManager* historyResources,
+        Streamer* streamer);
 
     CommandBuffer& commandBuffer_;
     uint32_t width_ = 1;
@@ -243,6 +245,7 @@ private:
     const RenderGraphProperties& properties_;
     std::vector<Binding> bindings_;
     HistoryResourceManager* historyResources_ = nullptr;
+    Streamer* streamer_ = nullptr;
 
     friend class RenderGraphExecutor;
 };

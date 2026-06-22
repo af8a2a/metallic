@@ -39,6 +39,7 @@ add_executable(MetallicRhiTests
     rhi/RenderingTests.cpp
     rhi/ResourceTests.cpp
     rhi/SceneRtxTests.cpp
+    rhi/StreamerTests.cpp
     rhi/TestOutput.cpp
     rhi/ValidationTests.cpp
     rhi/stb/Stb.cpp

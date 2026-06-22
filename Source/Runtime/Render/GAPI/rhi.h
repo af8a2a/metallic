@@ -279,6 +279,11 @@ struct DeviceCapabilities {
     bool streamline = false;
     bool streamlineDlssRr = false;
     bool aftermath = false;
+    uint64_t bufferCopyOffsetAlignment = 1;
+    uint64_t textureUploadBufferOffsetAlignment = 1;
+    uint64_t textureUploadRowPitchAlignment = 1;
+    uint64_t textureUploadSlicePitchAlignment = 1;
+    uint64_t constantBufferOffsetAlignment = 1;
     uint32_t maxBindlessSamplers = 0;
     uint32_t maxBindlessSampledImages = 0;
     uint32_t maxBindlessBuffers = 0;
@@ -462,21 +467,35 @@ struct GraphicsShaderObjectProgramDesc {
 struct TextureBufferCopyDesc {
     class Texture* texture = nullptr;
     class Buffer* buffer = nullptr;
+    uint64_t bufferOffset = 0;
+    uint32_t bufferRowPitch = 0;
+    uint32_t bufferSlicePitch = 0;
+    int32_t textureOffsetX = 0;
+    int32_t textureOffsetY = 0;
+    int32_t textureOffsetZ = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t depth = 1;
     uint32_t mipLevel = 0;
     uint32_t baseLayer = 0;
+    uint32_t layerCount = 1;
 };
 
 struct BufferTextureCopyDesc {
     class Buffer* buffer = nullptr;
     class Texture* texture = nullptr;
+    uint64_t bufferOffset = 0;
+    uint32_t bufferRowPitch = 0;
+    uint32_t bufferSlicePitch = 0;
+    int32_t textureOffsetX = 0;
+    int32_t textureOffsetY = 0;
+    int32_t textureOffsetZ = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t depth = 1;
     uint32_t mipLevel = 0;
     uint32_t baseLayer = 0;
+    uint32_t layerCount = 1;
 };
 
 struct TextureCopyDesc {
@@ -489,6 +508,64 @@ struct TextureCopyDesc {
     uint32_t sourceBaseLayer = 0;
     uint32_t destinationMipLevel = 0;
     uint32_t destinationBaseLayer = 0;
+};
+
+struct BufferCopyDesc {
+    class Buffer* source = nullptr;
+    class Buffer* destination = nullptr;
+    uint64_t sourceOffset = 0;
+    uint64_t destinationOffset = 0;
+    uint64_t size = 0;
+};
+
+struct BufferOffset {
+    class Buffer* buffer = nullptr;
+    uint64_t offset = 0;
+
+    bool valid() const { return buffer != nullptr; }
+};
+
+struct StreamDataChunk {
+    const void* data = nullptr;
+    uint64_t size = 0;
+};
+
+struct StreamerDesc {
+    uint64_t constantBufferSize = 0;
+    MemoryLocation constantBufferMemoryLocation = MemoryLocation::HostUpload;
+    MemoryLocation dynamicBufferMemoryLocation = MemoryLocation::HostUpload;
+    BufferDesc dynamicBufferDesc{
+        .size = 0,
+        .structureStride = 0,
+        .usage = BufferUsageBits::TransferSource,
+        .memoryLocation = MemoryLocation::HostUpload,
+    };
+    uint64_t dynamicBufferSizePerFrame = 1024ull * 1024ull;
+    uint32_t queuedFrameCount = 2;
+};
+
+struct StreamBufferDataDesc {
+    const StreamDataChunk* dataChunks = nullptr;
+    uint32_t dataChunkCount = 0;
+    uint32_t placementAlignment = 1;
+    class Buffer* dstBuffer = nullptr;
+    uint64_t dstOffset = 0;
+};
+
+struct StreamTextureDataDesc {
+    const void* data = nullptr;
+    uint32_t dataRowPitch = 0;
+    uint32_t dataSlicePitch = 0;
+    class Texture* dstTexture = nullptr;
+    uint32_t dstMipLevel = 0;
+    uint32_t dstBaseLayer = 0;
+    uint32_t dstLayerCount = 1;
+    int32_t dstOffsetX = 0;
+    int32_t dstOffsetY = 0;
+    int32_t dstOffsetZ = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t depth = 1;
 };
 
 struct BindlessHeapDesc {
@@ -525,6 +602,7 @@ struct BufferImpl;
 struct BufferViewImpl;
 struct TextureImpl;
 struct TextureViewImpl;
+struct StreamerImpl;
 struct ShaderModuleImpl;
 struct GraphicsPipelineImpl;
 struct ComputePipelineImpl;
@@ -844,6 +922,33 @@ private:
     friend struct detail::DeviceImpl;
 };
 
+class Streamer {
+public:
+    Streamer() = default;
+    ~Streamer();
+    Streamer(Streamer&&) noexcept;
+    Streamer& operator=(Streamer&&) noexcept;
+
+    Streamer(const Streamer&) = delete;
+    Streamer& operator=(const Streamer&) = delete;
+
+    const StreamerDesc& desc() const;
+    Buffer* constantBuffer() const;
+    BufferOffset streamBufferData(const StreamBufferDataDesc& desc);
+    BufferOffset streamTextureData(const StreamTextureDataDesc& desc);
+    uint64_t streamConstantData(const void* data, uint64_t byteSize);
+    void copyStreamedData(CommandBuffer& commandBuffer);
+    void endFrame();
+
+private:
+    explicit Streamer(std::unique_ptr<detail::StreamerImpl> impl);
+
+    std::unique_ptr<detail::StreamerImpl> impl_;
+
+    friend class Device;
+    friend class CommandBuffer;
+};
+
 class CommandBuffer {
 public:
     CommandBuffer() = default;
@@ -859,9 +964,11 @@ public:
     void beginDebugLabel(const DebugLabelDesc& desc);
     void endDebugLabel();
     void barrier(const BarrierDesc& desc);
+    void copyBuffer(const BufferCopyDesc& desc);
     void copyTexture(const TextureCopyDesc& desc);
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
     void copyBufferToTexture(const BufferTextureCopyDesc& desc);
+    void copyStreamedData(Streamer& streamer);
     void beginRendering(const RenderingDesc& desc);
     void clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect);
     void endRendering();
@@ -963,6 +1070,7 @@ public:
     Result createBufferView(Buffer& buffer, const BufferViewDesc& desc, std::unique_ptr<BufferView>& outBufferView);
     Result createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& outTexture);
     Result createTextureView(Texture& texture, const TextureViewDesc& desc, std::unique_ptr<TextureView>& outTextureView);
+    Result createStreamer(const StreamerDesc& desc, std::unique_ptr<Streamer>& outStreamer);
     Result createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule);
     Result createGraphicsPipeline(const GraphicsPipelineDesc& desc, std::unique_ptr<GraphicsPipeline>& outGraphicsPipeline);
     Result createComputePipeline(const ComputePipelineDesc& desc, std::unique_ptr<ComputePipeline>& outComputePipeline);

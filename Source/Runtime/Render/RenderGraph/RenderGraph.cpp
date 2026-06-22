@@ -413,7 +413,8 @@ RenderGraphExecutionContext::RenderGraphExecutionContext(
     std::string passName,
     const RenderGraphProperties& properties,
     std::vector<Binding> bindings,
-    HistoryResourceManager* historyResources)
+    HistoryResourceManager* historyResources,
+    Streamer* streamer)
     : commandBuffer_(commandBuffer)
     , width_(width)
     , height_(height)
@@ -421,6 +422,7 @@ RenderGraphExecutionContext::RenderGraphExecutionContext(
     , properties_(properties)
     , bindings_(std::move(bindings))
     , historyResources_(historyResources)
+    , streamer_(streamer)
 {
 }
 
