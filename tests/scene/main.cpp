@@ -1,4 +1,5 @@
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include <gtest/gtest.h>
 
@@ -6,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -984,6 +986,93 @@ void testMeshletPersistence(const std::filesystem::path& directory)
     expectClusterMetadataEqual(cached.meshletLodClusters.back(), generated.meshletLodClusters.back(), "last LOD meshlet");
 }
 
+void testMeshletStreamAsset(const std::filesystem::path& directory)
+{
+    const std::filesystem::path streamDirectory = directory / "meshlet_streamasset";
+    std::filesystem::create_directories(streamDirectory);
+    const std::filesystem::path gltfPath = writeMeshletLodGridScene(streamDirectory);
+    const std::filesystem::path streamAssetPath = metallic::scene::meshletStreamAssetPathFor(gltfPath);
+    std::filesystem::remove(streamAssetPath);
+
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.load(gltfPath)) << scene.lastLoadResult().error;
+    ASSERT_GT(scene.stats().meshletLodGroupCount, 0u);
+
+    std::string reason;
+    ASSERT_TRUE(metallic::scene::buildMeshletStreamAsset(
+        metallic::scene::MeshletStreamAssetBuildDesc{
+            .scene = &scene,
+            .sourcePath = gltfPath,
+            .outputPath = streamAssetPath,
+        },
+        reason)) << reason;
+    ASSERT_TRUE(std::filesystem::exists(streamAssetPath));
+    EXPECT_GT(std::filesystem::file_size(streamAssetPath), 0u);
+
+    metallic::scene::MeshletStreamAsset asset;
+    ASSERT_TRUE(asset.open(streamAssetPath, reason)) << reason;
+    EXPECT_TRUE(asset.isCurrentForSource(gltfPath));
+    ASSERT_EQ(asset.primitiveCount(), 1u);
+    ASSERT_GE(asset.instanceCount(), 1u);
+    ASSERT_GT(asset.lodLevelCount(), 1u);
+    ASSERT_GT(asset.pageCount(), 1u);
+    ASSERT_GT(asset.maxPagePayloadBytes(), 0u);
+    ASSERT_EQ(asset.pagePayloadOffsets().size(), asset.pageCount());
+
+    const metallic::scene::MeshletStreamPrimitiveInfo& primitive = asset.primitives().front();
+    EXPECT_EQ(primitive.renderPrimitiveIndex, 0u);
+    EXPECT_GT(primitive.fallbackPageCount, 0u);
+    uint32_t minLodPageCount = std::numeric_limits<uint32_t>::max();
+    for (uint32_t lod = 0; lod < primitive.lodLevelCount; ++lod) {
+        const metallic::scene::MeshletStreamLodLevelInfo& level =
+            asset.lodLevels()[primitive.lodLevelOffset + lod];
+        minLodPageCount = std::min(minLodPageCount, level.pageCount);
+    }
+    EXPECT_EQ(primitive.fallbackPageCount, minLodPageCount);
+
+    for (uint32_t pageIndex = 0; pageIndex < asset.pageCount(); ++pageIndex) {
+        const metallic::scene::MeshletStreamPageInfo& page = asset.pages()[pageIndex];
+        EXPECT_EQ(page.payloadOffset, asset.pagePayloadOffsets()[pageIndex]);
+        EXPECT_EQ(page.payloadOffset % 16u, 0u);
+        EXPECT_GT(page.payloadSize, sizeof(metallic::scene::MeshletStreamPayloadHeader));
+        EXPECT_LE(page.payloadSize, asset.maxPagePayloadBytes());
+    }
+
+    const metallic::scene::MeshletStreamPageInfo& page = asset.pages().front();
+    const std::span<const uint8_t> payload = asset.pagePayload(0);
+    ASSERT_EQ(payload.size(), page.payloadSize);
+    metallic::scene::MeshletStreamPayloadHeader header;
+    std::memcpy(&header, payload.data(), sizeof(header));
+    EXPECT_EQ(header.version, 1u);
+    EXPECT_EQ(header.clusterCount, page.clusterCount);
+    EXPECT_EQ(header.vertexCount, page.vertexCount);
+    EXPECT_EQ(header.triangleIndexCount, page.triangleIndexCount);
+    EXPECT_EQ(header.payloadByteSize, page.payloadSize);
+
+    ASSERT_LE(
+        header.clusterOffsetBytes + header.clusterCount * sizeof(metallic::scene::MeshletStreamPayloadCluster),
+        payload.size());
+    const auto* clusters = reinterpret_cast<const metallic::scene::MeshletStreamPayloadCluster*>(
+        payload.data() + header.clusterOffsetBytes);
+    for (uint32_t clusterIndex = 0; clusterIndex < header.clusterCount; ++clusterIndex) {
+        const metallic::scene::MeshletStreamPayloadCluster& cluster = clusters[clusterIndex];
+        ASSERT_LE(cluster.vertexOffset + cluster.vertexCount, header.vertexCount);
+        ASSERT_LE(cluster.triangleOffset + cluster.triangleCount * 3u, header.triangleIndexCount);
+        for (uint32_t index = 0; index < cluster.triangleCount * 3u; ++index) {
+            const uint8_t localIndex = payload[header.triangleOffsetBytes + cluster.triangleOffset + index];
+            EXPECT_LT(localIndex, cluster.vertexCount);
+        }
+    }
+
+    asset.close();
+    {
+        std::ofstream source(gltfPath, std::ios::app);
+        source << "\n";
+    }
+    ASSERT_TRUE(asset.open(streamAssetPath, reason)) << reason;
+    EXPECT_FALSE(asset.isCurrentForSource(gltfPath));
+}
+
 void testMaterialImport(const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
@@ -1393,6 +1482,11 @@ TEST(SceneImport, MeshletLodPartition)
 TEST(SceneImport, MeshletPersistence)
 {
     testMeshletPersistence(prepareOutputDirectory());
+}
+
+TEST(SceneImport, MeshletStreamAsset)
+{
+    testMeshletStreamAsset(prepareOutputDirectory());
 }
 
 TEST(SceneImport, Materials)

@@ -6,6 +6,7 @@ find_package(slang CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PAT
 
 add_library(MetallicRuntimeRender STATIC
     Runtime/Render/HistoryResources.cpp
+    Runtime/Render/MeshletStreamResidency.cpp
     Runtime/Render/GAPI/Streamer.cpp
     Runtime/Render/RenderSample.cpp
     Runtime/Render/SlangCompiler.cpp
@@ -17,6 +18,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/ClearColorPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/CopyColorPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/GPUDrivenPreviewPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ImageSamplePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/NrdDenoisePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/RenderGraphBufferPasses.cpp
@@ -75,6 +77,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 add_library(MetallicRuntimeScene STATIC
+    Runtime/Scene/MeshletStreamAsset.cpp
     Runtime/Scene/Scene.cpp
     Runtime/Scene/TinyGltfImpl.cpp
 )

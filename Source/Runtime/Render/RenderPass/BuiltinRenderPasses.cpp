@@ -48,6 +48,10 @@ void registerBuiltInRenderGraphPasses()
         "Visualize glTF meshlet clusters with mesh shaders",
         []() { return builtin_pass::createGPUDrivenPreviewPass(); });
     registerRenderGraphPassType(
+        "GPUDrivenStreamAssetPass",
+        "Stream and visualize meshlet streamasset pages with mesh shaders",
+        []() { return builtin_pass::createGPUDrivenStreamAssetPass(); });
+    registerRenderGraphPassType(
         "ScenePathTracePass",
         "Path trace a glTF scene with RayQuery",
         []() { return builtin_pass::createScenePathTracePass(); });

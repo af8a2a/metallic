@@ -1,6 +1,9 @@
 #include "RhiTest.h"
 
+#include "Runtime/Render/MeshletStreamResidency.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/Scene.h"
 
 #include <algorithm>
 #include <array>
@@ -9,6 +12,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -554,10 +558,182 @@ public:
     }
 };
 
+class StreamerMeshletResidencyUploadTest : public RhiTest {
+public:
+    StreamerMeshletResidencyUploadTest()
+    {
+        type = RhiTestType::Command;
+        name = "streamer_meshlet_residency_upload";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        const std::filesystem::path sourcePath =
+            std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
+
+        scene::Scene scene;
+        if (!scene.load(sourcePath)) {
+            return RhiTestResult::fail("Scene::load failed: " + scene.lastLoadResult().error);
+        }
+
+        const std::filesystem::path streamAssetPath = context.outputDirectory / "streamer_residency.meshstream.bin";
+        std::string reason;
+        if (!scene::buildMeshletStreamAsset(
+                scene::MeshletStreamAssetBuildDesc{
+                    .scene = &scene,
+                    .sourcePath = sourcePath,
+                    .outputPath = streamAssetPath,
+                },
+                reason)) {
+            return RhiTestResult::fail("buildMeshletStreamAsset failed: " + reason);
+        }
+
+        scene::MeshletStreamAsset asset;
+        if (!asset.open(streamAssetPath, reason)) {
+            return RhiTestResult::fail("MeshletStreamAsset::open failed: " + reason);
+        }
+        if (asset.pageCount() == 0) {
+            return RhiTestResult::fail("streamasset has no pages");
+        }
+
+        std::vector<uint32_t> fallbackPages;
+        for (const scene::MeshletStreamPrimitiveInfo& primitive : asset.primitives()) {
+            for (uint32_t page = 0; page < primitive.fallbackPageCount; ++page) {
+                fallbackPages.push_back(primitive.fallbackPageOffset + page);
+            }
+        }
+        const uint32_t maxResidentPages = std::max<uint32_t>(
+            static_cast<uint32_t>(fallbackPages.size()) + 2u,
+            4u);
+
+        render::MeshletStreamResidencyManager residency;
+        if (!residency.initialize(
+                render::MeshletStreamResidencyDesc{
+                    .asset = &asset,
+                    .maxResidentPages = maxResidentPages,
+                    .queuedFrameCount = 2,
+                },
+                reason)) {
+            return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
+        }
+        if (!residency.lockFallbackPages(fallbackPages, reason)) {
+            return RhiTestResult::fail("lockFallbackPages failed: " + reason);
+        }
+
+        std::unique_ptr<render::Streamer> streamer;
+        render::Result result = context.device.createStreamer(makeTestStreamerDesc(), streamer);
+        if (!result || streamer == nullptr) {
+            return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::Buffer> pageBuffer;
+        result = context.device.createBuffer(
+            render::BufferDesc{
+                .size = residency.pageBufferSize(),
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            pageBuffer);
+        if (!result || pageBuffer == nullptr) {
+            return RhiTestResult::fail(std::string("createBuffer(pageBuffer) returned ") + toString(result));
+        }
+
+        residency.beginFrame();
+        const uint32_t pageIndex = 0;
+        const bool alreadyResident = residency.requestPage(pageIndex);
+        if (alreadyResident || residency.queuedUploadCount() == 0) {
+            return RhiTestResult::fail("requestPage did not queue an unloaded page");
+        }
+        const uint32_t uploaded = residency.processUploads(*streamer, *pageBuffer, 1);
+        if (uploaded != 1) {
+            return RhiTestResult::fail("processUploads did not schedule exactly one upload");
+        }
+        if (residency.pageState(pageIndex) != render::MeshletStreamPageResidencyState::PendingUpload) {
+            return RhiTestResult::fail("uploaded page did not enter PendingUpload state");
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        std::unique_ptr<render::Fence> fence;
+        RhiTestResult setup = createCommandResources(
+            context.device,
+            context.graphicsQueue,
+            commandPool,
+            commandBuffer,
+            fence);
+        if (!setup.passed) {
+            return setup;
+        }
+
+        result = commandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+        }
+        render::BufferBarrierDesc toTransfer{
+            .buffer = pageBuffer.get(),
+            .before = render::ResourceState::Undefined,
+            .after = render::ResourceState::TransferDestination,
+            .offset = 0,
+            .size = pageBuffer->desc().size,
+        };
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = &toTransfer,
+            .bufferCount = 1,
+        });
+        commandBuffer->copyStreamedData(*streamer);
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+        }
+
+        RhiTestResult submit = submitAndWait(context.graphicsQueue, *commandBuffer, *fence);
+        streamer->endFrame();
+        if (!submit.passed) {
+            return submit;
+        }
+
+        residency.beginFrame();
+        if (residency.pageResident(pageIndex)) {
+            return RhiTestResult::fail("page became resident before queued frame delay elapsed");
+        }
+        residency.beginFrame();
+        if (!residency.pageResident(pageIndex)) {
+            return RhiTestResult::fail("page did not become resident after queued frame delay elapsed");
+        }
+
+        const uint32_t slot = residency.slotForPage(pageIndex);
+        if (slot == UINT32_MAX) {
+            return RhiTestResult::fail("resident page has no slot");
+        }
+
+        std::vector<uint8_t> actual(asset.pages()[pageIndex].payloadSize);
+        pageBuffer->invalidate(
+            static_cast<uint64_t>(slot) * residency.pageStride(),
+            actual.size());
+        void* mapped = pageBuffer->map();
+        if (mapped == nullptr) {
+            return RhiTestResult::fail("page buffer did not map");
+        }
+        std::memcpy(
+            actual.data(),
+            static_cast<uint8_t*>(mapped) + static_cast<uint64_t>(slot) * residency.pageStride(),
+            actual.size());
+        pageBuffer->unmap();
+
+        const std::span<const uint8_t> expected = asset.pagePayload(pageIndex);
+        if (actual.size() != expected.size() ||
+            std::memcmp(actual.data(), expected.data(), expected.size()) != 0) {
+            return RhiTestResult::fail("streamed page payload bytes did not match streamasset payload");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(StreamerBufferUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerTextureUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerConstantUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphFlushTest);
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyUploadTest);
 
 } // namespace
 } // namespace metallic::tests

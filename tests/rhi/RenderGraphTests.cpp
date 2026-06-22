@@ -738,6 +738,8 @@ public:
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenPreview =
             render::createRenderGraphPass("GPUDrivenPreviewPass");
+        const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
+            render::createRenderGraphPass("GPUDrivenStreamAssetPass");
         const std::unique_ptr<render::RenderGraphPass> nrdDenoise =
             render::createRenderGraphPass("NrdDenoisePass");
         const std::unique_ptr<render::RenderGraphPass> streamlineDlssRr =
@@ -749,6 +751,7 @@ public:
             pathTrace == nullptr ||
             materialVisualization == nullptr ||
             gpuDrivenPreview == nullptr ||
+            gpuDrivenStreamAsset == nullptr ||
             nrdDenoise == nullptr ||
             streamlineDlssRr == nullptr) {
             return RhiTestResult::fail("failed to create built-in render graph passes");
@@ -777,6 +780,10 @@ public:
             gpuDrivenPreview->queueType() != render::QueueType::Graphics) {
             return RhiTestResult::fail("GPUDrivenPreviewPass is not classified as Raster/Graphics");
         }
+        if (gpuDrivenStreamAsset->kind() != render::RenderGraphPassKind::Unsafe ||
+            gpuDrivenStreamAsset->queueType() != render::QueueType::Graphics) {
+            return RhiTestResult::fail("GPUDrivenStreamAssetPass is not classified as Unsafe/Graphics");
+        }
         if (nrdDenoise->kind() != render::RenderGraphPassKind::Compute ||
             nrdDenoise->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("NrdDenoisePass is not classified as Compute/Compute");
@@ -792,6 +799,7 @@ public:
         bool foundPathTrace = false;
         bool foundMaterialVisualization = false;
         bool foundGPUDrivenPreview = false;
+        bool foundGPUDrivenStreamAsset = false;
         bool foundNrdDenoise = false;
         bool foundStreamlineDlssRr = false;
         for (const render::RenderGraphPassInfo& passInfo : render::listRenderGraphPassTypes()) {
@@ -813,6 +821,9 @@ public:
             } else if (passInfo.type == "GPUDrivenPreviewPass") {
                 foundGPUDrivenPreview = passInfo.kind == render::RenderGraphPassKind::Raster &&
                     passInfo.queueType == render::QueueType::Graphics;
+            } else if (passInfo.type == "GPUDrivenStreamAssetPass") {
+                foundGPUDrivenStreamAsset = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
+                    passInfo.queueType == render::QueueType::Graphics;
             } else if (passInfo.type == "NrdDenoisePass") {
                 foundNrdDenoise = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
@@ -827,6 +838,7 @@ public:
             !foundPathTrace ||
             !foundMaterialVisualization ||
             !foundGPUDrivenPreview ||
+            !foundGPUDrivenStreamAsset ||
             !foundNrdDenoise ||
             !foundStreamlineDlssRr) {
             return RhiTestResult::fail("RenderGraphPassInfo did not preserve pass kind metadata");
@@ -1869,6 +1881,63 @@ public:
             std::to_string(meshCompile.spirv.size()) +
             ", fragment words=" +
             std::to_string(fragmentCompile.spirv.size()));
+    }
+};
+
+class RenderGraphGPUDrivenStreamAssetShaderCompileTest : public RhiTest {
+public:
+    RenderGraphGPUDrivenStreamAssetShaderCompileTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_gpu_driven_streamasset_shader_compile";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::ShaderCompileResult meshCompile;
+        const char* capabilities[] = {"spvMeshShadingEXT"};
+        render::Result result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "gpu_driven_streamasset",
+                .entryPointName = "gpuDrivenStreamAssetMeshMain",
+                .searchPath = kShaderSearchPath,
+                .profileName = "glsl_460",
+                .capabilities = capabilities,
+                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+            },
+            meshCompile);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenStreamAsset mesh shader compile returned ") +
+                toString(result) +
+                ": " +
+                meshCompile.diagnostics);
+        }
+        if (meshCompile.spirv.empty()) {
+            return RhiTestResult::fail("GPUDrivenStreamAsset mesh shader produced empty SPIR-V");
+        }
+
+        render::ShaderCompileResult fragmentCompile;
+        result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "gpu_driven_streamasset",
+                .entryPointName = "gpuDrivenStreamAssetFragmentMain",
+                .searchPath = kShaderSearchPath,
+                .profileName = "glsl_460",
+            },
+            fragmentCompile);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenStreamAsset fragment shader compile returned ") +
+                toString(result) +
+                ": " +
+                fragmentCompile.diagnostics);
+        }
+        if (fragmentCompile.spirv.empty()) {
+            return RhiTestResult::fail("GPUDrivenStreamAsset fragment shader produced empty SPIR-V");
+        }
+
+        return RhiTestResult::pass();
     }
 };
 
@@ -2973,6 +3042,74 @@ public:
     }
 };
 
+class RenderGraphGPUDrivenStreamAssetPassSmokeTest : public RhiTest {
+public:
+    RenderGraphGPUDrivenStreamAssetPassSmokeTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_gpu_driven_streamasset_pass_smoke";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        render::Result result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic GPUDrivenStreamAssetPass Smoke Test",
+                .enableValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true,
+                .enableMeshShader = true,
+            },
+            device);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+            }
+            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+        }
+
+        render::RenderGraph graph;
+        graph.setName("GPUDrivenStreamAssetSmoke");
+        graph.addNode(
+            "GPUDrivenStreamAssetPass",
+            "GPUDriven",
+            render::RenderGraphProperties{
+                {"path", "Asset/StandfordBunny/scene.gltf"},
+                {"streamAssetPath", (context.outputDirectory / "gpu_driven_streamasset_smoke.meshstream.bin").string()},
+                {"maxResidentPages", 64},
+                {"maxPageUploadsPerFrame", 1},
+            });
+        graph.markOutput("GPUDriven.color");
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        result = executor.compile(*device, graph, 128, 96, log);
+        const bool hasRequiredCapabilities =
+            device->capabilities().meshShader &&
+            device->capabilities().bindlessDescriptorHeap;
+        if (!hasRequiredCapabilities) {
+            if (!render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::fail(
+                    std::string("expected Unsupported without mesh shader capabilities, got ") +
+                    toString(result) +
+                    ": " +
+                    log);
+            }
+            return RhiTestResult::pass("GPUDrivenStreamAssetPass reported Unsupported without required capabilities");
+        }
+
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RenderGraphExecutor::compile returned ") +
+                toString(result) +
+                ": " +
+                log);
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 class RenderGraphGPUDrivenPreviewPassRenderTest : public RhiTest {
 public:
     RenderGraphGPUDrivenPreviewPassRenderTest()
@@ -3096,6 +3233,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphSceneMaterialVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewShaderCompileTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPathTracingGuidesShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingSamplePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingEnvironmentRotationTest);
@@ -3110,6 +3248,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphMultiQueueSubmitTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphImageSamplePassPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMaterialShaderObjectPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassSmokeTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassRenderTest);
 
 } // namespace
