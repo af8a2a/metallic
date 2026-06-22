@@ -26,12 +26,14 @@
 #include <array>
 #include <cstdint>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <iterator>
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace metallic {
@@ -129,6 +131,31 @@ DockSpace     ID=0xB0446515 Window=0x3660BDC2 Pos=0,28 Size=2400,1322 Split=X
   DockNode    ID=0x00000002 Parent=0xB0446515 SizeRef=576,1350 Selected=0xE601B12F
 
 )ini";
+
+using StartupClock = std::chrono::steady_clock;
+
+double elapsedMilliseconds(StartupClock::time_point begin)
+{
+    return std::chrono::duration<double, std::milli>(StartupClock::now() - begin).count();
+}
+
+class StartupLogScope {
+public:
+    explicit StartupLogScope(std::string label)
+        : label_(std::move(label))
+    {
+        spdlog::info("[Startup] Begin {}", label_);
+    }
+
+    ~StartupLogScope()
+    {
+        spdlog::info("[Startup] End {} in {:.2f} ms", label_, elapsedMilliseconds(begin_));
+    }
+
+private:
+    std::string label_;
+    StartupClock::time_point begin_ = StartupClock::now();
+};
 
 float getMainDisplayScale()
 {
@@ -1622,6 +1649,11 @@ int EditorApplication::run(bool smokeTest, bool waitForGraphicsDebugger, const c
     smokeTest_ = smokeTest;
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
     startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";
+    spdlog::info(
+        "[Startup] Run requested smokeTest={} waitForGraphicsDebugger={} startupSample='{}'",
+        smokeTest_,
+        waitForGraphicsDebugger_,
+        startupSampleId_);
 
     if (!initialize()) {
         shutdown();
@@ -1667,6 +1699,8 @@ int EditorApplication::run(bool smokeTest, bool waitForGraphicsDebugger, const c
 
 bool EditorApplication::initialize()
 {
+    StartupLogScope initializeScope("Editor initialization");
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         spdlog::error("SDL_Init failed: {}", SDL_GetError());
         return false;
@@ -1705,41 +1739,50 @@ bool EditorApplication::initialize()
         return false;
     }
 
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    imguiContextCreated_ = true;
+    {
+        StartupLogScope scope("ImGui context and style setup");
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        imguiContextCreated_ = true;
 
-    ImGuiIO& io = ImGui::GetIO();
-    if (smokeTest_) {
-        io.IniFilename = nullptr;
+        ImGuiIO& io = ImGui::GetIO();
+        if (smokeTest_) {
+            io.IniFilename = nullptr;
+        }
+
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        loadDefaultImGuiLayoutIfMissing();
+
+        applyNvproImGuiStyle();
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.ScaleAllSizes(mainScale_);
+        style.FontScaleDpi = mainScale_;
+
+        ImNodes::CreateContext();
+        imnodesContextCreated_ = true;
+        applyNvproImNodesStyle();
     }
-
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    loadDefaultImGuiLayoutIfMissing();
-
-    applyNvproImGuiStyle();
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.ScaleAllSizes(mainScale_);
-    style.FontScaleDpi = mainScale_;
-
-    ImNodes::CreateContext();
-    imnodesContextCreated_ = true;
-    applyNvproImNodesStyle();
 
     if (!initializeImGuiBackends()) {
         return false;
     }
 
-    nvmlMonitor_.initialize();
+    {
+        StartupLogScope scope("NVML monitor initialization");
+        nvmlMonitor_.initialize();
+    }
 
-    graphExecutor_ = std::make_unique<render::RenderGraphExecutor>();
-    sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
-    if (!startupSampleId_.empty()) {
-        loadBuiltInSample(startupSampleId_.c_str());
-    } else {
-        resetDefaultRenderGraph();
+    {
+        StartupLogScope scope("Startup render graph and scene setup");
+        graphExecutor_ = std::make_unique<render::RenderGraphExecutor>();
+        sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
+        if (!startupSampleId_.empty()) {
+            loadBuiltInSample(startupSampleId_.c_str());
+        } else {
+            resetDefaultRenderGraph();
+        }
     }
 
     return true;
@@ -1747,21 +1790,27 @@ bool EditorApplication::initialize()
 
 bool EditorApplication::initializeRhi()
 {
-    render::Result result = render::createDevice(
-        render::DeviceDesc{
-            .applicationName = "Metallic Engine Editor",
-            .enableValidation = false,
-            .enableBindlessDescriptorHeap = true,
-            .enableShaderObject = true,
-            .enableMeshShader = true,
-            .enableRayTracingAccelerationStructure = true,
-            .enableRayQuery = true,
-            .enablePushDescriptor = true,
-            .enableClusterAccelerationStructure = true,
-            .enableStreamline = true,
-            .enableAftermath = true,
-        },
-        device_);
+    StartupLogScope initializeScope("RHI initialization");
+
+    render::Result result;
+    {
+        StartupLogScope scope("RHI createDevice");
+        result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic Engine Editor",
+                .enableValidation = false,
+                .enableBindlessDescriptorHeap = true,
+                .enableShaderObject = true,
+                .enableMeshShader = true,
+                .enableRayTracingAccelerationStructure = true,
+                .enableRayQuery = true,
+                .enablePushDescriptor = true,
+                .enableClusterAccelerationStructure = true,
+                .enableStreamline = true,
+                .enableAftermath = true,
+            },
+            device_);
+    }
     if (!result || device_ == nullptr) {
         spdlog::error("createDevice failed with Result {}", render::resultToString(result));
         return false;
@@ -1773,33 +1822,39 @@ bool EditorApplication::initializeRhi()
         return false;
     }
 
-    result = historyResources_.initialize(*device_);
-    if (!result) {
-        spdlog::error("HistoryResourceManager initialize failed with Result {}", render::resultToString(result));
-        return false;
+    {
+        StartupLogScope scope("HistoryResourceManager initialization");
+        result = historyResources_.initialize(*device_);
+        if (!result) {
+            spdlog::error("HistoryResourceManager initialize failed with Result {}", render::resultToString(result));
+            return false;
+        }
     }
 
-    result = device_->createCommandPool(*graphicsQueue_, commandPool_);
-    if (!result) {
-        spdlog::error("createCommandPool failed with Result {}", render::resultToString(result));
-        return false;
-    }
-    result = commandPool_->createCommandBuffer(commandBuffer_);
-    if (!result) {
-        spdlog::error("createCommandBuffer failed with Result {}", render::resultToString(result));
-        return false;
-    }
-    result = device_->createFence(true, frameFence_);
-    if (!result) {
-        spdlog::error("createFence failed with Result {}", render::resultToString(result));
-        return false;
-    }
-    result = device_->createSwapchainSemaphore(imageAvailableSemaphore_);
-    if (!result) {
-        spdlog::error(
-            "createSwapchainSemaphore(imageAvailable) failed with Result {}",
-            render::resultToString(result));
-        return false;
+    {
+        StartupLogScope scope("Frame synchronization resource creation");
+        result = device_->createCommandPool(*graphicsQueue_, commandPool_);
+        if (!result) {
+            spdlog::error("createCommandPool failed with Result {}", render::resultToString(result));
+            return false;
+        }
+        result = commandPool_->createCommandBuffer(commandBuffer_);
+        if (!result) {
+            spdlog::error("createCommandBuffer failed with Result {}", render::resultToString(result));
+            return false;
+        }
+        result = device_->createFence(true, frameFence_);
+        if (!result) {
+            spdlog::error("createFence failed with Result {}", render::resultToString(result));
+            return false;
+        }
+        result = device_->createSwapchainSemaphore(imageAvailableSemaphore_);
+        if (!result) {
+            spdlog::error(
+                "createSwapchainSemaphore(imageAvailable) failed with Result {}",
+                render::resultToString(result));
+            return false;
+        }
     }
 
     int width = 0;
@@ -1808,17 +1863,24 @@ bool EditorApplication::initializeRhi()
         spdlog::error("SDL_GetWindowSizeInPixels failed: {}", SDL_GetError());
         return false;
     }
-    if (!createOrResizeSwapchain(
-            static_cast<uint32_t>(std::max(width, 1)),
-            static_cast<uint32_t>(std::max(height, 1)))) {
-        return false;
+    {
+        StartupLogScope scope("Initial swapchain creation");
+        if (!createOrResizeSwapchain(
+                static_cast<uint32_t>(std::max(width, 1)),
+                static_cast<uint32_t>(std::max(height, 1)))) {
+            return false;
+        }
     }
 
+    StartupLogScope scope("Viewport sampler creation");
     return createViewportSampler();
 }
 
 bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
 {
+    StartupLogScope scope(
+        "Swapchain create/resize " + std::to_string(width) + "x" + std::to_string(height));
+
     if (device_ == nullptr || width == 0 || height == 0) {
         return false;
     }
@@ -1909,6 +1971,8 @@ void EditorApplication::destroySwapchainResources()
 
 bool EditorApplication::initializeImGuiBackends()
 {
+    StartupLogScope scope("ImGui SDL/Vulkan backend initialization");
+
     imguiPlatformInitialized_ = ImGui_ImplSDL3_InitForVulkan(window_);
     if (!imguiPlatformInitialized_) {
         spdlog::error("ImGui SDL3 Vulkan platform backend initialization failed");
@@ -3486,21 +3550,30 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
         }
     }
 
+    StartupLogScope previewScope(
+        "Viewport preview prepare " + std::to_string(width) + "x" + std::to_string(height));
     destroyViewportTexture();
 
     std::string log;
     render::RenderGraphCompileOptions compileOptions;
     compileOptions.extraOutputs.push_back(previewOutput);
     compileOptions.enablePreviewOutputAccess = true;
-    render::Result result = graphExecutor_->compile(*device_, renderGraph_, width, height, compileOptions, log);
+    render::Result result;
+    {
+        StartupLogScope scope("RenderGraph compile for preview output '" + previewOutput + "'");
+        result = graphExecutor_->compile(*device_, renderGraph_, width, height, compileOptions, log);
+    }
     renderGraphStatus_ = log;
     if (!result) {
         spdlog::error("RenderGraph compile failed with Result {}", render::resultToString(result));
         return false;
     }
 
-    if (!bindViewportPreviewOutput(previewOutput)) {
-        return false;
+    {
+        StartupLogScope scope("Bind viewport preview output '" + previewOutput + "'");
+        if (!bindViewportPreviewOutput(previewOutput)) {
+            return false;
+        }
     }
 
     viewportTextureWidth_ = width;
@@ -3784,12 +3857,21 @@ bool EditorApplication::renderVulkanFrame()
 
 void EditorApplication::loadBuiltInSample(const char* sampleId)
 {
+    StartupLogScope scope(std::string("Load built-in sample '") + (sampleId != nullptr ? sampleId : "") + "'");
+
     render::RenderSampleLoadResult sample;
     std::string message;
     if (!render::loadBuiltInRenderSample(sampleId, sample, message)) {
         renderGraphStatus_ = message;
+        spdlog::warn("[Startup] Built-in sample load failed: {}", message);
         return;
     }
+    spdlog::info(
+        "[Startup] Loaded sample '{}' graph='{}' scene='{}' previewOutput='{}'",
+        sample.desc.name,
+        sample.desc.graphPath,
+        sample.desc.scenePath,
+        sample.desc.previewOutput);
 
     renderGraph_ = std::move(sample.graph);
     graphEditorPositionsInitialized_ = false;
@@ -3824,11 +3906,14 @@ void EditorApplication::saveRenderGraph()
 
 void EditorApplication::loadRenderGraph()
 {
+    StartupLogScope scope(std::string("Load render graph '") + graphFilePath_ + "'");
+
     render::RenderGraph loadedGraph;
     std::string message;
     const std::filesystem::path path = resolveGraphAssetPath(graphFilePath_);
     if (!render::loadRenderGraphFromFile(path, loadedGraph, message)) {
         renderGraphStatus_ = message;
+        spdlog::warn("[Startup] Render graph load failed: {}", message);
         return;
     }
     renderGraph_ = std::move(loadedGraph);
@@ -3933,6 +4018,8 @@ void EditorApplication::addRecentScenePath(const std::filesystem::path& path)
 
 void EditorApplication::applyLoadedSceneToRenderGraph(const std::filesystem::path& path)
 {
+    StartupLogScope scope("Synchronize loaded scene path into RenderGraph");
+
     const std::string graphScenePath = displayPathForProperty(path);
     bool changed = false;
 
@@ -3969,6 +4056,8 @@ void EditorApplication::applyLoadedSceneToRenderGraph(const std::filesystem::pat
 
 void EditorApplication::applyLoadedSceneCamera()
 {
+    StartupLogScope scope("Apply loaded scene camera to RenderGraph");
+
     if (!scene_.valid() || scene_.cameras().empty()) {
         return;
     }
@@ -4112,6 +4201,8 @@ void EditorApplication::applyEnvironmentToRenderGraph(const std::filesystem::pat
 
 void EditorApplication::loadScene()
 {
+    StartupLogScope scope(std::string("Editor scene load '") + sceneFilePath_ + "'");
+
     clearSceneRtx();
     historyResources_.invalidateAll();
 
@@ -4126,6 +4217,7 @@ void EditorApplication::loadScene()
         sceneStatus_ = loadResult.error.empty()
             ? "Failed to load scene."
             : "Failed to load scene: " + loadResult.error;
+        spdlog::warn("[Startup] Scene load failed: {}", sceneStatus_);
         return;
     }
 
@@ -4139,10 +4231,20 @@ void EditorApplication::loadScene()
     const scene::SceneStats& stats = scene_.stats();
     sceneStatus_ = "Loaded " + path.string() + " (" + std::to_string(stats.renderNodeCount) +
         " render nodes, " + std::to_string(scene_.nodes().size()) + " scene nodes).";
+    spdlog::info(
+        "[Startup] Editor scene loaded nodes={} renderNodes={} primitives={} triangles={} images={} textures={}",
+        scene_.nodes().size(),
+        stats.renderNodeCount,
+        stats.primitiveCount,
+        stats.triangleCount,
+        stats.imageCount,
+        stats.textureCount);
 }
 
 void EditorApplication::buildSceneRtx()
 {
+    StartupLogScope scope("Editor RTX acceleration structure build");
+
     if (sceneRtx_ == nullptr) {
         sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
     }
@@ -4160,6 +4262,18 @@ void EditorApplication::buildSceneRtx()
     sceneRtxStatus_ = log.empty()
         ? std::string("RTX AS build returned ") + render::resultToString(result)
         : log;
+    if (result) {
+        const render::vulkan::SceneRtxStats& stats = sceneRtx_->stats();
+        spdlog::info(
+            "[Startup] Editor RTX build completed blas={} instances={} triangles={} asBytes={} scratchBytes={}",
+            stats.blasCount,
+            stats.instanceCount,
+            stats.triangleCount,
+            stats.accelerationStructureBytes,
+            stats.scratchBytes);
+    } else {
+        spdlog::warn("[Startup] Editor RTX build failed: {}", sceneRtxStatus_);
+    }
 }
 
 void EditorApplication::clearSceneRtx()

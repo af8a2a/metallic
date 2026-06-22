@@ -91,6 +91,7 @@ target_link_libraries(MetallicRuntimeScene PUBLIC
     MathLib
     meshoptimizer
     nlohmann_json
+    spdlog::spdlog
     tinygltf
 )
 

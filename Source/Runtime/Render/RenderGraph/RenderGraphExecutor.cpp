@@ -3,6 +3,8 @@
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -16,6 +18,35 @@
 namespace metallic::render {
 
 using namespace detail;
+
+namespace {
+
+using RenderGraphLogClock = std::chrono::steady_clock;
+
+double renderGraphElapsedMilliseconds(RenderGraphLogClock::time_point begin)
+{
+    return std::chrono::duration<double, std::milli>(RenderGraphLogClock::now() - begin).count();
+}
+
+class RenderGraphLogScope {
+public:
+    explicit RenderGraphLogScope(std::string label)
+        : label_(std::move(label))
+    {
+        spdlog::info("[RenderGraph] Begin {}", label_);
+    }
+
+    ~RenderGraphLogScope()
+    {
+        spdlog::info("[RenderGraph] End {} in {:.2f} ms", label_, renderGraphElapsedMilliseconds(begin_));
+    }
+
+private:
+    std::string label_;
+    RenderGraphLogClock::time_point begin_ = RenderGraphLogClock::now();
+};
+
+} // namespace
 
 RenderGraphProperties mergeRenderGraphProperties(
     const RenderGraphProperties& staticProperties,
@@ -792,6 +823,15 @@ Result RenderGraphExecutor::compile(
     const RenderGraphCompileOptions& options,
     std::string& log)
 {
+    RenderGraphLogScope compileScope(
+        "compile graph '" + graph.name() + "' " + std::to_string(width) + "x" + std::to_string(height));
+    spdlog::info(
+        "[RenderGraph] Compile inputs graphNodes={} graphEdges={} markedOutputs={} extraOutputs={}",
+        graph.nodes().size(),
+        graph.edges().size(),
+        graph.outputs().size(),
+        options.extraOutputs.size());
+
     if (width == 0 || height == 0) {
         log = validationPrefix("invalid default dimensions");
         return makeError(Error::InvalidArgument);
@@ -809,8 +849,16 @@ Result RenderGraphExecutor::compile(
         impl_->isCompiled = false;
         return makeError(Error::InvalidArgument);
     }
+    spdlog::info(
+        "[RenderGraph] Active graph passCount={} requestedExtraOutputs={}",
+        activeGraph.executionOrder.size(),
+        options.extraOutputs.size());
 
-    Result pendingResult = impl_->waitForSubmittedWork(UINT64_MAX);
+    Result pendingResult;
+    {
+        RenderGraphLogScope scope("wait for previous submitted RenderGraph work");
+        pendingResult = impl_->waitForSubmittedWork(UINT64_MAX);
+    }
     if (!pendingResult) {
         log = resultMessage("RenderGraph waitForSubmittedWork", pendingResult);
         impl_->isCompiled = false;
@@ -842,12 +890,20 @@ Result RenderGraphExecutor::compile(
 
     if (canReuseCompiledPasses) {
         impl_->isCompiled = false;
-        Result refreshResult = impl_->refreshReusablePasses(graph, activeGraph, compileContext, log);
+        Result refreshResult;
+        {
+            RenderGraphLogScope scope("refresh reusable passes");
+            refreshResult = impl_->refreshReusablePasses(graph, activeGraph, compileContext, log);
+        }
         if (!refreshResult) {
             return refreshResult;
         }
 
-        Result resourceResult = impl_->rebuildGraphResources(device, graph, activeGraph, options, log);
+        Result resourceResult;
+        {
+            RenderGraphLogScope scope("rebuild graph resources");
+            resourceResult = impl_->rebuildGraphResources(device, graph, activeGraph, options, log);
+        }
         if (!resourceResult) {
             return resourceResult;
         }
@@ -894,6 +950,7 @@ Result RenderGraphExecutor::compile(
             .reflection = std::move(reflection),
         });
     }
+    spdlog::info("[RenderGraph] Created {} compiled pass objects", impl_->executionList.size());
 
     impl_->rebuildInputAliases(graph, activeGraph);
     Impl::BindlessResourcePlan bindlessPlan = impl_->collectBindlessResourcePlan();
@@ -905,7 +962,12 @@ Result RenderGraphExecutor::compile(
     }
 
     for (Impl::CompiledNode& node : impl_->executionList) {
-        Result result = node.pass->compile(compileContext, log);
+        Result result;
+        {
+            RenderGraphLogScope scope(
+                "compile pass '" + node.name + "' (" + node.type + ")");
+            result = node.pass->compile(compileContext, log);
+        }
         if (!result) {
             impl_->isCompiled = false;
             return result;
@@ -913,13 +975,17 @@ Result RenderGraphExecutor::compile(
         node.pass->setProperties(node.effectiveProperties);
     }
 
-    Result resourceResult = impl_->allocateGraphResources(
-        device,
-        graph,
-        activeGraph,
-        options,
-        bindlessPlan,
-        log);
+    Result resourceResult;
+    {
+        RenderGraphLogScope scope("allocate graph resources");
+        resourceResult = impl_->allocateGraphResources(
+            device,
+            graph,
+            activeGraph,
+            options,
+            bindlessPlan,
+            log);
+    }
     if (!resourceResult) {
         impl_->isCompiled = false;
         return resourceResult;

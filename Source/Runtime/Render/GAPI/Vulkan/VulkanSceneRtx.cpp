@@ -11,8 +11,11 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Profiling/NsightAftermath.h"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -22,6 +25,31 @@
 
 namespace metallic::render::vulkan {
 namespace {
+
+using RtxLogClock = std::chrono::steady_clock;
+
+double rtxElapsedMilliseconds(RtxLogClock::time_point begin)
+{
+    return std::chrono::duration<double, std::milli>(RtxLogClock::now() - begin).count();
+}
+
+class RtxLogScope {
+public:
+    explicit RtxLogScope(std::string label)
+        : label_(std::move(label))
+    {
+        spdlog::info("[RTX] Begin {}", label_);
+    }
+
+    ~RtxLogScope()
+    {
+        spdlog::info("[RTX] End {} in {:.2f} ms", label_, rtxElapsedMilliseconds(begin_));
+    }
+
+private:
+    std::string label_;
+    RtxLogClock::time_point begin_ = RtxLogClock::now();
+};
 
 constexpr VkBuildAccelerationStructureFlagsKHR kBuildFlags =
     VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
@@ -884,6 +912,7 @@ SceneRtxBuilder& SceneRtxBuilder::operator=(SceneRtxBuilder&&) noexcept = defaul
 Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log)
 {
     log.clear();
+    RtxLogScope buildScope("SceneRtxBuilder build");
     if (!scene.valid()) {
         log = "Scene is not loaded.";
         return makeError(Error::InvalidArgument);
@@ -900,6 +929,10 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         return makeError(Error::InvalidArgument);
     }
     volkLoadDevice(nativeDeviceInfo.device);
+    spdlog::info(
+        "[RTX] Scene input renderPrimitives={} renderNodes={}",
+        scene.renderPrimitives().size(),
+        scene.renderNodes().size());
 
     clear();
     impl_->device = nativeDeviceInfo.device;
@@ -910,6 +943,7 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
     std::vector<RtxVertex> vertices;
     std::vector<uint32_t> indices;
 
+    const auto collectInputsBegin = RtxLogClock::now();
     for (uint32_t primitiveIndex = 0; primitiveIndex < renderPrimitives.size(); ++primitiveIndex) {
         const scene::RenderPrimitive& primitive = renderPrimitives[primitiveIndex];
         if (primitive.mode != 4 || primitive.positions.size() < 3) {
@@ -963,6 +997,12 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         primitiveToBlas[primitiveIndex] = static_cast<int32_t>(primitiveInputs.size());
         primitiveInputs.push_back(input);
     }
+    spdlog::info(
+        "[RTX] Collected BLAS inputs primitives={} vertices={} indices={} in {:.2f} ms",
+        primitiveInputs.size(),
+        vertices.size(),
+        indices.size(),
+        rtxElapsedMilliseconds(collectInputsBegin));
 
     if (primitiveInputs.empty() || vertices.empty() || indices.empty()) {
         log = "Scene contains no triangle primitives suitable for RTX acceleration structures.";
@@ -970,6 +1010,7 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         return makeError(Error::Unsupported);
     }
 
+    const auto uploadGeometryBegin = RtxLogClock::now();
     Result result = createBuffer(
         device,
         "createBuffer(RTX vertices)",
@@ -1005,6 +1046,11 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         clear();
         return result;
     }
+    spdlog::info(
+        "[RTX] Uploaded RTX geometry buffers vertexBytes={} indexBytes={} in {:.2f} ms",
+        vertices.size() * sizeof(RtxVertex),
+        indices.size() * sizeof(uint32_t),
+        rtxElapsedMilliseconds(uploadGeometryBegin));
 
     const NativeBuffer nativeVertexBuffer = nativeBuffer(*impl_->vertexBuffer);
     const NativeBuffer nativeIndexBuffer = nativeBuffer(*impl_->indexBuffer);
@@ -1014,6 +1060,7 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         return makeError(Error::Failure);
     }
 
+    const auto createBlasBegin = RtxLogClock::now();
     impl_->blases.resize(primitiveInputs.size());
     VkDeviceSize maxScratchSize = 0;
     for (size_t blasIndex = 0; blasIndex < primitiveInputs.size(); ++blasIndex) {
@@ -1043,7 +1090,12 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
             return result;
         }
     }
+    spdlog::info(
+        "[RTX] Created {} BLAS objects in {:.2f} ms",
+        impl_->blases.size(),
+        rtxElapsedMilliseconds(createBlasBegin));
 
+    const auto collectInstancesBegin = RtxLogClock::now();
     std::vector<VkAccelerationStructureInstanceKHR> instances;
     instances.reserve(scene.renderNodes().size());
     for (const scene::RenderNode& renderNode : scene.renderNodes()) {
@@ -1067,6 +1119,10 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         instance.accelerationStructureReference = impl_->blases[static_cast<size_t>(blasIndex)].address;
         instances.push_back(instance);
     }
+    spdlog::info(
+        "[RTX] Collected {} TLAS instances in {:.2f} ms",
+        instances.size(),
+        rtxElapsedMilliseconds(collectInstancesBegin));
 
     if (instances.empty()) {
         log = "Scene contains no visible RTX instances.";
@@ -1074,6 +1130,7 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         return makeError(Error::Unsupported);
     }
 
+    const auto createTlasInputsBegin = RtxLogClock::now();
     result = createBuffer(
         device,
         "createBuffer(RTX instances)",
@@ -1158,7 +1215,12 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         clear();
         return makeError(Error::Failure);
     }
+    spdlog::info(
+        "[RTX] Created TLAS, instance, and scratch resources scratchBytes={} in {:.2f} ms",
+        scratchSize,
+        rtxElapsedMilliseconds(createTlasInputsBegin));
 
+    const auto recordBuildBegin = RtxLogClock::now();
     std::unique_ptr<CommandPool> commandPool;
     result = device.createCommandPool(queue, commandPool);
     if (!result) {
@@ -1223,8 +1285,14 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         clear();
         return result;
     }
+    spdlog::info(
+        "[RTX] Recorded RTX AS build commands blasCount={} instanceCount={} in {:.2f} ms",
+        primitiveInputs.size(),
+        instances.size(),
+        rtxElapsedMilliseconds(recordBuildBegin));
 
     CommandBuffer* submittedCommandBuffers[] = {commandBuffer.get()};
+    const auto submitBegin = RtxLogClock::now();
     result = queue.submit(QueueSubmitDesc{
         .commandBuffers = submittedCommandBuffers,
         .commandBufferCount = 1,
@@ -1235,13 +1303,16 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         clear();
         return result;
     }
+    spdlog::info("[RTX] Submitted RTX AS build in {:.2f} ms", rtxElapsedMilliseconds(submitBegin));
 
+    const auto waitBegin = RtxLogClock::now();
     result = fence->wait();
     if (!result) {
         log = resultMessage("Fence::wait(RTX AS build)", result);
         clear();
         return result;
     }
+    spdlog::info("[RTX] RTX AS build fence wait completed in {:.2f} ms", rtxElapsedMilliseconds(waitBegin));
 
     uint64_t accelerationBytes = tlasSizeInfo.accelerationStructureSize;
     uint64_t triangleCount = 0;
@@ -1269,6 +1340,14 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         " BLAS, " +
         std::to_string(impl_->stats.instanceCount) +
         " TLAS instances.";
+    spdlog::info(
+        "[RTX] Built acceleration structures blas={} instances={} triangles={} geometryBytes={} asBytes={} scratchBytes={}",
+        impl_->stats.blasCount,
+        impl_->stats.instanceCount,
+        impl_->stats.triangleCount,
+        impl_->stats.geometryBytes,
+        impl_->stats.accelerationStructureBytes,
+        impl_->stats.scratchBytes);
     return {};
 }
 

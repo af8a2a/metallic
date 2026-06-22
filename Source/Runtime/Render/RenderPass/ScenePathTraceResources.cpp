@@ -4,7 +4,10 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -25,6 +28,31 @@ constexpr const char* kDefaultPathTraceScenePath = PROJECT_SOURCE_DIR "/Asset/me
 constexpr int32_t kGltfTriangleListMode = 4;
 constexpr uint32_t kInvalidMaterialTextureIndex = std::numeric_limits<uint32_t>::max();
 constexpr uint32_t kPrimitiveHasAuthoredTangents = 1u << 0u;
+
+using SceneResourceLogClock = std::chrono::steady_clock;
+
+double sceneResourceElapsedMilliseconds(SceneResourceLogClock::time_point begin)
+{
+    return std::chrono::duration<double, std::milli>(SceneResourceLogClock::now() - begin).count();
+}
+
+class SceneResourceLogScope {
+public:
+    explicit SceneResourceLogScope(std::string label)
+        : label_(std::move(label))
+    {
+        spdlog::info("[SceneResources] Begin {}", label_);
+    }
+
+    ~SceneResourceLogScope()
+    {
+        spdlog::info("[SceneResources] End {} in {:.2f} ms", label_, sceneResourceElapsedMilliseconds(begin_));
+    }
+
+private:
+    std::string label_;
+    SceneResourceLogClock::time_point begin_ = SceneResourceLogClock::now();
+};
 
 struct ScenePathTraceGpuVertex {
     float position[4] = {};
@@ -1096,6 +1124,7 @@ struct ScenePathTraceResources::Impl {
 
         const uint8_t fallbackPixels[4] = {255, 255, 255, 255};
         ScenePathTraceMaterialTexture fallbackTexture;
+        const auto fallbackBegin = SceneResourceLogClock::now();
         Result result = createMaterialTexture(
             device,
             fallbackPixels,
@@ -1108,7 +1137,12 @@ struct ScenePathTraceResources::Impl {
             return result;
         }
         materialTextures.push_back(std::move(fallbackTexture));
+        spdlog::info(
+            "[SceneResources] Material texture fallback prepared in {:.2f} ms",
+            sceneResourceElapsedMilliseconds(fallbackBegin));
 
+        uint32_t decodedTextureCount = 0;
+        uint64_t decodedTextureBytes = 0;
         for (uint32_t textureIndex = 0; textureIndex < loadedScene.textures().size(); ++textureIndex) {
             if (materialTextures.size() >= kScenePathTraceMaxMaterialTextures) {
                 log = "ScenePathTracePass exceeded the material texture descriptor limit";
@@ -1116,14 +1150,34 @@ struct ScenePathTraceResources::Impl {
             }
 
             DecodedMaterialTexture decodedTexture;
+            const auto decodeBegin = SceneResourceLogClock::now();
             if (!decodeSceneTexture(loadedScene, textureIndex, decodedTexture, log)) {
+                spdlog::info(
+                    "[SceneResources] Material texture {} skipped during decode in {:.2f} ms",
+                    textureIndex,
+                    sceneResourceElapsedMilliseconds(decodeBegin));
                 continue;
             }
             if (decodedTexture.pixels.empty()) {
+                spdlog::info(
+                    "[SceneResources] Material texture {} decoded empty payload in {:.2f} ms",
+                    textureIndex,
+                    sceneResourceElapsedMilliseconds(decodeBegin));
                 continue;
             }
+            spdlog::info(
+                "[SceneResources] Material texture {} decoded '{}' {}x{} bytes={} in {:.2f} ms",
+                textureIndex,
+                decodedTexture.label,
+                decodedTexture.width,
+                decodedTexture.height,
+                decodedTexture.pixels.size(),
+                sceneResourceElapsedMilliseconds(decodeBegin));
+            ++decodedTextureCount;
+            decodedTextureBytes += decodedTexture.pixels.size();
 
             ScenePathTraceMaterialTexture materialTexture;
+            const auto createBegin = SceneResourceLogClock::now();
             result = createMaterialTexture(
                 device,
                 decodedTexture.pixels.data(),
@@ -1135,6 +1189,12 @@ struct ScenePathTraceResources::Impl {
             if (!result) {
                 return result;
             }
+            spdlog::info(
+                "[SceneResources] Material texture {} GPU resources mipCount={} uploadBytes={} in {:.2f} ms",
+                textureIndex,
+                materialTexture.mipCount,
+                materialTexture.byteSize,
+                sceneResourceElapsedMilliseconds(createBegin));
 
             const uint32_t materialTextureIndex = static_cast<uint32_t>(materialTextures.size());
             outTextureIndexMap[textureIndex] = materialTextureIndex;
@@ -1153,6 +1213,11 @@ struct ScenePathTraceResources::Impl {
             materialTextureViews[textureIndex] = materialTextures[textureIndex].view.get();
         }
         materialTextureCount = static_cast<uint32_t>(materialTextures.size());
+        spdlog::info(
+            "[SceneResources] Material textures prepared decoded={} decodedBytes={} descriptorCount={}",
+            decodedTextureCount,
+            decodedTextureBytes,
+            materialTextureCount);
         return {};
     }
 
@@ -1168,7 +1233,16 @@ struct ScenePathTraceResources::Impl {
 
         if (!path.empty()) {
             DecodedEnvironmentTexture decodedEnvironment;
+            const auto decodeBegin = SceneResourceLogClock::now();
             if (decodeEnvironmentTexture(path, decodedEnvironment, log) && !decodedEnvironment.pixels.empty()) {
+                spdlog::info(
+                    "[SceneResources] Environment decoded '{}' {}x{} texels={} in {:.2f} ms",
+                    decodedEnvironment.label,
+                    decodedEnvironment.width,
+                    decodedEnvironment.height,
+                    decodedEnvironment.pixels.size() / 4u,
+                    sceneResourceElapsedMilliseconds(decodeBegin));
+                const auto textureBegin = SceneResourceLogClock::now();
                 Result result = createEnvironmentTexture(
                     device,
                     decodedEnvironment.pixels.data(),
@@ -1180,7 +1254,17 @@ struct ScenePathTraceResources::Impl {
                 if (!result) {
                     return result;
                 }
+                spdlog::info(
+                    "[SceneResources] Environment GPU texture resources uploadBytes={} in {:.2f} ms",
+                    environmentTexture.byteSize,
+                    sceneResourceElapsedMilliseconds(textureBegin));
+                const auto importanceBegin = SceneResourceLogClock::now();
                 EnvironmentImportanceData importanceData = buildEnvironmentImportanceData(decodedEnvironment);
+                spdlog::info(
+                    "[SceneResources] Environment importance table built texels={} in {:.2f} ms",
+                    importanceData.texelCount,
+                    sceneResourceElapsedMilliseconds(importanceBegin));
+                const auto uploadBegin = SceneResourceLogClock::now();
                 result = uploadStorageBuffer(
                     device,
                     importanceData.aliasTable.data(),
@@ -1194,11 +1278,20 @@ struct ScenePathTraceResources::Impl {
                 }
                 environmentImportanceTexelCount = importanceData.texelCount;
                 environmentMapAvailable = true;
+                spdlog::info(
+                    "[SceneResources] Environment importance upload bytes={} in {:.2f} ms",
+                    importanceData.aliasTable.size() * sizeof(EnvironmentAliasEntry),
+                    sceneResourceElapsedMilliseconds(uploadBegin));
                 return {};
             }
+            spdlog::info(
+                "[SceneResources] Environment decode skipped/failed '{}' in {:.2f} ms",
+                path.string(),
+                sceneResourceElapsedMilliseconds(decodeBegin));
         }
 
         const float fallbackPixels[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        const auto fallbackBegin = SceneResourceLogClock::now();
         Result result = createEnvironmentTexture(
             device,
             fallbackPixels,
@@ -1210,9 +1303,13 @@ struct ScenePathTraceResources::Impl {
         if (!result) {
             return result;
         }
+        spdlog::info(
+            "[SceneResources] Environment fallback texture prepared in {:.2f} ms",
+            sceneResourceElapsedMilliseconds(fallbackBegin));
 
         const EnvironmentAliasEntry fallbackAliasTable[1] = {EnvironmentAliasEntry{}};
-        return uploadStorageBuffer(
+        const auto uploadBegin = SceneResourceLogClock::now();
+        result = uploadStorageBuffer(
             device,
             fallbackAliasTable,
             sizeof(fallbackAliasTable),
@@ -1220,6 +1317,10 @@ struct ScenePathTraceResources::Impl {
             environmentImportanceBuffer,
             log,
             "ScenePathTracePass environment fallback importance alias table");
+        spdlog::info(
+            "[SceneResources] Environment fallback importance upload in {:.2f} ms",
+            sceneResourceElapsedMilliseconds(uploadBegin));
+        return result;
     }
 
     Result uploadTexture(CommandBuffer& commandBuffer, ScenePathTraceMaterialTexture& texture)
@@ -1382,41 +1483,79 @@ Result ScenePathTraceResources::prepare(
     const std::filesystem::path path = scenePathFromProperties(properties);
     const std::filesystem::path environmentPath = environmentPathFromProperties(properties);
     if (impl_->valid() && impl_->scenePath == path && impl_->environmentPath == environmentPath) {
+        spdlog::info(
+            "[SceneResources] Reuse prepared scene='{}' environment='{}'",
+            path.string(),
+            environmentPath.string());
         return {};
     }
 
+    SceneResourceLogScope prepareScope(
+        "prepare scene='" + path.string() + "' environment='" + environmentPath.string() + "'");
     impl_->clear();
 
     scene::Scene loadedScene;
-    if (!loadedScene.load(path)) {
-        log = "ScenePathTracePass failed to load glTF: " + loadedScene.lastLoadResult().error;
-        return makeError(Error::Failure);
+    {
+        SceneResourceLogScope scope("load scene for render pass resources");
+        if (!loadedScene.load(path)) {
+            log = "ScenePathTracePass failed to load glTF: " + loadedScene.lastLoadResult().error;
+            return makeError(Error::Failure);
+        }
     }
     if (!loadedScene.bounds().valid) {
         log = "ScenePathTracePass scene bounds are unavailable";
         return makeError(Error::Failure);
     }
+    const scene::SceneStats& sceneStats = loadedScene.stats();
+    spdlog::info(
+        "[SceneResources] Loaded scene stats nodes={} renderNodes={} primitives={} triangles={} images={} textures={}",
+        loadedScene.nodes().size(),
+        sceneStats.renderNodeCount,
+        sceneStats.primitiveCount,
+        sceneStats.triangleCount,
+        sceneStats.imageCount,
+        sceneStats.textureCount);
 
     std::vector<uint32_t> textureIndexMap;
-    Result result = impl_->buildMaterialTextures(device, loadedScene, textureIndexMap, log);
+    Result result;
+    {
+        SceneResourceLogScope scope("build material textures");
+        result = impl_->buildMaterialTextures(device, loadedScene, textureIndexMap, log);
+    }
     if (!result) {
         impl_->clear();
         return result;
     }
-    result = impl_->buildEnvironmentTexture(device, environmentPath, log);
+    {
+        SceneResourceLogScope scope("build environment texture");
+        result = impl_->buildEnvironmentTexture(device, environmentPath, log);
+    }
     if (!result) {
         impl_->clear();
         return result;
     }
 
     ScenePathTraceGpuScene gpuScene;
-    if (!buildGpuScene(loadedScene, textureIndexMap, gpuScene, log)) {
-        impl_->clear();
-        return makeError(Error::Failure);
+    {
+        SceneResourceLogScope scope("build GPU scene payload");
+        if (!buildGpuScene(loadedScene, textureIndexMap, gpuScene, log)) {
+            impl_->clear();
+            return makeError(Error::Failure);
+        }
     }
+    spdlog::info(
+        "[SceneResources] GPU scene payload vertices={} indices={} primitives={} instances={} materials={}",
+        gpuScene.vertices.size(),
+        gpuScene.indices.size(),
+        gpuScene.primitives.size(),
+        gpuScene.instances.size(),
+        gpuScene.materials.size());
 
     std::string rtxLog;
-    result = impl_->rtxBuilder.build(device, graphicsQueue, loadedScene, rtxLog);
+    {
+        SceneResourceLogScope scope("build RTX acceleration structures for render pass");
+        result = impl_->rtxBuilder.build(device, graphicsQueue, loadedScene, rtxLog);
+    }
     if (!result) {
         appendLogBlock(log, rtxLog);
         impl_->clear();
@@ -1424,65 +1563,68 @@ Result ScenePathTraceResources::prepare(
     }
     appendLogBlock(log, rtxLog);
 
-    result = uploadStorageBuffer(
-        device,
-        gpuScene.vertices.data(),
-        static_cast<uint64_t>(gpuScene.vertices.size() * sizeof(ScenePathTraceGpuVertex)),
-        sizeof(ScenePathTraceGpuVertex),
-        impl_->vertexBuffer,
-        log,
-        "ScenePathTracePass vertices");
-    if (!result) {
-        impl_->clear();
-        return result;
-    }
-    result = uploadStorageBuffer(
-        device,
-        gpuScene.indices.data(),
-        static_cast<uint64_t>(gpuScene.indices.size() * sizeof(uint32_t)),
-        sizeof(uint32_t),
-        impl_->indexBuffer,
-        log,
-        "ScenePathTracePass indices");
-    if (!result) {
-        impl_->clear();
-        return result;
-    }
-    result = uploadStorageBuffer(
-        device,
-        gpuScene.primitives.data(),
-        static_cast<uint64_t>(gpuScene.primitives.size() * sizeof(ScenePathTraceGpuPrimitive)),
-        sizeof(ScenePathTraceGpuPrimitive),
-        impl_->primitiveBuffer,
-        log,
-        "ScenePathTracePass primitives");
-    if (!result) {
-        impl_->clear();
-        return result;
-    }
-    result = uploadStorageBuffer(
-        device,
-        gpuScene.instances.data(),
-        static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGpuInstance)),
-        sizeof(ScenePathTraceGpuInstance),
-        impl_->instanceBuffer,
-        log,
-        "ScenePathTracePass instances");
-    if (!result) {
-        impl_->clear();
-        return result;
-    }
-    result = uploadStorageBuffer(
-        device,
-        gpuScene.materials.data(),
-        static_cast<uint64_t>(gpuScene.materials.size() * sizeof(ScenePathTraceGpuMaterial)),
-        sizeof(ScenePathTraceGpuMaterial),
-        impl_->materialBuffer,
-        log,
-        "ScenePathTracePass materials");
-    if (!result) {
-        impl_->clear();
-        return result;
+    {
+        SceneResourceLogScope scope("upload GPU scene storage buffers");
+        result = uploadStorageBuffer(
+            device,
+            gpuScene.vertices.data(),
+            static_cast<uint64_t>(gpuScene.vertices.size() * sizeof(ScenePathTraceGpuVertex)),
+            sizeof(ScenePathTraceGpuVertex),
+            impl_->vertexBuffer,
+            log,
+            "ScenePathTracePass vertices");
+        if (!result) {
+            impl_->clear();
+            return result;
+        }
+        result = uploadStorageBuffer(
+            device,
+            gpuScene.indices.data(),
+            static_cast<uint64_t>(gpuScene.indices.size() * sizeof(uint32_t)),
+            sizeof(uint32_t),
+            impl_->indexBuffer,
+            log,
+            "ScenePathTracePass indices");
+        if (!result) {
+            impl_->clear();
+            return result;
+        }
+        result = uploadStorageBuffer(
+            device,
+            gpuScene.primitives.data(),
+            static_cast<uint64_t>(gpuScene.primitives.size() * sizeof(ScenePathTraceGpuPrimitive)),
+            sizeof(ScenePathTraceGpuPrimitive),
+            impl_->primitiveBuffer,
+            log,
+            "ScenePathTracePass primitives");
+        if (!result) {
+            impl_->clear();
+            return result;
+        }
+        result = uploadStorageBuffer(
+            device,
+            gpuScene.instances.data(),
+            static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGpuInstance)),
+            sizeof(ScenePathTraceGpuInstance),
+            impl_->instanceBuffer,
+            log,
+            "ScenePathTracePass instances");
+        if (!result) {
+            impl_->clear();
+            return result;
+        }
+        result = uploadStorageBuffer(
+            device,
+            gpuScene.materials.data(),
+            static_cast<uint64_t>(gpuScene.materials.size() * sizeof(ScenePathTraceGpuMaterial)),
+            sizeof(ScenePathTraceGpuMaterial),
+            impl_->materialBuffer,
+            log,
+            "ScenePathTracePass materials");
+        if (!result) {
+            impl_->clear();
+            return result;
+        }
     }
 
     impl_->drawBounds = loadedScene.bounds();
@@ -1490,6 +1632,12 @@ Result ScenePathTraceResources::prepare(
     impl_->environmentPath = environmentPath;
     impl_->prepared = true;
     ++impl_->revision;
+    spdlog::info(
+        "[SceneResources] Prepared scene resources revision={} materialTextures={} environmentAvailable={} environmentTexels={}",
+        impl_->revision,
+        impl_->materialTextureCount,
+        impl_->environmentMapAvailable,
+        impl_->environmentImportanceTexelCount);
     return {};
 }
 

@@ -15,11 +15,14 @@
 #include "json.hpp"
 #include "tiny_gltf.h"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cctype>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -32,6 +35,7 @@
 #include <system_error>
 #include <type_traits>
 #include <unordered_set>
+#include <utility>
 
 namespace metallic::scene {
 namespace {
@@ -58,6 +62,46 @@ constexpr uint32_t kMeshletCacheEndian = 0x01020304;
 constexpr const char* kMeshletCacheSuffix = ".meshlets.bin";
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
+
+using SceneLoadClock = std::chrono::steady_clock;
+
+double sceneLoadElapsedMilliseconds(SceneLoadClock::time_point begin)
+{
+    return std::chrono::duration<double, std::milli>(SceneLoadClock::now() - begin).count();
+}
+
+void logSceneLoadStep(std::string_view label, SceneLoadClock::time_point begin)
+{
+    spdlog::info("[SceneLoad] Step {} completed in {:.2f} ms", label, sceneLoadElapsedMilliseconds(begin));
+}
+
+class SceneLoadScope {
+public:
+    explicit SceneLoadScope(std::filesystem::path filename)
+        : filename_(std::move(filename))
+    {
+        spdlog::info("[SceneLoad] Begin load '{}'", filename_.string());
+    }
+
+    ~SceneLoadScope()
+    {
+        spdlog::info(
+            "[SceneLoad] End load '{}' status={} in {:.2f} ms",
+            filename_.string(),
+            success_ ? "success" : "failed",
+            sceneLoadElapsedMilliseconds(begin_));
+    }
+
+    void markSuccess()
+    {
+        success_ = true;
+    }
+
+private:
+    std::filesystem::path filename_;
+    SceneLoadClock::time_point begin_ = SceneLoadClock::now();
+    bool success_ = false;
+};
 
 struct MeshletCacheHeader {
     char magic[8]{};
@@ -2049,6 +2093,7 @@ bool Scene::load(const std::filesystem::path& filename)
     clearParsedData();
     lastLoadResult_ = {};
     lastLoadResult_.filename = filename;
+    SceneLoadScope loadScope(filename);
 
     std::error_code existsError;
     if (!std::filesystem::exists(filename, existsError)) {
@@ -2057,12 +2102,15 @@ bool Scene::load(const std::filesystem::path& filename)
     }
 
     tinygltf::Model model;
+    const auto tinyGltfBegin = SceneLoadClock::now();
     if (!loadModel(filename, model, lastLoadResult_)) {
+        logSceneLoadStep("tinygltf file import failed", tinyGltfBegin);
         if (lastLoadResult_.error.empty()) {
             lastLoadResult_.error = "tinygltf failed to load scene";
         }
         return false;
     }
+    logSceneLoadStep("tinygltf file import", tinyGltfBegin);
 
     if (!validateRequiredExtensions(model, lastLoadResult_)) {
         return false;
@@ -2079,6 +2127,7 @@ bool Scene::load(const std::filesystem::path& filename)
         return false;
     }
 
+    const auto metadataBegin = SceneLoadClock::now();
     filename_ = filename;
     sceneIndex_ = sceneIndex;
     lastLoadResult_.sceneIndex = sceneIndex;
@@ -2219,7 +2268,9 @@ bool Scene::load(const std::filesystem::path& filename)
         }
         materials_.push_back(material);
     }
+    logSceneLoadStep("asset metadata, images, textures, and materials", metadataBegin);
 
+    const auto sceneGraphBegin = SceneLoadClock::now();
     nodes_.resize(model.nodes.size());
     for (size_t nodeIndex = 0; nodeIndex < model.nodes.size(); ++nodeIndex) {
         const tinygltf::Node& gltfNode = model.nodes[nodeIndex];
@@ -2373,22 +2424,46 @@ bool Scene::load(const std::filesystem::path& filename)
     for (const int32_t rootNodeIndex : rootNodeIndices_) {
         traverseNode(rootNodeIndex, float4x4::Identity(), true);
     }
+    logSceneLoadStep("scene graph traversal and primitive extraction", sceneGraphBegin);
 
     const std::filesystem::path meshletCachePath = meshletCachePathFor(filename_);
     lastLoadResult_.meshletCachePath = meshletCachePath;
 
     std::string meshletCacheReason;
+    const auto meshletCacheBegin = SceneLoadClock::now();
     if (loadMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
         lastLoadResult_.meshletCacheLoaded = true;
+        spdlog::info(
+            "[SceneLoad] Meshlet cache loaded '{}' in {:.2f} ms",
+            meshletCachePath.string(),
+            sceneLoadElapsedMilliseconds(meshletCacheBegin));
     } else {
+        spdlog::info(
+            "[SceneLoad] Meshlet cache unavailable '{}' reason='{}' checked in {:.2f} ms",
+            meshletCachePath.string(),
+            meshletCacheReason,
+            sceneLoadElapsedMilliseconds(meshletCacheBegin));
         if (!meshletCacheReason.empty()) {
             appendWarning(lastLoadResult_.warning, "Meshlet cache ignored: " + meshletCacheReason);
         }
 
+        const auto meshletBuildBegin = SceneLoadClock::now();
         buildMeshletsForPrimitives(renderPrimitives_);
+        logSceneLoadStep("meshlet build", meshletBuildBegin);
+
+        const auto meshletSaveBegin = SceneLoadClock::now();
         if (saveMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
             lastLoadResult_.meshletCacheSaved = true;
+            spdlog::info(
+                "[SceneLoad] Meshlet cache saved '{}' in {:.2f} ms",
+                meshletCachePath.string(),
+                sceneLoadElapsedMilliseconds(meshletSaveBegin));
         } else if (!meshletCacheReason.empty()) {
+            spdlog::warn(
+                "[SceneLoad] Meshlet cache save failed '{}' reason='{}' in {:.2f} ms",
+                meshletCachePath.string(),
+                meshletCacheReason,
+                sceneLoadElapsedMilliseconds(meshletSaveBegin));
             appendWarning(lastLoadResult_.warning, "Meshlet cache save failed: " + meshletCacheReason);
         }
     }
@@ -2401,6 +2476,20 @@ bool Scene::load(const std::filesystem::path& filename)
     stats_.primitiveCount = renderPrimitives_.size();
     stats_.renderNodeCount = renderNodes_.size();
     lastLoadResult_.success = true;
+    loadScope.markSuccess();
+    spdlog::info(
+        "[SceneLoad] Summary scene='{}' nodes={} renderNodes={} primitives={} triangles={} meshes={} materials={} textures={} images={} meshletCacheLoaded={} meshletCacheSaved={}",
+        sceneName_,
+        nodes_.size(),
+        stats_.renderNodeCount,
+        stats_.primitiveCount,
+        stats_.triangleCount,
+        stats_.meshCount,
+        stats_.materialCount,
+        stats_.textureCount,
+        stats_.imageCount,
+        lastLoadResult_.meshletCacheLoaded,
+        lastLoadResult_.meshletCacheSaved);
     return true;
 }
 
