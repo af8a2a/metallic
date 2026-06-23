@@ -51,6 +51,7 @@ inline constexpr const char* kGPUDrivenPreviewFragmentEntryPoint = "gpuDrivenPre
 inline constexpr const char* kGPUDrivenStreamAssetShaderModuleName = "gpu_driven_streamasset";
 inline constexpr const char* kGPUDrivenStreamAssetMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kGPUDrivenStreamAssetFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
+inline constexpr const char* kGPUDrivenStreamAssetUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
 inline constexpr const char* kSceneMaterialVisualizationShaderModuleName = "scene_material_visualize";
 inline constexpr const char* kSceneMaterialVisualizationEntryPoint = "sceneMaterialVisualizeMain";
 inline constexpr const char* kScenePathTraceShaderModuleName = "scene_path_trace";

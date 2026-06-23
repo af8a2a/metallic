@@ -1,5 +1,9 @@
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
+static const uint kInvalidStreamSlot = 0xffffffffu;
+static const uint kInvalidClusterIndex = 0xffffffffu;
+static const uint kStreamStateResident = 2u;
+static const uint kStreamStateLockedFallback = 3u;
 
 struct GPUDrivenStreamAssetPush
 {
@@ -9,6 +13,8 @@ struct GPUDrivenStreamAssetPush
     uint drawItemBuffer;
     uint pageTableBuffer;
     uint paramsBuffer;
+    uint requestBuffer;
+    uint updateBuffer;
     uint padding0;
     uint padding1;
 };
@@ -29,6 +35,42 @@ struct GPUDrivenStreamAssetDrawItem
     float4 world3;
 };
 
+struct GPUDrivenStreamAssetPageTableEntry
+{
+    uint slot;
+    uint state;
+    uint lastRequestFrame;
+    uint lodLevel;
+    uint payloadBytes;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
+struct GPUDrivenStreamAssetRequestHeader
+{
+    uint loadCounter;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
+struct GPUDrivenStreamAssetPatch
+{
+    uint pageId;
+    uint slot;
+    uint state;
+    uint padding0;
+};
+
+struct GPUDrivenStreamAssetUpdateHeader
+{
+    uint patchCounter;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
 struct GPUDrivenStreamAssetParams
 {
     float4 eye;
@@ -40,7 +82,11 @@ struct GPUDrivenStreamAssetParams
     uint debugColorMode;
     uint pageStrideWords;
     uint drawItemCount;
+    uint frameIndex;
+    uint maxGpuPageRequests;
     uint padding0;
+    uint padding1;
+    uint padding2;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
@@ -108,6 +154,25 @@ uint readPageByte(StructuredBuffer<uint> pageWords, uint absoluteByteOffset)
     return (word >> shift) & 0xffu;
 }
 
+void requestStreamPage(
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
+    RWStructuredBuffer<uint> requests,
+    GPUDrivenStreamAssetParams params,
+    uint pageIndex)
+{
+    uint oldRequestFrame = 0;
+    InterlockedMax(pageTable[pageIndex].lastRequestFrame, params.frameIndex, oldRequestFrame);
+    if (oldRequestFrame == params.frameIndex) {
+        return;
+    }
+
+    uint requestOffset = 0;
+    InterlockedAdd(requests[0], 1u, requestOffset);
+    if (requestOffset < params.maxGpuPageRequests) {
+        requests[4u + requestOffset] = pageIndex;
+    }
+}
+
 [shader("mesh")]
 [numthreads(1, 1, 1)]
 [outputtopology("triangle")]
@@ -121,12 +186,18 @@ void gpuDrivenStreamAssetMeshMain(
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetDrawItem>> drawItemHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetDrawItem>>(uint2(push.bufferShaderIndexBase + push.drawItemBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.bufferShaderIndexBase + push.pageTableBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> requestHandle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.requestBuffer, 0));
 
     StructuredBuffer<uint> pageWords = pageHandle;
     StructuredBuffer<GPUDrivenStreamAssetDrawItem> drawItems = drawItemHandle;
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
+    RWStructuredBuffer<uint> requests = requestHandle;
 
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
     uint drawIndex = groupID.x;
@@ -136,7 +207,17 @@ void gpuDrivenStreamAssetMeshMain(
     }
 
     GPUDrivenStreamAssetDrawItem item = drawItems[drawIndex];
-    uint pageWord = item.pageSlot * params.pageStrideWords;
+    GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[item.pageIndex];
+    if (item.clusterIndex == kInvalidClusterIndex ||
+        ((pageEntry.state != kStreamStateResident && pageEntry.state != kStreamStateLockedFallback) ||
+        pageEntry.slot == kInvalidStreamSlot ||
+        pageEntry.payloadBytes == 0u)) {
+        requestStreamPage(pageTable, requests, params, item.pageIndex);
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
+
+    uint pageWord = pageEntry.slot * params.pageStrideWords;
     uint clusterCount = pageWords[pageWord + 2u];
     if (item.clusterIndex >= clusterCount) {
         SetMeshOutputCounts(0, 0);
@@ -181,7 +262,7 @@ void gpuDrivenStreamAssetMeshMain(
         }
     }
 
-    uint triangleBaseByte = item.pageSlot * params.pageStrideWords * 4u + triangleOffsetBytes + triangleOffset;
+    uint triangleBaseByte = pageEntry.slot * params.pageStrideWords * 4u + triangleOffsetBytes + triangleOffset;
     for (uint triangleIndex = 0; triangleIndex < kMaxMeshletTriangles; ++triangleIndex) {
         if (triangleIndex < triangleCount) {
             uint baseByte = triangleBaseByte + triangleIndex * 3u;
@@ -191,6 +272,30 @@ void gpuDrivenStreamAssetMeshMain(
                 readPageByte(pageWords, baseByte + 2u));
         }
     }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void gpuDrivenStreamAssetApplyUpdatesMain(uint3 dispatchThreadID : SV_DispatchThreadID, uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.bufferShaderIndexBase + push.pageTableBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> updateHandle =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.updateBuffer, 0));
+
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
+    StructuredBuffer<uint> updates = updateHandle;
+
+    uint patchIndex = dispatchThreadID.x;
+    uint patchCount = updates[0];
+    if (patchIndex >= patchCount) {
+        return;
+    }
+
+    uint patchWord = 4u + patchIndex * 4u;
+    uint pageId = updates[patchWord + 0u];
+    pageTable[pageId].slot = updates[patchWord + 1u];
+    pageTable[pageId].state = updates[patchWord + 2u];
 }
 
 [shader("fragment")]

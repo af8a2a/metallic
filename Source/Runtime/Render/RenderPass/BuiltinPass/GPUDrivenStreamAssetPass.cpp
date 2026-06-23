@@ -13,7 +13,7 @@ namespace metallic::render::builtin_pass {
 namespace {
 
 struct GPUDrivenStreamAssetGpuDrawItem {
-    uint32_t pageSlot = 0;
+    uint32_t pageSlot = UINT32_MAX;
     uint32_t clusterIndex = 0;
     uint32_t pageIndex = 0;
     uint32_t primitiveIndex = 0;
@@ -27,13 +27,6 @@ struct GPUDrivenStreamAssetGpuDrawItem {
     float world3[4] = {};
 };
 
-struct GPUDrivenStreamAssetGpuPageTableEntry {
-    uint32_t slot = UINT32_MAX;
-    uint32_t state = 0;
-    uint32_t payloadBytes = 0;
-    uint32_t lodLevel = 0;
-};
-
 struct GPUDrivenStreamAssetGpuParams {
     float eye[4] = {};
     float center[4] = {};
@@ -44,7 +37,11 @@ struct GPUDrivenStreamAssetGpuParams {
     uint32_t debugColorMode = kGPUDrivenStreamAssetDebugPage;
     uint32_t pageStrideWords = 0;
     uint32_t drawItemCount = 0;
+    uint32_t frameIndex = 0;
+    uint32_t maxGpuPageRequests = 0;
     uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
 };
 
 struct GPUDrivenStreamAssetUserPush {
@@ -52,14 +49,18 @@ struct GPUDrivenStreamAssetUserPush {
     uint32_t drawItemBuffer = 0;
     uint32_t pageTableBuffer = 0;
     uint32_t paramsBuffer = 0;
+    uint32_t requestBuffer = 0;
+    uint32_t updateBuffer = 0;
     uint32_t padding0 = 0;
     uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
-    uint32_t padding3 = 0;
 };
 
+inline constexpr uint32_t kInvalidClusterIndex = UINT32_MAX;
+inline constexpr uint32_t kDefaultMaxGpuPageRequests = 65536;
+
 static_assert(sizeof(GPUDrivenStreamAssetGpuDrawItem) == 96);
-static_assert(sizeof(GPUDrivenStreamAssetGpuParams) == 112);
+static_assert(sizeof(StreamPageTableEntry) == 32);
+static_assert(sizeof(GPUDrivenStreamAssetGpuParams) == 128);
 
 uint64_t alignUp(uint64_t value, uint64_t alignment)
 {
@@ -247,6 +248,22 @@ Result createHostStorageBuffer(
     return {};
 }
 
+Result createNamedBuffer(
+    Device& device,
+    const BufferDesc& desc,
+    std::unique_ptr<Buffer>& outBuffer,
+    std::string& log,
+    std::string_view label)
+{
+    Result result = device.createBuffer(desc, outBuffer);
+    if (!result || outBuffer == nullptr) {
+        log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
+        log += '\n';
+        return result ? makeError(Error::Failure) : result;
+    }
+    return {};
+}
+
 Result updateHostBuffer(Buffer& buffer, const void* data, uint64_t byteSize)
 {
     if (byteSize > buffer.desc().size || (byteSize > 0 && data == nullptr)) {
@@ -303,7 +320,7 @@ public:
     {
         return {
             runtimeIntSetting("selectedLodLevel", "LOD", 0, 0, 31),
-            runtimeEnumSetting(S
+            runtimeEnumSetting(
                 "debugColorMode",
                 "Color",
                 "page",
@@ -365,7 +382,19 @@ public:
 
         maxResidentPages_ = uintProperty(properties(), "maxResidentPages", 4096);
         maxPageUploadsPerFrame_ = uintProperty(properties(), "maxPageUploadsPerFrame", 64);
+        maxGpuPageRequests_ = std::max<uint32_t>(
+            uintProperty(properties(), "maxGpuPageRequests", kDefaultMaxGpuPageRequests),
+            1u);
         const uint64_t pageStride = alignUp(asset_.maxPagePayloadBytes(), 256);
+        if (maxResidentPages_ == 0) {
+            log = "GPUDrivenStreamAssetPass requires maxResidentPages to be greater than zero";
+            return makeError(Error::Failure);
+        }
+        if (pageStride == 0 ||
+            pageStride > std::numeric_limits<uint64_t>::max() / maxResidentPages_) {
+            log = "GPUDrivenStreamAssetPass resident page buffer size overflowed";
+            return makeError(Error::Failure);
+        }
 
         Result result = context.device->createBuffer(
             BufferDesc{
@@ -408,6 +437,14 @@ public:
             return makeError(Error::Failure);
         }
 
+        maxUpdatePatches_ = std::max<uint32_t>(asset_.pageCount() * 2u, 1u);
+        const uint64_t pageTableByteSize =
+            static_cast<uint64_t>(asset_.pageCount()) * sizeof(StreamPageTableEntry);
+        const uint64_t requestByteSize =
+            sizeof(StreamRequestBufferHeader) + static_cast<uint64_t>(maxGpuPageRequests_) * sizeof(uint32_t);
+        const uint64_t updateByteSize =
+            sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(maxUpdatePatches_) * sizeof(StreamPageTablePatch);
+
         result = createHostStorageBuffer(
             *context.device,
             static_cast<uint64_t>(maxDrawItems_) * sizeof(GPUDrivenStreamAssetGpuDrawItem),
@@ -417,12 +454,86 @@ public:
         if (!result) {
             return result;
         }
-        result = createHostStorageBuffer(
+        result = createNamedBuffer(
             *context.device,
-            static_cast<uint64_t>(asset_.pageCount()) * sizeof(GPUDrivenStreamAssetGpuPageTableEntry),
+            BufferDesc{
+                .size = pageTableByteSize,
+                .structureStride = sizeof(StreamPageTableEntry),
+                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::Device,
+            },
             pageTableBuffer_,
             log,
             "GPUDrivenStreamAsset page table");
+        if (!result) {
+            return result;
+        }
+        pageTableState_ = ResourceState::Undefined;
+        result = createNamedBuffer(
+            *context.device,
+            BufferDesc{
+                .size = pageTableByteSize,
+                .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload,
+            },
+            pageTableUploadBuffer_,
+            log,
+            "GPUDrivenStreamAsset page table upload");
+        if (!result) {
+            return result;
+        }
+        result = createNamedBuffer(
+            *context.device,
+            BufferDesc{
+                .size = requestByteSize,
+                .structureStride = sizeof(uint32_t),
+                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            requestBuffer_,
+            log,
+            "GPUDrivenStreamAsset request");
+        if (!result) {
+            return result;
+        }
+        requestBufferState_ = ResourceState::Undefined;
+        result = createNamedBuffer(
+            *context.device,
+            BufferDesc{
+                .size = requestByteSize,
+                .usage = BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::HostReadback,
+            },
+            requestReadbackBuffer_,
+            log,
+            "GPUDrivenStreamAsset request readback");
+        if (!result) {
+            return result;
+        }
+        result = createNamedBuffer(
+            *context.device,
+            BufferDesc{
+                .size = sizeof(StreamRequestBufferHeader),
+                .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload,
+            },
+            requestClearBuffer_,
+            log,
+            "GPUDrivenStreamAsset request clear");
+        if (!result) {
+            return result;
+        }
+        StreamRequestBufferHeader clearHeader{};
+        result = updateHostBuffer(*requestClearBuffer_, &clearHeader, sizeof(clearHeader));
+        if (!result) {
+            return result;
+        }
+        result = createHostStorageBuffer(
+            *context.device,
+            updateByteSize,
+            updateBuffer_,
+            log,
+            "GPUDrivenStreamAsset update");
         if (!result) {
             return result;
         }
@@ -440,7 +551,7 @@ public:
             BindlessHeapDesc{
                 .maxSamplers = 0,
                 .maxSampledImages = 0,
-                .maxBuffers = 4,
+                .maxBuffers = 6,
             },
             bindlessHeap_);
         if (!result || bindlessHeap_ == nullptr) {
@@ -461,6 +572,14 @@ public:
             return result;
         }
         result = allocateAndWriteBuffer(*bindlessHeap_, *paramsBuffer_, paramsHandle_, log, "streamasset params");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *requestBuffer_, requestHandle_, log, "streamasset request");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *updateBuffer_, updateHandle_, log, "streamasset update");
         if (!result) {
             return result;
         }
@@ -498,6 +617,16 @@ public:
             return result;
         }
 
+        ShaderCompileResult updateCompile;
+        result = compileSlangShader(
+            kGPUDrivenStreamAssetShaderModuleName,
+            kGPUDrivenStreamAssetUpdateEntryPoint,
+            updateCompile,
+            log);
+        if (!result) {
+            return result;
+        }
+
         result = context.device->createShaderModule(
             ShaderModuleDesc{
                 .code = meshCompile.spirv.data(),
@@ -520,6 +649,17 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
+        result = context.device->createShaderModule(
+            ShaderModuleDesc{
+                .code = updateCompile.spirv.data(),
+                .byteSize = static_cast<uint64_t>(updateCompile.spirv.size() * sizeof(uint32_t)),
+            },
+            updateShader_);
+        if (!result || updateShader_ == nullptr) {
+            log += resultMessage("createShaderModule(GPUDrivenStreamAsset update)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
         result = context.device->createGraphicsPipeline(
             GraphicsPipelineDesc{
                 .meshShader = meshShader_.get(),
@@ -539,6 +679,19 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
+        result = context.device->createComputePipeline(
+            ComputePipelineDesc{
+                .computeShader = updateShader_.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(GPUDrivenStreamAssetUserPush),
+            },
+            updatePipeline_);
+        if (!result || updatePipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(GPUDrivenStreamAssetPass update)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
 
         return {};
     }
@@ -552,21 +705,37 @@ public:
             context.streamer() == nullptr ||
             bindlessHeap_ == nullptr ||
             pipeline_ == nullptr ||
+            updatePipeline_ == nullptr ||
             pageBuffer_ == nullptr ||
             drawItemBuffer_ == nullptr ||
             pageTableBuffer_ == nullptr ||
+            pageTableUploadBuffer_ == nullptr ||
+            requestBuffer_ == nullptr ||
+            requestReadbackBuffer_ == nullptr ||
+            requestClearBuffer_ == nullptr ||
+            updateBuffer_ == nullptr ||
             paramsBuffer_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
+        ++frameIndex_;
+        consumeGpuRequestReadback();
         residency_.beginFrame();
-        buildFrameDrawItems(context.properties());
         const uint32_t uploadCount =
             residency_.processUploads(*context.streamer(), *pageBuffer_, maxPageUploadsPerFrame_);
-        Result result = updatePageTableBuffer();
+        Result result = initializePageTableIfNeeded(context.commandBuffer());
         if (!result) {
             return result;
         }
+        result = applyPageTablePatches(context.commandBuffer());
+        if (!result) {
+            return result;
+        }
+        result = clearRequestBuffer(context.commandBuffer());
+        if (!result) {
+            return result;
+        }
+        buildFrameDrawItems(context.properties());
         result = updateDrawItemBuffer();
         if (!result) {
             return result;
@@ -635,11 +804,18 @@ public:
                 .drawItemBuffer = drawItemHandle_.index,
                 .pageTableBuffer = pageTableHandle_.index,
                 .paramsBuffer = paramsHandle_.index,
+                .requestBuffer = requestHandle_.index,
+                .updateBuffer = updateHandle_.index,
             };
             context.commandBuffer().pushBindlessData(&push, sizeof(push));
             context.commandBuffer().drawMeshTasks(static_cast<uint32_t>(drawItems_.size()));
         }
         context.commandBuffer().endRendering();
+
+        result = copyRequestBufferForReadback(context.commandBuffer());
+        if (!result) {
+            return result;
+        }
 
         if (uploadCount > 0 && pageBufferState_ != ResourceState::TransferDestination) {
             BufferBarrierDesc barrier{
@@ -659,6 +835,154 @@ public:
     }
 
 private:
+    void transitionBuffer(
+        CommandBuffer& commandBuffer,
+        Buffer& buffer,
+        ResourceState& state,
+        ResourceState nextState,
+        bool forceBarrier = false)
+    {
+        if (!forceBarrier && state == nextState) {
+            return;
+        }
+        BufferBarrierDesc barrier{
+            .buffer = &buffer,
+            .before = state,
+            .after = nextState,
+            .offset = 0,
+            .size = buffer.desc().size,
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .buffers = &barrier,
+            .bufferCount = 1,
+        });
+        state = nextState;
+    }
+
+    void consumeGpuRequestReadback()
+    {
+        if (!requestReadbackValid_ || requestReadbackBuffer_ == nullptr) {
+            return;
+        }
+
+        requestReadbackBuffer_->invalidate();
+        const void* mapped = requestReadbackBuffer_->map();
+        if (mapped == nullptr) {
+            requestReadbackValid_ = false;
+            return;
+        }
+
+        const auto* words = static_cast<const uint32_t*>(mapped);
+        const uint32_t requestCount = std::min(words[0], maxGpuPageRequests_);
+        if (requestCount > 0) {
+            const uint32_t* pageIds = words + sizeof(StreamRequestBufferHeader) / sizeof(uint32_t);
+            (void)residency_.consumeGpuRequests(std::span<const uint32_t>(pageIds, requestCount));
+        }
+
+        requestReadbackBuffer_->unmap();
+        requestReadbackValid_ = false;
+    }
+
+    Result initializePageTableIfNeeded(CommandBuffer& commandBuffer)
+    {
+        if (pageTableInitialized_) {
+            return {};
+        }
+
+        pageTable_.resize(asset_.pageCount());
+        residency_.buildInitialPageTable(pageTable_);
+        const uint64_t byteSize = static_cast<uint64_t>(pageTable_.size()) * sizeof(StreamPageTableEntry);
+        Result result = updateHostBuffer(*pageTableUploadBuffer_, pageTable_.data(), byteSize);
+        if (!result) {
+            return result;
+        }
+
+        transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::TransferDestination);
+        commandBuffer.copyBuffer(BufferCopyDesc{
+            .source = pageTableUploadBuffer_.get(),
+            .destination = pageTableBuffer_.get(),
+            .sourceOffset = 0,
+            .destinationOffset = 0,
+            .size = byteSize,
+        });
+        transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::General);
+        pageTableInitialized_ = true;
+        residency_.clearPendingPatches();
+        return {};
+    }
+
+    Result applyPageTablePatches(CommandBuffer& commandBuffer)
+    {
+        const std::span<const StreamPageTablePatch> patches = residency_.pendingPatches();
+        if (patches.empty()) {
+            return {};
+        }
+        if (patches.size() > maxUpdatePatches_) {
+            return makeError(Error::Failure);
+        }
+
+        const uint32_t patchCount = static_cast<uint32_t>(patches.size());
+        void* mapped = updateBuffer_->map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        auto* header = static_cast<StreamUpdateBufferHeader*>(mapped);
+        *header = StreamUpdateBufferHeader{.patchCounter = patchCount};
+        std::memcpy(
+            static_cast<uint8_t*>(mapped) + sizeof(StreamUpdateBufferHeader),
+            patches.data(),
+            static_cast<size_t>(patchCount) * sizeof(StreamPageTablePatch));
+        updateBuffer_->flush(
+            0,
+            sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(patchCount) * sizeof(StreamPageTablePatch));
+        updateBuffer_->unmap();
+
+        transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::General);
+        commandBuffer.bindBindlessHeap(*bindlessHeap_);
+        commandBuffer.bindComputePipeline(*updatePipeline_);
+        const GPUDrivenStreamAssetUserPush push{
+            .pageBuffer = pageHandle_.index,
+            .drawItemBuffer = drawItemHandle_.index,
+            .pageTableBuffer = pageTableHandle_.index,
+            .paramsBuffer = paramsHandle_.index,
+            .requestBuffer = requestHandle_.index,
+            .updateBuffer = updateHandle_.index,
+        };
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.dispatch((patchCount + 63u) / 64u, 1, 1);
+        transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::General, true);
+        residency_.clearPendingPatches();
+        return {};
+    }
+
+    Result clearRequestBuffer(CommandBuffer& commandBuffer)
+    {
+        transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferDestination);
+        commandBuffer.copyBuffer(BufferCopyDesc{
+            .source = requestClearBuffer_.get(),
+            .destination = requestBuffer_.get(),
+            .sourceOffset = 0,
+            .destinationOffset = 0,
+            .size = sizeof(StreamRequestBufferHeader),
+        });
+        transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::General);
+        return {};
+    }
+
+    Result copyRequestBufferForReadback(CommandBuffer& commandBuffer)
+    {
+        transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferSource);
+        commandBuffer.copyBuffer(BufferCopyDesc{
+            .source = requestBuffer_.get(),
+            .destination = requestReadbackBuffer_.get(),
+            .sourceOffset = 0,
+            .destinationOffset = 0,
+            .size = requestBuffer_->desc().size,
+        });
+        requestReadbackValid_ = true;
+        return {};
+    }
+
     uint32_t computeMaxDrawItems() const
     {
         uint64_t total = 0;
@@ -669,12 +993,17 @@ private:
                 continue;
             }
             const scene::MeshletStreamPrimitiveInfo& primitive = primitives[instance.primitiveIndex];
-            uint32_t maxClusters = 0;
+            uint32_t fallbackClusters = 0;
+            for (uint32_t page = 0; page < primitive.fallbackPageCount; ++page) {
+                fallbackClusters += asset_.pages()[primitive.fallbackPageOffset + page].clusterCount;
+            }
+            uint32_t maxDraws = fallbackClusters;
             for (uint32_t lod = 0; lod < primitive.lodLevelCount; ++lod) {
                 const scene::MeshletStreamLodLevelInfo& lodInfo = lodLevels[primitive.lodLevelOffset + lod];
-                maxClusters = std::max(maxClusters, lodInfo.clusterCount);
+                maxDraws = std::max(maxDraws, lodInfo.clusterCount);
+                maxDraws = std::max(maxDraws, lodInfo.pageCount + fallbackClusters);
             }
-            total += maxClusters;
+            total += maxDraws;
             if (total > std::numeric_limits<uint32_t>::max()) {
                 return 0;
             }
@@ -710,6 +1039,31 @@ private:
         }
     }
 
+    void appendRequestDrawItems(
+        const scene::MeshletStreamInstanceInfo& instance,
+        const scene::MeshletStreamPageInfo& page,
+        uint32_t pageIndex)
+    {
+        if (drawItems_.size() >= maxDrawItems_) {
+            return;
+        }
+
+        GPUDrivenStreamAssetGpuDrawItem item;
+        item.clusterIndex = kInvalidClusterIndex;
+        item.pageIndex = pageIndex;
+        item.primitiveIndex = page.primitiveIndex;
+        item.lodLevel = page.lodLevel;
+        item.materialIndex = instance.materialIndex;
+        item.colorSeed = pageIndex * 131u;
+        for (uint32_t row = 0; row < 4; ++row) {
+            item.world0[row] = instance.worldMatrix[0 + row];
+            item.world1[row] = instance.worldMatrix[4 + row];
+            item.world2[row] = instance.worldMatrix[8 + row];
+            item.world3[row] = instance.worldMatrix[12 + row];
+        }
+        drawItems_.push_back(item);
+    }
+
     bool appendResidentPageRange(
         const scene::MeshletStreamInstanceInfo& instance,
         uint32_t pageOffset,
@@ -721,7 +1075,6 @@ private:
             const uint32_t pageIndex = pageOffset + page;
             if (!residency_.pageResident(pageIndex)) {
                 allResident = false;
-                residency_.requestPage(pageIndex);
             }
         }
         if (!allResident) {
@@ -732,6 +1085,20 @@ private:
             appendPageDrawItems(instance, pages[pageIndex], pageIndex);
         }
         return true;
+    }
+
+    void appendRequestPageRange(
+        const scene::MeshletStreamInstanceInfo& instance,
+        uint32_t pageOffset,
+        uint32_t pageCount)
+    {
+        const std::span<const scene::MeshletStreamPageInfo> pages = asset_.pages();
+        for (uint32_t page = 0; page < pageCount; ++page) {
+            const uint32_t pageIndex = pageOffset + page;
+            if (!residency_.pageResident(pageIndex)) {
+                appendRequestDrawItems(instance, pages[pageIndex], pageIndex);
+            }
+        }
     }
 
     void buildFrameDrawItems(const RenderGraphProperties& properties)
@@ -752,28 +1119,10 @@ private:
             const uint32_t localLod = std::min(selectedLod, primitive.lodLevelCount - 1u);
             const scene::MeshletStreamLodLevelInfo& lodInfo = lodLevels[primitive.lodLevelOffset + localLod];
             if (!appendResidentPageRange(instance, lodInfo.pageOffset, lodInfo.pageCount)) {
+                appendRequestPageRange(instance, lodInfo.pageOffset, lodInfo.pageCount);
                 appendResidentPageRange(instance, primitive.fallbackPageOffset, primitive.fallbackPageCount);
             }
         }
-    }
-
-    Result updatePageTableBuffer()
-    {
-        pageTable_.resize(asset_.pageCount());
-        const std::span<const scene::MeshletStreamPageInfo> pages = asset_.pages();
-        for (uint32_t pageIndex = 0; pageIndex < asset_.pageCount(); ++pageIndex) {
-            const MeshletStreamPageResidencyState state = residency_.pageState(pageIndex);
-            pageTable_[pageIndex] = GPUDrivenStreamAssetGpuPageTableEntry{
-                .slot = residency_.slotForPage(pageIndex),
-                .state = static_cast<uint32_t>(state),
-                .payloadBytes = static_cast<uint32_t>(pages[pageIndex].payloadSize),
-                .lodLevel = pages[pageIndex].lodLevel,
-            };
-        }
-        return updateHostBuffer(
-            *pageTableBuffer_,
-            pageTable_.data(),
-            static_cast<uint64_t>(pageTable_.size() * sizeof(GPUDrivenStreamAssetGpuPageTableEntry)));
     }
 
     Result updateDrawItemBuffer()
@@ -826,6 +1175,8 @@ private:
         params.debugColorMode = debugColorModeFromProperties(properties);
         params.pageStrideWords = static_cast<uint32_t>(residency_.pageStride() / sizeof(uint32_t));
         params.drawItemCount = static_cast<uint32_t>(drawItems_.size());
+        params.frameIndex = frameIndex_ == 0 ? 1u : frameIndex_;
+        params.maxGpuPageRequests = maxGpuPageRequests_;
         return updateHostBuffer(*paramsBuffer_, &params, sizeof(params));
     }
 
@@ -833,22 +1184,38 @@ private:
     MeshletStreamResidencyManager residency_;
     scene::Bounds drawBounds_;
     std::vector<GPUDrivenStreamAssetGpuDrawItem> drawItems_;
-    std::vector<GPUDrivenStreamAssetGpuPageTableEntry> pageTable_;
+    std::vector<StreamPageTableEntry> pageTable_;
     std::unique_ptr<Buffer> pageBuffer_;
     std::unique_ptr<Buffer> drawItemBuffer_;
     std::unique_ptr<Buffer> pageTableBuffer_;
+    std::unique_ptr<Buffer> pageTableUploadBuffer_;
+    std::unique_ptr<Buffer> requestBuffer_;
+    std::unique_ptr<Buffer> requestReadbackBuffer_;
+    std::unique_ptr<Buffer> requestClearBuffer_;
+    std::unique_ptr<Buffer> updateBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
+    std::unique_ptr<ShaderModule> updateShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
+    std::unique_ptr<ComputePipeline> updatePipeline_;
     BindlessHandle pageHandle_;
     BindlessHandle drawItemHandle_;
     BindlessHandle pageTableHandle_;
     BindlessHandle paramsHandle_;
+    BindlessHandle requestHandle_;
+    BindlessHandle updateHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
+    ResourceState pageTableState_ = ResourceState::Undefined;
+    ResourceState requestBufferState_ = ResourceState::Undefined;
+    bool pageTableInitialized_ = false;
+    bool requestReadbackValid_ = false;
+    uint32_t frameIndex_ = 0;
     uint32_t maxResidentPages_ = 0;
     uint32_t maxPageUploadsPerFrame_ = 0;
+    uint32_t maxGpuPageRequests_ = 0;
+    uint32_t maxUpdatePatches_ = 0;
     uint32_t maxDrawItems_ = 0;
 };
 

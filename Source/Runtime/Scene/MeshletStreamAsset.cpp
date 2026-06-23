@@ -31,6 +31,9 @@ constexpr uint32_t kMeshletClusterMaxVertices = 128;
 constexpr uint32_t kMeshletClusterMinTriangles = 32;
 constexpr uint32_t kMeshletClusterMaxTriangles = 128;
 constexpr uint32_t kMeshletLodGroupSize = 32;
+constexpr float kMeshletClusterFillWeight = 0.5f;
+constexpr float kMeshletLodErrorMergePrevious = 1.5f;
+constexpr float kMeshletLodErrorMergeAdditive = 0.0f;
 
 struct MeshletStreamFileHeader {
     char magic[8] = {};
@@ -55,6 +58,10 @@ struct MeshletStreamFileHeader {
     uint64_t lodLevelOffset = 0;
     uint64_t pageInfoOffset = 0;
     uint64_t pageOffsetTableOffset = 0;
+    float fillWeight = 0.0f;
+    float lodErrorMergePrevious = 0.0f;
+    float lodErrorMergeAdditive = 0.0f;
+    uint32_t reserved1 = 0;
 };
 
 static_assert(std::is_trivially_copyable_v<MeshletStreamFileHeader>);
@@ -66,6 +73,18 @@ static_assert(std::is_trivially_copyable_v<MeshletStreamPayloadHeader>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPayloadCluster>);
 static_assert(sizeof(MeshletStreamPayloadHeader) == 64);
 static_assert(sizeof(MeshletStreamPayloadCluster) == 32);
+
+bool meshletStreamBuildParamsMatch(const MeshletStreamFileHeader& header)
+{
+    return header.pagePayloadAlignment == kPageSlotAlignment &&
+        header.maxVertices == kMeshletClusterMaxVertices &&
+        header.minTriangles == kMeshletClusterMinTriangles &&
+        header.maxTriangles == kMeshletClusterMaxTriangles &&
+        header.lodGroupSize == kMeshletLodGroupSize &&
+        header.fillWeight == kMeshletClusterFillWeight &&
+        header.lodErrorMergePrevious == kMeshletLodErrorMergePrevious &&
+        header.lodErrorMergeAdditive == kMeshletLodErrorMergeAdditive;
+}
 
 uint64_t alignUp(uint64_t value, uint64_t alignment)
 {
@@ -141,6 +160,70 @@ std::span<const T> makeSpan(const uint8_t* base, uint64_t offset, uint64_t count
         return {};
     }
     return std::span<const T>(reinterpret_cast<const T*>(base + offset), static_cast<size_t>(count));
+}
+
+bool byteRangeWithin(uint64_t byteSize, uint64_t offset, uint64_t rangeSize)
+{
+    return offset <= byteSize && rangeSize <= byteSize - offset;
+}
+
+bool validatePayloadHeader(
+    const uint8_t* base,
+    uint64_t fileSize,
+    const MeshletStreamPageInfo& page,
+    uint32_t pageIndex,
+    std::string& reason)
+{
+    if (page.payloadOffset % kFileAlignment != 0 ||
+        page.payloadSize == 0 ||
+        page.payloadSize > std::numeric_limits<uint32_t>::max() ||
+        !byteRangeWithin(fileSize, page.payloadOffset, page.payloadSize) ||
+        page.payloadSize < sizeof(MeshletStreamPayloadHeader)) {
+        reason = "streamasset page payload metadata is invalid";
+        return false;
+    }
+
+    MeshletStreamPayloadHeader payloadHeader;
+    std::memcpy(&payloadHeader, base + page.payloadOffset, sizeof(payloadHeader));
+    if (payloadHeader.magic != kPayloadMagic ||
+        payloadHeader.version != kPayloadVersion ||
+        payloadHeader.clusterCount != page.clusterCount ||
+        payloadHeader.vertexCount != page.vertexCount ||
+        payloadHeader.triangleIndexCount != page.triangleIndexCount ||
+        payloadHeader.primitiveIndex != page.primitiveIndex ||
+        payloadHeader.materialIndex != page.materialIndex ||
+        payloadHeader.lodLevel != page.lodLevel ||
+        payloadHeader.lodGroupIndex != page.lodGroupIndex ||
+        payloadHeader.payloadByteSize != page.payloadSize) {
+        reason = "streamasset page payload header does not match page directory";
+        return false;
+    }
+
+    const uint64_t payloadSize = page.payloadSize;
+    const uint64_t clusterBytes =
+        static_cast<uint64_t>(payloadHeader.clusterCount) * sizeof(MeshletStreamPayloadCluster);
+    const uint64_t positionBytes = static_cast<uint64_t>(payloadHeader.vertexCount) * sizeof(float) * 4u;
+    const uint64_t triangleBytes = payloadHeader.triangleIndexCount;
+    if (payloadHeader.clusterOffsetBytes % 16u != 0 ||
+        payloadHeader.positionOffsetBytes % 16u != 0 ||
+        payloadHeader.triangleOffsetBytes % 4u != 0 ||
+        !byteRangeWithin(payloadSize, payloadHeader.clusterOffsetBytes, clusterBytes) ||
+        !byteRangeWithin(payloadSize, payloadHeader.positionOffsetBytes, positionBytes) ||
+        !byteRangeWithin(payloadSize, payloadHeader.triangleOffsetBytes, triangleBytes)) {
+        reason = "streamasset page payload section ranges are invalid";
+        return false;
+    }
+
+    if (payloadHeader.clusterCount == 0 ||
+        payloadHeader.vertexCount == 0 ||
+        payloadHeader.triangleIndexCount == 0 ||
+        payloadHeader.triangleIndexCount % 3u != 0) {
+        reason = "streamasset page payload counts are invalid";
+        return false;
+    }
+
+    (void)pageIndex;
+    return true;
 }
 
 bool writeZeros(std::ostream& stream, uint64_t byteCount)
@@ -496,7 +579,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
         return false;
     }
     if (impl->header.fileSize != impl->dataSize ||
-        impl->header.pagePayloadAlignment != kPageSlotAlignment ||
+        !meshletStreamBuildParamsMatch(impl->header) ||
         impl->header.maxPagePayloadBytes == 0) {
         reason = "streamasset header metadata is invalid";
         return false;
@@ -516,14 +599,59 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
     impl->pages = makeSpan<MeshletStreamPageInfo>(impl->data, impl->header.pageInfoOffset, impl->header.pageCount);
     impl->pageOffsets = makeSpan<uint64_t>(impl->data, impl->header.pageOffsetTableOffset, impl->header.pageCount);
 
+    for (uint32_t primitiveIndex = 0; primitiveIndex < impl->primitives.size(); ++primitiveIndex) {
+        const MeshletStreamPrimitiveInfo& primitive = impl->primitives[primitiveIndex];
+        if (primitive.lodLevelCount == 0 ||
+            primitive.pageCount == 0 ||
+            primitive.fallbackPageCount == 0 ||
+            primitive.lodLevelOffset > impl->lodLevels.size() ||
+            primitive.lodLevelCount > impl->lodLevels.size() - primitive.lodLevelOffset ||
+            primitive.pageOffset > impl->pages.size() ||
+            primitive.pageCount > impl->pages.size() - primitive.pageOffset ||
+            primitive.fallbackPageOffset > impl->pages.size() ||
+            primitive.fallbackPageCount > impl->pages.size() - primitive.fallbackPageOffset) {
+            reason = "streamasset primitive directory contains invalid ranges";
+            return false;
+        }
+    }
+
+    for (const MeshletStreamInstanceInfo& instance : impl->instances) {
+        if (instance.primitiveIndex >= impl->primitives.size()) {
+            reason = "streamasset instance directory references an invalid primitive";
+            return false;
+        }
+    }
+
+    for (uint32_t lodIndex = 0; lodIndex < impl->lodLevels.size(); ++lodIndex) {
+        const MeshletStreamLodLevelInfo& lod = impl->lodLevels[lodIndex];
+        if (lod.primitiveIndex >= impl->primitives.size() ||
+            lod.pageCount == 0 ||
+            lod.pageOffset > impl->pages.size() ||
+            lod.pageCount > impl->pages.size() - lod.pageOffset) {
+            reason = "streamasset LOD directory contains invalid ranges";
+            return false;
+        }
+        for (uint32_t localPage = 0; localPage < lod.pageCount; ++localPage) {
+            const MeshletStreamPageInfo& page = impl->pages[lod.pageOffset + localPage];
+            if (page.primitiveIndex != lod.primitiveIndex || page.lodLevel != lod.lodLevel) {
+                reason = "streamasset LOD directory does not match page directory";
+                return false;
+            }
+        }
+    }
+
     for (uint32_t pageIndex = 0; pageIndex < impl->header.pageCount; ++pageIndex) {
         const MeshletStreamPageInfo& page = impl->pages[pageIndex];
-        if (page.payloadOffset != impl->pageOffsets[pageIndex] ||
+        if (page.primitiveIndex >= impl->primitives.size() ||
+            page.payloadOffset != impl->pageOffsets[pageIndex] ||
             page.payloadOffset > impl->dataSize ||
             page.payloadSize > impl->dataSize - page.payloadOffset ||
             page.payloadSize == 0 ||
             page.payloadSize > impl->header.maxPagePayloadBytes) {
             reason = "streamasset page payload exceeds file bounds";
+            return false;
+        }
+        if (!validatePayloadHeader(impl->data, impl->dataSize, page, pageIndex, reason)) {
             return false;
         }
     }
@@ -552,7 +680,8 @@ bool MeshletStreamAsset::isCurrentForSource(const std::filesystem::path& sourceP
 {
     return valid() &&
         impl_->header.sourceFileSize == sourceFileSizeFor(sourcePath) &&
-        impl_->header.sourceWriteTime == sourceWriteTimeFor(sourcePath);
+        impl_->header.sourceWriteTime == sourceWriteTimeFor(sourcePath) &&
+        meshletStreamBuildParamsMatch(impl_->header);
 }
 
 uint32_t MeshletStreamAsset::primitiveCount() const
@@ -670,6 +799,9 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
     header.minTriangles = kMeshletClusterMinTriangles;
     header.maxTriangles = kMeshletClusterMaxTriangles;
     header.lodGroupSize = kMeshletLodGroupSize;
+    header.fillWeight = kMeshletClusterFillWeight;
+    header.lodErrorMergePrevious = kMeshletLodErrorMergePrevious;
+    header.lodErrorMergeAdditive = kMeshletLodErrorMergeAdditive;
 
     if (!writePod(stream, header)) {
         reason = "streamasset header placeholder write failed";

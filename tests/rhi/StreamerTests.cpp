@@ -88,6 +88,69 @@ render::StreamerDesc makeTestStreamerDesc(uint64_t dynamicSizePerFrame = 1024)
     return desc;
 }
 
+RhiTestResult buildBunnyStreamAssetForTest(
+    const std::filesystem::path& outputPath,
+    scene::MeshletStreamAsset& outAsset)
+{
+    const std::filesystem::path sourcePath =
+        std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
+
+    scene::Scene scene;
+    if (!scene.load(sourcePath)) {
+        return RhiTestResult::fail("Scene::load failed: " + scene.lastLoadResult().error);
+    }
+
+    std::string reason;
+    if (!scene::buildMeshletStreamAsset(
+            scene::MeshletStreamAssetBuildDesc{
+                .scene = &scene,
+                .sourcePath = sourcePath,
+                .outputPath = outputPath,
+            },
+            reason)) {
+        return RhiTestResult::fail("buildMeshletStreamAsset failed: " + reason);
+    }
+
+    if (!outAsset.open(outputPath, reason)) {
+        return RhiTestResult::fail("MeshletStreamAsset::open failed: " + reason);
+    }
+    if (outAsset.pageCount() == 0) {
+        return RhiTestResult::fail("streamasset has no pages");
+    }
+    return RhiTestResult::pass();
+}
+
+std::vector<uint32_t> fallbackPagesFor(const scene::MeshletStreamAsset& asset)
+{
+    std::vector<uint32_t> fallbackPages;
+    for (const scene::MeshletStreamPrimitiveInfo& primitive : asset.primitives()) {
+        for (uint32_t page = 0; page < primitive.fallbackPageCount; ++page) {
+            fallbackPages.push_back(primitive.fallbackPageOffset + page);
+        }
+    }
+    return fallbackPages;
+}
+
+std::vector<uint32_t> nonFallbackPagesFor(
+    const scene::MeshletStreamAsset& asset,
+    std::span<const uint32_t> fallbackPages)
+{
+    std::vector<uint8_t> isFallback(asset.pageCount(), 0);
+    for (uint32_t page : fallbackPages) {
+        if (page < isFallback.size()) {
+            isFallback[page] = 1;
+        }
+    }
+
+    std::vector<uint32_t> pages;
+    for (uint32_t page = 0; page < asset.pageCount(); ++page) {
+        if (isFallback[page] == 0) {
+            pages.push_back(page);
+        }
+    }
+    return pages;
+}
+
 class StreamerBufferUploadTest : public RhiTest {
 public:
     StreamerBufferUploadTest()
@@ -568,40 +631,15 @@ public:
 
     RhiTestResult run(RhiTestContext& context) override
     {
-        const std::filesystem::path sourcePath =
-            std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
-
-        scene::Scene scene;
-        if (!scene.load(sourcePath)) {
-            return RhiTestResult::fail("Scene::load failed: " + scene.lastLoadResult().error);
-        }
-
         const std::filesystem::path streamAssetPath = context.outputDirectory / "streamer_residency.meshstream.bin";
-        std::string reason;
-        if (!scene::buildMeshletStreamAsset(
-                scene::MeshletStreamAssetBuildDesc{
-                    .scene = &scene,
-                    .sourcePath = sourcePath,
-                    .outputPath = streamAssetPath,
-                },
-                reason)) {
-            return RhiTestResult::fail("buildMeshletStreamAsset failed: " + reason);
-        }
-
         scene::MeshletStreamAsset asset;
-        if (!asset.open(streamAssetPath, reason)) {
-            return RhiTestResult::fail("MeshletStreamAsset::open failed: " + reason);
-        }
-        if (asset.pageCount() == 0) {
-            return RhiTestResult::fail("streamasset has no pages");
+        RhiTestResult build = buildBunnyStreamAssetForTest(streamAssetPath, asset);
+        if (!build.passed) {
+            return build;
         }
 
-        std::vector<uint32_t> fallbackPages;
-        for (const scene::MeshletStreamPrimitiveInfo& primitive : asset.primitives()) {
-            for (uint32_t page = 0; page < primitive.fallbackPageCount; ++page) {
-                fallbackPages.push_back(primitive.fallbackPageOffset + page);
-            }
-        }
+        std::string reason;
+        std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
         const uint32_t maxResidentPages = std::max<uint32_t>(
             static_cast<uint32_t>(fallbackPages.size()) + 2u,
             4u);
@@ -639,10 +677,23 @@ public:
         }
 
         residency.beginFrame();
-        const uint32_t pageIndex = 0;
+        if (fallbackPages.empty() || residency.queuedUploadCount() == 0) {
+            return RhiTestResult::fail("lockFallbackPages did not queue fallback uploads");
+        }
+        const uint32_t pageIndex = fallbackPages.front();
+        std::vector<render::StreamPageTableEntry> initialTable(asset.pageCount());
+        residency.buildInitialPageTable(initialTable);
+        if (initialTable[pageIndex].slot != UINT32_MAX ||
+            initialTable[pageIndex].state !=
+                static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded) ||
+            initialTable[pageIndex].payloadBytes != asset.pages()[pageIndex].payloadSize) {
+            return RhiTestResult::fail("initial stream page table entry did not encode missing fallback page");
+        }
+        residency.clearPendingPatches();
+
         const bool alreadyResident = residency.requestPage(pageIndex);
         if (alreadyResident || residency.queuedUploadCount() == 0) {
-            return RhiTestResult::fail("requestPage did not queue an unloaded page");
+            return RhiTestResult::fail("fallback page was resident before upload");
         }
         const uint32_t uploaded = residency.processUploads(*streamer, *pageBuffer, 1);
         if (uploaded != 1) {
@@ -651,6 +702,14 @@ public:
         if (residency.pageState(pageIndex) != render::MeshletStreamPageResidencyState::PendingUpload) {
             return RhiTestResult::fail("uploaded page did not enter PendingUpload state");
         }
+        std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
+        if (patches.size() != 1 ||
+            patches[0].pageId != pageIndex ||
+            patches[0].slot == UINT32_MAX ||
+            patches[0].state != static_cast<uint32_t>(render::MeshletStreamPageResidencyState::PendingUpload)) {
+            return RhiTestResult::fail("pending upload did not produce expected page table patch");
+        }
+        residency.clearPendingPatches();
 
         std::unique_ptr<render::CommandPool> commandPool;
         std::unique_ptr<render::CommandBuffer> commandBuffer;
@@ -696,9 +755,19 @@ public:
         if (residency.pageResident(pageIndex)) {
             return RhiTestResult::fail("page became resident before queued frame delay elapsed");
         }
+        if (!residency.pendingPatches().empty()) {
+            return RhiTestResult::fail("residency produced a patch before pending upload completed");
+        }
         residency.beginFrame();
         if (!residency.pageResident(pageIndex)) {
             return RhiTestResult::fail("page did not become resident after queued frame delay elapsed");
+        }
+        patches = residency.pendingPatches();
+        if (patches.size() != 1 ||
+            patches[0].pageId != pageIndex ||
+            patches[0].slot == UINT32_MAX ||
+            patches[0].state != static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback)) {
+            return RhiTestResult::fail("resident fallback did not produce expected page table patch");
         }
 
         const uint32_t slot = residency.slotForPage(pageIndex);
@@ -729,11 +798,82 @@ public:
     }
 };
 
+class StreamerMeshletResidencyGpuRequestPatchTest : public RhiTest {
+public:
+    StreamerMeshletResidencyGpuRequestPatchTest()
+    {
+        type = RhiTestType::Command;
+        name = "streamer_meshlet_residency_gpu_request_patches";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        scene::MeshletStreamAsset asset;
+        RhiTestResult build = buildBunnyStreamAssetForTest(
+            context.outputDirectory / "streamer_residency_gpu_request.meshstream.bin",
+            asset);
+        if (!build.passed) {
+            return build;
+        }
+
+        std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
+        std::vector<uint32_t> streamablePages = nonFallbackPagesFor(asset, fallbackPages);
+        if (fallbackPages.empty() || streamablePages.size() < 2) {
+            return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
+        }
+
+        render::MeshletStreamResidencyManager residency;
+        std::string reason;
+        if (!residency.initialize(
+                render::MeshletStreamResidencyDesc{
+                    .asset = &asset,
+                    .maxResidentPages = static_cast<uint32_t>(fallbackPages.size()) + 1u,
+                    .queuedFrameCount = 2,
+                },
+                reason)) {
+            return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
+        }
+        if (!residency.lockFallbackPages(fallbackPages, reason)) {
+            return RhiTestResult::fail("lockFallbackPages failed: " + reason);
+        }
+        residency.clearPendingPatches();
+
+        const uint32_t firstPage = streamablePages[0];
+        const uint32_t secondPage = streamablePages[1];
+        const std::array<uint32_t, 4> gpuRequests = {
+            firstPage,
+            firstPage,
+            secondPage,
+            secondPage,
+        };
+        const uint32_t consumed = residency.consumeGpuRequests(gpuRequests);
+        if (consumed != 2) {
+            return RhiTestResult::fail("consumeGpuRequests did not deduplicate page ids");
+        }
+        if (residency.slotForPage(firstPage) != UINT32_MAX) {
+            return RhiTestResult::fail("first requested page was not evicted under slot pressure");
+        }
+        if (residency.slotForPage(secondPage) == UINT32_MAX) {
+            return RhiTestResult::fail("second requested page did not receive the single streamable slot");
+        }
+
+        const std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
+        if (patches.size() != 1 ||
+            patches[0].pageId != firstPage ||
+            patches[0].slot != UINT32_MAX ||
+            patches[0].state != static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded)) {
+            return RhiTestResult::fail("evicted request did not produce expected invalid page table patch");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(StreamerBufferUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerTextureUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerConstantUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphFlushTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyUploadTest);
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestPatchTest);
 
 } // namespace
 } // namespace metallic::tests

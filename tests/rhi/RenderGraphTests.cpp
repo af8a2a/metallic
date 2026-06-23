@@ -1971,6 +1971,26 @@ public:
             return RhiTestResult::fail("GPUDrivenStreamAsset fragment shader produced empty SPIR-V");
         }
 
+        render::ShaderCompileResult updateCompile;
+        result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "gpu_driven_streamasset",
+                .entryPointName = "gpuDrivenStreamAssetApplyUpdatesMain",
+                .searchPath = kShaderSearchPath,
+                .profileName = "glsl_460",
+            },
+            updateCompile);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenStreamAsset update shader compile returned ") +
+                toString(result) +
+                ": " +
+                updateCompile.diagnostics);
+        }
+        if (updateCompile.spirv.empty()) {
+            return RhiTestResult::fail("GPUDrivenStreamAsset update shader produced empty SPIR-V");
+        }
+
         return RhiTestResult::pass();
     }
 };
@@ -3086,6 +3106,10 @@ public:
 
     RhiTestResult run(RhiTestContext& context) override
     {
+        constexpr uint32_t kWidth = 128;
+        constexpr uint32_t kHeight = 96;
+        constexpr uint64_t kReadbackByteSize = static_cast<uint64_t>(kWidth) * kHeight * 4u;
+
         std::unique_ptr<render::Device> device;
         render::Result result = render::createDevice(
             render::DeviceDesc{
@@ -3100,6 +3124,10 @@ public:
                 return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
             }
             return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+        }
+        render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
+        if (graphicsQueue == nullptr) {
+            return RhiTestResult::fail("GPUDrivenStreamAssetPass smoke device has no graphics queue");
         }
 
         render::RenderGraph graph;
@@ -3117,7 +3145,7 @@ public:
 
         render::RenderGraphExecutor executor;
         std::string log;
-        result = executor.compile(*device, graph, 128, 96, log);
+        result = executor.compile(*device, graph, kWidth, kHeight, log);
         const bool hasRequiredCapabilities =
             device->capabilities().meshShader &&
             device->capabilities().bindlessDescriptorHeap;
@@ -3140,6 +3168,128 @@ public:
                 log);
         }
 
+        for (uint32_t frame = 0; frame < 5; ++frame) {
+            result = executor.execute(render::RenderGraphSubmitDesc{
+                .graphicsQueue = graphicsQueue,
+            });
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("RenderGraphExecutor::execute frame ") +
+                    std::to_string(frame) +
+                    " returned " +
+                    toString(result));
+            }
+            result = executor.waitForSubmittedWork(5'000'000'000ull);
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("RenderGraphExecutor::waitForSubmittedWork frame ") +
+                    std::to_string(frame) +
+                    " returned " +
+                    toString(result));
+            }
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        result = device->createCommandPool(*graphicsQueue, commandPool);
+        if (!result || commandPool == nullptr) {
+            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        result = commandPool->createCommandBuffer(commandBuffer);
+        if (!result || commandBuffer == nullptr) {
+            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::Fence> fence;
+        result = device->createFence(false, fence);
+        if (!result || fence == nullptr) {
+            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::Buffer> readbackBuffer;
+        result = device->createBuffer(
+            render::BufferDesc{
+                .size = kReadbackByteSize,
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            readbackBuffer);
+        if (!result || readbackBuffer == nullptr) {
+            return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
+        }
+
+        result = commandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+        }
+        result = executor.execute(*commandBuffer);
+        if (!result) {
+            return RhiTestResult::fail(std::string("RenderGraphExecutor::execute(readback) returned ") + toString(result));
+        }
+
+        render::RenderGraphResource* output = executor.outputResource("GPUDriven.color");
+        if (output == nullptr || output->texture == nullptr) {
+            return RhiTestResult::fail("GPUDrivenStreamAssetPass smoke output resource is missing");
+        }
+
+        result = executor.transitionOutput(*commandBuffer, "GPUDriven.color", render::ResourceState::TransferSource);
+        if (!result) {
+            return RhiTestResult::fail(std::string("transitionOutput returned ") + toString(result));
+        }
+        commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
+            .texture = output->texture,
+            .buffer = readbackBuffer.get(),
+            .width = kWidth,
+            .height = kHeight,
+            .depth = 1,
+            .mipLevel = 0,
+            .baseLayer = 0,
+        });
+
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+        }
+
+        render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+        result = graphicsQueue->submit(render::QueueSubmitDesc{
+            .commandBuffers = commandBuffers,
+            .commandBufferCount = 1,
+            .signalFence = fence.get(),
+        });
+        if (!result) {
+            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+        }
+        result = fence->wait(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+        }
+
+        readbackBuffer->invalidate();
+        void* mapped = readbackBuffer->map();
+        if (mapped == nullptr) {
+            return RhiTestResult::fail("readback buffer did not map");
+        }
+
+        std::vector<uint8_t> pixels(static_cast<size_t>(kReadbackByteSize));
+        std::memcpy(pixels.data(), mapped, pixels.size());
+        readbackBuffer->unmap();
+
+        uint32_t nonClearPixelCount = 0;
+        for (uint32_t index = 0; index < kWidth * kHeight; ++index) {
+            const uint8_t r = pixels[index * 4 + 0];
+            const uint8_t g = pixels[index * 4 + 1];
+            const uint8_t b = pixels[index * 4 + 2];
+            if (r > 24 || g > 24 || b > 24) {
+                ++nonClearPixelCount;
+            }
+        }
+        if (nonClearPixelCount == 0) {
+            return RhiTestResult::fail("GPUDrivenStreamAssetPass smoke produced only clear pixels");
+        }
+
+        (void)device->waitIdle();
         return RhiTestResult::pass();
     }
 };
