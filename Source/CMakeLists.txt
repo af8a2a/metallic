@@ -13,6 +13,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderGraph/RenderGraph.cpp
     Runtime/Render/RenderGraph/RenderGraphNode.cpp
     Runtime/Render/RenderGraph/RenderGraphExecutor.cpp
+    Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.cpp
     Runtime/Render/RenderPass/BuiltinRenderPasses.cpp
     Runtime/Render/RenderPass/BuiltinPass/BunnyWireframePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ClearColorPass.cpp

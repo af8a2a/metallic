@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
+#include "Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 
@@ -44,27 +45,6 @@ public:
 private:
     std::string label_;
     RenderGraphLogClock::time_point begin_ = RenderGraphLogClock::now();
-};
-
-class StreamerFrameScope {
-public:
-    explicit StreamerFrameScope(Streamer* streamer)
-        : streamer_(streamer)
-    {
-    }
-
-    ~StreamerFrameScope()
-    {
-        if (streamer_ != nullptr) {
-            streamer_->endFrame();
-        }
-    }
-
-    StreamerFrameScope(const StreamerFrameScope&) = delete;
-    StreamerFrameScope& operator=(const StreamerFrameScope&) = delete;
-
-private:
-    Streamer* streamer_ = nullptr;
 };
 
 } // namespace
@@ -146,7 +126,7 @@ struct RenderGraphExecutor::Impl {
     std::unordered_map<std::string, ResourceSlot> resources;
     std::unordered_map<std::string, std::string> inputAliases;
     std::unique_ptr<BindlessHeap> bindlessHeap;
-    std::unique_ptr<Streamer> streamer;
+    RenderGraphStreamingSubsystem streamingSubsystem;
     std::array<QueueCommandContext, 3> queueCommandContexts;
     std::vector<std::unique_ptr<CommandBuffer>> submittedCommandBuffers;
     std::unique_ptr<Semaphore> submittedTimelineSemaphore;
@@ -176,27 +156,6 @@ struct RenderGraphExecutor::Impl {
                 return node.name == name;
             });
         return iter == executionList.end() ? nullptr : &(*iter);
-    }
-
-    Result ensureStreamer(Device& graphDevice, std::string& log)
-    {
-        if (streamer != nullptr) {
-            return {};
-        }
-
-        StreamerDesc streamerDesc;
-        streamerDesc.constantBufferSize = 256ull * 1024ull;
-        streamerDesc.dynamicBufferSizePerFrame = 4ull * 1024ull * 1024ull;
-        streamerDesc.queuedFrameCount = 3;
-        streamerDesc.dynamicBufferDesc.usage = BufferUsageBits::TransferSource |
-            BufferUsageBits::Storage |
-            BufferUsageBits::Constant;
-        Result result = graphDevice.createStreamer(streamerDesc, streamer);
-        if (!result || streamer == nullptr) {
-            log = resultMessage("createStreamer(RenderGraph)", result);
-            return result ? makeError(Error::Failure) : result;
-        }
-        return {};
     }
 
     const RenderGraphField* reflectedField(
@@ -810,7 +769,7 @@ struct RenderGraphExecutor::Impl {
             node.effectiveProperties,
             std::move(bindings),
             historyResources,
-            streamer.get());
+            streamingSubsystem.streamer());
         const std::string markerName = passProfileMarkerName(node.name, node.type);
         const uint32_t markerColor = profiling::nsightColorFromName(node.type);
         const profiling::NsightProfileRange passMarker(
@@ -823,8 +782,8 @@ struct RenderGraphExecutor::Impl {
         });
         const auto cpuBegin = std::chrono::steady_clock::now();
         Result result = node.pass->execute(context);
-        if (result && streamer != nullptr) {
-            commandBuffer.copyStreamedData(*streamer);
+        if (result) {
+            streamingSubsystem.flush(commandBuffer);
         }
         const auto cpuEnd = std::chrono::steady_clock::now();
         commandBuffer.endDebugLabel();
@@ -918,7 +877,7 @@ Result RenderGraphExecutor::compile(
             queueContext.commandPool.reset();
             queueContext.resetForCurrentSubmit = false;
         }
-        impl_->streamer.reset();
+        impl_->streamingSubsystem.reset();
     }
 
     const bool dimensionsChanged = impl_->width != width || impl_->height != height;
@@ -936,14 +895,14 @@ Result RenderGraphExecutor::compile(
         .defaultFormat = impl_->defaultFormat,
     };
 
-    Result streamerResult;
+    Result streamingResult;
     {
-        RenderGraphLogScope scope("prepare streamer");
-        streamerResult = impl_->ensureStreamer(device, log);
+        RenderGraphLogScope scope("prepare streaming subsystem");
+        streamingResult = impl_->streamingSubsystem.initialize(device, log);
     }
-    if (!streamerResult) {
+    if (!streamingResult) {
         impl_->isCompiled = false;
-        return streamerResult;
+        return streamingResult;
     }
 
     if (canReuseCompiledPasses) {
@@ -1061,7 +1020,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     }
 
     impl_->historyResources = historyResources;
-    StreamerFrameScope streamerFrame(impl_->streamer.get());
+    RenderGraphStreamingFrameScope streamingFrame(impl_->streamingSubsystem);
     impl_->lastExecutionStats = {};
     const auto cpuBegin = std::chrono::steady_clock::now();
     for (Impl::CompiledNode& node : impl_->executionList) {
@@ -1093,7 +1052,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     if (!result) {
         return result;
     }
-    StreamerFrameScope streamerFrame(impl_->streamer.get());
+    RenderGraphStreamingFrameScope streamingFrame(impl_->streamingSubsystem);
     impl_->submittedCommandBuffers.clear();
     impl_->submittedTimelineSemaphore.reset();
     impl_->submittedTimelineValue = 0;
