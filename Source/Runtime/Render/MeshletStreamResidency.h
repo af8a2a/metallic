@@ -61,6 +61,38 @@ struct MeshletStreamResidencyDesc {
     uint64_t pageStride = 0;
 };
 
+struct MeshletStreamResidencyStats {
+    uint64_t frameIndex = 0;
+    uint32_t pageCount = 0;
+    uint32_t maxResidentPages = 0;
+    uint32_t usedSlotCount = 0;
+    uint32_t freeSlotCount = 0;
+    uint32_t activePageCount = 0;
+    uint32_t residentPageCount = 0;
+    uint32_t pendingPageCount = 0;
+    uint32_t queuedUploadCount = 0;
+    uint32_t pendingPatchCount = 0;
+    uint32_t frameGpuRequestCount = 0;
+    uint32_t frameUniqueGpuRequestCount = 0;
+    uint32_t frameConsumedGpuRequestCount = 0;
+    uint32_t frameQueuedUploadCount = 0;
+    uint32_t frameScheduledUploadCount = 0;
+    uint32_t frameCompletedUploadCount = 0;
+    uint32_t frameEvictedPageCount = 0;
+    uint32_t frameAllocationFailureCount = 0;
+    uint64_t totalGpuRequestCount = 0;
+    uint64_t totalUniqueGpuRequestCount = 0;
+    uint64_t totalConsumedGpuRequestCount = 0;
+    uint64_t totalQueuedUploadCount = 0;
+    uint64_t totalScheduledUploadCount = 0;
+    uint64_t totalCompletedUploadCount = 0;
+    uint64_t totalEvictedPageCount = 0;
+    uint64_t totalAllocationFailureCount = 0;
+    uint64_t oldestActiveAge = 0;
+    uint64_t oldestResidentAge = 0;
+    uint64_t oldestPendingAge = 0;
+};
+
 class MeshletStreamResidencyManager {
 public:
     bool initialize(const MeshletStreamResidencyDesc& desc, std::string& reason);
@@ -79,6 +111,7 @@ public:
     MeshletStreamPageResidencyState pageState(uint32_t pageIndex) const;
     uint32_t slotForPage(uint32_t pageIndex) const;
     bool pageResident(uint32_t pageIndex) const;
+    uint64_t pageAge(uint32_t pageIndex) const;
 
     uint32_t maxResidentPages() const { return maxResidentPages_; }
     uint32_t residentPageCount() const;
@@ -86,6 +119,12 @@ public:
     uint32_t queuedUploadCount() const { return static_cast<uint32_t>(uploadQueue_.size()); }
     uint64_t pageStride() const { return pageStride_; }
     uint64_t pageBufferSize() const { return pageStride_ * maxResidentPages_; }
+    std::span<const uint32_t> requestedPages() const { return requestedPages_; }
+    std::span<const uint32_t> activePages() const { return activePages_; }
+    std::span<const uint32_t> residentPages() const { return residentPages_; }
+    std::span<const uint32_t> pendingPages() const { return pendingPages_; }
+    std::span<const uint32_t> slotToPageTable() const { return slotToPage_; }
+    MeshletStreamResidencyStats stats() const;
 
 private:
     struct PageEntry {
@@ -100,15 +139,32 @@ private:
     uint32_t allocateSlot(uint32_t pageIndex);
     void releaseSlot(uint32_t pageIndex);
     void setPageState(uint32_t pageIndex, MeshletStreamPageResidencyState state);
+    void queueUpload(uint32_t pageIndex);
     void recordPatch(uint32_t pageIndex);
+    void addToTable(std::vector<uint32_t>& table, std::vector<uint32_t>& positions, uint32_t pageIndex);
+    void removeFromTable(std::vector<uint32_t>& table, std::vector<uint32_t>& positions, uint32_t pageIndex);
+    void updateStateTables(
+        uint32_t pageIndex,
+        MeshletStreamPageResidencyState oldState,
+        MeshletStreamPageResidencyState newState);
+    uint64_t oldestAge(std::span<const uint32_t> pageIndices) const;
+    void resetFrameStats();
 
     const scene::MeshletStreamAsset* asset_ = nullptr;
     std::vector<PageEntry> pages_;
     std::vector<uint32_t> slotToPage_;
     std::vector<uint32_t> freeSlots_;
     std::vector<uint32_t> uploadQueue_;
+    std::vector<uint32_t> requestedPages_;
+    std::vector<uint32_t> activePages_;
+    std::vector<uint32_t> residentPages_;
+    std::vector<uint32_t> pendingPages_;
+    std::vector<uint32_t> activePagePositions_;
+    std::vector<uint32_t> residentPagePositions_;
+    std::vector<uint32_t> pendingPagePositions_;
     std::vector<uint8_t> requestMarks_;
     std::vector<StreamPageTablePatch> patches_;
+    MeshletStreamResidencyStats stats_;
     uint64_t frameIndex_ = 0;
     uint64_t pageStride_ = 0;
     uint32_t maxResidentPages_ = 0;

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <span>
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -302,6 +303,135 @@ Result allocateAndWriteBuffer(
     return result;
 }
 
+void transitionBuffer(
+    CommandBuffer& commandBuffer,
+    Buffer& buffer,
+    ResourceState& state,
+    ResourceState nextState,
+    bool forceBarrier = false)
+{
+    if (!forceBarrier && state == nextState) {
+        return;
+    }
+    BufferBarrierDesc barrier{
+        .buffer = &buffer,
+        .before = state,
+        .after = nextState,
+        .offset = 0,
+        .size = buffer.desc().size,
+    };
+    commandBuffer.barrier(BarrierDesc{
+        .buffers = &barrier,
+        .bufferCount = 1,
+    });
+    state = nextState;
+}
+
+class GPUDrivenStreamUpdatePass final {
+public:
+    Result initialize(Device& device, BindlessHeap& bindlessHeap, uint64_t updateByteSize, std::string& log)
+    {
+        if (updateByteSize == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+        Result result = createHostStorageBuffer(
+            device,
+            updateByteSize,
+            updateBuffer_,
+            log,
+            "GPUDrivenStreamUpdatePass update");
+        if (!result) {
+            return result;
+        }
+
+        result = allocateAndWriteBuffer(bindlessHeap, *updateBuffer_, updateHandle_, log, "streamasset update");
+        if (!result) {
+            return result;
+        }
+
+        result = createSlangShaderModule(
+            device,
+            kGPUDrivenStreamAssetShaderModuleName,
+            kGPUDrivenStreamAssetUpdateEntryPoint,
+            updateShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        result = device.createComputePipeline(
+            ComputePipelineDesc{
+                .computeShader = updateShader_.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(GPUDrivenStreamAssetUserPush),
+            },
+            updatePipeline_);
+        if (!result || updatePipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(GPUDrivenStreamUpdatePass)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
+    }
+
+    bool ready() const
+    {
+        return updateBuffer_ != nullptr &&
+            updateHandle_.valid() &&
+            updatePipeline_ != nullptr;
+    }
+
+    BindlessHandle updateHandle() const { return updateHandle_; }
+
+    Result apply(
+        CommandBuffer& commandBuffer,
+        BindlessHeap& bindlessHeap,
+        const GPUDrivenStreamAssetUserPush& push,
+        std::span<const StreamPageTablePatch> patches,
+        uint32_t maxUpdatePatches,
+        Buffer& pageTableBuffer,
+        ResourceState& pageTableState)
+    {
+        if (patches.empty()) {
+            return {};
+        }
+        if (!ready() || patches.size() > maxUpdatePatches) {
+            return makeError(Error::Failure);
+        }
+
+        const uint32_t patchCount = static_cast<uint32_t>(patches.size());
+        void* mapped = updateBuffer_->map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        auto* header = static_cast<StreamUpdateBufferHeader*>(mapped);
+        *header = StreamUpdateBufferHeader{.patchCounter = patchCount};
+        std::memcpy(
+            static_cast<uint8_t*>(mapped) + sizeof(StreamUpdateBufferHeader),
+            patches.data(),
+            static_cast<size_t>(patchCount) * sizeof(StreamPageTablePatch));
+        updateBuffer_->flush(
+            0,
+            sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(patchCount) * sizeof(StreamPageTablePatch));
+        updateBuffer_->unmap();
+
+        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General);
+        commandBuffer.bindBindlessHeap(bindlessHeap);
+        commandBuffer.bindComputePipeline(*updatePipeline_);
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.dispatch((patchCount + 63u) / 64u, 1, 1);
+        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true);
+        return {};
+    }
+
+private:
+    std::unique_ptr<Buffer> updateBuffer_;
+    std::unique_ptr<ShaderModule> updateShader_;
+    std::unique_ptr<ComputePipeline> updatePipeline_;
+    BindlessHandle updateHandle_;
+};
+
 class GPUDrivenStreamAssetPass final : public UnsafePass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
@@ -530,15 +660,6 @@ public:
         }
         result = createHostStorageBuffer(
             *context.device,
-            updateByteSize,
-            updateBuffer_,
-            log,
-            "GPUDrivenStreamAsset update");
-        if (!result) {
-            return result;
-        }
-        result = createHostStorageBuffer(
-            *context.device,
             sizeof(GPUDrivenStreamAssetGpuParams),
             paramsBuffer_,
             log,
@@ -579,7 +700,8 @@ public:
         if (!result) {
             return result;
         }
-        result = allocateAndWriteBuffer(*bindlessHeap_, *updateBuffer_, updateHandle_, log, "streamasset update");
+
+        result = streamUpdatePass_.initialize(*context.device, *bindlessHeap_, updateByteSize, log);
         if (!result) {
             return result;
         }
@@ -617,16 +739,6 @@ public:
             return result;
         }
 
-        ShaderCompileResult updateCompile;
-        result = compileSlangShader(
-            kGPUDrivenStreamAssetShaderModuleName,
-            kGPUDrivenStreamAssetUpdateEntryPoint,
-            updateCompile,
-            log);
-        if (!result) {
-            return result;
-        }
-
         result = context.device->createShaderModule(
             ShaderModuleDesc{
                 .code = meshCompile.spirv.data(),
@@ -649,17 +761,6 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        result = context.device->createShaderModule(
-            ShaderModuleDesc{
-                .code = updateCompile.spirv.data(),
-                .byteSize = static_cast<uint64_t>(updateCompile.spirv.size() * sizeof(uint32_t)),
-            },
-            updateShader_);
-        if (!result || updateShader_ == nullptr) {
-            log += resultMessage("createShaderModule(GPUDrivenStreamAsset update)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
         result = context.device->createGraphicsPipeline(
             GraphicsPipelineDesc{
                 .meshShader = meshShader_.get(),
@@ -679,19 +780,6 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        result = context.device->createComputePipeline(
-            ComputePipelineDesc{
-                .computeShader = updateShader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(GPUDrivenStreamAssetUserPush),
-            },
-            updatePipeline_);
-        if (!result || updatePipeline_ == nullptr) {
-            log += resultMessage("createComputePipeline(GPUDrivenStreamAssetPass update)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
 
         return {};
     }
@@ -705,7 +793,7 @@ public:
             context.streamer() == nullptr ||
             bindlessHeap_ == nullptr ||
             pipeline_ == nullptr ||
-            updatePipeline_ == nullptr ||
+            !streamUpdatePass_.ready() ||
             pageBuffer_ == nullptr ||
             drawItemBuffer_ == nullptr ||
             pageTableBuffer_ == nullptr ||
@@ -713,16 +801,41 @@ public:
             requestBuffer_ == nullptr ||
             requestReadbackBuffer_ == nullptr ||
             requestClearBuffer_ == nullptr ||
-            updateBuffer_ == nullptr ||
             paramsBuffer_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
+        StreamingFrameLifecycle frame;
+        beginFrame(context, frame);
+
+        Result result = preDraw(context);
+        if (!result) {
+            return result;
+        }
+
+        result = draw(context, color, depth);
+        if (!result) {
+            return result;
+        }
+
+        return endFrame(context, frame);
+    }
+
+private:
+    struct StreamingFrameLifecycle {
+        uint32_t uploadCount = 0;
+    };
+
+    void beginFrame(RenderGraphExecutionContext& context, StreamingFrameLifecycle& frame)
+    {
         ++frameIndex_;
-        consumeGpuRequestReadback();
         residency_.beginFrame();
-        const uint32_t uploadCount =
-            residency_.processUploads(*context.streamer(), *pageBuffer_, maxPageUploadsPerFrame_);
+        consumeGpuRequestReadback();
+        frame.uploadCount = residency_.processUploads(*context.streamer(), *pageBuffer_, maxPageUploadsPerFrame_);
+    }
+
+    Result preDraw(RenderGraphExecutionContext& context)
+    {
         Result result = initializePageTableIfNeeded(context.commandBuffer());
         if (!result) {
             return result;
@@ -735,16 +848,17 @@ public:
         if (!result) {
             return result;
         }
+
         buildFrameDrawItems(context.properties());
         result = updateDrawItemBuffer();
         if (!result) {
             return result;
         }
-        result = updateParamsBuffer(context.width(), context.height(), context.properties());
-        if (!result) {
-            return result;
-        }
+        return updateParamsBuffer(context.width(), context.height(), context.properties());
+    }
 
+    Result draw(RenderGraphExecutionContext& context, TextureHandle color, TextureHandle depth)
+    {
         const bool needsShaderRead = !drawItems_.empty();
         if (needsShaderRead && pageBufferState_ != ResourceState::ShaderRead) {
             BufferBarrierDesc barrier{
@@ -805,19 +919,23 @@ public:
                 .pageTableBuffer = pageTableHandle_.index,
                 .paramsBuffer = paramsHandle_.index,
                 .requestBuffer = requestHandle_.index,
-                .updateBuffer = updateHandle_.index,
+                .updateBuffer = streamUpdatePass_.updateHandle().index,
             };
             context.commandBuffer().pushBindlessData(&push, sizeof(push));
             context.commandBuffer().drawMeshTasks(static_cast<uint32_t>(drawItems_.size()));
         }
         context.commandBuffer().endRendering();
+        return {};
+    }
 
-        result = copyRequestBufferForReadback(context.commandBuffer());
+    Result endFrame(RenderGraphExecutionContext& context, const StreamingFrameLifecycle& frame)
+    {
+        Result result = copyRequestBufferForReadback(context.commandBuffer());
         if (!result) {
             return result;
         }
 
-        if (uploadCount > 0 && pageBufferState_ != ResourceState::TransferDestination) {
+        if (frame.uploadCount > 0 && pageBufferState_ != ResourceState::TransferDestination) {
             BufferBarrierDesc barrier{
                 .buffer = pageBuffer_.get(),
                 .before = pageBufferState_,
@@ -832,31 +950,6 @@ public:
             pageBufferState_ = ResourceState::TransferDestination;
         }
         return {};
-    }
-
-private:
-    void transitionBuffer(
-        CommandBuffer& commandBuffer,
-        Buffer& buffer,
-        ResourceState& state,
-        ResourceState nextState,
-        bool forceBarrier = false)
-    {
-        if (!forceBarrier && state == nextState) {
-            return;
-        }
-        BufferBarrierDesc barrier{
-            .buffer = &buffer,
-            .before = state,
-            .after = nextState,
-            .offset = 0,
-            .size = buffer.desc().size,
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .buffers = &barrier,
-            .bufferCount = 1,
-        });
-        state = nextState;
     }
 
     void consumeGpuRequestReadback()
@@ -907,50 +1000,31 @@ private:
         });
         transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::General);
         pageTableInitialized_ = true;
-        residency_.clearPendingPatches();
         return {};
     }
 
     Result applyPageTablePatches(CommandBuffer& commandBuffer)
     {
         const std::span<const StreamPageTablePatch> patches = residency_.pendingPatches();
-        if (patches.empty()) {
-            return {};
-        }
-        if (patches.size() > maxUpdatePatches_) {
-            return makeError(Error::Failure);
-        }
-
-        const uint32_t patchCount = static_cast<uint32_t>(patches.size());
-        void* mapped = updateBuffer_->map();
-        if (mapped == nullptr) {
-            return makeError(Error::Failure);
-        }
-        auto* header = static_cast<StreamUpdateBufferHeader*>(mapped);
-        *header = StreamUpdateBufferHeader{.patchCounter = patchCount};
-        std::memcpy(
-            static_cast<uint8_t*>(mapped) + sizeof(StreamUpdateBufferHeader),
-            patches.data(),
-            static_cast<size_t>(patchCount) * sizeof(StreamPageTablePatch));
-        updateBuffer_->flush(
-            0,
-            sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(patchCount) * sizeof(StreamPageTablePatch));
-        updateBuffer_->unmap();
-
-        transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::General);
-        commandBuffer.bindBindlessHeap(*bindlessHeap_);
-        commandBuffer.bindComputePipeline(*updatePipeline_);
         const GPUDrivenStreamAssetUserPush push{
             .pageBuffer = pageHandle_.index,
             .drawItemBuffer = drawItemHandle_.index,
             .pageTableBuffer = pageTableHandle_.index,
             .paramsBuffer = paramsHandle_.index,
             .requestBuffer = requestHandle_.index,
-            .updateBuffer = updateHandle_.index,
+            .updateBuffer = streamUpdatePass_.updateHandle().index,
         };
-        commandBuffer.pushBindlessData(&push, sizeof(push));
-        commandBuffer.dispatch((patchCount + 63u) / 64u, 1, 1);
-        transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::General, true);
+        Result result = streamUpdatePass_.apply(
+            commandBuffer,
+            *bindlessHeap_,
+            push,
+            patches,
+            maxUpdatePatches_,
+            *pageTableBuffer_,
+            pageTableState_);
+        if (!result) {
+            return result;
+        }
         residency_.clearPendingPatches();
         return {};
     }
@@ -1192,20 +1266,17 @@ private:
     std::unique_ptr<Buffer> requestBuffer_;
     std::unique_ptr<Buffer> requestReadbackBuffer_;
     std::unique_ptr<Buffer> requestClearBuffer_;
-    std::unique_ptr<Buffer> updateBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
-    std::unique_ptr<ShaderModule> updateShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
-    std::unique_ptr<ComputePipeline> updatePipeline_;
+    GPUDrivenStreamUpdatePass streamUpdatePass_;
     BindlessHandle pageHandle_;
     BindlessHandle drawItemHandle_;
     BindlessHandle pageTableHandle_;
     BindlessHandle paramsHandle_;
     BindlessHandle requestHandle_;
-    BindlessHandle updateHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
     ResourceState pageTableState_ = ResourceState::Undefined;
     ResourceState requestBufferState_ = ResourceState::Undefined;

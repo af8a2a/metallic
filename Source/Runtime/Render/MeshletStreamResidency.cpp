@@ -16,6 +16,14 @@ uint64_t alignUp(uint64_t value, uint64_t alignment)
     return ((value + alignment - 1) / alignment) * alignment;
 }
 
+constexpr uint32_t kInvalidTablePosition = UINT32_MAX;
+
+bool residentState(MeshletStreamPageResidencyState state)
+{
+    return state == MeshletStreamPageResidencyState::Resident ||
+        state == MeshletStreamPageResidencyState::LockedFallback;
+}
+
 } // namespace
 
 bool MeshletStreamResidencyManager::initialize(
@@ -50,10 +58,19 @@ bool MeshletStreamResidencyManager::initialize(
     pages_.resize(asset_->pageCount());
     slotToPage_.assign(maxResidentPages_, UINT32_MAX);
     requestMarks_.assign(asset_->pageCount(), 0);
+    activePagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
+    residentPagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
+    pendingPagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
+    requestedPages_.reserve(asset_->pageCount());
+    activePages_.reserve(maxResidentPages_);
+    residentPages_.reserve(maxResidentPages_);
+    pendingPages_.reserve(maxResidentPages_);
     freeSlots_.reserve(maxResidentPages_);
     for (uint32_t slot = 0; slot < maxResidentPages_; ++slot) {
         freeSlots_.push_back(maxResidentPages_ - slot - 1u);
     }
+    stats_.pageCount = asset_->pageCount();
+    stats_.maxResidentPages = maxResidentPages_;
     return true;
 }
 
@@ -64,8 +81,16 @@ void MeshletStreamResidencyManager::reset()
     slotToPage_.clear();
     freeSlots_.clear();
     uploadQueue_.clear();
+    requestedPages_.clear();
+    activePages_.clear();
+    residentPages_.clear();
+    pendingPages_.clear();
+    activePagePositions_.clear();
+    residentPagePositions_.clear();
+    pendingPagePositions_.clear();
     requestMarks_.clear();
     patches_.clear();
+    stats_ = {};
     frameIndex_ = 0;
     pageStride_ = 0;
     maxResidentPages_ = 0;
@@ -75,6 +100,8 @@ void MeshletStreamResidencyManager::reset()
 void MeshletStreamResidencyManager::beginFrame()
 {
     ++frameIndex_;
+    requestedPages_.clear();
+    resetFrameStats();
     for (PageEntry& page : pages_) {
         if (page.state != MeshletStreamPageResidencyState::PendingUpload) {
             continue;
@@ -89,6 +116,8 @@ void MeshletStreamResidencyManager::beginFrame()
                 page.lockedFallback
                     ? MeshletStreamPageResidencyState::LockedFallback
                     : MeshletStreamPageResidencyState::Resident);
+            ++stats_.frameCompletedUploadCount;
+            ++stats_.totalCompletedUploadCount;
         }
     }
 }
@@ -119,8 +148,7 @@ bool MeshletStreamResidencyManager::lockFallbackPages(
             return false;
         }
         if (page.state == MeshletStreamPageResidencyState::Unloaded && !page.queued) {
-            uploadQueue_.push_back(pageIndex);
-            page.queued = true;
+            queueUpload(pageIndex);
         }
     }
     return true;
@@ -144,8 +172,7 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
         return false;
     }
     if (!page.queued) {
-        uploadQueue_.push_back(pageIndex);
-        page.queued = true;
+        queueUpload(pageIndex);
     }
     return false;
 }
@@ -156,6 +183,11 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint3
         return 0;
     }
 
+    stats_.frameGpuRequestCount += static_cast<uint32_t>(std::min<uint64_t>(
+        pageIds.size(),
+        std::numeric_limits<uint32_t>::max()));
+    stats_.totalGpuRequestCount += pageIds.size();
+
     std::vector<uint32_t> uniqueRequests;
     uniqueRequests.reserve(pageIds.size());
     for (uint32_t pageIndex : pageIds) {
@@ -164,7 +196,10 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint3
         }
         requestMarks_[pageIndex] = 1;
         uniqueRequests.push_back(pageIndex);
+        requestedPages_.push_back(pageIndex);
     }
+    stats_.frameUniqueGpuRequestCount += static_cast<uint32_t>(uniqueRequests.size());
+    stats_.totalUniqueGpuRequestCount += uniqueRequests.size();
 
     uint32_t consumed = 0;
     for (uint32_t pageIndex : uniqueRequests) {
@@ -172,6 +207,8 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint3
         ++consumed;
         requestMarks_[pageIndex] = 0;
     }
+    stats_.frameConsumedGpuRequestCount += consumed;
+    stats_.totalConsumedGpuRequestCount += consumed;
     return consumed;
 }
 
@@ -220,6 +257,8 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         setPageState(pageIndex, MeshletStreamPageResidencyState::PendingUpload);
         page.pendingFrames = std::max(streamer.desc().queuedFrameCount, queuedFrameCount_);
         ++uploadCount;
+        ++stats_.frameScheduledUploadCount;
+        ++stats_.totalScheduledUploadCount;
         uploadQueue_.erase(uploadQueue_.begin() + static_cast<std::ptrdiff_t>(queueIndex));
     }
     return uploadCount;
@@ -263,32 +302,45 @@ uint32_t MeshletStreamResidencyManager::slotForPage(uint32_t pageIndex) const
 
 bool MeshletStreamResidencyManager::pageResident(uint32_t pageIndex) const
 {
-    const MeshletStreamPageResidencyState state = pageState(pageIndex);
-    return state == MeshletStreamPageResidencyState::Resident ||
-        state == MeshletStreamPageResidencyState::LockedFallback;
+    return residentState(pageState(pageIndex));
+}
+
+uint64_t MeshletStreamResidencyManager::pageAge(uint32_t pageIndex) const
+{
+    if (pageIndex >= pages_.size()) {
+        return 0;
+    }
+    const uint64_t lastUsedFrame = pages_[pageIndex].lastUsedFrame;
+    return frameIndex_ >= lastUsedFrame ? frameIndex_ - lastUsedFrame : 0;
 }
 
 uint32_t MeshletStreamResidencyManager::residentPageCount() const
 {
-    uint32_t count = 0;
-    for (const PageEntry& page : pages_) {
-        if (page.state == MeshletStreamPageResidencyState::Resident ||
-            page.state == MeshletStreamPageResidencyState::LockedFallback) {
-            ++count;
-        }
-    }
-    return count;
+    return static_cast<uint32_t>(residentPages_.size());
 }
 
 uint32_t MeshletStreamResidencyManager::pendingPageCount() const
 {
-    uint32_t count = 0;
-    for (const PageEntry& page : pages_) {
-        if (page.state == MeshletStreamPageResidencyState::PendingUpload) {
-            ++count;
-        }
-    }
-    return count;
+    return static_cast<uint32_t>(pendingPages_.size());
+}
+
+MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
+{
+    MeshletStreamResidencyStats result = stats_;
+    result.frameIndex = frameIndex_;
+    result.pageCount = static_cast<uint32_t>(pages_.size());
+    result.maxResidentPages = maxResidentPages_;
+    result.usedSlotCount = static_cast<uint32_t>(activePages_.size());
+    result.freeSlotCount = static_cast<uint32_t>(freeSlots_.size());
+    result.activePageCount = static_cast<uint32_t>(activePages_.size());
+    result.residentPageCount = static_cast<uint32_t>(residentPages_.size());
+    result.pendingPageCount = static_cast<uint32_t>(pendingPages_.size());
+    result.queuedUploadCount = static_cast<uint32_t>(uploadQueue_.size());
+    result.pendingPatchCount = static_cast<uint32_t>(patches_.size());
+    result.oldestActiveAge = oldestAge(activePages_);
+    result.oldestResidentAge = oldestAge(residentPages_);
+    result.oldestPendingAge = oldestAge(pendingPages_);
+    return result;
 }
 
 uint32_t MeshletStreamResidencyManager::allocateSlot(uint32_t pageIndex)
@@ -321,14 +373,19 @@ uint32_t MeshletStreamResidencyManager::allocateSlot(uint32_t pageIndex)
             }
         }
         if (evictPage == UINT32_MAX) {
+            ++stats_.frameAllocationFailureCount;
+            ++stats_.totalAllocationFailureCount;
             return UINT32_MAX;
         }
         slot = pages_[evictPage].slot;
+        ++stats_.frameEvictedPageCount;
+        ++stats_.totalEvictedPageCount;
         releaseSlot(evictPage);
     }
 
     page.slot = slot;
     slotToPage_[slot] = pageIndex;
+    addToTable(activePages_, activePagePositions_, pageIndex);
     return slot;
 }
 
@@ -348,6 +405,7 @@ void MeshletStreamResidencyManager::releaseSlot(uint32_t pageIndex)
     page.slot = UINT32_MAX;
     page.pendingFrames = 0;
     page.queued = false;
+    removeFromTable(activePages_, activePagePositions_, pageIndex);
     setPageState(pageIndex, MeshletStreamPageResidencyState::Unloaded);
     if (oldState == MeshletStreamPageResidencyState::Unloaded) {
         recordPatch(pageIndex);
@@ -363,8 +421,25 @@ void MeshletStreamResidencyManager::setPageState(uint32_t pageIndex, MeshletStre
     if (page.state == state) {
         return;
     }
+    const MeshletStreamPageResidencyState oldState = page.state;
     page.state = state;
+    updateStateTables(pageIndex, oldState, state);
     recordPatch(pageIndex);
+}
+
+void MeshletStreamResidencyManager::queueUpload(uint32_t pageIndex)
+{
+    if (pageIndex >= pages_.size()) {
+        return;
+    }
+    PageEntry& page = pages_[pageIndex];
+    if (page.queued) {
+        return;
+    }
+    uploadQueue_.push_back(pageIndex);
+    page.queued = true;
+    ++stats_.frameQueuedUploadCount;
+    ++stats_.totalQueuedUploadCount;
 }
 
 void MeshletStreamResidencyManager::recordPatch(uint32_t pageIndex)
@@ -378,6 +453,77 @@ void MeshletStreamResidencyManager::recordPatch(uint32_t pageIndex)
         .slot = page.state == MeshletStreamPageResidencyState::Unloaded ? UINT32_MAX : page.slot,
         .state = static_cast<uint32_t>(page.state),
     });
+}
+
+void MeshletStreamResidencyManager::addToTable(
+    std::vector<uint32_t>& table,
+    std::vector<uint32_t>& positions,
+    uint32_t pageIndex)
+{
+    if (pageIndex >= positions.size() || positions[pageIndex] != kInvalidTablePosition) {
+        return;
+    }
+    positions[pageIndex] = static_cast<uint32_t>(table.size());
+    table.push_back(pageIndex);
+}
+
+void MeshletStreamResidencyManager::removeFromTable(
+    std::vector<uint32_t>& table,
+    std::vector<uint32_t>& positions,
+    uint32_t pageIndex)
+{
+    if (pageIndex >= positions.size() || positions[pageIndex] == kInvalidTablePosition) {
+        return;
+    }
+
+    const uint32_t position = positions[pageIndex];
+    const uint32_t movedPage = table.back();
+    table[position] = movedPage;
+    positions[movedPage] = position;
+    table.pop_back();
+    positions[pageIndex] = kInvalidTablePosition;
+}
+
+void MeshletStreamResidencyManager::updateStateTables(
+    uint32_t pageIndex,
+    MeshletStreamPageResidencyState oldState,
+    MeshletStreamPageResidencyState newState)
+{
+    if (residentState(oldState) && !residentState(newState)) {
+        removeFromTable(residentPages_, residentPagePositions_, pageIndex);
+    }
+    if (!residentState(oldState) && residentState(newState)) {
+        addToTable(residentPages_, residentPagePositions_, pageIndex);
+    }
+    if (oldState == MeshletStreamPageResidencyState::PendingUpload &&
+        newState != MeshletStreamPageResidencyState::PendingUpload) {
+        removeFromTable(pendingPages_, pendingPagePositions_, pageIndex);
+    }
+    if (oldState != MeshletStreamPageResidencyState::PendingUpload &&
+        newState == MeshletStreamPageResidencyState::PendingUpload) {
+        addToTable(pendingPages_, pendingPagePositions_, pageIndex);
+    }
+}
+
+uint64_t MeshletStreamResidencyManager::oldestAge(std::span<const uint32_t> pageIndices) const
+{
+    uint64_t oldest = 0;
+    for (uint32_t pageIndex : pageIndices) {
+        oldest = std::max(oldest, pageAge(pageIndex));
+    }
+    return oldest;
+}
+
+void MeshletStreamResidencyManager::resetFrameStats()
+{
+    stats_.frameGpuRequestCount = 0;
+    stats_.frameUniqueGpuRequestCount = 0;
+    stats_.frameConsumedGpuRequestCount = 0;
+    stats_.frameQueuedUploadCount = 0;
+    stats_.frameScheduledUploadCount = 0;
+    stats_.frameCompletedUploadCount = 0;
+    stats_.frameEvictedPageCount = 0;
+    stats_.frameAllocationFailureCount = 0;
 }
 
 } // namespace metallic::render

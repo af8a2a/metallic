@@ -657,6 +657,16 @@ public:
         if (!residency.lockFallbackPages(fallbackPages, reason)) {
             return RhiTestResult::fail("lockFallbackPages failed: " + reason);
         }
+        render::MeshletStreamResidencyStats stats = residency.stats();
+        if (residency.activePages().size() != fallbackPages.size() ||
+            !residency.residentPages().empty() ||
+            !residency.pendingPages().empty() ||
+            stats.activePageCount != fallbackPages.size() ||
+            stats.usedSlotCount != fallbackPages.size() ||
+            stats.freeSlotCount != maxResidentPages - fallbackPages.size() ||
+            stats.totalQueuedUploadCount != fallbackPages.size()) {
+            return RhiTestResult::fail("fallback lock did not populate active/storage residency tables");
+        }
 
         std::unique_ptr<render::Streamer> streamer;
         render::Result result = context.device.createStreamer(makeTestStreamerDesc(), streamer);
@@ -701,6 +711,15 @@ public:
         }
         if (residency.pageState(pageIndex) != render::MeshletStreamPageResidencyState::PendingUpload) {
             return RhiTestResult::fail("uploaded page did not enter PendingUpload state");
+        }
+        stats = residency.stats();
+        if (residency.pendingPages().size() != 1 ||
+            residency.pendingPages().front() != pageIndex ||
+            stats.pendingPageCount != 1 ||
+            stats.residentPageCount != 0 ||
+            stats.frameScheduledUploadCount != 1 ||
+            stats.oldestPendingAge != 0) {
+            return RhiTestResult::fail("pending upload did not update pending table or upload stats");
         }
         std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
         if (patches.size() != 1 ||
@@ -755,12 +774,28 @@ public:
         if (residency.pageResident(pageIndex)) {
             return RhiTestResult::fail("page became resident before queued frame delay elapsed");
         }
+        stats = residency.stats();
+        if (stats.pendingPageCount != 1 ||
+            stats.residentPageCount != 0 ||
+            stats.oldestPendingAge != 1) {
+            return RhiTestResult::fail("pending table age did not advance while upload was delayed");
+        }
         if (!residency.pendingPatches().empty()) {
             return RhiTestResult::fail("residency produced a patch before pending upload completed");
         }
         residency.beginFrame();
         if (!residency.pageResident(pageIndex)) {
             return RhiTestResult::fail("page did not become resident after queued frame delay elapsed");
+        }
+        stats = residency.stats();
+        if (residency.pendingPages().size() != 0 ||
+            residency.residentPages().size() != 1 ||
+            residency.residentPages().front() != pageIndex ||
+            stats.pendingPageCount != 0 ||
+            stats.residentPageCount != 1 ||
+            stats.frameCompletedUploadCount != 1 ||
+            stats.oldestResidentAge != residency.pageAge(pageIndex)) {
+            return RhiTestResult::fail("resident upload did not update resident table or completion stats");
         }
         patches = residency.pendingPatches();
         if (patches.size() != 1 ||
@@ -850,11 +885,29 @@ public:
         if (consumed != 2) {
             return RhiTestResult::fail("consumeGpuRequests did not deduplicate page ids");
         }
+        const std::span<const uint32_t> requestedPages = residency.requestedPages();
+        if (requestedPages.size() != 2 ||
+            std::find(requestedPages.begin(), requestedPages.end(), firstPage) == requestedPages.end() ||
+            std::find(requestedPages.begin(), requestedPages.end(), secondPage) == requestedPages.end()) {
+            return RhiTestResult::fail("request table did not preserve unique GPU-requested page ids");
+        }
         if (residency.slotForPage(firstPage) != UINT32_MAX) {
             return RhiTestResult::fail("first requested page was not evicted under slot pressure");
         }
         if (residency.slotForPage(secondPage) == UINT32_MAX) {
             return RhiTestResult::fail("second requested page did not receive the single streamable slot");
+        }
+        const std::span<const uint32_t> activePages = residency.activePages();
+        const render::MeshletStreamResidencyStats requestStats = residency.stats();
+        if (std::find(activePages.begin(), activePages.end(), firstPage) != activePages.end() ||
+            std::find(activePages.begin(), activePages.end(), secondPage) == activePages.end() ||
+            requestStats.frameGpuRequestCount != gpuRequests.size() ||
+            requestStats.frameUniqueGpuRequestCount != 2 ||
+            requestStats.frameConsumedGpuRequestCount != 2 ||
+            requestStats.frameEvictedPageCount != 1 ||
+            requestStats.activePageCount != fallbackPages.size() + 1u ||
+            requestStats.freeSlotCount != 0) {
+            return RhiTestResult::fail("active/request/storage stats did not track GPU request pressure");
         }
 
         const std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
