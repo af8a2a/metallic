@@ -17,6 +17,7 @@ enum class MeshletStreamPageResidencyState : uint8_t {
     PendingUpload,
     Resident,
     LockedFallback,
+    PendingUnload,
 };
 
 struct StreamPageTableEntry {
@@ -99,6 +100,8 @@ struct MeshletStreamResidencyDesc {
     uint32_t maxResidentPages = 0;
     uint32_t queuedFrameCount = 3;
     uint64_t pageStride = 0;
+    uint32_t unloadDelayFrames = 1;
+    uint32_t evictionAgeThresholdFrames = 1;
 };
 
 struct MeshletStreamResidencyStats {
@@ -115,6 +118,8 @@ struct MeshletStreamResidencyStats {
     uint32_t availableRequestTaskCount = 0;
     uint32_t queuedStorageTaskCount = 0;
     uint32_t availableStorageTaskCount = 0;
+    uint32_t queuedUnloadTaskCount = 0;
+    uint32_t availableUnloadTaskCount = 0;
     uint32_t queuedUpdateTaskCount = 0;
     uint32_t availableUpdateTaskCount = 0;
     uint32_t pendingPatchCount = 0;
@@ -139,6 +144,13 @@ struct MeshletStreamResidencyStats {
     uint32_t frameCompletedUploadCount = 0;
     uint32_t frameStorageTaskFailureCount = 0;
     uint32_t frameUpdateTaskFailureCount = 0;
+    uint32_t frameScheduledUnloadCount = 0;
+    uint32_t frameCompletedUnloadCount = 0;
+    uint32_t frameUnloadTaskFailureCount = 0;
+    uint32_t frameDelayedFreeCount = 0;
+    uint32_t frameEvictionAgeRejectedCount = 0;
+    uint32_t frameResidentBudgetFailureCount = 0;
+    uint32_t frameTransferBudgetFailureCount = 0;
     uint32_t frameEvictedPageCount = 0;
     uint32_t frameAllocationFailureCount = 0;
     uint64_t totalGpuRequestCount = 0;
@@ -162,6 +174,13 @@ struct MeshletStreamResidencyStats {
     uint64_t totalCompletedUploadCount = 0;
     uint64_t totalStorageTaskFailureCount = 0;
     uint64_t totalUpdateTaskFailureCount = 0;
+    uint64_t totalScheduledUnloadCount = 0;
+    uint64_t totalCompletedUnloadCount = 0;
+    uint64_t totalUnloadTaskFailureCount = 0;
+    uint64_t totalDelayedFreeCount = 0;
+    uint64_t totalEvictionAgeRejectedCount = 0;
+    uint64_t totalResidentBudgetFailureCount = 0;
+    uint64_t totalTransferBudgetFailureCount = 0;
     uint64_t totalEvictedPageCount = 0;
     uint64_t totalAllocationFailureCount = 0;
     uint64_t oldestActiveAge = 0;
@@ -210,6 +229,7 @@ private:
         uint32_t slot = UINT32_MAX;
         uint32_t storageTaskIndex = kInvalidStreamingTaskIndex;
         uint32_t updateTaskIndex = kInvalidStreamingTaskIndex;
+        uint32_t unloadTaskIndex = kInvalidStreamingTaskIndex;
         uint64_t lastUsedFrame = 0;
         bool lockedFallback = false;
         bool queued = false;
@@ -217,6 +237,8 @@ private:
     };
 
     uint32_t allocateSlot(uint32_t pageIndex);
+    bool scheduleUnload(uint32_t pageIndex, bool eviction);
+    void completeUnloadTask(uint32_t taskIndex);
     void releaseSlot(uint32_t pageIndex, bool returnToFreeList = true);
     void setPageState(uint32_t pageIndex, MeshletStreamPageResidencyState state);
     void queueUpload(uint32_t pageIndex);
@@ -240,6 +262,8 @@ private:
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> requestTaskUnloadPages_;
     StreamingTaskQueue storageTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> storageTaskPages_;
+    StreamingTaskQueue unloadTaskQueue_;
+    std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> unloadTaskPages_;
     StreamingTaskQueue updateTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> updateTaskPages_;
     std::vector<uint32_t> requestedPages_;
@@ -258,6 +282,8 @@ private:
     uint64_t pageStride_ = 0;
     uint32_t maxResidentPages_ = 0;
     uint32_t queuedFrameCount_ = 3;
+    uint32_t unloadDelayFrames_ = 1;
+    uint32_t evictionAgeThresholdFrames_ = 1;
 };
 
 } // namespace metallic::render

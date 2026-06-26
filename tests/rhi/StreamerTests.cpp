@@ -1190,10 +1190,10 @@ public:
             return RhiTestResult::fail("request task did not preserve unique page ids when consumed");
         }
         if (residency.slotForPage(firstPage) != UINT32_MAX) {
-            return RhiTestResult::fail("first requested page was not evicted under slot pressure");
+            return RhiTestResult::fail("older requested page received a slot despite latest-page pressure");
         }
         if (residency.slotForPage(secondPage) == UINT32_MAX) {
-            return RhiTestResult::fail("second requested page did not receive the single streamable slot");
+            return RhiTestResult::fail("latest requested page did not receive the single streamable slot");
         }
         const std::span<const uint32_t> activePages = residency.activePages();
         requestStats = residency.stats();
@@ -1203,18 +1203,16 @@ public:
             requestStats.frameConsumedGpuRequestCount != 2 ||
             requestStats.queuedRequestTaskCount != 0 ||
             requestStats.availableRequestTaskCount != render::kStreamingMaxActiveTasks ||
-            requestStats.frameEvictedPageCount != 1 ||
+            requestStats.frameEvictedPageCount != 0 ||
+            requestStats.frameResidentBudgetFailureCount != 1 ||
+            requestStats.frameAllocationFailureCount != 1 ||
             requestStats.activePageCount != fallbackPages.size() + 1u ||
             requestStats.freeSlotCount != 0) {
             return RhiTestResult::fail("active/request/storage stats did not track GPU request pressure");
         }
 
-        const std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
-        if (patches.size() != 1 ||
-            patches[0].pageId != firstPage ||
-            patches[0].slot != UINT32_MAX ||
-            patches[0].state != static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded)) {
-            return RhiTestResult::fail("evicted request did not produce expected invalid page table patch");
+        if (!residency.pendingPatches().empty()) {
+            return RhiTestResult::fail("budget-limited request emitted an unexpected eviction patch");
         }
         return RhiTestResult::pass();
     }
@@ -1380,13 +1378,18 @@ public:
 
         residency.beginFrame();
         stats = residency.stats();
-        if (residency.slotForPage(unloadPage) != UINT32_MAX ||
-            residency.slotForPage(loadPage) == UINT32_MAX ||
+        if (residency.slotForPage(unloadPage) == UINT32_MAX ||
+            residency.pageState(unloadPage) != render::MeshletStreamPageResidencyState::PendingUnload ||
+            residency.slotForPage(loadPage) != UINT32_MAX ||
             stats.frameCompletedRequestTaskCount != 1 ||
             stats.frameConsumedGpuRequestCount != 1 ||
             stats.frameConsumedGpuUnloadRequestCount != 1 ||
+            stats.frameScheduledUnloadCount != 1 ||
+            stats.queuedUnloadTaskCount != 1 ||
+            stats.frameDelayedFreeCount != 0 ||
+            stats.frameResidentBudgetFailureCount != 1 ||
             stats.frameEvictedPageCount != 0) {
-            return RhiTestResult::fail("GPU unload request did not release a slot before consuming loads");
+            return RhiTestResult::fail("GPU unload request did not enter delayed-free state before consuming loads");
         }
         if (residency.requestedPages().size() != 1 ||
             residency.requestedPages().front() != loadPage ||
@@ -1395,9 +1398,37 @@ public:
             return RhiTestResult::fail("completed request task did not expose consumed load/unload ids");
         }
 
-        const std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
+        std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
         if (patches.empty() ||
             std::find_if(
+                patches.begin(),
+                patches.end(),
+                [unloadPage](const render::StreamPageTablePatch& patch) {
+                    return patch.pageId == unloadPage &&
+                        patch.state == static_cast<uint32_t>(render::MeshletStreamPageResidencyState::PendingUnload);
+                }) == patches.end()) {
+            return RhiTestResult::fail("GPU unload request did not emit a pending-unload page table patch");
+        }
+
+        residency.clearPendingPatches();
+        residency.beginFrame();
+        stats = residency.stats();
+        if (residency.slotForPage(unloadPage) != UINT32_MAX ||
+            residency.pageState(unloadPage) != render::MeshletStreamPageResidencyState::Unloaded ||
+            stats.frameCompletedUnloadCount != 1 ||
+            stats.frameDelayedFreeCount != 1 ||
+            stats.freeSlotCount != 1) {
+            return RhiTestResult::fail("delayed unload task did not free the resident page slot");
+        }
+
+        (void)residency.requestPage(loadPage);
+        if (residency.slotForPage(loadPage) == UINT32_MAX ||
+            stats.frameCompletedUnloadCount != 1) {
+            return RhiTestResult::fail("load request did not acquire the slot after delayed free completed");
+        }
+
+        patches = residency.pendingPatches();
+        if (std::find_if(
                 patches.begin(),
                 patches.end(),
                 [unloadPage](const render::StreamPageTablePatch& patch) {
@@ -1405,7 +1436,128 @@ public:
                         patch.slot == UINT32_MAX &&
                         patch.state == static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded);
                 }) == patches.end()) {
-            return RhiTestResult::fail("GPU unload request did not emit an unloaded page table patch");
+            return RhiTestResult::fail("delayed unload completion did not emit an unloaded page table patch");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
+class StreamerMeshletResidencyEvictionDelayAgeTest : public RhiTest {
+public:
+    StreamerMeshletResidencyEvictionDelayAgeTest()
+    {
+        type = RhiTestType::Command;
+        name = "streamer_meshlet_residency_eviction_delay_age";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        scene::MeshletStreamAsset asset;
+        RhiTestResult build = buildBunnyStreamAssetForTest(
+            context.outputDirectory / "streamer_residency_eviction_delay_age.meshstream.bin",
+            asset);
+        if (!build.passed) {
+            return build;
+        }
+
+        std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
+        std::vector<uint32_t> streamablePages = nonFallbackPagesFor(asset, fallbackPages);
+        if (fallbackPages.empty() || streamablePages.size() < 2) {
+            return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
+        }
+
+        render::MeshletStreamResidencyManager residency;
+        std::string reason;
+        constexpr uint32_t kAgeThreshold = 6;
+        if (!residency.initialize(
+                render::MeshletStreamResidencyDesc{
+                    .asset = &asset,
+                    .maxResidentPages = static_cast<uint32_t>(fallbackPages.size()) + 1u,
+                    .queuedFrameCount = 1,
+                    .unloadDelayFrames = 1,
+                    .evictionAgeThresholdFrames = kAgeThreshold,
+                },
+                reason)) {
+            return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
+        }
+        if (!residency.lockFallbackPages(fallbackPages, reason)) {
+            return RhiTestResult::fail("lockFallbackPages failed: " + reason);
+        }
+
+        render::StreamerDesc streamerDesc = makeTestStreamerDesc(
+            (static_cast<uint64_t>(fallbackPages.size()) + 1ull) * asset.maxPagePayloadBytes() + 4096ull);
+        std::unique_ptr<render::Streamer> streamer;
+        render::Result result = context.device.createStreamer(streamerDesc, streamer);
+        if (!result || streamer == nullptr) {
+            return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::Buffer> pageBuffer;
+        result = context.device.createBuffer(
+            render::BufferDesc{
+                .size = residency.pageBufferSize(),
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            pageBuffer);
+        if (!result || pageBuffer == nullptr) {
+            return RhiTestResult::fail(std::string("createBuffer(pageBuffer) returned ") + toString(result));
+        }
+
+        const uint32_t residentPage = streamablePages[0];
+        const uint32_t requestedPage = streamablePages[1];
+        residency.beginFrame();
+        (void)residency.requestPage(residentPage);
+        const uint32_t uploadBudget = static_cast<uint32_t>(fallbackPages.size()) + 1u;
+        if (residency.processUploads(*streamer, *pageBuffer, uploadBudget) != uploadBudget) {
+            return RhiTestResult::fail("processUploads did not schedule fallback and streamable uploads");
+        }
+
+        residency.beginFrame();
+        residency.beginFrame();
+        residency.beginFrame();
+        if (!residency.pageResident(residentPage)) {
+            return RhiTestResult::fail("test setup did not make streamable page resident");
+        }
+
+        (void)residency.requestPage(requestedPage);
+        render::MeshletStreamResidencyStats stats = residency.stats();
+        if (residency.slotForPage(requestedPage) != UINT32_MAX ||
+            residency.pageState(residentPage) != render::MeshletStreamPageResidencyState::Resident ||
+            stats.frameEvictionAgeRejectedCount != 1 ||
+            stats.frameResidentBudgetFailureCount != 1 ||
+            stats.frameScheduledUnloadCount != 0) {
+            return RhiTestResult::fail("age filter did not reject eviction of a young resident page");
+        }
+
+        while (residency.pageAge(residentPage) < kAgeThreshold) {
+            residency.beginFrame();
+        }
+        (void)residency.requestPage(requestedPage);
+        stats = residency.stats();
+        if (residency.slotForPage(requestedPage) != UINT32_MAX ||
+            residency.pageState(residentPage) != render::MeshletStreamPageResidencyState::PendingUnload ||
+            stats.frameEvictedPageCount != 1 ||
+            stats.frameScheduledUnloadCount != 1 ||
+            stats.queuedUnloadTaskCount != 1 ||
+            stats.frameDelayedFreeCount != 0) {
+            return RhiTestResult::fail("eligible eviction did not schedule a delayed unload task");
+        }
+
+        residency.beginFrame();
+        stats = residency.stats();
+        if (residency.slotForPage(residentPage) != UINT32_MAX ||
+            residency.pageState(residentPage) != render::MeshletStreamPageResidencyState::Unloaded ||
+            stats.frameCompletedUnloadCount != 1 ||
+            stats.frameDelayedFreeCount != 1 ||
+            stats.freeSlotCount != 1) {
+            return RhiTestResult::fail("delayed eviction did not free its slot on task completion");
+        }
+
+        (void)residency.requestPage(requestedPage);
+        if (residency.slotForPage(requestedPage) == UINT32_MAX) {
+            return RhiTestResult::fail("request did not acquire slot after delayed eviction completed");
         }
 
         return RhiTestResult::pass();
@@ -1422,6 +1574,7 @@ METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestPatchTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyLatestGpuRequestTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestUnloadOverflowTest);
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyEvictionDelayAgeTest);
 
 } // namespace
 } // namespace metallic::tests
