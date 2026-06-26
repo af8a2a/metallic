@@ -1,75 +1,17 @@
-#include "Runtime/Render/MeshletStreamResidency.h"
+#include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
-#include <iterator>
+#include <filesystem>
 #include <limits>
-#include <span>
+#include <memory>
+#include <string>
 
 namespace metallic::render::builtin_pass {
 namespace {
-
-struct GPUDrivenStreamAssetGpuDrawItem {
-    uint32_t pageSlot = UINT32_MAX;
-    uint32_t clusterIndex = 0;
-    uint32_t pageIndex = 0;
-    uint32_t primitiveIndex = 0;
-    uint32_t lodLevel = 0;
-    uint32_t materialIndex = 0;
-    uint32_t colorSeed = 0;
-    uint32_t padding0 = 0;
-    float world0[4] = {};
-    float world1[4] = {};
-    float world2[4] = {};
-    float world3[4] = {};
-};
-
-struct GPUDrivenStreamAssetGpuParams {
-    float eye[4] = {};
-    float center[4] = {};
-    float upProjection[4] = {};
-    float viewport[4] = {};
-    float clipOrtho[4] = {};
-    float clearColor[4] = {};
-    uint32_t debugColorMode = kGPUDrivenStreamAssetDebugPage;
-    uint32_t pageStrideWords = 0;
-    uint32_t drawItemCount = 0;
-    uint32_t frameIndex = 0;
-    uint32_t maxGpuPageRequests = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
-};
-
-struct GPUDrivenStreamAssetUserPush {
-    uint32_t pageBuffer = 0;
-    uint32_t drawItemBuffer = 0;
-    uint32_t pageTableBuffer = 0;
-    uint32_t paramsBuffer = 0;
-    uint32_t requestBuffer = 0;
-    uint32_t updateBuffer = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
-};
-
-inline constexpr uint32_t kInvalidClusterIndex = UINT32_MAX;
-inline constexpr uint32_t kDefaultMaxGpuPageRequests = 65536;
-
-static_assert(sizeof(GPUDrivenStreamAssetGpuDrawItem) == 96);
-static_assert(sizeof(StreamPageTableEntry) == 32);
-static_assert(sizeof(GPUDrivenStreamAssetGpuParams) == 128);
-
-uint64_t alignUp(uint64_t value, uint64_t alignment)
-{
-    if (alignment <= 1) {
-        return value;
-    }
-    return ((value + alignment - 1) / alignment) * alignment;
-}
 
 std::filesystem::path pathFromProperties(
     const RenderGraphProperties& props,
@@ -133,16 +75,16 @@ uint32_t debugColorModeFromProperties(const RenderGraphProperties& props)
 {
     auto iter = props.find("debugColorMode");
     if (iter == props.end() || !iter->is_string()) {
-        return kGPUDrivenStreamAssetDebugPage;
+        return kMeshletStreamDebugPage;
     }
     const std::string mode = iter->get<std::string>();
     if (mode == "lod") {
-        return kGPUDrivenStreamAssetDebugLod;
+        return kMeshletStreamDebugLod;
     }
     if (mode == "primitive") {
-        return kGPUDrivenStreamAssetDebugPrimitive;
+        return kMeshletStreamDebugPrimitive;
     }
-    return kGPUDrivenStreamAssetDebugPage;
+    return kMeshletStreamDebugPage;
 }
 
 const RenderGraphProperties* cameraPropertiesFrom(const RenderGraphProperties& properties)
@@ -185,252 +127,62 @@ float3 cameraVec3(const RenderGraphProperties* camera, const char* key, const fl
     return float3(values[0], values[1], values[2]);
 }
 
-float3 transformPoint(const float matrix[16], const float3& point)
+MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& properties)
 {
-    return float3(
-        matrix[0] * point.x + matrix[4] * point.y + matrix[8] * point.z + matrix[12],
-        matrix[1] * point.x + matrix[5] * point.y + matrix[9] * point.z + matrix[13],
-        matrix[2] * point.x + matrix[6] * point.y + matrix[10] * point.z + matrix[14]);
-}
-
-void includeTransformedBounds(scene::Bounds& outBounds, const scene::MeshletStreamBounds& bounds, const float matrix[16])
-{
-    if (bounds.valid == 0) {
-        return;
-    }
-    const float3 minBounds(bounds.min[0], bounds.min[1], bounds.min[2]);
-    const float3 maxBounds(bounds.max[0], bounds.max[1], bounds.max[2]);
-    for (uint32_t z = 0; z < 2; ++z) {
-        for (uint32_t y = 0; y < 2; ++y) {
-            for (uint32_t x = 0; x < 2; ++x) {
-                const float3 corner(
-                    x == 0 ? minBounds.x : maxBounds.x,
-                    y == 0 ? minBounds.y : maxBounds.y,
-                    z == 0 ? minBounds.z : maxBounds.z);
-                outBounds.include(transformPoint(matrix, corner));
-            }
-        }
-    }
-}
-
-scene::Bounds computeDrawBounds(const scene::MeshletStreamAsset& asset)
-{
-    scene::Bounds bounds;
-    const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset.primitives();
-    for (const scene::MeshletStreamInstanceInfo& instance : asset.instances()) {
-        if (instance.visible == 0 || instance.primitiveIndex >= primitives.size()) {
-            continue;
-        }
-        includeTransformedBounds(bounds, primitives[instance.primitiveIndex].bounds, instance.worldMatrix);
-    }
-    return bounds;
-}
-
-Result createHostStorageBuffer(
-    Device& device,
-    uint64_t byteSize,
-    std::unique_ptr<Buffer>& outBuffer,
-    std::string& log,
-    std::string_view label)
-{
-    Result result = device.createBuffer(
-        BufferDesc{
-            .size = byteSize,
-            .structureStride = 0,
-            .usage = BufferUsageBits::Storage,
-            .memoryLocation = MemoryLocation::HostUpload,
-        },
-        outBuffer);
-    if (!result || outBuffer == nullptr) {
-        log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-    return {};
-}
-
-Result createNamedBuffer(
-    Device& device,
-    const BufferDesc& desc,
-    std::unique_ptr<Buffer>& outBuffer,
-    std::string& log,
-    std::string_view label)
-{
-    Result result = device.createBuffer(desc, outBuffer);
-    if (!result || outBuffer == nullptr) {
-        log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-    return {};
-}
-
-Result updateHostBuffer(Buffer& buffer, const void* data, uint64_t byteSize)
-{
-    if (byteSize > buffer.desc().size || (byteSize > 0 && data == nullptr)) {
-        return makeError(Error::InvalidArgument);
-    }
-    void* mapped = buffer.map();
-    if (mapped == nullptr) {
-        return makeError(Error::Failure);
-    }
-    if (byteSize > 0) {
-        std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-        buffer.flush(0, byteSize);
-    }
-    buffer.unmap();
-    return {};
-}
-
-Result allocateAndWriteBuffer(
-    BindlessHeap& heap,
-    Buffer& buffer,
-    BindlessHandle& outHandle,
-    std::string& log,
-    std::string_view label)
-{
-    Result result = heap.allocateBuffer(outHandle);
-    if (!result || !outHandle.valid()) {
-        log += resultMessage(std::string("allocateBuffer(") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-    result = heap.writeStorageBuffer(outHandle, buffer);
-    if (!result) {
-        log += resultMessage(std::string("writeStorageBuffer(") + std::string(label) + ")", result);
-        log += '\n';
-    }
-    return result;
-}
-
-void transitionBuffer(
-    CommandBuffer& commandBuffer,
-    Buffer& buffer,
-    ResourceState& state,
-    ResourceState nextState,
-    bool forceBarrier = false)
-{
-    if (!forceBarrier && state == nextState) {
-        return;
-    }
-    BufferBarrierDesc barrier{
-        .buffer = &buffer,
-        .before = state,
-        .after = nextState,
-        .offset = 0,
-        .size = buffer.desc().size,
+    const std::filesystem::path scenePath = scenePathFromProperties(properties);
+    return MeshletStreamRuntimeDesc{
+        .sourcePath = scenePath,
+        .streamAssetPath = streamAssetPathFromProperties(properties, scenePath),
+        .autoBuildStreamAsset = boolProperty(properties, "autoBuildStreamAsset", true),
+        .maxResidentPages = uintProperty(properties, "maxResidentPages", 4096),
+        .maxPageUploadsPerFrame = uintProperty(properties, "maxPageUploadsPerFrame", 64),
+        .maxGpuPageRequests = std::max<uint32_t>(
+            uintProperty(properties, "maxGpuPageRequests", kMeshletStreamDefaultMaxGpuPageRequests),
+            1u),
+        .queuedFrameCount = 3,
     };
-    commandBuffer.barrier(BarrierDesc{
-        .buffers = &barrier,
-        .bufferCount = 1,
-    });
-    state = nextState;
 }
 
-class GPUDrivenStreamUpdatePass final {
-public:
-    Result initialize(Device& device, BindlessHeap& bindlessHeap, uint64_t updateByteSize, std::string& log)
-    {
-        if (updateByteSize == 0) {
-            return makeError(Error::InvalidArgument);
+Result createMeshShader(Device& device, std::unique_ptr<ShaderModule>& outShader, std::string& log)
+{
+    ShaderCompileResult meshCompile;
+    const char* capabilities[] = {"spvMeshShadingEXT"};
+    Result result = compileSlangShaderToSpirv(
+        SlangShaderDesc{
+            .moduleName = kMeshletStreamShaderModuleName,
+            .entryPointName = kMeshletStreamMeshEntryPoint,
+            .searchPath = kMeshletStreamShaderSearchPath,
+            .profileName = "glsl_460",
+            .capabilities = capabilities,
+            .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+        },
+        meshCompile);
+    if (!result) {
+        log += "compileSlangShaderToSpirv(gpu_driven_streamasset.mesh) returned ";
+        log += resultToString(result);
+        if (!meshCompile.diagnostics.empty()) {
+            log += ": ";
+            log += meshCompile.diagnostics;
         }
-        Result result = createHostStorageBuffer(
-            device,
-            updateByteSize,
-            updateBuffer_,
-            log,
-            "GPUDrivenStreamUpdatePass update");
-        if (!result) {
-            return result;
-        }
-
-        result = allocateAndWriteBuffer(bindlessHeap, *updateBuffer_, updateHandle_, log, "streamasset update");
-        if (!result) {
-            return result;
-        }
-
-        result = createSlangShaderModule(
-            device,
-            kGPUDrivenStreamAssetShaderModuleName,
-            kGPUDrivenStreamAssetUpdateEntryPoint,
-            updateShader_,
-            log);
-        if (!result) {
-            return result;
-        }
-
-        result = device.createComputePipeline(
-            ComputePipelineDesc{
-                .computeShader = updateShader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(GPUDrivenStreamAssetUserPush),
-            },
-            updatePipeline_);
-        if (!result || updatePipeline_ == nullptr) {
-            log += resultMessage("createComputePipeline(GPUDrivenStreamUpdatePass)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-        return {};
+        log += '\n';
+        return result;
     }
 
-    bool ready() const
-    {
-        return updateBuffer_ != nullptr &&
-            updateHandle_.valid() &&
-            updatePipeline_ != nullptr;
+    result = device.createShaderModule(
+        ShaderModuleDesc{
+            .code = meshCompile.spirv.data(),
+            .byteSize = static_cast<uint64_t>(meshCompile.spirv.size() * sizeof(uint32_t)),
+        },
+        outShader);
+    if (!result || outShader == nullptr) {
+        log += resultMessage("createShaderModule(GPUDrivenStreamAsset mesh)", result);
+        log += '\n';
+        return result ? makeError(Error::Failure) : result;
     }
+    return {};
+}
 
-    BindlessHandle updateHandle() const { return updateHandle_; }
-
-    Result apply(
-        CommandBuffer& commandBuffer,
-        BindlessHeap& bindlessHeap,
-        const GPUDrivenStreamAssetUserPush& push,
-        std::span<const StreamPageTablePatch> patches,
-        uint32_t maxUpdatePatches,
-        Buffer& pageTableBuffer,
-        ResourceState& pageTableState)
-    {
-        if (patches.empty()) {
-            return {};
-        }
-        if (!ready() || patches.size() > maxUpdatePatches) {
-            return makeError(Error::Failure);
-        }
-
-        const uint32_t patchCount = static_cast<uint32_t>(patches.size());
-        void* mapped = updateBuffer_->map();
-        if (mapped == nullptr) {
-            return makeError(Error::Failure);
-        }
-        auto* header = static_cast<StreamUpdateBufferHeader*>(mapped);
-        *header = StreamUpdateBufferHeader{.patchCounter = patchCount};
-        std::memcpy(
-            static_cast<uint8_t*>(mapped) + sizeof(StreamUpdateBufferHeader),
-            patches.data(),
-            static_cast<size_t>(patchCount) * sizeof(StreamPageTablePatch));
-        updateBuffer_->flush(
-            0,
-            sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(patchCount) * sizeof(StreamPageTablePatch));
-        updateBuffer_->unmap();
-
-        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General);
-        commandBuffer.bindBindlessHeap(bindlessHeap);
-        commandBuffer.bindComputePipeline(*updatePipeline_);
-        commandBuffer.pushBindlessData(&push, sizeof(push));
-        commandBuffer.dispatch((patchCount + 63u) / 64u, 1, 1);
-        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true);
-        return {};
-    }
-
-private:
-    std::unique_ptr<Buffer> updateBuffer_;
-    std::unique_ptr<ShaderModule> updateShader_;
-    std::unique_ptr<ComputePipeline> updatePipeline_;
-    BindlessHandle updateHandle_;
-};
+} // namespace
 
 class GPUDrivenStreamAssetPass final : public UnsafePass {
 public:
@@ -470,286 +222,29 @@ public:
             return makeError(Error::Unsupported);
         }
 
-        const std::filesystem::path scenePath = scenePathFromProperties(properties());
-        const std::filesystem::path streamAssetPath = streamAssetPathFromProperties(properties(), scenePath);
-        const bool autoBuild = boolProperty(properties(), "autoBuildStreamAsset", true);
-
-        std::string reason;
-        scene::MeshletStreamAsset openedAsset;
-        if (!openedAsset.open(streamAssetPath, reason) || !openedAsset.isCurrentForSource(scenePath)) {
-            if (!autoBuild) {
-                log = "GPUDrivenStreamAssetPass failed to open current streamasset: " + reason;
-                return makeError(Error::Failure);
-            }
-
-            scene::Scene loadedScene;
-            if (!loadedScene.load(scenePath)) {
-                log = "GPUDrivenStreamAssetPass failed to load source scene: " + loadedScene.lastLoadResult().error;
-                return makeError(Error::Failure);
-            }
-            if (!scene::buildMeshletStreamAsset(
-                    scene::MeshletStreamAssetBuildDesc{
-                        .scene = &loadedScene,
-                        .sourcePath = scenePath,
-                        .outputPath = streamAssetPath,
-                    },
-                    reason)) {
-                log = "GPUDrivenStreamAssetPass failed to build streamasset: " + reason;
-                return makeError(Error::Failure);
-            }
-            if (!openedAsset.open(streamAssetPath, reason)) {
-                log = "GPUDrivenStreamAssetPass failed to open built streamasset: " + reason;
-                return makeError(Error::Failure);
-            }
-        }
-
-        asset_ = std::move(openedAsset);
-        drawBounds_ = computeDrawBounds(asset_);
-        if (!drawBounds_.valid) {
-            log = "GPUDrivenStreamAssetPass streamasset bounds are unavailable";
-            return makeError(Error::Failure);
-        }
-
-        maxResidentPages_ = uintProperty(properties(), "maxResidentPages", 4096);
-        maxPageUploadsPerFrame_ = uintProperty(properties(), "maxPageUploadsPerFrame", 64);
-        maxGpuPageRequests_ = std::max<uint32_t>(
-            uintProperty(properties(), "maxGpuPageRequests", kDefaultMaxGpuPageRequests),
-            1u);
-        const uint64_t pageStride = alignUp(asset_.maxPagePayloadBytes(), 256);
-        if (maxResidentPages_ == 0) {
-            log = "GPUDrivenStreamAssetPass requires maxResidentPages to be greater than zero";
-            return makeError(Error::Failure);
-        }
-        if (pageStride == 0 ||
-            pageStride > std::numeric_limits<uint64_t>::max() / maxResidentPages_) {
-            log = "GPUDrivenStreamAssetPass resident page buffer size overflowed";
-            return makeError(Error::Failure);
-        }
-
-        Result result = context.device->createBuffer(
-            BufferDesc{
-                .size = pageStride * maxResidentPages_,
-                .structureStride = 0,
-                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::Device,
-            },
-            pageBuffer_);
-        if (!result || pageBuffer_ == nullptr) {
-            log += resultMessage("createBuffer(GPUDrivenStreamAsset pages)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-        pageBufferState_ = ResourceState::Undefined;
-
-        std::vector<uint32_t> fallbackPages;
-        for (const scene::MeshletStreamPrimitiveInfo& primitive : asset_.primitives()) {
-            for (uint32_t page = 0; page < primitive.fallbackPageCount; ++page) {
-                fallbackPages.push_back(primitive.fallbackPageOffset + page);
-            }
-        }
-
-        if (!residency_.initialize(
-                MeshletStreamResidencyDesc{
-                    .asset = &asset_,
-                    .maxResidentPages = maxResidentPages_,
-                    .queuedFrameCount = 3,
-                    .pageStride = pageStride,
-                },
-                reason) ||
-            !residency_.lockFallbackPages(fallbackPages, reason)) {
-            log = "GPUDrivenStreamAssetPass residency initialization failed: " + reason;
-            return makeError(Error::Failure);
-        }
-
-        maxDrawItems_ = computeMaxDrawItems();
-        if (maxDrawItems_ == 0) {
-            log = "GPUDrivenStreamAssetPass streamasset has no drawable clusters";
-            return makeError(Error::Failure);
-        }
-
-        maxUpdatePatches_ = std::max<uint32_t>(asset_.pageCount() * 2u, 1u);
-        const uint64_t pageTableByteSize =
-            static_cast<uint64_t>(asset_.pageCount()) * sizeof(StreamPageTableEntry);
-        const uint64_t requestByteSize =
-            sizeof(StreamRequestBufferHeader) + static_cast<uint64_t>(maxGpuPageRequests_) * sizeof(uint32_t);
-        const uint64_t updateByteSize =
-            sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(maxUpdatePatches_) * sizeof(StreamPageTablePatch);
-
-        result = createHostStorageBuffer(
+        Result result = streamRuntime_.initialize(
             *context.device,
-            static_cast<uint64_t>(maxDrawItems_) * sizeof(GPUDrivenStreamAssetGpuDrawItem),
-            drawItemBuffer_,
-            log,
-            "GPUDrivenStreamAsset draw items");
-        if (!result) {
-            return result;
-        }
-        result = createNamedBuffer(
-            *context.device,
-            BufferDesc{
-                .size = pageTableByteSize,
-                .structureStride = sizeof(StreamPageTableEntry),
-                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::Device,
-            },
-            pageTableBuffer_,
-            log,
-            "GPUDrivenStreamAsset page table");
-        if (!result) {
-            return result;
-        }
-        pageTableState_ = ResourceState::Undefined;
-        result = createNamedBuffer(
-            *context.device,
-            BufferDesc{
-                .size = pageTableByteSize,
-                .usage = BufferUsageBits::TransferSource,
-                .memoryLocation = MemoryLocation::HostUpload,
-            },
-            pageTableUploadBuffer_,
-            log,
-            "GPUDrivenStreamAsset page table upload");
-        if (!result) {
-            return result;
-        }
-        result = createNamedBuffer(
-            *context.device,
-            BufferDesc{
-                .size = requestByteSize,
-                .structureStride = sizeof(uint32_t),
-                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::Device,
-            },
-            requestBuffer_,
-            log,
-            "GPUDrivenStreamAsset request");
-        if (!result) {
-            return result;
-        }
-        requestBufferState_ = ResourceState::Undefined;
-        result = createNamedBuffer(
-            *context.device,
-            BufferDesc{
-                .size = requestByteSize,
-                .usage = BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::HostReadback,
-            },
-            requestReadbackBuffer_,
-            log,
-            "GPUDrivenStreamAsset request readback");
-        if (!result) {
-            return result;
-        }
-        result = createNamedBuffer(
-            *context.device,
-            BufferDesc{
-                .size = sizeof(StreamRequestBufferHeader),
-                .usage = BufferUsageBits::TransferSource,
-                .memoryLocation = MemoryLocation::HostUpload,
-            },
-            requestClearBuffer_,
-            log,
-            "GPUDrivenStreamAsset request clear");
-        if (!result) {
-            return result;
-        }
-        StreamRequestBufferHeader clearHeader{};
-        result = updateHostBuffer(*requestClearBuffer_, &clearHeader, sizeof(clearHeader));
-        if (!result) {
-            return result;
-        }
-        result = createHostStorageBuffer(
-            *context.device,
-            sizeof(GPUDrivenStreamAssetGpuParams),
-            paramsBuffer_,
-            log,
-            "GPUDrivenStreamAsset params");
+            runtimeDescFromProperties(properties()),
+            log);
         if (!result) {
             return result;
         }
 
-        result = context.device->createBindlessHeap(
-            BindlessHeapDesc{
-                .maxSamplers = 0,
-                .maxSampledImages = 0,
-                .maxBuffers = 6,
-            },
-            bindlessHeap_);
-        if (!result || bindlessHeap_ == nullptr) {
-            log += resultMessage("createBindlessHeap(GPUDrivenStreamAssetPass)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-        result = allocateAndWriteBuffer(*bindlessHeap_, *pageBuffer_, pageHandle_, log, "streamasset pages");
+        result = createMeshShader(*context.device, meshShader_, log);
         if (!result) {
-            return result;
-        }
-        result = allocateAndWriteBuffer(*bindlessHeap_, *drawItemBuffer_, drawItemHandle_, log, "streamasset draw items");
-        if (!result) {
-            return result;
-        }
-        result = allocateAndWriteBuffer(*bindlessHeap_, *pageTableBuffer_, pageTableHandle_, log, "streamasset page table");
-        if (!result) {
-            return result;
-        }
-        result = allocateAndWriteBuffer(*bindlessHeap_, *paramsBuffer_, paramsHandle_, log, "streamasset params");
-        if (!result) {
-            return result;
-        }
-        result = allocateAndWriteBuffer(*bindlessHeap_, *requestBuffer_, requestHandle_, log, "streamasset request");
-        if (!result) {
-            return result;
-        }
-
-        result = streamUpdatePass_.initialize(*context.device, *bindlessHeap_, updateByteSize, log);
-        if (!result) {
-            return result;
-        }
-
-        ShaderCompileResult meshCompile;
-        const char* capabilities[] = {"spvMeshShadingEXT"};
-        result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
-                .moduleName = kGPUDrivenStreamAssetShaderModuleName,
-                .entryPointName = kGPUDrivenStreamAssetMeshEntryPoint,
-                .searchPath = kTriangleShaderSearchPath,
-                .profileName = "glsl_460",
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-            },
-            meshCompile);
-        if (!result) {
-            log += "compileSlangShaderToSpirv(gpu_driven_streamasset.mesh) returned ";
-            log += resultToString(result);
-            if (!meshCompile.diagnostics.empty()) {
-                log += ": ";
-                log += meshCompile.diagnostics;
-            }
-            log += '\n';
             return result;
         }
 
         ShaderCompileResult fragmentCompile;
         result = compileSlangShader(
-            kGPUDrivenStreamAssetShaderModuleName,
-            kGPUDrivenStreamAssetFragmentEntryPoint,
+            kMeshletStreamShaderModuleName,
+            kMeshletStreamFragmentEntryPoint,
             fragmentCompile,
             log);
         if (!result) {
             return result;
         }
 
-        result = context.device->createShaderModule(
-            ShaderModuleDesc{
-                .code = meshCompile.spirv.data(),
-                .byteSize = static_cast<uint64_t>(meshCompile.spirv.size() * sizeof(uint32_t)),
-            },
-            meshShader_);
-        if (!result || meshShader_ == nullptr) {
-            log += resultMessage("createShaderModule(GPUDrivenStreamAsset mesh)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
         result = context.device->createShaderModule(
             ShaderModuleDesc{
                 .code = fragmentCompile.spirv.data(),
@@ -761,6 +256,7 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
+
         result = context.device->createGraphicsPipeline(
             GraphicsPipelineDesc{
                 .meshShader = meshShader_.get(),
@@ -791,90 +287,65 @@ public:
         if (!color.valid() ||
             !depth.valid() ||
             context.streamer() == nullptr ||
-            bindlessHeap_ == nullptr ||
-            pipeline_ == nullptr ||
-            !streamUpdatePass_.ready() ||
-            pageBuffer_ == nullptr ||
-            drawItemBuffer_ == nullptr ||
-            pageTableBuffer_ == nullptr ||
-            pageTableUploadBuffer_ == nullptr ||
-            requestBuffer_ == nullptr ||
-            requestReadbackBuffer_ == nullptr ||
-            requestClearBuffer_ == nullptr ||
-            paramsBuffer_ == nullptr) {
+            !streamRuntime_.ready() ||
+            streamRuntime_.bindlessHeap() == nullptr ||
+            pipeline_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        StreamingFrameLifecycle frame;
-        beginFrame(context, frame);
-
-        Result result = preDraw(context);
+        const MeshletStreamFrameDesc frame = frameDescFromContext(context);
+        Result result = streamRuntime_.cmdBeginFrame(context.commandBuffer(), *context.streamer(), frame);
         if (!result) {
             return result;
         }
-
+        result = streamRuntime_.cmdPreTraversal(context.commandBuffer(), frame);
+        if (!result) {
+            return result;
+        }
         result = draw(context, color, depth);
         if (!result) {
             return result;
         }
-
-        return endFrame(context, frame);
+        result = streamRuntime_.cmdPostTraversal(context.commandBuffer());
+        if (!result) {
+            return result;
+        }
+        return streamRuntime_.cmdEndFrame(context.commandBuffer());
     }
 
 private:
-    struct StreamingFrameLifecycle {
-        uint32_t uploadCount = 0;
-    };
-
-    void beginFrame(RenderGraphExecutionContext& context, StreamingFrameLifecycle& frame)
+    MeshletStreamFrameDesc frameDescFromContext(const RenderGraphExecutionContext& context) const
     {
-        ++frameIndex_;
-        residency_.beginFrame();
-        consumeGpuRequestReadback();
-        frame.uploadCount = residency_.processUploads(*context.streamer(), *pageBuffer_, maxPageUploadsPerFrame_);
-    }
+        const scene::Bounds& bounds = streamRuntime_.bounds();
+        const float3 center = bounds.center();
+        const float radius = std::max(bounds.radius(), 1.0f);
+        const RenderGraphProperties* camera = cameraPropertiesFrom(context.properties());
+        const float3 defaultEye(center.x, center.y + radius * 0.35f, center.z + radius * 2.5f);
+        const float3 eye = cameraVec3(camera, "eye", defaultEye);
+        const float3 lookAt = cameraVec3(camera, "center", center);
+        const float3 up = cameraVec3(camera, "up", float3(0.0f, 1.0f, 0.0f));
+        const float fovDegrees = cameraFloat(camera, "fovDegrees", 60.0f);
+        const float znear = cameraFloat(camera, "znear", 0.1f);
+        const float zfar = cameraFloat(camera, "zfar", std::max(radius * 8.0f, znear + 100.0f));
 
-    Result preDraw(RenderGraphExecutionContext& context)
-    {
-        Result result = initializePageTableIfNeeded(context.commandBuffer());
-        if (!result) {
-            return result;
-        }
-        result = applyPageTablePatches(context.commandBuffer());
-        if (!result) {
-            return result;
-        }
-        result = clearRequestBuffer(context.commandBuffer());
-        if (!result) {
-            return result;
-        }
-
-        buildFrameDrawItems(context.properties());
-        result = updateDrawItemBuffer();
-        if (!result) {
-            return result;
-        }
-        return updateParamsBuffer(context.width(), context.height(), context.properties());
+        return MeshletStreamFrameDesc{
+            .width = context.width(),
+            .height = context.height(),
+            .selectedLodLevel = selectedLodProperty(context.properties()),
+            .debugColorMode = debugColorModeFromProperties(context.properties()),
+            .camera = MeshletStreamCameraDesc{
+                .eye = eye,
+                .center = lookAt,
+                .up = up,
+                .fovDegrees = fovDegrees,
+                .znear = znear,
+                .zfar = zfar,
+            },
+        };
     }
 
     Result draw(RenderGraphExecutionContext& context, TextureHandle color, TextureHandle depth)
     {
-        const bool needsShaderRead = !drawItems_.empty();
-        if (needsShaderRead && pageBufferState_ != ResourceState::ShaderRead) {
-            BufferBarrierDesc barrier{
-                .buffer = pageBuffer_.get(),
-                .before = pageBufferState_,
-                .after = ResourceState::ShaderRead,
-                .offset = 0,
-                .size = pageBuffer_->desc().size,
-            };
-            context.commandBuffer().barrier(BarrierDesc{
-                .buffers = &barrier,
-                .bufferCount = 1,
-            });
-            pageBufferState_ = ResourceState::ShaderRead;
-        }
-
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -910,387 +381,22 @@ private:
             .maxDepth = 1.0f,
         });
         context.commandBuffer().setScissor(renderArea);
-        if (!drawItems_.empty()) {
-            context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
+        if (streamRuntime_.drawTaskCount() > 0) {
+            context.commandBuffer().bindBindlessHeap(*streamRuntime_.bindlessHeap());
             context.commandBuffer().bindGraphicsPipeline(*pipeline_);
-            const GPUDrivenStreamAssetUserPush push{
-                .pageBuffer = pageHandle_.index,
-                .drawItemBuffer = drawItemHandle_.index,
-                .pageTableBuffer = pageTableHandle_.index,
-                .paramsBuffer = paramsHandle_.index,
-                .requestBuffer = requestHandle_.index,
-                .updateBuffer = streamUpdatePass_.updateHandle().index,
-            };
+            const MeshletStreamUserPush push = streamRuntime_.userPush();
             context.commandBuffer().pushBindlessData(&push, sizeof(push));
-            context.commandBuffer().drawMeshTasks(static_cast<uint32_t>(drawItems_.size()));
+            context.commandBuffer().drawMeshTasks(streamRuntime_.drawTaskCount());
         }
         context.commandBuffer().endRendering();
         return {};
     }
 
-    Result endFrame(RenderGraphExecutionContext& context, const StreamingFrameLifecycle& frame)
-    {
-        Result result = copyRequestBufferForReadback(context.commandBuffer());
-        if (!result) {
-            return result;
-        }
-
-        if (frame.uploadCount > 0 && pageBufferState_ != ResourceState::TransferDestination) {
-            BufferBarrierDesc barrier{
-                .buffer = pageBuffer_.get(),
-                .before = pageBufferState_,
-                .after = ResourceState::TransferDestination,
-                .offset = 0,
-                .size = pageBuffer_->desc().size,
-            };
-            context.commandBuffer().barrier(BarrierDesc{
-                .buffers = &barrier,
-                .bufferCount = 1,
-            });
-            pageBufferState_ = ResourceState::TransferDestination;
-        }
-        return {};
-    }
-
-    void consumeGpuRequestReadback()
-    {
-        if (!requestReadbackValid_ || requestReadbackBuffer_ == nullptr) {
-            return;
-        }
-
-        requestReadbackBuffer_->invalidate();
-        const void* mapped = requestReadbackBuffer_->map();
-        if (mapped == nullptr) {
-            requestReadbackValid_ = false;
-            return;
-        }
-
-        const auto* words = static_cast<const uint32_t*>(mapped);
-        const uint32_t requestCount = std::min(words[0], maxGpuPageRequests_);
-        if (requestCount > 0) {
-            const uint32_t* pageIds = words + sizeof(StreamRequestBufferHeader) / sizeof(uint32_t);
-            (void)residency_.consumeGpuRequests(std::span<const uint32_t>(pageIds, requestCount));
-        }
-
-        requestReadbackBuffer_->unmap();
-        requestReadbackValid_ = false;
-    }
-
-    Result initializePageTableIfNeeded(CommandBuffer& commandBuffer)
-    {
-        if (pageTableInitialized_) {
-            return {};
-        }
-
-        pageTable_.resize(asset_.pageCount());
-        residency_.buildInitialPageTable(pageTable_);
-        const uint64_t byteSize = static_cast<uint64_t>(pageTable_.size()) * sizeof(StreamPageTableEntry);
-        Result result = updateHostBuffer(*pageTableUploadBuffer_, pageTable_.data(), byteSize);
-        if (!result) {
-            return result;
-        }
-
-        transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::TransferDestination);
-        commandBuffer.copyBuffer(BufferCopyDesc{
-            .source = pageTableUploadBuffer_.get(),
-            .destination = pageTableBuffer_.get(),
-            .sourceOffset = 0,
-            .destinationOffset = 0,
-            .size = byteSize,
-        });
-        transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::General);
-        pageTableInitialized_ = true;
-        return {};
-    }
-
-    Result applyPageTablePatches(CommandBuffer& commandBuffer)
-    {
-        const std::span<const StreamPageTablePatch> patches = residency_.pendingPatches();
-        const GPUDrivenStreamAssetUserPush push{
-            .pageBuffer = pageHandle_.index,
-            .drawItemBuffer = drawItemHandle_.index,
-            .pageTableBuffer = pageTableHandle_.index,
-            .paramsBuffer = paramsHandle_.index,
-            .requestBuffer = requestHandle_.index,
-            .updateBuffer = streamUpdatePass_.updateHandle().index,
-        };
-        Result result = streamUpdatePass_.apply(
-            commandBuffer,
-            *bindlessHeap_,
-            push,
-            patches,
-            maxUpdatePatches_,
-            *pageTableBuffer_,
-            pageTableState_);
-        if (!result) {
-            return result;
-        }
-        residency_.clearPendingPatches();
-        return {};
-    }
-
-    Result clearRequestBuffer(CommandBuffer& commandBuffer)
-    {
-        transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferDestination);
-        commandBuffer.copyBuffer(BufferCopyDesc{
-            .source = requestClearBuffer_.get(),
-            .destination = requestBuffer_.get(),
-            .sourceOffset = 0,
-            .destinationOffset = 0,
-            .size = sizeof(StreamRequestBufferHeader),
-        });
-        transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::General);
-        return {};
-    }
-
-    Result copyRequestBufferForReadback(CommandBuffer& commandBuffer)
-    {
-        transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferSource);
-        commandBuffer.copyBuffer(BufferCopyDesc{
-            .source = requestBuffer_.get(),
-            .destination = requestReadbackBuffer_.get(),
-            .sourceOffset = 0,
-            .destinationOffset = 0,
-            .size = requestBuffer_->desc().size,
-        });
-        requestReadbackValid_ = true;
-        return {};
-    }
-
-    uint32_t computeMaxDrawItems() const
-    {
-        uint64_t total = 0;
-        const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
-        const std::span<const scene::MeshletStreamLodLevelInfo> lodLevels = asset_.lodLevels();
-        for (const scene::MeshletStreamInstanceInfo& instance : asset_.instances()) {
-            if (instance.visible == 0 || instance.primitiveIndex >= primitives.size()) {
-                continue;
-            }
-            const scene::MeshletStreamPrimitiveInfo& primitive = primitives[instance.primitiveIndex];
-            uint32_t fallbackClusters = 0;
-            for (uint32_t page = 0; page < primitive.fallbackPageCount; ++page) {
-                fallbackClusters += asset_.pages()[primitive.fallbackPageOffset + page].clusterCount;
-            }
-            uint32_t maxDraws = fallbackClusters;
-            for (uint32_t lod = 0; lod < primitive.lodLevelCount; ++lod) {
-                const scene::MeshletStreamLodLevelInfo& lodInfo = lodLevels[primitive.lodLevelOffset + lod];
-                maxDraws = std::max(maxDraws, lodInfo.clusterCount);
-                maxDraws = std::max(maxDraws, lodInfo.pageCount + fallbackClusters);
-            }
-            total += maxDraws;
-            if (total > std::numeric_limits<uint32_t>::max()) {
-                return 0;
-            }
-        }
-        return static_cast<uint32_t>(total);
-    }
-
-    void appendPageDrawItems(
-        const scene::MeshletStreamInstanceInfo& instance,
-        const scene::MeshletStreamPageInfo& page,
-        uint32_t pageIndex)
-    {
-        const uint32_t slot = residency_.slotForPage(pageIndex);
-        if (slot == UINT32_MAX || drawItems_.size() >= maxDrawItems_) {
-            return;
-        }
-        for (uint32_t cluster = 0; cluster < page.clusterCount && drawItems_.size() < maxDrawItems_; ++cluster) {
-            GPUDrivenStreamAssetGpuDrawItem item;
-            item.pageSlot = slot;
-            item.clusterIndex = cluster;
-            item.pageIndex = pageIndex;
-            item.primitiveIndex = page.primitiveIndex;
-            item.lodLevel = page.lodLevel;
-            item.materialIndex = instance.materialIndex;
-            item.colorSeed = pageIndex * 131u + cluster;
-            for (uint32_t row = 0; row < 4; ++row) {
-                item.world0[row] = instance.worldMatrix[0 + row];
-                item.world1[row] = instance.worldMatrix[4 + row];
-                item.world2[row] = instance.worldMatrix[8 + row];
-                item.world3[row] = instance.worldMatrix[12 + row];
-            }
-            drawItems_.push_back(item);
-        }
-    }
-
-    void appendRequestDrawItems(
-        const scene::MeshletStreamInstanceInfo& instance,
-        const scene::MeshletStreamPageInfo& page,
-        uint32_t pageIndex)
-    {
-        if (drawItems_.size() >= maxDrawItems_) {
-            return;
-        }
-
-        GPUDrivenStreamAssetGpuDrawItem item;
-        item.clusterIndex = kInvalidClusterIndex;
-        item.pageIndex = pageIndex;
-        item.primitiveIndex = page.primitiveIndex;
-        item.lodLevel = page.lodLevel;
-        item.materialIndex = instance.materialIndex;
-        item.colorSeed = pageIndex * 131u;
-        for (uint32_t row = 0; row < 4; ++row) {
-            item.world0[row] = instance.worldMatrix[0 + row];
-            item.world1[row] = instance.worldMatrix[4 + row];
-            item.world2[row] = instance.worldMatrix[8 + row];
-            item.world3[row] = instance.worldMatrix[12 + row];
-        }
-        drawItems_.push_back(item);
-    }
-
-    bool appendResidentPageRange(
-        const scene::MeshletStreamInstanceInfo& instance,
-        uint32_t pageOffset,
-        uint32_t pageCount)
-    {
-        const std::span<const scene::MeshletStreamPageInfo> pages = asset_.pages();
-        bool allResident = true;
-        for (uint32_t page = 0; page < pageCount; ++page) {
-            const uint32_t pageIndex = pageOffset + page;
-            if (!residency_.pageResident(pageIndex)) {
-                allResident = false;
-            }
-        }
-        if (!allResident) {
-            return false;
-        }
-        for (uint32_t page = 0; page < pageCount; ++page) {
-            const uint32_t pageIndex = pageOffset + page;
-            appendPageDrawItems(instance, pages[pageIndex], pageIndex);
-        }
-        return true;
-    }
-
-    void appendRequestPageRange(
-        const scene::MeshletStreamInstanceInfo& instance,
-        uint32_t pageOffset,
-        uint32_t pageCount)
-    {
-        const std::span<const scene::MeshletStreamPageInfo> pages = asset_.pages();
-        for (uint32_t page = 0; page < pageCount; ++page) {
-            const uint32_t pageIndex = pageOffset + page;
-            if (!residency_.pageResident(pageIndex)) {
-                appendRequestDrawItems(instance, pages[pageIndex], pageIndex);
-            }
-        }
-    }
-
-    void buildFrameDrawItems(const RenderGraphProperties& properties)
-    {
-        drawItems_.clear();
-        const uint32_t selectedLod = selectedLodProperty(properties);
-        const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
-        const std::span<const scene::MeshletStreamLodLevelInfo> lodLevels = asset_.lodLevels();
-
-        for (const scene::MeshletStreamInstanceInfo& instance : asset_.instances()) {
-            if (instance.visible == 0 || instance.primitiveIndex >= primitives.size()) {
-                continue;
-            }
-            const scene::MeshletStreamPrimitiveInfo& primitive = primitives[instance.primitiveIndex];
-            if (primitive.lodLevelCount == 0 || primitive.fallbackPageCount == 0) {
-                continue;
-            }
-            const uint32_t localLod = std::min(selectedLod, primitive.lodLevelCount - 1u);
-            const scene::MeshletStreamLodLevelInfo& lodInfo = lodLevels[primitive.lodLevelOffset + localLod];
-            if (!appendResidentPageRange(instance, lodInfo.pageOffset, lodInfo.pageCount)) {
-                appendRequestPageRange(instance, lodInfo.pageOffset, lodInfo.pageCount);
-                appendResidentPageRange(instance, primitive.fallbackPageOffset, primitive.fallbackPageCount);
-            }
-        }
-    }
-
-    Result updateDrawItemBuffer()
-    {
-        return updateHostBuffer(
-            *drawItemBuffer_,
-            drawItems_.data(),
-            static_cast<uint64_t>(drawItems_.size() * sizeof(GPUDrivenStreamAssetGpuDrawItem)));
-    }
-
-    Result updateParamsBuffer(uint32_t width, uint32_t height, const RenderGraphProperties& properties)
-    {
-        GPUDrivenStreamAssetGpuParams params;
-        const float3 center = drawBounds_.center();
-        const float radius = std::max(drawBounds_.radius(), 1.0f);
-        const RenderGraphProperties* camera = cameraPropertiesFrom(properties);
-        const float3 defaultEye(center.x, center.y + radius * 0.35f, center.z + radius * 2.5f);
-        const float3 eye = cameraVec3(camera, "eye", defaultEye);
-        const float3 lookAt = cameraVec3(camera, "center", center);
-        const float3 up = cameraVec3(camera, "up", float3(0.0f, 1.0f, 0.0f));
-        const float fovDegrees = cameraFloat(camera, "fovDegrees", 60.0f);
-        const float znear = cameraFloat(camera, "znear", 0.1f);
-        const float zfar = cameraFloat(camera, "zfar", std::max(radius * 8.0f, znear + 100.0f));
-        const float aspect = height != 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-
-        params.eye[0] = eye.x;
-        params.eye[1] = eye.y;
-        params.eye[2] = eye.z;
-        params.eye[3] = 1.0f;
-        params.center[0] = lookAt.x;
-        params.center[1] = lookAt.y;
-        params.center[2] = lookAt.z;
-        params.center[3] = 1.0f;
-        params.upProjection[0] = up.x;
-        params.upProjection[1] = up.y;
-        params.upProjection[2] = up.z;
-        params.upProjection[3] = 0.0f;
-        params.viewport[0] = aspect;
-        params.viewport[1] = static_cast<float>(width);
-        params.viewport[2] = static_cast<float>(height);
-        params.viewport[3] = fovDegrees * 0.017453292519943295f;
-        params.clipOrtho[0] = znear;
-        params.clipOrtho[1] = zfar;
-        params.clipOrtho[2] = radius * 2.0f;
-        params.clipOrtho[3] = kDefaultReversedZ ? 1.0f : 0.0f;
-        params.clearColor[0] = 0.015f;
-        params.clearColor[1] = 0.018f;
-        params.clearColor[2] = 0.024f;
-        params.clearColor[3] = 1.0f;
-        params.debugColorMode = debugColorModeFromProperties(properties);
-        params.pageStrideWords = static_cast<uint32_t>(residency_.pageStride() / sizeof(uint32_t));
-        params.drawItemCount = static_cast<uint32_t>(drawItems_.size());
-        params.frameIndex = frameIndex_ == 0 ? 1u : frameIndex_;
-        params.maxGpuPageRequests = maxGpuPageRequests_;
-        return updateHostBuffer(*paramsBuffer_, &params, sizeof(params));
-    }
-
-    scene::MeshletStreamAsset asset_;
-    MeshletStreamResidencyManager residency_;
-    scene::Bounds drawBounds_;
-    std::vector<GPUDrivenStreamAssetGpuDrawItem> drawItems_;
-    std::vector<StreamPageTableEntry> pageTable_;
-    std::unique_ptr<Buffer> pageBuffer_;
-    std::unique_ptr<Buffer> drawItemBuffer_;
-    std::unique_ptr<Buffer> pageTableBuffer_;
-    std::unique_ptr<Buffer> pageTableUploadBuffer_;
-    std::unique_ptr<Buffer> requestBuffer_;
-    std::unique_ptr<Buffer> requestReadbackBuffer_;
-    std::unique_ptr<Buffer> requestClearBuffer_;
-    std::unique_ptr<Buffer> paramsBuffer_;
-    std::unique_ptr<BindlessHeap> bindlessHeap_;
+    MeshletStreamRuntime streamRuntime_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
-    GPUDrivenStreamUpdatePass streamUpdatePass_;
-    BindlessHandle pageHandle_;
-    BindlessHandle drawItemHandle_;
-    BindlessHandle pageTableHandle_;
-    BindlessHandle paramsHandle_;
-    BindlessHandle requestHandle_;
-    ResourceState pageBufferState_ = ResourceState::Undefined;
-    ResourceState pageTableState_ = ResourceState::Undefined;
-    ResourceState requestBufferState_ = ResourceState::Undefined;
-    bool pageTableInitialized_ = false;
-    bool requestReadbackValid_ = false;
-    uint32_t frameIndex_ = 0;
-    uint32_t maxResidentPages_ = 0;
-    uint32_t maxPageUploadsPerFrame_ = 0;
-    uint32_t maxGpuPageRequests_ = 0;
-    uint32_t maxUpdatePatches_ = 0;
-    uint32_t maxDrawItems_ = 0;
 };
-
-} // namespace
 
 std::unique_ptr<RenderGraphPass> createGPUDrivenStreamAssetPass()
 {
