@@ -1,8 +1,10 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/StreamingTaskQueue.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -71,21 +73,45 @@ struct MeshletStreamResidencyStats {
     uint32_t residentPageCount = 0;
     uint32_t pendingPageCount = 0;
     uint32_t queuedUploadCount = 0;
+    uint32_t queuedRequestTaskCount = 0;
+    uint32_t availableRequestTaskCount = 0;
+    uint32_t queuedStorageTaskCount = 0;
+    uint32_t availableStorageTaskCount = 0;
+    uint32_t queuedUpdateTaskCount = 0;
+    uint32_t availableUpdateTaskCount = 0;
     uint32_t pendingPatchCount = 0;
     uint32_t frameGpuRequestCount = 0;
     uint32_t frameUniqueGpuRequestCount = 0;
+    uint32_t frameScheduledRequestTaskCount = 0;
+    uint32_t frameCompletedRequestTaskCount = 0;
+    uint32_t frameDroppedRequestTaskCount = 0;
+    uint32_t frameRequestTaskFailureCount = 0;
     uint32_t frameConsumedGpuRequestCount = 0;
     uint32_t frameQueuedUploadCount = 0;
     uint32_t frameScheduledUploadCount = 0;
+    uint32_t frameCompletedStorageTaskCount = 0;
+    uint32_t frameScheduledUpdateCount = 0;
+    uint32_t frameCompletedUpdateCount = 0;
     uint32_t frameCompletedUploadCount = 0;
+    uint32_t frameStorageTaskFailureCount = 0;
+    uint32_t frameUpdateTaskFailureCount = 0;
     uint32_t frameEvictedPageCount = 0;
     uint32_t frameAllocationFailureCount = 0;
     uint64_t totalGpuRequestCount = 0;
     uint64_t totalUniqueGpuRequestCount = 0;
+    uint64_t totalScheduledRequestTaskCount = 0;
+    uint64_t totalCompletedRequestTaskCount = 0;
+    uint64_t totalDroppedRequestTaskCount = 0;
+    uint64_t totalRequestTaskFailureCount = 0;
     uint64_t totalConsumedGpuRequestCount = 0;
     uint64_t totalQueuedUploadCount = 0;
     uint64_t totalScheduledUploadCount = 0;
+    uint64_t totalCompletedStorageTaskCount = 0;
+    uint64_t totalScheduledUpdateCount = 0;
+    uint64_t totalCompletedUpdateCount = 0;
     uint64_t totalCompletedUploadCount = 0;
+    uint64_t totalStorageTaskFailureCount = 0;
+    uint64_t totalUpdateTaskFailureCount = 0;
     uint64_t totalEvictedPageCount = 0;
     uint64_t totalAllocationFailureCount = 0;
     uint64_t oldestActiveAge = 0;
@@ -129,7 +155,8 @@ public:
 private:
     struct PageEntry {
         uint32_t slot = UINT32_MAX;
-        uint32_t pendingFrames = 0;
+        uint32_t storageTaskIndex = kInvalidStreamingTaskIndex;
+        uint32_t updateTaskIndex = kInvalidStreamingTaskIndex;
         uint64_t lastUsedFrame = 0;
         bool lockedFallback = false;
         bool queued = false;
@@ -155,6 +182,12 @@ private:
     std::vector<uint32_t> slotToPage_;
     std::vector<uint32_t> freeSlots_;
     std::vector<uint32_t> uploadQueue_;
+    StreamingTaskQueue requestTaskQueue_;
+    std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> requestTaskPages_;
+    StreamingTaskQueue storageTaskQueue_;
+    std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> storageTaskPages_;
+    StreamingTaskQueue updateTaskQueue_;
+    std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> updateTaskPages_;
     std::vector<uint32_t> requestedPages_;
     std::vector<uint32_t> activePages_;
     std::vector<uint32_t> residentPages_;

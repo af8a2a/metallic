@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/RenderGraph/RenderGraphNode.h"
+#include "Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.h"
 
 namespace metallic::render {
 struct RenderGraphSubmitDesc {
@@ -63,6 +64,7 @@ public:
     RenderGraphResource* outputResource(std::string_view fullName);
     const RenderGraphResource* outputResource(std::string_view fullName) const;
     const RenderGraphExecutionStats& executionStats() const;
+    const RenderGraphStreamingStats& streamingStats() const;
     bool compiled() const;
     uint32_t width() const;
     uint32_t height() const;

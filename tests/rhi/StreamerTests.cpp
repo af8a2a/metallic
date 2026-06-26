@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/MeshletStreamResidency.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/StreamingTaskQueue.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
 
@@ -151,6 +152,89 @@ std::vector<uint32_t> nonFallbackPagesFor(
     return pages;
 }
 
+class StreamingTaskQueueLifecycleTest : public RhiTest {
+public:
+    StreamingTaskQueueLifecycleTest()
+    {
+        type = RhiTestType::Validation;
+        name = "streaming_task_queue_lifecycle";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::StreamingTaskQueue queue;
+        if (queue.availableTaskCount() != render::kStreamingMaxActiveTasks ||
+            queue.queuedTaskCount() != 0 ||
+            queue.acquiredTaskCount() != 0) {
+            return RhiTestResult::fail("new StreamingTaskQueue did not start with all tasks available");
+        }
+
+        const uint32_t first = queue.acquireTaskIndex();
+        const uint32_t second = queue.acquireTaskIndex();
+        const uint32_t third = queue.acquireTaskIndex();
+        const uint32_t fourth = queue.acquireTaskIndex();
+        if (first != 0 ||
+            second != 1 ||
+            third != 2 ||
+            fourth != render::kInvalidStreamingTaskIndex ||
+            queue.availableTaskCount() != 0 ||
+            queue.acquiredTaskCount() != render::kStreamingMaxActiveTasks) {
+            return RhiTestResult::fail("StreamingTaskQueue did not allocate fixed task indices in order");
+        }
+
+        queue.push(first, 5, 17);
+        queue.push(second, 7);
+        render::StreamingTaskQueue::Stats queueStats = queue.stats();
+        if (!queueStats.acquisitionBlocked ||
+            queueStats.frontTaskIndex != first ||
+            queueStats.frontDependentIndex != 17 ||
+            queueStats.frontCompletionFrameIndex != 5 ||
+            queue.frontTaskIndex() != first ||
+            queue.frontDependentIndex() != 17 ||
+            queue.frontCompletionFrameIndex() != 5) {
+            return RhiTestResult::fail("StreamingTaskQueue did not expose front task acquisition pressure");
+        }
+        if (queue.canPop(4, false) ||
+            !queue.canPop(5, false) ||
+            queue.queuedTaskCount() != 2) {
+            return RhiTestResult::fail("StreamingTaskQueue completion frame test failed");
+        }
+
+        uint32_t dependent = render::kInvalidStreamingTaskIndex;
+        const uint32_t popped = queue.popWithDependent(dependent);
+        if (popped != first || dependent != 17 || queue.queuedTaskCount() != 1) {
+            return RhiTestResult::fail("StreamingTaskQueue did not pop the first queued task with its dependent index");
+        }
+        queue.releaseTaskIndex(popped);
+        if (queue.availableTaskCount() != 1 || queue.acquiredTaskCount() != 2) {
+            return RhiTestResult::fail("StreamingTaskQueue did not release a completed task index");
+        }
+
+        const uint32_t recycled = queue.acquireTaskIndex();
+        if (recycled != first) {
+            return RhiTestResult::fail("StreamingTaskQueue did not recycle the released task index");
+        }
+        queue.push(recycled, 6);
+        if (queue.canPop(6, false)) {
+            return RhiTestResult::fail("StreamingTaskQueue did not preserve FIFO completion order");
+        }
+        if (!queue.canPop(7, true)) {
+            return RhiTestResult::fail("StreamingTaskQueue did not report the front task ready at its completion frame");
+        }
+
+        queue.releaseTaskIndex(queue.pop());
+        queue.releaseTaskIndex(queue.pop());
+        queue.releaseTaskIndex(third);
+        if (!queue.empty() ||
+            queue.availableTaskCount() != render::kStreamingMaxActiveTasks ||
+            queue.acquiredTaskCount() != 0) {
+            return RhiTestResult::fail("StreamingTaskQueue did not return to an idle state");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 class StreamerBufferUploadTest : public RhiTest {
 public:
     StreamerBufferUploadTest()
@@ -207,6 +291,14 @@ public:
         if (!streamed.valid()) {
             return RhiTestResult::fail("streamBufferData returned an invalid source");
         }
+        render::StreamerStats streamerStats = streamer->stats();
+        if (streamerStats.currentFrameDynamicBytes != kByteSize ||
+            streamerStats.currentFrameDynamicRequestCount != 1 ||
+            streamerStats.totalDynamicBytes != 0 ||
+            streamerStats.pendingCopies.bufferCopyCount != 1 ||
+            streamerStats.pendingCopies.bufferCopyBytes != kByteSize) {
+            return RhiTestResult::fail("streamBufferData did not update current-frame dynamic streamer stats");
+        }
 
         std::unique_ptr<render::CommandPool> commandPool;
         std::unique_ptr<render::CommandBuffer> commandBuffer;
@@ -246,6 +338,14 @@ public:
         streamer->endFrame();
         if (!submit.passed) {
             return submit;
+        }
+        streamerStats = streamer->stats();
+        if (streamerStats.currentFrameDynamicBytes != 0 ||
+            streamerStats.lastFrameDynamicBytes != kByteSize ||
+            streamerStats.peakFrameDynamicBytes != kByteSize ||
+            streamerStats.totalDynamicBytes != kByteSize ||
+            streamerStats.lastFrameDynamicRequestCount != 1) {
+            return RhiTestResult::fail("Streamer::endFrame did not roll dynamic upload stats");
         }
 
         std::array<uint32_t, 4> actual{};
@@ -468,6 +568,14 @@ public:
             secondOffset < kFirst.size() * sizeof(uint32_t)) {
             return RhiTestResult::fail("second constant upload was not aligned after first upload");
         }
+        const uint64_t expectedConstantBytes =
+            kFirst.size() * sizeof(uint32_t) + kSecond.size() * sizeof(uint32_t);
+        render::StreamerStats streamerStats = streamer->stats();
+        if (streamerStats.currentFrameConstantBytes != expectedConstantBytes ||
+            streamerStats.currentFrameConstantRequestCount != 2 ||
+            streamerStats.totalConstantBytes != 0) {
+            return RhiTestResult::fail("streamConstantData did not update current-frame constant streamer stats");
+        }
 
         render::Buffer* constantBuffer = streamer->constantBuffer();
         constantBuffer->invalidate(0, desc.constantBufferSize);
@@ -489,6 +597,14 @@ public:
             return RhiTestResult::fail("constant buffer contents did not match streamed data");
         }
         streamer->endFrame();
+        streamerStats = streamer->stats();
+        if (streamerStats.currentFrameConstantBytes != 0 ||
+            streamerStats.lastFrameConstantBytes != expectedConstantBytes ||
+            streamerStats.peakFrameConstantBytes != expectedConstantBytes ||
+            streamerStats.totalConstantBytes != expectedConstantBytes ||
+            streamerStats.lastFrameConstantRequestCount != 2) {
+            return RhiTestResult::fail("Streamer::endFrame did not roll constant upload stats");
+        }
         return RhiTestResult::pass();
     }
 };
@@ -534,6 +650,43 @@ public:
     };
 };
 
+class StreamerCrossQueueSourcePass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferOutput("data", "Cross-queue source")
+            .buffer(16)
+            .storageReadWrite();
+        return reflection;
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext&) override
+    {
+        return render::makeError(render::Error::Failure);
+    }
+};
+
+class StreamerCrossQueueSinkPass final : public render::ComputePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferInput("data", "Cross-queue input")
+            .buffer(16)
+            .shaderRead();
+        reflection.addBufferOutput("copied", "Cross-queue output")
+            .buffer(16)
+            .storageReadWrite();
+        return reflection;
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext&) override
+    {
+        return render::makeError(render::Error::Failure);
+    }
+};
+
 void registerStreamerGraphPass()
 {
     static bool registered = false;
@@ -545,6 +698,14 @@ void registerStreamerGraphPass()
         "StreamerGraphUploadPass",
         "Test-only pass that streams into a graph output buffer",
         []() { return std::make_unique<StreamerGraphUploadPass>(); });
+    render::registerRenderGraphPassType(
+        "StreamerCrossQueueSourcePass",
+        "Test-only graphics pass for streaming cross-queue guards",
+        []() { return std::make_unique<StreamerCrossQueueSourcePass>(); });
+    render::registerRenderGraphPassType(
+        "StreamerCrossQueueSinkPass",
+        "Test-only compute pass for streaming cross-queue guards",
+        []() { return std::make_unique<StreamerCrossQueueSinkPass>(); });
 }
 
 class StreamerRenderGraphFlushTest : public RhiTest {
@@ -592,6 +753,28 @@ public:
         if (!result) {
             return RhiTestResult::fail(std::string("RenderGraphExecutor::execute returned ") + toString(result));
         }
+        const render::RenderGraphStreamingStats& streamingStats = executor.streamingStats();
+        const uint64_t expectedBytes = StreamerGraphUploadPass::kExpected.size() * sizeof(uint32_t);
+        if (streamingStats.flushCount != 1 ||
+            streamingStats.flushesWithWork != 1 ||
+            streamingStats.transferCount != 1 ||
+            streamingStats.bufferTransferCount != 1 ||
+            streamingStats.textureTransferCount != 0 ||
+            streamingStats.transferBytes != expectedBytes ||
+            streamingStats.bufferTransferBytes != expectedBytes) {
+            return RhiTestResult::fail("RenderGraph streaming subsystem stats did not match the streamed pass work");
+        }
+        if (streamingStats.streamer.pendingCopies.copyCount() != 0 ||
+            streamingStats.streamer.frameIndex == 0) {
+            return RhiTestResult::fail("RenderGraph streaming subsystem did not end the streamer frame cleanly");
+        }
+        if (streamingStats.streamer.currentFrameDynamicBytes != 0 ||
+            streamingStats.streamer.lastFrameDynamicBytes != expectedBytes ||
+            streamingStats.streamer.peakFrameDynamicBytes != expectedBytes ||
+            streamingStats.streamer.totalDynamicBytes != expectedBytes ||
+            streamingStats.streamer.lastFrameDynamicRequestCount != 1) {
+            return RhiTestResult::fail("RenderGraph streaming subsystem did not retain last-frame Streamer stats");
+        }
         result = commandBuffer->end();
         if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
@@ -616,6 +799,59 @@ public:
         }
         if (actual != StreamerGraphUploadPass::kExpected) {
             return RhiTestResult::fail("streamer graph output bytes did not match expected pattern");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+class StreamerRenderGraphUnsupportedDoesNotBeginFrameTest : public RhiTest {
+public:
+    StreamerRenderGraphUnsupportedDoesNotBeginFrameTest()
+    {
+        type = RhiTestType::Command;
+        name = "streamer_render_graph_unsupported_does_not_begin_frame";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        registerStreamerGraphPass();
+
+        render::Queue* computeQueue = context.device.getQueue(render::QueueType::Compute);
+        if (computeQueue == nullptr) {
+            return RhiTestResult::skip("device has no compute queue");
+        }
+
+        render::RenderGraph graph;
+        graph.setName("StreamerUnsupportedCrossQueue");
+        graph.addNode("StreamerCrossQueueSourcePass", "Source");
+        graph.addNode("StreamerCrossQueueSinkPass", "Sink");
+        graph.addEdge("Source.data", "Sink.data");
+        graph.markOutput("Sink.copied");
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        render::Result result = executor.compile(context.device, graph, 1, 1, log);
+        if (!result) {
+            return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+        }
+
+        const render::RenderGraphStreamingStats before = executor.streamingStats();
+        result = executor.execute(render::RenderGraphSubmitDesc{
+            .graphicsQueue = &context.graphicsQueue,
+            .computeQueue = computeQueue,
+        });
+        if (!render::hasError(result, render::Error::Unsupported)) {
+            return RhiTestResult::fail(
+                std::string("expected Unsupported for cross-queue resource edge, got ") +
+                toString(result));
+        }
+
+        const render::RenderGraphStreamingStats& after = executor.streamingStats();
+        if (after.frameIndex != before.frameIndex ||
+            after.streamer.frameIndex != before.streamer.frameIndex ||
+            after.flushCount != before.flushCount ||
+            after.transferCount != before.transferCount) {
+            return RhiTestResult::fail("unsupported submit started or mutated the RenderGraph streaming frame");
         }
         return RhiTestResult::pass();
     }
@@ -664,6 +900,12 @@ public:
             stats.activePageCount != fallbackPages.size() ||
             stats.usedSlotCount != fallbackPages.size() ||
             stats.freeSlotCount != maxResidentPages - fallbackPages.size() ||
+            stats.queuedRequestTaskCount != 0 ||
+            stats.availableRequestTaskCount != render::kStreamingMaxActiveTasks ||
+            stats.queuedStorageTaskCount != 0 ||
+            stats.availableStorageTaskCount != render::kStreamingMaxActiveTasks ||
+            stats.queuedUpdateTaskCount != 0 ||
+            stats.availableUpdateTaskCount != render::kStreamingMaxActiveTasks ||
             stats.totalQueuedUploadCount != fallbackPages.size()) {
             return RhiTestResult::fail("fallback lock did not populate active/storage residency tables");
         }
@@ -717,6 +959,10 @@ public:
             residency.pendingPages().front() != pageIndex ||
             stats.pendingPageCount != 1 ||
             stats.residentPageCount != 0 ||
+            stats.queuedStorageTaskCount != 1 ||
+            stats.availableStorageTaskCount != render::kStreamingMaxActiveTasks - 1u ||
+            stats.queuedUpdateTaskCount != 0 ||
+            stats.availableUpdateTaskCount != render::kStreamingMaxActiveTasks - 1u ||
             stats.frameScheduledUploadCount != 1 ||
             stats.oldestPendingAge != 0) {
             return RhiTestResult::fail("pending upload did not update pending table or upload stats");
@@ -777,6 +1023,10 @@ public:
         stats = residency.stats();
         if (stats.pendingPageCount != 1 ||
             stats.residentPageCount != 0 ||
+            stats.queuedStorageTaskCount != 1 ||
+            stats.availableStorageTaskCount != render::kStreamingMaxActiveTasks - 1u ||
+            stats.queuedUpdateTaskCount != 0 ||
+            stats.availableUpdateTaskCount != render::kStreamingMaxActiveTasks - 1u ||
             stats.oldestPendingAge != 1) {
             return RhiTestResult::fail("pending table age did not advance while upload was delayed");
         }
@@ -784,8 +1034,27 @@ public:
             return RhiTestResult::fail("residency produced a patch before pending upload completed");
         }
         residency.beginFrame();
+        if (residency.pageResident(pageIndex)) {
+            return RhiTestResult::fail("page became resident before queued update task elapsed");
+        }
+        stats = residency.stats();
+        if (stats.pendingPageCount != 1 ||
+            stats.residentPageCount != 0 ||
+            stats.queuedStorageTaskCount != 0 ||
+            stats.availableStorageTaskCount != render::kStreamingMaxActiveTasks ||
+            stats.queuedUpdateTaskCount != 1 ||
+            stats.availableUpdateTaskCount != render::kStreamingMaxActiveTasks - 1u ||
+            stats.frameCompletedStorageTaskCount != 1 ||
+            stats.frameScheduledUpdateCount != 1 ||
+            stats.oldestPendingAge != 2) {
+            return RhiTestResult::fail("storage completion did not queue a resident update task");
+        }
+        if (!residency.pendingPatches().empty()) {
+            return RhiTestResult::fail("storage completion produced a resident patch before update task completed");
+        }
+        residency.beginFrame();
         if (!residency.pageResident(pageIndex)) {
-            return RhiTestResult::fail("page did not become resident after queued frame delay elapsed");
+            return RhiTestResult::fail("page did not become resident after queued update task elapsed");
         }
         stats = residency.stats();
         if (residency.pendingPages().size() != 0 ||
@@ -793,6 +1062,11 @@ public:
             residency.residentPages().front() != pageIndex ||
             stats.pendingPageCount != 0 ||
             stats.residentPageCount != 1 ||
+            stats.queuedStorageTaskCount != 0 ||
+            stats.availableStorageTaskCount != render::kStreamingMaxActiveTasks ||
+            stats.queuedUpdateTaskCount != 0 ||
+            stats.availableUpdateTaskCount != render::kStreamingMaxActiveTasks ||
+            stats.frameCompletedUpdateCount != 1 ||
             stats.frameCompletedUploadCount != 1 ||
             stats.oldestResidentAge != residency.pageAge(pageIndex)) {
             return RhiTestResult::fail("resident upload did not update resident table or completion stats");
@@ -881,15 +1155,39 @@ public:
             secondPage,
             secondPage,
         };
-        const uint32_t consumed = residency.consumeGpuRequests(gpuRequests);
-        if (consumed != 2) {
-            return RhiTestResult::fail("consumeGpuRequests did not deduplicate page ids");
+        const uint32_t scheduled = residency.consumeGpuRequests(gpuRequests);
+        if (scheduled != 2) {
+            return RhiTestResult::fail("consumeGpuRequests did not deduplicate and schedule page ids");
         }
         const std::span<const uint32_t> requestedPages = residency.requestedPages();
         if (requestedPages.size() != 2 ||
             std::find(requestedPages.begin(), requestedPages.end(), firstPage) == requestedPages.end() ||
             std::find(requestedPages.begin(), requestedPages.end(), secondPage) == requestedPages.end()) {
             return RhiTestResult::fail("request table did not preserve unique GPU-requested page ids");
+        }
+        render::MeshletStreamResidencyStats requestStats = residency.stats();
+        if (requestStats.frameGpuRequestCount != gpuRequests.size() ||
+            requestStats.frameUniqueGpuRequestCount != 2 ||
+            requestStats.frameScheduledRequestTaskCount != 1 ||
+            requestStats.frameConsumedGpuRequestCount != 0 ||
+            requestStats.queuedRequestTaskCount != 1 ||
+            requestStats.availableRequestTaskCount != render::kStreamingMaxActiveTasks - 1u ||
+            requestStats.activePageCount != fallbackPages.size() ||
+            requestStats.freeSlotCount != 1) {
+            return RhiTestResult::fail("GPU request readback did not queue an isolated request task");
+        }
+        if (residency.slotForPage(firstPage) != UINT32_MAX ||
+            residency.slotForPage(secondPage) != UINT32_MAX ||
+            !residency.pendingPatches().empty()) {
+            return RhiTestResult::fail("queued GPU request task modified residency before beginFrame consumed it");
+        }
+
+        residency.beginFrame();
+        const std::span<const uint32_t> consumedRequestPages = residency.requestedPages();
+        if (consumedRequestPages.size() != 2 ||
+            std::find(consumedRequestPages.begin(), consumedRequestPages.end(), firstPage) == consumedRequestPages.end() ||
+            std::find(consumedRequestPages.begin(), consumedRequestPages.end(), secondPage) == consumedRequestPages.end()) {
+            return RhiTestResult::fail("request task did not preserve unique page ids when consumed");
         }
         if (residency.slotForPage(firstPage) != UINT32_MAX) {
             return RhiTestResult::fail("first requested page was not evicted under slot pressure");
@@ -898,12 +1196,13 @@ public:
             return RhiTestResult::fail("second requested page did not receive the single streamable slot");
         }
         const std::span<const uint32_t> activePages = residency.activePages();
-        const render::MeshletStreamResidencyStats requestStats = residency.stats();
+        requestStats = residency.stats();
         if (std::find(activePages.begin(), activePages.end(), firstPage) != activePages.end() ||
             std::find(activePages.begin(), activePages.end(), secondPage) == activePages.end() ||
-            requestStats.frameGpuRequestCount != gpuRequests.size() ||
-            requestStats.frameUniqueGpuRequestCount != 2 ||
+            requestStats.frameCompletedRequestTaskCount != 1 ||
             requestStats.frameConsumedGpuRequestCount != 2 ||
+            requestStats.queuedRequestTaskCount != 0 ||
+            requestStats.availableRequestTaskCount != render::kStreamingMaxActiveTasks ||
             requestStats.frameEvictedPageCount != 1 ||
             requestStats.activePageCount != fallbackPages.size() + 1u ||
             requestStats.freeSlotCount != 0) {
@@ -921,12 +1220,91 @@ public:
     }
 };
 
+class StreamerMeshletResidencyLatestGpuRequestTest : public RhiTest {
+public:
+    StreamerMeshletResidencyLatestGpuRequestTest()
+    {
+        type = RhiTestType::Command;
+        name = "streamer_meshlet_residency_latest_gpu_request";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        scene::MeshletStreamAsset asset;
+        RhiTestResult build = buildBunnyStreamAssetForTest(
+            context.outputDirectory / "streamer_residency_latest_gpu_request.meshstream.bin",
+            asset);
+        if (!build.passed) {
+            return build;
+        }
+
+        std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
+        std::vector<uint32_t> streamablePages = nonFallbackPagesFor(asset, fallbackPages);
+        if (fallbackPages.empty() || streamablePages.size() < 2) {
+            return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
+        }
+
+        render::MeshletStreamResidencyManager residency;
+        std::string reason;
+        if (!residency.initialize(
+                render::MeshletStreamResidencyDesc{
+                    .asset = &asset,
+                    .maxResidentPages = static_cast<uint32_t>(fallbackPages.size()) + 1u,
+                    .queuedFrameCount = 2,
+                },
+                reason)) {
+            return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
+        }
+        if (!residency.lockFallbackPages(fallbackPages, reason)) {
+            return RhiTestResult::fail("lockFallbackPages failed: " + reason);
+        }
+        residency.clearPendingPatches();
+
+        const uint32_t stalePage = streamablePages[0];
+        const uint32_t latestPage = streamablePages[1];
+        const uint32_t staleScheduled = residency.consumeGpuRequests(std::span<const uint32_t>(&stalePage, 1));
+        const uint32_t latestScheduled = residency.consumeGpuRequests(std::span<const uint32_t>(&latestPage, 1));
+        if (staleScheduled != 1 || latestScheduled != 1) {
+            return RhiTestResult::fail("consumeGpuRequests did not schedule two request tasks");
+        }
+
+        render::MeshletStreamResidencyStats stats = residency.stats();
+        if (stats.queuedRequestTaskCount != 2 ||
+            stats.availableRequestTaskCount != render::kStreamingMaxActiveTasks - 2u ||
+            stats.frameScheduledRequestTaskCount != 2 ||
+            stats.frameUniqueGpuRequestCount != 2 ||
+            stats.frameConsumedGpuRequestCount != 0) {
+            return RhiTestResult::fail("multiple GPU request readbacks were not queued as separate tasks");
+        }
+
+        residency.beginFrame();
+        const std::span<const uint32_t> requestedPages = residency.requestedPages();
+        stats = residency.stats();
+        if (requestedPages.size() != 1 ||
+            requestedPages.front() != latestPage ||
+            residency.slotForPage(stalePage) != UINT32_MAX ||
+            residency.slotForPage(latestPage) == UINT32_MAX ||
+            stats.frameDroppedRequestTaskCount != 1 ||
+            stats.frameCompletedRequestTaskCount != 1 ||
+            stats.frameConsumedGpuRequestCount != 1 ||
+            stats.queuedRequestTaskCount != 0 ||
+            stats.availableRequestTaskCount != render::kStreamingMaxActiveTasks) {
+            return RhiTestResult::fail("request queue did not drop stale ready tasks and consume the latest request");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(StreamingTaskQueueLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(StreamerBufferUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerTextureUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerConstantUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphFlushTest);
+METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphUnsupportedDoesNotBeginFrameTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestPatchTest);
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyLatestGpuRequestTest);
 
 } // namespace
 } // namespace metallic::tests

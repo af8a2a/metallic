@@ -90,6 +90,13 @@ uint32_t formatTexelByteSize(Format format)
     return 0;
 }
 
+uint64_t textureCopyByteSize(const BufferTextureCopyDesc& copy)
+{
+    return static_cast<uint64_t>(copy.bufferSlicePitch) *
+        static_cast<uint64_t>(copy.depth) *
+        static_cast<uint64_t>(copy.layerCount);
+}
+
 } // namespace
 
 namespace detail {
@@ -238,6 +245,8 @@ struct StreamerImpl {
         }
 
         dynamicBufferOffset = requiredSizePerFrame;
+        currentFrameDynamicBytes += dataSize;
+        ++currentFrameDynamicRequestCount;
         return BufferOffset{
             .buffer = dynamicBuffer.get(),
             .offset = bufferOffset,
@@ -370,6 +379,8 @@ struct StreamerImpl {
         });
 
         dynamicBufferOffset = requiredSizePerFrame;
+        currentFrameDynamicBytes += dataSize;
+        ++currentFrameDynamicRequestCount;
         return BufferOffset{
             .buffer = dynamicBuffer.get(),
             .offset = bufferOffset,
@@ -410,6 +421,8 @@ struct StreamerImpl {
             constantBuffer->unmap();
         }
         constantBufferOffset = offset + byteSize;
+        currentFrameConstantBytes += byteSize;
+        ++currentFrameConstantRequestCount;
         return offset;
     }
 
@@ -454,7 +467,59 @@ struct StreamerImpl {
         if (desc.queuedFrameCount != 0) {
             frameIndex = (frameIndex + 1) % desc.queuedFrameCount;
         }
+        ++frameSerial;
+        lastFrameDynamicBytes = currentFrameDynamicBytes;
+        lastFrameDynamicRequestCount = currentFrameDynamicRequestCount;
+        peakFrameDynamicBytes = std::max(peakFrameDynamicBytes, currentFrameDynamicBytes);
+        totalDynamicBytes += currentFrameDynamicBytes;
+        currentFrameDynamicBytes = 0;
+        currentFrameDynamicRequestCount = 0;
+
+        lastFrameConstantBytes = currentFrameConstantBytes;
+        lastFrameConstantRequestCount = currentFrameConstantRequestCount;
+        peakFrameConstantBytes = std::max(peakFrameConstantBytes, currentFrameConstantBytes);
+        totalConstantBytes += currentFrameConstantBytes;
+        currentFrameConstantBytes = 0;
+        currentFrameConstantRequestCount = 0;
         dynamicBufferOffset = 0;
+    }
+
+    StreamerStats stats() const
+    {
+        std::lock_guard lock(mutex);
+
+        StreamerPendingCopyStats pendingCopies;
+        pendingCopies.bufferCopyCount = static_cast<uint32_t>(bufferRequests.size());
+        pendingCopies.textureCopyCount = static_cast<uint32_t>(textureRequests.size());
+        for (const BufferCopyRequest& request : bufferRequests) {
+            pendingCopies.bufferCopyBytes += request.size;
+        }
+        for (const TextureCopyRequest& request : textureRequests) {
+            pendingCopies.textureCopyBytes += textureCopyByteSize(request.copy);
+        }
+
+        return StreamerStats{
+            .frameIndex = frameSerial,
+            .frameSlot = frameIndex,
+            .queuedFrameCount = desc.queuedFrameCount,
+            .dynamicBufferSizePerFrame = dynamicBufferSizePerFrame,
+            .dynamicBufferOffset = dynamicBufferOffset,
+            .constantBufferOffset = constantBufferOffset,
+            .currentFrameDynamicBytes = currentFrameDynamicBytes,
+            .lastFrameDynamicBytes = lastFrameDynamicBytes,
+            .peakFrameDynamicBytes = peakFrameDynamicBytes,
+            .totalDynamicBytes = totalDynamicBytes,
+            .currentFrameConstantBytes = currentFrameConstantBytes,
+            .lastFrameConstantBytes = lastFrameConstantBytes,
+            .peakFrameConstantBytes = peakFrameConstantBytes,
+            .totalConstantBytes = totalConstantBytes,
+            .currentFrameDynamicRequestCount = currentFrameDynamicRequestCount,
+            .lastFrameDynamicRequestCount = lastFrameDynamicRequestCount,
+            .currentFrameConstantRequestCount = currentFrameConstantRequestCount,
+            .lastFrameConstantRequestCount = lastFrameConstantRequestCount,
+            .garbageBufferCount = static_cast<uint32_t>(garbage.size()),
+            .pendingCopies = pendingCopies,
+        };
     }
 
     Device* device = nullptr;
@@ -467,8 +532,21 @@ struct StreamerImpl {
     uint64_t dynamicBufferOffset = 0;
     uint64_t dynamicBufferSizePerFrame = 0;
     uint64_t constantBufferOffset = 0;
+    uint64_t currentFrameDynamicBytes = 0;
+    uint64_t lastFrameDynamicBytes = 0;
+    uint64_t peakFrameDynamicBytes = 0;
+    uint64_t totalDynamicBytes = 0;
+    uint64_t currentFrameConstantBytes = 0;
+    uint64_t lastFrameConstantBytes = 0;
+    uint64_t peakFrameConstantBytes = 0;
+    uint64_t totalConstantBytes = 0;
+    uint64_t frameSerial = 0;
+    uint32_t currentFrameDynamicRequestCount = 0;
+    uint32_t lastFrameDynamicRequestCount = 0;
+    uint32_t currentFrameConstantRequestCount = 0;
+    uint32_t lastFrameConstantRequestCount = 0;
     uint32_t frameIndex = 0;
-    std::mutex mutex;
+    mutable std::mutex mutex;
 };
 
 } // namespace detail
@@ -486,6 +564,11 @@ const StreamerDesc& Streamer::desc() const
 {
     static const StreamerDesc emptyDesc;
     return impl_ != nullptr ? impl_->desc : emptyDesc;
+}
+
+StreamerStats Streamer::stats() const
+{
+    return impl_ != nullptr ? impl_->stats() : StreamerStats{};
 }
 
 Buffer* Streamer::constantBuffer() const

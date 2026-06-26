@@ -42,17 +42,42 @@ void RenderGraphStreamingSubsystem::reset()
 {
     endFrame();
     streamer_.reset();
+    stats_ = {};
 }
 
 void RenderGraphStreamingSubsystem::beginFrame()
 {
     frameActive_ = streamer_ != nullptr;
+    ++stats_.frameIndex;
+    stats_.flushCount = 0;
+    stats_.flushesWithWork = 0;
+    stats_.transferCount = 0;
+    stats_.bufferTransferCount = 0;
+    stats_.textureTransferCount = 0;
+    stats_.transferBytes = 0;
+    stats_.bufferTransferBytes = 0;
+    stats_.textureTransferBytes = 0;
+    stats_.streamer = streamer_ != nullptr ? streamer_->stats() : StreamerStats{};
 }
 
 void RenderGraphStreamingSubsystem::flush(CommandBuffer& commandBuffer)
 {
     if (streamer_ != nullptr) {
+        const StreamerStats streamerStats = streamer_->stats();
+        const StreamerPendingCopyStats pendingCopies = streamerStats.pendingCopies;
+        ++stats_.flushCount;
+        if (pendingCopies.copyCount() > 0) {
+            ++stats_.flushesWithWork;
+        }
+        stats_.transferCount += pendingCopies.copyCount();
+        stats_.bufferTransferCount += pendingCopies.bufferCopyCount;
+        stats_.textureTransferCount += pendingCopies.textureCopyCount;
+        stats_.transferBytes += pendingCopies.copyBytes();
+        stats_.bufferTransferBytes += pendingCopies.bufferCopyBytes;
+        stats_.textureTransferBytes += pendingCopies.textureCopyBytes;
+        stats_.streamer = streamerStats;
         commandBuffer.copyStreamedData(*streamer_);
+        stats_.streamer = streamer_->stats();
     }
 }
 
@@ -60,6 +85,7 @@ void RenderGraphStreamingSubsystem::endFrame()
 {
     if (frameActive_ && streamer_ != nullptr) {
         streamer_->endFrame();
+        stats_.streamer = streamer_->stats();
     }
     frameActive_ = false;
 }

@@ -544,6 +544,39 @@ struct StreamerDesc {
     uint32_t queuedFrameCount = 2;
 };
 
+struct StreamerPendingCopyStats {
+    uint32_t bufferCopyCount = 0;
+    uint32_t textureCopyCount = 0;
+    uint64_t bufferCopyBytes = 0;
+    uint64_t textureCopyBytes = 0;
+
+    uint32_t copyCount() const { return bufferCopyCount + textureCopyCount; }
+    uint64_t copyBytes() const { return bufferCopyBytes + textureCopyBytes; }
+};
+
+struct StreamerStats {
+    uint64_t frameIndex = 0;
+    uint32_t frameSlot = 0;
+    uint32_t queuedFrameCount = 0;
+    uint64_t dynamicBufferSizePerFrame = 0;
+    uint64_t dynamicBufferOffset = 0;
+    uint64_t constantBufferOffset = 0;
+    uint64_t currentFrameDynamicBytes = 0;
+    uint64_t lastFrameDynamicBytes = 0;
+    uint64_t peakFrameDynamicBytes = 0;
+    uint64_t totalDynamicBytes = 0;
+    uint64_t currentFrameConstantBytes = 0;
+    uint64_t lastFrameConstantBytes = 0;
+    uint64_t peakFrameConstantBytes = 0;
+    uint64_t totalConstantBytes = 0;
+    uint32_t currentFrameDynamicRequestCount = 0;
+    uint32_t lastFrameDynamicRequestCount = 0;
+    uint32_t currentFrameConstantRequestCount = 0;
+    uint32_t lastFrameConstantRequestCount = 0;
+    uint32_t garbageBufferCount = 0;
+    StreamerPendingCopyStats pendingCopies;
+};
+
 struct StreamBufferDataDesc {
     const StreamDataChunk* dataChunks = nullptr;
     uint32_t dataChunkCount = 0;
@@ -933,6 +966,7 @@ public:
     Streamer& operator=(const Streamer&) = delete;
 
     const StreamerDesc& desc() const;
+    StreamerStats stats() const;
     Buffer* constantBuffer() const;
     BufferOffset streamBufferData(const StreamBufferDataDesc& desc);
     BufferOffset streamTextureData(const StreamTextureDataDesc& desc);

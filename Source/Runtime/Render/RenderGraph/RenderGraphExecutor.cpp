@@ -1052,15 +1052,16 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     if (!result) {
         return result;
     }
-    RenderGraphStreamingFrameScope streamingFrame(impl_->streamingSubsystem);
-    impl_->submittedCommandBuffers.clear();
-    impl_->submittedTimelineSemaphore.reset();
-    impl_->submittedTimelineValue = 0;
 
     std::string crossQueueLog;
     if (impl_->hasCrossQueueResourceEdges(crossQueueLog)) {
         return makeError(Error::Unsupported);
     }
+
+    RenderGraphStreamingFrameScope streamingFrame(impl_->streamingSubsystem);
+    impl_->submittedCommandBuffers.clear();
+    impl_->submittedTimelineSemaphore.reset();
+    impl_->submittedTimelineValue = 0;
 
     for (Impl::QueueCommandContext& queueContext : impl_->queueCommandContexts) {
         queueContext.resetForCurrentSubmit = false;
@@ -1278,6 +1279,11 @@ const RenderGraphResource* RenderGraphExecutor::outputResource(std::string_view 
 const RenderGraphExecutionStats& RenderGraphExecutor::executionStats() const
 {
     return impl_->lastExecutionStats;
+}
+
+const RenderGraphStreamingStats& RenderGraphExecutor::streamingStats() const
+{
+    return impl_->streamingSubsystem.stats();
 }
 
 bool RenderGraphExecutor::compiled() const

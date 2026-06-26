@@ -81,6 +81,18 @@ void MeshletStreamResidencyManager::reset()
     slotToPage_.clear();
     freeSlots_.clear();
     uploadQueue_.clear();
+    requestTaskQueue_.reset();
+    for (std::vector<uint32_t>& taskPages : requestTaskPages_) {
+        taskPages.clear();
+    }
+    storageTaskQueue_.reset();
+    for (std::vector<uint32_t>& taskPages : storageTaskPages_) {
+        taskPages.clear();
+    }
+    updateTaskQueue_.reset();
+    for (std::vector<uint32_t>& taskPages : updateTaskPages_) {
+        taskPages.clear();
+    }
     requestedPages_.clear();
     activePages_.clear();
     residentPages_.clear();
@@ -102,23 +114,114 @@ void MeshletStreamResidencyManager::beginFrame()
     ++frameIndex_;
     requestedPages_.clear();
     resetFrameStats();
-    for (PageEntry& page : pages_) {
-        if (page.state != MeshletStreamPageResidencyState::PendingUpload) {
-            continue;
+
+    while (updateTaskQueue_.canPop(frameIndex_, true)) {
+        const uint32_t taskIndex = updateTaskQueue_.pop();
+        if (taskIndex < updateTaskPages_.size()) {
+            for (uint32_t pageIndex : updateTaskPages_[taskIndex]) {
+                if (pageIndex >= pages_.size()) {
+                    continue;
+                }
+                PageEntry& page = pages_[pageIndex];
+                if (page.state != MeshletStreamPageResidencyState::PendingUpload ||
+                    page.updateTaskIndex != taskIndex) {
+                    continue;
+                }
+                page.updateTaskIndex = kInvalidStreamingTaskIndex;
+                setPageState(
+                    pageIndex,
+                    page.lockedFallback
+                        ? MeshletStreamPageResidencyState::LockedFallback
+                        : MeshletStreamPageResidencyState::Resident);
+                ++stats_.frameCompletedUpdateCount;
+                ++stats_.frameCompletedUploadCount;
+                ++stats_.totalCompletedUpdateCount;
+                ++stats_.totalCompletedUploadCount;
+            }
+            updateTaskPages_[taskIndex].clear();
         }
-        if (page.pendingFrames > 0) {
-            --page.pendingFrames;
+        updateTaskQueue_.releaseTaskIndex(taskIndex);
+    }
+
+    if (storageTaskQueue_.canPop(frameIndex_, true)) {
+        uint32_t dependentIndex = kInvalidStreamingTaskIndex;
+        const uint32_t taskIndex = storageTaskQueue_.popWithDependent(dependentIndex);
+        uint32_t updateTaskIndex = dependentIndex;
+        if (updateTaskIndex == kInvalidStreamingTaskIndex) {
+            updateTaskIndex = updateTaskQueue_.acquireTaskIndex();
+            if (updateTaskIndex == kInvalidStreamingTaskIndex) {
+                ++stats_.frameUpdateTaskFailureCount;
+                ++stats_.totalUpdateTaskFailureCount;
+            }
         }
-        if (page.pendingFrames == 0) {
-            const uint32_t pageIndex = static_cast<uint32_t>(&page - pages_.data());
-            setPageState(
-                pageIndex,
-                page.lockedFallback
-                    ? MeshletStreamPageResidencyState::LockedFallback
-                    : MeshletStreamPageResidencyState::Resident);
-            ++stats_.frameCompletedUploadCount;
-            ++stats_.totalCompletedUploadCount;
+
+        if (updateTaskIndex != kInvalidStreamingTaskIndex) {
+            uint32_t updateCount = 0;
+            if (taskIndex < storageTaskPages_.size()) {
+                std::vector<uint32_t>& updatePages = updateTaskPages_[updateTaskIndex];
+                updatePages.clear();
+                for (uint32_t pageIndex : storageTaskPages_[taskIndex]) {
+                    if (pageIndex >= pages_.size()) {
+                        continue;
+                    }
+                    PageEntry& page = pages_[pageIndex];
+                    if (page.state != MeshletStreamPageResidencyState::PendingUpload ||
+                        page.storageTaskIndex != taskIndex) {
+                        continue;
+                    }
+                    page.storageTaskIndex = kInvalidStreamingTaskIndex;
+                    page.updateTaskIndex = updateTaskIndex;
+                    updatePages.push_back(pageIndex);
+                    ++updateCount;
+                }
+                storageTaskPages_[taskIndex].clear();
+            }
+
+            ++stats_.frameCompletedStorageTaskCount;
+            ++stats_.totalCompletedStorageTaskCount;
+            if (updateCount > 0) {
+                ++stats_.frameScheduledUpdateCount;
+                ++stats_.totalScheduledUpdateCount;
+                updateTaskQueue_.push(updateTaskIndex, frameIndex_ + 1u);
+            } else {
+                updateTaskPages_[updateTaskIndex].clear();
+                updateTaskQueue_.releaseTaskIndex(updateTaskIndex);
+            }
         }
+        storageTaskQueue_.releaseTaskIndex(taskIndex);
+    }
+
+    if (requestTaskQueue_.canPop(frameIndex_, true)) {
+        const uint32_t taskIndex = requestTaskQueue_.pop();
+        uint32_t latestTaskIndex = taskIndex;
+        while (requestTaskQueue_.canPop(frameIndex_, false)) {
+            if (latestTaskIndex < requestTaskPages_.size()) {
+                requestTaskPages_[latestTaskIndex].clear();
+            }
+            requestTaskQueue_.releaseTaskIndex(latestTaskIndex);
+            ++stats_.frameDroppedRequestTaskCount;
+            ++stats_.totalDroppedRequestTaskCount;
+            latestTaskIndex = requestTaskQueue_.pop();
+        }
+
+        uint32_t consumed = 0;
+        if (latestTaskIndex < requestTaskPages_.size()) {
+            for (uint32_t pageIndex : requestTaskPages_[latestTaskIndex]) {
+                if (pageIndex >= pages_.size()) {
+                    continue;
+                }
+                requestedPages_.push_back(pageIndex);
+                (void)requestPage(pageIndex);
+                ++consumed;
+            }
+            requestTaskPages_[latestTaskIndex].clear();
+        }
+        requestTaskQueue_.releaseTaskIndex(latestTaskIndex);
+
+        ++stats_.frameCompletedRequestTaskCount;
+        ++stats_.totalCompletedRequestTaskCount;
+        stats_.frameConsumedGpuRequestCount += consumed;
+        stats_.totalConsumedGpuRequestCount += consumed;
     }
 }
 
@@ -201,15 +304,26 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint3
     stats_.frameUniqueGpuRequestCount += static_cast<uint32_t>(uniqueRequests.size());
     stats_.totalUniqueGpuRequestCount += uniqueRequests.size();
 
-    uint32_t consumed = 0;
     for (uint32_t pageIndex : uniqueRequests) {
-        (void)requestPage(pageIndex);
-        ++consumed;
         requestMarks_[pageIndex] = 0;
     }
-    stats_.frameConsumedGpuRequestCount += consumed;
-    stats_.totalConsumedGpuRequestCount += consumed;
-    return consumed;
+    if (uniqueRequests.empty()) {
+        return 0;
+    }
+
+    const uint32_t taskIndex = requestTaskQueue_.acquireTaskIndex();
+    if (taskIndex == kInvalidStreamingTaskIndex) {
+        ++stats_.frameRequestTaskFailureCount;
+        ++stats_.totalRequestTaskFailureCount;
+        return 0;
+    }
+
+    std::vector<uint32_t>& taskPages = requestTaskPages_[taskIndex];
+    taskPages = std::move(uniqueRequests);
+    requestTaskQueue_.push(taskIndex, frameIndex_ + 1u);
+    ++stats_.frameScheduledRequestTaskCount;
+    ++stats_.totalScheduledRequestTaskCount;
+    return static_cast<uint32_t>(taskPages.size());
 }
 
 uint32_t MeshletStreamResidencyManager::processUploads(
@@ -221,6 +335,23 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         return 0;
     }
 
+    const uint32_t taskIndex = storageTaskQueue_.acquireTaskIndex();
+    if (taskIndex == kInvalidStreamingTaskIndex) {
+        ++stats_.frameStorageTaskFailureCount;
+        ++stats_.totalStorageTaskFailureCount;
+        return 0;
+    }
+
+    const uint32_t updateTaskIndex = updateTaskQueue_.acquireTaskIndex();
+    if (updateTaskIndex == kInvalidStreamingTaskIndex) {
+        storageTaskQueue_.releaseTaskIndex(taskIndex);
+        ++stats_.frameUpdateTaskFailureCount;
+        ++stats_.totalUpdateTaskFailureCount;
+        return 0;
+    }
+
+    std::vector<uint32_t>& taskPages = storageTaskPages_[taskIndex];
+    taskPages.clear();
     uint32_t uploadCount = 0;
     for (size_t queueIndex = 0; queueIndex < uploadQueue_.size() && uploadCount < maxUploads;) {
         const uint32_t pageIndex = uploadQueue_[queueIndex];
@@ -255,12 +386,23 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         }
 
         setPageState(pageIndex, MeshletStreamPageResidencyState::PendingUpload);
-        page.pendingFrames = std::max(streamer.desc().queuedFrameCount, queuedFrameCount_);
+        page.storageTaskIndex = taskIndex;
+        taskPages.push_back(pageIndex);
         ++uploadCount;
         ++stats_.frameScheduledUploadCount;
         ++stats_.totalScheduledUploadCount;
         uploadQueue_.erase(uploadQueue_.begin() + static_cast<std::ptrdiff_t>(queueIndex));
     }
+
+    if (uploadCount == 0) {
+        taskPages.clear();
+        storageTaskQueue_.releaseTaskIndex(taskIndex);
+        updateTaskQueue_.releaseTaskIndex(updateTaskIndex);
+        return 0;
+    }
+
+    const uint32_t frameDelay = std::max(streamer.desc().queuedFrameCount, queuedFrameCount_);
+    storageTaskQueue_.push(taskIndex, frameIndex_ + frameDelay, updateTaskIndex);
     return uploadCount;
 }
 
@@ -336,6 +478,12 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
     result.residentPageCount = static_cast<uint32_t>(residentPages_.size());
     result.pendingPageCount = static_cast<uint32_t>(pendingPages_.size());
     result.queuedUploadCount = static_cast<uint32_t>(uploadQueue_.size());
+    result.queuedRequestTaskCount = requestTaskQueue_.queuedTaskCount();
+    result.availableRequestTaskCount = requestTaskQueue_.availableTaskCount();
+    result.queuedStorageTaskCount = storageTaskQueue_.queuedTaskCount();
+    result.availableStorageTaskCount = storageTaskQueue_.availableTaskCount();
+    result.queuedUpdateTaskCount = updateTaskQueue_.queuedTaskCount();
+    result.availableUpdateTaskCount = updateTaskQueue_.availableTaskCount();
     result.pendingPatchCount = static_cast<uint32_t>(patches_.size());
     result.oldestActiveAge = oldestAge(activePages_);
     result.oldestResidentAge = oldestAge(residentPages_);
@@ -403,7 +551,8 @@ void MeshletStreamResidencyManager::releaseSlot(uint32_t pageIndex)
     }
     const MeshletStreamPageResidencyState oldState = page.state;
     page.slot = UINT32_MAX;
-    page.pendingFrames = 0;
+    page.storageTaskIndex = kInvalidStreamingTaskIndex;
+    page.updateTaskIndex = kInvalidStreamingTaskIndex;
     page.queued = false;
     removeFromTable(activePages_, activePagePositions_, pageIndex);
     setPageState(pageIndex, MeshletStreamPageResidencyState::Unloaded);
@@ -518,10 +667,19 @@ void MeshletStreamResidencyManager::resetFrameStats()
 {
     stats_.frameGpuRequestCount = 0;
     stats_.frameUniqueGpuRequestCount = 0;
+    stats_.frameScheduledRequestTaskCount = 0;
+    stats_.frameCompletedRequestTaskCount = 0;
+    stats_.frameDroppedRequestTaskCount = 0;
+    stats_.frameRequestTaskFailureCount = 0;
     stats_.frameConsumedGpuRequestCount = 0;
     stats_.frameQueuedUploadCount = 0;
     stats_.frameScheduledUploadCount = 0;
+    stats_.frameCompletedStorageTaskCount = 0;
+    stats_.frameScheduledUpdateCount = 0;
+    stats_.frameCompletedUpdateCount = 0;
     stats_.frameCompletedUploadCount = 0;
+    stats_.frameStorageTaskFailureCount = 0;
+    stats_.frameUpdateTaskFailureCount = 0;
     stats_.frameEvictedPageCount = 0;
     stats_.frameAllocationFailureCount = 0;
 }
