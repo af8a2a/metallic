@@ -58,10 +58,12 @@ bool MeshletStreamResidencyManager::initialize(
     pages_.resize(asset_->pageCount());
     slotToPage_.assign(maxResidentPages_, UINT32_MAX);
     requestMarks_.assign(asset_->pageCount(), 0);
+    unloadRequestMarks_.assign(asset_->pageCount(), 0);
     activePagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
     residentPagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
     pendingPagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
     requestedPages_.reserve(asset_->pageCount());
+    unloadRequestedPages_.reserve(asset_->pageCount());
     activePages_.reserve(maxResidentPages_);
     residentPages_.reserve(maxResidentPages_);
     pendingPages_.reserve(maxResidentPages_);
@@ -85,6 +87,9 @@ void MeshletStreamResidencyManager::reset()
     for (std::vector<uint32_t>& taskPages : requestTaskPages_) {
         taskPages.clear();
     }
+    for (std::vector<uint32_t>& taskPages : requestTaskUnloadPages_) {
+        taskPages.clear();
+    }
     storageTaskQueue_.reset();
     for (std::vector<uint32_t>& taskPages : storageTaskPages_) {
         taskPages.clear();
@@ -94,6 +99,7 @@ void MeshletStreamResidencyManager::reset()
         taskPages.clear();
     }
     requestedPages_.clear();
+    unloadRequestedPages_.clear();
     activePages_.clear();
     residentPages_.clear();
     pendingPages_.clear();
@@ -101,6 +107,7 @@ void MeshletStreamResidencyManager::reset()
     residentPagePositions_.clear();
     pendingPagePositions_.clear();
     requestMarks_.clear();
+    unloadRequestMarks_.clear();
     patches_.clear();
     stats_ = {};
     frameIndex_ = 0;
@@ -113,6 +120,7 @@ void MeshletStreamResidencyManager::beginFrame()
 {
     ++frameIndex_;
     requestedPages_.clear();
+    unloadRequestedPages_.clear();
     resetFrameStats();
 
     while (updateTaskQueue_.canPop(frameIndex_, true)) {
@@ -197,6 +205,7 @@ void MeshletStreamResidencyManager::beginFrame()
         while (requestTaskQueue_.canPop(frameIndex_, false)) {
             if (latestTaskIndex < requestTaskPages_.size()) {
                 requestTaskPages_[latestTaskIndex].clear();
+                requestTaskUnloadPages_[latestTaskIndex].clear();
             }
             requestTaskQueue_.releaseTaskIndex(latestTaskIndex);
             ++stats_.frameDroppedRequestTaskCount;
@@ -205,7 +214,17 @@ void MeshletStreamResidencyManager::beginFrame()
         }
 
         uint32_t consumed = 0;
+        uint32_t consumedUnloads = 0;
         if (latestTaskIndex < requestTaskPages_.size()) {
+            for (uint32_t pageIndex : requestTaskUnloadPages_[latestTaskIndex]) {
+                if (pageIndex >= pages_.size()) {
+                    continue;
+                }
+                unloadRequestedPages_.push_back(pageIndex);
+                if (unloadPage(pageIndex)) {
+                    ++consumedUnloads;
+                }
+            }
             for (uint32_t pageIndex : requestTaskPages_[latestTaskIndex]) {
                 if (pageIndex >= pages_.size()) {
                     continue;
@@ -215,6 +234,7 @@ void MeshletStreamResidencyManager::beginFrame()
                 ++consumed;
             }
             requestTaskPages_[latestTaskIndex].clear();
+            requestTaskUnloadPages_[latestTaskIndex].clear();
         }
         requestTaskQueue_.releaseTaskIndex(latestTaskIndex);
 
@@ -222,6 +242,8 @@ void MeshletStreamResidencyManager::beginFrame()
         ++stats_.totalCompletedRequestTaskCount;
         stats_.frameConsumedGpuRequestCount += consumed;
         stats_.totalConsumedGpuRequestCount += consumed;
+        stats_.frameConsumedGpuUnloadRequestCount += consumedUnloads;
+        stats_.totalConsumedGpuUnloadRequestCount += consumedUnloads;
     }
 }
 
@@ -280,21 +302,71 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
     return false;
 }
 
+bool MeshletStreamResidencyManager::unloadPage(uint32_t pageIndex)
+{
+    if (asset_ == nullptr || pageIndex >= pages_.size()) {
+        return false;
+    }
+
+    PageEntry& page = pages_[pageIndex];
+    if (page.lockedFallback) {
+        return false;
+    }
+    if (page.slot == UINT32_MAX && page.state == MeshletStreamPageResidencyState::Unloaded) {
+        page.lastUsedFrame = frameIndex_;
+        return true;
+    }
+
+    page.lastUsedFrame = frameIndex_;
+    releaseSlot(pageIndex);
+    return true;
+}
+
 uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint32_t> pageIds)
 {
-    if (asset_ == nullptr || requestMarks_.size() != pages_.size()) {
+    return consumeGpuRequests(StreamGpuRequestBatch{
+        .loadPageIds = pageIds,
+        .loadRequestCounter = static_cast<uint32_t>(std::min<uint64_t>(
+            pageIds.size(),
+            std::numeric_limits<uint32_t>::max())),
+    });
+}
+
+uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuRequestBatch& requests)
+{
+    if (asset_ == nullptr ||
+        requestMarks_.size() != pages_.size() ||
+        unloadRequestMarks_.size() != pages_.size()) {
         return 0;
     }
 
     stats_.frameGpuRequestCount += static_cast<uint32_t>(std::min<uint64_t>(
-        pageIds.size(),
+        requests.loadRequestCounter != 0 ? requests.loadRequestCounter : requests.loadPageIds.size(),
         std::numeric_limits<uint32_t>::max()));
-    stats_.totalGpuRequestCount += pageIds.size();
+    stats_.totalGpuRequestCount += requests.loadRequestCounter != 0
+        ? requests.loadRequestCounter
+        : requests.loadPageIds.size();
+    stats_.frameGpuUnloadRequestCount += static_cast<uint32_t>(std::min<uint64_t>(
+        requests.unloadRequestCounter != 0 ? requests.unloadRequestCounter : requests.unloadPageIds.size(),
+        std::numeric_limits<uint32_t>::max()));
+    stats_.totalGpuUnloadRequestCount += requests.unloadRequestCounter != 0
+        ? requests.unloadRequestCounter
+        : requests.unloadPageIds.size();
+    stats_.frameGpuRequestOverflowCount += requests.loadOverflowCounter;
+    stats_.totalGpuRequestOverflowCount += requests.loadOverflowCounter;
+    stats_.frameGpuUnloadRequestOverflowCount += requests.unloadOverflowCounter;
+    stats_.totalGpuUnloadRequestOverflowCount += requests.unloadOverflowCounter;
+    stats_.frameGpuInvalidRequestCount += requests.invalidPageCounter;
+    stats_.totalGpuInvalidRequestCount += requests.invalidPageCounter;
 
     std::vector<uint32_t> uniqueRequests;
-    uniqueRequests.reserve(pageIds.size());
-    for (uint32_t pageIndex : pageIds) {
+    uniqueRequests.reserve(requests.loadPageIds.size());
+    for (uint32_t pageIndex : requests.loadPageIds) {
         if (pageIndex >= pages_.size() || requestMarks_[pageIndex] != 0) {
+            if (pageIndex >= pages_.size()) {
+                ++stats_.frameGpuInvalidRequestCount;
+                ++stats_.totalGpuInvalidRequestCount;
+            }
             continue;
         }
         requestMarks_[pageIndex] = 1;
@@ -307,7 +379,28 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint3
     for (uint32_t pageIndex : uniqueRequests) {
         requestMarks_[pageIndex] = 0;
     }
-    if (uniqueRequests.empty()) {
+
+    std::vector<uint32_t> uniqueUnloadRequests;
+    uniqueUnloadRequests.reserve(requests.unloadPageIds.size());
+    for (uint32_t pageIndex : requests.unloadPageIds) {
+        if (pageIndex >= pages_.size() || unloadRequestMarks_[pageIndex] != 0) {
+            if (pageIndex >= pages_.size()) {
+                ++stats_.frameGpuInvalidRequestCount;
+                ++stats_.totalGpuInvalidRequestCount;
+            }
+            continue;
+        }
+        unloadRequestMarks_[pageIndex] = 1;
+        uniqueUnloadRequests.push_back(pageIndex);
+        unloadRequestedPages_.push_back(pageIndex);
+    }
+    stats_.frameUniqueGpuUnloadRequestCount += static_cast<uint32_t>(uniqueUnloadRequests.size());
+    stats_.totalUniqueGpuUnloadRequestCount += uniqueUnloadRequests.size();
+
+    for (uint32_t pageIndex : uniqueUnloadRequests) {
+        unloadRequestMarks_[pageIndex] = 0;
+    }
+    if (uniqueRequests.empty() && uniqueUnloadRequests.empty()) {
         return 0;
     }
 
@@ -320,10 +413,12 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint3
 
     std::vector<uint32_t>& taskPages = requestTaskPages_[taskIndex];
     taskPages = std::move(uniqueRequests);
+    std::vector<uint32_t>& taskUnloadPages = requestTaskUnloadPages_[taskIndex];
+    taskUnloadPages = std::move(uniqueUnloadRequests);
     requestTaskQueue_.push(taskIndex, frameIndex_ + 1u);
     ++stats_.frameScheduledRequestTaskCount;
     ++stats_.totalScheduledRequestTaskCount;
-    return static_cast<uint32_t>(taskPages.size());
+    return static_cast<uint32_t>(taskPages.size() + taskUnloadPages.size());
 }
 
 uint32_t MeshletStreamResidencyManager::processUploads(
@@ -528,7 +623,7 @@ uint32_t MeshletStreamResidencyManager::allocateSlot(uint32_t pageIndex)
         slot = pages_[evictPage].slot;
         ++stats_.frameEvictedPageCount;
         ++stats_.totalEvictedPageCount;
-        releaseSlot(evictPage);
+        releaseSlot(evictPage, false);
     }
 
     page.slot = slot;
@@ -537,7 +632,7 @@ uint32_t MeshletStreamResidencyManager::allocateSlot(uint32_t pageIndex)
     return slot;
 }
 
-void MeshletStreamResidencyManager::releaseSlot(uint32_t pageIndex)
+void MeshletStreamResidencyManager::releaseSlot(uint32_t pageIndex, bool returnToFreeList)
 {
     if (pageIndex >= pages_.size()) {
         return;
@@ -549,6 +644,7 @@ void MeshletStreamResidencyManager::releaseSlot(uint32_t pageIndex)
     if (page.slot < slotToPage_.size()) {
         slotToPage_[page.slot] = UINT32_MAX;
     }
+    const uint32_t releasedSlot = page.slot;
     const MeshletStreamPageResidencyState oldState = page.state;
     page.slot = UINT32_MAX;
     page.storageTaskIndex = kInvalidStreamingTaskIndex;
@@ -556,6 +652,9 @@ void MeshletStreamResidencyManager::releaseSlot(uint32_t pageIndex)
     page.queued = false;
     removeFromTable(activePages_, activePagePositions_, pageIndex);
     setPageState(pageIndex, MeshletStreamPageResidencyState::Unloaded);
+    if (returnToFreeList && releasedSlot < maxResidentPages_) {
+        freeSlots_.push_back(releasedSlot);
+    }
     if (oldState == MeshletStreamPageResidencyState::Unloaded) {
         recordPatch(pageIndex);
     }
@@ -667,11 +766,17 @@ void MeshletStreamResidencyManager::resetFrameStats()
 {
     stats_.frameGpuRequestCount = 0;
     stats_.frameUniqueGpuRequestCount = 0;
+    stats_.frameGpuUnloadRequestCount = 0;
+    stats_.frameUniqueGpuUnloadRequestCount = 0;
     stats_.frameScheduledRequestTaskCount = 0;
     stats_.frameCompletedRequestTaskCount = 0;
     stats_.frameDroppedRequestTaskCount = 0;
     stats_.frameRequestTaskFailureCount = 0;
     stats_.frameConsumedGpuRequestCount = 0;
+    stats_.frameConsumedGpuUnloadRequestCount = 0;
+    stats_.frameGpuRequestOverflowCount = 0;
+    stats_.frameGpuUnloadRequestOverflowCount = 0;
+    stats_.frameGpuInvalidRequestCount = 0;
     stats_.frameQueuedUploadCount = 0;
     stats_.frameScheduledUploadCount = 0;
     stats_.frameCompletedStorageTaskCount = 0;

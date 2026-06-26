@@ -37,24 +37,62 @@ struct StreamPageTablePatch {
     uint32_t padding0 = 0;
 };
 
+inline constexpr uint32_t kStreamRequestHeaderWordCount = 16;
+inline constexpr uint32_t kStreamUpdateHeaderWordCount = 16;
+
 struct StreamRequestBufferHeader {
+    uint32_t maxLoadRequests = 0;
+    uint32_t maxUnloadRequests = 0;
     uint32_t loadCounter = 0;
+    uint32_t unloadCounter = 0;
+    uint32_t frameIndex = 0;
+    uint32_t loadOverflowCounter = 0;
+    uint32_t unloadOverflowCounter = 0;
+    uint32_t invalidPageCounter = 0;
+    uint32_t lastLoadOverflowFrame = 0;
+    uint32_t lastUnloadOverflowFrame = 0;
+    uint32_t lastInvalidPageFrame = 0;
     uint32_t padding0 = 0;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
+    uint32_t padding3 = 0;
+    uint32_t padding4 = 0;
 };
 
 struct StreamUpdateBufferHeader {
-    uint32_t patchCounter = 0;
+    uint32_t patchUnloadPageCount = 0;
+    uint32_t patchPageCount = 0;
+    uint32_t frameIndex = 0;
+    uint32_t patchOverflowCounter = 0;
     uint32_t padding0 = 0;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
+    uint32_t padding3 = 0;
+    uint32_t padding4 = 0;
+    uint32_t padding5 = 0;
+    uint32_t padding6 = 0;
+    uint32_t padding7 = 0;
+    uint32_t padding8 = 0;
+    uint32_t padding9 = 0;
+    uint32_t padding10 = 0;
+    uint32_t padding11 = 0;
 };
 
 static_assert(sizeof(StreamPageTableEntry) == 32);
 static_assert(sizeof(StreamPageTablePatch) == 16);
-static_assert(sizeof(StreamRequestBufferHeader) == 16);
-static_assert(sizeof(StreamUpdateBufferHeader) == 16);
+static_assert(sizeof(StreamRequestBufferHeader) == kStreamRequestHeaderWordCount * sizeof(uint32_t));
+static_assert(sizeof(StreamUpdateBufferHeader) == kStreamUpdateHeaderWordCount * sizeof(uint32_t));
+
+struct StreamGpuRequestBatch {
+    std::span<const uint32_t> loadPageIds;
+    std::span<const uint32_t> unloadPageIds;
+    uint32_t loadRequestCounter = 0;
+    uint32_t unloadRequestCounter = 0;
+    uint32_t loadOverflowCounter = 0;
+    uint32_t unloadOverflowCounter = 0;
+    uint32_t invalidPageCounter = 0;
+    uint32_t frameIndex = 0;
+};
 
 struct MeshletStreamResidencyDesc {
     const scene::MeshletStreamAsset* asset = nullptr;
@@ -82,11 +120,17 @@ struct MeshletStreamResidencyStats {
     uint32_t pendingPatchCount = 0;
     uint32_t frameGpuRequestCount = 0;
     uint32_t frameUniqueGpuRequestCount = 0;
+    uint32_t frameGpuUnloadRequestCount = 0;
+    uint32_t frameUniqueGpuUnloadRequestCount = 0;
     uint32_t frameScheduledRequestTaskCount = 0;
     uint32_t frameCompletedRequestTaskCount = 0;
     uint32_t frameDroppedRequestTaskCount = 0;
     uint32_t frameRequestTaskFailureCount = 0;
     uint32_t frameConsumedGpuRequestCount = 0;
+    uint32_t frameConsumedGpuUnloadRequestCount = 0;
+    uint32_t frameGpuRequestOverflowCount = 0;
+    uint32_t frameGpuUnloadRequestOverflowCount = 0;
+    uint32_t frameGpuInvalidRequestCount = 0;
     uint32_t frameQueuedUploadCount = 0;
     uint32_t frameScheduledUploadCount = 0;
     uint32_t frameCompletedStorageTaskCount = 0;
@@ -99,11 +143,17 @@ struct MeshletStreamResidencyStats {
     uint32_t frameAllocationFailureCount = 0;
     uint64_t totalGpuRequestCount = 0;
     uint64_t totalUniqueGpuRequestCount = 0;
+    uint64_t totalGpuUnloadRequestCount = 0;
+    uint64_t totalUniqueGpuUnloadRequestCount = 0;
     uint64_t totalScheduledRequestTaskCount = 0;
     uint64_t totalCompletedRequestTaskCount = 0;
     uint64_t totalDroppedRequestTaskCount = 0;
     uint64_t totalRequestTaskFailureCount = 0;
     uint64_t totalConsumedGpuRequestCount = 0;
+    uint64_t totalConsumedGpuUnloadRequestCount = 0;
+    uint64_t totalGpuRequestOverflowCount = 0;
+    uint64_t totalGpuUnloadRequestOverflowCount = 0;
+    uint64_t totalGpuInvalidRequestCount = 0;
     uint64_t totalQueuedUploadCount = 0;
     uint64_t totalScheduledUploadCount = 0;
     uint64_t totalCompletedStorageTaskCount = 0;
@@ -127,7 +177,9 @@ public:
     void beginFrame();
     bool lockFallbackPages(std::span<const uint32_t> pageIndices, std::string& reason);
     bool requestPage(uint32_t pageIndex);
+    bool unloadPage(uint32_t pageIndex);
     uint32_t consumeGpuRequests(std::span<const uint32_t> pageIds);
+    uint32_t consumeGpuRequests(const StreamGpuRequestBatch& requests);
     uint32_t processUploads(Streamer& streamer, Buffer& destination, uint32_t maxUploads);
 
     void buildInitialPageTable(std::span<StreamPageTableEntry> outEntries) const;
@@ -146,6 +198,7 @@ public:
     uint64_t pageStride() const { return pageStride_; }
     uint64_t pageBufferSize() const { return pageStride_ * maxResidentPages_; }
     std::span<const uint32_t> requestedPages() const { return requestedPages_; }
+    std::span<const uint32_t> unloadRequestedPages() const { return unloadRequestedPages_; }
     std::span<const uint32_t> activePages() const { return activePages_; }
     std::span<const uint32_t> residentPages() const { return residentPages_; }
     std::span<const uint32_t> pendingPages() const { return pendingPages_; }
@@ -164,7 +217,7 @@ private:
     };
 
     uint32_t allocateSlot(uint32_t pageIndex);
-    void releaseSlot(uint32_t pageIndex);
+    void releaseSlot(uint32_t pageIndex, bool returnToFreeList = true);
     void setPageState(uint32_t pageIndex, MeshletStreamPageResidencyState state);
     void queueUpload(uint32_t pageIndex);
     void recordPatch(uint32_t pageIndex);
@@ -184,11 +237,13 @@ private:
     std::vector<uint32_t> uploadQueue_;
     StreamingTaskQueue requestTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> requestTaskPages_;
+    std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> requestTaskUnloadPages_;
     StreamingTaskQueue storageTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> storageTaskPages_;
     StreamingTaskQueue updateTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> updateTaskPages_;
     std::vector<uint32_t> requestedPages_;
+    std::vector<uint32_t> unloadRequestedPages_;
     std::vector<uint32_t> activePages_;
     std::vector<uint32_t> residentPages_;
     std::vector<uint32_t> pendingPages_;
@@ -196,6 +251,7 @@ private:
     std::vector<uint32_t> residentPagePositions_;
     std::vector<uint32_t> pendingPagePositions_;
     std::vector<uint8_t> requestMarks_;
+    std::vector<uint8_t> unloadRequestMarks_;
     std::vector<StreamPageTablePatch> patches_;
     MeshletStreamResidencyStats stats_;
     uint64_t frameIndex_ = 0;

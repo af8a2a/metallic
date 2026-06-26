@@ -130,14 +130,18 @@ float3 cameraVec3(const RenderGraphProperties* camera, const char* key, const fl
 MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& properties)
 {
     const std::filesystem::path scenePath = scenePathFromProperties(properties);
+    const uint32_t maxGpuPageRequests = std::max<uint32_t>(
+        uintProperty(properties, "maxGpuPageRequests", kMeshletStreamDefaultMaxGpuPageRequests),
+        1u);
     return MeshletStreamRuntimeDesc{
         .sourcePath = scenePath,
         .streamAssetPath = streamAssetPathFromProperties(properties, scenePath),
         .autoBuildStreamAsset = boolProperty(properties, "autoBuildStreamAsset", true),
         .maxResidentPages = uintProperty(properties, "maxResidentPages", 4096),
         .maxPageUploadsPerFrame = uintProperty(properties, "maxPageUploadsPerFrame", 64),
-        .maxGpuPageRequests = std::max<uint32_t>(
-            uintProperty(properties, "maxGpuPageRequests", kMeshletStreamDefaultMaxGpuPageRequests),
+        .maxGpuPageRequests = maxGpuPageRequests,
+        .maxGpuPageUnloadRequests = std::max<uint32_t>(
+            uintProperty(properties, "maxGpuPageUnloadRequests", maxGpuPageRequests),
             1u),
         .queuedFrameCount = 3,
     };

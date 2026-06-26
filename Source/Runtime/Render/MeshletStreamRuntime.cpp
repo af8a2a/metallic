@@ -286,6 +286,7 @@ public:
         const MeshletStreamUserPush& push,
         std::span<const StreamPageTablePatch> patches,
         uint32_t maxUpdatePatches,
+        uint32_t frameIndex,
         Buffer& pageTableBuffer,
         ResourceState& pageTableState)
     {
@@ -297,16 +298,36 @@ public:
         }
 
         const uint32_t patchCount = static_cast<uint32_t>(patches.size());
+        uint32_t unloadPatchCount = 0;
+        for (const StreamPageTablePatch& patch : patches) {
+            if (patch.state == static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded)) {
+                ++unloadPatchCount;
+            }
+        }
+
         void* mapped = updateBuffer_->map();
         if (mapped == nullptr) {
             return makeError(Error::Failure);
         }
         auto* header = static_cast<StreamUpdateBufferHeader*>(mapped);
-        *header = StreamUpdateBufferHeader{.patchCounter = patchCount};
-        std::memcpy(
-            static_cast<uint8_t*>(mapped) + sizeof(StreamUpdateBufferHeader),
-            patches.data(),
-            static_cast<size_t>(patchCount) * sizeof(StreamPageTablePatch));
+        *header = StreamUpdateBufferHeader{
+            .patchUnloadPageCount = unloadPatchCount,
+            .patchPageCount = patchCount,
+            .frameIndex = frameIndex,
+        };
+        auto* patchData = reinterpret_cast<StreamPageTablePatch*>(
+            static_cast<uint8_t*>(mapped) + sizeof(StreamUpdateBufferHeader));
+        uint32_t writeIndex = 0;
+        for (const StreamPageTablePatch& patch : patches) {
+            if (patch.state == static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded)) {
+                patchData[writeIndex++] = patch;
+            }
+        }
+        for (const StreamPageTablePatch& patch : patches) {
+            if (patch.state != static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded)) {
+                patchData[writeIndex++] = patch;
+            }
+        }
         updateBuffer_->flush(
             0,
             sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(patchCount) * sizeof(StreamPageTablePatch));
@@ -375,6 +396,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     maxResidentPages_ = desc.maxResidentPages;
     maxPageUploadsPerFrame_ = desc.maxPageUploadsPerFrame;
     maxGpuPageRequests_ = std::max(desc.maxGpuPageRequests, 1u);
+    maxGpuPageUnloadRequests_ = std::max(desc.maxGpuPageUnloadRequests, 1u);
     const uint64_t pageStride = alignUp(asset_.maxPagePayloadBytes(), 256);
     if (maxResidentPages_ == 0) {
         log = "MeshletStreamRuntime requires maxResidentPages to be greater than zero";
@@ -421,9 +443,15 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return makeError(Error::Failure);
     }
 
-    maxDrawItems_ = computeMaxDrawItems();
-    if (maxDrawItems_ == 0) {
-        log = "MeshletStreamRuntime streamasset has no drawable clusters";
+    maxActiveGroups_ = computeMaxActiveGroups();
+    maxActiveGroupClusters_ = computeMaxPageClusters();
+    if (maxActiveGroups_ == 0 || maxActiveGroupClusters_ == 0) {
+        log = "MeshletStreamRuntime streamasset has no drawable active groups";
+        return makeError(Error::Failure);
+    }
+    if (static_cast<uint64_t>(maxActiveGroups_) * maxActiveGroupClusters_ >
+        std::numeric_limits<uint32_t>::max()) {
+        log = "MeshletStreamRuntime active group draw task count overflowed";
         return makeError(Error::Failure);
     }
 
@@ -439,16 +467,17 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     const uint64_t pageTableByteSize =
         static_cast<uint64_t>(asset_.pageCount()) * sizeof(StreamPageTableEntry);
     const uint64_t requestByteSize =
-        sizeof(StreamRequestBufferHeader) + static_cast<uint64_t>(maxGpuPageRequests_) * sizeof(uint32_t);
+        sizeof(StreamRequestBufferHeader) +
+        (static_cast<uint64_t>(maxGpuPageRequests_) + maxGpuPageUnloadRequests_) * sizeof(uint32_t);
     const uint64_t updateByteSize =
         sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(maxUpdatePatches_) * sizeof(StreamPageTablePatch);
 
     result = createHostStorageBuffer(
         device,
-        static_cast<uint64_t>(maxDrawItems_) * sizeof(MeshletStreamGpuDrawItem),
-        drawItemBuffer_,
+        static_cast<uint64_t>(maxActiveGroups_) * sizeof(MeshletStreamGpuActiveGroup),
+        activeGroupBuffer_,
         log,
-        "MeshletStreamRuntime draw items");
+        "MeshletStreamRuntime active groups");
     if (!result) {
         return result;
     }
@@ -521,7 +550,10 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!result) {
         return result;
     }
-    StreamRequestBufferHeader clearHeader{};
+    StreamRequestBufferHeader clearHeader{
+        .maxLoadRequests = maxGpuPageRequests_,
+        .maxUnloadRequests = maxGpuPageUnloadRequests_,
+    };
     result = updateHostBuffer(*requestClearBuffer_, &clearHeader, sizeof(clearHeader));
     if (!result) {
         return result;
@@ -552,7 +584,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!result) {
         return result;
     }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *drawItemBuffer_, drawItemHandle_, log, "meshlet stream draw items");
+    result = allocateAndWriteBuffer(*bindlessHeap_, *activeGroupBuffer_, activeGroupHandle_, log, "meshlet stream active groups");
     if (!result) {
         return result;
     }
@@ -583,10 +615,10 @@ void MeshletStreamRuntime::reset()
     asset_.close();
     residency_.reset();
     drawBounds_.reset();
-    drawItems_.clear();
+    activeGroups_.clear();
     pageTable_.clear();
     pageBuffer_.reset();
-    drawItemBuffer_.reset();
+    activeGroupBuffer_.reset();
     pageTableBuffer_.reset();
     pageTableUploadBuffer_.reset();
     requestBuffer_.reset();
@@ -596,7 +628,7 @@ void MeshletStreamRuntime::reset()
     bindlessHeap_.reset();
     updatePass_.reset();
     pageHandle_ = {};
-    drawItemHandle_ = {};
+    activeGroupHandle_ = {};
     pageTableHandle_ = {};
     paramsHandle_ = {};
     requestHandle_ = {};
@@ -609,8 +641,10 @@ void MeshletStreamRuntime::reset()
     maxResidentPages_ = 0;
     maxPageUploadsPerFrame_ = 0;
     maxGpuPageRequests_ = 0;
+    maxGpuPageUnloadRequests_ = 0;
     maxUpdatePatches_ = 0;
-    maxDrawItems_ = 0;
+    maxActiveGroups_ = 0;
+    maxActiveGroupClusters_ = 0;
     currentFrameUploadCount_ = 0;
 }
 
@@ -621,7 +655,7 @@ bool MeshletStreamRuntime::ready() const
         updatePass_ != nullptr &&
         updatePass_->ready() &&
         pageBuffer_ != nullptr &&
-        drawItemBuffer_ != nullptr &&
+        activeGroupBuffer_ != nullptr &&
         pageTableBuffer_ != nullptr &&
         pageTableUploadBuffer_ != nullptr &&
         requestBuffer_ != nullptr &&
@@ -667,8 +701,8 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
         return result;
     }
 
-    buildFrameDrawItems(frame.selectedLodLevel);
-    result = updateDrawItemBuffer();
+    buildFrameActiveGroups(frame.selectedLodLevel);
+    result = updateActiveGroupBuffer();
     if (!result) {
         return result;
     }
@@ -706,7 +740,7 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
 {
     return MeshletStreamUserPush{
         .pageBuffer = pageHandle_.index,
-        .drawItemBuffer = drawItemHandle_.index,
+        .activeGroupBuffer = activeGroupHandle_.index,
         .pageTableBuffer = pageTableHandle_.index,
         .paramsBuffer = paramsHandle_.index,
         .requestBuffer = requestHandle_.index,
@@ -714,7 +748,16 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
     };
 }
 
-uint32_t MeshletStreamRuntime::computeMaxDrawItems() const
+uint32_t MeshletStreamRuntime::drawTaskCount() const
+{
+    if (activeGroups_.empty() || maxActiveGroupClusters_ == 0) {
+        return 0;
+    }
+    const uint64_t count = static_cast<uint64_t>(activeGroups_.size()) * maxActiveGroupClusters_;
+    return count > std::numeric_limits<uint32_t>::max() ? 0u : static_cast<uint32_t>(count);
+}
+
+uint32_t MeshletStreamRuntime::computeMaxActiveGroups() const
 {
     uint64_t total = 0;
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
@@ -724,17 +767,13 @@ uint32_t MeshletStreamRuntime::computeMaxDrawItems() const
             continue;
         }
         const scene::MeshletStreamPrimitiveInfo& primitive = primitives[instance.primitiveIndex];
-        uint32_t fallbackClusters = 0;
-        for (uint32_t page = 0; page < primitive.fallbackPageCount; ++page) {
-            fallbackClusters += asset_.pages()[primitive.fallbackPageOffset + page].clusterCount;
-        }
-        uint32_t maxDraws = fallbackClusters;
+        uint32_t maxGroups = primitive.fallbackPageCount;
         for (uint32_t lod = 0; lod < primitive.lodLevelCount; ++lod) {
             const scene::MeshletStreamLodLevelInfo& lodInfo = lodLevels[primitive.lodLevelOffset + lod];
-            maxDraws = std::max(maxDraws, lodInfo.clusterCount);
-            maxDraws = std::max(maxDraws, lodInfo.pageCount + fallbackClusters);
+            maxGroups = std::max(maxGroups, lodInfo.pageCount);
+            maxGroups = std::max(maxGroups, lodInfo.pageCount + primitive.fallbackPageCount);
         }
-        total += maxDraws;
+        total += maxGroups;
         if (total > std::numeric_limits<uint32_t>::max()) {
             return 0;
         }
@@ -742,57 +781,68 @@ uint32_t MeshletStreamRuntime::computeMaxDrawItems() const
     return static_cast<uint32_t>(total);
 }
 
-void MeshletStreamRuntime::appendPageDrawItems(
+uint32_t MeshletStreamRuntime::computeMaxPageClusters() const
+{
+    uint32_t maxClusters = 0;
+    for (const scene::MeshletStreamPageInfo& page : asset_.pages()) {
+        maxClusters = std::max(maxClusters, page.clusterCount);
+    }
+    return maxClusters;
+}
+
+void MeshletStreamRuntime::appendResidentPageGroup(
     const scene::MeshletStreamInstanceInfo& instance,
     const scene::MeshletStreamPageInfo& page,
     uint32_t pageIndex)
 {
     const uint32_t slot = residency_.slotForPage(pageIndex);
-    if (slot == UINT32_MAX || drawItems_.size() >= maxDrawItems_) {
+    if (slot == UINT32_MAX || activeGroups_.size() >= maxActiveGroups_) {
         return;
     }
-    for (uint32_t cluster = 0; cluster < page.clusterCount && drawItems_.size() < maxDrawItems_; ++cluster) {
-        MeshletStreamGpuDrawItem item;
-        item.pageSlot = slot;
-        item.clusterIndex = cluster;
-        item.pageIndex = pageIndex;
-        item.primitiveIndex = page.primitiveIndex;
-        item.lodLevel = page.lodLevel;
-        item.materialIndex = instance.materialIndex;
-        item.colorSeed = pageIndex * 131u + cluster;
-        for (uint32_t row = 0; row < 4; ++row) {
-            item.world0[row] = instance.worldMatrix[0 + row];
-            item.world1[row] = instance.worldMatrix[4 + row];
-            item.world2[row] = instance.worldMatrix[8 + row];
-            item.world3[row] = instance.worldMatrix[12 + row];
-        }
-        drawItems_.push_back(item);
+
+    MeshletStreamGpuActiveGroup group;
+    group.pageSlot = slot;
+    group.pageIndex = pageIndex;
+    group.clusterCount = page.clusterCount;
+    group.primitiveIndex = page.primitiveIndex;
+    group.lodLevel = page.lodLevel;
+    group.materialIndex = instance.materialIndex;
+    group.colorSeed = pageIndex * 131u;
+    group.flags = kMeshletStreamActiveGroupResident;
+    for (uint32_t row = 0; row < 4; ++row) {
+        group.world0[row] = instance.worldMatrix[0 + row];
+        group.world1[row] = instance.worldMatrix[4 + row];
+        group.world2[row] = instance.worldMatrix[8 + row];
+        group.world3[row] = instance.worldMatrix[12 + row];
     }
+    activeGroups_.push_back(group);
 }
 
-void MeshletStreamRuntime::appendRequestDrawItems(
+void MeshletStreamRuntime::appendLoadRequestGroup(
     const scene::MeshletStreamInstanceInfo& instance,
     const scene::MeshletStreamPageInfo& page,
     uint32_t pageIndex)
 {
-    if (drawItems_.size() >= maxDrawItems_) {
+    if (activeGroups_.size() >= maxActiveGroups_) {
         return;
     }
 
-    MeshletStreamGpuDrawItem item;
-    item.clusterIndex = kMeshletStreamInvalidClusterIndex;
-    item.pageIndex = pageIndex;
-    item.primitiveIndex = page.primitiveIndex;
-    item.lodLevel = page.lodLevel;
-    item.materialIndex = instance.materialIndex;
-    item.colorSeed = pageIndex * 131u;
+    MeshletStreamGpuActiveGroup group;
+    group.pageSlot = UINT32_MAX;
+    group.pageIndex = pageIndex;
+    group.clusterCount = 0;
+    group.primitiveIndex = page.primitiveIndex;
+    group.lodLevel = page.lodLevel;
+    group.materialIndex = instance.materialIndex;
+    group.colorSeed = pageIndex * 131u;
+    group.flags = kMeshletStreamActiveGroupLoadRequest;
     for (uint32_t row = 0; row < 4; ++row) {
-        item.world0[row] = instance.worldMatrix[0 + row];
-        item.world1[row] = instance.worldMatrix[4 + row];
-        item.world2[row] = instance.worldMatrix[8 + row];
-        item.world3[row] = instance.worldMatrix[12 + row];
+        group.world0[row] = instance.worldMatrix[0 + row];
+        group.world1[row] = instance.worldMatrix[4 + row];
+        group.world2[row] = instance.worldMatrix[8 + row];
+        group.world3[row] = instance.worldMatrix[12 + row];
     }
-    drawItems_.push_back(item);
+    activeGroups_.push_back(group);
 }
 
 bool MeshletStreamRuntime::appendResidentPageRange(
@@ -813,7 +863,7 @@ bool MeshletStreamRuntime::appendResidentPageRange(
     }
     for (uint32_t page = 0; page < pageCount; ++page) {
         const uint32_t pageIndex = pageOffset + page;
-        appendPageDrawItems(instance, pages[pageIndex], pageIndex);
+        appendResidentPageGroup(instance, pages[pageIndex], pageIndex);
     }
     return true;
 }
@@ -827,14 +877,14 @@ void MeshletStreamRuntime::appendRequestPageRange(
     for (uint32_t page = 0; page < pageCount; ++page) {
         const uint32_t pageIndex = pageOffset + page;
         if (!residency_.pageResident(pageIndex)) {
-            appendRequestDrawItems(instance, pages[pageIndex], pageIndex);
+            appendLoadRequestGroup(instance, pages[pageIndex], pageIndex);
         }
     }
 }
 
-void MeshletStreamRuntime::buildFrameDrawItems(uint32_t selectedLodLevel)
+void MeshletStreamRuntime::buildFrameActiveGroups(uint32_t selectedLodLevel)
 {
-    drawItems_.clear();
+    activeGroups_.clear();
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
     const std::span<const scene::MeshletStreamLodLevelInfo> lodLevels = asset_.lodLevels();
 
@@ -891,6 +941,7 @@ Result MeshletStreamRuntime::applyPageTablePatches(CommandBuffer& commandBuffer)
         userPush(),
         patches,
         maxUpdatePatches_,
+        frameIndex_,
         *pageTableBuffer_,
         pageTableState_);
     if (!result) {
@@ -902,6 +953,16 @@ Result MeshletStreamRuntime::applyPageTablePatches(CommandBuffer& commandBuffer)
 
 Result MeshletStreamRuntime::clearRequestBuffer(CommandBuffer& commandBuffer)
 {
+    const StreamRequestBufferHeader clearHeader{
+        .maxLoadRequests = maxGpuPageRequests_,
+        .maxUnloadRequests = maxGpuPageUnloadRequests_,
+        .frameIndex = frameIndex_,
+    };
+    Result result = updateHostBuffer(*requestClearBuffer_, &clearHeader, sizeof(clearHeader));
+    if (!result) {
+        return result;
+    }
+
     transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferDestination);
     commandBuffer.copyBuffer(BufferCopyDesc{
         .source = requestClearBuffer_.get(),
@@ -928,12 +989,12 @@ Result MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& command
     return {};
 }
 
-Result MeshletStreamRuntime::updateDrawItemBuffer()
+Result MeshletStreamRuntime::updateActiveGroupBuffer()
 {
     return updateHostBuffer(
-        *drawItemBuffer_,
-        drawItems_.data(),
-        static_cast<uint64_t>(drawItems_.size() * sizeof(MeshletStreamGpuDrawItem)));
+        *activeGroupBuffer_,
+        activeGroups_.data(),
+        static_cast<uint64_t>(activeGroups_.size() * sizeof(MeshletStreamGpuActiveGroup)));
 }
 
 Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& frame)
@@ -969,15 +1030,18 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
     params.clearColor[3] = 1.0f;
     params.debugColorMode = frame.debugColorMode;
     params.pageStrideWords = static_cast<uint32_t>(residency_.pageStride() / sizeof(uint32_t));
-    params.drawItemCount = static_cast<uint32_t>(drawItems_.size());
+    params.drawTaskCount = drawTaskCount();
     params.frameIndex = frameIndex_ == 0 ? 1u : frameIndex_;
     params.maxGpuPageRequests = maxGpuPageRequests_;
+    params.maxGpuPageUnloadRequests = maxGpuPageUnloadRequests_;
+    params.activeGroupCount = static_cast<uint32_t>(activeGroups_.size());
+    params.maxActiveGroupClusters = maxActiveGroupClusters_;
     return updateHostBuffer(*paramsBuffer_, &params, sizeof(params));
 }
 
 Result MeshletStreamRuntime::transitionPageBufferForTraversal(CommandBuffer& commandBuffer)
 {
-    if (drawItems_.empty()) {
+    if (activeGroups_.empty()) {
         return {};
     }
     transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead);
@@ -997,11 +1061,28 @@ void MeshletStreamRuntime::consumeGpuRequestReadback()
         return;
     }
 
-    const auto* words = static_cast<const uint32_t*>(mapped);
-    const uint32_t requestCount = std::min(words[0], maxGpuPageRequests_);
-    if (requestCount > 0) {
-        const uint32_t* pageIds = words + sizeof(StreamRequestBufferHeader) / sizeof(uint32_t);
-        (void)residency_.consumeGpuRequests(std::span<const uint32_t>(pageIds, requestCount));
+    const auto* header = static_cast<const StreamRequestBufferHeader*>(mapped);
+    const uint32_t loadCapacity = std::min(header->maxLoadRequests, maxGpuPageRequests_);
+    const uint32_t unloadCapacity = std::min(header->maxUnloadRequests, maxGpuPageUnloadRequests_);
+    const uint32_t loadCount = std::min(header->loadCounter, loadCapacity);
+    const uint32_t unloadCount = std::min(header->unloadCounter, unloadCapacity);
+    const auto* pageIds = reinterpret_cast<const uint32_t*>(
+        static_cast<const uint8_t*>(mapped) + sizeof(StreamRequestBufferHeader));
+    const uint32_t* loadPageIds = pageIds;
+    const uint32_t* unloadPageIds = pageIds + maxGpuPageRequests_;
+    if (header->loadCounter > 0 || header->unloadCounter > 0 ||
+        header->loadOverflowCounter > 0 || header->unloadOverflowCounter > 0 ||
+        header->invalidPageCounter > 0) {
+        (void)residency_.consumeGpuRequests(StreamGpuRequestBatch{
+            .loadPageIds = std::span<const uint32_t>(loadPageIds, loadCount),
+            .unloadPageIds = std::span<const uint32_t>(unloadPageIds, unloadCount),
+            .loadRequestCounter = header->loadCounter,
+            .unloadRequestCounter = header->unloadCounter,
+            .loadOverflowCounter = header->loadOverflowCounter,
+            .unloadOverflowCounter = header->unloadOverflowCounter,
+            .invalidPageCounter = header->invalidPageCounter,
+            .frameIndex = header->frameIndex,
+        });
     }
 
     requestReadbackBuffer_->unmap();

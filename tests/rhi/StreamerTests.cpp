@@ -1296,6 +1296,122 @@ public:
     }
 };
 
+class StreamerMeshletResidencyGpuRequestUnloadOverflowTest : public RhiTest {
+public:
+    StreamerMeshletResidencyGpuRequestUnloadOverflowTest()
+    {
+        type = RhiTestType::Command;
+        name = "streamer_meshlet_residency_gpu_request_unload_overflow";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        scene::MeshletStreamAsset asset;
+        RhiTestResult build = buildBunnyStreamAssetForTest(
+            context.outputDirectory / "streamer_residency_gpu_request_unload.meshstream.bin",
+            asset);
+        if (!build.passed) {
+            return build;
+        }
+
+        std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
+        std::vector<uint32_t> streamablePages = nonFallbackPagesFor(asset, fallbackPages);
+        if (fallbackPages.empty() || streamablePages.size() < 2) {
+            return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
+        }
+
+        render::MeshletStreamResidencyManager residency;
+        std::string reason;
+        if (!residency.initialize(
+                render::MeshletStreamResidencyDesc{
+                    .asset = &asset,
+                    .maxResidentPages = static_cast<uint32_t>(fallbackPages.size()) + 1u,
+                    .queuedFrameCount = 2,
+                },
+                reason)) {
+            return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
+        }
+        if (!residency.lockFallbackPages(fallbackPages, reason)) {
+            return RhiTestResult::fail("lockFallbackPages failed: " + reason);
+        }
+        residency.clearPendingPatches();
+
+        const uint32_t unloadPage = streamablePages[0];
+        const uint32_t loadPage = streamablePages[1];
+        (void)residency.requestPage(unloadPage);
+        if (residency.slotForPage(unloadPage) == UINT32_MAX) {
+            return RhiTestResult::fail("test setup did not allocate a streamable page slot");
+        }
+
+        const std::array<uint32_t, 2> loadRequests = {loadPage, loadPage};
+        const std::array<uint32_t, 2> unloadRequests = {unloadPage, unloadPage};
+        const uint32_t scheduled = residency.consumeGpuRequests(render::StreamGpuRequestBatch{
+            .loadPageIds = loadRequests,
+            .unloadPageIds = unloadRequests,
+            .loadRequestCounter = 3,
+            .unloadRequestCounter = 3,
+            .loadOverflowCounter = 1,
+            .unloadOverflowCounter = 1,
+            .invalidPageCounter = 1,
+            .frameIndex = 37,
+        });
+        if (scheduled != 2) {
+            return RhiTestResult::fail("load/unload GPU request batch did not schedule unique page ids");
+        }
+
+        render::MeshletStreamResidencyStats stats = residency.stats();
+        if (stats.frameGpuRequestCount != 3 ||
+            stats.frameUniqueGpuRequestCount != 1 ||
+            stats.frameGpuUnloadRequestCount != 3 ||
+            stats.frameUniqueGpuUnloadRequestCount != 1 ||
+            stats.frameGpuRequestOverflowCount != 1 ||
+            stats.frameGpuUnloadRequestOverflowCount != 1 ||
+            stats.frameGpuInvalidRequestCount != 1 ||
+            stats.frameScheduledRequestTaskCount != 1 ||
+            stats.queuedRequestTaskCount != 1) {
+            return RhiTestResult::fail("GPU request load/unload overflow stats were not tracked");
+        }
+        if (residency.requestedPages().size() != 1 ||
+            residency.requestedPages().front() != loadPage ||
+            residency.unloadRequestedPages().size() != 1 ||
+            residency.unloadRequestedPages().front() != unloadPage) {
+            return RhiTestResult::fail("GPU request batch did not preserve unique load/unload page ids");
+        }
+
+        residency.beginFrame();
+        stats = residency.stats();
+        if (residency.slotForPage(unloadPage) != UINT32_MAX ||
+            residency.slotForPage(loadPage) == UINT32_MAX ||
+            stats.frameCompletedRequestTaskCount != 1 ||
+            stats.frameConsumedGpuRequestCount != 1 ||
+            stats.frameConsumedGpuUnloadRequestCount != 1 ||
+            stats.frameEvictedPageCount != 0) {
+            return RhiTestResult::fail("GPU unload request did not release a slot before consuming loads");
+        }
+        if (residency.requestedPages().size() != 1 ||
+            residency.requestedPages().front() != loadPage ||
+            residency.unloadRequestedPages().size() != 1 ||
+            residency.unloadRequestedPages().front() != unloadPage) {
+            return RhiTestResult::fail("completed request task did not expose consumed load/unload ids");
+        }
+
+        const std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
+        if (patches.empty() ||
+            std::find_if(
+                patches.begin(),
+                patches.end(),
+                [unloadPage](const render::StreamPageTablePatch& patch) {
+                    return patch.pageId == unloadPage &&
+                        patch.slot == UINT32_MAX &&
+                        patch.state == static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded);
+                }) == patches.end()) {
+            return RhiTestResult::fail("GPU unload request did not emit an unloaded page table patch");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(StreamingTaskQueueLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(StreamerBufferUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerTextureUploadTest);
@@ -1305,6 +1421,7 @@ METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphUnsupportedDoesNotBeginFrameTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestPatchTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyLatestGpuRequestTest);
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestUnloadOverflowTest);
 
 } // namespace
 } // namespace metallic::tests

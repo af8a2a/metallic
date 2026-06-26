@@ -26,17 +26,21 @@ inline constexpr uint32_t kMeshletStreamDebugPage = 0;
 inline constexpr uint32_t kMeshletStreamDebugLod = 1;
 inline constexpr uint32_t kMeshletStreamDebugPrimitive = 2;
 inline constexpr uint32_t kMeshletStreamInvalidClusterIndex = UINT32_MAX;
+inline constexpr uint32_t kMeshletStreamUnloadClusterIndex = UINT32_MAX - 1u;
 inline constexpr uint32_t kMeshletStreamDefaultMaxGpuPageRequests = 65536;
+inline constexpr uint32_t kMeshletStreamActiveGroupResident = 1u << 0;
+inline constexpr uint32_t kMeshletStreamActiveGroupLoadRequest = 1u << 1;
+inline constexpr uint32_t kMeshletStreamActiveGroupUnloadRequest = 1u << 2;
 
-struct MeshletStreamGpuDrawItem {
+struct MeshletStreamGpuActiveGroup {
     uint32_t pageSlot = UINT32_MAX;
-    uint32_t clusterIndex = 0;
     uint32_t pageIndex = 0;
+    uint32_t clusterCount = 0;
     uint32_t primitiveIndex = 0;
     uint32_t lodLevel = 0;
     uint32_t materialIndex = 0;
     uint32_t colorSeed = 0;
-    uint32_t padding0 = 0;
+    uint32_t flags = 0;
     float world0[4] = {};
     float world1[4] = {};
     float world2[4] = {};
@@ -52,17 +56,17 @@ struct MeshletStreamGpuParams {
     float clearColor[4] = {};
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     uint32_t pageStrideWords = 0;
-    uint32_t drawItemCount = 0;
+    uint32_t drawTaskCount = 0;
     uint32_t frameIndex = 0;
     uint32_t maxGpuPageRequests = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
+    uint32_t maxGpuPageUnloadRequests = 0;
+    uint32_t activeGroupCount = 0;
+    uint32_t maxActiveGroupClusters = 0;
 };
 
 struct MeshletStreamUserPush {
     uint32_t pageBuffer = 0;
-    uint32_t drawItemBuffer = 0;
+    uint32_t activeGroupBuffer = 0;
     uint32_t pageTableBuffer = 0;
     uint32_t paramsBuffer = 0;
     uint32_t requestBuffer = 0;
@@ -71,7 +75,7 @@ struct MeshletStreamUserPush {
     uint32_t padding1 = 0;
 };
 
-static_assert(sizeof(MeshletStreamGpuDrawItem) == 96);
+static_assert(sizeof(MeshletStreamGpuActiveGroup) == 96);
 static_assert(sizeof(StreamPageTableEntry) == 32);
 static_assert(sizeof(MeshletStreamGpuParams) == 128);
 
@@ -82,6 +86,7 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxResidentPages = 4096;
     uint32_t maxPageUploadsPerFrame = 64;
     uint32_t maxGpuPageRequests = kMeshletStreamDefaultMaxGpuPageRequests;
+    uint32_t maxGpuPageUnloadRequests = kMeshletStreamDefaultMaxGpuPageRequests;
     uint32_t queuedFrameCount = 3;
 };
 
@@ -125,7 +130,7 @@ public:
 
     BindlessHeap* bindlessHeap() const { return bindlessHeap_.get(); }
     MeshletStreamUserPush userPush() const;
-    uint32_t drawTaskCount() const { return static_cast<uint32_t>(drawItems_.size()); }
+    uint32_t drawTaskCount() const;
     const scene::Bounds& bounds() const { return drawBounds_; }
     const scene::MeshletStreamAsset& asset() const { return asset_; }
     const MeshletStreamResidencyManager& residency() const { return residency_; }
@@ -133,12 +138,13 @@ public:
 private:
     class UpdatePass;
 
-    uint32_t computeMaxDrawItems() const;
-    void appendPageDrawItems(
+    uint32_t computeMaxActiveGroups() const;
+    uint32_t computeMaxPageClusters() const;
+    void appendResidentPageGroup(
         const scene::MeshletStreamInstanceInfo& instance,
         const scene::MeshletStreamPageInfo& page,
         uint32_t pageIndex);
-    void appendRequestDrawItems(
+    void appendLoadRequestGroup(
         const scene::MeshletStreamInstanceInfo& instance,
         const scene::MeshletStreamPageInfo& page,
         uint32_t pageIndex);
@@ -150,13 +156,13 @@ private:
         const scene::MeshletStreamInstanceInfo& instance,
         uint32_t pageOffset,
         uint32_t pageCount);
-    void buildFrameDrawItems(uint32_t selectedLodLevel);
+    void buildFrameActiveGroups(uint32_t selectedLodLevel);
 
     Result initializePageTableIfNeeded(CommandBuffer& commandBuffer);
     Result applyPageTablePatches(CommandBuffer& commandBuffer);
     Result clearRequestBuffer(CommandBuffer& commandBuffer);
     Result copyRequestBufferForReadback(CommandBuffer& commandBuffer);
-    Result updateDrawItemBuffer();
+    Result updateActiveGroupBuffer();
     Result updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
     void consumeGpuRequestReadback();
@@ -164,10 +170,10 @@ private:
     scene::MeshletStreamAsset asset_;
     MeshletStreamResidencyManager residency_;
     scene::Bounds drawBounds_;
-    std::vector<MeshletStreamGpuDrawItem> drawItems_;
+    std::vector<MeshletStreamGpuActiveGroup> activeGroups_;
     std::vector<StreamPageTableEntry> pageTable_;
     std::unique_ptr<Buffer> pageBuffer_;
-    std::unique_ptr<Buffer> drawItemBuffer_;
+    std::unique_ptr<Buffer> activeGroupBuffer_;
     std::unique_ptr<Buffer> pageTableBuffer_;
     std::unique_ptr<Buffer> pageTableUploadBuffer_;
     std::unique_ptr<Buffer> requestBuffer_;
@@ -177,7 +183,7 @@ private:
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<UpdatePass> updatePass_;
     BindlessHandle pageHandle_;
-    BindlessHandle drawItemHandle_;
+    BindlessHandle activeGroupHandle_;
     BindlessHandle pageTableHandle_;
     BindlessHandle paramsHandle_;
     BindlessHandle requestHandle_;
@@ -190,8 +196,10 @@ private:
     uint32_t maxResidentPages_ = 0;
     uint32_t maxPageUploadsPerFrame_ = 0;
     uint32_t maxGpuPageRequests_ = 0;
+    uint32_t maxGpuPageUnloadRequests_ = 0;
     uint32_t maxUpdatePatches_ = 0;
-    uint32_t maxDrawItems_ = 0;
+    uint32_t maxActiveGroups_ = 0;
+    uint32_t maxActiveGroupClusters_ = 0;
     uint32_t currentFrameUploadCount_ = 0;
 };
 
