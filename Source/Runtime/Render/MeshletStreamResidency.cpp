@@ -31,6 +31,167 @@ bool streamableEvictionState(MeshletStreamPageResidencyState state)
 
 } // namespace
 
+bool MeshletStreamStorage::initialize(uint64_t capacityBytes, uint64_t alignmentBytes, std::string& reason)
+{
+    reset();
+    reason.clear();
+    if (capacityBytes == 0) {
+        reason = "MeshletStreamStorage requires a non-zero byte budget";
+        return false;
+    }
+    if (capacityBytes > std::numeric_limits<uint32_t>::max()) {
+        reason = "MeshletStreamStorage currently requires maxResidentBytes <= 4 GiB for 32-bit shader offsets";
+        return false;
+    }
+    alignmentBytes_ = std::max<uint64_t>(alignmentBytes, 1u);
+    capacityBytes_ = alignUp(capacityBytes, alignmentBytes_);
+    if (capacityBytes_ > std::numeric_limits<uint32_t>::max()) {
+        reason = "MeshletStreamStorage aligned byte budget exceeds the 32-bit shader offset limit";
+        reset();
+        return false;
+    }
+    freeBlocks_.push_back(FreeBlock{
+        .offset = 0,
+        .size = capacityBytes_,
+    });
+    return true;
+}
+
+void MeshletStreamStorage::reset()
+{
+    capacityBytes_ = 0;
+    alignmentBytes_ = kMeshletStreamStorageAlignment;
+    usedBytes_ = 0;
+    allocationCount_ = 0;
+    freeBlocks_.clear();
+}
+
+MeshletStreamStorageAllocation MeshletStreamStorage::allocate(uint64_t byteSize)
+{
+    const uint64_t alignedSize = allocationSize(byteSize);
+    if (alignedSize == 0) {
+        return {};
+    }
+
+    for (size_t index = 0; index < freeBlocks_.size(); ++index) {
+        FreeBlock& block = freeBlocks_[index];
+        const uint64_t alignedOffset = alignUp(block.offset, alignmentBytes_);
+        if (alignedOffset < block.offset) {
+            continue;
+        }
+        const uint64_t prefixBytes = alignedOffset - block.offset;
+        if (prefixBytes > block.size || alignedSize > block.size - prefixBytes) {
+            continue;
+        }
+
+        const uint64_t suffixOffset = alignedOffset + alignedSize;
+        const uint64_t suffixBytes = block.offset + block.size - suffixOffset;
+        if (prefixBytes != 0 && suffixBytes != 0) {
+            block.size = prefixBytes;
+            freeBlocks_.insert(
+                freeBlocks_.begin() + static_cast<std::ptrdiff_t>(index + 1u),
+                FreeBlock{
+                    .offset = suffixOffset,
+                    .size = suffixBytes,
+                });
+        } else if (prefixBytes != 0) {
+            block.size = prefixBytes;
+        } else if (suffixBytes != 0) {
+            block.offset = suffixOffset;
+            block.size = suffixBytes;
+        } else {
+            freeBlocks_.erase(freeBlocks_.begin() + static_cast<std::ptrdiff_t>(index));
+        }
+
+        usedBytes_ += alignedSize;
+        ++allocationCount_;
+        return MeshletStreamStorageAllocation{
+            .offset = alignedOffset,
+            .requestedSize = byteSize,
+            .allocatedSize = alignedSize,
+        };
+    }
+
+    return {};
+}
+
+void MeshletStreamStorage::release(const MeshletStreamStorageAllocation& allocation)
+{
+    if (!allocation.valid() ||
+        allocation.offset >= capacityBytes_ ||
+        allocation.allocatedSize > capacityBytes_ - allocation.offset) {
+        return;
+    }
+
+    FreeBlock block{
+        .offset = allocation.offset,
+        .size = allocation.allocatedSize,
+    };
+    auto iter = std::lower_bound(
+        freeBlocks_.begin(),
+        freeBlocks_.end(),
+        block.offset,
+        [](const FreeBlock& lhs, uint64_t offset) {
+            return lhs.offset < offset;
+        });
+    iter = freeBlocks_.insert(iter, block);
+
+    if (iter != freeBlocks_.begin()) {
+        auto previous = iter - 1;
+        if (previous->offset + previous->size == iter->offset) {
+            previous->size += iter->size;
+            iter = freeBlocks_.erase(iter);
+            iter = previous;
+        }
+    }
+    auto next = iter + 1;
+    if (next != freeBlocks_.end() && iter->offset + iter->size == next->offset) {
+        iter->size += next->size;
+        freeBlocks_.erase(next);
+    }
+
+    usedBytes_ = allocation.allocatedSize <= usedBytes_ ? usedBytes_ - allocation.allocatedSize : 0;
+    if (allocationCount_ != 0) {
+        --allocationCount_;
+    }
+}
+
+uint64_t MeshletStreamStorage::allocationSize(uint64_t byteSize) const
+{
+    if (byteSize == 0) {
+        return 0;
+    }
+    return alignUp(byteSize, alignmentBytes_);
+}
+
+bool MeshletStreamStorage::canAllocate(uint64_t byteSize) const
+{
+    const uint64_t alignedSize = allocationSize(byteSize);
+    if (alignedSize == 0) {
+        return false;
+    }
+    for (const FreeBlock& block : freeBlocks_) {
+        const uint64_t alignedOffset = alignUp(block.offset, alignmentBytes_);
+        if (alignedOffset < block.offset) {
+            continue;
+        }
+        const uint64_t prefixBytes = alignedOffset - block.offset;
+        if (prefixBytes <= block.size && alignedSize <= block.size - prefixBytes) {
+            return true;
+        }
+    }
+    return false;
+}
+
+uint64_t MeshletStreamStorage::largestFreeBlockBytes() const
+{
+    uint64_t largest = 0;
+    for (const FreeBlock& block : freeBlocks_) {
+        largest = std::max(largest, block.size);
+    }
+    return largest;
+}
+
 bool MeshletStreamResidencyManager::initialize(
     const MeshletStreamResidencyDesc& desc,
     std::string& reason)
@@ -41,19 +202,30 @@ bool MeshletStreamResidencyManager::initialize(
         reason = "MeshletStreamResidencyManager requires a valid asset";
         return false;
     }
-    if (desc.maxResidentPages == 0) {
-        reason = "MeshletStreamResidencyManager requires at least one resident page slot";
-        return false;
-    }
     if (desc.asset->pageCount() == 0 || desc.asset->maxPagePayloadBytes() == 0) {
         reason = "MeshletStreamResidencyManager asset has no streamable pages";
         return false;
     }
 
     const uint64_t defaultStride = alignUp(desc.asset->maxPagePayloadBytes(), 256);
-    pageStride_ = desc.pageStride != 0 ? desc.pageStride : defaultStride;
-    if (pageStride_ < desc.asset->maxPagePayloadBytes()) {
-        reason = "MeshletStreamResidencyManager page stride is smaller than the largest payload";
+    const uint64_t legacyStride = desc.pageStride != 0 ? desc.pageStride : defaultStride;
+    uint64_t maxResidentBytes = desc.maxResidentBytes;
+    if (maxResidentBytes == 0) {
+        if (desc.maxResidentPages == 0) {
+            reason = "MeshletStreamResidencyManager requires maxResidentBytes or at least one legacy resident page";
+            return false;
+        }
+        if (legacyStride < desc.asset->maxPagePayloadBytes()) {
+            reason = "MeshletStreamResidencyManager legacy page stride is smaller than the largest payload";
+            return false;
+        }
+        if (legacyStride > std::numeric_limits<uint64_t>::max() / desc.maxResidentPages) {
+            reason = "MeshletStreamResidencyManager resident byte budget overflowed";
+            return false;
+        }
+        maxResidentBytes = legacyStride * desc.maxResidentPages;
+    }
+    if (!storage_.initialize(maxResidentBytes, desc.storageAlignment, reason)) {
         return false;
     }
 
@@ -63,7 +235,6 @@ bool MeshletStreamResidencyManager::initialize(
     unloadDelayFrames_ = std::max(desc.unloadDelayFrames, 1u);
     evictionAgeThresholdFrames_ = desc.evictionAgeThresholdFrames;
     pages_.resize(asset_->pageCount());
-    slotToPage_.assign(maxResidentPages_, UINT32_MAX);
     requestMarks_.assign(asset_->pageCount(), 0);
     unloadRequestMarks_.assign(asset_->pageCount(), 0);
     activePagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
@@ -71,24 +242,20 @@ bool MeshletStreamResidencyManager::initialize(
     pendingPagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
     requestedPages_.reserve(asset_->pageCount());
     unloadRequestedPages_.reserve(asset_->pageCount());
-    activePages_.reserve(maxResidentPages_);
-    residentPages_.reserve(maxResidentPages_);
-    pendingPages_.reserve(maxResidentPages_);
-    freeSlots_.reserve(maxResidentPages_);
-    for (uint32_t slot = 0; slot < maxResidentPages_; ++slot) {
-        freeSlots_.push_back(maxResidentPages_ - slot - 1u);
-    }
+    activePages_.reserve(asset_->pageCount());
+    residentPages_.reserve(asset_->pageCount());
+    pendingPages_.reserve(asset_->pageCount());
     stats_.pageCount = asset_->pageCount();
     stats_.maxResidentPages = maxResidentPages_;
+    stats_.maxResidentBytes = storage_.capacityBytes();
     return true;
 }
 
 void MeshletStreamResidencyManager::reset()
 {
     asset_ = nullptr;
+    storage_.reset();
     pages_.clear();
-    slotToPage_.clear();
-    freeSlots_.clear();
     uploadQueue_.clear();
     requestTaskQueue_.reset();
     for (std::vector<uint32_t>& taskPages : requestTaskPages_) {
@@ -122,7 +289,6 @@ void MeshletStreamResidencyManager::reset()
     patches_.clear();
     stats_ = {};
     frameIndex_ = 0;
-    pageStride_ = 0;
     maxResidentPages_ = 0;
     queuedFrameCount_ = 3;
     unloadDelayFrames_ = 1;
@@ -277,20 +443,33 @@ bool MeshletStreamResidencyManager::lockFallbackPages(
         reason = "MeshletStreamResidencyManager is not initialized";
         return false;
     }
-    if (pageIndices.size() > freeSlots_.size()) {
-        reason = "not enough resident page slots for locked fallback pages";
-        return false;
-    }
-
+    uint64_t requiredBytes = 0;
     for (uint32_t pageIndex : pageIndices) {
         if (pageIndex >= pages_.size()) {
             reason = "fallback page index is out of range";
             return false;
         }
+        if (!pageAllocated(pageIndex)) {
+            const uint64_t pageBytes = asset_->pages()[pageIndex].uncompressedSize;
+            const uint64_t allocationBytes = storage_.allocationSize(pageBytes);
+            if (allocationBytes == 0 ||
+                allocationBytes > std::numeric_limits<uint64_t>::max() - requiredBytes) {
+                reason = "locked fallback page byte budget overflowed";
+                return false;
+            }
+            requiredBytes += allocationBytes;
+        }
+    }
+    if (requiredBytes > storage_.freeBytes()) {
+        reason = "not enough resident byte budget for locked fallback pages";
+        return false;
+    }
+
+    for (uint32_t pageIndex : pageIndices) {
         PageEntry& page = pages_[pageIndex];
         page.lockedFallback = true;
-        if (page.slot == UINT32_MAX && allocateSlot(pageIndex) == UINT32_MAX) {
-            reason = "failed to allocate a fallback page slot";
+        if (!pageAllocated(pageIndex) && !allocatePageStorage(pageIndex)) {
+            reason = "failed to allocate fallback page storage";
             return false;
         }
         if (page.state == MeshletStreamPageResidencyState::Unloaded && !page.queued) {
@@ -319,7 +498,7 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
         return false;
     }
 
-    if (page.slot == UINT32_MAX && allocateSlot(pageIndex) == UINT32_MAX) {
+    if (!pageAllocated(pageIndex) && !allocatePageStorage(pageIndex)) {
         return false;
     }
     if (!page.queued) {
@@ -338,7 +517,7 @@ bool MeshletStreamResidencyManager::unloadPage(uint32_t pageIndex)
     if (page.lockedFallback) {
         return false;
     }
-    if (page.slot == UINT32_MAX && page.state == MeshletStreamPageResidencyState::Unloaded) {
+    if (!pageAllocated(pageIndex) && page.state == MeshletStreamPageResidencyState::Unloaded) {
         page.lastUsedFrame = frameIndex_;
         return true;
     }
@@ -483,7 +662,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         PageEntry& page = pages_[pageIndex];
         page.queued = false;
 
-        if (page.state != MeshletStreamPageResidencyState::Unloaded || page.slot == UINT32_MAX) {
+        if (page.state != MeshletStreamPageResidencyState::Unloaded || !pageAllocated(pageIndex)) {
             uploadQueue_.erase(uploadQueue_.begin() + static_cast<std::ptrdiff_t>(queueIndex));
             continue;
         }
@@ -499,7 +678,9 @@ uint32_t MeshletStreamResidencyManager::processUploads(
                 devicePayload,
                 decodeReason) ||
             devicePayload.empty() ||
-            devicePayload.size() > pageStride_) {
+            devicePayload.size() != page.deviceSizeBytes ||
+            devicePayload.size() > page.allocationBytes ||
+            devicePayload.size() > std::numeric_limits<uint32_t>::max()) {
             uploadQueue_.erase(uploadQueue_.begin() + static_cast<std::ptrdiff_t>(queueIndex));
             ++stats_.frameTransferBudgetFailureCount;
             ++stats_.totalTransferBudgetFailureCount;
@@ -515,7 +696,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             .dataChunkCount = 1,
             .placementAlignment = 16,
             .dstBuffer = &destination,
-            .dstOffset = static_cast<uint64_t>(page.slot) * pageStride_,
+            .dstOffset = page.deviceOffsetBytes,
         });
         if (!streamed.valid()) {
             page.queued = true;
@@ -559,8 +740,12 @@ void MeshletStreamResidencyManager::buildInitialPageTable(std::span<StreamPageTa
     for (uint32_t pageIndex = 0; pageIndex < pages_.size(); ++pageIndex) {
         const PageEntry& page = pages_[pageIndex];
         const scene::MeshletStreamPageInfo& assetPage = assetPages[pageIndex];
+        const bool tableResident = page.state != MeshletStreamPageResidencyState::Unloaded && pageAllocated(pageIndex);
         outEntries[pageIndex] = StreamPageTableEntry{
-            .slot = page.state == MeshletStreamPageResidencyState::Unloaded ? UINT32_MAX : page.slot,
+            .deviceOffsetBytes = tableResident
+                ? static_cast<uint32_t>(page.deviceOffsetBytes)
+                : kInvalidStreamDeviceOffsetBytes,
+            .deviceSizeBytes = tableResident ? page.deviceSizeBytes : 0u,
             .state = static_cast<uint32_t>(page.state),
             .lastRequestFrame = 0,
             .lodLevel = assetPage.lodLevel,
@@ -577,12 +762,25 @@ MeshletStreamPageResidencyState MeshletStreamResidencyManager::pageState(uint32_
     return pages_[pageIndex].state;
 }
 
-uint32_t MeshletStreamResidencyManager::slotForPage(uint32_t pageIndex) const
+uint64_t MeshletStreamResidencyManager::deviceOffsetForPage(uint32_t pageIndex) const
 {
     if (pageIndex >= pages_.size()) {
-        return UINT32_MAX;
+        return UINT64_MAX;
     }
-    return pages_[pageIndex].slot;
+    return pages_[pageIndex].deviceOffsetBytes;
+}
+
+uint32_t MeshletStreamResidencyManager::deviceSizeForPage(uint32_t pageIndex) const
+{
+    if (pageIndex >= pages_.size()) {
+        return 0;
+    }
+    return pages_[pageIndex].deviceSizeBytes;
+}
+
+bool MeshletStreamResidencyManager::pageAllocated(uint32_t pageIndex) const
+{
+    return pageIndex < pages_.size() && pages_[pageIndex].deviceOffsetBytes != UINT64_MAX;
 }
 
 bool MeshletStreamResidencyManager::pageResident(uint32_t pageIndex) const
@@ -615,8 +813,14 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
     result.frameIndex = frameIndex_;
     result.pageCount = static_cast<uint32_t>(pages_.size());
     result.maxResidentPages = maxResidentPages_;
-    result.usedSlotCount = static_cast<uint32_t>(activePages_.size());
-    result.freeSlotCount = static_cast<uint32_t>(freeSlots_.size());
+    result.maxResidentBytes = storage_.capacityBytes();
+    result.usedResidentBytes = storage_.usedBytes();
+    result.freeResidentBytes = storage_.freeBytes();
+    result.largestFreeBlockBytes = storage_.largestFreeBlockBytes();
+    result.storageAllocationCount = storage_.allocationCount();
+    result.storageFreeBlockCount = storage_.freeBlockCount();
+    result.usedSlotCount = storage_.allocationCount();
+    result.freeSlotCount = storage_.freeBlockCount();
     result.activePageCount = static_cast<uint32_t>(activePages_.size());
     result.residentPageCount = static_cast<uint32_t>(residentPages_.size());
     result.pendingPageCount = static_cast<uint32_t>(pendingPages_.size());
@@ -636,29 +840,31 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
     return result;
 }
 
-uint32_t MeshletStreamResidencyManager::allocateSlot(uint32_t pageIndex)
+bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
 {
     if (pageIndex >= pages_.size()) {
-        return UINT32_MAX;
+        return false;
     }
     PageEntry& page = pages_[pageIndex];
-    if (page.slot != UINT32_MAX) {
-        return page.slot;
+    if (pageAllocated(pageIndex)) {
+        return true;
     }
 
-    uint32_t slot = UINT32_MAX;
-    if (!freeSlots_.empty()) {
-        slot = freeSlots_.back();
-        freeSlots_.pop_back();
-    } else {
+    const scene::MeshletStreamPageInfo& assetPage = asset_->pages()[pageIndex];
+    const uint64_t requiredBytes = storage_.allocationSize(assetPage.uncompressedSize);
+    MeshletStreamStorageAllocation allocation = storage_.allocate(assetPage.uncompressedSize);
+    if (!allocation.valid()) {
         uint64_t oldestFrame = std::numeric_limits<uint64_t>::max();
         uint32_t evictPage = UINT32_MAX;
         bool rejectedByAge = false;
         for (uint32_t candidate = 0; candidate < pages_.size(); ++candidate) {
             const PageEntry& entry = pages_[candidate];
             if (entry.lockedFallback ||
-                entry.slot == UINT32_MAX ||
+                !pageAllocated(candidate) ||
                 !streamableEvictionState(entry.state)) {
+                continue;
+            }
+            if (storage_.freeBytes() + entry.allocationBytes < requiredBytes) {
                 continue;
             }
             const uint64_t age = pageAge(candidate);
@@ -680,24 +886,25 @@ uint32_t MeshletStreamResidencyManager::allocateSlot(uint32_t pageIndex)
             ++stats_.totalResidentBudgetFailureCount;
             ++stats_.frameAllocationFailureCount;
             ++stats_.totalAllocationFailureCount;
-            return UINT32_MAX;
+            return false;
         }
         if (!scheduleUnload(evictPage, true)) {
             ++stats_.frameResidentBudgetFailureCount;
             ++stats_.totalResidentBudgetFailureCount;
             ++stats_.frameAllocationFailureCount;
             ++stats_.totalAllocationFailureCount;
-            return UINT32_MAX;
+            return false;
         }
         ++stats_.frameEvictedPageCount;
         ++stats_.totalEvictedPageCount;
-        return UINT32_MAX;
+        return false;
     }
 
-    page.slot = slot;
-    slotToPage_[slot] = pageIndex;
+    page.deviceOffsetBytes = allocation.offset;
+    page.allocationBytes = allocation.allocatedSize;
+    page.deviceSizeBytes = static_cast<uint32_t>(allocation.requestedSize);
     addToTable(activePages_, activePagePositions_, pageIndex);
-    return slot;
+    return true;
 }
 
 bool MeshletStreamResidencyManager::scheduleUnload(uint32_t pageIndex, bool eviction)
@@ -708,7 +915,7 @@ bool MeshletStreamResidencyManager::scheduleUnload(uint32_t pageIndex, bool evic
 
     PageEntry& page = pages_[pageIndex];
     if (page.lockedFallback ||
-        page.slot == UINT32_MAX ||
+        !pageAllocated(pageIndex) ||
         (page.state == MeshletStreamPageResidencyState::Unloaded && !page.queued)) {
         return false;
     }
@@ -755,7 +962,7 @@ void MeshletStreamResidencyManager::completeUnloadTask(uint32_t taskIndex)
             continue;
         }
         page.unloadTaskIndex = kInvalidStreamingTaskIndex;
-        releaseSlot(pageIndex, true);
+        releasePageStorage(pageIndex);
         ++stats_.frameCompletedUnloadCount;
         ++stats_.totalCompletedUnloadCount;
         ++stats_.frameDelayedFreeCount;
@@ -764,30 +971,30 @@ void MeshletStreamResidencyManager::completeUnloadTask(uint32_t taskIndex)
     unloadTaskPages_[taskIndex].clear();
 }
 
-void MeshletStreamResidencyManager::releaseSlot(uint32_t pageIndex, bool returnToFreeList)
+void MeshletStreamResidencyManager::releasePageStorage(uint32_t pageIndex)
 {
     if (pageIndex >= pages_.size()) {
         return;
     }
     PageEntry& page = pages_[pageIndex];
-    if (page.slot == UINT32_MAX) {
+    if (!pageAllocated(pageIndex)) {
         return;
     }
-    if (page.slot < slotToPage_.size()) {
-        slotToPage_[page.slot] = UINT32_MAX;
-    }
-    const uint32_t releasedSlot = page.slot;
     const MeshletStreamPageResidencyState oldState = page.state;
-    page.slot = UINT32_MAX;
+    storage_.release(MeshletStreamStorageAllocation{
+        .offset = page.deviceOffsetBytes,
+        .requestedSize = page.deviceSizeBytes,
+        .allocatedSize = page.allocationBytes,
+    });
+    page.deviceOffsetBytes = UINT64_MAX;
+    page.allocationBytes = 0;
+    page.deviceSizeBytes = 0;
     page.storageTaskIndex = kInvalidStreamingTaskIndex;
     page.updateTaskIndex = kInvalidStreamingTaskIndex;
     page.unloadTaskIndex = kInvalidStreamingTaskIndex;
     page.queued = false;
     removeFromTable(activePages_, activePagePositions_, pageIndex);
     setPageState(pageIndex, MeshletStreamPageResidencyState::Unloaded);
-    if (returnToFreeList && releasedSlot < maxResidentPages_) {
-        freeSlots_.push_back(releasedSlot);
-    }
     if (oldState == MeshletStreamPageResidencyState::Unloaded) {
         recordPatch(pageIndex);
     }
@@ -829,9 +1036,13 @@ void MeshletStreamResidencyManager::recordPatch(uint32_t pageIndex)
         return;
     }
     const PageEntry& page = pages_[pageIndex];
+    const bool tableResident = page.state != MeshletStreamPageResidencyState::Unloaded && pageAllocated(pageIndex);
     patches_.push_back(StreamPageTablePatch{
         .pageId = pageIndex,
-        .slot = page.state == MeshletStreamPageResidencyState::Unloaded ? UINT32_MAX : page.slot,
+        .deviceOffsetBytes = tableResident
+            ? static_cast<uint32_t>(page.deviceOffsetBytes)
+            : kInvalidStreamDeviceOffsetBytes,
+        .deviceSizeBytes = tableResident ? page.deviceSizeBytes : 0u,
         .state = static_cast<uint32_t>(page.state),
     });
 }

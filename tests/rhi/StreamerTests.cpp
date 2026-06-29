@@ -154,6 +154,28 @@ std::vector<uint32_t> nonFallbackPagesFor(
     return pages;
 }
 
+uint64_t alignStreamStorageBytes(uint64_t value)
+{
+    const uint64_t alignment = render::kMeshletStreamStorageAlignment;
+    return ((value + alignment - 1u) / alignment) * alignment;
+}
+
+uint64_t pageStorageBytes(const scene::MeshletStreamAsset& asset, uint32_t pageIndex)
+{
+    return pageIndex < asset.pages().size()
+        ? alignStreamStorageBytes(asset.pages()[pageIndex].uncompressedSize)
+        : 0;
+}
+
+uint64_t pageStorageBytes(const scene::MeshletStreamAsset& asset, std::span<const uint32_t> pageIndices)
+{
+    uint64_t total = 0;
+    for (uint32_t pageIndex : pageIndices) {
+        total += pageStorageBytes(asset, pageIndex);
+    }
+    return total;
+}
+
 class StreamingTaskQueueLifecycleTest : public RhiTest {
 public:
     StreamingTaskQueueLifecycleTest()
@@ -881,14 +903,18 @@ public:
 
         std::string reason;
         std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
+        const uint64_t fallbackResidentBytes = pageStorageBytes(asset, fallbackPages);
         const uint32_t maxResidentPages = std::max<uint32_t>(
             static_cast<uint32_t>(fallbackPages.size()) + 2u,
             4u);
+        const uint64_t maxResidentBytes =
+            fallbackResidentBytes + 2ull * alignStreamStorageBytes(asset.maxPagePayloadBytes());
 
         render::MeshletStreamResidencyManager residency;
         if (!residency.initialize(
                 render::MeshletStreamResidencyDesc{
                     .asset = &asset,
+                    .maxResidentBytes = maxResidentBytes,
                     .maxResidentPages = maxResidentPages,
                     .queuedFrameCount = 2,
                 },
@@ -903,8 +929,9 @@ public:
             !residency.residentPages().empty() ||
             !residency.pendingPages().empty() ||
             stats.activePageCount != fallbackPages.size() ||
-            stats.usedSlotCount != fallbackPages.size() ||
-            stats.freeSlotCount != maxResidentPages - fallbackPages.size() ||
+            stats.storageAllocationCount != fallbackPages.size() ||
+            stats.usedResidentBytes != fallbackResidentBytes ||
+            stats.freeResidentBytes != maxResidentBytes - fallbackResidentBytes ||
             stats.queuedRequestTaskCount != 0 ||
             stats.availableRequestTaskCount != render::kStreamingMaxActiveTasks ||
             stats.queuedStorageTaskCount != 0 ||
@@ -940,7 +967,8 @@ public:
         const uint32_t pageIndex = fallbackPages.front();
         std::vector<render::StreamPageTableEntry> initialTable(asset.pageCount());
         residency.buildInitialPageTable(initialTable);
-        if (initialTable[pageIndex].slot != UINT32_MAX ||
+        if (initialTable[pageIndex].deviceOffsetBytes != render::kInvalidStreamDeviceOffsetBytes ||
+            initialTable[pageIndex].deviceSizeBytes != 0 ||
             initialTable[pageIndex].state !=
                 static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded) ||
             initialTable[pageIndex].payloadBytes != asset.pages()[pageIndex].uncompressedSize) {
@@ -979,7 +1007,8 @@ public:
         std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
         if (patches.size() != 1 ||
             patches[0].pageId != pageIndex ||
-            patches[0].slot == UINT32_MAX ||
+            patches[0].deviceOffsetBytes == render::kInvalidStreamDeviceOffsetBytes ||
+            patches[0].deviceSizeBytes != asset.pages()[pageIndex].uncompressedSize ||
             patches[0].state != static_cast<uint32_t>(render::MeshletStreamPageResidencyState::PendingUpload)) {
             return RhiTestResult::fail("pending upload did not produce expected page table patch");
         }
@@ -1083,27 +1112,26 @@ public:
         patches = residency.pendingPatches();
         if (patches.size() != 1 ||
             patches[0].pageId != pageIndex ||
-            patches[0].slot == UINT32_MAX ||
+            patches[0].deviceOffsetBytes == render::kInvalidStreamDeviceOffsetBytes ||
+            patches[0].deviceSizeBytes != asset.pages()[pageIndex].uncompressedSize ||
             patches[0].state != static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback)) {
             return RhiTestResult::fail("resident fallback did not produce expected page table patch");
         }
 
-        const uint32_t slot = residency.slotForPage(pageIndex);
-        if (slot == UINT32_MAX) {
-            return RhiTestResult::fail("resident page has no slot");
+        const uint64_t deviceOffset = residency.deviceOffsetForPage(pageIndex);
+        if (deviceOffset == UINT64_MAX) {
+            return RhiTestResult::fail("resident page has no device offset");
         }
 
         std::vector<uint8_t> actual(static_cast<size_t>(asset.pages()[pageIndex].uncompressedSize));
-        pageBuffer->invalidate(
-            static_cast<uint64_t>(slot) * residency.pageStride(),
-            actual.size());
+        pageBuffer->invalidate(deviceOffset, actual.size());
         void* mapped = pageBuffer->map();
         if (mapped == nullptr) {
             return RhiTestResult::fail("page buffer did not map");
         }
         std::memcpy(
             actual.data(),
-            static_cast<uint8_t*>(mapped) + static_cast<uint64_t>(slot) * residency.pageStride(),
+            static_cast<uint8_t*>(mapped) + deviceOffset,
             actual.size());
         pageBuffer->unmap();
 
@@ -1149,12 +1177,17 @@ public:
         if (fallbackPages.empty() || streamablePages.size() < 2) {
             return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
         }
+        const uint32_t firstPage = streamablePages[0];
+        const uint32_t secondPage = streamablePages[1];
+        const uint64_t fallbackResidentBytes = pageStorageBytes(asset, fallbackPages);
+        const uint64_t secondPageBytes = pageStorageBytes(asset, secondPage);
 
         render::MeshletStreamResidencyManager residency;
         std::string reason;
         if (!residency.initialize(
                 render::MeshletStreamResidencyDesc{
                     .asset = &asset,
+                    .maxResidentBytes = fallbackResidentBytes + secondPageBytes,
                     .maxResidentPages = static_cast<uint32_t>(fallbackPages.size()) + 1u,
                     .queuedFrameCount = 2,
                 },
@@ -1166,8 +1199,6 @@ public:
         }
         residency.clearPendingPatches();
 
-        const uint32_t firstPage = streamablePages[0];
-        const uint32_t secondPage = streamablePages[1];
         const std::array<uint32_t, 4> gpuRequests = {
             firstPage,
             firstPage,
@@ -1192,11 +1223,11 @@ public:
             requestStats.queuedRequestTaskCount != 1 ||
             requestStats.availableRequestTaskCount != render::kStreamingMaxActiveTasks - 1u ||
             requestStats.activePageCount != fallbackPages.size() ||
-            requestStats.freeSlotCount != 1) {
+            requestStats.freeResidentBytes != secondPageBytes) {
             return RhiTestResult::fail("GPU request readback did not queue an isolated request task");
         }
-        if (residency.slotForPage(firstPage) != UINT32_MAX ||
-            residency.slotForPage(secondPage) != UINT32_MAX ||
+        if (residency.pageAllocated(firstPage) ||
+            residency.pageAllocated(secondPage) ||
             !residency.pendingPatches().empty()) {
             return RhiTestResult::fail("queued GPU request task modified residency before beginFrame consumed it");
         }
@@ -1208,11 +1239,11 @@ public:
             std::find(consumedRequestPages.begin(), consumedRequestPages.end(), secondPage) == consumedRequestPages.end()) {
             return RhiTestResult::fail("request task did not preserve unique page ids when consumed");
         }
-        if (residency.slotForPage(firstPage) != UINT32_MAX) {
-            return RhiTestResult::fail("older requested page received a slot despite latest-page pressure");
+        if (residency.pageAllocated(firstPage)) {
+            return RhiTestResult::fail("older requested page received storage despite latest-page pressure");
         }
-        if (residency.slotForPage(secondPage) == UINT32_MAX) {
-            return RhiTestResult::fail("latest requested page did not receive the single streamable slot");
+        if (!residency.pageAllocated(secondPage)) {
+            return RhiTestResult::fail("latest requested page did not receive the single streamable allocation");
         }
         const std::span<const uint32_t> activePages = residency.activePages();
         requestStats = residency.stats();
@@ -1226,7 +1257,7 @@ public:
             requestStats.frameResidentBudgetFailureCount != 1 ||
             requestStats.frameAllocationFailureCount != 1 ||
             requestStats.activePageCount != fallbackPages.size() + 1u ||
-            requestStats.freeSlotCount != 0) {
+            requestStats.freeResidentBytes != 0) {
             return RhiTestResult::fail("active/request/storage stats did not track GPU request pressure");
         }
 
@@ -1260,12 +1291,17 @@ public:
         if (fallbackPages.empty() || streamablePages.size() < 2) {
             return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
         }
+        const uint32_t stalePage = streamablePages[0];
+        const uint32_t latestPage = streamablePages[1];
+        const uint64_t maxResidentBytes =
+            pageStorageBytes(asset, fallbackPages) + pageStorageBytes(asset, latestPage);
 
         render::MeshletStreamResidencyManager residency;
         std::string reason;
         if (!residency.initialize(
                 render::MeshletStreamResidencyDesc{
                     .asset = &asset,
+                    .maxResidentBytes = maxResidentBytes,
                     .maxResidentPages = static_cast<uint32_t>(fallbackPages.size()) + 1u,
                     .queuedFrameCount = 2,
                 },
@@ -1277,8 +1313,6 @@ public:
         }
         residency.clearPendingPatches();
 
-        const uint32_t stalePage = streamablePages[0];
-        const uint32_t latestPage = streamablePages[1];
         const uint32_t staleScheduled = residency.consumeGpuRequests(std::span<const uint32_t>(&stalePage, 1));
         const uint32_t latestScheduled = residency.consumeGpuRequests(std::span<const uint32_t>(&latestPage, 1));
         if (staleScheduled != 1 || latestScheduled != 1) {
@@ -1299,8 +1333,8 @@ public:
         stats = residency.stats();
         if (requestedPages.size() != 1 ||
             requestedPages.front() != latestPage ||
-            residency.slotForPage(stalePage) != UINT32_MAX ||
-            residency.slotForPage(latestPage) == UINT32_MAX ||
+            residency.pageAllocated(stalePage) ||
+            !residency.pageAllocated(latestPage) ||
             stats.frameDroppedRequestTaskCount != 1 ||
             stats.frameCompletedRequestTaskCount != 1 ||
             stats.frameConsumedGpuRequestCount != 1 ||
@@ -1336,12 +1370,19 @@ public:
         if (fallbackPages.empty() || streamablePages.size() < 2) {
             return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
         }
+        const uint32_t unloadPage = streamablePages[0];
+        const uint32_t loadPage = streamablePages[1];
+        const uint64_t streamableBudgetBytes = std::max(
+            pageStorageBytes(asset, unloadPage),
+            pageStorageBytes(asset, loadPage));
+        const uint64_t maxResidentBytes = pageStorageBytes(asset, fallbackPages) + streamableBudgetBytes;
 
         render::MeshletStreamResidencyManager residency;
         std::string reason;
         if (!residency.initialize(
                 render::MeshletStreamResidencyDesc{
                     .asset = &asset,
+                    .maxResidentBytes = maxResidentBytes,
                     .maxResidentPages = static_cast<uint32_t>(fallbackPages.size()) + 1u,
                     .queuedFrameCount = 2,
                 },
@@ -1353,11 +1394,9 @@ public:
         }
         residency.clearPendingPatches();
 
-        const uint32_t unloadPage = streamablePages[0];
-        const uint32_t loadPage = streamablePages[1];
         (void)residency.requestPage(unloadPage);
-        if (residency.slotForPage(unloadPage) == UINT32_MAX) {
-            return RhiTestResult::fail("test setup did not allocate a streamable page slot");
+        if (!residency.pageAllocated(unloadPage)) {
+            return RhiTestResult::fail("test setup did not allocate streamable page storage");
         }
 
         const std::array<uint32_t, 2> loadRequests = {loadPage, loadPage};
@@ -1397,9 +1436,9 @@ public:
 
         residency.beginFrame();
         stats = residency.stats();
-        if (residency.slotForPage(unloadPage) == UINT32_MAX ||
+        if (!residency.pageAllocated(unloadPage) ||
             residency.pageState(unloadPage) != render::MeshletStreamPageResidencyState::PendingUnload ||
-            residency.slotForPage(loadPage) != UINT32_MAX ||
+            residency.pageAllocated(loadPage) ||
             stats.frameCompletedRequestTaskCount != 1 ||
             stats.frameConsumedGpuRequestCount != 1 ||
             stats.frameConsumedGpuUnloadRequestCount != 1 ||
@@ -1432,18 +1471,18 @@ public:
         residency.clearPendingPatches();
         residency.beginFrame();
         stats = residency.stats();
-        if (residency.slotForPage(unloadPage) != UINT32_MAX ||
+        if (residency.pageAllocated(unloadPage) ||
             residency.pageState(unloadPage) != render::MeshletStreamPageResidencyState::Unloaded ||
             stats.frameCompletedUnloadCount != 1 ||
             stats.frameDelayedFreeCount != 1 ||
-            stats.freeSlotCount != 1) {
-            return RhiTestResult::fail("delayed unload task did not free the resident page slot");
+            stats.freeResidentBytes != streamableBudgetBytes) {
+            return RhiTestResult::fail("delayed unload task did not free resident page storage");
         }
 
         (void)residency.requestPage(loadPage);
-        if (residency.slotForPage(loadPage) == UINT32_MAX ||
+        if (!residency.pageAllocated(loadPage) ||
             stats.frameCompletedUnloadCount != 1) {
-            return RhiTestResult::fail("load request did not acquire the slot after delayed free completed");
+            return RhiTestResult::fail("load request did not acquire storage after delayed free completed");
         }
 
         patches = residency.pendingPatches();
@@ -1452,7 +1491,8 @@ public:
                 patches.end(),
                 [unloadPage](const render::StreamPageTablePatch& patch) {
                     return patch.pageId == unloadPage &&
-                        patch.slot == UINT32_MAX &&
+                        patch.deviceOffsetBytes == render::kInvalidStreamDeviceOffsetBytes &&
+                        patch.deviceSizeBytes == 0 &&
                         patch.state == static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded);
                 }) == patches.end()) {
             return RhiTestResult::fail("delayed unload completion did not emit an unloaded page table patch");
@@ -1485,6 +1525,12 @@ public:
         if (fallbackPages.empty() || streamablePages.size() < 2) {
             return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
         }
+        const uint32_t residentPage = streamablePages[0];
+        const uint32_t requestedPage = streamablePages[1];
+        const uint64_t streamableBudgetBytes = std::max(
+            pageStorageBytes(asset, residentPage),
+            pageStorageBytes(asset, requestedPage));
+        const uint64_t maxResidentBytes = pageStorageBytes(asset, fallbackPages) + streamableBudgetBytes;
 
         render::MeshletStreamResidencyManager residency;
         std::string reason;
@@ -1492,6 +1538,7 @@ public:
         if (!residency.initialize(
                 render::MeshletStreamResidencyDesc{
                     .asset = &asset,
+                    .maxResidentBytes = maxResidentBytes,
                     .maxResidentPages = static_cast<uint32_t>(fallbackPages.size()) + 1u,
                     .queuedFrameCount = 1,
                     .unloadDelayFrames = 1,
@@ -1524,8 +1571,6 @@ public:
             return RhiTestResult::fail(std::string("createBuffer(pageBuffer) returned ") + toString(result));
         }
 
-        const uint32_t residentPage = streamablePages[0];
-        const uint32_t requestedPage = streamablePages[1];
         residency.beginFrame();
         (void)residency.requestPage(residentPage);
         const uint32_t uploadBudget = static_cast<uint32_t>(fallbackPages.size()) + 1u;
@@ -1542,7 +1587,7 @@ public:
 
         (void)residency.requestPage(requestedPage);
         render::MeshletStreamResidencyStats stats = residency.stats();
-        if (residency.slotForPage(requestedPage) != UINT32_MAX ||
+        if (residency.pageAllocated(requestedPage) ||
             residency.pageState(residentPage) != render::MeshletStreamPageResidencyState::Resident ||
             stats.frameEvictionAgeRejectedCount != 1 ||
             stats.frameResidentBudgetFailureCount != 1 ||
@@ -1555,7 +1600,7 @@ public:
         }
         (void)residency.requestPage(requestedPage);
         stats = residency.stats();
-        if (residency.slotForPage(requestedPage) != UINT32_MAX ||
+        if (residency.pageAllocated(requestedPage) ||
             residency.pageState(residentPage) != render::MeshletStreamPageResidencyState::PendingUnload ||
             stats.frameEvictedPageCount != 1 ||
             stats.frameScheduledUnloadCount != 1 ||
@@ -1566,17 +1611,17 @@ public:
 
         residency.beginFrame();
         stats = residency.stats();
-        if (residency.slotForPage(residentPage) != UINT32_MAX ||
+        if (residency.pageAllocated(residentPage) ||
             residency.pageState(residentPage) != render::MeshletStreamPageResidencyState::Unloaded ||
             stats.frameCompletedUnloadCount != 1 ||
             stats.frameDelayedFreeCount != 1 ||
-            stats.freeSlotCount != 1) {
-            return RhiTestResult::fail("delayed eviction did not free its slot on task completion");
+            stats.freeResidentBytes != streamableBudgetBytes) {
+            return RhiTestResult::fail("delayed eviction did not free its storage on task completion");
         }
 
         (void)residency.requestPage(requestedPage);
-        if (residency.slotForPage(requestedPage) == UINT32_MAX) {
-            return RhiTestResult::fail("request did not acquire slot after delayed eviction completed");
+        if (!residency.pageAllocated(requestedPage)) {
+            return RhiTestResult::fail("request did not acquire storage after delayed eviction completed");
         }
 
         return RhiTestResult::pass();

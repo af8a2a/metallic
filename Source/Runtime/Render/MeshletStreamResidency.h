@@ -12,6 +12,9 @@
 
 namespace metallic::render {
 
+inline constexpr uint32_t kInvalidStreamDeviceOffsetBytes = UINT32_MAX;
+inline constexpr uint64_t kMeshletStreamStorageAlignment = 256;
+
 enum class MeshletStreamPageResidencyState : uint8_t {
     Unloaded,
     PendingUpload,
@@ -21,21 +24,21 @@ enum class MeshletStreamPageResidencyState : uint8_t {
 };
 
 struct StreamPageTableEntry {
-    uint32_t slot = UINT32_MAX;
+    uint32_t deviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
+    uint32_t deviceSizeBytes = 0;
     uint32_t state = static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded);
     uint32_t lastRequestFrame = 0;
     uint32_t lodLevel = 0;
     uint32_t payloadBytes = 0;
     uint32_t padding0 = 0;
     uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
 };
 
 struct StreamPageTablePatch {
     uint32_t pageId = 0;
-    uint32_t slot = UINT32_MAX;
+    uint32_t deviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
+    uint32_t deviceSizeBytes = 0;
     uint32_t state = static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded);
-    uint32_t padding0 = 0;
 };
 
 inline constexpr uint32_t kStreamRequestHeaderWordCount = 16;
@@ -95,11 +98,53 @@ struct StreamGpuRequestBatch {
     uint32_t frameIndex = 0;
 };
 
+struct MeshletStreamStorageAllocation {
+    uint64_t offset = UINT64_MAX;
+    uint64_t requestedSize = 0;
+    uint64_t allocatedSize = 0;
+
+    bool valid() const { return offset != UINT64_MAX && allocatedSize != 0; }
+};
+
+class MeshletStreamStorage {
+public:
+    bool initialize(uint64_t capacityBytes, uint64_t alignmentBytes, std::string& reason);
+    void reset();
+
+    MeshletStreamStorageAllocation allocate(uint64_t byteSize);
+    void release(const MeshletStreamStorageAllocation& allocation);
+
+    uint64_t allocationSize(uint64_t byteSize) const;
+    bool canAllocate(uint64_t byteSize) const;
+
+    uint64_t capacityBytes() const { return capacityBytes_; }
+    uint64_t usedBytes() const { return usedBytes_; }
+    uint64_t freeBytes() const { return capacityBytes_ >= usedBytes_ ? capacityBytes_ - usedBytes_ : 0; }
+    uint64_t largestFreeBlockBytes() const;
+    uint64_t alignmentBytes() const { return alignmentBytes_; }
+    uint32_t allocationCount() const { return allocationCount_; }
+    uint32_t freeBlockCount() const { return static_cast<uint32_t>(freeBlocks_.size()); }
+
+private:
+    struct FreeBlock {
+        uint64_t offset = 0;
+        uint64_t size = 0;
+    };
+
+    uint64_t capacityBytes_ = 0;
+    uint64_t alignmentBytes_ = kMeshletStreamStorageAlignment;
+    uint64_t usedBytes_ = 0;
+    uint32_t allocationCount_ = 0;
+    std::vector<FreeBlock> freeBlocks_;
+};
+
 struct MeshletStreamResidencyDesc {
     const scene::MeshletStreamAsset* asset = nullptr;
+    uint64_t maxResidentBytes = 0;
     uint32_t maxResidentPages = 0;
     uint32_t queuedFrameCount = 3;
     uint64_t pageStride = 0;
+    uint64_t storageAlignment = kMeshletStreamStorageAlignment;
     uint32_t unloadDelayFrames = 1;
     uint32_t evictionAgeThresholdFrames = 1;
 };
@@ -108,6 +153,12 @@ struct MeshletStreamResidencyStats {
     uint64_t frameIndex = 0;
     uint32_t pageCount = 0;
     uint32_t maxResidentPages = 0;
+    uint64_t maxResidentBytes = 0;
+    uint64_t usedResidentBytes = 0;
+    uint64_t freeResidentBytes = 0;
+    uint64_t largestFreeBlockBytes = 0;
+    uint32_t storageAllocationCount = 0;
+    uint32_t storageFreeBlockCount = 0;
     uint32_t usedSlotCount = 0;
     uint32_t freeSlotCount = 0;
     uint32_t activePageCount = 0;
@@ -206,27 +257,31 @@ public:
     void clearPendingPatches() { patches_.clear(); }
 
     MeshletStreamPageResidencyState pageState(uint32_t pageIndex) const;
-    uint32_t slotForPage(uint32_t pageIndex) const;
+    uint64_t deviceOffsetForPage(uint32_t pageIndex) const;
+    uint32_t deviceSizeForPage(uint32_t pageIndex) const;
+    bool pageAllocated(uint32_t pageIndex) const;
     bool pageResident(uint32_t pageIndex) const;
     uint64_t pageAge(uint32_t pageIndex) const;
 
     uint32_t maxResidentPages() const { return maxResidentPages_; }
+    uint64_t maxResidentBytes() const { return storage_.capacityBytes(); }
     uint32_t residentPageCount() const;
     uint32_t pendingPageCount() const;
     uint32_t queuedUploadCount() const { return static_cast<uint32_t>(uploadQueue_.size()); }
-    uint64_t pageStride() const { return pageStride_; }
-    uint64_t pageBufferSize() const { return pageStride_ * maxResidentPages_; }
+    uint64_t pageBufferSize() const { return storage_.capacityBytes(); }
     std::span<const uint32_t> requestedPages() const { return requestedPages_; }
     std::span<const uint32_t> unloadRequestedPages() const { return unloadRequestedPages_; }
     std::span<const uint32_t> activePages() const { return activePages_; }
     std::span<const uint32_t> residentPages() const { return residentPages_; }
     std::span<const uint32_t> pendingPages() const { return pendingPages_; }
-    std::span<const uint32_t> slotToPageTable() const { return slotToPage_; }
+    const MeshletStreamStorage& storage() const { return storage_; }
     MeshletStreamResidencyStats stats() const;
 
 private:
     struct PageEntry {
-        uint32_t slot = UINT32_MAX;
+        uint64_t deviceOffsetBytes = UINT64_MAX;
+        uint64_t allocationBytes = 0;
+        uint32_t deviceSizeBytes = 0;
         uint32_t storageTaskIndex = kInvalidStreamingTaskIndex;
         uint32_t updateTaskIndex = kInvalidStreamingTaskIndex;
         uint32_t unloadTaskIndex = kInvalidStreamingTaskIndex;
@@ -236,10 +291,10 @@ private:
         MeshletStreamPageResidencyState state = MeshletStreamPageResidencyState::Unloaded;
     };
 
-    uint32_t allocateSlot(uint32_t pageIndex);
+    bool allocatePageStorage(uint32_t pageIndex);
     bool scheduleUnload(uint32_t pageIndex, bool eviction);
     void completeUnloadTask(uint32_t taskIndex);
-    void releaseSlot(uint32_t pageIndex, bool returnToFreeList = true);
+    void releasePageStorage(uint32_t pageIndex);
     void setPageState(uint32_t pageIndex, MeshletStreamPageResidencyState state);
     void queueUpload(uint32_t pageIndex);
     void recordPatch(uint32_t pageIndex);
@@ -253,9 +308,8 @@ private:
     void resetFrameStats();
 
     const scene::MeshletStreamAsset* asset_ = nullptr;
+    MeshletStreamStorage storage_;
     std::vector<PageEntry> pages_;
-    std::vector<uint32_t> slotToPage_;
-    std::vector<uint32_t> freeSlots_;
     std::vector<uint32_t> uploadQueue_;
     StreamingTaskQueue requestTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> requestTaskPages_;
@@ -279,7 +333,6 @@ private:
     std::vector<StreamPageTablePatch> patches_;
     MeshletStreamResidencyStats stats_;
     uint64_t frameIndex_ = 0;
-    uint64_t pageStride_ = 0;
     uint32_t maxResidentPages_ = 0;
     uint32_t queuedFrameCount_ = 3;
     uint32_t unloadDelayFrames_ = 1;

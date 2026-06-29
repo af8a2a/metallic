@@ -398,19 +398,32 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     maxGpuPageRequests_ = std::max(desc.maxGpuPageRequests, 1u);
     maxGpuPageUnloadRequests_ = std::max(desc.maxGpuPageUnloadRequests, 1u);
     const uint64_t pageStride = alignUp(asset_.maxPagePayloadBytes(), 256);
-    if (maxResidentPages_ == 0) {
-        log = "MeshletStreamRuntime requires maxResidentPages to be greater than zero";
+    maxResidentBytes_ = desc.maxResidentBytes;
+    if (maxResidentBytes_ == 0) {
+        if (maxResidentPages_ == 0) {
+            log = "MeshletStreamRuntime requires maxResidentBytes or maxResidentPages to be greater than zero";
+            return makeError(Error::Failure);
+        }
+        if (pageStride == 0 ||
+            pageStride > std::numeric_limits<uint64_t>::max() / maxResidentPages_) {
+            log = "MeshletStreamRuntime resident byte budget overflowed";
+            return makeError(Error::Failure);
+        }
+        maxResidentBytes_ = pageStride * maxResidentPages_;
+    }
+    if (maxResidentBytes_ == 0 || maxResidentBytes_ > std::numeric_limits<uint32_t>::max()) {
+        log = "MeshletStreamRuntime resident page buffer size overflowed";
         return makeError(Error::Failure);
     }
-    if (pageStride == 0 ||
-        pageStride > std::numeric_limits<uint64_t>::max() / maxResidentPages_) {
-        log = "MeshletStreamRuntime resident page buffer size overflowed";
+    maxResidentBytes_ = alignUp(maxResidentBytes_, kMeshletStreamStorageAlignment);
+    if (maxResidentBytes_ > std::numeric_limits<uint32_t>::max()) {
+        log = "MeshletStreamRuntime resident page buffer aligned size overflowed";
         return makeError(Error::Failure);
     }
 
     Result result = device.createBuffer(
         BufferDesc{
-            .size = pageStride * maxResidentPages_,
+            .size = maxResidentBytes_,
             .structureStride = 0,
             .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::Device,
@@ -433,6 +446,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!residency_.initialize(
             MeshletStreamResidencyDesc{
                 .asset = &asset_,
+                .maxResidentBytes = maxResidentBytes_,
                 .maxResidentPages = maxResidentPages_,
                 .queuedFrameCount = std::max(desc.queuedFrameCount, 1u),
                 .pageStride = pageStride,
@@ -643,6 +657,7 @@ void MeshletStreamRuntime::reset()
     maxGpuPageRequests_ = 0;
     maxGpuPageUnloadRequests_ = 0;
     maxUpdatePatches_ = 0;
+    maxResidentBytes_ = 0;
     maxActiveGroups_ = 0;
     maxActiveGroupClusters_ = 0;
     currentFrameUploadCount_ = 0;
@@ -795,13 +810,15 @@ void MeshletStreamRuntime::appendResidentPageGroup(
     const scene::MeshletStreamPageInfo& page,
     uint32_t pageIndex)
 {
-    const uint32_t slot = residency_.slotForPage(pageIndex);
-    if (slot == UINT32_MAX || activeGroups_.size() >= maxActiveGroups_) {
+    const uint64_t deviceOffset = residency_.deviceOffsetForPage(pageIndex);
+    if (deviceOffset == UINT64_MAX ||
+        deviceOffset > std::numeric_limits<uint32_t>::max() ||
+        activeGroups_.size() >= maxActiveGroups_) {
         return;
     }
 
     MeshletStreamGpuActiveGroup group;
-    group.pageSlot = slot;
+    group.pageDeviceOffsetBytes = static_cast<uint32_t>(deviceOffset);
     group.pageIndex = pageIndex;
     group.clusterCount = page.clusterCount;
     group.primitiveIndex = page.primitiveIndex;
@@ -828,7 +845,7 @@ void MeshletStreamRuntime::appendLoadRequestGroup(
     }
 
     MeshletStreamGpuActiveGroup group;
-    group.pageSlot = UINT32_MAX;
+    group.pageDeviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
     group.pageIndex = pageIndex;
     group.clusterCount = 0;
     group.primitiveIndex = page.primitiveIndex;
@@ -1029,7 +1046,7 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
     params.clearColor[2] = 0.024f;
     params.clearColor[3] = 1.0f;
     params.debugColorMode = frame.debugColorMode;
-    params.pageStrideWords = static_cast<uint32_t>(residency_.pageStride() / sizeof(uint32_t));
+    params.pageBufferBytes = static_cast<uint32_t>(residency_.maxResidentBytes());
     params.drawTaskCount = drawTaskCount();
     params.frameIndex = frameIndex_ == 0 ? 1u : frameIndex_;
     params.maxGpuPageRequests = maxGpuPageRequests_;

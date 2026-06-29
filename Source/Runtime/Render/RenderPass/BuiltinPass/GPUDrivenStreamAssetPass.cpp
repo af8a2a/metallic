@@ -61,6 +61,16 @@ uint32_t uintProperty(const RenderGraphProperties& props, const char* key, uint3
         : static_cast<uint32_t>(value);
 }
 
+uint64_t uint64Property(const RenderGraphProperties& props, const char* key, uint64_t fallback)
+{
+    auto iter = props.find(key);
+    if (iter == props.end() || !iter->is_number_integer()) {
+        return fallback;
+    }
+    const int64_t value = iter->get<int64_t>();
+    return value < 0 ? fallback : static_cast<uint64_t>(value);
+}
+
 uint32_t selectedLodProperty(const RenderGraphProperties& props)
 {
     auto iter = props.find("selectedLodLevel");
@@ -137,6 +147,7 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
         .sourcePath = scenePath,
         .streamAssetPath = streamAssetPathFromProperties(properties, scenePath),
         .autoBuildStreamAsset = boolProperty(properties, "autoBuildStreamAsset", true),
+        .maxResidentBytes = uint64Property(properties, "maxResidentBytes", 0),
         .maxResidentPages = uintProperty(properties, "maxResidentPages", 4096),
         .maxPageUploadsPerFrame = uintProperty(properties, "maxPageUploadsPerFrame", 64),
         .maxGpuPageRequests = maxGpuPageRequests,

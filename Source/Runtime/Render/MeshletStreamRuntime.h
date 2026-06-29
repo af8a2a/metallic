@@ -33,7 +33,7 @@ inline constexpr uint32_t kMeshletStreamActiveGroupLoadRequest = 1u << 1;
 inline constexpr uint32_t kMeshletStreamActiveGroupUnloadRequest = 1u << 2;
 
 struct MeshletStreamGpuActiveGroup {
-    uint32_t pageSlot = UINT32_MAX;
+    uint32_t pageDeviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
     uint32_t pageIndex = 0;
     uint32_t clusterCount = 0;
     uint32_t primitiveIndex = 0;
@@ -55,7 +55,7 @@ struct MeshletStreamGpuParams {
     float clipOrtho[4] = {};
     float clearColor[4] = {};
     uint32_t debugColorMode = kMeshletStreamDebugPage;
-    uint32_t pageStrideWords = 0;
+    uint32_t pageBufferBytes = 0;
     uint32_t drawTaskCount = 0;
     uint32_t frameIndex = 0;
     uint32_t maxGpuPageRequests = 0;
@@ -83,6 +83,7 @@ struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
     std::filesystem::path streamAssetPath;
     bool autoBuildStreamAsset = true;
+    uint64_t maxResidentBytes = 0;
     uint32_t maxResidentPages = 4096;
     uint32_t maxPageUploadsPerFrame = 64;
     uint32_t maxGpuPageRequests = kMeshletStreamDefaultMaxGpuPageRequests;
@@ -198,6 +199,7 @@ private:
     uint32_t maxGpuPageRequests_ = 0;
     uint32_t maxGpuPageUnloadRequests_ = 0;
     uint32_t maxUpdatePatches_ = 0;
+    uint64_t maxResidentBytes_ = 0;
     uint32_t maxActiveGroups_ = 0;
     uint32_t maxActiveGroupClusters_ = 0;
     uint32_t currentFrameUploadCount_ = 0;

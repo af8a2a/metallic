@@ -1,6 +1,6 @@
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
-static const uint kInvalidStreamSlot = 0xffffffffu;
+static const uint kInvalidStreamDeviceOffset = 0xffffffffu;
 static const uint kInvalidClusterIndex = 0xffffffffu;
 static const uint kUnloadClusterIndex = 0xfffffffeu;
 static const uint kStreamStateResident = 2u;
@@ -38,7 +38,7 @@ struct GPUDrivenStreamAssetPush
 
 struct GPUDrivenStreamAssetActiveGroup
 {
-    uint pageSlot;
+    uint pageDeviceOffsetBytes;
     uint pageIndex;
     uint clusterCount;
     uint primitiveIndex;
@@ -54,14 +54,14 @@ struct GPUDrivenStreamAssetActiveGroup
 
 struct GPUDrivenStreamAssetPageTableEntry
 {
-    uint slot;
+    uint deviceOffsetBytes;
+    uint deviceSizeBytes;
     uint state;
     uint lastRequestFrame;
     uint lodLevel;
     uint payloadBytes;
     uint padding0;
     uint padding1;
-    uint padding2;
 };
 
 struct GPUDrivenStreamAssetRequestHeader
@@ -87,9 +87,9 @@ struct GPUDrivenStreamAssetRequestHeader
 struct GPUDrivenStreamAssetPatch
 {
     uint pageId;
-    uint slot;
+    uint deviceOffsetBytes;
+    uint deviceSizeBytes;
     uint state;
-    uint padding0;
 };
 
 struct GPUDrivenStreamAssetUpdateHeader
@@ -121,7 +121,7 @@ struct GPUDrivenStreamAssetParams
     float4 clipOrtho;
     float4 clearColor;
     uint debugColorMode;
-    uint pageStrideWords;
+    uint pageBufferBytes;
     uint drawTaskCount;
     uint frameIndex;
     uint maxGpuPageRequests;
@@ -295,7 +295,8 @@ void gpuDrivenStreamAssetMeshMain(
     GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[group.pageIndex];
     if (clusterIndex >= group.clusterCount ||
         ((pageEntry.state != kStreamStateResident && pageEntry.state != kStreamStateLockedFallback) ||
-        pageEntry.slot == kInvalidStreamSlot ||
+        pageEntry.deviceOffsetBytes == kInvalidStreamDeviceOffset ||
+        pageEntry.deviceSizeBytes == 0u ||
         pageEntry.payloadBytes == 0u)) {
         if (clusterIndex == 0u) {
             requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
@@ -303,8 +304,14 @@ void gpuDrivenStreamAssetMeshMain(
         SetMeshOutputCounts(0, 0);
         return;
     }
+    if (pageEntry.deviceOffsetBytes + pageEntry.payloadBytes < pageEntry.deviceOffsetBytes ||
+        pageEntry.deviceOffsetBytes + pageEntry.payloadBytes > params.pageBufferBytes ||
+        pageEntry.payloadBytes > pageEntry.deviceSizeBytes) {
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
 
-    uint pageWord = pageEntry.slot * params.pageStrideWords;
+    uint pageWord = pageEntry.deviceOffsetBytes / 4u;
     uint clusterCount = pageWords[pageWord + 2u];
     if (clusterIndex >= clusterCount) {
         SetMeshOutputCounts(0, 0);
@@ -349,7 +356,7 @@ void gpuDrivenStreamAssetMeshMain(
         }
     }
 
-    uint triangleBaseByte = pageEntry.slot * params.pageStrideWords * 4u + triangleOffsetBytes + triangleOffset;
+    uint triangleBaseByte = pageEntry.deviceOffsetBytes + triangleOffsetBytes + triangleOffset;
     for (uint triangleIndex = 0; triangleIndex < kMaxMeshletTriangles; ++triangleIndex) {
         if (triangleIndex < triangleCount) {
             uint baseByte = triangleBaseByte + triangleIndex * 3u;
@@ -381,8 +388,9 @@ void gpuDrivenStreamAssetApplyUpdatesMain(uint3 dispatchThreadID : SV_DispatchTh
 
     uint patchWord = kStreamUpdateHeaderWords + patchIndex * 4u;
     uint pageId = updates[patchWord + 0u];
-    pageTable[pageId].slot = updates[patchWord + 1u];
-    pageTable[pageId].state = updates[patchWord + 2u];
+    pageTable[pageId].deviceOffsetBytes = updates[patchWord + 1u];
+    pageTable[pageId].deviceSizeBytes = updates[patchWord + 2u];
+    pageTable[pageId].state = updates[patchWord + 3u];
 }
 
 [shader("fragment")]
