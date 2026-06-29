@@ -19,6 +19,7 @@ inline constexpr uint32_t kMeshletStreamPayloadAttributeMaterial = 1u << 3u;
 
 enum class MeshletStreamPayloadCompression : uint32_t {
     None = 0,
+    ByteRle = 1,
 };
 
 enum class MeshletStreamPayloadFormat : uint32_t {
@@ -181,8 +182,15 @@ struct MeshletStreamAssetBuildDesc {
     const Scene* scene = nullptr;
     std::filesystem::path sourcePath;
     std::filesystem::path outputPath;
+    MeshletStreamPayloadCompression compressionMode = MeshletStreamPayloadCompression::None;
 };
 
+bool decodeMeshletStreamPayloadForDevice(
+    const MeshletStreamPageInfo& page,
+    std::span<const uint8_t> storedPayload,
+    std::vector<uint8_t>& scratchPayload,
+    std::span<const uint8_t>& outDevicePayload,
+    std::string& reason);
 bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::string& reason);
 std::filesystem::path meshletStreamAssetPathFor(const std::filesystem::path& sourcePath);
 

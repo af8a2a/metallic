@@ -49,12 +49,29 @@ void printUsage()
         "  --rhi-bindless-descriptor-heap-smoke-test     Run the bindless descriptor heap smoke test\n"
         "  --rhi-no-validation                           Disable RHI validation for smoke tests\n"
         "  --build-meshstream <source.gltf>              Build a meshlet StreamAsset and exit\n"
-        "  --output <file.meshstream.bin>                Optional output path for --build-meshstream");
+        "  --output <file.meshstream.bin>                Optional output path for --build-meshstream\n"
+        "  --meshstream-compression <none|byte-rle>      Optional payload compression for --build-meshstream");
+}
+
+bool parseMeshletStreamCompression(
+    std::string_view value,
+    metallic::scene::MeshletStreamPayloadCompression& outCompressionMode)
+{
+    if (value == "none") {
+        outCompressionMode = metallic::scene::MeshletStreamPayloadCompression::None;
+        return true;
+    }
+    if (value == "byte-rle" || value == "byte_rle" || value == "byterle") {
+        outCompressionMode = metallic::scene::MeshletStreamPayloadCompression::ByteRle;
+        return true;
+    }
+    return false;
 }
 
 int buildMeshletStreamAssetOffline(
     const std::filesystem::path& sourcePath,
-    const std::filesystem::path& outputPath)
+    const std::filesystem::path& outputPath,
+    metallic::scene::MeshletStreamPayloadCompression compressionMode)
 {
     if (sourcePath.empty()) {
         std::fputs("Missing source path for --build-meshstream\n", stderr);
@@ -80,6 +97,7 @@ int buildMeshletStreamAssetOffline(
                 .scene = &scene,
                 .sourcePath = sourcePath,
                 .outputPath = resolvedOutputPath,
+                .compressionMode = compressionMode,
             },
             reason)) {
         std::fprintf(stderr, "Failed to build streamasset: %s\n", reason.c_str());
@@ -115,6 +133,8 @@ int main(int argc, char** argv)
     bool waitForGraphicsDebugger = waitForGraphicsDebuggerFromEnv();
     std::filesystem::path buildMeshstreamSourcePath;
     std::filesystem::path buildMeshstreamOutputPath;
+    metallic::scene::MeshletStreamPayloadCompression buildMeshstreamCompressionMode =
+        metallic::scene::MeshletStreamPayloadCompression::None;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--help" || argument == "-h") {
@@ -144,11 +164,28 @@ int main(int argc, char** argv)
                 return 1;
             }
             buildMeshstreamOutputPath = argv[++index];
+        } else if (argument == "--meshstream-compression") {
+            if (index + 1 >= argc) {
+                std::fputs("--meshstream-compression requires one of: none, byte-rle\n", stderr);
+                return 1;
+            }
+            const std::string_view compression(argv[++index]);
+            if (!parseMeshletStreamCompression(compression, buildMeshstreamCompressionMode)) {
+                std::fprintf(
+                    stderr,
+                    "Unsupported meshstream compression '%.*s'; expected none or byte-rle\n",
+                    static_cast<int>(compression.size()),
+                    compression.data());
+                return 1;
+            }
         }
     }
 
     if (!buildMeshstreamSourcePath.empty()) {
-        return buildMeshletStreamAssetOffline(buildMeshstreamSourcePath, buildMeshstreamOutputPath);
+        return buildMeshletStreamAssetOffline(
+            buildMeshstreamSourcePath,
+            buildMeshstreamOutputPath,
+            buildMeshstreamCompressionMode);
     }
 
     if (rhiTrianglePreviewTest) {

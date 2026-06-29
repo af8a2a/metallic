@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -171,6 +172,138 @@ bool byteRangeWithin(uint64_t byteSize, uint64_t offset, uint64_t rangeSize)
     return offset <= byteSize && rangeSize <= byteSize - offset;
 }
 
+bool meshletStreamCompressionSupported(uint32_t compressionMode)
+{
+    return compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::None) ||
+        compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::ByteRle);
+}
+
+bool encodeByteRle(std::span<const uint8_t> source, std::vector<uint8_t>& outBytes)
+{
+    outBytes.clear();
+    outBytes.reserve(source.size());
+
+    size_t offset = 0;
+    while (offset < source.size()) {
+        size_t runLength = 1;
+        while (offset + runLength < source.size() &&
+            source[offset + runLength] == source[offset] &&
+            runLength < 128) {
+            ++runLength;
+        }
+
+        if (runLength >= 3) {
+            outBytes.push_back(static_cast<uint8_t>(0x80u | (runLength - 1u)));
+            outBytes.push_back(source[offset]);
+            offset += runLength;
+            continue;
+        }
+
+        const size_t literalStart = offset;
+        size_t literalEnd = offset;
+        while (literalEnd < source.size() && literalEnd - literalStart < 128) {
+            runLength = 1;
+            while (literalEnd + runLength < source.size() &&
+                source[literalEnd + runLength] == source[literalEnd] &&
+                runLength < 128) {
+                ++runLength;
+            }
+            if (runLength >= 3) {
+                break;
+            }
+            ++literalEnd;
+        }
+
+        const size_t literalLength = literalEnd - literalStart;
+        if (literalLength == 0 || literalLength > 128) {
+            return false;
+        }
+        outBytes.push_back(static_cast<uint8_t>(literalLength - 1u));
+        outBytes.insert(
+            outBytes.end(),
+            source.data() + literalStart,
+            source.data() + literalStart + literalLength);
+        offset = literalEnd;
+    }
+    return true;
+}
+
+bool decodeByteRle(std::span<const uint8_t> source, std::span<uint8_t> destination)
+{
+    size_t sourceOffset = 0;
+    size_t destinationOffset = 0;
+    while (sourceOffset < source.size()) {
+        const uint8_t command = source[sourceOffset++];
+        const size_t count = static_cast<size_t>(command & 0x7fu) + 1u;
+        if ((command & 0x80u) != 0u) {
+            if (sourceOffset >= source.size() || count > destination.size() - destinationOffset) {
+                return false;
+            }
+            std::memset(destination.data() + destinationOffset, source[sourceOffset++], count);
+            destinationOffset += count;
+            continue;
+        }
+
+        if (count > source.size() - sourceOffset || count > destination.size() - destinationOffset) {
+            return false;
+        }
+        std::memcpy(destination.data() + destinationOffset, source.data() + sourceOffset, count);
+        sourceOffset += count;
+        destinationOffset += count;
+    }
+    return destinationOffset == destination.size();
+}
+
+bool encodePayloadForStorage(
+    const std::vector<uint8_t>& devicePayload,
+    MeshletStreamPayloadCompression compressionMode,
+    std::vector<uint8_t>& outStoredPayload,
+    MeshletStreamPageInfo& pageInfo,
+    std::string& reason)
+{
+    if (devicePayload.size() < sizeof(MeshletStreamPayloadHeader) ||
+        devicePayload.size() > std::numeric_limits<uint32_t>::max()) {
+        reason = "meshlet page payload is too small or too large for storage";
+        return false;
+    }
+
+    if (compressionMode == MeshletStreamPayloadCompression::None) {
+        outStoredPayload = devicePayload;
+    } else if (compressionMode == MeshletStreamPayloadCompression::ByteRle) {
+        std::vector<uint8_t> encodedBody;
+        const std::span<const uint8_t> body(
+            devicePayload.data() + sizeof(MeshletStreamPayloadHeader),
+            devicePayload.size() - sizeof(MeshletStreamPayloadHeader));
+        if (!encodeByteRle(body, encodedBody)) {
+            reason = "meshlet page ByteRle compression failed";
+            return false;
+        }
+
+        outStoredPayload.assign(
+            devicePayload.begin(),
+            devicePayload.begin() + static_cast<std::ptrdiff_t>(sizeof(MeshletStreamPayloadHeader)));
+        outStoredPayload.insert(outStoredPayload.end(), encodedBody.begin(), encodedBody.end());
+    } else {
+        reason = "meshlet page compression mode is unsupported";
+        return false;
+    }
+
+    if (outStoredPayload.size() > std::numeric_limits<uint32_t>::max()) {
+        reason = "meshlet page stored payload exceeds 32-bit shader offsets";
+        return false;
+    }
+
+    auto* storedHeader = reinterpret_cast<MeshletStreamPayloadHeader*>(outStoredPayload.data());
+    storedHeader->payloadByteSize = static_cast<uint32_t>(outStoredPayload.size());
+    storedHeader->uncompressedPayloadByteSize = static_cast<uint32_t>(devicePayload.size());
+    storedHeader->compressionMode = static_cast<uint32_t>(compressionMode);
+
+    pageInfo.payloadSize = outStoredPayload.size();
+    pageInfo.uncompressedSize = devicePayload.size();
+    pageInfo.compressionMode = static_cast<uint32_t>(compressionMode);
+    return true;
+}
+
 bool validatePayloadHeader(
     const uint8_t* base,
     uint64_t fileSize,
@@ -205,9 +338,18 @@ bool validatePayloadHeader(
         reason = "streamasset page payload header does not match page directory";
         return false;
     }
-    if (page.compressionMode != static_cast<uint32_t>(MeshletStreamPayloadCompression::None) ||
-        page.payloadSize != page.uncompressedSize) {
+    if (!meshletStreamCompressionSupported(page.compressionMode)) {
         reason = "streamasset page compression mode is unsupported by the v2 runtime reader";
+        return false;
+    }
+    if (page.compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::None) &&
+        page.payloadSize != page.uncompressedSize) {
+        reason = "streamasset uncompressed page has mismatched stored and device sizes";
+        return false;
+    }
+    if (page.compressionMode != static_cast<uint32_t>(MeshletStreamPayloadCompression::None) &&
+        page.uncompressedSize < sizeof(MeshletStreamPayloadHeader)) {
+        reason = "streamasset compressed page device payload metadata is invalid";
         return false;
     }
 
@@ -932,6 +1074,73 @@ std::span<const uint8_t> MeshletStreamAsset::pagePayload(uint32_t pageIndex) con
         static_cast<size_t>(page.payloadSize));
 }
 
+bool decodeMeshletStreamPayloadForDevice(
+    const MeshletStreamPageInfo& page,
+    std::span<const uint8_t> storedPayload,
+    std::vector<uint8_t>& scratchPayload,
+    std::span<const uint8_t>& outDevicePayload,
+    std::string& reason)
+{
+    reason.clear();
+    outDevicePayload = {};
+    if (storedPayload.empty() ||
+        storedPayload.size() != page.payloadSize ||
+        page.uncompressedSize == 0 ||
+        page.uncompressedSize > std::numeric_limits<uint32_t>::max()) {
+        reason = "streamasset stored payload does not match page metadata";
+        return false;
+    }
+
+    if (page.compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::None)) {
+        if (page.payloadSize != page.uncompressedSize) {
+            reason = "streamasset uncompressed payload has mismatched sizes";
+            return false;
+        }
+        outDevicePayload = storedPayload;
+        return true;
+    }
+
+    if (page.compressionMode != static_cast<uint32_t>(MeshletStreamPayloadCompression::ByteRle)) {
+        reason = "streamasset compressed payload mode is unsupported";
+        return false;
+    }
+    if (storedPayload.size() < sizeof(MeshletStreamPayloadHeader) ||
+        page.uncompressedSize < sizeof(MeshletStreamPayloadHeader)) {
+        reason = "streamasset compressed payload is too small";
+        return false;
+    }
+
+    MeshletStreamPayloadHeader storedHeader;
+    std::memcpy(&storedHeader, storedPayload.data(), sizeof(storedHeader));
+    if (storedHeader.payloadByteSize != page.payloadSize ||
+        storedHeader.uncompressedPayloadByteSize != page.uncompressedSize ||
+        storedHeader.compressionMode != page.compressionMode) {
+        reason = "streamasset compressed payload header does not match page metadata";
+        return false;
+    }
+
+    scratchPayload.resize(static_cast<size_t>(page.uncompressedSize));
+    std::memcpy(scratchPayload.data(), storedPayload.data(), sizeof(MeshletStreamPayloadHeader));
+
+    const std::span<const uint8_t> encodedBody(
+        storedPayload.data() + sizeof(MeshletStreamPayloadHeader),
+        storedPayload.size() - sizeof(MeshletStreamPayloadHeader));
+    std::span<uint8_t> decodedBody(
+        scratchPayload.data() + sizeof(MeshletStreamPayloadHeader),
+        scratchPayload.size() - sizeof(MeshletStreamPayloadHeader));
+    if (!decodeByteRle(encodedBody, decodedBody)) {
+        reason = "streamasset ByteRle payload decompression failed";
+        return false;
+    }
+
+    auto* deviceHeader = reinterpret_cast<MeshletStreamPayloadHeader*>(scratchPayload.data());
+    deviceHeader->payloadByteSize = static_cast<uint32_t>(page.uncompressedSize);
+    deviceHeader->uncompressedPayloadByteSize = static_cast<uint32_t>(page.uncompressedSize);
+    deviceHeader->compressionMode = static_cast<uint32_t>(MeshletStreamPayloadCompression::None);
+    outDevicePayload = std::span<const uint8_t>(scratchPayload.data(), scratchPayload.size());
+    return true;
+}
+
 std::filesystem::path meshletStreamAssetPathFor(const std::filesystem::path& sourcePath)
 {
     std::filesystem::path path = sourcePath;
@@ -995,6 +1204,7 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
     std::vector<uint64_t> pageOffsets;
 
     std::vector<uint8_t> payload;
+    std::vector<uint8_t> storedPayload;
     for (size_t renderPrimitiveIndex = 0; renderPrimitiveIndex < renderPrimitives.size(); ++renderPrimitiveIndex) {
         const RenderPrimitive& primitive = renderPrimitives[renderPrimitiveIndex];
         if (primitive.mode != 4 || primitive.positions.empty()) {
@@ -1062,14 +1272,20 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
                     if (!buildPagePayload(pageInput, payload, pageInfo, reason)) {
                         return false;
                     }
+                    if (!encodePayloadForStorage(
+                            payload,
+                            desc.compressionMode,
+                            storedPayload,
+                            pageInfo,
+                            reason)) {
+                        return false;
+                    }
                     uint64_t payloadOffset = 0;
-                    if (!writePayload(stream, payload, payloadOffset)) {
+                    if (!writePayload(stream, storedPayload, payloadOffset)) {
                         reason = "streamasset page payload write failed";
                         return false;
                     }
                     pageInfo.payloadOffset = payloadOffset;
-                    pageInfo.payloadSize = payload.size();
-                    pageInfo.uncompressedSize = payload.size();
                     header.maxPagePayloadBytes = std::max<uint32_t>(
                         header.maxPagePayloadBytes,
                         static_cast<uint32_t>(pageInfo.uncompressedSize));
@@ -1109,14 +1325,20 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
             if (!buildPagePayload(pageInput, payload, pageInfo, reason)) {
                 return false;
             }
+            if (!encodePayloadForStorage(
+                    payload,
+                    desc.compressionMode,
+                    storedPayload,
+                    pageInfo,
+                    reason)) {
+                return false;
+            }
             uint64_t payloadOffset = 0;
-            if (!writePayload(stream, payload, payloadOffset)) {
+            if (!writePayload(stream, storedPayload, payloadOffset)) {
                 reason = "streamasset fallback page payload write failed";
                 return false;
             }
             pageInfo.payloadOffset = payloadOffset;
-            pageInfo.payloadSize = payload.size();
-            pageInfo.uncompressedSize = payload.size();
             header.maxPagePayloadBytes =
                 std::max<uint32_t>(header.maxPagePayloadBytes, static_cast<uint32_t>(pageInfo.uncompressedSize));
             lodInfo.pageCount = 1;

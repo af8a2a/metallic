@@ -476,6 +476,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
 
     std::vector<uint32_t>& taskPages = storageTaskPages_[taskIndex];
     taskPages.clear();
+    std::vector<uint8_t> decompressedPayload;
     uint32_t uploadCount = 0;
     for (size_t queueIndex = 0; queueIndex < uploadQueue_.size() && uploadCount < maxUploads;) {
         const uint32_t pageIndex = uploadQueue_[queueIndex];
@@ -487,15 +488,27 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             continue;
         }
 
-        const std::span<const uint8_t> payload = asset_->pagePayload(pageIndex);
-        if (payload.empty() || payload.size() > pageStride_) {
+        const scene::MeshletStreamPageInfo& assetPage = asset_->pages()[pageIndex];
+        const std::span<const uint8_t> storedPayload = asset_->pagePayload(pageIndex);
+        std::span<const uint8_t> devicePayload;
+        std::string decodeReason;
+        if (!scene::decodeMeshletStreamPayloadForDevice(
+                assetPage,
+                storedPayload,
+                decompressedPayload,
+                devicePayload,
+                decodeReason) ||
+            devicePayload.empty() ||
+            devicePayload.size() > pageStride_) {
             uploadQueue_.erase(uploadQueue_.begin() + static_cast<std::ptrdiff_t>(queueIndex));
+            ++stats_.frameTransferBudgetFailureCount;
+            ++stats_.totalTransferBudgetFailureCount;
             continue;
         }
 
         const StreamDataChunk chunk{
-            .data = payload.data(),
-            .size = static_cast<uint64_t>(payload.size()),
+            .data = devicePayload.data(),
+            .size = static_cast<uint64_t>(devicePayload.size()),
         };
         const BufferOffset streamed = streamer.streamBufferData(StreamBufferDataDesc{
             .dataChunks = &chunk,

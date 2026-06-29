@@ -91,7 +91,8 @@ render::StreamerDesc makeTestStreamerDesc(uint64_t dynamicSizePerFrame = 1024)
 
 RhiTestResult buildBunnyStreamAssetForTest(
     const std::filesystem::path& outputPath,
-    scene::MeshletStreamAsset& outAsset)
+    scene::MeshletStreamAsset& outAsset,
+    scene::MeshletStreamPayloadCompression compressionMode = scene::MeshletStreamPayloadCompression::None)
 {
     const std::filesystem::path sourcePath =
         std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
@@ -107,6 +108,7 @@ RhiTestResult buildBunnyStreamAssetForTest(
                 .scene = &scene,
                 .sourcePath = sourcePath,
                 .outputPath = outputPath,
+                .compressionMode = compressionMode,
             },
             reason)) {
         return RhiTestResult::fail("buildMeshletStreamAsset failed: " + reason);
@@ -869,7 +871,10 @@ public:
     {
         const std::filesystem::path streamAssetPath = context.outputDirectory / "streamer_residency.meshstream.bin";
         scene::MeshletStreamAsset asset;
-        RhiTestResult build = buildBunnyStreamAssetForTest(streamAssetPath, asset);
+        RhiTestResult build = buildBunnyStreamAssetForTest(
+            streamAssetPath,
+            asset,
+            scene::MeshletStreamPayloadCompression::ByteRle);
         if (!build.passed) {
             return build;
         }
@@ -938,8 +943,12 @@ public:
         if (initialTable[pageIndex].slot != UINT32_MAX ||
             initialTable[pageIndex].state !=
                 static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded) ||
-            initialTable[pageIndex].payloadBytes != asset.pages()[pageIndex].payloadSize) {
+            initialTable[pageIndex].payloadBytes != asset.pages()[pageIndex].uncompressedSize) {
             return RhiTestResult::fail("initial stream page table entry did not encode missing fallback page");
+        }
+        if (asset.pages()[pageIndex].compressionMode !=
+            static_cast<uint32_t>(scene::MeshletStreamPayloadCompression::ByteRle)) {
+            return RhiTestResult::fail("compressed streamasset did not preserve ByteRle page metadata");
         }
         residency.clearPendingPatches();
 
@@ -1084,7 +1093,7 @@ public:
             return RhiTestResult::fail("resident page has no slot");
         }
 
-        std::vector<uint8_t> actual(asset.pages()[pageIndex].payloadSize);
+        std::vector<uint8_t> actual(static_cast<size_t>(asset.pages()[pageIndex].uncompressedSize));
         pageBuffer->invalidate(
             static_cast<uint64_t>(slot) * residency.pageStride(),
             actual.size());
@@ -1098,10 +1107,20 @@ public:
             actual.size());
         pageBuffer->unmap();
 
-        const std::span<const uint8_t> expected = asset.pagePayload(pageIndex);
+        std::vector<uint8_t> expectedStorage;
+        std::span<const uint8_t> expected;
+        std::string decodeReason;
+        if (!scene::decodeMeshletStreamPayloadForDevice(
+                asset.pages()[pageIndex],
+                asset.pagePayload(pageIndex),
+                expectedStorage,
+                expected,
+                decodeReason)) {
+            return RhiTestResult::fail("failed to decode compressed expected streamasset payload: " + decodeReason);
+        }
         if (actual.size() != expected.size() ||
             std::memcmp(actual.data(), expected.data(), expected.size()) != 0) {
-            return RhiTestResult::fail("streamed page payload bytes did not match streamasset payload");
+            return RhiTestResult::fail("streamed page payload bytes did not match decoded streamasset payload");
         }
         return RhiTestResult::pass();
     }

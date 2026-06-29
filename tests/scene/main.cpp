@@ -1125,6 +1125,60 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_GE(texcoords[1], 0.0f);
     EXPECT_LE(texcoords[1], 1.0f);
 
+    const std::filesystem::path compressedStreamAssetPath =
+        streamDirectory / "meshlet_lod_grid.byte_rle.meshstream.bin";
+    std::filesystem::remove(compressedStreamAssetPath);
+    ASSERT_TRUE(metallic::scene::buildMeshletStreamAsset(
+        metallic::scene::MeshletStreamAssetBuildDesc{
+            .scene = &scene,
+            .sourcePath = gltfPath,
+            .outputPath = compressedStreamAssetPath,
+            .compressionMode = metallic::scene::MeshletStreamPayloadCompression::ByteRle,
+        },
+        reason)) << reason;
+
+    metallic::scene::MeshletStreamAsset compressedAsset;
+    ASSERT_TRUE(compressedAsset.open(compressedStreamAssetPath, reason)) << reason;
+    ASSERT_EQ(compressedAsset.pageCount(), asset.pageCount());
+    const metallic::scene::MeshletStreamPageInfo& compressedPage = compressedAsset.pages().front();
+    EXPECT_EQ(
+        compressedPage.compressionMode,
+        static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadCompression::ByteRle));
+    EXPECT_NE(compressedPage.payloadSize, compressedPage.uncompressedSize);
+    EXPECT_EQ(compressedPage.uncompressedSize, page.uncompressedSize);
+
+    const std::span<const uint8_t> storedCompressedPayload = compressedAsset.pagePayload(0);
+    ASSERT_EQ(storedCompressedPayload.size(), compressedPage.payloadSize);
+    metallic::scene::MeshletStreamPayloadHeader storedCompressedHeader;
+    std::memcpy(&storedCompressedHeader, storedCompressedPayload.data(), sizeof(storedCompressedHeader));
+    EXPECT_EQ(storedCompressedHeader.payloadByteSize, compressedPage.payloadSize);
+    EXPECT_EQ(storedCompressedHeader.uncompressedPayloadByteSize, compressedPage.uncompressedSize);
+    EXPECT_EQ(storedCompressedHeader.compressionMode, compressedPage.compressionMode);
+
+    std::vector<uint8_t> decodedPayloadStorage;
+    std::span<const uint8_t> decodedPayload;
+    ASSERT_TRUE(metallic::scene::decodeMeshletStreamPayloadForDevice(
+        compressedPage,
+        storedCompressedPayload,
+        decodedPayloadStorage,
+        decodedPayload,
+        reason)) << reason;
+    ASSERT_EQ(decodedPayload.size(), compressedPage.uncompressedSize);
+    metallic::scene::MeshletStreamPayloadHeader decodedHeader;
+    std::memcpy(&decodedHeader, decodedPayload.data(), sizeof(decodedHeader));
+    EXPECT_EQ(decodedHeader.payloadByteSize, compressedPage.uncompressedSize);
+    EXPECT_EQ(decodedHeader.uncompressedPayloadByteSize, compressedPage.uncompressedSize);
+    EXPECT_EQ(
+        decodedHeader.compressionMode,
+        static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadCompression::None));
+    ASSERT_LE(
+        decodedHeader.clusterOffsetBytes +
+            decodedHeader.clusterCount * sizeof(metallic::scene::MeshletStreamPayloadCluster),
+        decodedPayload.size());
+    ASSERT_LE(decodedHeader.positionOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
+    ASSERT_LE(decodedHeader.normalOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
+    ASSERT_LE(decodedHeader.texcoord0OffsetBytes + decodedHeader.vertexCount * sizeof(float) * 2u, decodedPayload.size());
+
     asset.close();
     {
         std::ofstream source(gltfPath, std::ios::app);
