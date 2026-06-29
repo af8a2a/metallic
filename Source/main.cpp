@@ -1,7 +1,10 @@
 #include "Editor/EditorApplication.h"
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include <cstdlib>
+#include <cstdio>
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -35,6 +38,71 @@ bool waitForGraphicsDebuggerFromEnv()
 #endif
 }
 
+void printUsage()
+{
+    std::puts(
+        "Metallic options:\n"
+        "  --smoke-test                                  Render one frame and exit\n"
+        "  --wait-for-graphics-debugger                  Wait before Vulkan initialization\n"
+        "  --rhi-smoke-test                              Run the RHI smoke test\n"
+        "  --rhi-triangle-preview-test                   Run the RHI triangle preview test\n"
+        "  --rhi-bindless-descriptor-heap-smoke-test     Run the bindless descriptor heap smoke test\n"
+        "  --rhi-no-validation                           Disable RHI validation for smoke tests\n"
+        "  --build-meshstream <source.gltf>              Build a meshlet StreamAsset and exit\n"
+        "  --output <file.meshstream.bin>                Optional output path for --build-meshstream");
+}
+
+int buildMeshletStreamAssetOffline(
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& outputPath)
+{
+    if (sourcePath.empty()) {
+        std::fputs("Missing source path for --build-meshstream\n", stderr);
+        return 1;
+    }
+
+    metallic::scene::Scene scene;
+    if (!scene.load(sourcePath)) {
+        std::fprintf(
+            stderr,
+            "Failed to load source scene '%s': %s\n",
+            sourcePath.string().c_str(),
+            scene.lastLoadResult().error.c_str());
+        return 1;
+    }
+
+    const std::filesystem::path resolvedOutputPath = outputPath.empty()
+        ? metallic::scene::meshletStreamAssetPathFor(sourcePath)
+        : outputPath;
+    std::string reason;
+    if (!metallic::scene::buildMeshletStreamAsset(
+            metallic::scene::MeshletStreamAssetBuildDesc{
+                .scene = &scene,
+                .sourcePath = sourcePath,
+                .outputPath = resolvedOutputPath,
+            },
+            reason)) {
+        std::fprintf(stderr, "Failed to build streamasset: %s\n", reason.c_str());
+        return 1;
+    }
+
+    metallic::scene::MeshletStreamAsset asset;
+    if (!asset.open(resolvedOutputPath, reason)) {
+        std::fprintf(stderr, "Built streamasset failed validation: %s\n", reason.c_str());
+        return 1;
+    }
+
+    std::printf(
+        "Built meshlet StreamAsset '%s': primitives=%u geometries=%u instances=%u pages=%u maxPagePayloadBytes=%u\n",
+        resolvedOutputPath.string().c_str(),
+        asset.primitiveCount(),
+        asset.geometryCount(),
+        asset.instanceCount(),
+        asset.pageCount(),
+        asset.maxPagePayloadBytes());
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -45,9 +113,14 @@ int main(int argc, char** argv)
     bool rhiBindlessDescriptorHeapSmokeTest = false;
     bool rhiValidation = true;
     bool waitForGraphicsDebugger = waitForGraphicsDebuggerFromEnv();
+    std::filesystem::path buildMeshstreamSourcePath;
+    std::filesystem::path buildMeshstreamOutputPath;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
-        if (argument == "--smoke-test") {
+        if (argument == "--help" || argument == "-h") {
+            printUsage();
+            return 0;
+        } else if (argument == "--smoke-test") {
             smokeTest = true;
         } else if (argument == "--rhi-smoke-test") {
             rhiSmokeTest = true;
@@ -59,7 +132,23 @@ int main(int argc, char** argv)
             rhiValidation = false;
         } else if (argument == "--wait-for-graphics-debugger") {
             waitForGraphicsDebugger = true;
+        } else if (argument == "--build-meshstream") {
+            if (index + 1 >= argc) {
+                std::fputs("--build-meshstream requires a source path\n", stderr);
+                return 1;
+            }
+            buildMeshstreamSourcePath = argv[++index];
+        } else if (argument == "--output") {
+            if (index + 1 >= argc) {
+                std::fputs("--output requires a file path\n", stderr);
+                return 1;
+            }
+            buildMeshstreamOutputPath = argv[++index];
         }
+    }
+
+    if (!buildMeshstreamSourcePath.empty()) {
+        return buildMeshletStreamAssetOffline(buildMeshstreamSourcePath, buildMeshstreamOutputPath);
     }
 
     if (rhiTrianglePreviewTest) {

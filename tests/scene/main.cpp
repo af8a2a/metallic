@@ -119,9 +119,11 @@ std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& dire
 
     std::vector<float> positions;
     std::vector<float> normals;
+    std::vector<float> texcoords;
     std::vector<uint32_t> indices;
     positions.reserve(static_cast<size_t>(kGridVertices) * 3u);
     normals.reserve(static_cast<size_t>(kGridVertices) * 3u);
+    texcoords.reserve(static_cast<size_t>(kGridVertices) * 2u);
     indices.reserve(static_cast<size_t>(kGridTriangles) * 3u);
 
     float3 minBounds(std::numeric_limits<float>::max());
@@ -133,6 +135,9 @@ std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& dire
             const float fz = std::sin(fx * 0.35f) * std::cos(fy * 0.27f) * 0.08f;
             positions.insert(positions.end(), {fx, fy, fz});
             normals.insert(normals.end(), {0.0f, 0.0f, 1.0f});
+            texcoords.insert(
+                texcoords.end(),
+                {fx / static_cast<float>(kGridCells), fy / static_cast<float>(kGridCells)});
             minBounds.x = std::min(minBounds.x, fx);
             minBounds.y = std::min(minBounds.y, fy);
             minBounds.z = std::min(minBounds.z, fz);
@@ -164,11 +169,15 @@ std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& dire
         reinterpret_cast<const char*>(normals.data()),
         static_cast<std::streamsize>(normals.size() * sizeof(float)));
     binary.write(
+        reinterpret_cast<const char*>(texcoords.data()),
+        static_cast<std::streamsize>(texcoords.size() * sizeof(float)));
+    binary.write(
         reinterpret_cast<const char*>(indices.data()),
         static_cast<std::streamsize>(indices.size() * sizeof(uint32_t)));
 
     const size_t positionBytes = positions.size() * sizeof(float);
     const size_t normalBytes = normals.size() * sizeof(float);
+    const size_t texcoordBytes = texcoords.size() * sizeof(float);
     const size_t indexBytes = indices.size() * sizeof(uint32_t);
     const std::filesystem::path gltfPath = directory / "meshlet_lod_grid.gltf";
     std::ostringstream gltf;
@@ -176,7 +185,7 @@ std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& dire
   "asset": { "version": "2.0" },
   "buffers": [
     { "uri": "meshlet_lod_grid.bin", "byteLength": )json"
-         << (positionBytes + normalBytes + indexBytes) << R"json( }
+         << (positionBytes + normalBytes + texcoordBytes + indexBytes) << R"json( }
   ],
   "bufferViews": [
     { "buffer": 0, "byteOffset": 0, "byteLength": )json"
@@ -184,7 +193,9 @@ std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& dire
     { "buffer": 0, "byteOffset": )json"
          << positionBytes << R"json(, "byteLength": )json" << normalBytes << R"json(, "target": 34962 },
     { "buffer": 0, "byteOffset": )json"
-         << (positionBytes + normalBytes) << R"json(, "byteLength": )json" << indexBytes << R"json(, "target": 34963 }
+         << (positionBytes + normalBytes) << R"json(, "byteLength": )json" << texcoordBytes << R"json(, "target": 34962 },
+    { "buffer": 0, "byteOffset": )json"
+         << (positionBytes + normalBytes + texcoordBytes) << R"json(, "byteLength": )json" << indexBytes << R"json(, "target": 34963 }
   ],
   "accessors": [
     { "bufferView": 0, "componentType": 5126, "count": )json"
@@ -193,12 +204,14 @@ std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& dire
          << maxBounds.x << ", " << maxBounds.y << ", " << maxBounds.z << R"json(] },
     { "bufferView": 1, "componentType": 5126, "count": )json"
          << kGridVertices << R"json(, "type": "VEC3" },
-    { "bufferView": 2, "componentType": 5125, "count": )json"
+    { "bufferView": 2, "componentType": 5126, "count": )json"
+         << kGridVertices << R"json(, "type": "VEC2" },
+    { "bufferView": 3, "componentType": 5125, "count": )json"
          << indices.size() << R"json(, "type": "SCALAR" }
   ],
   "meshes": [
     { "name": "Meshlet LOD Grid", "primitives": [
-      { "attributes": { "POSITION": 0, "NORMAL": 1 }, "indices": 2, "mode": 4 }
+      { "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 }, "indices": 3, "mode": 4 }
     ] }
   ],
   "nodes": [ { "name": "Grid", "mesh": 0 } ],
@@ -1014,6 +1027,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_TRUE(asset.isCurrentForSource(gltfPath));
     ASSERT_EQ(asset.primitiveCount(), 1u);
     ASSERT_GE(asset.instanceCount(), 1u);
+    ASSERT_EQ(asset.geometryCount(), 1u);
     ASSERT_GT(asset.lodLevelCount(), 1u);
     ASSERT_GT(asset.pageCount(), 1u);
     ASSERT_GT(asset.maxPagePayloadBytes(), 0u);
@@ -1022,6 +1036,14 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     const metallic::scene::MeshletStreamPrimitiveInfo& primitive = asset.primitives().front();
     EXPECT_EQ(primitive.renderPrimitiveIndex, 0u);
     EXPECT_GT(primitive.fallbackPageCount, 0u);
+    const metallic::scene::MeshletStreamGeometryInfo& geometry = asset.geometries().front();
+    EXPECT_EQ(geometry.primitiveIndex, 0u);
+    EXPECT_EQ(geometry.renderPrimitiveIndex, primitive.renderPrimitiveIndex);
+    EXPECT_EQ(geometry.pageOffset, primitive.pageOffset);
+    EXPECT_EQ(geometry.pageCount, primitive.pageCount);
+    EXPECT_EQ(geometry.pagePayloadOffsetTableOffset, primitive.pageOffset);
+    EXPECT_EQ(geometry.pagePayloadOffsetTableCount, primitive.pageCount);
+    ASSERT_EQ(asset.geometryPagePayloadOffsets(0).size(), primitive.pageCount);
     uint32_t minLodPageCount = std::numeric_limits<uint32_t>::max();
     for (uint32_t lod = 0; lod < primitive.lodLevelCount; ++lod) {
         const metallic::scene::MeshletStreamLodLevelInfo& level =
@@ -1035,7 +1057,15 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
         EXPECT_EQ(page.payloadOffset, asset.pagePayloadOffsets()[pageIndex]);
         EXPECT_EQ(page.payloadOffset % 16u, 0u);
         EXPECT_GT(page.payloadSize, sizeof(metallic::scene::MeshletStreamPayloadHeader));
+        EXPECT_EQ(page.payloadSize, page.uncompressedSize);
         EXPECT_LE(page.payloadSize, asset.maxPagePayloadBytes());
+        EXPECT_EQ(
+            page.compressionMode,
+            static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadCompression::None));
+        EXPECT_TRUE((page.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributePosition) != 0u);
+        EXPECT_TRUE((page.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeNormal) != 0u);
+        EXPECT_TRUE((page.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeTexcoord0) != 0u);
+        EXPECT_TRUE((page.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeMaterial) != 0u);
     }
 
     const metallic::scene::MeshletStreamPageInfo& page = asset.pages().front();
@@ -1043,26 +1073,57 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     ASSERT_EQ(payload.size(), page.payloadSize);
     metallic::scene::MeshletStreamPayloadHeader header;
     std::memcpy(&header, payload.data(), sizeof(header));
-    EXPECT_EQ(header.version, 1u);
+    EXPECT_EQ(header.version, 2u);
     EXPECT_EQ(header.clusterCount, page.clusterCount);
     EXPECT_EQ(header.vertexCount, page.vertexCount);
     EXPECT_EQ(header.triangleIndexCount, page.triangleIndexCount);
     EXPECT_EQ(header.payloadByteSize, page.payloadSize);
+    EXPECT_EQ(header.uncompressedPayloadByteSize, page.uncompressedSize);
+    EXPECT_EQ(header.attributeFlags, page.attributeFlags);
+    EXPECT_EQ(header.compressionMode, page.compressionMode);
+    EXPECT_EQ(
+        header.positionFormat,
+        static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Float32x4));
+    EXPECT_EQ(
+        header.normalFormat,
+        static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Float32x4));
+    EXPECT_EQ(
+        header.texcoord0Format,
+        static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Float32x2));
+    EXPECT_EQ(
+        header.materialFormat,
+        static_cast<uint32_t>(metallic::scene::MeshletStreamPayloadFormat::Uint32));
+    EXPECT_EQ(header.materialCount, header.clusterCount);
 
     ASSERT_LE(
         header.clusterOffsetBytes + header.clusterCount * sizeof(metallic::scene::MeshletStreamPayloadCluster),
         payload.size());
+    ASSERT_LE(header.positionOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
+    ASSERT_LE(header.normalOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
+    ASSERT_LE(header.texcoord0OffsetBytes + header.vertexCount * sizeof(float) * 2u, payload.size());
+    ASSERT_LE(header.materialOffsetBytes + header.materialCount * sizeof(uint32_t), payload.size());
     const auto* clusters = reinterpret_cast<const metallic::scene::MeshletStreamPayloadCluster*>(
         payload.data() + header.clusterOffsetBytes);
+    const auto* materialIds = reinterpret_cast<const uint32_t*>(payload.data() + header.materialOffsetBytes);
     for (uint32_t clusterIndex = 0; clusterIndex < header.clusterCount; ++clusterIndex) {
         const metallic::scene::MeshletStreamPayloadCluster& cluster = clusters[clusterIndex];
         ASSERT_LE(cluster.vertexOffset + cluster.vertexCount, header.vertexCount);
         ASSERT_LE(cluster.triangleOffset + cluster.triangleCount * 3u, header.triangleIndexCount);
+        EXPECT_EQ(materialIds[clusterIndex], page.materialIndex);
         for (uint32_t index = 0; index < cluster.triangleCount * 3u; ++index) {
             const uint8_t localIndex = payload[header.triangleOffsetBytes + cluster.triangleOffset + index];
             EXPECT_LT(localIndex, cluster.vertexCount);
         }
     }
+
+    const auto* normals = reinterpret_cast<const float*>(payload.data() + header.normalOffsetBytes);
+    const auto* texcoords = reinterpret_cast<const float*>(payload.data() + header.texcoord0OffsetBytes);
+    EXPECT_TRUE(nearlyEqual(normals[2], 1.0f));
+    EXPECT_TRUE(nearlyEqual(normals[3], 0.0f));
+    EXPECT_GE(texcoords[0], 0.0f);
+    EXPECT_LE(texcoords[0], 1.0f);
+    EXPECT_GE(texcoords[1], 0.0f);
+    EXPECT_LE(texcoords[1], 1.0f);
 
     asset.close();
     {

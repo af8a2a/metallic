@@ -551,7 +551,7 @@ void MeshletStreamResidencyManager::buildInitialPageTable(std::span<StreamPageTa
             .state = static_cast<uint32_t>(page.state),
             .lastRequestFrame = 0,
             .lodLevel = assetPage.lodLevel,
-            .payloadBytes = static_cast<uint32_t>(assetPage.payloadSize),
+            .payloadBytes = static_cast<uint32_t>(assetPage.uncompressedSize),
         };
     }
 }
