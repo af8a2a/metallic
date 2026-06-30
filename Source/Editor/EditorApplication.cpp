@@ -561,6 +561,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
         return render::RenderGraphProperties{
             {"path", "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"},
             {"autoBuildStreamAsset", true},
+            {"enableGpuLodSelection", true},
             {"selectedLodLevel", 0},
             {"maxResidentPages", 4096},
             {"maxPageUploadsPerFrame", 64},

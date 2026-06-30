@@ -216,6 +216,7 @@ public:
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         return {
+            runtimeBoolSetting("enableGpuLodSelection", "GPU LOD", true),
             runtimeIntSetting("selectedLodLevel", "LOD", 0, 0, 31),
             runtimeEnumSetting(
                 "debugColorMode",
@@ -342,11 +343,15 @@ private:
         const float fovDegrees = cameraFloat(camera, "fovDegrees", 60.0f);
         const float znear = cameraFloat(camera, "znear", 0.1f);
         const float zfar = cameraFloat(camera, "zfar", std::max(radius * 8.0f, znear + 100.0f));
+        const bool enableGpuLodSelection = boolProperty(context.properties(), "enableGpuLodSelection", true);
 
         return MeshletStreamFrameDesc{
             .width = context.width(),
             .height = context.height(),
-            .selectedLodLevel = selectedLodProperty(context.properties()),
+            .selectedLodLevel = enableGpuLodSelection
+                ? kMeshletStreamNoDebugLodOverride
+                : selectedLodProperty(context.properties()),
+            .enableGpuLodSelection = enableGpuLodSelection,
             .debugColorMode = debugColorModeFromProperties(context.properties()),
             .camera = MeshletStreamCameraDesc{
                 .eye = eye,

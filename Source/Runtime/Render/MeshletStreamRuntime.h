@@ -21,16 +21,20 @@ inline constexpr const char* kMeshletStreamShaderModuleName = "gpu_driven_stream
 inline constexpr const char* kMeshletStreamMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kMeshletStreamFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
 inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
+inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
 
 inline constexpr uint32_t kMeshletStreamDebugPage = 0;
 inline constexpr uint32_t kMeshletStreamDebugLod = 1;
 inline constexpr uint32_t kMeshletStreamDebugPrimitive = 2;
+inline constexpr uint32_t kMeshletStreamNoDebugLodOverride = UINT32_MAX;
 inline constexpr uint32_t kMeshletStreamInvalidClusterIndex = UINT32_MAX;
 inline constexpr uint32_t kMeshletStreamUnloadClusterIndex = UINT32_MAX - 1u;
 inline constexpr uint32_t kMeshletStreamDefaultMaxGpuPageRequests = 65536;
 inline constexpr uint32_t kMeshletStreamActiveGroupResident = 1u << 0;
 inline constexpr uint32_t kMeshletStreamActiveGroupLoadRequest = 1u << 1;
 inline constexpr uint32_t kMeshletStreamActiveGroupUnloadRequest = 1u << 2;
+inline constexpr uint32_t kMeshletStreamTraversalLoadPhase = 0;
+inline constexpr uint32_t kMeshletStreamTraversalUnloadPhase = 1;
 
 struct MeshletStreamGpuActiveGroup {
     uint32_t pageDeviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
@@ -45,6 +49,47 @@ struct MeshletStreamGpuActiveGroup {
     float world1[4] = {};
     float world2[4] = {};
     float world3[4] = {};
+};
+
+struct MeshletStreamGpuInstance {
+    uint32_t primitiveIndex = 0;
+    uint32_t materialIndex = 0;
+    uint32_t visible = 0;
+    uint32_t padding0 = 0;
+    float world0[4] = {};
+    float world1[4] = {};
+    float world2[4] = {};
+    float world3[4] = {};
+    float boundsCenterRadius[4] = {};
+};
+
+struct MeshletStreamGpuPrimitive {
+    uint32_t lodLevelOffset = 0;
+    uint32_t lodLevelCount = 0;
+    uint32_t pageOffset = 0;
+    uint32_t pageCount = 0;
+    uint32_t fallbackPageOffset = 0;
+    uint32_t fallbackPageCount = 0;
+    uint32_t materialIndex = 0;
+    uint32_t padding0 = 0;
+};
+
+struct MeshletStreamGpuLodLevel {
+    uint32_t pageOffset = 0;
+    uint32_t pageCount = 0;
+    uint32_t lodLevel = 0;
+    uint32_t clusterCount = 0;
+    float minBoundingSphereRadius = 0.0f;
+    float minMaxQuadricError = 0.0f;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+};
+
+struct MeshletStreamGpuPageInfo {
+    uint32_t primitiveIndex = 0;
+    uint32_t lodLevel = 0;
+    uint32_t pageIndex = 0;
+    uint32_t padding0 = 0;
 };
 
 struct MeshletStreamGpuParams {
@@ -62,6 +107,14 @@ struct MeshletStreamGpuParams {
     uint32_t maxGpuPageUnloadRequests = 0;
     uint32_t activeGroupCount = 0;
     uint32_t maxActiveGroupClusters = 0;
+    uint32_t sceneInstanceCount = 0;
+    uint32_t scenePrimitiveCount = 0;
+    uint32_t sceneLodLevelCount = 0;
+    uint32_t scenePageCount = 0;
+    uint32_t selectedLodLevel = kMeshletStreamNoDebugLodOverride;
+    uint32_t enableGpuLodSelection = 1;
+    uint32_t enableGpuUnloadRequests = 1;
+    uint32_t padding0 = 0;
 };
 
 struct MeshletStreamUserPush {
@@ -71,13 +124,21 @@ struct MeshletStreamUserPush {
     uint32_t paramsBuffer = 0;
     uint32_t requestBuffer = 0;
     uint32_t updateBuffer = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
+    uint32_t instanceBuffer = 0;
+    uint32_t primitiveBuffer = 0;
+    uint32_t lodLevelBuffer = 0;
+    uint32_t pageInfoBuffer = 0;
+    uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
 };
 
 static_assert(sizeof(MeshletStreamGpuActiveGroup) == 96);
+static_assert(sizeof(MeshletStreamGpuInstance) == 96);
+static_assert(sizeof(MeshletStreamGpuPrimitive) == 32);
+static_assert(sizeof(MeshletStreamGpuLodLevel) == 32);
+static_assert(sizeof(MeshletStreamGpuPageInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 32);
-static_assert(sizeof(MeshletStreamGpuParams) == 128);
+static_assert(sizeof(MeshletStreamGpuParams) == 160);
+static_assert(sizeof(MeshletStreamUserPush) == 44);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -103,7 +164,8 @@ struct MeshletStreamCameraDesc {
 struct MeshletStreamFrameDesc {
     uint32_t width = 1;
     uint32_t height = 1;
-    uint32_t selectedLodLevel = 0;
+    uint32_t selectedLodLevel = kMeshletStreamNoDebugLodOverride;
+    bool enableGpuLodSelection = true;
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     MeshletStreamCameraDesc camera;
 };
@@ -138,9 +200,14 @@ public:
 
 private:
     class UpdatePass;
+    class TraversalPass;
 
     uint32_t computeMaxActiveGroups() const;
     uint32_t computeMaxPageClusters() const;
+    uint32_t selectLodForInstanceCpu(
+        const scene::MeshletStreamInstanceInfo& instance,
+        const scene::MeshletStreamPrimitiveInfo& primitive,
+        const MeshletStreamFrameDesc& frame) const;
     void appendResidentPageGroup(
         const scene::MeshletStreamInstanceInfo& instance,
         const scene::MeshletStreamPageInfo& page,
@@ -157,11 +224,13 @@ private:
         const scene::MeshletStreamInstanceInfo& instance,
         uint32_t pageOffset,
         uint32_t pageCount);
-    void buildFrameActiveGroups(uint32_t selectedLodLevel);
+    void buildFrameActiveGroups(const MeshletStreamFrameDesc& frame);
+    Result initializeSceneMetadataBuffers(Device& device, std::string& log);
 
     Result initializePageTableIfNeeded(CommandBuffer& commandBuffer);
     Result applyPageTablePatches(CommandBuffer& commandBuffer);
     Result clearRequestBuffer(CommandBuffer& commandBuffer);
+    Result dispatchTraversal(CommandBuffer& commandBuffer, uint32_t threadCount, uint32_t traversalPhase);
     Result copyRequestBufferForReadback(CommandBuffer& commandBuffer);
     Result updateActiveGroupBuffer();
     Result updateParamsBuffer(const MeshletStreamFrameDesc& frame);
@@ -181,13 +250,22 @@ private:
     std::unique_ptr<Buffer> requestReadbackBuffer_;
     std::unique_ptr<Buffer> requestClearBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
+    std::unique_ptr<Buffer> instanceBuffer_;
+    std::unique_ptr<Buffer> primitiveBuffer_;
+    std::unique_ptr<Buffer> lodLevelBuffer_;
+    std::unique_ptr<Buffer> pageInfoBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<UpdatePass> updatePass_;
+    std::unique_ptr<TraversalPass> traversalPass_;
     BindlessHandle pageHandle_;
     BindlessHandle activeGroupHandle_;
     BindlessHandle pageTableHandle_;
     BindlessHandle paramsHandle_;
     BindlessHandle requestHandle_;
+    BindlessHandle instanceHandle_;
+    BindlessHandle primitiveHandle_;
+    BindlessHandle lodLevelHandle_;
+    BindlessHandle pageInfoHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
     ResourceState pageTableState_ = ResourceState::Undefined;
     ResourceState requestBufferState_ = ResourceState::Undefined;

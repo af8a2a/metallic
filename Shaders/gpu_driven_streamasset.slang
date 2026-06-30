@@ -3,11 +3,15 @@ static const uint kMaxMeshletTriangles = 128;
 static const uint kInvalidStreamDeviceOffset = 0xffffffffu;
 static const uint kInvalidClusterIndex = 0xffffffffu;
 static const uint kUnloadClusterIndex = 0xfffffffeu;
+static const uint kStreamStatePendingUpload = 1u;
 static const uint kStreamStateResident = 2u;
 static const uint kStreamStateLockedFallback = 3u;
+static const uint kNoDebugLodOverride = 0xffffffffu;
 static const uint kActiveGroupResident = 1u << 0u;
 static const uint kActiveGroupLoadRequest = 1u << 1u;
 static const uint kActiveGroupUnloadRequest = 1u << 2u;
+static const uint kTraversalPhaseLoad = 0u;
+static const uint kTraversalPhaseUnload = 1u;
 static const uint kStreamRequestHeaderWords = 16u;
 static const uint kStreamUpdateHeaderWords = 16u;
 static const uint kStreamRequestMaxLoadsWord = 0u;
@@ -32,8 +36,11 @@ struct GPUDrivenStreamAssetPush
     uint paramsBuffer;
     uint requestBuffer;
     uint updateBuffer;
-    uint padding0;
-    uint padding1;
+    uint instanceBuffer;
+    uint primitiveBuffer;
+    uint lodLevelBuffer;
+    uint pageInfoBuffer;
+    uint traversalPhase;
 };
 
 struct GPUDrivenStreamAssetActiveGroup
@@ -50,6 +57,51 @@ struct GPUDrivenStreamAssetActiveGroup
     float4 world1;
     float4 world2;
     float4 world3;
+};
+
+struct GPUDrivenStreamAssetInstance
+{
+    uint primitiveIndex;
+    uint materialIndex;
+    uint visible;
+    uint padding0;
+    float4 world0;
+    float4 world1;
+    float4 world2;
+    float4 world3;
+    float4 boundsCenterRadius;
+};
+
+struct GPUDrivenStreamAssetPrimitive
+{
+    uint lodLevelOffset;
+    uint lodLevelCount;
+    uint pageOffset;
+    uint pageCount;
+    uint fallbackPageOffset;
+    uint fallbackPageCount;
+    uint materialIndex;
+    uint padding0;
+};
+
+struct GPUDrivenStreamAssetLodLevel
+{
+    uint pageOffset;
+    uint pageCount;
+    uint lodLevel;
+    uint clusterCount;
+    float minBoundingSphereRadius;
+    float minMaxQuadricError;
+    uint padding0;
+    uint padding1;
+};
+
+struct GPUDrivenStreamAssetPageInfo
+{
+    uint primitiveIndex;
+    uint lodLevel;
+    uint pageIndex;
+    uint padding0;
 };
 
 struct GPUDrivenStreamAssetPageTableEntry
@@ -128,6 +180,14 @@ struct GPUDrivenStreamAssetParams
     uint maxGpuPageUnloadRequests;
     uint activeGroupCount;
     uint maxActiveGroupClusters;
+    uint sceneInstanceCount;
+    uint scenePrimitiveCount;
+    uint sceneLodLevelCount;
+    uint scenePageCount;
+    uint selectedLodLevel;
+    uint enableGpuLodSelection;
+    uint enableGpuUnloadRequests;
+    uint padding0;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
@@ -218,6 +278,15 @@ void requestStreamPageLoad(
     }
 }
 
+void markStreamPageDemand(
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
+    GPUDrivenStreamAssetParams params,
+    uint pageIndex)
+{
+    uint oldRequestFrame = 0;
+    InterlockedMax(pageTable[pageIndex].lastRequestFrame, params.frameIndex, oldRequestFrame);
+}
+
 void requestStreamPageUnload(
     RWStructuredBuffer<uint> requests,
     GPUDrivenStreamAssetParams params,
@@ -232,6 +301,129 @@ void requestStreamPageUnload(
     } else {
         InterlockedAdd(requests[kStreamRequestUnloadOverflowCounterWord], 1u);
         InterlockedMax(requests[kStreamRequestLastUnloadOverflowFrameWord], params.frameIndex);
+    }
+}
+
+bool streamPageAvailable(uint state)
+{
+    return state == kStreamStatePendingUpload ||
+        state == kStreamStateResident ||
+        state == kStreamStateLockedFallback;
+}
+
+uint selectTraversalLod(
+    GPUDrivenStreamAssetParams params,
+    StructuredBuffer<GPUDrivenStreamAssetLodLevel> lodLevels,
+    GPUDrivenStreamAssetInstance instance,
+    GPUDrivenStreamAssetPrimitive primitive)
+{
+    if (primitive.lodLevelCount == 0u) {
+        return 0u;
+    }
+    if (params.enableGpuLodSelection == 0u && params.selectedLodLevel != kNoDebugLodOverride) {
+        return min(params.selectedLodLevel, primitive.lodLevelCount - 1u);
+    }
+
+    float3 center = instance.boundsCenterRadius.xyz;
+    float radius = max(instance.boundsCenterRadius.w, 0.001);
+    float distanceToCamera = max(length(center - params.eye.xyz) - radius, 0.001);
+    float fovRadians = clamp(params.viewport.w, 0.017453292, 3.12413936);
+    float pixelScale = max(params.viewport.z, 1.0) / max(2.0 * tan(fovRadians * 0.5), 0.001);
+    const float targetPixelError = 1.5;
+
+    for (uint reverse = 0u; reverse < primitive.lodLevelCount; ++reverse) {
+        uint localLod = primitive.lodLevelCount - 1u - reverse;
+        uint lodIndex = primitive.lodLevelOffset + localLod;
+        if (lodIndex >= params.sceneLodLevelCount) {
+            continue;
+        }
+        GPUDrivenStreamAssetLodLevel lod = lodLevels[lodIndex];
+        float lodError = max(lod.minMaxQuadricError, radius * 0.0005);
+        float pixelError = lodError * pixelScale / distanceToCamera;
+        if (pixelError <= targetPixelError || localLod == 0u) {
+            return localLod;
+        }
+    }
+    return 0u;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThreadID, uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instanceHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(push.bufferShaderIndexBase + push.instanceBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>> primitiveHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(uint2(push.bufferShaderIndexBase + push.primitiveBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetLodLevel>> lodLevelHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetLodLevel>>(uint2(push.bufferShaderIndexBase + push.lodLevelBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.bufferShaderIndexBase + push.pageTableBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> requestHandle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.requestBuffer, 0));
+
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
+    StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives = primitiveHandle;
+    StructuredBuffer<GPUDrivenStreamAssetLodLevel> lodLevels = lodLevelHandle;
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
+    RWStructuredBuffer<uint> requests = requestHandle;
+
+    GPUDrivenStreamAssetParams params = paramsBuffer[0];
+    if (push.traversalPhase == kTraversalPhaseUnload) {
+        uint pageIndex = dispatchThreadID.x;
+        if (pageIndex >= params.scenePageCount || params.enableGpuUnloadRequests == 0u) {
+            return;
+        }
+        GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[pageIndex];
+        if (pageEntry.state == kStreamStateResident && pageEntry.lastRequestFrame != params.frameIndex) {
+            requestStreamPageUnload(requests, params, pageIndex);
+        }
+        return;
+    }
+
+    uint instanceIndex = dispatchThreadID.x;
+    if (instanceIndex >= params.sceneInstanceCount) {
+        return;
+    }
+
+    GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
+    if (instance.visible == 0u) {
+        return;
+    }
+    if (instance.primitiveIndex >= params.scenePrimitiveCount) {
+        InterlockedAdd(requests[kStreamRequestInvalidPageCounterWord], 1u);
+        InterlockedMax(requests[kStreamRequestLastInvalidPageFrameWord], params.frameIndex);
+        return;
+    }
+
+    GPUDrivenStreamAssetPrimitive primitive = primitives[instance.primitiveIndex];
+    if (primitive.lodLevelCount == 0u ||
+        primitive.lodLevelOffset >= params.sceneLodLevelCount ||
+        primitive.lodLevelCount > params.sceneLodLevelCount - primitive.lodLevelOffset) {
+        InterlockedAdd(requests[kStreamRequestInvalidPageCounterWord], 1u);
+        InterlockedMax(requests[kStreamRequestLastInvalidPageFrameWord], params.frameIndex);
+        return;
+    }
+
+    uint localLod = selectTraversalLod(params, lodLevels, instance, primitive);
+    uint selectedLodIndex = primitive.lodLevelOffset + localLod;
+    GPUDrivenStreamAssetLodLevel selectedLod = lodLevels[selectedLodIndex];
+    for (uint page = 0u; page < selectedLod.pageCount; ++page) {
+        uint pageIndex = selectedLod.pageOffset + page;
+        if (pageIndex >= params.scenePageCount) {
+            InterlockedAdd(requests[kStreamRequestInvalidPageCounterWord], 1u);
+            InterlockedMax(requests[kStreamRequestLastInvalidPageFrameWord], params.frameIndex);
+            continue;
+        }
+        uint state = pageTable[pageIndex].state;
+        if (streamPageAvailable(state)) {
+            markStreamPageDemand(pageTable, params, pageIndex);
+        } else {
+            requestStreamPageLoad(pageTable, requests, params, pageIndex);
+        }
     }
 }
 

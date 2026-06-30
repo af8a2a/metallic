@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <array>
@@ -60,6 +61,40 @@ render::Result createSlangShaderModule(
             .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
         },
         outShaderModule);
+}
+
+render::Result writeHostBuffer(render::Buffer& buffer, const void* data, uint64_t byteSize)
+{
+    if (byteSize > buffer.desc().size || (byteSize > 0 && data == nullptr)) {
+        return render::makeError(render::Error::InvalidArgument);
+    }
+    void* mapped = buffer.map();
+    if (mapped == nullptr) {
+        return render::makeError(render::Error::Failure);
+    }
+    if (byteSize > 0) {
+        std::memcpy(mapped, data, static_cast<size_t>(byteSize));
+        buffer.flush(0, byteSize);
+    }
+    buffer.unmap();
+    return {};
+}
+
+bool readHostBuffer(render::Buffer& buffer, void* outData, uint64_t byteSize)
+{
+    if (byteSize > buffer.desc().size || (byteSize > 0 && outData == nullptr)) {
+        return false;
+    }
+    buffer.invalidate(0, byteSize);
+    void* mapped = buffer.map();
+    if (mapped == nullptr) {
+        return false;
+    }
+    if (byteSize > 0) {
+        std::memcpy(outData, mapped, static_cast<size_t>(byteSize));
+    }
+    buffer.unmap();
+    return true;
 }
 
 class TestInputOutputPass final : public render::RasterPass {
@@ -874,7 +909,9 @@ public:
             render::createRenderGraphPass("ScenePathTracePass");
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
-        if (pathTrace == nullptr || materialVisualization == nullptr) {
+        const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
+            render::createRenderGraphPass("GPUDrivenStreamAssetPass");
+        if (pathTrace == nullptr || materialVisualization == nullptr || gpuDrivenStreamAsset == nullptr) {
             return RhiTestResult::fail("failed to create passes for runtime settings declaration test");
         }
         if (!hasBoolRuntimeSetting(*pathTrace, "flipBitangent")) {
@@ -882,6 +919,9 @@ public:
         }
         if (!hasBoolRuntimeSetting(*materialVisualization, "flipBitangent")) {
             return RhiTestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
+        }
+        if (!hasBoolRuntimeSetting(*gpuDrivenStreamAsset, "enableGpuLodSelection")) {
+            return RhiTestResult::fail("GPUDrivenStreamAssetPass missing Bool runtime setting enableGpuLodSelection");
         }
         return RhiTestResult::pass();
     }
@@ -1198,6 +1238,7 @@ public:
             !gpuDrivenStreamAsset->properties.is_object() ||
             gpuDrivenStreamAsset->properties.value("path", "") != gpuDrivenStreamAssetSample.desc.scenePath ||
             !gpuDrivenStreamAsset->properties.value("autoBuildStreamAsset", false) ||
+            !gpuDrivenStreamAsset->properties.value("enableGpuLodSelection", false) ||
             gpuDrivenStreamAsset->properties.value("debugColorMode", "") != "page" ||
             gpuDrivenStreamAsset->properties.value("selectedLodLevel", -1) != 0) {
             return RhiTestResult::fail("GPUDriven StreamAsset sample did not preserve streamasset defaults");
@@ -1991,6 +2032,576 @@ public:
             return RhiTestResult::fail("GPUDrivenStreamAsset update shader produced empty SPIR-V");
         }
 
+        render::ShaderCompileResult traversalCompile;
+        result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "gpu_driven_streamasset",
+                .entryPointName = "gpuDrivenStreamAssetTraversalMain",
+                .searchPath = kShaderSearchPath,
+                .profileName = "glsl_460",
+            },
+            traversalCompile);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenStreamAsset traversal shader compile returned ") +
+                toString(result) +
+                ": " +
+                traversalCompile.diagnostics);
+        }
+        if (traversalCompile.spirv.empty()) {
+            return RhiTestResult::fail("GPUDrivenStreamAsset traversal shader produced empty SPIR-V");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
+class RenderGraphGPUDrivenStreamAssetTraversalDemandTest : public RhiTest {
+public:
+    RenderGraphGPUDrivenStreamAssetTraversalDemandTest()
+    {
+        type = RhiTestType::Command;
+        name = "render_graph_gpu_driven_streamasset_traversal_demand";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        constexpr uint32_t kMaxLoadRequests = 8;
+        constexpr uint32_t kMaxUnloadRequests = 8;
+        constexpr uint32_t kFrameIndex = 7;
+        constexpr uint64_t kRequestByteSize =
+            sizeof(render::StreamRequestBufferHeader) +
+            (static_cast<uint64_t>(kMaxLoadRequests) + kMaxUnloadRequests) * sizeof(uint32_t);
+
+        std::unique_ptr<render::Device> device;
+        render::Result result = render::createDevice(
+            render::DeviceDesc{
+                .applicationName = "Metallic GPUDrivenStreamAsset traversal demand test",
+                .enableValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true,
+            },
+            device);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+            }
+            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+        }
+        if (!device->capabilities().bindlessDescriptorHeap) {
+            return RhiTestResult::skip("DeviceCapabilities::bindlessDescriptorHeap is false");
+        }
+
+        render::Queue* queue = device->getQueue(render::QueueType::Compute);
+        if (queue == nullptr) {
+            queue = device->getQueue(render::QueueType::Graphics);
+        }
+        if (queue == nullptr) {
+            return RhiTestResult::skip("traversal demand test device has no compute-capable queue");
+        }
+
+        auto createBuffer = [&device](
+            const render::BufferDesc& desc,
+            const char* label,
+            std::unique_ptr<render::Buffer>& outBuffer) -> RhiTestResult {
+            render::Result bufferResult = device->createBuffer(desc, outBuffer);
+            if (!bufferResult || outBuffer == nullptr) {
+                return RhiTestResult::fail(std::string("createBuffer(") + label + ") returned " + toString(bufferResult));
+            }
+            return RhiTestResult::pass();
+        };
+
+        const std::array<render::MeshletStreamGpuInstance, 2> instances = [] {
+            std::array<render::MeshletStreamGpuInstance, 2> values{};
+            for (render::MeshletStreamGpuInstance& instance : values) {
+                instance.primitiveIndex = 0;
+                instance.visible = 1;
+                instance.boundsCenterRadius[2] = 5.0f;
+                instance.boundsCenterRadius[3] = 1.0f;
+            }
+            return values;
+        }();
+        const std::array<render::MeshletStreamGpuPrimitive, 1> primitives = {{
+            render::MeshletStreamGpuPrimitive{
+                .lodLevelOffset = 0,
+                .lodLevelCount = 1,
+                .pageOffset = 0,
+                .pageCount = 3,
+            },
+        }};
+        const std::array<render::MeshletStreamGpuLodLevel, 1> lodLevels = {{
+            render::MeshletStreamGpuLodLevel{
+                .pageOffset = 0,
+                .pageCount = 2,
+                .lodLevel = 0,
+                .clusterCount = 2,
+                .minBoundingSphereRadius = 1.0f,
+                .minMaxQuadricError = 0.0f,
+            },
+        }};
+        render::MeshletStreamGpuParams params;
+        params.viewport[2] = 96.0f;
+        params.viewport[3] = 1.0471975512f;
+        params.frameIndex = kFrameIndex;
+        params.maxGpuPageRequests = kMaxLoadRequests;
+        params.maxGpuPageUnloadRequests = kMaxUnloadRequests;
+        params.sceneInstanceCount = static_cast<uint32_t>(instances.size());
+        params.scenePrimitiveCount = static_cast<uint32_t>(primitives.size());
+        params.sceneLodLevelCount = static_cast<uint32_t>(lodLevels.size());
+        params.scenePageCount = 3;
+        params.selectedLodLevel = 0;
+        params.enableGpuLodSelection = 0;
+        params.enableGpuUnloadRequests = 1;
+
+        std::array<render::StreamPageTableEntry, 3> pageTable{};
+        pageTable[0].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded);
+        pageTable[1].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
+        pageTable[1].lastRequestFrame = 3;
+        pageTable[2].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
+        pageTable[2].lastRequestFrame = 3;
+
+        std::vector<uint8_t> requestInit(static_cast<size_t>(kRequestByteSize), 0);
+        auto* requestHeader = reinterpret_cast<render::StreamRequestBufferHeader*>(requestInit.data());
+        requestHeader->maxLoadRequests = kMaxLoadRequests;
+        requestHeader->maxUnloadRequests = kMaxUnloadRequests;
+        requestHeader->frameIndex = kFrameIndex;
+
+        std::unique_ptr<render::Buffer> instanceBuffer;
+        RhiTestResult testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(instances),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "instances",
+            instanceBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> primitiveBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(primitives),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "primitives",
+            primitiveBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> lodLevelBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(lodLevels),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "lod levels",
+            lodLevelBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> paramsBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(params),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "params",
+            paramsBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> pageTableUploadBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(pageTable),
+                .usage = render::BufferUsageBits::TransferSource,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "page table upload",
+            pageTableUploadBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> requestUploadBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = kRequestByteSize,
+                .usage = render::BufferUsageBits::TransferSource,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "request upload",
+            requestUploadBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> pageTableBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(pageTable),
+                .structureStride = sizeof(render::StreamPageTableEntry),
+                .usage = render::BufferUsageBits::Storage |
+                    render::BufferUsageBits::TransferDestination |
+                    render::BufferUsageBits::TransferSource,
+                .memoryLocation = render::MemoryLocation::Device,
+            },
+            "page table",
+            pageTableBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> requestBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = kRequestByteSize,
+                .structureStride = sizeof(uint32_t),
+                .usage = render::BufferUsageBits::Storage |
+                    render::BufferUsageBits::TransferDestination |
+                    render::BufferUsageBits::TransferSource,
+                .memoryLocation = render::MemoryLocation::Device,
+            },
+            "request",
+            requestBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> pageTableReadbackBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(pageTable),
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "page table readback",
+            pageTableReadbackBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> requestReadbackBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = kRequestByteSize,
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "request readback",
+            requestReadbackBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        result = writeHostBuffer(*instanceBuffer, instances.data(), sizeof(instances));
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(instances) returned ") + toString(result));
+        }
+        result = writeHostBuffer(*primitiveBuffer, primitives.data(), sizeof(primitives));
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(primitives) returned ") + toString(result));
+        }
+        result = writeHostBuffer(*lodLevelBuffer, lodLevels.data(), sizeof(lodLevels));
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(lod levels) returned ") + toString(result));
+        }
+        result = writeHostBuffer(*paramsBuffer, &params, sizeof(params));
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(params) returned ") + toString(result));
+        }
+        result = writeHostBuffer(*pageTableUploadBuffer, pageTable.data(), sizeof(pageTable));
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(page table upload) returned ") + toString(result));
+        }
+        result = writeHostBuffer(*requestUploadBuffer, requestInit.data(), kRequestByteSize);
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(request upload) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::BindlessHeap> bindlessHeap;
+        result = device->createBindlessHeap(
+            render::BindlessHeapDesc{
+                .maxSamplers = 0,
+                .maxSampledImages = 0,
+                .maxBuffers = 6,
+            },
+            bindlessHeap);
+        if (!result || bindlessHeap == nullptr) {
+            return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
+        }
+
+        auto allocateStorageBuffer = [&bindlessHeap](
+            render::Buffer& buffer,
+            const char* label,
+            render::BindlessHandle& outHandle) -> RhiTestResult {
+            render::Result bindlessResult = bindlessHeap->allocateBuffer(outHandle);
+            if (!bindlessResult || !outHandle.valid()) {
+                return RhiTestResult::fail(std::string("allocateBuffer(") + label + ") returned " + toString(bindlessResult));
+            }
+            bindlessResult = bindlessHeap->writeStorageBuffer(outHandle, buffer);
+            if (!bindlessResult) {
+                return RhiTestResult::fail(std::string("writeStorageBuffer(") + label + ") returned " + toString(bindlessResult));
+            }
+            return RhiTestResult::pass();
+        };
+
+        render::BindlessHandle instanceHandle;
+        testResult = allocateStorageBuffer(*instanceBuffer, "instances", instanceHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle primitiveHandle;
+        testResult = allocateStorageBuffer(*primitiveBuffer, "primitives", primitiveHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle lodLevelHandle;
+        testResult = allocateStorageBuffer(*lodLevelBuffer, "lod levels", lodLevelHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle pageTableHandle;
+        testResult = allocateStorageBuffer(*pageTableBuffer, "page table", pageTableHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle paramsHandle;
+        testResult = allocateStorageBuffer(*paramsBuffer, "params", paramsHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle requestHandle;
+        testResult = allocateStorageBuffer(*requestBuffer, "request", requestHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
+        render::ShaderCompileResult compileResult;
+        result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "gpu_driven_streamasset",
+                .entryPointName = "gpuDrivenStreamAssetTraversalMain",
+                .searchPath = kShaderSearchPath,
+                .profileName = "glsl_460",
+            },
+            compileResult);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("compileSlangShaderToSpirv(traversal) returned ") +
+                toString(result) +
+                ": " +
+                compileResult.diagnostics);
+        }
+        std::unique_ptr<render::ShaderModule> traversalShader;
+        result = device->createShaderModule(
+            render::ShaderModuleDesc{
+                .code = compileResult.spirv.data(),
+                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+            },
+            traversalShader);
+        if (!result || traversalShader == nullptr) {
+            return RhiTestResult::fail(std::string("createShaderModule(traversal) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::ComputePipeline> pipeline;
+        result = device->createComputePipeline(
+            render::ComputePipelineDesc{
+                .computeShader = traversalShader.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
+            },
+            pipeline);
+        if (!result || pipeline == nullptr) {
+            return RhiTestResult::fail(std::string("createComputePipeline(traversal) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        result = device->createCommandPool(*queue, commandPool);
+        if (!result || commandPool == nullptr) {
+            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+        }
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        result = commandPool->createCommandBuffer(commandBuffer);
+        if (!result || commandBuffer == nullptr) {
+            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+        }
+        std::unique_ptr<render::Fence> fence;
+        result = device->createFence(false, fence);
+        if (!result || fence == nullptr) {
+            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+        }
+
+        result = commandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+        }
+        std::array<render::BufferBarrierDesc, 2> uploadBarriers = {{
+            render::BufferBarrierDesc{
+                .buffer = pageTableBuffer.get(),
+                .before = render::ResourceState::Undefined,
+                .after = render::ResourceState::TransferDestination,
+                .offset = 0,
+                .size = pageTableBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = requestBuffer.get(),
+                .before = render::ResourceState::Undefined,
+                .after = render::ResourceState::TransferDestination,
+                .offset = 0,
+                .size = requestBuffer->desc().size,
+            },
+        }};
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = uploadBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(uploadBarriers.size()),
+        });
+        commandBuffer->copyBuffer(render::BufferCopyDesc{
+            .source = pageTableUploadBuffer.get(),
+            .destination = pageTableBuffer.get(),
+            .size = pageTableBuffer->desc().size,
+        });
+        commandBuffer->copyBuffer(render::BufferCopyDesc{
+            .source = requestUploadBuffer.get(),
+            .destination = requestBuffer.get(),
+            .size = requestBuffer->desc().size,
+        });
+        std::array<render::BufferBarrierDesc, 2> generalBarriers = {{
+            render::BufferBarrierDesc{
+                .buffer = pageTableBuffer.get(),
+                .before = render::ResourceState::TransferDestination,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = pageTableBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = requestBuffer.get(),
+                .before = render::ResourceState::TransferDestination,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = requestBuffer->desc().size,
+            },
+        }};
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = generalBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(generalBarriers.size()),
+        });
+
+        commandBuffer->bindBindlessHeap(*bindlessHeap);
+        commandBuffer->bindComputePipeline(*pipeline);
+        render::MeshletStreamUserPush push{
+            .pageTableBuffer = pageTableHandle.index,
+            .paramsBuffer = paramsHandle.index,
+            .requestBuffer = requestHandle.index,
+            .instanceBuffer = instanceHandle.index,
+            .primitiveBuffer = primitiveHandle.index,
+            .lodLevelBuffer = lodLevelHandle.index,
+            .traversalPhase = render::kMeshletStreamTraversalLoadPhase,
+        };
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        std::array<render::BufferBarrierDesc, 2> phaseBarriers = {{
+            render::BufferBarrierDesc{
+                .buffer = pageTableBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = pageTableBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = requestBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = requestBuffer->desc().size,
+            },
+        }};
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = phaseBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(phaseBarriers.size()),
+        });
+
+        push.traversalPhase = render::kMeshletStreamTraversalUnloadPhase;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        std::array<render::BufferBarrierDesc, 2> readbackBarriers = {{
+            render::BufferBarrierDesc{
+                .buffer = pageTableBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::TransferSource,
+                .offset = 0,
+                .size = pageTableBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = requestBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::TransferSource,
+                .offset = 0,
+                .size = requestBuffer->desc().size,
+            },
+        }};
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = readbackBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(readbackBarriers.size()),
+        });
+        commandBuffer->copyBuffer(render::BufferCopyDesc{
+            .source = pageTableBuffer.get(),
+            .destination = pageTableReadbackBuffer.get(),
+            .size = pageTableBuffer->desc().size,
+        });
+        commandBuffer->copyBuffer(render::BufferCopyDesc{
+            .source = requestBuffer.get(),
+            .destination = requestReadbackBuffer.get(),
+            .size = requestBuffer->desc().size,
+        });
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+        }
+
+        render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+        result = queue->submit(render::QueueSubmitDesc{
+            .commandBuffers = commandBuffers,
+            .commandBufferCount = 1,
+            .signalFence = fence.get(),
+        });
+        if (!result) {
+            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+        }
+        result = fence->wait(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+        }
+
+        std::array<render::StreamPageTableEntry, 3> pageTableResult{};
+        if (!readHostBuffer(*pageTableReadbackBuffer, pageTableResult.data(), sizeof(pageTableResult))) {
+            return RhiTestResult::fail("page table readback buffer did not map");
+        }
+        std::vector<uint8_t> requestResult(static_cast<size_t>(kRequestByteSize), 0);
+        if (!readHostBuffer(*requestReadbackBuffer, requestResult.data(), kRequestByteSize)) {
+            return RhiTestResult::fail("request readback buffer did not map");
+        }
+        const auto* actualHeader =
+            reinterpret_cast<const render::StreamRequestBufferHeader*>(requestResult.data());
+        const auto* actualPageIds = reinterpret_cast<const uint32_t*>(
+            requestResult.data() + sizeof(render::StreamRequestBufferHeader));
+        if (actualHeader->loadCounter != 1 ||
+            actualHeader->unloadCounter != 1 ||
+            actualHeader->loadOverflowCounter != 0 ||
+            actualHeader->unloadOverflowCounter != 0 ||
+            actualHeader->invalidPageCounter != 0 ||
+            actualPageIds[0] != 0 ||
+            actualPageIds[kMaxLoadRequests] != 2) {
+            return RhiTestResult::fail("traversal demand shader did not emit expected load/unload requests");
+        }
+        if (pageTableResult[0].lastRequestFrame != kFrameIndex ||
+            pageTableResult[1].lastRequestFrame != kFrameIndex ||
+            pageTableResult[2].lastRequestFrame == kFrameIndex) {
+            return RhiTestResult::fail("traversal demand shader did not mark selected pages conservatively");
+        }
+
+        (void)device->waitIdle();
         return RhiTestResult::pass();
     }
 };
@@ -3418,6 +4029,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetShaderCompileTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetTraversalDemandTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPathTracingGuidesShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingSamplePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingEnvironmentRotationTest);

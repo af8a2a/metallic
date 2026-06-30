@@ -12,6 +12,7 @@
             "properties": {
                 "autoBuildStreamAsset": true,
                 "debugColorMode": "page",
+                "enableGpuLodSelection": true,
                 "maxPageUploadsPerFrame": 64,
                 "maxResidentPages": 4096,
                 "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
