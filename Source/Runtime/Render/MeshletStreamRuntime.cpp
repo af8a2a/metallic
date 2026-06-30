@@ -418,6 +418,77 @@ private:
     std::unique_ptr<ComputePipeline> traversalPipeline_;
 };
 
+class MeshletStreamRuntime::ActiveBuildPass {
+public:
+    Result initialize(Device& device, std::string& log)
+    {
+        Result result = createSlangShaderModule(
+            device,
+            kMeshletStreamShaderModuleName,
+            kMeshletStreamActiveBuildEntryPoint,
+            activeBuildShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        result = device.createComputePipeline(
+            ComputePipelineDesc{
+                .computeShader = activeBuildShader_.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            },
+            activeBuildPipeline_);
+        if (!result || activeBuildPipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(MeshletStreamRuntime active build)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
+    }
+
+    bool ready() const
+    {
+        return activeBuildShader_ != nullptr && activeBuildPipeline_ != nullptr;
+    }
+
+    Result dispatch(
+        CommandBuffer& commandBuffer,
+        BindlessHeap& bindlessHeap,
+        const MeshletStreamUserPush& push,
+        uint32_t threadCount,
+        Buffer& activeGroupBuffer,
+        ResourceState& activeGroupBufferState,
+        Buffer& activeHeaderBuffer,
+        ResourceState& activeHeaderBufferState,
+        Buffer& pageTableBuffer,
+        ResourceState& pageTableState)
+    {
+        if (threadCount == 0) {
+            return {};
+        }
+        if (!ready()) {
+            return makeError(Error::Failure);
+        }
+
+        transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General);
+        transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General);
+        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General);
+        commandBuffer.bindBindlessHeap(bindlessHeap);
+        commandBuffer.bindComputePipeline(*activeBuildPipeline_);
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
+        transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true);
+        transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true);
+        return {};
+    }
+
+private:
+    std::unique_ptr<ShaderModule> activeBuildShader_;
+    std::unique_ptr<ComputePipeline> activeBuildPipeline_;
+};
+
 MeshletStreamRuntime::MeshletStreamRuntime() = default;
 MeshletStreamRuntime::~MeshletStreamRuntime() = default;
 
@@ -429,30 +500,11 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     std::string reason;
     scene::MeshletStreamAsset openedAsset;
     if (!openedAsset.open(desc.streamAssetPath, reason) || !openedAsset.isCurrentForSource(desc.sourcePath)) {
-        if (!desc.autoBuildStreamAsset) {
-            log = "MeshletStreamRuntime failed to open current streamasset: " + reason;
-            return makeError(Error::Failure);
+        log = "MeshletStreamRuntime failed to open current streamasset: " + reason;
+        if (desc.autoBuildStreamAsset) {
+            log += "; runtime auto-build is no longer supported, run Metallic --build-meshstream first";
         }
-
-        scene::Scene loadedScene;
-        if (!loadedScene.load(desc.sourcePath)) {
-            log = "MeshletStreamRuntime failed to load source scene: " + loadedScene.lastLoadResult().error;
-            return makeError(Error::Failure);
-        }
-        if (!scene::buildMeshletStreamAsset(
-                scene::MeshletStreamAssetBuildDesc{
-                    .scene = &loadedScene,
-                    .sourcePath = desc.sourcePath,
-                    .outputPath = desc.streamAssetPath,
-                },
-                reason)) {
-            log = "MeshletStreamRuntime failed to build streamasset: " + reason;
-            return makeError(Error::Failure);
-        }
-        if (!openedAsset.open(desc.streamAssetPath, reason)) {
-            log = "MeshletStreamRuntime failed to open built streamasset: " + reason;
-            return makeError(Error::Failure);
-        }
+        return makeError(Error::Failure);
     }
 
     asset_ = std::move(openedAsset);
@@ -560,15 +612,36 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
 
-    result = createHostStorageBuffer(
+    result = createNamedBuffer(
         device,
-        static_cast<uint64_t>(maxActiveGroups_) * sizeof(MeshletStreamGpuActiveGroup),
+        BufferDesc{
+            .size = static_cast<uint64_t>(maxActiveGroups_) * sizeof(MeshletStreamGpuActiveGroup),
+            .structureStride = sizeof(MeshletStreamGpuActiveGroup),
+            .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::Device,
+        },
         activeGroupBuffer_,
         log,
         "MeshletStreamRuntime active groups");
     if (!result) {
         return result;
     }
+    activeGroupBufferState_ = ResourceState::Undefined;
+    result = createNamedBuffer(
+        device,
+        BufferDesc{
+            .size = sizeof(MeshletStreamGpuActiveHeader),
+            .structureStride = sizeof(MeshletStreamGpuActiveHeader),
+            .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::Device,
+        },
+        activeHeaderBuffer_,
+        log,
+        "MeshletStreamRuntime active header");
+    if (!result) {
+        return result;
+    }
+    activeHeaderBufferState_ = ResourceState::Undefined;
     result = createNamedBuffer(
         device,
         BufferDesc{
@@ -660,7 +733,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         BindlessHeapDesc{
             .maxSamplers = 0,
             .maxSampledImages = 0,
-            .maxBuffers = 10,
+            .maxBuffers = 11,
         },
         bindlessHeap_);
     if (!result || bindlessHeap_ == nullptr) {
@@ -673,6 +746,10 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
     result = allocateAndWriteBuffer(*bindlessHeap_, *activeGroupBuffer_, activeGroupHandle_, log, "meshlet stream active groups");
+    if (!result) {
+        return result;
+    }
+    result = allocateAndWriteBuffer(*bindlessHeap_, *activeHeaderBuffer_, activeHeaderHandle_, log, "meshlet stream active header");
     if (!result) {
         return result;
     }
@@ -715,6 +792,11 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!result) {
         return result;
     }
+    activeBuildPass_ = std::make_unique<ActiveBuildPass>();
+    result = activeBuildPass_->initialize(device, log);
+    if (!result) {
+        return result;
+    }
 
     return {};
 }
@@ -724,10 +806,10 @@ void MeshletStreamRuntime::reset()
     asset_.close();
     residency_.reset();
     drawBounds_.reset();
-    activeGroups_.clear();
     pageTable_.clear();
     pageBuffer_.reset();
     activeGroupBuffer_.reset();
+    activeHeaderBuffer_.reset();
     pageTableBuffer_.reset();
     pageTableUploadBuffer_.reset();
     requestBuffer_.reset();
@@ -741,8 +823,10 @@ void MeshletStreamRuntime::reset()
     bindlessHeap_.reset();
     updatePass_.reset();
     traversalPass_.reset();
+    activeBuildPass_.reset();
     pageHandle_ = {};
     activeGroupHandle_ = {};
+    activeHeaderHandle_ = {};
     pageTableHandle_ = {};
     paramsHandle_ = {};
     requestHandle_ = {};
@@ -751,6 +835,8 @@ void MeshletStreamRuntime::reset()
     lodLevelHandle_ = {};
     pageInfoHandle_ = {};
     pageBufferState_ = ResourceState::Undefined;
+    activeGroupBufferState_ = ResourceState::Undefined;
+    activeHeaderBufferState_ = ResourceState::Undefined;
     pageTableState_ = ResourceState::Undefined;
     requestBufferState_ = ResourceState::Undefined;
     pageTableInitialized_ = false;
@@ -775,8 +861,11 @@ bool MeshletStreamRuntime::ready() const
         updatePass_->ready() &&
         traversalPass_ != nullptr &&
         traversalPass_->ready() &&
+        activeBuildPass_ != nullptr &&
+        activeBuildPass_->ready() &&
         pageBuffer_ != nullptr &&
         activeGroupBuffer_ != nullptr &&
+        activeHeaderBuffer_ != nullptr &&
         pageTableBuffer_ != nullptr &&
         pageTableUploadBuffer_ != nullptr &&
         requestBuffer_ != nullptr &&
@@ -826,11 +915,6 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
         return result;
     }
 
-    buildFrameActiveGroups(frame);
-    result = updateActiveGroupBuffer();
-    if (!result) {
-        return result;
-    }
     result = updateParamsBuffer(frame);
     if (!result) {
         return result;
@@ -840,6 +924,10 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
         return result;
     }
     result = dispatchTraversal(commandBuffer, asset_.pageCount(), kMeshletStreamTraversalUnloadPhase);
+    if (!result) {
+        return result;
+    }
+    result = buildActiveTable(commandBuffer);
     if (!result) {
         return result;
     }
@@ -878,6 +966,7 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
         .paramsBuffer = paramsHandle_.index,
         .requestBuffer = requestHandle_.index,
         .updateBuffer = updatePass_ != nullptr ? updatePass_->updateHandle().index : 0u,
+        .activeHeaderBuffer = activeHeaderHandle_.index,
         .instanceBuffer = instanceHandle_.index,
         .primitiveBuffer = primitiveHandle_.index,
         .lodLevelBuffer = lodLevelHandle_.index,
@@ -887,10 +976,10 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
 
 uint32_t MeshletStreamRuntime::drawTaskCount() const
 {
-    if (activeGroups_.empty() || maxActiveGroupClusters_ == 0) {
+    if (maxActiveGroups_ == 0 || maxActiveGroupClusters_ == 0) {
         return 0;
     }
-    const uint64_t count = static_cast<uint64_t>(activeGroups_.size()) * maxActiveGroupClusters_;
+    const uint64_t count = static_cast<uint64_t>(maxActiveGroups_) * maxActiveGroupClusters_;
     return count > std::numeric_limits<uint32_t>::max() ? 0u : static_cast<uint32_t>(count);
 }
 
@@ -925,159 +1014,6 @@ uint32_t MeshletStreamRuntime::computeMaxPageClusters() const
         maxClusters = std::max(maxClusters, page.clusterCount);
     }
     return maxClusters;
-}
-
-uint32_t MeshletStreamRuntime::selectLodForInstanceCpu(
-    const scene::MeshletStreamInstanceInfo& instance,
-    const scene::MeshletStreamPrimitiveInfo& primitive,
-    const MeshletStreamFrameDesc& frame) const
-{
-    if (primitive.lodLevelCount == 0) {
-        return 0;
-    }
-    if (!frame.enableGpuLodSelection && frame.selectedLodLevel != kMeshletStreamNoDebugLodOverride) {
-        return std::min(frame.selectedLodLevel, primitive.lodLevelCount - 1u);
-    }
-
-    scene::Bounds worldBounds;
-    includeTransformedBounds(worldBounds, primitive.bounds, instance.worldMatrix);
-    const float3 center = worldBounds.valid ? worldBounds.center() : drawBounds_.center();
-    const float radius = std::max(worldBounds.valid ? worldBounds.radius() : primitive.bounds.max[0] - primitive.bounds.min[0], 0.001f);
-    const float3 delta(center.x - frame.camera.eye.x, center.y - frame.camera.eye.y, center.z - frame.camera.eye.z);
-    const float distance = std::max(std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z) - radius, 0.001f);
-    const float viewportHeight = static_cast<float>(std::max(frame.height, 1u));
-    const float fovRadians = std::clamp(frame.camera.fovDegrees, 1.0f, 179.0f) * 0.017453292519943295f;
-    const float pixelScale = viewportHeight / std::max(2.0f * std::tan(fovRadians * 0.5f), 0.001f);
-    constexpr float kTargetPixelError = 1.5f;
-
-    const std::span<const scene::MeshletStreamLodLevelInfo> lodLevels = asset_.lodLevels();
-    for (uint32_t reverse = 0; reverse < primitive.lodLevelCount; ++reverse) {
-        const uint32_t localLod = primitive.lodLevelCount - 1u - reverse;
-        const scene::MeshletStreamLodLevelInfo& lod = lodLevels[primitive.lodLevelOffset + localLod];
-        const float lodError = std::max(lod.minMaxQuadricError, radius * 0.0005f);
-        const float pixelError = lodError * pixelScale / distance;
-        if (pixelError <= kTargetPixelError || localLod == 0) {
-            return localLod;
-        }
-    }
-    return 0;
-}
-
-void MeshletStreamRuntime::appendResidentPageGroup(
-    const scene::MeshletStreamInstanceInfo& instance,
-    const scene::MeshletStreamPageInfo& page,
-    uint32_t pageIndex)
-{
-    const uint64_t deviceOffset = residency_.deviceOffsetForPage(pageIndex);
-    if (deviceOffset == UINT64_MAX ||
-        deviceOffset > std::numeric_limits<uint32_t>::max() ||
-        activeGroups_.size() >= maxActiveGroups_) {
-        return;
-    }
-
-    MeshletStreamGpuActiveGroup group;
-    group.pageDeviceOffsetBytes = static_cast<uint32_t>(deviceOffset);
-    group.pageIndex = pageIndex;
-    group.clusterCount = page.clusterCount;
-    group.primitiveIndex = page.primitiveIndex;
-    group.lodLevel = page.lodLevel;
-    group.materialIndex = instance.materialIndex;
-    group.colorSeed = pageIndex * 131u;
-    group.flags = kMeshletStreamActiveGroupResident;
-    for (uint32_t row = 0; row < 4; ++row) {
-        group.world0[row] = instance.worldMatrix[0 + row];
-        group.world1[row] = instance.worldMatrix[4 + row];
-        group.world2[row] = instance.worldMatrix[8 + row];
-        group.world3[row] = instance.worldMatrix[12 + row];
-    }
-    activeGroups_.push_back(group);
-}
-
-void MeshletStreamRuntime::appendLoadRequestGroup(
-    const scene::MeshletStreamInstanceInfo& instance,
-    const scene::MeshletStreamPageInfo& page,
-    uint32_t pageIndex)
-{
-    if (activeGroups_.size() >= maxActiveGroups_) {
-        return;
-    }
-
-    MeshletStreamGpuActiveGroup group;
-    group.pageDeviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
-    group.pageIndex = pageIndex;
-    group.clusterCount = 0;
-    group.primitiveIndex = page.primitiveIndex;
-    group.lodLevel = page.lodLevel;
-    group.materialIndex = instance.materialIndex;
-    group.colorSeed = pageIndex * 131u;
-    group.flags = kMeshletStreamActiveGroupLoadRequest;
-    for (uint32_t row = 0; row < 4; ++row) {
-        group.world0[row] = instance.worldMatrix[0 + row];
-        group.world1[row] = instance.worldMatrix[4 + row];
-        group.world2[row] = instance.worldMatrix[8 + row];
-        group.world3[row] = instance.worldMatrix[12 + row];
-    }
-    activeGroups_.push_back(group);
-}
-
-bool MeshletStreamRuntime::appendResidentPageRange(
-    const scene::MeshletStreamInstanceInfo& instance,
-    uint32_t pageOffset,
-    uint32_t pageCount)
-{
-    const std::span<const scene::MeshletStreamPageInfo> pages = asset_.pages();
-    bool allResident = true;
-    for (uint32_t page = 0; page < pageCount; ++page) {
-        const uint32_t pageIndex = pageOffset + page;
-        if (!residency_.pageResident(pageIndex)) {
-            allResident = false;
-        }
-    }
-    if (!allResident) {
-        return false;
-    }
-    for (uint32_t page = 0; page < pageCount; ++page) {
-        const uint32_t pageIndex = pageOffset + page;
-        appendResidentPageGroup(instance, pages[pageIndex], pageIndex);
-    }
-    return true;
-}
-
-void MeshletStreamRuntime::appendRequestPageRange(
-    const scene::MeshletStreamInstanceInfo& instance,
-    uint32_t pageOffset,
-    uint32_t pageCount)
-{
-    const std::span<const scene::MeshletStreamPageInfo> pages = asset_.pages();
-    for (uint32_t page = 0; page < pageCount; ++page) {
-        const uint32_t pageIndex = pageOffset + page;
-        if (!residency_.pageResident(pageIndex)) {
-            appendLoadRequestGroup(instance, pages[pageIndex], pageIndex);
-        }
-    }
-}
-
-void MeshletStreamRuntime::buildFrameActiveGroups(const MeshletStreamFrameDesc& frame)
-{
-    activeGroups_.clear();
-    const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
-    const std::span<const scene::MeshletStreamLodLevelInfo> lodLevels = asset_.lodLevels();
-
-    for (const scene::MeshletStreamInstanceInfo& instance : asset_.instances()) {
-        if (instance.visible == 0 || instance.primitiveIndex >= primitives.size()) {
-            continue;
-        }
-        const scene::MeshletStreamPrimitiveInfo& primitive = primitives[instance.primitiveIndex];
-        if (primitive.lodLevelCount == 0 || primitive.fallbackPageCount == 0) {
-            continue;
-        }
-        const uint32_t localLod = selectLodForInstanceCpu(instance, primitive, frame);
-        const scene::MeshletStreamLodLevelInfo& lodInfo = lodLevels[primitive.lodLevelOffset + localLod];
-        if (!appendResidentPageRange(instance, lodInfo.pageOffset, lodInfo.pageCount)) {
-            appendRequestPageRange(instance, lodInfo.pageOffset, lodInfo.pageCount);
-            appendResidentPageRange(instance, primitive.fallbackPageOffset, primitive.fallbackPageCount);
-        }
-    }
 }
 
 Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std::string& log)
@@ -1144,6 +1080,7 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
             .primitiveIndex = page.primitiveIndex,
             .lodLevel = page.lodLevel,
             .pageIndex = pageIndex,
+            .clusterCount = page.clusterCount,
         });
     }
 
@@ -1261,14 +1198,6 @@ Result MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& command
     return {};
 }
 
-Result MeshletStreamRuntime::updateActiveGroupBuffer()
-{
-    return updateHostBuffer(
-        *activeGroupBuffer_,
-        activeGroups_.data(),
-        static_cast<uint64_t>(activeGroups_.size() * sizeof(MeshletStreamGpuActiveGroup)));
-}
-
 Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& frame)
 {
     MeshletStreamGpuParams params;
@@ -1306,7 +1235,7 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
     params.frameIndex = frameIndex_ == 0 ? 1u : frameIndex_;
     params.maxGpuPageRequests = maxGpuPageRequests_;
     params.maxGpuPageUnloadRequests = maxGpuPageUnloadRequests_;
-    params.activeGroupCount = static_cast<uint32_t>(activeGroups_.size());
+    params.activeGroupCount = maxActiveGroups_;
     params.maxActiveGroupClusters = maxActiveGroupClusters_;
     params.sceneInstanceCount = asset_.instanceCount();
     params.scenePrimitiveCount = asset_.primitiveCount();
@@ -1341,9 +1270,46 @@ Result MeshletStreamRuntime::dispatchTraversal(
         requestBufferState_);
 }
 
+Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer)
+{
+    if (activeBuildPass_ == nullptr || bindlessHeap_ == nullptr || !activeBuildPass_->ready()) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    MeshletStreamUserPush push = userPush();
+    push.activeBuildPhase = kMeshletStreamActiveBuildResetPhase;
+    Result result = activeBuildPass_->dispatch(
+        commandBuffer,
+        *bindlessHeap_,
+        push,
+        1,
+        *activeGroupBuffer_,
+        activeGroupBufferState_,
+        *activeHeaderBuffer_,
+        activeHeaderBufferState_,
+        *pageTableBuffer_,
+        pageTableState_);
+    if (!result) {
+        return result;
+    }
+
+    push.activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
+    return activeBuildPass_->dispatch(
+        commandBuffer,
+        *bindlessHeap_,
+        push,
+        asset_.instanceCount(),
+        *activeGroupBuffer_,
+        activeGroupBufferState_,
+        *activeHeaderBuffer_,
+        activeHeaderBufferState_,
+        *pageTableBuffer_,
+        pageTableState_);
+}
+
 Result MeshletStreamRuntime::transitionPageBufferForTraversal(CommandBuffer& commandBuffer)
 {
-    if (activeGroups_.empty()) {
+    if (drawTaskCount() == 0) {
         return {};
     }
     transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead);

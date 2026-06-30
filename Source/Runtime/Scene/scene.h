@@ -204,6 +204,8 @@ struct RenderMaterial {
     RenderTextureInfo diffuseTransmissionColorTexture;
 };
 
+bool buildMeshletsForPrimitive(RenderPrimitive& primitive);
+
 struct RenderCamera {
     std::string name;
     int32_t nodeIndex = kInvalidSceneIndex;

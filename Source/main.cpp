@@ -78,23 +78,12 @@ int buildMeshletStreamAssetOffline(
         return 1;
     }
 
-    metallic::scene::Scene scene;
-    if (!scene.load(sourcePath)) {
-        std::fprintf(
-            stderr,
-            "Failed to load source scene '%s': %s\n",
-            sourcePath.string().c_str(),
-            scene.lastLoadResult().error.c_str());
-        return 1;
-    }
-
     const std::filesystem::path resolvedOutputPath = outputPath.empty()
         ? metallic::scene::meshletStreamAssetPathFor(sourcePath)
         : outputPath;
     std::string reason;
-    if (!metallic::scene::buildMeshletStreamAsset(
-            metallic::scene::MeshletStreamAssetBuildDesc{
-                .scene = &scene,
+    if (!metallic::scene::buildMeshletStreamAssetOffline(
+            metallic::scene::MeshletStreamAssetOfflineBuildDesc{
                 .sourcePath = sourcePath,
                 .outputPath = resolvedOutputPath,
                 .compressionMode = compressionMode,

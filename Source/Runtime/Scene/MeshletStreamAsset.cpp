@@ -1,12 +1,18 @@
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
+#include "json.hpp"
+#include "tiny_gltf.h"
+
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <system_error>
 #include <type_traits>
 #include <unordered_map>
@@ -35,6 +41,7 @@ constexpr uint32_t kMeshletLodGroupSize = 32;
 constexpr float kMeshletClusterFillWeight = 0.5f;
 constexpr float kMeshletLodErrorMergePrevious = 1.5f;
 constexpr float kMeshletLodErrorMergeAdditive = 0.0f;
+constexpr const char* kExtensionNodeVisibility = "KHR_node_visibility";
 
 struct MeshletStreamFileHeader {
     char magic[8] = {};
@@ -701,6 +708,884 @@ void copyMatrix(const float4x4& matrix, float outValues[16])
     }
 }
 
+struct MeshletStreamBuildState {
+    MeshletStreamFileHeader header;
+    std::vector<MeshletStreamPrimitiveInfo> primitives;
+    std::vector<MeshletStreamInstanceInfo> instances;
+    std::vector<MeshletStreamGeometryInfo> geometries;
+    std::vector<MeshletStreamLodLevelInfo> lodLevels;
+    std::vector<MeshletStreamPageInfo> pages;
+    std::vector<uint64_t> pageOffsets;
+    std::vector<uint8_t> payload;
+    std::vector<uint8_t> storedPayload;
+};
+
+MeshletStreamFileHeader makeStreamFileHeader(const std::filesystem::path& sourcePath)
+{
+    MeshletStreamFileHeader header;
+    std::memcpy(header.magic, kMeshletStreamMagic.data(), kMeshletStreamMagic.size());
+    header.version = kMeshletStreamVersion;
+    header.endian = kMeshletStreamEndian;
+    header.sourceFileSize = sourceFileSizeFor(sourcePath);
+    header.sourceWriteTime = sourceWriteTimeFor(sourcePath);
+    header.pagePayloadAlignment = static_cast<uint32_t>(kPageSlotAlignment);
+    header.maxVertices = kMeshletClusterMaxVertices;
+    header.minTriangles = kMeshletClusterMinTriangles;
+    header.maxTriangles = kMeshletClusterMaxTriangles;
+    header.lodGroupSize = kMeshletLodGroupSize;
+    header.fillWeight = kMeshletClusterFillWeight;
+    header.lodErrorMergePrevious = kMeshletLodErrorMergePrevious;
+    header.lodErrorMergeAdditive = kMeshletLodErrorMergeAdditive;
+    return header;
+}
+
+bool openStreamAssetBuildFile(
+    const std::filesystem::path& outputPath,
+    std::ofstream& stream,
+    std::string& reason)
+{
+    std::error_code createError;
+    if (outputPath.has_parent_path()) {
+        std::filesystem::create_directories(outputPath.parent_path(), createError);
+        if (createError) {
+            reason = createError.message();
+            return false;
+        }
+    }
+
+    stream.open(outputPath, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        reason = "streamasset output file cannot be opened";
+        return false;
+    }
+    return true;
+}
+
+bool writeStreamAssetHeaderPlaceholder(
+    std::ostream& stream,
+    const MeshletStreamFileHeader& header,
+    std::string& reason)
+{
+    if (!writePod(stream, header)) {
+        reason = "streamasset header placeholder write failed";
+        return false;
+    }
+    return true;
+}
+
+bool appendStreamPrimitivePages(
+    std::ostream& stream,
+    MeshletStreamBuildState& state,
+    const RenderPrimitive& primitive,
+    uint32_t renderPrimitiveIndex,
+    MeshletStreamPayloadCompression compressionMode,
+    int32_t& outPrimitiveIndex,
+    std::string& reason)
+{
+    outPrimitiveIndex = kInvalidSceneIndex;
+    if (primitive.mode != 4 || primitive.positions.empty()) {
+        return true;
+    }
+
+    const bool hasLodGroups =
+        !primitive.meshletLodLevels.empty() &&
+        !primitive.meshletLodGroups.empty() &&
+        !primitive.meshletLodClusters.empty() &&
+        !primitive.meshletLodVertices.empty() &&
+        !primitive.meshletLodTriangles.empty();
+    const bool hasBaseMeshlets =
+        !primitive.meshletClusters.empty() &&
+        !primitive.meshletVertices.empty() &&
+        !primitive.meshletTriangles.empty();
+    if (!hasLodGroups && !hasBaseMeshlets) {
+        return true;
+    }
+
+    const uint32_t primitiveIndex = static_cast<uint32_t>(state.primitives.size());
+    MeshletStreamPrimitiveInfo primitiveInfo;
+    primitiveInfo.renderPrimitiveIndex = renderPrimitiveIndex;
+    primitiveInfo.materialIndex = static_cast<uint32_t>(std::max(primitive.materialIndex, 0));
+    primitiveInfo.lodLevelOffset = static_cast<uint32_t>(state.lodLevels.size());
+    primitiveInfo.pageOffset = static_cast<uint32_t>(state.pages.size());
+    primitiveInfo.bounds = makeStreamBounds(primitive.localBounds);
+
+    if (hasLodGroups) {
+        uint32_t bestFallbackPageCount = std::numeric_limits<uint32_t>::max();
+        for (uint32_t lodLevelIndex = 0; lodLevelIndex < primitive.meshletLodLevels.size(); ++lodLevelIndex) {
+            const MeshletLodLevel& sourceLevel = primitive.meshletLodLevels[lodLevelIndex];
+            if (sourceLevel.groupOffset > primitive.meshletLodGroups.size() ||
+                sourceLevel.groupCount > primitive.meshletLodGroups.size() - sourceLevel.groupOffset) {
+                reason = "primitive meshlet LOD level has invalid group range";
+                return false;
+            }
+
+            MeshletStreamLodLevelInfo lodInfo;
+            lodInfo.primitiveIndex = primitiveIndex;
+            lodInfo.lodLevel = lodLevelIndex;
+            lodInfo.pageOffset = static_cast<uint32_t>(state.pages.size());
+            lodInfo.minBoundingSphereRadius = sourceLevel.minBoundingSphereRadius;
+            lodInfo.minMaxQuadricError = sourceLevel.minMaxQuadricError;
+
+            for (uint32_t groupChild = 0; groupChild < sourceLevel.groupCount; ++groupChild) {
+                const uint32_t groupIndex = sourceLevel.groupOffset + groupChild;
+                const MeshletLodGroup& group = primitive.meshletLodGroups[groupIndex];
+                PagePayloadBuildInput pageInput{
+                    .primitive = &primitive,
+                    .clusters = &primitive.meshletLodClusters,
+                    .vertices = &primitive.meshletLodVertices,
+                    .triangles = &primitive.meshletLodTriangles,
+                    .firstCluster = group.clusterOffset,
+                    .clusterCount = group.clusterCount,
+                    .primitiveIndex = primitiveIndex,
+                    .lodLevel = lodLevelIndex,
+                    .lodGroupIndex = groupIndex,
+                    .materialIndex = primitiveInfo.materialIndex,
+                    .bounds = makeBounds(makeStreamBounds(group.bounds)),
+                    .maxQuadricError = group.maxQuadricError,
+                };
+                MeshletStreamPageInfo pageInfo;
+                if (!buildPagePayload(pageInput, state.payload, pageInfo, reason)) {
+                    return false;
+                }
+                if (!encodePayloadForStorage(
+                        state.payload,
+                        compressionMode,
+                        state.storedPayload,
+                        pageInfo,
+                        reason)) {
+                    return false;
+                }
+                uint64_t payloadOffset = 0;
+                if (!writePayload(stream, state.storedPayload, payloadOffset)) {
+                    reason = "streamasset page payload write failed";
+                    return false;
+                }
+                pageInfo.payloadOffset = payloadOffset;
+                state.header.maxPagePayloadBytes = std::max<uint32_t>(
+                    state.header.maxPagePayloadBytes,
+                    static_cast<uint32_t>(pageInfo.uncompressedSize));
+                lodInfo.clusterCount += pageInfo.clusterCount;
+                state.pages.push_back(pageInfo);
+                state.pageOffsets.push_back(payloadOffset);
+            }
+
+            lodInfo.pageCount = static_cast<uint32_t>(state.pages.size()) - lodInfo.pageOffset;
+            if (lodInfo.pageCount > 0 && lodInfo.pageCount < bestFallbackPageCount) {
+                primitiveInfo.fallbackPageOffset = lodInfo.pageOffset;
+                primitiveInfo.fallbackPageCount = lodInfo.pageCount;
+                bestFallbackPageCount = lodInfo.pageCount;
+            }
+            state.lodLevels.push_back(lodInfo);
+        }
+    } else {
+        MeshletStreamLodLevelInfo lodInfo;
+        lodInfo.primitiveIndex = primitiveIndex;
+        lodInfo.lodLevel = 0;
+        lodInfo.pageOffset = static_cast<uint32_t>(state.pages.size());
+
+        PagePayloadBuildInput pageInput{
+            .primitive = &primitive,
+            .clusters = &primitive.meshletClusters,
+            .vertices = &primitive.meshletVertices,
+            .triangles = &primitive.meshletTriangles,
+            .firstCluster = 0,
+            .clusterCount = static_cast<uint32_t>(primitive.meshletClusters.size()),
+            .primitiveIndex = primitiveIndex,
+            .lodLevel = 0,
+            .lodGroupIndex = 0,
+            .materialIndex = primitiveInfo.materialIndex,
+            .bounds = primitive.localBounds,
+        };
+        MeshletStreamPageInfo pageInfo;
+        if (!buildPagePayload(pageInput, state.payload, pageInfo, reason)) {
+            return false;
+        }
+        if (!encodePayloadForStorage(
+                state.payload,
+                compressionMode,
+                state.storedPayload,
+                pageInfo,
+                reason)) {
+            return false;
+        }
+        uint64_t payloadOffset = 0;
+        if (!writePayload(stream, state.storedPayload, payloadOffset)) {
+            reason = "streamasset fallback page payload write failed";
+            return false;
+        }
+        pageInfo.payloadOffset = payloadOffset;
+        state.header.maxPagePayloadBytes =
+            std::max<uint32_t>(state.header.maxPagePayloadBytes, static_cast<uint32_t>(pageInfo.uncompressedSize));
+        lodInfo.pageCount = 1;
+        lodInfo.clusterCount = pageInfo.clusterCount;
+        primitiveInfo.fallbackPageOffset = lodInfo.pageOffset;
+        primitiveInfo.fallbackPageCount = 1;
+        state.pages.push_back(pageInfo);
+        state.pageOffsets.push_back(payloadOffset);
+        state.lodLevels.push_back(lodInfo);
+    }
+
+    primitiveInfo.lodLevelCount = static_cast<uint32_t>(state.lodLevels.size()) - primitiveInfo.lodLevelOffset;
+    primitiveInfo.pageCount = static_cast<uint32_t>(state.pages.size()) - primitiveInfo.pageOffset;
+    if (primitiveInfo.pageCount == 0 || primitiveInfo.fallbackPageCount == 0) {
+        return true;
+    }
+
+    uint64_t payloadFileBegin = std::numeric_limits<uint64_t>::max();
+    uint64_t payloadFileEnd = 0;
+    for (uint32_t page = 0; page < primitiveInfo.pageCount; ++page) {
+        const MeshletStreamPageInfo& pageInfo = state.pages[primitiveInfo.pageOffset + page];
+        payloadFileBegin = std::min(payloadFileBegin, pageInfo.payloadOffset);
+        payloadFileEnd = std::max(payloadFileEnd, pageInfo.payloadOffset + pageInfo.payloadSize);
+    }
+    state.geometries.push_back(MeshletStreamGeometryInfo{
+        .primitiveIndex = primitiveIndex,
+        .renderPrimitiveIndex = primitiveInfo.renderPrimitiveIndex,
+        .pageOffset = primitiveInfo.pageOffset,
+        .pageCount = primitiveInfo.pageCount,
+        .pagePayloadOffsetTableOffset = primitiveInfo.pageOffset,
+        .pagePayloadOffsetTableCount = primitiveInfo.pageCount,
+        .payloadFileOffset = payloadFileBegin == std::numeric_limits<uint64_t>::max() ? 0u : payloadFileBegin,
+        .payloadFileSize = payloadFileEnd > payloadFileBegin ? payloadFileEnd - payloadFileBegin : 0u,
+    });
+    state.primitives.push_back(primitiveInfo);
+    outPrimitiveIndex = static_cast<int32_t>(primitiveIndex);
+    return true;
+}
+
+bool finalizeStreamAssetBuild(std::ostream& stream, MeshletStreamBuildState& state, std::string& reason)
+{
+    if (state.primitives.empty() || state.pages.empty()) {
+        reason = "scene contains no meshlet data suitable for streamasset";
+        return false;
+    }
+
+    if (state.instances.empty()) {
+        for (uint32_t primitiveIndex = 0; primitiveIndex < state.primitives.size(); ++primitiveIndex) {
+            MeshletStreamInstanceInfo instance;
+            instance.primitiveIndex = primitiveIndex;
+            instance.materialIndex = state.primitives[primitiveIndex].materialIndex;
+            instance.visible = 1;
+            copyMatrix(float4x4::Identity(), instance.worldMatrix);
+            state.instances.push_back(instance);
+        }
+    }
+
+    if (!alignStream(stream, kFileAlignment)) {
+        reason = "streamasset directory alignment failed";
+        return false;
+    }
+    state.header.primitiveOffset = static_cast<uint64_t>(stream.tellp());
+    if (!writeArray(stream, state.primitives) || !alignStream(stream, kFileAlignment)) {
+        reason = "streamasset primitive directory write failed";
+        return false;
+    }
+    state.header.instanceOffset = static_cast<uint64_t>(stream.tellp());
+    if (!writeArray(stream, state.instances) || !alignStream(stream, kFileAlignment)) {
+        reason = "streamasset instance directory write failed";
+        return false;
+    }
+    state.header.geometryOffset = static_cast<uint64_t>(stream.tellp());
+    if (!writeArray(stream, state.geometries) || !alignStream(stream, kFileAlignment)) {
+        reason = "streamasset geometry directory write failed";
+        return false;
+    }
+    state.header.lodLevelOffset = static_cast<uint64_t>(stream.tellp());
+    if (!writeArray(stream, state.lodLevels) || !alignStream(stream, kFileAlignment)) {
+        reason = "streamasset LOD directory write failed";
+        return false;
+    }
+    state.header.pageInfoOffset = static_cast<uint64_t>(stream.tellp());
+    if (!writeArray(stream, state.pages) || !alignStream(stream, kFileAlignment)) {
+        reason = "streamasset page directory write failed";
+        return false;
+    }
+    state.header.pageOffsetTableOffset = static_cast<uint64_t>(stream.tellp());
+    if (!writeArray(stream, state.pageOffsets)) {
+        reason = "streamasset page offset table write failed";
+        return false;
+    }
+
+    state.header.primitiveCount = static_cast<uint32_t>(state.primitives.size());
+    state.header.instanceCount = static_cast<uint32_t>(state.instances.size());
+    state.header.geometryCount = static_cast<uint32_t>(state.geometries.size());
+    state.header.lodLevelCount = static_cast<uint32_t>(state.lodLevels.size());
+    state.header.pageCount = static_cast<uint32_t>(state.pages.size());
+    state.header.fileSize = static_cast<uint64_t>(stream.tellp());
+    stream.seekp(0);
+    if (!writePod(stream, state.header)) {
+        reason = "streamasset header patch write failed";
+        return false;
+    }
+    return true;
+}
+
+bool validGltfIndex(int32_t index, size_t size)
+{
+    return index >= 0 && static_cast<size_t>(index) < size;
+}
+
+std::string lowerExtensionForStreamBuilder(const std::filesystem::path& path)
+{
+    std::string extension = path.extension().string();
+    std::transform(
+        extension.begin(),
+        extension.end(),
+        extension.begin(),
+        [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    return extension;
+}
+
+bool streamBuilderSupportsRequiredExtension(std::string_view extension)
+{
+    return extension == "KHR_lights_punctual" ||
+        extension == kExtensionNodeVisibility ||
+        extension == "KHR_materials_diffuse_transmission" ||
+        extension == "KHR_materials_emissive_strength" ||
+        extension == "KHR_materials_ior" ||
+        extension == "KHR_materials_transmission" ||
+        extension == "KHR_materials_volume" ||
+        extension == "KHR_mesh_quantization" ||
+        extension == "KHR_texture_transform";
+}
+
+float3 makeFloat3ForStreamBuilder(const std::vector<double>& values, const float3& fallback)
+{
+    if (values.size() < 3) {
+        return fallback;
+    }
+    return float3(
+        static_cast<float>(values[0]),
+        static_cast<float>(values[1]),
+        static_cast<float>(values[2]));
+}
+
+float4 makeQuaternionForStreamBuilder(const std::vector<double>& values)
+{
+    if (values.size() < 4) {
+        return float4(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+    return float4(
+        static_cast<float>(values[0]),
+        static_cast<float>(values[1]),
+        static_cast<float>(values[2]),
+        static_cast<float>(values[3]));
+}
+
+float4x4 makeMatrixFromGltfForStreamBuilder(const std::vector<double>& values)
+{
+    if (values.size() != 16) {
+        return float4x4::Identity();
+    }
+
+    float4x4 matrix;
+    for (size_t index = 0; index < values.size(); ++index) {
+        matrix.a[index] = static_cast<float>(values[index]);
+    }
+    return matrix;
+}
+
+float4x4 makeNodeLocalMatrixForStreamBuilder(const tinygltf::Node& node)
+{
+    if (node.matrix.size() == 16) {
+        return makeMatrixFromGltfForStreamBuilder(node.matrix);
+    }
+
+    float4x4 translation;
+    translation.SetupByTranslation(makeFloat3ForStreamBuilder(node.translation, float3(0.0f, 0.0f, 0.0f)));
+
+    float4x4 rotation;
+    rotation.SetupByQuaternion(makeQuaternionForStreamBuilder(node.rotation));
+
+    float4x4 scale;
+    scale.SetupByScale(makeFloat3ForStreamBuilder(node.scale, float3(1.0f, 1.0f, 1.0f)));
+
+    return translation * rotation * scale;
+}
+
+bool readNodeVisibilityForStreamBuilder(const tinygltf::Node& node)
+{
+    const auto extension = node.extensions.find(kExtensionNodeVisibility);
+    if (extension == node.extensions.end()) {
+        return true;
+    }
+
+    const tinygltf::Value& value = extension->second;
+    if (!value.IsObject() || !value.Has("visible") || !value.Get("visible").IsBool()) {
+        return true;
+    }
+    return value.Get("visible").Get<bool>();
+}
+
+Bounds accessorBoundsForStreamBuilder(const tinygltf::Accessor& accessor)
+{
+    Bounds bounds;
+    if (accessor.minValues.size() < 3 || accessor.maxValues.size() < 3) {
+        return bounds;
+    }
+
+    bounds.include(makeFloat3ForStreamBuilder(accessor.minValues, float3(0.0f, 0.0f, 0.0f)));
+    bounds.include(makeFloat3ForStreamBuilder(accessor.maxValues, float3(0.0f, 0.0f, 0.0f)));
+    return bounds;
+}
+
+Bounds boundsFromPositionsForStreamBuilder(std::span<const float3> positions)
+{
+    Bounds bounds;
+    for (const float3& position : positions) {
+        bounds.include(position);
+    }
+    return bounds;
+}
+
+const uint8_t* accessorDataForStreamBuilder(
+    const tinygltf::Model& model,
+    const tinygltf::Accessor& accessor,
+    const tinygltf::BufferView*& outBufferView,
+    int& outStride)
+{
+    outBufferView = nullptr;
+    outStride = 0;
+    if (accessor.sparse.isSparse || !validGltfIndex(accessor.bufferView, model.bufferViews.size())) {
+        return nullptr;
+    }
+
+    const tinygltf::BufferView& bufferView = model.bufferViews[static_cast<size_t>(accessor.bufferView)];
+    if (!validGltfIndex(bufferView.buffer, model.buffers.size())) {
+        return nullptr;
+    }
+
+    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView.buffer)];
+    const size_t byteOffset = bufferView.byteOffset + accessor.byteOffset;
+    if (byteOffset >= buffer.data.size()) {
+        return nullptr;
+    }
+
+    const int stride = accessor.ByteStride(bufferView);
+    if (stride <= 0) {
+        return nullptr;
+    }
+
+    outBufferView = &bufferView;
+    outStride = stride;
+    return buffer.data.data() + byteOffset;
+}
+
+std::vector<float3> readFloat3AccessorForStreamBuilder(
+    const tinygltf::Model& model,
+    const tinygltf::Accessor& accessor)
+{
+    std::vector<float3> values;
+    if (accessor.type != TINYGLTF_TYPE_VEC3 || accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
+        return values;
+    }
+
+    const tinygltf::BufferView* bufferView = nullptr;
+    int stride = 0;
+    const uint8_t* data = accessorDataForStreamBuilder(model, accessor, bufferView, stride);
+    if (data == nullptr || bufferView == nullptr) {
+        return values;
+    }
+
+    values.reserve(accessor.count);
+    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView->buffer)];
+    for (size_t index = 0; index < accessor.count; ++index) {
+        const size_t elementOffset = static_cast<size_t>(stride) * index;
+        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + sizeof(float) * 3 > buffer.data.size()) {
+            values.clear();
+            return values;
+        }
+
+        float components[3] = {};
+        std::memcpy(components, data + elementOffset, sizeof(components));
+        values.emplace_back(components[0], components[1], components[2]);
+    }
+    return values;
+}
+
+std::vector<float2> readFloat2AccessorForStreamBuilder(
+    const tinygltf::Model& model,
+    const tinygltf::Accessor& accessor)
+{
+    std::vector<float2> values;
+    if (accessor.type != TINYGLTF_TYPE_VEC2 || accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
+        return values;
+    }
+
+    const tinygltf::BufferView* bufferView = nullptr;
+    int stride = 0;
+    const uint8_t* data = accessorDataForStreamBuilder(model, accessor, bufferView, stride);
+    if (data == nullptr || bufferView == nullptr) {
+        return values;
+    }
+
+    values.reserve(accessor.count);
+    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView->buffer)];
+    for (size_t index = 0; index < accessor.count; ++index) {
+        const size_t elementOffset = static_cast<size_t>(stride) * index;
+        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + sizeof(float) * 2 > buffer.data.size()) {
+            values.clear();
+            return values;
+        }
+
+        float components[2] = {};
+        std::memcpy(components, data + elementOffset, sizeof(components));
+        values.emplace_back(components[0], components[1]);
+    }
+    return values;
+}
+
+std::vector<uint32_t> readIndexAccessorForStreamBuilder(
+    const tinygltf::Model& model,
+    const tinygltf::Accessor& accessor)
+{
+    std::vector<uint32_t> indices;
+    if (accessor.type != TINYGLTF_TYPE_SCALAR) {
+        return indices;
+    }
+
+    const tinygltf::BufferView* bufferView = nullptr;
+    int stride = 0;
+    const uint8_t* data = accessorDataForStreamBuilder(model, accessor, bufferView, stride);
+    if (data == nullptr || bufferView == nullptr) {
+        return indices;
+    }
+
+    size_t componentSize = 0;
+    switch (accessor.componentType) {
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+        componentSize = sizeof(uint8_t);
+        break;
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+        componentSize = sizeof(uint16_t);
+        break;
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+        componentSize = sizeof(uint32_t);
+        break;
+    default:
+        return indices;
+    }
+
+    indices.reserve(accessor.count);
+    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView->buffer)];
+    for (size_t index = 0; index < accessor.count; ++index) {
+        const size_t elementOffset = static_cast<size_t>(stride) * index;
+        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + componentSize > buffer.data.size()) {
+            indices.clear();
+            return indices;
+        }
+
+        switch (accessor.componentType) {
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+            indices.push_back(*(data + elementOffset));
+            break;
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+            uint16_t value = 0;
+            std::memcpy(&value, data + elementOffset, sizeof(value));
+            indices.push_back(value);
+            break;
+        }
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
+            uint32_t value = 0;
+            std::memcpy(&value, data + elementOffset, sizeof(value));
+            indices.push_back(value);
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    return indices;
+}
+
+uint64_t triangleCountForStreamPrimitive(int32_t mode, uint64_t elementCount)
+{
+    switch (mode) {
+    case TINYGLTF_MODE_TRIANGLES:
+        return elementCount / 3u;
+    case TINYGLTF_MODE_TRIANGLE_STRIP:
+    case TINYGLTF_MODE_TRIANGLE_FAN:
+        return elementCount >= 3u ? elementCount - 2u : 0u;
+    default:
+        return 0;
+    }
+}
+
+bool loadGltfModelForStreamAssetBuilder(
+    const std::filesystem::path& sourcePath,
+    tinygltf::Model& model,
+    std::string& reason)
+{
+    tinygltf::TinyGLTF loader;
+    loader.SetImagesAsIs(true);
+    loader.SetMaxExternalFileSize(static_cast<size_t>(-1));
+    loader.SetImageLoader(
+        [](tinygltf::Image* image,
+           const int,
+           std::string*,
+           std::string*,
+           int,
+           int,
+           const unsigned char*,
+           int,
+           void*) {
+            if (image != nullptr) {
+                image->image.clear();
+                image->width = 0;
+                image->height = 0;
+                image->component = 0;
+                image->bits = 8;
+                image->pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+            }
+            return true;
+        },
+        nullptr);
+
+    std::string error;
+    std::string warning;
+    const std::string filenameString = sourcePath.string();
+    const bool ok = lowerExtensionForStreamBuilder(sourcePath) == ".glb"
+        ? loader.LoadBinaryFromFile(&model, &error, &warning, filenameString)
+        : loader.LoadASCIIFromFile(&model, &error, &warning, filenameString);
+    if (!ok) {
+        reason = error.empty() ? "tinygltf failed to load streamasset source" : error;
+        if (!warning.empty()) {
+            reason += " warning: " + warning;
+        }
+        return false;
+    }
+
+    for (const std::string& extension : model.extensionsRequired) {
+        if (!streamBuilderSupportsRequiredExtension(extension)) {
+            reason = "Required extension unsupported by meshstream builder: " + extension;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool loadRenderPrimitiveForStreamAssetBuilder(
+    const tinygltf::Model& model,
+    int32_t meshIndex,
+    int32_t primitiveIndex,
+    RenderPrimitive& outPrimitive,
+    std::string& reason)
+{
+    outPrimitive = {};
+    if (!validGltfIndex(meshIndex, model.meshes.size())) {
+        reason = "streamasset builder mesh index is out of range";
+        return false;
+    }
+
+    const tinygltf::Mesh& mesh = model.meshes[static_cast<size_t>(meshIndex)];
+    if (!validGltfIndex(primitiveIndex, mesh.primitives.size())) {
+        reason = "streamasset builder primitive index is out of range";
+        return false;
+    }
+
+    const tinygltf::Primitive& gltfPrimitive = mesh.primitives[static_cast<size_t>(primitiveIndex)];
+    outPrimitive.name = mesh.name.empty()
+        ? "Primitive " + std::to_string(primitiveIndex)
+        : mesh.name;
+    outPrimitive.meshIndex = meshIndex;
+    outPrimitive.primitiveIndex = primitiveIndex;
+    outPrimitive.materialIndex = gltfPrimitive.material;
+    outPrimitive.mode = gltfPrimitive.mode;
+    if (outPrimitive.mode != TINYGLTF_MODE_TRIANGLES) {
+        return true;
+    }
+
+    const auto positionAccessorIter = gltfPrimitive.attributes.find("POSITION");
+    if (positionAccessorIter == gltfPrimitive.attributes.end() ||
+        !validGltfIndex(positionAccessorIter->second, model.accessors.size())) {
+        return true;
+    }
+
+    const tinygltf::Accessor& positionAccessor =
+        model.accessors[static_cast<size_t>(positionAccessorIter->second)];
+    outPrimitive.vertexCount = positionAccessor.count;
+    if (outPrimitive.vertexCount > std::numeric_limits<uint32_t>::max()) {
+        reason = "streamasset builder primitive vertex count exceeds 32-bit indices";
+        return false;
+    }
+    outPrimitive.localBounds = accessorBoundsForStreamBuilder(positionAccessor);
+    outPrimitive.positions = readFloat3AccessorForStreamBuilder(model, positionAccessor);
+    if (outPrimitive.positions.empty()) {
+        reason = "streamasset builder failed to read primitive POSITION accessor";
+        return false;
+    }
+    if (!outPrimitive.localBounds.valid) {
+        outPrimitive.localBounds = boundsFromPositionsForStreamBuilder(outPrimitive.positions);
+    }
+
+    const auto normalAccessorIter = gltfPrimitive.attributes.find("NORMAL");
+    if (normalAccessorIter != gltfPrimitive.attributes.end() &&
+        validGltfIndex(normalAccessorIter->second, model.accessors.size())) {
+        outPrimitive.normals = readFloat3AccessorForStreamBuilder(
+            model,
+            model.accessors[static_cast<size_t>(normalAccessorIter->second)]);
+        if (outPrimitive.normals.size() != outPrimitive.positions.size()) {
+            outPrimitive.normals.clear();
+        } else {
+            outPrimitive.hasAuthoredNormals = true;
+        }
+    }
+
+    const auto texcoordAccessorIter = gltfPrimitive.attributes.find("TEXCOORD_0");
+    if (texcoordAccessorIter != gltfPrimitive.attributes.end() &&
+        validGltfIndex(texcoordAccessorIter->second, model.accessors.size())) {
+        outPrimitive.texcoords0 = readFloat2AccessorForStreamBuilder(
+            model,
+            model.accessors[static_cast<size_t>(texcoordAccessorIter->second)]);
+        if (outPrimitive.texcoords0.size() != outPrimitive.positions.size()) {
+            outPrimitive.texcoords0.clear();
+        }
+    }
+
+    if (validGltfIndex(gltfPrimitive.indices, model.accessors.size())) {
+        const tinygltf::Accessor& indexAccessor =
+            model.accessors[static_cast<size_t>(gltfPrimitive.indices)];
+        outPrimitive.indexCount = indexAccessor.count;
+        outPrimitive.indices = readIndexAccessorForStreamBuilder(model, indexAccessor);
+        if (outPrimitive.indices.empty()) {
+            reason = "streamasset builder failed to read primitive index accessor";
+            return false;
+        }
+    } else {
+        outPrimitive.indexCount = outPrimitive.vertexCount;
+        outPrimitive.indices.reserve(static_cast<size_t>(outPrimitive.vertexCount));
+        for (uint64_t index = 0; index < outPrimitive.vertexCount; ++index) {
+            outPrimitive.indices.push_back(static_cast<uint32_t>(index));
+        }
+    }
+
+    outPrimitive.triangleCount = triangleCountForStreamPrimitive(outPrimitive.mode, outPrimitive.indexCount);
+    return true;
+}
+
+uint64_t gltfPrimitiveKey(int32_t meshIndex, int32_t primitiveIndex)
+{
+    return (static_cast<uint64_t>(static_cast<uint32_t>(meshIndex)) << 32u) |
+        static_cast<uint32_t>(primitiveIndex);
+}
+
+bool buildStreamAssetGeometryPayloadsFromGltf(
+    std::ostream& stream,
+    MeshletStreamBuildState& state,
+    const tinygltf::Model& model,
+    MeshletStreamPayloadCompression compressionMode,
+    std::unordered_map<uint64_t, uint32_t>& primitiveMap,
+    std::string& reason)
+{
+    uint32_t renderPrimitiveIndex = 0;
+    for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
+        const tinygltf::Mesh& mesh = model.meshes[meshIndex];
+        for (size_t primitiveIndex = 0; primitiveIndex < mesh.primitives.size(); ++primitiveIndex) {
+            RenderPrimitive primitive;
+            if (!loadRenderPrimitiveForStreamAssetBuilder(
+                    model,
+                    static_cast<int32_t>(meshIndex),
+                    static_cast<int32_t>(primitiveIndex),
+                    primitive,
+                    reason)) {
+                return false;
+            }
+
+            const uint32_t sourceRenderPrimitiveIndex = renderPrimitiveIndex++;
+            if (primitive.positions.empty()) {
+                continue;
+            }
+
+            buildMeshletsForPrimitive(primitive);
+            int32_t streamPrimitiveIndex = kInvalidSceneIndex;
+            if (!appendStreamPrimitivePages(
+                    stream,
+                    state,
+                    primitive,
+                    sourceRenderPrimitiveIndex,
+                    compressionMode,
+                    streamPrimitiveIndex,
+                    reason)) {
+                return false;
+            }
+            if (streamPrimitiveIndex >= 0) {
+                primitiveMap[gltfPrimitiveKey(static_cast<int32_t>(meshIndex), static_cast<int32_t>(primitiveIndex))] =
+                    static_cast<uint32_t>(streamPrimitiveIndex);
+            }
+        }
+    }
+    return true;
+}
+
+bool appendStreamAssetInstancesFromGltf(
+    MeshletStreamBuildState& state,
+    const tinygltf::Model& model,
+    int32_t sceneIndex,
+    const std::unordered_map<uint64_t, uint32_t>& primitiveMap,
+    std::string& reason)
+{
+    if (!validGltfIndex(sceneIndex, model.scenes.size())) {
+        reason = "streamasset builder default scene index is out of range";
+        return false;
+    }
+
+    uint32_t renderNodeIndex = 0;
+    std::function<bool(int32_t, const float4x4&, bool)> traverseNode;
+    traverseNode = [&](int32_t nodeIndex, const float4x4& parentWorld, bool parentVisible) -> bool {
+        if (!validGltfIndex(nodeIndex, model.nodes.size())) {
+            reason = "streamasset builder scene references an out-of-range node";
+            return false;
+        }
+
+        const tinygltf::Node& node = model.nodes[static_cast<size_t>(nodeIndex)];
+        const float4x4 worldMatrix = parentWorld * makeNodeLocalMatrixForStreamBuilder(node);
+        const bool visible = parentVisible && readNodeVisibilityForStreamBuilder(node);
+        if (validGltfIndex(node.mesh, model.meshes.size())) {
+            const tinygltf::Mesh& mesh = model.meshes[static_cast<size_t>(node.mesh)];
+            for (size_t primitiveIndex = 0; primitiveIndex < mesh.primitives.size(); ++primitiveIndex) {
+                const auto mappedPrimitive = primitiveMap.find(
+                    gltfPrimitiveKey(node.mesh, static_cast<int32_t>(primitiveIndex)));
+                if (mappedPrimitive == primitiveMap.end()) {
+                    continue;
+                }
+
+                const uint32_t streamPrimitiveIndex = mappedPrimitive->second;
+                if (streamPrimitiveIndex >= state.primitives.size()) {
+                    reason = "streamasset builder instance references an invalid primitive";
+                    return false;
+                }
+
+                const tinygltf::Primitive& gltfPrimitive = mesh.primitives[primitiveIndex];
+                MeshletStreamInstanceInfo instance;
+                instance.renderNodeIndex = renderNodeIndex++;
+                instance.primitiveIndex = streamPrimitiveIndex;
+                instance.materialIndex = static_cast<uint32_t>(
+                    gltfPrimitive.material >= 0
+                        ? gltfPrimitive.material
+                        : static_cast<int32_t>(state.primitives[streamPrimitiveIndex].materialIndex));
+                instance.visible = visible ? 1u : 0u;
+                copyMatrix(worldMatrix, instance.worldMatrix);
+                state.instances.push_back(instance);
+            }
+        }
+
+        for (const int32_t childIndex : node.children) {
+            if (!traverseNode(childIndex, worldMatrix, visible)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    const tinygltf::Scene& scene = model.scenes[static_cast<size_t>(sceneIndex)];
+    for (const int32_t rootNodeIndex : scene.nodes) {
+        if (!traverseNode(rootNodeIndex, float4x4::Identity(), true)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 struct MeshletStreamAsset::Impl {
@@ -1159,226 +2044,32 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
     const std::filesystem::path outputPath = desc.outputPath.empty()
         ? meshletStreamAssetPathFor(desc.sourcePath)
         : desc.outputPath;
-    std::error_code createError;
-    if (outputPath.has_parent_path()) {
-        std::filesystem::create_directories(outputPath.parent_path(), createError);
-        if (createError) {
-            reason = createError.message();
-            return false;
-        }
-    }
-
-    std::ofstream stream(outputPath, std::ios::binary | std::ios::trunc);
-    if (!stream) {
-        reason = "streamasset output file cannot be opened";
+    std::ofstream stream;
+    if (!openStreamAssetBuildFile(outputPath, stream, reason)) {
         return false;
     }
 
-    MeshletStreamFileHeader header;
-    std::memcpy(header.magic, kMeshletStreamMagic.data(), kMeshletStreamMagic.size());
-    header.version = kMeshletStreamVersion;
-    header.endian = kMeshletStreamEndian;
-    header.sourceFileSize = sourceFileSizeFor(desc.sourcePath);
-    header.sourceWriteTime = sourceWriteTimeFor(desc.sourcePath);
-    header.pagePayloadAlignment = static_cast<uint32_t>(kPageSlotAlignment);
-    header.maxVertices = kMeshletClusterMaxVertices;
-    header.minTriangles = kMeshletClusterMinTriangles;
-    header.maxTriangles = kMeshletClusterMaxTriangles;
-    header.lodGroupSize = kMeshletLodGroupSize;
-    header.fillWeight = kMeshletClusterFillWeight;
-    header.lodErrorMergePrevious = kMeshletLodErrorMergePrevious;
-    header.lodErrorMergeAdditive = kMeshletLodErrorMergeAdditive;
-
-    if (!writePod(stream, header)) {
-        reason = "streamasset header placeholder write failed";
+    MeshletStreamBuildState state;
+    state.header = makeStreamFileHeader(desc.sourcePath);
+    if (!writeStreamAssetHeaderPlaceholder(stream, state.header, reason)) {
         return false;
     }
 
     const std::vector<RenderPrimitive>& renderPrimitives = desc.scene->renderPrimitives();
     std::vector<int32_t> primitiveMap(renderPrimitives.size(), kInvalidSceneIndex);
-    std::vector<MeshletStreamPrimitiveInfo> primitives;
-    std::vector<MeshletStreamInstanceInfo> instances;
-    std::vector<MeshletStreamGeometryInfo> geometries;
-    std::vector<MeshletStreamLodLevelInfo> lodLevels;
-    std::vector<MeshletStreamPageInfo> pages;
-    std::vector<uint64_t> pageOffsets;
-
-    std::vector<uint8_t> payload;
-    std::vector<uint8_t> storedPayload;
     for (size_t renderPrimitiveIndex = 0; renderPrimitiveIndex < renderPrimitives.size(); ++renderPrimitiveIndex) {
-        const RenderPrimitive& primitive = renderPrimitives[renderPrimitiveIndex];
-        if (primitive.mode != 4 || primitive.positions.empty()) {
-            continue;
+        int32_t primitiveIndex = kInvalidSceneIndex;
+        if (!appendStreamPrimitivePages(
+                stream,
+                state,
+                renderPrimitives[renderPrimitiveIndex],
+                static_cast<uint32_t>(renderPrimitiveIndex),
+                desc.compressionMode,
+                primitiveIndex,
+                reason)) {
+            return false;
         }
-        const bool hasLodGroups =
-            !primitive.meshletLodLevels.empty() &&
-            !primitive.meshletLodGroups.empty() &&
-            !primitive.meshletLodClusters.empty() &&
-            !primitive.meshletLodVertices.empty() &&
-            !primitive.meshletLodTriangles.empty();
-        const bool hasBaseMeshlets =
-            !primitive.meshletClusters.empty() &&
-            !primitive.meshletVertices.empty() &&
-            !primitive.meshletTriangles.empty();
-        if (!hasLodGroups && !hasBaseMeshlets) {
-            continue;
-        }
-
-        const uint32_t primitiveIndex = static_cast<uint32_t>(primitives.size());
-        primitiveMap[renderPrimitiveIndex] = static_cast<int32_t>(primitiveIndex);
-
-        MeshletStreamPrimitiveInfo primitiveInfo;
-        primitiveInfo.renderPrimitiveIndex = static_cast<uint32_t>(renderPrimitiveIndex);
-        primitiveInfo.materialIndex = static_cast<uint32_t>(std::max(primitive.materialIndex, 0));
-        primitiveInfo.lodLevelOffset = static_cast<uint32_t>(lodLevels.size());
-        primitiveInfo.pageOffset = static_cast<uint32_t>(pages.size());
-        primitiveInfo.bounds = makeStreamBounds(primitive.localBounds);
-
-        if (hasLodGroups) {
-            uint32_t bestFallbackPageCount = std::numeric_limits<uint32_t>::max();
-            for (uint32_t lodLevelIndex = 0; lodLevelIndex < primitive.meshletLodLevels.size(); ++lodLevelIndex) {
-                const MeshletLodLevel& sourceLevel = primitive.meshletLodLevels[lodLevelIndex];
-                if (sourceLevel.groupOffset > primitive.meshletLodGroups.size() ||
-                    sourceLevel.groupCount > primitive.meshletLodGroups.size() - sourceLevel.groupOffset) {
-                    reason = "primitive meshlet LOD level has invalid group range";
-                    return false;
-                }
-
-                MeshletStreamLodLevelInfo lodInfo;
-                lodInfo.primitiveIndex = primitiveIndex;
-                lodInfo.lodLevel = lodLevelIndex;
-                lodInfo.pageOffset = static_cast<uint32_t>(pages.size());
-                lodInfo.minBoundingSphereRadius = sourceLevel.minBoundingSphereRadius;
-                lodInfo.minMaxQuadricError = sourceLevel.minMaxQuadricError;
-
-                for (uint32_t groupChild = 0; groupChild < sourceLevel.groupCount; ++groupChild) {
-                    const uint32_t groupIndex = sourceLevel.groupOffset + groupChild;
-                    const MeshletLodGroup& group = primitive.meshletLodGroups[groupIndex];
-                    PagePayloadBuildInput pageInput{
-                        .primitive = &primitive,
-                        .clusters = &primitive.meshletLodClusters,
-                        .vertices = &primitive.meshletLodVertices,
-                        .triangles = &primitive.meshletLodTriangles,
-                        .firstCluster = group.clusterOffset,
-                        .clusterCount = group.clusterCount,
-                        .primitiveIndex = primitiveIndex,
-                        .lodLevel = lodLevelIndex,
-                        .lodGroupIndex = groupIndex,
-                        .materialIndex = primitiveInfo.materialIndex,
-                        .bounds = makeBounds(makeStreamBounds(group.bounds)),
-                        .maxQuadricError = group.maxQuadricError,
-                    };
-                    MeshletStreamPageInfo pageInfo;
-                    if (!buildPagePayload(pageInput, payload, pageInfo, reason)) {
-                        return false;
-                    }
-                    if (!encodePayloadForStorage(
-                            payload,
-                            desc.compressionMode,
-                            storedPayload,
-                            pageInfo,
-                            reason)) {
-                        return false;
-                    }
-                    uint64_t payloadOffset = 0;
-                    if (!writePayload(stream, storedPayload, payloadOffset)) {
-                        reason = "streamasset page payload write failed";
-                        return false;
-                    }
-                    pageInfo.payloadOffset = payloadOffset;
-                    header.maxPagePayloadBytes = std::max<uint32_t>(
-                        header.maxPagePayloadBytes,
-                        static_cast<uint32_t>(pageInfo.uncompressedSize));
-                    lodInfo.clusterCount += pageInfo.clusterCount;
-                    pages.push_back(pageInfo);
-                    pageOffsets.push_back(payloadOffset);
-                }
-
-                lodInfo.pageCount = static_cast<uint32_t>(pages.size()) - lodInfo.pageOffset;
-                if (lodInfo.pageCount > 0 && lodInfo.pageCount < bestFallbackPageCount) {
-                    primitiveInfo.fallbackPageOffset = lodInfo.pageOffset;
-                    primitiveInfo.fallbackPageCount = lodInfo.pageCount;
-                    bestFallbackPageCount = lodInfo.pageCount;
-                }
-                lodLevels.push_back(lodInfo);
-            }
-        } else {
-            MeshletStreamLodLevelInfo lodInfo;
-            lodInfo.primitiveIndex = primitiveIndex;
-            lodInfo.lodLevel = 0;
-            lodInfo.pageOffset = static_cast<uint32_t>(pages.size());
-
-            PagePayloadBuildInput pageInput{
-                .primitive = &primitive,
-                .clusters = &primitive.meshletClusters,
-                .vertices = &primitive.meshletVertices,
-                .triangles = &primitive.meshletTriangles,
-                .firstCluster = 0,
-                .clusterCount = static_cast<uint32_t>(primitive.meshletClusters.size()),
-                .primitiveIndex = primitiveIndex,
-                .lodLevel = 0,
-                .lodGroupIndex = 0,
-                .materialIndex = primitiveInfo.materialIndex,
-                .bounds = primitive.localBounds,
-            };
-            MeshletStreamPageInfo pageInfo;
-            if (!buildPagePayload(pageInput, payload, pageInfo, reason)) {
-                return false;
-            }
-            if (!encodePayloadForStorage(
-                    payload,
-                    desc.compressionMode,
-                    storedPayload,
-                    pageInfo,
-                    reason)) {
-                return false;
-            }
-            uint64_t payloadOffset = 0;
-            if (!writePayload(stream, storedPayload, payloadOffset)) {
-                reason = "streamasset fallback page payload write failed";
-                return false;
-            }
-            pageInfo.payloadOffset = payloadOffset;
-            header.maxPagePayloadBytes =
-                std::max<uint32_t>(header.maxPagePayloadBytes, static_cast<uint32_t>(pageInfo.uncompressedSize));
-            lodInfo.pageCount = 1;
-            lodInfo.clusterCount = pageInfo.clusterCount;
-            primitiveInfo.fallbackPageOffset = lodInfo.pageOffset;
-            primitiveInfo.fallbackPageCount = 1;
-            pages.push_back(pageInfo);
-            pageOffsets.push_back(payloadOffset);
-            lodLevels.push_back(lodInfo);
-        }
-
-        primitiveInfo.lodLevelCount = static_cast<uint32_t>(lodLevels.size()) - primitiveInfo.lodLevelOffset;
-        primitiveInfo.pageCount = static_cast<uint32_t>(pages.size()) - primitiveInfo.pageOffset;
-        if (primitiveInfo.pageCount == 0 || primitiveInfo.fallbackPageCount == 0) {
-            primitiveMap[renderPrimitiveIndex] = kInvalidSceneIndex;
-            continue;
-        }
-        uint64_t payloadFileBegin = std::numeric_limits<uint64_t>::max();
-        uint64_t payloadFileEnd = 0;
-        for (uint32_t page = 0; page < primitiveInfo.pageCount; ++page) {
-            const MeshletStreamPageInfo& pageInfo = pages[primitiveInfo.pageOffset + page];
-            payloadFileBegin = std::min(payloadFileBegin, pageInfo.payloadOffset);
-            payloadFileEnd = std::max(payloadFileEnd, pageInfo.payloadOffset + pageInfo.payloadSize);
-        }
-        geometries.push_back(MeshletStreamGeometryInfo{
-            .primitiveIndex = primitiveIndex,
-            .renderPrimitiveIndex = primitiveInfo.renderPrimitiveIndex,
-            .pageOffset = primitiveInfo.pageOffset,
-            .pageCount = primitiveInfo.pageCount,
-            .pagePayloadOffsetTableOffset = primitiveInfo.pageOffset,
-            .pagePayloadOffsetTableCount = primitiveInfo.pageCount,
-            .payloadFileOffset = payloadFileBegin == std::numeric_limits<uint64_t>::max() ? 0u : payloadFileBegin,
-            .payloadFileSize = payloadFileEnd > payloadFileBegin ? payloadFileEnd - payloadFileBegin : 0u,
-        });
-        primitives.push_back(primitiveInfo);
-    }
-
-    if (primitives.empty() || pages.empty()) {
-        reason = "scene contains no meshlet data suitable for streamasset";
-        return false;
+        primitiveMap[renderPrimitiveIndex] = primitiveIndex;
     }
 
     for (size_t renderNodeIndex = 0; renderNodeIndex < desc.scene->renderNodes().size(); ++renderNodeIndex) {
@@ -1398,67 +2089,65 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
         instance.materialIndex = static_cast<uint32_t>(std::max(renderNode.materialIndex, 0));
         instance.visible = renderNode.visible ? 1u : 0u;
         copyMatrix(renderNode.worldMatrix, instance.worldMatrix);
-        instances.push_back(instance);
-    }
-    if (instances.empty()) {
-        for (uint32_t primitiveIndex = 0; primitiveIndex < primitives.size(); ++primitiveIndex) {
-            MeshletStreamInstanceInfo instance;
-            instance.primitiveIndex = primitiveIndex;
-            instance.materialIndex = primitives[primitiveIndex].materialIndex;
-            instance.visible = 1;
-            copyMatrix(float4x4::Identity(), instance.worldMatrix);
-            instances.push_back(instance);
-        }
+        state.instances.push_back(instance);
     }
 
-    if (!alignStream(stream, kFileAlignment)) {
-        reason = "streamasset directory alignment failed";
-        return false;
-    }
-    header.primitiveOffset = static_cast<uint64_t>(stream.tellp());
-    if (!writeArray(stream, primitives) || !alignStream(stream, kFileAlignment)) {
-        reason = "streamasset primitive directory write failed";
-        return false;
-    }
-    header.instanceOffset = static_cast<uint64_t>(stream.tellp());
-    if (!writeArray(stream, instances) || !alignStream(stream, kFileAlignment)) {
-        reason = "streamasset instance directory write failed";
-        return false;
-    }
-    header.geometryOffset = static_cast<uint64_t>(stream.tellp());
-    if (!writeArray(stream, geometries) || !alignStream(stream, kFileAlignment)) {
-        reason = "streamasset geometry directory write failed";
-        return false;
-    }
-    header.lodLevelOffset = static_cast<uint64_t>(stream.tellp());
-    if (!writeArray(stream, lodLevels) || !alignStream(stream, kFileAlignment)) {
-        reason = "streamasset LOD directory write failed";
-        return false;
-    }
-    header.pageInfoOffset = static_cast<uint64_t>(stream.tellp());
-    if (!writeArray(stream, pages) || !alignStream(stream, kFileAlignment)) {
-        reason = "streamasset page directory write failed";
-        return false;
-    }
-    header.pageOffsetTableOffset = static_cast<uint64_t>(stream.tellp());
-    if (!writeArray(stream, pageOffsets)) {
-        reason = "streamasset page offset table write failed";
+    return finalizeStreamAssetBuild(stream, state, reason);
+}
+
+bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& desc, std::string& reason)
+{
+    reason.clear();
+    if (desc.sourcePath.empty()) {
+        reason = "streamasset offline build requires a source path";
         return false;
     }
 
-    header.primitiveCount = static_cast<uint32_t>(primitives.size());
-    header.instanceCount = static_cast<uint32_t>(instances.size());
-    header.geometryCount = static_cast<uint32_t>(geometries.size());
-    header.lodLevelCount = static_cast<uint32_t>(lodLevels.size());
-    header.pageCount = static_cast<uint32_t>(pages.size());
-    header.fileSize = static_cast<uint64_t>(stream.tellp());
-    stream.seekp(0);
-    if (!writePod(stream, header)) {
-        reason = "streamasset header patch write failed";
+    tinygltf::Model model;
+    if (!loadGltfModelForStreamAssetBuilder(desc.sourcePath, model, reason)) {
+        return false;
+    }
+    if (model.scenes.empty()) {
+        reason = "glTF model contains no scenes";
         return false;
     }
 
-    return true;
+    const int32_t sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
+    if (!validGltfIndex(sceneIndex, model.scenes.size())) {
+        reason = "glTF default scene index is out of range";
+        return false;
+    }
+
+    const std::filesystem::path outputPath = desc.outputPath.empty()
+        ? meshletStreamAssetPathFor(desc.sourcePath)
+        : desc.outputPath;
+    std::ofstream stream;
+    if (!openStreamAssetBuildFile(outputPath, stream, reason)) {
+        return false;
+    }
+
+    MeshletStreamBuildState state;
+    state.header = makeStreamFileHeader(desc.sourcePath);
+    if (!writeStreamAssetHeaderPlaceholder(stream, state.header, reason)) {
+        return false;
+    }
+
+    std::unordered_map<uint64_t, uint32_t> primitiveMap;
+    primitiveMap.reserve(model.meshes.size() * 2u);
+    if (!buildStreamAssetGeometryPayloadsFromGltf(
+            stream,
+            state,
+            model,
+            desc.compressionMode,
+            primitiveMap,
+            reason)) {
+        return false;
+    }
+    if (!appendStreamAssetInstancesFromGltf(state, model, sceneIndex, primitiveMap, reason)) {
+        return false;
+    }
+
+    return finalizeStreamAssetBuild(stream, state, reason);
 }
 
 } // namespace metallic::scene

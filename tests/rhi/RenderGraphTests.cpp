@@ -4,6 +4,7 @@
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include <array>
 #include <cstdint>
@@ -1237,7 +1238,7 @@ public:
             gpuDrivenStreamAsset->type != "GPUDrivenStreamAssetPass" ||
             !gpuDrivenStreamAsset->properties.is_object() ||
             gpuDrivenStreamAsset->properties.value("path", "") != gpuDrivenStreamAssetSample.desc.scenePath ||
-            !gpuDrivenStreamAsset->properties.value("autoBuildStreamAsset", false) ||
+            gpuDrivenStreamAsset->properties.value("autoBuildStreamAsset", true) ||
             !gpuDrivenStreamAsset->properties.value("enableGpuLodSelection", false) ||
             gpuDrivenStreamAsset->properties.value("debugColorMode", "") != "page" ||
             gpuDrivenStreamAsset->properties.value("selectedLodLevel", -1) != 0) {
@@ -2052,6 +2053,26 @@ public:
             return RhiTestResult::fail("GPUDrivenStreamAsset traversal shader produced empty SPIR-V");
         }
 
+        render::ShaderCompileResult activeBuildCompile;
+        result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "gpu_driven_streamasset",
+                .entryPointName = "gpuDrivenStreamAssetBuildActiveMain",
+                .searchPath = kShaderSearchPath,
+                .profileName = "glsl_460",
+            },
+            activeBuildCompile);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenStreamAsset active build shader compile returned ") +
+                toString(result) +
+                ": " +
+                activeBuildCompile.diagnostics);
+        }
+        if (activeBuildCompile.spirv.empty()) {
+            return RhiTestResult::fail("GPUDrivenStreamAsset active build shader produced empty SPIR-V");
+        }
+
         return RhiTestResult::pass();
     }
 };
@@ -2110,25 +2131,41 @@ public:
             return RhiTestResult::pass();
         };
 
+        constexpr uint32_t kActiveGroupCapacity = 8;
         const std::array<render::MeshletStreamGpuInstance, 2> instances = [] {
             std::array<render::MeshletStreamGpuInstance, 2> values{};
-            for (render::MeshletStreamGpuInstance& instance : values) {
-                instance.primitiveIndex = 0;
-                instance.visible = 1;
-                instance.boundsCenterRadius[2] = 5.0f;
-                instance.boundsCenterRadius[3] = 1.0f;
+            for (uint32_t index = 0; index < values.size(); ++index) {
+                values[index].primitiveIndex = index;
+                values[index].materialIndex = index + 10u;
+                values[index].visible = 1;
+                values[index].world0[0] = 1.0f;
+                values[index].world1[1] = 1.0f;
+                values[index].world2[2] = 1.0f;
+                values[index].world3[3] = 1.0f;
+                values[index].boundsCenterRadius[2] = 5.0f + static_cast<float>(index);
+                values[index].boundsCenterRadius[3] = 1.0f;
             }
             return values;
         }();
-        const std::array<render::MeshletStreamGpuPrimitive, 1> primitives = {{
+        const std::array<render::MeshletStreamGpuPrimitive, 2> primitives = {{
             render::MeshletStreamGpuPrimitive{
                 .lodLevelOffset = 0,
                 .lodLevelCount = 1,
                 .pageOffset = 0,
-                .pageCount = 3,
+                .pageCount = 2,
+                .fallbackPageOffset = 2,
+                .fallbackPageCount = 1,
+            },
+            render::MeshletStreamGpuPrimitive{
+                .lodLevelOffset = 1,
+                .lodLevelCount = 1,
+                .pageOffset = 3,
+                .pageCount = 1,
+                .fallbackPageOffset = 4,
+                .fallbackPageCount = 1,
             },
         }};
-        const std::array<render::MeshletStreamGpuLodLevel, 1> lodLevels = {{
+        const std::array<render::MeshletStreamGpuLodLevel, 2> lodLevels = {{
             render::MeshletStreamGpuLodLevel{
                 .pageOffset = 0,
                 .pageCount = 2,
@@ -2137,6 +2174,22 @@ public:
                 .minBoundingSphereRadius = 1.0f,
                 .minMaxQuadricError = 0.0f,
             },
+            render::MeshletStreamGpuLodLevel{
+                .pageOffset = 3,
+                .pageCount = 1,
+                .lodLevel = 0,
+                .clusterCount = 1,
+                .minBoundingSphereRadius = 1.0f,
+                .minMaxQuadricError = 0.0f,
+            },
+        }};
+        const std::array<render::MeshletStreamGpuPageInfo, 6> pageInfos = {{
+            render::MeshletStreamGpuPageInfo{.primitiveIndex = 0, .lodLevel = 0, .pageIndex = 0, .clusterCount = 3},
+            render::MeshletStreamGpuPageInfo{.primitiveIndex = 0, .lodLevel = 0, .pageIndex = 1, .clusterCount = 5},
+            render::MeshletStreamGpuPageInfo{.primitiveIndex = 0, .lodLevel = 1, .pageIndex = 2, .clusterCount = 7},
+            render::MeshletStreamGpuPageInfo{.primitiveIndex = 1, .lodLevel = 0, .pageIndex = 3, .clusterCount = 11},
+            render::MeshletStreamGpuPageInfo{.primitiveIndex = 1, .lodLevel = 1, .pageIndex = 4, .clusterCount = 13},
+            render::MeshletStreamGpuPageInfo{.primitiveIndex = 1, .lodLevel = 2, .pageIndex = 5, .clusterCount = 17},
         }};
         render::MeshletStreamGpuParams params;
         params.viewport[2] = 96.0f;
@@ -2147,17 +2200,37 @@ public:
         params.sceneInstanceCount = static_cast<uint32_t>(instances.size());
         params.scenePrimitiveCount = static_cast<uint32_t>(primitives.size());
         params.sceneLodLevelCount = static_cast<uint32_t>(lodLevels.size());
-        params.scenePageCount = 3;
+        params.scenePageCount = static_cast<uint32_t>(pageInfos.size());
         params.selectedLodLevel = 0;
         params.enableGpuLodSelection = 0;
         params.enableGpuUnloadRequests = 1;
+        params.activeGroupCount = kActiveGroupCapacity;
+        params.maxActiveGroupClusters = 4;
 
-        std::array<render::StreamPageTableEntry, 3> pageTable{};
+        std::array<render::StreamPageTableEntry, 6> pageTable{};
         pageTable[0].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded);
         pageTable[1].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
         pageTable[1].lastRequestFrame = 3;
-        pageTable[2].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
+        pageTable[2].deviceOffsetBytes = 1024;
+        pageTable[2].deviceSizeBytes = 256;
+        pageTable[2].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback);
         pageTable[2].lastRequestFrame = 3;
+        pageTable[2].payloadBytes = 192;
+        pageTable[3].deviceOffsetBytes = 2048;
+        pageTable[3].deviceSizeBytes = 512;
+        pageTable[3].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
+        pageTable[3].lastRequestFrame = 3;
+        pageTable[3].payloadBytes = 384;
+        pageTable[4].deviceOffsetBytes = 4096;
+        pageTable[4].deviceSizeBytes = 256;
+        pageTable[4].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback);
+        pageTable[4].lastRequestFrame = 3;
+        pageTable[4].payloadBytes = 128;
+        pageTable[5].deviceOffsetBytes = 8192;
+        pageTable[5].deviceSizeBytes = 128;
+        pageTable[5].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
+        pageTable[5].lastRequestFrame = 3;
+        pageTable[5].payloadBytes = 96;
 
         std::vector<uint8_t> requestInit(static_cast<size_t>(kRequestByteSize), 0);
         auto* requestHeader = reinterpret_cast<render::StreamRequestBufferHeader*>(requestInit.data());
@@ -2198,6 +2271,18 @@ public:
             },
             "lod levels",
             lodLevelBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> pageInfoBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(pageInfos),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "page infos",
+            pageInfoBuffer);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2267,6 +2352,56 @@ public:
         if (!testResult.passed) {
             return testResult;
         }
+        std::unique_ptr<render::Buffer> activeGroupBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = static_cast<uint64_t>(kActiveGroupCapacity) * sizeof(render::MeshletStreamGpuActiveGroup),
+                .structureStride = sizeof(render::MeshletStreamGpuActiveGroup),
+                .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource,
+                .memoryLocation = render::MemoryLocation::Device,
+            },
+            "active groups",
+            activeGroupBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> activeHeaderBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(render::MeshletStreamGpuActiveHeader),
+                .structureStride = sizeof(render::MeshletStreamGpuActiveHeader),
+                .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource,
+                .memoryLocation = render::MemoryLocation::Device,
+            },
+            "active header",
+            activeHeaderBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> activeGroupReadbackBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = activeGroupBuffer->desc().size,
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "active groups readback",
+            activeGroupReadbackBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> activeHeaderReadbackBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = activeHeaderBuffer->desc().size,
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "active header readback",
+            activeHeaderReadbackBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
         std::unique_ptr<render::Buffer> pageTableReadbackBuffer;
         testResult = createBuffer(
             render::BufferDesc{
@@ -2304,6 +2439,10 @@ public:
         if (!result) {
             return RhiTestResult::fail(std::string("writeHostBuffer(lod levels) returned ") + toString(result));
         }
+        result = writeHostBuffer(*pageInfoBuffer, pageInfos.data(), sizeof(pageInfos));
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(page infos) returned ") + toString(result));
+        }
         result = writeHostBuffer(*paramsBuffer, &params, sizeof(params));
         if (!result) {
             return RhiTestResult::fail(std::string("writeHostBuffer(params) returned ") + toString(result));
@@ -2322,7 +2461,7 @@ public:
             render::BindlessHeapDesc{
                 .maxSamplers = 0,
                 .maxSampledImages = 0,
-                .maxBuffers = 6,
+                .maxBuffers = 9,
             },
             bindlessHeap);
         if (!result || bindlessHeap == nullptr) {
@@ -2359,6 +2498,11 @@ public:
         if (!testResult.passed) {
             return testResult;
         }
+        render::BindlessHandle pageInfoHandle;
+        testResult = allocateStorageBuffer(*pageInfoBuffer, "page infos", pageInfoHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
         render::BindlessHandle pageTableHandle;
         testResult = allocateStorageBuffer(*pageTableBuffer, "page table", pageTableHandle);
         if (!testResult.passed) {
@@ -2371,6 +2515,16 @@ public:
         }
         render::BindlessHandle requestHandle;
         testResult = allocateStorageBuffer(*requestBuffer, "request", requestHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle activeGroupHandle;
+        testResult = allocateStorageBuffer(*activeGroupBuffer, "active groups", activeGroupHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle activeHeaderHandle;
+        testResult = allocateStorageBuffer(*activeHeaderBuffer, "active header", activeHeaderHandle);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2413,6 +2567,46 @@ public:
             pipeline);
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline(traversal) returned ") + toString(result));
+        }
+
+        render::ShaderCompileResult activeBuildCompileResult;
+        result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "gpu_driven_streamasset",
+                .entryPointName = "gpuDrivenStreamAssetBuildActiveMain",
+                .searchPath = kShaderSearchPath,
+                .profileName = "glsl_460",
+            },
+            activeBuildCompileResult);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("compileSlangShaderToSpirv(active build) returned ") +
+                toString(result) +
+                ": " +
+                activeBuildCompileResult.diagnostics);
+        }
+        std::unique_ptr<render::ShaderModule> activeBuildShader;
+        result = device->createShaderModule(
+            render::ShaderModuleDesc{
+                .code = activeBuildCompileResult.spirv.data(),
+                .byteSize = static_cast<uint64_t>(activeBuildCompileResult.spirv.size() * sizeof(uint32_t)),
+            },
+            activeBuildShader);
+        if (!result || activeBuildShader == nullptr) {
+            return RhiTestResult::fail(std::string("createShaderModule(active build) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::ComputePipeline> activeBuildPipeline;
+        result = device->createComputePipeline(
+            render::ComputePipelineDesc{
+                .computeShader = activeBuildShader.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
+            },
+            activeBuildPipeline);
+        if (!result || activeBuildPipeline == nullptr) {
+            return RhiTestResult::fail(std::string("createComputePipeline(active build) returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
@@ -2489,12 +2683,15 @@ public:
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         commandBuffer->bindComputePipeline(*pipeline);
         render::MeshletStreamUserPush push{
+            .activeGroupBuffer = activeGroupHandle.index,
             .pageTableBuffer = pageTableHandle.index,
             .paramsBuffer = paramsHandle.index,
             .requestBuffer = requestHandle.index,
+            .activeHeaderBuffer = activeHeaderHandle.index,
             .instanceBuffer = instanceHandle.index,
             .primitiveBuffer = primitiveHandle.index,
             .lodLevelBuffer = lodLevelHandle.index,
+            .pageInfoBuffer = pageInfoHandle.index,
             .traversalPhase = render::kMeshletStreamTraversalLoadPhase,
         };
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -2525,7 +2722,72 @@ public:
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        std::array<render::BufferBarrierDesc, 2> readbackBarriers = {{
+        std::array<render::BufferBarrierDesc, 4> activeBuildBarriers = {{
+            render::BufferBarrierDesc{
+                .buffer = pageTableBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = pageTableBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = requestBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = requestBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = activeGroupBuffer.get(),
+                .before = render::ResourceState::Undefined,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = activeGroupBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = activeHeaderBuffer.get(),
+                .before = render::ResourceState::Undefined,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = activeHeaderBuffer->desc().size,
+            },
+        }};
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = activeBuildBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(activeBuildBarriers.size()),
+        });
+
+        commandBuffer->bindComputePipeline(*activeBuildPipeline);
+        push.activeBuildPhase = render::kMeshletStreamActiveBuildResetPhase;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        std::array<render::BufferBarrierDesc, 2> activeResetBarriers = {{
+            render::BufferBarrierDesc{
+                .buffer = activeGroupBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = activeGroupBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = activeHeaderBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = activeHeaderBuffer->desc().size,
+            },
+        }};
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = activeResetBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(activeResetBarriers.size()),
+        });
+
+        push.activeBuildPhase = render::kMeshletStreamActiveBuildBuildPhase;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        std::array<render::BufferBarrierDesc, 4> readbackBarriers = {{
             render::BufferBarrierDesc{
                 .buffer = pageTableBuffer.get(),
                 .before = render::ResourceState::General,
@@ -2539,6 +2801,20 @@ public:
                 .after = render::ResourceState::TransferSource,
                 .offset = 0,
                 .size = requestBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = activeGroupBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::TransferSource,
+                .offset = 0,
+                .size = activeGroupBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = activeHeaderBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::TransferSource,
+                .offset = 0,
+                .size = activeHeaderBuffer->desc().size,
             },
         }};
         commandBuffer->barrier(render::BarrierDesc{
@@ -2554,6 +2830,16 @@ public:
             .source = requestBuffer.get(),
             .destination = requestReadbackBuffer.get(),
             .size = requestBuffer->desc().size,
+        });
+        commandBuffer->copyBuffer(render::BufferCopyDesc{
+            .source = activeGroupBuffer.get(),
+            .destination = activeGroupReadbackBuffer.get(),
+            .size = activeGroupBuffer->desc().size,
+        });
+        commandBuffer->copyBuffer(render::BufferCopyDesc{
+            .source = activeHeaderBuffer.get(),
+            .destination = activeHeaderReadbackBuffer.get(),
+            .size = activeHeaderBuffer->desc().size,
         });
         result = commandBuffer->end();
         if (!result) {
@@ -2574,7 +2860,7 @@ public:
             return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
 
-        std::array<render::StreamPageTableEntry, 3> pageTableResult{};
+        std::array<render::StreamPageTableEntry, 6> pageTableResult{};
         if (!readHostBuffer(*pageTableReadbackBuffer, pageTableResult.data(), sizeof(pageTableResult))) {
             return RhiTestResult::fail("page table readback buffer did not map");
         }
@@ -2592,13 +2878,50 @@ public:
             actualHeader->unloadOverflowCounter != 0 ||
             actualHeader->invalidPageCounter != 0 ||
             actualPageIds[0] != 0 ||
-            actualPageIds[kMaxLoadRequests] != 2) {
+            actualPageIds[kMaxLoadRequests] != 5) {
             return RhiTestResult::fail("traversal demand shader did not emit expected load/unload requests");
         }
         if (pageTableResult[0].lastRequestFrame != kFrameIndex ||
             pageTableResult[1].lastRequestFrame != kFrameIndex ||
+            pageTableResult[3].lastRequestFrame != kFrameIndex ||
             pageTableResult[2].lastRequestFrame == kFrameIndex) {
             return RhiTestResult::fail("traversal demand shader did not mark selected pages conservatively");
+        }
+        render::MeshletStreamGpuActiveHeader activeHeaderResult;
+        if (!readHostBuffer(*activeHeaderReadbackBuffer, &activeHeaderResult, sizeof(activeHeaderResult))) {
+            return RhiTestResult::fail("active header readback buffer did not map");
+        }
+        std::array<render::MeshletStreamGpuActiveGroup, kActiveGroupCapacity> activeGroupsResult{};
+        if (!readHostBuffer(*activeGroupReadbackBuffer, activeGroupsResult.data(), sizeof(activeGroupsResult))) {
+            return RhiTestResult::fail("active group readback buffer did not map");
+        }
+        if (activeHeaderResult.activeGroupCount != 2 ||
+            activeHeaderResult.activeGroupCapacity != kActiveGroupCapacity ||
+            activeHeaderResult.maxActiveGroupClusters != params.maxActiveGroupClusters ||
+            activeHeaderResult.overflowCount != 0 ||
+            activeHeaderResult.frameIndex != kFrameIndex) {
+            return RhiTestResult::fail("active table header was not built as expected");
+        }
+
+        bool foundFallbackPage = false;
+        bool foundResidentFinePage = false;
+        for (uint32_t index = 0; index < activeHeaderResult.activeGroupCount; ++index) {
+            const render::MeshletStreamGpuActiveGroup& group = activeGroupsResult[index];
+            if (group.pageIndex == 2 &&
+                group.clusterCount == pageInfos[2].clusterCount &&
+                group.materialIndex == instances[0].materialIndex &&
+                group.flags == render::kMeshletStreamActiveGroupResident) {
+                foundFallbackPage = true;
+            }
+            if (group.pageIndex == 3 &&
+                group.clusterCount == pageInfos[3].clusterCount &&
+                group.materialIndex == instances[1].materialIndex &&
+                group.flags == render::kMeshletStreamActiveGroupResident) {
+                foundResidentFinePage = true;
+            }
+        }
+        if (!foundFallbackPage || !foundResidentFinePage) {
+            return RhiTestResult::fail("active table did not compact fallback and resident fine pages");
         }
 
         (void)device->waitIdle();
@@ -3741,14 +4064,28 @@ public:
             return RhiTestResult::fail("GPUDrivenStreamAssetPass smoke device has no graphics queue");
         }
 
+        const std::filesystem::path streamAssetPath =
+            context.outputDirectory / "gpu_driven_streamasset_smoke.meshstream.bin";
+        const std::filesystem::path sourcePath =
+            std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
+        std::string buildReason;
+        if (!scene::buildMeshletStreamAssetOffline(
+                scene::MeshletStreamAssetOfflineBuildDesc{
+                    .sourcePath = sourcePath,
+                    .outputPath = streamAssetPath,
+                },
+                buildReason)) {
+            return RhiTestResult::fail("buildMeshletStreamAssetOffline failed: " + buildReason);
+        }
+
         render::RenderGraph graph;
         graph.setName("GPUDrivenStreamAssetSmoke");
         graph.addNode(
             "GPUDrivenStreamAssetPass",
             "GPUDriven",
             render::RenderGraphProperties{
-                {"path", "Asset/StandfordBunny/scene.gltf"},
-                {"streamAssetPath", (context.outputDirectory / "gpu_driven_streamasset_smoke.meshstream.bin").string()},
+                {"path", sourcePath.string()},
+                {"streamAssetPath", streamAssetPath.string()},
                 {"maxResidentPages", 64},
                 {"maxPageUploadsPerFrame", 1},
             });

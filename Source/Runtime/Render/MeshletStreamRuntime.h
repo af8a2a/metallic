@@ -22,6 +22,7 @@ inline constexpr const char* kMeshletStreamMeshEntryPoint = "gpuDrivenStreamAsse
 inline constexpr const char* kMeshletStreamFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
 inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
 inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
+inline constexpr const char* kMeshletStreamActiveBuildEntryPoint = "gpuDrivenStreamAssetBuildActiveMain";
 
 inline constexpr uint32_t kMeshletStreamDebugPage = 0;
 inline constexpr uint32_t kMeshletStreamDebugLod = 1;
@@ -35,6 +36,19 @@ inline constexpr uint32_t kMeshletStreamActiveGroupLoadRequest = 1u << 1;
 inline constexpr uint32_t kMeshletStreamActiveGroupUnloadRequest = 1u << 2;
 inline constexpr uint32_t kMeshletStreamTraversalLoadPhase = 0;
 inline constexpr uint32_t kMeshletStreamTraversalUnloadPhase = 1;
+inline constexpr uint32_t kMeshletStreamActiveBuildResetPhase = 0;
+inline constexpr uint32_t kMeshletStreamActiveBuildBuildPhase = 1;
+
+struct MeshletStreamGpuActiveHeader {
+    uint32_t activeGroupCount = 0;
+    uint32_t activeGroupCapacity = 0;
+    uint32_t maxActiveGroupClusters = 0;
+    uint32_t overflowCount = 0;
+    uint32_t frameIndex = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+};
 
 struct MeshletStreamGpuActiveGroup {
     uint32_t pageDeviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
@@ -89,7 +103,7 @@ struct MeshletStreamGpuPageInfo {
     uint32_t primitiveIndex = 0;
     uint32_t lodLevel = 0;
     uint32_t pageIndex = 0;
-    uint32_t padding0 = 0;
+    uint32_t clusterCount = 0;
 };
 
 struct MeshletStreamGpuParams {
@@ -124,13 +138,16 @@ struct MeshletStreamUserPush {
     uint32_t paramsBuffer = 0;
     uint32_t requestBuffer = 0;
     uint32_t updateBuffer = 0;
+    uint32_t activeHeaderBuffer = 0;
     uint32_t instanceBuffer = 0;
     uint32_t primitiveBuffer = 0;
     uint32_t lodLevelBuffer = 0;
     uint32_t pageInfoBuffer = 0;
     uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
+    uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
 };
 
+static_assert(sizeof(MeshletStreamGpuActiveHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuActiveGroup) == 96);
 static_assert(sizeof(MeshletStreamGpuInstance) == 96);
 static_assert(sizeof(MeshletStreamGpuPrimitive) == 32);
@@ -138,12 +155,12 @@ static_assert(sizeof(MeshletStreamGpuLodLevel) == 32);
 static_assert(sizeof(MeshletStreamGpuPageInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 32);
 static_assert(sizeof(MeshletStreamGpuParams) == 160);
-static_assert(sizeof(MeshletStreamUserPush) == 44);
+static_assert(sizeof(MeshletStreamUserPush) == 52);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
     std::filesystem::path streamAssetPath;
-    bool autoBuildStreamAsset = true;
+    bool autoBuildStreamAsset = false;
     uint64_t maxResidentBytes = 0;
     uint32_t maxResidentPages = 4096;
     uint32_t maxPageUploadsPerFrame = 64;
@@ -201,38 +218,18 @@ public:
 private:
     class UpdatePass;
     class TraversalPass;
+    class ActiveBuildPass;
 
     uint32_t computeMaxActiveGroups() const;
     uint32_t computeMaxPageClusters() const;
-    uint32_t selectLodForInstanceCpu(
-        const scene::MeshletStreamInstanceInfo& instance,
-        const scene::MeshletStreamPrimitiveInfo& primitive,
-        const MeshletStreamFrameDesc& frame) const;
-    void appendResidentPageGroup(
-        const scene::MeshletStreamInstanceInfo& instance,
-        const scene::MeshletStreamPageInfo& page,
-        uint32_t pageIndex);
-    void appendLoadRequestGroup(
-        const scene::MeshletStreamInstanceInfo& instance,
-        const scene::MeshletStreamPageInfo& page,
-        uint32_t pageIndex);
-    bool appendResidentPageRange(
-        const scene::MeshletStreamInstanceInfo& instance,
-        uint32_t pageOffset,
-        uint32_t pageCount);
-    void appendRequestPageRange(
-        const scene::MeshletStreamInstanceInfo& instance,
-        uint32_t pageOffset,
-        uint32_t pageCount);
-    void buildFrameActiveGroups(const MeshletStreamFrameDesc& frame);
     Result initializeSceneMetadataBuffers(Device& device, std::string& log);
 
     Result initializePageTableIfNeeded(CommandBuffer& commandBuffer);
     Result applyPageTablePatches(CommandBuffer& commandBuffer);
     Result clearRequestBuffer(CommandBuffer& commandBuffer);
     Result dispatchTraversal(CommandBuffer& commandBuffer, uint32_t threadCount, uint32_t traversalPhase);
+    Result buildActiveTable(CommandBuffer& commandBuffer);
     Result copyRequestBufferForReadback(CommandBuffer& commandBuffer);
-    Result updateActiveGroupBuffer();
     Result updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
     void consumeGpuRequestReadback();
@@ -240,10 +237,10 @@ private:
     scene::MeshletStreamAsset asset_;
     MeshletStreamResidencyManager residency_;
     scene::Bounds drawBounds_;
-    std::vector<MeshletStreamGpuActiveGroup> activeGroups_;
     std::vector<StreamPageTableEntry> pageTable_;
     std::unique_ptr<Buffer> pageBuffer_;
     std::unique_ptr<Buffer> activeGroupBuffer_;
+    std::unique_ptr<Buffer> activeHeaderBuffer_;
     std::unique_ptr<Buffer> pageTableBuffer_;
     std::unique_ptr<Buffer> pageTableUploadBuffer_;
     std::unique_ptr<Buffer> requestBuffer_;
@@ -257,8 +254,10 @@ private:
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<UpdatePass> updatePass_;
     std::unique_ptr<TraversalPass> traversalPass_;
+    std::unique_ptr<ActiveBuildPass> activeBuildPass_;
     BindlessHandle pageHandle_;
     BindlessHandle activeGroupHandle_;
+    BindlessHandle activeHeaderHandle_;
     BindlessHandle pageTableHandle_;
     BindlessHandle paramsHandle_;
     BindlessHandle requestHandle_;
@@ -267,6 +266,8 @@ private:
     BindlessHandle lodLevelHandle_;
     BindlessHandle pageInfoHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
+    ResourceState activeGroupBufferState_ = ResourceState::Undefined;
+    ResourceState activeHeaderBufferState_ = ResourceState::Undefined;
     ResourceState pageTableState_ = ResourceState::Undefined;
     ResourceState requestBufferState_ = ResourceState::Undefined;
     bool pageTableInitialized_ = false;

@@ -560,7 +560,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
     if (type == "GPUDrivenStreamAssetPass") {
         return render::RenderGraphProperties{
             {"path", "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"},
-            {"autoBuildStreamAsset", true},
+            {"autoBuildStreamAsset", false},
             {"enableGpuLodSelection", true},
             {"selectedLodLevel", 0},
             {"maxResidentPages", 4096},

@@ -2031,6 +2031,13 @@ bool validIndex(int32_t index, size_t size)
 
 } // namespace
 
+bool buildMeshletsForPrimitive(RenderPrimitive& primitive)
+{
+    const bool builtBaseMeshlets = buildMeshletClusters(primitive);
+    const bool builtLodMeshlets = buildMeshletLods(primitive);
+    return builtBaseMeshlets || builtLodMeshlets;
+}
+
 void Bounds::reset()
 {
     min = float3(0.0f, 0.0f, 0.0f);

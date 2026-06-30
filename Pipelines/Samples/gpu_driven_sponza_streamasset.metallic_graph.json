@@ -10,7 +10,7 @@
                 "y": 281.0
             },
             "properties": {
-                "autoBuildStreamAsset": true,
+                "autoBuildStreamAsset": false,
                 "debugColorMode": "page",
                 "enableGpuLodSelection": true,
                 "maxPageUploadsPerFrame": 64,

@@ -146,7 +146,7 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
     return MeshletStreamRuntimeDesc{
         .sourcePath = scenePath,
         .streamAssetPath = streamAssetPathFromProperties(properties, scenePath),
-        .autoBuildStreamAsset = boolProperty(properties, "autoBuildStreamAsset", true),
+        .autoBuildStreamAsset = boolProperty(properties, "autoBuildStreamAsset", false),
         .maxResidentBytes = uint64Property(properties, "maxResidentBytes", 0),
         .maxResidentPages = uintProperty(properties, "maxResidentPages", 4096),
         .maxPageUploadsPerFrame = uintProperty(properties, "maxPageUploadsPerFrame", 64),

@@ -1179,6 +1179,33 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     ASSERT_LE(decodedHeader.normalOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
     ASSERT_LE(decodedHeader.texcoord0OffsetBytes + decodedHeader.vertexCount * sizeof(float) * 2u, decodedPayload.size());
 
+    const std::filesystem::path offlineDirectory = directory / "meshlet_streamasset_offline";
+    std::filesystem::create_directories(offlineDirectory);
+    const std::filesystem::path offlineGltfPath = writeMeshletLodGridScene(offlineDirectory);
+    const std::filesystem::path offlineStreamAssetPath =
+        offlineDirectory / "meshlet_lod_grid.offline.meshstream.bin";
+    std::filesystem::path offlineMeshletCachePath = offlineGltfPath;
+    offlineMeshletCachePath += ".meshlets.bin";
+    std::filesystem::remove(offlineStreamAssetPath);
+    std::filesystem::remove(offlineMeshletCachePath);
+    ASSERT_TRUE(metallic::scene::buildMeshletStreamAssetOffline(
+        metallic::scene::MeshletStreamAssetOfflineBuildDesc{
+            .sourcePath = offlineGltfPath,
+            .outputPath = offlineStreamAssetPath,
+        },
+        reason)) << reason;
+    EXPECT_FALSE(std::filesystem::exists(offlineMeshletCachePath));
+
+    metallic::scene::MeshletStreamAsset offlineAsset;
+    ASSERT_TRUE(offlineAsset.open(offlineStreamAssetPath, reason)) << reason;
+    EXPECT_TRUE(offlineAsset.isCurrentForSource(offlineGltfPath));
+    EXPECT_EQ(offlineAsset.primitiveCount(), asset.primitiveCount());
+    EXPECT_EQ(offlineAsset.geometryCount(), asset.geometryCount());
+    EXPECT_EQ(offlineAsset.instanceCount(), asset.instanceCount());
+    EXPECT_EQ(offlineAsset.lodLevelCount(), asset.lodLevelCount());
+    EXPECT_EQ(offlineAsset.pageCount(), asset.pageCount());
+    EXPECT_EQ(offlineAsset.pages().front().attributeFlags, asset.pages().front().attributeFlags);
+
     asset.close();
     {
         std::ofstream source(gltfPath, std::ios::app);

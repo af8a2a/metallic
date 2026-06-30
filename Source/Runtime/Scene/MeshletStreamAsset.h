@@ -185,6 +185,12 @@ struct MeshletStreamAssetBuildDesc {
     MeshletStreamPayloadCompression compressionMode = MeshletStreamPayloadCompression::None;
 };
 
+struct MeshletStreamAssetOfflineBuildDesc {
+    std::filesystem::path sourcePath;
+    std::filesystem::path outputPath;
+    MeshletStreamPayloadCompression compressionMode = MeshletStreamPayloadCompression::None;
+};
+
 bool decodeMeshletStreamPayloadForDevice(
     const MeshletStreamPageInfo& page,
     std::span<const uint8_t> storedPayload,
@@ -192,6 +198,7 @@ bool decodeMeshletStreamPayloadForDevice(
     std::span<const uint8_t>& outDevicePayload,
     std::string& reason);
 bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::string& reason);
+bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& desc, std::string& reason);
 std::filesystem::path meshletStreamAssetPathFor(const std::filesystem::path& sourcePath);
 
 } // namespace metallic::scene
