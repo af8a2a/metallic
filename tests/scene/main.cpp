@@ -111,7 +111,7 @@ void writeGeneratedTangentSceneBinary(const std::filesystem::path& path)
     file.write(reinterpret_cast<const char*>(kIndices.data()), sizeof(uint16_t) * kIndices.size());
 }
 
-std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& directory)
+std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& directory, uint32_t meshCount = 1)
 {
     constexpr uint32_t kGridCells = 32;
     constexpr uint32_t kGridVertices = (kGridCells + 1) * (kGridCells + 1);
@@ -209,13 +209,42 @@ std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& dire
     { "bufferView": 3, "componentType": 5125, "count": )json"
          << indices.size() << R"json(, "type": "SCALAR" }
   ],
-  "meshes": [
-    { "name": "Meshlet LOD Grid", "primitives": [
+)json";
+    meshCount = std::max(meshCount, 1u);
+    gltf << R"json(  "meshes": [
+)json";
+    for (uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
+        if (meshIndex != 0) {
+            gltf << ",\n";
+        }
+        gltf << R"json(    { "name": "Meshlet LOD Grid )json" << meshIndex << R"json(", "primitives": [
       { "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 }, "indices": 3, "mode": 4 }
-    ] }
+    ] })json";
+    }
+    gltf << R"json(
   ],
-  "nodes": [ { "name": "Grid", "mesh": 0 } ],
-  "scenes": [ { "name": "Grid Scene", "nodes": [0] } ],
+  "nodes": [
+)json";
+    for (uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
+        if (meshIndex != 0) {
+            gltf << ",\n";
+        }
+        gltf << R"json(    { "name": "Grid )json" << meshIndex << R"json(", "mesh": )json" << meshIndex;
+        if (meshIndex != 0) {
+            gltf << R"json(, "translation": [)json" << (static_cast<float>(meshIndex) * 40.0f) << R"json(, 0.0, 0.0])json";
+        }
+        gltf << " }";
+    }
+    gltf << R"json(
+  ],
+  "scenes": [ { "name": "Grid Scene", "nodes": [)json";
+    for (uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
+        if (meshIndex != 0) {
+            gltf << ", ";
+        }
+        gltf << meshIndex;
+    }
+    gltf << R"json(] } ],
   "scene": 0
 })json";
     writeTextFile(gltfPath, gltf.str());
@@ -1205,6 +1234,43 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_EQ(offlineAsset.lodLevelCount(), asset.lodLevelCount());
     EXPECT_EQ(offlineAsset.pageCount(), asset.pageCount());
     EXPECT_EQ(offlineAsset.pages().front().attributeFlags, asset.pages().front().attributeFlags);
+
+    const std::filesystem::path partialDirectory = directory / "meshlet_streamasset_partial";
+    std::filesystem::create_directories(partialDirectory);
+    const std::filesystem::path partialGltfPath = writeMeshletLodGridScene(partialDirectory, 2);
+    const std::filesystem::path partialStreamAssetPath =
+        partialDirectory / "meshlet_lod_grid.partial.meshstream.bin";
+    std::filesystem::path partialCachePath = partialStreamAssetPath;
+    partialCachePath += ".partial";
+    std::filesystem::remove(partialStreamAssetPath);
+    std::filesystem::remove(partialCachePath);
+    ASSERT_FALSE(metallic::scene::buildMeshletStreamAssetOffline(
+        metallic::scene::MeshletStreamAssetOfflineBuildDesc{
+            .sourcePath = partialGltfPath,
+            .outputPath = partialStreamAssetPath,
+            .maxNewGeometriesPerInvocation = 1,
+        },
+        reason));
+    EXPECT_NE(reason.find("paused"), std::string::npos) << reason;
+    EXPECT_TRUE(std::filesystem::exists(partialStreamAssetPath));
+    EXPECT_TRUE(std::filesystem::exists(partialCachePath));
+
+    ASSERT_TRUE(metallic::scene::buildMeshletStreamAssetOffline(
+        metallic::scene::MeshletStreamAssetOfflineBuildDesc{
+            .sourcePath = partialGltfPath,
+            .outputPath = partialStreamAssetPath,
+        },
+        reason)) << reason;
+    EXPECT_FALSE(std::filesystem::exists(partialCachePath));
+
+    metallic::scene::MeshletStreamAsset resumedAsset;
+    ASSERT_TRUE(resumedAsset.open(partialStreamAssetPath, reason)) << reason;
+    EXPECT_TRUE(resumedAsset.isCurrentForSource(partialGltfPath));
+    EXPECT_EQ(resumedAsset.primitiveCount(), 2u);
+    EXPECT_EQ(resumedAsset.geometryCount(), 2u);
+    EXPECT_EQ(resumedAsset.instanceCount(), 2u);
+    EXPECT_EQ(resumedAsset.lodLevelCount(), offlineAsset.lodLevelCount() * 2u);
+    EXPECT_EQ(resumedAsset.pageCount(), offlineAsset.pageCount() * 2u);
 
     asset.close();
     {

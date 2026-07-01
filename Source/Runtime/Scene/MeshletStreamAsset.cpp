@@ -28,7 +28,9 @@ namespace metallic::scene {
 namespace {
 
 constexpr std::array<char, 8> kMeshletStreamMagic{'M', 'T', 'L', 'M', 'S', 'T', 'R', 'M'};
+constexpr std::array<char, 8> kMeshletStreamPartialMagic{'M', 'T', 'L', 'M', 'S', 'P', 'R', 'T'};
 constexpr uint32_t kMeshletStreamVersion = 2;
+constexpr uint32_t kMeshletStreamPartialVersion = 1;
 constexpr uint32_t kMeshletStreamEndian = 0x01020304;
 constexpr uint32_t kPayloadMagic = 0x4d535047u; // "GSPM"
 constexpr uint32_t kPayloadVersion = 2;
@@ -75,7 +77,44 @@ struct MeshletStreamFileHeader {
     uint32_t reserved1 = 0;
 };
 
+struct MeshletStreamPartialFileHeader {
+    char magic[8] = {};
+    uint32_t version = 0;
+    uint32_t endian = 0;
+    uint64_t sourceFileSize = 0;
+    int64_t sourceWriteTime = 0;
+    uint64_t payloadWriteOffset = 0;
+    uint32_t compressionMode = 0;
+    uint32_t nextRenderPrimitiveIndex = 0;
+    uint32_t primitiveCount = 0;
+    uint32_t geometryCount = 0;
+    uint32_t lodLevelCount = 0;
+    uint32_t pageCount = 0;
+    uint32_t pageOffsetCount = 0;
+    uint32_t geometryEntryCount = 0;
+    uint32_t maxPagePayloadBytes = 0;
+    uint32_t pagePayloadAlignment = 0;
+    uint32_t maxVertices = 0;
+    uint32_t minTriangles = 0;
+    uint32_t maxTriangles = 0;
+    uint32_t lodGroupSize = 0;
+    uint32_t reserved = 0;
+    float fillWeight = 0.0f;
+    float lodErrorMergePrevious = 0.0f;
+    float lodErrorMergeAdditive = 0.0f;
+    uint32_t reserved1 = 0;
+};
+
+struct MeshletStreamPartialGeometryEntry {
+    int32_t meshIndex = 0;
+    int32_t primitiveIndex = 0;
+    uint32_t renderPrimitiveIndex = 0;
+    uint32_t streamPrimitiveIndex = 0;
+};
+
 static_assert(std::is_trivially_copyable_v<MeshletStreamFileHeader>);
+static_assert(std::is_trivially_copyable_v<MeshletStreamPartialFileHeader>);
+static_assert(std::is_trivially_copyable_v<MeshletStreamPartialGeometryEntry>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPrimitiveInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamInstanceInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamGeometryInfo>);
@@ -87,6 +126,18 @@ static_assert(sizeof(MeshletStreamPayloadHeader) == 96);
 static_assert(sizeof(MeshletStreamPayloadCluster) == 32);
 
 bool meshletStreamBuildParamsMatch(const MeshletStreamFileHeader& header)
+{
+    return header.pagePayloadAlignment == kPageSlotAlignment &&
+        header.maxVertices == kMeshletClusterMaxVertices &&
+        header.minTriangles == kMeshletClusterMinTriangles &&
+        header.maxTriangles == kMeshletClusterMaxTriangles &&
+        header.lodGroupSize == kMeshletLodGroupSize &&
+        header.fillWeight == kMeshletClusterFillWeight &&
+        header.lodErrorMergePrevious == kMeshletLodErrorMergePrevious &&
+        header.lodErrorMergeAdditive == kMeshletLodErrorMergeAdditive;
+}
+
+bool meshletStreamPartialBuildParamsMatch(const MeshletStreamPartialFileHeader& header)
 {
     return header.pagePayloadAlignment == kPageSlotAlignment &&
         header.maxVertices == kMeshletClusterMaxVertices &&
@@ -464,6 +515,26 @@ bool writeArray(std::ostream& stream, const std::vector<T>& values)
     return stream.good();
 }
 
+template <typename T>
+bool readPod(std::istream& stream, T& value)
+{
+    stream.read(reinterpret_cast<char*>(&value), sizeof(T));
+    return stream.good();
+}
+
+template <typename T>
+bool readArray(std::istream& stream, uint32_t count, std::vector<T>& values)
+{
+    values.resize(count);
+    if (values.empty()) {
+        return true;
+    }
+    stream.read(
+        reinterpret_cast<char*>(values.data()),
+        static_cast<std::streamsize>(values.size() * sizeof(T)));
+    return stream.good();
+}
+
 void appendBytes(std::vector<uint8_t>& bytes, const void* data, size_t byteSize)
 {
     const uint8_t* first = static_cast<const uint8_t*>(data);
@@ -716,8 +787,17 @@ struct MeshletStreamBuildState {
     std::vector<MeshletStreamLodLevelInfo> lodLevels;
     std::vector<MeshletStreamPageInfo> pages;
     std::vector<uint64_t> pageOffsets;
+    std::vector<MeshletStreamPartialGeometryEntry> partialGeometryEntries;
     std::vector<uint8_t> payload;
     std::vector<uint8_t> storedPayload;
+    uint32_t nextRenderPrimitiveIndex = 0;
+};
+
+struct MeshletStreamPartialBuildContext {
+    std::filesystem::path partialPath;
+    uint32_t maxNewGeometriesPerInvocation = 0;
+    uint32_t newGeometryCount = 0;
+    bool paused = false;
 };
 
 MeshletStreamFileHeader makeStreamFileHeader(const std::filesystem::path& sourcePath)
@@ -739,6 +819,13 @@ MeshletStreamFileHeader makeStreamFileHeader(const std::filesystem::path& source
     return header;
 }
 
+std::filesystem::path meshletStreamPartialPathFor(const std::filesystem::path& outputPath)
+{
+    std::filesystem::path path = outputPath;
+    path += ".partial";
+    return path;
+}
+
 bool openStreamAssetBuildFile(
     const std::filesystem::path& outputPath,
     std::ofstream& stream,
@@ -756,6 +843,59 @@ bool openStreamAssetBuildFile(
     stream.open(outputPath, std::ios::binary | std::ios::trunc);
     if (!stream) {
         reason = "streamasset output file cannot be opened";
+        return false;
+    }
+    return true;
+}
+
+bool openStreamAssetBuildFile(
+    const std::filesystem::path& outputPath,
+    std::fstream& stream,
+    std::string& reason)
+{
+    std::error_code createError;
+    if (outputPath.has_parent_path()) {
+        std::filesystem::create_directories(outputPath.parent_path(), createError);
+        if (createError) {
+            reason = createError.message();
+            return false;
+        }
+    }
+
+    stream.open(outputPath, std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
+    if (!stream) {
+        reason = "streamasset output file cannot be opened";
+        return false;
+    }
+    return true;
+}
+
+bool openStreamAssetResumeFile(
+    const std::filesystem::path& outputPath,
+    uint64_t payloadWriteOffset,
+    std::fstream& stream,
+    std::string& reason)
+{
+    if (payloadWriteOffset < sizeof(MeshletStreamFileHeader)) {
+        reason = "streamasset partial cache payload offset is invalid";
+        return false;
+    }
+
+    std::error_code resizeError;
+    std::filesystem::resize_file(outputPath, payloadWriteOffset, resizeError);
+    if (resizeError) {
+        reason = "streamasset partial output truncate failed: " + resizeError.message();
+        return false;
+    }
+
+    stream.open(outputPath, std::ios::binary | std::ios::in | std::ios::out);
+    if (!stream) {
+        reason = "streamasset partial output file cannot be reopened";
+        return false;
+    }
+    stream.seekp(static_cast<std::streamoff>(payloadWriteOffset));
+    if (!stream) {
+        reason = "streamasset partial output seek failed";
         return false;
     }
     return true;
@@ -1469,18 +1609,294 @@ uint64_t gltfPrimitiveKey(int32_t meshIndex, int32_t primitiveIndex)
         static_cast<uint32_t>(primitiveIndex);
 }
 
+MeshletStreamPartialFileHeader makePartialBuildHeader(
+    const MeshletStreamBuildState& state,
+    MeshletStreamPayloadCompression compressionMode,
+    uint64_t payloadWriteOffset)
+{
+    MeshletStreamPartialFileHeader header;
+    std::memcpy(header.magic, kMeshletStreamPartialMagic.data(), kMeshletStreamPartialMagic.size());
+    header.version = kMeshletStreamPartialVersion;
+    header.endian = kMeshletStreamEndian;
+    header.sourceFileSize = state.header.sourceFileSize;
+    header.sourceWriteTime = state.header.sourceWriteTime;
+    header.payloadWriteOffset = payloadWriteOffset;
+    header.compressionMode = static_cast<uint32_t>(compressionMode);
+    header.nextRenderPrimitiveIndex = state.nextRenderPrimitiveIndex;
+    header.primitiveCount = static_cast<uint32_t>(state.primitives.size());
+    header.geometryCount = static_cast<uint32_t>(state.geometries.size());
+    header.lodLevelCount = static_cast<uint32_t>(state.lodLevels.size());
+    header.pageCount = static_cast<uint32_t>(state.pages.size());
+    header.pageOffsetCount = static_cast<uint32_t>(state.pageOffsets.size());
+    header.geometryEntryCount = static_cast<uint32_t>(state.partialGeometryEntries.size());
+    header.maxPagePayloadBytes = state.header.maxPagePayloadBytes;
+    header.pagePayloadAlignment = static_cast<uint32_t>(kPageSlotAlignment);
+    header.maxVertices = kMeshletClusterMaxVertices;
+    header.minTriangles = kMeshletClusterMinTriangles;
+    header.maxTriangles = kMeshletClusterMaxTriangles;
+    header.lodGroupSize = kMeshletLodGroupSize;
+    header.fillWeight = kMeshletClusterFillWeight;
+    header.lodErrorMergePrevious = kMeshletLodErrorMergePrevious;
+    header.lodErrorMergeAdditive = kMeshletLodErrorMergeAdditive;
+    return header;
+}
+
+bool directoryRangeValid(uint32_t offset, uint32_t count, size_t size)
+{
+    return offset <= size && count <= size - offset;
+}
+
+bool addArrayByteSize(uint64_t count, uint64_t elementSize, uint64_t& inOutByteSize)
+{
+    if (count != 0 && elementSize > std::numeric_limits<uint64_t>::max() / count) {
+        return false;
+    }
+    const uint64_t byteSize = count * elementSize;
+    if (byteSize > std::numeric_limits<uint64_t>::max() - inOutByteSize) {
+        return false;
+    }
+    inOutByteSize += byteSize;
+    return true;
+}
+
+bool partialBuildStateRangesValid(
+    const MeshletStreamBuildState& state,
+    uint64_t payloadWriteOffset)
+{
+    if (state.primitives.size() != state.geometries.size() ||
+        state.pages.size() != state.pageOffsets.size() ||
+        state.partialGeometryEntries.size() != state.primitives.size() ||
+        payloadWriteOffset < sizeof(MeshletStreamFileHeader)) {
+        return false;
+    }
+
+    for (uint32_t primitiveIndex = 0; primitiveIndex < state.primitives.size(); ++primitiveIndex) {
+        const MeshletStreamPrimitiveInfo& primitive = state.primitives[primitiveIndex];
+        if (primitive.pageCount == 0 ||
+            primitive.fallbackPageCount == 0 ||
+            !directoryRangeValid(primitive.lodLevelOffset, primitive.lodLevelCount, state.lodLevels.size()) ||
+            !directoryRangeValid(primitive.pageOffset, primitive.pageCount, state.pages.size()) ||
+            !directoryRangeValid(primitive.fallbackPageOffset, primitive.fallbackPageCount, state.pages.size())) {
+            return false;
+        }
+    }
+
+    for (uint32_t geometryIndex = 0; geometryIndex < state.geometries.size(); ++geometryIndex) {
+        const MeshletStreamGeometryInfo& geometry = state.geometries[geometryIndex];
+        if (geometry.primitiveIndex >= state.primitives.size() ||
+            geometry.pageCount == 0 ||
+            !directoryRangeValid(geometry.pageOffset, geometry.pageCount, state.pages.size()) ||
+            !directoryRangeValid(
+                geometry.pagePayloadOffsetTableOffset,
+                geometry.pagePayloadOffsetTableCount,
+                state.pageOffsets.size()) ||
+            geometry.pagePayloadOffsetTableCount != geometry.pageCount) {
+            return false;
+        }
+
+        const MeshletStreamPrimitiveInfo& primitive = state.primitives[geometry.primitiveIndex];
+        if (geometry.pageOffset != primitive.pageOffset ||
+            geometry.pageCount != primitive.pageCount ||
+            geometry.renderPrimitiveIndex != primitive.renderPrimitiveIndex ||
+            geometry.pagePayloadOffsetTableOffset != primitive.pageOffset) {
+            return false;
+        }
+    }
+
+    for (uint32_t pageIndex = 0; pageIndex < state.pages.size(); ++pageIndex) {
+        const MeshletStreamPageInfo& page = state.pages[pageIndex];
+        if (page.payloadOffset != state.pageOffsets[pageIndex] ||
+            page.payloadOffset % kFileAlignment != 0 ||
+            page.payloadSize == 0 ||
+            page.payloadOffset > payloadWriteOffset ||
+            page.payloadSize > payloadWriteOffset - page.payloadOffset) {
+            return false;
+        }
+    }
+
+    for (const MeshletStreamPartialGeometryEntry& entry : state.partialGeometryEntries) {
+        if (entry.streamPrimitiveIndex >= state.primitives.size() ||
+            entry.renderPrimitiveIndex >= state.nextRenderPrimitiveIndex) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool savePartialBuildState(
+    const MeshletStreamPartialBuildContext& context,
+    const MeshletStreamBuildState& state,
+    MeshletStreamPayloadCompression compressionMode,
+    uint64_t payloadWriteOffset,
+    std::string& reason)
+{
+    if (!partialBuildStateRangesValid(state, payloadWriteOffset)) {
+        reason = "streamasset partial cache state is invalid";
+        return false;
+    }
+
+    std::error_code createError;
+    if (context.partialPath.has_parent_path()) {
+        std::filesystem::create_directories(context.partialPath.parent_path(), createError);
+        if (createError) {
+            reason = "streamasset partial cache directory create failed: " + createError.message();
+            return false;
+        }
+    }
+
+    std::filesystem::path tempPath = context.partialPath;
+    tempPath += ".tmp";
+    std::ofstream file(tempPath, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        reason = "streamasset partial cache file cannot be opened";
+        return false;
+    }
+
+    const MeshletStreamPartialFileHeader header =
+        makePartialBuildHeader(state, compressionMode, payloadWriteOffset);
+    if (!writePod(file, header) ||
+        !writeArray(file, state.primitives) ||
+        !writeArray(file, state.geometries) ||
+        !writeArray(file, state.lodLevels) ||
+        !writeArray(file, state.pages) ||
+        !writeArray(file, state.pageOffsets) ||
+        !writeArray(file, state.partialGeometryEntries)) {
+        reason = "streamasset partial cache write failed";
+        return false;
+    }
+    file.close();
+    if (!file) {
+        reason = "streamasset partial cache close failed";
+        return false;
+    }
+
+    std::error_code removeError;
+    std::filesystem::remove(context.partialPath, removeError);
+    std::error_code renameError;
+    std::filesystem::rename(tempPath, context.partialPath, renameError);
+    if (renameError) {
+        std::error_code cleanupError;
+        std::filesystem::remove(tempPath, cleanupError);
+        reason = "streamasset partial cache publish failed: " + renameError.message();
+        return false;
+    }
+
+    return true;
+}
+
+bool loadPartialBuildState(
+    const std::filesystem::path& partialPath,
+    const std::filesystem::path& outputPath,
+    const std::filesystem::path& sourcePath,
+    MeshletStreamPayloadCompression compressionMode,
+    MeshletStreamBuildState& state,
+    std::unordered_map<uint64_t, uint32_t>& primitiveMap,
+    uint64_t& payloadWriteOffset)
+{
+    std::error_code existsError;
+    if (!std::filesystem::exists(partialPath, existsError) || existsError) {
+        return false;
+    }
+
+    std::ifstream file(partialPath, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+
+    MeshletStreamPartialFileHeader partialHeader;
+    if (!readPod(file, partialHeader)) {
+        return false;
+    }
+    if (std::memcmp(partialHeader.magic, kMeshletStreamPartialMagic.data(), kMeshletStreamPartialMagic.size()) != 0 ||
+        partialHeader.version != kMeshletStreamPartialVersion ||
+        partialHeader.endian != kMeshletStreamEndian ||
+        partialHeader.sourceFileSize != sourceFileSizeFor(sourcePath) ||
+        partialHeader.sourceWriteTime != sourceWriteTimeFor(sourcePath) ||
+        partialHeader.compressionMode != static_cast<uint32_t>(compressionMode) ||
+        !meshletStreamPartialBuildParamsMatch(partialHeader) ||
+        partialHeader.maxPagePayloadBytes == 0 ||
+        partialHeader.payloadWriteOffset < sizeof(MeshletStreamFileHeader)) {
+        return false;
+    }
+
+    std::error_code sizeError;
+    const uint64_t outputFileSize = std::filesystem::file_size(outputPath, sizeError);
+    if (sizeError || outputFileSize < partialHeader.payloadWriteOffset) {
+        return false;
+    }
+
+    std::error_code partialSizeError;
+    const uint64_t partialFileSize = std::filesystem::file_size(partialPath, partialSizeError);
+    if (partialSizeError) {
+        return false;
+    }
+    uint64_t requiredPartialFileSize = sizeof(MeshletStreamPartialFileHeader);
+    if (!addArrayByteSize(partialHeader.primitiveCount, sizeof(MeshletStreamPrimitiveInfo), requiredPartialFileSize) ||
+        !addArrayByteSize(partialHeader.geometryCount, sizeof(MeshletStreamGeometryInfo), requiredPartialFileSize) ||
+        !addArrayByteSize(partialHeader.lodLevelCount, sizeof(MeshletStreamLodLevelInfo), requiredPartialFileSize) ||
+        !addArrayByteSize(partialHeader.pageCount, sizeof(MeshletStreamPageInfo), requiredPartialFileSize) ||
+        !addArrayByteSize(partialHeader.pageOffsetCount, sizeof(uint64_t), requiredPartialFileSize) ||
+        !addArrayByteSize(
+            partialHeader.geometryEntryCount,
+            sizeof(MeshletStreamPartialGeometryEntry),
+            requiredPartialFileSize) ||
+        requiredPartialFileSize > partialFileSize) {
+        return false;
+    }
+
+    MeshletStreamBuildState loaded;
+    loaded.header = makeStreamFileHeader(sourcePath);
+    loaded.header.maxPagePayloadBytes = partialHeader.maxPagePayloadBytes;
+    loaded.nextRenderPrimitiveIndex = partialHeader.nextRenderPrimitiveIndex;
+    if (!readArray(file, partialHeader.primitiveCount, loaded.primitives) ||
+        !readArray(file, partialHeader.geometryCount, loaded.geometries) ||
+        !readArray(file, partialHeader.lodLevelCount, loaded.lodLevels) ||
+        !readArray(file, partialHeader.pageCount, loaded.pages) ||
+        !readArray(file, partialHeader.pageOffsetCount, loaded.pageOffsets) ||
+        !readArray(file, partialHeader.geometryEntryCount, loaded.partialGeometryEntries)) {
+        return false;
+    }
+
+    if (!partialBuildStateRangesValid(loaded, partialHeader.payloadWriteOffset)) {
+        return false;
+    }
+
+    primitiveMap.clear();
+    primitiveMap.reserve(loaded.partialGeometryEntries.size() * 2u);
+    for (const MeshletStreamPartialGeometryEntry& entry : loaded.partialGeometryEntries) {
+        primitiveMap[gltfPrimitiveKey(entry.meshIndex, entry.primitiveIndex)] = entry.streamPrimitiveIndex;
+    }
+
+    state = std::move(loaded);
+    payloadWriteOffset = partialHeader.payloadWriteOffset;
+    return true;
+}
+
 bool buildStreamAssetGeometryPayloadsFromGltf(
     std::ostream& stream,
     MeshletStreamBuildState& state,
     const tinygltf::Model& model,
     MeshletStreamPayloadCompression compressionMode,
     std::unordered_map<uint64_t, uint32_t>& primitiveMap,
+    MeshletStreamPartialBuildContext* partialContext,
     std::string& reason)
 {
     uint32_t renderPrimitiveIndex = 0;
     for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
         const tinygltf::Mesh& mesh = model.meshes[meshIndex];
         for (size_t primitiveIndex = 0; primitiveIndex < mesh.primitives.size(); ++primitiveIndex) {
+            const uint32_t sourceRenderPrimitiveIndex = renderPrimitiveIndex++;
+            if (sourceRenderPrimitiveIndex < state.nextRenderPrimitiveIndex) {
+                continue;
+            }
+            if (partialContext != nullptr &&
+                partialContext->maxNewGeometriesPerInvocation != 0 &&
+                partialContext->newGeometryCount >= partialContext->maxNewGeometriesPerInvocation) {
+                partialContext->paused = true;
+                return true;
+            }
+
             RenderPrimitive primitive;
             if (!loadRenderPrimitiveForStreamAssetBuilder(
                     model,
@@ -1491,7 +1907,6 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
                 return false;
             }
 
-            const uint32_t sourceRenderPrimitiveIndex = renderPrimitiveIndex++;
             if (primitive.positions.empty()) {
                 continue;
             }
@@ -1511,6 +1926,29 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
             if (streamPrimitiveIndex >= 0) {
                 primitiveMap[gltfPrimitiveKey(static_cast<int32_t>(meshIndex), static_cast<int32_t>(primitiveIndex))] =
                     static_cast<uint32_t>(streamPrimitiveIndex);
+                state.partialGeometryEntries.push_back(MeshletStreamPartialGeometryEntry{
+                    .meshIndex = static_cast<int32_t>(meshIndex),
+                    .primitiveIndex = static_cast<int32_t>(primitiveIndex),
+                    .renderPrimitiveIndex = sourceRenderPrimitiveIndex,
+                    .streamPrimitiveIndex = static_cast<uint32_t>(streamPrimitiveIndex),
+                });
+                state.nextRenderPrimitiveIndex = sourceRenderPrimitiveIndex + 1u;
+                if (partialContext != nullptr) {
+                    const std::streampos payloadWritePosition = stream.tellp();
+                    if (payloadWritePosition == std::streampos(-1)) {
+                        reason = "streamasset partial payload offset query failed";
+                        return false;
+                    }
+                    if (!savePartialBuildState(
+                            *partialContext,
+                            state,
+                            compressionMode,
+                            static_cast<uint64_t>(payloadWritePosition),
+                            reason)) {
+                        return false;
+                    }
+                    ++partialContext->newGeometryCount;
+                }
             }
         }
     }
@@ -2121,33 +2559,84 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
     const std::filesystem::path outputPath = desc.outputPath.empty()
         ? meshletStreamAssetPathFor(desc.sourcePath)
         : desc.outputPath;
-    std::ofstream stream;
-    if (!openStreamAssetBuildFile(outputPath, stream, reason)) {
-        return false;
+    const std::filesystem::path partialPath = meshletStreamPartialPathFor(outputPath);
+    {
+        MeshletStreamAsset existingAsset;
+        std::string existingReason;
+        if (existingAsset.open(outputPath, existingReason) &&
+            existingAsset.isCurrentForSource(desc.sourcePath)) {
+            bool compressionMatches = true;
+            for (const MeshletStreamPageInfo& page : existingAsset.pages()) {
+                if (page.compressionMode != static_cast<uint32_t>(desc.compressionMode)) {
+                    compressionMatches = false;
+                    break;
+                }
+            }
+            if (compressionMatches) {
+                std::error_code removeError;
+                std::filesystem::remove(partialPath, removeError);
+                return true;
+            }
+        }
     }
 
+    std::fstream stream;
     MeshletStreamBuildState state;
-    state.header = makeStreamFileHeader(desc.sourcePath);
-    if (!writeStreamAssetHeaderPlaceholder(stream, state.header, reason)) {
-        return false;
-    }
-
     std::unordered_map<uint64_t, uint32_t> primitiveMap;
     primitiveMap.reserve(model.meshes.size() * 2u);
+    uint64_t payloadWriteOffset = 0;
+    const bool resumedPartial = loadPartialBuildState(
+        partialPath,
+        outputPath,
+        desc.sourcePath,
+        desc.compressionMode,
+        state,
+        primitiveMap,
+        payloadWriteOffset);
+    if (resumedPartial) {
+        if (!openStreamAssetResumeFile(outputPath, payloadWriteOffset, stream, reason)) {
+            return false;
+        }
+    } else {
+        std::error_code removeError;
+        std::filesystem::remove(partialPath, removeError);
+        state.header = makeStreamFileHeader(desc.sourcePath);
+        if (!openStreamAssetBuildFile(outputPath, stream, reason)) {
+            return false;
+        }
+        if (!writeStreamAssetHeaderPlaceholder(stream, state.header, reason)) {
+            return false;
+        }
+    }
+
+    MeshletStreamPartialBuildContext partialContext{
+        .partialPath = partialPath,
+        .maxNewGeometriesPerInvocation = desc.maxNewGeometriesPerInvocation,
+    };
     if (!buildStreamAssetGeometryPayloadsFromGltf(
             stream,
             state,
             model,
             desc.compressionMode,
             primitiveMap,
+            &partialContext,
             reason)) {
+        return false;
+    }
+    if (partialContext.paused) {
+        reason = "streamasset offline build paused after geometry budget; rerun the same build to resume";
         return false;
     }
     if (!appendStreamAssetInstancesFromGltf(state, model, sceneIndex, primitiveMap, reason)) {
         return false;
     }
 
-    return finalizeStreamAssetBuild(stream, state, reason);
+    if (!finalizeStreamAssetBuild(stream, state, reason)) {
+        return false;
+    }
+    std::error_code removeError;
+    std::filesystem::remove(partialPath, removeError);
+    return true;
 }
 
 } // namespace metallic::scene

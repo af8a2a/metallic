@@ -189,6 +189,7 @@ struct MeshletStreamAssetOfflineBuildDesc {
     std::filesystem::path sourcePath;
     std::filesystem::path outputPath;
     MeshletStreamPayloadCompression compressionMode = MeshletStreamPayloadCompression::None;
+    uint32_t maxNewGeometriesPerInvocation = 0;
 };
 
 bool decodeMeshletStreamPayloadForDevice(
