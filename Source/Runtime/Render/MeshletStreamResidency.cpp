@@ -302,6 +302,8 @@ void MeshletStreamResidencyManager::reset()
     activePages_.clear();
     residentPages_.clear();
     pendingPages_.clear();
+    newlyResidentPages_.clear();
+    newlyUnloadedPages_.clear();
     activePagePositions_.clear();
     residentPagePositions_.clear();
     pendingPagePositions_.clear();
@@ -322,6 +324,8 @@ void MeshletStreamResidencyManager::beginFrame()
     ++frameIndex_;
     requestedPages_.clear();
     unloadRequestedPages_.clear();
+    newlyResidentPages_.clear();
+    newlyUnloadedPages_.clear();
     resetFrameStats();
 
     while (updateTaskQueue_.canPop(frameIndex_, true)) {
@@ -342,6 +346,7 @@ void MeshletStreamResidencyManager::beginFrame()
                     page.lockedFallback
                         ? MeshletStreamPageResidencyState::LockedFallback
                         : MeshletStreamPageResidencyState::Resident);
+                newlyResidentPages_.push_back(pageIndex);
                 ++stats_.frameCompletedUpdateCount;
                 ++stats_.frameCompletedUploadCount;
                 ++stats_.totalCompletedUpdateCount;
@@ -1117,6 +1122,7 @@ void MeshletStreamResidencyManager::completeUnloadTask(uint32_t taskIndex)
         }
         page.unloadTaskIndex = kInvalidStreamingTaskIndex;
         releasePageStorage(pageIndex);
+        newlyUnloadedPages_.push_back(pageIndex);
         ++stats_.frameCompletedUnloadCount;
         ++stats_.totalCompletedUnloadCount;
         ++stats_.frameDelayedFreeCount;

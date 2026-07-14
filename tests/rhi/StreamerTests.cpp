@@ -1074,6 +1074,9 @@ public:
         if (residency.pageResident(pageIndex)) {
             return RhiTestResult::fail("page became resident before queued frame delay elapsed");
         }
+        if (!residency.newlyResidentPages().empty() || !residency.newlyUnloadedPages().empty()) {
+            return RhiTestResult::fail("residency reported a lifecycle transition before upload completion");
+        }
         stats = residency.stats();
         if (stats.pendingPageCount != 1 ||
             stats.residentPageCount != 0 ||
@@ -1090,6 +1093,9 @@ public:
         residency.beginFrame();
         if (residency.pageResident(pageIndex)) {
             return RhiTestResult::fail("page became resident before queued update task elapsed");
+        }
+        if (!residency.newlyResidentPages().empty() || !residency.newlyUnloadedPages().empty()) {
+            return RhiTestResult::fail("residency reported a lifecycle transition before the update task completed");
         }
         stats = residency.stats();
         if (stats.pendingPageCount != 1 ||
@@ -1109,6 +1115,11 @@ public:
         residency.beginFrame();
         if (!residency.pageResident(pageIndex)) {
             return RhiTestResult::fail("page did not become resident after queued update task elapsed");
+        }
+        if (residency.newlyResidentPages().size() != 1 ||
+            residency.newlyResidentPages().front() != pageIndex ||
+            !residency.newlyUnloadedPages().empty()) {
+            return RhiTestResult::fail("completed upload did not report the newly resident page");
         }
         stats = residency.stats();
         if (residency.pendingPages().size() != 0 ||
@@ -1493,6 +1504,11 @@ public:
             stats.frameDelayedFreeCount != 1 ||
             stats.freeResidentBytes != streamableBudgetBytes) {
             return RhiTestResult::fail("delayed unload task did not free resident page storage");
+        }
+        if (residency.newlyUnloadedPages().size() != 1 ||
+            residency.newlyUnloadedPages().front() != unloadPage ||
+            !residency.newlyResidentPages().empty()) {
+            return RhiTestResult::fail("completed unload did not report the newly unloaded page");
         }
 
         (void)residency.requestPage(loadPage);

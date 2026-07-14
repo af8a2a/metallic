@@ -289,6 +289,8 @@ public:
     std::span<const uint32_t> activePages() const { return activePages_; }
     std::span<const uint32_t> residentPages() const { return residentPages_; }
     std::span<const uint32_t> pendingPages() const { return pendingPages_; }
+    std::span<const uint32_t> newlyResidentPages() const { return newlyResidentPages_; }
+    std::span<const uint32_t> newlyUnloadedPages() const { return newlyUnloadedPages_; }
     const MeshletStreamStorage& storage() const { return storage_; }
     MeshletStreamResidencyStats stats() const;
 
@@ -342,6 +344,8 @@ private:
     std::vector<uint32_t> activePages_;
     std::vector<uint32_t> residentPages_;
     std::vector<uint32_t> pendingPages_;
+    std::vector<uint32_t> newlyResidentPages_;
+    std::vector<uint32_t> newlyUnloadedPages_;
     std::vector<uint32_t> activePagePositions_;
     std::vector<uint32_t> residentPagePositions_;
     std::vector<uint32_t> pendingPagePositions_;
