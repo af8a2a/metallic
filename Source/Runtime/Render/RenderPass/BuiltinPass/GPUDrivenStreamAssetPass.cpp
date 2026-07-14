@@ -178,6 +178,9 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
             uintProperty(properties, "maxPageLoadsInFlight", 128),
             1u),
         .queuedFrameCount = 3,
+        .enableClusterRtx = boolProperty(properties, "enableClusterRtx", false),
+        .maxClasBytes = uint64Property(properties, "maxClasBytes", 512ull * 1024ull * 1024ull),
+        .maxClasBuildClusters = uintProperty(properties, "maxClasBuildClusters", 0),
     };
 }
 

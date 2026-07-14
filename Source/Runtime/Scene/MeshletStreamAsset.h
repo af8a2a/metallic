@@ -200,6 +200,9 @@ public:
     uint32_t nodeCount() const;
     uint32_t pageCount() const;
     uint32_t maxPagePayloadBytes() const;
+    uint32_t maxClusterVertices() const;
+    uint32_t maxClusterTriangles() const;
+    uint32_t maxPageClusters() const;
     uint64_t sourceFileSize() const;
     int64_t sourceWriteTime() const;
 

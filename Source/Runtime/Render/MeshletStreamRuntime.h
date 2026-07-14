@@ -16,6 +16,10 @@
 
 namespace metallic::render {
 
+namespace vulkan {
+class MeshletStreamClasPool;
+}
+
 inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
 inline constexpr const char* kMeshletStreamShaderModuleName = "gpu_driven_streamasset";
 inline constexpr const char* kMeshletStreamMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
@@ -261,6 +265,9 @@ struct MeshletStreamRuntimeDesc {
     uint32_t pageLoadWorkerCount = 2;
     uint32_t maxPageLoadsInFlight = 128;
     uint32_t queuedFrameCount = 3;
+    bool enableClusterRtx = false;
+    uint64_t maxClasBytes = 512ull * 1024ull * 1024ull;
+    uint32_t maxClasBuildClusters = 0;
 };
 
 struct MeshletStreamCameraDesc {
@@ -309,6 +316,7 @@ public:
     const scene::Bounds& bounds() const { return drawBounds_; }
     const scene::MeshletStreamAsset& asset() const { return asset_; }
     const MeshletStreamResidencyManager& residency() const { return residency_; }
+    vulkan::MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
 
 private:
     class UpdatePass;
@@ -357,6 +365,7 @@ private:
     std::unique_ptr<UpdatePass> updatePass_;
     std::unique_ptr<TraversalPass> traversalPass_;
     std::unique_ptr<ActiveBuildPass> activeBuildPass_;
+    std::unique_ptr<vulkan::MeshletStreamClasPool> clasPool_;
     BindlessHandle pageHandle_;
     BindlessHandle activeGroupHandle_;
     BindlessHandle activeHeaderHandle_;

@@ -263,6 +263,42 @@ public:
     }
 };
 
+class MeshletStreamStorageAddressLimitTest : public RhiTest {
+public:
+    MeshletStreamStorageAddressLimitTest()
+    {
+        type = RhiTestType::Validation;
+        name = "meshlet_stream_storage_address_limit";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        constexpr uint64_t kLargeCapacity = 5ull * 1024ull * 1024ull * 1024ull;
+        render::MeshletStreamStorage storage;
+        std::string reason;
+        if (storage.initialize(kLargeCapacity, 256, reason)) {
+            return RhiTestResult::fail("page storage accepted a byte budget above its default 32-bit limit");
+        }
+        if (!storage.initialize(kLargeCapacity, 256, reason, UINT64_MAX) ||
+            storage.capacityBytes() != kLargeCapacity) {
+            return RhiTestResult::fail("64-bit CLAS storage budget initialization failed: " + reason);
+        }
+
+        const render::MeshletStreamStorageAllocation allocation =
+            storage.allocate(kLargeCapacity - 256u);
+        if (!allocation.valid() ||
+            allocation.offset != 0 ||
+            storage.usedBytes() != allocation.allocatedSize) {
+            return RhiTestResult::fail("64-bit CLAS storage allocation failed");
+        }
+        storage.release(allocation);
+        if (storage.usedBytes() != 0 || storage.freeBytes() != storage.capacityBytes()) {
+            return RhiTestResult::fail("64-bit CLAS storage release did not restore capacity");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
 class StreamerBufferUploadTest : public RhiTest {
 public:
     StreamerBufferUploadTest()
@@ -1760,6 +1796,7 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(StreamingTaskQueueLifecycleTest);
+METALLIC_REGISTER_RHI_TEST(MeshletStreamStorageAddressLimitTest);
 METALLIC_REGISTER_RHI_TEST(StreamerBufferUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerTextureUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerConstantUploadTest);

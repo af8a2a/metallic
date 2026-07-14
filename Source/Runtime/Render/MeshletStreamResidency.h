@@ -110,7 +110,11 @@ struct MeshletStreamStorageAllocation {
 
 class MeshletStreamStorage {
 public:
-    bool initialize(uint64_t capacityBytes, uint64_t alignmentBytes, std::string& reason);
+    bool initialize(
+        uint64_t capacityBytes,
+        uint64_t alignmentBytes,
+        std::string& reason,
+        uint64_t maxCapacityBytes = UINT32_MAX);
     void reset();
 
     MeshletStreamStorageAllocation allocate(uint64_t byteSize);

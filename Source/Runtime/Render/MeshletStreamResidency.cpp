@@ -31,7 +31,11 @@ bool streamableEvictionState(MeshletStreamPageResidencyState state)
 
 } // namespace
 
-bool MeshletStreamStorage::initialize(uint64_t capacityBytes, uint64_t alignmentBytes, std::string& reason)
+bool MeshletStreamStorage::initialize(
+    uint64_t capacityBytes,
+    uint64_t alignmentBytes,
+    std::string& reason,
+    uint64_t maxCapacityBytes)
 {
     reset();
     reason.clear();
@@ -39,14 +43,19 @@ bool MeshletStreamStorage::initialize(uint64_t capacityBytes, uint64_t alignment
         reason = "MeshletStreamStorage requires a non-zero byte budget";
         return false;
     }
-    if (capacityBytes > std::numeric_limits<uint32_t>::max()) {
-        reason = "MeshletStreamStorage currently requires maxResidentBytes <= 4 GiB for 32-bit shader offsets";
+    if (maxCapacityBytes == 0 || capacityBytes > maxCapacityBytes) {
+        reason = "MeshletStreamStorage byte budget exceeds the configured address limit";
         return false;
     }
     alignmentBytes_ = std::max<uint64_t>(alignmentBytes, 1u);
+    if (capacityBytes > std::numeric_limits<uint64_t>::max() - (alignmentBytes_ - 1u)) {
+        reason = "MeshletStreamStorage aligned byte budget overflowed";
+        reset();
+        return false;
+    }
     capacityBytes_ = alignUp(capacityBytes, alignmentBytes_);
-    if (capacityBytes_ > std::numeric_limits<uint32_t>::max()) {
-        reason = "MeshletStreamStorage aligned byte budget exceeds the 32-bit shader offset limit";
+    if (capacityBytes_ > maxCapacityBytes) {
+        reason = "MeshletStreamStorage aligned byte budget exceeds the configured address limit";
         reset();
         return false;
     }

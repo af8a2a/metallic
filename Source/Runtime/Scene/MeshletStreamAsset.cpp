@@ -3355,6 +3355,21 @@ uint32_t MeshletStreamAsset::maxPagePayloadBytes() const
     return valid() ? impl_->header.maxPagePayloadBytes : 0;
 }
 
+uint32_t MeshletStreamAsset::maxClusterVertices() const
+{
+    return valid() ? impl_->header.maxVertices : 0;
+}
+
+uint32_t MeshletStreamAsset::maxClusterTriangles() const
+{
+    return valid() ? impl_->header.maxTriangles : 0;
+}
+
+uint32_t MeshletStreamAsset::maxPageClusters() const
+{
+    return valid() ? impl_->header.lodGroupSize : 0;
+}
+
 uint64_t MeshletStreamAsset::sourceFileSize() const
 {
     return valid() ? impl_->header.sourceFileSize : 0;

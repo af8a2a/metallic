@@ -35,6 +35,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/ScenePathTraceResources.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanMeshletStreamClas.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.cpp
     Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.cpp
     Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp

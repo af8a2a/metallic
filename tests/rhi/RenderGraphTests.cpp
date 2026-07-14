@@ -4408,6 +4408,7 @@ public:
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
                 .enableMeshShader = true,
+                .enableClusterAccelerationStructure = true,
             },
             device);
         if (!result) {
@@ -4443,6 +4444,9 @@ public:
             render::RenderGraphProperties{
                 {"path", sourcePath.string()},
                 {"streamAssetPath", streamAssetPath.string()},
+                {"enableClusterRtx", true},
+                {"maxClasBytes", 64ull * 1024ull * 1024ull},
+                {"maxClasBuildClusters", 32},
                 {"maxResidentPages", 64},
                 {"maxPageUploadsPerFrame", 1},
             });
@@ -4453,7 +4457,8 @@ public:
         result = executor.compile(*device, graph, kWidth, kHeight, log);
         const bool hasRequiredCapabilities =
             device->capabilities().meshShader &&
-            device->capabilities().bindlessDescriptorHeap;
+            device->capabilities().bindlessDescriptorHeap &&
+            device->capabilities().clusterAccelerationStructure;
         if (!hasRequiredCapabilities) {
             if (!render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::fail(

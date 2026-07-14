@@ -1,5 +1,6 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
 
+#include "Runtime/Render/GAPI/Vulkan/VulkanMeshletStreamClas.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <algorithm>
@@ -559,11 +560,22 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return makeError(Error::Failure);
     }
 
+    BufferUsageBits pageBufferUsage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination;
+    if (desc.enableClusterRtx) {
+        if (!device.capabilities().clusterAccelerationStructure) {
+            log = "MeshletStreamRuntime cluster RTX requires cluster acceleration structure support";
+            return makeError(Error::Unsupported);
+        }
+        pageBufferUsage = pageBufferUsage |
+            BufferUsageBits::ShaderDeviceAddress |
+            BufferUsageBits::AccelerationStructureBuildInput;
+    }
+
     Result result = device.createBuffer(
         BufferDesc{
             .size = maxResidentBytes_,
             .structureStride = 0,
-            .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
+            .usage = pageBufferUsage,
             .memoryLocation = MemoryLocation::Device,
         },
         pageBuffer_);
@@ -612,6 +624,34 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (maxActiveGroupClusters_ > 32) {
         log = "MeshletStreamRuntime group exceeds the 32-cluster selection mask capacity";
         return makeError(Error::Failure);
+    }
+
+    if (desc.enableClusterRtx) {
+        const uint64_t defaultBuildClusters =
+            static_cast<uint64_t>(std::max(maxPageUploadsPerFrame_, 1u)) * asset_.maxPageClusters();
+        const uint64_t buildClusters = desc.maxClasBuildClusters != 0
+            ? desc.maxClasBuildClusters
+            : defaultBuildClusters;
+        if (desc.maxClasBytes == 0 ||
+            buildClusters == 0 ||
+            buildClusters > std::numeric_limits<uint32_t>::max()) {
+            log = "MeshletStreamRuntime cluster RTX capacities are invalid";
+            return makeError(Error::InvalidArgument);
+        }
+        clasPool_ = std::make_unique<vulkan::MeshletStreamClasPool>();
+        result = clasPool_->initialize(
+            device,
+            vulkan::MeshletStreamClasPoolDesc{
+                .asset = &asset_,
+                .maxStorageBytes = desc.maxClasBytes,
+                .maxBuildClusters = static_cast<uint32_t>(buildClusters),
+                .queuedFrameCount = std::max(desc.queuedFrameCount, 1u),
+            },
+            log);
+        if (!result) {
+            log = "MeshletStreamRuntime CLAS pool initialization failed: " + log;
+            return result;
+        }
     }
     if (maxActiveGroups_ == 0 ||
         maxActiveGroupClusters_ == 0 ||
@@ -955,6 +995,7 @@ void MeshletStreamRuntime::reset()
     updatePass_.reset();
     traversalPass_.reset();
     activeBuildPass_.reset();
+    clasPool_.reset();
     pageHandle_ = {};
     activeGroupHandle_ = {};
     activeHeaderHandle_ = {};
@@ -1024,7 +1065,8 @@ bool MeshletStreamRuntime::ready() const
         nodeBuffer_ != nullptr &&
         drawIndirectBuffer_ != nullptr &&
         traversalHeaderBuffer_ != nullptr &&
-        traversalWorkBuffer_ != nullptr;
+        traversalWorkBuffer_ != nullptr &&
+        (clasPool_ == nullptr || clasPool_->ready());
 }
 
 Result MeshletStreamRuntime::cmdBeginFrame(
@@ -1040,6 +1082,10 @@ Result MeshletStreamRuntime::cmdBeginFrame(
 
     ++frameIndex_;
     residency_.beginFrame();
+    if (clasPool_ != nullptr) {
+        clasPool_->beginFrame();
+        clasPool_->retirePages(residency_.newlyUnloadedPages());
+    }
     consumeGpuRequestReadback();
     currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, maxPageUploadsPerFrame_);
     return {};
@@ -1076,7 +1122,40 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
     if (!result) {
         return result;
     }
-    return transitionPageBufferForTraversal(commandBuffer);
+    result = transitionPageBufferForTraversal(commandBuffer);
+    if (!result || clasPool_ == nullptr) {
+        return result;
+    }
+
+    std::vector<vulkan::MeshletStreamClasPageBuild> clasBuilds;
+    clasBuilds.reserve(
+        residency_.newlyResidentPages().size() + residency_.residentPages().size());
+    for (uint32_t pageIndex : residency_.newlyResidentPages()) {
+        const uint64_t deviceOffset = residency_.deviceOffsetForPage(pageIndex);
+        if (deviceOffset != UINT64_MAX) {
+            clasBuilds.push_back(vulkan::MeshletStreamClasPageBuild{
+                .pageIndex = pageIndex,
+                .deviceOffsetBytes = deviceOffset,
+            });
+        }
+    }
+    for (uint32_t pageIndex : residency_.residentPages()) {
+        if (clasPool_->pageHasClas(pageIndex)) {
+            continue;
+        }
+        const uint64_t deviceOffset = residency_.deviceOffsetForPage(pageIndex);
+        if (deviceOffset != UINT64_MAX) {
+            clasBuilds.push_back(vulkan::MeshletStreamClasPageBuild{
+                .pageIndex = pageIndex,
+                .deviceOffsetBytes = deviceOffset,
+            });
+        }
+    }
+    if (clasBuilds.empty()) {
+        return {};
+    }
+    std::string clasLog;
+    return clasPool_->cmdBuildPages(commandBuffer, *pageBuffer_, clasBuilds, clasLog);
 }
 
 Result MeshletStreamRuntime::cmdPostTraversal(CommandBuffer& commandBuffer)
