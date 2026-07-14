@@ -13,8 +13,12 @@
                 "autoBuildStreamAsset": false,
                 "debugColorMode": "page",
                 "enableGpuLodSelection": true,
+                "maxActiveGroups": 262144,
                 "maxPageUploadsPerFrame": 64,
+                "maxPageLoadsInFlight": 128,
                 "maxResidentPages": 4096,
+                "maxTraversalWorkers": 1024,
+                "pageLoadWorkerCount": 2,
                 "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
                 "selectedLodLevel": 0
             },

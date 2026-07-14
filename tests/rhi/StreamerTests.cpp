@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
@@ -15,6 +16,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace metallic::tests {
@@ -918,6 +920,8 @@ public:
                     .maxResidentBytes = maxResidentBytes,
                     .maxResidentPages = maxResidentPages,
                     .queuedFrameCount = 2,
+                    .pageLoadWorkerCount = 1,
+                    .maxPageLoadsInFlight = 2,
                 },
                 reason)) {
             return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
@@ -985,9 +989,16 @@ public:
         if (alreadyResident || residency.queuedUploadCount() == 0) {
             return RhiTestResult::fail("fallback page was resident before upload");
         }
-        const uint32_t uploaded = residency.processUploads(*streamer, *pageBuffer, 1);
+        uint32_t uploaded = 0;
+        const auto pageLoadDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (uploaded == 0 && std::chrono::steady_clock::now() < pageLoadDeadline) {
+            uploaded = residency.processUploads(*streamer, *pageBuffer, 1);
+            if (uploaded == 0) {
+                std::this_thread::yield();
+            }
+        }
         if (uploaded != 1) {
-            return RhiTestResult::fail("processUploads did not schedule exactly one upload");
+            return RhiTestResult::fail("asynchronous page load did not schedule exactly one upload");
         }
         if (residency.pageState(pageIndex) != render::MeshletStreamPageResidencyState::PendingUpload) {
             return RhiTestResult::fail("uploaded page did not enter PendingUpload state");
@@ -1002,6 +1013,10 @@ public:
             stats.queuedUpdateTaskCount != 0 ||
             stats.availableUpdateTaskCount != render::kStreamingMaxActiveTasks - 1u ||
             stats.frameScheduledUploadCount != 1 ||
+            stats.pageLoadWorkerCount != 1 ||
+            stats.frameScheduledPageLoadCount == 0 ||
+            stats.frameCompletedPageLoadCount == 0 ||
+            stats.framePageLoadFailureCount != 0 ||
             stats.oldestPendingAge != 0) {
             return RhiTestResult::fail("pending upload did not update pending table or upload stats");
         }

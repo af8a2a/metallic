@@ -206,6 +206,10 @@ bool MeshletStreamResidencyManager::initialize(
         reason = "MeshletStreamResidencyManager asset has no streamable pages";
         return false;
     }
+    if (desc.pageLoadWorkerCount > kMeshletStreamMaxPageLoadWorkers) {
+        reason = "MeshletStreamResidencyManager page load worker count exceeds the supported limit";
+        return false;
+    }
 
     const uint64_t defaultStride = alignUp(desc.asset->maxPagePayloadBytes(), 256);
     const uint64_t legacyStride = desc.pageStride != 0 ? desc.pageStride : defaultStride;
@@ -246,6 +250,20 @@ bool MeshletStreamResidencyManager::initialize(
         residentPages_.reserve(residentReserve);
         pendingPages_.reserve(residentReserve);
     }
+    if (desc.pageLoadWorkerCount != 0) {
+        const uint32_t pageLoadCapacity = maxResidentPages_ != 0
+            ? std::min(maxResidentPages_, asset_->pageCount())
+            : asset_->pageCount();
+        maxPageLoadsInFlight_ = std::min(
+            std::max(desc.maxPageLoadsInFlight, desc.pageLoadWorkerCount),
+            pageLoadCapacity);
+        if (!pageLoader_.initialize(*asset_, desc.pageLoadWorkerCount, reason)) {
+            const std::string loaderReason = reason;
+            reset();
+            reason = loaderReason;
+            return false;
+        }
+    }
     stats_.pageCount = asset_->pageCount();
     stats_.maxResidentPages = maxResidentPages_;
     stats_.maxResidentBytes = storage_.capacityBytes();
@@ -254,10 +272,12 @@ bool MeshletStreamResidencyManager::initialize(
 
 void MeshletStreamResidencyManager::reset()
 {
+    pageLoader_.reset();
     asset_ = nullptr;
     storage_.reset();
     pages_.clear();
     uploadQueue_.clear();
+    preparedPageLoads_.clear();
     requestTaskQueue_.reset();
     for (std::vector<uint32_t>& taskPages : requestTaskPages_) {
         taskPages.clear();
@@ -294,6 +314,7 @@ void MeshletStreamResidencyManager::reset()
     queuedFrameCount_ = 3;
     unloadDelayFrames_ = 1;
     evictionAgeThresholdFrames_ = 1;
+    maxPageLoadsInFlight_ = 0;
 }
 
 void MeshletStreamResidencyManager::beginFrame()
@@ -645,11 +666,74 @@ uint32_t MeshletStreamResidencyManager::processUploads(
     Buffer& destination,
     uint32_t maxUploads)
 {
-    if (asset_ == nullptr || maxUploads == 0) {
-        if (asset_ != nullptr && maxUploads == 0 && !uploadQueue_.empty()) {
+    if (asset_ == nullptr) {
+        return 0;
+    }
+
+    const bool asynchronousLoads = pageLoader_.ready();
+    auto schedulePageLoads = [this]() {
+        while (!uploadQueue_.empty() &&
+            static_cast<uint64_t>(pageLoader_.outstandingCount()) + preparedPageLoads_.size() <
+                maxPageLoadsInFlight_) {
+            const uint32_t pageIndex = uploadQueue_.front();
+            uploadQueue_.pop_front();
+            if (pageIndex >= pages_.size()) {
+                continue;
+            }
+            PageEntry& page = pages_[pageIndex];
+            if (page.state != MeshletStreamPageResidencyState::Unloaded ||
+                !pageAllocated(pageIndex) ||
+                !page.queued) {
+                page.queued = false;
+                continue;
+            }
+            if (!pageLoader_.enqueue(pageIndex)) {
+                uploadQueue_.push_front(pageIndex);
+                break;
+            }
+            ++stats_.frameScheduledPageLoadCount;
+            ++stats_.totalScheduledPageLoadCount;
+        }
+    };
+
+    if (asynchronousLoads) {
+        schedulePageLoads();
+        MeshletStreamPageLoadResult loadedPage;
+        while (pageLoader_.tryPop(loadedPage)) {
+            ++stats_.frameCompletedPageLoadCount;
+            ++stats_.totalCompletedPageLoadCount;
+            if (loadedPage.pageIndex >= pages_.size()) {
+                ++stats_.framePageLoadFailureCount;
+                ++stats_.totalPageLoadFailureCount;
+                continue;
+            }
+            PageEntry& page = pages_[loadedPage.pageIndex];
+            const bool validPayload = loadedPage.success() &&
+                page.state == MeshletStreamPageResidencyState::Unloaded &&
+                pageAllocated(loadedPage.pageIndex) &&
+                page.queued &&
+                loadedPage.payload.size() == page.deviceSizeBytes &&
+                loadedPage.payload.size() <= page.allocationBytes;
+            if (!validPayload) {
+                page.queued = false;
+                releasePageStorage(loadedPage.pageIndex);
+                ++stats_.framePageLoadFailureCount;
+                ++stats_.totalPageLoadFailureCount;
+                continue;
+            }
+            preparedPageLoads_.push_back(std::move(loadedPage));
+        }
+    }
+
+    if (maxUploads == 0) {
+        if (queuedUploadCount() != 0) {
             ++stats_.frameTransferBudgetFailureCount;
             ++stats_.totalTransferBudgetFailureCount;
         }
+        return 0;
+    }
+    if ((asynchronousLoads && preparedPageLoads_.empty()) ||
+        (!asynchronousLoads && uploadQueue_.empty())) {
         return 0;
     }
 
@@ -672,34 +756,51 @@ uint32_t MeshletStreamResidencyManager::processUploads(
     taskPages.clear();
     std::vector<uint8_t> decompressedPayload;
     uint32_t uploadCount = 0;
-    for (size_t queueIndex = 0; queueIndex < uploadQueue_.size() && uploadCount < maxUploads;) {
-        const uint32_t pageIndex = uploadQueue_[queueIndex];
+    while (uploadCount < maxUploads &&
+        (asynchronousLoads ? !preparedPageLoads_.empty() : !uploadQueue_.empty())) {
+        const uint32_t pageIndex = asynchronousLoads
+            ? preparedPageLoads_.front().pageIndex
+            : uploadQueue_.front();
+        if (!asynchronousLoads) {
+            uploadQueue_.pop_front();
+        }
         PageEntry& page = pages_[pageIndex];
-        page.queued = false;
 
-        if (page.state != MeshletStreamPageResidencyState::Unloaded || !pageAllocated(pageIndex)) {
-            uploadQueue_.erase(uploadQueue_.begin() + static_cast<std::ptrdiff_t>(queueIndex));
+        if (page.state != MeshletStreamPageResidencyState::Unloaded ||
+            !pageAllocated(pageIndex) ||
+            !page.queued) {
+            page.queued = false;
+            if (asynchronousLoads) {
+                preparedPageLoads_.pop_front();
+            }
             continue;
         }
 
-        const scene::MeshletStreamPageInfo& assetPage = asset_->pages()[pageIndex];
-        const std::span<const uint8_t> storedPayload = asset_->pagePayload(pageIndex);
         std::span<const uint8_t> devicePayload;
-        std::string decodeReason;
-        if (!scene::decodeMeshletStreamPayloadForDevice(
-                assetPage,
-                storedPayload,
-                decompressedPayload,
-                devicePayload,
-                decodeReason) ||
-            devicePayload.empty() ||
-            devicePayload.size() != page.deviceSizeBytes ||
-            devicePayload.size() > page.allocationBytes ||
-            devicePayload.size() > std::numeric_limits<uint32_t>::max()) {
-            uploadQueue_.erase(uploadQueue_.begin() + static_cast<std::ptrdiff_t>(queueIndex));
-            ++stats_.frameTransferBudgetFailureCount;
-            ++stats_.totalTransferBudgetFailureCount;
-            continue;
+        if (asynchronousLoads) {
+            devicePayload = preparedPageLoads_.front().payload;
+        } else {
+            const scene::MeshletStreamPageInfo& assetPage = asset_->pages()[pageIndex];
+            const std::span<const uint8_t> storedPayload = asset_->pagePayload(pageIndex);
+            std::string decodeReason;
+            if (!scene::decodeMeshletStreamPayloadForDevice(
+                    assetPage,
+                    storedPayload,
+                    decompressedPayload,
+                    devicePayload,
+                    decodeReason) ||
+                devicePayload.empty() ||
+                devicePayload.size() != page.deviceSizeBytes ||
+                devicePayload.size() > page.allocationBytes ||
+                devicePayload.size() > std::numeric_limits<uint32_t>::max()) {
+                page.queued = false;
+                releasePageStorage(pageIndex);
+                ++stats_.frameTransferBudgetFailureCount;
+                ++stats_.totalTransferBudgetFailureCount;
+                ++stats_.framePageLoadFailureCount;
+                ++stats_.totalPageLoadFailureCount;
+                continue;
+            }
         }
 
         const StreamDataChunk chunk{
@@ -714,19 +815,24 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             .dstOffset = page.deviceOffsetBytes,
         });
         if (!streamed.valid()) {
-            page.queued = true;
+            if (!asynchronousLoads) {
+                uploadQueue_.push_front(pageIndex);
+            }
             ++stats_.frameTransferBudgetFailureCount;
             ++stats_.totalTransferBudgetFailureCount;
             break;
         }
 
+        page.queued = false;
+        if (asynchronousLoads) {
+            preparedPageLoads_.pop_front();
+        }
         setPageState(pageIndex, MeshletStreamPageResidencyState::PendingUpload);
         page.storageTaskIndex = taskIndex;
         taskPages.push_back(pageIndex);
         ++uploadCount;
         ++stats_.frameScheduledUploadCount;
         ++stats_.totalScheduledUploadCount;
-        uploadQueue_.erase(uploadQueue_.begin() + static_cast<std::ptrdiff_t>(queueIndex));
     }
 
     if (uploadCount == 0) {
@@ -735,13 +841,16 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         updateTaskQueue_.releaseTaskIndex(updateTaskIndex);
         return 0;
     }
-    if (!uploadQueue_.empty() && uploadCount >= maxUploads) {
+    if (queuedUploadCount() != 0 && uploadCount >= maxUploads) {
         ++stats_.frameTransferBudgetFailureCount;
         ++stats_.totalTransferBudgetFailureCount;
     }
 
     const uint32_t frameDelay = std::max(streamer.desc().queuedFrameCount, queuedFrameCount_);
     storageTaskQueue_.push(taskIndex, frameIndex_ + frameDelay, updateTaskIndex);
+    if (asynchronousLoads) {
+        schedulePageLoads();
+    }
     return uploadCount;
 }
 
@@ -822,6 +931,16 @@ uint32_t MeshletStreamResidencyManager::pendingPageCount() const
     return static_cast<uint32_t>(pendingPages_.size());
 }
 
+uint32_t MeshletStreamResidencyManager::queuedUploadCount() const
+{
+    const uint64_t count = static_cast<uint64_t>(uploadQueue_.size()) +
+        pageLoader_.outstandingCount() +
+        preparedPageLoads_.size();
+    return count > std::numeric_limits<uint32_t>::max()
+        ? std::numeric_limits<uint32_t>::max()
+        : static_cast<uint32_t>(count);
+}
+
 MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
 {
     MeshletStreamResidencyStats result = stats_;
@@ -844,7 +963,12 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
     result.activePageCount = static_cast<uint32_t>(activePages_.size());
     result.residentPageCount = static_cast<uint32_t>(residentPages_.size());
     result.pendingPageCount = static_cast<uint32_t>(pendingPages_.size());
-    result.queuedUploadCount = static_cast<uint32_t>(uploadQueue_.size());
+    result.queuedUploadCount = queuedUploadCount();
+    result.pageLoadWorkerCount = pageLoader_.workerCount();
+    result.pendingPageLoadCount = pageLoader_.pendingCount();
+    result.activePageLoadCount = pageLoader_.activeCount();
+    result.completedPageLoadCount = pageLoader_.completedCount();
+    result.preparedPageLoadCount = static_cast<uint32_t>(preparedPageLoads_.size());
     result.queuedRequestTaskCount = requestTaskQueue_.queuedTaskCount();
     result.availableRequestTaskCount = requestTaskQueue_.availableTaskCount();
     result.queuedStorageTaskCount = storageTaskQueue_.queuedTaskCount();
@@ -1168,6 +1292,9 @@ void MeshletStreamResidencyManager::resetFrameStats()
     stats_.frameTransferBudgetFailureCount = 0;
     stats_.frameEvictedPageCount = 0;
     stats_.frameAllocationFailureCount = 0;
+    stats_.frameScheduledPageLoadCount = 0;
+    stats_.frameCompletedPageLoadCount = 0;
+    stats_.framePageLoadFailureCount = 0;
 }
 
 } // namespace metallic::render

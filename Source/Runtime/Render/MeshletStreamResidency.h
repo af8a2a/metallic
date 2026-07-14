@@ -1,11 +1,13 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/MeshletStreamPageLoader.h"
 #include "Runtime/Render/StreamingTaskQueue.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <span>
 #include <string>
 #include <vector>
@@ -147,6 +149,8 @@ struct MeshletStreamResidencyDesc {
     uint64_t storageAlignment = kMeshletStreamStorageAlignment;
     uint32_t unloadDelayFrames = 1;
     uint32_t evictionAgeThresholdFrames = 1;
+    uint32_t pageLoadWorkerCount = 0;
+    uint32_t maxPageLoadsInFlight = 0;
 };
 
 struct MeshletStreamResidencyStats {
@@ -165,6 +169,11 @@ struct MeshletStreamResidencyStats {
     uint32_t residentPageCount = 0;
     uint32_t pendingPageCount = 0;
     uint32_t queuedUploadCount = 0;
+    uint32_t pageLoadWorkerCount = 0;
+    uint32_t pendingPageLoadCount = 0;
+    uint32_t activePageLoadCount = 0;
+    uint32_t completedPageLoadCount = 0;
+    uint32_t preparedPageLoadCount = 0;
     uint32_t queuedRequestTaskCount = 0;
     uint32_t availableRequestTaskCount = 0;
     uint32_t queuedStorageTaskCount = 0;
@@ -204,6 +213,9 @@ struct MeshletStreamResidencyStats {
     uint32_t frameTransferBudgetFailureCount = 0;
     uint32_t frameEvictedPageCount = 0;
     uint32_t frameAllocationFailureCount = 0;
+    uint32_t frameScheduledPageLoadCount = 0;
+    uint32_t frameCompletedPageLoadCount = 0;
+    uint32_t framePageLoadFailureCount = 0;
     uint64_t totalGpuRequestCount = 0;
     uint64_t totalUniqueGpuRequestCount = 0;
     uint64_t totalGpuUnloadRequestCount = 0;
@@ -234,6 +246,9 @@ struct MeshletStreamResidencyStats {
     uint64_t totalTransferBudgetFailureCount = 0;
     uint64_t totalEvictedPageCount = 0;
     uint64_t totalAllocationFailureCount = 0;
+    uint64_t totalScheduledPageLoadCount = 0;
+    uint64_t totalCompletedPageLoadCount = 0;
+    uint64_t totalPageLoadFailureCount = 0;
     uint64_t oldestActiveAge = 0;
     uint64_t oldestResidentAge = 0;
     uint64_t oldestPendingAge = 0;
@@ -267,7 +282,7 @@ public:
     uint64_t maxResidentBytes() const { return storage_.capacityBytes(); }
     uint32_t residentPageCount() const;
     uint32_t pendingPageCount() const;
-    uint32_t queuedUploadCount() const { return static_cast<uint32_t>(uploadQueue_.size()); }
+    uint32_t queuedUploadCount() const;
     uint64_t pageBufferSize() const { return storage_.capacityBytes(); }
     std::span<const uint32_t> requestedPages() const { return requestedPages_; }
     std::span<const uint32_t> unloadRequestedPages() const { return unloadRequestedPages_; }
@@ -310,7 +325,9 @@ private:
     const scene::MeshletStreamAsset* asset_ = nullptr;
     MeshletStreamStorage storage_;
     std::vector<PageEntry> pages_;
-    std::vector<uint32_t> uploadQueue_;
+    std::deque<uint32_t> uploadQueue_;
+    MeshletStreamPageLoader pageLoader_;
+    std::deque<MeshletStreamPageLoadResult> preparedPageLoads_;
     StreamingTaskQueue requestTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> requestTaskPages_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> requestTaskUnloadPages_;
@@ -337,6 +354,7 @@ private:
     uint32_t queuedFrameCount_ = 3;
     uint32_t unloadDelayFrames_ = 1;
     uint32_t evictionAgeThresholdFrames_ = 1;
+    uint32_t maxPageLoadsInFlight_ = 0;
 };
 
 } // namespace metallic::render

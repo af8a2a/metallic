@@ -225,6 +225,8 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxGpuPageUnloadRequests = kMeshletStreamDefaultMaxGpuPageRequests;
     uint32_t maxActiveGroups = kMeshletStreamDefaultMaxActiveGroups;
     uint32_t maxTraversalWorkers = kMeshletStreamDefaultTraversalWorkers;
+    uint32_t pageLoadWorkerCount = 2;
+    uint32_t maxPageLoadsInFlight = 128;
     uint32_t queuedFrameCount = 3;
 };
 

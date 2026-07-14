@@ -576,6 +576,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 .maxResidentPages = maxResidentPages_,
                 .queuedFrameCount = std::max(desc.queuedFrameCount, 1u),
                 .pageStride = pageStride,
+                .pageLoadWorkerCount = desc.pageLoadWorkerCount,
+                .maxPageLoadsInFlight = desc.maxPageLoadsInFlight,
             },
             reason) ||
         !residency_.lockFallbackPages(fallbackPages, reason)) {
@@ -862,8 +864,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
 void MeshletStreamRuntime::reset()
 {
-    asset_.close();
     residency_.reset();
+    asset_.close();
     drawBounds_.reset();
     pageTable_.clear();
     pageBuffer_.reset();
