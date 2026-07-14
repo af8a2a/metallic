@@ -2089,6 +2089,7 @@ public:
     {
         constexpr uint32_t kMaxLoadRequests = 8;
         constexpr uint32_t kMaxUnloadRequests = 8;
+        constexpr uint32_t kTraversalWorkCapacity = 32;
         constexpr uint32_t kFrameIndex = 7;
         constexpr uint64_t kRequestByteSize =
             sizeof(render::StreamRequestBufferHeader) +
@@ -2286,6 +2287,7 @@ public:
         params.maxPrimitiveGroupCount = 3;
         params.sceneNodeCount = static_cast<uint32_t>(nodes.size());
         params.traversalWorkerCount = 64;
+        params.traversalWorkCapacity = kTraversalWorkCapacity;
         params.activeGroupCount = kActiveGroupCapacity;
         params.maxActiveGroupClusters = 11;
         params.drawTaskCount = kActiveGroupCapacity * params.maxActiveGroupClusters;
@@ -2515,6 +2517,33 @@ public:
         if (!testResult.passed) {
             return testResult;
         }
+        std::unique_ptr<render::Buffer> traversalHeaderBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(render::MeshletStreamGpuTraversalHeader),
+                .structureStride = sizeof(render::MeshletStreamGpuTraversalHeader),
+                .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource,
+                .memoryLocation = render::MemoryLocation::Device,
+            },
+            "traversal header",
+            traversalHeaderBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> traversalWorkBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = static_cast<uint64_t>(kTraversalWorkCapacity) *
+                    sizeof(render::MeshletStreamGpuTraversalWorkItem),
+                .structureStride = sizeof(render::MeshletStreamGpuTraversalWorkItem),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::Device,
+            },
+            "traversal work",
+            traversalWorkBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
         std::unique_ptr<render::Buffer> activeGroupReadbackBuffer;
         testResult = createBuffer(
             render::BufferDesc{
@@ -2548,6 +2577,18 @@ public:
             },
             "draw indirect readback",
             drawIndirectReadbackBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> traversalHeaderReadbackBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(render::MeshletStreamGpuTraversalHeader),
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "traversal header readback",
+            traversalHeaderReadbackBuffer);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2625,7 +2666,7 @@ public:
             render::BindlessHeapDesc{
                 .maxSamplers = 0,
                 .maxSampledImages = 0,
-                .maxBuffers = 13,
+                .maxBuffers = 15,
             },
             bindlessHeap);
         if (!result || bindlessHeap == nullptr) {
@@ -2709,6 +2750,16 @@ public:
         }
         render::BindlessHandle drawIndirectHandle;
         testResult = allocateStorageBuffer(*drawIndirectBuffer, "draw indirect", drawIndirectHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle traversalHeaderHandle;
+        testResult = allocateStorageBuffer(*traversalHeaderBuffer, "traversal header", traversalHeaderHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle traversalWorkHandle;
+        testResult = allocateStorageBuffer(*traversalWorkBuffer, "traversal work", traversalWorkHandle);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2880,6 +2931,8 @@ public:
             .clusterRefBuffer = clusterRefHandle.index,
             .nodeBuffer = nodeHandle.index,
             .drawIndirectBuffer = drawIndirectHandle.index,
+            .traversalHeaderBuffer = traversalHeaderHandle.index,
+            .traversalWorkBuffer = traversalWorkHandle.index,
             .traversalPhase = render::kMeshletStreamTraversalLoadPhase,
         };
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -2910,7 +2963,7 @@ public:
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        std::array<render::BufferBarrierDesc, 5> activeBuildBarriers = {{
+        std::array<render::BufferBarrierDesc, 7> activeBuildBarriers = {{
             render::BufferBarrierDesc{
                 .buffer = pageTableBuffer.get(),
                 .before = render::ResourceState::General,
@@ -2945,6 +2998,20 @@ public:
                 .after = render::ResourceState::General,
                 .offset = 0,
                 .size = drawIndirectBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = traversalHeaderBuffer.get(),
+                .before = render::ResourceState::Undefined,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = traversalHeaderBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = traversalWorkBuffer.get(),
+                .before = render::ResourceState::Undefined,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = traversalWorkBuffer->desc().size,
             },
         }};
         commandBuffer->barrier(render::BarrierDesc{
@@ -2957,7 +3024,14 @@ public:
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        std::array<render::BufferBarrierDesc, 3> activeResetBarriers = {{
+        std::array<render::BufferBarrierDesc, 6> activePhaseBarriers = {{
+            render::BufferBarrierDesc{
+                .buffer = pageTableBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = pageTableBuffer->desc().size,
+            },
             render::BufferBarrierDesc{
                 .buffer = activeGroupBuffer.get(),
                 .before = render::ResourceState::General,
@@ -2979,25 +3053,47 @@ public:
                 .offset = 0,
                 .size = drawIndirectBuffer->desc().size,
             },
+            render::BufferBarrierDesc{
+                .buffer = traversalHeaderBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = traversalHeaderBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = traversalWorkBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = traversalWorkBuffer->desc().size,
+            },
         }};
         commandBuffer->barrier(render::BarrierDesc{
-            .buffers = activeResetBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(activeResetBarriers.size()),
+            .buffers = activePhaseBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
         });
 
-        push.activeBuildPhase = render::kMeshletStreamActiveBuildBuildPhase;
+        push.activeBuildPhase = render::kMeshletStreamActiveBuildSeedPhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
         commandBuffer->barrier(render::BarrierDesc{
-            .buffers = activeResetBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(activeResetBarriers.size()),
+            .buffers = activePhaseBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
+        });
+        push.activeBuildPhase = render::kMeshletStreamActiveBuildRunPhase;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = activePhaseBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
         });
         push.activeBuildPhase = render::kMeshletStreamActiveBuildFinalizePhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        std::array<render::BufferBarrierDesc, 5> readbackBarriers = {{
+        std::array<render::BufferBarrierDesc, 6> readbackBarriers = {{
             render::BufferBarrierDesc{
                 .buffer = pageTableBuffer.get(),
                 .before = render::ResourceState::General,
@@ -3032,6 +3128,13 @@ public:
                 .after = render::ResourceState::TransferSource,
                 .offset = 0,
                 .size = drawIndirectBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = traversalHeaderBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::TransferSource,
+                .offset = 0,
+                .size = traversalHeaderBuffer->desc().size,
             },
         }};
         commandBuffer->barrier(render::BarrierDesc{
@@ -3062,6 +3165,11 @@ public:
             .source = drawIndirectBuffer.get(),
             .destination = drawIndirectReadbackBuffer.get(),
             .size = drawIndirectBuffer->desc().size,
+        });
+        commandBuffer->copyBuffer(render::BufferCopyDesc{
+            .source = traversalHeaderBuffer.get(),
+            .destination = traversalHeaderReadbackBuffer.get(),
+            .size = traversalHeaderBuffer->desc().size,
         });
         result = commandBuffer->end();
         if (!result) {
@@ -3110,6 +3218,20 @@ public:
             pageTableResult[4].lastRequestFrame != kFrameIndex ||
             pageTableResult[5].lastRequestFrame == kFrameIndex) {
             return RhiTestResult::fail("traversal demand shader did not mark selected pages conservatively");
+        }
+        render::MeshletStreamGpuTraversalHeader traversalHeaderResult;
+        if (!readHostBuffer(
+                *traversalHeaderReadbackBuffer,
+                &traversalHeaderResult,
+                sizeof(traversalHeaderResult))) {
+            return RhiTestResult::fail("traversal header readback buffer did not map");
+        }
+        if (traversalHeaderResult.writeCounter != nodes.size() ||
+            traversalHeaderResult.readCounter < traversalHeaderResult.writeCounter ||
+            traversalHeaderResult.taskCounter != 0 ||
+            traversalHeaderResult.overflowCount != 0 ||
+            traversalHeaderResult.frameIndex != kFrameIndex) {
+            return RhiTestResult::fail("persistent traversal queue did not drain as expected");
         }
         render::MeshletStreamGpuActiveHeader activeHeaderResult;
         if (!readHostBuffer(*activeHeaderReadbackBuffer, &activeHeaderResult, sizeof(activeHeaderResult))) {

@@ -39,9 +39,13 @@ inline constexpr uint32_t kMeshletStreamTraversalUnloadPhase = 1;
 inline constexpr uint32_t kMeshletStreamActiveBuildResetPhase = 0;
 inline constexpr uint32_t kMeshletStreamActiveBuildBuildPhase = 1;
 inline constexpr uint32_t kMeshletStreamActiveBuildFinalizePhase = 2;
+inline constexpr uint32_t kMeshletStreamActiveBuildSeedPhase = 3;
+inline constexpr uint32_t kMeshletStreamActiveBuildRunPhase = 4;
 inline constexpr uint32_t kMeshletStreamDefaultMaxActiveGroups = 262144;
 inline constexpr uint32_t kMeshletStreamDefaultTraversalWorkers = 1024;
+inline constexpr uint32_t kMeshletStreamDefaultTraversalWorkItems = 1048576;
 inline constexpr uint32_t kMeshletStreamMaxTraversalWorkers = 65535u * 64u;
+inline constexpr uint32_t kMeshletStreamMaxTraversalWorkItems = 16777216;
 
 struct MeshletStreamGpuActiveHeader {
     uint32_t activeGroupCount = 0;
@@ -152,6 +156,24 @@ struct MeshletStreamGpuDrawIndirect {
     uint32_t groupCountZ = 1;
 };
 
+struct MeshletStreamGpuTraversalHeader {
+    uint32_t readCounter = 0;
+    uint32_t writeCounter = 0;
+    uint32_t taskCounter = 0;
+    uint32_t overflowCount = 0;
+    uint32_t frameIndex = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+};
+
+struct MeshletStreamGpuTraversalWorkItem {
+    uint32_t instanceIndex = 0;
+    uint32_t nodeIndex = 0;
+    uint32_t readyFrame = 0;
+    uint32_t padding0 = 0;
+};
+
 struct MeshletStreamGpuParams {
     float eye[4] = {};
     float center[4] = {};
@@ -178,7 +200,7 @@ struct MeshletStreamGpuParams {
     uint32_t maxPrimitiveGroupCount = 0;
     uint32_t sceneNodeCount = 0;
     uint32_t traversalWorkerCount = 0;
-    uint32_t padding0 = 0;
+    uint32_t traversalWorkCapacity = 0;
 };
 
 struct MeshletStreamUserPush {
@@ -197,6 +219,8 @@ struct MeshletStreamUserPush {
     uint32_t clusterRefBuffer = 0;
     uint32_t nodeBuffer = 0;
     uint32_t drawIndirectBuffer = 0;
+    uint32_t traversalHeaderBuffer = 0;
+    uint32_t traversalWorkBuffer = 0;
     uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
     uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
 };
@@ -210,9 +234,11 @@ static_assert(sizeof(MeshletStreamGpuPageInfo) == 16);
 static_assert(sizeof(MeshletStreamGpuGroup) == 64);
 static_assert(sizeof(MeshletStreamGpuNode) == 48);
 static_assert(sizeof(MeshletStreamGpuDrawIndirect) == 12);
+static_assert(sizeof(MeshletStreamGpuTraversalHeader) == 32);
+static_assert(sizeof(MeshletStreamGpuTraversalWorkItem) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 32);
 static_assert(sizeof(MeshletStreamGpuParams) == 176);
-static_assert(sizeof(MeshletStreamUserPush) == 68);
+static_assert(sizeof(MeshletStreamUserPush) == 76);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -225,6 +251,7 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxGpuPageUnloadRequests = kMeshletStreamDefaultMaxGpuPageRequests;
     uint32_t maxActiveGroups = kMeshletStreamDefaultMaxActiveGroups;
     uint32_t maxTraversalWorkers = kMeshletStreamDefaultTraversalWorkers;
+    uint32_t maxTraversalWorkItems = kMeshletStreamDefaultTraversalWorkItems;
     uint32_t pageLoadWorkerCount = 2;
     uint32_t maxPageLoadsInFlight = 128;
     uint32_t queuedFrameCount = 3;
@@ -318,6 +345,8 @@ private:
     std::unique_ptr<Buffer> clusterRefBuffer_;
     std::unique_ptr<Buffer> nodeBuffer_;
     std::unique_ptr<Buffer> drawIndirectBuffer_;
+    std::unique_ptr<Buffer> traversalHeaderBuffer_;
+    std::unique_ptr<Buffer> traversalWorkBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<UpdatePass> updatePass_;
     std::unique_ptr<TraversalPass> traversalPass_;
@@ -336,12 +365,16 @@ private:
     BindlessHandle clusterRefHandle_;
     BindlessHandle nodeHandle_;
     BindlessHandle drawIndirectHandle_;
+    BindlessHandle traversalHeaderHandle_;
+    BindlessHandle traversalWorkHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
     ResourceState activeGroupBufferState_ = ResourceState::Undefined;
     ResourceState activeHeaderBufferState_ = ResourceState::Undefined;
     ResourceState pageTableState_ = ResourceState::Undefined;
     ResourceState requestBufferState_ = ResourceState::Undefined;
     ResourceState drawIndirectBufferState_ = ResourceState::Undefined;
+    ResourceState traversalHeaderBufferState_ = ResourceState::Undefined;
+    ResourceState traversalWorkBufferState_ = ResourceState::Undefined;
     bool pageTableInitialized_ = false;
     bool requestReadbackValid_ = false;
     uint32_t frameIndex_ = 0;
@@ -355,6 +388,7 @@ private:
     uint32_t maxActiveGroupClusters_ = 0;
     uint32_t maxPrimitiveGroupCount_ = 0;
     uint32_t traversalWorkerCount_ = 0;
+    uint32_t traversalWorkCapacity_ = 0;
     uint32_t currentFrameUploadCount_ = 0;
 };
 

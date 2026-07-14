@@ -569,6 +569,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             {"maxPageLoadsInFlight", 128},
             {"maxActiveGroups", 262144},
             {"maxTraversalWorkers", 1024},
+            {"maxTraversalWorkItems", 1048576},
             {"debugColorMode", "page"},
             {"camera", {
                 {"projection", "perspective"},

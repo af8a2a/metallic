@@ -15,6 +15,8 @@ static const uint kTraversalPhaseUnload = 1u;
 static const uint kActiveBuildPhaseReset = 0u;
 static const uint kActiveBuildPhaseBuild = 1u;
 static const uint kActiveBuildPhaseFinalize = 2u;
+static const uint kActiveBuildPhaseSeed = 3u;
+static const uint kActiveBuildPhaseRun = 4u;
 static const uint kTraversalStackCapacity = 128u;
 static const uint kStreamRequestHeaderWords = 16u;
 static const uint kStreamUpdateHeaderWords = 16u;
@@ -49,6 +51,8 @@ struct GPUDrivenStreamAssetPush
     uint clusterRefBuffer;
     uint nodeBuffer;
     uint drawIndirectBuffer;
+    uint traversalHeaderBuffer;
+    uint traversalWorkBuffer;
     uint traversalPhase;
     uint activeBuildPhase;
 };
@@ -171,6 +175,26 @@ struct GPUDrivenStreamAssetDrawIndirect
     uint groupCountZ;
 };
 
+struct GPUDrivenStreamAssetTraversalHeader
+{
+    uint readCounter;
+    uint writeCounter;
+    uint taskCounter;
+    uint overflowCount;
+    uint frameIndex;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
+struct GPUDrivenStreamAssetTraversalWorkItem
+{
+    uint instanceIndex;
+    uint nodeIndex;
+    uint readyFrame;
+    uint padding0;
+};
+
 struct GPUDrivenStreamAssetPageTableEntry
 {
     uint deviceOffsetBytes;
@@ -258,7 +282,7 @@ struct GPUDrivenStreamAssetParams
     uint maxPrimitiveGroupCount;
     uint sceneNodeCount;
     uint traversalWorkerCount;
-    uint padding0;
+    uint traversalWorkCapacity;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
@@ -819,6 +843,209 @@ void buildInstanceActiveGroups(
     }
 }
 
+bool enqueueActiveTraversalWork(
+    RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader> traversalHeader,
+    RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem> traversalWork,
+    GPUDrivenStreamAssetParams params,
+    uint instanceIndex,
+    uint nodeIndex)
+{
+    uint writeIndex = 0u;
+    InterlockedAdd(traversalHeader[0].writeCounter, 1u, writeIndex);
+    if (writeIndex >= params.traversalWorkCapacity) {
+        InterlockedAdd(traversalHeader[0].overflowCount, 1u);
+        return false;
+    }
+
+    InterlockedAdd(traversalHeader[0].taskCounter, 1u);
+    traversalWork[writeIndex].instanceIndex = instanceIndex;
+    traversalWork[writeIndex].nodeIndex = nodeIndex;
+    traversalWork[writeIndex].padding0 = 0u;
+    DeviceMemoryBarrier();
+    uint oldReadyFrame = 0u;
+    InterlockedExchange(traversalWork[writeIndex].readyFrame, params.frameIndex + 1u, oldReadyFrame);
+    return true;
+}
+
+void appendInstanceFallbackGroups(
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups,
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
+    StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
+    StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
+    StructuredBuffer<uint> clusterRefs,
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
+    GPUDrivenStreamAssetParams params,
+    GPUDrivenStreamAssetInstance instance,
+    GPUDrivenStreamAssetPrimitive primitive)
+{
+    if (primitive.fallbackGroupOffset > params.sceneGroupCount ||
+        primitive.fallbackGroupCount > params.sceneGroupCount - primitive.fallbackGroupOffset) {
+        InterlockedAdd(activeHeader[0].overflowCount, 1u);
+        return;
+    }
+    for (uint fallbackChild = 0u; fallbackChild < primitive.fallbackGroupCount; ++fallbackChild) {
+        uint groupIndex = primitive.fallbackGroupOffset + fallbackChild;
+        GPUDrivenStreamAssetGroup group = groups[groupIndex];
+        if (group.primitiveIndex != instance.primitiveIndex ||
+            group.clusterCount == 0u ||
+            group.clusterCount > 32u ||
+            !groupPageDrawable(pageTable, params, group)) {
+            continue;
+        }
+        uint clusterSelectionMask = buildGroupClusterSelectionMask(
+            groups,
+            clusterRefs,
+            pageTable,
+            params,
+            instance,
+            primitive,
+            group);
+        if (clusterSelectionMask != 0u) {
+            appendActivePage(
+                activeGroups,
+                activeHeader,
+                pageTable,
+                pageInfos,
+                params,
+                instance,
+                group.pageIndex,
+                clusterSelectionMask);
+        }
+    }
+}
+
+void runActiveTraversalWorker(
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups,
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
+    RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader> traversalHeader,
+    RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem> traversalWork,
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instances,
+    StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives,
+    StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
+    StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
+    StructuredBuffer<uint> clusterRefs,
+    StructuredBuffer<GPUDrivenStreamAssetNode> nodes,
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
+    GPUDrivenStreamAssetParams params)
+{
+    uint readIndex = 0xffffffffu;
+    for (;;) {
+        if (WaveActiveAllTrue(readIndex == 0xffffffffu)) {
+            uint waveReadIndex = 0u;
+            if (WaveIsFirstLane()) {
+                InterlockedAdd(traversalHeader[0].readCounter, WaveGetLaneCount(), waveReadIndex);
+            }
+            waveReadIndex = WaveReadLaneFirst(waveReadIndex) + WaveGetLaneIndex();
+            readIndex = waveReadIndex < params.traversalWorkCapacity
+                ? waveReadIndex
+                : 0xffffffffu;
+            if (WaveActiveAllTrue(readIndex == 0xffffffffu)) {
+                return;
+            }
+        }
+
+        bool runnable = false;
+        GPUDrivenStreamAssetTraversalWorkItem work;
+        for (;;) {
+            if (readIndex != 0xffffffffu) {
+                uint readyFrame = 0u;
+                InterlockedAdd(traversalWork[readIndex].readyFrame, 0u, readyFrame);
+                runnable = readyFrame == params.frameIndex + 1u;
+                if (runnable) {
+                    DeviceMemoryBarrier();
+                    work = traversalWork[readIndex];
+                }
+            }
+            if (WaveActiveAnyTrue(runnable)) {
+                break;
+            }
+            uint taskCount = 0u;
+            InterlockedAdd(traversalHeader[0].taskCounter, 0u, taskCount);
+            if (WaveActiveAnyTrue(taskCount == 0u)) {
+                return;
+            }
+            DeviceMemoryBarrier();
+        }
+
+        bool validWork = runnable &&
+            work.instanceIndex < params.sceneInstanceCount &&
+            work.nodeIndex < params.sceneNodeCount;
+        if (runnable && validWork) {
+            GPUDrivenStreamAssetInstance instance = instances[work.instanceIndex];
+            validWork = instance.visible != 0u && instance.primitiveIndex < params.scenePrimitiveCount;
+            if (validWork) {
+                GPUDrivenStreamAssetPrimitive primitive = primitives[instance.primitiveIndex];
+                validWork = primitive.nodeCount != 0u &&
+                    primitive.nodeOffset < params.sceneNodeCount &&
+                    primitive.nodeCount <= params.sceneNodeCount - primitive.nodeOffset &&
+                    work.nodeIndex >= primitive.nodeOffset &&
+                    work.nodeIndex < primitive.nodeOffset + primitive.nodeCount;
+                if (validWork) {
+                    GPUDrivenStreamAssetNode node = nodes[work.nodeIndex];
+                    validWork = node.primitiveIndex == instance.primitiveIndex;
+                    if (validWork && nodeNeedsTraversal(params, instance, primitive, node)) {
+                        if (node.childCount != 0u) {
+                            bool validChildren = node.childOffset >= primitive.nodeOffset &&
+                                node.childOffset < primitive.nodeOffset + primitive.nodeCount &&
+                                node.childCount <= primitive.nodeOffset + primitive.nodeCount - node.childOffset;
+                            if (validChildren) {
+                                for (uint child = node.childCount; child != 0u; --child) {
+                                    enqueueActiveTraversalWork(
+                                        traversalHeader,
+                                        traversalWork,
+                                        params,
+                                        work.instanceIndex,
+                                        node.childOffset + child - 1u);
+                                }
+                            } else {
+                                validWork = false;
+                            }
+                        } else if (node.groupIndex < params.sceneGroupCount) {
+                            bool fallbackGroup = node.groupIndex >= primitive.fallbackGroupOffset &&
+                                node.groupIndex - primitive.fallbackGroupOffset < primitive.fallbackGroupCount;
+                            GPUDrivenStreamAssetGroup group = groups[node.groupIndex];
+                            if (!fallbackGroup &&
+                                group.primitiveIndex == instance.primitiveIndex &&
+                                group.clusterCount != 0u &&
+                                group.clusterCount <= 32u &&
+                                groupPageDrawable(pageTable, params, group)) {
+                                uint clusterSelectionMask = buildGroupClusterSelectionMask(
+                                    groups,
+                                    clusterRefs,
+                                    pageTable,
+                                    params,
+                                    instance,
+                                    primitive,
+                                    group);
+                                if (clusterSelectionMask != 0u) {
+                                    appendActivePage(
+                                        activeGroups,
+                                        activeHeader,
+                                        pageTable,
+                                        pageInfos,
+                                        params,
+                                        instance,
+                                        group.pageIndex,
+                                        clusterSelectionMask);
+                                }
+                            }
+                        } else {
+                            validWork = false;
+                        }
+                    }
+                }
+            }
+        }
+        if (runnable) {
+            if (!validWork) {
+                InterlockedAdd(traversalHeader[0].overflowCount, 1u);
+            }
+            InterlockedAdd(traversalHeader[0].taskCounter, 0xffffffffu);
+            readIndex = 0xffffffffu;
+        }
+    }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThreadID, uniform GPUDrivenStreamAssetPush push)
@@ -961,6 +1188,10 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetNode>>(uint2(push.bufferShaderIndexBase + push.nodeBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetDrawIndirect>> drawIndirectHandle =
         DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetDrawIndirect>>(uint2(push.bufferShaderIndexBase + push.drawIndirectBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader>> traversalHeaderHandle =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader>>(uint2(push.bufferShaderIndexBase + push.traversalHeaderBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>> traversalWorkHandle =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>>(uint2(push.bufferShaderIndexBase + push.traversalWorkBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
         DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.bufferShaderIndexBase + push.pageTableBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
@@ -976,6 +1207,8 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     StructuredBuffer<uint> clusterRefs = clusterRefHandle;
     StructuredBuffer<GPUDrivenStreamAssetNode> nodes = nodeHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetDrawIndirect> drawIndirect = drawIndirectHandle;
+    RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader> traversalHeader = traversalHeaderHandle;
+    RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem> traversalWork = traversalWorkHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
 
@@ -998,6 +1231,17 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                 draw.groupCountY = 1u;
                 draw.groupCountZ = 1u;
                 drawIndirect[0] = draw;
+
+                GPUDrivenStreamAssetTraversalHeader traversal;
+                traversal.readCounter = 0u;
+                traversal.writeCounter = 0u;
+                traversal.taskCounter = 0u;
+                traversal.overflowCount = 0u;
+                traversal.frameIndex = params.frameIndex;
+                traversal.padding0 = 0u;
+                traversal.padding1 = 0u;
+                traversal.padding2 = 0u;
+                traversalHeader[0] = traversal;
             }
         }
         return;
@@ -1006,12 +1250,79 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     if (push.activeBuildPhase == kActiveBuildPhaseFinalize) {
         if (dispatchThreadID.x == 0u) {
             GPUDrivenStreamAssetActiveHeader header = activeHeader[0];
+            if (params.sceneNodeCount != 0u) {
+                header.overflowCount += traversalHeader[0].overflowCount;
+                activeHeader[0] = header;
+            }
             uint activeCount = min(header.activeGroupCount, header.activeGroupCapacity);
             GPUDrivenStreamAssetDrawIndirect draw;
             draw.groupCountX = min(activeCount * header.maxActiveGroupClusters, params.drawTaskCount);
             draw.groupCountY = 1u;
             draw.groupCountZ = 1u;
             drawIndirect[0] = draw;
+        }
+        return;
+    }
+
+    if (push.activeBuildPhase == kActiveBuildPhaseSeed) {
+        uint workerCount = max(params.traversalWorkerCount, 1u);
+        if (dispatchThreadID.x >= workerCount) {
+            return;
+        }
+        for (uint instanceIndex = dispatchThreadID.x;
+             instanceIndex < params.sceneInstanceCount;
+             instanceIndex += workerCount) {
+            GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
+            if (instance.visible == 0u) {
+                continue;
+            }
+            if (instance.primitiveIndex >= params.scenePrimitiveCount) {
+                InterlockedAdd(traversalHeader[0].overflowCount, 1u);
+                continue;
+            }
+            GPUDrivenStreamAssetPrimitive primitive = primitives[instance.primitiveIndex];
+            appendInstanceFallbackGroups(
+                activeGroups,
+                activeHeader,
+                pageInfos,
+                groups,
+                clusterRefs,
+                pageTable,
+                params,
+                instance,
+                primitive);
+            if (primitive.nodeCount == 0u ||
+                primitive.nodeOffset >= params.sceneNodeCount ||
+                primitive.nodeCount > params.sceneNodeCount - primitive.nodeOffset) {
+                InterlockedAdd(traversalHeader[0].overflowCount, 1u);
+                continue;
+            }
+            enqueueActiveTraversalWork(
+                traversalHeader,
+                traversalWork,
+                params,
+                instanceIndex,
+                primitive.nodeOffset);
+        }
+        return;
+    }
+
+    if (push.activeBuildPhase == kActiveBuildPhaseRun) {
+        uint workerCount = max(params.traversalWorkerCount, 1u);
+        if (dispatchThreadID.x < workerCount) {
+            runActiveTraversalWorker(
+                activeGroups,
+                activeHeader,
+                traversalHeader,
+                traversalWork,
+                instances,
+                primitives,
+                pageInfos,
+                groups,
+                clusterRefs,
+                nodes,
+                pageTable,
+                params);
         }
         return;
     }

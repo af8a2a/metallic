@@ -160,6 +160,11 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
         .maxTraversalWorkers = std::max<uint32_t>(
             uintProperty(properties, "maxTraversalWorkers", kMeshletStreamDefaultTraversalWorkers),
             1u),
+        .maxTraversalWorkItems = std::min(
+            std::max<uint32_t>(
+                uintProperty(properties, "maxTraversalWorkItems", kMeshletStreamDefaultTraversalWorkItems),
+                1u),
+            kMeshletStreamMaxTraversalWorkItems),
         .pageLoadWorkerCount = std::min(
             uintProperty(properties, "pageLoadWorkerCount", 2),
             kMeshletStreamMaxPageLoadWorkers),
