@@ -1528,10 +1528,25 @@ public:
         }
         const uint32_t residentPage = streamablePages[0];
         const uint32_t requestedPage = streamablePages[1];
-        const uint64_t streamableBudgetBytes = std::max(
-            pageStorageBytes(asset, residentPage),
-            pageStorageBytes(asset, requestedPage));
+        const uint64_t streamableBudgetBytes =
+            pageStorageBytes(asset, residentPage) +
+            pageStorageBytes(asset, requestedPage);
         const uint64_t maxResidentBytes = pageStorageBytes(asset, fallbackPages) + streamableBudgetBytes;
+
+        render::MeshletStreamResidencyManager pageLimitedResidency;
+        std::string pageLimitedReason;
+        const std::array<uint32_t, 2> overBudgetLockedPages = {fallbackPages.front(), residentPage};
+        if (!pageLimitedResidency.initialize(
+                render::MeshletStreamResidencyDesc{
+                    .asset = &asset,
+                    .maxResidentBytes = maxResidentBytes,
+                    .maxResidentPages = 1,
+                },
+                pageLimitedReason) ||
+            pageLimitedResidency.lockFallbackPages(overBudgetLockedPages, pageLimitedReason) ||
+            !pageLimitedResidency.activePages().empty()) {
+            return RhiTestResult::fail("locked fallback pages did not reject the resident page-count budget atomically");
+        }
 
         render::MeshletStreamResidencyManager residency;
         std::string reason;
@@ -1590,6 +1605,8 @@ public:
         render::MeshletStreamResidencyStats stats = residency.stats();
         if (residency.pageAllocated(requestedPage) ||
             residency.pageState(residentPage) != render::MeshletStreamPageResidencyState::Resident ||
+            stats.activePageCount != fallbackPages.size() + 1u ||
+            stats.freeResidentBytes != pageStorageBytes(asset, requestedPage) ||
             stats.frameEvictionAgeRejectedCount != 1 ||
             stats.frameResidentBudgetFailureCount != 1 ||
             stats.frameScheduledUnloadCount != 0) {
@@ -1621,7 +1638,11 @@ public:
         }
 
         (void)residency.requestPage(requestedPage);
-        if (!residency.pageAllocated(requestedPage)) {
+        stats = residency.stats();
+        if (!residency.pageAllocated(requestedPage) ||
+            stats.activePageCount != fallbackPages.size() + 1u ||
+            stats.usedSlotCount > stats.maxResidentPages ||
+            stats.freeSlotCount != 0) {
             return RhiTestResult::fail("request did not acquire storage after delayed eviction completed");
         }
 

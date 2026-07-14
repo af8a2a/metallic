@@ -240,11 +240,12 @@ bool MeshletStreamResidencyManager::initialize(
     activePagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
     residentPagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
     pendingPagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
-    requestedPages_.reserve(asset_->pageCount());
-    unloadRequestedPages_.reserve(asset_->pageCount());
-    activePages_.reserve(asset_->pageCount());
-    residentPages_.reserve(asset_->pageCount());
-    pendingPages_.reserve(asset_->pageCount());
+    if (maxResidentPages_ != 0) {
+        const uint32_t residentReserve = std::min(maxResidentPages_, asset_->pageCount());
+        activePages_.reserve(residentReserve);
+        residentPages_.reserve(residentReserve);
+        pendingPages_.reserve(residentReserve);
+    }
     stats_.pageCount = asset_->pageCount();
     stats_.maxResidentPages = maxResidentPages_;
     stats_.maxResidentBytes = storage_.capacityBytes();
@@ -444,12 +445,20 @@ bool MeshletStreamResidencyManager::lockFallbackPages(
         return false;
     }
     uint64_t requiredBytes = 0;
+    uint32_t requiredPages = 0;
+    std::vector<uint32_t> uniqueNewPages;
+    uniqueNewPages.reserve(pageIndices.size());
     for (uint32_t pageIndex : pageIndices) {
         if (pageIndex >= pages_.size()) {
             reason = "fallback page index is out of range";
             return false;
         }
         if (!pageAllocated(pageIndex)) {
+            if (std::find(uniqueNewPages.begin(), uniqueNewPages.end(), pageIndex) != uniqueNewPages.end()) {
+                continue;
+            }
+            uniqueNewPages.push_back(pageIndex);
+            ++requiredPages;
             const uint64_t pageBytes = asset_->pages()[pageIndex].uncompressedSize;
             const uint64_t allocationBytes = storage_.allocationSize(pageBytes);
             if (allocationBytes == 0 ||
@@ -462,6 +471,12 @@ bool MeshletStreamResidencyManager::lockFallbackPages(
     }
     if (requiredBytes > storage_.freeBytes()) {
         reason = "not enough resident byte budget for locked fallback pages";
+        return false;
+    }
+    if (maxResidentPages_ != 0 &&
+        (activePages_.size() >= maxResidentPages_ ||
+        requiredPages > maxResidentPages_ - static_cast<uint32_t>(activePages_.size()))) {
+        reason = "not enough resident page budget for locked fallback pages";
         return false;
     }
 
@@ -819,8 +834,13 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
     result.largestFreeBlockBytes = storage_.largestFreeBlockBytes();
     result.storageAllocationCount = storage_.allocationCount();
     result.storageFreeBlockCount = storage_.freeBlockCount();
-    result.usedSlotCount = storage_.allocationCount();
-    result.freeSlotCount = storage_.freeBlockCount();
+    result.usedSlotCount = static_cast<uint32_t>(activePages_.size());
+    const uint32_t slotCapacity = maxResidentPages_ != 0
+        ? maxResidentPages_
+        : static_cast<uint32_t>(pages_.size());
+    result.freeSlotCount = slotCapacity >= result.usedSlotCount
+        ? slotCapacity - result.usedSlotCount
+        : 0u;
     result.activePageCount = static_cast<uint32_t>(activePages_.size());
     result.residentPageCount = static_cast<uint32_t>(residentPages_.size());
     result.pendingPageCount = static_cast<uint32_t>(pendingPages_.size());
@@ -852,19 +872,20 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
 
     const scene::MeshletStreamPageInfo& assetPage = asset_->pages()[pageIndex];
     const uint64_t requiredBytes = storage_.allocationSize(assetPage.uncompressedSize);
-    MeshletStreamStorageAllocation allocation = storage_.allocate(assetPage.uncompressedSize);
-    if (!allocation.valid()) {
+    const bool pageBudgetReached = maxResidentPages_ != 0 && activePages_.size() >= maxResidentPages_;
+    const bool storageBudgetReached = !storage_.canAllocate(assetPage.uncompressedSize);
+    if (pageBudgetReached || storageBudgetReached) {
         uint64_t oldestFrame = std::numeric_limits<uint64_t>::max();
         uint32_t evictPage = UINT32_MAX;
         bool rejectedByAge = false;
-        for (uint32_t candidate = 0; candidate < pages_.size(); ++candidate) {
+        for (uint32_t candidate : residentPages_) {
             const PageEntry& entry = pages_[candidate];
             if (entry.lockedFallback ||
                 !pageAllocated(candidate) ||
                 !streamableEvictionState(entry.state)) {
                 continue;
             }
-            if (storage_.freeBytes() + entry.allocationBytes < requiredBytes) {
+            if (storageBudgetReached && storage_.freeBytes() + entry.allocationBytes < requiredBytes) {
                 continue;
             }
             const uint64_t age = pageAge(candidate);
@@ -897,6 +918,15 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
         }
         ++stats_.frameEvictedPageCount;
         ++stats_.totalEvictedPageCount;
+        return false;
+    }
+
+    MeshletStreamStorageAllocation allocation = storage_.allocate(assetPage.uncompressedSize);
+    if (!allocation.valid()) {
+        ++stats_.frameResidentBudgetFailureCount;
+        ++stats_.totalResidentBudgetFailureCount;
+        ++stats_.frameAllocationFailureCount;
+        ++stats_.totalAllocationFailureCount;
         return false;
     }
 
