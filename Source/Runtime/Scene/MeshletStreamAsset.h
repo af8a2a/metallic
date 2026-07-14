@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -11,6 +12,8 @@
 namespace metallic::scene {
 
 inline constexpr const char* kMeshletStreamAssetSuffix = ".meshstream.bin";
+inline constexpr uint32_t kMeshletStreamInvalidGroupIndex = std::numeric_limits<uint32_t>::max();
+inline constexpr float kMeshletStreamTerminalGroupError = std::numeric_limits<float>::max();
 
 inline constexpr uint32_t kMeshletStreamPayloadAttributePosition = 1u << 0u;
 inline constexpr uint32_t kMeshletStreamPayloadAttributeNormal = 1u << 1u;
@@ -44,6 +47,10 @@ struct MeshletStreamPrimitiveInfo {
     uint32_t pageCount = 0;
     uint32_t fallbackPageOffset = 0;
     uint32_t fallbackPageCount = 0;
+    uint32_t groupOffset = 0;
+    uint32_t groupCount = 0;
+    uint32_t fallbackGroupOffset = 0;
+    uint32_t fallbackGroupCount = 0;
     MeshletStreamBounds bounds;
 };
 
@@ -76,6 +83,22 @@ struct MeshletStreamLodLevelInfo {
     uint32_t clusterCount = 0;
     float minBoundingSphereRadius = 0.0f;
     float minMaxQuadricError = 0.0f;
+};
+
+struct MeshletStreamGroupInfo {
+    uint32_t primitiveIndex = 0;
+    uint32_t pageIndex = 0;
+    uint32_t lodLevel = 0;
+    uint32_t clusterRefOffset = 0;
+    uint32_t clusterCount = 0;
+    uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
+    uint32_t reserved2 = 0;
+    float boundsCenterRadius[4] = {};
+    float maxQuadricError = 0.0f;
+    uint32_t reserved3 = 0;
+    uint32_t reserved4 = 0;
+    uint32_t reserved5 = 0;
 };
 
 struct MeshletStreamPageInfo {
@@ -157,6 +180,8 @@ public:
     uint32_t instanceCount() const;
     uint32_t geometryCount() const;
     uint32_t lodLevelCount() const;
+    uint32_t groupCount() const;
+    uint32_t clusterRefCount() const;
     uint32_t pageCount() const;
     uint32_t maxPagePayloadBytes() const;
     uint64_t sourceFileSize() const;
@@ -166,6 +191,9 @@ public:
     std::span<const MeshletStreamInstanceInfo> instances() const;
     std::span<const MeshletStreamGeometryInfo> geometries() const;
     std::span<const MeshletStreamLodLevelInfo> lodLevels() const;
+    std::span<const MeshletStreamGroupInfo> groups() const;
+    std::span<const uint32_t> clusterRefinedGroups() const;
+    std::span<const uint32_t> groupClusterRefinedGroups(uint32_t groupIndex) const;
     std::span<const MeshletStreamPageInfo> pages() const;
     std::span<const uint64_t> pagePayloadOffsets() const;
     std::span<const uint64_t> geometryPagePayloadOffsets(uint32_t geometryIndex) const;

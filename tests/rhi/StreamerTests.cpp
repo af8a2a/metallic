@@ -126,9 +126,10 @@ RhiTestResult buildBunnyStreamAssetForTest(
 std::vector<uint32_t> fallbackPagesFor(const scene::MeshletStreamAsset& asset)
 {
     std::vector<uint32_t> fallbackPages;
-    for (const scene::MeshletStreamPrimitiveInfo& primitive : asset.primitives()) {
-        for (uint32_t page = 0; page < primitive.fallbackPageCount; ++page) {
-            fallbackPages.push_back(primitive.fallbackPageOffset + page);
+    fallbackPages.reserve(asset.groupCount());
+    for (const scene::MeshletStreamGroupInfo& group : asset.groups()) {
+        if (group.maxQuadricError == scene::kMeshletStreamTerminalGroupError) {
+            fallbackPages.push_back(group.pageIndex);
         }
     }
     return fallbackPages;

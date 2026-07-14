@@ -2155,6 +2155,10 @@ public:
                 .pageCount = 2,
                 .fallbackPageOffset = 2,
                 .fallbackPageCount = 1,
+                .groupOffset = 0,
+                .groupCount = 3,
+                .fallbackGroupOffset = 2,
+                .fallbackGroupCount = 1,
             },
             render::MeshletStreamGpuPrimitive{
                 .lodLevelOffset = 1,
@@ -2163,6 +2167,10 @@ public:
                 .pageCount = 1,
                 .fallbackPageOffset = 4,
                 .fallbackPageCount = 1,
+                .groupOffset = 3,
+                .groupCount = 2,
+                .fallbackGroupOffset = 4,
+                .fallbackGroupCount = 1,
             },
         }};
         const std::array<render::MeshletStreamGpuLodLevel, 2> lodLevels = {{
@@ -2186,11 +2194,34 @@ public:
         const std::array<render::MeshletStreamGpuPageInfo, 6> pageInfos = {{
             render::MeshletStreamGpuPageInfo{.primitiveIndex = 0, .lodLevel = 0, .pageIndex = 0, .clusterCount = 3},
             render::MeshletStreamGpuPageInfo{.primitiveIndex = 0, .lodLevel = 0, .pageIndex = 1, .clusterCount = 5},
-            render::MeshletStreamGpuPageInfo{.primitiveIndex = 0, .lodLevel = 1, .pageIndex = 2, .clusterCount = 7},
+            render::MeshletStreamGpuPageInfo{.primitiveIndex = 0, .lodLevel = 1, .pageIndex = 2, .clusterCount = 2},
             render::MeshletStreamGpuPageInfo{.primitiveIndex = 1, .lodLevel = 0, .pageIndex = 3, .clusterCount = 11},
-            render::MeshletStreamGpuPageInfo{.primitiveIndex = 1, .lodLevel = 1, .pageIndex = 4, .clusterCount = 13},
+            render::MeshletStreamGpuPageInfo{.primitiveIndex = 1, .lodLevel = 1, .pageIndex = 4, .clusterCount = 1},
             render::MeshletStreamGpuPageInfo{.primitiveIndex = 1, .lodLevel = 2, .pageIndex = 5, .clusterCount = 17},
         }};
+        std::array<render::MeshletStreamGpuGroup, 5> groups{};
+        const std::array<uint32_t, 5> groupPages{0, 1, 2, 3, 4};
+        const std::array<uint32_t, 5> groupPrimitives{0, 0, 0, 1, 1};
+        const std::array<uint32_t, 5> groupLods{0, 0, 1, 0, 1};
+        const std::array<uint32_t, 5> groupClusterCounts{3, 5, 2, 11, 1};
+        uint32_t clusterRefOffset = 0;
+        for (uint32_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+            groups[groupIndex].primitiveIndex = groupPrimitives[groupIndex];
+            groups[groupIndex].pageIndex = groupPages[groupIndex];
+            groups[groupIndex].lodLevel = groupLods[groupIndex];
+            groups[groupIndex].clusterRefOffset = clusterRefOffset;
+            groups[groupIndex].clusterCount = groupClusterCounts[groupIndex];
+            groups[groupIndex].boundsCenterRadius[2] = 5.0f + static_cast<float>(groupPrimitives[groupIndex]);
+            groups[groupIndex].boundsCenterRadius[3] = 1.0f;
+            groups[groupIndex].maxQuadricError = groupLods[groupIndex] == 0
+                ? 1.0f
+                : std::numeric_limits<float>::max();
+            clusterRefOffset += groupClusterCounts[groupIndex];
+        }
+        std::vector<uint32_t> clusterRefs(clusterRefOffset, UINT32_MAX);
+        clusterRefs[groups[2].clusterRefOffset + 0u] = 0u;
+        clusterRefs[groups[2].clusterRefOffset + 1u] = 1u;
+        clusterRefs[groups[4].clusterRefOffset] = 3u;
         render::MeshletStreamGpuParams params;
         params.viewport[2] = 96.0f;
         params.viewport[3] = 1.0471975512f;
@@ -2201,16 +2232,21 @@ public:
         params.scenePrimitiveCount = static_cast<uint32_t>(primitives.size());
         params.sceneLodLevelCount = static_cast<uint32_t>(lodLevels.size());
         params.scenePageCount = static_cast<uint32_t>(pageInfos.size());
-        params.selectedLodLevel = 0;
-        params.enableGpuLodSelection = 0;
+        params.selectedLodLevel = render::kMeshletStreamNoDebugLodOverride;
+        params.enableGpuLodSelection = 1;
         params.enableGpuUnloadRequests = 1;
+        params.sceneGroupCount = static_cast<uint32_t>(groups.size());
+        params.maxPrimitiveGroupCount = 3;
         params.activeGroupCount = kActiveGroupCapacity;
-        params.maxActiveGroupClusters = 4;
+        params.maxActiveGroupClusters = 11;
 
         std::array<render::StreamPageTableEntry, 6> pageTable{};
         pageTable[0].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded);
         pageTable[1].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
         pageTable[1].lastRequestFrame = 3;
+        pageTable[1].deviceOffsetBytes = 512;
+        pageTable[1].deviceSizeBytes = 256;
+        pageTable[1].payloadBytes = 192;
         pageTable[2].deviceOffsetBytes = 1024;
         pageTable[2].deviceSizeBytes = 256;
         pageTable[2].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback);
@@ -2283,6 +2319,30 @@ public:
             },
             "page infos",
             pageInfoBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> groupBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(groups),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "groups",
+            groupBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> clusterRefBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = static_cast<uint64_t>(clusterRefs.size()) * sizeof(uint32_t),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "cluster refs",
+            clusterRefBuffer);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2443,6 +2503,17 @@ public:
         if (!result) {
             return RhiTestResult::fail(std::string("writeHostBuffer(page infos) returned ") + toString(result));
         }
+        result = writeHostBuffer(*groupBuffer, groups.data(), sizeof(groups));
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(groups) returned ") + toString(result));
+        }
+        result = writeHostBuffer(
+            *clusterRefBuffer,
+            clusterRefs.data(),
+            static_cast<uint64_t>(clusterRefs.size()) * sizeof(uint32_t));
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(cluster refs) returned ") + toString(result));
+        }
         result = writeHostBuffer(*paramsBuffer, &params, sizeof(params));
         if (!result) {
             return RhiTestResult::fail(std::string("writeHostBuffer(params) returned ") + toString(result));
@@ -2461,7 +2532,7 @@ public:
             render::BindlessHeapDesc{
                 .maxSamplers = 0,
                 .maxSampledImages = 0,
-                .maxBuffers = 9,
+                .maxBuffers = 11,
             },
             bindlessHeap);
         if (!result || bindlessHeap == nullptr) {
@@ -2500,6 +2571,16 @@ public:
         }
         render::BindlessHandle pageInfoHandle;
         testResult = allocateStorageBuffer(*pageInfoBuffer, "page infos", pageInfoHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle groupHandle;
+        testResult = allocateStorageBuffer(*groupBuffer, "groups", groupHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle clusterRefHandle;
+        testResult = allocateStorageBuffer(*clusterRefBuffer, "cluster refs", clusterRefHandle);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2692,6 +2773,8 @@ public:
             .primitiveBuffer = primitiveHandle.index,
             .lodLevelBuffer = lodLevelHandle.index,
             .pageInfoBuffer = pageInfoHandle.index,
+            .groupBuffer = groupHandle.index,
+            .clusterRefBuffer = clusterRefHandle.index,
             .traversalPhase = render::kMeshletStreamTraversalLoadPhase,
         };
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -2883,8 +2966,10 @@ public:
         }
         if (pageTableResult[0].lastRequestFrame != kFrameIndex ||
             pageTableResult[1].lastRequestFrame != kFrameIndex ||
+            pageTableResult[2].lastRequestFrame != kFrameIndex ||
             pageTableResult[3].lastRequestFrame != kFrameIndex ||
-            pageTableResult[2].lastRequestFrame == kFrameIndex) {
+            pageTableResult[4].lastRequestFrame != kFrameIndex ||
+            pageTableResult[5].lastRequestFrame == kFrameIndex) {
             return RhiTestResult::fail("traversal demand shader did not mark selected pages conservatively");
         }
         render::MeshletStreamGpuActiveHeader activeHeaderResult;
@@ -2895,7 +2980,7 @@ public:
         if (!readHostBuffer(*activeGroupReadbackBuffer, activeGroupsResult.data(), sizeof(activeGroupsResult))) {
             return RhiTestResult::fail("active group readback buffer did not map");
         }
-        if (activeHeaderResult.activeGroupCount != 2 ||
+        if (activeHeaderResult.activeGroupCount != 3 ||
             activeHeaderResult.activeGroupCapacity != kActiveGroupCapacity ||
             activeHeaderResult.maxActiveGroupClusters != params.maxActiveGroupClusters ||
             activeHeaderResult.overflowCount != 0 ||
@@ -2903,25 +2988,35 @@ public:
             return RhiTestResult::fail("active table header was not built as expected");
         }
 
+        bool foundResidentFinePage0 = false;
         bool foundFallbackPage = false;
         bool foundResidentFinePage = false;
         for (uint32_t index = 0; index < activeHeaderResult.activeGroupCount; ++index) {
             const render::MeshletStreamGpuActiveGroup& group = activeGroupsResult[index];
+            if (group.pageIndex == 1 &&
+                group.clusterCount == pageInfos[1].clusterCount &&
+                group.materialIndex == instances[0].materialIndex &&
+                group.clusterSelectionMask == 0x1fu &&
+                group.flags == render::kMeshletStreamActiveGroupResident) {
+                foundResidentFinePage0 = true;
+            }
             if (group.pageIndex == 2 &&
                 group.clusterCount == pageInfos[2].clusterCount &&
                 group.materialIndex == instances[0].materialIndex &&
+                group.clusterSelectionMask == 0x1u &&
                 group.flags == render::kMeshletStreamActiveGroupResident) {
                 foundFallbackPage = true;
             }
             if (group.pageIndex == 3 &&
                 group.clusterCount == pageInfos[3].clusterCount &&
                 group.materialIndex == instances[1].materialIndex &&
+                group.clusterSelectionMask == 0x7ffu &&
                 group.flags == render::kMeshletStreamActiveGroupResident) {
                 foundResidentFinePage = true;
             }
         }
-        if (!foundFallbackPage || !foundResidentFinePage) {
-            return RhiTestResult::fail("active table did not compact fallback and resident fine pages");
+        if (!foundResidentFinePage0 || !foundFallbackPage || !foundResidentFinePage) {
+            return RhiTestResult::fail("active table did not compact group-level fine and fallback selections");
         }
 
         (void)device->waitIdle();

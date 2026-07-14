@@ -101,13 +101,23 @@ int buildMeshletStreamAssetOffline(
         return 1;
     }
 
+    uint64_t terminalPageCount = 0;
+    for (const metallic::scene::MeshletStreamGroupInfo& group : asset.groups()) {
+        if (group.maxQuadricError == metallic::scene::kMeshletStreamTerminalGroupError) {
+            ++terminalPageCount;
+        }
+    }
     std::printf(
-        "Built meshlet StreamAsset '%s': primitives=%u geometries=%u instances=%u pages=%u maxPagePayloadBytes=%u\n",
+        "Built meshlet StreamAsset '%s': primitives=%u geometries=%u instances=%u lodLevels=%u groups=%u clusterRefs=%u pages=%u fallbackPages=%llu maxPagePayloadBytes=%u\n",
         resolvedOutputPath.string().c_str(),
         asset.primitiveCount(),
         asset.geometryCount(),
         asset.instanceCount(),
+        asset.lodLevelCount(),
+        asset.groupCount(),
+        asset.clusterRefCount(),
         asset.pageCount(),
+        static_cast<unsigned long long>(terminalPageCount),
         asset.maxPagePayloadBytes());
     if (buildStats.accessorRangeReadCount != 0) {
         std::printf(

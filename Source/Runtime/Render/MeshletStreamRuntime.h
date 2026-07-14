@@ -57,7 +57,7 @@ struct MeshletStreamGpuActiveGroup {
     uint32_t primitiveIndex = 0;
     uint32_t lodLevel = 0;
     uint32_t materialIndex = 0;
-    uint32_t colorSeed = 0;
+    uint32_t clusterSelectionMask = 0;
     uint32_t flags = 0;
     float world0[4] = {};
     float world1[4] = {};
@@ -84,8 +84,16 @@ struct MeshletStreamGpuPrimitive {
     uint32_t pageCount = 0;
     uint32_t fallbackPageOffset = 0;
     uint32_t fallbackPageCount = 0;
+    uint32_t groupOffset = 0;
+    uint32_t groupCount = 0;
+    uint32_t fallbackGroupOffset = 0;
+    uint32_t fallbackGroupCount = 0;
     uint32_t materialIndex = 0;
     uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+    uint32_t padding3 = 0;
+    uint32_t padding4 = 0;
 };
 
 struct MeshletStreamGpuLodLevel {
@@ -104,6 +112,22 @@ struct MeshletStreamGpuPageInfo {
     uint32_t lodLevel = 0;
     uint32_t pageIndex = 0;
     uint32_t clusterCount = 0;
+};
+
+struct MeshletStreamGpuGroup {
+    uint32_t primitiveIndex = 0;
+    uint32_t pageIndex = 0;
+    uint32_t lodLevel = 0;
+    uint32_t clusterRefOffset = 0;
+    uint32_t clusterCount = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+    float boundsCenterRadius[4] = {};
+    float maxQuadricError = 0.0f;
+    uint32_t padding3 = 0;
+    uint32_t padding4 = 0;
+    uint32_t padding5 = 0;
 };
 
 struct MeshletStreamGpuParams {
@@ -128,7 +152,11 @@ struct MeshletStreamGpuParams {
     uint32_t selectedLodLevel = kMeshletStreamNoDebugLodOverride;
     uint32_t enableGpuLodSelection = 1;
     uint32_t enableGpuUnloadRequests = 1;
+    uint32_t sceneGroupCount = 0;
+    uint32_t maxPrimitiveGroupCount = 0;
     uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
 };
 
 struct MeshletStreamUserPush {
@@ -143,6 +171,8 @@ struct MeshletStreamUserPush {
     uint32_t primitiveBuffer = 0;
     uint32_t lodLevelBuffer = 0;
     uint32_t pageInfoBuffer = 0;
+    uint32_t groupBuffer = 0;
+    uint32_t clusterRefBuffer = 0;
     uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
     uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
 };
@@ -150,12 +180,13 @@ struct MeshletStreamUserPush {
 static_assert(sizeof(MeshletStreamGpuActiveHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuActiveGroup) == 96);
 static_assert(sizeof(MeshletStreamGpuInstance) == 96);
-static_assert(sizeof(MeshletStreamGpuPrimitive) == 32);
+static_assert(sizeof(MeshletStreamGpuPrimitive) == 64);
 static_assert(sizeof(MeshletStreamGpuLodLevel) == 32);
 static_assert(sizeof(MeshletStreamGpuPageInfo) == 16);
+static_assert(sizeof(MeshletStreamGpuGroup) == 64);
 static_assert(sizeof(StreamPageTableEntry) == 32);
-static_assert(sizeof(MeshletStreamGpuParams) == 160);
-static_assert(sizeof(MeshletStreamUserPush) == 52);
+static_assert(sizeof(MeshletStreamGpuParams) == 176);
+static_assert(sizeof(MeshletStreamUserPush) == 60);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -222,6 +253,7 @@ private:
 
     uint32_t computeMaxActiveGroups() const;
     uint32_t computeMaxPageClusters() const;
+    uint32_t computeMaxPrimitiveGroups() const;
     Result initializeSceneMetadataBuffers(Device& device, std::string& log);
 
     Result initializePageTableIfNeeded(CommandBuffer& commandBuffer);
@@ -251,6 +283,8 @@ private:
     std::unique_ptr<Buffer> primitiveBuffer_;
     std::unique_ptr<Buffer> lodLevelBuffer_;
     std::unique_ptr<Buffer> pageInfoBuffer_;
+    std::unique_ptr<Buffer> groupBuffer_;
+    std::unique_ptr<Buffer> clusterRefBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<UpdatePass> updatePass_;
     std::unique_ptr<TraversalPass> traversalPass_;
@@ -265,6 +299,8 @@ private:
     BindlessHandle primitiveHandle_;
     BindlessHandle lodLevelHandle_;
     BindlessHandle pageInfoHandle_;
+    BindlessHandle groupHandle_;
+    BindlessHandle clusterRefHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
     ResourceState activeGroupBufferState_ = ResourceState::Undefined;
     ResourceState activeHeaderBufferState_ = ResourceState::Undefined;
@@ -281,6 +317,8 @@ private:
     uint64_t maxResidentBytes_ = 0;
     uint32_t maxActiveGroups_ = 0;
     uint32_t maxActiveGroupClusters_ = 0;
+    uint32_t maxPrimitiveGroupCount_ = 0;
+    uint32_t traversalWorkItemCount_ = 0;
     uint32_t currentFrameUploadCount_ = 0;
 };
 
