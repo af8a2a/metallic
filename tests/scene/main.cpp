@@ -1067,6 +1067,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     ASSERT_GT(asset.pageCount(), 1u);
     ASSERT_EQ(asset.groupCount(), asset.pageCount());
     ASSERT_GT(asset.clusterRefCount(), 0u);
+    ASSERT_GT(asset.nodeCount(), asset.groupCount());
     ASSERT_GT(asset.maxPagePayloadBytes(), 0u);
     ASSERT_EQ(asset.pagePayloadOffsets().size(), asset.pageCount());
 
@@ -1077,6 +1078,8 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_EQ(primitive.fallbackGroupCount, primitive.fallbackPageCount);
     EXPECT_EQ(primitive.groupOffset, primitive.pageOffset);
     EXPECT_EQ(primitive.fallbackGroupOffset, primitive.fallbackPageOffset);
+    EXPECT_EQ(primitive.nodeOffset, 0u);
+    EXPECT_EQ(primitive.nodeCount, asset.nodeCount());
     const metallic::scene::MeshletStreamGeometryInfo& geometry = asset.geometries().front();
     EXPECT_EQ(geometry.primitiveIndex, 0u);
     EXPECT_EQ(geometry.renderPrimitiveIndex, primitive.renderPrimitiveIndex);
@@ -1123,6 +1126,45 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_TRUE(foundOriginalCluster);
     EXPECT_TRUE(foundRefinedCluster);
     EXPECT_TRUE(foundTerminalGroup);
+
+    ASSERT_LT(primitive.nodeOffset, asset.nodeCount());
+    const metallic::scene::MeshletStreamNodeInfo& hierarchyRoot = asset.nodes()[primitive.nodeOffset];
+    EXPECT_EQ(hierarchyRoot.primitiveIndex, 0u);
+    EXPECT_EQ(hierarchyRoot.groupIndex, metallic::scene::kMeshletStreamInvalidGroupIndex);
+    EXPECT_EQ(hierarchyRoot.childCount, primitive.lodLevelCount);
+    EXPECT_EQ(hierarchyRoot.lodLevel, metallic::scene::kMeshletStreamInvalidNodeIndex);
+    std::vector<uint8_t> visitedNodes(asset.nodeCount(), 0);
+    std::vector<uint32_t> pendingNodes{primitive.nodeOffset};
+    uint32_t hierarchyLeafCount = 0;
+    while (!pendingNodes.empty()) {
+        const uint32_t nodeIndex = pendingNodes.back();
+        pendingNodes.pop_back();
+        ASSERT_GE(nodeIndex, primitive.nodeOffset);
+        ASSERT_LT(nodeIndex, primitive.nodeOffset + primitive.nodeCount);
+        ASSERT_EQ(visitedNodes[nodeIndex], 0u);
+        visitedNodes[nodeIndex] = 1;
+        const metallic::scene::MeshletStreamNodeInfo& node = asset.nodes()[nodeIndex];
+        EXPECT_EQ(node.primitiveIndex, 0u);
+        EXPECT_GE(node.boundsCenterRadius[3], 0.0f);
+        EXPECT_GE(node.maxQuadricError, 0.0f);
+        if (node.childCount == 0) {
+            ++hierarchyLeafCount;
+            ASSERT_LT(node.groupIndex, asset.groupCount());
+            EXPECT_EQ(asset.groups()[node.groupIndex].lodLevel, node.lodLevel);
+            continue;
+        }
+        EXPECT_EQ(node.groupIndex, metallic::scene::kMeshletStreamInvalidGroupIndex);
+        ASSERT_LE(node.childCount, 32u);
+        ASSERT_GE(node.childOffset, primitive.nodeOffset);
+        ASSERT_LE(node.childOffset + node.childCount, primitive.nodeOffset + primitive.nodeCount);
+        for (uint32_t child = 0; child < node.childCount; ++child) {
+            pendingNodes.push_back(node.childOffset + child);
+        }
+    }
+    EXPECT_EQ(
+        std::count(visitedNodes.begin(), visitedNodes.end(), static_cast<uint8_t>(1)),
+        primitive.nodeCount);
+    EXPECT_EQ(hierarchyLeafCount, primitive.groupCount);
 
     for (uint32_t pageIndex = 0; pageIndex < asset.pageCount(); ++pageIndex) {
         const metallic::scene::MeshletStreamPageInfo& page = asset.pages()[pageIndex];
@@ -1214,6 +1256,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     ASSERT_EQ(compressedAsset.pageCount(), asset.pageCount());
     ASSERT_EQ(compressedAsset.groupCount(), asset.groupCount());
     ASSERT_EQ(compressedAsset.clusterRefCount(), asset.clusterRefCount());
+    ASSERT_EQ(compressedAsset.nodeCount(), asset.nodeCount());
     const metallic::scene::MeshletStreamPageInfo& compressedPage = compressedAsset.pages().front();
     EXPECT_EQ(
         compressedPage.compressionMode,
@@ -1289,6 +1332,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_EQ(offlineAsset.lodLevelCount(), asset.lodLevelCount());
     EXPECT_EQ(offlineAsset.groupCount(), asset.groupCount());
     EXPECT_EQ(offlineAsset.clusterRefCount(), asset.clusterRefCount());
+    EXPECT_EQ(offlineAsset.nodeCount(), asset.nodeCount());
     EXPECT_EQ(offlineAsset.pageCount(), asset.pageCount());
     EXPECT_EQ(offlineAsset.pages().front().attributeFlags, asset.pages().front().attributeFlags);
 
@@ -1329,6 +1373,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_EQ(resumedAsset.lodLevelCount(), offlineAsset.lodLevelCount() * 2u);
     EXPECT_EQ(resumedAsset.groupCount(), offlineAsset.groupCount() * 2u);
     EXPECT_EQ(resumedAsset.clusterRefCount(), offlineAsset.clusterRefCount() * 2u);
+    EXPECT_EQ(resumedAsset.nodeCount(), offlineAsset.nodeCount() * 2u);
     EXPECT_EQ(resumedAsset.pageCount(), offlineAsset.pageCount() * 2u);
 
     asset.close();

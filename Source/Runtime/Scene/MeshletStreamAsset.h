@@ -13,6 +13,7 @@ namespace metallic::scene {
 
 inline constexpr const char* kMeshletStreamAssetSuffix = ".meshstream.bin";
 inline constexpr uint32_t kMeshletStreamInvalidGroupIndex = std::numeric_limits<uint32_t>::max();
+inline constexpr uint32_t kMeshletStreamInvalidNodeIndex = std::numeric_limits<uint32_t>::max();
 inline constexpr float kMeshletStreamTerminalGroupError = std::numeric_limits<float>::max();
 
 inline constexpr uint32_t kMeshletStreamPayloadAttributePosition = 1u << 0u;
@@ -51,6 +52,8 @@ struct MeshletStreamPrimitiveInfo {
     uint32_t groupCount = 0;
     uint32_t fallbackGroupOffset = 0;
     uint32_t fallbackGroupCount = 0;
+    uint32_t nodeOffset = 0;
+    uint32_t nodeCount = 0;
     MeshletStreamBounds bounds;
 };
 
@@ -99,6 +102,18 @@ struct MeshletStreamGroupInfo {
     uint32_t reserved3 = 0;
     uint32_t reserved4 = 0;
     uint32_t reserved5 = 0;
+};
+
+struct MeshletStreamNodeInfo {
+    uint32_t primitiveIndex = 0;
+    uint32_t childOffset = 0;
+    uint32_t childCount = 0;
+    uint32_t groupIndex = kMeshletStreamInvalidGroupIndex;
+    float boundsCenterRadius[4] = {};
+    float maxQuadricError = 0.0f;
+    uint32_t lodLevel = 0;
+    uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
 };
 
 struct MeshletStreamPageInfo {
@@ -182,6 +197,7 @@ public:
     uint32_t lodLevelCount() const;
     uint32_t groupCount() const;
     uint32_t clusterRefCount() const;
+    uint32_t nodeCount() const;
     uint32_t pageCount() const;
     uint32_t maxPagePayloadBytes() const;
     uint64_t sourceFileSize() const;
@@ -194,6 +210,7 @@ public:
     std::span<const MeshletStreamGroupInfo> groups() const;
     std::span<const uint32_t> clusterRefinedGroups() const;
     std::span<const uint32_t> groupClusterRefinedGroups(uint32_t groupIndex) const;
+    std::span<const MeshletStreamNodeInfo> nodes() const;
     std::span<const MeshletStreamPageInfo> pages() const;
     std::span<const uint64_t> pagePayloadOffsets() const;
     std::span<const uint64_t> geometryPagePayloadOffsets(uint32_t geometryIndex) const;
