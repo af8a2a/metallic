@@ -2159,6 +2159,8 @@ public:
                 .groupCount = 3,
                 .fallbackGroupOffset = 2,
                 .fallbackGroupCount = 1,
+                .nodeOffset = 0,
+                .nodeCount = 5,
             },
             render::MeshletStreamGpuPrimitive{
                 .lodLevelOffset = 1,
@@ -2171,6 +2173,8 @@ public:
                 .groupCount = 2,
                 .fallbackGroupOffset = 4,
                 .fallbackGroupCount = 1,
+                .nodeOffset = 5,
+                .nodeCount = 3,
             },
         }};
         const std::array<render::MeshletStreamGpuLodLevel, 2> lodLevels = {{
@@ -2222,6 +2226,49 @@ public:
         clusterRefs[groups[2].clusterRefOffset + 0u] = 0u;
         clusterRefs[groups[2].clusterRefOffset + 1u] = 1u;
         clusterRefs[groups[4].clusterRefOffset] = 3u;
+        std::array<render::MeshletStreamGpuNode, 8> nodes{};
+        nodes[0].primitiveIndex = 0;
+        nodes[0].childOffset = 1;
+        nodes[0].childCount = 2;
+        nodes[0].lodLevel = render::kMeshletStreamInvalidClusterIndex;
+        nodes[0].maxQuadricError = std::numeric_limits<float>::max();
+        nodes[1].primitiveIndex = 0;
+        nodes[1].childOffset = 3;
+        nodes[1].childCount = 2;
+        nodes[1].lodLevel = 0;
+        nodes[1].maxQuadricError = 1.0f;
+        nodes[2].primitiveIndex = 0;
+        nodes[2].groupIndex = 2;
+        nodes[2].lodLevel = 1;
+        nodes[2].maxQuadricError = std::numeric_limits<float>::max();
+        nodes[3].primitiveIndex = 0;
+        nodes[3].groupIndex = 0;
+        nodes[3].lodLevel = 0;
+        nodes[3].maxQuadricError = 1.0f;
+        nodes[4].primitiveIndex = 0;
+        nodes[4].groupIndex = 1;
+        nodes[4].lodLevel = 0;
+        nodes[4].maxQuadricError = 1.0f;
+        nodes[5].primitiveIndex = 1;
+        nodes[5].childOffset = 6;
+        nodes[5].childCount = 2;
+        nodes[5].lodLevel = render::kMeshletStreamInvalidClusterIndex;
+        nodes[5].maxQuadricError = std::numeric_limits<float>::max();
+        nodes[6].primitiveIndex = 1;
+        nodes[6].groupIndex = 3;
+        nodes[6].lodLevel = 0;
+        nodes[6].maxQuadricError = 1.0f;
+        nodes[7].primitiveIndex = 1;
+        nodes[7].groupIndex = 4;
+        nodes[7].lodLevel = 1;
+        nodes[7].maxQuadricError = std::numeric_limits<float>::max();
+        for (render::MeshletStreamGpuNode& node : nodes) {
+            const uint32_t groupIndex = node.groupIndex;
+            node.boundsCenterRadius[2] = groupIndex < groups.size()
+                ? groups[groupIndex].boundsCenterRadius[2]
+                : 5.5f;
+            node.boundsCenterRadius[3] = 1.0f;
+        }
         render::MeshletStreamGpuParams params;
         params.viewport[2] = 96.0f;
         params.viewport[3] = 1.0471975512f;
@@ -2237,8 +2284,11 @@ public:
         params.enableGpuUnloadRequests = 1;
         params.sceneGroupCount = static_cast<uint32_t>(groups.size());
         params.maxPrimitiveGroupCount = 3;
+        params.sceneNodeCount = static_cast<uint32_t>(nodes.size());
+        params.traversalWorkerCount = 64;
         params.activeGroupCount = kActiveGroupCapacity;
         params.maxActiveGroupClusters = 11;
+        params.drawTaskCount = kActiveGroupCapacity * params.maxActiveGroupClusters;
 
         std::array<render::StreamPageTableEntry, 6> pageTable{};
         pageTable[0].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded);
@@ -2346,6 +2396,18 @@ public:
         if (!testResult.passed) {
             return testResult;
         }
+        std::unique_ptr<render::Buffer> nodeBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(nodes),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "hierarchy nodes",
+            nodeBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
         std::unique_ptr<render::Buffer> paramsBuffer;
         testResult = createBuffer(
             render::BufferDesc{
@@ -2438,6 +2500,21 @@ public:
         if (!testResult.passed) {
             return testResult;
         }
+        std::unique_ptr<render::Buffer> drawIndirectBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(render::MeshletStreamGpuDrawIndirect),
+                .structureStride = sizeof(render::MeshletStreamGpuDrawIndirect),
+                .usage = render::BufferUsageBits::Storage |
+                    render::BufferUsageBits::Indirect |
+                    render::BufferUsageBits::TransferSource,
+                .memoryLocation = render::MemoryLocation::Device,
+            },
+            "draw indirect",
+            drawIndirectBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
         std::unique_ptr<render::Buffer> activeGroupReadbackBuffer;
         testResult = createBuffer(
             render::BufferDesc{
@@ -2459,6 +2536,18 @@ public:
             },
             "active header readback",
             activeHeaderReadbackBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> drawIndirectReadbackBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(render::MeshletStreamGpuDrawIndirect),
+                .usage = render::BufferUsageBits::TransferDestination,
+                .memoryLocation = render::MemoryLocation::HostReadback,
+            },
+            "draw indirect readback",
+            drawIndirectReadbackBuffer);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2514,6 +2603,10 @@ public:
         if (!result) {
             return RhiTestResult::fail(std::string("writeHostBuffer(cluster refs) returned ") + toString(result));
         }
+        result = writeHostBuffer(*nodeBuffer, nodes.data(), sizeof(nodes));
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(hierarchy nodes) returned ") + toString(result));
+        }
         result = writeHostBuffer(*paramsBuffer, &params, sizeof(params));
         if (!result) {
             return RhiTestResult::fail(std::string("writeHostBuffer(params) returned ") + toString(result));
@@ -2532,7 +2625,7 @@ public:
             render::BindlessHeapDesc{
                 .maxSamplers = 0,
                 .maxSampledImages = 0,
-                .maxBuffers = 11,
+                .maxBuffers = 13,
             },
             bindlessHeap);
         if (!result || bindlessHeap == nullptr) {
@@ -2584,6 +2677,11 @@ public:
         if (!testResult.passed) {
             return testResult;
         }
+        render::BindlessHandle nodeHandle;
+        testResult = allocateStorageBuffer(*nodeBuffer, "hierarchy nodes", nodeHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
         render::BindlessHandle pageTableHandle;
         testResult = allocateStorageBuffer(*pageTableBuffer, "page table", pageTableHandle);
         if (!testResult.passed) {
@@ -2606,6 +2704,11 @@ public:
         }
         render::BindlessHandle activeHeaderHandle;
         testResult = allocateStorageBuffer(*activeHeaderBuffer, "active header", activeHeaderHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle drawIndirectHandle;
+        testResult = allocateStorageBuffer(*drawIndirectBuffer, "draw indirect", drawIndirectHandle);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2775,6 +2878,8 @@ public:
             .pageInfoBuffer = pageInfoHandle.index,
             .groupBuffer = groupHandle.index,
             .clusterRefBuffer = clusterRefHandle.index,
+            .nodeBuffer = nodeHandle.index,
+            .drawIndirectBuffer = drawIndirectHandle.index,
             .traversalPhase = render::kMeshletStreamTraversalLoadPhase,
         };
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -2805,7 +2910,7 @@ public:
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        std::array<render::BufferBarrierDesc, 4> activeBuildBarriers = {{
+        std::array<render::BufferBarrierDesc, 5> activeBuildBarriers = {{
             render::BufferBarrierDesc{
                 .buffer = pageTableBuffer.get(),
                 .before = render::ResourceState::General,
@@ -2833,6 +2938,13 @@ public:
                 .after = render::ResourceState::General,
                 .offset = 0,
                 .size = activeHeaderBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = drawIndirectBuffer.get(),
+                .before = render::ResourceState::Undefined,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = drawIndirectBuffer->desc().size,
             },
         }};
         commandBuffer->barrier(render::BarrierDesc{
@@ -2845,7 +2957,7 @@ public:
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        std::array<render::BufferBarrierDesc, 2> activeResetBarriers = {{
+        std::array<render::BufferBarrierDesc, 3> activeResetBarriers = {{
             render::BufferBarrierDesc{
                 .buffer = activeGroupBuffer.get(),
                 .before = render::ResourceState::General,
@@ -2860,6 +2972,13 @@ public:
                 .offset = 0,
                 .size = activeHeaderBuffer->desc().size,
             },
+            render::BufferBarrierDesc{
+                .buffer = drawIndirectBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = drawIndirectBuffer->desc().size,
+            },
         }};
         commandBuffer->barrier(render::BarrierDesc{
             .buffers = activeResetBarriers.data(),
@@ -2870,7 +2989,15 @@ public:
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        std::array<render::BufferBarrierDesc, 4> readbackBarriers = {{
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = activeResetBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(activeResetBarriers.size()),
+        });
+        push.activeBuildPhase = render::kMeshletStreamActiveBuildFinalizePhase;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        std::array<render::BufferBarrierDesc, 5> readbackBarriers = {{
             render::BufferBarrierDesc{
                 .buffer = pageTableBuffer.get(),
                 .before = render::ResourceState::General,
@@ -2898,6 +3025,13 @@ public:
                 .after = render::ResourceState::TransferSource,
                 .offset = 0,
                 .size = activeHeaderBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = drawIndirectBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::TransferSource,
+                .offset = 0,
+                .size = drawIndirectBuffer->desc().size,
             },
         }};
         commandBuffer->barrier(render::BarrierDesc{
@@ -2923,6 +3057,11 @@ public:
             .source = activeHeaderBuffer.get(),
             .destination = activeHeaderReadbackBuffer.get(),
             .size = activeHeaderBuffer->desc().size,
+        });
+        commandBuffer->copyBuffer(render::BufferCopyDesc{
+            .source = drawIndirectBuffer.get(),
+            .destination = drawIndirectReadbackBuffer.get(),
+            .size = drawIndirectBuffer->desc().size,
         });
         result = commandBuffer->end();
         if (!result) {
@@ -2986,6 +3125,16 @@ public:
             activeHeaderResult.overflowCount != 0 ||
             activeHeaderResult.frameIndex != kFrameIndex) {
             return RhiTestResult::fail("active table header was not built as expected");
+        }
+        render::MeshletStreamGpuDrawIndirect drawIndirectResult;
+        if (!readHostBuffer(*drawIndirectReadbackBuffer, &drawIndirectResult, sizeof(drawIndirectResult))) {
+            return RhiTestResult::fail("draw indirect readback buffer did not map");
+        }
+        if (drawIndirectResult.groupCountX !=
+                activeHeaderResult.activeGroupCount * activeHeaderResult.maxActiveGroupClusters ||
+            drawIndirectResult.groupCountY != 1 ||
+            drawIndirectResult.groupCountZ != 1) {
+            return RhiTestResult::fail("active table did not generate the expected indirect mesh task command");
         }
 
         bool foundResidentFinePage0 = false;

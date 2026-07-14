@@ -451,6 +451,9 @@ VkBufferUsageFlags toVkBufferUsage(BufferUsageBits usage)
     if (hasFlag(usage, BufferUsageBits::AccelerationStructureStorage)) {
         flags |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
     }
+    if (hasFlag(usage, BufferUsageBits::Indirect)) {
+        flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    }
     return flags != 0 ? flags : VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 }
 
@@ -4007,6 +4010,23 @@ void CommandBuffer::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY, ui
 #ifdef VK_EXT_mesh_shader
     if (vkCmdDrawMeshTasksEXT != nullptr) {
         vkCmdDrawMeshTasksEXT(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
+    }
+#endif
+}
+
+void CommandBuffer::drawMeshTasksIndirect(Buffer& buffer, uint64_t offset)
+{
+    if (impl_ == nullptr ||
+        buffer.impl_ == nullptr ||
+        !hasFlag(buffer.impl_->desc.usage, BufferUsageBits::Indirect) ||
+        (offset & 3u) != 0 ||
+        offset > buffer.impl_->desc.size ||
+        sizeof(VkDrawMeshTasksIndirectCommandEXT) > buffer.impl_->desc.size - offset) {
+        return;
+    }
+#ifdef VK_EXT_mesh_shader
+    if (vkCmdDrawMeshTasksIndirectEXT != nullptr) {
+        vkCmdDrawMeshTasksIndirectEXT(impl_->commandBuffer, buffer.impl_->buffer, offset, 1, 0);
     }
 #endif
 }

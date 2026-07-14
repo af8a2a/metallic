@@ -154,6 +154,12 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
         .maxGpuPageUnloadRequests = std::max<uint32_t>(
             uintProperty(properties, "maxGpuPageUnloadRequests", maxGpuPageRequests),
             1u),
+        .maxActiveGroups = std::max<uint32_t>(
+            uintProperty(properties, "maxActiveGroups", kMeshletStreamDefaultMaxActiveGroups),
+            1u),
+        .maxTraversalWorkers = std::max<uint32_t>(
+            uintProperty(properties, "maxTraversalWorkers", kMeshletStreamDefaultTraversalWorkers),
+            1u),
         .queuedFrameCount = 3,
     };
 }
@@ -406,7 +412,7 @@ private:
             context.commandBuffer().bindGraphicsPipeline(*pipeline_);
             const MeshletStreamUserPush push = streamRuntime_.userPush();
             context.commandBuffer().pushBindlessData(&push, sizeof(push));
-            context.commandBuffer().drawMeshTasks(streamRuntime_.drawTaskCount());
+            streamRuntime_.cmdDrawMeshTasks(context.commandBuffer());
         }
         context.commandBuffer().endRendering();
         return {};

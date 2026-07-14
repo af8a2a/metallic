@@ -160,6 +160,7 @@ enum class BufferUsageBits : uint32_t {
     ShaderDeviceAddress = 1u << 6,
     AccelerationStructureBuildInput = 1u << 7,
     AccelerationStructureStorage = 1u << 8,
+    Indirect = 1u << 9,
 };
 
 enum class TextureUsageBits : uint32_t {
@@ -1017,6 +1018,7 @@ public:
     void pushBindlessData(const void* data, uint32_t byteSize);
     void draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
     void drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
+    void drawMeshTasksIndirect(Buffer& buffer, uint64_t offset = 0);
     void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
 
 private:
