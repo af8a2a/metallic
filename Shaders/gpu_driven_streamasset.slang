@@ -79,6 +79,10 @@ struct GPUDrivenStreamAssetActiveGroup
     uint materialIndex;
     uint clusterSelectionMask;
     uint flags;
+    uint instanceIndex;
+    uint padding0;
+    uint padding1;
+    uint padding2;
     float4 world0;
     float4 world1;
     float4 world2;
@@ -620,6 +624,7 @@ void appendActivePage(
     StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
     GPUDrivenStreamAssetParams params,
     GPUDrivenStreamAssetInstance instance,
+    uint instanceIndex,
     uint pageIndex,
     uint clusterSelectionMask)
 {
@@ -652,6 +657,10 @@ void appendActivePage(
     group.materialIndex = instance.materialIndex;
     group.clusterSelectionMask = clusterSelectionMask;
     group.flags = kActiveGroupResident;
+    group.instanceIndex = instanceIndex;
+    group.padding0 = 0u;
+    group.padding1 = 0u;
+    group.padding2 = 0u;
     group.world0 = instance.world0;
     group.world1 = instance.world1;
     group.world2 = instance.world2;
@@ -682,6 +691,7 @@ void appendActivePageRange(
     StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
     GPUDrivenStreamAssetParams params,
     GPUDrivenStreamAssetInstance instance,
+    uint instanceIndex,
     uint pageOffset,
     uint pageCount)
 {
@@ -693,6 +703,7 @@ void appendActivePageRange(
             pageInfos,
             params,
             instance,
+            instanceIndex,
             pageOffset + page,
             0xffffffffu);
     }
@@ -785,7 +796,8 @@ void buildInstanceActiveGroups(
     StructuredBuffer<GPUDrivenStreamAssetNode> nodes,
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
     GPUDrivenStreamAssetParams params,
-    GPUDrivenStreamAssetInstance instance)
+    GPUDrivenStreamAssetInstance instance,
+    uint instanceIndex)
 {
     if (instance.primitiveIndex >= params.scenePrimitiveCount) {
         InterlockedAdd(activeHeader[0].overflowCount, 1u);
@@ -858,6 +870,7 @@ void buildInstanceActiveGroups(
                 pageInfos,
                 params,
                 instance,
+                instanceIndex,
                 group.pageIndex,
                 clusterSelectionMask);
         }
@@ -898,6 +911,7 @@ void appendInstanceFallbackGroups(
     RWStructuredBuffer<uint> requests,
     GPUDrivenStreamAssetParams params,
     GPUDrivenStreamAssetInstance instance,
+    uint instanceIndex,
     GPUDrivenStreamAssetPrimitive primitive)
 {
     if (primitive.fallbackGroupOffset > params.sceneGroupCount ||
@@ -936,6 +950,7 @@ void appendInstanceFallbackGroups(
                 pageInfos,
                 params,
                 instance,
+                instanceIndex,
                 group.pageIndex,
                 clusterSelectionMask);
         }
@@ -1065,6 +1080,7 @@ void runActiveTraversalWorker(
                                         pageInfos,
                                         params,
                                         instance,
+                                        work.instanceIndex,
                                         group.pageIndex,
                                         clusterSelectionMask);
                                 }
@@ -1334,6 +1350,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                 requests,
                 params,
                 instance,
+                instanceIndex,
                 primitive);
             if (primitive.nodeCount == 0u ||
                 primitive.nodeOffset >= params.sceneNodeCount ||
@@ -1392,7 +1409,8 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                     nodes,
                     pageTable,
                     params,
-                    instance);
+                    instance,
+                    instanceIndex);
             }
         }
         return;
@@ -1445,6 +1463,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
             pageInfos,
             params,
             instance,
+            instanceIndex,
             group.pageIndex,
             clusterSelectionMask);
     }
@@ -1556,6 +1575,10 @@ void gpuDrivenStreamAssetMeshMain(
         colorSeed = group.lodLevel;
     } else if (params.debugColorMode == 2u) {
         colorSeed = group.primitiveIndex;
+    } else if (params.debugColorMode == 3u) {
+        colorSeed = group.instanceIndex;
+    } else if (params.debugColorMode == 4u) {
+        colorSeed = ((group.pageIndex + 1u) * 0x9e3779b9u) ^ clusterIndex;
     }
     float3 color = hashColor(colorSeed + 1u);
 

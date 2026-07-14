@@ -3255,6 +3255,7 @@ public:
             if (group.pageIndex == 1 &&
                 group.clusterCount == pageInfos[1].clusterCount &&
                 group.materialIndex == instances[0].materialIndex &&
+                group.instanceIndex == 0u &&
                 group.clusterSelectionMask == 0x1fu &&
                 group.flags == render::kMeshletStreamActiveGroupResident) {
                 foundResidentFinePage0 = true;
@@ -3262,6 +3263,7 @@ public:
             if (group.pageIndex == 2 &&
                 group.clusterCount == pageInfos[2].clusterCount &&
                 group.materialIndex == instances[0].materialIndex &&
+                group.instanceIndex == 0u &&
                 group.clusterSelectionMask == 0x1u &&
                 group.flags == render::kMeshletStreamActiveGroupResident) {
                 foundFallbackPage = true;
@@ -3269,6 +3271,7 @@ public:
             if (group.pageIndex == 3 &&
                 group.clusterCount == pageInfos[3].clusterCount &&
                 group.materialIndex == instances[1].materialIndex &&
+                group.instanceIndex == 1u &&
                 group.clusterSelectionMask == 0x7ffu &&
                 group.flags == render::kMeshletStreamActiveGroupResident) {
                 foundResidentFinePage = true;

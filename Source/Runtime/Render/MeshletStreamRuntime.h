@@ -27,6 +27,8 @@ inline constexpr const char* kMeshletStreamActiveBuildEntryPoint = "gpuDrivenStr
 inline constexpr uint32_t kMeshletStreamDebugPage = 0;
 inline constexpr uint32_t kMeshletStreamDebugLod = 1;
 inline constexpr uint32_t kMeshletStreamDebugPrimitive = 2;
+inline constexpr uint32_t kMeshletStreamDebugInstance = 3;
+inline constexpr uint32_t kMeshletStreamDebugMeshlet = 4;
 inline constexpr uint32_t kMeshletStreamNoDebugLodOverride = UINT32_MAX;
 inline constexpr uint32_t kMeshletStreamInvalidClusterIndex = UINT32_MAX;
 inline constexpr uint32_t kMeshletStreamUnloadClusterIndex = UINT32_MAX - 1u;
@@ -67,6 +69,10 @@ struct MeshletStreamGpuActiveGroup {
     uint32_t materialIndex = 0;
     uint32_t clusterSelectionMask = 0;
     uint32_t flags = 0;
+    uint32_t instanceIndex = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
     float world0[4] = {};
     float world1[4] = {};
     float world2[4] = {};
@@ -226,7 +232,7 @@ struct MeshletStreamUserPush {
 };
 
 static_assert(sizeof(MeshletStreamGpuActiveHeader) == 32);
-static_assert(sizeof(MeshletStreamGpuActiveGroup) == 96);
+static_assert(sizeof(MeshletStreamGpuActiveGroup) == 112);
 static_assert(sizeof(MeshletStreamGpuInstance) == 96);
 static_assert(sizeof(MeshletStreamGpuPrimitive) == 64);
 static_assert(sizeof(MeshletStreamGpuLodLevel) == 32);

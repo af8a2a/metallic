@@ -94,6 +94,12 @@ uint32_t debugColorModeFromProperties(const RenderGraphProperties& props)
     if (mode == "primitive") {
         return kMeshletStreamDebugPrimitive;
     }
+    if (mode == "instance") {
+        return kMeshletStreamDebugInstance;
+    }
+    if (mode == "meshlet" || mode == "cluster") {
+        return kMeshletStreamDebugMeshlet;
+    }
     return kMeshletStreamDebugPage;
 }
 
@@ -239,7 +245,13 @@ public:
                 "debugColorMode",
                 "Color",
                 "page",
-                {{"Page", "page"}, {"LOD", "lod"}, {"Primitive", "primitive"}}),
+                {
+                    {"Page", "page"},
+                    {"LOD", "lod"},
+                    {"Primitive", "primitive"},
+                    {"Instance", "instance"},
+                    {"Meshlet / Cluster", "meshlet"},
+                }),
         };
     }
 
