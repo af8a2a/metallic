@@ -1278,116 +1278,235 @@ Bounds boundsFromPositionsForStreamBuilder(std::span<const float3> positions)
     return bounds;
 }
 
-const uint8_t* accessorDataForStreamBuilder(
-    const tinygltf::Model& model,
-    const tinygltf::Accessor& accessor,
-    const tinygltf::BufferView*& outBufferView,
-    int& outStride)
+struct StreamGltfSource {
+    tinygltf::Model model;
+    std::filesystem::path directory;
+    std::vector<uint64_t> bufferByteLengths;
+    std::vector<bool> nodeVisibility;
+    MeshletStreamAssetOfflineBuildStats* stats = nullptr;
+    bool rangeReadExternalBuffers = false;
+};
+
+std::filesystem::path pathFromUtf8ForStreamBuilder(std::string_view value)
 {
-    outBufferView = nullptr;
+#if defined(__cpp_char8_t)
+    return std::filesystem::path(std::u8string(
+        reinterpret_cast<const char8_t*>(value.data()),
+        value.size()));
+#else
+    return std::filesystem::path(value);
+#endif
+}
+
+bool addWithin(uint64_t lhs, uint64_t rhs, uint64_t limit, uint64_t& result)
+{
+    if (lhs > limit || rhs > limit - lhs) {
+        return false;
+    }
+    result = lhs + rhs;
+    return true;
+}
+
+bool readAccessorRangeForStreamBuilder(
+    const StreamGltfSource& source,
+    const tinygltf::Accessor& accessor,
+    size_t elementByteSize,
+    std::vector<uint8_t>& outBytes,
+    size_t& outStride,
+    std::string& reason)
+{
+    outBytes.clear();
     outStride = 0;
-    if (accessor.sparse.isSparse || !validGltfIndex(accessor.bufferView, model.bufferViews.size())) {
-        return nullptr;
+    if (accessor.sparse.isSparse) {
+        reason = "streamasset builder does not support sparse accessors";
+        return false;
     }
-
-    const tinygltf::BufferView& bufferView = model.bufferViews[static_cast<size_t>(accessor.bufferView)];
-    if (!validGltfIndex(bufferView.buffer, model.buffers.size())) {
-        return nullptr;
+    if (!validGltfIndex(accessor.bufferView, source.model.bufferViews.size())) {
+        reason = "streamasset builder accessor has an invalid bufferView";
+        return false;
     }
-
-    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView.buffer)];
-    const size_t byteOffset = bufferView.byteOffset + accessor.byteOffset;
-    if (byteOffset >= buffer.data.size()) {
-        return nullptr;
+    const tinygltf::BufferView& bufferView =
+        source.model.bufferViews[static_cast<size_t>(accessor.bufferView)];
+    if (!validGltfIndex(bufferView.buffer, source.model.buffers.size()) ||
+        static_cast<size_t>(bufferView.buffer) >= source.bufferByteLengths.size()) {
+        reason = "streamasset builder bufferView has an invalid buffer";
+        return false;
     }
 
     const int stride = accessor.ByteStride(bufferView);
-    if (stride <= 0) {
-        return nullptr;
+    if (stride <= 0 || static_cast<size_t>(stride) < elementByteSize) {
+        reason = "streamasset builder accessor has an invalid byte stride";
+        return false;
+    }
+    if (accessor.count == 0) {
+        reason = "streamasset builder accessor is empty";
+        return false;
     }
 
-    outBufferView = &bufferView;
-    outStride = stride;
-    return buffer.data.data() + byteOffset;
+    const uint64_t countMinusOne = static_cast<uint64_t>(accessor.count - 1u);
+    if (countMinusOne > std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(stride)) {
+        reason = "streamasset builder accessor byte range overflows";
+        return false;
+    }
+    const uint64_t stridedBytes = countMinusOne * static_cast<uint64_t>(stride);
+    uint64_t rangeByteSize = 0;
+    if (!addWithin(stridedBytes, elementByteSize, std::numeric_limits<uint64_t>::max(), rangeByteSize)) {
+        reason = "streamasset builder accessor byte range overflows";
+        return false;
+    }
+    uint64_t rangeOffset = 0;
+    if (!addWithin(
+            static_cast<uint64_t>(bufferView.byteOffset),
+            static_cast<uint64_t>(accessor.byteOffset),
+            std::numeric_limits<uint64_t>::max(),
+            rangeOffset)) {
+        reason = "streamasset builder accessor byte offset overflows";
+        return false;
+    }
+    const uint64_t bufferByteLength = source.bufferByteLengths[static_cast<size_t>(bufferView.buffer)];
+    if (rangeOffset > bufferByteLength || rangeByteSize > bufferByteLength - rangeOffset) {
+        reason = "streamasset builder accessor byte range exceeds its buffer";
+        return false;
+    }
+    uint64_t bufferViewEnd = 0;
+    if (!addWithin(
+            static_cast<uint64_t>(bufferView.byteOffset),
+            static_cast<uint64_t>(bufferView.byteLength),
+            std::numeric_limits<uint64_t>::max(),
+            bufferViewEnd)) {
+        reason = "streamasset builder bufferView byte range overflows";
+        return false;
+    }
+    if (rangeOffset < bufferView.byteOffset ||
+        rangeOffset > bufferViewEnd ||
+        rangeByteSize > bufferViewEnd - rangeOffset) {
+        reason = "streamasset builder accessor byte range exceeds its bufferView";
+        return false;
+    }
+    if (rangeByteSize > std::numeric_limits<size_t>::max()) {
+        reason = "streamasset builder accessor byte range exceeds host address space";
+        return false;
+    }
+
+    outBytes.resize(static_cast<size_t>(rangeByteSize));
+    const tinygltf::Buffer& buffer = source.model.buffers[static_cast<size_t>(bufferView.buffer)];
+    if (!source.rangeReadExternalBuffers || !buffer.data.empty()) {
+        if (rangeOffset > buffer.data.size() || rangeByteSize > buffer.data.size() - rangeOffset) {
+            reason = "streamasset builder accessor byte range exceeds loaded buffer data";
+            outBytes.clear();
+            return false;
+        }
+        std::memcpy(outBytes.data(), buffer.data.data() + rangeOffset, outBytes.size());
+    } else {
+        std::string decodedUri;
+        if (!tinygltf::URIDecode(buffer.uri, &decodedUri, nullptr) || decodedUri.empty()) {
+            reason = "streamasset builder failed to decode external buffer URI";
+            outBytes.clear();
+            return false;
+        }
+        const std::filesystem::path bufferPath =
+            source.directory / pathFromUtf8ForStreamBuilder(decodedUri);
+        std::ifstream file(bufferPath, std::ios::binary);
+        if (!file) {
+            reason = "streamasset builder cannot open external buffer: " + bufferPath.string();
+            outBytes.clear();
+            return false;
+        }
+        if (rangeOffset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+            reason = "streamasset builder external buffer offset exceeds stream limits";
+            outBytes.clear();
+            return false;
+        }
+        file.seekg(static_cast<std::streamoff>(rangeOffset));
+        if (!file) {
+            reason = "streamasset builder failed to seek external buffer: " + bufferPath.string();
+            outBytes.clear();
+            return false;
+        }
+        if (outBytes.size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+            reason = "streamasset builder accessor range exceeds stream read limits";
+            outBytes.clear();
+            return false;
+        }
+        file.read(reinterpret_cast<char*>(outBytes.data()), static_cast<std::streamsize>(outBytes.size()));
+        if (!file || static_cast<size_t>(file.gcount()) != outBytes.size()) {
+            reason = "streamasset builder failed to read accessor range from: " + bufferPath.string();
+            outBytes.clear();
+            return false;
+        }
+        if (source.stats != nullptr) {
+            source.stats->accessorRangeReadBytes = rangeByteSize >
+                    std::numeric_limits<uint64_t>::max() - source.stats->accessorRangeReadBytes
+                ? std::numeric_limits<uint64_t>::max()
+                : source.stats->accessorRangeReadBytes + rangeByteSize;
+            source.stats->maxAccessorRangeReadBytes = std::max(
+                source.stats->maxAccessorRangeReadBytes,
+                rangeByteSize);
+            ++source.stats->accessorRangeReadCount;
+        }
+    }
+
+    outStride = static_cast<size_t>(stride);
+    return true;
 }
 
 std::vector<float3> readFloat3AccessorForStreamBuilder(
-    const tinygltf::Model& model,
-    const tinygltf::Accessor& accessor)
+    const StreamGltfSource& source,
+    const tinygltf::Accessor& accessor,
+    std::string& reason)
 {
     std::vector<float3> values;
     if (accessor.type != TINYGLTF_TYPE_VEC3 || accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
         return values;
     }
 
-    const tinygltf::BufferView* bufferView = nullptr;
-    int stride = 0;
-    const uint8_t* data = accessorDataForStreamBuilder(model, accessor, bufferView, stride);
-    if (data == nullptr || bufferView == nullptr) {
+    std::vector<uint8_t> bytes;
+    size_t stride = 0;
+    if (!readAccessorRangeForStreamBuilder(source, accessor, sizeof(float) * 3u, bytes, stride, reason)) {
         return values;
     }
 
     values.reserve(accessor.count);
-    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView->buffer)];
     for (size_t index = 0; index < accessor.count; ++index) {
-        const size_t elementOffset = static_cast<size_t>(stride) * index;
-        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + sizeof(float) * 3 > buffer.data.size()) {
-            values.clear();
-            return values;
-        }
-
         float components[3] = {};
-        std::memcpy(components, data + elementOffset, sizeof(components));
+        std::memcpy(components, bytes.data() + stride * index, sizeof(components));
         values.emplace_back(components[0], components[1], components[2]);
     }
     return values;
 }
 
 std::vector<float2> readFloat2AccessorForStreamBuilder(
-    const tinygltf::Model& model,
-    const tinygltf::Accessor& accessor)
+    const StreamGltfSource& source,
+    const tinygltf::Accessor& accessor,
+    std::string& reason)
 {
     std::vector<float2> values;
     if (accessor.type != TINYGLTF_TYPE_VEC2 || accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
         return values;
     }
 
-    const tinygltf::BufferView* bufferView = nullptr;
-    int stride = 0;
-    const uint8_t* data = accessorDataForStreamBuilder(model, accessor, bufferView, stride);
-    if (data == nullptr || bufferView == nullptr) {
+    std::vector<uint8_t> bytes;
+    size_t stride = 0;
+    if (!readAccessorRangeForStreamBuilder(source, accessor, sizeof(float) * 2u, bytes, stride, reason)) {
         return values;
     }
 
     values.reserve(accessor.count);
-    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView->buffer)];
     for (size_t index = 0; index < accessor.count; ++index) {
-        const size_t elementOffset = static_cast<size_t>(stride) * index;
-        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + sizeof(float) * 2 > buffer.data.size()) {
-            values.clear();
-            return values;
-        }
-
         float components[2] = {};
-        std::memcpy(components, data + elementOffset, sizeof(components));
+        std::memcpy(components, bytes.data() + stride * index, sizeof(components));
         values.emplace_back(components[0], components[1]);
     }
     return values;
 }
 
 std::vector<uint32_t> readIndexAccessorForStreamBuilder(
-    const tinygltf::Model& model,
-    const tinygltf::Accessor& accessor)
+    const StreamGltfSource& source,
+    const tinygltf::Accessor& accessor,
+    std::string& reason)
 {
     std::vector<uint32_t> indices;
     if (accessor.type != TINYGLTF_TYPE_SCALAR) {
-        return indices;
-    }
-
-    const tinygltf::BufferView* bufferView = nullptr;
-    int stride = 0;
-    const uint8_t* data = accessorDataForStreamBuilder(model, accessor, bufferView, stride);
-    if (data == nullptr || bufferView == nullptr) {
         return indices;
     }
 
@@ -1406,28 +1525,29 @@ std::vector<uint32_t> readIndexAccessorForStreamBuilder(
         return indices;
     }
 
+    std::vector<uint8_t> bytes;
+    size_t stride = 0;
+    if (!readAccessorRangeForStreamBuilder(source, accessor, componentSize, bytes, stride, reason)) {
+        return indices;
+    }
+
     indices.reserve(accessor.count);
-    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView->buffer)];
     for (size_t index = 0; index < accessor.count; ++index) {
-        const size_t elementOffset = static_cast<size_t>(stride) * index;
-        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + componentSize > buffer.data.size()) {
-            indices.clear();
-            return indices;
-        }
+        const uint8_t* data = bytes.data() + stride * index;
 
         switch (accessor.componentType) {
         case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-            indices.push_back(*(data + elementOffset));
+            indices.push_back(*data);
             break;
         case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
             uint16_t value = 0;
-            std::memcpy(&value, data + elementOffset, sizeof(value));
+            std::memcpy(&value, data, sizeof(value));
             indices.push_back(value);
             break;
         }
         case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
             uint32_t value = 0;
-            std::memcpy(&value, data + elementOffset, sizeof(value));
+            std::memcpy(&value, data, sizeof(value));
             indices.push_back(value);
             break;
         }
@@ -1451,11 +1571,325 @@ uint64_t triangleCountForStreamPrimitive(int32_t mode, uint64_t elementCount)
     }
 }
 
-bool loadGltfModelForStreamAssetBuilder(
+std::vector<double> jsonNumberArrayForStreamBuilder(const nlohmann::json& value)
+{
+    std::vector<double> result;
+    if (!value.is_array()) {
+        return result;
+    }
+    result.reserve(value.size());
+    for (const nlohmann::json& component : value) {
+        if (!component.is_number()) {
+            result.clear();
+            return result;
+        }
+        result.push_back(component.get<double>());
+    }
+    return result;
+}
+
+std::vector<int> jsonIntArrayForStreamBuilder(const nlohmann::json& value)
+{
+    std::vector<int> result;
+    if (!value.is_array()) {
+        return result;
+    }
+    result.reserve(value.size());
+    for (const nlohmann::json& component : value) {
+        if (!component.is_number_integer()) {
+            result.clear();
+            return result;
+        }
+        result.push_back(component.get<int>());
+    }
+    return result;
+}
+
+int accessorTypeForStreamBuilder(std::string_view type)
+{
+    if (type == "SCALAR") {
+        return TINYGLTF_TYPE_SCALAR;
+    }
+    if (type == "VEC2") {
+        return TINYGLTF_TYPE_VEC2;
+    }
+    if (type == "VEC3") {
+        return TINYGLTF_TYPE_VEC3;
+    }
+    if (type == "VEC4") {
+        return TINYGLTF_TYPE_VEC4;
+    }
+    if (type == "MAT2") {
+        return TINYGLTF_TYPE_MAT2;
+    }
+    if (type == "MAT3") {
+        return TINYGLTF_TYPE_MAT3;
+    }
+    if (type == "MAT4") {
+        return TINYGLTF_TYPE_MAT4;
+    }
+    return -1;
+}
+
+bool isDataUriForStreamBuilder(std::string_view uri)
+{
+    return uri.size() >= 5 &&
+        std::tolower(static_cast<unsigned char>(uri[0])) == 'd' &&
+        std::tolower(static_cast<unsigned char>(uri[1])) == 'a' &&
+        std::tolower(static_cast<unsigned char>(uri[2])) == 't' &&
+        std::tolower(static_cast<unsigned char>(uri[3])) == 'a' &&
+        uri[4] == ':';
+}
+
+bool loadExternalGltfMetadataForStreamAssetBuilder(
     const std::filesystem::path& sourcePath,
-    tinygltf::Model& model,
+    StreamGltfSource& source,
+    bool& applicable,
     std::string& reason)
 {
+    applicable = false;
+    std::ifstream file(sourcePath, std::ios::binary);
+    if (!file) {
+        reason = "streamasset builder cannot open glTF metadata";
+        return false;
+    }
+
+    nlohmann::json root;
+    try {
+        file >> root;
+        if (!root.is_object()) {
+            reason = "streamasset builder glTF root is not an object";
+            return false;
+        }
+
+        const nlohmann::json buffers = root.value("buffers", nlohmann::json::array());
+        if (!buffers.is_array() || buffers.empty()) {
+            reason = "streamasset builder glTF has no buffers";
+            return false;
+        }
+        for (const nlohmann::json& bufferJson : buffers) {
+            if (!bufferJson.is_object()) {
+                reason = "streamasset builder glTF buffer entry is invalid";
+                return false;
+            }
+            const std::string uri = bufferJson.value("uri", std::string{});
+            if (uri.empty() || isDataUriForStreamBuilder(uri)) {
+                return true;
+            }
+        }
+        applicable = true;
+
+        source = {};
+        source.directory = sourcePath.parent_path();
+        source.rangeReadExternalBuffers = true;
+        tinygltf::Model& model = source.model;
+        model.defaultScene = root.value("scene", -1);
+
+        const nlohmann::json extensionsRequired =
+            root.value("extensionsRequired", nlohmann::json::array());
+        if (extensionsRequired.is_array()) {
+            for (const nlohmann::json& extension : extensionsRequired) {
+                if (extension.is_string()) {
+                    model.extensionsRequired.push_back(extension.get<std::string>());
+                }
+            }
+        }
+
+        model.buffers.reserve(buffers.size());
+        source.bufferByteLengths.reserve(buffers.size());
+        for (const nlohmann::json& bufferJson : buffers) {
+            if (!bufferJson.contains("byteLength") || !bufferJson["byteLength"].is_number_unsigned()) {
+                reason = "streamasset builder glTF buffer byteLength is missing or invalid";
+                return false;
+            }
+            const uint64_t byteLength = bufferJson["byteLength"].get<uint64_t>();
+            tinygltf::Buffer buffer;
+            buffer.name = bufferJson.value("name", std::string{});
+            buffer.uri = bufferJson.value("uri", std::string{});
+
+            std::string decodedUri;
+            if (!tinygltf::URIDecode(buffer.uri, &decodedUri, nullptr) || decodedUri.empty()) {
+                reason = "streamasset builder failed to decode external buffer URI";
+                return false;
+            }
+            const std::filesystem::path bufferPath =
+                source.directory / pathFromUtf8ForStreamBuilder(decodedUri);
+            std::error_code sizeError;
+            const uint64_t actualByteLength = std::filesystem::file_size(bufferPath, sizeError);
+            if (sizeError) {
+                reason = "streamasset builder cannot stat external buffer: " + bufferPath.string();
+                return false;
+            }
+            if (actualByteLength < byteLength) {
+                reason = "streamasset builder external buffer is smaller than its declared byteLength: " +
+                    bufferPath.string();
+                return false;
+            }
+            model.buffers.push_back(std::move(buffer));
+            source.bufferByteLengths.push_back(byteLength);
+        }
+
+        const nlohmann::json bufferViews = root.value("bufferViews", nlohmann::json::array());
+        if (!bufferViews.is_array()) {
+            reason = "streamasset builder glTF bufferViews is invalid";
+            return false;
+        }
+        model.bufferViews.reserve(bufferViews.size());
+        for (const nlohmann::json& viewJson : bufferViews) {
+            tinygltf::BufferView view;
+            view.name = viewJson.value("name", std::string{});
+            view.buffer = viewJson.value("buffer", -1);
+            view.byteOffset = viewJson.value("byteOffset", size_t{0});
+            view.byteLength = viewJson.value("byteLength", size_t{0});
+            view.byteStride = viewJson.value("byteStride", size_t{0});
+            view.target = viewJson.value("target", 0);
+            model.bufferViews.push_back(std::move(view));
+        }
+
+        const nlohmann::json accessors = root.value("accessors", nlohmann::json::array());
+        if (!accessors.is_array()) {
+            reason = "streamasset builder glTF accessors is invalid";
+            return false;
+        }
+        model.accessors.reserve(accessors.size());
+        for (const nlohmann::json& accessorJson : accessors) {
+            tinygltf::Accessor accessor;
+            accessor.name = accessorJson.value("name", std::string{});
+            accessor.bufferView = accessorJson.value("bufferView", -1);
+            accessor.byteOffset = accessorJson.value("byteOffset", size_t{0});
+            accessor.normalized = accessorJson.value("normalized", false);
+            accessor.componentType = accessorJson.value("componentType", -1);
+            accessor.count = accessorJson.value("count", size_t{0});
+            accessor.type = accessorTypeForStreamBuilder(accessorJson.value("type", std::string{}));
+            accessor.minValues = jsonNumberArrayForStreamBuilder(
+                accessorJson.value("min", nlohmann::json::array()));
+            accessor.maxValues = jsonNumberArrayForStreamBuilder(
+                accessorJson.value("max", nlohmann::json::array()));
+            accessor.sparse.isSparse = accessorJson.contains("sparse");
+            model.accessors.push_back(std::move(accessor));
+        }
+
+        const nlohmann::json meshes = root.value("meshes", nlohmann::json::array());
+        if (!meshes.is_array()) {
+            reason = "streamasset builder glTF meshes is invalid";
+            return false;
+        }
+        model.meshes.reserve(meshes.size());
+        for (const nlohmann::json& meshJson : meshes) {
+            tinygltf::Mesh mesh;
+            mesh.name = meshJson.value("name", std::string{});
+            const nlohmann::json primitives = meshJson.value("primitives", nlohmann::json::array());
+            if (!primitives.is_array()) {
+                reason = "streamasset builder glTF mesh primitives is invalid";
+                return false;
+            }
+            mesh.primitives.reserve(primitives.size());
+            for (const nlohmann::json& primitiveJson : primitives) {
+                tinygltf::Primitive primitive;
+                primitive.material = primitiveJson.value("material", -1);
+                primitive.indices = primitiveJson.value("indices", -1);
+                primitive.mode = primitiveJson.value("mode", TINYGLTF_MODE_TRIANGLES);
+                const nlohmann::json attributes =
+                    primitiveJson.value("attributes", nlohmann::json::object());
+                if (!attributes.is_object()) {
+                    reason = "streamasset builder glTF primitive attributes is invalid";
+                    return false;
+                }
+                for (const auto& [name, accessorIndex] : attributes.items()) {
+                    if (accessorIndex.is_number_integer()) {
+                        primitive.attributes[name] = accessorIndex.get<int>();
+                    }
+                }
+                mesh.primitives.push_back(std::move(primitive));
+            }
+            model.meshes.push_back(std::move(mesh));
+        }
+
+        const nlohmann::json nodes = root.value("nodes", nlohmann::json::array());
+        if (!nodes.is_array()) {
+            reason = "streamasset builder glTF nodes is invalid";
+            return false;
+        }
+        model.nodes.reserve(nodes.size());
+        source.nodeVisibility.reserve(nodes.size());
+        for (const nlohmann::json& nodeJson : nodes) {
+            tinygltf::Node node;
+            node.name = nodeJson.value("name", std::string{});
+            node.mesh = nodeJson.value("mesh", -1);
+            node.children = jsonIntArrayForStreamBuilder(
+                nodeJson.value("children", nlohmann::json::array()));
+            node.rotation = jsonNumberArrayForStreamBuilder(
+                nodeJson.value("rotation", nlohmann::json::array()));
+            node.scale = jsonNumberArrayForStreamBuilder(
+                nodeJson.value("scale", nlohmann::json::array()));
+            node.translation = jsonNumberArrayForStreamBuilder(
+                nodeJson.value("translation", nlohmann::json::array()));
+            node.matrix = jsonNumberArrayForStreamBuilder(
+                nodeJson.value("matrix", nlohmann::json::array()));
+
+            bool visible = true;
+            const auto extensions = nodeJson.find("extensions");
+            if (extensions != nodeJson.end() && extensions->is_object()) {
+                const auto visibility = extensions->find(kExtensionNodeVisibility);
+                if (visibility != extensions->end() && visibility->is_object()) {
+                    const auto visibleValue = visibility->find("visible");
+                    if (visibleValue != visibility->end() && visibleValue->is_boolean()) {
+                        visible = visibleValue->get<bool>();
+                    }
+                }
+            }
+            model.nodes.push_back(std::move(node));
+            source.nodeVisibility.push_back(visible);
+        }
+
+        const nlohmann::json scenes = root.value("scenes", nlohmann::json::array());
+        if (!scenes.is_array()) {
+            reason = "streamasset builder glTF scenes is invalid";
+            return false;
+        }
+        model.scenes.reserve(scenes.size());
+        for (const nlohmann::json& sceneJson : scenes) {
+            tinygltf::Scene scene;
+            scene.name = sceneJson.value("name", std::string{});
+            scene.nodes = jsonIntArrayForStreamBuilder(
+                sceneJson.value("nodes", nlohmann::json::array()));
+            model.scenes.push_back(std::move(scene));
+        }
+    } catch (const std::exception& exception) {
+        reason = "streamasset builder failed to parse glTF metadata: ";
+        reason += exception.what();
+        return false;
+    }
+    return true;
+}
+
+bool loadGltfModelForStreamAssetBuilder(
+    const std::filesystem::path& sourcePath,
+    StreamGltfSource& source,
+    std::string& reason)
+{
+    if (lowerExtensionForStreamBuilder(sourcePath) == ".gltf") {
+        bool externalMetadataApplicable = false;
+        if (!loadExternalGltfMetadataForStreamAssetBuilder(
+                sourcePath,
+                source,
+                externalMetadataApplicable,
+                reason)) {
+            return false;
+        }
+        if (externalMetadataApplicable) {
+            for (const std::string& extension : source.model.extensionsRequired) {
+                if (!streamBuilderSupportsRequiredExtension(extension)) {
+                    reason = "Required extension unsupported by meshstream builder: " + extension;
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    source = {};
+    source.directory = sourcePath.parent_path();
     tinygltf::TinyGLTF loader;
     loader.SetImagesAsIs(true);
     loader.SetMaxExternalFileSize(static_cast<size_t>(-1));
@@ -1485,8 +1919,8 @@ bool loadGltfModelForStreamAssetBuilder(
     std::string warning;
     const std::string filenameString = sourcePath.string();
     const bool ok = lowerExtensionForStreamBuilder(sourcePath) == ".glb"
-        ? loader.LoadBinaryFromFile(&model, &error, &warning, filenameString)
-        : loader.LoadASCIIFromFile(&model, &error, &warning, filenameString);
+        ? loader.LoadBinaryFromFile(&source.model, &error, &warning, filenameString)
+        : loader.LoadASCIIFromFile(&source.model, &error, &warning, filenameString);
     if (!ok) {
         reason = error.empty() ? "tinygltf failed to load streamasset source" : error;
         if (!warning.empty()) {
@@ -1495,7 +1929,16 @@ bool loadGltfModelForStreamAssetBuilder(
         return false;
     }
 
-    for (const std::string& extension : model.extensionsRequired) {
+    source.bufferByteLengths.reserve(source.model.buffers.size());
+    for (const tinygltf::Buffer& buffer : source.model.buffers) {
+        source.bufferByteLengths.push_back(buffer.data.size());
+    }
+    source.nodeVisibility.reserve(source.model.nodes.size());
+    for (const tinygltf::Node& node : source.model.nodes) {
+        source.nodeVisibility.push_back(readNodeVisibilityForStreamBuilder(node));
+    }
+
+    for (const std::string& extension : source.model.extensionsRequired) {
         if (!streamBuilderSupportsRequiredExtension(extension)) {
             reason = "Required extension unsupported by meshstream builder: " + extension;
             return false;
@@ -1505,13 +1948,14 @@ bool loadGltfModelForStreamAssetBuilder(
 }
 
 bool loadRenderPrimitiveForStreamAssetBuilder(
-    const tinygltf::Model& model,
+    const StreamGltfSource& source,
     int32_t meshIndex,
     int32_t primitiveIndex,
     RenderPrimitive& outPrimitive,
     std::string& reason)
 {
     outPrimitive = {};
+    const tinygltf::Model& model = source.model;
     if (!validGltfIndex(meshIndex, model.meshes.size())) {
         reason = "streamasset builder mesh index is out of range";
         return false;
@@ -1549,7 +1993,7 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
         return false;
     }
     outPrimitive.localBounds = accessorBoundsForStreamBuilder(positionAccessor);
-    outPrimitive.positions = readFloat3AccessorForStreamBuilder(model, positionAccessor);
+    outPrimitive.positions = readFloat3AccessorForStreamBuilder(source, positionAccessor, reason);
     if (outPrimitive.positions.empty()) {
         reason = "streamasset builder failed to read primitive POSITION accessor";
         return false;
@@ -1562,8 +2006,9 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
     if (normalAccessorIter != gltfPrimitive.attributes.end() &&
         validGltfIndex(normalAccessorIter->second, model.accessors.size())) {
         outPrimitive.normals = readFloat3AccessorForStreamBuilder(
-            model,
-            model.accessors[static_cast<size_t>(normalAccessorIter->second)]);
+            source,
+            model.accessors[static_cast<size_t>(normalAccessorIter->second)],
+            reason);
         if (outPrimitive.normals.size() != outPrimitive.positions.size()) {
             outPrimitive.normals.clear();
         } else {
@@ -1575,8 +2020,9 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
     if (texcoordAccessorIter != gltfPrimitive.attributes.end() &&
         validGltfIndex(texcoordAccessorIter->second, model.accessors.size())) {
         outPrimitive.texcoords0 = readFloat2AccessorForStreamBuilder(
-            model,
-            model.accessors[static_cast<size_t>(texcoordAccessorIter->second)]);
+            source,
+            model.accessors[static_cast<size_t>(texcoordAccessorIter->second)],
+            reason);
         if (outPrimitive.texcoords0.size() != outPrimitive.positions.size()) {
             outPrimitive.texcoords0.clear();
         }
@@ -1586,7 +2032,7 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
         const tinygltf::Accessor& indexAccessor =
             model.accessors[static_cast<size_t>(gltfPrimitive.indices)];
         outPrimitive.indexCount = indexAccessor.count;
-        outPrimitive.indices = readIndexAccessorForStreamBuilder(model, indexAccessor);
+        outPrimitive.indices = readIndexAccessorForStreamBuilder(source, indexAccessor, reason);
         if (outPrimitive.indices.empty()) {
             reason = "streamasset builder failed to read primitive index accessor";
             return false;
@@ -1876,12 +2322,13 @@ bool loadPartialBuildState(
 bool buildStreamAssetGeometryPayloadsFromGltf(
     std::ostream& stream,
     MeshletStreamBuildState& state,
-    const tinygltf::Model& model,
+    const StreamGltfSource& source,
     MeshletStreamPayloadCompression compressionMode,
     std::unordered_map<uint64_t, uint32_t>& primitiveMap,
     MeshletStreamPartialBuildContext* partialContext,
     std::string& reason)
 {
+    const tinygltf::Model& model = source.model;
     uint32_t renderPrimitiveIndex = 0;
     for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
         const tinygltf::Mesh& mesh = model.meshes[meshIndex];
@@ -1899,7 +2346,7 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
 
             RenderPrimitive primitive;
             if (!loadRenderPrimitiveForStreamAssetBuilder(
-                    model,
+                    source,
                     static_cast<int32_t>(meshIndex),
                     static_cast<int32_t>(primitiveIndex),
                     primitive,
@@ -1957,11 +2404,12 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
 
 bool appendStreamAssetInstancesFromGltf(
     MeshletStreamBuildState& state,
-    const tinygltf::Model& model,
+    const StreamGltfSource& source,
     int32_t sceneIndex,
     const std::unordered_map<uint64_t, uint32_t>& primitiveMap,
     std::string& reason)
 {
+    const tinygltf::Model& model = source.model;
     if (!validGltfIndex(sceneIndex, model.scenes.size())) {
         reason = "streamasset builder default scene index is out of range";
         return false;
@@ -1977,7 +2425,10 @@ bool appendStreamAssetInstancesFromGltf(
 
         const tinygltf::Node& node = model.nodes[static_cast<size_t>(nodeIndex)];
         const float4x4 worldMatrix = parentWorld * makeNodeLocalMatrixForStreamBuilder(node);
-        const bool visible = parentVisible && readNodeVisibilityForStreamBuilder(node);
+        const bool nodeVisible = static_cast<size_t>(nodeIndex) < source.nodeVisibility.size()
+            ? source.nodeVisibility[static_cast<size_t>(nodeIndex)]
+            : readNodeVisibilityForStreamBuilder(node);
+        const bool visible = parentVisible && nodeVisible;
         if (validGltfIndex(node.mesh, model.meshes.size())) {
             const tinygltf::Mesh& mesh = model.meshes[static_cast<size_t>(node.mesh)];
             for (size_t primitiveIndex = 0; primitiveIndex < mesh.primitives.size(); ++primitiveIndex) {
@@ -2536,15 +2987,31 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
 bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& desc, std::string& reason)
 {
     reason.clear();
+    if (desc.stats != nullptr) {
+        *desc.stats = {};
+    }
     if (desc.sourcePath.empty()) {
         reason = "streamasset offline build requires a source path";
         return false;
     }
 
-    tinygltf::Model model;
-    if (!loadGltfModelForStreamAssetBuilder(desc.sourcePath, model, reason)) {
+    StreamGltfSource source;
+    if (!loadGltfModelForStreamAssetBuilder(desc.sourcePath, source, reason)) {
         return false;
     }
+    source.stats = desc.stats;
+    if (desc.stats != nullptr && source.rangeReadExternalBuffers) {
+        desc.stats->usedExternalBufferRangeReads = 1;
+        for (const uint64_t byteLength : source.bufferByteLengths) {
+            if (byteLength > std::numeric_limits<uint64_t>::max() -
+                    desc.stats->externalBufferDeclaredBytes) {
+                desc.stats->externalBufferDeclaredBytes = std::numeric_limits<uint64_t>::max();
+                break;
+            }
+            desc.stats->externalBufferDeclaredBytes += byteLength;
+        }
+    }
+    const tinygltf::Model& model = source.model;
     if (model.scenes.empty()) {
         reason = "glTF model contains no scenes";
         return false;
@@ -2616,7 +3083,7 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
     if (!buildStreamAssetGeometryPayloadsFromGltf(
             stream,
             state,
-            model,
+            source,
             desc.compressionMode,
             primitiveMap,
             &partialContext,
@@ -2627,7 +3094,7 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
         reason = "streamasset offline build paused after geometry budget; rerun the same build to resume";
         return false;
     }
-    if (!appendStreamAssetInstancesFromGltf(state, model, sceneIndex, primitiveMap, reason)) {
+    if (!appendStreamAssetInstancesFromGltf(state, source, sceneIndex, primitiveMap, reason)) {
         return false;
     }
 

@@ -185,11 +185,20 @@ struct MeshletStreamAssetBuildDesc {
     MeshletStreamPayloadCompression compressionMode = MeshletStreamPayloadCompression::None;
 };
 
+struct MeshletStreamAssetOfflineBuildStats {
+    uint64_t externalBufferDeclaredBytes = 0;
+    uint64_t accessorRangeReadBytes = 0;
+    uint64_t maxAccessorRangeReadBytes = 0;
+    uint32_t accessorRangeReadCount = 0;
+    uint32_t usedExternalBufferRangeReads = 0;
+};
+
 struct MeshletStreamAssetOfflineBuildDesc {
     std::filesystem::path sourcePath;
     std::filesystem::path outputPath;
     MeshletStreamPayloadCompression compressionMode = MeshletStreamPayloadCompression::None;
     uint32_t maxNewGeometriesPerInvocation = 0;
+    MeshletStreamAssetOfflineBuildStats* stats = nullptr;
 };
 
 bool decodeMeshletStreamPayloadForDevice(

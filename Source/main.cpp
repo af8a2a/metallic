@@ -81,12 +81,14 @@ int buildMeshletStreamAssetOffline(
     const std::filesystem::path resolvedOutputPath = outputPath.empty()
         ? metallic::scene::meshletStreamAssetPathFor(sourcePath)
         : outputPath;
+    metallic::scene::MeshletStreamAssetOfflineBuildStats buildStats;
     std::string reason;
     if (!metallic::scene::buildMeshletStreamAssetOffline(
             metallic::scene::MeshletStreamAssetOfflineBuildDesc{
                 .sourcePath = sourcePath,
                 .outputPath = resolvedOutputPath,
                 .compressionMode = compressionMode,
+                .stats = &buildStats,
             },
             reason)) {
         std::fprintf(stderr, "Failed to build streamasset: %s\n", reason.c_str());
@@ -107,6 +109,14 @@ int buildMeshletStreamAssetOffline(
         asset.instanceCount(),
         asset.pageCount(),
         asset.maxPagePayloadBytes());
+    if (buildStats.accessorRangeReadCount != 0) {
+        std::printf(
+            "External buffer range reads: buffersBytes=%llu readBytes=%llu maxRangeBytes=%llu ranges=%u\n",
+            static_cast<unsigned long long>(buildStats.externalBufferDeclaredBytes),
+            static_cast<unsigned long long>(buildStats.accessorRangeReadBytes),
+            static_cast<unsigned long long>(buildStats.maxAccessorRangeReadBytes),
+            buildStats.accessorRangeReadCount);
+    }
     return 0;
 }
 

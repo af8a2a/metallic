@@ -111,7 +111,10 @@ void writeGeneratedTangentSceneBinary(const std::filesystem::path& path)
     file.write(reinterpret_cast<const char*>(kIndices.data()), sizeof(uint16_t) * kIndices.size());
 }
 
-std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& directory, uint32_t meshCount = 1)
+std::filesystem::path writeMeshletLodGridScene(
+    const std::filesystem::path& directory,
+    uint32_t meshCount = 1,
+    bool percentEncodedBufferUri = false)
 {
     constexpr uint32_t kGridCells = 32;
     constexpr uint32_t kGridVertices = (kGridCells + 1) * (kGridCells + 1);
@@ -160,7 +163,8 @@ std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& dire
         }
     }
 
-    const std::filesystem::path binaryPath = directory / "meshlet_lod_grid.bin";
+    const std::filesystem::path binaryPath = directory /
+        (percentEncodedBufferUri ? "meshlet lod grid.bin" : "meshlet_lod_grid.bin");
     std::ofstream binary(binaryPath, std::ios::binary);
     binary.write(
         reinterpret_cast<const char*>(positions.data()),
@@ -184,7 +188,9 @@ std::filesystem::path writeMeshletLodGridScene(const std::filesystem::path& dire
     gltf << R"json({
   "asset": { "version": "2.0" },
   "buffers": [
-    { "uri": "meshlet_lod_grid.bin", "byteLength": )json"
+    { "uri": ")json"
+         << (percentEncodedBufferUri ? "meshlet%20lod%20grid.bin" : "meshlet_lod_grid.bin")
+         << R"json(", "byteLength": )json"
          << (positionBytes + normalBytes + texcoordBytes + indexBytes) << R"json( }
   ],
   "bufferViews": [
@@ -1210,20 +1216,30 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
 
     const std::filesystem::path offlineDirectory = directory / "meshlet_streamasset_offline";
     std::filesystem::create_directories(offlineDirectory);
-    const std::filesystem::path offlineGltfPath = writeMeshletLodGridScene(offlineDirectory);
+    const std::filesystem::path offlineGltfPath = writeMeshletLodGridScene(offlineDirectory, 1, true);
     const std::filesystem::path offlineStreamAssetPath =
         offlineDirectory / "meshlet_lod_grid.offline.meshstream.bin";
     std::filesystem::path offlineMeshletCachePath = offlineGltfPath;
     offlineMeshletCachePath += ".meshlets.bin";
     std::filesystem::remove(offlineStreamAssetPath);
     std::filesystem::remove(offlineMeshletCachePath);
+    metallic::scene::MeshletStreamAssetOfflineBuildStats offlineBuildStats;
     ASSERT_TRUE(metallic::scene::buildMeshletStreamAssetOffline(
         metallic::scene::MeshletStreamAssetOfflineBuildDesc{
             .sourcePath = offlineGltfPath,
             .outputPath = offlineStreamAssetPath,
+            .stats = &offlineBuildStats,
         },
         reason)) << reason;
     EXPECT_FALSE(std::filesystem::exists(offlineMeshletCachePath));
+    EXPECT_EQ(offlineBuildStats.usedExternalBufferRangeReads, 1u);
+    EXPECT_GT(offlineBuildStats.externalBufferDeclaredBytes, 0u);
+    EXPECT_GT(offlineBuildStats.accessorRangeReadCount, 0u);
+    EXPECT_GT(offlineBuildStats.accessorRangeReadBytes, 0u);
+    EXPECT_GT(offlineBuildStats.maxAccessorRangeReadBytes, 0u);
+    EXPECT_LT(
+        offlineBuildStats.maxAccessorRangeReadBytes,
+        offlineBuildStats.externalBufferDeclaredBytes);
 
     metallic::scene::MeshletStreamAsset offlineAsset;
     ASSERT_TRUE(offlineAsset.open(offlineStreamAssetPath, reason)) << reason;
