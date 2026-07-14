@@ -6,6 +6,7 @@ find_package(slang CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PAT
 
 add_library(MetallicRuntimeRender STATIC
     Runtime/Render/HistoryResources.cpp
+    Runtime/Render/MeshletStreamClas.cpp
     Runtime/Render/MeshletStreamPageLoader.cpp
     Runtime/Render/MeshletStreamResidency.cpp
     Runtime/Render/MeshletStreamRuntime.cpp

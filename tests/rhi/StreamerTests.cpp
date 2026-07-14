@@ -1,5 +1,6 @@
 #include "RhiTest.h"
 
+#include "Runtime/Render/MeshletStreamClas.h"
 #include "Runtime/Render/MeshletStreamResidency.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/StreamingTaskQueue.h"
@@ -1181,6 +1182,83 @@ public:
     }
 };
 
+class MeshletStreamClasPagePlanTest : public RhiTest {
+public:
+    MeshletStreamClasPagePlanTest()
+    {
+        type = RhiTestType::Validation;
+        name = "meshlet_stream_clas_page_plan";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        scene::MeshletStreamAsset asset;
+        RhiTestResult build = buildBunnyStreamAssetForTest(
+            context.outputDirectory / "streamer_clas_page_plan.meshstream.bin",
+            asset,
+            scene::MeshletStreamPayloadCompression::ByteRle);
+        if (!build.passed) {
+            return build;
+        }
+
+        std::vector<uint32_t> pageClusterOffsets;
+        uint32_t clusterCount = 0;
+        std::string reason;
+        if (!render::buildMeshletStreamPageClusterOffsets(
+                asset,
+                pageClusterOffsets,
+                clusterCount,
+                reason)) {
+            return RhiTestResult::fail("buildMeshletStreamPageClusterOffsets failed: " + reason);
+        }
+        if (pageClusterOffsets.size() != static_cast<size_t>(asset.pageCount()) + 1u ||
+            pageClusterOffsets.back() != clusterCount ||
+            clusterCount == 0) {
+            return RhiTestResult::fail("CLAS page cluster offsets did not cover the streamasset");
+        }
+
+        const std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
+        if (fallbackPages.empty()) {
+            return RhiTestResult::fail("streamasset has no fallback page for CLAS planning");
+        }
+        const uint32_t pageIndex = fallbackPages.front();
+        render::MeshletStreamClasPagePlan plan;
+        if (!render::buildMeshletStreamClasPagePlan(
+                asset,
+                pageIndex,
+                pageClusterOffsets[pageIndex],
+                plan,
+                reason)) {
+            return RhiTestResult::fail("buildMeshletStreamClasPagePlan failed: " + reason);
+        }
+
+        const scene::MeshletStreamPageInfo& page = asset.pages()[pageIndex];
+        if (plan.pageIndex != pageIndex ||
+            plan.firstClusterId != pageClusterOffsets[pageIndex] ||
+            plan.primitiveIndex != page.primitiveIndex ||
+            plan.lodLevel != page.lodLevel ||
+            plan.payloadByteSize != page.uncompressedSize ||
+            plan.clusters.size() != page.clusterCount) {
+            return RhiTestResult::fail("CLAS page plan did not preserve streamasset page metadata");
+        }
+
+        for (uint32_t clusterIndex = 0; clusterIndex < plan.clusters.size(); ++clusterIndex) {
+            const render::MeshletStreamClasClusterInput& cluster = plan.clusters[clusterIndex];
+            if (cluster.clusterId != pageClusterOffsets[pageIndex] + clusterIndex ||
+                cluster.pageIndex != pageIndex ||
+                cluster.clusterIndex != clusterIndex ||
+                cluster.primitiveIndex != page.primitiveIndex ||
+                cluster.vertexCount == 0 ||
+                cluster.triangleCount == 0 ||
+                cluster.vertexOffsetBytes >= page.uncompressedSize ||
+                cluster.triangleOffsetBytes >= page.uncompressedSize) {
+                return RhiTestResult::fail("CLAS page plan contains an invalid cluster build input");
+            }
+        }
+        return RhiTestResult::pass();
+    }
+};
+
 class StreamerMeshletResidencyGpuRequestPatchTest : public RhiTest {
 public:
     StreamerMeshletResidencyGpuRequestPatchTest()
@@ -1688,6 +1766,7 @@ METALLIC_REGISTER_RHI_TEST(StreamerConstantUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphFlushTest);
 METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphUnsupportedDoesNotBeginFrameTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyUploadTest);
+METALLIC_REGISTER_RHI_TEST(MeshletStreamClasPagePlanTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestPatchTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyLatestGpuRequestTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestUnloadOverflowTest);
