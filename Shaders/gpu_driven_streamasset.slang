@@ -528,6 +528,27 @@ bool nodeNeedsTraversal(
     return nodePixelError(params, instance, node) > targetPixelError;
 }
 
+bool updateGroupPageDemand(
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
+    RWStructuredBuffer<uint> requests,
+    GPUDrivenStreamAssetParams params,
+    GPUDrivenStreamAssetInstance instance,
+    GPUDrivenStreamAssetPrimitive primitive,
+    GPUDrivenStreamAssetGroup group)
+{
+    if (group.pageIndex >= params.scenePageCount ||
+        !groupNeedsTraversal(params, instance, primitive, group)) {
+        return false;
+    }
+    uint state = pageTable[group.pageIndex].state;
+    if (streamPageAvailable(state)) {
+        markStreamPageDemand(pageTable, params, group.pageIndex);
+    } else {
+        requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
+    }
+    return true;
+}
+
 void reportInvalidTraversal(
     RWStructuredBuffer<uint> requests,
     GPUDrivenStreamAssetParams params)
@@ -874,6 +895,7 @@ void appendInstanceFallbackGroups(
     StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
     StructuredBuffer<uint> clusterRefs,
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
+    RWStructuredBuffer<uint> requests,
     GPUDrivenStreamAssetParams params,
     GPUDrivenStreamAssetInstance instance,
     GPUDrivenStreamAssetPrimitive primitive)
@@ -889,6 +911,12 @@ void appendInstanceFallbackGroups(
         if (group.primitiveIndex != instance.primitiveIndex ||
             group.clusterCount == 0u ||
             group.clusterCount > 32u ||
+            group.pageIndex >= params.scenePageCount) {
+            InterlockedAdd(activeHeader[0].overflowCount, 1u);
+            reportInvalidTraversal(requests, params);
+            continue;
+        }
+        if (!updateGroupPageDemand(pageTable, requests, params, instance, primitive, group) ||
             !groupPageDrawable(pageTable, params, group)) {
             continue;
         }
@@ -926,6 +954,7 @@ void runActiveTraversalWorker(
     StructuredBuffer<uint> clusterRefs,
     StructuredBuffer<GPUDrivenStreamAssetNode> nodes,
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
+    RWStructuredBuffer<uint> requests,
     GPUDrivenStreamAssetParams params)
 {
     uint readIndex = 0xffffffffu;
@@ -1004,10 +1033,21 @@ void runActiveTraversalWorker(
                             bool fallbackGroup = node.groupIndex >= primitive.fallbackGroupOffset &&
                                 node.groupIndex - primitive.fallbackGroupOffset < primitive.fallbackGroupCount;
                             GPUDrivenStreamAssetGroup group = groups[node.groupIndex];
-                            if (!fallbackGroup &&
-                                group.primitiveIndex == instance.primitiveIndex &&
+                            bool validGroup = group.primitiveIndex == instance.primitiveIndex &&
                                 group.clusterCount != 0u &&
                                 group.clusterCount <= 32u &&
+                                group.pageIndex < params.scenePageCount;
+                            if (!validGroup) {
+                                validWork = false;
+                                reportInvalidTraversal(requests, params);
+                            } else if (updateGroupPageDemand(
+                                    pageTable,
+                                    requests,
+                                    params,
+                                    instance,
+                                    primitive,
+                                    group) &&
+                                !fallbackGroup &&
                                 groupPageDrawable(pageTable, params, group)) {
                                 uint clusterSelectionMask = buildGroupClusterSelectionMask(
                                     groups,
@@ -1062,10 +1102,10 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetNode>>(uint2(push.bufferShaderIndexBase + push.nodeBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
         DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.bufferShaderIndexBase + push.pageTableBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<uint>> requestHandle =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.requestBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
 
     StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
     StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives = primitiveHandle;
@@ -1194,6 +1234,8 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
         DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>>(uint2(push.bufferShaderIndexBase + push.traversalWorkBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
         DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.bufferShaderIndexBase + push.pageTableBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> requestHandle =
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.requestBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
 
@@ -1210,6 +1252,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader> traversalHeader = traversalHeaderHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem> traversalWork = traversalWorkHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
+    RWStructuredBuffer<uint> requests = requestHandle;
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
 
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
@@ -1288,6 +1331,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                 groups,
                 clusterRefs,
                 pageTable,
+                requests,
                 params,
                 instance,
                 primitive);
@@ -1322,6 +1366,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                 clusterRefs,
                 nodes,
                 pageTable,
+                requests,
                 params);
         }
         return;

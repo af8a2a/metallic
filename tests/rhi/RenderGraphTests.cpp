@@ -2916,7 +2916,6 @@ public:
         });
 
         commandBuffer->bindBindlessHeap(*bindlessHeap);
-        commandBuffer->bindComputePipeline(*pipeline);
         render::MeshletStreamUserPush push{
             .activeGroupBuffer = activeGroupHandle.index,
             .pageTableBuffer = pageTableHandle.index,
@@ -2935,33 +2934,6 @@ public:
             .traversalWorkBuffer = traversalWorkHandle.index,
             .traversalPhase = render::kMeshletStreamTraversalLoadPhase,
         };
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
-
-        std::array<render::BufferBarrierDesc, 2> phaseBarriers = {{
-            render::BufferBarrierDesc{
-                .buffer = pageTableBuffer.get(),
-                .before = render::ResourceState::General,
-                .after = render::ResourceState::General,
-                .offset = 0,
-                .size = pageTableBuffer->desc().size,
-            },
-            render::BufferBarrierDesc{
-                .buffer = requestBuffer.get(),
-                .before = render::ResourceState::General,
-                .after = render::ResourceState::General,
-                .offset = 0,
-                .size = requestBuffer->desc().size,
-            },
-        }};
-        commandBuffer->barrier(render::BarrierDesc{
-            .buffers = phaseBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(phaseBarriers.size()),
-        });
-
-        push.traversalPhase = render::kMeshletStreamTraversalUnloadPhase;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
 
         std::array<render::BufferBarrierDesc, 7> activeBuildBarriers = {{
             render::BufferBarrierDesc{
@@ -3024,13 +2996,20 @@ public:
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        std::array<render::BufferBarrierDesc, 6> activePhaseBarriers = {{
+        std::array<render::BufferBarrierDesc, 7> activePhaseBarriers = {{
             render::BufferBarrierDesc{
                 .buffer = pageTableBuffer.get(),
                 .before = render::ResourceState::General,
                 .after = render::ResourceState::General,
                 .offset = 0,
                 .size = pageTableBuffer->desc().size,
+            },
+            render::BufferBarrierDesc{
+                .buffer = requestBuffer.get(),
+                .before = render::ResourceState::General,
+                .after = render::ResourceState::General,
+                .offset = 0,
+                .size = requestBuffer->desc().size,
             },
             render::BufferBarrierDesc{
                 .buffer = activeGroupBuffer.get(),
@@ -3090,6 +3069,15 @@ public:
             .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
         });
         push.activeBuildPhase = render::kMeshletStreamActiveBuildFinalizePhase;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
+
+        commandBuffer->barrier(render::BarrierDesc{
+            .buffers = activePhaseBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
+        });
+        commandBuffer->bindComputePipeline(*pipeline);
+        push.traversalPhase = render::kMeshletStreamTraversalUnloadPhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 

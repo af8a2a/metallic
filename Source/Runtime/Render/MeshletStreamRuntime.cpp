@@ -464,6 +464,8 @@ public:
         ResourceState& activeHeaderBufferState,
         Buffer& pageTableBuffer,
         ResourceState& pageTableState,
+        Buffer& requestBuffer,
+        ResourceState& requestBufferState,
         Buffer& drawIndirectBuffer,
         ResourceState& drawIndirectBufferState,
         Buffer& traversalHeaderBuffer,
@@ -481,6 +483,7 @@ public:
         transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General);
         transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General);
         transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General);
+        transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General);
         transitionBuffer(commandBuffer, drawIndirectBuffer, drawIndirectBufferState, ResourceState::General);
         transitionBuffer(commandBuffer, traversalHeaderBuffer, traversalHeaderBufferState, ResourceState::General);
         transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General);
@@ -491,6 +494,7 @@ public:
         transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true);
         transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true);
         transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true);
+        transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General, true);
         transitionBuffer(commandBuffer, drawIndirectBuffer, drawIndirectBufferState, ResourceState::General, true);
         transitionBuffer(commandBuffer, traversalHeaderBuffer, traversalHeaderBufferState, ResourceState::General, true);
         transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General, true);
@@ -1064,15 +1068,11 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
     if (!result) {
         return result;
     }
-    result = dispatchTraversal(commandBuffer, traversalWorkerCount_, kMeshletStreamTraversalLoadPhase);
+    result = buildActiveTable(commandBuffer);
     if (!result) {
         return result;
     }
     result = dispatchTraversal(commandBuffer, asset_.pageCount(), kMeshletStreamTraversalUnloadPhase);
-    if (!result) {
-        return result;
-    }
-    result = buildActiveTable(commandBuffer);
     if (!result) {
         return result;
     }
@@ -1513,6 +1513,8 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer)
         activeHeaderBufferState_,
         *pageTableBuffer_,
         pageTableState_,
+        *requestBuffer_,
+        requestBufferState_,
         *drawIndirectBuffer_,
         drawIndirectBufferState_,
         *traversalHeaderBuffer_,
@@ -1535,6 +1537,8 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer)
         activeHeaderBufferState_,
         *pageTableBuffer_,
         pageTableState_,
+        *requestBuffer_,
+        requestBufferState_,
         *drawIndirectBuffer_,
         drawIndirectBufferState_,
         *traversalHeaderBuffer_,
@@ -1557,6 +1561,8 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer)
         activeHeaderBufferState_,
         *pageTableBuffer_,
         pageTableState_,
+        *requestBuffer_,
+        requestBufferState_,
         *drawIndirectBuffer_,
         drawIndirectBufferState_,
         *traversalHeaderBuffer_,
@@ -1579,6 +1585,8 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer)
         activeHeaderBufferState_,
         *pageTableBuffer_,
         pageTableState_,
+        *requestBuffer_,
+        requestBufferState_,
         *drawIndirectBuffer_,
         drawIndirectBufferState_,
         *traversalHeaderBuffer_,
