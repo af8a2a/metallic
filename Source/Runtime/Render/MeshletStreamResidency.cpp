@@ -346,10 +346,10 @@ void MeshletStreamResidencyManager::beginFrame()
                 }
                 PageEntry& page = pages_[pageIndex];
                 if (page.state != MeshletStreamPageResidencyState::PendingUpload ||
-                    page.updateTaskIndex != taskIndex) {
+                    page.taskIndex != taskIndex) {
                     continue;
                 }
-                page.updateTaskIndex = kInvalidStreamingTaskIndex;
+                page.taskIndex = kInvalidStreamingTaskIndex;
                 setPageState(
                     pageIndex,
                     page.lockedFallback
@@ -389,11 +389,10 @@ void MeshletStreamResidencyManager::beginFrame()
                     }
                     PageEntry& page = pages_[pageIndex];
                     if (page.state != MeshletStreamPageResidencyState::PendingUpload ||
-                        page.storageTaskIndex != taskIndex) {
+                        page.taskIndex != taskIndex) {
                         continue;
                     }
-                    page.storageTaskIndex = kInvalidStreamingTaskIndex;
-                    page.updateTaskIndex = updateTaskIndex;
+                    page.taskIndex = updateTaskIndex;
                     updatePages.push_back(pageIndex);
                     ++updateCount;
                 }
@@ -842,7 +841,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             preparedPageLoads_.pop_front();
         }
         setPageState(pageIndex, MeshletStreamPageResidencyState::PendingUpload);
-        page.storageTaskIndex = taskIndex;
+        page.taskIndex = taskIndex;
         taskPages.push_back(pageIndex);
         ++uploadCount;
         ++stats_.frameScheduledUploadCount;
@@ -901,7 +900,8 @@ uint64_t MeshletStreamResidencyManager::deviceOffsetForPage(uint32_t pageIndex) 
     if (pageIndex >= pages_.size()) {
         return UINT64_MAX;
     }
-    return pages_[pageIndex].deviceOffsetBytes;
+    const uint32_t deviceOffset = pages_[pageIndex].deviceOffsetBytes;
+    return deviceOffset == kInvalidStreamDeviceOffsetBytes ? UINT64_MAX : deviceOffset;
 }
 
 uint32_t MeshletStreamResidencyManager::deviceSizeForPage(uint32_t pageIndex) const
@@ -914,7 +914,8 @@ uint32_t MeshletStreamResidencyManager::deviceSizeForPage(uint32_t pageIndex) co
 
 bool MeshletStreamResidencyManager::pageAllocated(uint32_t pageIndex) const
 {
-    return pageIndex < pages_.size() && pages_[pageIndex].deviceOffsetBytes != UINT64_MAX;
+    return pageIndex < pages_.size() &&
+        pages_[pageIndex].deviceOffsetBytes != kInvalidStreamDeviceOffsetBytes;
 }
 
 bool MeshletStreamResidencyManager::pageResident(uint32_t pageIndex) const
@@ -1064,8 +1065,15 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
         return false;
     }
 
-    page.deviceOffsetBytes = allocation.offset;
-    page.allocationBytes = allocation.allocatedSize;
+    if (allocation.offset > std::numeric_limits<uint32_t>::max() ||
+        allocation.allocatedSize > std::numeric_limits<uint32_t>::max()) {
+        storage_.release(allocation);
+        ++stats_.frameAllocationFailureCount;
+        ++stats_.totalAllocationFailureCount;
+        return false;
+    }
+    page.deviceOffsetBytes = static_cast<uint32_t>(allocation.offset);
+    page.allocationBytes = static_cast<uint32_t>(allocation.allocatedSize);
     page.deviceSizeBytes = static_cast<uint32_t>(allocation.requestedSize);
     addToTable(activePages_, activePagePositions_, pageIndex);
     return true;
@@ -1101,7 +1109,7 @@ bool MeshletStreamResidencyManager::scheduleUnload(uint32_t pageIndex, bool evic
     std::vector<uint32_t>& taskPages = unloadTaskPages_[taskIndex];
     taskPages.clear();
     taskPages.push_back(pageIndex);
-    page.unloadTaskIndex = taskIndex;
+    page.taskIndex = taskIndex;
     page.queued = false;
     setPageState(pageIndex, MeshletStreamPageResidencyState::PendingUnload);
     unloadTaskQueue_.push(taskIndex, frameIndex_ + unloadDelayFrames_);
@@ -1122,10 +1130,10 @@ void MeshletStreamResidencyManager::completeUnloadTask(uint32_t taskIndex)
         }
         PageEntry& page = pages_[pageIndex];
         if (page.state != MeshletStreamPageResidencyState::PendingUnload ||
-            page.unloadTaskIndex != taskIndex) {
+            page.taskIndex != taskIndex) {
             continue;
         }
-        page.unloadTaskIndex = kInvalidStreamingTaskIndex;
+        page.taskIndex = kInvalidStreamingTaskIndex;
         releasePageStorage(pageIndex);
         newlyUnloadedPages_.push_back(pageIndex);
         ++stats_.frameCompletedUnloadCount;
@@ -1151,12 +1159,10 @@ void MeshletStreamResidencyManager::releasePageStorage(uint32_t pageIndex)
         .requestedSize = page.deviceSizeBytes,
         .allocatedSize = page.allocationBytes,
     });
-    page.deviceOffsetBytes = UINT64_MAX;
+    page.deviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
     page.allocationBytes = 0;
     page.deviceSizeBytes = 0;
-    page.storageTaskIndex = kInvalidStreamingTaskIndex;
-    page.updateTaskIndex = kInvalidStreamingTaskIndex;
-    page.unloadTaskIndex = kInvalidStreamingTaskIndex;
+    page.taskIndex = kInvalidStreamingTaskIndex;
     page.queued = false;
     removeFromTable(activePages_, activePagePositions_, pageIndex);
     setPageState(pageIndex, MeshletStreamPageResidencyState::Unloaded);

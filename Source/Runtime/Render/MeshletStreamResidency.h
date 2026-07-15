@@ -296,17 +296,17 @@ public:
 
 private:
     struct PageEntry {
-        uint64_t deviceOffsetBytes = UINT64_MAX;
-        uint64_t allocationBytes = 0;
-        uint32_t deviceSizeBytes = 0;
-        uint32_t storageTaskIndex = kInvalidStreamingTaskIndex;
-        uint32_t updateTaskIndex = kInvalidStreamingTaskIndex;
-        uint32_t unloadTaskIndex = kInvalidStreamingTaskIndex;
         uint64_t lastUsedFrame = 0;
+        uint32_t deviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
+        uint32_t allocationBytes = 0;
+        uint32_t deviceSizeBytes = 0;
+        uint32_t taskIndex = kInvalidStreamingTaskIndex;
         bool lockedFallback = false;
         bool queued = false;
         MeshletStreamPageResidencyState state = MeshletStreamPageResidencyState::Unloaded;
+        uint8_t padding0 = 0;
     };
+    static_assert(sizeof(PageEntry) == 32);
 
     bool allocatePageStorage(uint32_t pageIndex);
     bool scheduleUnload(uint32_t pageIndex, bool eviction);
