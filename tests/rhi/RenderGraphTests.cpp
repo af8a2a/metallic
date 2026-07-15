@@ -4447,6 +4447,7 @@ public:
                 {"enableClusterRtx", true},
                 {"maxClasBytes", 64ull * 1024ull * 1024ull},
                 {"maxClasBuildClusters", 32},
+                {"maxBlasClusterReferences", 32},
                 {"maxResidentPages", 64},
                 {"maxPageUploadsPerFrame", 1},
             });

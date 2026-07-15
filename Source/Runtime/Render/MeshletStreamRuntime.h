@@ -27,6 +27,7 @@ inline constexpr const char* kMeshletStreamFragmentEntryPoint = "gpuDrivenStream
 inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
 inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
 inline constexpr const char* kMeshletStreamActiveBuildEntryPoint = "gpuDrivenStreamAssetBuildActiveMain";
+inline constexpr const char* kMeshletStreamBlasInputEntryPoint = "gpuDrivenStreamAssetBuildBlasInputMain";
 
 inline constexpr uint32_t kMeshletStreamDebugPage = 0;
 inline constexpr uint32_t kMeshletStreamDebugLod = 1;
@@ -47,6 +48,13 @@ inline constexpr uint32_t kMeshletStreamActiveBuildBuildPhase = 1;
 inline constexpr uint32_t kMeshletStreamActiveBuildFinalizePhase = 2;
 inline constexpr uint32_t kMeshletStreamActiveBuildSeedPhase = 3;
 inline constexpr uint32_t kMeshletStreamActiveBuildRunPhase = 4;
+inline constexpr uint32_t kMeshletStreamBlasInputResetPhase = 0;
+inline constexpr uint32_t kMeshletStreamBlasInputCountPhase = 1;
+inline constexpr uint32_t kMeshletStreamBlasInputSetupPhase = 2;
+inline constexpr uint32_t kMeshletStreamBlasInputInsertPhase = 3;
+inline constexpr uint32_t kMeshletStreamBlasInstanceFallback = 1u << 0;
+inline constexpr uint32_t kMeshletStreamBlasInstanceDynamic = 1u << 1;
+inline constexpr uint32_t kMeshletStreamBlasInstanceOverflow = 1u << 2;
 inline constexpr uint32_t kMeshletStreamDefaultMaxActiveGroups = 262144;
 inline constexpr uint32_t kMeshletStreamDefaultTraversalWorkers = 1024;
 inline constexpr uint32_t kMeshletStreamDefaultTraversalWorkItems = 1048576;
@@ -184,6 +192,35 @@ struct MeshletStreamGpuTraversalWorkItem {
     uint32_t padding0 = 0;
 };
 
+struct MeshletStreamGpuBlasHeader {
+    uint32_t clusterReferenceCount = 0;
+    uint32_t blasBuildCount = 0;
+    uint32_t clusterReferenceCapacity = 0;
+    uint32_t overflowCount = 0;
+    uint32_t frameIndex = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+};
+
+struct MeshletStreamGpuInstanceBlas {
+    uint32_t clusterReferenceOffset = 0;
+    uint32_t clusterReferenceCapacity = 0;
+    uint32_t selectedClusterCount = 0;
+    uint32_t insertedClusterCount = 0;
+    uint32_t blasBuildIndex = kMeshletStreamInvalidClusterIndex;
+    uint32_t flags = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+};
+
+struct MeshletStreamGpuBlasBuildInfo {
+    uint32_t clusterReferencesCount = 0;
+    uint32_t clusterReferencesStride = sizeof(uint64_t);
+    uint32_t clusterReferencesAddressLow = 0;
+    uint32_t clusterReferencesAddressHigh = 0;
+};
+
 struct MeshletStreamGpuParams {
     float eye[4] = {};
     float center[4] = {};
@@ -231,8 +268,18 @@ struct MeshletStreamUserPush {
     uint32_t drawIndirectBuffer = 0;
     uint32_t traversalHeaderBuffer = 0;
     uint32_t traversalWorkBuffer = 0;
+    uint32_t clasAddressBuffer = 0;
+    uint32_t clasPageTableBuffer = 0;
+    uint32_t blasHeaderBuffer = 0;
+    uint32_t instanceBlasBuffer = 0;
+    uint32_t blasBuildInfoBuffer = 0;
+    uint32_t blasClusterReferenceBuffer = 0;
+    uint32_t blasClusterReferenceAddressLow = 0;
+    uint32_t blasClusterReferenceAddressHigh = 0;
+    uint32_t blasClusterReferenceCapacity = 0;
     uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
     uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
+    uint32_t blasInputPhase = kMeshletStreamBlasInputResetPhase;
 };
 
 static_assert(sizeof(MeshletStreamGpuActiveHeader) == 32);
@@ -246,9 +293,12 @@ static_assert(sizeof(MeshletStreamGpuNode) == 48);
 static_assert(sizeof(MeshletStreamGpuDrawIndirect) == 12);
 static_assert(sizeof(MeshletStreamGpuTraversalHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuTraversalWorkItem) == 16);
+static_assert(sizeof(MeshletStreamGpuBlasHeader) == 32);
+static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
+static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 32);
 static_assert(sizeof(MeshletStreamGpuParams) == 176);
-static_assert(sizeof(MeshletStreamUserPush) == 76);
+static_assert(sizeof(MeshletStreamUserPush) == 116);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -268,6 +318,7 @@ struct MeshletStreamRuntimeDesc {
     bool enableClusterRtx = false;
     uint64_t maxClasBytes = 512ull * 1024ull * 1024ull;
     uint32_t maxClasBuildClusters = 0;
+    uint32_t maxBlasClusterReferences = 0;
 };
 
 struct MeshletStreamCameraDesc {
@@ -322,6 +373,7 @@ private:
     class UpdatePass;
     class TraversalPass;
     class ActiveBuildPass;
+    class BlasInputPass;
 
     uint32_t computeMaxActiveGroups(uint32_t capacity) const;
     uint32_t computeMaxPageClusters() const;
@@ -333,6 +385,7 @@ private:
     Result clearRequestBuffer(CommandBuffer& commandBuffer);
     Result dispatchTraversal(CommandBuffer& commandBuffer, uint32_t threadCount, uint32_t traversalPhase);
     Result buildActiveTable(CommandBuffer& commandBuffer);
+    Result buildBlasInputs(CommandBuffer& commandBuffer);
     Result copyRequestBufferForReadback(CommandBuffer& commandBuffer);
     Result updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
@@ -361,10 +414,15 @@ private:
     std::unique_ptr<Buffer> drawIndirectBuffer_;
     std::unique_ptr<Buffer> traversalHeaderBuffer_;
     std::unique_ptr<Buffer> traversalWorkBuffer_;
+    std::unique_ptr<Buffer> blasHeaderBuffer_;
+    std::unique_ptr<Buffer> instanceBlasBuffer_;
+    std::unique_ptr<Buffer> blasBuildInfoBuffer_;
+    std::unique_ptr<Buffer> blasClusterReferenceBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<UpdatePass> updatePass_;
     std::unique_ptr<TraversalPass> traversalPass_;
     std::unique_ptr<ActiveBuildPass> activeBuildPass_;
+    std::unique_ptr<BlasInputPass> blasInputPass_;
     std::unique_ptr<vulkan::MeshletStreamClasPool> clasPool_;
     BindlessHandle pageHandle_;
     BindlessHandle activeGroupHandle_;
@@ -382,6 +440,12 @@ private:
     BindlessHandle drawIndirectHandle_;
     BindlessHandle traversalHeaderHandle_;
     BindlessHandle traversalWorkHandle_;
+    BindlessHandle clasAddressHandle_;
+    BindlessHandle clasPageTableHandle_;
+    BindlessHandle blasHeaderHandle_;
+    BindlessHandle instanceBlasHandle_;
+    BindlessHandle blasBuildInfoHandle_;
+    BindlessHandle blasClusterReferenceHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
     ResourceState activeGroupBufferState_ = ResourceState::Undefined;
     ResourceState activeHeaderBufferState_ = ResourceState::Undefined;
@@ -390,6 +454,10 @@ private:
     ResourceState drawIndirectBufferState_ = ResourceState::Undefined;
     ResourceState traversalHeaderBufferState_ = ResourceState::Undefined;
     ResourceState traversalWorkBufferState_ = ResourceState::Undefined;
+    ResourceState blasHeaderBufferState_ = ResourceState::Undefined;
+    ResourceState instanceBlasBufferState_ = ResourceState::Undefined;
+    ResourceState blasBuildInfoBufferState_ = ResourceState::Undefined;
+    ResourceState blasClusterReferenceBufferState_ = ResourceState::Undefined;
     bool pageTableInitialized_ = false;
     bool requestReadbackValid_ = false;
     uint32_t frameIndex_ = 0;
@@ -404,6 +472,8 @@ private:
     uint32_t maxPrimitiveGroupCount_ = 0;
     uint32_t traversalWorkerCount_ = 0;
     uint32_t traversalWorkCapacity_ = 0;
+    uint32_t blasClusterReferenceCapacity_ = 0;
+    uint64_t blasClusterReferenceAddress_ = 0;
     uint32_t currentFrameUploadCount_ = 0;
 };
 

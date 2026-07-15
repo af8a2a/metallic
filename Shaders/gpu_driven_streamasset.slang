@@ -17,6 +17,14 @@ static const uint kActiveBuildPhaseBuild = 1u;
 static const uint kActiveBuildPhaseFinalize = 2u;
 static const uint kActiveBuildPhaseSeed = 3u;
 static const uint kActiveBuildPhaseRun = 4u;
+static const uint kBlasInputPhaseReset = 0u;
+static const uint kBlasInputPhaseCount = 1u;
+static const uint kBlasInputPhaseSetup = 2u;
+static const uint kBlasInputPhaseInsert = 3u;
+static const uint kClasPageStateActive = 1u;
+static const uint kBlasInstanceFallback = 1u << 0u;
+static const uint kBlasInstanceDynamic = 1u << 1u;
+static const uint kBlasInstanceOverflow = 1u << 2u;
 static const uint kTraversalStackCapacity = 128u;
 static const uint kStreamRequestHeaderWords = 16u;
 static const uint kStreamUpdateHeaderWords = 16u;
@@ -53,8 +61,18 @@ struct GPUDrivenStreamAssetPush
     uint drawIndirectBuffer;
     uint traversalHeaderBuffer;
     uint traversalWorkBuffer;
+    uint clasAddressBuffer;
+    uint clasPageTableBuffer;
+    uint blasHeaderBuffer;
+    uint instanceBlasBuffer;
+    uint blasBuildInfoBuffer;
+    uint blasClusterReferenceBuffer;
+    uint blasClusterReferenceAddressLow;
+    uint blasClusterReferenceAddressHigh;
+    uint blasClusterReferenceCapacity;
     uint traversalPhase;
     uint activeBuildPhase;
+    uint blasInputPhase;
 };
 
 struct GPUDrivenStreamAssetActiveHeader
@@ -197,6 +215,46 @@ struct GPUDrivenStreamAssetTraversalWorkItem
     uint nodeIndex;
     uint readyFrame;
     uint padding0;
+};
+
+struct GPUDrivenStreamAssetClasPageEntry
+{
+    uint addressOffset;
+    uint clusterCount;
+    uint state;
+    uint generation;
+};
+
+struct GPUDrivenStreamAssetBlasHeader
+{
+    uint clusterReferenceCount;
+    uint blasBuildCount;
+    uint clusterReferenceCapacity;
+    uint overflowCount;
+    uint frameIndex;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
+struct GPUDrivenStreamAssetInstanceBlas
+{
+    uint clusterReferenceOffset;
+    uint clusterReferenceCapacity;
+    uint selectedClusterCount;
+    uint insertedClusterCount;
+    uint blasBuildIndex;
+    uint flags;
+    uint padding0;
+    uint padding1;
+};
+
+struct GPUDrivenStreamAssetBlasBuildInfo
+{
+    uint clusterReferencesCount;
+    uint clusterReferencesStride;
+    uint clusterReferencesAddressLow;
+    uint clusterReferencesAddressHigh;
 };
 
 struct GPUDrivenStreamAssetPageTableEntry
@@ -1466,6 +1524,187 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
             instanceIndex,
             group.pageIndex,
             clusterSelectionMask);
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void gpuDrivenStreamAssetBuildBlasInputMain(
+    uint3 dispatchThreadID : SV_DispatchThreadID,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeaderHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.bufferShaderIndexBase + push.activeHeaderBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetClasPageEntry>> clasPageTableHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetClasPageEntry>>(uint2(push.bufferShaderIndexBase + push.clasPageTableBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint2>> clasAddressHandle =
+        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.bufferShaderIndexBase + push.clasAddressBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetBlasHeader>> blasHeaderHandle =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetBlasHeader>>(uint2(push.bufferShaderIndexBase + push.blasHeaderBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetInstanceBlas>> instanceBlasHandle =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetInstanceBlas>>(uint2(push.bufferShaderIndexBase + push.instanceBlasBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetBlasBuildInfo>> blasBuildInfoHandle =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetBlasBuildInfo>>(uint2(push.bufferShaderIndexBase + push.blasBuildInfoBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint2>> blasClusterReferenceHandle =
+        DescriptorHandle<RWStructuredBuffer<uint2>>(uint2(push.bufferShaderIndexBase + push.blasClusterReferenceBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+
+    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
+    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader = activeHeaderHandle;
+    StructuredBuffer<GPUDrivenStreamAssetClasPageEntry> clasPageTable = clasPageTableHandle;
+    StructuredBuffer<uint2> clasAddresses = clasAddressHandle;
+    RWStructuredBuffer<GPUDrivenStreamAssetBlasHeader> blasHeader = blasHeaderHandle;
+    RWStructuredBuffer<GPUDrivenStreamAssetInstanceBlas> instanceBlas = instanceBlasHandle;
+    RWStructuredBuffer<GPUDrivenStreamAssetBlasBuildInfo> blasBuildInfos = blasBuildInfoHandle;
+    RWStructuredBuffer<uint2> blasClusterReferences = blasClusterReferenceHandle;
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
+
+    GPUDrivenStreamAssetParams params = paramsBuffer[0];
+    uint itemIndex = dispatchThreadID.x;
+
+    if (push.blasInputPhase == kBlasInputPhaseReset) {
+        if (itemIndex == 0u) {
+            GPUDrivenStreamAssetBlasHeader header;
+            header.clusterReferenceCount = 0u;
+            header.blasBuildCount = 0u;
+            header.clusterReferenceCapacity = push.blasClusterReferenceCapacity;
+            header.overflowCount = 0u;
+            header.frameIndex = params.frameIndex;
+            header.padding0 = 0u;
+            header.padding1 = 0u;
+            header.padding2 = 0u;
+            blasHeader[0] = header;
+        }
+        if (itemIndex < params.sceneInstanceCount) {
+            GPUDrivenStreamAssetInstanceBlas info = instanceBlas[itemIndex];
+            info.selectedClusterCount = 0u;
+            info.insertedClusterCount = 0u;
+            info.blasBuildIndex = kInvalidClusterIndex;
+            info.flags = 0u;
+            info.padding0 = 0u;
+            info.padding1 = 0u;
+            instanceBlas[itemIndex] = info;
+        }
+        return;
+    }
+
+    uint activeCount = min(activeHeader[0].activeGroupCount, activeHeader[0].activeGroupCapacity);
+    if (push.blasInputPhase == kBlasInputPhaseCount) {
+        if (itemIndex >= activeCount) {
+            return;
+        }
+        GPUDrivenStreamAssetActiveGroup group = activeGroups[itemIndex];
+        if (group.instanceIndex >= params.sceneInstanceCount ||
+            group.pageIndex >= params.scenePageCount ||
+            group.clusterCount == 0u ||
+            group.clusterCount > 32u) {
+            InterlockedAdd(blasHeader[0].overflowCount, 1u);
+            return;
+        }
+        GPUDrivenStreamAssetClasPageEntry page = clasPageTable[group.pageIndex];
+        if (page.state != kClasPageStateActive ||
+            page.addressOffset == kInvalidClusterIndex ||
+            group.clusterCount > page.clusterCount) {
+            InterlockedOr(instanceBlas[group.instanceIndex].flags, kBlasInstanceFallback);
+            return;
+        }
+        uint validMask = group.clusterCount == 32u
+            ? 0xffffffffu
+            : ((1u << group.clusterCount) - 1u);
+        uint selectedCount = countbits(group.clusterSelectionMask & validMask);
+        if (selectedCount != 0u) {
+            InterlockedAdd(instanceBlas[group.instanceIndex].selectedClusterCount, selectedCount);
+        }
+        return;
+    }
+
+    if (push.blasInputPhase == kBlasInputPhaseSetup) {
+        if (itemIndex >= params.sceneInstanceCount) {
+            return;
+        }
+        GPUDrivenStreamAssetInstanceBlas info = instanceBlas[itemIndex];
+        if (info.selectedClusterCount == 0u ||
+            (info.flags & kBlasInstanceFallback) != 0u) {
+            InterlockedOr(instanceBlas[itemIndex].flags, kBlasInstanceFallback);
+            return;
+        }
+        if (info.clusterReferenceCapacity == 0u ||
+            info.selectedClusterCount > info.clusterReferenceCapacity ||
+            info.clusterReferenceOffset >= push.blasClusterReferenceCapacity ||
+            info.selectedClusterCount > push.blasClusterReferenceCapacity - info.clusterReferenceOffset) {
+            InterlockedOr(
+                instanceBlas[itemIndex].flags,
+                kBlasInstanceFallback | kBlasInstanceOverflow);
+            InterlockedAdd(blasHeader[0].overflowCount, 1u);
+            return;
+        }
+
+        uint buildIndex;
+        InterlockedAdd(blasHeader[0].blasBuildCount, 1u, buildIndex);
+        uint ignored;
+        InterlockedAdd(blasHeader[0].clusterReferenceCount, info.selectedClusterCount, ignored);
+
+        uint byteAddressLow = info.clusterReferenceOffset << 3u;
+        uint byteAddressHigh = info.clusterReferenceOffset >> 29u;
+        uint referenceAddressLow = push.blasClusterReferenceAddressLow + byteAddressLow;
+        uint carry = referenceAddressLow < push.blasClusterReferenceAddressLow ? 1u : 0u;
+        GPUDrivenStreamAssetBlasBuildInfo buildInfo;
+        buildInfo.clusterReferencesCount = info.selectedClusterCount;
+        buildInfo.clusterReferencesStride = 8u;
+        buildInfo.clusterReferencesAddressLow = referenceAddressLow;
+        buildInfo.clusterReferencesAddressHigh =
+            push.blasClusterReferenceAddressHigh + byteAddressHigh + carry;
+        blasBuildInfos[buildIndex] = buildInfo;
+        instanceBlas[itemIndex].blasBuildIndex = buildIndex;
+        InterlockedOr(instanceBlas[itemIndex].flags, kBlasInstanceDynamic);
+        return;
+    }
+
+    if (push.blasInputPhase != kBlasInputPhaseInsert || itemIndex >= activeCount) {
+        return;
+    }
+
+    GPUDrivenStreamAssetActiveGroup group = activeGroups[itemIndex];
+    if (group.instanceIndex >= params.sceneInstanceCount ||
+        group.pageIndex >= params.scenePageCount ||
+        group.clusterCount == 0u ||
+        group.clusterCount > 32u) {
+        return;
+    }
+    GPUDrivenStreamAssetInstanceBlas info = instanceBlas[group.instanceIndex];
+    if ((info.flags & kBlasInstanceDynamic) == 0u ||
+        (info.flags & kBlasInstanceFallback) != 0u) {
+        return;
+    }
+    GPUDrivenStreamAssetClasPageEntry page = clasPageTable[group.pageIndex];
+    if (page.state != kClasPageStateActive ||
+        page.addressOffset == kInvalidClusterIndex ||
+        group.clusterCount > page.clusterCount) {
+        InterlockedOr(instanceBlas[group.instanceIndex].flags, kBlasInstanceFallback);
+        InterlockedAdd(blasHeader[0].overflowCount, 1u);
+        return;
+    }
+
+    uint validMask = group.clusterCount == 32u
+        ? 0xffffffffu
+        : ((1u << group.clusterCount) - 1u);
+    uint selectedMask = group.clusterSelectionMask & validMask;
+    for (uint clusterIndex = 0u; clusterIndex < group.clusterCount; ++clusterIndex) {
+        if ((selectedMask & (1u << clusterIndex)) == 0u) {
+            continue;
+        }
+        uint insertIndex;
+        InterlockedAdd(instanceBlas[group.instanceIndex].insertedClusterCount, 1u, insertIndex);
+        if (insertIndex >= info.selectedClusterCount || insertIndex >= info.clusterReferenceCapacity) {
+            InterlockedOr(instanceBlas[group.instanceIndex].flags, kBlasInstanceOverflow);
+            InterlockedAdd(blasHeader[0].overflowCount, 1u);
+            continue;
+        }
+        blasClusterReferences[info.clusterReferenceOffset + insertIndex] =
+            clasAddresses[page.addressOffset + clusterIndex];
     }
 }
 

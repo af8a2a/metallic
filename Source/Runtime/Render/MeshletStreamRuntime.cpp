@@ -1,11 +1,13 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
 
 #include "Runtime/Render/GAPI/Vulkan/VulkanMeshletStreamClas.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -17,6 +19,21 @@ namespace metallic::render {
 namespace {
 
 inline constexpr bool kDefaultReversedZ = true;
+
+#ifdef VK_NV_cluster_acceleration_structure
+static_assert(
+    sizeof(MeshletStreamGpuBlasBuildInfo) ==
+    sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV));
+static_assert(
+    offsetof(MeshletStreamGpuBlasBuildInfo, clusterReferencesCount) ==
+    offsetof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, clusterReferencesCount));
+static_assert(
+    offsetof(MeshletStreamGpuBlasBuildInfo, clusterReferencesStride) ==
+    offsetof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, clusterReferencesStride));
+static_assert(
+    offsetof(MeshletStreamGpuBlasBuildInfo, clusterReferencesAddressLow) ==
+    offsetof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, clusterReferences));
+#endif
 
 uint64_t alignUp(uint64_t value, uint64_t alignment)
 {
@@ -507,6 +524,99 @@ private:
     std::unique_ptr<ComputePipeline> activeBuildPipeline_;
 };
 
+class MeshletStreamRuntime::BlasInputPass {
+public:
+    Result initialize(Device& device, std::string& log)
+    {
+        Result result = createSlangShaderModule(
+            device,
+            kMeshletStreamShaderModuleName,
+            kMeshletStreamBlasInputEntryPoint,
+            blasInputShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        result = device.createComputePipeline(
+            ComputePipelineDesc{
+                .computeShader = blasInputShader_.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            },
+            blasInputPipeline_);
+        if (!result || blasInputPipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(MeshletStreamRuntime BLAS input)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
+    }
+
+    bool ready() const
+    {
+        return blasInputShader_ != nullptr && blasInputPipeline_ != nullptr;
+    }
+
+    Result dispatch(
+        CommandBuffer& commandBuffer,
+        BindlessHeap& bindlessHeap,
+        const MeshletStreamUserPush& push,
+        uint32_t threadCount,
+        Buffer& activeGroupBuffer,
+        ResourceState& activeGroupBufferState,
+        Buffer& activeHeaderBuffer,
+        ResourceState& activeHeaderBufferState,
+        Buffer& blasHeaderBuffer,
+        ResourceState& blasHeaderBufferState,
+        Buffer& instanceBlasBuffer,
+        ResourceState& instanceBlasBufferState,
+        Buffer& blasBuildInfoBuffer,
+        ResourceState& blasBuildInfoBufferState,
+        Buffer& blasClusterReferenceBuffer,
+        ResourceState& blasClusterReferenceBufferState)
+    {
+        if (threadCount == 0) {
+            return {};
+        }
+        if (!ready()) {
+            return makeError(Error::Failure);
+        }
+
+        transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General);
+        transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General);
+        transitionBuffer(commandBuffer, blasHeaderBuffer, blasHeaderBufferState, ResourceState::General);
+        transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General);
+        transitionBuffer(commandBuffer, blasBuildInfoBuffer, blasBuildInfoBufferState, ResourceState::General);
+        transitionBuffer(
+            commandBuffer,
+            blasClusterReferenceBuffer,
+            blasClusterReferenceBufferState,
+            ResourceState::General);
+        commandBuffer.bindBindlessHeap(bindlessHeap);
+        commandBuffer.bindComputePipeline(*blasInputPipeline_);
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
+        transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true);
+        transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true);
+        transitionBuffer(commandBuffer, blasHeaderBuffer, blasHeaderBufferState, ResourceState::General, true);
+        transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General, true);
+        transitionBuffer(commandBuffer, blasBuildInfoBuffer, blasBuildInfoBufferState, ResourceState::General, true);
+        transitionBuffer(
+            commandBuffer,
+            blasClusterReferenceBuffer,
+            blasClusterReferenceBufferState,
+            ResourceState::General,
+            true);
+        return {};
+    }
+
+private:
+    std::unique_ptr<ShaderModule> blasInputShader_;
+    std::unique_ptr<ComputePipeline> blasInputPipeline_;
+};
+
 MeshletStreamRuntime::MeshletStreamRuntime() = default;
 MeshletStreamRuntime::~MeshletStreamRuntime() = default;
 
@@ -665,6 +775,16 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         log = "MeshletStreamRuntime active group draw task count overflowed";
         return makeError(Error::Failure);
     }
+    if (clasPool_ != nullptr) {
+        const uint32_t activeClusterCapacity = drawTaskCount();
+        blasClusterReferenceCapacity_ = desc.maxBlasClusterReferences == 0
+            ? activeClusterCapacity
+            : std::min(desc.maxBlasClusterReferences, activeClusterCapacity);
+        if (blasClusterReferenceCapacity_ == 0) {
+            log = "MeshletStreamRuntime cluster RTX requires a non-zero BLAS cluster reference capacity";
+            return makeError(Error::InvalidArgument);
+        }
+    }
 
     const uint64_t maxUpdatePatches64 = std::max<uint64_t>(
         static_cast<uint64_t>(asset_.pageCount()) * 2ull,
@@ -763,6 +883,119 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
     traversalWorkBufferState_ = ResourceState::Undefined;
+    if (clasPool_ != nullptr) {
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = sizeof(MeshletStreamGpuBlasHeader),
+                .structureStride = sizeof(MeshletStreamGpuBlasHeader),
+                .usage = BufferUsageBits::Storage |
+                    BufferUsageBits::Indirect |
+                    BufferUsageBits::AccelerationStructureBuildInput |
+                    BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            blasHeaderBuffer_,
+            log,
+            "MeshletStreamRuntime BLAS header");
+        if (!result) {
+            return result;
+        }
+        blasHeaderBufferState_ = ResourceState::Undefined;
+
+        std::vector<MeshletStreamGpuInstanceBlas> instanceBlas(asset_.instanceCount());
+        std::vector<uint64_t> primitiveClusterCapacities(asset_.primitiveCount(), 0);
+        const std::span<const scene::MeshletStreamGroupInfo> groups = asset_.groups();
+        for (uint32_t primitiveIndex = 0; primitiveIndex < asset_.primitiveCount(); ++primitiveIndex) {
+            const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
+            uint64_t capacity = 0;
+            for (uint32_t localGroup = 0; localGroup < primitive.groupCount; ++localGroup) {
+                capacity += groups[primitive.groupOffset + localGroup].clusterCount;
+            }
+            primitiveClusterCapacities[primitiveIndex] = capacity;
+        }
+        uint32_t referenceOffset = 0;
+        for (uint32_t instanceIndex = 0; instanceIndex < asset_.instanceCount(); ++instanceIndex) {
+            const scene::MeshletStreamInstanceInfo& instance = asset_.instances()[instanceIndex];
+            if (instance.visible == 0 || instance.primitiveIndex >= primitiveClusterCapacities.size()) {
+                continue;
+            }
+            const uint64_t remaining = blasClusterReferenceCapacity_ - referenceOffset;
+            const uint32_t capacity = static_cast<uint32_t>(std::min(
+                primitiveClusterCapacities[instance.primitiveIndex],
+                remaining));
+            instanceBlas[instanceIndex].clusterReferenceOffset = referenceOffset;
+            instanceBlas[instanceIndex].clusterReferenceCapacity = capacity;
+            referenceOffset += capacity;
+            if (referenceOffset == blasClusterReferenceCapacity_) {
+                break;
+            }
+        }
+
+        result = createHostStorageBuffer(
+            device,
+            std::max<uint64_t>(
+                static_cast<uint64_t>(instanceBlas.size()) * sizeof(MeshletStreamGpuInstanceBlas),
+                sizeof(MeshletStreamGpuInstanceBlas)),
+            instanceBlasBuffer_,
+            log,
+            "MeshletStreamRuntime instance BLAS inputs");
+        if (!result) {
+            return result;
+        }
+        result = updateHostBuffer(
+            *instanceBlasBuffer_,
+            instanceBlas.data(),
+            static_cast<uint64_t>(instanceBlas.size()) * sizeof(MeshletStreamGpuInstanceBlas));
+        if (!result) {
+            log += resultMessage("updateHostBuffer(MeshletStreamRuntime instance BLAS inputs)", result);
+            return result;
+        }
+        instanceBlasBufferState_ = ResourceState::Undefined;
+
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = std::max<uint64_t>(
+                    static_cast<uint64_t>(asset_.instanceCount()) * sizeof(MeshletStreamGpuBlasBuildInfo),
+                    sizeof(MeshletStreamGpuBlasBuildInfo)),
+                .structureStride = sizeof(MeshletStreamGpuBlasBuildInfo),
+                .usage = BufferUsageBits::Storage |
+                    BufferUsageBits::AccelerationStructureBuildInput |
+                    BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            blasBuildInfoBuffer_,
+            log,
+            "MeshletStreamRuntime BLAS build infos");
+        if (!result) {
+            return result;
+        }
+        blasBuildInfoBufferState_ = ResourceState::Undefined;
+
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = static_cast<uint64_t>(blasClusterReferenceCapacity_) * sizeof(uint64_t),
+                .structureStride = sizeof(uint64_t),
+                .usage = BufferUsageBits::Storage |
+                    BufferUsageBits::AccelerationStructureBuildInput |
+                    BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            blasClusterReferenceBuffer_,
+            log,
+            "MeshletStreamRuntime BLAS cluster references");
+        if (!result) {
+            return result;
+        }
+        blasClusterReferenceBufferState_ = ResourceState::Undefined;
+        blasClusterReferenceAddress_ = vulkan::nativeBuffer(*blasClusterReferenceBuffer_).address;
+        if (blasClusterReferenceAddress_ == 0) {
+            log = "MeshletStreamRuntime BLAS cluster reference buffer has no device address";
+            return makeError(Error::Failure);
+        }
+    }
     result = createNamedBuffer(
         device,
         BufferDesc{
@@ -854,7 +1087,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         BindlessHeapDesc{
             .maxSamplers = 0,
             .maxSampledImages = 0,
-            .maxBuffers = 17,
+            .maxBuffers = clasPool_ != nullptr ? 23u : 17u,
         },
         bindlessHeap_);
     if (!result || bindlessHeap_ == nullptr) {
@@ -946,6 +1179,62 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (!result) {
         return result;
     }
+    if (clasPool_ != nullptr) {
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *clasPool_->clusterAddressBuffer(),
+            clasAddressHandle_,
+            log,
+            "meshlet stream CLAS addresses");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *clasPool_->pageTableBuffer(),
+            clasPageTableHandle_,
+            log,
+            "meshlet stream CLAS page table");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *blasHeaderBuffer_,
+            blasHeaderHandle_,
+            log,
+            "meshlet stream BLAS header");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *instanceBlasBuffer_,
+            instanceBlasHandle_,
+            log,
+            "meshlet stream instance BLAS inputs");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *blasBuildInfoBuffer_,
+            blasBuildInfoHandle_,
+            log,
+            "meshlet stream BLAS build infos");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *blasClusterReferenceBuffer_,
+            blasClusterReferenceHandle_,
+            log,
+            "meshlet stream BLAS cluster references");
+        if (!result) {
+            return result;
+        }
+    }
 
     updatePass_ = std::make_unique<UpdatePass>();
     result = updatePass_->initialize(device, *bindlessHeap_, updateByteSize, log);
@@ -961,6 +1250,13 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     result = activeBuildPass_->initialize(device, log);
     if (!result) {
         return result;
+    }
+    if (clasPool_ != nullptr) {
+        blasInputPass_ = std::make_unique<BlasInputPass>();
+        result = blasInputPass_->initialize(device, log);
+        if (!result) {
+            return result;
+        }
     }
 
     return {};
@@ -991,10 +1287,15 @@ void MeshletStreamRuntime::reset()
     drawIndirectBuffer_.reset();
     traversalHeaderBuffer_.reset();
     traversalWorkBuffer_.reset();
+    blasHeaderBuffer_.reset();
+    instanceBlasBuffer_.reset();
+    blasBuildInfoBuffer_.reset();
+    blasClusterReferenceBuffer_.reset();
     bindlessHeap_.reset();
     updatePass_.reset();
     traversalPass_.reset();
     activeBuildPass_.reset();
+    blasInputPass_.reset();
     clasPool_.reset();
     pageHandle_ = {};
     activeGroupHandle_ = {};
@@ -1012,6 +1313,12 @@ void MeshletStreamRuntime::reset()
     drawIndirectHandle_ = {};
     traversalHeaderHandle_ = {};
     traversalWorkHandle_ = {};
+    clasAddressHandle_ = {};
+    clasPageTableHandle_ = {};
+    blasHeaderHandle_ = {};
+    instanceBlasHandle_ = {};
+    blasBuildInfoHandle_ = {};
+    blasClusterReferenceHandle_ = {};
     pageBufferState_ = ResourceState::Undefined;
     activeGroupBufferState_ = ResourceState::Undefined;
     activeHeaderBufferState_ = ResourceState::Undefined;
@@ -1020,6 +1327,10 @@ void MeshletStreamRuntime::reset()
     drawIndirectBufferState_ = ResourceState::Undefined;
     traversalHeaderBufferState_ = ResourceState::Undefined;
     traversalWorkBufferState_ = ResourceState::Undefined;
+    blasHeaderBufferState_ = ResourceState::Undefined;
+    instanceBlasBufferState_ = ResourceState::Undefined;
+    blasBuildInfoBufferState_ = ResourceState::Undefined;
+    blasClusterReferenceBufferState_ = ResourceState::Undefined;
     pageTableInitialized_ = false;
     requestReadbackValid_ = false;
     frameIndex_ = 0;
@@ -1034,6 +1345,8 @@ void MeshletStreamRuntime::reset()
     maxPrimitiveGroupCount_ = 0;
     traversalWorkerCount_ = 0;
     traversalWorkCapacity_ = 0;
+    blasClusterReferenceCapacity_ = 0;
+    blasClusterReferenceAddress_ = 0;
     currentFrameUploadCount_ = 0;
 }
 
@@ -1066,7 +1379,14 @@ bool MeshletStreamRuntime::ready() const
         drawIndirectBuffer_ != nullptr &&
         traversalHeaderBuffer_ != nullptr &&
         traversalWorkBuffer_ != nullptr &&
-        (clasPool_ == nullptr || clasPool_->ready());
+        (clasPool_ == nullptr ||
+            (clasPool_->ready() &&
+                blasInputPass_ != nullptr &&
+                blasInputPass_->ready() &&
+                blasHeaderBuffer_ != nullptr &&
+                instanceBlasBuffer_ != nullptr &&
+                blasBuildInfoBuffer_ != nullptr &&
+                blasClusterReferenceBuffer_ != nullptr));
 }
 
 Result MeshletStreamRuntime::cmdBeginFrame(
@@ -1151,11 +1471,14 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
             });
         }
     }
-    if (clasBuilds.empty()) {
-        return {};
+    if (!clasBuilds.empty()) {
+        std::string clasLog;
+        result = clasPool_->cmdBuildPages(commandBuffer, *pageBuffer_, clasBuilds, clasLog);
+        if (!result) {
+            return result;
+        }
     }
-    std::string clasLog;
-    return clasPool_->cmdBuildPages(commandBuffer, *pageBuffer_, clasBuilds, clasLog);
+    return buildBlasInputs(commandBuffer);
 }
 
 Result MeshletStreamRuntime::cmdPostTraversal(CommandBuffer& commandBuffer)
@@ -1201,6 +1524,17 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
         .drawIndirectBuffer = drawIndirectHandle_.index,
         .traversalHeaderBuffer = traversalHeaderHandle_.index,
         .traversalWorkBuffer = traversalWorkHandle_.index,
+        .clasAddressBuffer = clasAddressHandle_.valid() ? clasAddressHandle_.index : 0u,
+        .clasPageTableBuffer = clasPageTableHandle_.valid() ? clasPageTableHandle_.index : 0u,
+        .blasHeaderBuffer = blasHeaderHandle_.valid() ? blasHeaderHandle_.index : 0u,
+        .instanceBlasBuffer = instanceBlasHandle_.valid() ? instanceBlasHandle_.index : 0u,
+        .blasBuildInfoBuffer = blasBuildInfoHandle_.valid() ? blasBuildInfoHandle_.index : 0u,
+        .blasClusterReferenceBuffer = blasClusterReferenceHandle_.valid()
+            ? blasClusterReferenceHandle_.index
+            : 0u,
+        .blasClusterReferenceAddressLow = static_cast<uint32_t>(blasClusterReferenceAddress_),
+        .blasClusterReferenceAddressHigh = static_cast<uint32_t>(blasClusterReferenceAddress_ >> 32u),
+        .blasClusterReferenceCapacity = blasClusterReferenceCapacity_,
     };
 }
 
@@ -1672,6 +2006,78 @@ Result MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer)
         traversalHeaderBufferState_,
         *traversalWorkBuffer_,
         traversalWorkBufferState_);
+}
+
+Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
+{
+    if (blasInputPass_ == nullptr ||
+        !blasInputPass_->ready() ||
+        bindlessHeap_ == nullptr ||
+        clasPool_ == nullptr ||
+        blasHeaderBuffer_ == nullptr ||
+        instanceBlasBuffer_ == nullptr ||
+        blasBuildInfoBuffer_ == nullptr ||
+        blasClusterReferenceBuffer_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const VkCommandBuffer nativeCommandBuffer = vulkan::nativeCommandBuffer(commandBuffer);
+    if (nativeCommandBuffer == VK_NULL_HANDLE) {
+        return makeError(Error::InvalidArgument);
+    }
+    const VkMemoryBarrier2 hostBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &hostBarrier,
+    };
+    vkCmdPipelineBarrier2(nativeCommandBuffer, &dependency);
+
+    auto dispatchPhase = [this, &commandBuffer](uint32_t phase, uint32_t threadCount) {
+        MeshletStreamUserPush push = userPush();
+        push.blasInputPhase = phase;
+        return blasInputPass_->dispatch(
+            commandBuffer,
+            *bindlessHeap_,
+            push,
+            threadCount,
+            *activeGroupBuffer_,
+            activeGroupBufferState_,
+            *activeHeaderBuffer_,
+            activeHeaderBufferState_,
+            *blasHeaderBuffer_,
+            blasHeaderBufferState_,
+            *instanceBlasBuffer_,
+            instanceBlasBufferState_,
+            *blasBuildInfoBuffer_,
+            blasBuildInfoBufferState_,
+            *blasClusterReferenceBuffer_,
+            blasClusterReferenceBufferState_);
+    };
+
+    Result result = dispatchPhase(
+        kMeshletStreamBlasInputResetPhase,
+        std::max(asset_.instanceCount(), 1u));
+    if (!result) {
+        return result;
+    }
+    result = dispatchPhase(kMeshletStreamBlasInputCountPhase, maxActiveGroups_);
+    if (!result) {
+        return result;
+    }
+    result = dispatchPhase(
+        kMeshletStreamBlasInputSetupPhase,
+        std::max(asset_.instanceCount(), 1u));
+    if (!result) {
+        return result;
+    }
+    return dispatchPhase(kMeshletStreamBlasInputInsertPhase, maxActiveGroups_);
 }
 
 Result MeshletStreamRuntime::transitionPageBufferForTraversal(CommandBuffer& commandBuffer)

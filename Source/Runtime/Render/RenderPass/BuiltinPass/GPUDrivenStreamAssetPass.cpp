@@ -181,6 +181,7 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
         .enableClusterRtx = boolProperty(properties, "enableClusterRtx", false),
         .maxClasBytes = uint64Property(properties, "maxClasBytes", 512ull * 1024ull * 1024ull),
         .maxClasBuildClusters = uintProperty(properties, "maxClasBuildClusters", 0),
+        .maxBlasClusterReferences = uintProperty(properties, "maxBlasClusterReferences", 0),
     };
 }
 
