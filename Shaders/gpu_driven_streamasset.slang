@@ -22,6 +22,8 @@ static const uint kBlasInputPhaseCount = 1u;
 static const uint kBlasInputPhaseSetup = 2u;
 static const uint kBlasInputPhaseInsert = 3u;
 static const uint kClasPageStateActive = 1u;
+static const uint kClasPageClusterCountMask = 0x0000ffffu;
+static const uint kClasPageStateShift = 16u;
 static const uint kBlasInstanceFallback = 1u << 0u;
 static const uint kBlasInstanceDynamic = 1u << 1u;
 static const uint kBlasInstanceOverflow = 1u << 2u;
@@ -205,10 +207,18 @@ struct GPUDrivenStreamAssetTraversalWorkItem
 struct GPUDrivenStreamAssetClasPageEntry
 {
     uint addressOffset;
-    uint clusterCount;
-    uint state;
-    uint generation;
+    uint metadata;
 };
+
+uint clasPageClusterCount(GPUDrivenStreamAssetClasPageEntry entry)
+{
+    return entry.metadata & kClasPageClusterCountMask;
+}
+
+uint clasPageState(GPUDrivenStreamAssetClasPageEntry entry)
+{
+    return entry.metadata >> kClasPageStateShift;
+}
 
 struct GPUDrivenStreamAssetBlasHeader
 {
@@ -1587,9 +1597,9 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
             return;
         }
         GPUDrivenStreamAssetClasPageEntry page = clasPageTable[group.pageIndex];
-        if (page.state != kClasPageStateActive ||
+        if (clasPageState(page) != kClasPageStateActive ||
             page.addressOffset == kInvalidClusterIndex ||
-            group.clusterCount > page.clusterCount) {
+            group.clusterCount > clasPageClusterCount(page)) {
             InterlockedOr(instanceBlas[group.instanceIndex].flags, kBlasInstanceFallback);
             return;
         }
@@ -1662,9 +1672,9 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         return;
     }
     GPUDrivenStreamAssetClasPageEntry page = clasPageTable[group.pageIndex];
-    if (page.state != kClasPageStateActive ||
+    if (clasPageState(page) != kClasPageStateActive ||
         page.addressOffset == kInvalidClusterIndex ||
-        group.clusterCount > page.clusterCount) {
+        group.clusterCount > clasPageClusterCount(page)) {
         InterlockedOr(instanceBlas[group.instanceIndex].flags, kBlasInstanceFallback);
         InterlockedAdd(blasHeader[0].overflowCount, 1u);
         return;

@@ -428,9 +428,10 @@ public:
             sizeof(gpuPageEntry));
         pool.pageTableBuffer()->unmap();
         if (gpuPageEntry.addressOffset != pool.pageClasAddressOffset(pageIndex) ||
-            gpuPageEntry.clusterCount != asset.pages()[pageIndex].clusterCount ||
-            gpuPageEntry.state !=
-                static_cast<uint32_t>(render::vulkan::MeshletStreamClasPageState::Active)) {
+            render::vulkan::meshletStreamClasPageClusterCount(gpuPageEntry) !=
+                asset.pages()[pageIndex].clusterCount ||
+            render::vulkan::meshletStreamClasPageState(gpuPageEntry) !=
+                render::vulkan::MeshletStreamClasPageState::Active) {
             return RhiTestResult::fail("stream CLAS GPU page table did not expose the built page");
         }
 
@@ -452,8 +453,8 @@ public:
                 static_cast<uint64_t>(pageIndex) * sizeof(gpuPageEntry),
             sizeof(gpuPageEntry));
         pool.pageTableBuffer()->unmap();
-        if (gpuPageEntry.state !=
-            static_cast<uint32_t>(render::vulkan::MeshletStreamClasPageState::Retiring)) {
+        if (render::vulkan::meshletStreamClasPageState(gpuPageEntry) !=
+            render::vulkan::MeshletStreamClasPageState::Retiring) {
             return RhiTestResult::fail("stream CLAS GPU page table did not hide the retired page");
         }
         pool.beginFrame();
@@ -478,9 +479,9 @@ public:
             sizeof(gpuPageEntry));
         pool.pageTableBuffer()->unmap();
         if (gpuPageEntry.addressOffset != render::vulkan::kInvalidMeshletStreamClasAddressOffset ||
-            gpuPageEntry.clusterCount != 0 ||
-            gpuPageEntry.state !=
-                static_cast<uint32_t>(render::vulkan::MeshletStreamClasPageState::Empty)) {
+            render::vulkan::meshletStreamClasPageClusterCount(gpuPageEntry) != 0 ||
+            render::vulkan::meshletStreamClasPageState(gpuPageEntry) !=
+                render::vulkan::MeshletStreamClasPageState::Empty) {
             return RhiTestResult::fail("stream CLAS GPU page table did not clear the released page");
         }
 

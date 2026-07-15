@@ -18,14 +18,34 @@ enum class MeshletStreamClasPageState : uint32_t {
     Retiring = 2,
 };
 
+inline constexpr uint32_t kMeshletStreamClasClusterCountMask = 0x0000ffffu;
+inline constexpr uint32_t kMeshletStreamClasPageStateShift = 16u;
+
 struct MeshletStreamClasPageEntry {
     uint32_t addressOffset = kInvalidMeshletStreamClasAddressOffset;
-    uint32_t clusterCount = 0;
-    uint32_t state = static_cast<uint32_t>(MeshletStreamClasPageState::Empty);
-    uint32_t generation = 0;
+    uint32_t metadata = 0;
 };
 
-static_assert(sizeof(MeshletStreamClasPageEntry) == 16);
+static_assert(sizeof(MeshletStreamClasPageEntry) == 8);
+
+inline constexpr uint32_t packMeshletStreamClasPageMetadata(
+    uint32_t clusterCount,
+    MeshletStreamClasPageState state)
+{
+    return (clusterCount & kMeshletStreamClasClusterCountMask) |
+        (static_cast<uint32_t>(state) << kMeshletStreamClasPageStateShift);
+}
+
+inline constexpr uint32_t meshletStreamClasPageClusterCount(const MeshletStreamClasPageEntry& entry)
+{
+    return entry.metadata & kMeshletStreamClasClusterCountMask;
+}
+
+inline constexpr MeshletStreamClasPageState meshletStreamClasPageState(
+    const MeshletStreamClasPageEntry& entry)
+{
+    return static_cast<MeshletStreamClasPageState>(entry.metadata >> kMeshletStreamClasPageStateShift);
+}
 
 struct MeshletStreamClasPoolDesc {
     const scene::MeshletStreamAsset* asset = nullptr;

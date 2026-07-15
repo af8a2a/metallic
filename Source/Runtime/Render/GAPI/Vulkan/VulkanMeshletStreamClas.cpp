@@ -183,11 +183,10 @@ struct MeshletStreamClasPool::Impl {
         auto pageIter = pages.find(pageIndex);
         if (pageIter != pages.end()) {
             const PageEntry& page = pageIter->second;
-            entry.generation = page.generation;
             if (page.state != PageState::Empty) {
                 entry.addressOffset = page.addressOffset;
-                entry.clusterCount = page.clusterCount;
-                entry.state = static_cast<uint32_t>(
+                entry.metadata = packMeshletStreamClasPageMetadata(
+                    page.clusterCount,
                     page.state == PageState::Built
                         ? MeshletStreamClasPageState::Active
                         : MeshletStreamClasPageState::Retiring);
@@ -476,8 +475,12 @@ Result MeshletStreamClasPool::initialize(
     const uint32_t clusterIdStride = desc.asset->maxPageClusters();
     const uint64_t clusterIdCapacity =
         static_cast<uint64_t>(desc.asset->pageCount()) * clusterIdStride;
-    if (clusterIdStride == 0 ||
-        clusterIdCapacity > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1ull) {
+    if (clusterIdStride == 0 || clusterIdStride > kMeshletStreamClasClusterCountMask) {
+        log = "MeshletStreamClasPool page cluster count exceeds packed GPU metadata";
+        clear();
+        return makeError(Error::InvalidArgument);
+    }
+    if (clusterIdCapacity > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1ull) {
         log = "MeshletStreamClasPool page-strided cluster IDs exceed the 32-bit Vulkan limit";
         clear();
         return makeError(Error::InvalidArgument);
