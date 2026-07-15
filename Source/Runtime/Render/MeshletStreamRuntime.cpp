@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -34,6 +35,10 @@ static_assert(
 static_assert(
     offsetof(MeshletStreamGpuBlasBuildInfo, clusterReferencesAddressLow) ==
     offsetof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, clusterReferences));
+static_assert(sizeof(MeshletStreamGpuTlasInstance) == sizeof(VkAccelerationStructureInstanceKHR));
+static_assert(
+    offsetof(MeshletStreamGpuTlasInstance, accelerationStructureReferenceLow) ==
+    offsetof(VkAccelerationStructureInstanceKHR, accelerationStructureReference));
 #endif
 
 uint64_t alignUp(uint64_t value, uint64_t alignment)
@@ -88,6 +93,24 @@ uint64_t clusterBottomLevelAlignment(VkPhysicalDevice physicalDevice)
     (void)physicalDevice;
     return 256;
 #endif
+}
+
+uint64_t accelerationStructureScratchAlignment(VkPhysicalDevice physicalDevice)
+{
+    if (physicalDevice == VK_NULL_HANDLE) {
+        return 256;
+    }
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationProperties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
+    };
+    VkPhysicalDeviceProperties2 properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &accelerationProperties,
+    };
+    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+    return accelerationProperties.minAccelerationStructureScratchOffsetAlignment != 0
+        ? accelerationProperties.minAccelerationStructureScratchOffsetAlignment
+        : 256;
 }
 
 std::string resultMessage(std::string_view label, const Result& result)
@@ -664,8 +687,77 @@ private:
     std::unique_ptr<ComputePipeline> blasInputPipeline_;
 };
 
+class MeshletStreamRuntime::TlasInputPass {
+public:
+    Result initialize(Device& device, std::string& log)
+    {
+        Result result = createSlangShaderModule(
+            device,
+            kMeshletStreamShaderModuleName,
+            kMeshletStreamTlasInputEntryPoint,
+            tlasInputShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+        result = device.createComputePipeline(
+            ComputePipelineDesc{
+                .computeShader = tlasInputShader_.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            },
+            tlasInputPipeline_);
+        if (!result || tlasInputPipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(MeshletStreamRuntime TLAS input)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
+    }
+
+    bool ready() const
+    {
+        return tlasInputShader_ != nullptr && tlasInputPipeline_ != nullptr;
+    }
+
+    Result dispatch(
+        CommandBuffer& commandBuffer,
+        BindlessHeap& bindlessHeap,
+        const MeshletStreamUserPush& push,
+        uint32_t threadCount,
+        Buffer& instanceBlasBuffer,
+        ResourceState& instanceBlasBufferState,
+        Buffer& tlasInstanceBuffer,
+        ResourceState& tlasInstanceBufferState)
+    {
+        if (threadCount == 0) {
+            return {};
+        }
+        if (!ready()) {
+            return makeError(Error::Failure);
+        }
+        transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General);
+        transitionBuffer(commandBuffer, tlasInstanceBuffer, tlasInstanceBufferState, ResourceState::General);
+        commandBuffer.bindBindlessHeap(bindlessHeap);
+        commandBuffer.bindComputePipeline(*tlasInputPipeline_);
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
+        transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General, true);
+        transitionBuffer(commandBuffer, tlasInstanceBuffer, tlasInstanceBufferState, ResourceState::General, true);
+        return {};
+    }
+
+private:
+    std::unique_ptr<ShaderModule> tlasInputShader_;
+    std::unique_ptr<ComputePipeline> tlasInputPipeline_;
+};
+
 MeshletStreamRuntime::MeshletStreamRuntime() = default;
-MeshletStreamRuntime::~MeshletStreamRuntime() = default;
+MeshletStreamRuntime::~MeshletStreamRuntime()
+{
+    reset();
+}
 
 Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log)
 {
@@ -1376,6 +1468,129 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             log = "MeshletStreamRuntime fallback BLAS buffers have no device addresses";
             return makeError(Error::Failure);
         }
+
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = static_cast<uint64_t>(asset_.instanceCount()) * sizeof(MeshletStreamGpuTlasInstance),
+                .structureStride = sizeof(MeshletStreamGpuTlasInstance),
+                .usage = BufferUsageBits::Storage |
+                    BufferUsageBits::AccelerationStructureBuildInput |
+                    BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            tlasInstanceBuffer_,
+            log,
+            "MeshletStreamRuntime TLAS instances");
+        if (!result) {
+            return result;
+        }
+        tlasInstanceBufferState_ = ResourceState::Undefined;
+        const vulkan::NativeBuffer nativeTlasInstances =
+            vulkan::nativeBuffer(*tlasInstanceBuffer_);
+        if (nativeTlasInstances.address == 0) {
+            log = "MeshletStreamRuntime TLAS instance buffer has no device address";
+            return makeError(Error::Failure);
+        }
+
+        VkAccelerationStructureGeometryKHR tlasGeometry{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+            .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR,
+            .geometry = {.instances = VkAccelerationStructureGeometryInstancesDataKHR{
+                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+                .arrayOfPointers = VK_FALSE,
+                .data = {.deviceAddress = nativeTlasInstances.address},
+            }},
+        };
+        VkAccelerationStructureBuildGeometryInfoKHR tlasBuildInfo{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+            .type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+            .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+            .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+            .geometryCount = 1,
+            .pGeometries = &tlasGeometry,
+        };
+        const uint32_t tlasInstanceCount = asset_.instanceCount();
+        VkAccelerationStructureBuildSizesInfoKHR tlasSizes{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+        };
+        vkGetAccelerationStructureBuildSizesKHR(
+            nativeDevice.device,
+            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+            &tlasBuildInfo,
+            &tlasInstanceCount,
+            &tlasSizes);
+        if (tlasSizes.accelerationStructureSize == 0 || tlasSizes.buildScratchSize == 0) {
+            log = "MeshletStreamRuntime TLAS build size query returned zero";
+            return makeError(Error::Failure);
+        }
+
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = tlasSizes.accelerationStructureSize,
+                .usage = BufferUsageBits::AccelerationStructureStorage |
+                    BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            tlasStorageBuffer_,
+            log,
+            "MeshletStreamRuntime TLAS storage");
+        if (!result) {
+            return result;
+        }
+        const vulkan::NativeBuffer nativeTlasStorage =
+            vulkan::nativeBuffer(*tlasStorageBuffer_);
+        if (nativeTlasStorage.buffer == VK_NULL_HANDLE) {
+            log = "MeshletStreamRuntime TLAS storage buffer is unavailable";
+            return makeError(Error::Failure);
+        }
+
+        const uint64_t tlasScratchAlignment =
+            accelerationStructureScratchAlignment(nativeDevice.physicalDevice);
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = tlasSizes.buildScratchSize + tlasScratchAlignment - 1u,
+                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            tlasScratchBuffer_,
+            log,
+            "MeshletStreamRuntime TLAS scratch");
+        if (!result) {
+            return result;
+        }
+        tlasScratchAddress_ = alignUp(
+            vulkan::nativeBuffer(*tlasScratchBuffer_).address,
+            tlasScratchAlignment);
+        if (tlasScratchAddress_ == 0) {
+            log = "MeshletStreamRuntime TLAS scratch buffer has no device address";
+            return makeError(Error::Failure);
+        }
+
+        VkAccelerationStructureCreateInfoKHR tlasCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
+            .buffer = nativeTlasStorage.buffer,
+            .offset = 0,
+            .size = tlasSizes.accelerationStructureSize,
+            .type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        };
+        VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
+        const VkResult vkResult = vkCreateAccelerationStructureKHR(
+            nativeDevice.device,
+            &tlasCreateInfo,
+            nullptr,
+            &tlas);
+        if (vkResult != VK_SUCCESS || tlas == VK_NULL_HANDLE) {
+            log = "vkCreateAccelerationStructureKHR(MeshletStreamRuntime TLAS) returned " +
+                std::to_string(static_cast<int>(vkResult));
+            return makeError(Error::Failure);
+        }
+        static_assert(sizeof(tlas) == sizeof(tlasHandle_));
+        static_assert(sizeof(nativeDevice.device) == sizeof(nativeDeviceHandle_));
+        tlasHandle_ = std::bit_cast<uint64_t>(tlas);
+        nativeDeviceHandle_ = std::bit_cast<uint64_t>(nativeDevice.device);
     }
     result = createNamedBuffer(
         device,
@@ -1468,7 +1683,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         BindlessHeapDesc{
             .maxSamplers = 0,
             .maxSampledImages = 0,
-            .maxBuffers = clasPool_ != nullptr ? 24u : 17u,
+            .maxBuffers = clasPool_ != nullptr ? 26u : 17u,
         },
         bindlessHeap_);
     if (!result || bindlessHeap_ == nullptr) {
@@ -1624,6 +1839,24 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!result) {
             return result;
         }
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *blasAddressBuffer_,
+            dynamicBlasAddressHandle_,
+            log,
+            "meshlet stream dynamic BLAS addresses");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *tlasInstanceBuffer_,
+            tlasInstanceHandle_,
+            log,
+            "meshlet stream TLAS instances");
+        if (!result) {
+            return result;
+        }
     }
 
     updatePass_ = std::make_unique<UpdatePass>();
@@ -1647,6 +1880,11 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!result) {
             return result;
         }
+        tlasInputPass_ = std::make_unique<TlasInputPass>();
+        result = tlasInputPass_->initialize(device, log);
+        if (!result) {
+            return result;
+        }
     }
 
     return {};
@@ -1654,6 +1892,16 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
 
 void MeshletStreamRuntime::reset()
 {
+    if (nativeDeviceHandle_ != 0 && tlasHandle_ != 0) {
+        const VkDevice device = std::bit_cast<VkDevice>(nativeDeviceHandle_);
+        const VkAccelerationStructureKHR tlas =
+            std::bit_cast<VkAccelerationStructureKHR>(tlasHandle_);
+        volkLoadDevice(device);
+        vkDestroyAccelerationStructureKHR(device, tlas, nullptr);
+    }
+    tlasHandle_ = 0;
+    nativeDeviceHandle_ = 0;
+    tlasBuilt_ = false;
     residency_.reset();
     asset_.close();
     drawBounds_.reset();
@@ -1691,11 +1939,15 @@ void MeshletStreamRuntime::reset()
     fallbackBlasBuildInfoBuffer_.reset();
     fallbackBlasDestinationBuffer_.reset();
     fallbackBlasAddressBuffer_.reset();
+    tlasInstanceBuffer_.reset();
+    tlasStorageBuffer_.reset();
+    tlasScratchBuffer_.reset();
     bindlessHeap_.reset();
     updatePass_.reset();
     traversalPass_.reset();
     activeBuildPass_.reset();
     blasInputPass_.reset();
+    tlasInputPass_.reset();
     clasPool_.reset();
     pageHandle_ = {};
     activeGroupHandle_ = {};
@@ -1720,6 +1972,8 @@ void MeshletStreamRuntime::reset()
     blasBuildInfoHandle_ = {};
     blasClusterReferenceHandle_ = {};
     fallbackBlasAddressHandle_ = {};
+    dynamicBlasAddressHandle_ = {};
+    tlasInstanceHandle_ = {};
     pageBufferState_ = ResourceState::Undefined;
     activeGroupBufferState_ = ResourceState::Undefined;
     activeHeaderBufferState_ = ResourceState::Undefined;
@@ -1732,6 +1986,7 @@ void MeshletStreamRuntime::reset()
     instanceBlasBufferState_ = ResourceState::Undefined;
     blasBuildInfoBufferState_ = ResourceState::Undefined;
     blasClusterReferenceBufferState_ = ResourceState::Undefined;
+    tlasInstanceBufferState_ = ResourceState::Undefined;
     pageTableInitialized_ = false;
     requestReadbackValid_ = false;
     frameIndex_ = 0;
@@ -1753,6 +2008,7 @@ void MeshletStreamRuntime::reset()
     blasStorageAddress_ = 0;
     blasScratchAddress_ = 0;
     fallbackBlasScratchAddress_ = 0;
+    tlasScratchAddress_ = 0;
     fallbackBlasReferenceOffsets_.clear();
     fallbackBlasReferenceCounts_.clear();
     fallbackBlasStorageOffsets_.clear();
@@ -1793,6 +2049,8 @@ bool MeshletStreamRuntime::ready() const
             (clasPool_->ready() &&
                 blasInputPass_ != nullptr &&
                 blasInputPass_->ready() &&
+                tlasInputPass_ != nullptr &&
+                tlasInputPass_->ready() &&
                 blasHeaderBuffer_ != nullptr &&
                 instanceBlasBuffer_ != nullptr &&
                 blasBuildInfoBuffer_ != nullptr &&
@@ -1806,7 +2064,16 @@ bool MeshletStreamRuntime::ready() const
                 fallbackBlasReferenceBuffer_ != nullptr &&
                 fallbackBlasBuildInfoBuffer_ != nullptr &&
                 fallbackBlasDestinationBuffer_ != nullptr &&
-                fallbackBlasAddressBuffer_ != nullptr));
+                fallbackBlasAddressBuffer_ != nullptr &&
+                tlasInstanceBuffer_ != nullptr &&
+                tlasStorageBuffer_ != nullptr &&
+                tlasScratchBuffer_ != nullptr &&
+                tlasHandle_ != 0));
+}
+
+uint64_t MeshletStreamRuntime::tlasHandle() const
+{
+    return tlasBuilt_ ? tlasHandle_ : 0;
 }
 
 Result MeshletStreamRuntime::cmdBeginFrame(
@@ -1906,7 +2173,15 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
     if (!result) {
         return result;
     }
-    return cmdBuildBlas(commandBuffer);
+    result = cmdBuildBlas(commandBuffer);
+    if (!result) {
+        return result;
+    }
+    result = buildTlasInstances(commandBuffer);
+    if (!result) {
+        return result;
+    }
+    return cmdBuildTlas(commandBuffer);
 }
 
 Result MeshletStreamRuntime::cmdPostTraversal(CommandBuffer& commandBuffer)
@@ -1963,6 +2238,10 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
         .fallbackBlasAddressBuffer = fallbackBlasAddressHandle_.valid()
             ? fallbackBlasAddressHandle_.index
             : 0u,
+        .dynamicBlasAddressBuffer = dynamicBlasAddressHandle_.valid()
+            ? dynamicBlasAddressHandle_.index
+            : 0u,
+        .tlasInstanceBuffer = tlasInstanceHandle_.valid() ? tlasInstanceHandle_.index : 0u,
     };
 }
 
@@ -2784,6 +3063,118 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
     }
     return {};
 #endif
+}
+
+Result MeshletStreamRuntime::buildTlasInstances(CommandBuffer& commandBuffer)
+{
+    if (tlasInputPass_ == nullptr ||
+        !tlasInputPass_->ready() ||
+        bindlessHeap_ == nullptr ||
+        instanceBlasBuffer_ == nullptr ||
+        tlasInstanceBuffer_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    const VkCommandBuffer nativeCommands = vulkan::nativeCommandBuffer(commandBuffer);
+    if (nativeCommands == VK_NULL_HANDLE) {
+        return makeError(Error::InvalidArgument);
+    }
+    const VkMemoryBarrier2 hostBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &hostBarrier,
+    };
+    vkCmdPipelineBarrier2(nativeCommands, &dependency);
+    return tlasInputPass_->dispatch(
+        commandBuffer,
+        *bindlessHeap_,
+        userPush(),
+        asset_.instanceCount(),
+        *instanceBlasBuffer_,
+        instanceBlasBufferState_,
+        *tlasInstanceBuffer_,
+        tlasInstanceBufferState_);
+}
+
+Result MeshletStreamRuntime::cmdBuildTlas(CommandBuffer& commandBuffer)
+{
+    if (tlasHandle_ == 0 ||
+        tlasScratchAddress_ == 0 ||
+        tlasInstanceBuffer_ == nullptr ||
+        asset_.instanceCount() == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    const VkCommandBuffer nativeCommands = vulkan::nativeCommandBuffer(commandBuffer);
+    const vulkan::NativeBuffer nativeInstances = vulkan::nativeBuffer(*tlasInstanceBuffer_);
+    if (nativeCommands == VK_NULL_HANDLE || nativeInstances.address == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const VkMemoryBarrier2 inputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+    };
+    const VkDependencyInfo inputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &inputBarrier,
+    };
+    vkCmdPipelineBarrier2(nativeCommands, &inputDependency);
+
+    VkAccelerationStructureGeometryKHR geometry{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+        .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR,
+        .geometry = {.instances = VkAccelerationStructureGeometryInstancesDataKHR{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+            .arrayOfPointers = VK_FALSE,
+            .data = {.deviceAddress = nativeInstances.address},
+        }},
+    };
+    const VkAccelerationStructureKHR tlas =
+        std::bit_cast<VkAccelerationStructureKHR>(tlasHandle_);
+    const VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+        .type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+        .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+        .dstAccelerationStructure = tlas,
+        .geometryCount = 1,
+        .pGeometries = &geometry,
+        .scratchData = {.deviceAddress = tlasScratchAddress_},
+    };
+    const VkAccelerationStructureBuildRangeInfoKHR range{
+        .primitiveCount = asset_.instanceCount(),
+    };
+    const VkAccelerationStructureBuildRangeInfoKHR* ranges[] = {&range};
+    vkCmdBuildAccelerationStructuresKHR(nativeCommands, 1, &buildInfo, ranges);
+
+    const VkMemoryBarrier2 outputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_SHADER_READ_BIT,
+    };
+    const VkDependencyInfo outputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &outputBarrier,
+    };
+    vkCmdPipelineBarrier2(nativeCommands, &outputDependency);
+    tlasBuilt_ = true;
+    return {};
 }
 
 Result MeshletStreamRuntime::transitionPageBufferForTraversal(CommandBuffer& commandBuffer)

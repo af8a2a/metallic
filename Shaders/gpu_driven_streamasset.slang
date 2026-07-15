@@ -68,6 +68,8 @@ struct GPUDrivenStreamAssetPush
     uint blasBuildInfoBuffer;
     uint blasClusterReferenceBuffer;
     uint fallbackBlasAddressBuffer;
+    uint dynamicBlasAddressBuffer;
+    uint tlasInstanceBuffer;
     uint traversalPhase;
     uint activeBuildPhase;
 };
@@ -252,6 +254,17 @@ struct GPUDrivenStreamAssetBlasBuildInfo
     uint clusterReferencesStride;
     uint clusterReferencesAddressLow;
     uint clusterReferencesAddressHigh;
+};
+
+struct GPUDrivenStreamAssetTlasInstance
+{
+    float4 transform0;
+    float4 transform1;
+    float4 transform2;
+    uint customIndexMask;
+    uint shaderBindingTableFlags;
+    uint accelerationStructureReferenceLow;
+    uint accelerationStructureReferenceHigh;
 };
 
 struct GPUDrivenStreamAssetPageTableEntry
@@ -1707,6 +1720,69 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         blasClusterReferences[info.clusterReferenceOffset + insertIndex] =
             clasAddresses[page.addressOffset + clusterIndex];
     }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void gpuDrivenStreamAssetBuildTlasInputMain(
+    uint3 dispatchThreadID : SV_DispatchThreadID,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instanceHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(push.bufferShaderIndexBase + push.instanceBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBlas>> instanceBlasHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBlas>>(uint2(push.bufferShaderIndexBase + push.instanceBlasBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint2>> fallbackBlasAddressHandle =
+        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.bufferShaderIndexBase + push.fallbackBlasAddressBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint2>> dynamicBlasAddressHandle =
+        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.bufferShaderIndexBase + push.dynamicBlasAddressBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTlasInstance>> tlasInstanceHandle =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTlasInstance>>(uint2(push.bufferShaderIndexBase + push.tlasInstanceBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
+    StructuredBuffer<GPUDrivenStreamAssetInstanceBlas> instanceBlas = instanceBlasHandle;
+    StructuredBuffer<uint2> fallbackBlasAddresses = fallbackBlasAddressHandle;
+    StructuredBuffer<uint2> dynamicBlasAddresses = dynamicBlasAddressHandle;
+    RWStructuredBuffer<GPUDrivenStreamAssetTlasInstance> tlasInstances = tlasInstanceHandle;
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
+
+    GPUDrivenStreamAssetParams params = paramsBuffer[0];
+    uint instanceIndex = dispatchThreadID.x;
+    if (instanceIndex >= params.sceneInstanceCount) {
+        return;
+    }
+
+    GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
+    GPUDrivenStreamAssetInstanceBlas blas = instanceBlas[instanceIndex];
+    uint2 accelerationStructureReference = uint2(0u, 0u);
+    bool dynamicReady =
+        (blas.flags & kBlasInstanceDynamic) != 0u &&
+        (blas.flags & (kBlasInstanceFallback | kBlasInstanceOverflow)) == 0u &&
+        blas.selectedClusterCount != 0u &&
+        blas.insertedClusterCount == blas.selectedClusterCount &&
+        blas.blasBuildIndex < params.blasBuildCapacity;
+    if (dynamicReady) {
+        accelerationStructureReference = dynamicBlasAddresses[blas.blasBuildIndex];
+    } else if (instance.primitiveIndex < params.scenePrimitiveCount) {
+        accelerationStructureReference = fallbackBlasAddresses[instance.primitiveIndex];
+    }
+
+    bool addressValid =
+        accelerationStructureReference.x != 0u ||
+        accelerationStructureReference.y != 0u;
+    uint visibilityMask = instance.visible != 0u && addressValid ? 0xffu : 0u;
+
+    GPUDrivenStreamAssetTlasInstance output;
+    output.transform0 = float4(instance.world0.x, instance.world1.x, instance.world2.x, instance.world3.x);
+    output.transform1 = float4(instance.world0.y, instance.world1.y, instance.world2.y, instance.world3.y);
+    output.transform2 = float4(instance.world0.z, instance.world1.z, instance.world2.z, instance.world3.z);
+    output.customIndexMask = (instanceIndex & 0x00ffffffu) | (visibilityMask << 24u);
+    output.shaderBindingTableFlags = 0u;
+    output.accelerationStructureReferenceLow = accelerationStructureReference.x;
+    output.accelerationStructureReferenceHigh = accelerationStructureReference.y;
+    tlasInstances[instanceIndex] = output;
 }
 
 [shader("mesh")]

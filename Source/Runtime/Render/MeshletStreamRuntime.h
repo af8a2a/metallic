@@ -28,6 +28,7 @@ inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAs
 inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
 inline constexpr const char* kMeshletStreamActiveBuildEntryPoint = "gpuDrivenStreamAssetBuildActiveMain";
 inline constexpr const char* kMeshletStreamBlasInputEntryPoint = "gpuDrivenStreamAssetBuildBlasInputMain";
+inline constexpr const char* kMeshletStreamTlasInputEntryPoint = "gpuDrivenStreamAssetBuildTlasInputMain";
 
 inline constexpr uint32_t kMeshletStreamDebugPage = 0;
 inline constexpr uint32_t kMeshletStreamDebugLod = 1;
@@ -222,6 +223,16 @@ struct MeshletStreamGpuBlasBuildInfo {
     uint32_t clusterReferencesAddressHigh = 0;
 };
 
+struct MeshletStreamGpuTlasInstance {
+    float transform0[4] = {};
+    float transform1[4] = {};
+    float transform2[4] = {};
+    uint32_t customIndexMask = 0;
+    uint32_t shaderBindingTableFlags = 0;
+    uint32_t accelerationStructureReferenceLow = 0;
+    uint32_t accelerationStructureReferenceHigh = 0;
+};
+
 struct MeshletStreamGpuParams {
     float eye[4] = {};
     float center[4] = {};
@@ -280,6 +291,8 @@ struct MeshletStreamUserPush {
     uint32_t blasBuildInfoBuffer = 0;
     uint32_t blasClusterReferenceBuffer = 0;
     uint32_t fallbackBlasAddressBuffer = 0;
+    uint32_t dynamicBlasAddressBuffer = 0;
+    uint32_t tlasInstanceBuffer = 0;
     uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
     uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
 };
@@ -298,9 +311,10 @@ static_assert(sizeof(MeshletStreamGpuTraversalWorkItem) == 16);
 static_assert(sizeof(MeshletStreamGpuBlasHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
+static_assert(sizeof(MeshletStreamGpuTlasInstance) == 64);
 static_assert(sizeof(StreamPageTableEntry) == 32);
 static_assert(sizeof(MeshletStreamGpuParams) == 192);
-static_assert(sizeof(MeshletStreamUserPush) == 104);
+static_assert(sizeof(MeshletStreamUserPush) == 112);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -359,6 +373,8 @@ public:
     void reset();
 
     bool ready() const;
+    bool tlasReady() const { return tlasBuilt_; }
+    uint64_t tlasHandle() const;
 
     Result cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame);
     Result cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame);
@@ -379,6 +395,7 @@ private:
     class TraversalPass;
     class ActiveBuildPass;
     class BlasInputPass;
+    class TlasInputPass;
 
     uint32_t computeMaxActiveGroups(uint32_t capacity) const;
     uint32_t computeMaxPageClusters() const;
@@ -393,6 +410,8 @@ private:
     Result buildBlasInputs(CommandBuffer& commandBuffer);
     Result cmdBuildBlas(CommandBuffer& commandBuffer);
     Result cmdBuildFallbackBlas(CommandBuffer& commandBuffer);
+    Result buildTlasInstances(CommandBuffer& commandBuffer);
+    Result cmdBuildTlas(CommandBuffer& commandBuffer);
     Result copyRequestBufferForReadback(CommandBuffer& commandBuffer);
     Result updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
@@ -435,11 +454,15 @@ private:
     std::unique_ptr<Buffer> fallbackBlasBuildInfoBuffer_;
     std::unique_ptr<Buffer> fallbackBlasDestinationBuffer_;
     std::unique_ptr<Buffer> fallbackBlasAddressBuffer_;
+    std::unique_ptr<Buffer> tlasInstanceBuffer_;
+    std::unique_ptr<Buffer> tlasStorageBuffer_;
+    std::unique_ptr<Buffer> tlasScratchBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<UpdatePass> updatePass_;
     std::unique_ptr<TraversalPass> traversalPass_;
     std::unique_ptr<ActiveBuildPass> activeBuildPass_;
     std::unique_ptr<BlasInputPass> blasInputPass_;
+    std::unique_ptr<TlasInputPass> tlasInputPass_;
     std::unique_ptr<vulkan::MeshletStreamClasPool> clasPool_;
     BindlessHandle pageHandle_;
     BindlessHandle activeGroupHandle_;
@@ -464,6 +487,8 @@ private:
     BindlessHandle blasBuildInfoHandle_;
     BindlessHandle blasClusterReferenceHandle_;
     BindlessHandle fallbackBlasAddressHandle_;
+    BindlessHandle dynamicBlasAddressHandle_;
+    BindlessHandle tlasInstanceHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
     ResourceState activeGroupBufferState_ = ResourceState::Undefined;
     ResourceState activeHeaderBufferState_ = ResourceState::Undefined;
@@ -476,6 +501,7 @@ private:
     ResourceState instanceBlasBufferState_ = ResourceState::Undefined;
     ResourceState blasBuildInfoBufferState_ = ResourceState::Undefined;
     ResourceState blasClusterReferenceBufferState_ = ResourceState::Undefined;
+    ResourceState tlasInstanceBufferState_ = ResourceState::Undefined;
     bool pageTableInitialized_ = false;
     bool requestReadbackValid_ = false;
     uint32_t frameIndex_ = 0;
@@ -497,6 +523,10 @@ private:
     uint64_t blasStorageAddress_ = 0;
     uint64_t blasScratchAddress_ = 0;
     uint64_t fallbackBlasScratchAddress_ = 0;
+    uint64_t tlasScratchAddress_ = 0;
+    uint64_t tlasHandle_ = 0;
+    uint64_t nativeDeviceHandle_ = 0;
+    bool tlasBuilt_ = false;
     std::vector<uint64_t> fallbackBlasReferenceOffsets_;
     std::vector<uint32_t> fallbackBlasReferenceCounts_;
     std::vector<uint64_t> fallbackBlasStorageOffsets_;
