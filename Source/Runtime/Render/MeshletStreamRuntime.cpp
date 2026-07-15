@@ -979,9 +979,13 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         }
     }
 
-    const uint64_t maxUpdatePatches64 = std::max<uint64_t>(
-        static_cast<uint64_t>(asset_.pageCount()) * 2ull,
-        1ull);
+    uint64_t residentPageCapacity = std::min<uint64_t>(
+        asset_.pageCount(),
+        maxResidentBytes_ / kMeshletStreamStorageAlignment);
+    if (maxResidentPages_ != 0) {
+        residentPageCapacity = std::min<uint64_t>(residentPageCapacity, maxResidentPages_);
+    }
+    const uint64_t maxUpdatePatches64 = std::max(residentPageCapacity * 2ull, 1ull);
     if (maxUpdatePatches64 > std::numeric_limits<uint32_t>::max()) {
         log = "MeshletStreamRuntime update patch capacity overflowed";
         return makeError(Error::Failure);
