@@ -142,9 +142,6 @@ struct MeshletStreamGpuGroup {
     uint32_t clusterCount = 0;
     float boundsCenterRadius[4] = {};
     float maxQuadricError = 0.0f;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
 };
 
 struct MeshletStreamGpuNode {
@@ -289,7 +286,7 @@ static_assert(sizeof(MeshletStreamGpuActiveGroup) == 112);
 static_assert(sizeof(MeshletStreamGpuInstance) == 96);
 static_assert(sizeof(MeshletStreamGpuPrimitive) == 64);
 static_assert(sizeof(MeshletStreamGpuLodLevel) == 32);
-static_assert(sizeof(MeshletStreamGpuGroup) == 48);
+static_assert(sizeof(MeshletStreamGpuGroup) == 36);
 static_assert(sizeof(MeshletStreamGpuNode) == 48);
 static_assert(sizeof(MeshletStreamGpuDrawIndirect) == 12);
 static_assert(sizeof(MeshletStreamGpuTraversalHeader) == 32);

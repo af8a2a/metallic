@@ -30,8 +30,8 @@ namespace {
 
 constexpr std::array<char, 8> kMeshletStreamMagic{'M', 'T', 'L', 'M', 'S', 'T', 'R', 'M'};
 constexpr std::array<char, 8> kMeshletStreamPartialMagic{'M', 'T', 'L', 'M', 'S', 'P', 'R', 'T'};
-constexpr uint32_t kMeshletStreamVersion = 6;
-constexpr uint32_t kMeshletStreamPartialVersion = 5;
+constexpr uint32_t kMeshletStreamVersion = 7;
+constexpr uint32_t kMeshletStreamPartialVersion = 6;
 constexpr uint32_t kMeshletStreamEndian = 0x01020304;
 constexpr uint32_t kPayloadMagic = 0x4d535047u; // "GSPM"
 constexpr uint32_t kPayloadVersion = 3;
@@ -142,7 +142,7 @@ static_assert(std::is_trivially_copyable_v<MeshletStreamPayloadHeader>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPayloadCluster>);
 static_assert(sizeof(MeshletStreamPayloadHeader) == 96);
 static_assert(sizeof(MeshletStreamPayloadCluster) == 36);
-static_assert(sizeof(MeshletStreamGroupInfo) == 48);
+static_assert(sizeof(MeshletStreamGroupInfo) == 36);
 static_assert(sizeof(MeshletStreamNodeInfo) == 48);
 
 bool meshletStreamBuildParamsMatch(const MeshletStreamFileHeader& header)

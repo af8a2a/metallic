@@ -155,11 +155,11 @@ struct GPUDrivenStreamAssetGroup
     uint pageIndex;
     uint lodLevel;
     uint clusterCount;
-    float4 boundsCenterRadius;
+    float boundsCenterX;
+    float boundsCenterY;
+    float boundsCenterZ;
+    float boundsRadius;
     float maxQuadricError;
-    uint padding0;
-    uint padding1;
-    uint padding2;
 };
 
 struct GPUDrivenStreamAssetNode
@@ -518,14 +518,14 @@ float groupPixelError(
     GPUDrivenStreamAssetInstance instance,
     GPUDrivenStreamAssetGroup group)
 {
-    float3 localCenter = group.boundsCenterRadius.xyz;
+    float3 localCenter = float3(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ);
     float3 worldCenter =
         instance.world0.xyz * localCenter.x +
         instance.world1.xyz * localCenter.y +
         instance.world2.xyz * localCenter.z +
         instance.world3.xyz;
     float uniformScale = instanceUniformScale(instance);
-    float worldRadius = max(group.boundsCenterRadius.w * uniformScale, 0.000001);
+    float worldRadius = max(group.boundsRadius * uniformScale, 0.000001);
     float distanceToCamera = max(length(worldCenter - params.eye.xyz) - worldRadius, 0.001);
     float fovRadians = clamp(params.viewport.w, 0.017453292, 3.12413936);
     float pixelScale = max(params.viewport.z, 1.0) / max(2.0 * tan(fovRadians * 0.5), 0.001);

@@ -95,9 +95,6 @@ struct MeshletStreamGroupInfo {
     uint32_t clusterCount = 0;
     float boundsCenterRadius[4] = {};
     float maxQuadricError = 0.0f;
-    uint32_t reserved0 = 0;
-    uint32_t reserved1 = 0;
-    uint32_t reserved2 = 0;
 };
 
 struct MeshletStreamNodeInfo {
