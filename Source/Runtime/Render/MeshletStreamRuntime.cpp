@@ -43,6 +43,29 @@ uint64_t alignUp(uint64_t value, uint64_t alignment)
     return ((value + alignment - 1) / alignment) * alignment;
 }
 
+uint64_t clusterScratchAlignment(VkPhysicalDevice physicalDevice)
+{
+#ifdef VK_NV_cluster_acceleration_structure
+    if (physicalDevice == VK_NULL_HANDLE) {
+        return 256;
+    }
+    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV clusterProperties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
+    };
+    VkPhysicalDeviceProperties2 properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &clusterProperties,
+    };
+    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+    return clusterProperties.clusterScratchByteAlignment != 0
+        ? clusterProperties.clusterScratchByteAlignment
+        : 256;
+#else
+    (void)physicalDevice;
+    return 256;
+#endif
+}
+
 std::string resultMessage(std::string_view label, const Result& result)
 {
     std::string message(label);
@@ -914,22 +937,71 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             }
             primitiveClusterCapacities[primitiveIndex] = capacity;
         }
-        uint32_t referenceOffset = 0;
-        for (uint32_t instanceIndex = 0; instanceIndex < asset_.instanceCount(); ++instanceIndex) {
-            const scene::MeshletStreamInstanceInfo& instance = asset_.instances()[instanceIndex];
-            if (instance.visible == 0 || instance.primitiveIndex >= primitiveClusterCapacities.size()) {
-                continue;
+        if (desc.maxBlasBytes == 0 || desc.maxBlasBuilds == 0) {
+            log = "MeshletStreamRuntime cluster RTX BLAS budgets must be non-zero";
+            return makeError(Error::InvalidArgument);
+        }
+
+        uint32_t referenceLimit = blasClusterReferenceCapacity_;
+        uint32_t buildLimit = std::min(desc.maxBlasBuilds, asset_.instanceCount());
+        vulkan::ClusterAccelerationStructureBuildSizes blasSizes;
+        for (;;) {
+            std::fill(instanceBlas.begin(), instanceBlas.end(), MeshletStreamGpuInstanceBlas{});
+            uint32_t referenceOffset = 0;
+            uint32_t buildCapacity = 0;
+            uint32_t maxClustersPerBuild = 0;
+            for (uint32_t instanceIndex = 0; instanceIndex < asset_.instanceCount(); ++instanceIndex) {
+                const scene::MeshletStreamInstanceInfo& instance = asset_.instances()[instanceIndex];
+                if (instance.visible == 0 || instance.primitiveIndex >= primitiveClusterCapacities.size()) {
+                    continue;
+                }
+                if (buildCapacity == buildLimit || referenceOffset == referenceLimit) {
+                    break;
+                }
+                const uint64_t remaining = referenceLimit - referenceOffset;
+                const uint32_t capacity = static_cast<uint32_t>(std::min(
+                    primitiveClusterCapacities[instance.primitiveIndex],
+                    remaining));
+                if (capacity == 0) {
+                    continue;
+                }
+                instanceBlas[instanceIndex].clusterReferenceOffset = referenceOffset;
+                instanceBlas[instanceIndex].clusterReferenceCapacity = capacity;
+                referenceOffset += capacity;
+                maxClustersPerBuild = std::max(maxClustersPerBuild, capacity);
+                ++buildCapacity;
             }
-            const uint64_t remaining = blasClusterReferenceCapacity_ - referenceOffset;
-            const uint32_t capacity = static_cast<uint32_t>(std::min(
-                primitiveClusterCapacities[instance.primitiveIndex],
-                remaining));
-            instanceBlas[instanceIndex].clusterReferenceOffset = referenceOffset;
-            instanceBlas[instanceIndex].clusterReferenceCapacity = capacity;
-            referenceOffset += capacity;
-            if (referenceOffset == blasClusterReferenceCapacity_) {
+            if (referenceOffset == 0 || buildCapacity == 0 || maxClustersPerBuild == 0) {
+                log = "MeshletStreamRuntime cluster RTX BLAS budget cannot cover one visible instance";
+                return makeError(Error::OutOfMemory);
+            }
+
+            result = vulkan::queryClusterAccelerationStructureBottomLevelBuildSizes(
+                device,
+                vulkan::ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+                    .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+                    .maxClusterCountPerAccelerationStructure = maxClustersPerBuild,
+                    .maxTotalClusterCount = referenceOffset,
+                    .maxAccelerationStructureCount = buildCapacity,
+                },
+                blasSizes);
+            if (!result || blasSizes.accelerationStructureSize == 0 || blasSizes.buildScratchSize == 0) {
+                log = std::string("queryClusterAccelerationStructureBottomLevelBuildSizes(stream BLAS) returned ") +
+                    resultToString(result);
+                return result ? makeError(Error::Failure) : result;
+            }
+            if (blasSizes.accelerationStructureSize <= desc.maxBlasBytes) {
+                blasClusterReferenceCapacity_ = referenceOffset;
+                blasBuildCapacity_ = buildCapacity;
+                maxBlasClustersPerBuild_ = maxClustersPerBuild;
                 break;
             }
+            if (referenceLimit == 1 && buildLimit == 1) {
+                log = "MeshletStreamRuntime maxBlasBytes cannot hold one dynamic cluster BLAS";
+                return makeError(Error::OutOfMemory);
+            }
+            referenceLimit = std::max(referenceLimit / 2u, 1u);
+            buildLimit = std::max(buildLimit / 2u, 1u);
         }
 
         result = createHostStorageBuffer(
@@ -957,7 +1029,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             device,
             BufferDesc{
                 .size = std::max<uint64_t>(
-                    static_cast<uint64_t>(asset_.instanceCount()) * sizeof(MeshletStreamGpuBlasBuildInfo),
+                    static_cast<uint64_t>(blasBuildCapacity_) * sizeof(MeshletStreamGpuBlasBuildInfo),
                     sizeof(MeshletStreamGpuBlasBuildInfo)),
                 .structureStride = sizeof(MeshletStreamGpuBlasBuildInfo),
                 .usage = BufferUsageBits::Storage |
@@ -993,6 +1065,78 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         blasClusterReferenceAddress_ = vulkan::nativeBuffer(*blasClusterReferenceBuffer_).address;
         if (blasClusterReferenceAddress_ == 0) {
             log = "MeshletStreamRuntime BLAS cluster reference buffer has no device address";
+            return makeError(Error::Failure);
+        }
+
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = blasSizes.accelerationStructureSize,
+                .usage = BufferUsageBits::AccelerationStructureStorage |
+                    BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            blasStorageBuffer_,
+            log,
+            "MeshletStreamRuntime dynamic BLAS storage");
+        if (!result) {
+            return result;
+        }
+        blasStorageAddress_ = vulkan::nativeBuffer(*blasStorageBuffer_).address;
+
+        const vulkan::NativeDevice nativeDevice = vulkan::nativeDevice(device);
+        const uint64_t scratchAlignment = clusterScratchAlignment(nativeDevice.physicalDevice);
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = blasSizes.buildScratchSize + scratchAlignment - 1u,
+                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            blasScratchBuffer_,
+            log,
+            "MeshletStreamRuntime dynamic BLAS scratch");
+        if (!result) {
+            return result;
+        }
+        blasScratchAddress_ = alignUp(
+            vulkan::nativeBuffer(*blasScratchBuffer_).address,
+            scratchAlignment);
+
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = static_cast<uint64_t>(blasBuildCapacity_) * sizeof(uint64_t),
+                .structureStride = sizeof(uint64_t),
+                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            blasAddressBuffer_,
+            log,
+            "MeshletStreamRuntime dynamic BLAS addresses");
+        if (!result) {
+            return result;
+        }
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = static_cast<uint64_t>(blasBuildCapacity_) * sizeof(uint32_t),
+                .structureStride = sizeof(uint32_t),
+                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            blasSizeBuffer_,
+            log,
+            "MeshletStreamRuntime dynamic BLAS sizes");
+        if (!result) {
+            return result;
+        }
+
+        if (blasStorageAddress_ == 0 ||
+            blasScratchAddress_ == 0 ||
+            vulkan::nativeBuffer(*blasAddressBuffer_).address == 0 ||
+            vulkan::nativeBuffer(*blasSizeBuffer_).address == 0) {
+            log = "MeshletStreamRuntime dynamic BLAS buffers have no device addresses";
             return makeError(Error::Failure);
         }
     }
@@ -1291,6 +1435,10 @@ void MeshletStreamRuntime::reset()
     instanceBlasBuffer_.reset();
     blasBuildInfoBuffer_.reset();
     blasClusterReferenceBuffer_.reset();
+    blasStorageBuffer_.reset();
+    blasScratchBuffer_.reset();
+    blasAddressBuffer_.reset();
+    blasSizeBuffer_.reset();
     bindlessHeap_.reset();
     updatePass_.reset();
     traversalPass_.reset();
@@ -1346,7 +1494,11 @@ void MeshletStreamRuntime::reset()
     traversalWorkerCount_ = 0;
     traversalWorkCapacity_ = 0;
     blasClusterReferenceCapacity_ = 0;
+    blasBuildCapacity_ = 0;
+    maxBlasClustersPerBuild_ = 0;
     blasClusterReferenceAddress_ = 0;
+    blasStorageAddress_ = 0;
+    blasScratchAddress_ = 0;
     currentFrameUploadCount_ = 0;
 }
 
@@ -1386,7 +1538,11 @@ bool MeshletStreamRuntime::ready() const
                 blasHeaderBuffer_ != nullptr &&
                 instanceBlasBuffer_ != nullptr &&
                 blasBuildInfoBuffer_ != nullptr &&
-                blasClusterReferenceBuffer_ != nullptr));
+                blasClusterReferenceBuffer_ != nullptr &&
+                blasStorageBuffer_ != nullptr &&
+                blasScratchBuffer_ != nullptr &&
+                blasAddressBuffer_ != nullptr &&
+                blasSizeBuffer_ != nullptr));
 }
 
 Result MeshletStreamRuntime::cmdBeginFrame(
@@ -1478,7 +1634,11 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
             return result;
         }
     }
-    return buildBlasInputs(commandBuffer);
+    result = buildBlasInputs(commandBuffer);
+    if (!result) {
+        return result;
+    }
+    return cmdBuildBlas(commandBuffer);
 }
 
 Result MeshletStreamRuntime::cmdPostTraversal(CommandBuffer& commandBuffer)
@@ -2078,6 +2238,111 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
         return result;
     }
     return dispatchPhase(kMeshletStreamBlasInputInsertPhase, maxActiveGroups_);
+}
+
+Result MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
+{
+#ifndef VK_NV_cluster_acceleration_structure
+    (void)commandBuffer;
+    return makeError(Error::Unsupported);
+#else
+    if (clasPool_ == nullptr ||
+        blasBuildCapacity_ == 0 ||
+        maxBlasClustersPerBuild_ == 0 ||
+        blasClusterReferenceCapacity_ == 0 ||
+        blasHeaderBuffer_ == nullptr ||
+        blasBuildInfoBuffer_ == nullptr ||
+        blasStorageBuffer_ == nullptr ||
+        blasScratchBuffer_ == nullptr ||
+        blasAddressBuffer_ == nullptr ||
+        blasSizeBuffer_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const VkCommandBuffer nativeCommands = vulkan::nativeCommandBuffer(commandBuffer);
+    const vulkan::NativeBuffer nativeHeader = vulkan::nativeBuffer(*blasHeaderBuffer_);
+    const vulkan::NativeBuffer nativeBuildInfos = vulkan::nativeBuffer(*blasBuildInfoBuffer_);
+    const vulkan::NativeBuffer nativeAddresses = vulkan::nativeBuffer(*blasAddressBuffer_);
+    const vulkan::NativeBuffer nativeSizes = vulkan::nativeBuffer(*blasSizeBuffer_);
+    if (nativeCommands == VK_NULL_HANDLE ||
+        nativeHeader.address == 0 ||
+        nativeBuildInfos.address == 0 ||
+        nativeAddresses.address == 0 ||
+        nativeSizes.address == 0 ||
+        blasStorageAddress_ == 0 ||
+        blasScratchAddress_ == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const VkMemoryBarrier2 buildInputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+    };
+    const VkDependencyInfo inputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &buildInputBarrier,
+    };
+    vkCmdPipelineBarrier2(nativeCommands, &inputDependency);
+
+    VkClusterAccelerationStructureClustersBottomLevelInputNV blasInput{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
+        .maxTotalClusterCount = blasClusterReferenceCapacity_,
+        .maxClusterCountPerAccelerationStructure = maxBlasClustersPerBuild_,
+    };
+    const VkClusterAccelerationStructureInputInfoNV input{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+        .maxAccelerationStructureCount = blasBuildCapacity_,
+        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV,
+        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV,
+        .opInput = {.pClustersBottomLevel = &blasInput},
+    };
+    const VkClusterAccelerationStructureCommandsInfoNV commands{
+        .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+        .input = input,
+        .dstImplicitData = blasStorageAddress_,
+        .scratchData = blasScratchAddress_,
+        .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
+            .deviceAddress = nativeAddresses.address,
+            .stride = sizeof(uint64_t),
+            .size = nativeAddresses.size,
+        },
+        .dstSizesArray = VkStridedDeviceAddressRegionKHR{
+            .deviceAddress = nativeSizes.address,
+            .stride = sizeof(uint32_t),
+            .size = nativeSizes.size,
+        },
+        .srcInfosArray = VkStridedDeviceAddressRegionKHR{
+            .deviceAddress = nativeBuildInfos.address,
+            .stride = sizeof(MeshletStreamGpuBlasBuildInfo),
+            .size = nativeBuildInfos.size,
+        },
+        .srcInfosCount = nativeHeader.address + offsetof(MeshletStreamGpuBlasHeader, blasBuildCount),
+    };
+    vkCmdBuildClusterAccelerationStructureIndirectNV(nativeCommands, &commands);
+
+    const VkMemoryBarrier2 buildOutputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_SHADER_READ_BIT,
+    };
+    const VkDependencyInfo outputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &buildOutputBarrier,
+    };
+    vkCmdPipelineBarrier2(nativeCommands, &outputDependency);
+    return {};
+#endif
 }
 
 Result MeshletStreamRuntime::transitionPageBufferForTraversal(CommandBuffer& commandBuffer)

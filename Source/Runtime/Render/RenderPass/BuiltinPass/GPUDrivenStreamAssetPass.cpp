@@ -182,6 +182,10 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
         .maxClasBytes = uint64Property(properties, "maxClasBytes", 512ull * 1024ull * 1024ull),
         .maxClasBuildClusters = uintProperty(properties, "maxClasBuildClusters", 0),
         .maxBlasClusterReferences = uintProperty(properties, "maxBlasClusterReferences", 0),
+        .maxBlasBytes = uint64Property(properties, "maxBlasBytes", 512ull * 1024ull * 1024ull),
+        .maxBlasBuilds = std::max<uint32_t>(
+            uintProperty(properties, "maxBlasBuilds", kMeshletStreamDefaultMaxBlasBuilds),
+            1u),
     };
 }
 

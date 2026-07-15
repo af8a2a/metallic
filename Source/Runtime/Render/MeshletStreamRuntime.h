@@ -58,6 +58,7 @@ inline constexpr uint32_t kMeshletStreamBlasInstanceOverflow = 1u << 2;
 inline constexpr uint32_t kMeshletStreamDefaultMaxActiveGroups = 262144;
 inline constexpr uint32_t kMeshletStreamDefaultTraversalWorkers = 1024;
 inline constexpr uint32_t kMeshletStreamDefaultTraversalWorkItems = 1048576;
+inline constexpr uint32_t kMeshletStreamDefaultMaxBlasBuilds = 65536;
 inline constexpr uint32_t kMeshletStreamMaxTraversalWorkers = 65535u * 64u;
 inline constexpr uint32_t kMeshletStreamMaxTraversalWorkItems = 16777216;
 
@@ -319,6 +320,8 @@ struct MeshletStreamRuntimeDesc {
     uint64_t maxClasBytes = 512ull * 1024ull * 1024ull;
     uint32_t maxClasBuildClusters = 0;
     uint32_t maxBlasClusterReferences = 0;
+    uint64_t maxBlasBytes = 512ull * 1024ull * 1024ull;
+    uint32_t maxBlasBuilds = kMeshletStreamDefaultMaxBlasBuilds;
 };
 
 struct MeshletStreamCameraDesc {
@@ -386,6 +389,7 @@ private:
     Result dispatchTraversal(CommandBuffer& commandBuffer, uint32_t threadCount, uint32_t traversalPhase);
     Result buildActiveTable(CommandBuffer& commandBuffer);
     Result buildBlasInputs(CommandBuffer& commandBuffer);
+    Result cmdBuildBlas(CommandBuffer& commandBuffer);
     Result copyRequestBufferForReadback(CommandBuffer& commandBuffer);
     Result updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
@@ -418,6 +422,10 @@ private:
     std::unique_ptr<Buffer> instanceBlasBuffer_;
     std::unique_ptr<Buffer> blasBuildInfoBuffer_;
     std::unique_ptr<Buffer> blasClusterReferenceBuffer_;
+    std::unique_ptr<Buffer> blasStorageBuffer_;
+    std::unique_ptr<Buffer> blasScratchBuffer_;
+    std::unique_ptr<Buffer> blasAddressBuffer_;
+    std::unique_ptr<Buffer> blasSizeBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<UpdatePass> updatePass_;
     std::unique_ptr<TraversalPass> traversalPass_;
@@ -473,7 +481,11 @@ private:
     uint32_t traversalWorkerCount_ = 0;
     uint32_t traversalWorkCapacity_ = 0;
     uint32_t blasClusterReferenceCapacity_ = 0;
+    uint32_t blasBuildCapacity_ = 0;
+    uint32_t maxBlasClustersPerBuild_ = 0;
     uint64_t blasClusterReferenceAddress_ = 0;
+    uint64_t blasStorageAddress_ = 0;
+    uint64_t blasScratchAddress_ = 0;
     uint32_t currentFrameUploadCount_ = 0;
 };
 
