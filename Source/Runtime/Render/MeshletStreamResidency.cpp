@@ -248,11 +248,8 @@ bool MeshletStreamResidencyManager::initialize(
     unloadDelayFrames_ = std::max(desc.unloadDelayFrames, 1u);
     evictionAgeThresholdFrames_ = desc.evictionAgeThresholdFrames;
     pages_.resize(asset_->pageCount());
-    requestMarks_.assign(asset_->pageCount(), 0);
-    unloadRequestMarks_.assign(asset_->pageCount(), 0);
     activePagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
-    residentPagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
-    pendingPagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
+    statePagePositions_.assign(asset_->pageCount(), kInvalidTablePosition);
     if (maxResidentPages_ != 0) {
         const uint32_t residentReserve = std::min(maxResidentPages_, asset_->pageCount());
         activePages_.reserve(residentReserve);
@@ -314,8 +311,7 @@ void MeshletStreamResidencyManager::reset()
     newlyResidentPages_.clear();
     newlyUnloadedPages_.clear();
     activePagePositions_.clear();
-    residentPagePositions_.clear();
-    pendingPagePositions_.clear();
+    statePagePositions_.clear();
     requestMarks_.clear();
     unloadRequestMarks_.clear();
     patches_.clear();
@@ -587,9 +583,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint3
 
 uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuRequestBatch& requests)
 {
-    if (asset_ == nullptr ||
-        requestMarks_.size() != pages_.size() ||
-        unloadRequestMarks_.size() != pages_.size()) {
+    if (asset_ == nullptr) {
         return 0;
     }
 
@@ -614,45 +608,40 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
 
     std::vector<uint32_t> uniqueRequests;
     uniqueRequests.reserve(requests.loadPageIds.size());
+    requestMarks_.clear();
+    requestMarks_.reserve(requests.loadPageIds.size());
     for (uint32_t pageIndex : requests.loadPageIds) {
-        if (pageIndex >= pages_.size() || requestMarks_[pageIndex] != 0) {
+        if (pageIndex >= pages_.size() || !requestMarks_.insert(pageIndex).second) {
             if (pageIndex >= pages_.size()) {
                 ++stats_.frameGpuInvalidRequestCount;
                 ++stats_.totalGpuInvalidRequestCount;
             }
             continue;
         }
-        requestMarks_[pageIndex] = 1;
         uniqueRequests.push_back(pageIndex);
         requestedPages_.push_back(pageIndex);
     }
     stats_.frameUniqueGpuRequestCount += static_cast<uint32_t>(uniqueRequests.size());
     stats_.totalUniqueGpuRequestCount += uniqueRequests.size();
 
-    for (uint32_t pageIndex : uniqueRequests) {
-        requestMarks_[pageIndex] = 0;
-    }
-
     std::vector<uint32_t> uniqueUnloadRequests;
     uniqueUnloadRequests.reserve(requests.unloadPageIds.size());
+    unloadRequestMarks_.clear();
+    unloadRequestMarks_.reserve(requests.unloadPageIds.size());
     for (uint32_t pageIndex : requests.unloadPageIds) {
-        if (pageIndex >= pages_.size() || unloadRequestMarks_[pageIndex] != 0) {
+        if (pageIndex >= pages_.size() || !unloadRequestMarks_.insert(pageIndex).second) {
             if (pageIndex >= pages_.size()) {
                 ++stats_.frameGpuInvalidRequestCount;
                 ++stats_.totalGpuInvalidRequestCount;
             }
             continue;
         }
-        unloadRequestMarks_[pageIndex] = 1;
         uniqueUnloadRequests.push_back(pageIndex);
         unloadRequestedPages_.push_back(pageIndex);
     }
     stats_.frameUniqueGpuUnloadRequestCount += static_cast<uint32_t>(uniqueUnloadRequests.size());
     stats_.totalUniqueGpuUnloadRequestCount += uniqueUnloadRequests.size();
 
-    for (uint32_t pageIndex : uniqueUnloadRequests) {
-        unloadRequestMarks_[pageIndex] = 0;
-    }
     if (uniqueRequests.empty() && uniqueUnloadRequests.empty()) {
         return 0;
     }
@@ -1253,18 +1242,18 @@ void MeshletStreamResidencyManager::updateStateTables(
     MeshletStreamPageResidencyState newState)
 {
     if (residentState(oldState) && !residentState(newState)) {
-        removeFromTable(residentPages_, residentPagePositions_, pageIndex);
-    }
-    if (!residentState(oldState) && residentState(newState)) {
-        addToTable(residentPages_, residentPagePositions_, pageIndex);
+        removeFromTable(residentPages_, statePagePositions_, pageIndex);
     }
     if (oldState == MeshletStreamPageResidencyState::PendingUpload &&
         newState != MeshletStreamPageResidencyState::PendingUpload) {
-        removeFromTable(pendingPages_, pendingPagePositions_, pageIndex);
+        removeFromTable(pendingPages_, statePagePositions_, pageIndex);
+    }
+    if (!residentState(oldState) && residentState(newState)) {
+        addToTable(residentPages_, statePagePositions_, pageIndex);
     }
     if (oldState != MeshletStreamPageResidencyState::PendingUpload &&
         newState == MeshletStreamPageResidencyState::PendingUpload) {
-        addToTable(pendingPages_, pendingPagePositions_, pageIndex);
+        addToTable(pendingPages_, statePagePositions_, pageIndex);
     }
 }
 

@@ -10,6 +10,7 @@
 #include <deque>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace metallic::render {
@@ -347,10 +348,9 @@ private:
     std::vector<uint32_t> newlyResidentPages_;
     std::vector<uint32_t> newlyUnloadedPages_;
     std::vector<uint32_t> activePagePositions_;
-    std::vector<uint32_t> residentPagePositions_;
-    std::vector<uint32_t> pendingPagePositions_;
-    std::vector<uint8_t> requestMarks_;
-    std::vector<uint8_t> unloadRequestMarks_;
+    std::vector<uint32_t> statePagePositions_;
+    std::unordered_set<uint32_t> requestMarks_;
+    std::unordered_set<uint32_t> unloadRequestMarks_;
     std::vector<StreamPageTablePatch> patches_;
     MeshletStreamResidencyStats stats_;
     uint64_t frameIndex_ = 0;
