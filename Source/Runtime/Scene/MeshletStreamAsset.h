@@ -92,16 +92,12 @@ struct MeshletStreamGroupInfo {
     uint32_t primitiveIndex = 0;
     uint32_t pageIndex = 0;
     uint32_t lodLevel = 0;
-    uint32_t clusterRefOffset = 0;
     uint32_t clusterCount = 0;
+    float boundsCenterRadius[4] = {};
+    float maxQuadricError = 0.0f;
     uint32_t reserved0 = 0;
     uint32_t reserved1 = 0;
     uint32_t reserved2 = 0;
-    float boundsCenterRadius[4] = {};
-    float maxQuadricError = 0.0f;
-    uint32_t reserved3 = 0;
-    uint32_t reserved4 = 0;
-    uint32_t reserved5 = 0;
 };
 
 struct MeshletStreamNodeInfo {
@@ -130,7 +126,7 @@ struct MeshletStreamPageInfo {
     uint32_t attributeFlags = 0;
     uint32_t compressionMode = static_cast<uint32_t>(MeshletStreamPayloadCompression::None);
     uint32_t payloadFlags = 0;
-    uint32_t reserved = 0;
+    uint32_t primitiveGroupOffset = 0;
     MeshletStreamBounds bounds;
     float maxQuadricError = 0.0f;
 };
@@ -171,6 +167,7 @@ struct MeshletStreamPayloadCluster {
     uint32_t materialIndex = 0;
     uint32_t lodLevel = 0;
     uint32_t lodGroupIndex = 0;
+    uint32_t refinedGroupIndex = kMeshletStreamInvalidGroupIndex;
 };
 
 class MeshletStreamAsset {
@@ -196,7 +193,6 @@ public:
     uint32_t geometryCount() const;
     uint32_t lodLevelCount() const;
     uint32_t groupCount() const;
-    uint32_t clusterRefCount() const;
     uint32_t nodeCount() const;
     uint32_t pageCount() const;
     uint32_t maxPagePayloadBytes() const;
@@ -211,8 +207,6 @@ public:
     std::span<const MeshletStreamGeometryInfo> geometries() const;
     std::span<const MeshletStreamLodLevelInfo> lodLevels() const;
     std::span<const MeshletStreamGroupInfo> groups() const;
-    std::span<const uint32_t> clusterRefinedGroups() const;
-    std::span<const uint32_t> groupClusterRefinedGroups(uint32_t groupIndex) const;
     std::span<const MeshletStreamNodeInfo> nodes() const;
     std::span<const MeshletStreamPageInfo> pages() const;
     std::span<const uint64_t> pagePayloadOffsets() const;

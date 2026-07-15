@@ -56,7 +56,6 @@ struct GPUDrivenStreamAssetPush
     uint lodLevelBuffer;
     uint pageInfoBuffer;
     uint groupBuffer;
-    uint clusterRefBuffer;
     uint nodeBuffer;
     uint drawIndirectBuffer;
     uint traversalHeaderBuffer;
@@ -164,16 +163,12 @@ struct GPUDrivenStreamAssetGroup
     uint primitiveIndex;
     uint pageIndex;
     uint lodLevel;
-    uint clusterRefOffset;
     uint clusterCount;
+    float4 boundsCenterRadius;
+    float maxQuadricError;
     uint padding0;
     uint padding1;
     uint padding2;
-    float4 boundsCenterRadius;
-    float maxQuadricError;
-    uint padding3;
-    uint padding4;
-    uint padding5;
 };
 
 struct GPUDrivenStreamAssetNode
@@ -645,7 +640,7 @@ bool groupPageDrawable(
 
 uint buildGroupClusterSelectionMask(
     StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
-    StructuredBuffer<uint> clusterRefs,
+    StructuredBuffer<uint> pageWords,
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
     GPUDrivenStreamAssetParams params,
     GPUDrivenStreamAssetInstance instance,
@@ -661,19 +656,46 @@ uint buildGroupClusterSelectionMask(
         return clusterCount == 32u ? 0xffffffffu : ((1u << clusterCount) - 1u);
     }
 
+    GPUDrivenStreamAssetPageTableEntry currentPage = pageTable[group.pageIndex];
+    uint pageWord = 0u;
+    uint payloadClusterCount = 0u;
+    uint clusterOffsetBytes = 0u;
+    uint payloadBytes = 0u;
+    bool clusterDirectoryAvailable = false;
+    if (currentPage.deviceOffsetBytes != kInvalidStreamDeviceOffset &&
+        currentPage.deviceSizeBytes >= 96u &&
+        currentPage.deviceOffsetBytes + currentPage.deviceSizeBytes >= currentPage.deviceOffsetBytes &&
+        currentPage.deviceOffsetBytes + currentPage.deviceSizeBytes <= params.pageBufferBytes) {
+        pageWord = currentPage.deviceOffsetBytes / 4u;
+        payloadClusterCount = pageWords[pageWord + 2u];
+        clusterOffsetBytes = pageWords[pageWord + 9u];
+        payloadBytes = pageWords[pageWord + 12u];
+        clusterDirectoryAvailable = payloadBytes >= 96u && payloadBytes <= currentPage.deviceSizeBytes;
+    }
+
     uint mask = 0u;
     for (uint clusterChild = 0u; clusterChild < 32u; ++clusterChild) {
         if (clusterChild >= clusterCount) {
             break;
         }
-        uint refinedGroupIndex = clusterRefs[group.clusterRefOffset + clusterChild];
+        uint refinedGroupIndex = kInvalidClusterIndex;
+        if (clusterDirectoryAvailable) {
+            uint refinedGroupByteOffset = clusterOffsetBytes + clusterChild * 36u + 32u;
+            if (clusterChild < payloadClusterCount &&
+                refinedGroupByteOffset >= clusterOffsetBytes &&
+                refinedGroupByteOffset + 4u >= refinedGroupByteOffset &&
+                refinedGroupByteOffset + 4u <= payloadBytes) {
+                refinedGroupIndex = pageWords[pageWord + refinedGroupByteOffset / 4u];
+            }
+        }
         bool renderCluster = refinedGroupIndex == kInvalidClusterIndex;
         if (!renderCluster) {
             if (refinedGroupIndex >= params.sceneGroupCount) {
                 renderCluster = true;
             } else {
                 GPUDrivenStreamAssetGroup refinedGroup = groups[refinedGroupIndex];
-                renderCluster = !groupPageDrawable(pageTable, params, refinedGroup) ||
+                renderCluster = refinedGroup.primitiveIndex != group.primitiveIndex ||
+                    !groupPageDrawable(pageTable, params, refinedGroup) ||
                     !groupNeedsTraversal(params, instance, primitive, refinedGroup);
             }
         }
@@ -858,7 +880,7 @@ void buildInstanceActiveGroups(
     StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives,
     StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
     StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
-    StructuredBuffer<uint> clusterRefs,
+    StructuredBuffer<uint> pageWords,
     StructuredBuffer<GPUDrivenStreamAssetNode> nodes,
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
     GPUDrivenStreamAssetParams params,
@@ -922,7 +944,7 @@ void buildInstanceActiveGroups(
         }
         uint clusterSelectionMask = buildGroupClusterSelectionMask(
             groups,
-            clusterRefs,
+            pageWords,
             pageTable,
             params,
             instance,
@@ -972,7 +994,7 @@ void appendInstanceFallbackGroups(
     RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
     StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
     StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
-    StructuredBuffer<uint> clusterRefs,
+    StructuredBuffer<uint> pageWords,
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
     RWStructuredBuffer<uint> requests,
     GPUDrivenStreamAssetParams params,
@@ -1002,7 +1024,7 @@ void appendInstanceFallbackGroups(
         }
         uint clusterSelectionMask = buildGroupClusterSelectionMask(
             groups,
-            clusterRefs,
+            pageWords,
             pageTable,
             params,
             instance,
@@ -1032,7 +1054,7 @@ void runActiveTraversalWorker(
     StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives,
     StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
     StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
-    StructuredBuffer<uint> clusterRefs,
+    StructuredBuffer<uint> pageWords,
     StructuredBuffer<GPUDrivenStreamAssetNode> nodes,
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
     RWStructuredBuffer<uint> requests,
@@ -1132,7 +1154,7 @@ void runActiveTraversalWorker(
                                 groupPageDrawable(pageTable, params, group)) {
                                 uint clusterSelectionMask = buildGroupClusterSelectionMask(
                                     groups,
-                                    clusterRefs,
+                                    pageWords,
                                     pageTable,
                                     params,
                                     instance,
@@ -1290,6 +1312,8 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
 [numthreads(64, 1, 1)]
 void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThreadID, uniform GPUDrivenStreamAssetPush push)
 {
+    DescriptorHandle<StructuredBuffer<uint>> pageHandle =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
         DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeaderHandle =
@@ -1304,8 +1328,6 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageInfo>>(uint2(push.bufferShaderIndexBase + push.pageInfoBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>> groupHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(uint2(push.bufferShaderIndexBase + push.groupBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint>> clusterRefHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.clusterRefBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetNode>> nodeHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetNode>>(uint2(push.bufferShaderIndexBase + push.nodeBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetDrawIndirect>> drawIndirectHandle =
@@ -1321,6 +1343,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
 
+    StructuredBuffer<uint> pageWords = pageHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader = activeHeaderHandle;
     StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
@@ -1328,7 +1351,6 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     StructuredBuffer<GPUDrivenStreamAssetLodLevel> lodLevels = lodLevelHandle;
     StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos = pageInfoHandle;
     StructuredBuffer<GPUDrivenStreamAssetGroup> groups = groupHandle;
-    StructuredBuffer<uint> clusterRefs = clusterRefHandle;
     StructuredBuffer<GPUDrivenStreamAssetNode> nodes = nodeHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetDrawIndirect> drawIndirect = drawIndirectHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader> traversalHeader = traversalHeaderHandle;
@@ -1411,7 +1433,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                 activeHeader,
                 pageInfos,
                 groups,
-                clusterRefs,
+                pageWords,
                 pageTable,
                 requests,
                 params,
@@ -1446,7 +1468,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                 primitives,
                 pageInfos,
                 groups,
-                clusterRefs,
+                pageWords,
                 nodes,
                 pageTable,
                 requests,
@@ -1471,7 +1493,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                     primitives,
                     pageInfos,
                     groups,
-                    clusterRefs,
+                    pageWords,
                     nodes,
                     pageTable,
                     params,
@@ -1515,7 +1537,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     }
     uint clusterSelectionMask = buildGroupClusterSelectionMask(
         groups,
-        clusterRefs,
+        pageWords,
         pageTable,
         params,
         instance,
@@ -1875,7 +1897,7 @@ void gpuDrivenStreamAssetMeshMain(
     uint clusterOffsetBytes = pageWords[pageWord + 9u];
     uint positionOffsetBytes = pageWords[pageWord + 10u];
     uint triangleOffsetBytes = pageWords[pageWord + 11u];
-    uint clusterWord = pageWord + clusterOffsetBytes / 4u + clusterIndex * 8u;
+    uint clusterWord = pageWord + clusterOffsetBytes / 4u + clusterIndex * 9u;
     uint vertexOffset = pageWords[clusterWord + 0u];
     uint vertexCount = min(pageWords[clusterWord + 1u], kMaxMeshletVertices);
     uint triangleOffset = pageWords[clusterWord + 2u];

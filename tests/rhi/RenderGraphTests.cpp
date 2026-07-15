@@ -2223,24 +2223,17 @@ public:
         const std::array<uint32_t, 5> groupPrimitives{0, 0, 0, 1, 1};
         const std::array<uint32_t, 5> groupLods{0, 0, 1, 0, 1};
         const std::array<uint32_t, 5> groupClusterCounts{3, 5, 2, 11, 1};
-        uint32_t clusterRefOffset = 0;
         for (uint32_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
             groups[groupIndex].primitiveIndex = groupPrimitives[groupIndex];
             groups[groupIndex].pageIndex = groupPages[groupIndex];
             groups[groupIndex].lodLevel = groupLods[groupIndex];
-            groups[groupIndex].clusterRefOffset = clusterRefOffset;
             groups[groupIndex].clusterCount = groupClusterCounts[groupIndex];
             groups[groupIndex].boundsCenterRadius[2] = 5.0f + static_cast<float>(groupPrimitives[groupIndex]);
             groups[groupIndex].boundsCenterRadius[3] = 1.0f;
             groups[groupIndex].maxQuadricError = groupLods[groupIndex] == 0
                 ? 1.0f
                 : std::numeric_limits<float>::max();
-            clusterRefOffset += groupClusterCounts[groupIndex];
         }
-        std::vector<uint32_t> clusterRefs(clusterRefOffset, UINT32_MAX);
-        clusterRefs[groups[2].clusterRefOffset + 0u] = 0u;
-        clusterRefs[groups[2].clusterRefOffset + 1u] = 1u;
-        clusterRefs[groups[4].clusterRefOffset] = 3u;
         std::array<render::MeshletStreamGpuNode, 8> nodes{};
         nodes[0].primitiveIndex = 0;
         nodes[0].childOffset = 1;
@@ -2311,7 +2304,7 @@ public:
         pageTable[1].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
         pageTable[1].lastRequestFrame = 3;
         pageTable[1].deviceOffsetBytes = 512;
-        pageTable[1].deviceSizeBytes = 256;
+        pageTable[1].deviceSizeBytes = 512;
         pageTable[2].deviceOffsetBytes = 1024;
         pageTable[2].deviceSizeBytes = 256;
         pageTable[2].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback);
@@ -2328,6 +2321,35 @@ public:
         pageTable[5].deviceSizeBytes = 128;
         pageTable[5].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
         pageTable[5].lastRequestFrame = 3;
+
+        constexpr uint32_t kPageBufferBytes = 16u * 1024u;
+        std::vector<uint32_t> pageWords(kPageBufferBytes / sizeof(uint32_t), 0u);
+        for (uint32_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+            const uint32_t pageIndex = groups[groupIndex].pageIndex;
+            const render::StreamPageTableEntry& entry = pageTable[pageIndex];
+            if (entry.deviceOffsetBytes == render::kInvalidStreamDeviceOffsetBytes) {
+                continue;
+            }
+            const uint32_t pageWord = entry.deviceOffsetBytes / sizeof(uint32_t);
+            constexpr uint32_t kClusterOffsetBytes = 96u;
+            const uint32_t payloadBytes =
+                kClusterOffsetBytes + groups[groupIndex].clusterCount * 36u;
+            pageWords[pageWord + 2u] = groups[groupIndex].clusterCount;
+            pageWords[pageWord + 9u] = kClusterOffsetBytes;
+            pageWords[pageWord + 12u] = payloadBytes;
+            const uint32_t clusterWord = pageWord + kClusterOffsetBytes / sizeof(uint32_t);
+            for (uint32_t clusterIndex = 0; clusterIndex < groups[groupIndex].clusterCount; ++clusterIndex) {
+                pageWords[clusterWord + clusterIndex * 9u + 8u] = UINT32_MAX;
+            }
+        }
+        const uint32_t group2ClusterWord =
+            pageTable[groups[2].pageIndex].deviceOffsetBytes / sizeof(uint32_t) + 96u / sizeof(uint32_t);
+        pageWords[group2ClusterWord + 8u] = 0u;
+        pageWords[group2ClusterWord + 9u + 8u] = 1u;
+        const uint32_t group4ClusterWord =
+            pageTable[groups[4].pageIndex].deviceOffsetBytes / sizeof(uint32_t) + 96u / sizeof(uint32_t);
+        pageWords[group4ClusterWord + 8u] = 3u;
+        params.pageBufferBytes = kPageBufferBytes;
 
         std::vector<uint8_t> requestInit(static_cast<size_t>(kRequestByteSize), 0);
         auto* requestHeader = reinterpret_cast<render::StreamRequestBufferHeader*>(requestInit.data());
@@ -2395,15 +2417,15 @@ public:
         if (!testResult.passed) {
             return testResult;
         }
-        std::unique_ptr<render::Buffer> clusterRefBuffer;
+        std::unique_ptr<render::Buffer> pageBuffer;
         testResult = createBuffer(
             render::BufferDesc{
-                .size = static_cast<uint64_t>(clusterRefs.size()) * sizeof(uint32_t),
+                .size = static_cast<uint64_t>(pageWords.size()) * sizeof(uint32_t),
                 .usage = render::BufferUsageBits::Storage,
                 .memoryLocation = render::MemoryLocation::HostUpload,
             },
-            "cluster refs",
-            clusterRefBuffer);
+            "stream pages",
+            pageBuffer);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2647,11 +2669,11 @@ public:
             return RhiTestResult::fail(std::string("writeHostBuffer(groups) returned ") + toString(result));
         }
         result = writeHostBuffer(
-            *clusterRefBuffer,
-            clusterRefs.data(),
-            static_cast<uint64_t>(clusterRefs.size()) * sizeof(uint32_t));
+            *pageBuffer,
+            pageWords.data(),
+            static_cast<uint64_t>(pageWords.size()) * sizeof(uint32_t));
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(cluster refs) returned ") + toString(result));
+            return RhiTestResult::fail(std::string("writeHostBuffer(stream pages) returned ") + toString(result));
         }
         result = writeHostBuffer(*nodeBuffer, nodes.data(), sizeof(nodes));
         if (!result) {
@@ -2722,8 +2744,8 @@ public:
         if (!testResult.passed) {
             return testResult;
         }
-        render::BindlessHandle clusterRefHandle;
-        testResult = allocateStorageBuffer(*clusterRefBuffer, "cluster refs", clusterRefHandle);
+        render::BindlessHandle pageHandle;
+        testResult = allocateStorageBuffer(*pageBuffer, "stream pages", pageHandle);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2926,6 +2948,7 @@ public:
 
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         render::MeshletStreamUserPush push{
+            .pageBuffer = pageHandle.index,
             .activeGroupBuffer = activeGroupHandle.index,
             .pageTableBuffer = pageTableHandle.index,
             .paramsBuffer = paramsHandle.index,
@@ -2936,7 +2959,6 @@ public:
             .lodLevelBuffer = lodLevelHandle.index,
             .pageInfoBuffer = pageInfoHandle.index,
             .groupBuffer = groupHandle.index,
-            .clusterRefBuffer = clusterRefHandle.index,
             .nodeBuffer = nodeHandle.index,
             .drawIndirectBuffer = drawIndirectHandle.index,
             .traversalHeaderBuffer = traversalHeaderHandle.index,

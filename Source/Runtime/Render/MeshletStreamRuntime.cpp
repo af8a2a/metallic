@@ -1683,7 +1683,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         BindlessHeapDesc{
             .maxSamplers = 0,
             .maxSampledImages = 0,
-            .maxBuffers = clasPool_ != nullptr ? 26u : 17u,
+            .maxBuffers = clasPool_ != nullptr ? 25u : 16u,
         },
         bindlessHeap_);
     if (!result || bindlessHeap_ == nullptr) {
@@ -1732,15 +1732,6 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
     result = allocateAndWriteBuffer(*bindlessHeap_, *groupBuffer_, groupHandle_, log, "meshlet stream groups");
-    if (!result) {
-        return result;
-    }
-    result = allocateAndWriteBuffer(
-        *bindlessHeap_,
-        *clusterRefBuffer_,
-        clusterRefHandle_,
-        log,
-        "meshlet stream cluster DAG refs");
     if (!result) {
         return result;
     }
@@ -1920,7 +1911,6 @@ void MeshletStreamRuntime::reset()
     lodLevelBuffer_.reset();
     pageInfoBuffer_.reset();
     groupBuffer_.reset();
-    clusterRefBuffer_.reset();
     nodeBuffer_.reset();
     drawIndirectBuffer_.reset();
     traversalHeaderBuffer_.reset();
@@ -1960,7 +1950,6 @@ void MeshletStreamRuntime::reset()
     lodLevelHandle_ = {};
     pageInfoHandle_ = {};
     groupHandle_ = {};
-    clusterRefHandle_ = {};
     nodeHandle_ = {};
     drawIndirectHandle_ = {};
     traversalHeaderHandle_ = {};
@@ -2040,7 +2029,6 @@ bool MeshletStreamRuntime::ready() const
         lodLevelBuffer_ != nullptr &&
         pageInfoBuffer_ != nullptr &&
         groupBuffer_ != nullptr &&
-        clusterRefBuffer_ != nullptr &&
         nodeBuffer_ != nullptr &&
         drawIndirectBuffer_ != nullptr &&
         traversalHeaderBuffer_ != nullptr &&
@@ -2222,7 +2210,6 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
         .lodLevelBuffer = lodLevelHandle_.index,
         .pageInfoBuffer = pageInfoHandle_.index,
         .groupBuffer = groupHandle_.index,
-        .clusterRefBuffer = clusterRefHandle_.index,
         .nodeBuffer = nodeHandle_.index,
         .drawIndirectBuffer = drawIndirectHandle_.index,
         .traversalHeaderBuffer = traversalHeaderHandle_.index,
@@ -2380,7 +2367,6 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
             .primitiveIndex = group.primitiveIndex,
             .pageIndex = group.pageIndex,
             .lodLevel = group.lodLevel,
-            .clusterRefOffset = group.clusterRefOffset,
             .clusterCount = group.clusterCount,
             .maxQuadricError = group.maxQuadricError,
         };
@@ -2390,9 +2376,6 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
             std::begin(gpuGroup.boundsCenterRadius));
         gpuGroups.push_back(gpuGroup);
     }
-    std::vector<uint32_t> gpuClusterRefs(
-        asset_.clusterRefinedGroups().begin(),
-        asset_.clusterRefinedGroups().end());
     std::vector<MeshletStreamGpuNode> gpuNodes;
     gpuNodes.reserve(asset_.nodes().size());
     for (const scene::MeshletStreamNodeInfo& node : asset_.nodes()) {
@@ -2443,10 +2426,6 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
         return result;
     }
     result = createAndUpload(gpuGroups, groupBuffer_, "MeshletStreamRuntime groups");
-    if (!result) {
-        return result;
-    }
-    result = createAndUpload(gpuClusterRefs, clusterRefBuffer_, "MeshletStreamRuntime cluster DAG refs");
     if (!result) {
         return result;
     }

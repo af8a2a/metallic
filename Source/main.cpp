@@ -108,14 +108,13 @@ int buildMeshletStreamAssetOffline(
         }
     }
     std::printf(
-        "Built meshlet StreamAsset '%s': primitives=%u geometries=%u instances=%u lodLevels=%u groups=%u clusterRefs=%u nodes=%u pages=%u fallbackPages=%llu maxPagePayloadBytes=%u\n",
+        "Built meshlet StreamAsset '%s': primitives=%u geometries=%u instances=%u lodLevels=%u groups=%u nodes=%u pages=%u fallbackPages=%llu maxPagePayloadBytes=%u\n",
         resolvedOutputPath.string().c_str(),
         asset.primitiveCount(),
         asset.geometryCount(),
         asset.instanceCount(),
         asset.lodLevelCount(),
         asset.groupCount(),
-        asset.clusterRefCount(),
         asset.nodeCount(),
         asset.pageCount(),
         static_cast<unsigned long long>(terminalPageCount),

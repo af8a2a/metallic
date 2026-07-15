@@ -146,16 +146,12 @@ struct MeshletStreamGpuGroup {
     uint32_t primitiveIndex = 0;
     uint32_t pageIndex = 0;
     uint32_t lodLevel = 0;
-    uint32_t clusterRefOffset = 0;
     uint32_t clusterCount = 0;
+    float boundsCenterRadius[4] = {};
+    float maxQuadricError = 0.0f;
     uint32_t padding0 = 0;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
-    float boundsCenterRadius[4] = {};
-    float maxQuadricError = 0.0f;
-    uint32_t padding3 = 0;
-    uint32_t padding4 = 0;
-    uint32_t padding5 = 0;
 };
 
 struct MeshletStreamGpuNode {
@@ -279,7 +275,6 @@ struct MeshletStreamUserPush {
     uint32_t lodLevelBuffer = 0;
     uint32_t pageInfoBuffer = 0;
     uint32_t groupBuffer = 0;
-    uint32_t clusterRefBuffer = 0;
     uint32_t nodeBuffer = 0;
     uint32_t drawIndirectBuffer = 0;
     uint32_t traversalHeaderBuffer = 0;
@@ -303,7 +298,7 @@ static_assert(sizeof(MeshletStreamGpuInstance) == 96);
 static_assert(sizeof(MeshletStreamGpuPrimitive) == 64);
 static_assert(sizeof(MeshletStreamGpuLodLevel) == 32);
 static_assert(sizeof(MeshletStreamGpuPageInfo) == 16);
-static_assert(sizeof(MeshletStreamGpuGroup) == 64);
+static_assert(sizeof(MeshletStreamGpuGroup) == 48);
 static_assert(sizeof(MeshletStreamGpuNode) == 48);
 static_assert(sizeof(MeshletStreamGpuDrawIndirect) == 12);
 static_assert(sizeof(MeshletStreamGpuTraversalHeader) == 32);
@@ -314,7 +309,7 @@ static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(MeshletStreamGpuTlasInstance) == 64);
 static_assert(sizeof(StreamPageTableEntry) == 16);
 static_assert(sizeof(MeshletStreamGpuParams) == 192);
-static_assert(sizeof(MeshletStreamUserPush) == 112);
+static_assert(sizeof(MeshletStreamUserPush) == 108);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -435,7 +430,6 @@ private:
     std::unique_ptr<Buffer> lodLevelBuffer_;
     std::unique_ptr<Buffer> pageInfoBuffer_;
     std::unique_ptr<Buffer> groupBuffer_;
-    std::unique_ptr<Buffer> clusterRefBuffer_;
     std::unique_ptr<Buffer> nodeBuffer_;
     std::unique_ptr<Buffer> drawIndirectBuffer_;
     std::unique_ptr<Buffer> traversalHeaderBuffer_;
@@ -475,7 +469,6 @@ private:
     BindlessHandle lodLevelHandle_;
     BindlessHandle pageInfoHandle_;
     BindlessHandle groupHandle_;
-    BindlessHandle clusterRefHandle_;
     BindlessHandle nodeHandle_;
     BindlessHandle drawIndirectHandle_;
     BindlessHandle traversalHeaderHandle_;
