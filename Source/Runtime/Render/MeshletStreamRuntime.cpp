@@ -989,6 +989,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     if (maxResidentPages_ != 0) {
         residentPageCapacity = std::min<uint64_t>(residentPageCapacity, maxResidentPages_);
     }
+    residentPageCapacity_ = static_cast<uint32_t>(residentPageCapacity);
     const uint64_t maxUpdatePatches64 = std::max(residentPageCapacity * 2ull, 1ull);
     if (maxUpdatePatches64 > std::numeric_limits<uint32_t>::max()) {
         log = "MeshletStreamRuntime update patch capacity overflowed";
@@ -1728,11 +1729,27 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
 
+    residentPageFrames_.resize(std::max(desc.queuedFrameCount, 1u));
+    for (ResidentPageFrame& frame : residentPageFrames_) {
+        result = createHostStorageBuffer(
+            device,
+            std::max<uint64_t>(
+                static_cast<uint64_t>(residentPageCapacity_) * sizeof(uint32_t),
+                sizeof(uint32_t)),
+            frame.buffer,
+            log,
+            "MeshletStreamRuntime resident pages");
+        if (!result) {
+            return result;
+        }
+    }
+
     result = device.createBindlessHeap(
         BindlessHeapDesc{
             .maxSamplers = 0,
             .maxSampledImages = 0,
-            .maxBuffers = clasPool_ != nullptr ? 24u : 15u,
+            .maxBuffers = (clasPool_ != nullptr ? 24u : 15u) +
+                static_cast<uint32_t>(residentPageFrames_.size()),
         },
         bindlessHeap_);
     if (!result || bindlessHeap_ == nullptr) {
@@ -1763,6 +1780,17 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     result = allocateAndWriteBuffer(*bindlessHeap_, *requestBuffer_, requestHandle_, log, "meshlet stream request");
     if (!result) {
         return result;
+    }
+    for (ResidentPageFrame& frame : residentPageFrames_) {
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *frame.buffer,
+            frame.handle,
+            log,
+            "meshlet stream resident pages");
+        if (!result) {
+            return result;
+        }
     }
     result = allocateAndWriteBuffer(*bindlessHeap_, *instanceBuffer_, instanceHandle_, log, "meshlet stream instances");
     if (!result) {
@@ -1949,6 +1977,7 @@ void MeshletStreamRuntime::reset()
     requestReadbackBuffer_.reset();
     requestClearBuffer_.reset();
     paramsBuffer_.reset();
+    residentPageFrames_.clear();
     instanceBuffer_.reset();
     primitiveBuffer_.reset();
     lodLevelBuffer_.reset();
@@ -2025,6 +2054,8 @@ void MeshletStreamRuntime::reset()
     maxGpuPageRequests_ = 0;
     maxGpuPageUnloadRequests_ = 0;
     maxUpdatePatches_ = 0;
+    residentPageCapacity_ = 0;
+    currentResidentPageCount_ = 0;
     maxResidentBytes_ = 0;
     maxActiveGroups_ = 0;
     maxActiveGroupClusters_ = 0;
@@ -2122,6 +2153,21 @@ Result MeshletStreamRuntime::cmdBeginFrame(
     }
     consumeGpuRequestReadback();
     currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, maxPageUploadsPerFrame_);
+    const std::span<const uint32_t> residentPages = residency_.residentPages();
+    if (residentPages.size() > residentPageCapacity_ || residentPageFrames_.empty()) {
+        return makeError(Error::Failure);
+    }
+    currentResidentPageCount_ = static_cast<uint32_t>(residentPages.size());
+    if (!residentPages.empty()) {
+        ResidentPageFrame& residentFrame = residentPageFrames_[frameIndex_ % residentPageFrames_.size()];
+        const Result residentUpdate = updateHostBuffer(
+            *residentFrame.buffer,
+            residentPages.data(),
+            static_cast<uint64_t>(residentPages.size()) * sizeof(uint32_t));
+        if (!residentUpdate) {
+            return residentUpdate;
+        }
+    }
     return {};
 }
 
@@ -2152,7 +2198,10 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
     if (!result) {
         return result;
     }
-    result = dispatchTraversal(commandBuffer, asset_.pageCount(), kMeshletStreamTraversalUnloadPhase);
+    result = dispatchTraversal(
+        commandBuffer,
+        currentResidentPageCount_,
+        kMeshletStreamTraversalUnloadPhase);
     if (!result) {
         return result;
     }
@@ -2242,6 +2291,9 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
         .pageTableBuffer = pageTableHandle_.index,
         .paramsBuffer = paramsHandle_.index,
         .requestBuffer = requestHandle_.index,
+        .residentPageBuffer = !residentPageFrames_.empty()
+            ? residentPageFrames_[frameIndex_ % residentPageFrames_.size()].handle.index
+            : 0u,
         .updateBuffer = updatePass_ != nullptr ? updatePass_->updateHandle().index : 0u,
         .activeHeaderBuffer = activeHeaderHandle_.index,
         .instanceBuffer = instanceHandle_.index,
@@ -2601,6 +2653,7 @@ Result MeshletStreamRuntime::dispatchTraversal(
     }
     MeshletStreamUserPush push = userPush();
     push.traversalPhase = traversalPhase;
+    push.activeBuildPhase = threadCount;
     return traversalPass_->dispatch(
         commandBuffer,
         *bindlessHeap_,

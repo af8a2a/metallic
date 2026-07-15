@@ -53,6 +53,7 @@ struct GPUDrivenStreamAssetPush
     uint pageTableBuffer;
     uint paramsBuffer;
     uint requestBuffer;
+    uint residentPageBuffer;
     uint updateBuffer;
     uint activeHeaderBuffer;
     uint instanceBuffer;
@@ -1203,8 +1204,16 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
 
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
     if (push.traversalPhase == kTraversalPhaseUnload) {
-        uint pageIndex = dispatchThreadID.x;
-        if (pageIndex >= params.scenePageCount || params.enableGpuUnloadRequests == 0u) {
+        uint residentPageIndex = dispatchThreadID.x;
+        if (residentPageIndex >= push.activeBuildPhase || params.enableGpuUnloadRequests == 0u) {
+            return;
+        }
+        DescriptorHandle<StructuredBuffer<uint>> residentPageHandle =
+            DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.residentPageBuffer, 0));
+        StructuredBuffer<uint> residentPages = residentPageHandle;
+        uint pageIndex = residentPages[residentPageIndex];
+        if (pageIndex >= params.scenePageCount) {
+            reportInvalidTraversal(requests, params);
             return;
         }
         GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[pageIndex];

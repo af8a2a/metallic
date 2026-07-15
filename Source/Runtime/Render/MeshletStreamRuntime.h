@@ -259,6 +259,7 @@ struct MeshletStreamUserPush {
     uint32_t pageTableBuffer = 0;
     uint32_t paramsBuffer = 0;
     uint32_t requestBuffer = 0;
+    uint32_t residentPageBuffer = 0;
     uint32_t updateBuffer = 0;
     uint32_t activeHeaderBuffer = 0;
     uint32_t instanceBuffer = 0;
@@ -298,7 +299,7 @@ static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(MeshletStreamGpuTlasInstance) == 64);
 static_assert(sizeof(StreamPageTableEntry) == 12);
 static_assert(sizeof(MeshletStreamGpuParams) == 192);
-static_assert(sizeof(MeshletStreamUserPush) == 104);
+static_assert(sizeof(MeshletStreamUserPush) == 108);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -375,6 +376,11 @@ public:
     vulkan::MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
 
 private:
+    struct ResidentPageFrame {
+        std::unique_ptr<Buffer> buffer;
+        BindlessHandle handle;
+    };
+
     class UpdatePass;
     class TraversalPass;
     class ActiveBuildPass;
@@ -412,6 +418,7 @@ private:
     std::unique_ptr<Buffer> requestReadbackBuffer_;
     std::unique_ptr<Buffer> requestClearBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
+    std::vector<ResidentPageFrame> residentPageFrames_;
     std::unique_ptr<Buffer> instanceBuffer_;
     std::unique_ptr<Buffer> primitiveBuffer_;
     std::unique_ptr<Buffer> lodLevelBuffer_;
@@ -488,6 +495,8 @@ private:
     uint32_t maxGpuPageRequests_ = 0;
     uint32_t maxGpuPageUnloadRequests_ = 0;
     uint32_t maxUpdatePatches_ = 0;
+    uint32_t residentPageCapacity_ = 0;
+    uint32_t currentResidentPageCount_ = 0;
     uint64_t maxResidentBytes_ = 0;
     uint32_t maxActiveGroups_ = 0;
     uint32_t maxActiveGroupClusters_ = 0;

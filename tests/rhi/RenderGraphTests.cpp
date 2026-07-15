@@ -2321,6 +2321,7 @@ public:
             128,
             render::MeshletStreamPageResidencyState::Resident);
         pageTable[5].lastRequestFrame = 3;
+        const std::array<uint32_t, 5> residentPageIds = {1, 2, 3, 4, 5};
 
         constexpr uint32_t kPageBufferBytes = 16u * 1024u;
         std::vector<uint32_t> pageWords(kPageBufferBytes / sizeof(uint32_t), 0u);
@@ -2402,6 +2403,19 @@ public:
             },
             "groups",
             groupBuffer);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::Buffer> residentPageBuffer;
+        testResult = createBuffer(
+            render::BufferDesc{
+                .size = sizeof(residentPageIds),
+                .structureStride = sizeof(uint32_t),
+                .usage = render::BufferUsageBits::Storage,
+                .memoryLocation = render::MemoryLocation::HostUpload,
+            },
+            "resident pages",
+            residentPageBuffer);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2675,13 +2689,17 @@ public:
         if (!result) {
             return RhiTestResult::fail(std::string("writeHostBuffer(request upload) returned ") + toString(result));
         }
+        result = writeHostBuffer(*residentPageBuffer, residentPageIds.data(), sizeof(residentPageIds));
+        if (!result) {
+            return RhiTestResult::fail(std::string("writeHostBuffer(resident pages) returned ") + toString(result));
+        }
 
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
         result = device->createBindlessHeap(
             render::BindlessHeapDesc{
                 .maxSamplers = 0,
                 .maxSampledImages = 0,
-                .maxBuffers = 14,
+                .maxBuffers = 15,
             },
             bindlessHeap);
         if (!result || bindlessHeap == nullptr) {
@@ -2720,6 +2738,11 @@ public:
         }
         render::BindlessHandle groupHandle;
         testResult = allocateStorageBuffer(*groupBuffer, "groups", groupHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle residentPageHandle;
+        testResult = allocateStorageBuffer(*residentPageBuffer, "resident pages", residentPageHandle);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2932,6 +2955,7 @@ public:
             .pageTableBuffer = pageTableHandle.index,
             .paramsBuffer = paramsHandle.index,
             .requestBuffer = requestHandle.index,
+            .residentPageBuffer = residentPageHandle.index,
             .activeHeaderBuffer = activeHeaderHandle.index,
             .instanceBuffer = instanceHandle.index,
             .primitiveBuffer = primitiveHandle.index,
@@ -3087,6 +3111,7 @@ public:
         });
         commandBuffer->bindComputePipeline(*pipeline);
         push.traversalPhase = render::kMeshletStreamTraversalUnloadPhase;
+        push.activeBuildPhase = static_cast<uint32_t>(residentPageIds.size());
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
