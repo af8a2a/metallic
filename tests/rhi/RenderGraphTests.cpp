@@ -4450,6 +4450,7 @@ public:
                 {"maxBlasClusterReferences", 4096},
                 {"maxBlasBytes", 64ull * 1024ull * 1024ull},
                 {"maxBlasBuilds", 4},
+                {"maxFallbackBlasBytes", 64ull * 1024ull * 1024ull},
                 {"maxResidentPages", 64},
                 {"maxPageUploadsPerFrame", 1},
             });

@@ -67,12 +67,9 @@ struct GPUDrivenStreamAssetPush
     uint instanceBlasBuffer;
     uint blasBuildInfoBuffer;
     uint blasClusterReferenceBuffer;
-    uint blasClusterReferenceAddressLow;
-    uint blasClusterReferenceAddressHigh;
-    uint blasClusterReferenceCapacity;
+    uint fallbackBlasAddressBuffer;
     uint traversalPhase;
     uint activeBuildPhase;
-    uint blasInputPhase;
 };
 
 struct GPUDrivenStreamAssetActiveHeader
@@ -345,6 +342,10 @@ struct GPUDrivenStreamAssetParams
     uint sceneNodeCount;
     uint traversalWorkerCount;
     uint traversalWorkCapacity;
+    uint blasClusterReferenceAddressLow;
+    uint blasClusterReferenceAddressHigh;
+    uint blasClusterReferenceCapacity;
+    uint blasBuildCapacity;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
@@ -1565,12 +1566,12 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
     uint itemIndex = dispatchThreadID.x;
 
-    if (push.blasInputPhase == kBlasInputPhaseReset) {
+    if (push.activeBuildPhase == kBlasInputPhaseReset) {
         if (itemIndex == 0u) {
             GPUDrivenStreamAssetBlasHeader header;
             header.clusterReferenceCount = 0u;
             header.blasBuildCount = 0u;
-            header.clusterReferenceCapacity = push.blasClusterReferenceCapacity;
+            header.clusterReferenceCapacity = params.blasClusterReferenceCapacity;
             header.overflowCount = 0u;
             header.frameIndex = params.frameIndex;
             header.padding0 = 0u;
@@ -1592,7 +1593,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     }
 
     uint activeCount = min(activeHeader[0].activeGroupCount, activeHeader[0].activeGroupCapacity);
-    if (push.blasInputPhase == kBlasInputPhaseCount) {
+    if (push.activeBuildPhase == kBlasInputPhaseCount) {
         if (itemIndex >= activeCount) {
             return;
         }
@@ -1621,7 +1622,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         return;
     }
 
-    if (push.blasInputPhase == kBlasInputPhaseSetup) {
+    if (push.activeBuildPhase == kBlasInputPhaseSetup) {
         if (itemIndex >= params.sceneInstanceCount) {
             return;
         }
@@ -1633,8 +1634,8 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         }
         if (info.clusterReferenceCapacity == 0u ||
             info.selectedClusterCount > info.clusterReferenceCapacity ||
-            info.clusterReferenceOffset >= push.blasClusterReferenceCapacity ||
-            info.selectedClusterCount > push.blasClusterReferenceCapacity - info.clusterReferenceOffset) {
+            info.clusterReferenceOffset >= params.blasClusterReferenceCapacity ||
+            info.selectedClusterCount > params.blasClusterReferenceCapacity - info.clusterReferenceOffset) {
             InterlockedOr(
                 instanceBlas[itemIndex].flags,
                 kBlasInstanceFallback | kBlasInstanceOverflow);
@@ -1649,21 +1650,21 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
 
         uint byteAddressLow = info.clusterReferenceOffset << 3u;
         uint byteAddressHigh = info.clusterReferenceOffset >> 29u;
-        uint referenceAddressLow = push.blasClusterReferenceAddressLow + byteAddressLow;
-        uint carry = referenceAddressLow < push.blasClusterReferenceAddressLow ? 1u : 0u;
+        uint referenceAddressLow = params.blasClusterReferenceAddressLow + byteAddressLow;
+        uint carry = referenceAddressLow < params.blasClusterReferenceAddressLow ? 1u : 0u;
         GPUDrivenStreamAssetBlasBuildInfo buildInfo;
         buildInfo.clusterReferencesCount = info.selectedClusterCount;
         buildInfo.clusterReferencesStride = 8u;
         buildInfo.clusterReferencesAddressLow = referenceAddressLow;
         buildInfo.clusterReferencesAddressHigh =
-            push.blasClusterReferenceAddressHigh + byteAddressHigh + carry;
+            params.blasClusterReferenceAddressHigh + byteAddressHigh + carry;
         blasBuildInfos[buildIndex] = buildInfo;
         instanceBlas[itemIndex].blasBuildIndex = buildIndex;
         InterlockedOr(instanceBlas[itemIndex].flags, kBlasInstanceDynamic);
         return;
     }
 
-    if (push.blasInputPhase != kBlasInputPhaseInsert || itemIndex >= activeCount) {
+    if (push.activeBuildPhase != kBlasInputPhaseInsert || itemIndex >= activeCount) {
         return;
     }
 

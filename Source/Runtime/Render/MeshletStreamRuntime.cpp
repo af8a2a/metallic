@@ -14,6 +14,7 @@
 #include <span>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 
 namespace metallic::render {
 namespace {
@@ -59,6 +60,29 @@ uint64_t clusterScratchAlignment(VkPhysicalDevice physicalDevice)
     vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
     return clusterProperties.clusterScratchByteAlignment != 0
         ? clusterProperties.clusterScratchByteAlignment
+        : 256;
+#else
+    (void)physicalDevice;
+    return 256;
+#endif
+}
+
+uint64_t clusterBottomLevelAlignment(VkPhysicalDevice physicalDevice)
+{
+#ifdef VK_NV_cluster_acceleration_structure
+    if (physicalDevice == VK_NULL_HANDLE) {
+        return 256;
+    }
+    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV clusterProperties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
+    };
+    VkPhysicalDeviceProperties2 properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &clusterProperties,
+    };
+    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+    return clusterProperties.clusterBottomLevelByteAlignment != 0
+        ? clusterProperties.clusterBottomLevelByteAlignment
         : 256;
 #else
     (void)physicalDevice;
@@ -1139,6 +1163,219 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             log = "MeshletStreamRuntime dynamic BLAS buffers have no device addresses";
             return makeError(Error::Failure);
         }
+
+        if (desc.maxFallbackBlasBytes == 0) {
+            log = "MeshletStreamRuntime fallback BLAS budget must be non-zero";
+            return makeError(Error::InvalidArgument);
+        }
+        fallbackBlasReferenceOffsets_.resize(asset_.primitiveCount());
+        fallbackBlasReferenceCounts_.resize(asset_.primitiveCount());
+        fallbackBlasStorageOffsets_.resize(asset_.primitiveCount());
+        fallbackBlasBuilt_.assign(asset_.primitiveCount(), 0);
+
+        uint64_t totalFallbackReferences = 0;
+        for (uint32_t primitiveIndex = 0; primitiveIndex < asset_.primitiveCount(); ++primitiveIndex) {
+            const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
+            uint64_t primitiveReferences = 0;
+            for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
+                primitiveReferences += asset_.pages()[primitive.fallbackPageOffset + localPage].clusterCount;
+            }
+            if (primitiveReferences == 0 || primitiveReferences > std::numeric_limits<uint32_t>::max()) {
+                log = "MeshletStreamRuntime primitive fallback CLAS reference count overflowed";
+                return makeError(Error::InvalidArgument);
+            }
+            fallbackBlasReferenceOffsets_[primitiveIndex] = totalFallbackReferences;
+            fallbackBlasReferenceCounts_[primitiveIndex] = static_cast<uint32_t>(primitiveReferences);
+            totalFallbackReferences += primitiveReferences;
+        }
+        if (totalFallbackReferences > std::numeric_limits<uint64_t>::max() / sizeof(uint64_t)) {
+            log = "MeshletStreamRuntime total fallback CLAS reference bytes overflowed";
+            return makeError(Error::InvalidArgument);
+        }
+
+        const uint64_t bottomLevelAlignment = clusterBottomLevelAlignment(nativeDevice.physicalDevice);
+        std::unordered_map<uint32_t, vulkan::ClusterAccelerationStructureBuildSizes> sizeCache;
+        uint64_t fallbackStorageBytes = 0;
+        uint64_t fallbackScratchBytes = 0;
+        for (uint32_t primitiveIndex = 0; primitiveIndex < asset_.primitiveCount(); ++primitiveIndex) {
+            const uint32_t clusterCount = fallbackBlasReferenceCounts_[primitiveIndex];
+            auto [iter, inserted] = sizeCache.try_emplace(clusterCount);
+            if (inserted) {
+                result = vulkan::queryClusterAccelerationStructureBottomLevelBuildSizes(
+                    device,
+                    vulkan::ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+                        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+                        .maxClusterCountPerAccelerationStructure = clusterCount,
+                        .maxTotalClusterCount = clusterCount,
+                        .maxAccelerationStructureCount = 1,
+                    },
+                    iter->second);
+                if (!result ||
+                    iter->second.accelerationStructureSize == 0 ||
+                    iter->second.buildScratchSize == 0) {
+                    log = std::string("queryClusterAccelerationStructureBottomLevelBuildSizes(fallback BLAS) returned ") +
+                        resultToString(result);
+                    return result ? makeError(Error::Failure) : result;
+                }
+            }
+            fallbackStorageBytes = alignUp(fallbackStorageBytes, bottomLevelAlignment);
+            fallbackBlasStorageOffsets_[primitiveIndex] = fallbackStorageBytes;
+            if (iter->second.accelerationStructureSize >
+                std::numeric_limits<uint64_t>::max() - fallbackStorageBytes) {
+                log = "MeshletStreamRuntime fallback BLAS storage size overflowed";
+                return makeError(Error::InvalidArgument);
+            }
+            fallbackStorageBytes += iter->second.accelerationStructureSize;
+            fallbackScratchBytes = std::max(fallbackScratchBytes, iter->second.buildScratchSize);
+        }
+        if (fallbackStorageBytes > desc.maxFallbackBlasBytes) {
+            log = "MeshletStreamRuntime fallback BLAS storage exceeds maxFallbackBlasBytes";
+            return makeError(Error::OutOfMemory);
+        }
+
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = fallbackStorageBytes,
+                .usage = BufferUsageBits::AccelerationStructureStorage |
+                    BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            fallbackBlasStorageBuffer_,
+            log,
+            "MeshletStreamRuntime fallback BLAS storage");
+        if (!result) {
+            return result;
+        }
+        const uint64_t fallbackStorageAddress =
+            vulkan::nativeBuffer(*fallbackBlasStorageBuffer_).address;
+
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = fallbackScratchBytes + scratchAlignment - 1u,
+                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            fallbackBlasScratchBuffer_,
+            log,
+            "MeshletStreamRuntime fallback BLAS scratch");
+        if (!result) {
+            return result;
+        }
+        fallbackBlasScratchAddress_ = alignUp(
+            vulkan::nativeBuffer(*fallbackBlasScratchBuffer_).address,
+            scratchAlignment);
+
+        result = createNamedBuffer(
+            device,
+            BufferDesc{
+                .size = totalFallbackReferences * sizeof(uint64_t),
+                .structureStride = sizeof(uint64_t),
+                .usage = BufferUsageBits::Storage |
+                    BufferUsageBits::AccelerationStructureBuildInput |
+                    BufferUsageBits::ShaderDeviceAddress,
+                .memoryLocation = MemoryLocation::HostUpload,
+            },
+            fallbackBlasReferenceBuffer_,
+            log,
+            "MeshletStreamRuntime fallback BLAS references");
+        if (!result) {
+            return result;
+        }
+        const uint64_t fallbackReferenceAddress =
+            vulkan::nativeBuffer(*fallbackBlasReferenceBuffer_).address;
+
+        std::vector<MeshletStreamGpuBlasBuildInfo> fallbackBuildInfos(asset_.primitiveCount());
+        std::vector<uint64_t> fallbackDestinations(asset_.primitiveCount());
+        std::vector<uint64_t> fallbackAddresses(asset_.primitiveCount(), 0);
+        for (uint32_t primitiveIndex = 0; primitiveIndex < asset_.primitiveCount(); ++primitiveIndex) {
+            const uint64_t referenceAddress = fallbackReferenceAddress +
+                fallbackBlasReferenceOffsets_[primitiveIndex] * sizeof(uint64_t);
+            fallbackBuildInfos[primitiveIndex] = MeshletStreamGpuBlasBuildInfo{
+                .clusterReferencesCount = fallbackBlasReferenceCounts_[primitiveIndex],
+                .clusterReferencesStride = sizeof(uint64_t),
+                .clusterReferencesAddressLow = static_cast<uint32_t>(referenceAddress),
+                .clusterReferencesAddressHigh = static_cast<uint32_t>(referenceAddress >> 32u),
+            };
+            fallbackDestinations[primitiveIndex] =
+                fallbackStorageAddress + fallbackBlasStorageOffsets_[primitiveIndex];
+        }
+
+        auto createFallbackHostBuffer = [&device, &log](
+                                            uint64_t size,
+                                            BufferUsageBits usage,
+                                            std::unique_ptr<Buffer>& buffer,
+                                            std::string_view label) {
+            return createNamedBuffer(
+                device,
+                BufferDesc{
+                    .size = size,
+                    .usage = usage,
+                    .memoryLocation = MemoryLocation::HostUpload,
+                },
+                buffer,
+                log,
+                label);
+        };
+        const uint64_t primitiveBuildInfoBytes =
+            static_cast<uint64_t>(asset_.primitiveCount()) * sizeof(MeshletStreamGpuBlasBuildInfo);
+        const uint64_t primitiveAddressBytes =
+            static_cast<uint64_t>(asset_.primitiveCount()) * sizeof(uint64_t);
+        result = createFallbackHostBuffer(
+            primitiveBuildInfoBytes,
+            BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+            fallbackBlasBuildInfoBuffer_,
+            "MeshletStreamRuntime fallback BLAS build infos");
+        if (!result) {
+            return result;
+        }
+        result = updateHostBuffer(
+            *fallbackBlasBuildInfoBuffer_,
+            fallbackBuildInfos.data(),
+            primitiveBuildInfoBytes);
+        if (!result) {
+            return result;
+        }
+        result = createFallbackHostBuffer(
+            primitiveAddressBytes,
+            BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+            fallbackBlasDestinationBuffer_,
+            "MeshletStreamRuntime fallback BLAS destinations");
+        if (!result) {
+            return result;
+        }
+        result = updateHostBuffer(
+            *fallbackBlasDestinationBuffer_,
+            fallbackDestinations.data(),
+            primitiveAddressBytes);
+        if (!result) {
+            return result;
+        }
+        result = createFallbackHostBuffer(
+            primitiveAddressBytes,
+            BufferUsageBits::Storage,
+            fallbackBlasAddressBuffer_,
+            "MeshletStreamRuntime fallback BLAS address table");
+        if (!result) {
+            return result;
+        }
+        result = updateHostBuffer(
+            *fallbackBlasAddressBuffer_,
+            fallbackAddresses.data(),
+            primitiveAddressBytes);
+        if (!result) {
+            return result;
+        }
+
+        if (fallbackStorageAddress == 0 ||
+            fallbackBlasScratchAddress_ == 0 ||
+            fallbackReferenceAddress == 0 ||
+            vulkan::nativeBuffer(*fallbackBlasBuildInfoBuffer_).address == 0 ||
+            vulkan::nativeBuffer(*fallbackBlasDestinationBuffer_).address == 0) {
+            log = "MeshletStreamRuntime fallback BLAS buffers have no device addresses";
+            return makeError(Error::Failure);
+        }
     }
     result = createNamedBuffer(
         device,
@@ -1231,7 +1468,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         BindlessHeapDesc{
             .maxSamplers = 0,
             .maxSampledImages = 0,
-            .maxBuffers = clasPool_ != nullptr ? 23u : 17u,
+            .maxBuffers = clasPool_ != nullptr ? 24u : 17u,
         },
         bindlessHeap_);
     if (!result || bindlessHeap_ == nullptr) {
@@ -1378,6 +1615,15 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!result) {
             return result;
         }
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *fallbackBlasAddressBuffer_,
+            fallbackBlasAddressHandle_,
+            log,
+            "meshlet stream fallback BLAS addresses");
+        if (!result) {
+            return result;
+        }
     }
 
     updatePass_ = std::make_unique<UpdatePass>();
@@ -1439,6 +1685,12 @@ void MeshletStreamRuntime::reset()
     blasScratchBuffer_.reset();
     blasAddressBuffer_.reset();
     blasSizeBuffer_.reset();
+    fallbackBlasStorageBuffer_.reset();
+    fallbackBlasScratchBuffer_.reset();
+    fallbackBlasReferenceBuffer_.reset();
+    fallbackBlasBuildInfoBuffer_.reset();
+    fallbackBlasDestinationBuffer_.reset();
+    fallbackBlasAddressBuffer_.reset();
     bindlessHeap_.reset();
     updatePass_.reset();
     traversalPass_.reset();
@@ -1467,6 +1719,7 @@ void MeshletStreamRuntime::reset()
     instanceBlasHandle_ = {};
     blasBuildInfoHandle_ = {};
     blasClusterReferenceHandle_ = {};
+    fallbackBlasAddressHandle_ = {};
     pageBufferState_ = ResourceState::Undefined;
     activeGroupBufferState_ = ResourceState::Undefined;
     activeHeaderBufferState_ = ResourceState::Undefined;
@@ -1499,6 +1752,11 @@ void MeshletStreamRuntime::reset()
     blasClusterReferenceAddress_ = 0;
     blasStorageAddress_ = 0;
     blasScratchAddress_ = 0;
+    fallbackBlasScratchAddress_ = 0;
+    fallbackBlasReferenceOffsets_.clear();
+    fallbackBlasReferenceCounts_.clear();
+    fallbackBlasStorageOffsets_.clear();
+    fallbackBlasBuilt_.clear();
     currentFrameUploadCount_ = 0;
 }
 
@@ -1542,7 +1800,13 @@ bool MeshletStreamRuntime::ready() const
                 blasStorageBuffer_ != nullptr &&
                 blasScratchBuffer_ != nullptr &&
                 blasAddressBuffer_ != nullptr &&
-                blasSizeBuffer_ != nullptr));
+                blasSizeBuffer_ != nullptr &&
+                fallbackBlasStorageBuffer_ != nullptr &&
+                fallbackBlasScratchBuffer_ != nullptr &&
+                fallbackBlasReferenceBuffer_ != nullptr &&
+                fallbackBlasBuildInfoBuffer_ != nullptr &&
+                fallbackBlasDestinationBuffer_ != nullptr &&
+                fallbackBlasAddressBuffer_ != nullptr));
 }
 
 Result MeshletStreamRuntime::cmdBeginFrame(
@@ -1634,6 +1898,10 @@ Result MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const
             return result;
         }
     }
+    result = cmdBuildFallbackBlas(commandBuffer);
+    if (!result) {
+        return result;
+    }
     result = buildBlasInputs(commandBuffer);
     if (!result) {
         return result;
@@ -1692,9 +1960,9 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
         .blasClusterReferenceBuffer = blasClusterReferenceHandle_.valid()
             ? blasClusterReferenceHandle_.index
             : 0u,
-        .blasClusterReferenceAddressLow = static_cast<uint32_t>(blasClusterReferenceAddress_),
-        .blasClusterReferenceAddressHigh = static_cast<uint32_t>(blasClusterReferenceAddress_ >> 32u),
-        .blasClusterReferenceCapacity = blasClusterReferenceCapacity_,
+        .fallbackBlasAddressBuffer = fallbackBlasAddressHandle_.valid()
+            ? fallbackBlasAddressHandle_.index
+            : 0u,
     };
 }
 
@@ -2043,6 +2311,10 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
     params.sceneNodeCount = asset_.nodeCount();
     params.traversalWorkerCount = traversalWorkerCount_;
     params.traversalWorkCapacity = traversalWorkCapacity_;
+    params.blasClusterReferenceAddressLow = static_cast<uint32_t>(blasClusterReferenceAddress_);
+    params.blasClusterReferenceAddressHigh = static_cast<uint32_t>(blasClusterReferenceAddress_ >> 32u);
+    params.blasClusterReferenceCapacity = blasClusterReferenceCapacity_;
+    params.blasBuildCapacity = blasBuildCapacity_;
     return updateHostBuffer(*paramsBuffer_, &params, sizeof(params));
 }
 
@@ -2201,7 +2473,7 @@ Result MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer)
 
     auto dispatchPhase = [this, &commandBuffer](uint32_t phase, uint32_t threadCount) {
         MeshletStreamUserPush push = userPush();
-        push.blasInputPhase = phase;
+        push.activeBuildPhase = phase;
         return blasInputPass_->dispatch(
             commandBuffer,
             *bindlessHeap_,
@@ -2341,6 +2613,175 @@ Result MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
         .pMemoryBarriers = &buildOutputBarrier,
     };
     vkCmdPipelineBarrier2(nativeCommands, &outputDependency);
+    return {};
+#endif
+}
+
+Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
+{
+#ifndef VK_NV_cluster_acceleration_structure
+    (void)commandBuffer;
+    return makeError(Error::Unsupported);
+#else
+    if (clasPool_ == nullptr ||
+        fallbackBlasStorageBuffer_ == nullptr ||
+        fallbackBlasScratchBuffer_ == nullptr ||
+        fallbackBlasReferenceBuffer_ == nullptr ||
+        fallbackBlasBuildInfoBuffer_ == nullptr ||
+        fallbackBlasDestinationBuffer_ == nullptr ||
+        fallbackBlasAddressBuffer_ == nullptr ||
+        fallbackBlasReferenceOffsets_.size() != asset_.primitiveCount() ||
+        fallbackBlasReferenceCounts_.size() != asset_.primitiveCount() ||
+        fallbackBlasStorageOffsets_.size() != asset_.primitiveCount() ||
+        fallbackBlasBuilt_.size() != asset_.primitiveCount()) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    std::vector<uint32_t> readyPrimitives;
+    for (uint32_t primitiveIndex = 0; primitiveIndex < asset_.primitiveCount(); ++primitiveIndex) {
+        if (fallbackBlasBuilt_[primitiveIndex] != 0) {
+            continue;
+        }
+        const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
+        bool ready = true;
+        for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
+            if (!clasPool_->pageHasClas(primitive.fallbackPageOffset + localPage)) {
+                ready = false;
+                break;
+            }
+        }
+        if (ready) {
+            readyPrimitives.push_back(primitiveIndex);
+        }
+    }
+    if (readyPrimitives.empty()) {
+        return {};
+    }
+
+    auto* referenceData = static_cast<uint64_t*>(fallbackBlasReferenceBuffer_->map());
+    auto* addressData = static_cast<uint64_t*>(fallbackBlasAddressBuffer_->map());
+    if (referenceData == nullptr || addressData == nullptr) {
+        if (referenceData != nullptr) {
+            fallbackBlasReferenceBuffer_->unmap();
+        }
+        if (addressData != nullptr) {
+            fallbackBlasAddressBuffer_->unmap();
+        }
+        return makeError(Error::Failure);
+    }
+
+    const uint64_t fallbackStorageAddress =
+        vulkan::nativeBuffer(*fallbackBlasStorageBuffer_).address;
+    for (uint32_t primitiveIndex : readyPrimitives) {
+        const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
+        const uint64_t referenceOffset = fallbackBlasReferenceOffsets_[primitiveIndex];
+        uint64_t writeOffset = referenceOffset;
+        for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
+            const uint32_t pageIndex = primitive.fallbackPageOffset + localPage;
+            const uint32_t clusterCount = asset_.pages()[pageIndex].clusterCount;
+            for (uint32_t clusterIndex = 0; clusterIndex < clusterCount; ++clusterIndex) {
+                referenceData[writeOffset++] = clasPool_->clusterAddress(pageIndex, clusterIndex);
+            }
+        }
+        if (writeOffset - referenceOffset != fallbackBlasReferenceCounts_[primitiveIndex]) {
+            fallbackBlasReferenceBuffer_->unmap();
+            fallbackBlasAddressBuffer_->unmap();
+            return makeError(Error::Failure);
+        }
+        addressData[primitiveIndex] =
+            fallbackStorageAddress + fallbackBlasStorageOffsets_[primitiveIndex];
+        fallbackBlasReferenceBuffer_->flush(
+            referenceOffset * sizeof(uint64_t),
+            static_cast<uint64_t>(fallbackBlasReferenceCounts_[primitiveIndex]) * sizeof(uint64_t));
+        fallbackBlasAddressBuffer_->flush(
+            static_cast<uint64_t>(primitiveIndex) * sizeof(uint64_t),
+            sizeof(uint64_t));
+    }
+    fallbackBlasReferenceBuffer_->unmap();
+    fallbackBlasAddressBuffer_->unmap();
+
+    const VkCommandBuffer nativeCommands = vulkan::nativeCommandBuffer(commandBuffer);
+    const vulkan::NativeBuffer nativeBuildInfos =
+        vulkan::nativeBuffer(*fallbackBlasBuildInfoBuffer_);
+    const vulkan::NativeBuffer nativeDestinations =
+        vulkan::nativeBuffer(*fallbackBlasDestinationBuffer_);
+    if (nativeCommands == VK_NULL_HANDLE ||
+        nativeBuildInfos.address == 0 ||
+        nativeDestinations.address == 0 ||
+        fallbackStorageAddress == 0 ||
+        fallbackBlasScratchAddress_ == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const VkMemoryBarrier2 inputBarrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT |
+            VK_ACCESS_2_MEMORY_READ_BIT |
+            VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+    };
+    const VkDependencyInfo inputDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &inputBarrier,
+    };
+    vkCmdPipelineBarrier2(nativeCommands, &inputDependency);
+
+    for (uint32_t primitiveIndex : readyPrimitives) {
+        const uint32_t clusterCount = fallbackBlasReferenceCounts_[primitiveIndex];
+        VkClusterAccelerationStructureClustersBottomLevelInputNV blasInput{
+            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
+            .maxTotalClusterCount = clusterCount,
+            .maxClusterCountPerAccelerationStructure = clusterCount,
+        };
+        const VkClusterAccelerationStructureInputInfoNV input{
+            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+            .maxAccelerationStructureCount = 1,
+            .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+            .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV,
+            .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
+            .opInput = {.pClustersBottomLevel = &blasInput},
+        };
+        const VkClusterAccelerationStructureCommandsInfoNV commands{
+            .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+            .input = input,
+            .scratchData = fallbackBlasScratchAddress_,
+            .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
+                .deviceAddress = nativeDestinations.address +
+                    static_cast<uint64_t>(primitiveIndex) * sizeof(uint64_t),
+                .stride = sizeof(uint64_t),
+                .size = sizeof(uint64_t),
+            },
+            .srcInfosArray = VkStridedDeviceAddressRegionKHR{
+                .deviceAddress = nativeBuildInfos.address +
+                    static_cast<uint64_t>(primitiveIndex) * sizeof(MeshletStreamGpuBlasBuildInfo),
+                .stride = sizeof(MeshletStreamGpuBlasBuildInfo),
+                .size = sizeof(MeshletStreamGpuBlasBuildInfo),
+            },
+        };
+        vkCmdBuildClusterAccelerationStructureIndirectNV(nativeCommands, &commands);
+
+        const VkMemoryBarrier2 buildBarrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
+                VK_ACCESS_2_SHADER_READ_BIT,
+        };
+        const VkDependencyInfo buildDependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .memoryBarrierCount = 1,
+            .pMemoryBarriers = &buildBarrier,
+        };
+        vkCmdPipelineBarrier2(nativeCommands, &buildDependency);
+        fallbackBlasBuilt_[primitiveIndex] = 1;
+    }
     return {};
 #endif
 }

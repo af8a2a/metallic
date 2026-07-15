@@ -249,6 +249,10 @@ struct MeshletStreamGpuParams {
     uint32_t sceneNodeCount = 0;
     uint32_t traversalWorkerCount = 0;
     uint32_t traversalWorkCapacity = 0;
+    uint32_t blasClusterReferenceAddressLow = 0;
+    uint32_t blasClusterReferenceAddressHigh = 0;
+    uint32_t blasClusterReferenceCapacity = 0;
+    uint32_t blasBuildCapacity = 0;
 };
 
 struct MeshletStreamUserPush {
@@ -275,12 +279,9 @@ struct MeshletStreamUserPush {
     uint32_t instanceBlasBuffer = 0;
     uint32_t blasBuildInfoBuffer = 0;
     uint32_t blasClusterReferenceBuffer = 0;
-    uint32_t blasClusterReferenceAddressLow = 0;
-    uint32_t blasClusterReferenceAddressHigh = 0;
-    uint32_t blasClusterReferenceCapacity = 0;
+    uint32_t fallbackBlasAddressBuffer = 0;
     uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
     uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
-    uint32_t blasInputPhase = kMeshletStreamBlasInputResetPhase;
 };
 
 static_assert(sizeof(MeshletStreamGpuActiveHeader) == 32);
@@ -298,8 +299,8 @@ static_assert(sizeof(MeshletStreamGpuBlasHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 32);
-static_assert(sizeof(MeshletStreamGpuParams) == 176);
-static_assert(sizeof(MeshletStreamUserPush) == 116);
+static_assert(sizeof(MeshletStreamGpuParams) == 192);
+static_assert(sizeof(MeshletStreamUserPush) == 104);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -322,6 +323,7 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxBlasClusterReferences = 0;
     uint64_t maxBlasBytes = 512ull * 1024ull * 1024ull;
     uint32_t maxBlasBuilds = kMeshletStreamDefaultMaxBlasBuilds;
+    uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
 };
 
 struct MeshletStreamCameraDesc {
@@ -390,6 +392,7 @@ private:
     Result buildActiveTable(CommandBuffer& commandBuffer);
     Result buildBlasInputs(CommandBuffer& commandBuffer);
     Result cmdBuildBlas(CommandBuffer& commandBuffer);
+    Result cmdBuildFallbackBlas(CommandBuffer& commandBuffer);
     Result copyRequestBufferForReadback(CommandBuffer& commandBuffer);
     Result updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
@@ -426,6 +429,12 @@ private:
     std::unique_ptr<Buffer> blasScratchBuffer_;
     std::unique_ptr<Buffer> blasAddressBuffer_;
     std::unique_ptr<Buffer> blasSizeBuffer_;
+    std::unique_ptr<Buffer> fallbackBlasStorageBuffer_;
+    std::unique_ptr<Buffer> fallbackBlasScratchBuffer_;
+    std::unique_ptr<Buffer> fallbackBlasReferenceBuffer_;
+    std::unique_ptr<Buffer> fallbackBlasBuildInfoBuffer_;
+    std::unique_ptr<Buffer> fallbackBlasDestinationBuffer_;
+    std::unique_ptr<Buffer> fallbackBlasAddressBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     std::unique_ptr<UpdatePass> updatePass_;
     std::unique_ptr<TraversalPass> traversalPass_;
@@ -454,6 +463,7 @@ private:
     BindlessHandle instanceBlasHandle_;
     BindlessHandle blasBuildInfoHandle_;
     BindlessHandle blasClusterReferenceHandle_;
+    BindlessHandle fallbackBlasAddressHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
     ResourceState activeGroupBufferState_ = ResourceState::Undefined;
     ResourceState activeHeaderBufferState_ = ResourceState::Undefined;
@@ -486,6 +496,11 @@ private:
     uint64_t blasClusterReferenceAddress_ = 0;
     uint64_t blasStorageAddress_ = 0;
     uint64_t blasScratchAddress_ = 0;
+    uint64_t fallbackBlasScratchAddress_ = 0;
+    std::vector<uint64_t> fallbackBlasReferenceOffsets_;
+    std::vector<uint32_t> fallbackBlasReferenceCounts_;
+    std::vector<uint64_t> fallbackBlasStorageOffsets_;
+    std::vector<uint8_t> fallbackBlasBuilt_;
     uint32_t currentFrameUploadCount_ = 0;
 };
 
