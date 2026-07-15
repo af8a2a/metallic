@@ -273,10 +273,6 @@ struct GPUDrivenStreamAssetPageTableEntry
     uint deviceSizeBytes;
     uint state;
     uint lastRequestFrame;
-    uint lodLevel;
-    uint payloadBytes;
-    uint padding0;
-    uint padding1;
 };
 
 struct GPUDrivenStreamAssetRequestHeader
@@ -644,8 +640,7 @@ bool groupPageDrawable(
     GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[group.pageIndex];
     return streamPageDrawable(pageEntry.state) &&
         pageEntry.deviceOffsetBytes != kInvalidStreamDeviceOffset &&
-        pageEntry.deviceSizeBytes != 0u &&
-        pageEntry.payloadBytes != 0u;
+        pageEntry.deviceSizeBytes != 0u;
 }
 
 uint buildGroupClusterSelectionMask(
@@ -707,8 +702,7 @@ void appendActivePage(
     GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[pageIndex];
     if (!streamPageDrawable(pageEntry.state) ||
         pageEntry.deviceOffsetBytes == kInvalidStreamDeviceOffset ||
-        pageEntry.deviceSizeBytes == 0u ||
-        pageEntry.payloadBytes == 0u) {
+        pageEntry.deviceSizeBytes == 0u) {
         return;
     }
 
@@ -1853,22 +1847,25 @@ void gpuDrivenStreamAssetMeshMain(
         ((group.clusterSelectionMask >> clusterIndex) & 1u) == 0u ||
         ((pageEntry.state != kStreamStateResident && pageEntry.state != kStreamStateLockedFallback) ||
         pageEntry.deviceOffsetBytes == kInvalidStreamDeviceOffset ||
-        pageEntry.deviceSizeBytes == 0u ||
-        pageEntry.payloadBytes == 0u)) {
+        pageEntry.deviceSizeBytes == 0u)) {
         if (clusterIndex == 0u) {
             requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
         }
         SetMeshOutputCounts(0, 0);
         return;
     }
-    if (pageEntry.deviceOffsetBytes + pageEntry.payloadBytes < pageEntry.deviceOffsetBytes ||
-        pageEntry.deviceOffsetBytes + pageEntry.payloadBytes > params.pageBufferBytes ||
-        pageEntry.payloadBytes > pageEntry.deviceSizeBytes) {
+    if (pageEntry.deviceOffsetBytes + pageEntry.deviceSizeBytes < pageEntry.deviceOffsetBytes ||
+        pageEntry.deviceOffsetBytes + pageEntry.deviceSizeBytes > params.pageBufferBytes) {
         SetMeshOutputCounts(0, 0);
         return;
     }
 
     uint pageWord = pageEntry.deviceOffsetBytes / 4u;
+    uint payloadBytes = pageWords[pageWord + 12u];
+    if (payloadBytes < 96u || payloadBytes > pageEntry.deviceSizeBytes) {
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
     uint clusterCount = pageWords[pageWord + 2u];
     if (clusterIndex >= clusterCount) {
         SetMeshOutputCounts(0, 0);

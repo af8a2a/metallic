@@ -2312,27 +2312,22 @@ public:
         pageTable[1].lastRequestFrame = 3;
         pageTable[1].deviceOffsetBytes = 512;
         pageTable[1].deviceSizeBytes = 256;
-        pageTable[1].payloadBytes = 192;
         pageTable[2].deviceOffsetBytes = 1024;
         pageTable[2].deviceSizeBytes = 256;
         pageTable[2].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback);
         pageTable[2].lastRequestFrame = 3;
-        pageTable[2].payloadBytes = 192;
         pageTable[3].deviceOffsetBytes = 2048;
         pageTable[3].deviceSizeBytes = 512;
         pageTable[3].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
         pageTable[3].lastRequestFrame = 3;
-        pageTable[3].payloadBytes = 384;
         pageTable[4].deviceOffsetBytes = 4096;
         pageTable[4].deviceSizeBytes = 256;
         pageTable[4].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback);
         pageTable[4].lastRequestFrame = 3;
-        pageTable[4].payloadBytes = 128;
         pageTable[5].deviceOffsetBytes = 8192;
         pageTable[5].deviceSizeBytes = 128;
         pageTable[5].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
         pageTable[5].lastRequestFrame = 3;
-        pageTable[5].payloadBytes = 96;
 
         std::vector<uint8_t> requestInit(static_cast<size_t>(kRequestByteSize), 0);
         auto* requestHeader = reinterpret_cast<render::StreamRequestBufferHeader*>(requestInit.data());

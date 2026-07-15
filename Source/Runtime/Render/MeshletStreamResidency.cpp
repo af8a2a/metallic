@@ -874,10 +874,8 @@ void MeshletStreamResidencyManager::buildInitialPageTable(std::span<StreamPageTa
         return;
     }
 
-    const std::span<const scene::MeshletStreamPageInfo> assetPages = asset_->pages();
     for (uint32_t pageIndex = 0; pageIndex < pages_.size(); ++pageIndex) {
         const PageEntry& page = pages_[pageIndex];
-        const scene::MeshletStreamPageInfo& assetPage = assetPages[pageIndex];
         const bool tableResident = page.state != MeshletStreamPageResidencyState::Unloaded && pageAllocated(pageIndex);
         outEntries[pageIndex] = StreamPageTableEntry{
             .deviceOffsetBytes = tableResident
@@ -886,8 +884,6 @@ void MeshletStreamResidencyManager::buildInitialPageTable(std::span<StreamPageTa
             .deviceSizeBytes = tableResident ? page.deviceSizeBytes : 0u,
             .state = static_cast<uint32_t>(page.state),
             .lastRequestFrame = 0,
-            .lodLevel = assetPage.lodLevel,
-            .payloadBytes = static_cast<uint32_t>(assetPage.uncompressedSize),
         };
     }
 }

@@ -30,10 +30,6 @@ struct StreamPageTableEntry {
     uint32_t deviceSizeBytes = 0;
     uint32_t state = static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded);
     uint32_t lastRequestFrame = 0;
-    uint32_t lodLevel = 0;
-    uint32_t payloadBytes = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
 };
 
 struct StreamPageTablePatch {
@@ -84,7 +80,7 @@ struct StreamUpdateBufferHeader {
     uint32_t padding11 = 0;
 };
 
-static_assert(sizeof(StreamPageTableEntry) == 32);
+static_assert(sizeof(StreamPageTableEntry) == 16);
 static_assert(sizeof(StreamPageTablePatch) == 16);
 static_assert(sizeof(StreamRequestBufferHeader) == kStreamRequestHeaderWordCount * sizeof(uint32_t));
 static_assert(sizeof(StreamUpdateBufferHeader) == kStreamUpdateHeaderWordCount * sizeof(uint32_t));

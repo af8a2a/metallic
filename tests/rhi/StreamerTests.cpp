@@ -1012,8 +1012,7 @@ public:
         if (initialTable[pageIndex].deviceOffsetBytes != render::kInvalidStreamDeviceOffsetBytes ||
             initialTable[pageIndex].deviceSizeBytes != 0 ||
             initialTable[pageIndex].state !=
-                static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded) ||
-            initialTable[pageIndex].payloadBytes != asset.pages()[pageIndex].uncompressedSize) {
+                static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded)) {
             return RhiTestResult::fail("initial stream page table entry did not encode missing fallback page");
         }
         if (asset.pages()[pageIndex].compressionMode !=
