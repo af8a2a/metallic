@@ -30,8 +30,8 @@ namespace {
 
 constexpr std::array<char, 8> kMeshletStreamMagic{'M', 'T', 'L', 'M', 'S', 'T', 'R', 'M'};
 constexpr std::array<char, 8> kMeshletStreamPartialMagic{'M', 'T', 'L', 'M', 'S', 'P', 'R', 'T'};
-constexpr uint32_t kMeshletStreamVersion = 4;
-constexpr uint32_t kMeshletStreamPartialVersion = 3;
+constexpr uint32_t kMeshletStreamVersion = 5;
+constexpr uint32_t kMeshletStreamPartialVersion = 4;
 constexpr uint32_t kMeshletStreamEndian = 0x01020304;
 constexpr uint32_t kPayloadMagic = 0x4d535047u; // "GSPM"
 constexpr uint32_t kPayloadVersion = 2;
@@ -54,6 +54,9 @@ struct MeshletStreamFileHeader {
     uint64_t fileSize = 0;
     uint64_t sourceFileSize = 0;
     int64_t sourceWriteTime = 0;
+    uint64_t sourceDependencyFingerprint = 0;
+    uint32_t sourceDependencyCount = 0;
+    uint32_t sourceDependencyPathByteCount = 0;
     uint32_t primitiveCount = 0;
     uint32_t instanceCount = 0;
     uint32_t geometryCount = 0;
@@ -79,6 +82,7 @@ struct MeshletStreamFileHeader {
     uint64_t nodeInfoOffset = 0;
     uint64_t pageInfoOffset = 0;
     uint64_t pageOffsetTableOffset = 0;
+    uint64_t sourceDependencyPathOffset = 0;
     float fillWeight = 0.0f;
     float lodErrorMergePrevious = 0.0f;
     float lodErrorMergeAdditive = 0.0f;
@@ -91,6 +95,7 @@ struct MeshletStreamPartialFileHeader {
     uint32_t endian = 0;
     uint64_t sourceFileSize = 0;
     int64_t sourceWriteTime = 0;
+    uint64_t sourceDependencyFingerprint = 0;
     uint64_t payloadWriteOffset = 0;
     uint32_t compressionMode = 0;
     uint32_t nextRenderPrimitiveIndex = 0;
@@ -805,9 +810,11 @@ struct MeshletStreamBuildState {
     std::vector<MeshletStreamNodeInfo> nodes;
     std::vector<MeshletStreamPageInfo> pages;
     std::vector<uint64_t> pageOffsets;
+    std::vector<char> sourceDependencyPaths;
     std::vector<MeshletStreamPartialGeometryEntry> partialGeometryEntries;
     std::vector<uint8_t> payload;
     std::vector<uint8_t> storedPayload;
+    uint32_t sourceDependencyCount = 0;
     uint32_t nextRenderPrimitiveIndex = 0;
 };
 
@@ -818,7 +825,9 @@ struct MeshletStreamPartialBuildContext {
     bool paused = false;
 };
 
-MeshletStreamFileHeader makeStreamFileHeader(const std::filesystem::path& sourcePath)
+MeshletStreamFileHeader makeStreamFileHeader(
+    const std::filesystem::path& sourcePath,
+    uint64_t sourceDependencyFingerprint)
 {
     MeshletStreamFileHeader header;
     std::memcpy(header.magic, kMeshletStreamMagic.data(), kMeshletStreamMagic.size());
@@ -826,6 +835,7 @@ MeshletStreamFileHeader makeStreamFileHeader(const std::filesystem::path& source
     header.endian = kMeshletStreamEndian;
     header.sourceFileSize = sourceFileSizeFor(sourcePath);
     header.sourceWriteTime = sourceWriteTimeFor(sourcePath);
+    header.sourceDependencyFingerprint = sourceDependencyFingerprint;
     header.pagePayloadAlignment = static_cast<uint32_t>(kPageSlotAlignment);
     header.maxVertices = kMeshletClusterMaxVertices;
     header.minTriangles = kMeshletClusterMinTriangles;
@@ -1445,11 +1455,19 @@ bool finalizeStreamAssetBuild(std::ostream& stream, MeshletStreamBuildState& sta
         return false;
     }
     state.header.pageOffsetTableOffset = static_cast<uint64_t>(stream.tellp());
-    if (!writeArray(stream, state.pageOffsets)) {
+    if (!writeArray(stream, state.pageOffsets) || !alignStream(stream, kFileAlignment)) {
         reason = "streamasset page offset table write failed";
         return false;
     }
+    state.header.sourceDependencyPathOffset = static_cast<uint64_t>(stream.tellp());
+    if (!writeArray(stream, state.sourceDependencyPaths)) {
+        reason = "streamasset source dependency directory write failed";
+        return false;
+    }
 
+    state.header.sourceDependencyCount = state.sourceDependencyCount;
+    state.header.sourceDependencyPathByteCount =
+        static_cast<uint32_t>(state.sourceDependencyPaths.size());
     state.header.primitiveCount = static_cast<uint32_t>(state.primitives.size());
     state.header.instanceCount = static_cast<uint32_t>(state.instances.size());
     state.header.geometryCount = static_cast<uint32_t>(state.geometries.size());
@@ -1589,6 +1607,7 @@ struct StreamGltfSource {
     tinygltf::Model model;
     std::filesystem::path directory;
     std::vector<uint64_t> bufferByteLengths;
+    std::vector<std::string> externalBufferUris;
     std::vector<bool> nodeVisibility;
     MeshletStreamAssetOfflineBuildStats* stats = nullptr;
     bool rangeReadExternalBuffers = false;
@@ -1948,6 +1967,145 @@ bool isDataUriForStreamBuilder(std::string_view uri)
         uri[4] == ':';
 }
 
+void appendFingerprintBytes(uint64_t& fingerprint, std::string_view bytes)
+{
+    constexpr uint64_t kFnvPrime = 1099511628211ull;
+    for (const unsigned char byte : bytes) {
+        fingerprint ^= byte;
+        fingerprint *= kFnvPrime;
+    }
+}
+
+void appendFingerprintUint64(uint64_t& fingerprint, uint64_t value)
+{
+    std::array<char, sizeof(value)> bytes{};
+    for (size_t byteIndex = 0; byteIndex < bytes.size(); ++byteIndex) {
+        bytes[byteIndex] = static_cast<char>((value >> (byteIndex * 8u)) & 0xffu);
+    }
+    appendFingerprintBytes(fingerprint, std::string_view(bytes.data(), bytes.size()));
+}
+
+bool appendFileMetadataFingerprint(
+    uint64_t& fingerprint,
+    const std::filesystem::path& path)
+{
+    std::error_code sizeError;
+    const uint64_t byteSize = std::filesystem::file_size(path, sizeError);
+    std::error_code timeError;
+    const auto writeTime = std::filesystem::last_write_time(path, timeError);
+    if (sizeError || timeError) {
+        return false;
+    }
+    appendFingerprintUint64(fingerprint, byteSize);
+    appendFingerprintUint64(
+        fingerprint,
+        static_cast<uint64_t>(writeTime.time_since_epoch().count()));
+    return true;
+}
+
+template <typename UriRange>
+uint64_t sourceDependencyFingerprintFor(
+    const std::filesystem::path& sourcePath,
+    const UriRange& externalBufferUris)
+{
+    constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
+    uint64_t fingerprint = kFnvOffsetBasis;
+    if (!appendFileMetadataFingerprint(fingerprint, sourcePath)) {
+        return 0;
+    }
+    appendFingerprintUint64(fingerprint, static_cast<uint64_t>(externalBufferUris.size()));
+    for (const auto& uriValue : externalBufferUris) {
+        const std::string_view decodedUri(uriValue);
+        if (decodedUri.empty()) {
+            return 0;
+        }
+        appendFingerprintUint64(fingerprint, static_cast<uint64_t>(decodedUri.size()));
+        appendFingerprintBytes(fingerprint, decodedUri);
+        if (!appendFileMetadataFingerprint(
+                fingerprint,
+                sourcePath.parent_path() / pathFromUtf8ForStreamBuilder(decodedUri))) {
+            return 0;
+        }
+    }
+    return fingerprint == 0 ? 1 : fingerprint;
+}
+
+bool setStreamSourceDependencies(
+    MeshletStreamBuildState& state,
+    const std::vector<std::string>& externalBufferUris,
+    std::string& reason)
+{
+    if (externalBufferUris.size() > std::numeric_limits<uint32_t>::max()) {
+        reason = "streamasset source dependency count exceeds the format limit";
+        return false;
+    }
+    state.sourceDependencyPaths.clear();
+    state.sourceDependencyCount = static_cast<uint32_t>(externalBufferUris.size());
+    for (const std::string& uri : externalBufferUris) {
+        if (uri.empty() ||
+            uri.find('\0') != std::string::npos ||
+            uri.size() >= std::numeric_limits<uint32_t>::max() ||
+            state.sourceDependencyPaths.size() >
+                std::numeric_limits<uint32_t>::max() - uri.size() - 1u) {
+            reason = "streamasset source dependency path directory exceeds the format limit";
+            return false;
+        }
+        state.sourceDependencyPaths.insert(
+            state.sourceDependencyPaths.end(),
+            uri.begin(),
+            uri.end());
+        state.sourceDependencyPaths.push_back('\0');
+    }
+    return true;
+}
+
+bool loadSourceDependencyUris(
+    const std::filesystem::path& sourcePath,
+    std::vector<std::string>& externalBufferUris,
+    std::string& reason)
+{
+    externalBufferUris.clear();
+    if (lowerExtensionForStreamBuilder(sourcePath) != ".gltf") {
+        return true;
+    }
+
+    std::ifstream file(sourcePath, std::ios::binary);
+    if (!file) {
+        reason = "streamasset builder cannot open glTF dependency metadata";
+        return false;
+    }
+    try {
+        nlohmann::json root;
+        file >> root;
+        const nlohmann::json buffers = root.value("buffers", nlohmann::json::array());
+        if (!buffers.is_array()) {
+            reason = "streamasset builder glTF buffers are invalid";
+            return false;
+        }
+        for (const nlohmann::json& bufferJson : buffers) {
+            if (!bufferJson.is_object()) {
+                reason = "streamasset builder glTF buffer entry is invalid";
+                return false;
+            }
+            const std::string uri = bufferJson.value("uri", std::string{});
+            if (uri.empty() || isDataUriForStreamBuilder(uri)) {
+                continue;
+            }
+            std::string decodedUri;
+            if (!tinygltf::URIDecode(uri, &decodedUri, nullptr) || decodedUri.empty()) {
+                reason = "streamasset builder failed to decode external buffer URI";
+                return false;
+            }
+            externalBufferUris.push_back(std::move(decodedUri));
+        }
+    } catch (const std::exception& exception) {
+        reason = "streamasset builder failed to parse glTF dependency metadata: ";
+        reason += exception.what();
+        return false;
+    }
+    return true;
+}
+
 bool loadExternalGltfMetadataForStreamAssetBuilder(
     const std::filesystem::path& sourcePath,
     StreamGltfSource& source,
@@ -2034,6 +2192,7 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
             }
             model.buffers.push_back(std::move(buffer));
             source.bufferByteLengths.push_back(byteLength);
+            source.externalBufferUris.push_back(std::move(decodedUri));
         }
 
         const nlohmann::json bufferViews = root.value("bufferViews", nlohmann::json::array());
@@ -2240,6 +2399,9 @@ bool loadGltfModelForStreamAssetBuilder(
     for (const tinygltf::Buffer& buffer : source.model.buffers) {
         source.bufferByteLengths.push_back(buffer.data.size());
     }
+    if (!loadSourceDependencyUris(sourcePath, source.externalBufferUris, reason)) {
+        return false;
+    }
     source.nodeVisibility.reserve(source.model.nodes.size());
     for (const tinygltf::Node& node : source.model.nodes) {
         source.nodeVisibility.push_back(readNodeVisibilityForStreamBuilder(node));
@@ -2373,6 +2535,7 @@ MeshletStreamPartialFileHeader makePartialBuildHeader(
     header.endian = kMeshletStreamEndian;
     header.sourceFileSize = state.header.sourceFileSize;
     header.sourceWriteTime = state.header.sourceWriteTime;
+    header.sourceDependencyFingerprint = state.header.sourceDependencyFingerprint;
     header.payloadWriteOffset = payloadWriteOffset;
     header.compressionMode = static_cast<uint32_t>(compressionMode);
     header.nextRenderPrimitiveIndex = state.nextRenderPrimitiveIndex;
@@ -2713,6 +2876,7 @@ bool loadPartialBuildState(
     const std::filesystem::path& partialPath,
     const std::filesystem::path& outputPath,
     const std::filesystem::path& sourcePath,
+    uint64_t sourceDependencyFingerprint,
     MeshletStreamPayloadCompression compressionMode,
     MeshletStreamBuildState& state,
     std::unordered_map<uint64_t, uint32_t>& primitiveMap,
@@ -2737,6 +2901,7 @@ bool loadPartialBuildState(
         partialHeader.endian != kMeshletStreamEndian ||
         partialHeader.sourceFileSize != sourceFileSizeFor(sourcePath) ||
         partialHeader.sourceWriteTime != sourceWriteTimeFor(sourcePath) ||
+        partialHeader.sourceDependencyFingerprint != sourceDependencyFingerprint ||
         partialHeader.compressionMode != static_cast<uint32_t>(compressionMode) ||
         !meshletStreamPartialBuildParamsMatch(partialHeader) ||
         partialHeader.maxPagePayloadBytes == 0 ||
@@ -2773,7 +2938,7 @@ bool loadPartialBuildState(
     }
 
     MeshletStreamBuildState loaded;
-    loaded.header = makeStreamFileHeader(sourcePath);
+    loaded.header = makeStreamFileHeader(sourcePath, sourceDependencyFingerprint);
     loaded.header.maxPagePayloadBytes = partialHeader.maxPagePayloadBytes;
     loaded.nextRenderPrimitiveIndex = partialHeader.nextRenderPrimitiveIndex;
     if (!readArray(file, partialHeader.primitiveCount, loaded.primitives) ||
@@ -2994,6 +3159,7 @@ struct MeshletStreamAsset::Impl {
     std::span<const MeshletStreamNodeInfo> nodes;
     std::span<const MeshletStreamPageInfo> pages;
     std::span<const uint64_t> pageOffsets;
+    std::span<const char> sourceDependencyPaths;
 };
 
 MeshletStreamAsset::MeshletStreamAsset() = default;
@@ -3091,6 +3257,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
     }
     if (impl->header.fileSize != impl->dataSize ||
         !meshletStreamBuildParamsMatch(impl->header) ||
+        impl->header.sourceDependencyFingerprint == 0 ||
         impl->header.maxPagePayloadBytes == 0 ||
         impl->header.groupCount == 0 ||
         impl->header.groupCount != impl->header.pageCount ||
@@ -3107,7 +3274,11 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
         !rangeWithin<uint32_t>(impl->dataSize, impl->header.clusterRefOffset, impl->header.clusterRefCount) ||
         !rangeWithin<MeshletStreamNodeInfo>(impl->dataSize, impl->header.nodeInfoOffset, impl->header.nodeCount) ||
         !rangeWithin<MeshletStreamPageInfo>(impl->dataSize, impl->header.pageInfoOffset, impl->header.pageCount) ||
-        !rangeWithin<uint64_t>(impl->dataSize, impl->header.pageOffsetTableOffset, impl->header.pageCount)) {
+        !rangeWithin<uint64_t>(impl->dataSize, impl->header.pageOffsetTableOffset, impl->header.pageCount) ||
+        !rangeWithin<char>(
+            impl->dataSize,
+            impl->header.sourceDependencyPathOffset,
+            impl->header.sourceDependencyPathByteCount)) {
         reason = "streamasset directory exceeds file bounds";
         return false;
     }
@@ -3121,6 +3292,33 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
     impl->nodes = makeSpan<MeshletStreamNodeInfo>(impl->data, impl->header.nodeInfoOffset, impl->header.nodeCount);
     impl->pages = makeSpan<MeshletStreamPageInfo>(impl->data, impl->header.pageInfoOffset, impl->header.pageCount);
     impl->pageOffsets = makeSpan<uint64_t>(impl->data, impl->header.pageOffsetTableOffset, impl->header.pageCount);
+    impl->sourceDependencyPaths = makeSpan<char>(
+        impl->data,
+        impl->header.sourceDependencyPathOffset,
+        impl->header.sourceDependencyPathByteCount);
+
+    size_t dependencyPathOffset = 0;
+    for (uint32_t dependencyIndex = 0;
+         dependencyIndex < impl->header.sourceDependencyCount;
+         ++dependencyIndex) {
+        if (dependencyPathOffset >= impl->sourceDependencyPaths.size()) {
+            reason = "streamasset source dependency directory is truncated";
+            return false;
+        }
+        const char* pathBegin = impl->sourceDependencyPaths.data() + dependencyPathOffset;
+        const size_t remainingBytes = impl->sourceDependencyPaths.size() - dependencyPathOffset;
+        const void* terminator = std::memchr(pathBegin, '\0', remainingBytes);
+        if (terminator == nullptr || terminator == pathBegin) {
+            reason = "streamasset source dependency path is invalid";
+            return false;
+        }
+        dependencyPathOffset =
+            static_cast<const char*>(terminator) - impl->sourceDependencyPaths.data() + 1u;
+    }
+    if (dependencyPathOffset != impl->sourceDependencyPaths.size()) {
+        reason = "streamasset source dependency directory size is invalid";
+        return false;
+    }
 
     for (uint32_t primitiveIndex = 0; primitiveIndex < impl->primitives.size(); ++primitiveIndex) {
         const MeshletStreamPrimitiveInfo& primitive = impl->primitives[primitiveIndex];
@@ -3308,9 +3506,25 @@ bool MeshletStreamAsset::valid() const
 
 bool MeshletStreamAsset::isCurrentForSource(const std::filesystem::path& sourcePath) const
 {
-    return valid() &&
+    if (!valid()) {
+        return false;
+    }
+    std::vector<std::string_view> externalBufferUris;
+    externalBufferUris.reserve(impl_->header.sourceDependencyCount);
+    size_t dependencyPathOffset = 0;
+    while (dependencyPathOffset < impl_->sourceDependencyPaths.size()) {
+        const char* path = impl_->sourceDependencyPaths.data() + dependencyPathOffset;
+        const size_t pathByteSize = std::strlen(path);
+        externalBufferUris.emplace_back(path, pathByteSize);
+        dependencyPathOffset += pathByteSize + 1u;
+    }
+    const uint64_t sourceDependencyFingerprint =
+        sourceDependencyFingerprintFor(sourcePath, externalBufferUris);
+    return
+        sourceDependencyFingerprint != 0 &&
         impl_->header.sourceFileSize == sourceFileSizeFor(sourcePath) &&
         impl_->header.sourceWriteTime == sourceWriteTimeFor(sourcePath) &&
+        impl_->header.sourceDependencyFingerprint == sourceDependencyFingerprint &&
         meshletStreamBuildParamsMatch(impl_->header);
 }
 
@@ -3558,13 +3772,26 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
     const std::filesystem::path outputPath = desc.outputPath.empty()
         ? meshletStreamAssetPathFor(desc.sourcePath)
         : desc.outputPath;
+    std::vector<std::string> externalBufferUris;
+    if (!loadSourceDependencyUris(desc.sourcePath, externalBufferUris, reason)) {
+        return false;
+    }
+    const uint64_t sourceDependencyFingerprint =
+        sourceDependencyFingerprintFor(desc.sourcePath, externalBufferUris);
+    if (sourceDependencyFingerprint == 0) {
+        reason = "streamasset build cannot fingerprint source dependencies";
+        return false;
+    }
     std::ofstream stream;
     if (!openStreamAssetBuildFile(outputPath, stream, reason)) {
         return false;
     }
 
     MeshletStreamBuildState state;
-    state.header = makeStreamFileHeader(desc.sourcePath);
+    state.header = makeStreamFileHeader(desc.sourcePath, sourceDependencyFingerprint);
+    if (!setStreamSourceDependencies(state, externalBufferUris, reason)) {
+        return false;
+    }
     if (!writeStreamAssetHeaderPlaceholder(stream, state.header, reason)) {
         return false;
     }
@@ -3606,6 +3833,11 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
         state.instances.push_back(instance);
     }
 
+    if (sourceDependencyFingerprintFor(desc.sourcePath, externalBufferUris) !=
+        sourceDependencyFingerprint) {
+        reason = "streamasset source dependencies changed during build";
+        return false;
+    }
     return finalizeStreamAssetBuild(stream, state, reason);
 }
 
@@ -3622,6 +3854,12 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
 
     StreamGltfSource source;
     if (!loadGltfModelForStreamAssetBuilder(desc.sourcePath, source, reason)) {
+        return false;
+    }
+    const uint64_t sourceDependencyFingerprint =
+        sourceDependencyFingerprintFor(desc.sourcePath, source.externalBufferUris);
+    if (sourceDependencyFingerprint == 0) {
+        reason = "streamasset offline build cannot fingerprint source dependencies";
         return false;
     }
     source.stats = desc.stats;
@@ -3681,6 +3919,7 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
         partialPath,
         outputPath,
         desc.sourcePath,
+        sourceDependencyFingerprint,
         desc.compressionMode,
         state,
         primitiveMap,
@@ -3692,13 +3931,16 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
     } else {
         std::error_code removeError;
         std::filesystem::remove(partialPath, removeError);
-        state.header = makeStreamFileHeader(desc.sourcePath);
+        state.header = makeStreamFileHeader(desc.sourcePath, sourceDependencyFingerprint);
         if (!openStreamAssetBuildFile(outputPath, stream, reason)) {
             return false;
         }
         if (!writeStreamAssetHeaderPlaceholder(stream, state.header, reason)) {
             return false;
         }
+    }
+    if (!setStreamSourceDependencies(state, source.externalBufferUris, reason)) {
+        return false;
     }
 
     MeshletStreamPartialBuildContext partialContext{
@@ -3720,6 +3962,12 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
         return false;
     }
     if (!appendStreamAssetInstancesFromGltf(state, source, sceneIndex, primitiveMap, reason)) {
+        return false;
+    }
+
+    if (sourceDependencyFingerprintFor(desc.sourcePath, source.externalBufferUris) !=
+        sourceDependencyFingerprint) {
+        reason = "streamasset source dependencies changed during offline build";
         return false;
     }
 

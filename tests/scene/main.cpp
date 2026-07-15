@@ -1435,6 +1435,22 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_EQ(offlineAsset.nodeCount(), asset.nodeCount());
     EXPECT_EQ(offlineAsset.pageCount(), asset.pageCount());
     EXPECT_EQ(offlineAsset.pages().front().attributeFlags, asset.pages().front().attributeFlags);
+    {
+        std::ofstream externalBuffer(
+            offlineDirectory / "meshlet lod grid.bin",
+            std::ios::binary | std::ios::app);
+        externalBuffer.put('\0');
+    }
+    EXPECT_FALSE(offlineAsset.isCurrentForSource(offlineGltfPath));
+    offlineAsset.close();
+    ASSERT_TRUE(metallic::scene::buildMeshletStreamAssetOffline(
+        metallic::scene::MeshletStreamAssetOfflineBuildDesc{
+            .sourcePath = offlineGltfPath,
+            .outputPath = offlineStreamAssetPath,
+        },
+        reason)) << reason;
+    ASSERT_TRUE(offlineAsset.open(offlineStreamAssetPath, reason)) << reason;
+    EXPECT_TRUE(offlineAsset.isCurrentForSource(offlineGltfPath));
 
     const std::filesystem::path partialDirectory = directory / "meshlet_streamasset_partial";
     std::filesystem::create_directories(partialDirectory);
@@ -1456,13 +1472,25 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_TRUE(std::filesystem::exists(partialStreamAssetPath));
     EXPECT_TRUE(std::filesystem::exists(partialCachePath));
 
+    {
+        std::ofstream externalBuffer(
+            partialDirectory / "meshlet_lod_grid.bin",
+            std::ios::binary | std::ios::app);
+        externalBuffer.put('\0');
+    }
+
+    metallic::scene::MeshletStreamAssetOfflineBuildStats restartedBuildStats;
     ASSERT_TRUE(metallic::scene::buildMeshletStreamAssetOffline(
         metallic::scene::MeshletStreamAssetOfflineBuildDesc{
             .sourcePath = partialGltfPath,
             .outputPath = partialStreamAssetPath,
+            .stats = &restartedBuildStats,
         },
         reason)) << reason;
     EXPECT_FALSE(std::filesystem::exists(partialCachePath));
+    EXPECT_EQ(
+        restartedBuildStats.accessorRangeReadCount,
+        offlineBuildStats.accessorRangeReadCount * 2u);
 
     metallic::scene::MeshletStreamAsset resumedAsset;
     ASSERT_TRUE(resumedAsset.open(partialStreamAssetPath, reason)) << reason;
