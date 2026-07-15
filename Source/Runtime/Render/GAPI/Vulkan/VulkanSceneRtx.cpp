@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstring>
 #include <functional>
@@ -3095,7 +3096,11 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
         switch (expectedBinding.kind) {
         case SceneRayQueryBindingKind::AccelerationStructure: {
             VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
-            if (binding->accelerationStructure != nullptr &&
+            if (binding->accelerationStructureHandle != 0) {
+                static_assert(sizeof(binding->accelerationStructureHandle) == sizeof(accelerationStructure));
+                accelerationStructure = std::bit_cast<VkAccelerationStructureKHR>(
+                    binding->accelerationStructureHandle);
+            } else if (binding->accelerationStructure != nullptr &&
                 binding->accelerationStructure->valid() &&
                 binding->accelerationStructure->impl_ != nullptr &&
                 binding->accelerationStructure->impl_->tlas != VK_NULL_HANDLE) {

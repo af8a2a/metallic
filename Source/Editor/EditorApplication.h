@@ -29,7 +29,7 @@ private:
     bool initialize();
     void shutdown();
     void pollEvents();
-    void renderFrame();
+    bool renderFrame();
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();

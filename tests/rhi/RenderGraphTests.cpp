@@ -1267,11 +1267,12 @@ public:
         }
         const render::RenderGraphNode* gpuDrivenRtas = gpuDrivenRtasSample.graph.findNode("GPUDriven");
         if (gpuDrivenRtas == nullptr ||
-            gpuDrivenRtas->type != "SceneRayQueryVisualizationPass" ||
+            gpuDrivenRtas->type != "GPUDrivenStreamAssetPass" ||
             !gpuDrivenRtas->properties.is_object() ||
             gpuDrivenRtas->properties.value("path", "") != gpuDrivenRtasSample.desc.scenePath ||
-            gpuDrivenRtas->properties.value("granularity", "") != "cluster-id" ||
-            gpuDrivenRtas->properties.value("mode", "") != "meshlet" ||
+            !gpuDrivenRtas->properties.value("enableClusterRtx", false) ||
+            !gpuDrivenRtas->properties.value("rtasVisualization", false) ||
+            gpuDrivenRtas->properties.value("rtasGranularity", "") != "cluster-id" ||
             !gpuDrivenRtas->properties.contains("environment") ||
             !gpuDrivenRtas->properties["environment"].is_object() ||
             gpuDrivenRtas->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr") {
@@ -4408,6 +4409,7 @@ public:
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
                 .enableMeshShader = true,
+                .enableRayQuery = true,
                 .enableClusterAccelerationStructure = true,
             },
             device);
@@ -4445,6 +4447,8 @@ public:
                 {"path", sourcePath.string()},
                 {"streamAssetPath", streamAssetPath.string()},
                 {"enableClusterRtx", true},
+                {"rtasVisualization", true},
+                {"rtasGranularity", "cluster-id"},
                 {"maxClasBytes", 64ull * 1024ull * 1024ull},
                 {"maxClasBuildClusters", 32},
                 {"maxBlasClusterReferences", 4096},
@@ -4462,6 +4466,7 @@ public:
         const bool hasRequiredCapabilities =
             device->capabilities().meshShader &&
             device->capabilities().bindlessDescriptorHeap &&
+            device->capabilities().rayQuery &&
             device->capabilities().clusterAccelerationStructure;
         if (!hasRequiredCapabilities) {
             if (!render::hasError(result, render::Error::Unsupported)) {

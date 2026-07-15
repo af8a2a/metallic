@@ -1695,10 +1695,10 @@ int EditorApplication::run(bool smokeTest, bool waitForGraphicsDebugger, const c
         }
         {
             auto profileScope = profiler_.scope("Render Frame");
-            renderFrame();
+            const bool rendered = renderFrame();
+            shutdown();
+            return rendered ? 0 : 1;
         }
-        shutdown();
-        return 0;
     }
 
     while (running_) {
@@ -2163,17 +2163,17 @@ void EditorApplication::pollEvents()
     }
 }
 
-void EditorApplication::renderFrame()
+bool EditorApplication::renderFrame()
 {
     int framebufferWidth = 0;
     int framebufferHeight = 0;
     if (!SDL_GetWindowSizeInPixels(window_, &framebufferWidth, &framebufferHeight)) {
         spdlog::error("SDL_GetWindowSizeInPixels failed: {}", SDL_GetError());
         running_ = false;
-        return;
+        return false;
     }
     if (framebufferWidth <= 0 || framebufferHeight <= 0) {
-        return;
+        return true;
     }
 
     if (frameFence_ != nullptr) {
@@ -2182,7 +2182,7 @@ void EditorApplication::renderFrame()
         if (!result) {
             spdlog::error("frameFence wait before UI failed with Result {}", render::resultToString(result));
             running_ = false;
-            return;
+            return false;
         }
     }
 
@@ -2195,7 +2195,7 @@ void EditorApplication::renderFrame()
                 static_cast<uint32_t>(framebufferWidth),
                 static_cast<uint32_t>(framebufferHeight))) {
             running_ = false;
-            return;
+            return false;
         }
     }
 
@@ -2214,6 +2214,11 @@ void EditorApplication::renderFrame()
         auto profileScope = profiler_.scope("Panels");
         drawPanels();
     }
+    if (smokeTest_ && !viewportPreviewValid_) {
+        spdlog::error("Smoke test did not produce a valid viewport preview: {}", renderGraphStatus_);
+        running_ = false;
+        return false;
+    }
 
     {
         auto profileScope = profiler_.scope("ImGui Render");
@@ -2221,7 +2226,9 @@ void EditorApplication::renderFrame()
     }
     if (!renderVulkanFrame()) {
         running_ = false;
+        return false;
     }
+    return true;
 }
 
 void EditorApplication::setupDefaultDockLayout()
@@ -3592,7 +3599,10 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     }
     renderGraphStatus_ = log;
     if (!result) {
-        spdlog::error("RenderGraph compile failed with Result {}", render::resultToString(result));
+        spdlog::error(
+            "RenderGraph compile failed with Result {}: {}",
+            render::resultToString(result),
+            log);
         return false;
     }
 

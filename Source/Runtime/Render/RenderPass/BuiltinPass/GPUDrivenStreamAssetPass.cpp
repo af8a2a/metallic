@@ -1,4 +1,5 @@
 #include "Runtime/Render/MeshletStreamRuntime.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -101,6 +102,22 @@ uint32_t debugColorModeFromProperties(const RenderGraphProperties& props)
         return kMeshletStreamDebugMeshlet;
     }
     return kMeshletStreamDebugPage;
+}
+
+uint32_t rtasGranularityFromProperties(const RenderGraphProperties& props)
+{
+    auto iter = props.find("rtasGranularity");
+    if (iter == props.end() || !iter->is_string()) {
+        return kRayQueryVisualizationGranularityInstance;
+    }
+    const std::string mode = iter->get<std::string>();
+    if (mode == "primitive") {
+        return kRayQueryVisualizationGranularityPrimitive;
+    }
+    if (mode == "cluster" || mode == "cluster-id" || mode == "meshlet") {
+        return kRayQueryVisualizationGranularityClusterId;
+    }
+    return kRayQueryVisualizationGranularityInstance;
 }
 
 const RenderGraphProperties* cameraPropertiesFrom(const RenderGraphProperties& properties)
@@ -239,9 +256,14 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addTextureOutput("color", "Meshlet streamasset debug color")
-            .texture2D()
-            .colorWrite();
+        RenderGraphField& color = reflection.addTextureOutput(
+            "color",
+            "Meshlet streamasset debug color");
+        if (boolProperty(properties(), "rtasVisualization", false)) {
+            color.texture2D().storageReadWrite().format = Format::Rgba8Unorm;
+        } else {
+            color.texture2D().colorWrite();
+        }
         reflection.addTextureOutput("depth", "Meshlet streamasset debug depth")
             .texture2D()
             .depthStencilWrite();
@@ -264,6 +286,15 @@ public:
                     {"Instance", "instance"},
                     {"Meshlet / Cluster", "meshlet"},
                 }),
+            runtimeEnumSetting(
+                "rtasGranularity",
+                "RTAS Color",
+                "instance",
+                {
+                    {"Instance", "instance"},
+                    {"Primitive", "primitive"},
+                    {"Cluster ID", "cluster-id"},
+                }),
         };
     }
 
@@ -285,6 +316,18 @@ public:
             log);
         if (!result) {
             return result;
+        }
+        rtasVisualization_ = boolProperty(properties(), "rtasVisualization", false);
+        if (rtasVisualization_) {
+            if (!boolProperty(properties(), "enableClusterRtx", false)) {
+                log = "GPUDrivenStreamAssetPass RTAS visualization requires enableClusterRtx=true";
+                return makeError(Error::InvalidArgument);
+            }
+            if (!context.device->capabilities().rayQuery ||
+                !context.device->capabilities().clusterAccelerationStructure) {
+                log = "GPUDrivenStreamAssetPass RTAS visualization requires rayQuery and clusterAccelerationStructure";
+                return makeError(Error::Unsupported);
+            }
         }
 
         result = createMeshShader(*context.device, meshShader_, log);
@@ -334,6 +377,13 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
 
+        if (rtasVisualization_) {
+            result = initializeRayQuery(*context.device, log);
+            if (!result) {
+                return result;
+            }
+        }
+
         return {};
     }
 
@@ -346,7 +396,8 @@ public:
             context.streamer() == nullptr ||
             !streamRuntime_.ready() ||
             streamRuntime_.bindlessHeap() == nullptr ||
-            pipeline_ == nullptr) {
+            pipeline_ == nullptr ||
+            (rtasVisualization_ && !rayQueryProgram_.valid())) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -359,7 +410,9 @@ public:
         if (!result) {
             return result;
         }
-        result = draw(context, color, depth);
+        result = rtasVisualization_
+            ? drawRayQuery(context, color, frame)
+            : draw(context, color, depth);
         if (!result) {
             return result;
         }
@@ -371,6 +424,66 @@ public:
     }
 
 private:
+    Result initializeRayQuery(Device& device, std::string& log)
+    {
+        const char* capabilities[] = {
+            "spirv_1_4",
+            "spvRayQueryKHR",
+            "SPV_NV_cluster_acceleration_structure",
+        };
+        const SlangMacroDefine macros[] = {
+            SlangMacroDefine{
+                .name = "SCENE_RAYQUERY_ENABLE_CLUSTER_ID",
+                .value = "1",
+            },
+        };
+        ShaderCompileResult compileResult;
+        Result result = compileSlangShaderToSpirv(
+            SlangShaderDesc{
+                .moduleName = kSceneRayQueryVisualizationShaderModuleName,
+                .entryPointName = kSceneRayQueryVisualizationEntryPoint,
+                .searchPath = kTriangleShaderSearchPath,
+                .profileName = "glsl_460",
+                .capabilities = capabilities,
+                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                .macroDefines = macros,
+                .macroDefineCount = static_cast<uint32_t>(std::size(macros)),
+            },
+            compileResult);
+        if (!result) {
+            log += "compileSlangShaderToSpirv(stream RTAS visualization) returned ";
+            log += resultToString(result);
+            if (!compileResult.diagnostics.empty()) {
+                log += ": ";
+                log += compileResult.diagnostics;
+            }
+            log += '\n';
+            return result;
+        }
+
+        const vulkan::SceneRayQueryBindingDesc bindings[] = {
+            vulkan::SceneRayQueryBindingDesc{
+                .binding = 0,
+                .kind = vulkan::SceneRayQueryBindingKind::AccelerationStructure,
+            },
+            vulkan::SceneRayQueryBindingDesc{
+                .binding = 1,
+                .kind = vulkan::SceneRayQueryBindingKind::StorageImage,
+            },
+        };
+        return rayQueryProgram_.initialize(
+            device,
+            vulkan::SceneRayQueryProgramDesc{
+                .spirv = compileResult.spirv.data(),
+                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+                .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
+                .bindings = bindings,
+                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+                .debugName = "GPUDrivenStreamAssetPass RTAS visualization",
+            },
+            log);
+    }
+
     MeshletStreamFrameDesc frameDescFromContext(const RenderGraphExecutionContext& context) const
     {
         const scene::Bounds& bounds = streamRuntime_.bounds();
@@ -453,10 +566,69 @@ private:
         return {};
     }
 
+    Result drawRayQuery(
+        RenderGraphExecutionContext& context,
+        TextureHandle color,
+        const MeshletStreamFrameDesc& frame)
+    {
+        if (!streamRuntime_.tlasReady() || streamRuntime_.tlasHandle() == 0 || color.view() == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        SceneRayQueryVisualizationPush push;
+        push.eye[0] = frame.camera.eye.x;
+        push.eye[1] = frame.camera.eye.y;
+        push.eye[2] = frame.camera.eye.z;
+        push.eye[3] = 0.0f;
+        push.center[0] = frame.camera.center.x;
+        push.center[1] = frame.camera.center.y;
+        push.center[2] = frame.camera.center.z;
+        push.center[3] = 0.0f;
+        push.upProjection[0] = frame.camera.up.x;
+        push.upProjection[1] = frame.camera.up.y;
+        push.upProjection[2] = frame.camera.up.z;
+        push.upProjection[3] = 0.0f;
+        push.viewport[0] = static_cast<float>(std::max(context.width(), 1u)) /
+            static_cast<float>(std::max(context.height(), 1u));
+        push.viewport[1] = static_cast<float>(context.width());
+        push.viewport[2] = static_cast<float>(context.height());
+        push.viewport[3] = frame.camera.fovDegrees * 0.017453292519943295f;
+        push.clipOrtho[0] = frame.camera.znear;
+        push.clipOrtho[1] = frame.camera.zfar;
+        push.clipOrtho[2] = std::max(streamRuntime_.bounds().radius() * 2.0f, 0.001f);
+        push.clipOrtho[3] = 0.0f;
+        push.mode = rtasGranularityFromProperties(context.properties());
+        push.width = context.width();
+        push.height = context.height();
+
+        const vulkan::SceneRayQueryDispatchBinding bindings[] = {
+            vulkan::SceneRayQueryDispatchBinding{
+                .binding = 0,
+                .accelerationStructureHandle = streamRuntime_.tlasHandle(),
+            },
+            vulkan::SceneRayQueryDispatchBinding{
+                .binding = 1,
+                .textureView = color.view(),
+            },
+        };
+        return rayQueryProgram_.dispatch(vulkan::SceneRayQueryDispatchDesc{
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = bindings,
+            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (context.width() + 7u) / 8u,
+            .groupCountY = (context.height() + 7u) / 8u,
+            .groupCountZ = 1,
+        });
+    }
+
     MeshletStreamRuntime streamRuntime_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
+    vulkan::SceneRayQueryProgram rayQueryProgram_;
+    bool rtasVisualization_ = false;
 };
 
 std::unique_ptr<RenderGraphPass> createGPUDrivenStreamAssetPass()

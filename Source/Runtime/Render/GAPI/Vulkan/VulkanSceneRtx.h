@@ -149,6 +149,7 @@ struct SceneRayQueryProgramDesc {
 
 struct SceneRayQueryDispatchBinding {
     uint32_t binding = 0;
+    uint64_t accelerationStructureHandle = 0;
     SceneRtxBuilder* accelerationStructure = nullptr;
     SceneClusterRtxBuilder* clusterAccelerationStructure = nullptr;
     ScenePartitionedRtxBuilder* partitionedAccelerationStructure = nullptr;

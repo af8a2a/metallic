@@ -10,18 +10,25 @@
                 "y": 281.0
             },
             "properties": {
-                "environment": {
-                    "enabled": true,
-                    "intensity": 1.0,
-                    "path": "Asset/ABeautifulGame/environment.hdr",
-                    "rotationDegrees": 0.0,
-                    "visible": true
-                },
-                "granularity": "cluster-id",
-                "mode": "meshlet",
-                "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"
+                "autoBuildStreamAsset": false,
+                "enableClusterRtx": true,
+                "enableGpuLodSelection": true,
+                "maxActiveGroups": 262144,
+                "maxBlasBuilds": 65536,
+                "maxBlasBytes": 536870912,
+                "maxClasBytes": 536870912,
+                "maxFallbackBlasBytes": 536870912,
+                "maxPageUploadsPerFrame": 64,
+                "maxPageLoadsInFlight": 128,
+                "maxResidentPages": 4096,
+                "maxTraversalWorkers": 1024,
+                "maxTraversalWorkItems": 1048576,
+                "pageLoadWorkerCount": 2,
+                "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
+                "rtasGranularity": "cluster-id",
+                "rtasVisualization": true
             },
-            "type": "SceneRayQueryVisualizationPass"
+            "type": "GPUDrivenStreamAssetPass"
         }
     ],
     "outputs": [
