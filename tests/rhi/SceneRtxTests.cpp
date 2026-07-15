@@ -404,12 +404,30 @@ public:
             pool.pageClasAddressOffset(pageIndex) == UINT32_MAX ||
             pool.clusterAddress(pageIndex, 0) == 0 ||
             pool.clusterAddressBuffer() == nullptr ||
+            pool.pageTableBuffer() == nullptr ||
             builtStats.builtPageCount != 1 ||
             builtStats.builtClusterCount != asset.pages()[pageIndex].clusterCount ||
             builtStats.frameBuiltPageCount != 1 ||
             builtStats.usedStorageBytes == 0 ||
             builtStats.usedStorageBytes > builtStats.storageBytes) {
             return RhiTestResult::fail("stream CLAS pool did not retain the built fallback page");
+        }
+        render::vulkan::MeshletStreamClasPageEntry gpuPageEntry;
+        mapped = pool.pageTableBuffer()->map();
+        if (mapped == nullptr) {
+            return RhiTestResult::fail("stream CLAS page table did not map");
+        }
+        std::memcpy(
+            &gpuPageEntry,
+            static_cast<uint8_t*>(mapped) +
+                static_cast<uint64_t>(pageIndex) * sizeof(gpuPageEntry),
+            sizeof(gpuPageEntry));
+        pool.pageTableBuffer()->unmap();
+        if (gpuPageEntry.addressOffset != pool.pageClasAddressOffset(pageIndex) ||
+            gpuPageEntry.clusterCount != asset.pages()[pageIndex].clusterCount ||
+            gpuPageEntry.state !=
+                static_cast<uint32_t>(render::vulkan::MeshletStreamClasPageState::Active)) {
+            return RhiTestResult::fail("stream CLAS GPU page table did not expose the built page");
         }
 
         pool.retirePages(std::span(&pageIndex, 1));
@@ -418,6 +436,20 @@ public:
             retiringStats.builtPageCount != 0 ||
             retiringStats.retiringPageCount != 1) {
             return RhiTestResult::fail("stream CLAS pool did not defer retired page storage");
+        }
+        mapped = pool.pageTableBuffer()->map();
+        if (mapped == nullptr) {
+            return RhiTestResult::fail("stream CLAS page table did not map after retirement");
+        }
+        std::memcpy(
+            &gpuPageEntry,
+            static_cast<uint8_t*>(mapped) +
+                static_cast<uint64_t>(pageIndex) * sizeof(gpuPageEntry),
+            sizeof(gpuPageEntry));
+        pool.pageTableBuffer()->unmap();
+        if (gpuPageEntry.state !=
+            static_cast<uint32_t>(render::vulkan::MeshletStreamClasPageState::Retiring)) {
+            return RhiTestResult::fail("stream CLAS GPU page table did not hide the retired page");
         }
         pool.beginFrame();
         if (!pool.pageHasClas(pageIndex)) {
@@ -428,6 +460,22 @@ public:
             pool.stats().retiringPageCount != 0 ||
             pool.stats().usedStorageBytes != 0) {
             return RhiTestResult::fail("stream CLAS pool did not release retired storage after the queued-frame delay");
+        }
+        mapped = pool.pageTableBuffer()->map();
+        if (mapped == nullptr) {
+            return RhiTestResult::fail("stream CLAS page table did not map after release");
+        }
+        std::memcpy(
+            &gpuPageEntry,
+            static_cast<uint8_t*>(mapped) +
+                static_cast<uint64_t>(pageIndex) * sizeof(gpuPageEntry),
+            sizeof(gpuPageEntry));
+        pool.pageTableBuffer()->unmap();
+        if (gpuPageEntry.addressOffset != render::vulkan::kInvalidMeshletStreamClasAddressOffset ||
+            gpuPageEntry.clusterCount != 0 ||
+            gpuPageEntry.state !=
+                static_cast<uint32_t>(render::vulkan::MeshletStreamClasPageState::Empty)) {
+            return RhiTestResult::fail("stream CLAS GPU page table did not clear the released page");
         }
 
         return RhiTestResult::pass("Built and retired persistent stream CLAS page storage");

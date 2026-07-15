@@ -10,6 +10,23 @@
 
 namespace metallic::render::vulkan {
 
+inline constexpr uint32_t kInvalidMeshletStreamClasAddressOffset = UINT32_MAX;
+
+enum class MeshletStreamClasPageState : uint32_t {
+    Empty = 0,
+    Active = 1,
+    Retiring = 2,
+};
+
+struct MeshletStreamClasPageEntry {
+    uint32_t addressOffset = kInvalidMeshletStreamClasAddressOffset;
+    uint32_t clusterCount = 0;
+    uint32_t state = static_cast<uint32_t>(MeshletStreamClasPageState::Empty);
+    uint32_t generation = 0;
+};
+
+static_assert(sizeof(MeshletStreamClasPageEntry) == 16);
+
 struct MeshletStreamClasPoolDesc {
     const scene::MeshletStreamAsset* asset = nullptr;
     uint64_t maxStorageBytes = 512ull * 1024ull * 1024ull;
@@ -68,6 +85,7 @@ public:
     uint32_t pageClasAddressOffset(uint32_t pageIndex) const;
     uint64_t clusterAddress(uint32_t pageIndex, uint32_t clusterIndex) const;
     Buffer* clusterAddressBuffer() const;
+    Buffer* pageTableBuffer() const;
     MeshletStreamClasPoolStats stats() const;
 
 private:

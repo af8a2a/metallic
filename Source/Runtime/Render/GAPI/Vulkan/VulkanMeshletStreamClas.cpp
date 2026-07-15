@@ -94,8 +94,8 @@ void clusterBuildInputBarrier(VkCommandBuffer commandBuffer)
 {
     VkMemoryBarrier2 barrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
     };
@@ -159,6 +159,7 @@ struct MeshletStreamClasPool::Impl {
     std::unique_ptr<Buffer> storageBuffer;
     std::unique_ptr<Buffer> scratchBuffer;
     std::unique_ptr<Buffer> addressBuffer;
+    std::unique_ptr<Buffer> pageTableBuffer;
     std::vector<FrameResources> frames;
     std::vector<PageEntry> pages;
     std::vector<RetiredPage> retiredPages;
@@ -171,10 +172,39 @@ struct MeshletStreamClasPool::Impl {
     uint32_t maxBuildClusters = 0;
     uint32_t queuedFrameCount = 0;
 
+    void writePageEntry(uint32_t pageIndex)
+    {
+        if (pageTableBuffer == nullptr || pageIndex >= pages.size()) {
+            return;
+        }
+        const PageEntry& page = pages[pageIndex];
+        MeshletStreamClasPageEntry entry;
+        entry.generation = page.generation;
+        if (page.state != PageState::Empty) {
+            entry.addressOffset = page.addressOffset;
+            entry.clusterCount = page.clusterCount;
+            entry.state = static_cast<uint32_t>(
+                page.state == PageState::Built
+                    ? MeshletStreamClasPageState::Active
+                    : MeshletStreamClasPageState::Retiring);
+        }
+
+        const uint64_t offset = static_cast<uint64_t>(pageIndex) * sizeof(entry);
+        void* mapped = pageTableBuffer->map();
+        if (mapped == nullptr) {
+            return;
+        }
+        std::memcpy(static_cast<uint8_t*>(mapped) + offset, &entry, sizeof(entry));
+        pageTableBuffer->flush(offset, sizeof(entry));
+        pageTableBuffer->unmap();
+    }
+
     void releasePage(PageEntry& page)
     {
+        const uint32_t generation = page.generation;
         if (!page.allocation.valid()) {
             page = {};
+            page.generation = generation;
             return;
         }
         if (addressBuffer != nullptr && page.addressOffset != UINT32_MAX) {
@@ -193,6 +223,7 @@ struct MeshletStreamClasPool::Impl {
         }
         storage.release(page.allocation);
         page = {};
+        page.generation = generation;
     }
 };
 
@@ -371,6 +402,29 @@ Result MeshletStreamClasPool::initialize(
         return makeError(Error::Failure);
     }
 
+    result = createBuffer(
+        device,
+        static_cast<uint64_t>(desc.asset->pageCount()) * sizeof(MeshletStreamClasPageEntry),
+        BufferUsageBits::Storage,
+        MemoryLocation::HostUpload,
+        impl_->pageTableBuffer,
+        "createBuffer(stream CLAS page table)",
+        log);
+    if (!result) {
+        clear();
+        return result;
+    }
+    if (void* mapped = impl_->pageTableBuffer->map(); mapped != nullptr) {
+        std::vector<MeshletStreamClasPageEntry> entries(desc.asset->pageCount());
+        std::memcpy(mapped, entries.data(), entries.size() * sizeof(entries.front()));
+        impl_->pageTableBuffer->flush();
+        impl_->pageTableBuffer->unmap();
+    } else {
+        log = "MeshletStreamClasPool page table buffer did not map";
+        clear();
+        return makeError(Error::Failure);
+    }
+
     impl_->frames.resize(desc.queuedFrameCount);
     for (Impl::FrameResources& frame : impl_->frames) {
         result = createBuffer(
@@ -465,6 +519,7 @@ void MeshletStreamClasPool::beginFrame()
                 impl_->stats.retiringPageCount -= 1u;
                 impl_->stats.retiringClusterCount -= page.clusterCount;
                 impl_->releasePage(page);
+                impl_->writePageEntry(iter->pageIndex);
             }
         }
         iter = impl_->retiredPages.erase(iter);
@@ -538,6 +593,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
             impl_->stats.retiringClusterCount -= existing.clusterCount;
             ++impl_->stats.builtPageCount;
             impl_->stats.builtClusterCount += existing.clusterCount;
+            impl_->writePageEntry(request.pageIndex);
             continue;
         }
         if (std::find_if(
@@ -715,6 +771,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
         page.clusterCount = static_cast<uint32_t>(pending.addresses.size());
         ++page.generation;
         page.state = Impl::PageState::Built;
+        impl_->writePageEntry(pending.pageIndex);
         ++impl_->stats.builtPageCount;
         impl_->stats.builtClusterCount += page.clusterCount;
         ++impl_->stats.frameBuiltPageCount;
@@ -750,6 +807,7 @@ void MeshletStreamClasPool::retirePages(std::span<const uint32_t> pageIndices)
             .generation = page.generation,
             .completionFrame = impl_->frameIndex + impl_->queuedFrameCount,
         });
+        impl_->writePageEntry(pageIndex);
     }
 }
 
@@ -760,6 +818,7 @@ bool MeshletStreamClasPool::ready() const
         impl_->storageBuffer != nullptr &&
         impl_->scratchBuffer != nullptr &&
         impl_->addressBuffer != nullptr &&
+        impl_->pageTableBuffer != nullptr &&
         !impl_->frames.empty();
 }
 
@@ -788,6 +847,11 @@ uint64_t MeshletStreamClasPool::clusterAddress(uint32_t pageIndex, uint32_t clus
 Buffer* MeshletStreamClasPool::clusterAddressBuffer() const
 {
     return ready() ? impl_->addressBuffer.get() : nullptr;
+}
+
+Buffer* MeshletStreamClasPool::pageTableBuffer() const
+{
+    return ready() ? impl_->pageTableBuffer.get() : nullptr;
 }
 
 MeshletStreamClasPoolStats MeshletStreamClasPool::stats() const
