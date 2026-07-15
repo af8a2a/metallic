@@ -10,6 +10,7 @@
 #include <deque>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -157,6 +158,7 @@ struct MeshletStreamResidencyDesc {
 struct MeshletStreamResidencyStats {
     uint64_t frameIndex = 0;
     uint32_t pageCount = 0;
+    uint32_t trackedPageCount = 0;
     uint32_t maxResidentPages = 0;
     uint64_t maxResidentBytes = 0;
     uint64_t usedResidentBytes = 0;
@@ -284,6 +286,7 @@ public:
     uint32_t residentPageCount() const;
     uint32_t pendingPageCount() const;
     uint32_t queuedUploadCount() const;
+    uint32_t trackedPageCount() const { return static_cast<uint32_t>(pages_.size()); }
     uint64_t pageBufferSize() const { return storage_.capacityBytes(); }
     std::span<const uint32_t> requestedPages() const { return requestedPages_; }
     std::span<const uint32_t> unloadRequestedPages() const { return unloadRequestedPages_; }
@@ -302,12 +305,16 @@ private:
         uint32_t allocationBytes = 0;
         uint32_t deviceSizeBytes = 0;
         uint32_t taskIndex = kInvalidStreamingTaskIndex;
+        uint32_t activeTablePosition = UINT32_MAX;
+        uint32_t stateTablePosition = UINT32_MAX;
         bool lockedFallback = false;
         bool queued = false;
         MeshletStreamPageResidencyState state = MeshletStreamPageResidencyState::Unloaded;
         uint8_t padding0 = 0;
     };
-    static_assert(sizeof(PageEntry) == 32);
+    static_assert(sizeof(PageEntry) == 40);
+
+    using PagePositionMember = uint32_t PageEntry::*;
 
     bool allocatePageStorage(uint32_t pageIndex);
     bool scheduleUnload(uint32_t pageIndex, bool eviction);
@@ -316,8 +323,8 @@ private:
     void setPageState(uint32_t pageIndex, MeshletStreamPageResidencyState state);
     void queueUpload(uint32_t pageIndex);
     void recordPatch(uint32_t pageIndex);
-    void addToTable(std::vector<uint32_t>& table, std::vector<uint32_t>& positions, uint32_t pageIndex);
-    void removeFromTable(std::vector<uint32_t>& table, std::vector<uint32_t>& positions, uint32_t pageIndex);
+    void addToTable(std::vector<uint32_t>& table, PagePositionMember positionMember, uint32_t pageIndex);
+    void removeFromTable(std::vector<uint32_t>& table, PagePositionMember positionMember, uint32_t pageIndex);
     void updateStateTables(
         uint32_t pageIndex,
         MeshletStreamPageResidencyState oldState,
@@ -327,7 +334,7 @@ private:
 
     const scene::MeshletStreamAsset* asset_ = nullptr;
     MeshletStreamStorage storage_;
-    std::vector<PageEntry> pages_;
+    std::unordered_map<uint32_t, PageEntry> pages_;
     std::deque<uint32_t> uploadQueue_;
     MeshletStreamPageLoader pageLoader_;
     std::deque<MeshletStreamPageLoadResult> preparedPageLoads_;
@@ -347,13 +354,12 @@ private:
     std::vector<uint32_t> pendingPages_;
     std::vector<uint32_t> newlyResidentPages_;
     std::vector<uint32_t> newlyUnloadedPages_;
-    std::vector<uint32_t> activePagePositions_;
-    std::vector<uint32_t> statePagePositions_;
     std::unordered_set<uint32_t> requestMarks_;
     std::unordered_set<uint32_t> unloadRequestMarks_;
     std::vector<StreamPageTablePatch> patches_;
     MeshletStreamResidencyStats stats_;
     uint64_t frameIndex_ = 0;
+    uint32_t pageCount_ = 0;
     uint32_t maxResidentPages_ = 0;
     uint32_t queuedFrameCount_ = 3;
     uint32_t unloadDelayFrames_ = 1;

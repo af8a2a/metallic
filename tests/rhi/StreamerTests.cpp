@@ -963,6 +963,12 @@ public:
                 reason)) {
             return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
         }
+        render::MeshletStreamResidencyStats sparseStats = residency.stats();
+        if (sparseStats.pageCount != asset.pageCount() ||
+            sparseStats.trackedPageCount != 0 ||
+            residency.trackedPageCount() != 0) {
+            return RhiTestResult::fail("residency initialization eagerly tracked unloaded scene pages");
+        }
         if (!residency.lockFallbackPages(fallbackPages, reason)) {
             return RhiTestResult::fail("lockFallbackPages failed: " + reason);
         }
@@ -1362,6 +1368,7 @@ public:
             requestStats.frameConsumedGpuRequestCount != 0 ||
             requestStats.queuedRequestTaskCount != 1 ||
             requestStats.availableRequestTaskCount != render::kStreamingMaxActiveTasks - 1u ||
+            requestStats.trackedPageCount != fallbackPages.size() ||
             requestStats.activePageCount != fallbackPages.size() ||
             requestStats.freeResidentBytes != secondPageBytes) {
             return RhiTestResult::fail("GPU request readback did not queue an isolated request task");
@@ -1396,6 +1403,7 @@ public:
             requestStats.frameEvictedPageCount != 0 ||
             requestStats.frameResidentBudgetFailureCount != 1 ||
             requestStats.frameAllocationFailureCount != 1 ||
+            requestStats.trackedPageCount != fallbackPages.size() + 1u ||
             requestStats.activePageCount != fallbackPages.size() + 1u ||
             requestStats.freeResidentBytes != 0) {
             return RhiTestResult::fail("active/request/storage stats did not track GPU request pressure");
@@ -1613,6 +1621,7 @@ public:
         stats = residency.stats();
         if (residency.pageAllocated(unloadPage) ||
             residency.pageState(unloadPage) != render::MeshletStreamPageResidencyState::Unloaded ||
+            stats.trackedPageCount != fallbackPages.size() ||
             stats.frameCompletedUnloadCount != 1 ||
             stats.frameDelayedFreeCount != 1 ||
             stats.freeResidentBytes != streamableBudgetBytes) {
