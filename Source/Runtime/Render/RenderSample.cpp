@@ -202,6 +202,7 @@ public:
         return "GPU-driven sample scaffold using SuperSponza and a mesh shader meshlet preview pass.";
     }
     std::string scenePath() const override { return "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"; }
+    bool loadSceneInEditor() const override { return false; }
     std::string graphPath() const override
     {
         return "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json";
@@ -231,6 +232,7 @@ public:
         return "GPUDrivenSample variant dedicated to RayQuery acceleration-structure visualization.";
     }
     std::string scenePath() const override { return "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"; }
+    bool loadSceneInEditor() const override { return false; }
     std::string graphPath() const override
     {
         return "Pipelines/Samples/gpu_driven_sponza_rtas_visualization.metallic_graph.json";
@@ -260,6 +262,7 @@ public:
         return "GPUDrivenSample variant using GPUDrivenStreamAssetPass and the meshlet streamasset prototype.";
     }
     std::string scenePath() const override { return "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"; }
+    bool loadSceneInEditor() const override { return false; }
     std::string graphPath() const override
     {
         return "Pipelines/Samples/gpu_driven_sponza_streamasset.metallic_graph.json";
@@ -333,6 +336,7 @@ RenderSampleDesc RenderSample::desc() const
         .category = std::string(category()),
         .description = std::string(description()),
         .scenePath = scenePath(),
+        .loadSceneInEditor = loadSceneInEditor(),
         .graphPath = graphPath(),
         .scenePathTargets = scenePathTargets(),
         .environment = environment(),

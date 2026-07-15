@@ -3922,7 +3922,18 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     activePreviewOutput_ = sample.desc.previewOutput;
     copyToBuffer(activePreviewOutput_, previewOutputBuffer_, sizeof(previewOutputBuffer_));
     renderGraphStatus_ = "Loaded Sample: " + sample.desc.name;
-    loadScene();
+    if (sample.desc.loadSceneInEditor) {
+        loadScene();
+        return;
+    }
+
+    clearSceneRtx();
+    scene_.clear();
+    sceneSelection_ = SceneSelection{};
+    sceneStatus_ = "StreamAsset-only sample: editor scene loading skipped for " + sample.desc.scenePath;
+    spdlog::info(
+        "[Startup] Skipped editor scene and static RTX loading for StreamAsset-only sample '{}'",
+        sample.desc.name);
 }
 
 void EditorApplication::resetDefaultRenderGraph()

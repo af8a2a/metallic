@@ -1197,6 +1197,7 @@ public:
             gpuDrivenSample.desc.name != "GPUDrivenSample" ||
             gpuDrivenSample.desc.category != "GPUDriven" ||
             gpuDrivenSample.desc.scenePath != "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf" ||
+            gpuDrivenSample.desc.loadSceneInEditor ||
             gpuDrivenSample.desc.graphPath != "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json" ||
             gpuDrivenSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||
             gpuDrivenSample.desc.previewOutput != "GPUDriven.color") {
@@ -1227,6 +1228,7 @@ public:
             gpuDrivenStreamAssetSample.desc.name != "GPUDrivenSample / StreamAsset" ||
             gpuDrivenStreamAssetSample.desc.category != "GPUDriven" ||
             gpuDrivenStreamAssetSample.desc.scenePath != "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf" ||
+            gpuDrivenStreamAssetSample.desc.loadSceneInEditor ||
             gpuDrivenStreamAssetSample.desc.graphPath !=
                 "Pipelines/Samples/gpu_driven_sponza_streamasset.metallic_graph.json" ||
             gpuDrivenStreamAssetSample.desc.previewOutput != "GPUDriven.color") {
@@ -1259,6 +1261,7 @@ public:
             gpuDrivenRtasSample.desc.name != "GPUDrivenSample / RTAS Visualization" ||
             gpuDrivenRtasSample.desc.category != "GPUDriven" ||
             gpuDrivenRtasSample.desc.scenePath != "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf" ||
+            gpuDrivenRtasSample.desc.loadSceneInEditor ||
             gpuDrivenRtasSample.desc.graphPath !=
                 "Pipelines/Samples/gpu_driven_sponza_rtas_visualization.metallic_graph.json" ||
             gpuDrivenRtasSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||

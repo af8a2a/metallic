@@ -23,6 +23,7 @@ struct RenderSampleDesc {
     std::string category;
     std::string description;
     std::string scenePath;
+    bool loadSceneInEditor = true;
     std::string graphPath;
     std::vector<std::string> scenePathTargets;
     RenderSampleEnvironmentDesc environment;
@@ -45,6 +46,7 @@ public:
     virtual std::string_view category() const = 0;
     virtual std::string_view description() const { return {}; }
     virtual std::string scenePath() const = 0;
+    virtual bool loadSceneInEditor() const { return true; }
     virtual std::string graphPath() const = 0;
     virtual std::vector<std::string> scenePathTargets() const = 0;
     virtual RenderSampleEnvironmentDesc environment() const { return {}; }
