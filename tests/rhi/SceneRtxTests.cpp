@@ -350,6 +350,9 @@ public:
             return RhiTestResult::fail(
                 std::string("MeshletStreamClasPool::initialize returned ") + toString(result) + ": " + log);
         }
+        if (pool.stats().trackedPageCount != 0) {
+            return RhiTestResult::fail("stream CLAS pool eagerly tracked empty scene pages");
+        }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*graphicsQueue, commandPool);
@@ -406,6 +409,7 @@ public:
             pool.clusterAddressBuffer() == nullptr ||
             pool.pageTableBuffer() == nullptr ||
             builtStats.builtPageCount != 1 ||
+            builtStats.trackedPageCount != 1 ||
             builtStats.builtClusterCount != asset.pages()[pageIndex].clusterCount ||
             builtStats.frameBuiltPageCount != 1 ||
             builtStats.usedStorageBytes == 0 ||
@@ -434,6 +438,7 @@ public:
         const render::vulkan::MeshletStreamClasPoolStats retiringStats = pool.stats();
         if (!pool.pageHasClas(pageIndex) ||
             retiringStats.builtPageCount != 0 ||
+            retiringStats.trackedPageCount != 1 ||
             retiringStats.retiringPageCount != 1) {
             return RhiTestResult::fail("stream CLAS pool did not defer retired page storage");
         }
@@ -458,6 +463,7 @@ public:
         pool.beginFrame();
         if (pool.pageHasClas(pageIndex) ||
             pool.stats().retiringPageCount != 0 ||
+            pool.stats().trackedPageCount != 0 ||
             pool.stats().usedStorageBytes != 0) {
             return RhiTestResult::fail("stream CLAS pool did not release retired storage after the queued-frame delay");
         }

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -161,32 +162,36 @@ struct MeshletStreamClasPool::Impl {
     std::unique_ptr<Buffer> addressBuffer;
     std::unique_ptr<Buffer> pageTableBuffer;
     std::vector<FrameResources> frames;
-    std::vector<PageEntry> pages;
+    std::unordered_map<uint32_t, PageEntry> pages;
     std::vector<RetiredPage> retiredPages;
-    std::vector<uint32_t> pageClusterOffsets;
     MeshletStreamClasPoolStats stats;
     uint64_t frameIndex = 0;
     uint64_t storageAddress = 0;
     uint64_t scratchAddress = 0;
     uint64_t clusterStride = 0;
+    uint32_t pageCount = 0;
+    uint32_t clusterIdStride = 0;
     uint32_t maxBuildClusters = 0;
     uint32_t queuedFrameCount = 0;
 
     void writePageEntry(uint32_t pageIndex)
     {
-        if (pageTableBuffer == nullptr || pageIndex >= pages.size()) {
+        if (pageTableBuffer == nullptr || pageIndex >= pageCount) {
             return;
         }
-        const PageEntry& page = pages[pageIndex];
         MeshletStreamClasPageEntry entry;
-        entry.generation = page.generation;
-        if (page.state != PageState::Empty) {
-            entry.addressOffset = page.addressOffset;
-            entry.clusterCount = page.clusterCount;
-            entry.state = static_cast<uint32_t>(
-                page.state == PageState::Built
-                    ? MeshletStreamClasPageState::Active
-                    : MeshletStreamClasPageState::Retiring);
+        auto pageIter = pages.find(pageIndex);
+        if (pageIter != pages.end()) {
+            const PageEntry& page = pageIter->second;
+            entry.generation = page.generation;
+            if (page.state != PageState::Empty) {
+                entry.addressOffset = page.addressOffset;
+                entry.clusterCount = page.clusterCount;
+                entry.state = static_cast<uint32_t>(
+                    page.state == PageState::Built
+                        ? MeshletStreamClasPageState::Active
+                        : MeshletStreamClasPageState::Retiring);
+            }
         }
 
         const uint64_t offset = static_cast<uint64_t>(pageIndex) * sizeof(entry);
@@ -415,8 +420,10 @@ Result MeshletStreamClasPool::initialize(
         return result;
     }
     if (void* mapped = impl_->pageTableBuffer->map(); mapped != nullptr) {
-        std::vector<MeshletStreamClasPageEntry> entries(desc.asset->pageCount());
-        std::memcpy(mapped, entries.data(), entries.size() * sizeof(entries.front()));
+        std::fill_n(
+            static_cast<MeshletStreamClasPageEntry*>(mapped),
+            desc.asset->pageCount(),
+            MeshletStreamClasPageEntry{});
         impl_->pageTableBuffer->flush();
         impl_->pageTableBuffer->unmap();
     } else {
@@ -466,22 +473,23 @@ Result MeshletStreamClasPool::initialize(
         return makeError(Error::Failure);
     }
 
-    uint32_t totalClusterCount = 0;
-    if (!buildMeshletStreamPageClusterOffsets(
-            *desc.asset,
-            impl_->pageClusterOffsets,
-            totalClusterCount,
-            reason)) {
-        log = "MeshletStreamClasPool page cluster directory failed: " + reason;
+    const uint32_t clusterIdStride = desc.asset->maxPageClusters();
+    const uint64_t clusterIdCapacity =
+        static_cast<uint64_t>(desc.asset->pageCount()) * clusterIdStride;
+    if (clusterIdStride == 0 ||
+        clusterIdCapacity > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1ull) {
+        log = "MeshletStreamClasPool page-strided cluster IDs exceed the 32-bit Vulkan limit";
         clear();
         return makeError(Error::InvalidArgument);
     }
 
     impl_->asset = desc.asset;
-    impl_->pages.resize(desc.asset->pageCount());
+    impl_->pages.reserve(std::min(desc.maxBuildClusters, desc.asset->pageCount()));
     impl_->storageAddress = nativeStorage.address;
     impl_->scratchAddress = alignUp(nativeScratch.address, scratchAlignment);
     impl_->clusterStride = clusterStride;
+    impl_->pageCount = desc.asset->pageCount();
+    impl_->clusterIdStride = clusterIdStride;
     impl_->maxBuildClusters = desc.maxBuildClusters;
     impl_->queuedFrameCount = desc.queuedFrameCount;
     impl_->stats.pageCapacity = desc.asset->pageCount();
@@ -513,13 +521,15 @@ void MeshletStreamClasPool::beginFrame()
             ++iter;
             continue;
         }
-        if (iter->pageIndex < impl_->pages.size()) {
-            Impl::PageEntry& page = impl_->pages[iter->pageIndex];
+        auto pageIter = impl_->pages.find(iter->pageIndex);
+        if (pageIter != impl_->pages.end()) {
+            Impl::PageEntry& page = pageIter->second;
             if (page.state == Impl::PageState::Retiring && page.generation == iter->generation) {
                 impl_->stats.retiringPageCount -= 1u;
                 impl_->stats.retiringClusterCount -= page.clusterCount;
                 impl_->releasePage(page);
                 impl_->writePageEntry(iter->pageIndex);
+                impl_->pages.erase(pageIter);
             }
         }
         iter = impl_->retiredPages.erase(iter);
@@ -577,16 +587,17 @@ Result MeshletStreamClasPool::cmdBuildPages(
     };
 
     for (const MeshletStreamClasPageBuild& request : pages) {
-        if (request.pageIndex >= impl_->pages.size() || request.deviceOffsetBytes == UINT64_MAX) {
+        if (request.pageIndex >= impl_->pageCount || request.deviceOffsetBytes == UINT64_MAX) {
             rollback();
             log = "MeshletStreamClasPool page build request is invalid";
             return makeError(Error::InvalidArgument);
         }
-        Impl::PageEntry& existing = impl_->pages[request.pageIndex];
-        if (existing.state == Impl::PageState::Built) {
-            continue;
-        }
-        if (existing.state == Impl::PageState::Retiring) {
+        auto existingIter = impl_->pages.find(request.pageIndex);
+        if (existingIter != impl_->pages.end()) {
+            Impl::PageEntry& existing = existingIter->second;
+            if (existing.state == Impl::PageState::Built) {
+                continue;
+            }
             existing.state = Impl::PageState::Built;
             ++existing.generation;
             --impl_->stats.retiringPageCount;
@@ -632,7 +643,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
         if (!buildMeshletStreamClasPagePlan(
                 *impl_->asset,
                 request.pageIndex,
-                impl_->pageClusterOffsets[request.pageIndex],
+                request.pageIndex * impl_->clusterIdStride,
                 plan,
                 reason)) {
             impl_->storage.release(allocation);
@@ -765,7 +776,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
     clusterBuildOutputBarrier(nativeCommands);
 
     for (PendingPage& pending : pendingPages) {
-        Impl::PageEntry& page = impl_->pages[pending.pageIndex];
+        Impl::PageEntry& page = impl_->pages.try_emplace(pending.pageIndex).first->second;
         page.allocation = pending.allocation;
         page.addressOffset = pending.addressOffset;
         page.clusterCount = static_cast<uint32_t>(pending.addresses.size());
@@ -789,10 +800,14 @@ void MeshletStreamClasPool::retirePages(std::span<const uint32_t> pageIndices)
         return;
     }
     for (uint32_t pageIndex : pageIndices) {
-        if (pageIndex >= impl_->pages.size()) {
+        if (pageIndex >= impl_->pageCount) {
             continue;
         }
-        Impl::PageEntry& page = impl_->pages[pageIndex];
+        auto pageIter = impl_->pages.find(pageIndex);
+        if (pageIter == impl_->pages.end()) {
+            continue;
+        }
+        Impl::PageEntry& page = pageIter->second;
         if (page.state != Impl::PageState::Built) {
             continue;
         }
@@ -824,22 +839,30 @@ bool MeshletStreamClasPool::ready() const
 
 bool MeshletStreamClasPool::pageHasClas(uint32_t pageIndex) const
 {
-    return ready() &&
-        pageIndex < impl_->pages.size() &&
-        impl_->pages[pageIndex].state != Impl::PageState::Empty;
+    if (!ready() || pageIndex >= impl_->pageCount) {
+        return false;
+    }
+    const auto pageIter = impl_->pages.find(pageIndex);
+    return pageIter != impl_->pages.end() && pageIter->second.state != Impl::PageState::Empty;
 }
 
 uint32_t MeshletStreamClasPool::pageClasAddressOffset(uint32_t pageIndex) const
 {
-    return pageHasClas(pageIndex) ? impl_->pages[pageIndex].addressOffset : UINT32_MAX;
+    if (!pageHasClas(pageIndex)) {
+        return UINT32_MAX;
+    }
+    return impl_->pages.find(pageIndex)->second.addressOffset;
 }
 
 uint64_t MeshletStreamClasPool::clusterAddress(uint32_t pageIndex, uint32_t clusterIndex) const
 {
-    if (!pageHasClas(pageIndex) || clusterIndex >= impl_->pages[pageIndex].clusterCount) {
+    if (!pageHasClas(pageIndex)) {
         return 0;
     }
-    const Impl::PageEntry& page = impl_->pages[pageIndex];
+    const Impl::PageEntry& page = impl_->pages.find(pageIndex)->second;
+    if (clusterIndex >= page.clusterCount) {
+        return 0;
+    }
     return impl_->storageAddress + page.allocation.offset +
         static_cast<uint64_t>(clusterIndex) * impl_->clusterStride;
 }
@@ -860,6 +883,7 @@ MeshletStreamClasPoolStats MeshletStreamClasPool::stats() const
         return {};
     }
     MeshletStreamClasPoolStats result = impl_->stats;
+    result.trackedPageCount = static_cast<uint32_t>(impl_->pages.size());
     result.usedStorageBytes = impl_->storage.usedBytes();
     return result;
 }

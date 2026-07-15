@@ -41,6 +41,7 @@ struct MeshletStreamClasPageBuild {
 
 struct MeshletStreamClasPoolStats {
     uint32_t pageCapacity = 0;
+    uint32_t trackedPageCount = 0;
     uint32_t clusterSlotCapacity = 0;
     uint32_t builtPageCount = 0;
     uint32_t builtClusterCount = 0;
