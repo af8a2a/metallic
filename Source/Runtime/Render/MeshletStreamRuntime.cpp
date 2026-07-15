@@ -337,6 +337,29 @@ public:
         result = createSlangShaderModule(
             device,
             kMeshletStreamShaderModuleName,
+            kMeshletStreamPageTableInitEntryPoint,
+            pageTableInitShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+        result = device.createComputePipeline(
+            ComputePipelineDesc{
+                .computeShader = pageTableInitShader_.get(),
+                .computeEntryPoint = "main",
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            },
+            pageTableInitPipeline_);
+        if (!result || pageTableInitPipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(MeshletStreamRuntime page table init)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = createSlangShaderModule(
+            device,
+            kMeshletStreamShaderModuleName,
             kMeshletStreamUpdateEntryPoint,
             updateShader_,
             log);
@@ -364,10 +387,39 @@ public:
     {
         return updateBuffer_ != nullptr &&
             updateHandle_.valid() &&
+            pageTableInitShader_ != nullptr &&
+            pageTableInitPipeline_ != nullptr &&
             updatePipeline_ != nullptr;
     }
 
     BindlessHandle updateHandle() const { return updateHandle_; }
+
+    Result initializePageTable(
+        CommandBuffer& commandBuffer,
+        BindlessHeap& bindlessHeap,
+        MeshletStreamUserPush push,
+        uint32_t pageCount,
+        Buffer& pageTableBuffer,
+        ResourceState& pageTableState)
+    {
+        if (!ready() || pageCount == 0) {
+            return makeError(Error::Failure);
+        }
+        constexpr uint32_t kMaxDispatchGroupsPerDimension = 65535u;
+        const uint32_t totalGroups = (pageCount - 1u) / 64u + 1u;
+        const uint32_t groupCountX = std::min(totalGroups, kMaxDispatchGroupsPerDimension);
+        const uint32_t groupCountY =
+            (totalGroups + kMaxDispatchGroupsPerDimension - 1u) / kMaxDispatchGroupsPerDimension;
+
+        push.activeBuildPhase = pageCount;
+        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General);
+        commandBuffer.bindBindlessHeap(bindlessHeap);
+        commandBuffer.bindComputePipeline(*pageTableInitPipeline_);
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.dispatch(groupCountX, groupCountY, 1);
+        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true);
+        return {};
+    }
 
     Result apply(
         CommandBuffer& commandBuffer,
@@ -433,6 +485,8 @@ public:
 
 private:
     std::unique_ptr<Buffer> updateBuffer_;
+    std::unique_ptr<ShaderModule> pageTableInitShader_;
+    std::unique_ptr<ComputePipeline> pageTableInitPipeline_;
     std::unique_ptr<ShaderModule> updateShader_;
     std::unique_ptr<ComputePipeline> updatePipeline_;
     BindlessHandle updateHandle_;
@@ -1610,19 +1664,6 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = pageTableByteSize,
-            .usage = BufferUsageBits::TransferSource,
-            .memoryLocation = MemoryLocation::HostUpload,
-        },
-        pageTableUploadBuffer_,
-        log,
-        "MeshletStreamRuntime page table upload");
-    if (!result) {
-        return result;
-    }
-    result = createNamedBuffer(
-        device,
-        BufferDesc{
             .size = requestByteSize,
             .structureStride = sizeof(uint32_t),
             .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination,
@@ -1892,12 +1933,10 @@ void MeshletStreamRuntime::reset()
     residency_.reset();
     asset_.close();
     drawBounds_.reset();
-    pageTable_.clear();
     pageBuffer_.reset();
     activeGroupBuffer_.reset();
     activeHeaderBuffer_.reset();
     pageTableBuffer_.reset();
-    pageTableUploadBuffer_.reset();
     requestBuffer_.reset();
     requestReadbackBuffer_.reset();
     requestClearBuffer_.reset();
@@ -2013,7 +2052,6 @@ bool MeshletStreamRuntime::ready() const
         activeGroupBuffer_ != nullptr &&
         activeHeaderBuffer_ != nullptr &&
         pageTableBuffer_ != nullptr &&
-        pageTableUploadBuffer_ != nullptr &&
         requestBuffer_ != nullptr &&
         requestReadbackBuffer_ != nullptr &&
         requestClearBuffer_ != nullptr &&
@@ -2414,23 +2452,16 @@ Result MeshletStreamRuntime::initializePageTableIfNeeded(CommandBuffer& commandB
         return {};
     }
 
-    pageTable_.resize(asset_.pageCount());
-    residency_.buildInitialPageTable(pageTable_);
-    const uint64_t byteSize = static_cast<uint64_t>(pageTable_.size()) * sizeof(StreamPageTableEntry);
-    Result result = updateHostBuffer(*pageTableUploadBuffer_, pageTable_.data(), byteSize);
+    Result result = updatePass_->initializePageTable(
+        commandBuffer,
+        *bindlessHeap_,
+        userPush(),
+        asset_.pageCount(),
+        *pageTableBuffer_,
+        pageTableState_);
     if (!result) {
         return result;
     }
-
-    transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::TransferDestination);
-    commandBuffer.copyBuffer(BufferCopyDesc{
-        .source = pageTableUploadBuffer_.get(),
-        .destination = pageTableBuffer_.get(),
-        .sourceOffset = 0,
-        .destinationOffset = 0,
-        .size = byteSize,
-    });
-    transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::General);
     pageTableInitialized_ = true;
     return {};
 }

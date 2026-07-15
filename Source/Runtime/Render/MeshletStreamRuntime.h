@@ -24,6 +24,7 @@ inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR
 inline constexpr const char* kMeshletStreamShaderModuleName = "gpu_driven_streamasset";
 inline constexpr const char* kMeshletStreamMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kMeshletStreamFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
+inline constexpr const char* kMeshletStreamPageTableInitEntryPoint = "gpuDrivenStreamAssetInitializePageTableMain";
 inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
 inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
 inline constexpr const char* kMeshletStreamActiveBuildEntryPoint = "gpuDrivenStreamAssetBuildActiveMain";
@@ -403,12 +404,10 @@ private:
     scene::MeshletStreamAsset asset_;
     MeshletStreamResidencyManager residency_;
     scene::Bounds drawBounds_;
-    std::vector<StreamPageTableEntry> pageTable_;
     std::unique_ptr<Buffer> pageBuffer_;
     std::unique_ptr<Buffer> activeGroupBuffer_;
     std::unique_ptr<Buffer> activeHeaderBuffer_;
     std::unique_ptr<Buffer> pageTableBuffer_;
-    std::unique_ptr<Buffer> pageTableUploadBuffer_;
     std::unique_ptr<Buffer> requestBuffer_;
     std::unique_ptr<Buffer> requestReadbackBuffer_;
     std::unique_ptr<Buffer> requestClearBuffer_;

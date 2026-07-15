@@ -1902,6 +1902,31 @@ void gpuDrivenStreamAssetMeshMain(
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
+void gpuDrivenStreamAssetInitializePageTableMain(
+    uint3 dispatchThreadID : SV_DispatchThreadID,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    static const uint kPageTableInitRowThreads = 65535u * 64u;
+    uint pageIndex = dispatchThreadID.x + dispatchThreadID.y * kPageTableInitRowThreads;
+    uint pageCount = push.activeBuildPhase;
+    if (pageIndex >= pageCount) {
+        return;
+    }
+
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
+        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.bufferShaderIndexBase + push.pageTableBuffer, 0));
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
+
+    GPUDrivenStreamAssetPageTableEntry entry;
+    entry.deviceOffsetBytes = kInvalidStreamDeviceOffset;
+    entry.deviceSizeBytes = 0u;
+    entry.state = 0u;
+    entry.lastRequestFrame = 0u;
+    pageTable[pageIndex] = entry;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
 void gpuDrivenStreamAssetApplyUpdatesMain(uint3 dispatchThreadID : SV_DispatchThreadID, uniform GPUDrivenStreamAssetPush push)
 {
     DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
