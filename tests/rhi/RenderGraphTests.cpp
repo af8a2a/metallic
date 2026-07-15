@@ -2293,26 +2293,33 @@ public:
         params.drawTaskCount = kActiveGroupCapacity * params.maxActiveGroupClusters;
 
         std::array<render::StreamPageTableEntry, kScenePageCount> pageTable{};
-        pageTable[0].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded);
-        pageTable[1].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
+        pageTable[0].metadata = render::packStreamPageTableMetadata(
+            0,
+            render::MeshletStreamPageResidencyState::Unloaded);
+        pageTable[1].metadata = render::packStreamPageTableMetadata(
+            512,
+            render::MeshletStreamPageResidencyState::Resident);
         pageTable[1].lastRequestFrame = 3;
         pageTable[1].deviceOffsetBytes = 512;
-        pageTable[1].deviceSizeBytes = 512;
         pageTable[2].deviceOffsetBytes = 1024;
-        pageTable[2].deviceSizeBytes = 256;
-        pageTable[2].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback);
+        pageTable[2].metadata = render::packStreamPageTableMetadata(
+            256,
+            render::MeshletStreamPageResidencyState::LockedFallback);
         pageTable[2].lastRequestFrame = 3;
         pageTable[3].deviceOffsetBytes = 2048;
-        pageTable[3].deviceSizeBytes = 512;
-        pageTable[3].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
+        pageTable[3].metadata = render::packStreamPageTableMetadata(
+            512,
+            render::MeshletStreamPageResidencyState::Resident);
         pageTable[3].lastRequestFrame = 3;
         pageTable[4].deviceOffsetBytes = 4096;
-        pageTable[4].deviceSizeBytes = 256;
-        pageTable[4].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback);
+        pageTable[4].metadata = render::packStreamPageTableMetadata(
+            256,
+            render::MeshletStreamPageResidencyState::LockedFallback);
         pageTable[4].lastRequestFrame = 3;
         pageTable[5].deviceOffsetBytes = 8192;
-        pageTable[5].deviceSizeBytes = 128;
-        pageTable[5].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
+        pageTable[5].metadata = render::packStreamPageTableMetadata(
+            128,
+            render::MeshletStreamPageResidencyState::Resident);
         pageTable[5].lastRequestFrame = 3;
 
         constexpr uint32_t kPageBufferBytes = 16u * 1024u;

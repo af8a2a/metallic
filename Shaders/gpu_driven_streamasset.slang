@@ -6,6 +6,8 @@ static const uint kUnloadClusterIndex = 0xfffffffeu;
 static const uint kStreamStatePendingUpload = 1u;
 static const uint kStreamStateResident = 2u;
 static const uint kStreamStateLockedFallback = 3u;
+static const uint kStreamPageDeviceSizeMask = 0x1fffffffu;
+static const uint kStreamPageStateShift = 29u;
 static const uint kNoDebugLodOverride = 0xffffffffu;
 static const uint kActiveGroupResident = 1u << 0u;
 static const uint kActiveGroupLoadRequest = 1u << 1u;
@@ -266,10 +268,19 @@ struct GPUDrivenStreamAssetTlasInstance
 struct GPUDrivenStreamAssetPageTableEntry
 {
     uint deviceOffsetBytes;
-    uint deviceSizeBytes;
-    uint state;
+    uint metadata;
     uint lastRequestFrame;
 };
+
+uint streamPageDeviceSize(GPUDrivenStreamAssetPageTableEntry entry)
+{
+    return entry.metadata & kStreamPageDeviceSizeMask;
+}
+
+uint streamPageState(GPUDrivenStreamAssetPageTableEntry entry)
+{
+    return entry.metadata >> kStreamPageStateShift;
+}
 
 struct GPUDrivenStreamAssetRequestHeader
 {
@@ -608,7 +619,7 @@ bool updateGroupPageDemand(
         !groupNeedsTraversal(params, instance, primitive, group)) {
         return false;
     }
-    uint state = pageTable[group.pageIndex].state;
+    uint state = streamPageState(pageTable[group.pageIndex]);
     if (streamPageAvailable(state)) {
         markStreamPageDemand(pageTable, params, group.pageIndex);
     } else {
@@ -634,9 +645,9 @@ bool groupPageDrawable(
         return false;
     }
     GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[group.pageIndex];
-    return streamPageDrawable(pageEntry.state) &&
+    return streamPageDrawable(streamPageState(pageEntry)) &&
         pageEntry.deviceOffsetBytes != kInvalidStreamDeviceOffset &&
-        pageEntry.deviceSizeBytes != 0u;
+        streamPageDeviceSize(pageEntry) != 0u;
 }
 
 uint buildGroupClusterSelectionMask(
@@ -663,15 +674,16 @@ uint buildGroupClusterSelectionMask(
     uint clusterOffsetBytes = 0u;
     uint payloadBytes = 0u;
     bool clusterDirectoryAvailable = false;
+    uint currentPageSize = streamPageDeviceSize(currentPage);
     if (currentPage.deviceOffsetBytes != kInvalidStreamDeviceOffset &&
-        currentPage.deviceSizeBytes >= 96u &&
-        currentPage.deviceOffsetBytes + currentPage.deviceSizeBytes >= currentPage.deviceOffsetBytes &&
-        currentPage.deviceOffsetBytes + currentPage.deviceSizeBytes <= params.pageBufferBytes) {
+        currentPageSize >= 96u &&
+        currentPage.deviceOffsetBytes + currentPageSize >= currentPage.deviceOffsetBytes &&
+        currentPage.deviceOffsetBytes + currentPageSize <= params.pageBufferBytes) {
         pageWord = currentPage.deviceOffsetBytes / 4u;
         payloadClusterCount = pageWords[pageWord + 2u];
         clusterOffsetBytes = pageWords[pageWord + 9u];
         payloadBytes = pageWords[pageWord + 12u];
-        clusterDirectoryAvailable = payloadBytes >= 96u && payloadBytes <= currentPage.deviceSizeBytes;
+        clusterDirectoryAvailable = payloadBytes >= 96u && payloadBytes <= currentPageSize;
     }
 
     uint mask = 0u;
@@ -723,9 +735,9 @@ void appendActivePage(
     }
 
     GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[pageIndex];
-    if (!streamPageDrawable(pageEntry.state) ||
+    if (!streamPageDrawable(streamPageState(pageEntry)) ||
         pageEntry.deviceOffsetBytes == kInvalidStreamDeviceOffset ||
-        pageEntry.deviceSizeBytes == 0u) {
+        streamPageDeviceSize(pageEntry) == 0u) {
         return;
     }
 
@@ -765,7 +777,7 @@ bool pageRangeDrawable(
     for (uint page = 0u; page < pageCount; ++page) {
         uint pageIndex = pageOffset + page;
         if (pageIndex >= params.scenePageCount ||
-            !streamPageDrawable(pageTable[pageIndex].state)) {
+            !streamPageDrawable(streamPageState(pageTable[pageIndex]))) {
             return false;
         }
     }
@@ -840,7 +852,7 @@ void traverseInstancePageDemand(
             continue;
         }
 
-        uint state = pageTable[group.pageIndex].state;
+        uint state = streamPageState(pageTable[group.pageIndex]);
         if (streamPageAvailable(state)) {
             markStreamPageDemand(pageTable, params, group.pageIndex);
         } else {
@@ -1196,7 +1208,8 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
             return;
         }
         GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[pageIndex];
-        if (pageEntry.state == kStreamStateResident && pageEntry.lastRequestFrame != params.frameIndex) {
+        if (streamPageState(pageEntry) == kStreamStateResident &&
+            pageEntry.lastRequestFrame != params.frameIndex) {
             requestStreamPageUnload(requests, params, pageIndex);
         }
         return;
@@ -1269,7 +1282,7 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
     if (!groupNeedsTraversal(params, instance, primitive, group)) {
         return;
     }
-    uint state = pageTable[group.pageIndex].state;
+    uint state = streamPageState(pageTable[group.pageIndex]);
     if (streamPageAvailable(state)) {
         markStreamPageDemand(pageTable, params, group.pageIndex);
     } else {
@@ -1826,27 +1839,29 @@ void gpuDrivenStreamAssetMeshMain(
     }
 
     GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[group.pageIndex];
+    uint pageState = streamPageState(pageEntry);
+    uint pageSize = streamPageDeviceSize(pageEntry);
     if (clusterIndex >= group.clusterCount ||
         clusterIndex >= 32u ||
         ((group.clusterSelectionMask >> clusterIndex) & 1u) == 0u ||
-        ((pageEntry.state != kStreamStateResident && pageEntry.state != kStreamStateLockedFallback) ||
+        ((pageState != kStreamStateResident && pageState != kStreamStateLockedFallback) ||
         pageEntry.deviceOffsetBytes == kInvalidStreamDeviceOffset ||
-        pageEntry.deviceSizeBytes == 0u)) {
+        pageSize == 0u)) {
         if (clusterIndex == 0u) {
             requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
         }
         SetMeshOutputCounts(0, 0);
         return;
     }
-    if (pageEntry.deviceOffsetBytes + pageEntry.deviceSizeBytes < pageEntry.deviceOffsetBytes ||
-        pageEntry.deviceOffsetBytes + pageEntry.deviceSizeBytes > params.pageBufferBytes) {
+    if (pageEntry.deviceOffsetBytes + pageSize < pageEntry.deviceOffsetBytes ||
+        pageEntry.deviceOffsetBytes + pageSize > params.pageBufferBytes) {
         SetMeshOutputCounts(0, 0);
         return;
     }
 
     uint pageWord = pageEntry.deviceOffsetBytes / 4u;
     uint payloadBytes = pageWords[pageWord + 12u];
-    if (payloadBytes < 96u || payloadBytes > pageEntry.deviceSizeBytes) {
+    if (payloadBytes < 96u || payloadBytes > pageSize) {
         SetMeshOutputCounts(0, 0);
         return;
     }
@@ -1929,8 +1944,7 @@ void gpuDrivenStreamAssetInitializePageTableMain(
 
     GPUDrivenStreamAssetPageTableEntry entry;
     entry.deviceOffsetBytes = kInvalidStreamDeviceOffset;
-    entry.deviceSizeBytes = 0u;
-    entry.state = 0u;
+    entry.metadata = 0u;
     entry.lastRequestFrame = 0u;
     pageTable[pageIndex] = entry;
 }
@@ -1956,8 +1970,9 @@ void gpuDrivenStreamAssetApplyUpdatesMain(uint3 dispatchThreadID : SV_DispatchTh
     uint patchWord = kStreamUpdateHeaderWords + patchIndex * 4u;
     uint pageId = updates[patchWord + 0u];
     pageTable[pageId].deviceOffsetBytes = updates[patchWord + 1u];
-    pageTable[pageId].deviceSizeBytes = updates[patchWord + 2u];
-    pageTable[pageId].state = updates[patchWord + 3u];
+    pageTable[pageId].metadata =
+        (updates[patchWord + 2u] & kStreamPageDeviceSizeMask) |
+        (updates[patchWord + 3u] << kStreamPageStateShift);
 }
 
 [shader("fragment")]

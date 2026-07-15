@@ -857,6 +857,10 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         log = "MeshletStreamRuntime resident page buffer size overflowed";
         return makeError(Error::Failure);
     }
+    if (asset_.maxPagePayloadBytes() > kStreamPageDeviceSizeMask) {
+        log = "MeshletStreamRuntime page payload exceeds packed GPU page metadata";
+        return makeError(Error::Failure);
+    }
     maxResidentBytes_ = alignUp(maxResidentBytes_, kMeshletStreamStorageAlignment);
     if (maxResidentBytes_ > std::numeric_limits<uint32_t>::max()) {
         log = "MeshletStreamRuntime resident page buffer aligned size overflowed";

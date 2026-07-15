@@ -886,8 +886,9 @@ void MeshletStreamResidencyManager::buildInitialPageTable(std::span<StreamPageTa
             .deviceOffsetBytes = tableResident
                 ? static_cast<uint32_t>(page.deviceOffsetBytes)
                 : kInvalidStreamDeviceOffsetBytes,
-            .deviceSizeBytes = tableResident ? page.deviceSizeBytes : 0u,
-            .state = static_cast<uint32_t>(page.state),
+            .metadata = packStreamPageTableMetadata(
+                tableResident ? page.deviceSizeBytes : 0u,
+                page.state),
             .lastRequestFrame = 0,
         };
     }
