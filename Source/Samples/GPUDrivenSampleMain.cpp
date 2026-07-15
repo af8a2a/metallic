@@ -17,7 +17,8 @@ void printUsage()
         "MetallicGPUDrivenSample options:\n"
         "  --smoke-test                 Render one frame and exit\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization\n"
-        "  --streamasset                Load the meshlet StreamAsset variant\n"
+        "  --streamasset                Load the default meshlet StreamAsset variant\n"
+        "  --legacy-preloaded           Load the legacy fully preloaded variant\n"
         "  --rtas-visualization         Load the RTAS visualization variant\n"
         "  --scene <source.gltf>        Override the sample source scene\n"
         "  --streamasset-path <file>    Override the StreamAsset cache path");
@@ -29,7 +30,7 @@ int main(int argc, char** argv)
 {
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
-    const char* sampleId = kGPUDrivenSampleId;
+    const char* sampleId = kGPUDrivenStreamAssetSampleId;
     std::string scenePath;
     std::string streamAssetPath;
     for (int index = 1; index < argc; ++index) {
@@ -48,6 +49,10 @@ int main(int argc, char** argv)
         }
         if (argument == "--streamasset") {
             sampleId = kGPUDrivenStreamAssetSampleId;
+            continue;
+        }
+        if (argument == "--legacy-preloaded") {
+            sampleId = kGPUDrivenSampleId;
             continue;
         }
         if (argument == "--rtas-visualization") {
@@ -70,7 +75,7 @@ int main(int argc, char** argv)
     }
 
     if (!streamAssetPath.empty() && std::string_view(sampleId) == kGPUDrivenSampleId) {
-        spdlog::error("--streamasset-path requires --streamasset or --rtas-visualization");
+        spdlog::error("--streamasset-path cannot be used with --legacy-preloaded");
         return 1;
     }
 
