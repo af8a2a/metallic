@@ -16,7 +16,51 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <winioctl.h>
+#endif
+
 namespace {
+
+bool resizeSparseFile(const std::filesystem::path& path, uint64_t size)
+{
+#ifdef _WIN32
+    HANDLE file = CreateFileW(
+        path.wstring().c_str(),
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    DWORD returnedBytes = 0;
+    const BOOL sparse = DeviceIoControl(
+        file,
+        FSCTL_SET_SPARSE,
+        nullptr,
+        0,
+        nullptr,
+        0,
+        &returnedBytes,
+        nullptr);
+    LARGE_INTEGER end{};
+    end.QuadPart = static_cast<LONGLONG>(size);
+    const BOOL resized = sparse && SetFilePointerEx(file, end, nullptr, FILE_BEGIN) && SetEndOfFile(file);
+    CloseHandle(file);
+    return resized != FALSE;
+#else
+    std::error_code error;
+    std::filesystem::resize_file(path, size, error);
+    return !error;
+#endif
+}
 
 void expect(bool condition, const std::string& message)
 {
@@ -1295,6 +1339,62 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     ASSERT_LE(decodedHeader.positionOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
     ASSERT_LE(decodedHeader.normalOffsetBytes + decodedHeader.vertexCount * sizeof(float) * 4u, decodedPayload.size());
     ASSERT_LE(decodedHeader.texcoord0OffsetBytes + decodedHeader.vertexCount * sizeof(float) * 2u, decodedPayload.size());
+
+    const std::filesystem::path lazyValidationPath =
+        streamDirectory / "meshlet_lod_grid.lazy_validation.meshstream.bin";
+    std::filesystem::copy_file(
+        streamAssetPath,
+        lazyValidationPath,
+        std::filesystem::copy_options::overwrite_existing);
+    {
+        std::fstream corrupted(lazyValidationPath, std::ios::binary | std::ios::in | std::ios::out);
+        ASSERT_TRUE(corrupted);
+        corrupted.seekp(static_cast<std::streamoff>(page.payloadOffset));
+        const uint32_t invalidMagic = 0;
+        corrupted.write(reinterpret_cast<const char*>(&invalidMagic), sizeof(invalidMagic));
+        ASSERT_TRUE(corrupted);
+    }
+    metallic::scene::MeshletStreamAsset lazyValidationAsset;
+    ASSERT_TRUE(lazyValidationAsset.open(lazyValidationPath, reason)) << reason;
+    std::vector<uint8_t> lazyDecodeStorage;
+    std::span<const uint8_t> lazyDecodedPayload;
+    EXPECT_FALSE(metallic::scene::decodeMeshletStreamPayloadForDevice(
+        lazyValidationAsset.pages().front(),
+        lazyValidationAsset.pagePayload(0),
+        lazyDecodeStorage,
+        lazyDecodedPayload,
+        reason));
+    EXPECT_NE(reason.find("header"), std::string::npos) << reason;
+    lazyValidationAsset.close();
+    std::filesystem::remove(lazyValidationPath);
+
+    if constexpr (sizeof(void*) >= 8) {
+        const std::filesystem::path largeSparsePath =
+            streamDirectory / "meshlet_lod_grid.large_sparse.meshstream.bin";
+        std::filesystem::copy_file(
+            streamAssetPath,
+            largeSparsePath,
+            std::filesystem::copy_options::overwrite_existing);
+        constexpr uint64_t kLargeSparseSize = (uint64_t{1} << 32u) + 4096u;
+        ASSERT_TRUE(resizeSparseFile(largeSparsePath, kLargeSparseSize));
+        {
+            std::fstream largeSparse(
+                largeSparsePath,
+                std::ios::binary | std::ios::in | std::ios::out);
+            ASSERT_TRUE(largeSparse);
+            constexpr std::streamoff kFileSizeHeaderOffset = 16;
+            largeSparse.seekp(kFileSizeHeaderOffset);
+            largeSparse.write(
+                reinterpret_cast<const char*>(&kLargeSparseSize),
+                sizeof(kLargeSparseSize));
+            ASSERT_TRUE(largeSparse);
+        }
+        metallic::scene::MeshletStreamAsset largeSparseAsset;
+        ASSERT_TRUE(largeSparseAsset.open(largeSparsePath, reason)) << reason;
+        EXPECT_GT(std::filesystem::file_size(largeSparsePath), std::numeric_limits<uint32_t>::max());
+        largeSparseAsset.close();
+        std::filesystem::remove(largeSparsePath);
+    }
 
     const std::filesystem::path offlineDirectory = directory / "meshlet_streamasset_offline";
     std::filesystem::create_directories(offlineDirectory);

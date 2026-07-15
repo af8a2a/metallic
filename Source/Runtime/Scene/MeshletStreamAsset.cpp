@@ -3252,15 +3252,19 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
         const MeshletStreamPageInfo& page = impl->pages[pageIndex];
         if (page.primitiveIndex >= impl->primitives.size() ||
             page.payloadOffset != impl->pageOffsets[pageIndex] ||
+            page.payloadOffset % kFileAlignment != 0 ||
             page.payloadOffset > impl->dataSize ||
             page.payloadSize > impl->dataSize - page.payloadOffset ||
             page.uncompressedSize == 0 ||
             page.payloadSize == 0 ||
+            page.payloadSize > std::numeric_limits<uint32_t>::max() ||
+            !meshletStreamCompressionSupported(page.compressionMode) ||
+            (page.compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::None) &&
+                page.payloadSize != page.uncompressedSize) ||
+            (page.compressionMode != static_cast<uint32_t>(MeshletStreamPayloadCompression::None) &&
+                page.uncompressedSize < sizeof(MeshletStreamPayloadHeader)) ||
             page.uncompressedSize > impl->header.maxPagePayloadBytes) {
             reason = "streamasset page payload exceeds file bounds";
-            return false;
-        }
-        if (!validatePayloadHeader(impl->data, impl->dataSize, page, pageIndex, reason)) {
             return false;
         }
     }
@@ -3472,6 +3476,17 @@ bool decodeMeshletStreamPayloadForDevice(
         page.uncompressedSize == 0 ||
         page.uncompressedSize > std::numeric_limits<uint32_t>::max()) {
         reason = "streamasset stored payload does not match page metadata";
+        return false;
+    }
+
+    MeshletStreamPageInfo localPage = page;
+    localPage.payloadOffset = 0;
+    if (!validatePayloadHeader(
+            storedPayload.data(),
+            storedPayload.size(),
+            localPage,
+            0,
+            reason)) {
         return false;
     }
 
