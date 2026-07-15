@@ -2210,14 +2210,7 @@ public:
                 .minMaxQuadricError = 0.0f,
             },
         }};
-        const std::array<render::MeshletStreamGpuPageInfo, 6> pageInfos = {{
-            render::MeshletStreamGpuPageInfo{.primitiveIndex = 0, .lodLevel = 0, .pageIndex = 0, .clusterCount = 3},
-            render::MeshletStreamGpuPageInfo{.primitiveIndex = 0, .lodLevel = 0, .pageIndex = 1, .clusterCount = 5},
-            render::MeshletStreamGpuPageInfo{.primitiveIndex = 0, .lodLevel = 1, .pageIndex = 2, .clusterCount = 2},
-            render::MeshletStreamGpuPageInfo{.primitiveIndex = 1, .lodLevel = 0, .pageIndex = 3, .clusterCount = 11},
-            render::MeshletStreamGpuPageInfo{.primitiveIndex = 1, .lodLevel = 1, .pageIndex = 4, .clusterCount = 1},
-            render::MeshletStreamGpuPageInfo{.primitiveIndex = 1, .lodLevel = 2, .pageIndex = 5, .clusterCount = 17},
-        }};
+        constexpr uint32_t kScenePageCount = 6;
         std::array<render::MeshletStreamGpuGroup, 5> groups{};
         const std::array<uint32_t, 5> groupPages{0, 1, 2, 3, 4};
         const std::array<uint32_t, 5> groupPrimitives{0, 0, 0, 1, 1};
@@ -2286,7 +2279,7 @@ public:
         params.sceneInstanceCount = static_cast<uint32_t>(instances.size());
         params.scenePrimitiveCount = static_cast<uint32_t>(primitives.size());
         params.sceneLodLevelCount = static_cast<uint32_t>(lodLevels.size());
-        params.scenePageCount = static_cast<uint32_t>(pageInfos.size());
+        params.scenePageCount = kScenePageCount;
         params.selectedLodLevel = render::kMeshletStreamNoDebugLodOverride;
         params.enableGpuLodSelection = 1;
         params.enableGpuUnloadRequests = 1;
@@ -2299,7 +2292,7 @@ public:
         params.maxActiveGroupClusters = 11;
         params.drawTaskCount = kActiveGroupCapacity * params.maxActiveGroupClusters;
 
-        std::array<render::StreamPageTableEntry, 6> pageTable{};
+        std::array<render::StreamPageTableEntry, kScenePageCount> pageTable{};
         pageTable[0].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded);
         pageTable[1].state = static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Resident);
         pageTable[1].lastRequestFrame = 3;
@@ -2390,18 +2383,6 @@ public:
             },
             "lod levels",
             lodLevelBuffer);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        std::unique_ptr<render::Buffer> pageInfoBuffer;
-        testResult = createBuffer(
-            render::BufferDesc{
-                .size = sizeof(pageInfos),
-                .usage = render::BufferUsageBits::Storage,
-                .memoryLocation = render::MemoryLocation::HostUpload,
-            },
-            "page infos",
-            pageInfoBuffer);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2660,10 +2641,6 @@ public:
         if (!result) {
             return RhiTestResult::fail(std::string("writeHostBuffer(lod levels) returned ") + toString(result));
         }
-        result = writeHostBuffer(*pageInfoBuffer, pageInfos.data(), sizeof(pageInfos));
-        if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(page infos) returned ") + toString(result));
-        }
         result = writeHostBuffer(*groupBuffer, groups.data(), sizeof(groups));
         if (!result) {
             return RhiTestResult::fail(std::string("writeHostBuffer(groups) returned ") + toString(result));
@@ -2697,7 +2674,7 @@ public:
             render::BindlessHeapDesc{
                 .maxSamplers = 0,
                 .maxSampledImages = 0,
-                .maxBuffers = 15,
+                .maxBuffers = 14,
             },
             bindlessHeap);
         if (!result || bindlessHeap == nullptr) {
@@ -2731,11 +2708,6 @@ public:
         }
         render::BindlessHandle lodLevelHandle;
         testResult = allocateStorageBuffer(*lodLevelBuffer, "lod levels", lodLevelHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle pageInfoHandle;
-        testResult = allocateStorageBuffer(*pageInfoBuffer, "page infos", pageInfoHandle);
         if (!testResult.passed) {
             return testResult;
         }
@@ -2957,7 +2929,6 @@ public:
             .instanceBuffer = instanceHandle.index,
             .primitiveBuffer = primitiveHandle.index,
             .lodLevelBuffer = lodLevelHandle.index,
-            .pageInfoBuffer = pageInfoHandle.index,
             .groupBuffer = groupHandle.index,
             .nodeBuffer = nodeHandle.index,
             .drawIndirectBuffer = drawIndirectHandle.index,
@@ -3284,7 +3255,7 @@ public:
         for (uint32_t index = 0; index < activeHeaderResult.activeGroupCount; ++index) {
             const render::MeshletStreamGpuActiveGroup& group = activeGroupsResult[index];
             if (group.pageIndex == 1 &&
-                group.clusterCount == pageInfos[1].clusterCount &&
+                group.clusterCount == groupClusterCounts[1] &&
                 group.materialIndex == instances[0].materialIndex &&
                 group.instanceIndex == 0u &&
                 group.clusterSelectionMask == 0x1fu &&
@@ -3292,7 +3263,7 @@ public:
                 foundResidentFinePage0 = true;
             }
             if (group.pageIndex == 2 &&
-                group.clusterCount == pageInfos[2].clusterCount &&
+                group.clusterCount == groupClusterCounts[2] &&
                 group.materialIndex == instances[0].materialIndex &&
                 group.instanceIndex == 0u &&
                 group.clusterSelectionMask == 0x1u &&
@@ -3300,7 +3271,7 @@ public:
                 foundFallbackPage = true;
             }
             if (group.pageIndex == 3 &&
-                group.clusterCount == pageInfos[3].clusterCount &&
+                group.clusterCount == groupClusterCounts[3] &&
                 group.materialIndex == instances[1].materialIndex &&
                 group.instanceIndex == 1u &&
                 group.clusterSelectionMask == 0x7ffu &&

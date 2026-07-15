@@ -1683,7 +1683,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         BindlessHeapDesc{
             .maxSamplers = 0,
             .maxSampledImages = 0,
-            .maxBuffers = clasPool_ != nullptr ? 25u : 16u,
+            .maxBuffers = clasPool_ != nullptr ? 24u : 15u,
         },
         bindlessHeap_);
     if (!result || bindlessHeap_ == nullptr) {
@@ -1724,10 +1724,6 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         return result;
     }
     result = allocateAndWriteBuffer(*bindlessHeap_, *lodLevelBuffer_, lodLevelHandle_, log, "meshlet stream LOD levels");
-    if (!result) {
-        return result;
-    }
-    result = allocateAndWriteBuffer(*bindlessHeap_, *pageInfoBuffer_, pageInfoHandle_, log, "meshlet stream page infos");
     if (!result) {
         return result;
     }
@@ -1909,7 +1905,6 @@ void MeshletStreamRuntime::reset()
     instanceBuffer_.reset();
     primitiveBuffer_.reset();
     lodLevelBuffer_.reset();
-    pageInfoBuffer_.reset();
     groupBuffer_.reset();
     nodeBuffer_.reset();
     drawIndirectBuffer_.reset();
@@ -1948,7 +1943,6 @@ void MeshletStreamRuntime::reset()
     instanceHandle_ = {};
     primitiveHandle_ = {};
     lodLevelHandle_ = {};
-    pageInfoHandle_ = {};
     groupHandle_ = {};
     nodeHandle_ = {};
     drawIndirectHandle_ = {};
@@ -2027,7 +2021,6 @@ bool MeshletStreamRuntime::ready() const
         instanceBuffer_ != nullptr &&
         primitiveBuffer_ != nullptr &&
         lodLevelBuffer_ != nullptr &&
-        pageInfoBuffer_ != nullptr &&
         groupBuffer_ != nullptr &&
         nodeBuffer_ != nullptr &&
         drawIndirectBuffer_ != nullptr &&
@@ -2208,7 +2201,6 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
         .instanceBuffer = instanceHandle_.index,
         .primitiveBuffer = primitiveHandle_.index,
         .lodLevelBuffer = lodLevelHandle_.index,
-        .pageInfoBuffer = pageInfoHandle_.index,
         .groupBuffer = groupHandle_.index,
         .nodeBuffer = nodeHandle_.index,
         .drawIndirectBuffer = drawIndirectHandle_.index,
@@ -2348,18 +2340,6 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
         });
     }
 
-    std::vector<MeshletStreamGpuPageInfo> gpuPages;
-    gpuPages.reserve(asset_.pages().size());
-    for (uint32_t pageIndex = 0; pageIndex < asset_.pages().size(); ++pageIndex) {
-        const scene::MeshletStreamPageInfo& page = asset_.pages()[pageIndex];
-        gpuPages.push_back(MeshletStreamGpuPageInfo{
-            .primitiveIndex = page.primitiveIndex,
-            .lodLevel = page.lodLevel,
-            .pageIndex = pageIndex,
-            .clusterCount = page.clusterCount,
-        });
-    }
-
     std::vector<MeshletStreamGpuGroup> gpuGroups;
     gpuGroups.reserve(asset_.groups().size());
     for (const scene::MeshletStreamGroupInfo& group : asset_.groups()) {
@@ -2418,10 +2398,6 @@ Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std:
         return result;
     }
     result = createAndUpload(gpuLodLevels, lodLevelBuffer_, "MeshletStreamRuntime LOD levels");
-    if (!result) {
-        return result;
-    }
-    result = createAndUpload(gpuPages, pageInfoBuffer_, "MeshletStreamRuntime page infos");
     if (!result) {
         return result;
     }

@@ -54,7 +54,6 @@ struct GPUDrivenStreamAssetPush
     uint instanceBuffer;
     uint primitiveBuffer;
     uint lodLevelBuffer;
-    uint pageInfoBuffer;
     uint groupBuffer;
     uint nodeBuffer;
     uint drawIndirectBuffer;
@@ -148,14 +147,6 @@ struct GPUDrivenStreamAssetLodLevel
     float minMaxQuadricError;
     uint padding0;
     uint padding1;
-};
-
-struct GPUDrivenStreamAssetPageInfo
-{
-    uint primitiveIndex;
-    uint lodLevel;
-    uint pageIndex;
-    uint clusterCount;
 };
 
 struct GPUDrivenStreamAssetGroup
@@ -710,13 +701,13 @@ void appendActivePage(
     RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups,
     RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
-    StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
     GPUDrivenStreamAssetParams params,
     GPUDrivenStreamAssetInstance instance,
     uint instanceIndex,
-    uint pageIndex,
+    GPUDrivenStreamAssetGroup sourceGroup,
     uint clusterSelectionMask)
 {
+    uint pageIndex = sourceGroup.pageIndex;
     if (pageIndex >= params.scenePageCount) {
         return;
     }
@@ -735,13 +726,12 @@ void appendActivePage(
         return;
     }
 
-    GPUDrivenStreamAssetPageInfo pageInfo = pageInfos[pageIndex];
     GPUDrivenStreamAssetActiveGroup group;
     group.pageDeviceOffsetBytes = pageEntry.deviceOffsetBytes;
     group.pageIndex = pageIndex;
-    group.clusterCount = pageInfo.clusterCount;
-    group.primitiveIndex = pageInfo.primitiveIndex;
-    group.lodLevel = pageInfo.lodLevel;
+    group.clusterCount = sourceGroup.clusterCount;
+    group.primitiveIndex = sourceGroup.primitiveIndex;
+    group.lodLevel = sourceGroup.lodLevel;
     group.materialIndex = instance.materialIndex;
     group.clusterSelectionMask = clusterSelectionMask;
     group.flags = kActiveGroupResident;
@@ -770,31 +760,6 @@ bool pageRangeDrawable(
         }
     }
     return true;
-}
-
-void appendActivePageRange(
-    RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups,
-    RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
-    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
-    StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
-    GPUDrivenStreamAssetParams params,
-    GPUDrivenStreamAssetInstance instance,
-    uint instanceIndex,
-    uint pageOffset,
-    uint pageCount)
-{
-    for (uint page = 0u; page < pageCount; ++page) {
-        appendActivePage(
-            activeGroups,
-            activeHeader,
-            pageTable,
-            pageInfos,
-            params,
-            instance,
-            instanceIndex,
-            pageOffset + page,
-            0xffffffffu);
-    }
 }
 
 void traverseInstancePageDemand(
@@ -878,7 +843,6 @@ void buildInstanceActiveGroups(
     RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups,
     RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
     StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives,
-    StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
     StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
     StructuredBuffer<uint> pageWords,
     StructuredBuffer<GPUDrivenStreamAssetNode> nodes,
@@ -955,11 +919,10 @@ void buildInstanceActiveGroups(
                 activeGroups,
                 activeHeader,
                 pageTable,
-                pageInfos,
                 params,
                 instance,
                 instanceIndex,
-                group.pageIndex,
+                group,
                 clusterSelectionMask);
         }
     }
@@ -992,7 +955,6 @@ bool enqueueActiveTraversalWork(
 void appendInstanceFallbackGroups(
     RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups,
     RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader,
-    StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
     StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
     StructuredBuffer<uint> pageWords,
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable,
@@ -1035,11 +997,10 @@ void appendInstanceFallbackGroups(
                 activeGroups,
                 activeHeader,
                 pageTable,
-                pageInfos,
                 params,
                 instance,
                 instanceIndex,
-                group.pageIndex,
+                group,
                 clusterSelectionMask);
         }
     }
@@ -1052,7 +1013,6 @@ void runActiveTraversalWorker(
     RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem> traversalWork,
     StructuredBuffer<GPUDrivenStreamAssetInstance> instances,
     StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives,
-    StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos,
     StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
     StructuredBuffer<uint> pageWords,
     StructuredBuffer<GPUDrivenStreamAssetNode> nodes,
@@ -1165,11 +1125,10 @@ void runActiveTraversalWorker(
                                         activeGroups,
                                         activeHeader,
                                         pageTable,
-                                        pageInfos,
                                         params,
                                         instance,
                                         work.instanceIndex,
-                                        group.pageIndex,
+                                        group,
                                         clusterSelectionMask);
                                 }
                             }
@@ -1324,8 +1283,6 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(uint2(push.bufferShaderIndexBase + push.primitiveBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetLodLevel>> lodLevelHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetLodLevel>>(uint2(push.bufferShaderIndexBase + push.lodLevelBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageInfo>> pageInfoHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageInfo>>(uint2(push.bufferShaderIndexBase + push.pageInfoBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>> groupHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(uint2(push.bufferShaderIndexBase + push.groupBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetNode>> nodeHandle =
@@ -1349,7 +1306,6 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
     StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives = primitiveHandle;
     StructuredBuffer<GPUDrivenStreamAssetLodLevel> lodLevels = lodLevelHandle;
-    StructuredBuffer<GPUDrivenStreamAssetPageInfo> pageInfos = pageInfoHandle;
     StructuredBuffer<GPUDrivenStreamAssetGroup> groups = groupHandle;
     StructuredBuffer<GPUDrivenStreamAssetNode> nodes = nodeHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetDrawIndirect> drawIndirect = drawIndirectHandle;
@@ -1431,7 +1387,6 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
             appendInstanceFallbackGroups(
                 activeGroups,
                 activeHeader,
-                pageInfos,
                 groups,
                 pageWords,
                 pageTable,
@@ -1466,7 +1421,6 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                 traversalWork,
                 instances,
                 primitives,
-                pageInfos,
                 groups,
                 pageWords,
                 nodes,
@@ -1491,7 +1445,6 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
                     activeGroups,
                     activeHeader,
                     primitives,
-                    pageInfos,
                     groups,
                     pageWords,
                     nodes,
@@ -1548,11 +1501,10 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
             activeGroups,
             activeHeader,
             pageTable,
-            pageInfos,
             params,
             instance,
             instanceIndex,
-            group.pageIndex,
+            group,
             clusterSelectionMask);
     }
 }

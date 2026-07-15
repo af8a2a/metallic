@@ -135,13 +135,6 @@ struct MeshletStreamGpuLodLevel {
     uint32_t padding1 = 0;
 };
 
-struct MeshletStreamGpuPageInfo {
-    uint32_t primitiveIndex = 0;
-    uint32_t lodLevel = 0;
-    uint32_t pageIndex = 0;
-    uint32_t clusterCount = 0;
-};
-
 struct MeshletStreamGpuGroup {
     uint32_t primitiveIndex = 0;
     uint32_t pageIndex = 0;
@@ -273,7 +266,6 @@ struct MeshletStreamUserPush {
     uint32_t instanceBuffer = 0;
     uint32_t primitiveBuffer = 0;
     uint32_t lodLevelBuffer = 0;
-    uint32_t pageInfoBuffer = 0;
     uint32_t groupBuffer = 0;
     uint32_t nodeBuffer = 0;
     uint32_t drawIndirectBuffer = 0;
@@ -297,7 +289,6 @@ static_assert(sizeof(MeshletStreamGpuActiveGroup) == 112);
 static_assert(sizeof(MeshletStreamGpuInstance) == 96);
 static_assert(sizeof(MeshletStreamGpuPrimitive) == 64);
 static_assert(sizeof(MeshletStreamGpuLodLevel) == 32);
-static_assert(sizeof(MeshletStreamGpuPageInfo) == 16);
 static_assert(sizeof(MeshletStreamGpuGroup) == 48);
 static_assert(sizeof(MeshletStreamGpuNode) == 48);
 static_assert(sizeof(MeshletStreamGpuDrawIndirect) == 12);
@@ -309,7 +300,7 @@ static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(MeshletStreamGpuTlasInstance) == 64);
 static_assert(sizeof(StreamPageTableEntry) == 16);
 static_assert(sizeof(MeshletStreamGpuParams) == 192);
-static_assert(sizeof(MeshletStreamUserPush) == 108);
+static_assert(sizeof(MeshletStreamUserPush) == 104);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -428,7 +419,6 @@ private:
     std::unique_ptr<Buffer> instanceBuffer_;
     std::unique_ptr<Buffer> primitiveBuffer_;
     std::unique_ptr<Buffer> lodLevelBuffer_;
-    std::unique_ptr<Buffer> pageInfoBuffer_;
     std::unique_ptr<Buffer> groupBuffer_;
     std::unique_ptr<Buffer> nodeBuffer_;
     std::unique_ptr<Buffer> drawIndirectBuffer_;
@@ -467,7 +457,6 @@ private:
     BindlessHandle instanceHandle_;
     BindlessHandle primitiveHandle_;
     BindlessHandle lodLevelHandle_;
-    BindlessHandle pageInfoHandle_;
     BindlessHandle groupHandle_;
     BindlessHandle nodeHandle_;
     BindlessHandle drawIndirectHandle_;
