@@ -65,5 +65,9 @@ bool loadBuiltInRenderSample(
     std::string_view id,
     RenderSampleLoadResult& outResult,
     std::string& outMessage);
+bool setRenderSampleScenePath(
+    RenderSampleLoadResult& sample,
+    std::string scenePath,
+    std::string& outMessage);
 
 } // namespace metallic::render

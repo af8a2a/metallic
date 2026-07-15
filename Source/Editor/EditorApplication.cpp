@@ -1671,16 +1671,26 @@ void applyNvproImNodesStyle()
 
 } // namespace
 
-int EditorApplication::run(bool smokeTest, bool waitForGraphicsDebugger, const char* startupSampleId)
+int EditorApplication::run(
+    bool smokeTest,
+    bool waitForGraphicsDebugger,
+    const char* startupSampleId,
+    const char* startupScenePath,
+    const char* startupStreamAssetPath)
 {
     smokeTest_ = smokeTest;
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
     startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";
+    startupScenePath_ = startupScenePath != nullptr ? startupScenePath : "";
+    startupStreamAssetPath_ = startupStreamAssetPath != nullptr ? startupStreamAssetPath : "";
     spdlog::info(
-        "[Startup] Run requested smokeTest={} waitForGraphicsDebugger={} startupSample='{}'",
+        "[Startup] Run requested smokeTest={} waitForGraphicsDebugger={} startupSample='{}' "
+        "sceneOverride='{}' streamAssetOverride='{}'",
         smokeTest_,
         waitForGraphicsDebugger_,
-        startupSampleId_);
+        startupSampleId_,
+        startupScenePath_,
+        startupStreamAssetPath_);
 
     if (!initialize()) {
         shutdown();
@@ -3902,6 +3912,33 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         renderGraphStatus_ = message;
         spdlog::warn("[Startup] Built-in sample load failed: {}", message);
         return;
+    }
+    if (!startupScenePath_.empty() &&
+        !render::setRenderSampleScenePath(sample, startupScenePath_, message)) {
+        renderGraphStatus_ = message;
+        spdlog::warn("[Startup] Built-in sample scene override failed: {}", message);
+        return;
+    }
+    if (!startupStreamAssetPath_.empty()) {
+        for (const std::string& target : sample.desc.scenePathTargets) {
+            render::RenderGraphNode* node = sample.graph.findNode(target);
+            if (node == nullptr || node->type != "GPUDrivenStreamAssetPass") {
+                renderGraphStatus_ =
+                    "StreamAsset path override requires a GPUDrivenStreamAssetPass target: " + target;
+                spdlog::warn("[Startup] {}", renderGraphStatus_);
+                return;
+            }
+            render::RenderGraphProperties properties = node->properties.is_object()
+                ? node->properties
+                : render::RenderGraphProperties::object();
+            properties["streamAssetPath"] = startupStreamAssetPath_;
+            if (!sample.graph.setNodeProperties(node->id, std::move(properties))) {
+                renderGraphStatus_ = "Failed to apply StreamAsset path override to: " + target;
+                spdlog::warn("[Startup] {}", renderGraphStatus_);
+                return;
+            }
+        }
+        sample.graph.clearDirty();
     }
     spdlog::info(
         "[Startup] Loaded sample '{}' graph='{}' scene='{}' previewOutput='{}'",

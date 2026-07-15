@@ -1252,6 +1252,16 @@ public:
         if (gpuDrivenStreamAssetSample.graph.firstOutputName() != "GPUDriven.color") {
             return RhiTestResult::fail("GPUDriven StreamAsset graph first output changed");
         }
+        if (!render::setRenderSampleScenePath(
+                gpuDrivenStreamAssetSample,
+                "Asset/Zorah/zorah_main_public.v2.gltf",
+                message) ||
+            gpuDrivenStreamAssetSample.desc.scenePath != "Asset/Zorah/zorah_main_public.v2.gltf" ||
+            gpuDrivenStreamAsset->properties.value("path", "") !=
+                "Asset/Zorah/zorah_main_public.v2.gltf" ||
+            gpuDrivenStreamAssetSample.graph.dirty()) {
+            return RhiTestResult::fail("GPUDriven StreamAsset scene override failed");
+        }
 
         render::RenderSampleLoadResult gpuDrivenRtasSample;
         if (!render::loadBuiltInRenderSample("gpu-driven-rtas-visualization", gpuDrivenRtasSample, message)) {

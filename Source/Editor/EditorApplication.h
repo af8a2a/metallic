@@ -23,7 +23,12 @@ namespace metallic {
 
 class EditorApplication {
 public:
-    int run(bool smokeTest = false, bool waitForGraphicsDebugger = false, const char* startupSampleId = nullptr);
+    int run(
+        bool smokeTest = false,
+        bool waitForGraphicsDebugger = false,
+        const char* startupSampleId = nullptr,
+        const char* startupScenePath = nullptr,
+        const char* startupStreamAssetPath = nullptr);
 
 private:
     bool initialize();
@@ -169,6 +174,8 @@ private:
     std::string sceneStatus_ = "No scene loaded.";
     std::string sceneRtxStatus_ = "RTX AS not built.";
     std::string startupSampleId_;
+    std::string startupScenePath_;
+    std::string startupStreamAssetPath_;
     SceneSelection sceneSelection_;
     std::vector<std::filesystem::path> recentScenePaths_;
 };

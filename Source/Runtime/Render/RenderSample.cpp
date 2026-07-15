@@ -425,4 +425,23 @@ bool loadBuiltInRenderSample(
     return false;
 }
 
+bool setRenderSampleScenePath(
+    RenderSampleLoadResult& sample,
+    std::string scenePath,
+    std::string& outMessage)
+{
+    outMessage.clear();
+    if (scenePath.empty()) {
+        outMessage = "Sample scene path override is empty";
+        return false;
+    }
+
+    sample.desc.scenePath = std::move(scenePath);
+    if (!applySampleScenePath(sample.graph, sample.desc, outMessage)) {
+        return false;
+    }
+    sample.graph.clearDirty();
+    return true;
+}
+
 } // namespace metallic::render
