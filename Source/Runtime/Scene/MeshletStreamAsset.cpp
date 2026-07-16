@@ -1,6 +1,7 @@
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include "json.hpp"
+#include "meshoptimizer.h"
 #include "tiny_gltf.h"
 
 #include <algorithm>
@@ -1620,18 +1621,6 @@ bool readNodeVisibilityForStreamBuilder(const tinygltf::Node& node)
     return value.Get("visible").Get<bool>();
 }
 
-Bounds accessorBoundsForStreamBuilder(const tinygltf::Accessor& accessor)
-{
-    Bounds bounds;
-    if (accessor.minValues.size() < 3 || accessor.maxValues.size() < 3) {
-        return bounds;
-    }
-
-    bounds.include(makeFloat3ForStreamBuilder(accessor.minValues, float3(0.0f, 0.0f, 0.0f)));
-    bounds.include(makeFloat3ForStreamBuilder(accessor.maxValues, float3(0.0f, 0.0f, 0.0f)));
-    return bounds;
-}
-
 Bounds boundsFromPositionsForStreamBuilder(std::span<const float3> positions)
 {
     Bounds bounds;
@@ -1642,11 +1631,26 @@ Bounds boundsFromPositionsForStreamBuilder(std::span<const float3> positions)
 }
 
 struct StreamGltfSource {
+    struct MeshoptCompression {
+        int32_t buffer = -1;
+        uint64_t byteOffset = 0;
+        uint64_t byteLength = 0;
+        uint64_t count = 0;
+        uint64_t stride = 0;
+        std::string mode;
+        std::string filter;
+
+        bool valid() const { return buffer >= 0; }
+    };
+
     tinygltf::Model model;
     std::filesystem::path directory;
     std::vector<uint64_t> bufferByteLengths;
     std::vector<std::string> externalBufferUris;
     std::vector<bool> nodeVisibility;
+    std::vector<MeshoptCompression> meshoptCompressions;
+    mutable size_t decodedMeshoptBufferView = std::numeric_limits<size_t>::max();
+    mutable std::vector<uint8_t> decodedMeshoptBytes;
     MeshletStreamAssetOfflineBuildStats* stats = nullptr;
     bool rangeReadExternalBuffers = false;
 };
@@ -1671,6 +1675,155 @@ bool addWithin(uint64_t lhs, uint64_t rhs, uint64_t limit, uint64_t& result)
     return true;
 }
 
+bool validMeshoptCompressionForStreamBuilder(
+    const StreamGltfSource::MeshoptCompression& compression,
+    uint64_t decodedByteLength)
+{
+    if (compression.stride == 0 ||
+        compression.count > std::numeric_limits<uint64_t>::max() / compression.stride) {
+        return false;
+    }
+    const bool attributeMode = compression.mode == "ATTRIBUTES";
+    const bool triangleMode = compression.mode == "TRIANGLES";
+    const bool indexMode = compression.mode == "INDICES";
+    if ((!attributeMode && !triangleMode && !indexMode) ||
+        (attributeMode && (compression.stride % 4u != 0 || compression.stride > 256u)) ||
+        (triangleMode && compression.count % 3u != 0) ||
+        ((triangleMode || indexMode) && compression.stride != 2u && compression.stride != 4u) ||
+        decodedByteLength != compression.count * compression.stride) {
+        return false;
+    }
+
+    if (triangleMode || indexMode) {
+        return compression.filter.empty() || compression.filter == "NONE";
+    }
+    if (compression.filter.empty() || compression.filter == "NONE") {
+        return true;
+    }
+    if (compression.filter == "OCTAHEDRAL") {
+        return compression.stride == 4u || compression.stride == 8u;
+    }
+    if (compression.filter == "QUATERNION") {
+        return compression.stride == 8u;
+    }
+    if (compression.filter == "EXPONENTIAL") {
+        return compression.stride % 4u == 0;
+    }
+    if (compression.filter == "COLOR") {
+        return compression.stride == 4u || compression.stride == 8u;
+    }
+    return false;
+}
+
+bool decodeMeshoptBufferViewForStreamBuilder(
+    const StreamGltfSource& source,
+    size_t bufferViewIndex,
+    std::string& reason)
+{
+    if (source.decodedMeshoptBufferView == bufferViewIndex) {
+        return true;
+    }
+    source.decodedMeshoptBufferView = std::numeric_limits<size_t>::max();
+    source.decodedMeshoptBytes.clear();
+    if (bufferViewIndex >= source.meshoptCompressions.size()) {
+        reason = "streamasset builder meshopt bufferView metadata is missing";
+        return false;
+    }
+    const StreamGltfSource::MeshoptCompression& compression =
+        source.meshoptCompressions[bufferViewIndex];
+    const uint64_t decodedByteLength = bufferViewIndex < source.model.bufferViews.size()
+        ? source.model.bufferViews[bufferViewIndex].byteLength
+        : 0;
+    if (!compression.valid() ||
+        !validGltfIndex(compression.buffer, source.model.buffers.size()) ||
+        static_cast<size_t>(compression.buffer) >= source.bufferByteLengths.size() ||
+        compression.byteLength == 0 || compression.count == 0 || compression.stride == 0 ||
+        compression.byteOffset > source.bufferByteLengths[compression.buffer] ||
+        compression.byteLength > source.bufferByteLengths[compression.buffer] - compression.byteOffset ||
+        compression.byteLength > std::numeric_limits<size_t>::max() ||
+        compression.count > std::numeric_limits<size_t>::max() / compression.stride ||
+        !validMeshoptCompressionForStreamBuilder(compression, decodedByteLength)) {
+        reason = "streamasset builder meshopt bufferView metadata is invalid";
+        return false;
+    }
+
+    const tinygltf::Buffer& buffer = source.model.buffers[compression.buffer];
+    std::vector<uint8_t> encoded(static_cast<size_t>(compression.byteLength));
+    if (!source.rangeReadExternalBuffers || !buffer.data.empty()) {
+        if (compression.byteOffset > buffer.data.size() ||
+            compression.byteLength > buffer.data.size() - compression.byteOffset) {
+            reason = "streamasset builder meshopt range exceeds loaded buffer data";
+            return false;
+        }
+        std::memcpy(encoded.data(), buffer.data.data() + compression.byteOffset, encoded.size());
+    } else {
+        std::string decodedUri;
+        if (!tinygltf::URIDecode(buffer.uri, &decodedUri, nullptr) || decodedUri.empty()) {
+            reason = "streamasset builder failed to decode meshopt buffer URI";
+            return false;
+        }
+        const std::filesystem::path bufferPath =
+            source.directory / pathFromUtf8ForStreamBuilder(decodedUri);
+        std::ifstream file(bufferPath, std::ios::binary);
+        if (!file || compression.byteOffset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+            reason = "streamasset builder cannot open or seek meshopt buffer: " + bufferPath.string();
+            return false;
+        }
+        file.seekg(static_cast<std::streamoff>(compression.byteOffset));
+        if (!file || encoded.size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+            reason = "streamasset builder meshopt range exceeds stream read limits";
+            return false;
+        }
+        file.read(reinterpret_cast<char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+        if (!file || static_cast<size_t>(file.gcount()) != encoded.size()) {
+            reason = "streamasset builder failed to read meshopt buffer range: " + bufferPath.string();
+            return false;
+        }
+        if (source.stats != nullptr) {
+            source.stats->accessorRangeReadBytes = compression.byteLength >
+                    std::numeric_limits<uint64_t>::max() - source.stats->accessorRangeReadBytes
+                ? std::numeric_limits<uint64_t>::max()
+                : source.stats->accessorRangeReadBytes + compression.byteLength;
+            source.stats->maxAccessorRangeReadBytes = std::max(
+                source.stats->maxAccessorRangeReadBytes,
+                compression.byteLength);
+            ++source.stats->accessorRangeReadCount;
+        }
+    }
+
+    source.decodedMeshoptBytes.resize(static_cast<size_t>(compression.count * compression.stride));
+    int decodeResult = -1;
+    if (compression.mode == "ATTRIBUTES") {
+        decodeResult = meshopt_decodeVertexBuffer(
+            source.decodedMeshoptBytes.data(), compression.count, compression.stride,
+            encoded.data(), encoded.size());
+    } else if (compression.mode == "TRIANGLES") {
+        decodeResult = meshopt_decodeIndexBuffer(
+            source.decodedMeshoptBytes.data(), compression.count, compression.stride,
+            encoded.data(), encoded.size());
+    } else if (compression.mode == "INDICES") {
+        decodeResult = meshopt_decodeIndexSequence(
+            source.decodedMeshoptBytes.data(), compression.count, compression.stride,
+            encoded.data(), encoded.size());
+    }
+    if (decodeResult != 0) {
+        source.decodedMeshoptBytes.clear();
+        reason = "streamasset builder meshopt bufferView decode failed";
+        return false;
+    }
+    if (compression.filter == "OCTAHEDRAL") {
+        meshopt_decodeFilterOct(source.decodedMeshoptBytes.data(), compression.count, compression.stride);
+    } else if (compression.filter == "QUATERNION") {
+        meshopt_decodeFilterQuat(source.decodedMeshoptBytes.data(), compression.count, compression.stride);
+    } else if (compression.filter == "EXPONENTIAL") {
+        meshopt_decodeFilterExp(source.decodedMeshoptBytes.data(), compression.count, compression.stride);
+    } else if (compression.filter == "COLOR") {
+        meshopt_decodeFilterColor(source.decodedMeshoptBytes.data(), compression.count, compression.stride);
+    }
+    source.decodedMeshoptBufferView = bufferViewIndex;
+    return true;
+}
+
 bool readAccessorRangeForStreamBuilder(
     const StreamGltfSource& source,
     const tinygltf::Accessor& accessor,
@@ -1691,8 +1844,12 @@ bool readAccessorRangeForStreamBuilder(
     }
     const tinygltf::BufferView& bufferView =
         source.model.bufferViews[static_cast<size_t>(accessor.bufferView)];
-    if (!validGltfIndex(bufferView.buffer, source.model.buffers.size()) ||
-        static_cast<size_t>(bufferView.buffer) >= source.bufferByteLengths.size()) {
+    const size_t bufferViewIndex = static_cast<size_t>(accessor.bufferView);
+    const bool meshoptCompressed = bufferViewIndex < source.meshoptCompressions.size() &&
+        source.meshoptCompressions[bufferViewIndex].valid();
+    if (!meshoptCompressed &&
+        (!validGltfIndex(bufferView.buffer, source.model.buffers.size()) ||
+            static_cast<size_t>(bufferView.buffer) >= source.bufferByteLengths.size())) {
         reason = "streamasset builder bufferView has an invalid buffer";
         return false;
     }
@@ -1717,6 +1874,25 @@ bool readAccessorRangeForStreamBuilder(
     if (!addWithin(stridedBytes, elementByteSize, std::numeric_limits<uint64_t>::max(), rangeByteSize)) {
         reason = "streamasset builder accessor byte range overflows";
         return false;
+    }
+    if (meshoptCompressed) {
+        if (!decodeMeshoptBufferViewForStreamBuilder(source, bufferViewIndex, reason)) {
+            return false;
+        }
+        const uint64_t rangeOffset = accessor.byteOffset;
+        if (rangeOffset > source.decodedMeshoptBytes.size() ||
+            rangeByteSize > source.decodedMeshoptBytes.size() - rangeOffset ||
+            rangeByteSize > std::numeric_limits<size_t>::max()) {
+            reason = "streamasset builder accessor byte range exceeds decoded meshopt bufferView";
+            return false;
+        }
+        outBytes.resize(static_cast<size_t>(rangeByteSize));
+        std::memcpy(
+            outBytes.data(),
+            source.decodedMeshoptBytes.data() + rangeOffset,
+            outBytes.size());
+        outStride = static_cast<size_t>(stride);
+        return true;
     }
     uint64_t rangeOffset = 0;
     if (!addWithin(
@@ -1814,27 +1990,99 @@ bool readAccessorRangeForStreamBuilder(
     return true;
 }
 
+float readAccessorFloatComponentForStreamBuilder(
+    const tinygltf::Accessor& accessor,
+    const uint8_t* data)
+{
+    switch (accessor.componentType) {
+    case TINYGLTF_COMPONENT_TYPE_BYTE: {
+        int8_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return accessor.normalized
+            ? std::max(static_cast<float>(value) / 127.0f, -1.0f)
+            : static_cast<float>(value);
+    }
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: {
+        uint8_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return accessor.normalized
+            ? static_cast<float>(value) / 255.0f
+            : static_cast<float>(value);
+    }
+    case TINYGLTF_COMPONENT_TYPE_SHORT: {
+        int16_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return accessor.normalized
+            ? std::max(static_cast<float>(value) / 32767.0f, -1.0f)
+            : static_cast<float>(value);
+    }
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+        uint16_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return accessor.normalized
+            ? static_cast<float>(value) / 65535.0f
+            : static_cast<float>(value);
+    }
+    case TINYGLTF_COMPONENT_TYPE_INT: {
+        int32_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return accessor.normalized
+            ? std::max(static_cast<float>(static_cast<double>(value) / 2147483647.0), -1.0f)
+            : static_cast<float>(value);
+    }
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
+        uint32_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return accessor.normalized
+            ? static_cast<float>(static_cast<double>(value) / 4294967295.0)
+            : static_cast<float>(value);
+    }
+    case TINYGLTF_COMPONENT_TYPE_FLOAT: {
+        float value = 0.0f;
+        std::memcpy(&value, data, sizeof(value));
+        return value;
+    }
+    case TINYGLTF_COMPONENT_TYPE_DOUBLE: {
+        double value = 0.0;
+        std::memcpy(&value, data, sizeof(value));
+        return static_cast<float>(value);
+    }
+    default:
+        return 0.0f;
+    }
+}
+
 std::vector<float3> readFloat3AccessorForStreamBuilder(
     const StreamGltfSource& source,
     const tinygltf::Accessor& accessor,
     std::string& reason)
 {
     std::vector<float3> values;
-    if (accessor.type != TINYGLTF_TYPE_VEC3 || accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
+    const int32_t componentSize = tinygltf::GetComponentSizeInBytes(accessor.componentType);
+    if (accessor.type != TINYGLTF_TYPE_VEC3 || componentSize <= 0) {
         return values;
     }
 
     std::vector<uint8_t> bytes;
     size_t stride = 0;
-    if (!readAccessorRangeForStreamBuilder(source, accessor, sizeof(float) * 3u, bytes, stride, reason)) {
+    if (!readAccessorRangeForStreamBuilder(
+            source,
+            accessor,
+            static_cast<size_t>(componentSize) * 3u,
+            bytes,
+            stride,
+            reason)) {
         return values;
     }
 
     values.reserve(accessor.count);
     for (size_t index = 0; index < accessor.count; ++index) {
-        float components[3] = {};
-        std::memcpy(components, bytes.data() + stride * index, sizeof(components));
-        values.emplace_back(components[0], components[1], components[2]);
+        const uint8_t* data = bytes.data() + stride * index;
+        const size_t componentByteSize = static_cast<size_t>(componentSize);
+        values.emplace_back(
+            readAccessorFloatComponentForStreamBuilder(accessor, data),
+            readAccessorFloatComponentForStreamBuilder(accessor, data + componentByteSize),
+            readAccessorFloatComponentForStreamBuilder(accessor, data + componentByteSize * 2u));
     }
     return values;
 }
@@ -1845,21 +2093,30 @@ std::vector<float2> readFloat2AccessorForStreamBuilder(
     std::string& reason)
 {
     std::vector<float2> values;
-    if (accessor.type != TINYGLTF_TYPE_VEC2 || accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
+    const int32_t componentSize = tinygltf::GetComponentSizeInBytes(accessor.componentType);
+    if (accessor.type != TINYGLTF_TYPE_VEC2 || componentSize <= 0) {
         return values;
     }
 
     std::vector<uint8_t> bytes;
     size_t stride = 0;
-    if (!readAccessorRangeForStreamBuilder(source, accessor, sizeof(float) * 2u, bytes, stride, reason)) {
+    if (!readAccessorRangeForStreamBuilder(
+            source,
+            accessor,
+            static_cast<size_t>(componentSize) * 2u,
+            bytes,
+            stride,
+            reason)) {
         return values;
     }
 
     values.reserve(accessor.count);
     for (size_t index = 0; index < accessor.count; ++index) {
-        float components[2] = {};
-        std::memcpy(components, bytes.data() + stride * index, sizeof(components));
-        values.emplace_back(components[0], components[1]);
+        const uint8_t* data = bytes.data() + stride * index;
+        const size_t componentByteSize = static_cast<size_t>(componentSize);
+        values.emplace_back(
+            readAccessorFloatComponentForStreamBuilder(accessor, data),
+            readAccessorFloatComponentForStreamBuilder(accessor, data + componentByteSize));
     }
     return values;
 }
@@ -2239,6 +2496,7 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
             return false;
         }
         model.bufferViews.reserve(bufferViews.size());
+        source.meshoptCompressions.reserve(bufferViews.size());
         for (const nlohmann::json& viewJson : bufferViews) {
             tinygltf::BufferView view;
             view.name = viewJson.value("name", std::string{});
@@ -2247,7 +2505,37 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
             view.byteLength = viewJson.value("byteLength", size_t{0});
             view.byteStride = viewJson.value("byteStride", size_t{0});
             view.target = viewJson.value("target", 0);
+            StreamGltfSource::MeshoptCompression meshoptCompression;
+            const auto extensions = viewJson.find("extensions");
+            if (extensions != viewJson.end() && extensions->is_object()) {
+                const auto meshopt = extensions->find("EXT_meshopt_compression");
+                if (meshopt != extensions->end()) {
+                    if (!meshopt->is_object() ||
+                        !meshopt->contains("buffer") || !(*meshopt)["buffer"].is_number_integer() ||
+                        !meshopt->contains("byteLength") || !(*meshopt)["byteLength"].is_number_unsigned() ||
+                        !meshopt->contains("count") || !(*meshopt)["count"].is_number_unsigned() ||
+                        !meshopt->contains("byteStride") || !(*meshopt)["byteStride"].is_number_unsigned() ||
+                        !meshopt->contains("mode") || !(*meshopt)["mode"].is_string()) {
+                        reason = "streamasset builder meshopt bufferView extension is invalid";
+                        return false;
+                    }
+                    meshoptCompression.buffer = (*meshopt)["buffer"].get<int32_t>();
+                    meshoptCompression.byteOffset = meshopt->value("byteOffset", uint64_t{0});
+                    meshoptCompression.byteLength = (*meshopt)["byteLength"].get<uint64_t>();
+                    meshoptCompression.count = (*meshopt)["count"].get<uint64_t>();
+                    meshoptCompression.stride = (*meshopt)["byteStride"].get<uint64_t>();
+                    meshoptCompression.mode = (*meshopt)["mode"].get<std::string>();
+                    meshoptCompression.filter = meshopt->value("filter", std::string{"NONE"});
+                    if (meshoptCompression.stride > std::numeric_limits<size_t>::max() ||
+                        (view.byteStride != 0 && view.byteStride != meshoptCompression.stride)) {
+                        reason = "streamasset builder meshopt bufferView stride is invalid";
+                        return false;
+                    }
+                    view.byteStride = static_cast<size_t>(meshoptCompression.stride);
+                }
+            }
             model.bufferViews.push_back(std::move(view));
+            source.meshoptCompressions.push_back(std::move(meshoptCompression));
         }
 
         const nlohmann::json accessors = root.value("accessors", nlohmann::json::array());
@@ -2383,7 +2671,8 @@ bool loadGltfModelForStreamAssetBuilder(
         }
         if (externalMetadataApplicable) {
             for (const std::string& extension : source.model.extensionsRequired) {
-                if (!streamBuilderSupportsRequiredExtension(extension)) {
+                if (extension != "EXT_meshopt_compression" &&
+                    !streamBuilderSupportsRequiredExtension(extension)) {
                     reason = "Required extension unsupported by meshstream builder: " + extension;
                     return false;
                 }
@@ -2499,15 +2788,12 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
         reason = "streamasset builder primitive vertex count exceeds 32-bit indices";
         return false;
     }
-    outPrimitive.localBounds = accessorBoundsForStreamBuilder(positionAccessor);
     outPrimitive.positions = readFloat3AccessorForStreamBuilder(source, positionAccessor, reason);
     if (outPrimitive.positions.empty()) {
         reason = "streamasset builder failed to read primitive POSITION accessor";
         return false;
     }
-    if (!outPrimitive.localBounds.valid) {
-        outPrimitive.localBounds = boundsFromPositionsForStreamBuilder(outPrimitive.positions);
-    }
+    outPrimitive.localBounds = boundsFromPositionsForStreamBuilder(outPrimitive.positions);
 
     const auto normalAccessorIter = gltfPrimitive.attributes.find("NORMAL");
     if (normalAccessorIter != gltfPrimitive.attributes.end() &&

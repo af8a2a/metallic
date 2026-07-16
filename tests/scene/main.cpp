@@ -1,5 +1,6 @@
 #include "Runtime/Scene/Scene.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "meshoptimizer.h"
 
 #include <gtest/gtest.h>
 
@@ -153,6 +154,168 @@ void writeGeneratedTangentSceneBinary(const std::filesystem::path& path)
     file.write(reinterpret_cast<const char*>(kNormals.data()), sizeof(float) * kNormals.size());
     file.write(reinterpret_cast<const char*>(kTexcoords.data()), sizeof(float) * kTexcoords.size());
     file.write(reinterpret_cast<const char*>(kIndices.data()), sizeof(uint16_t) * kIndices.size());
+}
+
+std::filesystem::path writeMeshoptCompressedScene(
+    const std::filesystem::path& directory,
+    size_t positionCompressionStride = sizeof(uint16_t) * 4u)
+{
+    constexpr std::array<uint16_t, 12> kPositions{
+        0, 0, 0, 0,
+        65535, 0, 0, 0,
+        0, 65535, 0, 0,
+    };
+    constexpr std::array<float, 12> kNormalSources{
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+    };
+    std::array<int8_t, 12> normals{};
+    meshopt_encodeFilterOct(
+        normals.data(),
+        3,
+        sizeof(int8_t) * 4u,
+        8,
+        kNormalSources.data());
+    constexpr std::array<uint16_t, 6> kTexcoords{
+        0, 0,
+        65535, 0,
+        0, 65535,
+    };
+    constexpr std::array<uint32_t, 3> kIndices{0, 1, 2};
+
+    const auto encodeAttributes = [](const void* data, size_t count, size_t stride) {
+        std::vector<uint8_t> encoded(meshopt_encodeVertexBufferBound(count, stride));
+        const size_t encodedSize = meshopt_encodeVertexBufferLevel(
+            encoded.data(),
+            encoded.size(),
+            data,
+            count,
+            stride,
+            2,
+            0);
+        EXPECT_GT(encodedSize, 0u);
+        encoded.resize(encodedSize);
+        EXPECT_EQ(meshopt_decodeVertexVersion(encoded.data(), encoded.size()), 0);
+        return encoded;
+    };
+    const auto encodeTriangles = [](const uint32_t* indices, size_t count, size_t vertexCount) {
+        std::vector<uint8_t> encoded(meshopt_encodeIndexBufferBound(count, vertexCount));
+        const size_t encodedSize = meshopt_encodeIndexBuffer(
+            encoded.data(),
+            encoded.size(),
+            indices,
+            count);
+        EXPECT_GT(encodedSize, 0u);
+        encoded.resize(encodedSize);
+        EXPECT_EQ(meshopt_decodeIndexVersion(encoded.data(), encoded.size()), 1);
+        return encoded;
+    };
+
+    const std::array<std::vector<uint8_t>, 4> encodedViews{
+        encodeAttributes(kPositions.data(), 3, sizeof(uint16_t) * 4u),
+        encodeAttributes(normals.data(), 3, sizeof(int8_t) * 4u),
+        encodeAttributes(kTexcoords.data(), 3, sizeof(uint16_t) * 2u),
+        encodeTriangles(kIndices.data(), kIndices.size(), 3),
+    };
+    std::array<size_t, 4> encodedOffsets{};
+    std::vector<uint8_t> binary;
+    for (size_t viewIndex = 0; viewIndex < encodedViews.size(); ++viewIndex) {
+        encodedOffsets[viewIndex] = binary.size();
+        binary.insert(binary.end(), encodedViews[viewIndex].begin(), encodedViews[viewIndex].end());
+        binary.resize((binary.size() + 3u) & ~size_t{3});
+    }
+
+    const std::filesystem::path binaryPath = directory / "meshopt_compressed.bin";
+    std::ofstream binaryFile(binaryPath, std::ios::binary);
+    binaryFile.write(
+        reinterpret_cast<const char*>(binary.data()),
+        static_cast<std::streamsize>(binary.size()));
+
+    constexpr std::array<size_t, 4> kDecodedByteSizes{
+        sizeof(kPositions),
+        sizeof(normals),
+        sizeof(kTexcoords),
+        sizeof(uint16_t) * kIndices.size(),
+    };
+    constexpr std::array<size_t, 4> kStrides{
+        sizeof(uint16_t) * 4u,
+        sizeof(int8_t) * 4u,
+        sizeof(uint16_t) * 2u,
+        sizeof(uint16_t),
+    };
+    std::array<size_t, 4> fallbackOffsets{};
+    for (size_t viewIndex = 1; viewIndex < fallbackOffsets.size(); ++viewIndex) {
+        fallbackOffsets[viewIndex] =
+            fallbackOffsets[viewIndex - 1] + kDecodedByteSizes[viewIndex - 1];
+    }
+
+    const std::filesystem::path gltfPath = directory / "meshopt_compressed.gltf";
+    std::ostringstream gltf;
+    gltf << R"json({
+  "asset": { "version": "2.0" },
+  "extensionsUsed": ["EXT_meshopt_compression", "KHR_mesh_quantization"],
+  "extensionsRequired": ["EXT_meshopt_compression", "KHR_mesh_quantization"],
+  "buffers": [
+    { "uri": "meshopt_compressed.bin", "byteLength": )json"
+         << binary.size() << R"json( }
+  ],
+  "bufferViews": [
+)json";
+    constexpr std::array<const char*, 4> kModes{
+        "ATTRIBUTES",
+        "ATTRIBUTES",
+        "ATTRIBUTES",
+        "TRIANGLES",
+    };
+    constexpr std::array<const char*, 4> kFilters{
+        "NONE",
+        "OCTAHEDRAL",
+        "NONE",
+        "NONE",
+    };
+    for (size_t viewIndex = 0; viewIndex < encodedViews.size(); ++viewIndex) {
+        gltf << R"json(    { "buffer": 1, "byteOffset": )json"
+             << fallbackOffsets[viewIndex] << R"json(, "byteLength": )json"
+             << kDecodedByteSizes[viewIndex];
+        if (viewIndex != 3) {
+            gltf << R"json(, "byteStride": )json" << kStrides[viewIndex];
+        }
+        const size_t compressionStride = viewIndex == 0
+            ? positionCompressionStride
+            : kStrides[viewIndex];
+        gltf << R"json(, "target": )json" << (viewIndex == 3 ? 34963 : 34962)
+             << R"json(, "extensions": { "EXT_meshopt_compression": {
+      "buffer": 0, "byteOffset": )json"
+             << encodedOffsets[viewIndex] << R"json(, "byteLength": )json"
+             << encodedViews[viewIndex].size() << R"json(, "byteStride": )json"
+             << compressionStride << R"json(, "count": 3, "mode": ")json"
+             << kModes[viewIndex] << R"json(", "filter": ")json"
+             << kFilters[viewIndex] << R"json("
+    } } })json";
+        if (viewIndex + 1 != encodedViews.size()) {
+            gltf << ',';
+        }
+        gltf << '\n';
+    }
+    gltf << R"json(  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5123, "normalized": true, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [65535, 65535, 0] },
+    { "bufferView": 1, "componentType": 5120, "normalized": true, "count": 3, "type": "VEC3" },
+    { "bufferView": 2, "componentType": 5123, "normalized": true, "count": 3, "type": "VEC2" },
+    { "bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR" }
+  ],
+  "meshes": [
+    { "name": "Meshopt Triangle", "primitives": [
+      { "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 }, "indices": 3, "mode": 4 }
+    ] }
+  ],
+  "nodes": [ { "name": "Meshopt Triangle", "mesh": 0 } ],
+  "scenes": [ { "name": "Meshopt Scene", "nodes": [0] } ],
+  "scene": 0
+})json";
+    writeTextFile(gltfPath, gltf.str());
+    return gltfPath;
 }
 
 std::filesystem::path writeMeshletLodGridScene(
@@ -1527,6 +1690,140 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_FALSE(asset.isCurrentForSource(gltfPath));
 }
 
+void testMeshoptCompressedMeshletStreamAsset(const std::filesystem::path& directory)
+{
+    const std::filesystem::path compressedDirectory = directory / "meshopt_compressed_streamasset";
+    std::filesystem::create_directories(compressedDirectory);
+    const std::filesystem::path gltfPath = writeMeshoptCompressedScene(compressedDirectory);
+    const std::filesystem::path streamAssetPath =
+        compressedDirectory / "meshopt_compressed.meshstream.bin";
+    std::filesystem::remove(streamAssetPath);
+
+    std::string reason;
+    metallic::scene::MeshletStreamAssetOfflineBuildStats buildStats;
+    ASSERT_TRUE(metallic::scene::buildMeshletStreamAssetOffline(
+        metallic::scene::MeshletStreamAssetOfflineBuildDesc{
+            .sourcePath = gltfPath,
+            .outputPath = streamAssetPath,
+            .stats = &buildStats,
+        },
+        reason)) << reason;
+    EXPECT_EQ(buildStats.usedExternalBufferRangeReads, 1u);
+    EXPECT_EQ(buildStats.accessorRangeReadCount, 4u);
+    EXPECT_GT(buildStats.accessorRangeReadBytes, 0u);
+    EXPECT_LE(buildStats.accessorRangeReadBytes, buildStats.externalBufferDeclaredBytes);
+    EXPECT_GT(buildStats.maxAccessorRangeReadBytes, 0u);
+    EXPECT_LT(buildStats.maxAccessorRangeReadBytes, buildStats.externalBufferDeclaredBytes);
+    EXPECT_EQ(buildStats.partialCheckpointCount, 1u);
+
+    metallic::scene::MeshletStreamAsset asset;
+    ASSERT_TRUE(asset.open(streamAssetPath, reason)) << reason;
+    EXPECT_TRUE(asset.isCurrentForSource(gltfPath));
+    ASSERT_EQ(asset.primitiveCount(), 1u);
+    ASSERT_EQ(asset.geometryCount(), 1u);
+    ASSERT_EQ(asset.instanceCount(), 1u);
+    ASSERT_GT(asset.pageCount(), 0u);
+    const metallic::scene::MeshletStreamBounds& primitiveBounds = asset.primitives().front().bounds;
+    ASSERT_EQ(primitiveBounds.valid, 1u);
+    EXPECT_TRUE(nearlyEqual(primitiveBounds.min[0], 0.0f));
+    EXPECT_TRUE(nearlyEqual(primitiveBounds.min[1], 0.0f));
+    EXPECT_TRUE(nearlyEqual(primitiveBounds.min[2], 0.0f));
+    EXPECT_TRUE(nearlyEqual(primitiveBounds.max[0], 1.0f));
+    EXPECT_TRUE(nearlyEqual(primitiveBounds.max[1], 1.0f));
+    EXPECT_TRUE(nearlyEqual(primitiveBounds.max[2], 0.0f));
+
+    constexpr std::array<std::array<float, 3>, 3> kExpectedPositions{
+        std::array<float, 3>{0.0f, 0.0f, 0.0f},
+        std::array<float, 3>{1.0f, 0.0f, 0.0f},
+        std::array<float, 3>{0.0f, 1.0f, 0.0f},
+    };
+    constexpr std::array<std::array<float, 2>, 3> kExpectedTexcoords{
+        std::array<float, 2>{0.0f, 0.0f},
+        std::array<float, 2>{1.0f, 0.0f},
+        std::array<float, 2>{0.0f, 1.0f},
+    };
+    std::array<bool, 3> foundPositions{};
+    uint32_t decodedTriangleCount = 0;
+    for (uint32_t pageIndex = 0; pageIndex < asset.pageCount(); ++pageIndex) {
+        const metallic::scene::MeshletStreamPageInfo& page = asset.pages()[pageIndex];
+        const std::span<const uint8_t> payload = asset.pagePayload(pageIndex);
+        ASSERT_GE(payload.size(), sizeof(metallic::scene::MeshletStreamPayloadHeader));
+        metallic::scene::MeshletStreamPayloadHeader header;
+        std::memcpy(&header, payload.data(), sizeof(header));
+        ASSERT_TRUE(
+            (header.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeNormal) != 0u);
+        ASSERT_TRUE(
+            (header.attributeFlags & metallic::scene::kMeshletStreamPayloadAttributeTexcoord0) != 0u);
+        ASSERT_LE(header.positionOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
+        ASSERT_LE(header.normalOffsetBytes + header.vertexCount * sizeof(float) * 4u, payload.size());
+        ASSERT_LE(header.texcoord0OffsetBytes + header.vertexCount * sizeof(float) * 2u, payload.size());
+        ASSERT_LE(
+            header.clusterOffsetBytes +
+                header.clusterCount * sizeof(metallic::scene::MeshletStreamPayloadCluster),
+            payload.size());
+
+        const auto* positions = reinterpret_cast<const float*>(payload.data() + header.positionOffsetBytes);
+        const auto* normals = reinterpret_cast<const float*>(payload.data() + header.normalOffsetBytes);
+        const auto* texcoords = reinterpret_cast<const float*>(payload.data() + header.texcoord0OffsetBytes);
+        for (uint32_t vertexIndex = 0; vertexIndex < header.vertexCount; ++vertexIndex) {
+            size_t expectedIndex = kExpectedPositions.size();
+            for (size_t candidate = 0; candidate < kExpectedPositions.size(); ++candidate) {
+                if (nearlyEqual(positions[vertexIndex * 4u], kExpectedPositions[candidate][0]) &&
+                    nearlyEqual(positions[vertexIndex * 4u + 1u], kExpectedPositions[candidate][1]) &&
+                    nearlyEqual(positions[vertexIndex * 4u + 2u], kExpectedPositions[candidate][2])) {
+                    expectedIndex = candidate;
+                    break;
+                }
+            }
+            ASSERT_LT(expectedIndex, kExpectedPositions.size());
+            foundPositions[expectedIndex] = true;
+            EXPECT_TRUE(nearlyEqual(positions[vertexIndex * 4u + 3u], 1.0f));
+            EXPECT_TRUE(nearlyEqual(normals[vertexIndex * 4u], 0.0f));
+            EXPECT_TRUE(nearlyEqual(normals[vertexIndex * 4u + 1u], 0.0f));
+            EXPECT_TRUE(nearlyEqual(normals[vertexIndex * 4u + 2u], 1.0f));
+            EXPECT_TRUE(nearlyEqual(normals[vertexIndex * 4u + 3u], 0.0f));
+            EXPECT_TRUE(nearlyEqual(
+                texcoords[vertexIndex * 2u],
+                kExpectedTexcoords[expectedIndex][0]));
+            EXPECT_TRUE(nearlyEqual(
+                texcoords[vertexIndex * 2u + 1u],
+                kExpectedTexcoords[expectedIndex][1]));
+        }
+
+        const auto* clusters = reinterpret_cast<const metallic::scene::MeshletStreamPayloadCluster*>(
+            payload.data() + header.clusterOffsetBytes);
+        for (uint32_t clusterIndex = 0; clusterIndex < header.clusterCount; ++clusterIndex) {
+            const metallic::scene::MeshletStreamPayloadCluster& cluster = clusters[clusterIndex];
+            decodedTriangleCount += cluster.triangleCount;
+            ASSERT_LE(cluster.vertexOffset + cluster.vertexCount, header.vertexCount);
+            ASSERT_LE(cluster.triangleOffset + cluster.triangleCount * 3u, header.triangleIndexCount);
+            for (uint32_t index = 0; index < cluster.triangleCount * 3u; ++index) {
+                EXPECT_LT(
+                    payload[header.triangleOffsetBytes + cluster.triangleOffset + index],
+                    cluster.vertexCount);
+            }
+        }
+    }
+    EXPECT_TRUE(std::ranges::all_of(foundPositions, [](bool found) { return found; }));
+    EXPECT_GE(decodedTriangleCount, 1u);
+
+    asset.close();
+    const std::filesystem::path invalidDirectory =
+        directory / "meshopt_invalid_stride_streamasset";
+    std::filesystem::create_directories(invalidDirectory);
+    const std::filesystem::path invalidGltfPath = writeMeshoptCompressedScene(invalidDirectory, 10u);
+    const std::filesystem::path invalidStreamAssetPath =
+        invalidDirectory / "meshopt_invalid_stride.meshstream.bin";
+    std::filesystem::remove(invalidStreamAssetPath);
+    ASSERT_FALSE(metallic::scene::buildMeshletStreamAssetOffline(
+        metallic::scene::MeshletStreamAssetOfflineBuildDesc{
+            .sourcePath = invalidGltfPath,
+            .outputPath = invalidStreamAssetPath,
+        },
+        reason));
+    EXPECT_NE(reason.find("meshopt bufferView stride is invalid"), std::string::npos) << reason;
+}
+
 void testMaterialImport(const std::filesystem::path& directory)
 {
     metallic::scene::Scene scene;
@@ -1941,6 +2238,11 @@ TEST(SceneImport, MeshletPersistence)
 TEST(SceneImport, MeshletStreamAsset)
 {
     testMeshletStreamAsset(prepareOutputDirectory());
+}
+
+TEST(SceneImport, MeshoptCompressedMeshletStreamAsset)
+{
+    testMeshoptCompressedMeshletStreamAsset(prepareOutputDirectory());
 }
 
 TEST(SceneImport, Materials)
