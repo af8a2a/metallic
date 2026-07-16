@@ -14,7 +14,6 @@
 #include <limits>
 #include <span>
 #include <string_view>
-#include <type_traits>
 #include <unordered_map>
 
 namespace metallic::render {
@@ -217,6 +216,43 @@ Result updateHostBuffer(Buffer& buffer, const void* data, uint64_t byteSize)
         buffer.flush(0, byteSize);
     }
     buffer.unmap();
+    return {};
+}
+
+template<typename ValueType, typename Populate>
+Result createAndPopulateHostStorageBuffer(
+    Device& device,
+    size_t valueCount,
+    std::unique_ptr<Buffer>& outBuffer,
+    std::string& log,
+    std::string_view label,
+    Populate&& populate)
+{
+    const uint64_t allocationCount = std::max<uint64_t>(valueCount, 1u);
+    if (allocationCount > std::numeric_limits<uint64_t>::max() / sizeof(ValueType)) {
+        log += std::string(label) + " byte size overflowed\n";
+        return makeError(Error::OutOfMemory);
+    }
+    const uint64_t byteSize = allocationCount * sizeof(ValueType);
+    Result result = createHostStorageBuffer(device, byteSize, outBuffer, log, label);
+    if (!result) {
+        return result;
+    }
+
+    auto* values = static_cast<ValueType*>(outBuffer->map());
+    if (values == nullptr) {
+        log += std::string("map(") + std::string(label) + ") returned null\n";
+        return makeError(Error::Failure);
+    }
+    if (valueCount == 0) {
+        values[0] = ValueType{};
+    } else {
+        for (size_t index = 0; index < valueCount; ++index) {
+            populate(values[index], index);
+        }
+    }
+    outBuffer->flush(0, byteSize);
+    outBuffer->unmap();
     return {};
 }
 
@@ -2379,132 +2415,143 @@ uint32_t MeshletStreamRuntime::computeMaxPrimitiveGroups() const
 
 Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std::string& log)
 {
-    std::vector<MeshletStreamGpuInstance> gpuInstances;
-    gpuInstances.reserve(asset_.instances().size());
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
-    for (const scene::MeshletStreamInstanceInfo& instance : asset_.instances()) {
-        MeshletStreamGpuInstance gpuInstance;
-        gpuInstance.primitiveIndex = instance.primitiveIndex;
-        gpuInstance.materialIndex = instance.materialIndex;
-        gpuInstance.visible = instance.visible;
-        for (uint32_t row = 0; row < 4; ++row) {
-            gpuInstance.world0[row] = instance.worldMatrix[0 + row];
-            gpuInstance.world1[row] = instance.worldMatrix[4 + row];
-            gpuInstance.world2[row] = instance.worldMatrix[8 + row];
-            gpuInstance.world3[row] = instance.worldMatrix[12 + row];
-        }
-        scene::Bounds worldBounds;
-        if (instance.primitiveIndex < primitives.size()) {
-            includeTransformedBounds(worldBounds, primitives[instance.primitiveIndex].bounds, instance.worldMatrix);
-        }
-        const float3 center = worldBounds.valid ? worldBounds.center() : drawBounds_.center();
-        const float radius = std::max(worldBounds.valid ? worldBounds.radius() : drawBounds_.radius(), 0.001f);
-        gpuInstance.boundsCenterRadius[0] = center.x;
-        gpuInstance.boundsCenterRadius[1] = center.y;
-        gpuInstance.boundsCenterRadius[2] = center.z;
-        gpuInstance.boundsCenterRadius[3] = radius;
-        gpuInstances.push_back(gpuInstance);
-    }
-
-    std::vector<MeshletStreamGpuPrimitive> gpuPrimitives;
-    gpuPrimitives.reserve(asset_.primitives().size());
-    for (const scene::MeshletStreamPrimitiveInfo& primitive : asset_.primitives()) {
-        gpuPrimitives.push_back(MeshletStreamGpuPrimitive{
-            .lodLevelOffset = primitive.lodLevelOffset,
-            .lodLevelCount = primitive.lodLevelCount,
-            .pageOffset = primitive.pageOffset,
-            .pageCount = primitive.pageCount,
-            .fallbackPageOffset = primitive.fallbackPageOffset,
-            .fallbackPageCount = primitive.fallbackPageCount,
-            .groupOffset = primitive.groupOffset,
-            .groupCount = primitive.groupCount,
-            .fallbackGroupOffset = primitive.fallbackGroupOffset,
-            .fallbackGroupCount = primitive.fallbackGroupCount,
-            .materialIndex = primitive.materialIndex,
-            .nodeOffset = primitive.nodeOffset,
-            .nodeCount = primitive.nodeCount,
+    const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
+    Result result = createAndPopulateHostStorageBuffer<MeshletStreamGpuInstance>(
+        device,
+        instances.size(),
+        instanceBuffer_,
+        log,
+        "MeshletStreamRuntime instances",
+        [this, primitives, instances](MeshletStreamGpuInstance& gpuInstance, size_t index) {
+            const scene::MeshletStreamInstanceInfo& instance = instances[index];
+            gpuInstance = MeshletStreamGpuInstance{};
+            gpuInstance.primitiveIndex = instance.primitiveIndex;
+            gpuInstance.materialIndex = instance.materialIndex;
+            gpuInstance.visible = instance.visible;
+            for (uint32_t row = 0; row < 4; ++row) {
+                gpuInstance.world0[row] = instance.worldMatrix[0 + row];
+                gpuInstance.world1[row] = instance.worldMatrix[4 + row];
+                gpuInstance.world2[row] = instance.worldMatrix[8 + row];
+                gpuInstance.world3[row] = instance.worldMatrix[12 + row];
+            }
+            scene::Bounds worldBounds;
+            if (instance.primitiveIndex < primitives.size()) {
+                includeTransformedBounds(
+                    worldBounds,
+                    primitives[instance.primitiveIndex].bounds,
+                    instance.worldMatrix);
+            }
+            const float3 center = worldBounds.valid ? worldBounds.center() : drawBounds_.center();
+            const float radius = std::max(
+                worldBounds.valid ? worldBounds.radius() : drawBounds_.radius(),
+                0.001f);
+            gpuInstance.boundsCenterRadius[0] = center.x;
+            gpuInstance.boundsCenterRadius[1] = center.y;
+            gpuInstance.boundsCenterRadius[2] = center.z;
+            gpuInstance.boundsCenterRadius[3] = radius;
         });
+    if (!result) {
+        return result;
     }
 
-    std::vector<MeshletStreamGpuLodLevel> gpuLodLevels;
-    gpuLodLevels.reserve(asset_.lodLevels().size());
-    for (const scene::MeshletStreamLodLevelInfo& lod : asset_.lodLevels()) {
-        gpuLodLevels.push_back(MeshletStreamGpuLodLevel{
-            .pageOffset = lod.pageOffset,
-            .pageCount = lod.pageCount,
-            .lodLevel = lod.lodLevel,
-            .clusterCount = lod.clusterCount,
-            .minBoundingSphereRadius = lod.minBoundingSphereRadius,
-            .minMaxQuadricError = lod.minMaxQuadricError,
+    result = createAndPopulateHostStorageBuffer<MeshletStreamGpuPrimitive>(
+        device,
+        primitives.size(),
+        primitiveBuffer_,
+        log,
+        "MeshletStreamRuntime primitives",
+        [primitives](MeshletStreamGpuPrimitive& gpuPrimitive, size_t index) {
+            const scene::MeshletStreamPrimitiveInfo& primitive = primitives[index];
+            gpuPrimitive = MeshletStreamGpuPrimitive{
+                .lodLevelOffset = primitive.lodLevelOffset,
+                .lodLevelCount = primitive.lodLevelCount,
+                .pageOffset = primitive.pageOffset,
+                .pageCount = primitive.pageCount,
+                .fallbackPageOffset = primitive.fallbackPageOffset,
+                .fallbackPageCount = primitive.fallbackPageCount,
+                .groupOffset = primitive.groupOffset,
+                .groupCount = primitive.groupCount,
+                .fallbackGroupOffset = primitive.fallbackGroupOffset,
+                .fallbackGroupCount = primitive.fallbackGroupCount,
+                .materialIndex = primitive.materialIndex,
+                .nodeOffset = primitive.nodeOffset,
+                .nodeCount = primitive.nodeCount,
+            };
         });
+    if (!result) {
+        return result;
     }
 
-    std::vector<MeshletStreamGpuGroup> gpuGroups;
-    gpuGroups.reserve(asset_.groups().size());
-    for (const scene::MeshletStreamGroupInfo& group : asset_.groups()) {
-        MeshletStreamGpuGroup gpuGroup{
-            .primitiveIndex = group.primitiveIndex,
-            .pageIndex = group.pageIndex,
-            .lodLevel = group.lodLevel,
-            .clusterCount = group.clusterCount,
-            .maxQuadricError = group.maxQuadricError,
-        };
-        std::copy(
-            std::begin(group.boundsCenterRadius),
-            std::end(group.boundsCenterRadius),
-            std::begin(gpuGroup.boundsCenterRadius));
-        gpuGroups.push_back(gpuGroup);
-    }
-    std::vector<MeshletStreamGpuNode> gpuNodes;
-    gpuNodes.reserve(asset_.nodes().size());
-    for (const scene::MeshletStreamNodeInfo& node : asset_.nodes()) {
-        MeshletStreamGpuNode gpuNode{
-            .primitiveIndex = node.primitiveIndex,
-            .childOffset = node.childOffset,
-            .childCount = node.childCount,
-            .groupIndex = node.groupIndex,
-            .maxQuadricError = node.maxQuadricError,
-            .lodLevel = node.lodLevel,
-        };
-        std::copy(
-            std::begin(node.boundsCenterRadius),
-            std::end(node.boundsCenterRadius),
-            std::begin(gpuNode.boundsCenterRadius));
-        gpuNodes.push_back(gpuNode);
+    const std::span<const scene::MeshletStreamLodLevelInfo> lodLevels = asset_.lodLevels();
+    result = createAndPopulateHostStorageBuffer<MeshletStreamGpuLodLevel>(
+        device,
+        lodLevels.size(),
+        lodLevelBuffer_,
+        log,
+        "MeshletStreamRuntime LOD levels",
+        [lodLevels](MeshletStreamGpuLodLevel& gpuLod, size_t index) {
+            const scene::MeshletStreamLodLevelInfo& lod = lodLevels[index];
+            gpuLod = MeshletStreamGpuLodLevel{
+                .pageOffset = lod.pageOffset,
+                .pageCount = lod.pageCount,
+                .lodLevel = lod.lodLevel,
+                .clusterCount = lod.clusterCount,
+                .minBoundingSphereRadius = lod.minBoundingSphereRadius,
+                .minMaxQuadricError = lod.minMaxQuadricError,
+            };
+        });
+    if (!result) {
+        return result;
     }
 
-    auto createAndUpload = [&device, &log](auto& values, std::unique_ptr<Buffer>& outBuffer, std::string_view label) {
-        using ValueType = typename std::remove_reference_t<decltype(values)>::value_type;
-        const uint64_t byteSize = std::max<uint64_t>(
-            static_cast<uint64_t>(values.size()) * sizeof(ValueType),
-            sizeof(ValueType));
-        Result result = createHostStorageBuffer(device, byteSize, outBuffer, log, label);
-        if (!result) {
-            return result;
-        }
-        if (!values.empty()) {
-            result = updateHostBuffer(*outBuffer, values.data(), static_cast<uint64_t>(values.size()) * sizeof(ValueType));
-        }
+    const std::span<const scene::MeshletStreamGroupInfo> groups = asset_.groups();
+    result = createAndPopulateHostStorageBuffer<MeshletStreamGpuGroup>(
+        device,
+        groups.size(),
+        groupBuffer_,
+        log,
+        "MeshletStreamRuntime groups",
+        [groups](MeshletStreamGpuGroup& gpuGroup, size_t index) {
+            const scene::MeshletStreamGroupInfo& group = groups[index];
+            gpuGroup = MeshletStreamGpuGroup{
+                .primitiveIndex = group.primitiveIndex,
+                .pageIndex = group.pageIndex,
+                .lodLevel = group.lodLevel,
+                .clusterCount = group.clusterCount,
+                .maxQuadricError = group.maxQuadricError,
+            };
+            std::copy(
+                std::begin(group.boundsCenterRadius),
+                std::end(group.boundsCenterRadius),
+                std::begin(gpuGroup.boundsCenterRadius));
+        });
+    if (!result) {
         return result;
-    };
+    }
 
-    Result result = createAndUpload(gpuInstances, instanceBuffer_, "MeshletStreamRuntime instances");
-    if (!result) {
-        return result;
-    }
-    result = createAndUpload(gpuPrimitives, primitiveBuffer_, "MeshletStreamRuntime primitives");
-    if (!result) {
-        return result;
-    }
-    result = createAndUpload(gpuLodLevels, lodLevelBuffer_, "MeshletStreamRuntime LOD levels");
-    if (!result) {
-        return result;
-    }
-    result = createAndUpload(gpuGroups, groupBuffer_, "MeshletStreamRuntime groups");
-    if (!result) {
-        return result;
-    }
-    return createAndUpload(gpuNodes, nodeBuffer_, "MeshletStreamRuntime hierarchy nodes");
+    const std::span<const scene::MeshletStreamNodeInfo> nodes = asset_.nodes();
+    return createAndPopulateHostStorageBuffer<MeshletStreamGpuNode>(
+        device,
+        nodes.size(),
+        nodeBuffer_,
+        log,
+        "MeshletStreamRuntime hierarchy nodes",
+        [nodes](MeshletStreamGpuNode& gpuNode, size_t index) {
+            const scene::MeshletStreamNodeInfo& node = nodes[index];
+            gpuNode = MeshletStreamGpuNode{
+                .primitiveIndex = node.primitiveIndex,
+                .childOffset = node.childOffset,
+                .childCount = node.childCount,
+                .groupIndex = node.groupIndex,
+                .maxQuadricError = node.maxQuadricError,
+                .lodLevel = node.lodLevel,
+            };
+            std::copy(
+                std::begin(node.boundsCenterRadius),
+                std::end(node.boundsCenterRadius),
+                std::begin(gpuNode.boundsCenterRadius));
+        });
 }
 
 Result MeshletStreamRuntime::initializePageTableIfNeeded(CommandBuffer& commandBuffer)
