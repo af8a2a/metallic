@@ -1149,14 +1149,18 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         }
         blasHeaderBufferState_ = ResourceState::Undefined;
 
-        std::vector<MeshletStreamGpuInstanceBlas> instanceBlas(asset_.instanceCount());
-        std::vector<uint64_t> primitiveClusterCapacities(asset_.primitiveCount(), 0);
+        std::vector<uint32_t> primitiveClusterCapacities(asset_.primitiveCount(), 0);
         const std::span<const scene::MeshletStreamGroupInfo> groups = asset_.groups();
         for (uint32_t primitiveIndex = 0; primitiveIndex < asset_.primitiveCount(); ++primitiveIndex) {
             const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
-            uint64_t capacity = 0;
-            for (uint32_t localGroup = 0; localGroup < primitive.groupCount; ++localGroup) {
-                capacity += groups[primitive.groupOffset + localGroup].clusterCount;
+            uint32_t capacity = 0;
+            for (uint32_t localGroup = 0;
+                 localGroup < primitive.groupCount && capacity < blasClusterReferenceCapacity_;
+                 ++localGroup) {
+                const uint32_t remaining = blasClusterReferenceCapacity_ - capacity;
+                capacity += std::min(
+                    groups[primitive.groupOffset + localGroup].clusterCount,
+                    remaining);
             }
             primitiveClusterCapacities[primitiveIndex] = capacity;
         }
@@ -1168,33 +1172,43 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         uint32_t referenceLimit = blasClusterReferenceCapacity_;
         uint32_t buildLimit = std::min(desc.maxBlasBuilds, asset_.instanceCount());
         vulkan::ClusterAccelerationStructureBuildSizes blasSizes;
-        for (;;) {
-            std::fill(instanceBlas.begin(), instanceBlas.end(), MeshletStreamGpuInstanceBlas{});
-            uint32_t referenceOffset = 0;
-            uint32_t buildCapacity = 0;
+        struct BlasCapacityPlan {
+            uint32_t referenceCount = 0;
+            uint32_t buildCount = 0;
             uint32_t maxClustersPerBuild = 0;
-            for (uint32_t instanceIndex = 0; instanceIndex < asset_.instanceCount(); ++instanceIndex) {
-                const scene::MeshletStreamInstanceInfo& instance = asset_.instances()[instanceIndex];
-                if (instance.visible == 0 || instance.primitiveIndex >= primitiveClusterCapacities.size()) {
-                    continue;
-                }
-                if (buildCapacity == buildLimit || referenceOffset == referenceLimit) {
+        };
+        auto planBlasCapacities = [this, &primitiveClusterCapacities](
+                                      uint32_t plannedReferenceLimit,
+                                      uint32_t plannedBuildLimit) {
+            BlasCapacityPlan plan;
+            for (const scene::MeshletStreamInstanceInfo& instance : asset_.instances()) {
+                if (plan.buildCount == plannedBuildLimit ||
+                    plan.referenceCount == plannedReferenceLimit) {
                     break;
                 }
-                const uint64_t remaining = referenceLimit - referenceOffset;
-                const uint32_t capacity = static_cast<uint32_t>(std::min(
+                if (instance.visible == 0 ||
+                    instance.primitiveIndex >= primitiveClusterCapacities.size()) {
+                    continue;
+                }
+                const uint32_t remaining = plannedReferenceLimit - plan.referenceCount;
+                const uint32_t capacity = std::min(
                     primitiveClusterCapacities[instance.primitiveIndex],
-                    remaining));
+                    remaining);
                 if (capacity == 0) {
                     continue;
                 }
-                instanceBlas[instanceIndex].clusterReferenceOffset = referenceOffset;
-                instanceBlas[instanceIndex].clusterReferenceCapacity = capacity;
-                referenceOffset += capacity;
-                maxClustersPerBuild = std::max(maxClustersPerBuild, capacity);
-                ++buildCapacity;
+                plan.referenceCount += capacity;
+                plan.maxClustersPerBuild = std::max(plan.maxClustersPerBuild, capacity);
+                ++plan.buildCount;
             }
-            if (referenceOffset == 0 || buildCapacity == 0 || maxClustersPerBuild == 0) {
+            return plan;
+        };
+        BlasCapacityPlan blasPlan;
+        for (;;) {
+            blasPlan = planBlasCapacities(referenceLimit, buildLimit);
+            if (blasPlan.referenceCount == 0 ||
+                blasPlan.buildCount == 0 ||
+                blasPlan.maxClustersPerBuild == 0) {
                 log = "MeshletStreamRuntime cluster RTX BLAS budget cannot cover one visible instance";
                 return makeError(Error::OutOfMemory);
             }
@@ -1203,9 +1217,9 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 device,
                 vulkan::ClusterAccelerationStructureBottomLevelBuildSizesDesc{
                     .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-                    .maxClusterCountPerAccelerationStructure = maxClustersPerBuild,
-                    .maxTotalClusterCount = referenceOffset,
-                    .maxAccelerationStructureCount = buildCapacity,
+                    .maxClusterCountPerAccelerationStructure = blasPlan.maxClustersPerBuild,
+                    .maxTotalClusterCount = blasPlan.referenceCount,
+                    .maxAccelerationStructureCount = blasPlan.buildCount,
                 },
                 blasSizes);
             if (!result || blasSizes.accelerationStructureSize == 0 || blasSizes.buildScratchSize == 0) {
@@ -1214,9 +1228,9 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 return result ? makeError(Error::Failure) : result;
             }
             if (blasSizes.accelerationStructureSize <= desc.maxBlasBytes) {
-                blasClusterReferenceCapacity_ = referenceOffset;
-                blasBuildCapacity_ = buildCapacity;
-                maxBlasClustersPerBuild_ = maxClustersPerBuild;
+                blasClusterReferenceCapacity_ = blasPlan.referenceCount;
+                blasBuildCapacity_ = blasPlan.buildCount;
+                maxBlasClustersPerBuild_ = blasPlan.maxClustersPerBuild;
                 break;
             }
             if (referenceLimit == 1 && buildLimit == 1) {
@@ -1227,24 +1241,48 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             buildLimit = std::max(buildLimit / 2u, 1u);
         }
 
-        result = createHostStorageBuffer(
+        uint32_t instanceReferenceOffset = 0;
+        uint32_t instanceBuildCount = 0;
+        const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
+        result = createAndPopulateHostStorageBuffer<MeshletStreamGpuInstanceBlas>(
             device,
-            std::max<uint64_t>(
-                static_cast<uint64_t>(instanceBlas.size()) * sizeof(MeshletStreamGpuInstanceBlas),
-                sizeof(MeshletStreamGpuInstanceBlas)),
+            instances.size(),
             instanceBlasBuffer_,
             log,
-            "MeshletStreamRuntime instance BLAS inputs");
+            "MeshletStreamRuntime instance BLAS inputs",
+            [instances,
+             &primitiveClusterCapacities,
+             &instanceReferenceOffset,
+             &instanceBuildCount,
+             this](MeshletStreamGpuInstanceBlas& instanceBlas, size_t index) {
+                instanceBlas = MeshletStreamGpuInstanceBlas{};
+                const scene::MeshletStreamInstanceInfo& instance = instances[index];
+                if (instance.visible == 0 ||
+                    instance.primitiveIndex >= primitiveClusterCapacities.size() ||
+                    instanceBuildCount == blasBuildCapacity_ ||
+                    instanceReferenceOffset == blasClusterReferenceCapacity_) {
+                    return;
+                }
+                const uint32_t remaining =
+                    blasClusterReferenceCapacity_ - instanceReferenceOffset;
+                const uint32_t capacity = std::min(
+                    primitiveClusterCapacities[instance.primitiveIndex],
+                    remaining);
+                if (capacity == 0) {
+                    return;
+                }
+                instanceBlas.clusterReferenceOffset = instanceReferenceOffset;
+                instanceBlas.clusterReferenceCapacity = capacity;
+                instanceReferenceOffset += capacity;
+                ++instanceBuildCount;
+            });
         if (!result) {
             return result;
         }
-        result = updateHostBuffer(
-            *instanceBlasBuffer_,
-            instanceBlas.data(),
-            static_cast<uint64_t>(instanceBlas.size()) * sizeof(MeshletStreamGpuInstanceBlas));
-        if (!result) {
-            log += resultMessage("updateHostBuffer(MeshletStreamRuntime instance BLAS inputs)", result);
-            return result;
+        if (instanceReferenceOffset != blasClusterReferenceCapacity_ ||
+            instanceBuildCount != blasBuildCapacity_) {
+            log = "MeshletStreamRuntime instance BLAS capacity plan changed while populating inputs";
+            return makeError(Error::Failure);
         }
         instanceBlasBufferState_ = ResourceState::Undefined;
 
