@@ -1389,8 +1389,8 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
             streamAssetPath,
             largeSparsePath,
             std::filesystem::copy_options::overwrite_existing);
-        constexpr uint64_t kLargeSparseSize = (uint64_t{1} << 32u) + 4096u;
-        ASSERT_TRUE(resizeSparseFile(largeSparsePath, kLargeSparseSize));
+        constexpr uint64_t kZorahScaleSparseSize = uint64_t{26} << 30u;
+        ASSERT_TRUE(resizeSparseFile(largeSparsePath, kZorahScaleSparseSize));
         {
             std::fstream largeSparse(
                 largeSparsePath,
@@ -1399,13 +1399,13 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
             constexpr std::streamoff kFileSizeHeaderOffset = 16;
             largeSparse.seekp(kFileSizeHeaderOffset);
             largeSparse.write(
-                reinterpret_cast<const char*>(&kLargeSparseSize),
-                sizeof(kLargeSparseSize));
+                reinterpret_cast<const char*>(&kZorahScaleSparseSize),
+                sizeof(kZorahScaleSparseSize));
             ASSERT_TRUE(largeSparse);
         }
         metallic::scene::MeshletStreamAsset largeSparseAsset;
         ASSERT_TRUE(largeSparseAsset.open(largeSparsePath, reason)) << reason;
-        EXPECT_GT(std::filesystem::file_size(largeSparsePath), std::numeric_limits<uint32_t>::max());
+        EXPECT_EQ(std::filesystem::file_size(largeSparsePath), kZorahScaleSparseSize);
         largeSparseAsset.close();
         std::filesystem::remove(largeSparsePath);
     }
@@ -1433,6 +1433,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_GT(offlineBuildStats.accessorRangeReadCount, 0u);
     EXPECT_GT(offlineBuildStats.accessorRangeReadBytes, 0u);
     EXPECT_GT(offlineBuildStats.maxAccessorRangeReadBytes, 0u);
+    EXPECT_EQ(offlineBuildStats.partialCheckpointCount, 1u);
     EXPECT_LT(
         offlineBuildStats.maxAccessorRangeReadBytes,
         offlineBuildStats.externalBufferDeclaredBytes);
@@ -1504,6 +1505,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     EXPECT_EQ(
         restartedBuildStats.accessorRangeReadCount,
         offlineBuildStats.accessorRangeReadCount * 2u);
+    EXPECT_EQ(restartedBuildStats.partialCheckpointCount, 1u);
 
     metallic::scene::MeshletStreamAsset resumedAsset;
     ASSERT_TRUE(resumedAsset.open(partialStreamAssetPath, reason)) << reason;

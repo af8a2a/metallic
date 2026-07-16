@@ -230,6 +230,7 @@ struct MeshletStreamAssetOfflineBuildStats {
     uint64_t maxAccessorRangeReadBytes = 0;
     uint32_t accessorRangeReadCount = 0;
     uint32_t usedExternalBufferRangeReads = 0;
+    uint32_t partialCheckpointCount = 0;
 };
 
 struct MeshletStreamAssetOfflineBuildDesc {
@@ -237,6 +238,7 @@ struct MeshletStreamAssetOfflineBuildDesc {
     std::filesystem::path outputPath;
     MeshletStreamPayloadCompression compressionMode = MeshletStreamPayloadCompression::None;
     uint32_t maxNewGeometriesPerInvocation = 0;
+    uint32_t partialCheckpointGeometryInterval = 64;
     MeshletStreamAssetOfflineBuildStats* stats = nullptr;
 };
 

@@ -870,7 +870,10 @@ struct MeshletStreamBuildState {
 struct MeshletStreamPartialBuildContext {
     std::filesystem::path partialPath;
     uint32_t maxNewGeometriesPerInvocation = 0;
+    uint32_t checkpointGeometryInterval = 64;
     uint32_t newGeometryCount = 0;
+    uint32_t geometriesSinceCheckpoint = 0;
+    MeshletStreamAssetOfflineBuildStats* stats = nullptr;
     bool paused = false;
 };
 
@@ -2894,6 +2897,45 @@ bool savePartialBuildState(
     return true;
 }
 
+bool checkpointPartialBuildState(
+    std::ostream& stream,
+    MeshletStreamPartialBuildContext& context,
+    const MeshletStreamBuildState& state,
+    MeshletStreamPayloadCompression compressionMode,
+    bool force,
+    std::string& reason)
+{
+    if (context.geometriesSinceCheckpoint == 0) {
+        return true;
+    }
+    const bool periodicCheckpoint = context.checkpointGeometryInterval != 0 &&
+        (context.newGeometryCount == 1 ||
+            context.geometriesSinceCheckpoint >= context.checkpointGeometryInterval);
+    if (!force && !periodicCheckpoint) {
+        return true;
+    }
+
+    stream.flush();
+    const std::streampos payloadWritePosition = stream.tellp();
+    if (!stream || payloadWritePosition == std::streampos(-1)) {
+        reason = "streamasset partial payload checkpoint flush failed";
+        return false;
+    }
+    if (!savePartialBuildState(
+            context,
+            state,
+            compressionMode,
+            static_cast<uint64_t>(payloadWritePosition),
+            reason)) {
+        return false;
+    }
+    context.geometriesSinceCheckpoint = 0;
+    if (context.stats != nullptr) {
+        ++context.stats->partialCheckpointCount;
+    }
+    return true;
+}
+
 bool loadPartialBuildState(
     const std::filesystem::path& partialPath,
     const std::filesystem::path& outputPath,
@@ -3009,6 +3051,15 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
             if (partialContext != nullptr &&
                 partialContext->maxNewGeometriesPerInvocation != 0 &&
                 partialContext->newGeometryCount >= partialContext->maxNewGeometriesPerInvocation) {
+                if (!checkpointPartialBuildState(
+                        stream,
+                        *partialContext,
+                        state,
+                        compressionMode,
+                        true,
+                        reason)) {
+                    return false;
+                }
                 partialContext->paused = true;
                 return true;
             }
@@ -3050,20 +3101,17 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
                 });
                 state.nextRenderPrimitiveIndex = sourceRenderPrimitiveIndex + 1u;
                 if (partialContext != nullptr) {
-                    const std::streampos payloadWritePosition = stream.tellp();
-                    if (payloadWritePosition == std::streampos(-1)) {
-                        reason = "streamasset partial payload offset query failed";
-                        return false;
-                    }
-                    if (!savePartialBuildState(
+                    ++partialContext->newGeometryCount;
+                    ++partialContext->geometriesSinceCheckpoint;
+                    if (!checkpointPartialBuildState(
+                            stream,
                             *partialContext,
                             state,
                             compressionMode,
-                            static_cast<uint64_t>(payloadWritePosition),
+                            false,
                             reason)) {
                         return false;
                     }
-                    ++partialContext->newGeometryCount;
                 }
             }
         }
@@ -3937,6 +3985,8 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
     MeshletStreamPartialBuildContext partialContext{
         .partialPath = partialPath,
         .maxNewGeometriesPerInvocation = desc.maxNewGeometriesPerInvocation,
+        .checkpointGeometryInterval = desc.partialCheckpointGeometryInterval,
+        .stats = desc.stats,
     };
     if (!buildStreamAssetGeometryPayloadsFromGltf(
             stream,
