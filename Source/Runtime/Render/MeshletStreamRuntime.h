@@ -388,7 +388,6 @@ private:
     class TlasInputPass;
 
     uint32_t computeMaxActiveGroups(uint32_t capacity) const;
-    uint32_t computeMaxPageClusters() const;
     uint32_t computeMaxPrimitiveGroups() const;
     Result initializeSceneMetadataBuffers(Device& device, std::string& log);
 

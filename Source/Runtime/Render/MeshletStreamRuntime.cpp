@@ -894,10 +894,18 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     pageBufferState_ = ResourceState::Undefined;
 
     std::vector<uint32_t> fallbackPages;
-    fallbackPages.reserve(asset_.groupCount());
-    for (const scene::MeshletStreamGroupInfo& group : asset_.groups()) {
-        if (group.maxQuadricError == scene::kMeshletStreamTerminalGroupError) {
-            fallbackPages.push_back(group.pageIndex);
+    uint64_t fallbackPageCount = 0;
+    for (const scene::MeshletStreamPrimitiveInfo& primitive : asset_.primitives()) {
+        fallbackPageCount += primitive.fallbackPageCount;
+    }
+    if (fallbackPageCount > asset_.pageCount()) {
+        log = "MeshletStreamRuntime fallback page ranges exceed the asset page count";
+        return makeError(Error::Failure);
+    }
+    fallbackPages.reserve(static_cast<size_t>(fallbackPageCount));
+    for (const scene::MeshletStreamPrimitiveInfo& primitive : asset_.primitives()) {
+        for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
+            fallbackPages.push_back(primitive.fallbackPageOffset + localPage);
         }
     }
 
@@ -918,7 +926,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     }
 
     maxActiveGroups_ = computeMaxActiveGroups(desc.maxActiveGroups);
-    maxActiveGroupClusters_ = computeMaxPageClusters();
+    maxActiveGroupClusters_ = asset_.maxPageClusters();
     maxPrimitiveGroupCount_ = computeMaxPrimitiveGroups();
     const uint32_t requestedTraversalWorkers = std::min(
         std::max(desc.maxTraversalWorkers, 1u),
@@ -2365,15 +2373,6 @@ uint32_t MeshletStreamRuntime::computeMaxPrimitiveGroups() const
         maxGroups = std::max(maxGroups, primitive.groupCount);
     }
     return maxGroups;
-}
-
-uint32_t MeshletStreamRuntime::computeMaxPageClusters() const
-{
-    uint32_t maxClusters = 0;
-    for (const scene::MeshletStreamPageInfo& page : asset_.pages()) {
-        maxClusters = std::max(maxClusters, page.clusterCount);
-    }
-    return maxClusters;
 }
 
 Result MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, std::string& log)
