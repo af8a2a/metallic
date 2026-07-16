@@ -18,6 +18,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cassert>
 #include <cctype>
@@ -33,6 +34,7 @@
 #include <sstream>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -938,6 +940,185 @@ clodConfig makeMeshletLodConfig()
     return config;
 }
 
+// The reference vk_lod_clusters builder parallelizes the independent groups in
+// each CLOD level. Compute those groups concurrently here, then emit them in
+// task order so group/refined indices remain deterministic and checkpointable.
+template <typename Output>
+int emitClusterLodGroup(
+    const clodConfig& config,
+    const clodMesh& mesh,
+    const std::vector<clod::Cluster>& clusters,
+    const std::vector<int>& group,
+    const clodBounds& simplified,
+    int depth,
+    Output& output)
+{
+    std::vector<clodCluster> outputClusters(group.size());
+    for (size_t groupIndex = 0; groupIndex < group.size(); ++groupIndex) {
+        const clod::Cluster& cluster = clusters[group[groupIndex]];
+        clodCluster& outputCluster = outputClusters[groupIndex];
+        outputCluster.refined = cluster.refined;
+        outputCluster.bounds = config.optimize_bounds && cluster.refined != -1
+            ? clod::boundsCompute(mesh, cluster.indices, cluster.bounds.error)
+            : cluster.bounds;
+        outputCluster.indices = cluster.indices.data();
+        outputCluster.index_count = cluster.indices.size();
+        outputCluster.vertex_count = cluster.vertices;
+    }
+    return output(
+        clodGroup{depth, simplified},
+        outputClusters.data(),
+        outputClusters.size());
+}
+
+template <typename Output>
+size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, Output& output)
+{
+    assert(mesh.vertex_attributes_stride % sizeof(float) == 0);
+    assert(mesh.attribute_count * sizeof(float) <= mesh.vertex_attributes_stride);
+    assert(mesh.attribute_protect_mask <
+        (1u << (mesh.vertex_attributes_stride / sizeof(float))));
+
+    std::vector<unsigned char> locks(mesh.vertex_count);
+    std::vector<unsigned int> remap(mesh.vertex_count);
+    meshopt_generatePositionRemap(
+        remap.data(),
+        mesh.vertex_positions,
+        mesh.vertex_count,
+        mesh.vertex_positions_stride);
+
+    if (mesh.attribute_protect_mask != 0) {
+        const size_t maxAttributes = mesh.vertex_attributes_stride / sizeof(float);
+        for (size_t vertexIndex = 0; vertexIndex < mesh.vertex_count; ++vertexIndex) {
+            const unsigned int remappedVertex = remap[vertexIndex];
+            for (size_t attributeIndex = 0; attributeIndex < maxAttributes; ++attributeIndex) {
+                if (remappedVertex != vertexIndex &&
+                    (mesh.attribute_protect_mask & (1u << attributeIndex)) != 0 &&
+                    mesh.vertex_attributes[vertexIndex * maxAttributes + attributeIndex] !=
+                        mesh.vertex_attributes[remappedVertex * maxAttributes + attributeIndex]) {
+                    locks[vertexIndex] |= meshopt_SimplifyVertex_Protect;
+                }
+            }
+        }
+    }
+
+    std::vector<clod::Cluster> clusters =
+        clod::clusterize(config, mesh, mesh.indices, mesh.index_count);
+    for (clod::Cluster& cluster : clusters) {
+        cluster.bounds = clod::boundsCompute(mesh, cluster.indices, 0.0f);
+    }
+
+    std::vector<int> pending(clusters.size());
+    for (size_t clusterIndex = 0; clusterIndex < clusters.size(); ++clusterIndex) {
+        pending[clusterIndex] = static_cast<int>(clusterIndex);
+    }
+
+    int depth = 0;
+    while (pending.size() > 1) {
+        const std::vector<std::vector<int>> groups =
+            clod::partition(config, mesh, clusters, pending, remap);
+        clod::lockBoundary(locks, groups, clusters, remap, mesh.vertex_lock);
+
+        struct TaskResult {
+            clodBounds bounds{};
+            std::vector<clod::Cluster> split;
+            bool terminal = false;
+        };
+        std::vector<TaskResult> results(groups.size());
+        std::atomic_size_t nextTask{0};
+        const auto processTasks = [&]() {
+            for (;;) {
+                const size_t taskIndex = nextTask.fetch_add(1, std::memory_order_relaxed);
+                if (taskIndex >= groups.size()) {
+                    return;
+                }
+
+                const std::vector<int>& group = groups[taskIndex];
+                std::vector<unsigned int> merged;
+                merged.reserve(group.size() * config.max_triangles * 3u);
+                for (const int clusterIndex : group) {
+                    merged.insert(
+                        merged.end(),
+                        clusters[clusterIndex].indices.begin(),
+                        clusters[clusterIndex].indices.end());
+                }
+
+                const size_t targetSize =
+                    static_cast<size_t>((merged.size() / 3u) * config.simplify_ratio) * 3u;
+                TaskResult& result = results[taskIndex];
+                result.bounds = clod::boundsMerge(clusters, group);
+                float error = 0.0f;
+                std::vector<unsigned int> simplified =
+                    clod::simplify(config, mesh, merged, locks, targetSize, &error);
+                if (simplified.size() > merged.size() * config.simplify_threshold) {
+                    result.bounds.error = FLT_MAX;
+                    result.terminal = true;
+                    continue;
+                }
+
+                result.bounds.error = std::max(
+                    result.bounds.error * config.simplify_error_merge_previous,
+                    error) + error * config.simplify_error_merge_additive;
+                result.split = clod::clusterize(
+                    config,
+                    mesh,
+                    simplified.data(),
+                    simplified.size());
+            }
+        };
+
+        const size_t hardwareThreads =
+            std::max<size_t>(1u, std::thread::hardware_concurrency());
+        const size_t workerCount = std::min(
+            groups.size(),
+            std::max<size_t>(1u, hardwareThreads / 2u));
+        std::vector<std::thread> workers;
+        workers.reserve(workerCount > 0 ? workerCount - 1u : 0u);
+        for (size_t workerIndex = 1; workerIndex < workerCount; ++workerIndex) {
+            workers.emplace_back(processTasks);
+        }
+        processTasks();
+        for (std::thread& worker : workers) {
+            worker.join();
+        }
+
+        pending.clear();
+        for (size_t taskIndex = 0; taskIndex < groups.size(); ++taskIndex) {
+            TaskResult& result = results[taskIndex];
+            const int refined = emitClusterLodGroup(
+                config,
+                mesh,
+                clusters,
+                groups[taskIndex],
+                result.bounds,
+                depth,
+                output);
+            if (result.terminal) {
+                continue;
+            }
+
+            for (const int clusterIndex : groups[taskIndex]) {
+                clusters[clusterIndex].indices.clear();
+            }
+            for (clod::Cluster& cluster : result.split) {
+                cluster.refined = refined;
+                cluster.bounds = result.bounds;
+                clusters.push_back(std::move(cluster));
+                pending.push_back(static_cast<int>(clusters.size() - 1u));
+            }
+        }
+        ++depth;
+    }
+
+    if (!pending.empty()) {
+        assert(pending.size() == 1);
+        clodBounds bounds = clusters[pending.front()].bounds;
+        bounds.error = FLT_MAX;
+        emitClusterLodGroup(config, mesh, clusters, pending, bounds, depth, output);
+    }
+    return clusters.size();
+}
+
 bool buildMeshletClusters(RenderPrimitive& primitive)
 {
     clearMeshletClusters(primitive);
@@ -1133,7 +1314,7 @@ bool buildMeshletLods(RenderPrimitive& primitive)
         return groupIndex;
     };
 
-    clodBuild(config, mesh, outputGroup);
+    buildClusterLodParallel(config, mesh, outputGroup);
     if (!success ||
         primitive.meshletLodLevels.empty() ||
         primitive.meshletLodGroups.empty() ||
@@ -2036,6 +2217,14 @@ bool buildMeshletsForPrimitive(RenderPrimitive& primitive)
     const bool builtBaseMeshlets = buildMeshletClusters(primitive);
     const bool builtLodMeshlets = buildMeshletLods(primitive);
     return builtBaseMeshlets || builtLodMeshlets;
+}
+
+bool buildStreamMeshletsForPrimitive(RenderPrimitive& primitive)
+{
+    if (buildMeshletLods(primitive)) {
+        return true;
+    }
+    return buildMeshletClusters(primitive);
 }
 
 void Bounds::reset()

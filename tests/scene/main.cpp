@@ -250,6 +250,8 @@ std::filesystem::path writeMeshoptCompressedScene(
         fallbackOffsets[viewIndex] =
             fallbackOffsets[viewIndex - 1] + kDecodedByteSizes[viewIndex - 1];
     }
+    const size_t decodedBufferSize =
+        fallbackOffsets.back() + kDecodedByteSizes.back();
 
     const std::filesystem::path gltfPath = directory / "meshopt_compressed.gltf";
     std::ostringstream gltf;
@@ -259,7 +261,8 @@ std::filesystem::path writeMeshoptCompressedScene(
   "extensionsRequired": ["EXT_meshopt_compression", "KHR_mesh_quantization"],
   "buffers": [
     { "uri": "meshopt_compressed.bin", "byteLength": )json"
-         << binary.size() << R"json( }
+         << binary.size() << R"json( },
+    { "byteLength": )json" << decodedBufferSize << R"json( }
   ],
   "bufferViews": [
 )json";

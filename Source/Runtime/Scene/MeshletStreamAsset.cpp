@@ -2633,15 +2633,20 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
             reason = "streamasset builder glTF has no buffers";
             return false;
         }
+        bool hasExternalBuffer = false;
         for (const nlohmann::json& bufferJson : buffers) {
             if (!bufferJson.is_object()) {
                 reason = "streamasset builder glTF buffer entry is invalid";
                 return false;
             }
             const std::string uri = bufferJson.value("uri", std::string{});
-            if (uri.empty() || isDataUriForStreamBuilder(uri)) {
+            if (isDataUriForStreamBuilder(uri)) {
                 return true;
             }
+            hasExternalBuffer = hasExternalBuffer || !uri.empty();
+        }
+        if (!hasExternalBuffer) {
+            return true;
         }
         applicable = true;
 
@@ -2672,6 +2677,12 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
             tinygltf::Buffer buffer;
             buffer.name = bufferJson.value("name", std::string{});
             buffer.uri = bufferJson.value("uri", std::string{});
+            source.bufferByteLengths.push_back(byteLength);
+
+            if (buffer.uri.empty()) {
+                model.buffers.push_back(std::move(buffer));
+                continue;
+            }
 
             std::string decodedUri;
             if (!tinygltf::URIDecode(buffer.uri, &decodedUri, nullptr) || decodedUri.empty()) {
@@ -2692,7 +2703,6 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
                 return false;
             }
             model.buffers.push_back(std::move(buffer));
-            source.bufferByteLengths.push_back(byteLength);
             source.externalBufferUris.push_back(std::move(decodedUri));
         }
 
@@ -2742,6 +2752,38 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
             }
             model.bufferViews.push_back(std::move(view));
             source.meshoptCompressions.push_back(std::move(meshoptCompression));
+        }
+
+        for (size_t viewIndex = 0; viewIndex < model.bufferViews.size(); ++viewIndex) {
+            const tinygltf::BufferView& view = model.bufferViews[viewIndex];
+            if (!validGltfIndex(view.buffer, model.buffers.size()) ||
+                static_cast<size_t>(view.buffer) >= source.bufferByteLengths.size()) {
+                reason = "streamasset builder bufferView has an invalid logical buffer";
+                return false;
+            }
+            const uint64_t logicalBufferByteLength =
+                source.bufferByteLengths[static_cast<size_t>(view.buffer)];
+            if (view.byteOffset > logicalBufferByteLength ||
+                view.byteLength > logicalBufferByteLength - view.byteOffset) {
+                reason = "streamasset builder bufferView exceeds its logical buffer";
+                return false;
+            }
+
+            const StreamGltfSource::MeshoptCompression& compression =
+                source.meshoptCompressions[viewIndex];
+            if (model.buffers[static_cast<size_t>(view.buffer)].uri.empty() &&
+                !compression.valid()) {
+                reason = "streamasset builder virtual logical bufferView is missing "
+                    "EXT_meshopt_compression";
+                return false;
+            }
+            if (compression.valid() &&
+                (!validGltfIndex(compression.buffer, model.buffers.size()) ||
+                    static_cast<size_t>(compression.buffer) >= source.bufferByteLengths.size() ||
+                    model.buffers[static_cast<size_t>(compression.buffer)].uri.empty())) {
+                reason = "streamasset builder meshopt bufferView has no external source buffer";
+                return false;
+            }
         }
 
         const nlohmann::json accessors = root.value("accessors", nlohmann::json::array());
@@ -3570,7 +3612,7 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
                 continue;
             }
 
-            buildMeshletsForPrimitive(primitive);
+            buildStreamMeshletsForPrimitive(primitive);
             int32_t streamPrimitiveIndex = kInvalidSceneIndex;
             if (!appendStreamPrimitivePages(
                     stream,

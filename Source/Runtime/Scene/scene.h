@@ -205,6 +205,7 @@ struct RenderMaterial {
 };
 
 bool buildMeshletsForPrimitive(RenderPrimitive& primitive);
+bool buildStreamMeshletsForPrimitive(RenderPrimitive& primitive);
 
 struct RenderCamera {
     std::string name;
