@@ -219,6 +219,11 @@ bool MeshletStreamResidencyManager::initialize(
         reason = "MeshletStreamResidencyManager page load worker count exceeds the supported limit";
         return false;
     }
+    if (desc.storageAlignment < kStreamPageTableOffsetAlignment ||
+        desc.storageAlignment % kStreamPageTableOffsetAlignment != 0) {
+        reason = "MeshletStreamResidencyManager storage alignment cannot pack page state into offsets";
+        return false;
+    }
 
     const uint64_t defaultStride = alignUp(desc.asset->maxPagePayloadBytes(), 256);
     const uint64_t legacyStride = desc.pageStride != 0 ? desc.pageStride : defaultStride;
@@ -883,11 +888,10 @@ void MeshletStreamResidencyManager::buildInitialPageTable(std::span<StreamPageTa
     for (const auto& [pageIndex, page] : pages_) {
         const bool tableResident = page.state != MeshletStreamPageResidencyState::Unloaded && pageAllocated(pageIndex);
         outEntries[pageIndex] = StreamPageTableEntry{
-            .deviceOffsetBytes = tableResident
-                ? static_cast<uint32_t>(page.deviceOffsetBytes)
-                : kInvalidStreamDeviceOffsetBytes,
-            .metadata = packStreamPageTableMetadata(
-                tableResident ? page.deviceSizeBytes : 0u,
+            .deviceOffsetAndState = packStreamPageTableEntry(
+                tableResident
+                    ? static_cast<uint32_t>(page.deviceOffsetBytes)
+                    : kInvalidStreamDeviceOffsetBytes,
                 page.state),
             .lastRequestFrame = 0,
         };
@@ -1254,11 +1258,11 @@ void MeshletStreamResidencyManager::recordPatch(uint32_t pageIndex)
     const bool tableResident = page.state != MeshletStreamPageResidencyState::Unloaded && pageAllocated(pageIndex);
     patches_.push_back(StreamPageTablePatch{
         .pageId = pageIndex,
-        .deviceOffsetBytes = tableResident
-            ? static_cast<uint32_t>(page.deviceOffsetBytes)
-            : kInvalidStreamDeviceOffsetBytes,
-        .deviceSizeBytes = tableResident ? page.deviceSizeBytes : 0u,
-        .state = static_cast<uint32_t>(page.state),
+        .deviceOffsetAndState = packStreamPageTableEntry(
+            tableResident
+                ? static_cast<uint32_t>(page.deviceOffsetBytes)
+                : kInvalidStreamDeviceOffsetBytes,
+            page.state),
     });
 }
 

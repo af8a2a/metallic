@@ -1019,8 +1019,8 @@ public:
         const uint32_t pageIndex = fallbackPages.front();
         std::vector<render::StreamPageTableEntry> initialTable(asset.pageCount());
         residency.buildInitialPageTable(initialTable);
-        if (initialTable[pageIndex].deviceOffsetBytes != render::kInvalidStreamDeviceOffsetBytes ||
-            render::streamPageTableDeviceSize(initialTable[pageIndex]) != 0 ||
+        if (render::streamPageTableDeviceOffset(initialTable[pageIndex]) !=
+                render::kInvalidStreamDeviceOffsetBytes ||
             render::streamPageTableState(initialTable[pageIndex]) !=
                 render::MeshletStreamPageResidencyState::Unloaded) {
             return RhiTestResult::fail("initial stream page table entry did not encode missing fallback page");
@@ -1069,9 +1069,10 @@ public:
         std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
         if (patches.size() != 1 ||
             patches[0].pageId != pageIndex ||
-            patches[0].deviceOffsetBytes == render::kInvalidStreamDeviceOffsetBytes ||
-            patches[0].deviceSizeBytes != asset.pages()[pageIndex].uncompressedSize ||
-            patches[0].state != static_cast<uint32_t>(render::MeshletStreamPageResidencyState::PendingUpload)) {
+            render::streamPageTablePatchDeviceOffset(patches[0]) ==
+                render::kInvalidStreamDeviceOffsetBytes ||
+            render::streamPageTablePatchState(patches[0]) !=
+                render::MeshletStreamPageResidencyState::PendingUpload) {
             return RhiTestResult::fail("pending upload did not produce expected page table patch");
         }
         residency.clearPendingPatches();
@@ -1185,9 +1186,10 @@ public:
         patches = residency.pendingPatches();
         if (patches.size() != 1 ||
             patches[0].pageId != pageIndex ||
-            patches[0].deviceOffsetBytes == render::kInvalidStreamDeviceOffsetBytes ||
-            patches[0].deviceSizeBytes != asset.pages()[pageIndex].uncompressedSize ||
-            patches[0].state != static_cast<uint32_t>(render::MeshletStreamPageResidencyState::LockedFallback)) {
+            render::streamPageTablePatchDeviceOffset(patches[0]) ==
+                render::kInvalidStreamDeviceOffsetBytes ||
+            render::streamPageTablePatchState(patches[0]) !=
+                render::MeshletStreamPageResidencyState::LockedFallback) {
             return RhiTestResult::fail("resident fallback did not produce expected page table patch");
         }
 
@@ -1615,7 +1617,8 @@ public:
                 patches.end(),
                 [unloadPage](const render::StreamPageTablePatch& patch) {
                     return patch.pageId == unloadPage &&
-                        patch.state == static_cast<uint32_t>(render::MeshletStreamPageResidencyState::PendingUnload);
+                        render::streamPageTablePatchState(patch) ==
+                            render::MeshletStreamPageResidencyState::PendingUnload;
                 }) == patches.end()) {
             return RhiTestResult::fail("GPU unload request did not emit a pending-unload page table patch");
         }
@@ -1649,9 +1652,10 @@ public:
                 patches.end(),
                 [unloadPage](const render::StreamPageTablePatch& patch) {
                     return patch.pageId == unloadPage &&
-                        patch.deviceOffsetBytes == render::kInvalidStreamDeviceOffsetBytes &&
-                        patch.deviceSizeBytes == 0 &&
-                        patch.state == static_cast<uint32_t>(render::MeshletStreamPageResidencyState::Unloaded);
+                        render::streamPageTablePatchDeviceOffset(patch) ==
+                            render::kInvalidStreamDeviceOffsetBytes &&
+                        render::streamPageTablePatchState(patch) ==
+                            render::MeshletStreamPageResidencyState::Unloaded;
                 }) == patches.end()) {
             return RhiTestResult::fail("delayed unload completion did not emit an unloaded page table patch");
         }

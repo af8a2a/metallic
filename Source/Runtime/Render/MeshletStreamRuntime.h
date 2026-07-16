@@ -297,7 +297,7 @@ static_assert(sizeof(MeshletStreamGpuBlasHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(MeshletStreamGpuTlasInstance) == 64);
-static_assert(sizeof(StreamPageTableEntry) == 12);
+static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGpuParams) == 192);
 static_assert(sizeof(MeshletStreamUserPush) == 108);
 

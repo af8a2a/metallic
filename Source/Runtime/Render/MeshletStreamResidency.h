@@ -27,39 +27,56 @@ enum class MeshletStreamPageResidencyState : uint8_t {
     PendingUnload,
 };
 
-inline constexpr uint32_t kStreamPageDeviceSizeMask = 0x1fffffffu;
-inline constexpr uint32_t kStreamPageStateShift = 29u;
+inline constexpr uint32_t kStreamPageStateMask = 0x00000007u;
+inline constexpr uint32_t kStreamPageDeviceOffsetMask = ~kStreamPageStateMask;
+inline constexpr uint64_t kStreamPageTableOffsetAlignment = kStreamPageStateMask + 1u;
 
 struct StreamPageTableEntry {
-    uint32_t deviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
-    uint32_t metadata = 0;
+    uint32_t deviceOffsetAndState = 0;
     uint32_t lastRequestFrame = 0;
 };
 
-inline constexpr uint32_t packStreamPageTableMetadata(
-    uint32_t deviceSizeBytes,
+inline constexpr uint32_t packStreamPageTableEntry(
+    uint32_t deviceOffsetBytes,
     MeshletStreamPageResidencyState state)
 {
-    return (deviceSizeBytes & kStreamPageDeviceSizeMask) |
-        (static_cast<uint32_t>(state) << kStreamPageStateShift);
+    return (state == MeshletStreamPageResidencyState::Unloaded
+            ? 0u
+            : deviceOffsetBytes & kStreamPageDeviceOffsetMask) |
+        static_cast<uint32_t>(state);
 }
 
-inline constexpr uint32_t streamPageTableDeviceSize(const StreamPageTableEntry& entry)
+inline constexpr uint32_t streamPageTableDeviceOffset(const StreamPageTableEntry& entry)
 {
-    return entry.metadata & kStreamPageDeviceSizeMask;
+    return (entry.deviceOffsetAndState & kStreamPageStateMask) ==
+            static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded)
+        ? kInvalidStreamDeviceOffsetBytes
+        : entry.deviceOffsetAndState & kStreamPageDeviceOffsetMask;
 }
 
 inline constexpr MeshletStreamPageResidencyState streamPageTableState(const StreamPageTableEntry& entry)
 {
-    return static_cast<MeshletStreamPageResidencyState>(entry.metadata >> kStreamPageStateShift);
+    return static_cast<MeshletStreamPageResidencyState>(
+        entry.deviceOffsetAndState & kStreamPageStateMask);
 }
 
 struct StreamPageTablePatch {
     uint32_t pageId = 0;
-    uint32_t deviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
-    uint32_t deviceSizeBytes = 0;
-    uint32_t state = static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded);
+    uint32_t deviceOffsetAndState = 0;
 };
+
+inline constexpr uint32_t streamPageTablePatchDeviceOffset(const StreamPageTablePatch& patch)
+{
+    const StreamPageTableEntry entry{.deviceOffsetAndState = patch.deviceOffsetAndState};
+    return streamPageTableDeviceOffset(entry);
+}
+
+inline constexpr MeshletStreamPageResidencyState streamPageTablePatchState(
+    const StreamPageTablePatch& patch)
+{
+    const StreamPageTableEntry entry{.deviceOffsetAndState = patch.deviceOffsetAndState};
+    return streamPageTableState(entry);
+}
 
 inline constexpr uint32_t kStreamRequestHeaderWordCount = 16;
 inline constexpr uint32_t kStreamUpdateHeaderWordCount = 16;
@@ -102,8 +119,8 @@ struct StreamUpdateBufferHeader {
     uint32_t padding11 = 0;
 };
 
-static_assert(sizeof(StreamPageTableEntry) == 12);
-static_assert(sizeof(StreamPageTablePatch) == 16);
+static_assert(sizeof(StreamPageTableEntry) == 8);
+static_assert(sizeof(StreamPageTablePatch) == 8);
 static_assert(sizeof(StreamRequestBufferHeader) == kStreamRequestHeaderWordCount * sizeof(uint32_t));
 static_assert(sizeof(StreamUpdateBufferHeader) == kStreamUpdateHeaderWordCount * sizeof(uint32_t));
 

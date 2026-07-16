@@ -2293,32 +2293,27 @@ public:
         params.drawTaskCount = kActiveGroupCapacity * params.maxActiveGroupClusters;
 
         std::array<render::StreamPageTableEntry, kScenePageCount> pageTable{};
-        pageTable[0].metadata = render::packStreamPageTableMetadata(
-            0,
+        pageTable[0].deviceOffsetAndState = render::packStreamPageTableEntry(
+            render::kInvalidStreamDeviceOffsetBytes,
             render::MeshletStreamPageResidencyState::Unloaded);
-        pageTable[1].metadata = render::packStreamPageTableMetadata(
+        pageTable[1].deviceOffsetAndState = render::packStreamPageTableEntry(
             512,
             render::MeshletStreamPageResidencyState::Resident);
         pageTable[1].lastRequestFrame = 3;
-        pageTable[1].deviceOffsetBytes = 512;
-        pageTable[2].deviceOffsetBytes = 1024;
-        pageTable[2].metadata = render::packStreamPageTableMetadata(
-            256,
+        pageTable[2].deviceOffsetAndState = render::packStreamPageTableEntry(
+            1024,
             render::MeshletStreamPageResidencyState::LockedFallback);
         pageTable[2].lastRequestFrame = 3;
-        pageTable[3].deviceOffsetBytes = 2048;
-        pageTable[3].metadata = render::packStreamPageTableMetadata(
-            512,
+        pageTable[3].deviceOffsetAndState = render::packStreamPageTableEntry(
+            2048,
             render::MeshletStreamPageResidencyState::Resident);
         pageTable[3].lastRequestFrame = 3;
-        pageTable[4].deviceOffsetBytes = 4096;
-        pageTable[4].metadata = render::packStreamPageTableMetadata(
-            256,
+        pageTable[4].deviceOffsetAndState = render::packStreamPageTableEntry(
+            4096,
             render::MeshletStreamPageResidencyState::LockedFallback);
         pageTable[4].lastRequestFrame = 3;
-        pageTable[5].deviceOffsetBytes = 8192;
-        pageTable[5].metadata = render::packStreamPageTableMetadata(
-            128,
+        pageTable[5].deviceOffsetAndState = render::packStreamPageTableEntry(
+            8192,
             render::MeshletStreamPageResidencyState::Resident);
         pageTable[5].lastRequestFrame = 3;
         const std::array<uint32_t, 5> residentPageIds = {1, 2, 3, 4, 5};
@@ -2328,10 +2323,11 @@ public:
         for (uint32_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
             const uint32_t pageIndex = groups[groupIndex].pageIndex;
             const render::StreamPageTableEntry& entry = pageTable[pageIndex];
-            if (entry.deviceOffsetBytes == render::kInvalidStreamDeviceOffsetBytes) {
+            const uint32_t deviceOffsetBytes = render::streamPageTableDeviceOffset(entry);
+            if (deviceOffsetBytes == render::kInvalidStreamDeviceOffsetBytes) {
                 continue;
             }
-            const uint32_t pageWord = entry.deviceOffsetBytes / sizeof(uint32_t);
+            const uint32_t pageWord = deviceOffsetBytes / sizeof(uint32_t);
             constexpr uint32_t kClusterOffsetBytes = 96u;
             const uint32_t payloadBytes =
                 kClusterOffsetBytes + groups[groupIndex].clusterCount * 36u;
@@ -2344,11 +2340,13 @@ public:
             }
         }
         const uint32_t group2ClusterWord =
-            pageTable[groups[2].pageIndex].deviceOffsetBytes / sizeof(uint32_t) + 96u / sizeof(uint32_t);
+            render::streamPageTableDeviceOffset(pageTable[groups[2].pageIndex]) /
+                sizeof(uint32_t) + 96u / sizeof(uint32_t);
         pageWords[group2ClusterWord + 8u] = 0u;
         pageWords[group2ClusterWord + 9u + 8u] = 1u;
         const uint32_t group4ClusterWord =
-            pageTable[groups[4].pageIndex].deviceOffsetBytes / sizeof(uint32_t) + 96u / sizeof(uint32_t);
+            render::streamPageTableDeviceOffset(pageTable[groups[4].pageIndex]) /
+                sizeof(uint32_t) + 96u / sizeof(uint32_t);
         pageWords[group4ClusterWord + 8u] = 3u;
         params.pageBufferBytes = kPageBufferBytes;
 

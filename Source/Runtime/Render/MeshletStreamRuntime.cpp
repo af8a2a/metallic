@@ -477,7 +477,7 @@ public:
         const uint32_t patchCount = static_cast<uint32_t>(patches.size());
         uint32_t unloadPatchCount = 0;
         for (const StreamPageTablePatch& patch : patches) {
-            if (patch.state == static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded)) {
+            if (streamPageTablePatchState(patch) == MeshletStreamPageResidencyState::Unloaded) {
                 ++unloadPatchCount;
             }
         }
@@ -496,12 +496,12 @@ public:
             static_cast<uint8_t*>(mapped) + sizeof(StreamUpdateBufferHeader));
         uint32_t writeIndex = 0;
         for (const StreamPageTablePatch& patch : patches) {
-            if (patch.state == static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded)) {
+            if (streamPageTablePatchState(patch) == MeshletStreamPageResidencyState::Unloaded) {
                 patchData[writeIndex++] = patch;
             }
         }
         for (const StreamPageTablePatch& patch : patches) {
-            if (patch.state != static_cast<uint32_t>(MeshletStreamPageResidencyState::Unloaded)) {
+            if (streamPageTablePatchState(patch) != MeshletStreamPageResidencyState::Unloaded) {
                 patchData[writeIndex++] = patch;
             }
         }
@@ -893,8 +893,8 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         log = "MeshletStreamRuntime resident page buffer size overflowed";
         return makeError(Error::Failure);
     }
-    if (asset_.maxPagePayloadBytes() > kStreamPageDeviceSizeMask) {
-        log = "MeshletStreamRuntime page payload exceeds packed GPU page metadata";
+    if (asset_.maxPagePayloadBytes() > maxResidentBytes_) {
+        log = "MeshletStreamRuntime resident budget cannot hold the largest page payload";
         return makeError(Error::Failure);
     }
     maxResidentBytes_ = alignUp(maxResidentBytes_, kMeshletStreamStorageAlignment);
