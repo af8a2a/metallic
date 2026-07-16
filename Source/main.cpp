@@ -4,7 +4,9 @@
 
 #include <cstdlib>
 #include <cstdio>
+#include <charconv>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -50,7 +52,21 @@ void printUsage()
         "  --rhi-no-validation                           Disable RHI validation for smoke tests\n"
         "  --build-meshstream <source.gltf>              Build a meshlet StreamAsset and exit\n"
         "  --output <file.meshstream.bin>                Optional output path for --build-meshstream\n"
-        "  --meshstream-compression <none|byte-rle>      Optional payload compression for --build-meshstream");
+        "  --meshstream-compression <none|byte-rle>      Optional payload compression for --build-meshstream\n"
+        "  --meshstream-max-geometries <count>           Pause after this many new geometries (0 = unlimited)\n"
+        "  --meshstream-checkpoint-interval <count>      Partial checkpoint interval (0 = pause only)");
+}
+
+bool parseUint32(std::string_view value, uint32_t& outValue)
+{
+    uint64_t parsed = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc{} || end != value.data() + value.size() ||
+        parsed > std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
+    outValue = static_cast<uint32_t>(parsed);
+    return true;
 }
 
 bool parseMeshletStreamCompression(
@@ -71,7 +87,9 @@ bool parseMeshletStreamCompression(
 int buildMeshletStreamAssetOffline(
     const std::filesystem::path& sourcePath,
     const std::filesystem::path& outputPath,
-    metallic::scene::MeshletStreamPayloadCompression compressionMode)
+    metallic::scene::MeshletStreamPayloadCompression compressionMode,
+    uint32_t maxNewGeometriesPerInvocation,
+    uint32_t partialCheckpointGeometryInterval)
 {
     if (sourcePath.empty()) {
         std::fputs("Missing source path for --build-meshstream\n", stderr);
@@ -88,11 +106,19 @@ int buildMeshletStreamAssetOffline(
                 .sourcePath = sourcePath,
                 .outputPath = resolvedOutputPath,
                 .compressionMode = compressionMode,
+                .maxNewGeometriesPerInvocation = maxNewGeometriesPerInvocation,
+                .partialCheckpointGeometryInterval = partialCheckpointGeometryInterval,
                 .stats = &buildStats,
             },
             reason)) {
-        std::fprintf(stderr, "Failed to build streamasset: %s\n", reason.c_str());
-        return 1;
+        const bool paused = reason.find("paused after geometry budget") != std::string::npos;
+        std::fprintf(
+            paused ? stdout : stderr,
+            "%s: %s (checkpoints=%u)\n",
+            paused ? "Paused StreamAsset build" : "StreamAsset build failed",
+            reason.c_str(),
+            buildStats.partialCheckpointCount);
+        return paused ? 2 : 1;
     }
 
     metallic::scene::MeshletStreamAsset asset;
@@ -125,6 +151,7 @@ int buildMeshletStreamAssetOffline(
             static_cast<unsigned long long>(buildStats.maxAccessorRangeReadBytes),
             buildStats.accessorRangeReadCount);
     }
+    std::printf("Partial checkpoints written: %u\n", buildStats.partialCheckpointCount);
     return 0;
 }
 
@@ -142,6 +169,8 @@ int main(int argc, char** argv)
     std::filesystem::path buildMeshstreamOutputPath;
     metallic::scene::MeshletStreamPayloadCompression buildMeshstreamCompressionMode =
         metallic::scene::MeshletStreamPayloadCompression::None;
+    uint32_t buildMeshstreamMaxNewGeometries = 0;
+    uint32_t buildMeshstreamCheckpointInterval = 64;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--help" || argument == "-h") {
@@ -185,6 +214,23 @@ int main(int argc, char** argv)
                     compression.data());
                 return 1;
             }
+        } else if (argument == "--meshstream-max-geometries" ||
+                   argument == "--meshstream-checkpoint-interval") {
+            if (index + 1 >= argc) {
+                std::fprintf(stderr, "%.*s requires a non-negative integer\n",
+                    static_cast<int>(argument.size()), argument.data());
+                return 1;
+            }
+            uint32_t& value = argument == "--meshstream-max-geometries"
+                ? buildMeshstreamMaxNewGeometries
+                : buildMeshstreamCheckpointInterval;
+            const std::string_view text(argv[++index]);
+            if (!parseUint32(text, value)) {
+                std::fprintf(stderr, "Invalid value '%.*s' for %.*s\n",
+                    static_cast<int>(text.size()), text.data(),
+                    static_cast<int>(argument.size()), argument.data());
+                return 1;
+            }
         }
     }
 
@@ -192,7 +238,9 @@ int main(int argc, char** argv)
         return buildMeshletStreamAssetOffline(
             buildMeshstreamSourcePath,
             buildMeshstreamOutputPath,
-            buildMeshstreamCompressionMode);
+            buildMeshstreamCompressionMode,
+            buildMeshstreamMaxNewGeometries,
+            buildMeshstreamCheckpointInterval);
     }
 
     if (rhiTrianglePreviewTest) {
