@@ -16,6 +16,7 @@
                 "maxActiveGroups": 262144,
                 "maxPageUploadsPerFrame": 64,
                 "maxPageLoadsInFlight": 128,
+                "maxLockedFallbackPages": 1024,
                 "maxResidentPages": 4096,
                 "maxTraversalWorkers": 1024,
                 "maxTraversalWorkItems": 1048576,

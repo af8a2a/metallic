@@ -172,6 +172,7 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
         .autoBuildStreamAsset = boolProperty(properties, "autoBuildStreamAsset", false),
         .maxResidentBytes = uint64Property(properties, "maxResidentBytes", 0),
         .maxResidentPages = uintProperty(properties, "maxResidentPages", 4096),
+        .maxLockedFallbackPages = uintProperty(properties, "maxLockedFallbackPages", 1024),
         .maxPageUploadsPerFrame = uintProperty(properties, "maxPageUploadsPerFrame", 64),
         .maxGpuPageRequests = maxGpuPageRequests,
         .maxGpuPageUnloadRequests = std::max<uint32_t>(

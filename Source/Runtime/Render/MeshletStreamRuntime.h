@@ -307,6 +307,7 @@ struct MeshletStreamRuntimeDesc {
     bool autoBuildStreamAsset = false;
     uint64_t maxResidentBytes = 0;
     uint32_t maxResidentPages = 4096;
+    uint32_t maxLockedFallbackPages = 1024;
     uint32_t maxPageUploadsPerFrame = 64;
     uint32_t maxGpuPageRequests = kMeshletStreamDefaultMaxGpuPageRequests;
     uint32_t maxGpuPageUnloadRequests = kMeshletStreamDefaultMaxGpuPageRequests;
@@ -376,6 +377,14 @@ public:
     vulkan::MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
 
 private:
+    struct FallbackBlasPrimitive {
+        uint32_t primitiveIndex = 0;
+        uint32_t referenceCount = 0;
+        uint64_t referenceOffset = 0;
+        uint64_t storageOffset = 0;
+        bool built = false;
+    };
+
     struct ResidentPageFrame {
         std::unique_ptr<Buffer> buffer;
         BindlessHandle handle;
@@ -513,10 +522,7 @@ private:
     uint64_t tlasHandle_ = 0;
     uint64_t nativeDeviceHandle_ = 0;
     bool tlasBuilt_ = false;
-    std::vector<uint64_t> fallbackBlasReferenceOffsets_;
-    std::vector<uint32_t> fallbackBlasReferenceCounts_;
-    std::vector<uint64_t> fallbackBlasStorageOffsets_;
-    std::vector<uint8_t> fallbackBlasBuilt_;
+    std::vector<FallbackBlasPrimitive> fallbackBlasPrimitives_;
     uint32_t currentFrameUploadCount_ = 0;
 };
 

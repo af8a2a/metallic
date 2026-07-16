@@ -4486,6 +4486,7 @@ public:
                 {"maxBlasBytes", 64ull * 1024ull * 1024ull},
                 {"maxBlasBuilds", 4},
                 {"maxFallbackBlasBytes", 64ull * 1024ull * 1024ull},
+                {"maxLockedFallbackPages", 1},
                 {"maxResidentPages", 64},
                 {"maxPageUploadsPerFrame", 1},
             });
@@ -4518,7 +4519,8 @@ public:
                 log);
         }
 
-        for (uint32_t frame = 0; frame < 5; ++frame) {
+        constexpr uint32_t kStreamingWarmupFrameCount = 16;
+        for (uint32_t frame = 0; frame < kStreamingWarmupFrameCount; ++frame) {
             result = executor.execute(render::RenderGraphSubmitDesc{
                 .graphicsQueue = graphicsQueue,
             });
@@ -4637,6 +4639,56 @@ public:
         }
         if (nonClearPixelCount == 0) {
             return RhiTestResult::fail("GPUDrivenStreamAssetPass smoke produced only clear pixels");
+        }
+
+        render::RenderGraph streamedFallbackGraph;
+        streamedFallbackGraph.setName("GPUDrivenStreamAssetStreamedFallbackSmoke");
+        streamedFallbackGraph.addNode(
+            "GPUDrivenStreamAssetPass",
+            "GPUDriven",
+            render::RenderGraphProperties{
+                {"path", sourcePath.string()},
+                {"streamAssetPath", streamAssetPath.string()},
+                {"maxLockedFallbackPages", 0},
+                {"maxResidentPages", 1},
+                {"maxPageUploadsPerFrame", 1},
+            });
+        streamedFallbackGraph.markOutput("GPUDriven.color");
+
+        render::RenderGraphExecutor streamedFallbackExecutor;
+        log.clear();
+        result = streamedFallbackExecutor.compile(
+            *device,
+            streamedFallbackGraph,
+            kWidth,
+            kHeight,
+            log);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("zero-locked-fallback RenderGraphExecutor::compile returned ") +
+                toString(result) +
+                ": " +
+                log);
+        }
+        for (uint32_t frame = 0; frame < 5; ++frame) {
+            result = streamedFallbackExecutor.execute(render::RenderGraphSubmitDesc{
+                .graphicsQueue = graphicsQueue,
+            });
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("zero-locked-fallback RenderGraphExecutor::execute frame ") +
+                    std::to_string(frame) +
+                    " returned " +
+                    toString(result));
+            }
+            result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("zero-locked-fallback RenderGraphExecutor::waitForSubmittedWork frame ") +
+                    std::to_string(frame) +
+                    " returned " +
+                    toString(result));
+            }
         }
 
         (void)device->waitIdle();

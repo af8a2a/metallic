@@ -15,6 +15,7 @@
 #include <span>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace metallic::render {
 namespace {
@@ -929,22 +930,6 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
     }
     pageBufferState_ = ResourceState::Undefined;
 
-    std::vector<uint32_t> fallbackPages;
-    uint64_t fallbackPageCount = 0;
-    for (const scene::MeshletStreamPrimitiveInfo& primitive : asset_.primitives()) {
-        fallbackPageCount += primitive.fallbackPageCount;
-    }
-    if (fallbackPageCount > asset_.pageCount()) {
-        log = "MeshletStreamRuntime fallback page ranges exceed the asset page count";
-        return makeError(Error::Failure);
-    }
-    fallbackPages.reserve(static_cast<size_t>(fallbackPageCount));
-    for (const scene::MeshletStreamPrimitiveInfo& primitive : asset_.primitives()) {
-        for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
-            fallbackPages.push_back(primitive.fallbackPageOffset + localPage);
-        }
-    }
-
     if (!residency_.initialize(
             MeshletStreamResidencyDesc{
                 .asset = &asset_,
@@ -955,9 +940,88 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 .pageLoadWorkerCount = desc.pageLoadWorkerCount,
                 .maxPageLoadsInFlight = desc.maxPageLoadsInFlight,
             },
-            reason) ||
-        !residency_.lockFallbackPages(fallbackPages, reason)) {
+            reason)) {
         log = "MeshletStreamRuntime residency initialization failed: " + reason;
+        return makeError(Error::Failure);
+    }
+
+    const MeshletStreamStorage& residencyStorage = residency_.storage();
+    const uint64_t streamedPageReserveBytes =
+        residencyStorage.allocationSize(asset_.maxPagePayloadBytes());
+    const uint64_t lockedFallbackByteBudget = residencyStorage.capacityBytes() > streamedPageReserveBytes
+        ? residencyStorage.capacityBytes() - streamedPageReserveBytes
+        : 0;
+    uint64_t lockedFallbackPageBudget = desc.maxLockedFallbackPages;
+    if (maxResidentPages_ != 0) {
+        const uint32_t pageBudgetWithStreamingReserve = maxResidentPages_ > 1
+            ? maxResidentPages_ - 1
+            : 0;
+        lockedFallbackPageBudget = std::min<uint64_t>(
+            lockedFallbackPageBudget,
+            pageBudgetWithStreamingReserve);
+    }
+    lockedFallbackPageBudget = std::min<uint64_t>(
+        lockedFallbackPageBudget,
+        lockedFallbackByteBudget / residencyStorage.alignmentBytes());
+
+    std::vector<uint32_t> fallbackPages;
+    std::vector<uint32_t> lockedFallbackPrimitives;
+    fallbackPages.reserve(static_cast<size_t>(std::min<uint64_t>(
+        lockedFallbackPageBudget,
+        asset_.pageCount())));
+    lockedFallbackPrimitives.reserve(static_cast<size_t>(std::min<uint64_t>(
+        lockedFallbackPageBudget,
+        asset_.primitiveCount())));
+    const uint64_t fallbackPrimitiveCandidateBudget = std::min<uint64_t>(
+        asset_.primitiveCount(),
+        std::max<uint64_t>(lockedFallbackPageBudget, 1u) * 4u);
+    std::unordered_set<uint32_t> consideredFallbackPrimitives;
+    consideredFallbackPrimitives.reserve(static_cast<size_t>(fallbackPrimitiveCandidateBudget));
+    uint64_t lockedFallbackBytes = 0;
+    for (const scene::MeshletStreamInstanceInfo& instance : asset_.instances()) {
+        if (fallbackPages.size() == lockedFallbackPageBudget ||
+            lockedFallbackByteBudget - lockedFallbackBytes < residencyStorage.alignmentBytes() ||
+            consideredFallbackPrimitives.size() == fallbackPrimitiveCandidateBudget) {
+            break;
+        }
+        if (instance.visible == 0 ||
+            instance.primitiveIndex >= asset_.primitiveCount() ||
+            !consideredFallbackPrimitives.insert(instance.primitiveIndex).second) {
+            continue;
+        }
+        const uint32_t primitiveIndex = instance.primitiveIndex;
+        const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
+        if (primitive.fallbackPageOffset > asset_.pageCount() ||
+            primitive.fallbackPageCount > asset_.pageCount() - primitive.fallbackPageOffset) {
+            log = "MeshletStreamRuntime primitive fallback page range exceeds the asset page count";
+            return makeError(Error::Failure);
+        }
+
+        uint64_t primitiveFallbackBytes = 0;
+        for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
+            const uint32_t pageIndex = primitive.fallbackPageOffset + localPage;
+            const uint64_t pageBytes = residencyStorage.allocationSize(
+                asset_.pages()[pageIndex].uncompressedSize);
+            if (pageBytes == 0 ||
+                pageBytes > std::numeric_limits<uint64_t>::max() - primitiveFallbackBytes) {
+                log = "MeshletStreamRuntime primitive fallback page byte budget overflowed";
+                return makeError(Error::Failure);
+            }
+            primitiveFallbackBytes += pageBytes;
+        }
+        if (primitive.fallbackPageCount > lockedFallbackPageBudget - fallbackPages.size() ||
+            primitiveFallbackBytes > lockedFallbackByteBudget - lockedFallbackBytes) {
+            continue;
+        }
+
+        lockedFallbackPrimitives.push_back(primitiveIndex);
+        lockedFallbackBytes += primitiveFallbackBytes;
+        for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
+            fallbackPages.push_back(primitive.fallbackPageOffset + localPage);
+        }
+    }
+    if (!residency_.lockFallbackPages(fallbackPages, reason)) {
+        log = "MeshletStreamRuntime fallback residency initialization failed: " + reason;
         return makeError(Error::Failure);
     }
 
@@ -1405,37 +1469,38 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
             log = "MeshletStreamRuntime fallback BLAS budget must be non-zero";
             return makeError(Error::InvalidArgument);
         }
-        fallbackBlasReferenceOffsets_.resize(asset_.primitiveCount());
-        fallbackBlasReferenceCounts_.resize(asset_.primitiveCount());
-        fallbackBlasStorageOffsets_.resize(asset_.primitiveCount());
-        fallbackBlasBuilt_.assign(asset_.primitiveCount(), 0);
+        if (lockedFallbackPrimitives.empty()) {
+            log = "MeshletStreamRuntime cluster RTX requires at least one locked fallback primitive";
+            return makeError(Error::OutOfMemory);
+        }
 
+        const uint64_t bottomLevelAlignment = clusterBottomLevelAlignment(nativeDevice.physicalDevice);
+        if (bottomLevelAlignment == 0) {
+            log = "MeshletStreamRuntime fallback BLAS alignment is unavailable";
+            return makeError(Error::Failure);
+        }
+        std::unordered_map<uint32_t, vulkan::ClusterAccelerationStructureBuildSizes> sizeCache;
         uint64_t totalFallbackReferences = 0;
-        for (uint32_t primitiveIndex = 0; primitiveIndex < asset_.primitiveCount(); ++primitiveIndex) {
+        uint64_t fallbackStorageBytes = 0;
+        uint64_t fallbackScratchBytes = 0;
+        fallbackBlasPrimitives_.reserve(lockedFallbackPrimitives.size());
+        for (uint32_t primitiveIndex : lockedFallbackPrimitives) {
             const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
             uint64_t primitiveReferences = 0;
             for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
-                primitiveReferences += asset_.pages()[primitive.fallbackPageOffset + localPage].clusterCount;
+                const uint32_t clusterCount =
+                    asset_.pages()[primitive.fallbackPageOffset + localPage].clusterCount;
+                if (clusterCount > std::numeric_limits<uint64_t>::max() - primitiveReferences) {
+                    log = "MeshletStreamRuntime primitive fallback CLAS reference count overflowed";
+                    return makeError(Error::InvalidArgument);
+                }
+                primitiveReferences += clusterCount;
             }
             if (primitiveReferences == 0 || primitiveReferences > std::numeric_limits<uint32_t>::max()) {
                 log = "MeshletStreamRuntime primitive fallback CLAS reference count overflowed";
                 return makeError(Error::InvalidArgument);
             }
-            fallbackBlasReferenceOffsets_[primitiveIndex] = totalFallbackReferences;
-            fallbackBlasReferenceCounts_[primitiveIndex] = static_cast<uint32_t>(primitiveReferences);
-            totalFallbackReferences += primitiveReferences;
-        }
-        if (totalFallbackReferences > std::numeric_limits<uint64_t>::max() / sizeof(uint64_t)) {
-            log = "MeshletStreamRuntime total fallback CLAS reference bytes overflowed";
-            return makeError(Error::InvalidArgument);
-        }
-
-        const uint64_t bottomLevelAlignment = clusterBottomLevelAlignment(nativeDevice.physicalDevice);
-        std::unordered_map<uint32_t, vulkan::ClusterAccelerationStructureBuildSizes> sizeCache;
-        uint64_t fallbackStorageBytes = 0;
-        uint64_t fallbackScratchBytes = 0;
-        for (uint32_t primitiveIndex = 0; primitiveIndex < asset_.primitiveCount(); ++primitiveIndex) {
-            const uint32_t clusterCount = fallbackBlasReferenceCounts_[primitiveIndex];
+            const uint32_t clusterCount = static_cast<uint32_t>(primitiveReferences);
             auto [iter, inserted] = sizeCache.try_emplace(clusterCount);
             if (inserted) {
                 result = vulkan::queryClusterAccelerationStructureBottomLevelBuildSizes(
@@ -1455,19 +1520,42 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                     return result ? makeError(Error::Failure) : result;
                 }
             }
-            fallbackStorageBytes = alignUp(fallbackStorageBytes, bottomLevelAlignment);
-            fallbackBlasStorageOffsets_[primitiveIndex] = fallbackStorageBytes;
+            if (fallbackStorageBytes >
+                std::numeric_limits<uint64_t>::max() - (bottomLevelAlignment - 1u)) {
+                log = "MeshletStreamRuntime fallback BLAS storage alignment overflowed";
+                return makeError(Error::InvalidArgument);
+            }
+            const uint64_t storageOffset = alignUp(fallbackStorageBytes, bottomLevelAlignment);
+            if (storageOffset > desc.maxFallbackBlasBytes ||
+                iter->second.accelerationStructureSize > desc.maxFallbackBlasBytes - storageOffset) {
+                continue;
+            }
+            if (primitiveReferences > std::numeric_limits<uint64_t>::max() - totalFallbackReferences) {
+                log = "MeshletStreamRuntime total fallback CLAS reference count overflowed";
+                return makeError(Error::InvalidArgument);
+            }
+            fallbackBlasPrimitives_.push_back(FallbackBlasPrimitive{
+                .primitiveIndex = primitiveIndex,
+                .referenceCount = clusterCount,
+                .referenceOffset = totalFallbackReferences,
+                .storageOffset = storageOffset,
+            });
+            totalFallbackReferences += primitiveReferences;
             if (iter->second.accelerationStructureSize >
-                std::numeric_limits<uint64_t>::max() - fallbackStorageBytes) {
+                std::numeric_limits<uint64_t>::max() - storageOffset) {
                 log = "MeshletStreamRuntime fallback BLAS storage size overflowed";
                 return makeError(Error::InvalidArgument);
             }
-            fallbackStorageBytes += iter->second.accelerationStructureSize;
+            fallbackStorageBytes = storageOffset + iter->second.accelerationStructureSize;
             fallbackScratchBytes = std::max(fallbackScratchBytes, iter->second.buildScratchSize);
         }
-        if (fallbackStorageBytes > desc.maxFallbackBlasBytes) {
-            log = "MeshletStreamRuntime fallback BLAS storage exceeds maxFallbackBlasBytes";
+        if (fallbackBlasPrimitives_.empty()) {
+            log = "MeshletStreamRuntime maxFallbackBlasBytes cannot hold one locked fallback primitive";
             return makeError(Error::OutOfMemory);
+        }
+        if (totalFallbackReferences > std::numeric_limits<uint64_t>::max() / sizeof(uint64_t)) {
+            log = "MeshletStreamRuntime total fallback CLAS reference bytes overflowed";
+            return makeError(Error::InvalidArgument);
         }
 
         result = createNamedBuffer(
@@ -1523,22 +1611,6 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         const uint64_t fallbackReferenceAddress =
             vulkan::nativeBuffer(*fallbackBlasReferenceBuffer_).address;
 
-        std::vector<MeshletStreamGpuBlasBuildInfo> fallbackBuildInfos(asset_.primitiveCount());
-        std::vector<uint64_t> fallbackDestinations(asset_.primitiveCount());
-        std::vector<uint64_t> fallbackAddresses(asset_.primitiveCount(), 0);
-        for (uint32_t primitiveIndex = 0; primitiveIndex < asset_.primitiveCount(); ++primitiveIndex) {
-            const uint64_t referenceAddress = fallbackReferenceAddress +
-                fallbackBlasReferenceOffsets_[primitiveIndex] * sizeof(uint64_t);
-            fallbackBuildInfos[primitiveIndex] = MeshletStreamGpuBlasBuildInfo{
-                .clusterReferencesCount = fallbackBlasReferenceCounts_[primitiveIndex],
-                .clusterReferencesStride = sizeof(uint64_t),
-                .clusterReferencesAddressLow = static_cast<uint32_t>(referenceAddress),
-                .clusterReferencesAddressHigh = static_cast<uint32_t>(referenceAddress >> 32u),
-            };
-            fallbackDestinations[primitiveIndex] =
-                fallbackStorageAddress + fallbackBlasStorageOffsets_[primitiveIndex];
-        }
-
         auto createFallbackHostBuffer = [&device, &log](
                                             uint64_t size,
                                             BufferUsageBits usage,
@@ -1555,27 +1627,44 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 log,
                 label);
         };
-        const uint64_t primitiveBuildInfoBytes =
-            static_cast<uint64_t>(asset_.primitiveCount()) * sizeof(MeshletStreamGpuBlasBuildInfo);
+        const uint64_t fallbackPrimitiveCount = fallbackBlasPrimitives_.size();
+        const uint64_t fallbackBuildInfoBytes =
+            fallbackPrimitiveCount * sizeof(MeshletStreamGpuBlasBuildInfo);
+        const uint64_t fallbackDestinationBytes = fallbackPrimitiveCount * sizeof(uint64_t);
         const uint64_t primitiveAddressBytes =
             static_cast<uint64_t>(asset_.primitiveCount()) * sizeof(uint64_t);
         result = createFallbackHostBuffer(
-            primitiveBuildInfoBytes,
+            fallbackBuildInfoBytes,
             BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
             fallbackBlasBuildInfoBuffer_,
             "MeshletStreamRuntime fallback BLAS build infos");
         if (!result) {
             return result;
         }
-        result = updateHostBuffer(
-            *fallbackBlasBuildInfoBuffer_,
-            fallbackBuildInfos.data(),
-            primitiveBuildInfoBytes);
-        if (!result) {
-            return result;
+        auto* fallbackBuildInfos = static_cast<MeshletStreamGpuBlasBuildInfo*>(
+            fallbackBlasBuildInfoBuffer_->map());
+        if (fallbackBuildInfos == nullptr) {
+            log = "MeshletStreamRuntime fallback BLAS build info buffer map failed";
+            return makeError(Error::Failure);
         }
+        for (size_t fallbackIndex = 0;
+             fallbackIndex < fallbackBlasPrimitives_.size();
+             ++fallbackIndex) {
+            const FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
+            const uint64_t referenceAddress = fallbackReferenceAddress +
+                fallback.referenceOffset * sizeof(uint64_t);
+            fallbackBuildInfos[fallbackIndex] = MeshletStreamGpuBlasBuildInfo{
+                .clusterReferencesCount = fallback.referenceCount,
+                .clusterReferencesStride = sizeof(uint64_t),
+                .clusterReferencesAddressLow = static_cast<uint32_t>(referenceAddress),
+                .clusterReferencesAddressHigh = static_cast<uint32_t>(referenceAddress >> 32u),
+            };
+        }
+        fallbackBlasBuildInfoBuffer_->flush(0, fallbackBuildInfoBytes);
+        fallbackBlasBuildInfoBuffer_->unmap();
+
         result = createFallbackHostBuffer(
-            primitiveAddressBytes,
+            fallbackDestinationBytes,
             BufferUsageBits::Storage |
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
@@ -1584,13 +1673,20 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!result) {
             return result;
         }
-        result = updateHostBuffer(
-            *fallbackBlasDestinationBuffer_,
-            fallbackDestinations.data(),
-            primitiveAddressBytes);
-        if (!result) {
-            return result;
+        auto* fallbackDestinations = static_cast<uint64_t*>(fallbackBlasDestinationBuffer_->map());
+        if (fallbackDestinations == nullptr) {
+            log = "MeshletStreamRuntime fallback BLAS destination buffer map failed";
+            return makeError(Error::Failure);
         }
+        for (size_t fallbackIndex = 0;
+             fallbackIndex < fallbackBlasPrimitives_.size();
+             ++fallbackIndex) {
+            fallbackDestinations[fallbackIndex] =
+                fallbackStorageAddress + fallbackBlasPrimitives_[fallbackIndex].storageOffset;
+        }
+        fallbackBlasDestinationBuffer_->flush(0, fallbackDestinationBytes);
+        fallbackBlasDestinationBuffer_->unmap();
+
         result = createFallbackHostBuffer(
             primitiveAddressBytes,
             BufferUsageBits::Storage,
@@ -1599,13 +1695,14 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         if (!result) {
             return result;
         }
-        result = updateHostBuffer(
-            *fallbackBlasAddressBuffer_,
-            fallbackAddresses.data(),
-            primitiveAddressBytes);
-        if (!result) {
-            return result;
+        auto* fallbackAddresses = static_cast<uint64_t*>(fallbackBlasAddressBuffer_->map());
+        if (fallbackAddresses == nullptr) {
+            log = "MeshletStreamRuntime fallback BLAS address table map failed";
+            return makeError(Error::Failure);
         }
+        std::fill_n(fallbackAddresses, asset_.primitiveCount(), uint64_t{0});
+        fallbackBlasAddressBuffer_->flush(0, primitiveAddressBytes);
+        fallbackBlasAddressBuffer_->unmap();
 
         if (fallbackStorageAddress == 0 ||
             fallbackBlasScratchAddress_ == 0 ||
@@ -2154,10 +2251,7 @@ void MeshletStreamRuntime::reset()
     blasScratchAddress_ = 0;
     fallbackBlasScratchAddress_ = 0;
     tlasScratchAddress_ = 0;
-    fallbackBlasReferenceOffsets_.clear();
-    fallbackBlasReferenceCounts_.clear();
-    fallbackBlasStorageOffsets_.clear();
-    fallbackBlasBuilt_.clear();
+    fallbackBlasPrimitives_.clear();
     currentFrameUploadCount_ = 0;
 }
 
@@ -3042,18 +3136,19 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
         fallbackBlasBuildInfoBuffer_ == nullptr ||
         fallbackBlasDestinationBuffer_ == nullptr ||
         fallbackBlasAddressBuffer_ == nullptr ||
-        fallbackBlasReferenceOffsets_.size() != asset_.primitiveCount() ||
-        fallbackBlasReferenceCounts_.size() != asset_.primitiveCount() ||
-        fallbackBlasStorageOffsets_.size() != asset_.primitiveCount() ||
-        fallbackBlasBuilt_.size() != asset_.primitiveCount()) {
+        fallbackBlasPrimitives_.empty()) {
         return makeError(Error::InvalidArgument);
     }
 
-    std::vector<uint32_t> readyPrimitives;
-    for (uint32_t primitiveIndex = 0; primitiveIndex < asset_.primitiveCount(); ++primitiveIndex) {
-        if (fallbackBlasBuilt_[primitiveIndex] != 0) {
+    std::vector<uint32_t> readyFallbackIndices;
+    for (uint32_t fallbackIndex = 0;
+         fallbackIndex < fallbackBlasPrimitives_.size();
+         ++fallbackIndex) {
+        const FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
+        if (fallback.built) {
             continue;
         }
+        const uint32_t primitiveIndex = fallback.primitiveIndex;
         const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
         bool ready = true;
         for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
@@ -3063,10 +3158,10 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
             }
         }
         if (ready) {
-            readyPrimitives.push_back(primitiveIndex);
+            readyFallbackIndices.push_back(fallbackIndex);
         }
     }
-    if (readyPrimitives.empty()) {
+    if (readyFallbackIndices.empty()) {
         return {};
     }
 
@@ -3084,9 +3179,11 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
 
     const uint64_t fallbackStorageAddress =
         vulkan::nativeBuffer(*fallbackBlasStorageBuffer_).address;
-    for (uint32_t primitiveIndex : readyPrimitives) {
+    for (uint32_t fallbackIndex : readyFallbackIndices) {
+        const FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
+        const uint32_t primitiveIndex = fallback.primitiveIndex;
         const scene::MeshletStreamPrimitiveInfo& primitive = asset_.primitives()[primitiveIndex];
-        const uint64_t referenceOffset = fallbackBlasReferenceOffsets_[primitiveIndex];
+        const uint64_t referenceOffset = fallback.referenceOffset;
         uint64_t writeOffset = referenceOffset;
         for (uint32_t localPage = 0; localPage < primitive.fallbackPageCount; ++localPage) {
             const uint32_t pageIndex = primitive.fallbackPageOffset + localPage;
@@ -3095,16 +3192,16 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
                 referenceData[writeOffset++] = clasPool_->clusterAddress(pageIndex, clusterIndex);
             }
         }
-        if (writeOffset - referenceOffset != fallbackBlasReferenceCounts_[primitiveIndex]) {
+        if (writeOffset - referenceOffset != fallback.referenceCount) {
             fallbackBlasReferenceBuffer_->unmap();
             fallbackBlasAddressBuffer_->unmap();
             return makeError(Error::Failure);
         }
         addressData[primitiveIndex] =
-            fallbackStorageAddress + fallbackBlasStorageOffsets_[primitiveIndex];
+            fallbackStorageAddress + fallback.storageOffset;
         fallbackBlasReferenceBuffer_->flush(
             referenceOffset * sizeof(uint64_t),
-            static_cast<uint64_t>(fallbackBlasReferenceCounts_[primitiveIndex]) * sizeof(uint64_t));
+            static_cast<uint64_t>(fallback.referenceCount) * sizeof(uint64_t));
         fallbackBlasAddressBuffer_->flush(
             static_cast<uint64_t>(primitiveIndex) * sizeof(uint64_t),
             sizeof(uint64_t));
@@ -3142,8 +3239,9 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
     };
     vkCmdPipelineBarrier2(nativeCommands, &inputDependency);
 
-    for (uint32_t primitiveIndex : readyPrimitives) {
-        const uint32_t clusterCount = fallbackBlasReferenceCounts_[primitiveIndex];
+    for (uint32_t fallbackIndex : readyFallbackIndices) {
+        FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
+        const uint32_t clusterCount = fallback.referenceCount;
         VkClusterAccelerationStructureClustersBottomLevelInputNV blasInput{
             .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
             .maxTotalClusterCount = clusterCount,
@@ -3163,13 +3261,13 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
             .scratchData = fallbackBlasScratchAddress_,
             .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
                 .deviceAddress = nativeDestinations.address +
-                    static_cast<uint64_t>(primitiveIndex) * sizeof(uint64_t),
+                    static_cast<uint64_t>(fallbackIndex) * sizeof(uint64_t),
                 .stride = sizeof(uint64_t),
                 .size = sizeof(uint64_t),
             },
             .srcInfosArray = VkStridedDeviceAddressRegionKHR{
                 .deviceAddress = nativeBuildInfos.address +
-                    static_cast<uint64_t>(primitiveIndex) * sizeof(MeshletStreamGpuBlasBuildInfo),
+                    static_cast<uint64_t>(fallbackIndex) * sizeof(MeshletStreamGpuBlasBuildInfo),
                 .stride = sizeof(MeshletStreamGpuBlasBuildInfo),
                 .size = sizeof(MeshletStreamGpuBlasBuildInfo),
             },
@@ -3192,7 +3290,7 @@ Result MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
             .pMemoryBarriers = &buildBarrier,
         };
         vkCmdPipelineBarrier2(nativeCommands, &buildDependency);
-        fallbackBlasBuilt_[primitiveIndex] = 1;
+        fallback.built = true;
     }
     return {};
 #endif
