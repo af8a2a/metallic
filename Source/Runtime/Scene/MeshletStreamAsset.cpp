@@ -31,8 +31,10 @@ namespace {
 
 constexpr std::array<char, 8> kMeshletStreamMagic{'M', 'T', 'L', 'M', 'S', 'T', 'R', 'M'};
 constexpr std::array<char, 8> kMeshletStreamPartialMagic{'M', 'T', 'L', 'M', 'S', 'P', 'R', 'T'};
+constexpr std::array<char, 8> kMeshoptDecodeCacheMagic{'M', 'T', 'L', 'M', 'O', 'P', 'T', 'C'};
 constexpr uint32_t kMeshletStreamVersion = 7;
 constexpr uint32_t kMeshletStreamPartialVersion = 6;
+constexpr uint32_t kMeshoptDecodeCacheVersion = 1;
 constexpr uint32_t kMeshletStreamEndian = 0x01020304;
 constexpr uint32_t kPayloadMagic = 0x4d535047u; // "GSPM"
 constexpr uint32_t kPayloadVersion = 3;
@@ -129,9 +131,18 @@ struct MeshletStreamPartialGeometryEntry {
     uint32_t streamPrimitiveIndex = 0;
 };
 
+struct MeshoptDecodeCacheHeader {
+    char magic[8] = {};
+    uint32_t version = 0;
+    uint32_t endian = 0;
+    uint64_t sourceDependencyFingerprint = 0;
+    uint64_t bufferViewCount = 0;
+};
+
 static_assert(std::is_trivially_copyable_v<MeshletStreamFileHeader>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPartialFileHeader>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPartialGeometryEntry>);
+static_assert(std::is_trivially_copyable_v<MeshoptDecodeCacheHeader>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPrimitiveInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamInstanceInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamGeometryInfo>);
@@ -907,6 +918,13 @@ std::filesystem::path meshletStreamPartialPathFor(const std::filesystem::path& o
     return path;
 }
 
+std::filesystem::path meshoptDecodeCachePathFor(const std::filesystem::path& outputPath)
+{
+    std::filesystem::path path = outputPath;
+    path += ".meshopt-cache";
+    return path;
+}
+
 bool openStreamAssetBuildFile(
     const std::filesystem::path& outputPath,
     std::ofstream& stream,
@@ -1649,6 +1667,8 @@ struct StreamGltfSource {
     std::vector<std::string> externalBufferUris;
     std::vector<bool> nodeVisibility;
     std::vector<MeshoptCompression> meshoptCompressions;
+    std::filesystem::path meshoptDecodeCacheDirectory;
+    mutable std::vector<uint8_t> meshoptDecodeCacheReady;
     mutable size_t decodedMeshoptBufferView = std::numeric_limits<size_t>::max();
     mutable std::vector<uint8_t> decodedMeshoptBytes;
     MeshletStreamAssetOfflineBuildStats* stats = nullptr;
@@ -1672,6 +1692,118 @@ bool addWithin(uint64_t lhs, uint64_t rhs, uint64_t limit, uint64_t& result)
         return false;
     }
     result = lhs + rhs;
+    return true;
+}
+
+std::filesystem::path meshoptDecodedBufferViewPathForStreamBuilder(
+    const StreamGltfSource& source,
+    size_t bufferViewIndex)
+{
+    return source.meshoptDecodeCacheDirectory /
+        ("buffer_view_" + std::to_string(bufferViewIndex) + ".bin");
+}
+
+void removeMeshoptDecodeCacheForStreamBuilder(const std::filesystem::path& outputPath)
+{
+    std::error_code removeError;
+    std::filesystem::remove_all(meshoptDecodeCachePathFor(outputPath), removeError);
+}
+
+bool prepareMeshoptDecodeCacheForStreamBuilder(
+    StreamGltfSource& source,
+    const std::filesystem::path& outputPath,
+    uint64_t sourceDependencyFingerprint,
+    std::string& reason)
+{
+    if (std::none_of(
+            source.meshoptCompressions.begin(),
+            source.meshoptCompressions.end(),
+            [](const StreamGltfSource::MeshoptCompression& compression) {
+                return compression.valid();
+            })) {
+        return true;
+    }
+
+    source.meshoptDecodeCacheDirectory = meshoptDecodeCachePathFor(outputPath);
+    source.meshoptDecodeCacheReady.assign(source.meshoptCompressions.size(), 0);
+    const std::filesystem::path headerPath =
+        source.meshoptDecodeCacheDirectory / "header.bin";
+
+    bool cacheHeaderValid = false;
+    {
+        std::ifstream headerFile(headerPath, std::ios::binary);
+        MeshoptDecodeCacheHeader header;
+        if (headerFile && readPod(headerFile, header)) {
+            cacheHeaderValid =
+                std::memcmp(header.magic, kMeshoptDecodeCacheMagic.data(),
+                    kMeshoptDecodeCacheMagic.size()) == 0 &&
+                header.version == kMeshoptDecodeCacheVersion &&
+                header.endian == kMeshletStreamEndian &&
+                header.sourceDependencyFingerprint == sourceDependencyFingerprint &&
+                header.bufferViewCount == source.model.bufferViews.size();
+        }
+    }
+
+    if (!cacheHeaderValid) {
+        std::error_code removeError;
+        std::filesystem::remove_all(source.meshoptDecodeCacheDirectory, removeError);
+        if (removeError) {
+            reason = "streamasset builder cannot reset meshopt decode cache: " +
+                removeError.message();
+            return false;
+        }
+        std::error_code createError;
+        std::filesystem::create_directories(source.meshoptDecodeCacheDirectory, createError);
+        if (createError) {
+            reason = "streamasset builder cannot create meshopt decode cache: " +
+                createError.message();
+            return false;
+        }
+
+        MeshoptDecodeCacheHeader header;
+        std::memcpy(header.magic, kMeshoptDecodeCacheMagic.data(), kMeshoptDecodeCacheMagic.size());
+        header.version = kMeshoptDecodeCacheVersion;
+        header.endian = kMeshletStreamEndian;
+        header.sourceDependencyFingerprint = sourceDependencyFingerprint;
+        header.bufferViewCount = source.model.bufferViews.size();
+        std::filesystem::path tempHeaderPath = headerPath;
+        tempHeaderPath += ".tmp";
+        std::ofstream headerFile(tempHeaderPath, std::ios::binary | std::ios::trunc);
+        if (!headerFile || !writePod(headerFile, header)) {
+            reason = "streamasset builder cannot write meshopt decode cache header";
+            return false;
+        }
+        headerFile.close();
+        if (!headerFile) {
+            reason = "streamasset builder cannot close meshopt decode cache header";
+            return false;
+        }
+        std::error_code renameError;
+        std::filesystem::rename(tempHeaderPath, headerPath, renameError);
+        if (renameError) {
+            std::error_code cleanupError;
+            std::filesystem::remove(tempHeaderPath, cleanupError);
+            reason = "streamasset builder cannot publish meshopt decode cache header: " +
+                renameError.message();
+            return false;
+        }
+    }
+
+    for (size_t bufferViewIndex = 0;
+         bufferViewIndex < source.meshoptCompressions.size();
+         ++bufferViewIndex) {
+        if (!source.meshoptCompressions[bufferViewIndex].valid() ||
+            bufferViewIndex >= source.model.bufferViews.size()) {
+            continue;
+        }
+        std::error_code sizeError;
+        const uint64_t cachedSize = std::filesystem::file_size(
+            meshoptDecodedBufferViewPathForStreamBuilder(source, bufferViewIndex),
+            sizeError);
+        if (!sizeError && cachedSize == source.model.bufferViews[bufferViewIndex].byteLength) {
+            source.meshoptDecodeCacheReady[bufferViewIndex] = 1;
+        }
+    }
     return true;
 }
 
@@ -1720,11 +1852,7 @@ bool decodeMeshoptBufferViewForStreamBuilder(
     size_t bufferViewIndex,
     std::string& reason)
 {
-    if (source.decodedMeshoptBufferView == bufferViewIndex) {
-        return true;
-    }
-    source.decodedMeshoptBufferView = std::numeric_limits<size_t>::max();
-    source.decodedMeshoptBytes.clear();
+    const bool diskCacheEnabled = !source.meshoptDecodeCacheDirectory.empty();
     if (bufferViewIndex >= source.meshoptCompressions.size()) {
         reason = "streamasset builder meshopt bufferView metadata is missing";
         return false;
@@ -1746,6 +1874,16 @@ bool decodeMeshoptBufferViewForStreamBuilder(
         reason = "streamasset builder meshopt bufferView metadata is invalid";
         return false;
     }
+    if (diskCacheEnabled &&
+        bufferViewIndex < source.meshoptDecodeCacheReady.size() &&
+        source.meshoptDecodeCacheReady[bufferViewIndex] != 0) {
+        return true;
+    }
+    if (!diskCacheEnabled && source.decodedMeshoptBufferView == bufferViewIndex) {
+        return true;
+    }
+    source.decodedMeshoptBufferView = std::numeric_limits<size_t>::max();
+    source.decodedMeshoptBytes.clear();
 
     const tinygltf::Buffer& buffer = source.model.buffers[compression.buffer];
     std::vector<uint8_t> encoded(static_cast<size_t>(compression.byteLength));
@@ -1820,6 +1958,46 @@ bool decodeMeshoptBufferViewForStreamBuilder(
     } else if (compression.filter == "COLOR") {
         meshopt_decodeFilterColor(source.decodedMeshoptBytes.data(), compression.count, compression.stride);
     }
+
+    if (diskCacheEnabled) {
+        if (bufferViewIndex >= source.meshoptDecodeCacheReady.size() ||
+            source.decodedMeshoptBytes.size() >
+                static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+            reason = "streamasset builder decoded meshopt bufferView exceeds cache limits";
+            return false;
+        }
+        const std::filesystem::path cachePath =
+            meshoptDecodedBufferViewPathForStreamBuilder(source, bufferViewIndex);
+        std::filesystem::path tempPath = cachePath;
+        tempPath += ".tmp";
+        std::ofstream cacheFile(tempPath, std::ios::binary | std::ios::trunc);
+        if (!cacheFile) {
+            reason = "streamasset builder cannot open decoded meshopt cache file";
+            return false;
+        }
+        cacheFile.write(
+            reinterpret_cast<const char*>(source.decodedMeshoptBytes.data()),
+            static_cast<std::streamsize>(source.decodedMeshoptBytes.size()));
+        cacheFile.close();
+        if (!cacheFile) {
+            reason = "streamasset builder cannot write decoded meshopt cache file";
+            return false;
+        }
+        std::error_code removeError;
+        std::filesystem::remove(cachePath, removeError);
+        std::error_code renameError;
+        std::filesystem::rename(tempPath, cachePath, renameError);
+        if (renameError) {
+            std::error_code cleanupError;
+            std::filesystem::remove(tempPath, cleanupError);
+            reason = "streamasset builder cannot publish decoded meshopt cache file: " +
+                renameError.message();
+            return false;
+        }
+        source.meshoptDecodeCacheReady[bufferViewIndex] = 1;
+        std::vector<uint8_t>().swap(source.decodedMeshoptBytes);
+        return true;
+    }
     source.decodedMeshoptBufferView = bufferViewIndex;
     return true;
 }
@@ -1880,17 +2058,45 @@ bool readAccessorRangeForStreamBuilder(
             return false;
         }
         const uint64_t rangeOffset = accessor.byteOffset;
-        if (rangeOffset > source.decodedMeshoptBytes.size() ||
-            rangeByteSize > source.decodedMeshoptBytes.size() - rangeOffset ||
+        const uint64_t decodedByteLength = bufferView.byteLength;
+        if (rangeOffset > decodedByteLength ||
+            rangeByteSize > decodedByteLength - rangeOffset ||
             rangeByteSize > std::numeric_limits<size_t>::max()) {
             reason = "streamasset builder accessor byte range exceeds decoded meshopt bufferView";
             return false;
         }
         outBytes.resize(static_cast<size_t>(rangeByteSize));
-        std::memcpy(
-            outBytes.data(),
-            source.decodedMeshoptBytes.data() + rangeOffset,
-            outBytes.size());
+        if (!source.meshoptDecodeCacheDirectory.empty()) {
+            if (rangeOffset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
+                outBytes.size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+                reason = "streamasset builder decoded meshopt cache range exceeds stream limits";
+                return false;
+            }
+            const std::filesystem::path cachePath =
+                meshoptDecodedBufferViewPathForStreamBuilder(source, bufferViewIndex);
+            std::ifstream cacheFile(cachePath, std::ios::binary);
+            if (!cacheFile) {
+                reason = "streamasset builder cannot open decoded meshopt cache file";
+                return false;
+            }
+            cacheFile.seekg(static_cast<std::streamoff>(rangeOffset));
+            cacheFile.read(
+                reinterpret_cast<char*>(outBytes.data()),
+                static_cast<std::streamsize>(outBytes.size()));
+            if (!cacheFile || static_cast<size_t>(cacheFile.gcount()) != outBytes.size()) {
+                reason = "streamasset builder cannot read decoded meshopt cache range";
+                return false;
+            }
+        } else {
+            if (decodedByteLength != source.decodedMeshoptBytes.size()) {
+                reason = "streamasset builder decoded meshopt bufferView cache is invalid";
+                return false;
+            }
+            std::memcpy(
+                outBytes.data(),
+                source.decodedMeshoptBytes.data() + rangeOffset,
+                outBytes.size());
+        }
         outStride = static_cast<size_t>(stride);
         return true;
     }
@@ -4230,9 +4436,17 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
             if (compressionMatches) {
                 std::error_code removeError;
                 std::filesystem::remove(partialPath, removeError);
+                removeMeshoptDecodeCacheForStreamBuilder(outputPath);
                 return true;
             }
         }
+    }
+    if (!prepareMeshoptDecodeCacheForStreamBuilder(
+            source,
+            outputPath,
+            sourceDependencyFingerprint,
+            reason)) {
+        return false;
     }
 
     std::fstream stream;
@@ -4303,6 +4517,7 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
     }
     std::error_code removeError;
     std::filesystem::remove(partialPath, removeError);
+    removeMeshoptDecodeCacheForStreamBuilder(outputPath);
     return true;
 }
 

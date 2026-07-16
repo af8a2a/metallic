@@ -158,7 +158,8 @@ void writeGeneratedTangentSceneBinary(const std::filesystem::path& path)
 
 std::filesystem::path writeMeshoptCompressedScene(
     const std::filesystem::path& directory,
-    size_t positionCompressionStride = sizeof(uint16_t) * 4u)
+    size_t positionCompressionStride = sizeof(uint16_t) * 4u,
+    uint32_t meshCount = 1u)
 {
     constexpr std::array<uint16_t, 12> kPositions{
         0, 0, 0, 0,
@@ -306,12 +307,37 @@ std::filesystem::path writeMeshoptCompressedScene(
     { "bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR" }
   ],
   "meshes": [
-    { "name": "Meshopt Triangle", "primitives": [
+)json";
+    meshCount = std::max(meshCount, 1u);
+    for (uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
+        if (meshIndex != 0) {
+            gltf << ",\n";
+        }
+        gltf << R"json(    { "name": "Meshopt Triangle )json" << meshIndex << R"json(", "primitives": [
       { "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 }, "indices": 3, "mode": 4 }
-    ] }
+    ] })json";
+    }
+    gltf << R"json(
   ],
-  "nodes": [ { "name": "Meshopt Triangle", "mesh": 0 } ],
-  "scenes": [ { "name": "Meshopt Scene", "nodes": [0] } ],
+  "nodes": [
+)json";
+    for (uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
+        if (meshIndex != 0) {
+            gltf << ",\n";
+        }
+        gltf << R"json(    { "name": "Meshopt Triangle )json" << meshIndex
+             << R"json(", "mesh": )json" << meshIndex << " }";
+    }
+    gltf << R"json(
+  ],
+  "scenes": [ { "name": "Meshopt Scene", "nodes": [)json";
+    for (uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
+        if (meshIndex != 0) {
+            gltf << ", ";
+        }
+        gltf << meshIndex;
+    }
+    gltf << R"json(] } ],
   "scene": 0
 })json";
     writeTextFile(gltfPath, gltf.str());
@@ -1694,34 +1720,67 @@ void testMeshoptCompressedMeshletStreamAsset(const std::filesystem::path& direct
 {
     const std::filesystem::path compressedDirectory = directory / "meshopt_compressed_streamasset";
     std::filesystem::create_directories(compressedDirectory);
-    const std::filesystem::path gltfPath = writeMeshoptCompressedScene(compressedDirectory);
+    const std::filesystem::path gltfPath = writeMeshoptCompressedScene(
+        compressedDirectory,
+        sizeof(uint16_t) * 4u,
+        2u);
     const std::filesystem::path streamAssetPath =
         compressedDirectory / "meshopt_compressed.meshstream.bin";
+    std::filesystem::path partialPath = streamAssetPath;
+    partialPath += ".partial";
+    std::filesystem::path meshoptCachePath = streamAssetPath;
+    meshoptCachePath += ".meshopt-cache";
     std::filesystem::remove(streamAssetPath);
+    std::filesystem::remove(partialPath);
+    std::filesystem::remove_all(meshoptCachePath);
 
     std::string reason;
-    metallic::scene::MeshletStreamAssetOfflineBuildStats buildStats;
+    metallic::scene::MeshletStreamAssetOfflineBuildStats pausedBuildStats;
+    ASSERT_FALSE(metallic::scene::buildMeshletStreamAssetOffline(
+        metallic::scene::MeshletStreamAssetOfflineBuildDesc{
+            .sourcePath = gltfPath,
+            .outputPath = streamAssetPath,
+            .maxNewGeometriesPerInvocation = 1,
+            .stats = &pausedBuildStats,
+        },
+        reason));
+    EXPECT_NE(reason.find("paused"), std::string::npos) << reason;
+    EXPECT_EQ(pausedBuildStats.usedExternalBufferRangeReads, 1u);
+    EXPECT_EQ(pausedBuildStats.accessorRangeReadCount, 4u);
+    EXPECT_GT(pausedBuildStats.accessorRangeReadBytes, 0u);
+    EXPECT_LE(
+        pausedBuildStats.accessorRangeReadBytes,
+        pausedBuildStats.externalBufferDeclaredBytes);
+    EXPECT_GT(pausedBuildStats.maxAccessorRangeReadBytes, 0u);
+    EXPECT_LT(
+        pausedBuildStats.maxAccessorRangeReadBytes,
+        pausedBuildStats.externalBufferDeclaredBytes);
+    EXPECT_EQ(pausedBuildStats.partialCheckpointCount, 1u);
+    EXPECT_TRUE(std::filesystem::exists(partialPath));
+    EXPECT_TRUE(std::filesystem::exists(meshoptCachePath));
+
+    metallic::scene::MeshletStreamAssetOfflineBuildStats resumedBuildStats;
     ASSERT_TRUE(metallic::scene::buildMeshletStreamAssetOffline(
         metallic::scene::MeshletStreamAssetOfflineBuildDesc{
             .sourcePath = gltfPath,
             .outputPath = streamAssetPath,
-            .stats = &buildStats,
+            .stats = &resumedBuildStats,
         },
         reason)) << reason;
-    EXPECT_EQ(buildStats.usedExternalBufferRangeReads, 1u);
-    EXPECT_EQ(buildStats.accessorRangeReadCount, 4u);
-    EXPECT_GT(buildStats.accessorRangeReadBytes, 0u);
-    EXPECT_LE(buildStats.accessorRangeReadBytes, buildStats.externalBufferDeclaredBytes);
-    EXPECT_GT(buildStats.maxAccessorRangeReadBytes, 0u);
-    EXPECT_LT(buildStats.maxAccessorRangeReadBytes, buildStats.externalBufferDeclaredBytes);
-    EXPECT_EQ(buildStats.partialCheckpointCount, 1u);
+    EXPECT_EQ(resumedBuildStats.usedExternalBufferRangeReads, 1u);
+    EXPECT_EQ(resumedBuildStats.accessorRangeReadCount, 0u);
+    EXPECT_EQ(resumedBuildStats.accessorRangeReadBytes, 0u);
+    EXPECT_EQ(resumedBuildStats.maxAccessorRangeReadBytes, 0u);
+    EXPECT_EQ(resumedBuildStats.partialCheckpointCount, 1u);
+    EXPECT_FALSE(std::filesystem::exists(partialPath));
+    EXPECT_FALSE(std::filesystem::exists(meshoptCachePath));
 
     metallic::scene::MeshletStreamAsset asset;
     ASSERT_TRUE(asset.open(streamAssetPath, reason)) << reason;
     EXPECT_TRUE(asset.isCurrentForSource(gltfPath));
-    ASSERT_EQ(asset.primitiveCount(), 1u);
-    ASSERT_EQ(asset.geometryCount(), 1u);
-    ASSERT_EQ(asset.instanceCount(), 1u);
+    ASSERT_EQ(asset.primitiveCount(), 2u);
+    ASSERT_EQ(asset.geometryCount(), 2u);
+    ASSERT_EQ(asset.instanceCount(), 2u);
     ASSERT_GT(asset.pageCount(), 0u);
     const metallic::scene::MeshletStreamBounds& primitiveBounds = asset.primitives().front().bounds;
     ASSERT_EQ(primitiveBounds.valid, 1u);

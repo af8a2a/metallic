@@ -81,5 +81,7 @@ package-lock.json
 _builds
 .claude
 Asset/MeshletCache/
+*.meshstream.bin.partial
+*.meshopt-cache/
 cache/
 Asset/SuperSponza/
