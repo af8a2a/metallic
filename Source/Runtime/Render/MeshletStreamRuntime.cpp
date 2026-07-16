@@ -1502,7 +1502,9 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
         }
         result = createFallbackHostBuffer(
             primitiveAddressBytes,
-            BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+            BufferUsageBits::Storage |
+                BufferUsageBits::AccelerationStructureBuildInput |
+                BufferUsageBits::ShaderDeviceAddress,
             fallbackBlasDestinationBuffer_,
             "MeshletStreamRuntime fallback BLAS destinations");
         if (!result) {
