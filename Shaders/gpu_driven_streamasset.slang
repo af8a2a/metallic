@@ -24,8 +24,8 @@ static const uint kBlasInputPhaseCount = 1u;
 static const uint kBlasInputPhaseSetup = 2u;
 static const uint kBlasInputPhaseInsert = 3u;
 static const uint kClasPageStateActive = 1u;
-static const uint kClasPageClusterCountMask = 0x0000ffffu;
-static const uint kClasPageStateShift = 16u;
+static const uint kClasPageAddressOffsetMask = 0x3fffffffu;
+static const uint kClasPageStateShift = 30u;
 static const uint kBlasInstanceFallback = 1u << 0u;
 static const uint kBlasInstanceDynamic = 1u << 1u;
 static const uint kBlasInstanceOverflow = 1u << 2u;
@@ -209,18 +209,17 @@ struct GPUDrivenStreamAssetTraversalWorkItem
 
 struct GPUDrivenStreamAssetClasPageEntry
 {
-    uint addressOffset;
-    uint metadata;
+    uint addressOffsetAndState;
 };
 
-uint clasPageClusterCount(GPUDrivenStreamAssetClasPageEntry entry)
+uint clasPageAddressOffset(GPUDrivenStreamAssetClasPageEntry entry)
 {
-    return entry.metadata & kClasPageClusterCountMask;
+    return entry.addressOffsetAndState & kClasPageAddressOffsetMask;
 }
 
 uint clasPageState(GPUDrivenStreamAssetClasPageEntry entry)
 {
-    return entry.metadata >> kClasPageStateShift;
+    return entry.addressOffsetAndState >> kClasPageStateShift;
 }
 
 struct GPUDrivenStreamAssetBlasHeader
@@ -1619,9 +1618,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
             return;
         }
         GPUDrivenStreamAssetClasPageEntry page = clasPageTable[group.pageIndex];
-        if (clasPageState(page) != kClasPageStateActive ||
-            page.addressOffset == kInvalidClusterIndex ||
-            group.clusterCount > clasPageClusterCount(page)) {
+        if (clasPageState(page) != kClasPageStateActive) {
             InterlockedOr(instanceBlas[group.instanceIndex].flags, kBlasInstanceFallback);
             return;
         }
@@ -1694,9 +1691,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         return;
     }
     GPUDrivenStreamAssetClasPageEntry page = clasPageTable[group.pageIndex];
-    if (clasPageState(page) != kClasPageStateActive ||
-        page.addressOffset == kInvalidClusterIndex ||
-        group.clusterCount > clasPageClusterCount(page)) {
+    if (clasPageState(page) != kClasPageStateActive) {
         InterlockedOr(instanceBlas[group.instanceIndex].flags, kBlasInstanceFallback);
         InterlockedAdd(blasHeader[0].overflowCount, 1u);
         return;
@@ -1718,7 +1713,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
             continue;
         }
         blasClusterReferences[info.clusterReferenceOffset + insertIndex] =
-            clasAddresses[page.addressOffset + clusterIndex];
+            clasAddresses[clasPageAddressOffset(page) + clusterIndex];
     }
 }
 

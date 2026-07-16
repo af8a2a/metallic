@@ -408,6 +408,9 @@ public:
             pool.clusterAddress(pageIndex, 0) == 0 ||
             pool.clusterAddressBuffer() == nullptr ||
             pool.pageTableBuffer() == nullptr ||
+            pool.pageTableBuffer()->desc().size !=
+                static_cast<uint64_t>(asset.pageCount()) *
+                    sizeof(render::vulkan::MeshletStreamClasPageEntry) ||
             builtStats.builtPageCount != 1 ||
             builtStats.trackedPageCount != 1 ||
             builtStats.builtClusterCount != asset.pages()[pageIndex].clusterCount ||
@@ -427,9 +430,8 @@ public:
                 static_cast<uint64_t>(pageIndex) * sizeof(gpuPageEntry),
             sizeof(gpuPageEntry));
         pool.pageTableBuffer()->unmap();
-        if (gpuPageEntry.addressOffset != pool.pageClasAddressOffset(pageIndex) ||
-            render::vulkan::meshletStreamClasPageClusterCount(gpuPageEntry) !=
-                asset.pages()[pageIndex].clusterCount ||
+        if (render::vulkan::meshletStreamClasPageAddressOffset(gpuPageEntry) !=
+                pool.pageClasAddressOffset(pageIndex) ||
             render::vulkan::meshletStreamClasPageState(gpuPageEntry) !=
                 render::vulkan::MeshletStreamClasPageState::Active) {
             return RhiTestResult::fail("stream CLAS GPU page table did not expose the built page");
@@ -478,8 +480,8 @@ public:
                 static_cast<uint64_t>(pageIndex) * sizeof(gpuPageEntry),
             sizeof(gpuPageEntry));
         pool.pageTableBuffer()->unmap();
-        if (gpuPageEntry.addressOffset != render::vulkan::kInvalidMeshletStreamClasAddressOffset ||
-            render::vulkan::meshletStreamClasPageClusterCount(gpuPageEntry) != 0 ||
+        if (render::vulkan::meshletStreamClasPageAddressOffset(gpuPageEntry) !=
+                render::vulkan::kInvalidMeshletStreamClasAddressOffset ||
             render::vulkan::meshletStreamClasPageState(gpuPageEntry) !=
                 render::vulkan::MeshletStreamClasPageState::Empty) {
             return RhiTestResult::fail("stream CLAS GPU page table did not clear the released page");

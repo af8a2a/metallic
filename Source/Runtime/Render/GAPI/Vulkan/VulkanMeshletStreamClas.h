@@ -18,33 +18,36 @@ enum class MeshletStreamClasPageState : uint32_t {
     Retiring = 2,
 };
 
-inline constexpr uint32_t kMeshletStreamClasClusterCountMask = 0x0000ffffu;
-inline constexpr uint32_t kMeshletStreamClasPageStateShift = 16u;
+inline constexpr uint32_t kMeshletStreamClasPageAddressOffsetMask = 0x3fffffffu;
+inline constexpr uint32_t kMeshletStreamClasPageStateShift = 30u;
 
 struct MeshletStreamClasPageEntry {
-    uint32_t addressOffset = kInvalidMeshletStreamClasAddressOffset;
-    uint32_t metadata = 0;
+    uint32_t addressOffsetAndState = 0;
 };
 
-static_assert(sizeof(MeshletStreamClasPageEntry) == 8);
+static_assert(sizeof(MeshletStreamClasPageEntry) == 4);
 
-inline constexpr uint32_t packMeshletStreamClasPageMetadata(
-    uint32_t clusterCount,
+inline constexpr uint32_t packMeshletStreamClasPageEntry(
+    uint32_t addressOffset,
     MeshletStreamClasPageState state)
 {
-    return (clusterCount & kMeshletStreamClasClusterCountMask) |
+    return (addressOffset & kMeshletStreamClasPageAddressOffsetMask) |
         (static_cast<uint32_t>(state) << kMeshletStreamClasPageStateShift);
 }
 
-inline constexpr uint32_t meshletStreamClasPageClusterCount(const MeshletStreamClasPageEntry& entry)
+inline constexpr uint32_t meshletStreamClasPageAddressOffset(const MeshletStreamClasPageEntry& entry)
 {
-    return entry.metadata & kMeshletStreamClasClusterCountMask;
+    return (entry.addressOffsetAndState >> kMeshletStreamClasPageStateShift) ==
+            static_cast<uint32_t>(MeshletStreamClasPageState::Empty)
+        ? kInvalidMeshletStreamClasAddressOffset
+        : entry.addressOffsetAndState & kMeshletStreamClasPageAddressOffsetMask;
 }
 
 inline constexpr MeshletStreamClasPageState meshletStreamClasPageState(
     const MeshletStreamClasPageEntry& entry)
 {
-    return static_cast<MeshletStreamClasPageState>(entry.metadata >> kMeshletStreamClasPageStateShift);
+    return static_cast<MeshletStreamClasPageState>(
+        entry.addressOffsetAndState >> kMeshletStreamClasPageStateShift);
 }
 
 struct MeshletStreamClasPoolDesc {

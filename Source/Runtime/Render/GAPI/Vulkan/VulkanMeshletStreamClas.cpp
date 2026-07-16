@@ -184,9 +184,8 @@ struct MeshletStreamClasPool::Impl {
         if (pageIter != pages.end()) {
             const PageEntry& page = pageIter->second;
             if (page.state != PageState::Empty) {
-                entry.addressOffset = page.addressOffset;
-                entry.metadata = packMeshletStreamClasPageMetadata(
-                    page.clusterCount,
+                entry.addressOffsetAndState = packMeshletStreamClasPageEntry(
+                    page.addressOffset,
                     page.state == PageState::Built
                         ? MeshletStreamClasPageState::Active
                         : MeshletStreamClasPageState::Retiring);
@@ -377,8 +376,9 @@ Result MeshletStreamClasPool::initialize(
     }
 
     const uint64_t clusterSlotCapacity = storageBytes / clusterStride;
-    if (clusterSlotCapacity > std::numeric_limits<uint32_t>::max()) {
-        log = "MeshletStreamClasPool cluster slot capacity exceeds 32-bit addressing";
+    if (clusterSlotCapacity >
+        static_cast<uint64_t>(kMeshletStreamClasPageAddressOffsetMask) + 1u) {
+        log = "MeshletStreamClasPool cluster slot capacity exceeds packed page addressing";
         clear();
         return makeError(Error::InvalidArgument);
     }
@@ -475,8 +475,8 @@ Result MeshletStreamClasPool::initialize(
     const uint32_t clusterIdStride = desc.asset->maxPageClusters();
     const uint64_t clusterIdCapacity =
         static_cast<uint64_t>(desc.asset->pageCount()) * clusterIdStride;
-    if (clusterIdStride == 0 || clusterIdStride > kMeshletStreamClasClusterCountMask) {
-        log = "MeshletStreamClasPool page cluster count exceeds packed GPU metadata";
+    if (clusterIdStride == 0 || clusterIdStride > 32) {
+        log = "MeshletStreamClasPool page cluster count exceeds the traversal mask capacity";
         clear();
         return makeError(Error::InvalidArgument);
     }
