@@ -257,6 +257,42 @@ std::span<const T> makeSpan(const uint8_t* base, uint64_t offset, uint64_t count
     return std::span<const T>(reinterpret_cast<const T*>(base + offset), static_cast<size_t>(count));
 }
 
+bool publishFileReplacingDestination(
+    const std::filesystem::path& tempPath,
+    const std::filesystem::path& destinationPath,
+    std::error_code& error)
+{
+#ifdef _WIN32
+    constexpr uint32_t kPublishAttemptCount = 101;
+    constexpr DWORD kPublishRetryDelayMilliseconds = 100;
+    DWORD lastError = ERROR_SUCCESS;
+    for (uint32_t attempt = 0; attempt < kPublishAttemptCount; ++attempt) {
+        if (MoveFileExW(
+                tempPath.c_str(),
+                destinationPath.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE) {
+            error.clear();
+            return true;
+        }
+
+        lastError = GetLastError();
+        const bool retryable =
+            lastError == ERROR_ACCESS_DENIED ||
+            lastError == ERROR_SHARING_VIOLATION ||
+            lastError == ERROR_LOCK_VIOLATION;
+        if (!retryable || attempt + 1 == kPublishAttemptCount) {
+            break;
+        }
+        Sleep(kPublishRetryDelayMilliseconds);
+    }
+    error = std::error_code(static_cast<int>(lastError), std::system_category());
+    return false;
+#else
+    std::filesystem::rename(tempPath, destinationPath, error);
+    return !error;
+#endif
+}
+
 bool byteRangeWithin(uint64_t byteSize, uint64_t offset, uint64_t rangeSize)
 {
     return offset <= byteSize && rangeSize <= byteSize - offset;
@@ -1779,8 +1815,7 @@ bool prepareMeshoptDecodeCacheForStreamBuilder(
             return false;
         }
         std::error_code renameError;
-        std::filesystem::rename(tempHeaderPath, headerPath, renameError);
-        if (renameError) {
+        if (!publishFileReplacingDestination(tempHeaderPath, headerPath, renameError)) {
             std::error_code cleanupError;
             std::filesystem::remove(tempHeaderPath, cleanupError);
             reason = "streamasset builder cannot publish meshopt decode cache header: " +
@@ -1983,11 +2018,8 @@ bool decodeMeshoptBufferViewForStreamBuilder(
             reason = "streamasset builder cannot write decoded meshopt cache file";
             return false;
         }
-        std::error_code removeError;
-        std::filesystem::remove(cachePath, removeError);
         std::error_code renameError;
-        std::filesystem::rename(tempPath, cachePath, renameError);
-        if (renameError) {
+        if (!publishFileReplacingDestination(tempPath, cachePath, renameError)) {
             std::error_code cleanupError;
             std::filesystem::remove(tempPath, cleanupError);
             reason = "streamasset builder cannot publish decoded meshopt cache file: " +
@@ -3417,11 +3449,8 @@ bool savePartialBuildState(
         return false;
     }
 
-    std::error_code removeError;
-    std::filesystem::remove(context.partialPath, removeError);
     std::error_code renameError;
-    std::filesystem::rename(tempPath, context.partialPath, renameError);
-    if (renameError) {
+    if (!publishFileReplacingDestination(tempPath, context.partialPath, renameError)) {
         std::error_code cleanupError;
         std::filesystem::remove(tempPath, cleanupError);
         reason = "streamasset partial cache publish failed: " + renameError.message();

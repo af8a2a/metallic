@@ -14,6 +14,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -1762,14 +1763,33 @@ void testMeshoptCompressedMeshletStreamAsset(const std::filesystem::path& direct
     EXPECT_TRUE(std::filesystem::exists(partialPath));
     EXPECT_TRUE(std::filesystem::exists(meshoptCachePath));
 
+#ifdef _WIN32
+    HANDLE lockedPartial = CreateFileW(
+        partialPath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    ASSERT_NE(lockedPartial, INVALID_HANDLE_VALUE);
+    std::thread unlockPartial([lockedPartial]() {
+        Sleep(500);
+        CloseHandle(lockedPartial);
+    });
+#endif
     metallic::scene::MeshletStreamAssetOfflineBuildStats resumedBuildStats;
-    ASSERT_TRUE(metallic::scene::buildMeshletStreamAssetOffline(
+    const bool resumed = metallic::scene::buildMeshletStreamAssetOffline(
         metallic::scene::MeshletStreamAssetOfflineBuildDesc{
             .sourcePath = gltfPath,
             .outputPath = streamAssetPath,
             .stats = &resumedBuildStats,
         },
-        reason)) << reason;
+        reason);
+#ifdef _WIN32
+    unlockPartial.join();
+#endif
+    ASSERT_TRUE(resumed) << reason;
     EXPECT_EQ(resumedBuildStats.usedExternalBufferRangeReads, 1u);
     EXPECT_EQ(resumedBuildStats.accessorRangeReadCount, 0u);
     EXPECT_EQ(resumedBuildStats.accessorRangeReadBytes, 0u);
