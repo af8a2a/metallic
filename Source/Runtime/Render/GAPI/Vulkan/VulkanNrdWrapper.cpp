@@ -586,7 +586,9 @@ Result NrdDenoiser::createInternalTexture(
     Result result = device.createTexture(
         TextureDesc{
             .type = TextureType::Texture2D,
-            .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage,
+            .usage = TextureUsageBits::Sampled |
+                TextureUsageBits::Storage |
+                TextureUsageBits::TransferDestination,
             .format = format,
             .width = textureWidth,
             .height = textureHeight,

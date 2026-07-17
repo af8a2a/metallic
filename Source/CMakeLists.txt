@@ -46,6 +46,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/SceneMaterialShaderObjectPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneMaterialVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/RtxdiCompositePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRtxdiPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/StreamlineDlssRrPass.cpp

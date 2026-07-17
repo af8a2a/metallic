@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -28,6 +29,27 @@ public:
         reflection.addTextureOutput("color", "ReSTIR DI many-light direct illumination")
             .storageReadWrite()
             .format = Format::Rgba8Unorm;
+        reflection.addTextureOutput("noisyDiffuse", "RELAX diffuse radiance and hit distance")
+            .storageReadWrite()
+            .format = Format::Rgba16Sfloat;
+        reflection.addTextureOutput("noisySpecular", "RELAX specular radiance and hit distance")
+            .storageReadWrite()
+            .format = Format::Rgba16Sfloat;
+        reflection.addTextureOutput("normalRoughness", "NRD packed world normal and roughness")
+            .storageReadWrite()
+            .format = vulkan::nrdNormalRoughnessFormat();
+        reflection.addTextureOutput("motionVectors", "NRD previous-minus-current UV motion")
+            .storageReadWrite()
+            .format = Format::Rgba16Sfloat;
+        reflection.addTextureOutput("viewZ", "NRD linear view depth")
+            .storageReadWrite()
+            .format = Format::R16Sfloat;
+        reflection.addTextureOutput("baseColorMetalness", "NRD base color and metalness")
+            .storageReadWrite()
+            .format = Format::Rgba8Unorm;
+        reflection.addTextureOutput("emissive", "Emissive and background radiance")
+            .storageReadWrite()
+            .format = Format::Rgba16Sfloat;
         return reflection;
     }
 
@@ -151,6 +173,13 @@ public:
             {.binding = 11, .kind = SceneRayQueryBindingKind::StorageImage},
             {.binding = 12, .kind = SceneRayQueryBindingKind::StorageImage},
             {.binding = 13, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 14, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 15, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 16, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 17, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 18, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 19, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 20, .kind = SceneRayQueryBindingKind::StorageImage},
         };
         std::string programLog;
         result = rayQueryProgram_.initialize(
@@ -179,9 +208,22 @@ public:
     Result execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle color = context.outputTexture("color");
+        TextureHandle noisyDiffuse = context.outputTexture("noisyDiffuse");
+        TextureHandle noisySpecular = context.outputTexture("noisySpecular");
+        TextureHandle normalRoughness = context.outputTexture("normalRoughness");
+        TextureHandle motionVectors = context.outputTexture("motionVectors");
+        TextureHandle viewZ = context.outputTexture("viewZ");
+        TextureHandle baseColorMetalness = context.outputTexture("baseColorMetalness");
+        TextureHandle emissive = context.outputTexture("emissive");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
-        if (!color.valid() ||
-            color.view() == nullptr ||
+        if (!validTexture(color) ||
+            !validTexture(noisyDiffuse) ||
+            !validTexture(noisySpecular) ||
+            !validTexture(normalRoughness) ||
+            !validTexture(motionVectors) ||
+            !validTexture(viewZ) ||
+            !validTexture(baseColorMetalness) ||
+            !validTexture(emissive) ||
             !rayQueryProgram_.valid() ||
             !sceneResources_.valid() ||
             materialTextureViews[0] == nullptr ||
@@ -265,6 +307,13 @@ public:
             {.binding = 11, .textureView = positionHistory.previous},
             {.binding = 12, .textureView = normalHistory.current},
             {.binding = 13, .textureView = normalHistory.previous},
+            {.binding = 14, .textureView = noisyDiffuse.view()},
+            {.binding = 15, .textureView = noisySpecular.view()},
+            {.binding = 16, .textureView = normalRoughness.view()},
+            {.binding = 17, .textureView = motionVectors.view()},
+            {.binding = 18, .textureView = viewZ.view()},
+            {.binding = 19, .textureView = baseColorMetalness.view()},
+            {.binding = 20, .textureView = emissive.view()},
         };
         result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
@@ -293,6 +342,11 @@ public:
     }
 
 private:
+    static bool validTexture(TextureHandle texture)
+    {
+        return texture.valid() && texture.texture() != nullptr && texture.view() != nullptr;
+    }
+
     static Result prepareHistoryTexture(
         RenderGraphExecutionContext& context,
         std::string_view suffix,

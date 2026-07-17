@@ -17,7 +17,7 @@ void printUsage()
 {
     spdlog::info(
         "MetallicRtxdiSample options:\n"
-        "  --smoke-test                 Render two history-aware frames and exit\n"
+        "  --smoke-test                 Render eight ReSTIR/RELAX history frames and exit\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization");
 }
 
@@ -49,7 +49,8 @@ int runSmokeTest()
 
     constexpr uint32_t kSmokeWidth = 256;
     constexpr uint32_t kSmokeHeight = 256;
-    for (uint32_t frame = 0; frame < 2; ++frame) {
+    constexpr uint32_t kSmokeFrameCount = 8;
+    for (uint32_t frame = 0; frame < kSmokeFrameCount; ++frame) {
         result = preview.render(sample.graph, kSmokeWidth, kSmokeHeight, sample.desc.previewOutput);
         if (!result) {
             spdlog::error(
@@ -70,7 +71,8 @@ int runSmokeTest()
         return 1;
     }
     spdlog::info(
-        "RTXDI smoke test rendered two {}x{} frames with {} visible pixels",
+        "RTXDI/RELAX smoke test rendered {} {}x{} frames with {} visible pixels",
+        kSmokeFrameCount,
         kSmokeWidth,
         kSmokeHeight,
         visiblePixelCount);

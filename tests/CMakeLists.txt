@@ -77,6 +77,7 @@ target_include_directories(MetallicRhiTests PRIVATE
 )
 
 target_link_libraries(MetallicRhiTests PRIVATE
+    metallic::sdl3
     MetallicRuntimeRender
     GTest::gtest
 )

@@ -772,6 +772,8 @@ public:
             render::createRenderGraphPass("ScenePathTracePass");
         const std::unique_ptr<render::RenderGraphPass> rtxdi =
             render::createRenderGraphPass("SceneRtxdiPass");
+        const std::unique_ptr<render::RenderGraphPass> rtxdiComposite =
+            render::createRenderGraphPass("RtxdiCompositePass");
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenPreview =
@@ -788,6 +790,7 @@ public:
             bufferWrite == nullptr ||
             pathTrace == nullptr ||
             rtxdi == nullptr ||
+            rtxdiComposite == nullptr ||
             materialVisualization == nullptr ||
             gpuDrivenPreview == nullptr ||
             gpuDrivenStreamAsset == nullptr ||
@@ -815,6 +818,10 @@ public:
             rtxdi->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("SceneRtxdiPass is not classified as Compute/Compute");
         }
+        if (rtxdiComposite->kind() != render::RenderGraphPassKind::Compute ||
+            rtxdiComposite->queueType() != render::QueueType::Compute) {
+            return RhiTestResult::fail("RtxdiCompositePass is not classified as Compute/Compute");
+        }
         if (materialVisualization->kind() != render::RenderGraphPassKind::Compute ||
             materialVisualization->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("SceneMaterialVisualizationPass is not classified as Compute/Compute");
@@ -841,6 +848,7 @@ public:
         bool foundBufferWrite = false;
         bool foundPathTrace = false;
         bool foundRtxdi = false;
+        bool foundRtxdiComposite = false;
         bool foundMaterialVisualization = false;
         bool foundGPUDrivenPreview = false;
         bool foundGPUDrivenStreamAsset = false;
@@ -861,6 +869,9 @@ public:
                     passInfo.queueType == render::QueueType::Compute;
             } else if (passInfo.type == "SceneRtxdiPass") {
                 foundRtxdi = passInfo.kind == render::RenderGraphPassKind::Compute &&
+                    passInfo.queueType == render::QueueType::Compute;
+            } else if (passInfo.type == "RtxdiCompositePass") {
+                foundRtxdiComposite = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
             } else if (passInfo.type == "SceneMaterialVisualizationPass") {
                 foundMaterialVisualization = passInfo.kind == render::RenderGraphPassKind::Compute &&
@@ -884,6 +895,7 @@ public:
             !foundBufferWrite ||
             !foundPathTrace ||
             !foundRtxdi ||
+            !foundRtxdiComposite ||
             !foundMaterialVisualization ||
             !foundGPUDrivenPreview ||
             !foundGPUDrivenStreamAsset ||
@@ -922,11 +934,17 @@ public:
             render::createRenderGraphPass("ScenePathTracePass");
         const std::unique_ptr<render::RenderGraphPass> rtxdi =
             render::createRenderGraphPass("SceneRtxdiPass");
+        const std::unique_ptr<render::RenderGraphPass> nrdDenoise =
+            render::createRenderGraphPass("NrdDenoisePass");
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
             render::createRenderGraphPass("GPUDrivenStreamAssetPass");
-        if (pathTrace == nullptr || rtxdi == nullptr || materialVisualization == nullptr || gpuDrivenStreamAsset == nullptr) {
+        if (pathTrace == nullptr ||
+            rtxdi == nullptr ||
+            nrdDenoise == nullptr ||
+            materialVisualization == nullptr ||
+            gpuDrivenStreamAsset == nullptr) {
             return RhiTestResult::fail("failed to create passes for runtime settings declaration test");
         }
         if (!hasBoolRuntimeSetting(*pathTrace, "flipBitangent")) {
@@ -937,6 +955,9 @@ public:
             !hasBoolRuntimeSetting(*rtxdi, "initialVisibility") ||
             !hasBoolRuntimeSetting(*rtxdi, "animateLights")) {
             return RhiTestResult::fail("SceneRtxdiPass missing ReSTIR DI Bool runtime settings");
+        }
+        if (!hasBoolRuntimeSetting(*nrdDenoise, "relaxAntiFirefly")) {
+            return RhiTestResult::fail("NrdDenoisePass missing RELAX runtime settings");
         }
         if (!hasBoolRuntimeSetting(*materialVisualization, "flipBitangent")) {
             return RhiTestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
@@ -1163,12 +1184,18 @@ public:
             rtxdiSample.desc.category != "RTXDI" ||
             rtxdiSample.desc.scenePath != "Asset/meet_mat.glb" ||
             rtxdiSample.desc.graphPath != "Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json" ||
-            rtxdiSample.desc.previewOutput != "Rtxdi.color") {
+            rtxdiSample.desc.previewOutput != "Composite.color") {
             return RhiTestResult::fail("RTXDI Sample metadata did not load as expected");
         }
         const render::RenderGraphNode* rtxdi = rtxdiSample.graph.findNode("Rtxdi");
+        const render::RenderGraphNode* relax = rtxdiSample.graph.findNode("Relax");
+        const render::RenderGraphNode* composite = rtxdiSample.graph.findNode("Composite");
         if (rtxdi == nullptr ||
+            relax == nullptr ||
+            composite == nullptr ||
             rtxdi->type != "SceneRtxdiPass" ||
+            relax->type != "NrdDenoisePass" ||
+            composite->type != "RtxdiCompositePass" ||
             !rtxdi->properties.is_object() ||
             rtxdi->properties.value("path", "") != rtxdiSample.desc.scenePath ||
             rtxdi->properties.value("lightCount", 0) != 256 ||
@@ -1176,13 +1203,16 @@ public:
             rtxdi->properties.value("spatialSamples", 0) != 1 ||
             !rtxdi->properties.value("temporalReuse", false) ||
             !rtxdi->properties.value("spatialReuse", false) ||
-            !rtxdi->properties.value("initialVisibility", false)) {
-            return RhiTestResult::fail("RTXDI Sample did not apply scene and ReSTIR DI defaults");
+            !rtxdi->properties.value("initialVisibility", false) ||
+            !relax->properties.is_object() ||
+            relax->properties.value("denoiser", "") != "RELAX" ||
+            !relax->properties.value("relaxAntiFirefly", false)) {
+            return RhiTestResult::fail("RTXDI Sample did not apply ReSTIR DI and RELAX defaults");
         }
         if (!rtxdiSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (rtxdiSample.graph.firstOutputName() != "Rtxdi.color") {
+        if (rtxdiSample.graph.firstOutputName() != "Composite.color") {
             return RhiTestResult::fail("RTXDI Sample graph first output changed");
         }
 
@@ -3392,32 +3422,28 @@ public:
         if (!render::loadBuiltInRenderSample("rtxdi-sample", sample, message)) {
             return RhiTestResult::fail(message);
         }
-        result = preview.render(sample.graph, 256, 256, sample.desc.previewOutput);
-        if (!result) {
-            if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
-                    std::string("SceneRtxdiPass is unsupported on this device: ") + preview.lastLog());
+        constexpr uint32_t kRelaxFrameCount = 8;
+        for (uint32_t frame = 0; frame < kRelaxFrameCount; ++frame) {
+            result = preview.render(sample.graph, 256, 256, sample.desc.previewOutput);
+            if (!result) {
+                if (frame == 0 && render::hasError(result, render::Error::Unsupported)) {
+                    return RhiTestResult::skip(
+                        std::string("RTXDI/RELAX graph is unsupported on this device: ") + preview.lastLog());
+                }
+                return RhiTestResult::fail(
+                    std::string("RTXDI/RELAX frame ") +
+                    std::to_string(frame) +
+                    " returned " +
+                    toString(result) +
+                    ": " +
+                    preview.lastLog());
             }
-            return RhiTestResult::fail(
-                std::string("SceneRtxdiPass render returned ") +
-                toString(result) +
-                ": " +
-                preview.lastLog());
-        }
-
-        result = preview.render(sample.graph, 256, 256, sample.desc.previewOutput);
-        if (!result) {
-            return RhiTestResult::fail(
-                std::string("SceneRtxdiPass history render returned ") +
-                toString(result) +
-                ": " +
-                preview.lastLog());
         }
 
         const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 128) {
             return RhiTestResult::fail(
-                std::string("SceneRtxdiPass produced too few visible pixels: ") +
+                std::string("RTXDI/RELAX graph produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
 
@@ -3426,7 +3452,7 @@ public:
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
             return RhiTestResult::fail(message);
         }
-        return RhiTestResult::pass("wrote RTXDI preview");
+        return RhiTestResult::pass("wrote RTXDI RELAX preview");
     }
 };
 
@@ -3441,28 +3467,40 @@ public:
     RhiTestResult run(RhiTestContext&) override
     {
         const char* capabilities[] = {"spvRayQueryKHR"};
-        render::ShaderCompileResult compileResult;
-        render::Result result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
-                .moduleName = "scene_rtxdi",
-                .entryPointName = "sceneRtxdiMain",
-                .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-            },
-            compileResult);
-        if (!result) {
-            return RhiTestResult::fail(
-                std::string("RTXDI shader compile returned ") +
-                toString(result) +
-                ": " +
-                compileResult.diagnostics);
+        const struct ShaderEntry {
+            const char* moduleName;
+            const char* entryPointName;
+            bool rayQuery;
+        } entries[] = {
+            {"scene_rtxdi", "sceneRtxdiMain", true},
+            {"rtxdi_composite", "rtxdiCompositeMain", false},
+        };
+        for (const ShaderEntry& entry : entries) {
+            render::ShaderCompileResult compileResult;
+            render::Result result = render::compileSlangShaderToSpirv(
+                render::SlangShaderDesc{
+                    .moduleName = entry.moduleName,
+                    .entryPointName = entry.entryPointName,
+                    .searchPath = kShaderSearchPath,
+                    .profileName = "glsl_460",
+                    .capabilities = entry.rayQuery ? capabilities : nullptr,
+                    .capabilityCount = entry.rayQuery
+                        ? static_cast<uint32_t>(std::size(capabilities))
+                        : 0u,
+                },
+                compileResult);
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("RTXDI shader compile returned ") +
+                    toString(result) +
+                    ": " +
+                    compileResult.diagnostics);
+            }
+            if (compileResult.spirv.empty()) {
+                return RhiTestResult::fail("RTXDI shader produced empty SPIR-V");
+            }
         }
-        if (compileResult.spirv.empty()) {
-            return RhiTestResult::fail("RTXDI shader produced empty SPIR-V");
-        }
-        return RhiTestResult::pass("compiled RTXDI ReSTIR DI shader");
+        return RhiTestResult::pass("compiled RTXDI ReSTIR DI and RELAX composite shaders");
     }
 };
 

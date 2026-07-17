@@ -1,13 +1,64 @@
 {
-    "edges": [],
-    "name": "RtxdiSample",
+    "edges": [
+        {
+            "dst": "Relax.noisyDiffuse",
+            "id": 1,
+            "src": "Rtxdi.noisyDiffuse"
+        },
+        {
+            "dst": "Relax.noisySpecular",
+            "id": 2,
+            "src": "Rtxdi.noisySpecular"
+        },
+        {
+            "dst": "Relax.normalRoughness",
+            "id": 3,
+            "src": "Rtxdi.normalRoughness"
+        },
+        {
+            "dst": "Relax.motionVectors",
+            "id": 4,
+            "src": "Rtxdi.motionVectors"
+        },
+        {
+            "dst": "Relax.viewZ",
+            "id": 5,
+            "src": "Rtxdi.viewZ"
+        },
+        {
+            "dst": "Relax.baseColorMetalness",
+            "id": 6,
+            "src": "Rtxdi.baseColorMetalness"
+        },
+        {
+            "dst": "Composite.denoisedDiffuse",
+            "id": 7,
+            "src": "Relax.denoisedDiffuse"
+        },
+        {
+            "dst": "Composite.denoisedSpecular",
+            "id": 8,
+            "src": "Relax.denoisedSpecular"
+        },
+        {
+            "dst": "Composite.baseColorMetalness",
+            "id": 9,
+            "src": "Rtxdi.baseColorMetalness"
+        },
+        {
+            "dst": "Composite.emissive",
+            "id": 10,
+            "src": "Rtxdi.emissive"
+        }
+    ],
+    "name": "RtxdiRelaxSample",
     "nodes": [
         {
             "id": 1,
             "name": "Rtxdi",
             "position": {
-                "x": 335.0,
-                "y": 281.0
+                "x": 120.0,
+                "y": 280.0
             },
             "properties": {
                 "animateLights": true,
@@ -46,9 +97,68 @@
                 "visualization": "shaded"
             },
             "type": "SceneRtxdiPass"
+        },
+        {
+            "id": 2,
+            "name": "Relax",
+            "position": {
+                "x": 540.0,
+                "y": 280.0
+            },
+            "properties": {
+                "camera": {
+                    "center": [
+                        0.0,
+                        0.15000000596046448,
+                        0.0
+                    ],
+                    "eye": [
+                        0.0,
+                        0.25,
+                        3.0
+                    ],
+                    "fovDegrees": 50.0,
+                    "projection": "perspective",
+                    "reversedZ": true,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 10000.0,
+                    "znear": 0.0010000000474974513
+                },
+                "denoiser": "RELAX",
+                "denoisingRange": 1000.0,
+                "enableValidation": false,
+                "motionVectorScaleX": 1.0,
+                "motionVectorScaleY": 1.0,
+                "relaxAntiFirefly": true,
+                "relaxAtrousIterations": 5,
+                "relaxDiffusePrepassRadius": 30.0,
+                "relaxFastHistoryLength": 6,
+                "relaxHistoryLength": 30,
+                "relaxMinHitDistanceWeight": 0.1,
+                "relaxSpecularPrepassRadius": 50.0,
+                "resetSerial": 0
+            },
+            "type": "NrdDenoisePass"
+        },
+        {
+            "id": 3,
+            "name": "Composite",
+            "position": {
+                "x": 900.0,
+                "y": 280.0
+            },
+            "properties": {
+                "exposure": 1.0
+            },
+            "type": "RtxdiCompositePass"
         }
     ],
     "outputs": [
+        "Composite.color",
         "Rtxdi.color"
     ],
     "version": 1

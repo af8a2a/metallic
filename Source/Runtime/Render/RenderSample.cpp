@@ -181,7 +181,7 @@ public:
     std::string_view category() const override { return "RTXDI"; }
     std::string_view description() const override
     {
-        return "Fused spatiotemporal ReSTIR DI over hundreds of animated analytic lights using RayQuery visibility.";
+        return "Fused spatiotemporal ReSTIR DI over hundreds of animated lights, denoised with NRD RELAX.";
     }
     std::string scenePath() const override { return "Asset/meet_mat.glb"; }
     std::string graphPath() const override
@@ -189,7 +189,7 @@ public:
         return "Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"Rtxdi"}; }
-    std::string previewOutput() const override { return "Rtxdi.color"; }
+    std::string previewOutput() const override { return "Composite.color"; }
 };
 
 class MaterialVisualizationABeautifulGameSample final : public RenderSample {

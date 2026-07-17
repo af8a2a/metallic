@@ -1,10 +1,12 @@
 # RTXDI / ReSTIR DI Sample
 
 Metallic includes a native many-light direct-illumination pass inspired by the
-fused spatiotemporal ReSTIR DI flow in `E:\RTXDI\Samples\Minimal Sample`. The
-implementation uses Metallic's render graph, scene buffers, ray-query path, and
-history-resource manager. It does not copy or link the NVIDIA RTXDI SDK source,
-so the repository does not acquire a machine-local SDK dependency or redistribute
+fused spatiotemporal ReSTIR DI flow in `E:\RTXDI\Samples\Minimal Sample`, with
+the signal decomposition and NRD RELAX integration patterned after
+`E:\RTXDI\Samples\FullSample`. The implementation uses Metallic's render graph,
+scene buffers, ray-query path, history-resource manager, and vendored NRD
+integration. It does not copy or link the NVIDIA RTXDI SDK source, so the
+repository does not acquire a machine-local RTXDI SDK dependency or redistribute
 SDK-licensed code.
 
 ## What is implemented
@@ -17,12 +19,29 @@ their direct contribution against glTF materials. Each pixel performs:
 2. Previous-frame reprojection with position and normal rejection.
 3. Temporal reservoir combination with a bounded history length.
 4. Spatial combination from reprojected neighboring reservoirs.
-5. One RayQuery visibility test for the selected light and final tone mapping.
+5. One RayQuery visibility test for the selected light.
+6. FullSample-style diffuse/specular demodulation and RELAX signal packing.
 
 The pass stores double-buffered reservoir, world-position, and shading-normal
 textures through `HistoryResourceManager`. Authored world-space geometric and
 shading normals remain stable while constructing TBN; face-forwarding is applied
 only after normal-map evaluation.
+
+The sample graph then runs three passes:
+
+1. `SceneRtxdiPass` writes raw preview color plus demodulated diffuse and
+   specular radiance/hit-distance signals, packed normal/roughness, screen-space
+   motion vectors, linear view depth, base-color/metalness, and emissive data.
+2. `NrdDenoisePass` runs `RELAX_DIFFUSE_SPECULAR`. It receives current and
+   previous camera matrices, advances RELAX history across frames, and resets
+   history when the camera or graph is reset.
+3. `RtxdiCompositePass` remodulates the denoised diffuse signal by diffuse
+   albedo, remodulates the denoised specular signal by dielectric/metallic F0,
+   adds emissive/ambient radiance, and performs exposure and tone mapping.
+
+The normal/roughness and radiance/hit-distance encodings use NRD's own front-end
+helpers, so they track the configured NRD build. Motion vectors use the NRD
+convention `previousUv = currentUv + motionVector`, with a scale of `(1, 1)`.
 
 This is the ReSTIR DI portion of RTXDI. ReGIR, ReSTIR GI, SDK light structures,
 and the RTXDI SDK's optional bias-correction modes are outside the current scope.
@@ -36,7 +55,8 @@ build\Source\Debug\MetallicRtxdiSample.exe
 ```
 
 The standalone executable opens the editor with the `RTXDI / ReSTIR DI` sample
-selected. A non-interactive two-frame validation path is also available:
+selected. A non-interactive eight-frame path is also available; multiple frames
+are rendered so RELAX history is exercised:
 
 ```powershell
 build\Source\Debug\MetallicRtxdiSample.exe --smoke-test
@@ -46,15 +66,19 @@ The sample graph is
 `Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json`. Its inspector exposes
 light count, initial candidates, initial visibility, spatial neighbors, history
 length, temporal and spatial reuse, light animation, intensity, exposure, and
-debug views for the selected light and reservoir history. The default sampling
-budget follows the RTXDI Minimal Sample: eight initial local-light candidates and
-one spatial neighbor.
+debug views for the selected light and reservoir history. RELAX settings include
+history lengths, A-trous iteration count, diffuse/specular prepass blur radii,
+minimum hit-distance weight, anti-firefly, disocclusion threshold, denoising
+range, and validation mode. The default sampling budget follows the RTXDI Minimal
+Sample: eight initial local-light candidates and one spatial neighbor. The graph's
+default presentation output is `Composite.color`; `Rtxdi.color` remains marked as
+a raw/debug output for inspecting the pre-denoise result.
 
-The shader and two-frame GPU preview tests can be run with:
+The shader and eight-frame GPU preview tests can be run with:
 
 ```powershell
 build\tests\Debug\MetallicRhiTests.exe --filter render_graph_rtxdi_shader_compile
-build\tests\Debug\MetallicRhiTests.exe --filter render_graph_rtxdi_preview
+build\tests\Debug\MetallicRhiTests.exe --rhi-validation --filter render_graph_rtxdi_preview
 ```
 
 A Vulkan device with acceleration-structure and ray-query support is required.

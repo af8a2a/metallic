@@ -1,6 +1,9 @@
 // ReSTIR DI implementation for Metallic. The integration follows the fused
 // spatiotemporal flow demonstrated by RTXDI while using Metallic-native data.
 
+#define NRD_HEADER_ONLY
+#include "NRD.hlsli"
+
 [[vk::binding(0, 0)]]
 RaytracingAccelerationStructure gScene;
 
@@ -101,6 +104,27 @@ RWTexture2D<float4> gNormalCurrent;
 [[vk::binding(13, 0)]]
 RWTexture2D<float4> gNormalPrevious;
 
+[[vk::binding(14, 0)]]
+RWTexture2D<float4> gNoisyDiffuse;
+
+[[vk::binding(15, 0)]]
+RWTexture2D<float4> gNoisySpecular;
+
+[[vk::binding(16, 0)]]
+RWTexture2D<float4> gNrdNormalRoughness;
+
+[[vk::binding(17, 0)]]
+RWTexture2D<float4> gNrdMotionVectors;
+
+[[vk::binding(18, 0)]]
+RWTexture2D<float> gNrdViewZ;
+
+[[vk::binding(19, 0)]]
+RWTexture2D<float4> gBaseColorMetalness;
+
+[[vk::binding(20, 0)]]
+RWTexture2D<float4> gEmissive;
+
 static const uint kMaxMaterialTextures = 256u;
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
@@ -169,9 +193,11 @@ struct Surface
     float3 normal;
     float3 geometryNormal;
     float3 viewDirection;
+    float3 baseColor;
     float3 diffuseAlbedo;
     float3 specularF0;
     float3 emissive;
+    float metalness;
     float roughness;
 };
 
@@ -184,6 +210,8 @@ struct AnalyticLight
 struct LightEvaluation
 {
     float3 contribution;
+    float3 diffuseRadiance;
+    float3 specularRadiance;
     float3 direction;
     float distance;
     float target;
@@ -310,6 +338,25 @@ bool projectWorldToPreviousUv(float3 worldPosition, SceneRtxdiPush push, out flo
     }
     uv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     return all(uv >= 0.0) && all(uv < 1.0);
+}
+
+float cameraLinearDepth(float3 worldPosition, SceneRtxdiPush push)
+{
+    float3 forward = safeNormalize(push.center.xyz - push.eye.xyz, float3(0.0, 0.0, -1.0));
+    return max(dot(worldPosition - push.eye.xyz, forward), 0.0);
+}
+
+float2 motionVectorToPrevious(float3 worldPosition, float2 currentSamplePixel, SceneRtxdiPush push)
+{
+    if (push.hasHistory == 0u) {
+        return float2(0.0, 0.0);
+    }
+    float2 previousUv;
+    if (!projectWorldToPreviousUv(worldPosition, push, previousUv)) {
+        return float2(0.0, 0.0);
+    }
+    float2 currentUv = currentSamplePixel / float2(max(push.width, 1u), max(push.height, 1u));
+    return previousUv - currentUv;
 }
 
 bool hasMaterialTexture(RtxdiTextureInfo textureInfo, SceneRtxdiPush push)
@@ -614,11 +661,11 @@ Surface makeSurface(HitInfo hit, Ray ray, SceneRtxdiPush push)
         material.textureParams.x);
     surface.normal = faceForwardShadingNormal(surface.normal, surface.geometryNormal, ray.direction);
     surface.viewDirection = -ray.direction;
-    float3 baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
-    float metallic = saturate(material.params.x * metallicRoughnessSample.b);
+    surface.baseColor = saturate(material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+    surface.metalness = saturate(material.params.x * metallicRoughnessSample.b);
     surface.roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.03, 1.0);
-    surface.diffuseAlbedo = baseColor * (1.0 - metallic);
-    surface.specularF0 = lerp(float3(0.04, 0.04, 0.04), baseColor, metallic);
+    surface.diffuseAlbedo = surface.baseColor * (1.0 - surface.metalness);
+    surface.specularF0 = lerp(float3(0.04, 0.04, 0.04), surface.baseColor, surface.metalness);
     surface.emissive = max(material.emissive.rgb * srgbToLinear(emissiveSample.rgb), 0.0);
     return surface;
 }
@@ -664,14 +711,15 @@ LightEvaluation evaluateLight(uint lightIndex, Surface surface, SceneRtxdiPush p
     float3 halfVector = safeNormalize(lightDirection + surface.viewDirection, surface.normal);
     float nDotH = saturate(dot(surface.normal, halfVector));
     float specularPower = lerp(128.0, 4.0, surface.roughness);
-    float3 diffuse = surface.diffuseAlbedo / kPi;
-    float3 specular = surface.specularF0 *
-        ((specularPower + 2.0) / (2.0 * kPi)) *
-        pow(nDotH, specularPower);
     float3 incidentRadiance = light.radiance / distanceSquared;
 
     LightEvaluation evaluation;
-    evaluation.contribution = (diffuse + specular) * incidentRadiance * nDotL;
+    evaluation.diffuseRadiance = incidentRadiance * (nDotL / kPi);
+    evaluation.specularRadiance = incidentRadiance * nDotL *
+        ((specularPower + 2.0) / (2.0 * kPi)) *
+        pow(nDotH, specularPower);
+    evaluation.contribution = evaluation.diffuseRadiance * surface.diffuseAlbedo +
+        evaluation.specularRadiance * surface.specularF0;
     evaluation.direction = lightDirection;
     evaluation.distance = distance;
     evaluation.target = max(luminance(evaluation.contribution), 0.0);
@@ -819,16 +867,45 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
     ray.direction = rayDirectionFromPixel(samplePixel, push);
     HitInfo hit;
     if (!traceClosest(ray, push, hit)) {
+        float3 sky = skyColor(ray.direction);
         gReservoirCurrent[pixel] = packReservoir(emptyReservoir());
         gPositionCurrent[pixel] = float4(0.0, 0.0, 0.0, 0.0);
         gNormalCurrent[pixel] = float4(0.0, 0.0, 0.0, 0.0);
-        gOutput[pixel] = float4(toneMap(skyColor(ray.direction), push.exposure), 1.0);
+        gNoisyDiffuse[pixel] = RELAX_FrontEnd_PackRadianceAndHitDist(float3(0.0, 0.0, 0.0), 0.0, true);
+        gNoisySpecular[pixel] = RELAX_FrontEnd_PackRadianceAndHitDist(float3(0.0, 0.0, 0.0), 0.0, true);
+        gNrdNormalRoughness[pixel] = NRD_FrontEnd_PackNormalAndRoughness(
+            float3(0.0, 1.0, 0.0),
+            1.0,
+            0.0);
+        gNrdMotionVectors[pixel] = float4(
+            motionVectorToPrevious(
+                ray.origin + ray.direction * max(push.clipOrtho.y, 1.0),
+                samplePixel,
+                push),
+            0.0,
+            0.0);
+        gNrdViewZ[pixel] = max(push.clipOrtho.y, 1.0);
+        gBaseColorMetalness[pixel] = float4(0.0, 0.0, 0.0, 0.0);
+        gEmissive[pixel] = float4(sky, 1.0);
+        gOutput[pixel] = float4(toneMap(sky, push.exposure), 1.0);
         return;
     }
 
     Surface surface = makeSurface(hit, ray, push);
     gPositionCurrent[pixel] = float4(surface.position, 1.0);
     gNormalCurrent[pixel] = float4(surface.normal, 1.0);
+    gNrdNormalRoughness[pixel] = NRD_FrontEnd_PackNormalAndRoughness(
+        surface.normal,
+        surface.roughness,
+        0.0);
+    gNrdMotionVectors[pixel] = float4(
+        motionVectorToPrevious(surface.position, samplePixel, push),
+        0.0,
+        0.0);
+    gNrdViewZ[pixel] = cameraLinearDepth(surface.position, push);
+    gBaseColorMetalness[pixel] = float4(surface.baseColor, surface.metalness);
+    float3 emissiveAndAmbient = surface.emissive + surface.diffuseAlbedo * 0.012;
+    gEmissive[pixel] = float4(emissiveAndAmbient, 1.0);
 
     DIReservoir reservoir = emptyReservoir();
     uint initialSampleCount = max(push.initialSampleCount, 1u);
@@ -908,21 +985,10 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
     clampReservoirHistory(reservoir, maximumM);
     gReservoirCurrent[pixel] = packReservoir(reservoir);
 
-    if (push.visualizationMode == kVisualizationLightId) {
-        float3 color = reservoirValid(reservoir, push)
-            ? hashColor(reservoir.lightIndex)
-            : float3(0.0, 0.0, 0.0);
-        gOutput[pixel] = float4(color, 1.0);
-        return;
-    }
-    if (push.visualizationMode == kVisualizationHistory) {
-        float history = saturate(float(reservoir.M) / float(max(maximumM, 1u)));
-        float3 heat = lerp(float3(0.02, 0.05, 0.2), float3(1.0, 0.25, 0.02), history);
-        gOutput[pixel] = float4(heat, 1.0);
-        return;
-    }
-
-    float3 color = surface.emissive + surface.diffuseAlbedo * 0.012;
+    float3 noisyDiffuse = float3(0.0, 0.0, 0.0);
+    float3 noisySpecular = float3(0.0, 0.0, 0.0);
+    float lightDistance = 0.0;
+    float3 color = emissiveAndAmbient;
     if (reservoirValid(reservoir, push)) {
         LightEvaluation selected = evaluateLight(reservoir.lightIndex, surface, push);
         float reservoirWeight = reservoir.weightSum /
@@ -936,8 +1002,34 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
             selected.distance,
             push);
         if (!occluded) {
+            noisyDiffuse = selected.diffuseRadiance * reservoirWeight;
+            noisySpecular = selected.specularRadiance * reservoirWeight;
+            lightDistance = selected.distance;
             color += selected.contribution * reservoirWeight;
         }
     }
+    gNoisyDiffuse[pixel] = RELAX_FrontEnd_PackRadianceAndHitDist(
+        noisyDiffuse,
+        lightDistance,
+        true);
+    gNoisySpecular[pixel] = RELAX_FrontEnd_PackRadianceAndHitDist(
+        noisySpecular,
+        lightDistance,
+        true);
+
+    if (push.visualizationMode == kVisualizationLightId) {
+        float3 selectedColor = reservoirValid(reservoir, push)
+            ? hashColor(reservoir.lightIndex)
+            : float3(0.0, 0.0, 0.0);
+        gOutput[pixel] = float4(selectedColor, 1.0);
+        return;
+    }
+    if (push.visualizationMode == kVisualizationHistory) {
+        float history = saturate(float(reservoir.M) / float(max(maximumM, 1u)));
+        float3 heat = lerp(float3(0.02, 0.05, 0.2), float3(1.0, 0.25, 0.02), history);
+        gOutput[pixel] = float4(heat, 1.0);
+        return;
+    }
+
     gOutput[pixel] = float4(toneMap(color, push.exposure), 1.0);
 }

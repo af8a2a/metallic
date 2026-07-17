@@ -58,6 +58,8 @@ inline constexpr const char* kScenePathTraceShaderModuleName = "scene_path_trace
 inline constexpr const char* kScenePathTraceEntryPoint = "scenePathTraceMain";
 inline constexpr const char* kSceneRtxdiShaderModuleName = "scene_rtxdi";
 inline constexpr const char* kSceneRtxdiEntryPoint = "sceneRtxdiMain";
+inline constexpr const char* kRtxdiCompositeShaderModuleName = "rtxdi_composite";
+inline constexpr const char* kRtxdiCompositeEntryPoint = "rtxdiCompositeMain";
 inline constexpr const char* kScenePathTraceGuidesShaderModuleName = "scene_path_trace_guides";
 inline constexpr const char* kScenePathTraceGuidesEntryPoint = "scenePathTraceGuidesMain";
 inline constexpr const char* kOpenPBRRayQueryPathTraceShaderModuleName = "openpbr_rayquery_path_trace";
@@ -457,6 +459,15 @@ struct SceneRtxdiPush {
 };
 
 static_assert(sizeof(SceneRtxdiPush) == 256);
+
+struct RtxdiCompositePush {
+    uint32_t width = 1;
+    uint32_t height = 1;
+    float exposure = 1.0f;
+    uint32_t padding = 0;
+};
+
+static_assert(sizeof(RtxdiCompositePush) == 16);
 
 inline std::string resultMessage(std::string_view label, const Result& result)
 {

@@ -219,7 +219,8 @@ bool isSceneAwareRenderPassType(const std::string& type)
         type == "GPUDrivenStreamAssetPass" ||
         type == "SceneRayQueryVisualizationPass" ||
         type == "SceneMaterialVisualizationPass" ||
-        type == "ScenePathTracePass";
+        type == "ScenePathTracePass" ||
+        type == "SceneRtxdiPass";
 }
 
 std::string firstScenePathFromGraph(const render::RenderGraph& graph)
@@ -614,8 +615,28 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
         return render::RenderGraphProperties{
             {"denoiser", "REBLUR"},
             {"enableValidation", true},
+            {"relaxHistoryLength", 30},
+            {"relaxFastHistoryLength", 6},
+            {"relaxAtrousIterations", 5},
+            {"relaxDiffusePrepassRadius", 30.0f},
+            {"relaxSpecularPrepassRadius", 50.0f},
+            {"relaxMinHitDistanceWeight", 0.1f},
+            {"relaxAntiFirefly", true},
             {"resetSerial", 0},
+            {"camera", {
+                {"projection", "perspective"},
+                {"fovDegrees", 50.0f},
+                {"znear", 0.001f},
+                {"zfar", 10000.0f},
+                {"reversedZ", true},
+                {"eye", {0.0f, 0.25f, 3.0f}},
+                {"center", {0.0f, 0.15f, 0.0f}},
+                {"up", {0.0f, 1.0f, 0.0f}},
+            }},
         };
+    }
+    if (type == "RtxdiCompositePass") {
+        return render::RenderGraphProperties{{"exposure", 1.0f}};
     }
     return render::RenderGraphProperties::object();
 }
@@ -3314,7 +3335,35 @@ void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties
     if (node == nullptr) {
         return;
     }
+    const render::RenderGraphProperties camera = properties.is_object() &&
+        properties.contains("camera") &&
+        properties["camera"].is_object()
+        ? properties["camera"]
+        : render::RenderGraphProperties::object();
     applyRuntimeNodeProperties(node->id, std::move(properties), status);
+
+    if (camera.empty()) {
+        return;
+    }
+    bool companionUpdated = false;
+    for (const render::RenderGraphNode& candidate : renderGraph_.nodes()) {
+        if (candidate.type != "NrdDenoisePass" && candidate.type != "StreamlineDlssRrPass") {
+            continue;
+        }
+        render::RenderGraphProperties runtimeProperties = candidate.runtimeProperties.is_object()
+            ? candidate.runtimeProperties
+            : render::RenderGraphProperties::object();
+        const render::RenderGraphProperties effectiveProperties = effectiveNodeProperties(candidate);
+        const uint32_t resetSerial = effectiveProperties.value("resetSerial", 0u);
+        runtimeProperties["camera"] = camera;
+        runtimeProperties["resetSerial"] = resetSerial + 1u;
+        companionUpdated = renderGraph_.setNodeRuntimeProperties(
+            candidate.id,
+            std::move(runtimeProperties)) || companionUpdated;
+    }
+    if (companionUpdated && graphExecutor_ != nullptr && !renderGraph_.dirty()) {
+        graphExecutor_->syncRuntimeProperties(renderGraph_);
+    }
 }
 
 void EditorApplication::drawSceneNode(int32_t nodeIndex)
