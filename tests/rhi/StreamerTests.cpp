@@ -1,11 +1,14 @@
 #include "RhiTest.h"
 
 #include "Runtime/Render/MeshletStreamClas.h"
+#include "Runtime/Render/MeshletStreamPageLoader.h"
 #include "Runtime/Render/MeshletStreamResidency.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
 #include "Runtime/Render/StreamingTaskQueue.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Task/task_system.h"
 
 #include <algorithm>
 #include <array>
@@ -15,6 +18,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <thread>
@@ -183,6 +187,197 @@ uint64_t pageStorageBytes(const scene::MeshletStreamAsset& asset, std::span<cons
     }
     return total;
 }
+
+class PageLoaderEventSink final : public task::ITaskEventSink {
+public:
+    void onGraphSubmitted(const task::TaskGraphSnapshot& snapshot) override
+    {
+        std::lock_guard lock(mutex);
+        submitted.push_back(snapshot);
+    }
+
+    void onTaskStateChanged(const task::TaskNodeEvent& event) override
+    {
+        std::lock_guard lock(mutex);
+        events.push_back(event);
+    }
+
+    void onGraphCompleted(const task::TaskGraphSnapshot& snapshot) override
+    {
+        std::lock_guard lock(mutex);
+        completed.push_back(snapshot);
+    }
+
+    std::mutex mutex;
+    std::vector<task::TaskGraphSnapshot> submitted;
+    std::vector<task::TaskNodeEvent> events;
+    std::vector<task::TaskGraphSnapshot> completed;
+};
+
+class MeshletStreamPageLoaderTaskGraphTest : public RhiTest {
+public:
+    MeshletStreamPageLoaderTaskGraphTest()
+    {
+        type = RhiTestType::Validation;
+        name = "meshlet_stream_page_loader_task_graph";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        const std::filesystem::path streamAssetPath =
+            context.outputDirectory / "task_graph_page_loader.meshstream.bin";
+        scene::MeshletStreamAsset asset;
+        RhiTestResult build = buildBunnyStreamAssetForTest(
+            streamAssetPath,
+            asset,
+            scene::MeshletStreamPayloadCompression::ByteRle);
+        if (!build.passed) {
+            return build;
+        }
+
+        render::MeshletStreamPageLoader loader;
+        std::string reason;
+        if (!loader.initialize(asset, 2, reason)) {
+            return RhiTestResult::fail("MeshletStreamPageLoader::initialize failed: " + reason);
+        }
+
+        auto sink = std::make_shared<PageLoaderEventSink>();
+        const task::TaskEventSinkToken sinkToken = task::taskSystem().subscribe(sink);
+        auto fail = [&](std::string message) {
+            loader.reset();
+            (void)task::taskSystem().unsubscribe(sinkToken);
+            return RhiTestResult::fail(std::move(message));
+        };
+
+        const uint32_t validLoadCount = std::min(asset.pageCount(), 8u);
+        const uint32_t expectedLoadCount = validLoadCount + 1u;
+        for (uint32_t pageIndex = 0; pageIndex < validLoadCount; ++pageIndex) {
+            if (!loader.enqueue(pageIndex)) {
+                return fail("MeshletStreamPageLoader rejected a valid page");
+            }
+        }
+        const uint32_t invalidPageIndex = asset.pageCount();
+        if (!loader.enqueue(invalidPageIndex)) {
+            return fail("MeshletStreamPageLoader rejected the failure propagation page");
+        }
+
+        uint32_t maxActiveLoads = loader.activeCount();
+        uint32_t completedLoads = 0;
+        uint32_t successfulLoads = 0;
+        uint32_t failedLoads = 0;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (completedLoads < expectedLoadCount && std::chrono::steady_clock::now() < deadline) {
+            maxActiveLoads = std::max(maxActiveLoads, loader.activeCount());
+            if (loader.activeCount() > 2) {
+                return fail("MeshletStreamPageLoader exceeded its local concurrency budget");
+            }
+            render::MeshletStreamPageLoadResult result;
+            if (!loader.tryPop(result)) {
+                std::this_thread::yield();
+                continue;
+            }
+            ++completedLoads;
+            if (result.success()) {
+                ++successfulLoads;
+            } else {
+                ++failedLoads;
+                if (result.pageIndex != invalidPageIndex || result.failureReason.empty()) {
+                    return fail("MeshletStreamPageLoader did not preserve decode failure details");
+                }
+            }
+        }
+        if (completedLoads != expectedLoadCount ||
+            successfulLoads != validLoadCount ||
+            failedLoads != 1 ||
+            maxActiveLoads > 2 ||
+            loader.outstandingCount() != 0) {
+            return fail("MeshletStreamPageLoader did not complete its bounded asynchronous queue");
+        }
+
+        const auto eventDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::chrono::steady_clock::now() < eventDeadline) {
+            std::lock_guard lock(sink->mutex);
+            if (sink->completed.size() == expectedLoadCount) {
+                break;
+            }
+            std::this_thread::yield();
+        }
+
+        uint32_t failedGraphs = 0;
+        {
+            std::lock_guard lock(sink->mutex);
+            if (sink->submitted.size() != expectedLoadCount ||
+                sink->completed.size() != expectedLoadCount) {
+                return fail("page loader TaskGraph events were incomplete");
+            }
+            for (const task::TaskGraphSnapshot& snapshot : sink->completed) {
+                if (snapshot.name != "MeshletStreamPageLoad" ||
+                    snapshot.nodes.size() != 1 ||
+                    !snapshot.edges.empty() ||
+                    snapshot.nodes.front().desc.name != "MeshletStreamPageLoad" ||
+                    snapshot.nodes.front().desc.category != "Streaming" ||
+                    snapshot.nodes.front().workerThreadId == 0) {
+                    return fail("page loader TaskGraph event metadata was invalid");
+                }
+                if (snapshot.status == task::TaskGraphStatus::Failed) {
+                    ++failedGraphs;
+                    if (snapshot.nodes.front().desc.userTag != invalidPageIndex ||
+                        snapshot.nodes.front().error.empty()) {
+                        return fail("failed page TaskGraph event lost its page tag or error");
+                    }
+                }
+            }
+        }
+        if (failedGraphs != 1) {
+            return fail("page loader did not emit exactly one failed TaskGraph");
+        }
+
+        for (uint32_t pageIndex = 0; pageIndex < validLoadCount; ++pageIndex) {
+            if (!loader.enqueue(pageIndex)) {
+                return fail("MeshletStreamPageLoader rejected a page before reset drain validation");
+            }
+        }
+        loader.reset();
+        (void)task::taskSystem().unsubscribe(sinkToken);
+        if (loader.ready() || loader.pendingCount() != 0 || loader.activeCount() != 0 ||
+            loader.completedCount() != 0 || loader.outstandingCount() != 0) {
+            return RhiTestResult::fail("MeshletStreamPageLoader::reset did not drain and clear the loader");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+class MeshletStreamPageLoadConfigurationCompatibilityTest : public RhiTest {
+public:
+    MeshletStreamPageLoadConfigurationCompatibilityTest()
+    {
+        type = RhiTestType::Validation;
+        name = "meshlet_stream_page_load_configuration_compatibility";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::RenderGraphProperties legacyOnly{{"pageLoadWorkerCount", 5}};
+        render::RenderGraphProperties bothKeys{
+            {"pageLoadWorkerCount", 5},
+            {"pageLoadConcurrency", 3},
+        };
+        render::RenderGraphProperties invalidNewKey{
+            {"pageLoadWorkerCount", 4},
+            {"pageLoadConcurrency", -1},
+        };
+        render::RenderGraphProperties capped{{"pageLoadConcurrency", 1000}};
+
+        if (render::builtin_pass::pageLoadConcurrencyFromProperties(legacyOnly) != 5 ||
+            render::builtin_pass::pageLoadConcurrencyFromProperties(bothKeys) != 3 ||
+            render::builtin_pass::pageLoadConcurrencyFromProperties(invalidNewKey) != 4 ||
+            render::builtin_pass::pageLoadConcurrencyFromProperties(capped) !=
+                render::kMeshletStreamMaxPageLoadConcurrency) {
+            return RhiTestResult::fail("page load concurrency configuration compatibility failed");
+        }
+        return RhiTestResult::pass();
+    }
+};
 
 class StreamingTaskQueueLifecycleTest : public RhiTest {
 public:
@@ -961,7 +1156,7 @@ public:
                     .maxResidentBytes = maxResidentBytes,
                     .maxResidentPages = maxResidentPages,
                     .queuedFrameCount = 2,
-                    .pageLoadWorkerCount = 1,
+                    .pageLoadConcurrency = 1,
                     .maxPageLoadsInFlight = 2,
                 },
                 reason)) {
@@ -1059,7 +1254,7 @@ public:
             stats.queuedUpdateTaskCount != 0 ||
             stats.availableUpdateTaskCount != render::kStreamingMaxActiveTasks - 1u ||
             stats.frameScheduledUploadCount != 1 ||
-            stats.pageLoadWorkerCount != 1 ||
+            stats.pageLoadConcurrency != 1 ||
             stats.frameScheduledPageLoadCount == 0 ||
             stats.frameCompletedPageLoadCount == 0 ||
             stats.framePageLoadFailureCount != 0 ||
@@ -1812,6 +2007,8 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(StreamingTaskQueueLifecycleTest);
+METALLIC_REGISTER_RHI_TEST(MeshletStreamPageLoaderTaskGraphTest);
+METALLIC_REGISTER_RHI_TEST(MeshletStreamPageLoadConfigurationCompatibilityTest);
 METALLIC_REGISTER_RHI_TEST(MeshletStreamStorageAddressLimitTest);
 METALLIC_REGISTER_RHI_TEST(StreamerBufferUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerTextureUploadTest);

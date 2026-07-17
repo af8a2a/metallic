@@ -2,6 +2,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
 
 #include <algorithm>
 #include <cmath>
@@ -189,9 +190,7 @@ MeshletStreamRuntimeDesc runtimeDescFromProperties(const RenderGraphProperties& 
                 uintProperty(properties, "maxTraversalWorkItems", kMeshletStreamDefaultTraversalWorkItems),
                 1u),
             kMeshletStreamMaxTraversalWorkItems),
-        .pageLoadWorkerCount = std::min(
-            uintProperty(properties, "pageLoadWorkerCount", 2),
-            kMeshletStreamMaxPageLoadWorkers),
+        .pageLoadConcurrency = pageLoadConcurrencyFromProperties(properties),
         .maxPageLoadsInFlight = std::max<uint32_t>(
             uintProperty(properties, "maxPageLoadsInFlight", 128),
             1u),

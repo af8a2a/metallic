@@ -1,34 +1,21 @@
 #include "Runtime/Render/MeshletStreamPageLoader.h"
+#include "Runtime/Task/task_system.h"
 
 #include <condition_variable>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <span>
-#include <thread>
 #include <utility>
 
 namespace metallic::render {
 
-struct MeshletStreamPageLoader::Impl {
-    void runWorker()
+struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStreamPageLoader::Impl> {
+    task::TaskOutcome loadPage(uint32_t pageIndex) noexcept
     {
-        for (;;) {
-            uint32_t pageIndex = UINT32_MAX;
-            {
-                std::unique_lock lock(mutex);
-                condition.wait(lock, [this] {
-                    return stopping || !pendingPages.empty();
-                });
-                if (stopping && pendingPages.empty()) {
-                    return;
-                }
-                pageIndex = pendingPages.front();
-                pendingPages.pop_front();
-                ++activeLoads;
-            }
-
-            MeshletStreamPageLoadResult result;
-            result.pageIndex = pageIndex;
+        MeshletStreamPageLoadResult result;
+        result.pageIndex = pageIndex;
+        try {
             if (asset == nullptr || pageIndex >= asset->pageCount()) {
                 result.failureReason = "stream page index is out of range";
             } else {
@@ -51,11 +38,97 @@ struct MeshletStreamPageLoader::Impl {
                     result.payload.assign(devicePayload.begin(), devicePayload.end());
                 }
             }
+        } catch (const std::exception& exception) {
+            result.failureReason = exception.what();
+        } catch (...) {
+            result.failureReason = "stream page decode threw an unknown exception";
+        }
 
+        std::string taskFailure = result.failureReason;
+        bool replenish = false;
+        try {
+            std::lock_guard lock(mutex);
+            if (activeLoads != 0) {
+                --activeLoads;
+            }
+            try {
+                completedLoads.push_back(std::move(result));
+            } catch (const std::exception& exception) {
+                if (taskFailure.empty()) {
+                    taskFailure = exception.what();
+                }
+            } catch (...) {
+                if (taskFailure.empty()) {
+                    taskFailure = "failed to store the completed stream page load";
+                }
+            }
+            replenish = !stopping && asset != nullptr && !pendingPages.empty();
+        } catch (...) {
+            if (taskFailure.empty()) {
+                taskFailure = "failed to finalize the stream page load";
+            }
+        }
+        condition.notify_all();
+        if (replenish) {
+            scheduleAvailable();
+        }
+
+        if (!taskFailure.empty()) {
+            return std::unexpected(std::move(taskFailure));
+        }
+        return {};
+    }
+
+    void completeRejectedSubmission(uint32_t pageIndex, std::string reason)
+    {
+        {
+            std::lock_guard lock(mutex);
+            if (activeLoads != 0) {
+                --activeLoads;
+            }
+            completedLoads.push_back(MeshletStreamPageLoadResult{
+                .pageIndex = pageIndex,
+                .failureReason = std::move(reason),
+            });
+        }
+        condition.notify_all();
+    }
+
+    void scheduleAvailable()
+    {
+        for (;;) {
+            uint32_t pageIndex = UINT32_MAX;
             {
                 std::lock_guard lock(mutex);
-                --activeLoads;
-                completedLoads.push_back(std::move(result));
+                if (stopping || asset == nullptr ||
+                    activeLoads >= pageLoadConcurrency || pendingPages.empty()) {
+                    return;
+                }
+                pageIndex = pendingPages.front();
+                pendingPages.pop_front();
+                ++activeLoads;
+            }
+
+            task::TaskGraph graph("MeshletStreamPageLoad");
+            const std::shared_ptr<Impl> self = shared_from_this();
+            graph.addTask(
+                task::TaskDesc{
+                    .name = "MeshletStreamPageLoad",
+                    .category = "Streaming",
+                    .userTag = pageIndex,
+                },
+                [self, pageIndex]() -> task::TaskOutcome {
+                    return self->loadPage(pageIndex);
+                });
+
+            const std::shared_ptr<task::TaskSystem> system = task::detail::tryAcquireTaskSystem();
+            if (system == nullptr) {
+                completeRejectedSubmission(pageIndex, "TaskSystem is not initialized");
+                continue;
+            }
+            auto submitted = system->submit(std::move(graph));
+            if (!submitted) {
+                completeRejectedSubmission(pageIndex, submitted.error().message);
             }
         }
     }
@@ -65,13 +138,13 @@ struct MeshletStreamPageLoader::Impl {
     std::condition_variable condition;
     std::deque<uint32_t> pendingPages;
     std::deque<MeshletStreamPageLoadResult> completedLoads;
-    std::vector<std::thread> workers;
+    uint32_t pageLoadConcurrency = 0;
     uint32_t activeLoads = 0;
     bool stopping = false;
 };
 
 MeshletStreamPageLoader::MeshletStreamPageLoader()
-    : impl_(std::make_unique<Impl>())
+    : impl_(std::make_shared<Impl>())
 {
 }
 
@@ -82,7 +155,7 @@ MeshletStreamPageLoader::~MeshletStreamPageLoader()
 
 bool MeshletStreamPageLoader::initialize(
     const scene::MeshletStreamAsset& asset,
-    uint32_t workerCount,
+    uint32_t concurrency,
     std::string& reason)
 {
     reset();
@@ -91,23 +164,23 @@ bool MeshletStreamPageLoader::initialize(
         reason = "MeshletStreamPageLoader requires a valid streamasset";
         return false;
     }
-    if (workerCount == 0) {
-        reason = "MeshletStreamPageLoader requires at least one worker";
+    if (concurrency == 0) {
+        reason = "MeshletStreamPageLoader requires non-zero concurrency";
         return false;
     }
-    if (workerCount > kMeshletStreamMaxPageLoadWorkers) {
-        reason = "MeshletStreamPageLoader worker count exceeds the supported limit";
+    if (concurrency > kMeshletStreamMaxPageLoadConcurrency) {
+        reason = "MeshletStreamPageLoader concurrency exceeds the supported limit";
+        return false;
+    }
+    const std::shared_ptr<task::TaskSystem> system = task::detail::tryAcquireTaskSystem();
+    if (system == nullptr || !system->acceptingTasks()) {
+        reason = "MeshletStreamPageLoader requires an initialized TaskSystem";
         return false;
     }
 
     impl_->asset = &asset;
     impl_->stopping = false;
-    impl_->workers.reserve(workerCount);
-    for (uint32_t worker = 0; worker < workerCount; ++worker) {
-        impl_->workers.emplace_back([this] {
-            impl_->runWorker();
-        });
-    }
+    impl_->pageLoadConcurrency = concurrency;
     return true;
 }
 
@@ -121,18 +194,18 @@ void MeshletStreamPageLoader::reset()
         impl_->stopping = true;
         impl_->pendingPages.clear();
     }
-    impl_->condition.notify_all();
-    for (std::thread& worker : impl_->workers) {
-        if (worker.joinable()) {
-            worker.join();
-        }
+    {
+        std::unique_lock lock(impl_->mutex);
+        impl_->condition.wait(lock, [this] {
+            return impl_->activeLoads == 0;
+        });
     }
-    impl_->workers.clear();
     {
         std::lock_guard lock(impl_->mutex);
         impl_->pendingPages.clear();
         impl_->completedLoads.clear();
         impl_->activeLoads = 0;
+        impl_->pageLoadConcurrency = 0;
         impl_->asset = nullptr;
         impl_->stopping = false;
     }
@@ -143,14 +216,18 @@ bool MeshletStreamPageLoader::enqueue(uint32_t pageIndex)
     if (impl_ == nullptr) {
         return false;
     }
+    bool schedule = false;
     {
         std::lock_guard lock(impl_->mutex);
-        if (impl_->workers.empty() || impl_->stopping || impl_->asset == nullptr) {
+        if (impl_->pageLoadConcurrency == 0 || impl_->stopping || impl_->asset == nullptr) {
             return false;
         }
         impl_->pendingPages.push_back(pageIndex);
+        schedule = impl_->activeLoads < impl_->pageLoadConcurrency;
     }
-    impl_->condition.notify_one();
+    if (schedule) {
+        impl_->scheduleAvailable();
+    }
     return true;
 }
 
@@ -170,16 +247,16 @@ bool MeshletStreamPageLoader::tryPop(MeshletStreamPageLoadResult& outResult)
 
 bool MeshletStreamPageLoader::ready() const
 {
-    return workerCount() != 0;
+    return concurrency() != 0;
 }
 
-uint32_t MeshletStreamPageLoader::workerCount() const
+uint32_t MeshletStreamPageLoader::concurrency() const
 {
     if (impl_ == nullptr) {
         return 0;
     }
     std::lock_guard lock(impl_->mutex);
-    return static_cast<uint32_t>(impl_->workers.size());
+    return impl_->pageLoadConcurrency;
 }
 
 uint32_t MeshletStreamPageLoader::pendingCount() const

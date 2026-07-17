@@ -9,7 +9,7 @@
 
 namespace metallic::render {
 
-inline constexpr uint32_t kMeshletStreamMaxPageLoadWorkers = 32;
+inline constexpr uint32_t kMeshletStreamMaxPageLoadConcurrency = 32;
 
 struct MeshletStreamPageLoadResult {
     uint32_t pageIndex = UINT32_MAX;
@@ -30,14 +30,14 @@ public:
     MeshletStreamPageLoader(MeshletStreamPageLoader&&) noexcept = delete;
     MeshletStreamPageLoader& operator=(MeshletStreamPageLoader&&) noexcept = delete;
 
-    bool initialize(const scene::MeshletStreamAsset& asset, uint32_t workerCount, std::string& reason);
+    bool initialize(const scene::MeshletStreamAsset& asset, uint32_t concurrency, std::string& reason);
     void reset();
 
     bool enqueue(uint32_t pageIndex);
     bool tryPop(MeshletStreamPageLoadResult& outResult);
 
     bool ready() const;
-    uint32_t workerCount() const;
+    uint32_t concurrency() const;
     uint32_t pendingCount() const;
     uint32_t activeCount() const;
     uint32_t completedCount() const;
@@ -45,7 +45,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 } // namespace metallic::render

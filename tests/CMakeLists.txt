@@ -1,5 +1,31 @@
 include(GoogleTest)
 
+add_executable(MetallicTaskTests
+    task/task_graph_tests.cpp
+)
+
+target_include_directories(MetallicTaskTests PRIVATE
+    "${CMAKE_SOURCE_DIR}/Source"
+)
+
+target_link_libraries(MetallicTaskTests PRIVATE
+    MetallicRuntimeTask
+    GTest::gtest_main
+)
+
+if(WIN32)
+    target_compile_definitions(MetallicTaskTests PRIVATE NOMINMAX)
+    target_compile_options(MetallicTaskTests PRIVATE /EHsc)
+endif()
+
+add_test(
+    NAME MetallicTaskTests
+    COMMAND MetallicTaskTests --gtest_color=no
+)
+set_tests_properties(MetallicTaskTests PROPERTIES
+    LABELS "task"
+)
+
 add_executable(MetallicSceneTests
     scene/Main.cpp
 )
@@ -61,6 +87,7 @@ target_compile_definitions(MetallicRhiTests PRIVATE
 
 if(WIN32)
     target_compile_definitions(MetallicRhiTests PRIVATE NOMINMAX)
+    target_compile_options(MetallicRhiTests PRIVATE /EHsc)
 
     set(METALLIC_TEST_SLANG_ROOT "${CMAKE_SOURCE_DIR}/External/slang")
     if(DEFINED SLANG_ROOT)

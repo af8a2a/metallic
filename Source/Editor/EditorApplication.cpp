@@ -4,6 +4,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Task/task_system.h"
 #include "imnodes.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -565,7 +566,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             {"selectedLodLevel", 0},
             {"maxResidentPages", 4096},
             {"maxPageUploadsPerFrame", 64},
-            {"pageLoadWorkerCount", 2},
+            {"pageLoadConcurrency", 2},
             {"maxPageLoadsInFlight", 128},
             {"maxActiveGroups", 262144},
             {"maxTraversalWorkers", 1024},
@@ -1678,6 +1679,18 @@ int EditorApplication::run(
     const char* startupScenePath,
     const char* startupStreamAssetPath)
 {
+    const auto taskInitialization = task::initializeTaskSystem();
+    if (!taskInitialization) {
+        spdlog::error("TaskSystem initialization failed: {}", taskInitialization.error().message);
+        return 1;
+    }
+    struct TaskSystemShutdownGuard {
+        ~TaskSystemShutdownGuard()
+        {
+            task::shutdownTaskSystem();
+        }
+    } taskSystemShutdownGuard;
+
     smokeTest_ = smokeTest;
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
     startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";

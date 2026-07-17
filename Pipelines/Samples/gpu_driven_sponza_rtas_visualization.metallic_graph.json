@@ -24,7 +24,7 @@
                 "maxResidentPages": 4096,
                 "maxTraversalWorkers": 1024,
                 "maxTraversalWorkItems": 1048576,
-                "pageLoadWorkerCount": 2,
+                "pageLoadConcurrency": 2,
                 "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
                 "rtasGranularity": "cluster-id",
                 "rtasVisualization": true

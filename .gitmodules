@@ -35,3 +35,6 @@
 [submodule "External/meshoptimizer"]
 	path = External/meshoptimizer
 	url = https://github.com/zeux/meshoptimizer.git
+[submodule "External/stdexec"]
+	path = External/stdexec
+	url = https://github.com/NVIDIA/stdexec.git

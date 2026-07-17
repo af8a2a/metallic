@@ -215,8 +215,8 @@ bool MeshletStreamResidencyManager::initialize(
         reason = "MeshletStreamResidencyManager asset has no streamable pages";
         return false;
     }
-    if (desc.pageLoadWorkerCount > kMeshletStreamMaxPageLoadWorkers) {
-        reason = "MeshletStreamResidencyManager page load worker count exceeds the supported limit";
+    if (desc.pageLoadConcurrency > kMeshletStreamMaxPageLoadConcurrency) {
+        reason = "MeshletStreamResidencyManager page load concurrency exceeds the supported limit";
         return false;
     }
     if (desc.storageAlignment < kStreamPageTableOffsetAlignment ||
@@ -260,14 +260,14 @@ bool MeshletStreamResidencyManager::initialize(
         residentPages_.reserve(residentReserve);
         pendingPages_.reserve(residentReserve);
     }
-    if (desc.pageLoadWorkerCount != 0) {
+    if (desc.pageLoadConcurrency != 0) {
         const uint32_t pageLoadCapacity = maxResidentPages_ != 0
             ? std::min(maxResidentPages_, pageCount_)
             : pageCount_;
         maxPageLoadsInFlight_ = std::min(
-            std::max(desc.maxPageLoadsInFlight, desc.pageLoadWorkerCount),
+            std::max(desc.maxPageLoadsInFlight, desc.pageLoadConcurrency),
             pageLoadCapacity);
-        if (!pageLoader_.initialize(*asset_, desc.pageLoadWorkerCount, reason)) {
+        if (!pageLoader_.initialize(*asset_, desc.pageLoadConcurrency, reason)) {
             const std::string loaderReason = reason;
             reset();
             reason = loaderReason;
@@ -1003,7 +1003,7 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats() const
     result.residentPageCount = static_cast<uint32_t>(residentPages_.size());
     result.pendingPageCount = static_cast<uint32_t>(pendingPages_.size());
     result.queuedUploadCount = queuedUploadCount();
-    result.pageLoadWorkerCount = pageLoader_.workerCount();
+    result.pageLoadConcurrency = pageLoader_.concurrency();
     result.pendingPageLoadCount = pageLoader_.pendingCount();
     result.activePageLoadCount = pageLoader_.activeCount();
     result.completedPageLoadCount = pageLoader_.completedCount();

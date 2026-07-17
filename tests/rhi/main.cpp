@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "Runtime/Task/task_system.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
@@ -336,5 +337,12 @@ int main(int argc, char** argv)
     gEnvironment = environment;
     ::testing::AddGlobalTestEnvironment(environment);
 
-    return RUN_ALL_TESTS();
+    const auto taskInitialization = metallic::task::initializeTaskSystem();
+    if (!taskInitialization) {
+        spdlog::error("TaskSystem initialization failed: {}", taskInitialization.error().message);
+        return 1;
+    }
+    const int result = RUN_ALL_TESTS();
+    metallic::task::shutdownTaskSystem();
+    return result;
 }

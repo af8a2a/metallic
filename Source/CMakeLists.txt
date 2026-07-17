@@ -4,6 +4,23 @@ if(DEFINED SLANG_ROOT)
 endif()
 find_package(slang CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PATH)
 
+add_library(MetallicRuntimeTask STATIC
+    Runtime/Task/task_system.cpp
+)
+
+target_include_directories(MetallicRuntimeTask PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+target_link_libraries(MetallicRuntimeTask PUBLIC
+    STDEXEC::stdexec
+)
+
+if(WIN32)
+    target_compile_definitions(MetallicRuntimeTask PRIVATE NOMINMAX)
+    target_compile_options(MetallicRuntimeTask PRIVATE /EHsc)
+endif()
+
 add_library(MetallicRuntimeRender STATIC
     Runtime/Render/HistoryResources.cpp
     Runtime/Render/MeshletStreamClas.cpp
@@ -52,6 +69,7 @@ target_include_directories(MetallicRuntimeRender SYSTEM PRIVATE
 )
 
 target_link_libraries(MetallicRuntimeRender PUBLIC
+    MetallicRuntimeTask
     metallic::volk
     metallic::sdl3
     metallic::aftermath
@@ -75,6 +93,7 @@ target_compile_definitions(MetallicRuntimeRender PRIVATE
 
 if(WIN32)
     target_compile_definitions(MetallicRuntimeRender PRIVATE NOMINMAX)
+    target_compile_options(MetallicRuntimeRender PRIVATE /EHsc)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -145,6 +164,7 @@ target_compile_definitions(Metallic PRIVATE
 
 if(WIN32)
     target_compile_definitions(Metallic PRIVATE NOMINMAX)
+    target_compile_options(Metallic PRIVATE /EHsc)
     target_link_libraries(Metallic PRIVATE Comdlg32)
 
     file(GLOB METALLIC_SLANG_RUNTIME_DLLS "${METALLIC_SLANG_ROOT}/bin/*.dll")

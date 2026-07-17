@@ -937,7 +937,7 @@ Result MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRunti
                 .maxResidentPages = maxResidentPages_,
                 .queuedFrameCount = std::max(desc.queuedFrameCount, 1u),
                 .pageStride = pageStride,
-                .pageLoadWorkerCount = desc.pageLoadWorkerCount,
+                .pageLoadConcurrency = desc.pageLoadConcurrency,
                 .maxPageLoadsInFlight = desc.maxPageLoadsInFlight,
             },
             reason)) {

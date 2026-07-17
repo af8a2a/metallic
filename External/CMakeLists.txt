@@ -12,6 +12,22 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/meshoptimizer_build/CMakeLists.txt")
     add_subdirectory(meshoptimizer_build)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/stdexec/include/stdexec/execution.hpp")
+    find_package(Threads REQUIRED)
+
+    add_library(stdexec INTERFACE)
+    add_library(STDEXEC::stdexec ALIAS stdexec)
+    target_include_directories(stdexec SYSTEM INTERFACE
+        "${CMAKE_CURRENT_SOURCE_DIR}/stdexec/include"
+    )
+    target_link_libraries(stdexec INTERFACE Threads::Threads)
+    target_compile_features(stdexec INTERFACE cxx_std_20)
+    target_compile_options(stdexec INTERFACE
+        $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-fcoroutines;-fconcepts-diagnostics-depth=10>
+        $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/Zc:__cplusplus;/Zc:preprocessor;/Zc:externConstexpr;/bigobj>
+    )
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/volk/volk.c")
     add_library(volk STATIC
         volk/volk.c

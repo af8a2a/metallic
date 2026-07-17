@@ -188,7 +188,7 @@ struct MeshletStreamResidencyDesc {
     uint64_t storageAlignment = kMeshletStreamStorageAlignment;
     uint32_t unloadDelayFrames = 1;
     uint32_t evictionAgeThresholdFrames = 1;
-    uint32_t pageLoadWorkerCount = 0;
+    uint32_t pageLoadConcurrency = 0;
     uint32_t maxPageLoadsInFlight = 0;
 };
 
@@ -209,7 +209,7 @@ struct MeshletStreamResidencyStats {
     uint32_t residentPageCount = 0;
     uint32_t pendingPageCount = 0;
     uint32_t queuedUploadCount = 0;
-    uint32_t pageLoadWorkerCount = 0;
+    uint32_t pageLoadConcurrency = 0;
     uint32_t pendingPageLoadCount = 0;
     uint32_t activePageLoadCount = 0;
     uint32_t completedPageLoadCount = 0;
