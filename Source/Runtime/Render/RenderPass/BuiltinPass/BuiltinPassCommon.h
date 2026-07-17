@@ -56,6 +56,8 @@ inline constexpr const char* kSceneMaterialVisualizationShaderModuleName = "scen
 inline constexpr const char* kSceneMaterialVisualizationEntryPoint = "sceneMaterialVisualizeMain";
 inline constexpr const char* kScenePathTraceShaderModuleName = "scene_path_trace";
 inline constexpr const char* kScenePathTraceEntryPoint = "scenePathTraceMain";
+inline constexpr const char* kSceneRtxdiShaderModuleName = "scene_rtxdi";
+inline constexpr const char* kSceneRtxdiEntryPoint = "sceneRtxdiMain";
 inline constexpr const char* kScenePathTraceGuidesShaderModuleName = "scene_path_trace_guides";
 inline constexpr const char* kScenePathTraceGuidesEntryPoint = "scenePathTraceGuidesMain";
 inline constexpr const char* kOpenPBRRayQueryPathTraceShaderModuleName = "openpbr_rayquery_path_trace";
@@ -98,6 +100,15 @@ inline constexpr uint32_t kDefaultPathTraceMaxDepth = 3;
 inline constexpr uint32_t kDefaultPathTraceSamples = 2;
 inline constexpr uint32_t kMaxPathTraceMaxDepth = 32;
 inline constexpr uint32_t kMaxPathTraceSamples = 16;
+inline constexpr uint32_t kDefaultRtxdiLightCount = 256;
+inline constexpr uint32_t kDefaultRtxdiInitialSamples = 8;
+inline constexpr uint32_t kDefaultRtxdiSpatialSamples = 1;
+inline constexpr uint32_t kMaxRtxdiLightCount = 4096;
+inline constexpr uint32_t kMaxRtxdiInitialSamples = 32;
+inline constexpr uint32_t kMaxRtxdiSpatialSamples = 16;
+inline constexpr uint32_t kRtxdiVisualizationShaded = 0;
+inline constexpr uint32_t kRtxdiVisualizationLightId = 1;
+inline constexpr uint32_t kRtxdiVisualizationHistory = 2;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeProcedural = 0;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeMap = 1;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeDisabled = 2;
@@ -410,6 +421,42 @@ struct ScenePathTracePush {
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
 };
+
+struct SceneRtxdiPush {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+    float previousEye[4] = {};
+    float previousCenter[4] = {};
+    float previousUpProjection[4] = {};
+    float previousViewport[4] = {};
+    float previousClipOrtho[4] = {};
+    float sceneCenterRadius[4] = {};
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t frameIndex = 0;
+    uint32_t hasHistory = 0;
+    uint32_t lightCount = kDefaultRtxdiLightCount;
+    uint32_t initialSampleCount = kDefaultRtxdiInitialSamples;
+    uint32_t spatialSampleCount = kDefaultRtxdiSpatialSamples;
+    uint32_t maxHistoryLength = 20;
+    uint32_t enableTemporalReuse = 1;
+    uint32_t enableSpatialReuse = 1;
+    uint32_t animateLights = 1;
+    uint32_t visualizationMode = kRtxdiVisualizationShaded;
+    uint32_t materialTextureCount = 0;
+    float bitangentFlip = 1.0f;
+    float lightIntensity = 12.0f;
+    float exposure = 1.0f;
+    float normalThreshold = 0.6f;
+    float depthThreshold = 0.08f;
+    uint32_t enableInitialVisibility = 1;
+    uint32_t padding1 = 0;
+};
+
+static_assert(sizeof(SceneRtxdiPush) == 256);
 
 inline std::string resultMessage(std::string_view label, const Result& result)
 {

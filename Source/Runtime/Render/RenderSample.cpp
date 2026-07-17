@@ -174,6 +174,24 @@ public:
     std::string previewOutput() const override { return "DlssRr.color"; }
 };
 
+class RtxdiSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "rtxdi-sample"; }
+    std::string_view name() const override { return "RTXDI / ReSTIR DI"; }
+    std::string_view category() const override { return "RTXDI"; }
+    std::string_view description() const override
+    {
+        return "Fused spatiotemporal ReSTIR DI over hundreds of animated analytic lights using RayQuery visibility.";
+    }
+    std::string scenePath() const override { return "Asset/meet_mat.glb"; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"Rtxdi"}; }
+    std::string previewOutput() const override { return "Rtxdi.color"; }
+};
+
 class MaterialVisualizationABeautifulGameSample final : public RenderSample {
 public:
     std::string_view id() const override { return "material-visualization-abeautiful-game"; }
@@ -295,6 +313,12 @@ const RenderSample& materialVisualizationABeautifulGameSample()
     return sample;
 }
 
+const RenderSample& rtxdiSample()
+{
+    static const RtxdiSample sample;
+    return sample;
+}
+
 const RenderSample& gpuDrivenSample()
 {
     static const GPUDrivenSample sample;
@@ -319,6 +343,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &pathTracingMeetMatSample(),
         &pathTracingSample(),
         &pathTracingDlssRrSample(),
+        &rtxdiSample(),
         &materialVisualizationABeautifulGameSample(),
         &gpuDrivenSample(),
         &gpuDrivenStreamAssetSample(),

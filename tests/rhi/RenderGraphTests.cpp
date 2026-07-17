@@ -770,6 +770,8 @@ public:
             render::createRenderGraphPass("RenderGraphBufferWritePass");
         const std::unique_ptr<render::RenderGraphPass> pathTrace =
             render::createRenderGraphPass("ScenePathTracePass");
+        const std::unique_ptr<render::RenderGraphPass> rtxdi =
+            render::createRenderGraphPass("SceneRtxdiPass");
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenPreview =
@@ -785,6 +787,7 @@ public:
             copy == nullptr ||
             bufferWrite == nullptr ||
             pathTrace == nullptr ||
+            rtxdi == nullptr ||
             materialVisualization == nullptr ||
             gpuDrivenPreview == nullptr ||
             gpuDrivenStreamAsset == nullptr ||
@@ -807,6 +810,10 @@ public:
         if (pathTrace->kind() != render::RenderGraphPassKind::Compute ||
             pathTrace->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("ScenePathTracePass is not classified as Compute/Compute");
+        }
+        if (rtxdi->kind() != render::RenderGraphPassKind::Compute ||
+            rtxdi->queueType() != render::QueueType::Compute) {
+            return RhiTestResult::fail("SceneRtxdiPass is not classified as Compute/Compute");
         }
         if (materialVisualization->kind() != render::RenderGraphPassKind::Compute ||
             materialVisualization->queueType() != render::QueueType::Compute) {
@@ -833,6 +840,7 @@ public:
         bool foundCopy = false;
         bool foundBufferWrite = false;
         bool foundPathTrace = false;
+        bool foundRtxdi = false;
         bool foundMaterialVisualization = false;
         bool foundGPUDrivenPreview = false;
         bool foundGPUDrivenStreamAsset = false;
@@ -850,6 +858,9 @@ public:
                     passInfo.queueType == render::QueueType::Compute;
             } else if (passInfo.type == "ScenePathTracePass") {
                 foundPathTrace = passInfo.kind == render::RenderGraphPassKind::Compute &&
+                    passInfo.queueType == render::QueueType::Compute;
+            } else if (passInfo.type == "SceneRtxdiPass") {
+                foundRtxdi = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
             } else if (passInfo.type == "SceneMaterialVisualizationPass") {
                 foundMaterialVisualization = passInfo.kind == render::RenderGraphPassKind::Compute &&
@@ -872,6 +883,7 @@ public:
             !foundCopy ||
             !foundBufferWrite ||
             !foundPathTrace ||
+            !foundRtxdi ||
             !foundMaterialVisualization ||
             !foundGPUDrivenPreview ||
             !foundGPUDrivenStreamAsset ||
@@ -908,15 +920,23 @@ public:
     {
         const std::unique_ptr<render::RenderGraphPass> pathTrace =
             render::createRenderGraphPass("ScenePathTracePass");
+        const std::unique_ptr<render::RenderGraphPass> rtxdi =
+            render::createRenderGraphPass("SceneRtxdiPass");
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
             render::createRenderGraphPass("GPUDrivenStreamAssetPass");
-        if (pathTrace == nullptr || materialVisualization == nullptr || gpuDrivenStreamAsset == nullptr) {
+        if (pathTrace == nullptr || rtxdi == nullptr || materialVisualization == nullptr || gpuDrivenStreamAsset == nullptr) {
             return RhiTestResult::fail("failed to create passes for runtime settings declaration test");
         }
         if (!hasBoolRuntimeSetting(*pathTrace, "flipBitangent")) {
             return RhiTestResult::fail("ScenePathTracePass missing Bool runtime setting flipBitangent");
+        }
+        if (!hasBoolRuntimeSetting(*rtxdi, "temporalReuse") ||
+            !hasBoolRuntimeSetting(*rtxdi, "spatialReuse") ||
+            !hasBoolRuntimeSetting(*rtxdi, "initialVisibility") ||
+            !hasBoolRuntimeSetting(*rtxdi, "animateLights")) {
+            return RhiTestResult::fail("SceneRtxdiPass missing ReSTIR DI Bool runtime settings");
         }
         if (!hasBoolRuntimeSetting(*materialVisualization, "flipBitangent")) {
             return RhiTestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
@@ -1132,6 +1152,38 @@ public:
         }
         if (pathTracingSample.graph.firstOutputName() != "PathTrace.color") {
             return RhiTestResult::fail("OpenPBR PathTracingSample graph first output changed");
+        }
+
+        render::RenderSampleLoadResult rtxdiSample;
+        if (!render::loadBuiltInRenderSample("rtxdi-sample", rtxdiSample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (rtxdiSample.desc.id != "rtxdi-sample" ||
+            rtxdiSample.desc.name != "RTXDI / ReSTIR DI" ||
+            rtxdiSample.desc.category != "RTXDI" ||
+            rtxdiSample.desc.scenePath != "Asset/meet_mat.glb" ||
+            rtxdiSample.desc.graphPath != "Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json" ||
+            rtxdiSample.desc.previewOutput != "Rtxdi.color") {
+            return RhiTestResult::fail("RTXDI Sample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* rtxdi = rtxdiSample.graph.findNode("Rtxdi");
+        if (rtxdi == nullptr ||
+            rtxdi->type != "SceneRtxdiPass" ||
+            !rtxdi->properties.is_object() ||
+            rtxdi->properties.value("path", "") != rtxdiSample.desc.scenePath ||
+            rtxdi->properties.value("lightCount", 0) != 256 ||
+            rtxdi->properties.value("initialSamples", 0) != 8 ||
+            rtxdi->properties.value("spatialSamples", 0) != 1 ||
+            !rtxdi->properties.value("temporalReuse", false) ||
+            !rtxdi->properties.value("spatialReuse", false) ||
+            !rtxdi->properties.value("initialVisibility", false)) {
+            return RhiTestResult::fail("RTXDI Sample did not apply scene and ReSTIR DI defaults");
+        }
+        if (!rtxdiSample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (rtxdiSample.graph.firstOutputName() != "Rtxdi.color") {
+            return RhiTestResult::fail("RTXDI Sample graph first output changed");
         }
 
         render::RenderSampleLoadResult dlssRrSample;
@@ -3318,6 +3370,102 @@ public:
     }
 };
 
+class RenderGraphRtxdiPreviewTest : public RhiTest {
+public:
+    RenderGraphRtxdiPreviewTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_rtxdi_preview";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(true, true);
+        if (!result) {
+            return RhiTestResult::skip(
+                std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+
+        render::RenderSampleLoadResult sample;
+        std::string message;
+        if (!render::loadBuiltInRenderSample("rtxdi-sample", sample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        result = preview.render(sample.graph, 256, 256, sample.desc.previewOutput);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("SceneRtxdiPass is unsupported on this device: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("SceneRtxdiPass render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        result = preview.render(sample.graph, 256, 256, sample.desc.previewOutput);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("SceneRtxdiPass history render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
+        if (visiblePixelCount < 128) {
+            return RhiTestResult::fail(
+                std::string("SceneRtxdiPass produced too few visible pixels: ") +
+                std::to_string(visiblePixelCount));
+        }
+
+        const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const std::filesystem::path outputPath = context.outputDirectory / "render_graph_rtxdi_preview.png";
+        if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
+            return RhiTestResult::fail(message);
+        }
+        return RhiTestResult::pass("wrote RTXDI preview");
+    }
+};
+
+class RenderGraphRtxdiShaderCompileTest : public RhiTest {
+public:
+    RenderGraphRtxdiShaderCompileTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_rtxdi_shader_compile";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const char* capabilities[] = {"spvRayQueryKHR"};
+        render::ShaderCompileResult compileResult;
+        render::Result result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "scene_rtxdi",
+                .entryPointName = "sceneRtxdiMain",
+                .searchPath = kShaderSearchPath,
+                .profileName = "glsl_460",
+                .capabilities = capabilities,
+                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+            },
+            compileResult);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RTXDI shader compile returned ") +
+                toString(result) +
+                ": " +
+                compileResult.diagnostics);
+        }
+        if (compileResult.spirv.empty()) {
+            return RhiTestResult::fail("RTXDI shader produced empty SPIR-V");
+        }
+        return RhiTestResult::pass("compiled RTXDI ReSTIR DI shader");
+    }
+};
+
 class RenderGraphPathTracingGuidesShaderCompileTest : public RhiTest {
 public:
     RenderGraphPathTracingGuidesShaderCompileTest()
@@ -4821,6 +4969,8 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetTraversalDemandTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphRtxdiPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphRtxdiShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPathTracingGuidesShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingSamplePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingEnvironmentRotationTest);

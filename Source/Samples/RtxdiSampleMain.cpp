@@ -1,0 +1,111 @@
+#include "Editor/EditorApplication.h"
+#include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
+#include "Runtime/Render/RenderSample.h"
+
+#include <SDL3/SDL.h>
+#include <spdlog/spdlog.h>
+
+#include <algorithm>
+#include <string>
+#include <string_view>
+
+namespace {
+
+constexpr const char* kRtxdiSampleId = "rtxdi-sample";
+
+void printUsage()
+{
+    spdlog::info(
+        "MetallicRtxdiSample options:\n"
+        "  --smoke-test                 Render two history-aware frames and exit\n"
+        "  --wait-for-graphics-debugger Wait before Vulkan initialization");
+}
+
+int runSmokeTest()
+{
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        spdlog::error("RTXDI smoke test failed to initialize SDL: {}", SDL_GetError());
+        return 1;
+    }
+    struct SdlShutdownGuard {
+        ~SdlShutdownGuard() { SDL_Quit(); }
+    } sdlShutdownGuard;
+
+    metallic::render::RenderSampleLoadResult sample;
+    std::string message;
+    if (!metallic::render::loadBuiltInRenderSample(kRtxdiSampleId, sample, message)) {
+        spdlog::error("RTXDI smoke test failed to load Sample: {}", message);
+        return 1;
+    }
+
+    metallic::render::RenderGraphPreviewRenderer preview;
+    metallic::render::Result result = preview.initialize(false, true);
+    if (!result) {
+        spdlog::error(
+            "RTXDI smoke test failed to initialize preview renderer: {}",
+            metallic::render::resultToString(result));
+        return 1;
+    }
+
+    constexpr uint32_t kSmokeWidth = 256;
+    constexpr uint32_t kSmokeHeight = 256;
+    for (uint32_t frame = 0; frame < 2; ++frame) {
+        result = preview.render(sample.graph, kSmokeWidth, kSmokeHeight, sample.desc.previewOutput);
+        if (!result) {
+            spdlog::error(
+                "RTXDI smoke frame {} failed: {}: {}",
+                frame,
+                metallic::render::resultToString(result),
+                preview.lastLog());
+            return 1;
+        }
+    }
+
+    const size_t visiblePixelCount = std::count_if(
+        preview.pixels().begin(),
+        preview.pixels().end(),
+        [](uint32_t pixel) { return (pixel & 0x00ffffffu) != 0u; });
+    if (visiblePixelCount < 1024) {
+        spdlog::error("RTXDI smoke test produced too few visible pixels: {}", visiblePixelCount);
+        return 1;
+    }
+    spdlog::info(
+        "RTXDI smoke test rendered two {}x{} frames with {} visible pixels",
+        kSmokeWidth,
+        kSmokeHeight,
+        visiblePixelCount);
+    return 0;
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    bool smokeTest = false;
+    bool waitForGraphicsDebugger = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string_view argument(argv[index]);
+        if (argument == "--help" || argument == "-h") {
+            printUsage();
+            return 0;
+        }
+        if (argument == "--smoke-test") {
+            smokeTest = true;
+            continue;
+        }
+        if (argument == "--wait-for-graphics-debugger") {
+            waitForGraphicsDebugger = true;
+            continue;
+        }
+        spdlog::error("Unknown argument: {}", argument);
+        printUsage();
+        return 1;
+    }
+
+    if (smokeTest) {
+        return runSmokeTest();
+    }
+
+    metallic::EditorApplication app;
+    return app.run(false, waitForGraphicsDebugger, kRtxdiSampleId);
+}

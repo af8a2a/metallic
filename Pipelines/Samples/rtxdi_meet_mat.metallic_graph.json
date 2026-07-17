@@ -1,0 +1,55 @@
+{
+    "edges": [],
+    "name": "RtxdiSample",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "Rtxdi",
+            "position": {
+                "x": 335.0,
+                "y": 281.0
+            },
+            "properties": {
+                "animateLights": true,
+                "camera": {
+                    "center": [
+                        0.0,
+                        0.15000000596046448,
+                        0.0
+                    ],
+                    "eye": [
+                        0.0,
+                        0.25,
+                        3.0
+                    ],
+                    "fovDegrees": 50.0,
+                    "projection": "perspective",
+                    "reversedZ": true,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 10000.0,
+                    "znear": 0.0010000000474974513
+                },
+                "exposure": 1.0,
+                "initialVisibility": true,
+                "initialSamples": 8,
+                "lightCount": 256,
+                "lightIntensity": 12.0,
+                "maxHistoryLength": 20,
+                "path": "Asset/meet_mat.glb",
+                "spatialReuse": true,
+                "spatialSamples": 1,
+                "temporalReuse": true,
+                "visualization": "shaded"
+            },
+            "type": "SceneRtxdiPass"
+        }
+    ],
+    "outputs": [
+        "Rtxdi.color"
+    ],
+    "version": 1
+}

@@ -46,6 +46,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/SceneMaterialShaderObjectPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneMaterialVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/SceneRtxdiPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/StreamlineDlssRrPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
@@ -257,6 +258,12 @@ add_executable(MetallicPathTracingSample
     ${METALLIC_EDITOR_SOURCES}
 )
 configure_metallic_editor_sample(MetallicPathTracingSample)
+
+add_executable(MetallicRtxdiSample
+    Samples/RtxdiSampleMain.cpp
+    ${METALLIC_EDITOR_SOURCES}
+)
+configure_metallic_editor_sample(MetallicRtxdiSample)
 
 add_executable(MetallicGPUDrivenSample
     Samples/GPUDrivenSampleMain.cpp

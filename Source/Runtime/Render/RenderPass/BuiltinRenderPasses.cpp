@@ -56,6 +56,10 @@ void registerBuiltInRenderGraphPasses()
         "Path trace a glTF scene with RayQuery",
         []() { return builtin_pass::createScenePathTracePass(); });
     registerRenderGraphPassType(
+        "SceneRtxdiPass",
+        "Render many-light direct illumination with ReSTIR DI reservoir resampling",
+        []() { return builtin_pass::createSceneRtxdiPass(); });
+    registerRenderGraphPassType(
         "NrdDenoisePass",
         "Denoise connected NRD radiance resources",
         []() { return builtin_pass::createNrdDenoisePass(); });
