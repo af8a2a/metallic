@@ -5,7 +5,7 @@ endif()
 find_package(slang CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PATH)
 
 add_library(MetallicRuntimeTask STATIC
-    Runtime/Task/task_system.cpp
+    Runtime/Task/TaskSystem.cpp
 )
 
 target_include_directories(MetallicRuntimeTask PUBLIC

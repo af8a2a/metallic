@@ -13,7 +13,7 @@
 - `build\Source\Debug\Metallic.exe --smoke-test` runs a quick Windows/MSVC smoke check after building.
 
 ## Coding Style & Naming Conventions
-The project uses C++23 through CMake. Match the existing style: 4-space indentation, no tabs, Allman braces for function definitions, same-line braces for control statements, and namespace end comments such as `} // namespace metallic::render`. Use `PascalCase` for types, `lowerCamelCase` for functions and locals, `kPascalCase` for constants, trailing underscores for private members, and snake_case file names such as `render_graph.cpp`.
+The project uses C++23 through CMake. Match the existing style: 4-space indentation, no tabs, Allman braces for function definitions, same-line braces for control statements, and namespace end comments such as `} // namespace metallic::render`. Use `PascalCase` for types, `lowerCamelCase` for functions and locals, `kPascalCase` for constants, and trailing underscores for private members. Use `PascalCase` for newly added C++ source and header file names, such as `TaskGraph.cpp` and `TaskGraph.h`; existing legacy file names do not need opportunistic renaming.
 
 ## Testing Guidelines
 Tests are custom CTest executables, not a third-party unit framework. Scene tests use simple `expect` helpers and return nonzero on failure. RHI tests are registry-based, support `--list` and `--filter <text>`, and use exit code `77` for unsupported environments. Add tests under `tests/scene/` or `tests/rhi/`, wire them in `tests/CMakeLists.txt`, and keep generated images out of source control.

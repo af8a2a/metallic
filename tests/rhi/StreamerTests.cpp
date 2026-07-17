@@ -8,7 +8,7 @@
 #include "Runtime/Render/StreamingTaskQueue.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
-#include "Runtime/Task/task_system.h"
+#include "Runtime/Task/TaskSystem.h"
 
 #include <algorithm>
 #include <array>

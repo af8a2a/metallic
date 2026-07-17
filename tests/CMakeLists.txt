@@ -1,7 +1,7 @@
 include(GoogleTest)
 
 add_executable(MetallicTaskTests
-    task/task_graph_tests.cpp
+    task/TaskGraphTests.cpp
 )
 
 target_include_directories(MetallicTaskTests PRIVATE
