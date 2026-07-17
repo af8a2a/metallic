@@ -1,4 +1,4 @@
-#include "openpbr_rayquery_path_trace.slang"
+#include "OpenPBRRayQueryPathTrace.slang"
 
 [[vk::binding(14, 0)]]
 RWTexture2D<float4> gDlssRrAlbedo;

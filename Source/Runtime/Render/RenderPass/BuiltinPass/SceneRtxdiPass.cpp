@@ -143,7 +143,7 @@ public:
             },
             computeCompile);
         if (!result) {
-            log += "compileSlangShaderToSpirv(scene_rtxdi.sceneRtxdiMain) returned ";
+            log += "compileSlangShaderToSpirv(SceneRtxdi.sceneRtxdiMain) returned ";
             log += resultToString(result);
             if (!computeCompile.diagnostics.empty()) {
                 log += ": ";

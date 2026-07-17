@@ -1,4 +1,4 @@
-#include "scene_path_trace.slang"
+#include "ScenePathTrace.slang"
 
 [[vk::binding(14, 0)]]
 RWTexture2D<float4> gDlssRrAlbedo;

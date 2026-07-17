@@ -225,7 +225,7 @@ Result createMeshShader(Device& device, std::unique_ptr<ShaderModule>& outShader
         },
         meshCompile);
     if (!result) {
-        log += "compileSlangShaderToSpirv(gpu_driven_streamasset.mesh) returned ";
+        log += "compileSlangShaderToSpirv(GPUDrivenStreamAsset.mesh) returned ";
         log += resultToString(result);
         if (!meshCompile.diagnostics.empty()) {
             log += ": ";

@@ -21,7 +21,7 @@ class MeshletStreamClasPool;
 }
 
 inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
-inline constexpr const char* kMeshletStreamShaderModuleName = "gpu_driven_streamasset";
+inline constexpr const char* kMeshletStreamShaderModuleName = "GPUDrivenStreamAsset";
 inline constexpr const char* kMeshletStreamMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kMeshletStreamFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
 inline constexpr const char* kMeshletStreamPageTableInitEntryPoint = "gpuDrivenStreamAssetInitializePageTableMain";

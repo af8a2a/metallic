@@ -54,7 +54,7 @@ public:
             },
             compileResult);
         if (!result) {
-            log = resultMessage("compileSlangShaderToSpirv(rtxdi_composite.rtxdiCompositeMain)", result);
+            log = resultMessage("compileSlangShaderToSpirv(RtxdiComposite.rtxdiCompositeMain)", result);
             if (!compileResult.diagnostics.empty()) {
                 log += ": ";
                 log += compileResult.diagnostics;

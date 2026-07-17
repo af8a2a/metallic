@@ -26,7 +26,7 @@ namespace metallic::tests {
 namespace {
 
 constexpr const char* kShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
-constexpr const char* kBindlessSmokeShaderModuleName = "bindless_smoke";
+constexpr const char* kBindlessSmokeShaderModuleName = "BindlessSmoke";
 constexpr const char* kBindlessSmokeVertexEntryPoint = "bindlessSmokeVertexMain";
 constexpr const char* kBindlessSmokeFragmentEntryPoint = "bindlessSmokeFragmentMain";
 
@@ -1971,7 +1971,7 @@ public:
         const char* capabilities[] = {"spvRayQueryKHR"};
         render::Result result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "openpbr_rayquery_path_trace",
+                .moduleName = "OpenPBRRayQueryPathTrace",
                 .entryPointName = "openPbrRayQueryPathTraceMain",
                 .searchPath = kShaderSearchPath,
                 .profileName = "glsl_460",
@@ -2009,7 +2009,7 @@ public:
         const char* capabilities[] = {"spvMeshShadingEXT"};
         render::Result result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "gpu_driven_preview",
+                .moduleName = "GPUDrivenPreview",
                 .entryPointName = "gpuDrivenPreviewMeshMain",
                 .searchPath = kShaderSearchPath,
                 .profileName = "glsl_460",
@@ -2031,7 +2031,7 @@ public:
         render::ShaderCompileResult fragmentCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "gpu_driven_preview",
+                .moduleName = "GPUDrivenPreview",
                 .entryPointName = "gpuDrivenPreviewFragmentMain",
                 .searchPath = kShaderSearchPath,
                 .profileName = "glsl_460",
@@ -2070,7 +2070,7 @@ public:
         const char* capabilities[] = {"spvMeshShadingEXT"};
         render::Result result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "gpu_driven_streamasset",
+                .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetMeshMain",
                 .searchPath = kShaderSearchPath,
                 .profileName = "glsl_460",
@@ -2092,7 +2092,7 @@ public:
         render::ShaderCompileResult fragmentCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "gpu_driven_streamasset",
+                .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetFragmentMain",
                 .searchPath = kShaderSearchPath,
                 .profileName = "glsl_460",
@@ -2112,7 +2112,7 @@ public:
         render::ShaderCompileResult updateCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "gpu_driven_streamasset",
+                .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetApplyUpdatesMain",
                 .searchPath = kShaderSearchPath,
                 .profileName = "glsl_460",
@@ -2132,7 +2132,7 @@ public:
         render::ShaderCompileResult traversalCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "gpu_driven_streamasset",
+                .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetTraversalMain",
                 .searchPath = kShaderSearchPath,
                 .profileName = "glsl_460",
@@ -2152,7 +2152,7 @@ public:
         render::ShaderCompileResult activeBuildCompile;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "gpu_driven_streamasset",
+                .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetBuildActiveMain",
                 .searchPath = kShaderSearchPath,
                 .profileName = "glsl_460",
@@ -2880,7 +2880,7 @@ public:
         render::ShaderCompileResult compileResult;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "gpu_driven_streamasset",
+                .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetTraversalMain",
                 .searchPath = kShaderSearchPath,
                 .profileName = "glsl_460",
@@ -2920,7 +2920,7 @@ public:
         render::ShaderCompileResult activeBuildCompileResult;
         result = render::compileSlangShaderToSpirv(
             render::SlangShaderDesc{
-                .moduleName = "gpu_driven_streamasset",
+                .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetBuildActiveMain",
                 .searchPath = kShaderSearchPath,
                 .profileName = "glsl_460",
@@ -3472,8 +3472,8 @@ public:
             const char* entryPointName;
             bool rayQuery;
         } entries[] = {
-            {"scene_rtxdi", "sceneRtxdiMain", true},
-            {"rtxdi_composite", "rtxdiCompositeMain", false},
+            {"SceneRtxdi", "sceneRtxdiMain", true},
+            {"RtxdiComposite", "rtxdiCompositeMain", false},
         };
         for (const ShaderEntry& entry : entries) {
             render::ShaderCompileResult compileResult;
@@ -3519,8 +3519,8 @@ public:
             const char* moduleName;
             const char* entryPointName;
         } entries[] = {
-            {"scene_path_trace_guides", "scenePathTraceGuidesMain"},
-            {"openpbr_rayquery_path_trace_guides", "openPbrRayQueryPathTraceGuidesMain"},
+            {"ScenePathTraceGuides", "scenePathTraceGuidesMain"},
+            {"OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain"},
         };
 
         for (const ShaderEntry& entry : entries) {

@@ -20,14 +20,14 @@ namespace {
 constexpr uint32_t kWidth = 128;
 constexpr uint32_t kHeight = 96;
 constexpr const char* kTriangleShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
-constexpr const char* kTriangleShaderModuleName = "triangle";
+constexpr const char* kTriangleShaderModuleName = "Triangle";
 constexpr const char* kTriangleVertexEntryPoint = "triangleVertexMain";
 constexpr const char* kTriangleFragmentEntryPoint = "triangleFragmentMain";
 constexpr const char* kReversedDepthNearVertexEntryPoint = "reversedDepthNearVertexMain";
 constexpr const char* kReversedDepthFarVertexEntryPoint = "reversedDepthFarVertexMain";
 constexpr const char* kSolidGreenFragmentEntryPoint = "solidGreenFragmentMain";
 constexpr const char* kSolidRedFragmentEntryPoint = "solidRedFragmentMain";
-constexpr const char* kMaterialShaderModuleName = "material_shader_object";
+constexpr const char* kMaterialShaderModuleName = "MaterialShaderObject";
 constexpr const char* kMaterialVertexEntryPoint = "materialShaderObjectVertexMain";
 constexpr const char* kMaterialFragmentEntryPoint = "materialShaderObjectFragmentMain";
 constexpr const char* kMaterialAlternateFragmentEntryPoint = "materialShaderObjectAlternateFragmentMain";

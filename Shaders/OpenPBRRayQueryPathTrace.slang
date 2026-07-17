@@ -85,7 +85,7 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 #define OPENPBR_SAMPLE_3D_TEXTURE(lut_id, uvw) sampleOpenPBRLut3D(lut_id, uvw)
 
 #include "../External/openpbr-bsdf/openpbr.h"
-#include "scene_path_trace.slang"
+#include "ScenePathTrace.slang"
 
 struct OpenPBRMaterialEval
 {
