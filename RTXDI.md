@@ -31,11 +31,19 @@ Following the RTXDI FullSample preprocessing convention, local-light base-level
 weights are proportional to emitted power. Environment texel weights are
 `luminance * sin(theta)`, which accounts for lat-long texel solid angle. Both
 distributions are padded to power-of-two dimensions and reduced into complete
-R32_FLOAT mip chains with 2x2 averaging. The shader descends those mip chains
-from the root, selects among four children by relative weight, and accumulates
-the discrete selection probability. The environment probability is divided by
-the sampled texel's solid angle before reservoir weighting. Zero-energy inputs
-fall back to a uniform distribution.
+R32_FLOAT mip chains with 2x2 averaging. Mirroring FullSample's
+`PrepareLights.hlsl` flow, `PrepareLightsPdf.slang` performs the preprocessing
+entirely on the GPU: it writes local-light power into a Z-curve base level,
+derives the environment base level directly from the HDR texture, and dispatches
+each mip reduction with an explicit UAV dependency barrier. The local-light PDF
+is refreshed every frame, while the environment PDF is rebuilt when its source
+resource changes; neither path needs a PDF readback or CPU mip upload.
+
+The RTXDI shader descends those mip chains from the root, selects among four
+children by relative weight, and accumulates the discrete selection probability.
+The environment probability is divided by the sampled texel's solid angle before
+reservoir weighting. Zero-energy inputs fall back to a uniform distribution over
+the valid lights or environment texels.
 
 The sample graph then runs three passes:
 

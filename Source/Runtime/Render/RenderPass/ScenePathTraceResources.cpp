@@ -1,5 +1,4 @@
 #include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
-#include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
 #define STB_IMAGE_STATIC
@@ -159,7 +158,6 @@ struct EnvironmentAliasEntry {
 
 struct EnvironmentImportanceData {
     std::vector<EnvironmentAliasEntry> aliasTable;
-    std::vector<float> weights;
     uint32_t texelCount = 1;
 };
 
@@ -609,14 +607,12 @@ EnvironmentImportanceData buildEnvironmentImportanceData(const DecodedEnvironmen
     if (texture.pixels.empty() || texture.width == 0 || texture.height == 0 || texelCount64 == 0 ||
         texelCount64 > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
         data.aliasTable = {EnvironmentAliasEntry{}};
-        data.weights = {1.0f};
         data.texelCount = 1;
         return data;
     }
 
     data.texelCount = static_cast<uint32_t>(texelCount64);
     data.aliasTable.resize(data.texelCount);
-    data.weights.resize(data.texelCount, 0.0f);
     std::vector<double> weights(data.texelCount, 0.0);
     double totalWeight = 0.0;
     for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
@@ -624,14 +620,12 @@ EnvironmentImportanceData buildEnvironmentImportanceData(const DecodedEnvironmen
         const float weight = environmentTexelWeight(&texture.pixels[static_cast<size_t>(texelIndex) * 4u], y, texture.height);
         totalWeight += static_cast<double>(weight);
         weights[texelIndex] = static_cast<double>(weight);
-        data.weights[texelIndex] = weight;
     }
 
     std::vector<double> scaledProbabilities(data.texelCount, 1.0);
     if (totalWeight <= 0.0 || !std::isfinite(totalWeight)) {
         for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
             data.aliasTable[texelIndex].texelProbability = 1.0f / static_cast<float>(data.texelCount);
-            data.weights[texelIndex] = 1.0f;
         }
     } else {
         const double reciprocalTotalWeight = 1.0 / totalWeight;
@@ -1236,7 +1230,6 @@ struct ScenePathTraceResources::Impl {
     {
         environmentTexture = ScenePathTraceMaterialTexture{};
         environmentImportanceBuffer.reset();
-        environmentImportanceTexture.clear();
         environmentImportanceTexelCount = 1;
         environmentMapAvailable = false;
 
@@ -1285,25 +1278,11 @@ struct ScenePathTraceResources::Impl {
                 if (!result) {
                     return result;
                 }
-                result = environmentImportanceTexture.initialize(
-                    device,
-                    importanceData.weights,
-                    decodedEnvironment.width,
-                    decodedEnvironment.height,
-                    "ScenePathTracePass environment importance PDF",
-                    log);
-                if (!result) {
-                    return result;
-                }
                 environmentImportanceTexelCount = importanceData.texelCount;
                 environmentMapAvailable = true;
                 spdlog::info(
-                    "[SceneResources] Environment importance upload aliasBytes={} pdfMipBytes={} pdf={}x{} mips={} in {:.2f} ms",
+                    "[SceneResources] Environment importance upload aliasBytes={} in {:.2f} ms",
                     importanceData.aliasTable.size() * sizeof(EnvironmentAliasEntry),
-                    environmentImportanceTexture.byteSize(),
-                    environmentImportanceTexture.textureWidth(),
-                    environmentImportanceTexture.textureHeight(),
-                    environmentImportanceTexture.mipCount(),
                     sceneResourceElapsedMilliseconds(uploadBegin));
                 return {};
             }
@@ -1340,16 +1319,6 @@ struct ScenePathTraceResources::Impl {
             environmentImportanceBuffer,
             log,
             "ScenePathTracePass environment fallback importance alias table");
-        if (result) {
-            const float fallbackWeight = 1.0f;
-            result = environmentImportanceTexture.initialize(
-                device,
-                std::span<const float>(&fallbackWeight, 1),
-                1,
-                1,
-                "ScenePathTracePass environment fallback importance PDF",
-                log);
-        }
         spdlog::info(
             "[SceneResources] Environment fallback importance upload in {:.2f} ms",
             sceneResourceElapsedMilliseconds(uploadBegin));
@@ -1432,11 +1401,7 @@ struct ScenePathTraceResources::Impl {
 
     Result uploadEnvironmentTexture(CommandBuffer& commandBuffer)
     {
-        Result result = uploadTexture(commandBuffer, environmentTexture);
-        if (!result) {
-            return result;
-        }
-        return environmentImportanceTexture.upload(commandBuffer);
+        return uploadTexture(commandBuffer, environmentTexture);
     }
 
     void resetGpuBuffers()
@@ -1451,7 +1416,6 @@ struct ScenePathTraceResources::Impl {
         materialTextureCount = 0;
         environmentTexture = ScenePathTraceMaterialTexture{};
         environmentImportanceBuffer.reset();
-        environmentImportanceTexture.clear();
         environmentImportanceTexelCount = 1;
         environmentMapAvailable = false;
     }
@@ -1479,8 +1443,7 @@ struct ScenePathTraceResources::Impl {
             !materialTextures.empty() &&
             materialTextureViews[0] != nullptr &&
             environmentTexture.view != nullptr &&
-            environmentImportanceBuffer != nullptr &&
-            environmentImportanceTexture.valid();
+            environmentImportanceBuffer != nullptr;
     }
 
     SceneRtxBuilder rtxBuilder;
@@ -1503,7 +1466,6 @@ struct ScenePathTraceResources::Impl {
     uint32_t materialTextureCount = 0;
     ScenePathTraceMaterialTexture environmentTexture;
     std::unique_ptr<Buffer> environmentImportanceBuffer;
-    ImportancePdfTexture environmentImportanceTexture;
     uint32_t environmentImportanceTexelCount = 1;
     bool environmentMapAvailable = false;
 };
@@ -1832,14 +1794,19 @@ Buffer* ScenePathTraceResources::environmentImportanceBuffer() const
     return impl_->environmentImportanceBuffer.get();
 }
 
-TextureView* ScenePathTraceResources::environmentImportanceTextureView() const
-{
-    return impl_->environmentImportanceTexture.view();
-}
-
 uint32_t ScenePathTraceResources::environmentImportanceTexelCount() const
 {
     return impl_->environmentImportanceTexelCount;
+}
+
+uint32_t ScenePathTraceResources::environmentTextureWidth() const
+{
+    return impl_->environmentTexture.width;
+}
+
+uint32_t ScenePathTraceResources::environmentTextureHeight() const
+{
+    return impl_->environmentTexture.height;
 }
 
 bool ScenePathTraceResources::environmentMapAvailable() const

@@ -300,6 +300,16 @@ float luminance(float3 color)
     return dot(color, float3(0.2126, 0.7152, 0.0722));
 }
 
+uint zCurveToLinearIndex(uint2 position)
+{
+    uint index = 0u;
+    for (uint bit = 0u; bit < 16u; ++bit) {
+        index |= ((position.x >> bit) & 1u) << (bit * 2u);
+        index |= ((position.y >> bit) & 1u) << (bit * 2u + 1u);
+    }
+    return index;
+}
+
 float loadImportanceWeight(Texture2D<float> pdfTexture, uint2 position, uint mipLevel)
 {
     uint width = 0u;
@@ -377,18 +387,20 @@ bool sampleLocalLight(SceneRtxdiPush push, inout uint seed, out uint lightIndex,
     }
 
     uint2 position;
-    if (!sampleImportanceMipmap(
+    if (sampleImportanceMipmap(
             gLocalLightPdf,
             seed,
             position,
             sourcePdf)) {
-        return false;
+        lightIndex = zCurveToLinearIndex(position);
+        if (lightIndex < push.lightCount && sourcePdf > 0.0) {
+            return true;
+        }
     }
-    uint pdfWidth = 0u;
-    uint pdfHeight = 0u;
-    gLocalLightPdf.GetDimensions(pdfWidth, pdfHeight);
-    lightIndex = position.y * pdfWidth + position.x;
-    return lightIndex < push.lightCount && sourcePdf > 0.0;
+
+    lightIndex = min(uint(randomFloat(seed) * float(push.lightCount)), push.lightCount - 1u);
+    sourcePdf = 1.0 / float(push.lightCount);
+    return true;
 }
 
 bool sampleEnvironmentTexel(
@@ -416,14 +428,23 @@ bool sampleEnvironmentTexel(
         return texel.y < height;
     }
 
-    if (!sampleImportanceMipmap(
+    if (sampleImportanceMipmap(
             gEnvironmentPdf,
             seed,
             texel,
-            texelPdf)) {
-        return false;
+            texelPdf) &&
+        texel.x < width &&
+        texel.y < height &&
+        texelPdf > 0.0) {
+        return true;
     }
-    return texel.x < width && texel.y < height && texelPdf > 0.0;
+
+    uint texelIndex = min(
+        uint(randomFloat(seed) * float(max(environmentTexelCount, 1u))),
+        max(environmentTexelCount, 1u) - 1u);
+    texel = uint2(texelIndex % width, texelIndex / width);
+    texelPdf = 1.0 / float(max(environmentTexelCount, 1u));
+    return texel.y < height;
 }
 
 float3 srgbToLinear(float3 color)

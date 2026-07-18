@@ -2949,7 +2949,7 @@ struct SceneRayQueryProgram::Impl {
     VkDevice device = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> descriptorSets;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkShaderModule shaderModule = VK_NULL_HANDLE;
@@ -2981,7 +2981,6 @@ struct SceneRayQueryProgram::Impl {
             if (descriptorPool != VK_NULL_HANDLE) {
                 vkDestroyDescriptorPool(device, descriptorPool, nullptr);
                 descriptorPool = VK_NULL_HANDLE;
-                descriptorSet = VK_NULL_HANDLE;
             }
             if (descriptorSetLayout != VK_NULL_HANDLE) {
                 vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
@@ -2990,6 +2989,7 @@ struct SceneRayQueryProgram::Impl {
         }
 
         device = VK_NULL_HANDLE;
+        descriptorSets.clear();
         pushConstantSize = 0;
         bindings.clear();
         debugName = "SceneRayQueryProgram";
@@ -3020,6 +3020,7 @@ Result SceneRayQueryProgram::initialize(
         (desc.byteSize % sizeof(uint32_t)) != 0 ||
         desc.bindings == nullptr ||
         desc.bindingCount == 0 ||
+        desc.descriptorSetCount == 0 ||
         hasDuplicateBindings(desc.bindings, desc.bindingCount)) {
         log = "SceneRayQueryProgramDesc is invalid";
         return makeError(Error::InvalidArgument);
@@ -3062,7 +3063,16 @@ Result SceneRayQueryProgram::initialize(
             .descriptorCount = descriptorCount,
             .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
         });
-        addPoolSize(poolSizes, poolSizeCount, descriptorType, descriptorCount);
+        if (descriptorCount > UINT32_MAX / desc.descriptorSetCount) {
+            log = "SceneRayQueryProgram descriptor pool size overflows uint32_t";
+            clear();
+            return makeError(Error::InvalidArgument);
+        }
+        addPoolSize(
+            poolSizes,
+            poolSizeCount,
+            descriptorType,
+            descriptorCount * desc.descriptorSetCount);
     }
 
     VkDescriptorSetLayoutCreateInfo setLayoutInfo{
@@ -3084,7 +3094,7 @@ Result SceneRayQueryProgram::initialize(
 
     VkDescriptorPoolCreateInfo poolInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = 1,
+        .maxSets = desc.descriptorSetCount,
         .poolSizeCount = poolSizeCount,
         .pPoolSizes = poolSizes.data(),
     };
@@ -3096,13 +3106,20 @@ Result SceneRayQueryProgram::initialize(
         return resultFromVk(vkResult);
     }
 
+    std::vector<VkDescriptorSetLayout> setLayouts(
+        desc.descriptorSetCount,
+        impl_->descriptorSetLayout);
+    impl_->descriptorSets.resize(desc.descriptorSetCount, VK_NULL_HANDLE);
     VkDescriptorSetAllocateInfo allocateInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = impl_->descriptorPool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &impl_->descriptorSetLayout,
+        .descriptorSetCount = desc.descriptorSetCount,
+        .pSetLayouts = setLayouts.data(),
     };
-    vkResult = vkAllocateDescriptorSets(impl_->device, &allocateInfo, &impl_->descriptorSet);
+    vkResult = vkAllocateDescriptorSets(
+        impl_->device,
+        &allocateInfo,
+        impl_->descriptorSets.data());
     if (vkResult != VK_SUCCESS) {
         log = "vkAllocateDescriptorSets(" + impl_->debugName + ") returned " +
             std::to_string(static_cast<int>(vkResult));
@@ -3183,7 +3200,7 @@ bool SceneRayQueryProgram::valid() const
 {
     return impl_ != nullptr &&
         impl_->device != VK_NULL_HANDLE &&
-        impl_->descriptorSet != VK_NULL_HANDLE &&
+        !impl_->descriptorSets.empty() &&
         impl_->pipelineLayout != VK_NULL_HANDLE &&
         impl_->pipeline != VK_NULL_HANDLE;
 }
@@ -3195,8 +3212,14 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
         desc.groupCountX == 0 ||
         desc.groupCountY == 0 ||
         desc.groupCountZ == 0 ||
+        desc.descriptorSetIndex >= impl_->descriptorSets.size() ||
         (impl_->pushConstantSize > 0 && (desc.pushData == nullptr || desc.pushDataSize != impl_->pushConstantSize)) ||
         (impl_->pushConstantSize == 0 && desc.pushDataSize != 0)) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const VkDescriptorSet descriptorSet = impl_->descriptorSets[desc.descriptorSetIndex];
+    if (descriptorSet == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -3230,7 +3253,7 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
 
         VkWriteDescriptorSet write{
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = impl_->descriptorSet,
+            .dstSet = descriptorSet,
             .dstBinding = expectedBinding.binding,
             .descriptorCount = std::max(expectedBinding.descriptorCount, 1u),
             .descriptorType = descriptorTypeFor(expectedBinding.kind),
@@ -3284,19 +3307,31 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
             write.pNext = &partitionedAccelerationInfos.back();
             break;
         case SceneRayQueryBindingKind::StorageImage: {
-            if (binding->textureView == nullptr) {
+            const uint32_t descriptorCount = std::max(expectedBinding.descriptorCount, 1u);
+            const bool useTextureArray =
+                binding->textureViews != nullptr && binding->textureViewCount >= descriptorCount;
+            if (!useTextureArray && (descriptorCount != 1u || binding->textureView == nullptr)) {
                 return makeError(Error::InvalidArgument);
             }
-            write.descriptorCount = 1;
-            VkImageView imageView = nativeImageView(*binding->textureView);
-            if (imageView == VK_NULL_HANDLE) {
-                return makeError(Error::InvalidArgument);
+            const size_t firstImageInfo = imageInfos.size();
+            for (uint32_t index = 0; index < descriptorCount; ++index) {
+                TextureView* textureView = useTextureArray
+                    ? binding->textureViews[index]
+                    : binding->textureView;
+                if (textureView == nullptr) {
+                    return makeError(Error::InvalidArgument);
+                }
+                VkImageView imageView = nativeImageView(*textureView);
+                if (imageView == VK_NULL_HANDLE) {
+                    return makeError(Error::InvalidArgument);
+                }
+                imageInfos.push_back(VkDescriptorImageInfo{
+                    .imageView = imageView,
+                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                });
             }
-            imageInfos.push_back(VkDescriptorImageInfo{
-                .imageView = imageView,
-                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-            });
-            write.pImageInfo = &imageInfos.back();
+            write.descriptorCount = descriptorCount;
+            write.pImageInfo = imageInfos.data() + firstImageInfo;
             break;
         }
         case SceneRayQueryBindingKind::SampledImage: {
@@ -3365,7 +3400,7 @@ Result SceneRayQueryProgram::dispatch(const SceneRayQueryDispatchDesc& desc)
         impl_->pipelineLayout,
         0,
         1,
-        &impl_->descriptorSet,
+        &descriptorSet,
         0,
         nullptr);
     if (impl_->pushConstantSize > 0) {

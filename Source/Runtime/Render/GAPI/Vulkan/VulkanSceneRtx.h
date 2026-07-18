@@ -150,6 +150,9 @@ struct SceneRayQueryProgramDesc {
     const SceneRayQueryBindingDesc* bindings = nullptr;
     uint32_t bindingCount = 0;
     const char* debugName = nullptr;
+    // Multiple sets let a command buffer record several dispatches without
+    // updating a descriptor set that is still referenced by an earlier dispatch.
+    uint32_t descriptorSetCount = 1;
 };
 
 struct SceneRayQueryDispatchBinding {
@@ -175,6 +178,7 @@ struct SceneRayQueryDispatchDesc {
     uint32_t groupCountX = 1;
     uint32_t groupCountY = 1;
     uint32_t groupCountZ = 1;
+    uint32_t descriptorSetIndex = 0;
 };
 
 class SceneRayQueryProgram {

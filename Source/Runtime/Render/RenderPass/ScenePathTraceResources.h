@@ -50,8 +50,9 @@ public:
     uint32_t materialTextureCount() const;
     TextureView* environmentTextureView() const;
     Buffer* environmentImportanceBuffer() const;
-    TextureView* environmentImportanceTextureView() const;
     uint32_t environmentImportanceTexelCount() const;
+    uint32_t environmentTextureWidth() const;
+    uint32_t environmentTextureHeight() const;
     bool environmentMapAvailable() const;
 
 private:

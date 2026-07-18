@@ -3535,6 +3535,7 @@ public:
             const char* entryPointName;
             bool rayQuery;
         } entries[] = {
+            {"PrepareLightsPdf", "prepareLightsPdfMain", false},
             {"SceneRtxdi", "sceneRtxdiMain", true},
             {"RtxdiComposite", "rtxdiCompositeMain", false},
         };
@@ -5128,6 +5129,11 @@ public:
 
     RhiTestResult run(RhiTestContext&) override
     {
+        const render::ImportancePdfSize lightPdfSize = render::computeImportancePdfTextureSize(257);
+        if (lightPdfSize.width != 32 || lightPdfSize.height != 16 || lightPdfSize.mipCount != 6) {
+            return RhiTestResult::fail("RTXDI local-light PDF sizing does not match a power-of-two rectangle");
+        }
+
         constexpr std::array<float, 6> weights = {1.0f, 2.0f, 3.0f, 4.0f, 0.0f, 10.0f};
         const render::ImportanceMipChain chain = render::buildImportanceMipChain(weights, 3, 2);
         auto near = [](float left, float right) {

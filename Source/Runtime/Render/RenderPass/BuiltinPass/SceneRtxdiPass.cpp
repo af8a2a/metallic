@@ -3,8 +3,6 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.h"
 #include "Runtime/Render/ImportanceSampling.h"
 
-#include <bit>
-
 namespace metallic::render::builtin_pass {
 namespace {
 
@@ -21,49 +19,6 @@ struct SceneRtxdiHistoryViews {
     TextureView* previous = nullptr;
     bool previousValid = false;
 };
-
-uint32_t rtxdiHash(uint32_t value)
-{
-    value ^= value >> 16u;
-    value *= 0x7feb352du;
-    value ^= value >> 15u;
-    value *= 0x846ca68bu;
-    value ^= value >> 16u;
-    return value;
-}
-
-float rtxdiHashToFloat(uint32_t value)
-{
-    return static_cast<float>(rtxdiHash(value) & 0x00ffffffu) / 16777216.0f;
-}
-
-float localLightImportanceWeight(uint32_t lightIndex)
-{
-    const uint32_t value = lightIndex + 1u;
-    const float r = 0.2f + rtxdiHashToFloat(value * 3u + 0u) * 0.8f;
-    const float g = 0.2f + rtxdiHashToFloat(value * 3u + 1u) * 0.8f;
-    const float b = 0.2f + rtxdiHashToFloat(value * 3u + 2u) * 0.8f;
-    const float intensityVariation = 0.65f + rtxdiHashToFloat(lightIndex * 17u + 3u) * 0.7f;
-    return (r * 0.2126f + g * 0.7152f + b * 0.0722f) * intensityVariation;
-}
-
-std::vector<float> buildLocalLightImportanceWeights(
-    uint32_t lightCount,
-    uint32_t& outWidth,
-    uint32_t& outHeight)
-{
-    outWidth = 1;
-    while (static_cast<uint64_t>(outWidth) * outWidth < lightCount) {
-        outWidth *= 2u;
-    }
-    const uint32_t requiredRows = std::max((lightCount + outWidth - 1u) / outWidth, 1u);
-    outHeight = std::bit_ceil(requiredRows);
-    std::vector<float> weights(static_cast<size_t>(outWidth) * outHeight, 0.0f);
-    for (uint32_t lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
-        weights[lightIndex] = localLightImportanceWeight(lightIndex);
-    }
-    return weights;
-}
 
 class SceneRtxdiPass final : public ComputePass {
 public:
@@ -192,12 +147,19 @@ public:
         const uint64_t resourceRevision = sceneResources_.revision();
         if (resourceRevision != sceneResourceRevision_) {
             sceneResourceRevision_ = resourceRevision;
+            environmentPdfBuilt_ = false;
             resetHistory_ = true;
             hasPreviousCamera_ = false;
         }
-        result = ensureLocalLightPdf(
+        result = importancePdfCompute_.initialize(*context.device, log);
+        if (!result) {
+            return result;
+        }
+        result = ensureImportancePdfResources(
             *context.device,
             uintProperty(properties(), "lightCount", kDefaultRtxdiLightCount, 1, kMaxRtxdiLightCount),
+            sceneResources_.environmentTextureWidth(),
+            sceneResources_.environmentTextureHeight(),
             log);
         if (!result) {
             return result;
@@ -293,6 +255,7 @@ public:
         }
         if (sceneResources_.revision() != sceneResourceRevision_) {
             sceneResourceRevision_ = sceneResources_.revision();
+            environmentPdfBuilt_ = false;
             resetHistory_ = true;
             hasPreviousCamera_ = false;
         }
@@ -300,7 +263,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
         std::string importanceLog;
-        Result importanceResult = ensureLocalLightPdf(
+        Result importanceResult = ensureImportancePdfResources(
             *device_,
             uintProperty(
                 context.properties(),
@@ -308,6 +271,8 @@ public:
                 kDefaultRtxdiLightCount,
                 1,
                 kMaxRtxdiLightCount),
+            sceneResources_.environmentTextureWidth(),
+            sceneResources_.environmentTextureHeight(),
             importanceLog);
         if (!importanceResult) {
             spdlog::warn("[SceneRtxdiPass] Local light PDF rebuild failed: {}", importanceLog);
@@ -323,7 +288,7 @@ public:
         TextureHandle emissive = context.outputTexture("emissive");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         TextureView* environmentTextureView = sceneResources_.environmentTextureView();
-        TextureView* environmentImportanceTextureView = sceneResources_.environmentImportanceTextureView();
+        TextureView* environmentImportanceTextureView = environmentPdf_.view();
         if (!validTexture(color) ||
             !validTexture(noisyDiffuse) ||
             !validTexture(noisySpecular) ||
@@ -339,6 +304,7 @@ public:
             environmentImportanceTextureView == nullptr ||
             !localLightPdf_.valid() ||
             localLightPdf_.view() == nullptr ||
+            !importancePdfCompute_.valid() ||
             context.historyResources() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
@@ -406,10 +372,19 @@ public:
         if (!result) {
             return result;
         }
-        result = localLightPdf_.upload(context.commandBuffer());
+        result = importancePdfCompute_.build(
+            context.commandBuffer(),
+            *environmentTextureView,
+            localLightPdf_,
+            push.lightCount,
+            push.lightIntensity,
+            push.sceneCenterRadius[3],
+            environmentPdf_,
+            !environmentPdfBuilt_);
         if (!result) {
             return result;
         }
+        environmentPdfBuilt_ = true;
 
         TextureView* const environmentTextureViews[] = {environmentTextureView};
         TextureView* const localLightPdfViews[] = {localLightPdf_.view()};
@@ -483,36 +458,55 @@ public:
     }
 
 private:
-    Result ensureLocalLightPdf(Device& device, uint32_t lightCount, std::string& log)
+    Result ensureImportancePdfResources(
+        Device& device,
+        uint32_t lightCount,
+        uint32_t environmentWidth,
+        uint32_t environmentHeight,
+        std::string& log)
     {
-        if (localLightPdf_.valid() && localLightPdfLightCount_ == lightCount) {
-            return {};
+        if (!localLightPdf_.valid() || localLightPdfLightCount_ != lightCount) {
+            const ImportancePdfSize localPdfSize = computeImportancePdfTextureSize(lightCount);
+            ImportancePdfTexture nextPdf;
+            Result result = nextPdf.initialize(
+                device,
+                localPdfSize.width,
+                localPdfSize.height,
+                "SceneRtxdiPass local light importance PDF",
+                log);
+            if (!result) {
+                return result;
+            }
+            if (localLightPdf_.valid()) {
+                retiredLocalLightPdfs_.push_back(std::move(localLightPdf_));
+            }
+            localLightPdf_ = std::move(nextPdf);
+            localLightPdfLightCount_ = lightCount;
+            resetHistory_ = true;
         }
 
-        uint32_t pdfWidth = 1;
-        uint32_t pdfHeight = 1;
-        const std::vector<float> weights = buildLocalLightImportanceWeights(
-            lightCount,
-            pdfWidth,
-            pdfHeight);
-        ImportancePdfTexture nextPdf;
-        Result result = nextPdf.initialize(
-            device,
-            weights,
-            pdfWidth,
-            pdfHeight,
-            "SceneRtxdiPass local light importance PDF",
-            log);
-        if (!result) {
-            return result;
+        environmentWidth = std::max(environmentWidth, 1u);
+        environmentHeight = std::max(environmentHeight, 1u);
+        if (!environmentPdf_.valid() ||
+            environmentPdf_.sourceWidth() != environmentWidth ||
+            environmentPdf_.sourceHeight() != environmentHeight) {
+            ImportancePdfTexture nextPdf;
+            Result result = nextPdf.initialize(
+                device,
+                environmentWidth,
+                environmentHeight,
+                "SceneRtxdiPass environment importance PDF",
+                log);
+            if (!result) {
+                return result;
+            }
+            if (environmentPdf_.valid()) {
+                retiredEnvironmentPdfs_.push_back(std::move(environmentPdf_));
+            }
+            environmentPdf_ = std::move(nextPdf);
+            environmentPdfBuilt_ = false;
+            resetHistory_ = true;
         }
-
-        if (localLightPdf_.valid()) {
-            retiredLocalLightPdfs_.push_back(std::move(localLightPdf_));
-        }
-        localLightPdf_ = std::move(nextPdf);
-        localLightPdfLightCount_ = lightCount;
-        resetHistory_ = true;
         return {};
     }
 
@@ -849,9 +843,13 @@ private:
     ScenePathTraceResources sceneResources_;
     SceneRayQueryProgram rayQueryProgram_;
     Device* device_ = nullptr;
+    ImportancePdfCompute importancePdfCompute_;
     ImportancePdfTexture localLightPdf_;
+    ImportancePdfTexture environmentPdf_;
     std::vector<ImportancePdfTexture> retiredLocalLightPdfs_;
+    std::vector<ImportancePdfTexture> retiredEnvironmentPdfs_;
     uint32_t localLightPdfLightCount_ = 0;
+    bool environmentPdfBuilt_ = false;
     uint64_t sceneResourceRevision_ = 0;
     uint32_t frameIndex_ = 0;
     SceneRtxdiCameraSnapshot previousCamera_;
