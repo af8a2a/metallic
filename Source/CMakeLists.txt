@@ -24,6 +24,7 @@ endif()
 add_library(MetallicRuntimeRender STATIC
     Runtime/Render/HistoryResources.cpp
     Runtime/Render/ImportanceSampling.cpp
+    Runtime/Render/ReGIR.cpp
     Runtime/Render/MeshletStreamClas.cpp
     Runtime/Render/MeshletStreamPageLoader.cpp
     Runtime/Render/MeshletStreamResidency.cpp

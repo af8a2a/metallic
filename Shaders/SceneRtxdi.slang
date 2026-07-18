@@ -134,12 +134,16 @@ Texture2D<float> gLocalLightPdf;
 [[vk::binding(23, 0)]]
 Texture2D<float> gEnvironmentPdf;
 
+[[vk::binding(24, 0)]]
+StructuredBuffer<uint4> gReGIRData;
+
 static const uint kMaxMaterialTextures = 256u;
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
 static const uint kVisualizationShaded = 0u;
 static const uint kVisualizationLightId = 1u;
 static const uint kVisualizationHistory = 2u;
+static const uint kVisualizationReGIRCells = 3u;
 static const uint kEnvironmentSampleBit = 0x80000000u;
 static const uint kEnvironmentSampleMask = 0x7fffffffu;
 static const uint kBehaviorTemporalReuse = 1u << 0u;
@@ -152,6 +156,9 @@ static const uint kBehaviorEnvironmentVisible = 1u << 6u;
 static const uint kBehaviorEnvironmentImportance = 1u << 7u;
 static const uint kBehaviorVisualizationShift = 8u;
 static const uint kBehaviorVisualizationMask = 3u;
+static const uint kBehaviorReGIR = 1u << 10u;
+static const uint kReGIRHeaderRecordCount = 3u;
+static const uint kReGIRMagic = 0x52454749u;
 static const float kPi = 3.14159265358979323846;
 static const float kGoldenAngle = 2.39996322972865332;
 
@@ -373,12 +380,145 @@ bool sampleImportanceMipmap(
     return pdf > 0.0 && all(position < pdfTextureSize);
 }
 
-bool sampleLocalLight(SceneRtxdiPush push, inout uint seed, out uint lightIndex, out float sourcePdf)
+struct ReGIRSelectionContext
+{
+    uint lightSlotBase;
+    uint lightsPerCell;
+    uint lightSlotCount;
+    uint valid;
+};
+
+ReGIRSelectionContext initializeReGIRSelectionContext(
+    SceneRtxdiPush push,
+    Surface surface,
+    inout uint seed)
+{
+    ReGIRSelectionContext context;
+    context.lightSlotBase = 0u;
+    context.lightsPerCell = 0u;
+    context.lightSlotCount = 0u;
+    context.valid = 0u;
+    if (!behaviorEnabled(push, kBehaviorReGIR)) {
+        return context;
+    }
+
+    uint4 grid = gReGIRData[0];
+    uint4 centerAndCellSize = gReGIRData[1];
+    uint4 metadata = gReGIRData[2];
+    if (metadata.x != kReGIRMagic ||
+        any(grid.xyz == uint3(0u, 0u, 0u)) ||
+        grid.w == 0u ||
+        metadata.y == 0u) {
+        return context;
+    }
+
+    float3 gridCenter = asfloat(centerAndCellSize.xyz);
+    float cellSize = asfloat(centerAndCellSize.w);
+    float samplingJitter = max(asfloat(metadata.z), 0.0);
+    if (!(cellSize > 0.0) || !isfinite(cellSize) || !isfinite(samplingJitter)) {
+        return context;
+    }
+
+    float3 cellJitter = float3(
+        randomFloat(seed),
+        randomFloat(seed),
+        randomFloat(seed));
+    cellJitter = (cellJitter - 0.5) * (samplingJitter * cellSize * 2.0);
+    float3 samplingPosition = surface.position + cellJitter;
+    float3 gridOrigin = gridCenter - float3(grid.xyz) * (cellSize * 0.5);
+    int3 cellPosition = int3(floor((samplingPosition - gridOrigin) / cellSize));
+    if (any(cellPosition < int3(0, 0, 0)) || any(cellPosition >= int3(grid.xyz))) {
+        return context;
+    }
+
+    uint cellIndex = uint(cellPosition.x) +
+        (uint(cellPosition.y) + uint(cellPosition.z) * grid.y) * grid.x;
+    uint lightSlotBase = cellIndex * grid.w;
+    if (lightSlotBase >= metadata.y || grid.w > metadata.y - lightSlotBase) {
+        return context;
+    }
+
+    context.lightSlotBase = lightSlotBase;
+    context.lightsPerCell = grid.w;
+    context.lightSlotCount = metadata.y;
+    context.valid = 1u;
+    return context;
+}
+
+bool sampleLocalLightFromReGIR(
+    SceneRtxdiPush push,
+    ReGIRSelectionContext context,
+    inout uint seed,
+    out uint lightIndex,
+    out float sourcePdf)
+{
+    lightIndex = 0u;
+    sourcePdf = 0.0;
+    if (context.valid == 0u || context.lightsPerCell == 0u) {
+        return false;
+    }
+
+    uint lightInCell = min(
+        uint(randomFloat(seed) * float(context.lightsPerCell)),
+        context.lightsPerCell - 1u);
+    uint lightSlot = context.lightSlotBase + lightInCell;
+    if (lightSlot >= context.lightSlotCount) {
+        return false;
+    }
+    uint4 lightData = gReGIRData[kReGIRHeaderRecordCount + lightSlot];
+    float inverseSourcePdf = asfloat(lightData.y);
+    if (lightData.x >= push.lightCount ||
+        !(inverseSourcePdf > 0.0) ||
+        !isfinite(inverseSourcePdf)) {
+        return false;
+    }
+
+    lightIndex = lightData.x;
+    sourcePdf = 1.0 / inverseSourcePdf;
+    return sourcePdf > 0.0 && isfinite(sourcePdf);
+}
+
+float3 visualizeReGIRCell(float3 worldPosition)
+{
+    uint4 grid = gReGIRData[0];
+    uint4 centerAndCellSize = gReGIRData[1];
+    uint4 metadata = gReGIRData[2];
+    float cellSize = asfloat(centerAndCellSize.w);
+    if (metadata.x != kReGIRMagic ||
+        any(grid.xyz == uint3(0u, 0u, 0u)) ||
+        !(cellSize > 0.0)) {
+        return float3(0.0, 0.0, 0.0);
+    }
+
+    float3 gridCenter = asfloat(centerAndCellSize.xyz);
+    float3 gridOrigin = gridCenter - float3(grid.xyz) * (cellSize * 0.5);
+    float3 cellCoordinates = (worldPosition - gridOrigin) / cellSize;
+    int3 cellPosition = int3(floor(cellCoordinates));
+    if (any(cellPosition < int3(0, 0, 0)) || any(cellPosition >= int3(grid.xyz))) {
+        return float3(0.0, 0.0, 0.0);
+    }
+
+    uint cellIndex = uint(cellPosition.x) +
+        (uint(cellPosition.y) + uint(cellPosition.z) * grid.y) * grid.x;
+    float3 cellColor = hashColor(cellIndex + 0x7f4a7c15u);
+    float3 centerDistance = abs(frac(cellCoordinates) - 0.5) * 2.0;
+    return cellColor * lerp(0.35, 1.0, max(centerDistance.x, max(centerDistance.y, centerDistance.z)));
+}
+
+bool sampleLocalLight(
+    SceneRtxdiPush push,
+    ReGIRSelectionContext reGIRContext,
+    inout uint seed,
+    out uint lightIndex,
+    out float sourcePdf)
 {
     lightIndex = 0u;
     sourcePdf = 0.0;
     if (push.lightCount == 0u) {
         return false;
+    }
+    if (sampleLocalLightFromReGIR(push, reGIRContext, seed, lightIndex, sourcePdf)) {
+        return true;
     }
     if (!behaviorEnabled(push, kBehaviorLocalLightImportance)) {
         lightIndex = min(uint(randomFloat(seed) * float(push.lightCount)), push.lightCount - 1u);
@@ -1236,6 +1376,10 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
     gEmissive[pixel] = float4(emissiveAndAmbient, 1.0);
 
     DIReservoir reservoir = emptyReservoir();
+    ReGIRSelectionContext reGIRContext = initializeReGIRSelectionContext(
+        push,
+        surface,
+        seed);
     uint localSampleCount = max(push.initialSampleCount, 1u);
     uint environmentSampleCount = behaviorEnabled(push, kBehaviorEnvironmentEnabled)
         ? push.environmentSampleCount
@@ -1246,7 +1390,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
     for (uint sampleIndex = 0u; sampleIndex < localSampleCount; ++sampleIndex) {
         uint lightIndex;
         float sourcePdf;
-        bool sampled = sampleLocalLight(push, seed, lightIndex, sourcePdf);
+        bool sampled = sampleLocalLight(push, reGIRContext, seed, lightIndex, sourcePdf);
         LightEvaluation evaluation = sampled
             ? evaluateLight(lightIndex, surface, push)
             : emptyLightEvaluation();
@@ -1401,6 +1545,10 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
         float history = saturate(float(reservoir.M) / float(max(maximumM, 1u)));
         float3 heat = lerp(float3(0.02, 0.05, 0.2), float3(1.0, 0.25, 0.02), history);
         gOutput[pixel] = float4(heat, 1.0);
+        return;
+    }
+    if (visualizationMode(push) == kVisualizationReGIRCells) {
+        gOutput[pixel] = float4(visualizeReGIRCell(surface.position), 1.0);
         return;
     }
 

@@ -14,8 +14,9 @@ SDK-licensed code.
 `SceneRtxdiPass` generates hundreds of animated analytic lights and evaluates
 their direct contribution against glTF materials. Each pixel performs:
 
-1. Hierarchical PDF-mipmap importance sampling for local lights and the HDR
-   environment, optional initial visibility, and weighted reservoir updates.
+1. ReGIR grid selection for local lights, hierarchical PDF-mipmap importance
+   sampling for fallback and the HDR environment, optional initial visibility,
+   and weighted reservoir updates.
 2. Previous-frame reprojection with position and normal rejection.
 3. Temporal reservoir combination with a bounded history length.
 4. Spatial combination from reprojected neighboring reservoirs.
@@ -45,6 +46,19 @@ The environment probability is divided by the sampled texel's solid angle before
 reservoir weighting. Zero-energy inputs fall back to a uniform distribution over
 the valid lights or environment texels.
 
+Local-light selection uses a Metallic-native Grid ReGIR modeled after
+FullSample's `PresampleReGIR.hlsl` flow. `BuildReGIR.slang` covers the scene
+bounds with a configurable 3D grid and constructs a fixed number of RIS light
+slots per cell on the GPU. Each slot draws multiple candidates from the global
+power PDF, evaluates a light target using the fitted average distance to the
+cell volume, and stores the selected light with its estimated inverse source
+PDF. During initial ReSTIR sampling, the surface position (with configurable
+cell jitter) selects a cell and one of its slots. Surfaces outside the grid and
+invalid slots fall back to
+the global power-PDF or uniform selector. The structure is rebuilt every frame
+so animated procedural lights remain synchronized, with an explicit storage
+buffer write-to-read barrier before the screen-space RTXDI dispatch.
+
 The sample graph then runs three passes:
 
 1. `SceneRtxdiPass` writes raw preview color plus demodulated diffuse and
@@ -61,8 +75,9 @@ The normal/roughness and radiance/hit-distance encodings use NRD's own front-end
 helpers, so they track the configured NRD build. Motion vectors use the NRD
 convention `previousUv = currentUv + motionVector`, with a scale of `(1, 1)`.
 
-This is the ReSTIR DI portion of RTXDI. ReGIR, ReSTIR GI, SDK light structures,
-and the RTXDI SDK's optional bias-correction modes are outside the current scope.
+This is the ReSTIR DI portion of RTXDI with Grid ReGIR. Onion ReGIR, ReSTIR GI,
+SDK light structures, and the RTXDI SDK's optional bias-correction modes are
+outside the current scope.
 
 ## Build and run
 
@@ -82,12 +97,13 @@ build\Source\Debug\MetallicRtxdiSample.exe --smoke-test
 
 The sample graph is
 `Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json`. Its inspector exposes
-light count, local-light importance sampling, initial local candidates,
+light count, local-light importance sampling, Grid ReGIR enablement/resolution,
+lights per cell, build samples, sampling jitter, initial local candidates,
 environment candidates, HDR environment intensity/rotation/visibility,
 environment importance sampling, initial visibility, spatial neighbors, history
 length, temporal and spatial reuse, light animation, intensity, exposure, and
-debug views for the selected light and reservoir history. RELAX settings include
-history lengths, A-trous iteration count, diffuse/specular prepass blur radii,
+debug views for the selected light, ReGIR cells, and reservoir history. RELAX
+settings include history lengths, A-trous iteration count, diffuse/specular prepass blur radii,
 minimum hit-distance weight, anti-firefly, disocclusion threshold, denoising
 range, and validation mode. The default sampling budget uses eight initial
 local-light candidates, four environment candidates, and one spatial neighbor.
@@ -99,6 +115,7 @@ The shader and eight-frame GPU preview tests can be run with:
 ```powershell
 build\tests\Debug\MetallicRhiTests.exe --filter render_graph_rtxdi_shader_compile
 build\tests\Debug\MetallicRhiTests.exe --filter importance_pdf_mip_chain
+build\tests\Debug\MetallicRhiTests.exe --filter regir_grid_layout
 build\tests\Debug\MetallicRhiTests.exe --rhi-validation --filter render_graph_rtxdi_preview
 ```
 

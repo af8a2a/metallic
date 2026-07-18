@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.h"
 #include "Runtime/Render/ImportanceSampling.h"
+#include "Runtime/Render/ReGIR.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -76,6 +77,35 @@ public:
                 "Local Light PDF",
                 true,
                 true),
+            runtimeBoolSetting("regirEnabled", "ReGIR Selector", true, true),
+            runtimeIntSetting(
+                "regirGridSize",
+                "ReGIR Grid Resolution",
+                static_cast<int32_t>(kDefaultReGIRGridSize),
+                4,
+                static_cast<int32_t>(kMaxReGIRGridSize),
+                true),
+            runtimeIntSetting(
+                "regirLightsPerCell",
+                "ReGIR Lights per Cell",
+                static_cast<int32_t>(kDefaultReGIRLightsPerCell),
+                8,
+                static_cast<int32_t>(kMaxReGIRLightsPerCell),
+                true),
+            runtimeIntSetting(
+                "regirBuildSamples",
+                "ReGIR Build Samples",
+                static_cast<int32_t>(kDefaultReGIRBuildSamples),
+                1,
+                static_cast<int32_t>(kMaxReGIRBuildSamples),
+                true),
+            runtimeFloatSetting(
+                "regirSamplingJitter",
+                "ReGIR Sampling Jitter",
+                1.0f,
+                0.0f,
+                2.0f,
+                true),
             runtimeIntSetting(
                 "environmentSamples",
                 "Environment Candidates",
@@ -110,6 +140,7 @@ public:
                     {"Shaded", "shaded"},
                     {"Selected Light", "lightId"},
                     {"Reservoir History", "history"},
+                    {"ReGIR Cells", "regirCells"},
                 }),
             runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
         };
@@ -155,12 +186,20 @@ public:
         if (!result) {
             return result;
         }
+        result = reGIR_.initialize(*context.device, log);
+        if (!result) {
+            return result;
+        }
         result = ensureImportancePdfResources(
             *context.device,
             uintProperty(properties(), "lightCount", kDefaultRtxdiLightCount, 1, kMaxRtxdiLightCount),
             sceneResources_.environmentTextureWidth(),
             sceneResources_.environmentTextureHeight(),
             log);
+        if (!result) {
+            return result;
+        }
+        result = ensureReGIRResources(*context.device, properties(), log);
         if (!result) {
             return result;
         }
@@ -220,6 +259,7 @@ public:
             {.binding = 21, .kind = SceneRayQueryBindingKind::SampledImage},
             {.binding = 22, .kind = SceneRayQueryBindingKind::SampledImage},
             {.binding = 23, .kind = SceneRayQueryBindingKind::SampledImage},
+            {.binding = 24, .kind = SceneRayQueryBindingKind::StorageBuffer},
         };
         std::string programLog;
         result = rayQueryProgram_.initialize(
@@ -278,6 +318,11 @@ public:
             spdlog::warn("[SceneRtxdiPass] Local light PDF rebuild failed: {}", importanceLog);
             return importanceResult;
         }
+        Result reGIRResult = ensureReGIRResources(*device_, context.properties(), importanceLog);
+        if (!reGIRResult) {
+            spdlog::warn("[SceneRtxdiPass] ReGIR rebuild failed: {}", importanceLog);
+            return reGIRResult;
+        }
         TextureHandle color = context.outputTexture("color");
         TextureHandle noisyDiffuse = context.outputTexture("noisyDiffuse");
         TextureHandle noisySpecular = context.outputTexture("noisySpecular");
@@ -305,6 +350,8 @@ public:
             !localLightPdf_.valid() ||
             localLightPdf_.view() == nullptr ||
             !importancePdfCompute_.valid() ||
+            !reGIR_.valid() ||
+            reGIR_.buffer() == nullptr ||
             context.historyResources() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
@@ -386,6 +433,35 @@ public:
         }
         environmentPdfBuilt_ = true;
 
+        if ((push.behaviorFlags & kRtxdiBehaviorReGIR) != 0u) {
+            ReGIRBuildParameters reGIRBuild;
+            reGIRBuild.lightCount = push.lightCount;
+            reGIRBuild.buildSamples = uintProperty(
+                context.properties(),
+                "regirBuildSamples",
+                kDefaultReGIRBuildSamples,
+                1,
+                kMaxReGIRBuildSamples);
+            reGIRBuild.frameIndex = push.frameIndex;
+            reGIRBuild.animateLights =
+                (push.behaviorFlags & kRtxdiBehaviorAnimateLights) != 0u;
+            reGIRBuild.sceneCenter[0] = push.sceneCenterRadius[0];
+            reGIRBuild.sceneCenter[1] = push.sceneCenterRadius[1];
+            reGIRBuild.sceneCenter[2] = push.sceneCenterRadius[2];
+            reGIRBuild.sceneRadius = push.sceneCenterRadius[3];
+            reGIRBuild.lightIntensity = push.lightIntensity;
+            reGIRBuild.samplingJitter = std::max(
+                floatProperty(context.properties(), "regirSamplingJitter", 1.0f),
+                0.0f);
+            result = reGIR_.build(
+                context.commandBuffer(),
+                *localLightPdf_.view(),
+                reGIRBuild);
+            if (!result) {
+                return result;
+            }
+        }
+
         TextureView* const environmentTextureViews[] = {environmentTextureView};
         TextureView* const localLightPdfViews[] = {localLightPdf_.view()};
         TextureView* const environmentImportanceTextureViews[] = {environmentImportanceTextureView};
@@ -430,6 +506,7 @@ public:
                 .textureViews = environmentImportanceTextureViews,
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentImportanceTextureViews)),
             },
+            {.binding = 24, .buffer = reGIR_.buffer()},
         };
         result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
@@ -508,6 +585,33 @@ private:
             resetHistory_ = true;
         }
         return {};
+    }
+
+    Result ensureReGIRResources(
+        Device& device,
+        const RenderGraphProperties& properties,
+        std::string& log)
+    {
+        const uint32_t gridSize = uintProperty(
+            properties,
+            "regirGridSize",
+            kDefaultReGIRGridSize,
+            4,
+            kMaxReGIRGridSize);
+        const uint32_t lightsPerCell = uintProperty(
+            properties,
+            "regirLightsPerCell",
+            kDefaultReGIRLightsPerCell,
+            8,
+            kMaxReGIRLightsPerCell);
+        const bool layoutChanged =
+            reGIR_.layout().gridSize != gridSize ||
+            reGIR_.layout().lightsPerCell != lightsPerCell;
+        Result result = reGIR_.ensureGrid(device, gridSize, lightsPerCell, log);
+        if (result && layoutChanged) {
+            resetHistory_ = true;
+        }
+        return result;
     }
 
     static bool validTexture(TextureHandle texture)
@@ -704,6 +808,9 @@ private:
         if (mode == "history" || mode == "reservoirHistory") {
             return kRtxdiVisualizationHistory;
         }
+        if (mode == "regirCells" || mode == "regir") {
+            return kRtxdiVisualizationReGIRCells;
+        }
         return kRtxdiVisualizationShaded;
     }
 
@@ -821,6 +928,7 @@ private:
         setBehavior(
             kRtxdiBehaviorLocalLightImportance,
             boolProperty(&properties, "localLightImportanceSampling", true));
+        setBehavior(kRtxdiBehaviorReGIR, boolProperty(&properties, "regirEnabled", true));
         outPush.environmentSampleCount = uintProperty(properties, "environmentSamples", 4, 0, 16);
         setBehavior(
             kRtxdiBehaviorEnvironmentImportance,
@@ -846,6 +954,7 @@ private:
     ImportancePdfCompute importancePdfCompute_;
     ImportancePdfTexture localLightPdf_;
     ImportancePdfTexture environmentPdf_;
+    ReGIRLightSelector reGIR_;
     std::vector<ImportancePdfTexture> retiredLocalLightPdfs_;
     std::vector<ImportancePdfTexture> retiredEnvironmentPdfs_;
     uint32_t localLightPdfLightCount_ = 0;

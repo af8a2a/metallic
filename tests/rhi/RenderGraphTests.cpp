@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/ImportanceSampling.h"
+#include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -3535,6 +3536,7 @@ public:
             const char* entryPointName;
             bool rayQuery;
         } entries[] = {
+            {"BuildReGIR", "buildReGIRMain", false},
             {"PrepareLightsPdf", "prepareLightsPdfMain", false},
             {"SceneRtxdi", "sceneRtxdiMain", true},
             {"RtxdiComposite", "rtxdiCompositeMain", false},
@@ -5182,6 +5184,35 @@ public:
     }
 };
 
+class ReGIRGridLayoutTest : public RhiTest {
+public:
+    ReGIRGridLayoutTest()
+    {
+        type = RhiTestType::Resource;
+        name = "regir_grid_layout";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const render::ReGIRGridLayout layout = render::computeReGIRGridLayout(12, 64);
+        if (!layout.valid() ||
+            layout.cellCount != 1728 ||
+            layout.lightSlotCount != 110592 ||
+            layout.bufferByteSize !=
+                static_cast<uint64_t>(110592 + render::kReGIRHeaderRecordCount) *
+                    render::kReGIRRecordByteSize) {
+            return RhiTestResult::fail("ReGIR grid layout or buffer sizing is incorrect");
+        }
+
+        if (render::computeReGIRGridLayout(0, 64).valid() ||
+            render::computeReGIRGridLayout(12, 0).valid() ||
+            render::computeReGIRGridLayout(UINT32_MAX, UINT32_MAX).valid()) {
+            return RhiTestResult::fail("invalid ReGIR grid parameters were accepted");
+        }
+        return RhiTestResult::pass("validated ReGIR cell, slot, and buffer layout");
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
@@ -5219,6 +5250,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassRenderTest);
 METALLIC_REGISTER_RHI_TEST(ImportancePdfMipChainTest);
+METALLIC_REGISTER_RHI_TEST(ReGIRGridLayoutTest);
 
 } // namespace
 } // namespace metallic::tests

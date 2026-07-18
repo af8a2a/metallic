@@ -1,11 +1,6 @@
 {
     "edges": [
         {
-            "dst": "Relax.noisyDiffuse",
-            "id": 1,
-            "src": "Rtxdi.noisyDiffuse"
-        },
-        {
             "dst": "Relax.noisySpecular",
             "id": 2,
             "src": "Rtxdi.noisySpecular"
@@ -49,6 +44,11 @@
             "dst": "Composite.emissive",
             "id": 10,
             "src": "Rtxdi.emissive"
+        },
+        {
+            "dst": "Relax.noisyDiffuse",
+            "id": 11,
+            "src": "Rtxdi.noisyDiffuse"
         }
     ],
     "name": "RtxdiRelaxSample",
@@ -57,8 +57,8 @@
             "id": 1,
             "name": "Rtxdi",
             "position": {
-                "x": 120.0,
-                "y": 280.0
+                "x": -151.0,
+                "y": 267.0000305175781
             },
             "properties": {
                 "animateLights": true,
@@ -84,7 +84,6 @@
                     "zfar": 10000.0,
                     "znear": 0.0010000000474974513
                 },
-                "exposure": 1.0,
                 "environment": {
                     "enabled": true,
                     "intensity": 1.0,
@@ -94,13 +93,19 @@
                 },
                 "environmentImportanceSampling": true,
                 "environmentSamples": 4,
-                "initialVisibility": true,
+                "exposure": 1.0,
                 "initialSamples": 8,
+                "initialVisibility": true,
                 "lightCount": 256,
                 "lightIntensity": 12.0,
                 "localLightImportanceSampling": true,
                 "maxHistoryLength": 20,
                 "path": "Asset/meet_mat.glb",
+                "regirBuildSamples": 8,
+                "regirEnabled": true,
+                "regirGridSize": 12,
+                "regirLightsPerCell": 64,
+                "regirSamplingJitter": 1.0,
                 "spatialReuse": true,
                 "spatialSamples": 1,
                 "temporalReuse": true,
@@ -112,8 +117,8 @@
             "id": 2,
             "name": "Relax",
             "position": {
-                "x": 540.0,
-                "y": 280.0
+                "x": 524.0,
+                "y": -9.999969482421875
             },
             "properties": {
                 "camera": {
@@ -158,8 +163,8 @@
             "id": 3,
             "name": "Composite",
             "position": {
-                "x": 900.0,
-                "y": 280.0
+                "x": 1198.7313232421875,
+                "y": 233.73342895507813
             },
             "properties": {
                 "exposure": 1.0
