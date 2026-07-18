@@ -1,6 +1,7 @@
 #include "RhiTest.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -8,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -1248,6 +1250,7 @@ public:
             rtxdiSample.desc.category != "RTXDI" ||
             rtxdiSample.desc.scenePath != "Asset/meet_mat.glb" ||
             rtxdiSample.desc.graphPath != "Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json" ||
+            rtxdiSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||
             rtxdiSample.desc.previewOutput != "Composite.color") {
             return RhiTestResult::fail("RTXDI Sample metadata did not load as expected");
         }
@@ -1264,7 +1267,13 @@ public:
             rtxdi->properties.value("path", "") != rtxdiSample.desc.scenePath ||
             rtxdi->properties.value("lightCount", 0) != 256 ||
             rtxdi->properties.value("initialSamples", 0) != 8 ||
+            rtxdi->properties.value("environmentSamples", 0) != 4 ||
             rtxdi->properties.value("spatialSamples", 0) != 1 ||
+            !rtxdi->properties.value("localLightImportanceSampling", false) ||
+            !rtxdi->properties.value("environmentImportanceSampling", false) ||
+            !rtxdi->properties.contains("environment") ||
+            !rtxdi->properties["environment"].is_object() ||
+            rtxdi->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr" ||
             !rtxdi->properties.value("temporalReuse", false) ||
             !rtxdi->properties.value("spatialReuse", false) ||
             !rtxdi->properties.value("initialVisibility", false) ||
@@ -5109,6 +5118,64 @@ public:
     }
 };
 
+class ImportancePdfMipChainTest : public RhiTest {
+public:
+    ImportancePdfMipChainTest()
+    {
+        type = RhiTestType::Resource;
+        name = "importance_pdf_mip_chain";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        constexpr std::array<float, 6> weights = {1.0f, 2.0f, 3.0f, 4.0f, 0.0f, 10.0f};
+        const render::ImportanceMipChain chain = render::buildImportanceMipChain(weights, 3, 2);
+        auto near = [](float left, float right) {
+            return std::abs(left - right) <= 1e-6f;
+        };
+
+        if (!chain.valid() ||
+            chain.sourceWidth != 3 ||
+            chain.sourceHeight != 2 ||
+            chain.textureWidth != 4 ||
+            chain.textureHeight != 2 ||
+            chain.levels.size() != 3 ||
+            !near(chain.totalWeight, 20.0f)) {
+            return RhiTestResult::fail("importance PDF dimensions or total weight are incorrect");
+        }
+        if (chain.levels[1].width != 2 ||
+            chain.levels[1].height != 1 ||
+            !near(chain.levels[1].values[0], 1.75f) ||
+            !near(chain.levels[1].values[1], 3.25f) ||
+            !near(chain.levels[2].values[0], 1.25f)) {
+            return RhiTestResult::fail("importance PDF 2x2 mip reduction is incorrect");
+        }
+
+        float probabilitySum = 0.0f;
+        for (uint32_t y = 0; y < chain.sourceHeight; ++y) {
+            for (uint32_t x = 0; x < chain.sourceWidth; ++x) {
+                probabilitySum += chain.probability(x, y);
+            }
+        }
+        if (!near(probabilitySum, 1.0f) ||
+            !near(chain.probability(0, 0), 0.05f) ||
+            !near(chain.probability(2, 1), 0.5f) ||
+            chain.probability(3, 0) != 0.0f) {
+            return RhiTestResult::fail("importance PDF base probabilities are not normalized");
+        }
+
+        constexpr std::array<float, 6> zeroWeights = {};
+        const render::ImportanceMipChain uniform = render::buildImportanceMipChain(zeroWeights, 3, 2);
+        if (!uniform.valid() ||
+            !near(uniform.totalWeight, 6.0f) ||
+            !near(uniform.probability(1, 1), 1.0f / 6.0f)) {
+            return RhiTestResult::fail("zero-energy importance PDF did not fall back to uniform weights");
+        }
+
+        return RhiTestResult::pass("validated padded PDF mip reduction and normalization");
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
@@ -5145,6 +5212,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphMaterialShaderObjectPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassRenderTest);
+METALLIC_REGISTER_RHI_TEST(ImportancePdfMipChainTest);
 
 } // namespace
 } // namespace metallic::tests

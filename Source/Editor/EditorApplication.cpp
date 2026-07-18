@@ -248,7 +248,8 @@ std::string firstScenePathFromGraph(const render::RenderGraph& graph)
 std::string firstEnvironmentPathFromGraph(const render::RenderGraph& graph)
 {
     for (const render::RenderGraphNode& node : graph.nodes()) {
-        if (node.type != "ScenePathTracePass" || !node.properties.is_object()) {
+        if ((node.type != "ScenePathTracePass" && node.type != "SceneRtxdiPass") ||
+            !node.properties.is_object()) {
             continue;
         }
         auto environmentIter = node.properties.find("environment");

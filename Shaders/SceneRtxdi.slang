@@ -125,12 +125,33 @@ RWTexture2D<float4> gBaseColorMetalness;
 [[vk::binding(20, 0)]]
 RWTexture2D<float4> gEmissive;
 
+[[vk::binding(21, 0)]]
+Texture2D<float4> gEnvironmentMap;
+
+[[vk::binding(22, 0)]]
+Texture2D<float> gLocalLightPdf;
+
+[[vk::binding(23, 0)]]
+Texture2D<float> gEnvironmentPdf;
+
 static const uint kMaxMaterialTextures = 256u;
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
 static const uint kVisualizationShaded = 0u;
 static const uint kVisualizationLightId = 1u;
 static const uint kVisualizationHistory = 2u;
+static const uint kEnvironmentSampleBit = 0x80000000u;
+static const uint kEnvironmentSampleMask = 0x7fffffffu;
+static const uint kBehaviorTemporalReuse = 1u << 0u;
+static const uint kBehaviorSpatialReuse = 1u << 1u;
+static const uint kBehaviorAnimateLights = 1u << 2u;
+static const uint kBehaviorInitialVisibility = 1u << 3u;
+static const uint kBehaviorLocalLightImportance = 1u << 4u;
+static const uint kBehaviorEnvironmentEnabled = 1u << 5u;
+static const uint kBehaviorEnvironmentVisible = 1u << 6u;
+static const uint kBehaviorEnvironmentImportance = 1u << 7u;
+static const uint kBehaviorVisualizationShift = 8u;
+static const uint kBehaviorVisualizationMask = 3u;
 static const float kPi = 3.14159265358979323846;
 static const float kGoldenAngle = 2.39996322972865332;
 
@@ -155,19 +176,29 @@ struct SceneRtxdiPush
     uint initialSampleCount;
     uint spatialSampleCount;
     uint maxHistoryLength;
-    uint enableTemporalReuse;
-    uint enableSpatialReuse;
-    uint animateLights;
-    uint visualizationMode;
+    uint behaviorFlags;
+    float environmentIntensity;
+    float environmentRotationRadians;
+    uint environmentSampleCount;
     uint materialTextureCount;
     float bitangentFlip;
     float lightIntensity;
     float exposure;
     float normalThreshold;
     float depthThreshold;
-    uint enableInitialVisibility;
     uint padding1;
+    uint padding2;
 };
+
+bool behaviorEnabled(SceneRtxdiPush push, uint flag)
+{
+    return (push.behaviorFlags & flag) != 0u;
+}
+
+uint visualizationMode(SceneRtxdiPush push)
+{
+    return (push.behaviorFlags >> kBehaviorVisualizationShift) & kBehaviorVisualizationMask;
+}
 
 struct Ray
 {
@@ -225,6 +256,18 @@ struct DIReservoir
     uint M;
 };
 
+LightEvaluation emptyLightEvaluation()
+{
+    LightEvaluation evaluation;
+    evaluation.contribution = float3(0.0, 0.0, 0.0);
+    evaluation.diffuseRadiance = float3(0.0, 0.0, 0.0);
+    evaluation.specularRadiance = float3(0.0, 0.0, 0.0);
+    evaluation.direction = float3(0.0, 1.0, 0.0);
+    evaluation.distance = 0.0;
+    evaluation.target = 0.0;
+    return evaluation;
+}
+
 float3 safeNormalize(float3 value, float3 fallback)
 {
     float lengthSquared = dot(value, value);
@@ -255,6 +298,132 @@ float randomFloat(inout uint state)
 float luminance(float3 color)
 {
     return dot(color, float3(0.2126, 0.7152, 0.0722));
+}
+
+float loadImportanceWeight(Texture2D<float> pdfTexture, uint2 position, uint mipLevel)
+{
+    uint width = 0u;
+    uint height = 0u;
+    uint mipCount = 0u;
+    pdfTexture.GetDimensions(mipLevel, width, height, mipCount);
+    if (position.x >= width || position.y >= height) {
+        return 0.0;
+    }
+    return max(pdfTexture.Load(int3(position, mipLevel)), 0.0);
+}
+
+bool sampleImportanceMipmap(
+    Texture2D<float> pdfTexture,
+    inout uint seed,
+    out uint2 position,
+    out float pdf)
+{
+    position = uint2(0u, 0u);
+    pdf = 1.0;
+    uint width = 0u;
+    uint height = 0u;
+    uint mipCount = 0u;
+    pdfTexture.GetDimensions(0u, width, height, mipCount);
+    uint2 pdfTextureSize = uint2(width, height);
+    if (pdfTextureSize.x == 0u || pdfTextureSize.y == 0u || mipCount == 0u) {
+        pdf = 0.0;
+        return false;
+    }
+    if (mipCount == 1u) {
+        return loadImportanceWeight(pdfTexture, position, 0u) > 0.0;
+    }
+
+    for (int mipLevel = int(mipCount) - 2; mipLevel >= 0; --mipLevel) {
+        position *= 2u;
+        float4 weights = float4(
+            loadImportanceWeight(pdfTexture, position + uint2(0u, 0u), uint(mipLevel)),
+            loadImportanceWeight(pdfTexture, position + uint2(0u, 1u), uint(mipLevel)),
+            loadImportanceWeight(pdfTexture, position + uint2(1u, 0u), uint(mipLevel)),
+            loadImportanceWeight(pdfTexture, position + uint2(1u, 1u), uint(mipLevel)));
+        float weightSum = weights.x + weights.y + weights.z + weights.w;
+        if (weightSum <= 0.0) {
+            pdf = 0.0;
+            return false;
+        }
+        weights /= weightSum;
+        float randomValue = randomFloat(seed);
+        if (randomValue < weights.x) {
+            pdf *= weights.x;
+        } else if (randomValue < weights.x + weights.y) {
+            position += uint2(0u, 1u);
+            pdf *= weights.y;
+        } else if (randomValue < weights.x + weights.y + weights.z) {
+            position += uint2(1u, 0u);
+            pdf *= weights.z;
+        } else {
+            position += uint2(1u, 1u);
+            pdf *= weights.w;
+        }
+    }
+    return pdf > 0.0 && all(position < pdfTextureSize);
+}
+
+bool sampleLocalLight(SceneRtxdiPush push, inout uint seed, out uint lightIndex, out float sourcePdf)
+{
+    lightIndex = 0u;
+    sourcePdf = 0.0;
+    if (push.lightCount == 0u) {
+        return false;
+    }
+    if (!behaviorEnabled(push, kBehaviorLocalLightImportance)) {
+        lightIndex = min(uint(randomFloat(seed) * float(push.lightCount)), push.lightCount - 1u);
+        sourcePdf = 1.0 / float(push.lightCount);
+        return true;
+    }
+
+    uint2 position;
+    if (!sampleImportanceMipmap(
+            gLocalLightPdf,
+            seed,
+            position,
+            sourcePdf)) {
+        return false;
+    }
+    uint pdfWidth = 0u;
+    uint pdfHeight = 0u;
+    gLocalLightPdf.GetDimensions(pdfWidth, pdfHeight);
+    lightIndex = position.y * pdfWidth + position.x;
+    return lightIndex < push.lightCount && sourcePdf > 0.0;
+}
+
+bool sampleEnvironmentTexel(
+    SceneRtxdiPush push,
+    inout uint seed,
+    out uint2 texel,
+    out float texelPdf)
+{
+    texel = uint2(0u, 0u);
+    texelPdf = 0.0;
+    uint width = 0u;
+    uint height = 0u;
+    gEnvironmentMap.GetDimensions(width, height);
+    if (!behaviorEnabled(push, kBehaviorEnvironmentEnabled) || width == 0u || height == 0u) {
+        return false;
+    }
+
+    uint environmentTexelCount = width * height;
+    if (!behaviorEnabled(push, kBehaviorEnvironmentImportance)) {
+        uint texelIndex = min(
+            uint(randomFloat(seed) * float(max(environmentTexelCount, 1u))),
+            max(environmentTexelCount, 1u) - 1u);
+        texel = uint2(texelIndex % width, texelIndex / width);
+        texelPdf = 1.0 / float(max(environmentTexelCount, 1u));
+        return texel.y < height;
+    }
+
+    if (!sampleImportanceMipmap(
+            gEnvironmentPdf,
+            seed,
+            texel,
+            texelPdf)) {
+        return false;
+    }
+    return texel.x < width && texel.y < height && texelPdf > 0.0;
 }
 
 float3 srgbToLinear(float3 color)
@@ -678,12 +847,14 @@ AnalyticLight getAnalyticLight(uint lightIndex, SceneRtxdiPush push)
     uint layerIndex = lightIndex / ringCount;
     uint layerCount = max((push.lightCount + ringCount - 1u) / ringCount, 1u);
     float layer = (float(layerIndex) + 0.5) / float(layerCount);
-    float animation = push.animateLights != 0u ? float(push.frameIndex) * 0.0125 : 0.0;
+    float animation = behaviorEnabled(push, kBehaviorAnimateLights)
+        ? float(push.frameIndex) * 0.0125
+        : 0.0;
     float angle = float(lightIndex) * kGoldenAngle + animation * (0.55 + hashToFloat(lightIndex + 19u));
     float radialJitter = 0.55 + hashToFloat(lightIndex * 11u + 7u) * 0.5;
     float radialDistance = radius * radialJitter;
     float vertical = radius * lerp(-0.2, 1.4, layer);
-    float wobble = push.animateLights != 0u
+    float wobble = behaviorEnabled(push, kBehaviorAnimateLights)
         ? sin(animation * (0.7 + hashToFloat(lightIndex + 31u)) + float(ringIndex)) * radius * 0.08
         : 0.0;
 
@@ -726,6 +897,128 @@ LightEvaluation evaluateLight(uint lightIndex, Surface surface, SceneRtxdiPush p
     return evaluation;
 }
 
+bool isEnvironmentSample(uint lightIndex)
+{
+    return (lightIndex & kEnvironmentSampleBit) != 0u;
+}
+
+uint environmentTexelIndex(uint lightIndex)
+{
+    return lightIndex & kEnvironmentSampleMask;
+}
+
+uint encodeEnvironmentSample(uint texelIndex)
+{
+    return kEnvironmentSampleBit | (texelIndex & kEnvironmentSampleMask);
+}
+
+float3 environmentLocalDirectionToWorld(float3 direction, float rotationRadians)
+{
+    float sine = sin(rotationRadians);
+    float cosine = cos(rotationRadians);
+    return float3(
+        direction.x * cosine + direction.z * sine,
+        direction.y,
+        -direction.x * sine + direction.z * cosine);
+}
+
+float3 environmentLocalDirectionFromUv(float2 uv)
+{
+    float phi = (uv.x - 0.5) * (2.0 * kPi);
+    float theta = uv.y * kPi;
+    float sinTheta = sin(theta);
+    return float3(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
+}
+
+float2 environmentUvFromDirection(float3 direction, float rotationRadians)
+{
+    float sine = sin(-rotationRadians);
+    float cosine = cos(-rotationRadians);
+    float3 localDirection = float3(
+        direction.x * cosine + direction.z * sine,
+        direction.y,
+        -direction.x * sine + direction.z * cosine);
+    float phi = atan2(localDirection.z, localDirection.x);
+    float u = frac(phi / (2.0 * kPi) + 0.5);
+    float v = acos(clamp(localDirection.y, -1.0, 1.0)) / kPi;
+    return float2(u, v);
+}
+
+float environmentTexelSolidAngle(uint y, uint width, uint height)
+{
+    float theta = (float(y) + 0.5) * (kPi / float(max(height, 1u)));
+    return max(
+        (2.0 * kPi / float(max(width, 1u))) *
+            (kPi / float(max(height, 1u))) *
+            sin(theta),
+        0.0000001);
+}
+
+float3 environmentRadiance(float3 direction, SceneRtxdiPush push)
+{
+    if (!behaviorEnabled(push, kBehaviorEnvironmentEnabled) || push.environmentIntensity <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    uint width = 0u;
+    uint height = 0u;
+    gEnvironmentMap.GetDimensions(width, height);
+    if (width == 0u || height == 0u) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float2 uv = environmentUvFromDirection(direction, push.environmentRotationRadians);
+    uint2 texel = min(uint2(uv * float2(width, height)), uint2(width - 1u, height - 1u));
+    return max(gEnvironmentMap.Load(int3(texel, 0)).rgb, float3(0.0, 0.0, 0.0)) *
+        push.environmentIntensity;
+}
+
+LightEvaluation evaluateEnvironmentSample(uint encodedSample, Surface surface, SceneRtxdiPush push)
+{
+    LightEvaluation evaluation = emptyLightEvaluation();
+    evaluation.distance = max(push.clipOrtho.y, push.sceneCenterRadius.w * 16.0);
+
+    uint width = 0u;
+    uint height = 0u;
+    gEnvironmentMap.GetDimensions(width, height);
+    uint texelIndex = environmentTexelIndex(encodedSample);
+    if (!behaviorEnabled(push, kBehaviorEnvironmentEnabled) || width == 0u || height == 0u ||
+        texelIndex >= width * height) {
+        return evaluation;
+    }
+
+    uint2 texel = uint2(texelIndex % width, texelIndex / width);
+    if (texel.y >= height) {
+        return evaluation;
+    }
+    float2 uv = (float2(texel) + 0.5) / float2(width, height);
+    evaluation.direction = safeNormalize(
+        environmentLocalDirectionToWorld(
+            environmentLocalDirectionFromUv(uv),
+            push.environmentRotationRadians),
+        float3(0.0, 1.0, 0.0));
+    float nDotL = saturate(dot(surface.normal, evaluation.direction));
+    float3 halfVector = safeNormalize(evaluation.direction + surface.viewDirection, surface.normal);
+    float nDotH = saturate(dot(surface.normal, halfVector));
+    float specularPower = lerp(128.0, 4.0, surface.roughness);
+    float3 incidentRadiance = max(
+        gEnvironmentMap.Load(int3(texel, 0)).rgb,
+        float3(0.0, 0.0, 0.0)) * push.environmentIntensity;
+    evaluation.diffuseRadiance = incidentRadiance * (nDotL / kPi);
+    evaluation.specularRadiance = incidentRadiance * nDotL *
+        ((specularPower + 2.0) / (2.0 * kPi)) *
+        pow(nDotH, specularPower);
+    evaluation.contribution = evaluation.diffuseRadiance * surface.diffuseAlbedo +
+        evaluation.specularRadiance * surface.specularF0;
+    evaluation.target = max(luminance(evaluation.contribution), 0.0);
+    return evaluation;
+}
+
+LightEvaluation evaluateLightSample(uint lightIndex, Surface surface, SceneRtxdiPush push)
+{
+    return isEnvironmentSample(lightIndex)
+        ? evaluateEnvironmentSample(lightIndex, surface, push)
+        : evaluateLight(lightIndex, surface, push);
+}
+
 DIReservoir emptyReservoir()
 {
     DIReservoir reservoir;
@@ -738,7 +1031,14 @@ DIReservoir emptyReservoir()
 
 bool reservoirValid(DIReservoir reservoir, SceneRtxdiPush push)
 {
-    return reservoir.lightIndex < push.lightCount &&
+    uint environmentWidth = 0u;
+    uint environmentHeight = 0u;
+    gEnvironmentMap.GetDimensions(environmentWidth, environmentHeight);
+    bool sampleIndexValid = isEnvironmentSample(reservoir.lightIndex)
+        ? behaviorEnabled(push, kBehaviorEnvironmentEnabled) &&
+            environmentTexelIndex(reservoir.lightIndex) < environmentWidth * environmentHeight
+        : reservoir.lightIndex < push.lightCount;
+    return sampleIndexValid &&
         reservoir.M > 0u &&
         reservoir.weightSum > 0.0 &&
         reservoir.selectedTarget > 0.0;
@@ -752,11 +1052,14 @@ void updateReservoir(
     uint candidateM,
     float randomValue)
 {
-    if (candidateWeight <= 0.0 || candidateTarget <= 0.0 || candidateM == 0u) {
+    if (candidateM == 0u) {
+        return;
+    }
+    reservoir.M += candidateM;
+    if (candidateWeight <= 0.0 || candidateTarget <= 0.0) {
         return;
     }
     reservoir.weightSum += candidateWeight;
-    reservoir.M += candidateM;
     if (randomValue * reservoir.weightSum < candidateWeight) {
         reservoir.lightIndex = lightIndex;
         reservoir.selectedTarget = candidateTarget;
@@ -867,7 +1170,11 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
     ray.direction = rayDirectionFromPixel(samplePixel, push);
     HitInfo hit;
     if (!traceClosest(ray, push, hit)) {
-        float3 sky = skyColor(ray.direction);
+        float3 sky = behaviorEnabled(push, kBehaviorEnvironmentEnabled)
+            ? (behaviorEnabled(push, kBehaviorEnvironmentVisible)
+                ? environmentRadiance(ray.direction, push)
+                : float3(0.0, 0.0, 0.0))
+            : skyColor(ray.direction);
         gReservoirCurrent[pixel] = packReservoir(emptyReservoir());
         gPositionCurrent[pixel] = float4(0.0, 0.0, 0.0, 0.0);
         gNormalCurrent[pixel] = float4(0.0, 0.0, 0.0, 0.0);
@@ -908,12 +1215,21 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
     gEmissive[pixel] = float4(emissiveAndAmbient, 1.0);
 
     DIReservoir reservoir = emptyReservoir();
-    uint initialSampleCount = max(push.initialSampleCount, 1u);
-    float sourcePdf = 1.0 / float(max(push.lightCount, 1u));
-    for (uint sampleIndex = 0u; sampleIndex < initialSampleCount; ++sampleIndex) {
-        uint lightIndex = min(uint(randomFloat(seed) * float(push.lightCount)), push.lightCount - 1u);
-        LightEvaluation evaluation = evaluateLight(lightIndex, surface, push);
-        if (push.enableInitialVisibility != 0u && evaluation.target > 0.0) {
+    uint localSampleCount = max(push.initialSampleCount, 1u);
+    uint environmentSampleCount = behaviorEnabled(push, kBehaviorEnvironmentEnabled)
+        ? push.environmentSampleCount
+        : 0u;
+    uint initialSampleCount = localSampleCount + environmentSampleCount;
+    float localTechniqueProbability = float(localSampleCount) / float(max(initialSampleCount, 1u));
+    float environmentTechniqueProbability = float(environmentSampleCount) / float(max(initialSampleCount, 1u));
+    for (uint sampleIndex = 0u; sampleIndex < localSampleCount; ++sampleIndex) {
+        uint lightIndex;
+        float sourcePdf;
+        bool sampled = sampleLocalLight(push, seed, lightIndex, sourcePdf);
+        LightEvaluation evaluation = sampled
+            ? evaluateLight(lightIndex, surface, push)
+            : emptyLightEvaluation();
+        if (behaviorEnabled(push, kBehaviorInitialVisibility) && evaluation.target > 0.0) {
             float3 offsetNormal = dot(evaluation.direction, surface.geometryNormal) >= 0.0
                 ? surface.geometryNormal
                 : -surface.geometryNormal;
@@ -928,7 +1244,43 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
         updateReservoir(
             reservoir,
             lightIndex,
-            evaluation.target / max(sourcePdf, 0.000001),
+            evaluation.target / max(sourcePdf * localTechniqueProbability, 0.000001),
+            evaluation.target,
+            1u,
+            randomFloat(seed));
+    }
+
+    for (uint sampleIndex = 0u; sampleIndex < environmentSampleCount; ++sampleIndex) {
+        uint2 texel;
+        float texelPdf;
+        bool sampled = sampleEnvironmentTexel(push, seed, texel, texelPdf);
+        uint environmentWidth = 1u;
+        uint environmentHeight = 1u;
+        gEnvironmentMap.GetDimensions(environmentWidth, environmentHeight);
+        uint texelIndex = texel.y * environmentWidth + texel.x;
+        uint lightIndex = encodeEnvironmentSample(texelIndex);
+        LightEvaluation evaluation = sampled
+            ? evaluateEnvironmentSample(lightIndex, surface, push)
+            : emptyLightEvaluation();
+        if (behaviorEnabled(push, kBehaviorInitialVisibility) && evaluation.target > 0.0) {
+            float3 offsetNormal = dot(evaluation.direction, surface.geometryNormal) >= 0.0
+                ? surface.geometryNormal
+                : -surface.geometryNormal;
+            if (traceShadow(
+                    surface.position + offsetNormal * 0.001,
+                    evaluation.direction,
+                    evaluation.distance,
+                    push)) {
+                evaluation.target = 0.0;
+            }
+        }
+        float sourcePdfSolidAngle = texelPdf /
+            environmentTexelSolidAngle(texel.y, environmentWidth, environmentHeight);
+        updateReservoir(
+            reservoir,
+            lightIndex,
+            evaluation.target /
+                max(sourcePdfSolidAngle * environmentTechniqueProbability, 0.000001),
             evaluation.target,
             1u,
             randomFloat(seed));
@@ -936,14 +1288,14 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
 
     uint maximumM = max(initialSampleCount * max(push.maxHistoryLength, 1u), initialSampleCount);
     float positionThreshold = max(push.sceneCenterRadius.w * push.depthThreshold, 0.0001);
-    if (push.hasHistory != 0u && push.enableTemporalReuse != 0u) {
+    if (push.hasHistory != 0u && behaviorEnabled(push, kBehaviorTemporalReuse)) {
         float2 previousUv;
         if (projectWorldToPreviousUv(surface.position, push, previousUv)) {
             int2 previousPixel = int2(previousUv * float2(push.width, push.height));
             if (previousSurfaceMatches(previousPixel, surface, positionThreshold, push)) {
                 DIReservoir previousReservoir = unpackReservoir(gReservoirPrevious[previousPixel]);
                 if (reservoirValid(previousReservoir, push)) {
-                    float currentTarget = evaluateLight(previousReservoir.lightIndex, surface, push).target;
+                    float currentTarget = evaluateLightSample(previousReservoir.lightIndex, surface, push).target;
                     combineReservoir(
                         reservoir,
                         previousReservoir,
@@ -956,7 +1308,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
         }
     }
 
-    if (push.hasHistory != 0u && push.enableSpatialReuse != 0u) {
+    if (push.hasHistory != 0u && behaviorEnabled(push, kBehaviorSpatialReuse)) {
         uint spatialSampleCount = min(push.spatialSampleCount, 16u);
         for (uint sampleIndex = 0u; sampleIndex < spatialSampleCount; ++sampleIndex) {
             float angle = randomFloat(seed) * 2.0 * kPi;
@@ -971,7 +1323,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
             if (!reservoirValid(neighborReservoir, push)) {
                 continue;
             }
-            float currentTarget = evaluateLight(neighborReservoir.lightIndex, surface, push).target;
+            float currentTarget = evaluateLightSample(neighborReservoir.lightIndex, surface, push).target;
             combineReservoir(
                 reservoir,
                 neighborReservoir,
@@ -990,7 +1342,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
     float lightDistance = 0.0;
     float3 color = emissiveAndAmbient;
     if (reservoirValid(reservoir, push)) {
-        LightEvaluation selected = evaluateLight(reservoir.lightIndex, surface, push);
+        LightEvaluation selected = evaluateLightSample(reservoir.lightIndex, surface, push);
         float reservoirWeight = reservoir.weightSum /
             max(float(reservoir.M) * reservoir.selectedTarget, 0.000001);
         float3 offsetNormal = dot(selected.direction, surface.geometryNormal) >= 0.0
@@ -1017,14 +1369,14 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform SceneR
         lightDistance,
         true);
 
-    if (push.visualizationMode == kVisualizationLightId) {
+    if (visualizationMode(push) == kVisualizationLightId) {
         float3 selectedColor = reservoirValid(reservoir, push)
             ? hashColor(reservoir.lightIndex)
             : float3(0.0, 0.0, 0.0);
         gOutput[pixel] = float4(selectedColor, 1.0);
         return;
     }
-    if (push.visualizationMode == kVisualizationHistory) {
+    if (visualizationMode(push) == kVisualizationHistory) {
         float history = saturate(float(reservoir.M) / float(max(maximumM, 1u)));
         float3 heat = lerp(float3(0.02, 0.05, 0.2), float3(1.0, 0.25, 0.02), history);
         gOutput[pixel] = float4(heat, 1.0);

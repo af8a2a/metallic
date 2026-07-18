@@ -181,7 +181,7 @@ public:
     std::string_view category() const override { return "RTXDI"; }
     std::string_view description() const override
     {
-        return "Fused spatiotemporal ReSTIR DI over hundreds of animated lights, denoised with NRD RELAX.";
+        return "Fused spatiotemporal ReSTIR DI with hierarchical local-light and environment importance sampling, denoised with NRD RELAX.";
     }
     std::string scenePath() const override { return "Asset/meet_mat.glb"; }
     std::string graphPath() const override
@@ -189,6 +189,17 @@ public:
         return "Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"Rtxdi"}; }
+    RenderSampleEnvironmentDesc environment() const override
+    {
+        return RenderSampleEnvironmentDesc{
+            .enabled = true,
+            .path = "Asset/ABeautifulGame/environment.hdr",
+            .intensity = 1.0f,
+            .rotationDegrees = 0.0f,
+            .visible = true,
+        };
+    }
+    std::vector<std::string> environmentTargets() const override { return {"Rtxdi"}; }
     std::string previewOutput() const override { return "Composite.color"; }
 };
 

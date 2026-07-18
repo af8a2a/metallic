@@ -114,6 +114,15 @@ inline constexpr uint32_t kMaxRtxdiSpatialSamples = 16;
 inline constexpr uint32_t kRtxdiVisualizationShaded = 0;
 inline constexpr uint32_t kRtxdiVisualizationLightId = 1;
 inline constexpr uint32_t kRtxdiVisualizationHistory = 2;
+inline constexpr uint32_t kRtxdiBehaviorTemporalReuse = 1u << 0u;
+inline constexpr uint32_t kRtxdiBehaviorSpatialReuse = 1u << 1u;
+inline constexpr uint32_t kRtxdiBehaviorAnimateLights = 1u << 2u;
+inline constexpr uint32_t kRtxdiBehaviorInitialVisibility = 1u << 3u;
+inline constexpr uint32_t kRtxdiBehaviorLocalLightImportance = 1u << 4u;
+inline constexpr uint32_t kRtxdiBehaviorEnvironmentEnabled = 1u << 5u;
+inline constexpr uint32_t kRtxdiBehaviorEnvironmentVisible = 1u << 6u;
+inline constexpr uint32_t kRtxdiBehaviorEnvironmentImportance = 1u << 7u;
+inline constexpr uint32_t kRtxdiBehaviorVisualizationShift = 8u;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeProcedural = 0;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeMap = 1;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeDisabled = 2;
@@ -474,18 +483,25 @@ struct SceneRtxdiPush {
     uint32_t initialSampleCount = kDefaultRtxdiInitialSamples;
     uint32_t spatialSampleCount = kDefaultRtxdiSpatialSamples;
     uint32_t maxHistoryLength = 20;
-    uint32_t enableTemporalReuse = 1;
-    uint32_t enableSpatialReuse = 1;
-    uint32_t animateLights = 1;
-    uint32_t visualizationMode = kRtxdiVisualizationShaded;
+    uint32_t behaviorFlags =
+        kRtxdiBehaviorTemporalReuse |
+        kRtxdiBehaviorSpatialReuse |
+        kRtxdiBehaviorAnimateLights |
+        kRtxdiBehaviorInitialVisibility |
+        kRtxdiBehaviorLocalLightImportance |
+        kRtxdiBehaviorEnvironmentVisible |
+        kRtxdiBehaviorEnvironmentImportance;
+    float environmentIntensity = 1.0f;
+    float environmentRotationRadians = 0.0f;
+    uint32_t environmentSampleCount = 0;
     uint32_t materialTextureCount = 0;
     float bitangentFlip = 1.0f;
     float lightIntensity = 12.0f;
     float exposure = 1.0f;
     float normalThreshold = 0.6f;
     float depthThreshold = 0.08f;
-    uint32_t enableInitialVisibility = 1;
     uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
 };
 
 static_assert(sizeof(SceneRtxdiPush) == 256);

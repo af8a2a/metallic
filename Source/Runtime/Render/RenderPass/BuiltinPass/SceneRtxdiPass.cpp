@@ -1,6 +1,9 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNrdWrapper.h"
+#include "Runtime/Render/ImportanceSampling.h"
+
+#include <bit>
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -18,6 +21,49 @@ struct SceneRtxdiHistoryViews {
     TextureView* previous = nullptr;
     bool previousValid = false;
 };
+
+uint32_t rtxdiHash(uint32_t value)
+{
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    value ^= value >> 16u;
+    return value;
+}
+
+float rtxdiHashToFloat(uint32_t value)
+{
+    return static_cast<float>(rtxdiHash(value) & 0x00ffffffu) / 16777216.0f;
+}
+
+float localLightImportanceWeight(uint32_t lightIndex)
+{
+    const uint32_t value = lightIndex + 1u;
+    const float r = 0.2f + rtxdiHashToFloat(value * 3u + 0u) * 0.8f;
+    const float g = 0.2f + rtxdiHashToFloat(value * 3u + 1u) * 0.8f;
+    const float b = 0.2f + rtxdiHashToFloat(value * 3u + 2u) * 0.8f;
+    const float intensityVariation = 0.65f + rtxdiHashToFloat(lightIndex * 17u + 3u) * 0.7f;
+    return (r * 0.2126f + g * 0.7152f + b * 0.0722f) * intensityVariation;
+}
+
+std::vector<float> buildLocalLightImportanceWeights(
+    uint32_t lightCount,
+    uint32_t& outWidth,
+    uint32_t& outHeight)
+{
+    outWidth = 1;
+    while (static_cast<uint64_t>(outWidth) * outWidth < lightCount) {
+        outWidth *= 2u;
+    }
+    const uint32_t requiredRows = std::max((lightCount + outWidth - 1u) / outWidth, 1u);
+    outHeight = std::bit_ceil(requiredRows);
+    std::vector<float> weights(static_cast<size_t>(outWidth) * outHeight, 0.0f);
+    for (uint32_t lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
+        weights[lightIndex] = localLightImportanceWeight(lightIndex);
+    }
+    return weights;
+}
 
 class SceneRtxdiPass final : public ComputePass {
 public:
@@ -70,6 +116,23 @@ public:
                 1,
                 static_cast<int32_t>(kMaxRtxdiInitialSamples),
                 true),
+            runtimeBoolSetting(
+                "localLightImportanceSampling",
+                "Local Light PDF",
+                true,
+                true),
+            runtimeIntSetting(
+                "environmentSamples",
+                "Environment Candidates",
+                4,
+                0,
+                16,
+                true),
+            runtimeBoolSetting(
+                "environmentImportanceSampling",
+                "Environment PDF",
+                true,
+                true),
             runtimeIntSetting(
                 "spatialSamples",
                 "Spatial Neighbors",
@@ -115,6 +178,7 @@ public:
             log = "SceneRtxdiPass requires rayTracingAccelerationStructure and rayQuery capabilities";
             return makeError(Error::Unsupported);
         }
+        device_ = context.device;
 
         Result result = sceneResources_.prepare(
             *context.device,
@@ -130,6 +194,13 @@ public:
             sceneResourceRevision_ = resourceRevision;
             resetHistory_ = true;
             hasPreviousCamera_ = false;
+        }
+        result = ensureLocalLightPdf(
+            *context.device,
+            uintProperty(properties(), "lightCount", kDefaultRtxdiLightCount, 1, kMaxRtxdiLightCount),
+            log);
+        if (!result) {
+            return result;
         }
         if (rayQueryProgram_.valid()) {
             return {};
@@ -184,6 +255,9 @@ public:
             {.binding = 18, .kind = SceneRayQueryBindingKind::StorageImage},
             {.binding = 19, .kind = SceneRayQueryBindingKind::StorageImage},
             {.binding = 20, .kind = SceneRayQueryBindingKind::StorageImage},
+            {.binding = 21, .kind = SceneRayQueryBindingKind::SampledImage},
+            {.binding = 22, .kind = SceneRayQueryBindingKind::SampledImage},
+            {.binding = 23, .kind = SceneRayQueryBindingKind::SampledImage},
         };
         std::string programLog;
         result = rayQueryProgram_.initialize(
@@ -222,6 +296,23 @@ public:
             resetHistory_ = true;
             hasPreviousCamera_ = false;
         }
+        if (device_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        std::string importanceLog;
+        Result importanceResult = ensureLocalLightPdf(
+            *device_,
+            uintProperty(
+                context.properties(),
+                "lightCount",
+                kDefaultRtxdiLightCount,
+                1,
+                kMaxRtxdiLightCount),
+            importanceLog);
+        if (!importanceResult) {
+            spdlog::warn("[SceneRtxdiPass] Local light PDF rebuild failed: {}", importanceLog);
+            return importanceResult;
+        }
         TextureHandle color = context.outputTexture("color");
         TextureHandle noisyDiffuse = context.outputTexture("noisyDiffuse");
         TextureHandle noisySpecular = context.outputTexture("noisySpecular");
@@ -231,6 +322,8 @@ public:
         TextureHandle baseColorMetalness = context.outputTexture("baseColorMetalness");
         TextureHandle emissive = context.outputTexture("emissive");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
+        TextureView* environmentTextureView = sceneResources_.environmentTextureView();
+        TextureView* environmentImportanceTextureView = sceneResources_.environmentImportanceTextureView();
         if (!validTexture(color) ||
             !validTexture(noisyDiffuse) ||
             !validTexture(noisySpecular) ||
@@ -242,6 +335,10 @@ public:
             !rayQueryProgram_.valid() ||
             !sceneResources_.valid() ||
             materialTextureViews[0] == nullptr ||
+            environmentTextureView == nullptr ||
+            environmentImportanceTextureView == nullptr ||
+            !localLightPdf_.valid() ||
+            localLightPdf_.view() == nullptr ||
             context.historyResources() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
@@ -282,6 +379,9 @@ public:
             sceneResources_.bounds(),
             push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
+        if (!sceneResources_.environmentMapAvailable()) {
+            push.behaviorFlags &= ~kRtxdiBehaviorEnvironmentEnabled;
+        }
         push.frameIndex = frameIndex_++;
 
         const SceneRtxdiCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
@@ -302,7 +402,18 @@ public:
         if (!result) {
             return result;
         }
+        result = sceneResources_.uploadEnvironmentTexture(context.commandBuffer());
+        if (!result) {
+            return result;
+        }
+        result = localLightPdf_.upload(context.commandBuffer());
+        if (!result) {
+            return result;
+        }
 
+        TextureView* const environmentTextureViews[] = {environmentTextureView};
+        TextureView* const localLightPdfViews[] = {localLightPdf_.view()};
+        TextureView* const environmentImportanceTextureViews[] = {environmentImportanceTextureView};
         const SceneRayQueryDispatchBinding bindings[] = {
             {.binding = 0, .accelerationStructure = &sceneResources_.accelerationStructure()},
             {.binding = 1, .textureView = color.view()},
@@ -329,6 +440,21 @@ public:
             {.binding = 18, .textureView = viewZ.view()},
             {.binding = 19, .textureView = baseColorMetalness.view()},
             {.binding = 20, .textureView = emissive.view()},
+            {
+                .binding = 21,
+                .textureViews = environmentTextureViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
+            },
+            {
+                .binding = 22,
+                .textureViews = localLightPdfViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(localLightPdfViews)),
+            },
+            {
+                .binding = 23,
+                .textureViews = environmentImportanceTextureViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(environmentImportanceTextureViews)),
+            },
         };
         result = rayQueryProgram_.dispatch(SceneRayQueryDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
@@ -357,6 +483,39 @@ public:
     }
 
 private:
+    Result ensureLocalLightPdf(Device& device, uint32_t lightCount, std::string& log)
+    {
+        if (localLightPdf_.valid() && localLightPdfLightCount_ == lightCount) {
+            return {};
+        }
+
+        uint32_t pdfWidth = 1;
+        uint32_t pdfHeight = 1;
+        const std::vector<float> weights = buildLocalLightImportanceWeights(
+            lightCount,
+            pdfWidth,
+            pdfHeight);
+        ImportancePdfTexture nextPdf;
+        Result result = nextPdf.initialize(
+            device,
+            weights,
+            pdfWidth,
+            pdfHeight,
+            "SceneRtxdiPass local light importance PDF",
+            log);
+        if (!result) {
+            return result;
+        }
+
+        if (localLightPdf_.valid()) {
+            retiredLocalLightPdfs_.push_back(std::move(localLightPdf_));
+        }
+        localLightPdf_ = std::move(nextPdf);
+        localLightPdfLightCount_ = lightCount;
+        resetHistory_ = true;
+        return {};
+    }
+
     static bool validTexture(TextureHandle texture)
     {
         return texture.valid() && texture.texture() != nullptr && texture.view() != nullptr;
@@ -469,6 +628,16 @@ private:
             return fallback;
         }
         return finiteOr(iter->get<float>(), fallback);
+    }
+
+    static const RenderGraphProperties* environmentPropertiesFrom(
+        const RenderGraphProperties& properties)
+    {
+        if (!properties.is_object()) {
+            return nullptr;
+        }
+        auto iter = properties.find("environment");
+        return iter != properties.end() && iter->is_object() ? &(*iter) : nullptr;
     }
 
     static const RenderGraphProperties* cameraPropertiesFrom(const RenderGraphProperties& properties)
@@ -640,18 +809,49 @@ private:
             0,
             kMaxRtxdiSpatialSamples);
         outPush.maxHistoryLength = uintProperty(properties, "maxHistoryLength", 20, 1, 64);
-        outPush.enableTemporalReuse = boolProperty(&properties, "temporalReuse", true) ? 1u : 0u;
-        outPush.enableSpatialReuse = boolProperty(&properties, "spatialReuse", true) ? 1u : 0u;
-        outPush.enableInitialVisibility = boolProperty(&properties, "initialVisibility", true) ? 1u : 0u;
-        outPush.animateLights = boolProperty(&properties, "animateLights", true) ? 1u : 0u;
-        outPush.visualizationMode = visualizationModeFromProperties(properties);
+        outPush.behaviorFlags = 0u;
+        auto setBehavior = [&outPush](uint32_t flag, bool enabled) {
+            if (enabled) {
+                outPush.behaviorFlags |= flag;
+            }
+        };
+        setBehavior(kRtxdiBehaviorTemporalReuse, boolProperty(&properties, "temporalReuse", true));
+        setBehavior(kRtxdiBehaviorSpatialReuse, boolProperty(&properties, "spatialReuse", true));
+        setBehavior(kRtxdiBehaviorInitialVisibility, boolProperty(&properties, "initialVisibility", true));
+        setBehavior(kRtxdiBehaviorAnimateLights, boolProperty(&properties, "animateLights", true));
+        outPush.behaviorFlags |=
+            visualizationModeFromProperties(properties) << kRtxdiBehaviorVisualizationShift;
         outPush.bitangentFlip = boolProperty(&properties, "flipBitangent", false) ? -1.0f : 1.0f;
         outPush.lightIntensity = std::max(floatProperty(properties, "lightIntensity", 12.0f), 0.0f);
         outPush.exposure = std::max(floatProperty(properties, "exposure", 1.0f), 0.001f);
+        setBehavior(
+            kRtxdiBehaviorLocalLightImportance,
+            boolProperty(&properties, "localLightImportanceSampling", true));
+        outPush.environmentSampleCount = uintProperty(properties, "environmentSamples", 4, 0, 16);
+        setBehavior(
+            kRtxdiBehaviorEnvironmentImportance,
+            boolProperty(&properties, "environmentImportanceSampling", true));
+        const RenderGraphProperties* environment = environmentPropertiesFrom(properties);
+        setBehavior(
+            kRtxdiBehaviorEnvironmentEnabled,
+            boolProperty(environment, "enabled", false));
+        setBehavior(
+            kRtxdiBehaviorEnvironmentVisible,
+            boolProperty(environment, "visible", true));
+        outPush.environmentIntensity = environment != nullptr
+            ? std::max(floatProperty(*environment, "intensity", 1.0f), 0.0f)
+            : 1.0f;
+        outPush.environmentRotationRadians = environment != nullptr
+            ? floatProperty(*environment, "rotationDegrees", 0.0f) * (kPi / 180.0f)
+            : 0.0f;
     }
 
     ScenePathTraceResources sceneResources_;
     SceneRayQueryProgram rayQueryProgram_;
+    Device* device_ = nullptr;
+    ImportancePdfTexture localLightPdf_;
+    std::vector<ImportancePdfTexture> retiredLocalLightPdfs_;
+    uint32_t localLightPdfLightCount_ = 0;
     uint64_t sceneResourceRevision_ = 0;
     uint32_t frameIndex_ = 0;
     SceneRtxdiCameraSnapshot previousCamera_;
