@@ -7,6 +7,8 @@
 
 namespace metallic::render {
 
+inline constexpr const char* kDefaultSlangProfileName = "spirv_1_6";
+
 struct SlangMacroDefine {
     const char* name = nullptr;
     const char* value = "1";
@@ -16,7 +18,7 @@ struct SlangShaderDesc {
     const char* moduleName = nullptr;
     const char* entryPointName = nullptr;
     const char* searchPath = nullptr;
-    const char* profileName = "glsl_450";
+    const char* profileName = kDefaultSlangProfileName;
     const char* const* capabilities = nullptr;
     uint32_t capabilityCount = 0;
     const SlangMacroDefine* macroDefines = nullptr;

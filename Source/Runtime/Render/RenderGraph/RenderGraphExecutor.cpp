@@ -122,6 +122,7 @@ struct RenderGraphExecutor::Impl {
     uint32_t height = 0;
     Format defaultFormat = Format::Rgba8Unorm;
     HistoryResourceManager* historyResources = nullptr;
+    const scene::Scene* runtimeScene = nullptr;
     std::vector<CompiledNode> executionList;
     std::unordered_map<std::string, ResourceSlot> resources;
     std::unordered_map<std::string, std::string> inputAliases;
@@ -769,7 +770,8 @@ struct RenderGraphExecutor::Impl {
             node.effectiveProperties,
             std::move(bindings),
             historyResources,
-            streamingSubsystem.streamer());
+            streamingSubsystem.streamer(),
+            runtimeScene);
         const std::string markerName = passProfileMarkerName(node.name, node.type);
         const uint32_t markerColor = profiling::nsightColorFromName(node.type);
         const profiling::NsightProfileRange passMarker(
@@ -890,6 +892,7 @@ Result RenderGraphExecutor::compile(
     const RenderGraphCompileContext compileContext{
         .device = &device,
         .graphicsQueue = device.getQueue(QueueType::Graphics),
+        .runtimeScene = impl_->runtimeScene,
         .width = width,
         .height = height,
         .defaultFormat = impl_->defaultFormat,
@@ -1039,6 +1042,11 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
 
     impl_->historyResources = nullptr;
     return {};
+}
+
+void RenderGraphExecutor::bindRuntimeScene(const scene::Scene* scene)
+{
+    impl_->runtimeScene = scene;
 }
 
 Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)

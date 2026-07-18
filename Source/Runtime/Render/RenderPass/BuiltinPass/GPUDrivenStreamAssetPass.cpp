@@ -219,7 +219,6 @@ Result createMeshShader(Device& device, std::unique_ptr<ShaderModule>& outShader
             .moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamMeshEntryPoint,
             .searchPath = kMeshletStreamShaderSearchPath,
-            .profileName = "glsl_460",
             .capabilities = capabilities,
             .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
         },
@@ -389,6 +388,17 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        const scene::Scene* runtimeScene = runtimeSceneForPath(
+            context.runtimeScene(),
+            scenePathFromProperties(context.properties()));
+        if (runtimeScene != nullptr) {
+            std::string syncLog;
+            Result syncResult = streamRuntime_.syncRuntimeScene(*runtimeScene, syncLog);
+            if (!syncResult) {
+                spdlog::warn("[GPUDrivenStreamAssetPass] Runtime scene sync failed: {}", syncLog);
+                return syncResult;
+            }
+        }
         TextureHandle color = context.outputTexture("color");
         TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
@@ -427,9 +437,9 @@ private:
     Result initializeRayQuery(Device& device, std::string& log)
     {
         const char* capabilities[] = {
-            "spirv_1_4",
             "spvRayQueryKHR",
             "SPV_NV_cluster_acceleration_structure",
+            "spvRayTracingClusterAccelerationStructureNV",
         };
         const SlangMacroDefine macros[] = {
             SlangMacroDefine{
@@ -443,7 +453,6 @@ private:
                 .moduleName = kSceneRayQueryVisualizationShaderModuleName,
                 .entryPointName = kSceneRayQueryVisualizationEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
-                .profileName = "glsl_460",
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
                 .macroDefines = macros,

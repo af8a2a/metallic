@@ -3,6 +3,7 @@
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/MeshletStreamResidency.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/Scene.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -356,6 +357,7 @@ public:
     MeshletStreamRuntime& operator=(MeshletStreamRuntime&&) noexcept = delete;
 
     Result initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log);
+    Result syncRuntimeScene(const scene::Scene& scene, std::string& log);
     void reset();
 
     bool ready() const;
@@ -418,6 +420,7 @@ private:
     scene::MeshletStreamAsset asset_;
     MeshletStreamResidencyManager residency_;
     scene::Bounds drawBounds_;
+    uint64_t sceneTransformRevision_ = 0;
     std::unique_ptr<Buffer> pageBuffer_;
     std::unique_ptr<Buffer> activeGroupBuffer_;
     std::unique_ptr<Buffer> activeHeaderBuffer_;

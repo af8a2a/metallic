@@ -49,6 +49,8 @@ float3 hashColor(uint value)
 #if SCENE_RAYQUERY_ENABLE_CLUSTER_ID
 int committedClusterId(inout RayQuery<RAY_FLAG_FORCE_OPAQUE> query)
 {
+    // Target capabilities authorize the extension, while inline SPIR-V must
+    // still declare the extension and capability used by the injected opcode.
     return spirv_asm {
         OpCapability RayTracingClusterAccelerationStructureNV;
         OpExtension "SPV_NV_cluster_acceleration_structure";

@@ -51,19 +51,28 @@ public:
             log = "SceneRayQueryVisualizationPass cluster-id granularity requires clusterAccelerationStructure capability";
             return makeError(Error::Unsupported);
         }
+        device_ = context.device;
+        graphicsQueue_ = context.graphicsQueue;
+        const std::filesystem::path path = scenePathFromProperties(properties());
+        const scene::Scene* runtimeScene = runtimeSceneForPath(context.runtimeScene, path);
+        const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
         if (rayQueryProgram_.valid() &&
             rtxBuilder_.valid() &&
+            sceneRevision_ == runtimeRevision &&
             clusterIdShaderEnabled_ == clusterIdSupported &&
             (!clusterIdSupported || clusterRtxBuilder_.valid())) {
             return {};
         }
 
-        scene::Scene loadedScene;
-        const std::filesystem::path path = scenePathFromProperties(properties());
-        if (!loadedScene.load(path)) {
-            log = "SceneRayQueryVisualizationPass failed to load glTF: " + loadedScene.lastLoadResult().error;
-            return makeError(Error::Failure);
+        scene::Scene fallbackScene;
+        if (runtimeScene == nullptr) {
+            if (!fallbackScene.load(path)) {
+                log = "SceneRayQueryVisualizationPass failed to load glTF: " + fallbackScene.lastLoadResult().error;
+                return makeError(Error::Failure);
+            }
+            runtimeScene = &fallbackScene;
         }
+        const scene::Scene& loadedScene = *runtimeScene;
         if (!loadedScene.bounds().valid) {
             log = "SceneRayQueryVisualizationPass scene bounds are unavailable";
             return makeError(Error::Failure);
@@ -93,9 +102,9 @@ public:
         ShaderCompileResult computeCompile;
         const char* rayQueryCapabilities[] = {"spvRayQueryKHR"};
         const char* clusterIdCapabilities[] = {
-            "spirv_1_4",
             "spvRayQueryKHR",
             "SPV_NV_cluster_acceleration_structure",
+            "spvRayTracingClusterAccelerationStructureNV",
         };
         const SlangMacroDefine clusterIdMacros[] = {
             SlangMacroDefine{
@@ -112,7 +121,6 @@ public:
                 .moduleName = kSceneRayQueryVisualizationShaderModuleName,
                 .entryPointName = kSceneRayQueryVisualizationEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
-                .profileName = "glsl_460",
                 .capabilities = capabilities,
                 .capabilityCount = capabilityCount,
                 .macroDefines = clusterIdSupported ? clusterIdMacros : nullptr,
@@ -161,11 +169,16 @@ public:
         }
         clusterIdShaderEnabled_ = clusterIdSupported;
 
+        sceneRevision_ = runtimeRevision;
         return {};
     }
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        Result syncResult = syncRuntimeScene(context.runtimeScene());
+        if (!syncResult) {
+            return syncResult;
+        }
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() ||
             color.view() == nullptr ||
@@ -206,6 +219,36 @@ public:
     }
 
 private:
+    Result syncRuntimeScene(const scene::Scene* runtimeScene)
+    {
+        runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
+        if (runtimeScene == nullptr || runtimeScene->transformRevision() == sceneRevision_) {
+            return {};
+        }
+        if (device_ == nullptr || graphicsQueue_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        std::string log;
+        Result result = rtxBuilder_.updateInstanceTransforms(
+            *device_,
+            *graphicsQueue_,
+            *runtimeScene,
+            log);
+        if (!result) {
+            spdlog::warn("[SceneRayQueryVisualizationPass] Runtime TLAS refit failed: {}", log);
+            return result;
+        }
+        if (clusterIdShaderEnabled_ && clusterRtxBuilder_.valid()) {
+            result = clusterRtxBuilder_.build(*device_, *graphicsQueue_, *runtimeScene, log);
+            if (!result) {
+                return result;
+            }
+        }
+        drawBounds_ = runtimeScene->bounds();
+        sceneRevision_ = runtimeScene->transformRevision();
+        return {};
+    }
+
     static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
     {
         if (props.contains("path") && props["path"].is_string()) {
@@ -373,6 +416,9 @@ private:
     SceneClusterRtxBuilder clusterRtxBuilder_;
     SceneRayQueryProgram rayQueryProgram_;
     scene::Bounds drawBounds_;
+    uint64_t sceneRevision_ = 0;
+    Device* device_ = nullptr;
+    Queue* graphicsQueue_ = nullptr;
     bool clusterIdShaderEnabled_ = false;
 };
 

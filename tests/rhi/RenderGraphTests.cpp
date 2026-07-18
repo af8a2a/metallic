@@ -6,6 +6,7 @@
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -29,6 +31,68 @@ constexpr const char* kShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
 constexpr const char* kBindlessSmokeShaderModuleName = "BindlessSmoke";
 constexpr const char* kBindlessSmokeVertexEntryPoint = "bindlessSmokeVertexMain";
 constexpr const char* kBindlessSmokeFragmentEntryPoint = "bindlessSmokeFragmentMain";
+constexpr uint32_t kSpirvMagic = 0x07230203u;
+constexpr uint32_t kSpirvVersion16 = 0x00010600u;
+constexpr uint16_t kSpirvOpExtension = 10u;
+constexpr uint16_t kSpirvOpCapability = 17u;
+constexpr uint16_t kSpirvOpRayQueryGetIntersectionClusterIdNv = 5345u;
+constexpr uint32_t kSpirvRayTracingClusterAccelerationStructureNv = 5437u;
+
+bool spirvContainsOpcode(const std::vector<uint32_t>& spirv, uint16_t expectedOpcode)
+{
+    for (size_t wordIndex = 5; wordIndex < spirv.size();) {
+        const uint32_t instruction = spirv[wordIndex];
+        const uint16_t wordCount = static_cast<uint16_t>(instruction >> 16u);
+        const uint16_t opcode = static_cast<uint16_t>(instruction & 0xffffu);
+        if (wordCount == 0 || wordIndex + wordCount > spirv.size()) {
+            return false;
+        }
+        if (opcode == expectedOpcode) {
+            return true;
+        }
+        wordIndex += wordCount;
+    }
+    return false;
+}
+
+bool spirvContainsCapability(const std::vector<uint32_t>& spirv, uint32_t expectedCapability)
+{
+    for (size_t wordIndex = 5; wordIndex < spirv.size();) {
+        const uint32_t instruction = spirv[wordIndex];
+        const uint16_t wordCount = static_cast<uint16_t>(instruction >> 16u);
+        const uint16_t opcode = static_cast<uint16_t>(instruction & 0xffffu);
+        if (wordCount == 0 || wordIndex + wordCount > spirv.size()) {
+            return false;
+        }
+        if (opcode == kSpirvOpCapability && wordCount >= 2 && spirv[wordIndex + 1] == expectedCapability) {
+            return true;
+        }
+        wordIndex += wordCount;
+    }
+    return false;
+}
+
+bool spirvContainsExtension(const std::vector<uint32_t>& spirv, std::string_view expectedExtension)
+{
+    for (size_t wordIndex = 5; wordIndex < spirv.size();) {
+        const uint32_t instruction = spirv[wordIndex];
+        const uint16_t wordCount = static_cast<uint16_t>(instruction >> 16u);
+        const uint16_t opcode = static_cast<uint16_t>(instruction & 0xffffu);
+        if (wordCount == 0 || wordIndex + wordCount > spirv.size()) {
+            return false;
+        }
+        if (opcode == kSpirvOpExtension && wordCount >= 2) {
+            const char* begin = reinterpret_cast<const char*>(spirv.data() + wordIndex + 1);
+            const char* limit = begin + static_cast<size_t>(wordCount - 1) * sizeof(uint32_t);
+            const char* end = std::find(begin, limit, '\0');
+            if (end != limit && std::string_view(begin, static_cast<size_t>(end - begin)) == expectedExtension) {
+                return true;
+            }
+        }
+        wordIndex += wordCount;
+    }
+    return false;
+}
 
 render::Result createSlangShaderModule(
     render::Device& device,
@@ -1974,7 +2038,6 @@ public:
                 .moduleName = "OpenPBRRayQueryPathTrace",
                 .entryPointName = "openPbrRayQueryPathTraceMain",
                 .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
             },
@@ -2012,7 +2075,6 @@ public:
                 .moduleName = "GPUDrivenPreview",
                 .entryPointName = "gpuDrivenPreviewMeshMain",
                 .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
             },
@@ -2034,7 +2096,6 @@ public:
                 .moduleName = "GPUDrivenPreview",
                 .entryPointName = "gpuDrivenPreviewFragmentMain",
                 .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
             },
             fragmentCompile);
         if (!result) {
@@ -2073,7 +2134,6 @@ public:
                 .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetMeshMain",
                 .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
             },
@@ -2095,7 +2155,6 @@ public:
                 .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetFragmentMain",
                 .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
             },
             fragmentCompile);
         if (!result) {
@@ -2115,7 +2174,6 @@ public:
                 .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetApplyUpdatesMain",
                 .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
             },
             updateCompile);
         if (!result) {
@@ -2135,7 +2193,6 @@ public:
                 .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetTraversalMain",
                 .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
             },
             traversalCompile);
         if (!result) {
@@ -2155,7 +2212,6 @@ public:
                 .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetBuildActiveMain",
                 .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
             },
             activeBuildCompile);
         if (!result) {
@@ -2883,7 +2939,6 @@ public:
                 .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetTraversalMain",
                 .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
             },
             compileResult);
         if (!result) {
@@ -2923,7 +2978,6 @@ public:
                 .moduleName = "GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetBuildActiveMain",
                 .searchPath = kShaderSearchPath,
-                .profileName = "glsl_460",
             },
             activeBuildCompileResult);
         if (!result) {
@@ -3482,7 +3536,6 @@ public:
                     .moduleName = entry.moduleName,
                     .entryPointName = entry.entryPointName,
                     .searchPath = kShaderSearchPath,
-                    .profileName = "glsl_460",
                     .capabilities = entry.rayQuery ? capabilities : nullptr,
                     .capabilityCount = entry.rayQuery
                         ? static_cast<uint32_t>(std::size(capabilities))
@@ -3530,7 +3583,6 @@ public:
                     .moduleName = entry.moduleName,
                     .entryPointName = entry.entryPointName,
                     .searchPath = kShaderSearchPath,
-                    .profileName = "glsl_460",
                     .capabilities = capabilities,
                     .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
                 },
@@ -3556,6 +3608,73 @@ public:
         }
 
         return RhiTestResult::pass("compiled path tracing guide shaders");
+    }
+};
+
+class RenderGraphSceneRayQueryClusterShaderCompileTest : public RhiTest {
+public:
+    RenderGraphSceneRayQueryClusterShaderCompileTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_scene_rayquery_cluster_shader_compile";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const char* capabilities[] = {
+            "spvRayQueryKHR",
+            "SPV_NV_cluster_acceleration_structure",
+            "spvRayTracingClusterAccelerationStructureNV",
+        };
+        const render::SlangMacroDefine macros[] = {
+            render::SlangMacroDefine{
+                .name = "SCENE_RAYQUERY_ENABLE_CLUSTER_ID",
+                .value = "1",
+            },
+        };
+        render::ShaderCompileResult compileResult;
+        render::Result result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "SceneRayQueryVisualize",
+                .entryPointName = "sceneRayQueryVisualizeMain",
+                .searchPath = kShaderSearchPath,
+                .capabilities = capabilities,
+                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                .macroDefines = macros,
+                .macroDefineCount = static_cast<uint32_t>(std::size(macros)),
+            },
+            compileResult);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("Cluster ray-query shader compile returned ") +
+                toString(result) +
+                ": " +
+                compileResult.diagnostics);
+        }
+        if (compileResult.spirv.size() < 5 ||
+            compileResult.spirv[0] != kSpirvMagic ||
+            compileResult.spirv[1] != kSpirvVersion16) {
+            return RhiTestResult::fail("Cluster ray-query shader did not produce a SPIR-V 1.6 module");
+        }
+        if (!spirvContainsCapability(
+                compileResult.spirv,
+                kSpirvRayTracingClusterAccelerationStructureNv)) {
+            return RhiTestResult::fail(
+                "Cluster ray-query shader omitted RayTracingClusterAccelerationStructureNV");
+        }
+        if (!spirvContainsExtension(
+                compileResult.spirv,
+                "SPV_NV_cluster_acceleration_structure")) {
+            return RhiTestResult::fail(
+                "Cluster ray-query shader omitted SPV_NV_cluster_acceleration_structure");
+        }
+        if (!spirvContainsOpcode(
+                compileResult.spirv,
+                kSpirvOpRayQueryGetIntersectionClusterIdNv)) {
+            return RhiTestResult::fail(
+                "Cluster ray-query shader omitted OpRayQueryGetIntersectionClusterIdNV");
+        }
+        return RhiTestResult::pass("compiled SPIR-V 1.6 cluster ray-query shader");
     }
 };
 
@@ -5010,6 +5129,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetTraversalDemandTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRtxdiPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRtxdiShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPathTracingGuidesShaderCompileTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryClusterShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingSamplePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingEnvironmentRotationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTraceMaterialTexturesPreviewTest);

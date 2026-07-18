@@ -76,6 +76,29 @@ public:
             return RhiTestResult::fail("SceneRtxBuilder produced empty RTX stats");
         }
 
+        const render::vulkan::SceneRtxStats statsBeforeUpdate = stats;
+        const int32_t movedNodeIndex = loadedScene.renderNodes().front().nodeIndex;
+        if (movedNodeIndex < 0 || static_cast<size_t>(movedNodeIndex) >= loadedScene.nodes().size()) {
+            return RhiTestResult::fail("SceneRtxBuilder test scene has no editable instance owner");
+        }
+        float4x4 movedLocal = loadedScene.nodes()[static_cast<size_t>(movedNodeIndex)].localMatrix;
+        movedLocal.a03 += 2.0f;
+        if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, movedLocal)) {
+            return RhiTestResult::fail("failed to move the RTX test instance");
+        }
+        result = builder.updateInstanceTransforms(*device, *graphicsQueue, loadedScene, log);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("SceneRtxBuilder::updateInstanceTransforms returned ") +
+                toString(result) + ": " + log);
+        }
+        const render::vulkan::SceneRtxStats& statsAfterUpdate = builder.stats();
+        if (statsAfterUpdate.blasCount != statsBeforeUpdate.blasCount ||
+            statsAfterUpdate.instanceCount != statsBeforeUpdate.instanceCount ||
+            statsAfterUpdate.triangleCount != statsBeforeUpdate.triangleCount) {
+            return RhiTestResult::fail("TLAS refit changed BLAS, instance, or triangle counts");
+        }
+
         return RhiTestResult::pass(log);
     }
 };

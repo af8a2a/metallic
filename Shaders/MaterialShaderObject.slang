@@ -8,8 +8,16 @@ struct MaterialShaderObjectPush
     uint paramsBuffer;
     uint vertexOffset;
     uint materialVariant;
-    uint padding0;
-    uint padding1;
+    uint transformBuffer;
+    uint padding;
+};
+
+struct SceneTransform
+{
+    float4 world0;
+    float4 world1;
+    float4 world2;
+    float4 world3;
 };
 
 struct MaterialCameraParams
@@ -82,15 +90,25 @@ MaterialVertexOutput materialShaderObjectVertexMain(uint vertexIndex : SV_Vertex
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.materialIndexBuffer, 0));
     DescriptorHandle<StructuredBuffer<MaterialCameraParams>> paramsHandle =
         DescriptorHandle<StructuredBuffer<MaterialCameraParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    DescriptorHandle<StructuredBuffer<SceneTransform>> transformHandle =
+        DescriptorHandle<StructuredBuffer<SceneTransform>>(uint2(push.bufferShaderIndexBase + push.transformBuffer, 0));
 
     StructuredBuffer<float4> positions = positionHandle;
     StructuredBuffer<uint> materialIndices = materialIndexHandle;
     StructuredBuffer<MaterialCameraParams> paramsBuffer = paramsHandle;
+    StructuredBuffer<SceneTransform> transforms = transformHandle;
 
     uint globalVertexIndex = push.vertexOffset + vertexIndex;
+    float4 localPosition = positions[globalVertexIndex];
+    SceneTransform transform = transforms[(uint)localPosition.w];
+    float3 worldPosition =
+        transform.world0.xyz * localPosition.x +
+        transform.world1.xyz * localPosition.y +
+        transform.world2.xyz * localPosition.z +
+        transform.world3.xyz;
 
     MaterialVertexOutput output;
-    output.position = projectPosition(positions[globalVertexIndex].xyz, paramsBuffer[0]);
+    output.position = projectPosition(worldPosition, paramsBuffer[0]);
     output.materialIndex = materialIndices[globalVertexIndex];
     return output;
 }

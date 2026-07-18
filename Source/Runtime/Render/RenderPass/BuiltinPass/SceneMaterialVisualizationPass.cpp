@@ -60,7 +60,12 @@ public:
             return makeError(Error::Unsupported);
         }
 
-        Result result = sceneResources_.prepare(*context.device, *context.graphicsQueue, properties(), log);
+        Result result = sceneResources_.prepare(
+            *context.device,
+            *context.graphicsQueue,
+            properties(),
+            context.runtimeScene,
+            log);
         if (!result) {
             return result;
         }
@@ -75,7 +80,6 @@ public:
                 .moduleName = kSceneMaterialVisualizationShaderModuleName,
                 .entryPointName = kSceneMaterialVisualizationEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
-                .profileName = "glsl_460",
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
             },
@@ -158,6 +162,12 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        std::string syncLog;
+        Result syncResult = sceneResources_.syncRuntimeScene(context.runtimeScene(), syncLog);
+        if (!syncResult) {
+            spdlog::warn("[SceneMaterialVisualizationPass] Runtime scene sync failed: {}", syncLog);
+            return syncResult;
+        }
         TextureHandle color = context.outputTexture("color");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         if (!color.valid() ||

@@ -3,9 +3,12 @@
 #include "Runtime/Render/GAPI/SceneRtx.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
+#include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Scene/Scene.h"
+
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <array>
@@ -265,6 +268,27 @@ struct RenderGraphBufferUserPush {
     uint32_t padding = 0;
 };
 
+struct SceneGpuTransform {
+    float world[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+};
+
+inline std::vector<SceneGpuTransform> buildSceneGpuTransforms(const scene::Scene& loadedScene)
+{
+    std::vector<SceneGpuTransform> transforms(loadedScene.renderNodes().size());
+    for (size_t index = 0; index < loadedScene.renderNodes().size(); ++index) {
+        std::memcpy(
+            transforms[index].world,
+            loadedScene.renderNodes()[index].worldMatrix.a,
+            sizeof(transforms[index].world));
+    }
+    return transforms;
+}
+
 struct BunnyWireframeGpuPosition {
     float x = 0.0f;
     float y = 0.0f;
@@ -286,6 +310,8 @@ struct BunnyWireframeGpuParams {
 struct BunnyWireframeUserPush {
     uint32_t paramsBuffer = 0;
     uint32_t positionBuffer = 0;
+    uint32_t transformBuffer = 0;
+    uint32_t padding = 0;
 };
 
 struct MaterialShaderObjectGpuPosition {
@@ -314,8 +340,8 @@ struct MaterialShaderObjectUserPush {
     uint32_t paramsBuffer = 0;
     uint32_t vertexOffset = 0;
     uint32_t materialVariant = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
+    uint32_t transformBuffer = 0;
+    uint32_t padding = 0;
 };
 
 struct MaterialShaderObjectBatch {
@@ -352,6 +378,10 @@ struct GPUDrivenPreviewGpuMeshlet {
     uint32_t materialIndex = 0;
     uint32_t lodLevel = 0;
     uint32_t lodGroupIndex = 0;
+    uint32_t transformIndex = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
 };
 
 struct GPUDrivenPreviewGpuParams {
@@ -373,7 +403,7 @@ struct GPUDrivenPreviewUserPush {
     uint32_t meshletVertexBuffer = 0;
     uint32_t meshletTriangleBuffer = 0;
     uint32_t paramsBuffer = 0;
-    uint32_t padding0 = 0;
+    uint32_t transformBuffer = 0;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
 };

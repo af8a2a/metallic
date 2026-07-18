@@ -38,3 +38,6 @@
 [submodule "External/stdexec"]
 	path = External/stdexec
 	url = https://github.com/NVIDIA/stdexec.git
+[submodule "External/ImGuizmo"]
+	path = External/ImGuizmo
+	url = https://github.com/CedricGuillemet/ImGuizmo.git

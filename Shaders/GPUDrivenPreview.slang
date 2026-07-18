@@ -10,9 +10,17 @@ struct GPUDrivenPreviewPush
     uint meshletVertexBuffer;
     uint meshletTriangleBuffer;
     uint paramsBuffer;
-    uint padding0;
+    uint transformBuffer;
     uint padding1;
     uint padding2;
+};
+
+struct SceneTransform
+{
+    float4 world0;
+    float4 world1;
+    float4 world2;
+    float4 world3;
 };
 
 struct GPUDrivenPreviewMeshlet
@@ -25,6 +33,10 @@ struct GPUDrivenPreviewMeshlet
     uint materialIndex;
     uint lodLevel;
     uint lodGroupIndex;
+    uint transformIndex;
+    uint padding0;
+    uint padding1;
+    uint padding2;
 };
 
 struct GPUDrivenPreviewParams
@@ -118,12 +130,15 @@ void gpuDrivenPreviewMeshMain(
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.meshletTriangleBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+    DescriptorHandle<StructuredBuffer<SceneTransform>> transformHandle =
+        DescriptorHandle<StructuredBuffer<SceneTransform>>(uint2(push.bufferShaderIndexBase + push.transformBuffer, 0));
 
     StructuredBuffer<float4> positions = positionHandle;
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
     StructuredBuffer<uint> meshletVertices = meshletVertexHandle;
     StructuredBuffer<uint> meshletTriangles = meshletTriangleHandle;
     StructuredBuffer<GPUDrivenPreviewParams> paramsBuffer = paramsHandle;
+    StructuredBuffer<SceneTransform> transforms = transformHandle;
 
     GPUDrivenPreviewParams params = paramsBuffer[0];
     uint localMeshletIndex = groupID.x;
@@ -134,6 +149,7 @@ void gpuDrivenPreviewMeshMain(
 
     uint meshletIndex = params.meshletOffset + localMeshletIndex;
     GPUDrivenPreviewMeshlet meshlet = meshlets[meshletIndex];
+    SceneTransform transform = transforms[meshlet.transformIndex];
     uint vertexCount = min(meshlet.vertexCount, kMaxMeshletVertices);
     uint triangleCount = min(meshlet.triangleCount, kMaxMeshletTriangles);
     SetMeshOutputCounts(vertexCount, triangleCount);
@@ -149,7 +165,13 @@ void gpuDrivenPreviewMeshMain(
     for (uint vertexIndex = 0; vertexIndex < kMaxMeshletVertices; ++vertexIndex) {
         if (vertexIndex < vertexCount) {
             uint positionIndex = meshletVertices[meshlet.vertexOffset + vertexIndex];
-            float4 position = projectPosition(positions[positionIndex].xyz, params);
+            float3 localPosition = positions[positionIndex].xyz;
+            float3 worldPosition =
+                transform.world0.xyz * localPosition.x +
+                transform.world1.xyz * localPosition.y +
+                transform.world2.xyz * localPosition.z +
+                transform.world3.xyz;
+            float4 position = projectPosition(worldPosition, params);
             position.y = -position.y;
             vertices[vertexIndex].position = position;
             vertices[vertexIndex].color = color;

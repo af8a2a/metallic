@@ -28,7 +28,9 @@ public:
         Device& device,
         Queue& graphicsQueue,
         const RenderGraphProperties& properties,
+        const scene::Scene* runtimeScene,
         std::string& log);
+    Result syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log);
     Result uploadMaterialTextures(CommandBuffer& commandBuffer);
     Result uploadEnvironmentTexture(CommandBuffer& commandBuffer);
 

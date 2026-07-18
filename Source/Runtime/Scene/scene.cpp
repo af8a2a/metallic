@@ -2477,6 +2477,7 @@ bool Scene::load(const std::filesystem::path& filename)
         node.cameraIndex = gltfNode.camera;
         node.lightIndex = gltfNode.light;
         node.localMatrix = makeNodeLocalMatrix(gltfNode);
+        node.authoredLocalMatrix = node.localMatrix;
         node.worldMatrix = float4x4::Identity();
         node.visible = readNodeVisibility(gltfNode);
     }
@@ -2601,6 +2602,7 @@ bool Scene::load(const std::filesystem::path& filename)
                 renderNode.renderPrimitiveIndex = static_cast<int32_t>(renderPrimitives_.size());
                 renderNode.materialIndex = primitive.materialIndex;
                 renderNode.worldMatrix = node.worldMatrix;
+                renderNode.transformRevision = transformRevision_;
                 renderNode.visible = node.visible;
 
                 bounds_.include(transformBounds(primitive.localBounds, node.worldMatrix));
@@ -2689,6 +2691,103 @@ bool Scene::load(const std::filesystem::path& filename)
     return true;
 }
 
+bool Scene::setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix)
+{
+    if (!valid() || !validIndex(nodeIndex, nodes_.size())) {
+        return false;
+    }
+    for (const float value : localMatrix.a) {
+        if (!std::isfinite(value)) {
+            return false;
+        }
+    }
+
+    SceneNode& node = nodes_[static_cast<size_t>(nodeIndex)];
+    if (matrixNearlyEqual(node.localMatrix, localMatrix)) {
+        return false;
+    }
+
+    node.localMatrix = localMatrix;
+    ++transformRevision_;
+    if (transformRevision_ == 0) {
+        transformRevision_ = 1;
+    }
+    refreshTransforms();
+    return true;
+}
+
+void Scene::refreshTransforms()
+{
+    const uint64_t revision = transformRevision_;
+    std::function<void(int32_t, const float4x4&)> traverseNode;
+    traverseNode = [&](int32_t nodeIndex, const float4x4& parentWorld) {
+        if (!validIndex(nodeIndex, nodes_.size())) {
+            return;
+        }
+        SceneNode& node = nodes_[static_cast<size_t>(nodeIndex)];
+        const float4x4 worldMatrix = parentWorld * node.localMatrix;
+        if (!matrixNearlyEqual(node.worldMatrix, worldMatrix)) {
+            node.worldMatrix = worldMatrix;
+            node.transformRevision = revision;
+        }
+        for (const int32_t child : node.children) {
+            traverseNode(child, node.worldMatrix);
+        }
+    };
+    for (const int32_t rootNodeIndex : rootNodeIndices_) {
+        traverseNode(rootNodeIndex, float4x4::Identity());
+    }
+
+    bounds_.reset();
+    for (RenderNode& renderNode : renderNodes_) {
+        if (!validIndex(renderNode.nodeIndex, nodes_.size()) ||
+            !validIndex(renderNode.renderPrimitiveIndex, renderPrimitives_.size())) {
+            continue;
+        }
+        const SceneNode& node = nodes_[static_cast<size_t>(renderNode.nodeIndex)];
+        if (!matrixNearlyEqual(renderNode.worldMatrix, node.worldMatrix)) {
+            renderNode.worldMatrix = node.worldMatrix;
+            renderNode.transformRevision = revision;
+        }
+        renderNode.visible = node.visible;
+        bounds_.include(transformBounds(
+            renderPrimitives_[static_cast<size_t>(renderNode.renderPrimitiveIndex)].localBounds,
+            renderNode.worldMatrix));
+    }
+
+    for (RenderCamera& camera : cameras_) {
+        if (camera.fallback) {
+            camera = makeFallbackCamera(bounds_);
+            continue;
+        }
+        if (!validIndex(camera.nodeIndex, nodes_.size())) {
+            continue;
+        }
+        const SceneNode& node = nodes_[static_cast<size_t>(camera.nodeIndex)];
+        if (node.transformRevision != revision) {
+            continue;
+        }
+        camera.eye = matrixTranslation(node.worldMatrix);
+        const float3 forward = normalizedOr(
+            transformVector(node.worldMatrix, float3(0.0f, 0.0f, -1.0f)),
+            float3(0.0f, 0.0f, -1.0f));
+        camera.center = camera.eye + forward;
+        camera.up = normalizedOr(
+            transformVector(node.worldMatrix, float3(0.0f, 1.0f, 0.0f)),
+            float3(0.0f, 1.0f, 0.0f));
+    }
+
+    for (RenderLight& light : lights_) {
+        if (!validIndex(light.nodeIndex, nodes_.size())) {
+            continue;
+        }
+        const SceneNode& node = nodes_[static_cast<size_t>(light.nodeIndex)];
+        if (node.transformRevision == revision) {
+            light.worldMatrix = node.worldMatrix;
+        }
+    }
+}
+
 void Scene::clearParsedData()
 {
     filename_.clear();
@@ -2707,6 +2806,20 @@ void Scene::clearParsedData()
     materials_.clear();
     cameras_.clear();
     lights_.clear();
+    transformRevision_ = 0;
+}
+
+bool matrixNearlyEqual(const float4x4& lhs, const float4x4& rhs, float epsilon)
+{
+    for (size_t index = 0; index < 16; ++index) {
+        if (!std::isfinite(lhs.a[index]) || !std::isfinite(rhs.a[index])) {
+            return false;
+        }
+        if (std::abs(lhs.a[index] - rhs.a[index]) > epsilon) {
+            return false;
+        }
+    }
+    return true;
 }
 
 const char* cameraTypeName(CameraType type)

@@ -13,6 +13,10 @@
 #include <utility>
 #include <vector>
 
+namespace metallic::scene {
+class Scene;
+}
+
 namespace metallic::render {
 
 class HistoryResourceManager;
@@ -139,6 +143,7 @@ private:
 struct RenderGraphCompileContext {
     Device* device = nullptr;
     Queue* graphicsQueue = nullptr;
+    const scene::Scene* runtimeScene = nullptr;
     uint32_t width = 1;
     uint32_t height = 1;
     Format defaultFormat = Format::Rgba8Unorm;
@@ -205,6 +210,7 @@ public:
     const RenderGraphProperties& properties() const { return properties_; }
     HistoryResourceManager* historyResources() const { return historyResources_; }
     Streamer* streamer() const { return streamer_; }
+    const scene::Scene* runtimeScene() const { return runtimeScene_; }
 
     RenderGraphResource* resource(std::string_view fieldName) const;
     RenderGraphResource* input(std::string_view fieldName) const;
@@ -236,7 +242,8 @@ private:
         const RenderGraphProperties& properties,
         std::vector<Binding> bindings,
         HistoryResourceManager* historyResources,
-        Streamer* streamer);
+        Streamer* streamer,
+        const scene::Scene* runtimeScene);
 
     CommandBuffer& commandBuffer_;
     uint32_t width_ = 1;
@@ -246,6 +253,7 @@ private:
     std::vector<Binding> bindings_;
     HistoryResourceManager* historyResources_ = nullptr;
     Streamer* streamer_ = nullptr;
+    const scene::Scene* runtimeScene_ = nullptr;
 
     friend class RenderGraphExecutor;
 };

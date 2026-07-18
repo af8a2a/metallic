@@ -125,6 +125,17 @@ target_include_directories(imgui PUBLIC
 )
 target_link_libraries(imgui PUBLIC metallic::sdl3)
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ImGuizmo/src/ImGuizmo.cpp")
+    add_library(imguizmo STATIC
+        ImGuizmo/src/ImGuizmo.cpp
+    )
+    add_library(imguizmo::imguizmo ALIAS imguizmo)
+    target_include_directories(imguizmo PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/ImGuizmo/src"
+    )
+    target_link_libraries(imguizmo PUBLIC imgui)
+endif()
+
 if(APPLE)
     target_sources(imgui PRIVATE imgui/backends/imgui_impl_metal.mm)
     target_link_libraries(imgui PUBLIC metal-cpp "-framework Metal" "-framework AppKit")

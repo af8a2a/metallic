@@ -1,6 +1,10 @@
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Scene/SceneDocument.h"
+#include "Runtime/Scene/ScenePicker.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "meshoptimizer.h"
+
+#include <nlohmann/json.hpp>
 
 #include <gtest/gtest.h>
 
@@ -2300,6 +2304,162 @@ void testGeneratedTangentHandedness(const std::filesystem::path& directory)
     }
 }
 
+void testMutableSceneTransforms(const std::filesystem::path& directory)
+{
+    const std::filesystem::path gltfPath = writeFullScene(directory);
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.load(gltfPath)) << scene.lastLoadResult().error;
+    ASSERT_EQ(scene.nodes().size(), 5u);
+    ASSERT_EQ(scene.renderNodes().size(), 1u);
+    ASSERT_EQ(scene.cameras().size(), 2u);
+    ASSERT_EQ(scene.lights().size(), 1u);
+
+    const float4x4 authoredRoot = scene.nodes()[0].authoredLocalMatrix;
+    float4x4 editedRoot = float4x4::Identity();
+    editedRoot.SetupByTranslation(float3(2.0f, 3.0f, 4.0f));
+    EXPECT_TRUE(scene.setNodeLocalMatrix(0, editedRoot));
+    EXPECT_EQ(scene.transformRevision(), 1u);
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(scene.nodes()[0].authoredLocalMatrix, authoredRoot));
+    EXPECT_EQ(scene.nodes()[0].transformRevision, 1u);
+    EXPECT_EQ(scene.nodes()[1].transformRevision, 1u);
+    EXPECT_EQ(scene.renderNodes()[0].transformRevision, 1u);
+    expectVec3(
+        float3(
+            scene.nodes()[1].worldMatrix.a03,
+            scene.nodes()[1].worldMatrix.a13,
+            scene.nodes()[1].worldMatrix.a23),
+        float3(6.0f, 3.0f, 4.0f),
+        "child world transform propagated");
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        scene.renderNodes()[0].worldMatrix,
+        scene.nodes()[1].worldMatrix));
+    expectVec3(scene.cameras()[0].eye, float3(2.0f, 3.0f, 14.0f), "camera transform propagated");
+    expectVec3(
+        float3(
+            scene.lights()[0].worldMatrix.a03,
+            scene.lights()[0].worldMatrix.a13,
+            scene.lights()[0].worldMatrix.a23),
+        float3(2.0f, 3.0f, 4.0f),
+        "light transform propagated");
+    ASSERT_TRUE(scene.bounds().valid);
+    expectVec3(scene.bounds().min, float3(6.0f, 3.0f, 4.0f), "scene bounds min updated");
+    expectVec3(scene.bounds().max, float3(7.0f, 4.0f, 4.0f), "scene bounds max updated");
+
+    EXPECT_FALSE(scene.setNodeLocalMatrix(0, editedRoot));
+    EXPECT_EQ(scene.transformRevision(), 1u);
+    EXPECT_FALSE(scene.setNodeLocalMatrix(-1, editedRoot));
+}
+
+void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
+{
+    const std::filesystem::path directory = baseDirectory / "scene_document";
+    std::filesystem::create_directories(directory);
+    const std::filesystem::path gltfPath = writeFullScene(directory);
+    const std::filesystem::path sidecarPath =
+        metallic::scene::SceneDocument::sidecarPathForSource(gltfPath);
+    std::error_code cleanupError;
+    std::filesystem::remove(sidecarPath, cleanupError);
+    std::filesystem::remove(sidecarPath.string() + ".tmp", cleanupError);
+
+    metallic::scene::SceneDocument document;
+    ASSERT_TRUE(document.load(gltfPath)) << document.lastLoadResult().error;
+    EXPECT_FALSE(document.dirty());
+    float4x4 edited = document.nodes()[1].localMatrix;
+    edited.a03 = 9.0f;
+    EXPECT_TRUE(document.setNodeLocalMatrix(1, edited));
+    EXPECT_TRUE(document.dirty());
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    EXPECT_FALSE(document.dirty());
+    EXPECT_TRUE(std::filesystem::exists(sidecarPath));
+
+    nlohmann::json saved;
+    {
+        std::ifstream stream(sidecarPath, std::ios::binary);
+        stream >> saved;
+    }
+    ASSERT_EQ(saved.value("version", 0), 1);
+    ASSERT_TRUE(saved.contains("nodes"));
+    ASSERT_EQ(saved["nodes"].size(), 1u);
+    EXPECT_EQ(saved["nodes"][0].value("nodeIndex", -1), 1);
+    EXPECT_EQ(saved["nodes"][0].value("sourceName", std::string{}), "Mesh Node");
+
+    metallic::scene::SceneDocument autoDiscovered;
+    ASSERT_TRUE(autoDiscovered.load(gltfPath)) << autoDiscovered.lastLoadResult().error;
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(autoDiscovered.nodes()[1].localMatrix, edited));
+    EXPECT_FALSE(autoDiscovered.dirty());
+
+    metallic::scene::SceneDocument directlyOpened;
+    ASSERT_TRUE(directlyOpened.load(sidecarPath)) << directlyOpened.lastLoadResult().error;
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(directlyOpened.nodes()[1].localMatrix, edited));
+    EXPECT_EQ(
+        std::filesystem::weakly_canonical(directlyOpened.sourcePath()),
+        std::filesystem::weakly_canonical(gltfPath));
+
+    const nlohmann::json validSaved = saved;
+    nlohmann::json outOfRangeOverride = saved["nodes"][0];
+    outOfRangeOverride["nodeIndex"] = 9999;
+    saved["nodes"].push_back(std::move(outOfRangeOverride));
+    writeTextFile(sidecarPath, saved.dump(2));
+    metallic::scene::SceneDocument partiallyApplied;
+    ASSERT_TRUE(partiallyApplied.load(gltfPath)) << partiallyApplied.lastLoadResult().error;
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(partiallyApplied.nodes()[1].localMatrix, edited));
+    EXPECT_NE(partiallyApplied.documentWarning().find("out-of-range"), std::string::npos);
+
+    saved = validSaved;
+    saved["source"] = "other.gltf";
+    writeTextFile(sidecarPath, saved.dump(2));
+    metallic::scene::SceneDocument wrongSource;
+    EXPECT_FALSE(wrongSource.load(gltfPath));
+    EXPECT_NE(wrongSource.documentWarning().find("does not match"), std::string::npos);
+
+    saved = validSaved;
+    saved["nodes"][0]["sourceName"] = "Renamed In Source";
+    writeTextFile(sidecarPath, saved.dump(2));
+    metallic::scene::SceneDocument mismatched;
+    ASSERT_TRUE(mismatched.load(gltfPath)) << mismatched.lastLoadResult().error;
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        mismatched.nodes()[1].localMatrix,
+        mismatched.nodes()[1].authoredLocalMatrix));
+    EXPECT_NE(mismatched.documentWarning().find("sourceName"), std::string::npos);
+}
+
+void testScenePickerBvh(const std::filesystem::path& directory)
+{
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.load(writeFullScene(directory))) << scene.lastLoadResult().error;
+    metallic::scene::ScenePicker picker;
+    metallic::scene::ScenePickResult hit = picker.pick(
+        scene,
+        metallic::scene::ScenePickRay{
+            .origin = float3(5.75f, 2.25f, 10.0f),
+            .direction = float3(0.0f, 0.0f, -1.0f),
+        });
+    ASSERT_TRUE(hit.hit());
+    EXPECT_EQ(hit.nodeIndex, 1);
+    EXPECT_EQ(hit.renderPrimitiveIndex, 0);
+    EXPECT_EQ(hit.triangleIndex, 0u);
+    EXPECT_TRUE(nearlyEqual(hit.distance, 7.0f));
+
+    float4x4 movedRoot = scene.nodes()[0].localMatrix;
+    movedRoot.a03 += 10.0f;
+    ASSERT_TRUE(scene.setNodeLocalMatrix(0, movedRoot));
+    EXPECT_FALSE(picker.pick(
+        scene,
+        metallic::scene::ScenePickRay{
+            .origin = float3(5.75f, 2.25f, 10.0f),
+            .direction = float3(0.0f, 0.0f, -1.0f),
+        }).hit());
+    hit = picker.pick(
+        scene,
+        metallic::scene::ScenePickRay{
+            .origin = float3(15.75f, 2.25f, 10.0f),
+            .direction = float3(0.0f, 0.0f, -1.0f),
+        });
+    ASSERT_TRUE(hit.hit());
+    EXPECT_EQ(hit.nodeIndex, 1);
+}
+
 } // namespace
 
 TEST(SceneImport, FullScene)
@@ -2360,4 +2520,19 @@ TEST(SceneImport, FallbackCamera)
 TEST(SceneImport, UnsupportedRequiredExtension)
 {
     testUnsupportedRequiredExtension(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, MutableTransforms)
+{
+    testMutableSceneTransforms(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, DocumentRoundTrip)
+{
+    testSceneDocumentRoundTrip(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, PickerBvh)
+{
+    testScenePickerBvh(prepareOutputDirectory());
 }

@@ -41,7 +41,14 @@ Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResul
 
     slang::TargetDesc targetDesc{};
     targetDesc.format = SLANG_SPIRV;
-    targetDesc.profile = globalSession->findProfile(desc.profileName != nullptr ? desc.profileName : "glsl_450");
+    const char* profileName = desc.profileName != nullptr ? desc.profileName : kDefaultSlangProfileName;
+    targetDesc.profile = globalSession->findProfile(profileName);
+    if (targetDesc.profile == SLANG_PROFILE_UNKNOWN) {
+        outResult.diagnostics = "Unknown Slang target profile: ";
+        outResult.diagnostics += profileName;
+        outResult.diagnostics += '\n';
+        return makeError(Error::InvalidArgument);
+    }
 
     const char* searchPaths[] = {desc.searchPath};
     std::vector<slang::CompilerOptionEntry> compilerOptions;

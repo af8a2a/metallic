@@ -315,7 +315,6 @@ Result createSlangShaderModule(
             .moduleName = moduleName,
             .entryPointName = entryPoint,
             .searchPath = kMeshletStreamShaderSearchPath,
-            .profileName = "glsl_460",
         },
         compileResult);
     if (!result) {
@@ -2150,6 +2149,7 @@ void MeshletStreamRuntime::reset()
     residency_.reset();
     asset_.close();
     drawBounds_.reset();
+    sceneTransformRevision_ = 0;
     pageBuffer_.reset();
     activeGroupBuffer_.reset();
     activeHeaderBuffer_.reset();
@@ -2507,6 +2507,77 @@ uint32_t MeshletStreamRuntime::drawTaskCount() const
     }
     const uint64_t count = static_cast<uint64_t>(maxActiveGroups_) * maxActiveGroupClusters_;
     return count > std::numeric_limits<uint32_t>::max() ? 0u : static_cast<uint32_t>(count);
+}
+
+Result MeshletStreamRuntime::syncRuntimeScene(const scene::Scene& scene, std::string& log)
+{
+    log.clear();
+    if (!ready() || !scene.valid() || instanceBuffer_ == nullptr) {
+        log = "MeshletStreamRuntime is not ready for a scene transform update.";
+        return makeError(Error::InvalidArgument);
+    }
+    if (sceneTransformRevision_ == scene.transformRevision()) {
+        return {};
+    }
+
+    const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
+    const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
+    if (instances.size() * sizeof(MeshletStreamGpuInstance) != instanceBuffer_->desc().size) {
+        log = "MeshletStreamRuntime instance layout changed.";
+        return makeError(Error::InvalidArgument);
+    }
+
+    std::vector<MeshletStreamGpuInstance> gpuInstances(instances.size());
+    scene::Bounds updatedBounds;
+    for (size_t index = 0; index < instances.size(); ++index) {
+        const scene::MeshletStreamInstanceInfo& instance = instances[index];
+        if (instance.renderNodeIndex >= scene.renderNodes().size() ||
+            instance.primitiveIndex >= primitives.size()) {
+            log = "MeshletStreamRuntime instance does not match the runtime glTF scene.";
+            return makeError(Error::InvalidArgument);
+        }
+        const scene::RenderNode& renderNode = scene.renderNodes()[instance.renderNodeIndex];
+        MeshletStreamGpuInstance& gpuInstance = gpuInstances[index];
+        gpuInstance = MeshletStreamGpuInstance{};
+        gpuInstance.primitiveIndex = instance.primitiveIndex;
+        gpuInstance.materialIndex = instance.materialIndex;
+        gpuInstance.visible = renderNode.visible ? 1u : 0u;
+        for (uint32_t row = 0; row < 4; ++row) {
+            gpuInstance.world0[row] = renderNode.worldMatrix.a[0 + row];
+            gpuInstance.world1[row] = renderNode.worldMatrix.a[4 + row];
+            gpuInstance.world2[row] = renderNode.worldMatrix.a[8 + row];
+            gpuInstance.world3[row] = renderNode.worldMatrix.a[12 + row];
+        }
+        scene::Bounds worldBounds;
+        includeTransformedBounds(
+            worldBounds,
+            primitives[instance.primitiveIndex].bounds,
+            renderNode.worldMatrix.a);
+        if (worldBounds.valid) {
+            updatedBounds.include(worldBounds.min);
+            updatedBounds.include(worldBounds.max);
+        }
+        const float3 center = worldBounds.valid ? worldBounds.center() : drawBounds_.center();
+        gpuInstance.boundsCenterRadius[0] = center.x;
+        gpuInstance.boundsCenterRadius[1] = center.y;
+        gpuInstance.boundsCenterRadius[2] = center.z;
+        gpuInstance.boundsCenterRadius[3] = std::max(
+            worldBounds.valid ? worldBounds.radius() : drawBounds_.radius(),
+            0.001f);
+    }
+
+    void* mapped = instanceBuffer_->map();
+    if (mapped == nullptr) {
+        return makeError(Error::Failure);
+    }
+    std::memcpy(mapped, gpuInstances.data(), static_cast<size_t>(instanceBuffer_->desc().size));
+    instanceBuffer_->flush(0, instanceBuffer_->desc().size);
+    instanceBuffer_->unmap();
+    if (updatedBounds.valid) {
+        drawBounds_ = updatedBounds;
+    }
+    sceneTransformRevision_ = scene.transformRevision();
+    return {};
 }
 
 void MeshletStreamRuntime::cmdDrawMeshTasks(CommandBuffer& commandBuffer) const

@@ -115,8 +115,10 @@ struct SceneNode {
     int32_t meshIndex = kInvalidSceneIndex;
     int32_t cameraIndex = kInvalidSceneIndex;
     int32_t lightIndex = kInvalidSceneIndex;
+    float4x4 authoredLocalMatrix = float4x4::Identity();
     float4x4 localMatrix = float4x4::Identity();
     float4x4 worldMatrix = float4x4::Identity();
+    uint64_t transformRevision = 0;
     bool visible = true;
 };
 
@@ -172,6 +174,7 @@ struct RenderNode {
     int32_t renderPrimitiveIndex = kInvalidSceneIndex;
     int32_t materialIndex = kInvalidSceneIndex;
     float4x4 worldMatrix = float4x4::Identity();
+    uint64_t transformRevision = 0;
     bool visible = true;
 };
 
@@ -241,6 +244,7 @@ class Scene {
 public:
     bool load(const std::filesystem::path& filename);
     void clear();
+    bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
 
     bool valid() const { return lastLoadResult_.success; }
     const LoadResult& lastLoadResult() const { return lastLoadResult_; }
@@ -260,9 +264,11 @@ public:
     const std::vector<RenderMaterial>& materials() const { return materials_; }
     const std::vector<RenderCamera>& cameras() const { return cameras_; }
     const std::vector<RenderLight>& lights() const { return lights_; }
+    uint64_t transformRevision() const { return transformRevision_; }
 
 private:
     void clearParsedData();
+    void refreshTransforms();
 
     LoadResult lastLoadResult_;
     std::filesystem::path filename_;
@@ -281,7 +287,10 @@ private:
     std::vector<RenderMaterial> materials_;
     std::vector<RenderCamera> cameras_;
     std::vector<RenderLight> lights_;
+    uint64_t transformRevision_ = 0;
 };
+
+bool matrixNearlyEqual(const float4x4& lhs, const float4x4& rhs, float epsilon = 0.000001f);
 
 const char* cameraTypeName(CameraType type);
 std::string formatVec3(const float3& value);

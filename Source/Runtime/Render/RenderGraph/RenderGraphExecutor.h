@@ -54,6 +54,7 @@ public:
     Result execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources = nullptr);
     Result execute(const RenderGraphSubmitDesc& desc);
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);
+    void bindRuntimeScene(const scene::Scene* scene);
     bool syncProperties(const RenderGraph& graph);
     bool syncRuntimeProperties(const RenderGraph& graph);
     Result transitionOutput(

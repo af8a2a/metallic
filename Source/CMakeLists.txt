@@ -105,6 +105,8 @@ endif()
 add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/MeshletStreamAsset.cpp
     Runtime/Scene/Scene.cpp
+    Runtime/Scene/SceneDocument.cpp
+    Runtime/Scene/ScenePicker.cpp
     Runtime/Scene/TinyGltfImpl.cpp
 )
 
@@ -154,6 +156,7 @@ target_include_directories(Metallic PRIVATE
 
 target_link_libraries(Metallic PRIVATE
     imgui
+    imguizmo::imguizmo
     imnodes
     metallic::sdl3
     MetallicRuntimeRender
@@ -205,6 +208,7 @@ function(configure_metallic_editor_sample target_name)
 
     target_link_libraries(${target_name} PRIVATE
         imgui
+        imguizmo::imguizmo
         imnodes
         metallic::sdl3
         MetallicRuntimeRender

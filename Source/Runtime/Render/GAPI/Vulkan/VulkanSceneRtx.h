@@ -64,6 +64,11 @@ public:
     SceneRtxBuilder& operator=(const SceneRtxBuilder&) = delete;
 
     Result build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
+    Result updateInstanceTransforms(
+        Device& device,
+        Queue& queue,
+        const scene::Scene& scene,
+        std::string& log);
     void clear();
 
     bool valid() const;

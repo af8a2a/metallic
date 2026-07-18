@@ -5,7 +5,8 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.h"
 #include "Runtime/Render/HistoryResources.h"
-#include "Runtime/Scene/Scene.h"
+#include "Runtime/Scene/SceneDocument.h"
+#include "Runtime/Scene/ScenePicker.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -31,6 +32,8 @@ public:
         const char* startupStreamAssetPath = nullptr);
 
 private:
+    enum class PendingSceneAction : int32_t;
+
     bool initialize();
     void shutdown();
     void pollEvents();
@@ -53,6 +56,23 @@ private:
         bool showEmptyMessage);
     void drawViewportPanel();
     void handleViewportCameraControls(const ImVec2& min, const ImVec2& max);
+    void drawViewportGizmo(const ImVec2& min, const ImVec2& max);
+    void selectViewportObject(const ImVec2& min, const ImVec2& max);
+    void drawSelectedNodeTransformInspector();
+    int32_t selectedNodeIndex() const;
+    bool setSelectedNodeWorldMatrix(const float4x4& worldMatrix, std::string& reason);
+    void notifySceneTransformChanged();
+    void pushTransformCommand(int32_t nodeIndex, const float4x4& before, const float4x4& after);
+    void undoTransform();
+    void redoTransform();
+    void resetTransformHistory();
+    void saveScene();
+    void requestPendingSceneAction(
+        PendingSceneAction action,
+        std::filesystem::path path = {},
+        std::string value = {});
+    void drawUnsavedSceneModal();
+    void executePendingSceneAction();
     void applyRuntimeNodeProperties(uint32_t nodeId, render::RenderGraphProperties properties, const char* status);
     void applyBunnyCameraProperties(render::RenderGraphProperties properties, const char* status);
     void drawRenderGraphEditorWindow();
@@ -114,6 +134,27 @@ private:
         int32_t primitiveIndex = scene::kInvalidSceneIndex;
     };
 
+    enum class GizmoOperation : uint8_t {
+        Translate,
+        Rotate,
+        Scale,
+    };
+
+    enum class PendingSceneAction : int32_t {
+        None,
+        Clear,
+        Exit,
+        LoadScene,
+        LoadRenderGraph,
+        LoadSample,
+    };
+
+    struct TransformCommand {
+        int32_t nodeIndex = scene::kInvalidSceneIndex;
+        float4x4 before = float4x4::Identity();
+        float4x4 after = float4x4::Identity();
+    };
+
     SDL_Window* window_ = nullptr;
     std::unique_ptr<render::Device> device_;
     render::Queue* graphicsQueue_ = nullptr;
@@ -131,7 +172,8 @@ private:
     EditorProfiler profiler_;
     NvmlMonitor nvmlMonitor_;
     render::RenderGraph renderGraph_;
-    scene::Scene scene_;
+    scene::SceneDocument scene_;
+    scene::ScenePicker scenePicker_;
     VkSampler viewportSampler_ = VK_NULL_HANDLE;
     VkDescriptorSet viewportDescriptor_ = VK_NULL_HANDLE;
     uint32_t viewportTextureWidth_ = 0;
@@ -159,7 +201,23 @@ private:
     bool inspectorOpen_ = true;
     bool statisticsOpen_ = true;
     bool graphEditorPositionsInitialized_ = false;
+    bool snapEnabled_ = false;
+    bool gizmoLocal_ = false;
+    bool gizmoWasUsing_ = false;
+    bool inspectorTransformEditing_ = false;
     int viewportCameraDragButton_ = -1;
+    GizmoOperation gizmoOperation_ = GizmoOperation::Translate;
+    float translateSnap_ = 0.5f;
+    float rotateSnap_ = 15.0f;
+    float scaleSnap_ = 0.1f;
+    float4x4 gizmoStartLocalMatrix_ = float4x4::Identity();
+    float4x4 inspectorStartLocalMatrix_ = float4x4::Identity();
+    std::vector<TransformCommand> transformCommands_;
+    size_t transformCommandCursor_ = 0;
+    int64_t savedTransformCommandCursor_ = 0;
+    PendingSceneAction pendingSceneAction_ = PendingSceneAction::None;
+    std::filesystem::path pendingScenePath_;
+    std::string pendingSceneValue_;
     float mainScale_ = 1.0f;
     float clearColor_[4] = {0.07f, 0.08f, 0.10f, 1.0f};
     int selectedGraphNodeId_ = -1;

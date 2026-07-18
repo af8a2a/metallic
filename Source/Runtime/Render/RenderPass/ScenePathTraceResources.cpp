@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
+#include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
@@ -1118,6 +1119,7 @@ struct ScenePathTraceResources::Impl {
         materialTextures.clear();
         materialTextureViews.fill(nullptr);
         materialTextureCount = 0;
+        textureIndexMap.clear();
         environmentTexture = ScenePathTraceMaterialTexture{};
         environmentMapAvailable = false;
         outTextureIndexMap.assign(loadedScene.textures().size(), kInvalidMaterialTextureIndex);
@@ -1445,17 +1447,21 @@ struct ScenePathTraceResources::Impl {
     }
 
     SceneRtxBuilder rtxBuilder;
+    Device* device = nullptr;
+    Queue* graphicsQueue = nullptr;
     scene::Bounds drawBounds;
     std::filesystem::path scenePath;
     std::filesystem::path environmentPath;
     bool prepared = false;
     uint64_t revision = 0;
+    uint64_t sourceTransformRevision = 0;
     std::unique_ptr<Buffer> vertexBuffer;
     std::unique_ptr<Buffer> indexBuffer;
     std::unique_ptr<Buffer> primitiveBuffer;
     std::unique_ptr<Buffer> instanceBuffer;
     std::unique_ptr<Buffer> materialBuffer;
     std::vector<ScenePathTraceMaterialTexture> materialTextures;
+    std::vector<uint32_t> textureIndexMap;
     std::array<TextureView*, kScenePathTraceMaxMaterialTextures> materialTextureViews{};
     uint32_t materialTextureCount = 0;
     ScenePathTraceMaterialTexture environmentTexture;
@@ -1478,11 +1484,20 @@ Result ScenePathTraceResources::prepare(
     Device& device,
     Queue& graphicsQueue,
     const RenderGraphProperties& properties,
+    const scene::Scene* runtimeScene,
     std::string& log)
 {
+    impl_->device = &device;
+    impl_->graphicsQueue = &graphicsQueue;
     const std::filesystem::path path = scenePathFromProperties(properties);
     const std::filesystem::path environmentPath = environmentPathFromProperties(properties);
-    if (impl_->valid() && impl_->scenePath == path && impl_->environmentPath == environmentPath) {
+    const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, path);
+    if (impl_->valid() && impl_->scenePath == path && impl_->environmentPath == environmentPath &&
+        boundScene != nullptr && impl_->sourceTransformRevision != boundScene->transformRevision()) {
+        return syncRuntimeScene(boundScene, log);
+    }
+    if (impl_->valid() && impl_->scenePath == path && impl_->environmentPath == environmentPath &&
+        (boundScene == nullptr || impl_->sourceTransformRevision == boundScene->transformRevision())) {
         spdlog::info(
             "[SceneResources] Reuse prepared scene='{}' environment='{}'",
             path.string(),
@@ -1494,14 +1509,16 @@ Result ScenePathTraceResources::prepare(
         "prepare scene='" + path.string() + "' environment='" + environmentPath.string() + "'");
     impl_->clear();
 
-    scene::Scene loadedScene;
-    {
+    scene::Scene fallbackScene;
+    if (boundScene == nullptr) {
         SceneResourceLogScope scope("load scene for render pass resources");
-        if (!loadedScene.load(path)) {
-            log = "ScenePathTracePass failed to load glTF: " + loadedScene.lastLoadResult().error;
+        if (!fallbackScene.load(path)) {
+            log = "ScenePathTracePass failed to load glTF: " + fallbackScene.lastLoadResult().error;
             return makeError(Error::Failure);
         }
+        boundScene = &fallbackScene;
     }
+    const scene::Scene& loadedScene = *boundScene;
     if (!loadedScene.bounds().valid) {
         log = "ScenePathTracePass scene bounds are unavailable";
         return makeError(Error::Failure);
@@ -1526,6 +1543,7 @@ Result ScenePathTraceResources::prepare(
         impl_->clear();
         return result;
     }
+    impl_->textureIndexMap = textureIndexMap;
     {
         SceneResourceLogScope scope("build environment texture");
         result = impl_->buildEnvironmentTexture(device, environmentPath, log);
@@ -1630,6 +1648,7 @@ Result ScenePathTraceResources::prepare(
     impl_->drawBounds = loadedScene.bounds();
     impl_->scenePath = path;
     impl_->environmentPath = environmentPath;
+    impl_->sourceTransformRevision = loadedScene.transformRevision();
     impl_->prepared = true;
     ++impl_->revision;
     spdlog::info(
@@ -1638,6 +1657,55 @@ Result ScenePathTraceResources::prepare(
         impl_->materialTextureCount,
         impl_->environmentMapAvailable,
         impl_->environmentImportanceTexelCount);
+    return {};
+}
+
+Result ScenePathTraceResources::syncRuntimeScene(
+    const scene::Scene* runtimeScene,
+    std::string& log)
+{
+    log.clear();
+    const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, impl_->scenePath);
+    if (boundScene == nullptr || !impl_->valid() ||
+        impl_->sourceTransformRevision == boundScene->transformRevision()) {
+        return {};
+    }
+    if (impl_->device == nullptr || impl_->graphicsQueue == nullptr) {
+        log = "Scene resources have no device or graphics queue for a runtime transform update.";
+        return makeError(Error::InvalidArgument);
+    }
+
+    ScenePathTraceGpuScene gpuScene;
+    if (!buildGpuScene(*boundScene, impl_->textureIndexMap, gpuScene, log)) {
+        return makeError(Error::Failure);
+    }
+    std::string rtxLog;
+    Result result = impl_->rtxBuilder.updateInstanceTransforms(
+        *impl_->device,
+        *impl_->graphicsQueue,
+        *boundScene,
+        rtxLog);
+    appendLogBlock(log, rtxLog);
+    if (!result) {
+        return result;
+    }
+    result = uploadStorageBuffer(
+        *impl_->device,
+        gpuScene.instances.data(),
+        static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGpuInstance)),
+        sizeof(ScenePathTraceGpuInstance),
+        impl_->instanceBuffer,
+        log,
+        "ScenePathTracePass updated instances");
+    if (!result) {
+        return result;
+    }
+    impl_->drawBounds = boundScene->bounds();
+    impl_->sourceTransformRevision = boundScene->transformRevision();
+    ++impl_->revision;
+    spdlog::info(
+        "[SceneResources] Updated instance transforms and refit TLAS revision={}",
+        impl_->revision);
     return {};
 }
 

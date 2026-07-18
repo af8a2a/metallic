@@ -4,6 +4,16 @@ struct BindlessHeapPush
     uint bufferShaderIndexBase;
     uint paramsBuffer;
     uint positionBuffer;
+    uint transformBuffer;
+    uint padding;
+};
+
+struct SceneTransform
+{
+    float4 world0;
+    float4 world1;
+    float4 world2;
+    float4 world3;
 };
 
 struct BunnyWireframeParams
@@ -85,13 +95,23 @@ BunnyWireframeVertexOutput bunnyWireframeVertexMain(uint vertexIndex : SV_Vertex
         DescriptorHandle<StructuredBuffer<BunnyWireframeParams>>(uint2(bindless.bufferShaderIndexBase + bindless.paramsBuffer, 0));
     DescriptorHandle<StructuredBuffer<float4>> positionsHandle =
         DescriptorHandle<StructuredBuffer<float4>>(uint2(bindless.bufferShaderIndexBase + bindless.positionBuffer, 0));
+    DescriptorHandle<StructuredBuffer<SceneTransform>> transformsHandle =
+        DescriptorHandle<StructuredBuffer<SceneTransform>>(uint2(bindless.bufferShaderIndexBase + bindless.transformBuffer, 0));
 
     StructuredBuffer<BunnyWireframeParams> paramsBuffer = paramsHandle;
     StructuredBuffer<float4> positions = positionsHandle;
+    StructuredBuffer<SceneTransform> transforms = transformsHandle;
     BunnyWireframeParams params = paramsBuffer[0];
+    float4 localPosition = positions[vertexIndex];
+    SceneTransform transform = transforms[(uint)localPosition.w];
+    float3 worldPosition =
+        transform.world0.xyz * localPosition.x +
+        transform.world1.xyz * localPosition.y +
+        transform.world2.xyz * localPosition.z +
+        transform.world3.xyz;
 
     BunnyWireframeVertexOutput output;
-    output.position = projectPosition(positions[vertexIndex].xyz, params);
+    output.position = projectPosition(worldPosition, params);
 
     uint corner = vertexIndex % 3;
     output.barycentric = corner == 0 ? float3(1.0, 0.0, 0.0) :

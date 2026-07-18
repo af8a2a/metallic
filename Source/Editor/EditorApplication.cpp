@@ -10,6 +10,7 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
+#include "ImGuizmo.h"
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
@@ -31,6 +32,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <unordered_map>
@@ -203,7 +205,12 @@ std::string lowerPathExtension(const std::filesystem::path& path)
 bool isSceneFilePath(const std::filesystem::path& path)
 {
     const std::string extension = lowerPathExtension(path);
-    return extension == ".gltf" || extension == ".glb";
+    std::string filename = path.filename().string();
+    std::transform(filename.begin(), filename.end(), filename.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    return extension == ".gltf" || extension == ".glb" ||
+        filename.ends_with(".metallic_scene.json");
 }
 
 bool isRenderGraphFilePath(const std::filesystem::path& path)
@@ -218,6 +225,7 @@ bool isSceneAwareRenderPassType(const std::string& type)
         type == "GPUDrivenPreviewPass" ||
         type == "GPUDrivenStreamAssetPass" ||
         type == "SceneRayQueryVisualizationPass" ||
+        type == "SceneMaterialShaderObjectPass" ||
         type == "SceneMaterialVisualizationPass" ||
         type == "ScenePathTracePass" ||
         type == "SceneRtxdiPass";
@@ -379,7 +387,8 @@ std::filesystem::path openSceneFileDialog(
     openFilename.lStructSize = sizeof(openFilename);
     openFilename.hwndOwner = owner;
     openFilename.lpstrFilter =
-        L"3D Scene Files (*.gltf;*.glb)\0*.gltf;*.glb\0"
+        L"Metallic Scene Files (*.gltf;*.glb;*.metallic_scene.json)\0*.gltf;*.glb;*.metallic_scene.json\0"
+        L"Metallic Scene Document (*.metallic_scene.json)\0*.metallic_scene.json\0"
         L"glTF Text (*.gltf)\0*.gltf\0"
         L"glTF Binary (*.glb)\0*.glb\0"
         L"All Files (*.*)\0*.*\0";
@@ -840,6 +849,93 @@ CameraFrame cameraFrameFrom(const render::RenderGraphProperties& camera)
     frame.right = normalizedOr(cross(frame.forward, frame.up), perpendicularTo(frame.forward));
     frame.viewUp = normalizedOr(cross(frame.right, frame.forward), frame.up);
     return frame;
+}
+
+struct ViewportCameraMatrices {
+    CameraFrame frame;
+    float4x4 view = float4x4::Identity();
+    float4x4 projection = float4x4::Identity();
+    bool orthographic = false;
+};
+
+ViewportCameraMatrices viewportCameraMatrices(
+    const render::RenderGraphProperties& camera,
+    float viewportWidth,
+    float viewportHeight)
+{
+    constexpr float kPi = 3.14159265358979323846f;
+    ViewportCameraMatrices result;
+    result.frame = cameraFrameFrom(camera);
+    result.view.a00 = result.frame.right.x;
+    result.view.a01 = result.frame.right.y;
+    result.view.a02 = result.frame.right.z;
+    result.view.a03 = -dot(result.frame.right, result.frame.eye);
+    result.view.a10 = result.frame.viewUp.x;
+    result.view.a11 = result.frame.viewUp.y;
+    result.view.a12 = result.frame.viewUp.z;
+    result.view.a13 = -dot(result.frame.viewUp, result.frame.eye);
+    result.view.a20 = -result.frame.forward.x;
+    result.view.a21 = -result.frame.forward.y;
+    result.view.a22 = -result.frame.forward.z;
+    result.view.a23 = dot(result.frame.forward, result.frame.eye);
+
+    const float znear = std::max(propertyFloatOr(camera, "znear", 0.1f), 0.00001f);
+    const float zfar = std::max(propertyFloatOr(camera, "zfar", 10000.0f), znear + 0.00001f);
+    const bool reversedZ = camera.value("reversedZ", true);
+    const uint32_t projectionFlags = reversedZ ? PROJ_REVERSED_Z : 0;
+    const float aspect = std::max(viewportWidth / std::max(viewportHeight, 1.0f), 0.001f);
+    result.orthographic = camera.value("projection", std::string("perspective")) == "orthographic";
+    if (result.orthographic) {
+        const float height = cameraOrthoHeight(camera, result.frame.distance);
+        const float width = height * aspect;
+        result.projection.SetupByOrthoProjection(
+            -width * 0.5f,
+            width * 0.5f,
+            -height * 0.5f,
+            height * 0.5f,
+            znear,
+            zfar,
+            projectionFlags);
+    } else {
+        const float fov = std::clamp(propertyFloatOr(camera, "fovDegrees", 60.0f), 1.0f, 179.0f);
+        result.projection.SetupByHalfFovy(fov * (kPi / 360.0f), aspect, znear, zfar, projectionFlags);
+    }
+    return result;
+}
+
+float affineDeterminant(const float4x4& matrix)
+{
+    const float3 column0(matrix.a00, matrix.a10, matrix.a20);
+    const float3 column1(matrix.a01, matrix.a11, matrix.a21);
+    const float3 column2(matrix.a02, matrix.a12, matrix.a22);
+    return dot(column0, cross(column1, column2));
+}
+
+bool matrixIsFinite(const float4x4& matrix)
+{
+    for (size_t index = 0; index < 16; ++index) {
+        if (!std::isfinite(matrix.a[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool matrixHasShear(const float4x4& matrix)
+{
+    const float3 column0(matrix.a00, matrix.a10, matrix.a20);
+    const float3 column1(matrix.a01, matrix.a11, matrix.a21);
+    const float3 column2(matrix.a02, matrix.a12, matrix.a22);
+    const float length0 = length(column0);
+    const float length1 = length(column1);
+    const float length2 = length(column2);
+    if (std::min({length0, length1, length2}) <= 0.000001f) {
+        return false;
+    }
+    constexpr float kShearEpsilon = 0.0005f;
+    return std::abs(dot(column0 / length0, column1 / length1)) > kShearEpsilon ||
+        std::abs(dot(column0 / length0, column2 / length2)) > kShearEpsilon ||
+        std::abs(dot(column1 / length1, column2 / length2)) > kShearEpsilon;
 }
 
 CameraViewDimensions cameraViewDimensions(
@@ -1848,6 +1944,7 @@ bool EditorApplication::initialize()
     {
         StartupLogScope scope("Startup render graph and scene setup");
         graphExecutor_ = std::make_unique<render::RenderGraphExecutor>();
+        graphExecutor_->bindRuntimeScene(&scene_);
         sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
         if (!startupSampleId_.empty()) {
             loadBuiltInSample(startupSampleId_.c_str());
@@ -2185,12 +2282,12 @@ void EditorApplication::pollEvents()
         ImGui_ImplSDL3_ProcessEvent(&event);
 
         if (event.type == SDL_EVENT_QUIT) {
-            running_ = false;
+            requestPendingSceneAction(PendingSceneAction::Exit);
         }
 
         if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
             event.window.windowID == SDL_GetWindowID(window_)) {
-            running_ = false;
+            requestPendingSceneAction(PendingSceneAction::Exit);
         }
 
         if (event.type == SDL_EVENT_DROP_FILE && event.drop.data != nullptr) {
@@ -2248,6 +2345,7 @@ bool EditorApplication::renderFrame()
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
+        ImGuizmo::BeginFrame();
     }
 
     {
@@ -2351,10 +2449,26 @@ void EditorApplication::drawDockspace()
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
 
     if (!ImGui::GetIO().WantTextInput) {
-        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O)) {
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) {
+            saveScene();
+        } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z)) {
+            undoTransform();
+        } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y)) {
+            redoTransform();
+        } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O)) {
             chooseEnvironmentFile();
         } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
             chooseSceneFile();
+        } else if (!ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt) {
+            if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
+                gizmoOperation_ = GizmoOperation::Translate;
+            } else if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+                gizmoOperation_ = GizmoOperation::Rotate;
+            } else if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+                gizmoOperation_ = GizmoOperation::Scale;
+            } else if (ImGui::IsKeyPressed(ImGuiKey_X, false)) {
+                gizmoLocal_ = !gizmoLocal_;
+            }
         }
     }
 
@@ -2373,6 +2487,9 @@ void EditorApplication::drawDockspace()
             if (ImGui::MenuItem("Open Scene...", "Ctrl+O")) {
                 chooseSceneFile();
             }
+            if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, scene_.valid())) {
+                saveScene();
+            }
             if (ImGui::MenuItem("Load Environment...", "Ctrl+Shift+O")) {
                 chooseEnvironmentFile();
             }
@@ -2382,15 +2499,14 @@ void EditorApplication::drawDockspace()
                 }
                 for (const std::filesystem::path& recentPath : recentScenePaths_) {
                     if (ImGui::MenuItem(recentPath.string().c_str())) {
-                        copyToBuffer(recentPath.string(), sceneFilePath_, sizeof(sceneFilePath_));
-                        loadScene();
+                        loadDroppedScene(recentPath);
                     }
                 }
                 ImGui::EndMenu();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
-                running_ = false;
+                requestPendingSceneAction(PendingSceneAction::Exit);
             }
             ImGui::EndMenu();
         }
@@ -2415,12 +2531,28 @@ void EditorApplication::drawDockspace()
             ImGui::EndMenu();
         }
 
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Undo Transform", "Ctrl+Z", false, transformCommandCursor_ > 0)) {
+                undoTransform();
+            }
+            if (ImGui::MenuItem(
+                    "Redo Transform",
+                    "Ctrl+Y",
+                    false,
+                    transformCommandCursor_ < transformCommands_.size())) {
+                redoTransform();
+            }
+            ImGui::EndMenu();
+        }
+
         if (ImGui::Button("Open Render Graph Editor")) {
             renderGraphEditorOpen_ = true;
         }
 
         ImGui::EndMenuBar();
     }
+
+    drawUnsavedSceneModal();
 
     ImGui::End();
 }
@@ -2471,17 +2603,13 @@ void EditorApplication::drawScenePanel()
     ImGui::TextUnformatted("glTF Scene");
     if (scene_.valid()) {
         ImGui::TextWrapped("Path: %s", scene_.filename().string().c_str());
+        ImGui::Text("Document: %s%s", scene_.documentPath().string().c_str(), scene_.dirty() ? " *" : "");
     } else {
         ImGui::TextDisabled("No scene loaded.");
     }
 
     if (ImGui::Button("Clear")) {
-        clearSceneRtx();
-        scene_.clear();
-        sceneSelection_ = SceneSelection{};
-        historyResources_.invalidateAll();
-        viewportPreviewValid_ = false;
-        sceneStatus_ = "No scene loaded.";
+        requestPendingSceneAction(PendingSceneAction::Clear);
     }
     ImGui::SameLine();
     if (ImGui::Button("Build RTX AS")) {
@@ -2632,6 +2760,15 @@ void EditorApplication::drawSceneListSelectable(const char* label, int32_t index
             .type = selectionType,
             .index = index,
         };
+        if (selectionType == SceneSelectionType::Node) {
+            sceneSelection_.nodeIndex = index;
+        } else if (selectionType == SceneSelectionType::Camera &&
+            index >= 0 && static_cast<size_t>(index) < scene_.cameras().size()) {
+            sceneSelection_.nodeIndex = scene_.cameras()[static_cast<size_t>(index)].nodeIndex;
+        } else if (selectionType == SceneSelectionType::Light &&
+            index >= 0 && static_cast<size_t>(index) < scene_.lights().size()) {
+            sceneSelection_.nodeIndex = scene_.lights()[static_cast<size_t>(index)].nodeIndex;
+        }
     }
 }
 
@@ -2684,6 +2821,15 @@ void EditorApplication::drawSceneListTab()
                     .meshIndex = primitive.meshIndex,
                     .primitiveIndex = primitive.primitiveIndex,
                 };
+                const auto owner = std::find_if(
+                    scene_.renderNodes().begin(),
+                    scene_.renderNodes().end(),
+                    [index](const scene::RenderNode& renderNode) {
+                        return renderNode.renderPrimitiveIndex == static_cast<int32_t>(index);
+                    });
+                if (owner != scene_.renderNodes().end()) {
+                    sceneSelection_.nodeIndex = owner->nodeIndex;
+                }
             }
         }
         ImGui::EndChild();
@@ -2768,6 +2914,11 @@ void EditorApplication::drawInspectorPanel()
         ImGui::TextWrapped("Select an element in the Scene Browser to view its properties.");
         ImGui::End();
         return;
+    }
+
+    if (selectedNodeIndex() != scene::kInvalidSceneIndex) {
+        drawSelectedNodeTransformInspector();
+        ImGui::Separator();
     }
 
     switch (sceneSelection_.type) {
@@ -3443,9 +3594,504 @@ void EditorApplication::drawSceneNode(int32_t nodeIndex)
     }
 }
 
+int32_t EditorApplication::selectedNodeIndex() const
+{
+    int32_t nodeIndex = sceneSelection_.nodeIndex;
+    if (nodeIndex == scene::kInvalidSceneIndex && sceneSelection_.type == SceneSelectionType::Node) {
+        nodeIndex = sceneSelection_.index;
+    }
+    return nodeIndex >= 0 && static_cast<size_t>(nodeIndex) < scene_.nodes().size()
+        ? nodeIndex
+        : scene::kInvalidSceneIndex;
+}
+
+void EditorApplication::notifySceneTransformChanged()
+{
+    historyResources_.invalidateAll();
+    historyFrameIndex_ = 0;
+    if (graphExecutor_ == nullptr || !graphExecutor_->compiled()) {
+        viewportPreviewValid_ = false;
+    }
+    viewportPreviewNeedsRender_ = true;
+    sceneRtxStatus_ = "RTX AS transform data changed; runtime passes will synchronize on the next frame.";
+}
+
+bool EditorApplication::setSelectedNodeWorldMatrix(const float4x4& worldMatrix, std::string& reason)
+{
+    const int32_t nodeIndex = selectedNodeIndex();
+    if (nodeIndex == scene::kInvalidSceneIndex || !matrixIsFinite(worldMatrix)) {
+        reason = "Selected transform is invalid.";
+        return false;
+    }
+
+    const scene::SceneNode& node = scene_.nodes()[static_cast<size_t>(nodeIndex)];
+    float4x4 localMatrix = worldMatrix;
+    if (node.parent != scene::kInvalidSceneIndex) {
+        if (node.parent < 0 || static_cast<size_t>(node.parent) >= scene_.nodes().size()) {
+            reason = "The selected node has an invalid parent.";
+            return false;
+        }
+        const float4x4& parentWorld = scene_.nodes()[static_cast<size_t>(node.parent)].worldMatrix;
+        if (!std::isfinite(affineDeterminant(parentWorld)) ||
+            std::abs(affineDeterminant(parentWorld)) <= 0.0000001f) {
+            reason = "The parent world transform is singular and cannot be inverted.";
+            return false;
+        }
+        float4x4 inverseParent = parentWorld;
+        inverseParent.Invert();
+        localMatrix = inverseParent * worldMatrix;
+    }
+
+    if (!matrixIsFinite(localMatrix)) {
+        reason = "The local transform could not be updated.";
+        return false;
+    }
+    if (scene::matrixNearlyEqual(node.localMatrix, localMatrix)) {
+        return true;
+    }
+    if (!scene_.setNodeLocalMatrix(nodeIndex, localMatrix)) {
+        reason = "The local transform could not be updated.";
+        return false;
+    }
+    notifySceneTransformChanged();
+    return true;
+}
+
+void EditorApplication::pushTransformCommand(
+    int32_t nodeIndex,
+    const float4x4& before,
+    const float4x4& after)
+{
+    if (nodeIndex < 0 || scene::matrixNearlyEqual(before, after)) {
+        scene_.setDirty(savedTransformCommandCursor_ < 0 ||
+            static_cast<int64_t>(transformCommandCursor_) != savedTransformCommandCursor_);
+        return;
+    }
+    if (transformCommandCursor_ < transformCommands_.size()) {
+        transformCommands_.erase(
+            transformCommands_.begin() + static_cast<ptrdiff_t>(transformCommandCursor_),
+            transformCommands_.end());
+        if (savedTransformCommandCursor_ > static_cast<int64_t>(transformCommandCursor_)) {
+            savedTransformCommandCursor_ = -1;
+        }
+    }
+    transformCommands_.push_back(TransformCommand{
+        .nodeIndex = nodeIndex,
+        .before = before,
+        .after = after,
+    });
+    ++transformCommandCursor_;
+    constexpr size_t kTransformCommandCapacity = 256;
+    if (transformCommands_.size() > kTransformCommandCapacity) {
+        transformCommands_.erase(transformCommands_.begin());
+        --transformCommandCursor_;
+        if (savedTransformCommandCursor_ > 0) {
+            --savedTransformCommandCursor_;
+        } else if (savedTransformCommandCursor_ == 0) {
+            savedTransformCommandCursor_ = -1;
+        }
+    }
+    scene_.setDirty(savedTransformCommandCursor_ < 0 ||
+        static_cast<int64_t>(transformCommandCursor_) != savedTransformCommandCursor_);
+}
+
+void EditorApplication::undoTransform()
+{
+    if (transformCommandCursor_ == 0) {
+        return;
+    }
+    --transformCommandCursor_;
+    const TransformCommand& command = transformCommands_[transformCommandCursor_];
+    if (!scene_.setNodeLocalMatrix(command.nodeIndex, command.before)) {
+        ++transformCommandCursor_;
+        return;
+    }
+    scene_.setDirty(savedTransformCommandCursor_ < 0 ||
+        static_cast<int64_t>(transformCommandCursor_) != savedTransformCommandCursor_);
+    notifySceneTransformChanged();
+}
+
+void EditorApplication::redoTransform()
+{
+    if (transformCommandCursor_ >= transformCommands_.size()) {
+        return;
+    }
+    const TransformCommand& command = transformCommands_[transformCommandCursor_];
+    if (!scene_.setNodeLocalMatrix(command.nodeIndex, command.after)) {
+        return;
+    }
+    ++transformCommandCursor_;
+    scene_.setDirty(savedTransformCommandCursor_ < 0 ||
+        static_cast<int64_t>(transformCommandCursor_) != savedTransformCommandCursor_);
+    notifySceneTransformChanged();
+}
+
+void EditorApplication::resetTransformHistory()
+{
+    transformCommands_.clear();
+    transformCommandCursor_ = 0;
+    savedTransformCommandCursor_ = 0;
+    gizmoWasUsing_ = false;
+    inspectorTransformEditing_ = false;
+    scenePicker_.clear();
+    scene_.setDirty(false);
+}
+
+void EditorApplication::saveScene()
+{
+    if (!scene_.valid()) {
+        sceneStatus_ = "No scene is open.";
+        return;
+    }
+    std::string message;
+    if (!scene_.save(message)) {
+        sceneStatus_ = message.empty() ? "Failed to save scene document." : message;
+        return;
+    }
+    savedTransformCommandCursor_ = static_cast<int64_t>(transformCommandCursor_);
+    scene_.setDirty(false);
+    sceneStatus_ = "Saved scene overrides: " + scene_.documentPath().string();
+}
+
+void EditorApplication::requestPendingSceneAction(
+    PendingSceneAction action,
+    std::filesystem::path path,
+    std::string value)
+{
+    pendingSceneAction_ = action;
+    pendingScenePath_ = std::move(path);
+    pendingSceneValue_ = std::move(value);
+    if (!scene_.dirty()) {
+        executePendingSceneAction();
+    }
+}
+
+void EditorApplication::executePendingSceneAction()
+{
+    const PendingSceneAction action = pendingSceneAction_;
+    const std::filesystem::path path = std::move(pendingScenePath_);
+    const std::string value = std::move(pendingSceneValue_);
+    pendingSceneAction_ = PendingSceneAction::None;
+    pendingScenePath_.clear();
+    pendingSceneValue_.clear();
+
+    switch (action) {
+    case PendingSceneAction::Clear:
+        clearSceneRtx();
+        scene_.clear();
+        resetTransformHistory();
+        sceneSelection_ = SceneSelection{};
+        historyResources_.invalidateAll();
+        viewportPreviewValid_ = false;
+        sceneStatus_ = "No scene loaded.";
+        break;
+    case PendingSceneAction::Exit:
+        running_ = false;
+        break;
+    case PendingSceneAction::LoadScene:
+        copyToBuffer(path.string(), sceneFilePath_, sizeof(sceneFilePath_));
+        loadScene();
+        break;
+    case PendingSceneAction::LoadRenderGraph:
+        copyToBuffer(path.string(), graphFilePath_, sizeof(graphFilePath_));
+        loadRenderGraph();
+        break;
+    case PendingSceneAction::LoadSample:
+        loadBuiltInSample(value.c_str());
+        break;
+    case PendingSceneAction::None:
+        break;
+    }
+}
+
+void EditorApplication::drawUnsavedSceneModal()
+{
+    if (pendingSceneAction_ == PendingSceneAction::None || !scene_.dirty()) {
+        return;
+    }
+    ImGui::OpenPopup("Unsaved Scene Changes");
+    if (!ImGui::BeginPopupModal(
+            "Unsaved Scene Changes",
+            nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+    ImGui::TextWrapped(
+        "Save changes to %s before continuing?",
+        scene_.documentPath().string().c_str());
+    ImGui::Spacing();
+    if (ImGui::Button("Save", ImVec2(100.0f * mainScale_, 0.0f))) {
+        saveScene();
+        if (!scene_.dirty()) {
+            ImGui::CloseCurrentPopup();
+            executePendingSceneAction();
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Discard", ImVec2(100.0f * mainScale_, 0.0f))) {
+        scene_.setDirty(false);
+        ImGui::CloseCurrentPopup();
+        executePendingSceneAction();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100.0f * mainScale_, 0.0f))) {
+        pendingSceneAction_ = PendingSceneAction::None;
+        pendingScenePath_.clear();
+        pendingSceneValue_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void EditorApplication::drawSelectedNodeTransformInspector()
+{
+    const int32_t nodeIndex = selectedNodeIndex();
+    if (nodeIndex == scene::kInvalidSceneIndex) {
+        return;
+    }
+
+    const scene::SceneNode& node = scene_.nodes()[static_cast<size_t>(nodeIndex)];
+    const float4x4 originalLocal = node.localMatrix;
+    const bool singular = !matrixIsFinite(originalLocal) ||
+        std::abs(affineDeterminant(originalLocal)) <= 0.0000001f;
+    const bool shear = !singular && matrixHasShear(originalLocal);
+    float translation[3] = {};
+    float rotation[3] = {};
+    float scale[3] = {};
+    ImGuizmo::DecomposeMatrixToComponents(originalLocal.a, translation, rotation, scale);
+
+    ImGui::TextUnformatted("Local Transform");
+    if (singular) {
+        ImGui::TextDisabled("Read-only: the local matrix is singular.");
+    } else if (shear) {
+        ImGui::TextDisabled("Shear detected: only translation can be edited safely.");
+    }
+
+    const auto applyEdit = [&](bool changed, bool translationOnly) {
+        if (ImGui::IsItemActivated()) {
+            inspectorStartLocalMatrix_ = originalLocal;
+            inspectorTransformEditing_ = true;
+        }
+        if (changed) {
+            float4x4 edited = originalLocal;
+            if (translationOnly) {
+                edited.a03 = translation[0];
+                edited.a13 = translation[1];
+                edited.a23 = translation[2];
+            } else {
+                ImGuizmo::RecomposeMatrixFromComponents(translation, rotation, scale, edited.a);
+            }
+            if (scene_.setNodeLocalMatrix(nodeIndex, edited)) {
+                notifySceneTransformChanged();
+            }
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && inspectorTransformEditing_) {
+            const float4x4 after = scene_.nodes()[static_cast<size_t>(nodeIndex)].localMatrix;
+            pushTransformCommand(nodeIndex, inspectorStartLocalMatrix_, after);
+            inspectorTransformEditing_ = false;
+        }
+    };
+
+    ImGui::BeginDisabled(singular);
+    const bool translationChanged = ImGui::DragFloat3("Position", translation, 0.01f);
+    applyEdit(translationChanged, shear);
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(singular || shear);
+    const bool rotationChanged = ImGui::DragFloat3("Rotation", rotation, 0.25f);
+    applyEdit(rotationChanged, false);
+    const bool scaleChanged = ImGui::DragFloat3("Scale", scale, 0.01f);
+    applyEdit(scaleChanged, false);
+    ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("World Transform (read-only)");
+    for (uint32_t row = 0; row < 4; ++row) {
+        const float4 values = node.worldMatrix.Row(row);
+        ImGui::TextDisabled("% .5f  % .5f  % .5f  % .5f", values.x, values.y, values.z, values.w);
+    }
+}
+
+void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
+{
+    const int32_t nodeIndex = selectedNodeIndex();
+    render::RenderGraphNode* renderNode = activePreviewRenderGraphNode();
+    if (nodeIndex == scene::kInvalidSceneIndex || renderNode == nullptr) {
+        gizmoWasUsing_ = false;
+        return;
+    }
+
+    const scene::SceneNode& node = scene_.nodes()[static_cast<size_t>(nodeIndex)];
+    const bool singular = !matrixIsFinite(node.localMatrix) ||
+        std::abs(affineDeterminant(node.localMatrix)) <= 0.0000001f;
+    const bool shear = !singular && matrixHasShear(node.localMatrix);
+    const bool parentSingular = node.parent != scene::kInvalidSceneIndex &&
+        (node.parent < 0 || static_cast<size_t>(node.parent) >= scene_.nodes().size() ||
+            std::abs(affineDeterminant(scene_.nodes()[static_cast<size_t>(node.parent)].worldMatrix)) <=
+                0.0000001f);
+    const bool operationBlocked = singular || parentSingular ||
+        (shear && gizmoOperation_ != GizmoOperation::Translate);
+    if (operationBlocked) {
+        const char* reason = singular
+            ? "Gizmo disabled: singular local transform"
+            : (parentSingular
+                    ? "Gizmo disabled: singular parent transform"
+                    : "Rotate/scale disabled: shear detected");
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(min.x + 10.0f, max.y - 28.0f * mainScale_),
+            IM_COL32(255, 190, 90, 255),
+            reason);
+        gizmoWasUsing_ = false;
+        return;
+    }
+
+    render::RenderGraphProperties properties = effectiveNodeProperties(*renderNode);
+    ensureCameraProperties(properties, scene_.bounds());
+    const ViewportCameraMatrices matrices = viewportCameraMatrices(
+        properties["camera"],
+        max.x - min.x,
+        max.y - min.y);
+    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+    ImGuizmo::SetRect(min.x, min.y, max.x - min.x, max.y - min.y);
+    ImGuizmo::SetOrthographic(matrices.orthographic);
+    ImGuizmo::SetID(nodeIndex);
+
+    ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
+    if (gizmoOperation_ == GizmoOperation::Rotate) {
+        operation = ImGuizmo::ROTATE;
+    } else if (gizmoOperation_ == GizmoOperation::Scale) {
+        operation = ImGuizmo::SCALE;
+    }
+    const ImGuizmo::MODE mode = gizmoOperation_ == GizmoOperation::Scale || gizmoLocal_
+        ? ImGuizmo::LOCAL
+        : ImGuizmo::WORLD;
+    const bool useSnap = snapEnabled_ || ImGui::GetIO().KeyCtrl;
+    const float step = gizmoOperation_ == GizmoOperation::Translate
+        ? translateSnap_
+        : (gizmoOperation_ == GizmoOperation::Rotate ? rotateSnap_ : scaleSnap_);
+    const float snap[3] = {step, step, step};
+    float4x4 editedWorld = node.worldMatrix;
+    const float4x4 localBeforeManipulate = node.localMatrix;
+    const bool manipulated = ImGuizmo::Manipulate(
+        matrices.view.a,
+        matrices.projection.a,
+        operation,
+        mode,
+        editedWorld.a,
+        nullptr,
+        useSnap ? snap : nullptr);
+    const bool usingNow = ImGuizmo::IsUsing();
+    if (usingNow && !gizmoWasUsing_) {
+        gizmoStartLocalMatrix_ = localBeforeManipulate;
+    }
+    if (manipulated) {
+        std::string reason;
+        if (!setSelectedNodeWorldMatrix(editedWorld, reason) && !reason.empty()) {
+            sceneStatus_ = reason;
+        }
+    }
+    if (!usingNow && gizmoWasUsing_) {
+        const float4x4 after = scene_.nodes()[static_cast<size_t>(nodeIndex)].localMatrix;
+        pushTransformCommand(nodeIndex, gizmoStartLocalMatrix_, after);
+    }
+    gizmoWasUsing_ = usingNow;
+}
+
+void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& max)
+{
+    if (!scene_.valid() || !ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+        ImGui::GetIO().KeyAlt || ImGuizmo::IsOver() || ImGuizmo::IsUsing()) {
+        return;
+    }
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    if (mouse.x < min.x || mouse.x > max.x || mouse.y < min.y || mouse.y > max.y) {
+        return;
+    }
+    render::RenderGraphNode* renderNode = activePreviewRenderGraphNode();
+    if (renderNode == nullptr) {
+        return;
+    }
+    render::RenderGraphProperties properties = effectiveNodeProperties(*renderNode);
+    ensureCameraProperties(properties, scene_.bounds());
+    const render::RenderGraphProperties& camera = properties["camera"];
+    const ViewportCameraMatrices matrices = viewportCameraMatrices(
+        camera,
+        max.x - min.x,
+        max.y - min.y);
+    const float normalizedX = ((mouse.x - min.x) / std::max(max.x - min.x, 1.0f)) * 2.0f - 1.0f;
+    const float normalizedY = 1.0f - ((mouse.y - min.y) / std::max(max.y - min.y, 1.0f)) * 2.0f;
+    const float aspect = std::max((max.x - min.x) / std::max(max.y - min.y, 1.0f), 0.001f);
+    float3 rayOrigin = matrices.frame.eye;
+    float3 rayDirection = matrices.frame.forward;
+    if (matrices.orthographic) {
+        const float height = cameraOrthoHeight(camera, matrices.frame.distance);
+        rayOrigin += matrices.frame.right * (normalizedX * height * aspect * 0.5f) +
+            matrices.frame.viewUp * (normalizedY * height * 0.5f);
+    } else {
+        constexpr float kPi = 3.14159265358979323846f;
+        const float tangent = std::tan(
+            std::clamp(propertyFloatOr(camera, "fovDegrees", 60.0f), 1.0f, 179.0f) *
+            (kPi / 360.0f));
+        rayDirection = normalizedOr(
+            matrices.frame.forward +
+                matrices.frame.right * (normalizedX * tangent * aspect) +
+                matrices.frame.viewUp * (normalizedY * tangent),
+            matrices.frame.forward);
+    }
+
+    const scene::ScenePickResult pick = scenePicker_.pick(
+        scene_,
+        scene::ScenePickRay{
+            .origin = rayOrigin,
+            .direction = rayDirection,
+        });
+    if (!pick.hit()) {
+        sceneSelection_ = SceneSelection{};
+        return;
+    }
+    const int32_t nearestNodeIndex = pick.nodeIndex;
+    const scene::SceneNode& selected = scene_.nodes()[static_cast<size_t>(nearestNodeIndex)];
+    sceneSelection_ = SceneSelection{
+        .type = SceneSelectionType::Node,
+        .index = nearestNodeIndex,
+        .nodeIndex = nearestNodeIndex,
+        .meshIndex = selected.meshIndex,
+    };
+}
+
 void EditorApplication::drawViewportPanel()
 {
     ImGui::Begin("Viewport");
+
+    const auto drawToolButton = [this](const char* label, GizmoOperation operation) {
+        const bool selected = gizmoOperation_ == operation;
+        if (selected) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        }
+        if (ImGui::Button(label)) {
+            gizmoOperation_ = operation;
+        }
+        if (selected) {
+            ImGui::PopStyleColor();
+        }
+    };
+    drawToolButton("W Move", GizmoOperation::Translate);
+    ImGui::SameLine();
+    drawToolButton("E Rotate", GizmoOperation::Rotate);
+    ImGui::SameLine();
+    drawToolButton("R Scale", GizmoOperation::Scale);
+    ImGui::SameLine();
+    if (ImGui::Button(gizmoLocal_ ? "Local" : "World")) {
+        gizmoLocal_ = !gizmoLocal_;
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Snap", &snapEnabled_);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(72.0f * mainScale_);
+    float* snapValue = gizmoOperation_ == GizmoOperation::Translate
+        ? &translateSnap_
+        : (gizmoOperation_ == GizmoOperation::Rotate ? &rotateSnap_ : &scaleSnap_);
+    ImGui::DragFloat("##SnapStep", snapValue, 0.05f, 0.001f, 1000.0f, "%.3f");
 
     ImVec2 available = ImGui::GetContentRegionAvail();
     available.x = std::max(available.x, 1.0f);
@@ -3454,7 +4100,6 @@ void EditorApplication::drawViewportPanel()
 
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
-    handleViewportCameraControls(min, max);
     const float width = max.x - min.x;
     const float height = max.y - min.y;
     const uint32_t previewWidth = std::clamp(
@@ -3498,7 +4143,11 @@ void EditorApplication::drawViewportPanel()
     }
 
     drawList->AddRect(min, max, IM_COL32(58, 67, 80, 255));
+    drawViewportGizmo(min, max);
     drawList->PopClipRect();
+
+    selectViewportObject(min, max);
+    handleViewportCameraControls(min, max);
 
     ImGui::End();
 }
@@ -3514,9 +4163,11 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
     const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     const ImVec2 size(max.x - min.x, max.y - min.y);
     ImGuiIO& io = ImGui::GetIO();
+    const bool gizmoCapturingMouse = ImGuizmo::IsUsing() || ImGuizmo::IsOver();
+    const bool alt = ImGui::IsKeyDown(ImGuiKey_LeftAlt) || ImGui::IsKeyDown(ImGuiKey_RightAlt);
 
-    if (hovered) {
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (hovered && !gizmoCapturingMouse) {
+        if (alt && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             viewportCameraDragButton_ = ImGuiMouseButton_Left;
         } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             viewportCameraDragButton_ = ImGuiMouseButton_Right;
@@ -3535,12 +4186,11 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
     render::RenderGraphProperties& camera = properties["camera"];
     bool changed = false;
 
-    if (hovered && io.MouseWheel != 0.0f) {
+    if (hovered && !gizmoCapturingMouse && io.MouseWheel != 0.0f) {
         changed = dollyCamera(io.MouseWheel, camera) || changed;
     }
 
-    if (hovered && !io.WantTextInput) {
-        const bool alt = ImGui::IsKeyDown(ImGuiKey_LeftAlt) || ImGui::IsKeyDown(ImGuiKey_RightAlt);
+    if (viewportCameraDragButton_ == ImGuiMouseButton_Right && !io.WantTextInput) {
         if (!alt) {
             const bool shift = ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
             const bool ctrl = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
@@ -3589,7 +4239,17 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
                     changed = true;
                 }
             } else if (viewportCameraDragButton_ == ImGuiMouseButton_Right) {
-                changed = dragDollyCamera(delta.x, delta.y, size.x, size.y, camera) || changed;
+                float eye[3] = {};
+                float center[3] = {};
+                float up[3] = {};
+                readVec3Property(camera, "eye", eye);
+                readVec3Property(camera, "center", center);
+                readVec3Property(camera, "up", up);
+                if (orbitCamera(delta.x, delta.y, size.x, size.y, center, eye, up)) {
+                    storeVec3Property(camera, "center", center);
+                    storeVec3Property(camera, "up", up);
+                    changed = true;
+                }
             } else if (viewportCameraDragButton_ == ImGuiMouseButton_Middle) {
                 changed = panCamera(delta.x, delta.y, size.x, size.y, camera) || changed;
             }
@@ -3966,6 +4626,13 @@ bool EditorApplication::renderVulkanFrame()
 
 void EditorApplication::loadBuiltInSample(const char* sampleId)
 {
+    if (scene_.dirty()) {
+        requestPendingSceneAction(
+            PendingSceneAction::LoadSample,
+            {},
+            sampleId != nullptr ? sampleId : kDefaultRenderSampleId);
+        return;
+    }
     StartupLogScope scope(std::string("Load built-in sample '") + (sampleId != nullptr ? sampleId : "") + "'");
 
     render::RenderSampleLoadResult sample;
@@ -4028,6 +4695,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
 
     clearSceneRtx();
     scene_.clear();
+    resetTransformHistory();
     sceneSelection_ = SceneSelection{};
     sceneStatus_ = "StreamAsset-only sample: editor scene loading skipped for " + sample.desc.scenePath;
     spdlog::info(
@@ -4053,6 +4721,12 @@ void EditorApplication::saveRenderGraph()
 
 void EditorApplication::loadRenderGraph()
 {
+    if (scene_.dirty()) {
+        requestPendingSceneAction(
+            PendingSceneAction::LoadRenderGraph,
+            resolveGraphAssetPath(graphFilePath_));
+        return;
+    }
     StartupLogScope scope(std::string("Load render graph '") + graphFilePath_ + "'");
 
     render::RenderGraph loadedGraph;
@@ -4083,14 +4757,12 @@ void EditorApplication::loadRenderGraph()
 
 void EditorApplication::loadDroppedScene(const std::filesystem::path& path)
 {
-    copyToBuffer(path.string(), sceneFilePath_, sizeof(sceneFilePath_));
-    loadScene();
+    requestPendingSceneAction(PendingSceneAction::LoadScene, path);
 }
 
 void EditorApplication::loadDroppedRenderGraph(const std::filesystem::path& path)
 {
-    copyToBuffer(path.string(), graphFilePath_, sizeof(graphFilePath_));
-    loadRenderGraph();
+    requestPendingSceneAction(PendingSceneAction::LoadRenderGraph, path);
 }
 
 void EditorApplication::chooseSceneFile()
@@ -4350,10 +5022,15 @@ void EditorApplication::loadScene()
 {
     StartupLogScope scope(std::string("Editor scene load '") + sceneFilePath_ + "'");
 
+    const std::filesystem::path path = resolveSceneAssetPath(sceneFilePath_);
+    if (scene_.dirty()) {
+        requestPendingSceneAction(PendingSceneAction::LoadScene, path);
+        return;
+    }
+
     clearSceneRtx();
     historyResources_.invalidateAll();
 
-    const std::filesystem::path path = resolveSceneAssetPath(sceneFilePath_);
     if (path.empty()) {
         sceneStatus_ = "Scene path is empty.";
         return;
@@ -4361,23 +5038,31 @@ void EditorApplication::loadScene()
 
     if (!scene_.load(path)) {
         const scene::LoadResult& loadResult = scene_.lastLoadResult();
-        sceneStatus_ = loadResult.error.empty()
+        const std::string error = !loadResult.error.empty()
+            ? loadResult.error
+            : scene_.documentWarning();
+        sceneStatus_ = error.empty()
             ? "Failed to load scene."
-            : "Failed to load scene: " + loadResult.error;
+            : "Failed to load scene: " + error;
         spdlog::warn("[Startup] Scene load failed: {}", sceneStatus_);
         return;
     }
 
     sceneSelection_ = SceneSelection{};
-    copyToBuffer(displayPathForProperty(path), sceneFilePath_, sizeof(sceneFilePath_));
-    addRecentScenePath(path);
-    applyLoadedSceneToRenderGraph(path);
+    resetTransformHistory();
+    const std::filesystem::path sourcePath = scene_.sourcePath();
+    copyToBuffer(displayPathForProperty(sourcePath), sceneFilePath_, sizeof(sceneFilePath_));
+    addRecentScenePath(sourcePath);
+    applyLoadedSceneToRenderGraph(sourcePath);
     applyLoadedSceneCamera();
     buildSceneRtx();
 
     const scene::SceneStats& stats = scene_.stats();
-    sceneStatus_ = "Loaded " + path.string() + " (" + std::to_string(stats.renderNodeCount) +
+    sceneStatus_ = "Loaded " + sourcePath.string() + " (" + std::to_string(stats.renderNodeCount) +
         " render nodes, " + std::to_string(scene_.nodes().size()) + " scene nodes).";
+    if (!scene_.documentWarning().empty()) {
+        sceneStatus_ += " Warning: " + scene_.documentWarning();
+    }
     spdlog::info(
         "[Startup] Editor scene loaded nodes={} renderNodes={} primitives={} triangles={} images={} textures={}",
         scene_.nodes().size(),

@@ -26,13 +26,18 @@ public:
             log = "BunnyWireframePass requires shaderObject and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
-        if (program_ != nullptr) {
+        const scene::Scene* runtimeScene = runtimeSceneForPath(
+            context.runtimeScene,
+            scenePathFromProperties(properties()));
+        const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
+        if (program_ != nullptr && sceneRevision_ == runtimeRevision) {
             return {};
         }
 
         std::vector<BunnyWireframeGpuPosition> positions;
+        std::vector<SceneGpuTransform> transforms;
         BunnyWireframeGpuParams params;
-        if (!loadBunnyGeometry(properties(), positions, drawBounds_, log)) {
+        if (!loadBunnyGeometry(properties(), runtimeScene, positions, transforms, drawBounds_, log)) {
             return makeError(Error::Failure);
         }
         if (positions.size() > std::numeric_limits<uint32_t>::max()) {
@@ -53,6 +58,16 @@ public:
         }
         result = uploadStorageBuffer(
             *context.device,
+            transforms.data(),
+            static_cast<uint64_t>(transforms.size() * sizeof(SceneGpuTransform)),
+            transformBuffer_,
+            log,
+            "BunnyWireframePass transforms");
+        if (!result) {
+            return result;
+        }
+        result = uploadStorageBuffer(
+            *context.device,
             &params,
             sizeof(params),
             paramsBuffer_,
@@ -64,7 +79,7 @@ public:
 
         result = context.device->createBindlessHeap(
             BindlessHeapDesc{
-                .maxBuffers = 2,
+                .maxBuffers = 3,
             },
             bindlessHeap_);
         if (!result || bindlessHeap_ == nullptr) {
@@ -85,6 +100,12 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
+        result = bindlessHeap_->allocateBuffer(transformHandle_);
+        if (!result || !transformHandle_.valid()) {
+            log += resultMessage("allocateBuffer(BunnyWireframePass transforms)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
         result = bindlessHeap_->writeStorageBuffer(paramsHandle_, *paramsBuffer_);
         if (!result) {
             log += resultMessage("writeStorageBuffer(BunnyWireframePass params)", result);
@@ -94,6 +115,12 @@ public:
         result = bindlessHeap_->writeStorageBuffer(positionHandle_, *positionBuffer_);
         if (!result) {
             log += resultMessage("writeStorageBuffer(BunnyWireframePass positions)", result);
+            log += '\n';
+            return result;
+        }
+        result = bindlessHeap_->writeStorageBuffer(transformHandle_, *transformBuffer_);
+        if (!result) {
+            log += resultMessage("writeStorageBuffer(BunnyWireframePass transforms)", result);
             log += '\n';
             return result;
         }
@@ -134,11 +161,16 @@ public:
         }
 
         drawVertexCount_ = static_cast<uint32_t>(positions.size());
+        sceneRevision_ = runtimeRevision;
         return {};
     }
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        Result syncResult = syncRuntimeGeometry(context.runtimeScene());
+        if (!syncResult) {
+            return syncResult;
+        }
         TextureHandle color = context.outputTexture("color");
         TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
@@ -201,6 +233,7 @@ public:
         const BunnyWireframeUserPush push{
             .paramsBuffer = paramsHandle_.index,
             .positionBuffer = positionHandle_.index,
+            .transformBuffer = transformHandle_.index,
         };
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
         context.commandBuffer().draw(drawVertexCount_);
@@ -244,6 +277,30 @@ private:
         std::memcpy(mapped, data, static_cast<size_t>(byteSize));
         outBuffer->flush(0, byteSize);
         outBuffer->unmap();
+        return {};
+    }
+
+    Result syncRuntimeGeometry(const scene::Scene* runtimeScene)
+    {
+        runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
+        if (runtimeScene == nullptr || runtimeScene->transformRevision() == sceneRevision_) {
+            return {};
+        }
+        const std::vector<SceneGpuTransform> transforms = buildSceneGpuTransforms(*runtimeScene);
+        if (transformBuffer_ == nullptr ||
+            transforms.size() * sizeof(SceneGpuTransform) != transformBuffer_->desc().size) {
+            spdlog::warn("[BunnyWireframePass] Runtime scene transform layout changed");
+            return makeError(Error::Failure);
+        }
+        void* mapped = transformBuffer_->map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, transforms.data(), static_cast<size_t>(transformBuffer_->desc().size));
+        transformBuffer_->flush(0, transformBuffer_->desc().size);
+        transformBuffer_->unmap();
+        drawBounds_ = runtimeScene->bounds();
+        sceneRevision_ = runtimeScene->transformRevision();
         return {};
     }
 
@@ -359,19 +416,27 @@ private:
 
     static bool loadBunnyGeometry(
         const RenderGraphProperties& properties,
+        const scene::Scene* runtimeScene,
         std::vector<BunnyWireframeGpuPosition>& outPositions,
+        std::vector<SceneGpuTransform>& outTransforms,
         scene::Bounds& outBounds,
         std::string& log)
     {
-        scene::Scene bunnyScene;
         const std::filesystem::path path = scenePathFromProperties(properties);
-        if (!bunnyScene.load(path)) {
-            log = "BunnyWireframePass failed to load glTF: " + bunnyScene.lastLoadResult().error;
-            return false;
+        scene::Scene fallbackScene;
+        if (runtimeScene == nullptr) {
+            if (!fallbackScene.load(path)) {
+                log = "BunnyWireframePass failed to load glTF: " + fallbackScene.lastLoadResult().error;
+                return false;
+            }
+            runtimeScene = &fallbackScene;
         }
+        const scene::Scene& bunnyScene = *runtimeScene;
+        outTransforms = buildSceneGpuTransforms(bunnyScene);
 
         outBounds.reset();
-        for (const scene::RenderNode& renderNode : bunnyScene.renderNodes()) {
+        for (size_t renderNodeIndex = 0; renderNodeIndex < bunnyScene.renderNodes().size(); ++renderNodeIndex) {
+            const scene::RenderNode& renderNode = bunnyScene.renderNodes()[renderNodeIndex];
             if (renderNode.renderPrimitiveIndex < 0 ||
                 static_cast<size_t>(renderNode.renderPrimitiveIndex) >= bunnyScene.renderPrimitives().size()) {
                 continue;
@@ -387,13 +452,14 @@ private:
                 if (static_cast<size_t>(localIndex) >= primitive.positions.size()) {
                     return;
                 }
-                const float3 world = renderNode.worldMatrix * primitive.positions[static_cast<size_t>(localIndex)];
+                const float3 local = primitive.positions[static_cast<size_t>(localIndex)];
                 outPositions.push_back(BunnyWireframeGpuPosition{
-                    .x = world.x,
-                    .y = world.y,
-                    .z = world.z,
-                    .w = 1.0f,
+                    .x = local.x,
+                    .y = local.y,
+                    .z = local.z,
+                    .w = static_cast<float>(renderNodeIndex),
                 });
+                const float3 world = renderNode.worldMatrix * local;
                 outBounds.include(world);
             };
 
@@ -483,12 +549,15 @@ private:
     }
 
     std::unique_ptr<Buffer> positionBuffer_;
+    std::unique_ptr<Buffer> transformBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     BindlessHandle positionHandle_;
+    BindlessHandle transformHandle_;
     BindlessHandle paramsHandle_;
     std::unique_ptr<GraphicsShaderObjectProgram> program_;
     scene::Bounds drawBounds_;
+    uint64_t sceneRevision_ = 0;
     uint32_t drawVertexCount_ = 0;
 };
 

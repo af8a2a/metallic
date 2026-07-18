@@ -321,7 +321,10 @@ VkAccelerationStructureBuildGeometryInfoKHR makeBuildInfo(
     return VkAccelerationStructureBuildGeometryInfoKHR{
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .type = type,
-        .flags = kBuildFlags,
+        .flags = kBuildFlags |
+            (type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR
+                    ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR
+                    : 0),
         .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
         .geometryCount = 1,
         .pGeometries = &geometry,
@@ -868,6 +871,8 @@ struct SceneRtxBuilder::Impl {
     std::unique_ptr<Buffer> scratchBuffer;
     std::unique_ptr<Buffer> tlasStorage;
     std::vector<BuiltBlas> blases;
+    std::vector<int32_t> primitiveToBlas;
+    uint64_t sourceTransformRevision = 0;
 
     ~Impl()
     {
@@ -892,6 +897,8 @@ struct SceneRtxBuilder::Impl {
         tlasAddress = 0;
         stats = {};
         blases.clear();
+        primitiveToBlas.clear();
+        sourceTransformRevision = 0;
         tlasStorage.reset();
         scratchBuffer.reset();
         instanceBuffer.reset();
@@ -1176,7 +1183,9 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         nativeDeviceInfo.device,
         tlasBuildInfo,
         static_cast<uint32_t>(instances.size()));
-    maxScratchSize = std::max(maxScratchSize, tlasSizeInfo.buildScratchSize);
+    maxScratchSize = std::max(
+        maxScratchSize,
+        std::max(tlasSizeInfo.buildScratchSize, tlasSizeInfo.updateScratchSize));
 
     result = createAccelerationStructure(
         device,
@@ -1335,6 +1344,8 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         .accelerationStructureBytes = accelerationBytes,
         .scratchBytes = scratchSize,
     };
+    impl_->primitiveToBlas = std::move(primitiveToBlas);
+    impl_->sourceTransformRevision = scene.transformRevision();
 
     log = "Built Vulkan RTX acceleration structures: " +
         std::to_string(impl_->stats.blasCount) +
@@ -1349,6 +1360,138 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         impl_->stats.geometryBytes,
         impl_->stats.accelerationStructureBytes,
         impl_->stats.scratchBytes);
+    return {};
+}
+
+Result SceneRtxBuilder::updateInstanceTransforms(
+    Device& device,
+    Queue& queue,
+    const scene::Scene& scene,
+    std::string& log)
+{
+    log.clear();
+    if (!valid() || !scene.valid() || impl_->instanceBuffer == nullptr ||
+        impl_->scratchBuffer == nullptr || impl_->primitiveToBlas.empty()) {
+        log = "Scene RTX acceleration structures are not ready for an instance update.";
+        return makeError(Error::InvalidArgument);
+    }
+    if (impl_->sourceTransformRevision == scene.transformRevision()) {
+        return {};
+    }
+
+    const NativeDevice nativeDeviceInfo = nativeDevice(device);
+    const NativeQueue nativeQueueInfo = nativeQueue(queue);
+    if (nativeDeviceInfo.device == VK_NULL_HANDLE || nativeQueueInfo.queue == VK_NULL_HANDLE ||
+        nativeDeviceInfo.device != impl_->device) {
+        log = "Scene RTX instance update device or queue does not match the original build.";
+        return makeError(Error::InvalidArgument);
+    }
+
+    std::vector<VkAccelerationStructureInstanceKHR> instances;
+    instances.reserve(scene.renderNodes().size());
+    for (const scene::RenderNode& renderNode : scene.renderNodes()) {
+        if (!renderNode.visible || renderNode.renderPrimitiveIndex < 0 ||
+            static_cast<size_t>(renderNode.renderPrimitiveIndex) >= impl_->primitiveToBlas.size()) {
+            continue;
+        }
+        const int32_t blasIndex =
+            impl_->primitiveToBlas[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
+        if (blasIndex < 0 || static_cast<size_t>(blasIndex) >= impl_->blases.size()) {
+            continue;
+        }
+        VkAccelerationStructureInstanceKHR instance{};
+        instance.transform = toVkTransform(renderNode.worldMatrix);
+        instance.instanceCustomIndex = static_cast<uint32_t>(renderNode.renderPrimitiveIndex) & 0x00ffffffu;
+        instance.mask = 0xff;
+        instance.instanceShaderBindingTableRecordOffset = 0;
+        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        instance.accelerationStructureReference = impl_->blases[static_cast<size_t>(blasIndex)].address;
+        instances.push_back(instance);
+    }
+    if (instances.size() != impl_->stats.instanceCount) {
+        log = "Scene RTX instance layout changed; a full acceleration-structure rebuild is required.";
+        return makeError(Error::InvalidArgument);
+    }
+
+    Result result = uploadVector(*impl_->instanceBuffer, instances, "RTX instance transform update", log);
+    if (!result) {
+        return result;
+    }
+    const NativeBuffer nativeInstanceBuffer = nativeBuffer(*impl_->instanceBuffer);
+    const NativeBuffer nativeScratchBuffer = nativeBuffer(*impl_->scratchBuffer);
+    const VkDeviceSize alignment = scratchAlignment(nativeDeviceInfo.physicalDevice);
+    const VkDeviceAddress scratchAddress = alignUp(nativeScratchBuffer.address, alignment);
+    if (nativeInstanceBuffer.address == 0 || scratchAddress == 0) {
+        log = "Scene RTX instance update buffers do not have valid device addresses.";
+        return makeError(Error::Failure);
+    }
+
+    VkAccelerationStructureGeometryInstancesDataKHR instancesData{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+        .arrayOfPointers = VK_FALSE,
+        .data = VkDeviceOrHostAddressConstKHR{.deviceAddress = nativeInstanceBuffer.address},
+    };
+    VkAccelerationStructureGeometryKHR geometry{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+        .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR,
+    };
+    geometry.geometry.instances = instancesData;
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo = makeBuildInfo(
+        VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        geometry);
+    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+    buildInfo.srcAccelerationStructure = impl_->tlas;
+    buildInfo.dstAccelerationStructure = impl_->tlas;
+    buildInfo.scratchData.deviceAddress = scratchAddress;
+    VkAccelerationStructureBuildRangeInfoKHR range = makeBuildRange(
+        static_cast<uint32_t>(instances.size()));
+    const VkAccelerationStructureBuildRangeInfoKHR* ranges[] = {&range};
+
+    std::unique_ptr<CommandPool> commandPool;
+    result = device.createCommandPool(queue, commandPool);
+    if (!result) {
+        log = resultMessage("createCommandPool(RTX instance update)", result);
+        return result;
+    }
+    std::unique_ptr<CommandBuffer> commandBuffer;
+    result = commandPool->createCommandBuffer(commandBuffer);
+    if (!result) {
+        log = resultMessage("createCommandBuffer(RTX instance update)", result);
+        return result;
+    }
+    std::unique_ptr<Fence> fence;
+    result = device.createFence(false, fence);
+    if (!result) {
+        log = resultMessage("createFence(RTX instance update)", result);
+        return result;
+    }
+    result = commandBuffer->begin();
+    if (!result) {
+        return result;
+    }
+    const VkCommandBuffer vkCommandBuffer = nativeCommandBuffer(*commandBuffer);
+    vkCmdBuildAccelerationStructuresKHR(vkCommandBuffer, 1, &buildInfo, ranges);
+    accelerationStructureBarrier(vkCommandBuffer);
+    result = commandBuffer->end();
+    if (!result) {
+        return result;
+    }
+    CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+    result = queue.submit(QueueSubmitDesc{
+        .commandBuffers = commandBuffers,
+        .commandBufferCount = 1,
+        .signalFence = fence.get(),
+    });
+    if (!result) {
+        return result;
+    }
+    result = fence->wait();
+    if (!result) {
+        return result;
+    }
+
+    impl_->sourceTransformRevision = scene.transformRevision();
+    log = "Updated Vulkan RTX instance transforms and refit the TLAS.";
     return {};
 }
 
@@ -2770,7 +2913,6 @@ Result SceneClusterRtxBuilder::build(Device& device, Queue& queue, const scene::
             tlasSizeInfo.accelerationStructureSize,
         .scratchBytes = scratchSize,
     };
-
     log = "Built Vulkan cluster acceleration structures: " +
         std::to_string(impl_->stats.clasCount) +
         " CLAS, " +

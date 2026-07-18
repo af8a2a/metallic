@@ -26,14 +26,28 @@ public:
             log = "SceneMaterialShaderObjectPass requires shaderObject and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
-        if (defaultProgram_ != nullptr && !batches_.empty()) {
+        const scene::Scene* runtimeScene = runtimeSceneForPath(
+            context.runtimeScene,
+            scenePathFromProperties(properties()));
+        const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
+        if (defaultProgram_ != nullptr && !batches_.empty() && sceneRevision_ == runtimeRevision) {
             return {};
         }
 
         std::vector<MaterialShaderObjectGpuPosition> positions;
         std::vector<uint32_t> materialIndices;
         std::vector<MaterialShaderObjectGpuMaterial> materials;
-        if (!loadSceneGeometry(properties(), positions, materialIndices, materials, batches_, drawBounds_, log)) {
+        std::vector<SceneGpuTransform> transforms;
+        if (!loadSceneGeometry(
+                properties(),
+                runtimeScene,
+                positions,
+                materialIndices,
+                materials,
+                transforms,
+                batches_,
+                drawBounds_,
+                log)) {
             return makeError(Error::Failure);
         }
 
@@ -47,6 +61,16 @@ public:
             positionBuffer_,
             log,
             "SceneMaterialShaderObjectPass positions");
+        if (!result) {
+            return result;
+        }
+        result = uploadStorageBuffer(
+            *context.device,
+            transforms.data(),
+            static_cast<uint64_t>(transforms.size() * sizeof(SceneGpuTransform)),
+            transformBuffer_,
+            log,
+            "SceneMaterialShaderObjectPass transforms");
         if (!result) {
             return result;
         }
@@ -83,7 +107,7 @@ public:
 
         result = context.device->createBindlessHeap(
             BindlessHeapDesc{
-                .maxBuffers = 4,
+                .maxBuffers = 5,
             },
             bindlessHeap_);
         if (!result || bindlessHeap_ == nullptr) {
@@ -105,6 +129,10 @@ public:
             return result;
         }
         result = allocateAndWriteBuffer(*bindlessHeap_, *paramsBuffer_, paramsHandle_, log, "params");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *transformBuffer_, transformHandle_, log, "transforms");
         if (!result) {
             return result;
         }
@@ -146,11 +174,16 @@ public:
             return result;
         }
 
+        sceneRevision_ = runtimeRevision;
         return {};
     }
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        Result syncResult = syncRuntimeGeometry(context.runtimeScene());
+        if (!syncResult) {
+            return syncResult;
+        }
         TextureHandle color = context.outputTexture("color");
         TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
@@ -232,6 +265,7 @@ public:
                 .paramsBuffer = paramsHandle_.index,
                 .vertexOffset = batch.firstVertex,
                 .materialVariant = desiredProgram == alternateProgram_.get() ? 1u : 0u,
+                .transformBuffer = transformHandle_.index,
             };
             context.commandBuffer().pushBindlessData(&push, sizeof(push));
             context.commandBuffer().draw(batch.vertexCount);
@@ -242,6 +276,30 @@ public:
     }
 
 private:
+    Result syncRuntimeGeometry(const scene::Scene* runtimeScene)
+    {
+        runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
+        if (runtimeScene == nullptr || runtimeScene->transformRevision() == sceneRevision_) {
+            return {};
+        }
+        const std::vector<SceneGpuTransform> transforms = buildSceneGpuTransforms(*runtimeScene);
+        if (transformBuffer_ == nullptr ||
+            transforms.size() * sizeof(SceneGpuTransform) != transformBuffer_->desc().size) {
+            spdlog::warn("[SceneMaterialShaderObjectPass] Runtime scene transform layout changed");
+            return makeError(Error::Failure);
+        }
+        void* mapped = transformBuffer_->map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, transforms.data(), static_cast<size_t>(transformBuffer_->desc().size));
+        transformBuffer_->flush(0, transformBuffer_->desc().size);
+        transformBuffer_->unmap();
+        drawBounds_ = runtimeScene->bounds();
+        sceneRevision_ = runtimeScene->transformRevision();
+        return {};
+    }
+
     static Result uploadStorageBuffer(
         Device& device,
         const void* data,
@@ -352,6 +410,7 @@ private:
 
     static void appendTriangleVertex(
         const scene::RenderNode& renderNode,
+        uint32_t renderNodeIndex,
         const scene::RenderPrimitive& primitive,
         uint32_t localIndex,
         std::vector<MaterialShaderObjectGpuPosition>& outPositions,
@@ -360,31 +419,39 @@ private:
         if (static_cast<size_t>(localIndex) >= primitive.positions.size()) {
             return;
         }
-        const float3 world = renderNode.worldMatrix * primitive.positions[static_cast<size_t>(localIndex)];
+        const float3 local = primitive.positions[static_cast<size_t>(localIndex)];
         outPositions.push_back(MaterialShaderObjectGpuPosition{
-            .x = world.x,
-            .y = world.y,
-            .z = world.z,
-            .w = 1.0f,
+            .x = local.x,
+            .y = local.y,
+            .z = local.z,
+            .w = static_cast<float>(renderNodeIndex),
         });
+        const float3 world = renderNode.worldMatrix * local;
         outBounds.include(world);
     }
 
     static bool loadSceneGeometry(
         const RenderGraphProperties& properties,
+        const scene::Scene* runtimeScene,
         std::vector<MaterialShaderObjectGpuPosition>& outPositions,
         std::vector<uint32_t>& outMaterialIndices,
         std::vector<MaterialShaderObjectGpuMaterial>& outMaterials,
+        std::vector<SceneGpuTransform>& outTransforms,
         std::vector<MaterialShaderObjectBatch>& outBatches,
         scene::Bounds& outBounds,
         std::string& log)
     {
-        scene::Scene loadedScene;
         const std::filesystem::path path = scenePathFromProperties(properties);
-        if (!loadedScene.load(path)) {
-            log = "SceneMaterialShaderObjectPass failed to load glTF: " + loadedScene.lastLoadResult().error;
-            return false;
+        scene::Scene fallbackScene;
+        if (runtimeScene == nullptr) {
+            if (!fallbackScene.load(path)) {
+                log = "SceneMaterialShaderObjectPass failed to load glTF: " + fallbackScene.lastLoadResult().error;
+                return false;
+            }
+            runtimeScene = &fallbackScene;
         }
+        const scene::Scene& loadedScene = *runtimeScene;
+        outTransforms = buildSceneGpuTransforms(loadedScene);
 
         outMaterials.clear();
         if (loadedScene.materials().empty()) {
@@ -405,7 +472,8 @@ private:
 
         std::vector<std::vector<MaterialShaderObjectGpuPosition>> positionsByMaterial(outMaterials.size());
         outBounds.reset();
-        for (const scene::RenderNode& renderNode : loadedScene.renderNodes()) {
+        for (size_t renderNodeIndex = 0; renderNodeIndex < loadedScene.renderNodes().size(); ++renderNodeIndex) {
+            const scene::RenderNode& renderNode = loadedScene.renderNodes()[renderNodeIndex];
             if (!renderNode.visible ||
                 renderNode.renderPrimitiveIndex < 0 ||
                 static_cast<size_t>(renderNode.renderPrimitiveIndex) >= loadedScene.renderPrimitives().size()) {
@@ -426,13 +494,20 @@ private:
             if (!indices.empty()) {
                 const size_t triangleIndexCount = indices.size() - (indices.size() % 3);
                 for (size_t index = 0; index < triangleIndexCount; ++index) {
-                    appendTriangleVertex(renderNode, primitive, indices[index], materialPositions, outBounds);
+                    appendTriangleVertex(
+                        renderNode,
+                        static_cast<uint32_t>(renderNodeIndex),
+                        primitive,
+                        indices[index],
+                        materialPositions,
+                        outBounds);
                 }
             } else {
                 const size_t triangleVertexCount = primitive.positions.size() - (primitive.positions.size() % 3);
                 for (size_t index = 0; index < triangleVertexCount; ++index) {
                     appendTriangleVertex(
                         renderNode,
+                        static_cast<uint32_t>(renderNodeIndex),
                         primitive,
                         static_cast<uint32_t>(index),
                         materialPositions,
@@ -527,11 +602,13 @@ private:
     }
 
     std::unique_ptr<Buffer> positionBuffer_;
+    std::unique_ptr<Buffer> transformBuffer_;
     std::unique_ptr<Buffer> materialIndexBuffer_;
     std::unique_ptr<Buffer> materialBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     BindlessHandle positionHandle_;
+    BindlessHandle transformHandle_;
     BindlessHandle materialIndexHandle_;
     BindlessHandle materialHandle_;
     BindlessHandle paramsHandle_;
@@ -539,6 +616,7 @@ private:
     std::unique_ptr<GraphicsShaderObjectProgram> alternateProgram_;
     std::vector<MaterialShaderObjectBatch> batches_;
     scene::Bounds drawBounds_;
+    uint64_t sceneRevision_ = 0;
 };
 
 } // namespace

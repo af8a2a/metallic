@@ -50,7 +50,6 @@ public:
                 .moduleName = kRtxdiCompositeShaderModuleName,
                 .entryPointName = kRtxdiCompositeEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
-                .profileName = "glsl_460",
             },
             compileResult);
         if (!result) {

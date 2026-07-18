@@ -49,7 +49,11 @@ public:
             log = "GPUDrivenPreviewPass requires meshShader and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
-        if (pipeline_ != nullptr && drawTaskCount_ > 0) {
+        const scene::Scene* runtimeScene = runtimeSceneForPath(
+            context.runtimeScene,
+            scenePathFromProperties(properties()));
+        const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
+        if (pipeline_ != nullptr && drawTaskCount_ > 0 && sceneRevision_ == runtimeRevision) {
             return {};
         }
 
@@ -57,14 +61,17 @@ public:
         std::vector<GPUDrivenPreviewGpuMeshlet> meshlets;
         std::vector<uint32_t> meshletVertices;
         std::vector<uint32_t> meshletTriangles;
+        std::vector<SceneGpuTransform> transforms;
         std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges;
         GPUDrivenPreviewMeshletRange baseMeshletRange;
         if (!loadMeshletScene(
                 properties(),
+                runtimeScene,
                 positions,
                 meshlets,
                 meshletVertices,
                 meshletTriangles,
+                transforms,
                 drawBounds_,
                 baseMeshletRange,
                 lodLevelRanges,
@@ -93,6 +100,16 @@ public:
             positionBuffer_,
             log,
             "GPUDrivenPreviewPass positions");
+        if (!result) {
+            return result;
+        }
+        result = uploadStorageBuffer(
+            *context.device,
+            transforms.data(),
+            static_cast<uint64_t>(transforms.size() * sizeof(SceneGpuTransform)),
+            transformBuffer_,
+            log,
+            "GPUDrivenPreviewPass transforms");
         if (!result) {
             return result;
         }
@@ -139,7 +156,7 @@ public:
 
         result = context.device->createBindlessHeap(
             BindlessHeapDesc{
-                .maxBuffers = 5,
+                .maxBuffers = 6,
             },
             bindlessHeap_);
         if (!result || bindlessHeap_ == nullptr) {
@@ -168,6 +185,10 @@ public:
         if (!result) {
             return result;
         }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *transformBuffer_, transformHandle_, log, "transforms");
+        if (!result) {
+            return result;
+        }
 
         ShaderCompileResult meshCompile;
         const char* capabilities[] = {"spvMeshShadingEXT"};
@@ -176,7 +197,6 @@ public:
                 .moduleName = kGPUDrivenPreviewShaderModuleName,
                 .entryPointName = kGPUDrivenPreviewMeshEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
-                .profileName = "glsl_460",
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
             },
@@ -249,11 +269,16 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
 
+        sceneRevision_ = runtimeRevision;
         return {};
     }
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        Result syncResult = syncRuntimeGeometry(context.runtimeScene());
+        if (!syncResult) {
+            return syncResult;
+        }
         TextureHandle color = context.outputTexture("color");
         TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
@@ -312,6 +337,7 @@ public:
             .meshletVertexBuffer = meshletVertexHandle_.index,
             .meshletTriangleBuffer = meshletTriangleHandle_.index,
             .paramsBuffer = paramsHandle_.index,
+            .transformBuffer = transformHandle_.index,
         };
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
         context.commandBuffer().drawMeshTasks(drawTaskCount_);
@@ -320,6 +346,30 @@ public:
     }
 
 private:
+    Result syncRuntimeGeometry(const scene::Scene* runtimeScene)
+    {
+        runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
+        if (runtimeScene == nullptr || runtimeScene->transformRevision() == sceneRevision_) {
+            return {};
+        }
+        const std::vector<SceneGpuTransform> transforms = buildSceneGpuTransforms(*runtimeScene);
+        if (transformBuffer_ == nullptr ||
+            transforms.size() * sizeof(SceneGpuTransform) != transformBuffer_->desc().size) {
+            spdlog::warn("[GPUDrivenPreviewPass] Runtime scene transform layout changed");
+            return makeError(Error::Failure);
+        }
+        void* mapped = transformBuffer_->map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, transforms.data(), static_cast<size_t>(transformBuffer_->desc().size));
+        transformBuffer_->flush(0, transformBuffer_->desc().size);
+        transformBuffer_->unmap();
+        drawBounds_ = runtimeScene->bounds();
+        sceneRevision_ = runtimeScene->transformRevision();
+        return {};
+    }
+
     static Result uploadStorageBuffer(
         Device& device,
         const void* data,
@@ -553,10 +603,10 @@ private:
         uint32_t positionBase = 0;
         uint32_t primitiveIndex = 0;
         uint32_t materialIndex = 0;
+        uint32_t transformIndex = 0;
     };
 
     static bool appendPrimitivePositions(
-        const float4x4& worldMatrix,
         const scene::RenderPrimitive& primitive,
         std::vector<GPUDrivenPreviewGpuPosition>& outPositions,
         uint32_t& outPositionBase,
@@ -570,11 +620,10 @@ private:
         outPositionBase = static_cast<uint32_t>(outPositions.size());
         outPositions.reserve(outPositions.size() + primitive.positions.size());
         for (const float3& localPosition : primitive.positions) {
-            const float3 world = worldMatrix * localPosition;
             outPositions.push_back(GPUDrivenPreviewGpuPosition{
-                .x = world.x,
-                .y = world.y,
-                .z = world.z,
+                .x = localPosition.x,
+                .y = localPosition.y,
+                .z = localPosition.z,
                 .w = 1.0f,
             });
         }
@@ -591,6 +640,7 @@ private:
         uint32_t positionBase,
         uint32_t primitiveIndex,
         uint32_t materialIndex,
+        uint32_t transformIndex,
         std::vector<GPUDrivenPreviewGpuMeshlet>& outMeshlets,
         std::vector<uint32_t>& outMeshletVertices,
         std::vector<uint32_t>& outMeshletTriangles,
@@ -646,6 +696,7 @@ private:
                 .materialIndex = materialIndex,
                 .lodLevel = cluster.lodLevel,
                 .lodGroupIndex = static_cast<uint32_t>(std::max(cluster.lodGroupIndex, 0)),
+                .transformIndex = transformIndex,
             });
         }
 
@@ -654,21 +705,27 @@ private:
 
     static bool loadMeshletScene(
         const RenderGraphProperties& properties,
+        const scene::Scene* runtimeScene,
         std::vector<GPUDrivenPreviewGpuPosition>& outPositions,
         std::vector<GPUDrivenPreviewGpuMeshlet>& outMeshlets,
         std::vector<uint32_t>& outMeshletVertices,
         std::vector<uint32_t>& outMeshletTriangles,
+        std::vector<SceneGpuTransform>& outTransforms,
         scene::Bounds& outBounds,
         GPUDrivenPreviewMeshletRange& outBaseMeshletRange,
         std::vector<GPUDrivenPreviewMeshletRange>& outLodLevelRanges,
         std::string& log)
     {
-        scene::Scene loadedScene;
         const std::filesystem::path path = scenePathFromProperties(properties);
-        if (!loadedScene.load(path)) {
-            log = "GPUDrivenPreviewPass failed to load glTF: " + loadedScene.lastLoadResult().error;
-            return false;
+        scene::Scene fallbackScene;
+        if (runtimeScene == nullptr) {
+            if (!fallbackScene.load(path)) {
+                log = "GPUDrivenPreviewPass failed to load glTF: " + fallbackScene.lastLoadResult().error;
+                return false;
+            }
+            runtimeScene = &fallbackScene;
         }
+        const scene::Scene& loadedScene = *runtimeScene;
         if (!loadedScene.bounds().valid) {
             log = "GPUDrivenPreviewPass scene bounds are unavailable";
             return false;
@@ -681,11 +738,13 @@ private:
         outBaseMeshletRange = GPUDrivenPreviewMeshletRange{};
         outLodLevelRanges.clear();
         outBounds = loadedScene.bounds();
+        outTransforms = buildSceneGpuTransforms(loadedScene);
 
         std::vector<PrimitiveInstanceRef> primitiveInstances;
         primitiveInstances.reserve(loadedScene.renderNodes().size());
         size_t maxLodLevelCount = 0;
-        for (const scene::RenderNode& renderNode : loadedScene.renderNodes()) {
+        for (size_t renderNodeIndex = 0; renderNodeIndex < loadedScene.renderNodes().size(); ++renderNodeIndex) {
+            const scene::RenderNode& renderNode = loadedScene.renderNodes()[renderNodeIndex];
             if (!renderNode.visible ||
                 renderNode.renderPrimitiveIndex < 0 ||
                 static_cast<size_t>(renderNode.renderPrimitiveIndex) >= loadedScene.renderPrimitives().size()) {
@@ -701,7 +760,7 @@ private:
             }
 
             uint32_t positionBase = 0;
-            if (!appendPrimitivePositions(renderNode.worldMatrix, primitive, outPositions, positionBase, log)) {
+            if (!appendPrimitivePositions(primitive, outPositions, positionBase, log)) {
                 return false;
             }
             primitiveInstances.push_back(PrimitiveInstanceRef{
@@ -709,6 +768,7 @@ private:
                 .positionBase = positionBase,
                 .primitiveIndex = static_cast<uint32_t>(std::max(renderNode.renderPrimitiveIndex, 0)),
                 .materialIndex = static_cast<uint32_t>(std::max(renderNode.materialIndex, 0)),
+                .transformIndex = static_cast<uint32_t>(renderNodeIndex),
             });
             maxLodLevelCount = std::max(maxLodLevelCount, primitive.meshletLodLevels.size());
         }
@@ -726,6 +786,7 @@ private:
                     instance.positionBase,
                     instance.primitiveIndex,
                     instance.materialIndex,
+                    instance.transformIndex,
                     outMeshlets,
                     outMeshletVertices,
                     outMeshletTriangles,
@@ -756,6 +817,7 @@ private:
                         instance.positionBase,
                         instance.primitiveIndex,
                         instance.materialIndex,
+                        instance.transformIndex,
                         outMeshlets,
                         outMeshletVertices,
                         outMeshletTriangles,
@@ -883,16 +945,19 @@ private:
     std::unique_ptr<Buffer> meshletVertexBuffer_;
     std::unique_ptr<Buffer> meshletTriangleBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
+    std::unique_ptr<Buffer> transformBuffer_;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     BindlessHandle positionHandle_;
     BindlessHandle meshletHandle_;
     BindlessHandle meshletVertexHandle_;
     BindlessHandle meshletTriangleHandle_;
     BindlessHandle paramsHandle_;
+    BindlessHandle transformHandle_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
     scene::Bounds drawBounds_;
+    uint64_t sceneRevision_ = 0;
     GPUDrivenPreviewMeshletRange baseMeshletRange_;
     std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges_;
     uint32_t drawTaskCount_ = 0;
