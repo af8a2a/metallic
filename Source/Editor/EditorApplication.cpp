@@ -650,8 +650,29 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
     return render::RenderGraphProperties::object();
 }
 
-render::RenderGraphNode* findBunnyWireframeNode(render::RenderGraph& graph)
+render::RenderGraphNode* findSceneCameraNode(
+    render::RenderGraph& graph,
+    const render::RenderGraphNode* outputNode)
 {
+    std::vector<std::string> pendingNodes;
+    if (outputNode != nullptr) {
+        pendingNodes.push_back(outputNode->name);
+    }
+    for (size_t pendingIndex = 0; pendingIndex < pendingNodes.size(); ++pendingIndex) {
+        const std::string nodeName = pendingNodes[pendingIndex];
+        render::RenderGraphNode* node = graph.findNode(nodeName);
+        if (node != nullptr && isSceneAwareRenderPassType(node->type)) {
+            return node;
+        }
+        for (const render::RenderGraphEdge& edge : graph.edges()) {
+            if (edge.dstPass != nodeName ||
+                std::find(pendingNodes.begin(), pendingNodes.end(), edge.srcPass) != pendingNodes.end()) {
+                continue;
+            }
+            pendingNodes.push_back(edge.srcPass);
+        }
+    }
+
     for (const render::RenderGraphNode& node : graph.nodes()) {
         if (isSceneAwareRenderPassType(node.type)) {
             return graph.findNode(node.id);
@@ -1001,7 +1022,7 @@ bool orbitCamera(float deltaX, float deltaY, float width, float height, float ey
     const float yawS = std::sin(yaw);
     horizontal = horizontal * yawC + cross(cameraUp, horizontal) * yawS;
 
-    const float pitch = displacement.y * 2.0f * kPi;
+    const float pitch = -displacement.y * 2.0f * kPi;
     const float newElev = std::clamp(elev - pitch, kPolePad, kPi - kPolePad);
     centerToEye = (cameraUp * std::cos(newElev) + horizontal * std::sin(newElev)) * radius;
 
@@ -3185,6 +3206,11 @@ render::RenderGraphNode* EditorApplication::activePreviewRenderGraphNode()
     return findRenderGraphNodeForOutput(renderGraph_, fallbackOutput);
 }
 
+render::RenderGraphNode* EditorApplication::viewportCameraRenderGraphNode()
+{
+    return findSceneCameraNode(renderGraph_, activePreviewRenderGraphNode());
+}
+
 bool EditorApplication::drawRuntimeSettingsForNode(
     render::RenderGraphNode& node,
     bool hideCameraSettings,
@@ -3245,7 +3271,7 @@ bool EditorApplication::drawRuntimeSettingsForNode(
 
 void EditorApplication::drawCameraControls()
 {
-    render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
+    render::RenderGraphNode* node = viewportCameraRenderGraphNode();
     if (node == nullptr) {
         ImGui::TextDisabled("No render camera controls for this graph.");
         return;
@@ -3482,7 +3508,7 @@ void EditorApplication::applyRuntimeNodeProperties(
 }
 void EditorApplication::applyBunnyCameraProperties(render::RenderGraphProperties properties, const char* status)
 {
-    render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
+    render::RenderGraphNode* node = viewportCameraRenderGraphNode();
     if (node == nullptr) {
         return;
     }
@@ -3915,7 +3941,7 @@ void EditorApplication::drawSelectedNodeTransformInspector()
 void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
 {
     const int32_t nodeIndex = selectedNodeIndex();
-    render::RenderGraphNode* renderNode = activePreviewRenderGraphNode();
+    render::RenderGraphNode* renderNode = viewportCameraRenderGraphNode();
     if (nodeIndex == scene::kInvalidSceneIndex || renderNode == nullptr) {
         gizmoWasUsing_ = false;
         return;
@@ -3954,7 +3980,6 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(min.x, min.y, max.x - min.x, max.y - min.y);
     ImGuizmo::SetOrthographic(matrices.orthographic);
-    ImGuizmo::SetID(nodeIndex);
 
     ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
     if (gizmoOperation_ == GizmoOperation::Rotate) {
@@ -3972,6 +3997,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     const float snap[3] = {step, step, step};
     float4x4 editedWorld = node.worldMatrix;
     const float4x4 localBeforeManipulate = node.localMatrix;
+    ImGuizmo::PushID(nodeIndex);
     const bool manipulated = ImGuizmo::Manipulate(
         matrices.view.a,
         matrices.projection.a,
@@ -3980,6 +4006,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         editedWorld.a,
         nullptr,
         useSnap ? snap : nullptr);
+    ImGuizmo::PopID();
     const bool usingNow = ImGuizmo::IsUsing();
     if (usingNow && !gizmoWasUsing_) {
         gizmoStartLocalMatrix_ = localBeforeManipulate;
@@ -4007,7 +4034,7 @@ void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& ma
     if (mouse.x < min.x || mouse.x > max.x || mouse.y < min.y || mouse.y > max.y) {
         return;
     }
-    render::RenderGraphNode* renderNode = activePreviewRenderGraphNode();
+    render::RenderGraphNode* renderNode = viewportCameraRenderGraphNode();
     if (renderNode == nullptr) {
         return;
     }
@@ -4096,10 +4123,9 @@ void EditorApplication::drawViewportPanel()
     ImVec2 available = ImGui::GetContentRegionAvail();
     available.x = std::max(available.x, 1.0f);
     available.y = std::max(available.y, 1.0f);
-    ImGui::InvisibleButton("ViewportCanvas", available);
-
-    const ImVec2 min = ImGui::GetItemRectMin();
-    const ImVec2 max = ImGui::GetItemRectMax();
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const ImVec2 max(min.x + available.x, min.y + available.y);
+    ImGui::ItemSize(available);
     const float width = max.x - min.x;
     const float height = max.y - min.y;
     const uint32_t previewWidth = std::clamp(
@@ -4154,15 +4180,17 @@ void EditorApplication::drawViewportPanel()
 
 void EditorApplication::handleViewportCameraControls(const ImVec2& min, const ImVec2& max)
 {
-    render::RenderGraphNode* node = findBunnyWireframeNode(renderGraph_);
+    render::RenderGraphNode* node = viewportCameraRenderGraphNode();
     if (node == nullptr) {
         viewportCameraDragButton_ = kNoViewportCameraDragButton;
         return;
     }
 
-    const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     const ImVec2 size(max.x - min.x, max.y - min.y);
     ImGuiIO& io = ImGui::GetIO();
+    const bool hovered = io.MousePos.x >= min.x && io.MousePos.x <= max.x &&
+        io.MousePos.y >= min.y && io.MousePos.y <= max.y &&
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     const bool gizmoCapturingMouse = ImGuizmo::IsUsing() || ImGuizmo::IsOver();
     const bool alt = ImGui::IsKeyDown(ImGuiKey_LeftAlt) || ImGui::IsKeyDown(ImGuiKey_RightAlt);
 

@@ -50,6 +50,7 @@ private:
     void drawSceneListTab();
     void drawSceneListSelectable(const char* label, int32_t index, int32_t type);
     render::RenderGraphNode* activePreviewRenderGraphNode();
+    render::RenderGraphNode* viewportCameraRenderGraphNode();
     bool drawRuntimeSettingsForNode(
         render::RenderGraphNode& node,
         bool hideCameraSettings,
