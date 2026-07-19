@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "ml.h"
+#include "Runtime/Scene/SceneLoad.h"
 
 namespace metallic::scene {
 
@@ -155,6 +156,14 @@ struct RenderImage {
     std::string mimeType;
     int32_t bufferView = kInvalidSceneIndex;
     std::vector<uint8_t> encodedData;
+    struct Mip {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        std::vector<uint8_t> pixels;
+    };
+    std::vector<Mip> decodedMips;
+    std::string decodeWarning;
+    bool decodeAttempted = false;
 };
 
 struct RenderTexture {
@@ -243,8 +252,21 @@ struct RenderLight {
 class Scene {
 public:
     bool load(const std::filesystem::path& filename);
+    bool load(
+        const std::filesystem::path& filename,
+        const SceneLoadProgressCallback& progressCallback);
+    bool loadDeferredMeshlets(
+        const std::filesystem::path& filename,
+        const SceneLoadProgressCallback& progressCallback);
+    bool hasDeferredMeshlets() const { return deferredMeshletBuild_; }
+    bool buildDeferredMeshlet(size_t primitiveIndex);
+    bool finalizeDeferredMeshlets();
     void clear();
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
+    bool setImageDecodeResult(
+        size_t imageIndex,
+        std::vector<RenderImage::Mip> mips,
+        std::string warning);
 
     bool valid() const { return lastLoadResult_.success; }
     const LoadResult& lastLoadResult() const { return lastLoadResult_; }
@@ -267,6 +289,10 @@ public:
     uint64_t transformRevision() const { return transformRevision_; }
 
 private:
+    bool loadInternal(
+        const std::filesystem::path& filename,
+        const SceneLoadProgressCallback& progressCallback,
+        bool deferMeshletBuild);
     void clearParsedData();
     void refreshTransforms();
 
@@ -288,6 +314,7 @@ private:
     std::vector<RenderCamera> cameras_;
     std::vector<RenderLight> lights_;
     uint64_t transformRevision_ = 0;
+    bool deferredMeshletBuild_ = false;
 };
 
 bool matrixNearlyEqual(const float4x4& lhs, const float4x4& rhs, float epsilon = 0.000001f);

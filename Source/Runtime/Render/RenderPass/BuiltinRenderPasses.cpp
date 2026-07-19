@@ -60,6 +60,10 @@ void registerBuiltInRenderGraphPasses()
         "Render many-light direct illumination with ReSTIR DI reservoir resampling",
         []() { return builtin_pass::createSceneRtxdiPass(); });
     registerRenderGraphPassType(
+        "RtxdiConfidencePass",
+        "Convert RTXDI temporal lighting gradients into NRD confidence inputs",
+        []() { return builtin_pass::createRtxdiConfidencePass(); });
+    registerRenderGraphPassType(
         "RtxdiCompositePass",
         "Composite NRD-denoised RTXDI diffuse and specular lighting",
         []() { return builtin_pass::createRtxdiCompositePass(); });

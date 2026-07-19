@@ -21,8 +21,8 @@ public:
     ScenePathTraceResources(ScenePathTraceResources&&) noexcept;
     ScenePathTraceResources& operator=(ScenePathTraceResources&&) noexcept;
 
-    ScenePathTraceResources(const ScenePathTraceResources&) = delete;
-    ScenePathTraceResources& operator=(const ScenePathTraceResources&) = delete;
+    ScenePathTraceResources(const ScenePathTraceResources&) = default;
+    ScenePathTraceResources& operator=(const ScenePathTraceResources&) = default;
 
     Result prepare(
         Device& device,
@@ -30,9 +30,23 @@ public:
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
         std::string& log);
+    Result beginPrepareAsync(
+        Device& device,
+        Queue& graphicsQueue,
+        const RenderGraphProperties& properties,
+        const scene::Scene& runtimeScene,
+        std::string& log);
+    Result pumpPrepareAsync(
+        double budgetMilliseconds,
+        bool& complete,
+        scene::SceneLoadProgress& progress,
+        std::string& log);
+    bool preparing() const;
     Result syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log);
     Result uploadMaterialTextures(CommandBuffer& commandBuffer);
     Result uploadEnvironmentTexture(CommandBuffer& commandBuffer);
+    bool textureUploadsReady() const;
+    bool gpuWorkComplete();
 
     void clear();
     bool valid() const;
@@ -57,7 +71,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 } // namespace metallic::render

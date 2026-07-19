@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/SceneResourceManager.h"
 
 #include "openpbr_data_constants.h"
 
@@ -534,13 +535,36 @@ public:
             log = "ScenePathTracePass requires rayTracingAccelerationStructure and rayQuery capabilities";
             return makeError(Error::Unsupported);
         }
+        device_ = context.device;
+        graphicsQueue_ = context.graphicsQueue;
+        sceneResourceManager_ = context.sceneResourceManager;
 
-        Result result = sceneResources_.prepare(
-            *context.device,
-            *context.graphicsQueue,
-            properties(),
-            context.runtimeScene,
-            log);
+        Result result;
+        if (context.sceneResourceManager != nullptr) {
+            std::shared_ptr<SceneResourceSnapshot> snapshot;
+            result = context.sceneResourceManager->acquire(
+                *context.device,
+                *context.graphicsQueue,
+                properties(),
+                context.runtimeScene,
+                SceneResourceFeatureBits::Geometry |
+                    SceneResourceFeatureBits::Materials |
+                    SceneResourceFeatureBits::MaterialTextures |
+                    SceneResourceFeatureBits::StandardAccelerationStructure |
+                    SceneResourceFeatureBits::Environment,
+                snapshot,
+                log);
+            if (result && snapshot != nullptr) {
+                sceneResources_ = *snapshot->pathTraceResources;
+            }
+        } else {
+            result = sceneResources_.prepare(
+                *context.device,
+                *context.graphicsQueue,
+                properties(),
+                context.runtimeScene,
+                log);
+        }
         if (!result) {
             return result;
         }
@@ -734,10 +758,32 @@ public:
     Result execute(RenderGraphExecutionContext& context) override
     {
         std::string syncLog;
+        if (sceneResourceManager_ != nullptr && device_ != nullptr && graphicsQueue_ != nullptr) {
+            std::shared_ptr<SceneResourceSnapshot> snapshot;
+            Result acquireResult = sceneResourceManager_->acquire(
+                *device_,
+                *graphicsQueue_,
+                context.properties(),
+                context.runtimeScene(),
+                SceneResourceFeatureBits::Geometry |
+                    SceneResourceFeatureBits::Materials |
+                    SceneResourceFeatureBits::MaterialTextures |
+                    SceneResourceFeatureBits::StandardAccelerationStructure |
+                    SceneResourceFeatureBits::Environment,
+                snapshot,
+                syncLog);
+            if (!acquireResult || snapshot == nullptr) {
+                return acquireResult ? makeError(Error::Failure) : acquireResult;
+            }
+            sceneResources_ = *snapshot->pathTraceResources;
+        }
         Result syncResult = sceneResources_.syncRuntimeScene(context.runtimeScene(), syncLog);
         if (!syncResult) {
             spdlog::warn("[ScenePathTracePass] Runtime scene sync failed: {}", syncLog);
             return syncResult;
+        }
+        if (!sceneResources_.textureUploadsReady()) {
+            return {};
         }
         if (sceneResources_.revision() != sceneResourceRevision_) {
             sceneResourceRevision_ = sceneResources_.revision();
@@ -1302,6 +1348,9 @@ private:
     }
 
     ScenePathTraceResources sceneResources_;
+    SceneResourceManager* sceneResourceManager_ = nullptr;
+    Device* device_ = nullptr;
+    Queue* graphicsQueue_ = nullptr;
     OpenPBRLutResources openPBRLuts_;
     SceneRayQueryProgram rayQueryProgram_;
     std::string compiledShaderKey_;

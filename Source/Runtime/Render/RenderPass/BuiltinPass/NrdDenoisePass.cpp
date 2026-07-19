@@ -54,6 +54,16 @@ public:
             "Base color and metalness").storageReadWrite();
         baseColorMetalness.format = Format::Rgba8Unorm;
         baseColorMetalness.usage = TextureUsageBits::Sampled;
+        RenderGraphField& diffuseConfidence = reflection.addTextureInput(
+            "diffuseConfidence",
+            "Diffuse history confidence").storageReadWrite();
+        diffuseConfidence.format = Format::R8Unorm;
+        diffuseConfidence.usage = TextureUsageBits::Sampled;
+        RenderGraphField& specularConfidence = reflection.addTextureInput(
+            "specularConfidence",
+            "Specular history confidence").storageReadWrite();
+        specularConfidence.format = Format::R8Unorm;
+        specularConfidence.usage = TextureUsageBits::Sampled;
         reflection.addTextureOutput("denoisedDiffuse", "NRD denoised diffuse radiance and hit distance")
             .storageReadWrite()
             .format = Format::Rgba16Sfloat;
@@ -83,6 +93,7 @@ public:
             runtimeFloatSetting("relaxSpecularPrepassRadius", "RELAX Specular Prepass", 50.0f, 0.0f, 50.0f, true),
             runtimeFloatSetting("relaxMinHitDistanceWeight", "RELAX Min Hit Weight", 0.1f, 0.001f, 0.2f, true),
             runtimeBoolSetting("relaxAntiFirefly", "RELAX Anti-Firefly", true, true),
+            runtimeBoolSetting("relaxConfidenceInputs", "RELAX Confidence Inputs", true, true),
             runtimeActionCounterSetting("resetSerial", "Reset", true),
         };
         appendCameraRuntimeSettings(
@@ -125,6 +136,8 @@ public:
         TextureHandle motionVectors = context.inputTexture("motionVectors");
         TextureHandle viewZ = context.inputTexture("viewZ");
         TextureHandle baseColorMetalness = context.inputTexture("baseColorMetalness");
+        TextureHandle diffuseConfidence = context.inputTexture("diffuseConfidence");
+        TextureHandle specularConfidence = context.inputTexture("specularConfidence");
         TextureHandle denoisedDiffuse = context.outputTexture("denoisedDiffuse");
         TextureHandle denoisedSpecular = context.outputTexture("denoisedSpecular");
         TextureHandle validation = context.outputTexture("validation");
@@ -135,6 +148,8 @@ public:
             !validTexture(motionVectors) ||
             !validTexture(viewZ) ||
             !validTexture(baseColorMetalness) ||
+            !validTexture(diffuseConfidence) ||
+            !validTexture(specularConfidence) ||
             !validTexture(denoisedDiffuse) ||
             !validTexture(denoisedSpecular) ||
             !validTexture(validation) ||
@@ -170,6 +185,8 @@ public:
             motionVectors,
             viewZ,
             baseColorMetalness,
+            diffuseConfidence,
+            specularConfidence,
             denoisedDiffuse,
             denoisedSpecular,
             validation);
@@ -445,6 +462,8 @@ private:
         TextureHandle motionVectors,
         TextureHandle viewZ,
         TextureHandle baseColorMetalness,
+        TextureHandle diffuseConfidence,
+        TextureHandle specularConfidence,
         TextureHandle denoisedDiffuse,
         TextureHandle denoisedSpecular,
         TextureHandle validation)
@@ -469,6 +488,8 @@ private:
         put(nrd::ResourceType::IN_MV, motionVectors);
         put(nrd::ResourceType::IN_VIEWZ, viewZ);
         put(nrd::ResourceType::IN_BASECOLOR_METALNESS, baseColorMetalness);
+        put(nrd::ResourceType::IN_DIFF_CONFIDENCE, diffuseConfidence);
+        put(nrd::ResourceType::IN_SPEC_CONFIDENCE, specularConfidence);
         put(nrd::ResourceType::OUT_VALIDATION, validation);
         put(nrd::ResourceType::IN_SIGNAL, noisyDiffuse);
         put(nrd::ResourceType::OUT_SIGNAL, denoisedDiffuse);
@@ -500,6 +521,8 @@ private:
         nrd_->setUserPoolTexture(nrd::ResourceType::IN_MV, *motionVectors.texture(), *motionVectors.view());
         nrd_->setUserPoolTexture(nrd::ResourceType::IN_VIEWZ, *viewZ.texture(), *viewZ.view());
         nrd_->setUserPoolTexture(nrd::ResourceType::IN_BASECOLOR_METALNESS, *baseColorMetalness.texture(), *baseColorMetalness.view());
+        nrd_->setUserPoolTexture(nrd::ResourceType::IN_DIFF_CONFIDENCE, *diffuseConfidence.texture(), *diffuseConfidence.view());
+        nrd_->setUserPoolTexture(nrd::ResourceType::IN_SPEC_CONFIDENCE, *specularConfidence.texture(), *specularConfidence.view());
         nrd_->setUserPoolTexture(nrd::ResourceType::OUT_VALIDATION, *validation.texture(), *validation.view());
         return {};
     }
@@ -543,6 +566,9 @@ private:
             : nrd::AccumulationMode::CONTINUE;
         commonSettings.isMotionVectorInWorldSpace = boolProperty(&properties, "motionVectorInWorldSpace", false);
         commonSettings.isBaseColorMetalnessAvailable = true;
+        commonSettings.isHistoryConfidenceAvailable =
+            denoiserMode == kNrdDenoiserModeRelax &&
+            boolProperty(&properties, "relaxConfidenceInputs", true);
         commonSettings.enableValidation = boolProperty(&properties, "enableValidation", true);
 
         Result result = nrd_->setCommonSettings(commonSettings);

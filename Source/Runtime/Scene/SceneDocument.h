@@ -10,6 +10,12 @@ namespace metallic::scene {
 class SceneDocument : public Scene {
 public:
     bool load(const std::filesystem::path& path);
+    bool load(
+        const std::filesystem::path& path,
+        const SceneLoadProgressCallback& progressCallback);
+    bool loadDeferredMeshlets(
+        const std::filesystem::path& path,
+        const SceneLoadProgressCallback& progressCallback);
     void clear();
     bool save(std::string& message);
     bool revert(std::string& message);
@@ -24,6 +30,10 @@ public:
     static std::filesystem::path sidecarPathForSource(const std::filesystem::path& sourcePath);
 
 private:
+    bool loadInternal(
+        const std::filesystem::path& path,
+        const SceneLoadProgressCallback& progressCallback,
+        bool deferMeshletBuild);
     bool applySidecar(const std::filesystem::path& path);
 
     std::filesystem::path sourcePath_;

@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/SceneResourceManager.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -59,13 +60,35 @@ public:
             log = "SceneMaterialVisualizationPass requires rayTracingAccelerationStructure and rayQuery capabilities";
             return makeError(Error::Unsupported);
         }
+        device_ = context.device;
+        graphicsQueue_ = context.graphicsQueue;
+        sceneResourceManager_ = context.sceneResourceManager;
 
-        Result result = sceneResources_.prepare(
-            *context.device,
-            *context.graphicsQueue,
-            properties(),
-            context.runtimeScene,
-            log);
+        Result result;
+        if (context.sceneResourceManager != nullptr) {
+            std::shared_ptr<SceneResourceSnapshot> snapshot;
+            result = context.sceneResourceManager->acquire(
+                *context.device,
+                *context.graphicsQueue,
+                properties(),
+                context.runtimeScene,
+                SceneResourceFeatureBits::Geometry |
+                    SceneResourceFeatureBits::Materials |
+                    SceneResourceFeatureBits::MaterialTextures |
+                    SceneResourceFeatureBits::StandardAccelerationStructure,
+                snapshot,
+                log);
+            if (result && snapshot != nullptr) {
+                sceneResources_ = *snapshot->pathTraceResources;
+            }
+        } else {
+            result = sceneResources_.prepare(
+                *context.device,
+                *context.graphicsQueue,
+                properties(),
+                context.runtimeScene,
+                log);
+        }
         if (!result) {
             return result;
         }
@@ -163,10 +186,31 @@ public:
     Result execute(RenderGraphExecutionContext& context) override
     {
         std::string syncLog;
+        if (sceneResourceManager_ != nullptr && device_ != nullptr && graphicsQueue_ != nullptr) {
+            std::shared_ptr<SceneResourceSnapshot> snapshot;
+            Result acquireResult = sceneResourceManager_->acquire(
+                *device_,
+                *graphicsQueue_,
+                context.properties(),
+                context.runtimeScene(),
+                SceneResourceFeatureBits::Geometry |
+                    SceneResourceFeatureBits::Materials |
+                    SceneResourceFeatureBits::MaterialTextures |
+                    SceneResourceFeatureBits::StandardAccelerationStructure,
+                snapshot,
+                syncLog);
+            if (!acquireResult || snapshot == nullptr) {
+                return acquireResult ? makeError(Error::Failure) : acquireResult;
+            }
+            sceneResources_ = *snapshot->pathTraceResources;
+        }
         Result syncResult = sceneResources_.syncRuntimeScene(context.runtimeScene(), syncLog);
         if (!syncResult) {
             spdlog::warn("[SceneMaterialVisualizationPass] Runtime scene sync failed: {}", syncLog);
             return syncResult;
+        }
+        if (!sceneResources_.textureUploadsReady()) {
+            return {};
         }
         TextureHandle color = context.outputTexture("color");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
@@ -420,6 +464,9 @@ private:
     }
 
     ScenePathTraceResources sceneResources_;
+    SceneResourceManager* sceneResourceManager_ = nullptr;
+    Device* device_ = nullptr;
+    Queue* graphicsQueue_ = nullptr;
     SceneRayQueryProgram rayQueryProgram_;
 };
 

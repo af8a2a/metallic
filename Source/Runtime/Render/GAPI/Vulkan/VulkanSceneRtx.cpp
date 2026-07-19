@@ -220,6 +220,7 @@ Result createBuffer(
             .size = size,
             .usage = usage,
             .memoryLocation = location,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
         },
         outBuffer);
     if (!result) {
@@ -873,6 +874,10 @@ struct SceneRtxBuilder::Impl {
     std::vector<BuiltBlas> blases;
     std::vector<int32_t> primitiveToBlas;
     uint64_t sourceTransformRevision = 0;
+    std::unique_ptr<CommandPool> buildCommandPool;
+    std::unique_ptr<CommandBuffer> buildCommandBuffer;
+    std::unique_ptr<Fence> buildFence;
+    SceneRtxBuildState buildState = SceneRtxBuildState::Idle;
 
     ~Impl()
     {
@@ -881,6 +886,12 @@ struct SceneRtxBuilder::Impl {
 
     void destroy()
     {
+        if (buildFence != nullptr && !buildFence->isSignaled()) {
+            (void)buildFence->wait();
+        }
+        buildCommandBuffer.reset();
+        buildCommandPool.reset();
+        buildFence.reset();
         if (device != VK_NULL_HANDLE) {
             if (tlas != VK_NULL_HANDLE) {
                 vkDestroyAccelerationStructureKHR(device, tlas, nullptr);
@@ -899,6 +910,7 @@ struct SceneRtxBuilder::Impl {
         blases.clear();
         primitiveToBlas.clear();
         sourceTransformRevision = 0;
+        buildState = SceneRtxBuildState::Idle;
         tlasStorage.reset();
         scratchBuffer.reset();
         instanceBuffer.reset();
@@ -918,6 +930,25 @@ SceneRtxBuilder::SceneRtxBuilder(SceneRtxBuilder&&) noexcept = default;
 SceneRtxBuilder& SceneRtxBuilder::operator=(SceneRtxBuilder&&) noexcept = default;
 
 Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log)
+{
+    return buildInternal(device, queue, scene, true, log);
+}
+
+Result SceneRtxBuilder::beginBuild(
+    Device& device,
+    Queue& queue,
+    const scene::Scene& scene,
+    std::string& log)
+{
+    return buildInternal(device, queue, scene, false, log);
+}
+
+Result SceneRtxBuilder::buildInternal(
+    Device& device,
+    Queue& queue,
+    const scene::Scene& scene,
+    bool waitForCompletion,
+    std::string& log)
 {
     log.clear();
     RtxLogScope buildScope("SceneRtxBuilder build");
@@ -1315,14 +1346,24 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
     }
     spdlog::info("[RTX] Submitted RTX AS build in {:.2f} ms", rtxElapsedMilliseconds(submitBegin));
 
-    const auto waitBegin = RtxLogClock::now();
-    result = fence->wait();
-    if (!result) {
-        log = resultMessage("Fence::wait(RTX AS build)", result);
-        clear();
-        return result;
+    if (waitForCompletion) {
+        const auto waitBegin = RtxLogClock::now();
+        result = fence->wait();
+        if (!result) {
+            log = resultMessage("Fence::wait(RTX AS build)", result);
+            clear();
+            return result;
+        }
+        spdlog::info(
+            "[RTX] RTX AS build fence wait completed in {:.2f} ms",
+            rtxElapsedMilliseconds(waitBegin));
+        impl_->buildState = SceneRtxBuildState::Ready;
+    } else {
+        impl_->buildCommandPool = std::move(commandPool);
+        impl_->buildCommandBuffer = std::move(commandBuffer);
+        impl_->buildFence = std::move(fence);
+        impl_->buildState = SceneRtxBuildState::Building;
     }
-    spdlog::info("[RTX] RTX AS build fence wait completed in {:.2f} ms", rtxElapsedMilliseconds(waitBegin));
 
     uint64_t accelerationBytes = tlasSizeInfo.accelerationStructureSize;
     uint64_t triangleCount = 0;
@@ -1361,6 +1402,33 @@ Result SceneRtxBuilder::build(Device& device, Queue& queue, const scene::Scene& 
         impl_->stats.accelerationStructureBytes,
         impl_->stats.scratchBytes);
     return {};
+}
+
+bool SceneRtxBuilder::pollBuild()
+{
+    if (impl_ == nullptr || impl_->buildState != SceneRtxBuildState::Building) {
+        return valid();
+    }
+    if (impl_->buildFence == nullptr || !impl_->buildFence->isSignaled()) {
+        return false;
+    }
+    impl_->buildCommandBuffer.reset();
+    impl_->buildCommandPool.reset();
+    impl_->buildFence.reset();
+    impl_->buildState = SceneRtxBuildState::Ready;
+    return true;
+}
+
+SceneRtxBuildState SceneRtxBuilder::buildState() const
+{
+    if (impl_ == nullptr) {
+        return SceneRtxBuildState::Idle;
+    }
+    if (impl_->buildState == SceneRtxBuildState::Building &&
+        impl_->buildFence != nullptr && impl_->buildFence->isSignaled()) {
+        return SceneRtxBuildState::Ready;
+    }
+    return impl_->buildState;
 }
 
 Result SceneRtxBuilder::updateInstanceTransforms(
@@ -1504,7 +1572,10 @@ void SceneRtxBuilder::clear()
 
 bool SceneRtxBuilder::valid() const
 {
-    return impl_ != nullptr && impl_->tlas != VK_NULL_HANDLE && impl_->tlasAddress != 0;
+    return impl_ != nullptr &&
+        buildState() == SceneRtxBuildState::Ready &&
+        impl_->tlas != VK_NULL_HANDLE &&
+        impl_->tlasAddress != 0;
 }
 
 const SceneRtxStats& SceneRtxBuilder::stats() const

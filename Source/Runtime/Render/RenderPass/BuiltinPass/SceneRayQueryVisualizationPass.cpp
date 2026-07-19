@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/SceneResourceManager.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -53,24 +54,28 @@ public:
         }
         device_ = context.device;
         graphicsQueue_ = context.graphicsQueue;
+        sceneResourceManager_ = context.sceneResourceManager;
         const std::filesystem::path path = scenePathFromProperties(properties());
         const scene::Scene* runtimeScene = runtimeSceneForPath(context.runtimeScene, path);
+        if (runtimeScene == nullptr && context.sceneResourceManager != nullptr) {
+            Result sceneResult = context.sceneResourceManager->resolveScene(
+                properties(), context.runtimeScene, runtimeScene, log);
+            if (!sceneResult) {
+                return sceneResult;
+            }
+        }
         const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
         if (rayQueryProgram_.valid() &&
-            rtxBuilder_.valid() &&
+            sceneResources_.accelerationStructure().valid() &&
             sceneRevision_ == runtimeRevision &&
             clusterIdShaderEnabled_ == clusterIdSupported &&
             (!clusterIdSupported || clusterRtxBuilder_.valid())) {
             return {};
         }
 
-        scene::Scene fallbackScene;
         if (runtimeScene == nullptr) {
-            if (!fallbackScene.load(path)) {
-                log = "SceneRayQueryVisualizationPass failed to load glTF: " + fallbackScene.lastLoadResult().error;
-                return makeError(Error::Failure);
-            }
-            runtimeScene = &fallbackScene;
+            log = "SceneRayQueryVisualizationPass requires a runtime scene resource provider";
+            return makeError(Error::InvalidArgument);
         }
         const scene::Scene& loadedScene = *runtimeScene;
         if (!loadedScene.bounds().valid) {
@@ -79,14 +84,27 @@ public:
         }
 
         drawBounds_ = loadedScene.bounds();
-        rtxBuilder_.clear();
         clusterRtxBuilder_.clear();
         rayQueryProgram_.clear();
 
-        Result result = rtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
+        if (context.sceneResourceManager == nullptr) {
+            log = "SceneRayQueryVisualizationPass requires a scene resource provider";
+            return makeError(Error::InvalidArgument);
+        }
+        std::shared_ptr<SceneResourceSnapshot> snapshot;
+        Result result = context.sceneResourceManager->acquire(
+            *context.device,
+            *context.graphicsQueue,
+            properties(),
+            context.runtimeScene,
+            SceneResourceFeatureBits::Geometry |
+                SceneResourceFeatureBits::StandardAccelerationStructure,
+            snapshot,
+            log);
         if (!result) {
             return result;
         }
+        sceneResources_ = *snapshot->pathTraceResources;
         const std::string rtxBuildLog = log;
         if (clusterIdSupported) {
             result = clusterRtxBuilder_.build(*context.device, *context.graphicsQueue, loadedScene, log);
@@ -175,6 +193,23 @@ public:
 
     Result execute(RenderGraphExecutionContext& context) override
     {
+        if (sceneResourceManager_ != nullptr && device_ != nullptr && graphicsQueue_ != nullptr) {
+            std::shared_ptr<SceneResourceSnapshot> snapshot;
+            std::string log;
+            Result result = sceneResourceManager_->acquire(
+                *device_,
+                *graphicsQueue_,
+                context.properties(),
+                context.runtimeScene(),
+                SceneResourceFeatureBits::Geometry |
+                    SceneResourceFeatureBits::StandardAccelerationStructure,
+                snapshot,
+                log);
+            if (!result || snapshot == nullptr) {
+                return result ? makeError(Error::Failure) : result;
+            }
+            sceneResources_ = *snapshot->pathTraceResources;
+        }
         Result syncResult = syncRuntimeScene(context.runtimeScene());
         if (!syncResult) {
             return syncResult;
@@ -183,9 +218,11 @@ public:
         if (!color.valid() ||
             color.view() == nullptr ||
             !rayQueryProgram_.valid() ||
-            !rtxBuilder_.valid() ||
             !drawBounds_.valid) {
             return makeError(Error::InvalidArgument);
+        }
+        if (!sceneResources_.accelerationStructure().valid()) {
+            return {};
         }
 
         SceneRayQueryVisualizationPush push;
@@ -198,7 +235,9 @@ public:
         const SceneRayQueryDispatchBinding bindings[] = {
             SceneRayQueryDispatchBinding{
                 .binding = 0,
-                .accelerationStructure = useClusterId ? nullptr : &rtxBuilder_,
+                .accelerationStructure = useClusterId
+                    ? nullptr
+                    : &sceneResources_.accelerationStructure(),
                 .clusterAccelerationStructure = useClusterId ? &clusterRtxBuilder_ : nullptr,
             },
             SceneRayQueryDispatchBinding{
@@ -229,11 +268,7 @@ private:
             return makeError(Error::InvalidArgument);
         }
         std::string log;
-        Result result = rtxBuilder_.updateInstanceTransforms(
-            *device_,
-            *graphicsQueue_,
-            *runtimeScene,
-            log);
+        Result result = sceneResources_.syncRuntimeScene(runtimeScene, log);
         if (!result) {
             spdlog::warn("[SceneRayQueryVisualizationPass] Runtime TLAS refit failed: {}", log);
             return result;
@@ -412,13 +447,14 @@ private:
         outPush.height = height;
     }
 
-    SceneRtxBuilder rtxBuilder_;
+    ScenePathTraceResources sceneResources_;
     SceneClusterRtxBuilder clusterRtxBuilder_;
     SceneRayQueryProgram rayQueryProgram_;
     scene::Bounds drawBounds_;
     uint64_t sceneRevision_ = 0;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
+    SceneResourceManager* sceneResourceManager_ = nullptr;
     bool clusterIdShaderEnabled_ = false;
 };
 

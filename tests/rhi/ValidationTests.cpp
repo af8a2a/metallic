@@ -1,5 +1,6 @@
 #include "RhiTest.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
 namespace metallic::tests {
 namespace {
@@ -20,6 +21,15 @@ public:
         }
         if (graphicsQueue->type() != render::QueueType::Graphics) {
             return RhiTestResult::fail("graphics queue reported the wrong type");
+        }
+        render::Queue* copyQueue = context.device.getQueue(render::QueueType::Copy);
+        if (context.device.capabilities().independentCopyQueue != (copyQueue != nullptr)) {
+            return RhiTestResult::fail(
+                "independentCopyQueue capability does not match QueueType::Copy availability");
+        }
+        if (copyQueue != nullptr &&
+            (copyQueue == graphicsQueue || copyQueue->type() != render::QueueType::Copy)) {
+            return RhiTestResult::fail("copy queue did not expose an independent Copy wrapper");
         }
 
         render::Result result = context.device.waitIdle();
@@ -88,6 +98,49 @@ public:
                 std::string("Device::waitIdle(optional features) returned ") + toString(result));
         }
 
+        return RhiTestResult::pass();
+    }
+};
+
+class ScenePathNormalizationTest : public RhiTest {
+public:
+    ScenePathNormalizationTest()
+    {
+        type = RhiTestType::Validation;
+        name = "scene_path_normalization";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::error_code error;
+        const std::filesystem::path originalWorkingDirectory =
+            std::filesystem::current_path(error);
+        if (error) {
+            return RhiTestResult::fail("failed to query the current working directory");
+        }
+
+        const std::filesystem::path alternateWorkingDirectory =
+            std::filesystem::temp_directory_path(error);
+        if (error) {
+            return RhiTestResult::fail("failed to query the temporary directory");
+        }
+        std::filesystem::current_path(alternateWorkingDirectory, error);
+        if (error) {
+            return RhiTestResult::fail("failed to switch to the RHI test output directory");
+        }
+        const std::filesystem::path normalizedRelative =
+            render::normalizedScenePath("Asset/meet_mat.glb");
+        std::filesystem::current_path(originalWorkingDirectory, error);
+        if (error) {
+            return RhiTestResult::fail("failed to restore the current working directory");
+        }
+
+        const std::filesystem::path normalizedAbsolute = render::normalizedScenePath(
+            std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/meet_mat.glb");
+        if (normalizedRelative != normalizedAbsolute) {
+            return RhiTestResult::fail(
+                "relative scene paths were resolved against the process working directory");
+        }
         return RhiTestResult::pass();
     }
 };
@@ -235,6 +288,7 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(ValidateDeviceTest);
+METALLIC_REGISTER_RHI_TEST(ScenePathNormalizationTest);
 METALLIC_REGISTER_RHI_TEST(OptionalFeatureSoftRequestTest);
 METALLIC_REGISTER_RHI_TEST(ClusterAccelerationStructureSupportTest);
 METALLIC_REGISTER_RHI_TEST(PartitionedAccelerationStructureSupportTest);

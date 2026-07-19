@@ -6,6 +6,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Scene/SceneDocument.h"
+#include "Runtime/Scene/SceneLoader.h"
 #include "Runtime/Scene/ScenePicker.h"
 
 #include <cstdint>
@@ -90,6 +91,10 @@ private:
     void chooseSceneFile();
     void chooseEnvironmentFile();
     void loadScene();
+    void pollSceneLoad();
+    void cancelSceneLoad();
+    void commitLoadedScene(std::unique_ptr<scene::SceneDocument> loadedScene);
+    bool waitForPendingSceneLoad(uint32_t timeoutMilliseconds);
     void loadDroppedScene(const std::filesystem::path& path);
     void loadDroppedRenderGraph(const std::filesystem::path& path);
     void addRecentScenePath(const std::filesystem::path& path);
@@ -148,6 +153,7 @@ private:
         LoadScene,
         LoadRenderGraph,
         LoadSample,
+        CommitLoadedScene,
     };
 
     struct TransformCommand {
@@ -174,6 +180,13 @@ private:
     NvmlMonitor nvmlMonitor_;
     render::RenderGraph renderGraph_;
     scene::SceneDocument scene_;
+    scene::SceneLoader sceneLoader_;
+    scene::SceneLoadHandle pendingSceneLoad_;
+    std::unique_ptr<scene::SceneDocument> readySceneLoad_;
+    scene::SceneLoadProgress pendingSceneResourceProgress_;
+    bool pendingSceneResourcePreparation_ = false;
+    std::filesystem::path pendingSceneLoadPath_;
+    uint64_t sceneLoadGeneration_ = 0;
     scene::ScenePicker scenePicker_;
     VkSampler viewportSampler_ = VK_NULL_HANDLE;
     VkDescriptorSet viewportDescriptor_ = VK_NULL_HANDLE;

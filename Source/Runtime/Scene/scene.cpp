@@ -39,6 +39,10 @@
 #include <unordered_set>
 #include <utility>
 
+#if defined(_WIN32)
+#include <Windows.h>
+#endif
+
 namespace metallic::scene {
 namespace {
 
@@ -75,6 +79,27 @@ double sceneLoadElapsedMilliseconds(SceneLoadClock::time_point begin)
 void logSceneLoadStep(std::string_view label, SceneLoadClock::time_point begin)
 {
     spdlog::info("[SceneLoad] Step {} completed in {:.2f} ms", label, sceneLoadElapsedMilliseconds(begin));
+}
+
+bool reportSceneLoadProgress(
+    const SceneLoadProgressCallback& callback,
+    SceneLoadPhase phase,
+    float fraction,
+    uint64_t completedUnits,
+    uint64_t totalUnits,
+    std::string currentItem = {})
+{
+    if (!callback) {
+        return true;
+    }
+    return callback(SceneLoadProgress{
+        .status = SceneLoadStatus::Running,
+        .phase = phase,
+        .fraction = clampSceneLoadFraction(fraction),
+        .completedUnits = completedUnits,
+        .totalUnits = totalUnits,
+        .currentItem = std::move(currentItem),
+    });
 }
 
 class SceneLoadScope {
@@ -2031,25 +2056,68 @@ bool saveMeshletCache(
         return false;
     }
 
-    std::ofstream stream(cachePath, std::ios::binary | std::ios::trunc);
-    if (!stream) {
-        reason = "cache file cannot be opened for writing";
-        return false;
-    }
+    std::filesystem::path temporaryPath = cachePath;
+    temporaryPath += ".tmp.";
+    temporaryPath += std::to_string(
+        static_cast<uint64_t>(SceneLoadClock::now().time_since_epoch().count()));
+    temporaryPath += ".";
+    temporaryPath += std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
 
-    const MeshletCacheHeader header = makeMeshletCacheHeader(sourcePath, primitives);
-    if (!writePod(stream, header)) {
-        reason = "cache header write failed";
-        return false;
-    }
+    const auto removeTemporary = [&temporaryPath]() {
+        std::error_code removeError;
+        (void)std::filesystem::remove(temporaryPath, removeError);
+    };
 
-    for (const RenderPrimitive& primitive : primitives) {
-        if (!writeMeshletCachePrimitive(stream, primitive)) {
-            reason = "primitive payload write failed";
+    {
+        std::ofstream stream(temporaryPath, std::ios::binary | std::ios::trunc);
+        if (!stream) {
+            reason = "temporary cache file cannot be opened for writing";
+            return false;
+        }
+
+        const MeshletCacheHeader header = makeMeshletCacheHeader(sourcePath, primitives);
+        if (!writePod(stream, header)) {
+            reason = "cache header write failed";
+            stream.close();
+            removeTemporary();
+            return false;
+        }
+
+        for (const RenderPrimitive& primitive : primitives) {
+            if (!writeMeshletCachePrimitive(stream, primitive)) {
+                reason = "primitive payload write failed";
+                stream.close();
+                removeTemporary();
+                return false;
+            }
+        }
+        stream.flush();
+        if (!stream) {
+            reason = "cache flush failed";
+            stream.close();
+            removeTemporary();
             return false;
         }
     }
 
+#if defined(_WIN32)
+    if (!MoveFileExW(
+            temporaryPath.c_str(),
+            cachePath.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        reason = "cache atomic replace failed with Win32 error " + std::to_string(GetLastError());
+        removeTemporary();
+        return false;
+    }
+#else
+    std::error_code renameError;
+    std::filesystem::rename(temporaryPath, cachePath, renameError);
+    if (renameError) {
+        reason = "cache atomic replace failed: " + renameError.message();
+        removeTemporary();
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -2286,10 +2354,48 @@ void Scene::clear()
 
 bool Scene::load(const std::filesystem::path& filename)
 {
+    return loadInternal(filename, {}, false);
+}
+
+bool Scene::load(
+    const std::filesystem::path& filename,
+    const SceneLoadProgressCallback& progressCallback)
+{
+    return loadInternal(filename, progressCallback, false);
+}
+
+bool Scene::loadDeferredMeshlets(
+    const std::filesystem::path& filename,
+    const SceneLoadProgressCallback& progressCallback)
+{
+    return loadInternal(filename, progressCallback, true);
+}
+
+bool Scene::loadInternal(
+    const std::filesystem::path& filename,
+    const SceneLoadProgressCallback& progressCallback,
+    bool deferMeshletBuild)
+{
     clearParsedData();
     lastLoadResult_ = {};
     lastLoadResult_.filename = filename;
     SceneLoadScope loadScope(filename);
+
+    const auto cancelLoad = [this]() {
+        lastLoadResult_.error = "Scene load cancelled.";
+        clearParsedData();
+        return false;
+    };
+
+    if (!reportSceneLoadProgress(
+            progressCallback,
+            SceneLoadPhase::Parsing,
+            0.01f,
+            0,
+            1,
+            filename.string())) {
+        return cancelLoad();
+    }
 
     std::error_code existsError;
     if (!std::filesystem::exists(filename, existsError)) {
@@ -2307,6 +2413,15 @@ bool Scene::load(const std::filesystem::path& filename)
         return false;
     }
     logSceneLoadStep("tinygltf file import", tinyGltfBegin);
+    if (!reportSceneLoadProgress(
+            progressCallback,
+            SceneLoadPhase::Parsing,
+            0.10f,
+            1,
+            1,
+            filename.filename().string())) {
+        return cancelLoad();
+    }
 
     if (!validateRequiredExtensions(model, lastLoadResult_)) {
         return false;
@@ -2465,6 +2580,14 @@ bool Scene::load(const std::filesystem::path& filename)
         materials_.push_back(material);
     }
     logSceneLoadStep("asset metadata, images, textures, and materials", metadataBegin);
+    if (!reportSceneLoadProgress(
+            progressCallback,
+            SceneLoadPhase::Images,
+            0.15f,
+            model.images.size(),
+            model.images.size())) {
+        return cancelLoad();
+    }
 
     const auto sceneGraphBegin = SceneLoadClock::now();
     nodes_.resize(model.nodes.size());
@@ -2501,7 +2624,12 @@ bool Scene::load(const std::filesystem::path& filename)
     }
 
     std::function<void(int32_t, const float4x4&, bool)> traverseNode;
+    uint64_t traversedNodeCount = 0;
+    bool traversalCancelled = false;
     traverseNode = [&](int32_t nodeIndex, const float4x4& parentWorld, bool parentVisible) {
+        if (traversalCancelled) {
+            return;
+        }
         SceneNode& node = nodes_[static_cast<size_t>(nodeIndex)];
         node.worldMatrix = parentWorld * node.localMatrix;
         node.visible = parentVisible && node.visible;
@@ -2617,10 +2745,24 @@ bool Scene::load(const std::filesystem::path& filename)
                 traverseNode(child, node.worldMatrix, node.visible);
             }
         }
+
+        ++traversedNodeCount;
+        const float fraction = 0.15f + 0.10f * static_cast<float>(traversedNodeCount) /
+            static_cast<float>(std::max<size_t>(nodes_.size(), 1u));
+        traversalCancelled = !reportSceneLoadProgress(
+            progressCallback,
+            SceneLoadPhase::Geometry,
+            fraction,
+            traversedNodeCount,
+            nodes_.size(),
+            node.name);
     };
 
     for (const int32_t rootNodeIndex : rootNodeIndices_) {
         traverseNode(rootNodeIndex, float4x4::Identity(), true);
+        if (traversalCancelled) {
+            return cancelLoad();
+        }
     }
     logSceneLoadStep("scene graph traversal and primitive extraction", sceneGraphBegin);
 
@@ -2630,11 +2772,21 @@ bool Scene::load(const std::filesystem::path& filename)
     std::string meshletCacheReason;
     const auto meshletCacheBegin = SceneLoadClock::now();
     if (loadMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
+        deferredMeshletBuild_ = false;
         lastLoadResult_.meshletCacheLoaded = true;
         spdlog::info(
             "[SceneLoad] Meshlet cache loaded '{}' in {:.2f} ms",
             meshletCachePath.string(),
             sceneLoadElapsedMilliseconds(meshletCacheBegin));
+        if (!reportSceneLoadProgress(
+                progressCallback,
+                SceneLoadPhase::Geometry,
+                0.40f,
+                renderPrimitives_.size(),
+                renderPrimitives_.size(),
+                "Meshlet cache")) {
+            return cancelLoad();
+        }
     } else {
         spdlog::info(
             "[SceneLoad] Meshlet cache unavailable '{}' reason='{}' checked in {:.2f} ms",
@@ -2645,24 +2797,52 @@ bool Scene::load(const std::filesystem::path& filename)
             appendWarning(lastLoadResult_.warning, "Meshlet cache ignored: " + meshletCacheReason);
         }
 
-        const auto meshletBuildBegin = SceneLoadClock::now();
-        buildMeshletsForPrimitives(renderPrimitives_);
-        logSceneLoadStep("meshlet build", meshletBuildBegin);
+        if (deferMeshletBuild) {
+            deferredMeshletBuild_ = true;
+            if (!reportSceneLoadProgress(
+                    progressCallback,
+                    SceneLoadPhase::Geometry,
+                    0.25f,
+                    0,
+                    renderPrimitives_.size(),
+                    "Meshlets queued")) {
+                return cancelLoad();
+            }
+        } else {
+            const auto meshletBuildBegin = SceneLoadClock::now();
+            for (size_t primitiveIndex = 0; primitiveIndex < renderPrimitives_.size(); ++primitiveIndex) {
+                RenderPrimitive& primitive = renderPrimitives_[primitiveIndex];
+                buildMeshletClusters(primitive);
+                buildMeshletLods(primitive);
+                const float fraction = 0.25f + 0.15f * static_cast<float>(primitiveIndex + 1u) /
+                    static_cast<float>(std::max<size_t>(renderPrimitives_.size(), 1u));
+                if (!reportSceneLoadProgress(
+                        progressCallback,
+                        SceneLoadPhase::Geometry,
+                        fraction,
+                        primitiveIndex + 1u,
+                        renderPrimitives_.size(),
+                        primitive.name)) {
+                    return cancelLoad();
+                }
+            }
+            logSceneLoadStep("meshlet build", meshletBuildBegin);
 
-        const auto meshletSaveBegin = SceneLoadClock::now();
-        if (saveMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
-            lastLoadResult_.meshletCacheSaved = true;
-            spdlog::info(
-                "[SceneLoad] Meshlet cache saved '{}' in {:.2f} ms",
-                meshletCachePath.string(),
-                sceneLoadElapsedMilliseconds(meshletSaveBegin));
-        } else if (!meshletCacheReason.empty()) {
-            spdlog::warn(
-                "[SceneLoad] Meshlet cache save failed '{}' reason='{}' in {:.2f} ms",
-                meshletCachePath.string(),
-                meshletCacheReason,
-                sceneLoadElapsedMilliseconds(meshletSaveBegin));
-            appendWarning(lastLoadResult_.warning, "Meshlet cache save failed: " + meshletCacheReason);
+            const auto meshletSaveBegin = SceneLoadClock::now();
+            if (saveMeshletCache(meshletCachePath, filename_, renderPrimitives_, meshletCacheReason)) {
+                lastLoadResult_.meshletCacheSaved = true;
+                spdlog::info(
+                    "[SceneLoad] Meshlet cache saved '{}' in {:.2f} ms",
+                    meshletCachePath.string(),
+                    sceneLoadElapsedMilliseconds(meshletSaveBegin));
+            } else if (!meshletCacheReason.empty()) {
+                spdlog::warn(
+                    "[SceneLoad] Meshlet cache save failed '{}' reason='{}' in {:.2f} ms",
+                    meshletCachePath.string(),
+                    meshletCacheReason,
+                    sceneLoadElapsedMilliseconds(meshletSaveBegin));
+                appendWarning(lastLoadResult_.warning, "Meshlet cache save failed: " + meshletCacheReason);
+            }
         }
     }
     accumulateMeshletStats(renderPrimitives_, stats_);
@@ -2673,6 +2853,15 @@ bool Scene::load(const std::filesystem::path& filename)
 
     stats_.primitiveCount = renderPrimitives_.size();
     stats_.renderNodeCount = renderNodes_.size();
+    if (!reportSceneLoadProgress(
+            progressCallback,
+            SceneLoadPhase::Finalizing,
+            0.97f,
+            1,
+            1,
+            sceneName_)) {
+        return cancelLoad();
+    }
     lastLoadResult_.success = true;
     loadScope.markSuccess();
     spdlog::info(
@@ -2688,6 +2877,59 @@ bool Scene::load(const std::filesystem::path& filename)
         stats_.imageCount,
         lastLoadResult_.meshletCacheLoaded,
         lastLoadResult_.meshletCacheSaved);
+    (void)reportSceneLoadProgress(
+        progressCallback,
+        SceneLoadPhase::Completed,
+        1.0f,
+        1,
+        1,
+        sceneName_);
+    return true;
+}
+
+bool Scene::buildDeferredMeshlet(size_t primitiveIndex)
+{
+    if (!deferredMeshletBuild_ || primitiveIndex >= renderPrimitives_.size()) {
+        return false;
+    }
+    RenderPrimitive& primitive = renderPrimitives_[primitiveIndex];
+    buildMeshletClusters(primitive);
+    buildMeshletLods(primitive);
+    return true;
+}
+
+bool Scene::finalizeDeferredMeshlets()
+{
+    if (!deferredMeshletBuild_) {
+        return true;
+    }
+
+    stats_.meshletClusterCount = 0;
+    stats_.meshletVertexReferenceCount = 0;
+    stats_.meshletTriangleIndexCount = 0;
+    stats_.meshletLodLevelCount = 0;
+    stats_.meshletLodGroupCount = 0;
+    stats_.meshletLodClusterCount = 0;
+    stats_.meshletLodVertexReferenceCount = 0;
+    stats_.meshletLodTriangleIndexCount = 0;
+    accumulateMeshletStats(renderPrimitives_, stats_);
+
+    std::string cacheReason;
+    const auto saveBegin = SceneLoadClock::now();
+    if (saveMeshletCache(
+            lastLoadResult_.meshletCachePath,
+            filename_,
+            renderPrimitives_,
+            cacheReason)) {
+        lastLoadResult_.meshletCacheSaved = true;
+        spdlog::info(
+            "[SceneLoad] Meshlet cache saved '{}' in {:.2f} ms",
+            lastLoadResult_.meshletCachePath.string(),
+            sceneLoadElapsedMilliseconds(saveBegin));
+    } else if (!cacheReason.empty()) {
+        appendWarning(lastLoadResult_.warning, "Meshlet cache save failed: " + cacheReason);
+    }
+    deferredMeshletBuild_ = false;
     return true;
 }
 
@@ -2713,6 +2955,21 @@ bool Scene::setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix)
         transformRevision_ = 1;
     }
     refreshTransforms();
+    return true;
+}
+
+bool Scene::setImageDecodeResult(
+    size_t imageIndex,
+    std::vector<RenderImage::Mip> mips,
+    std::string warning)
+{
+    if (imageIndex >= images_.size()) {
+        return false;
+    }
+    RenderImage& image = images_[imageIndex];
+    image.decodedMips = std::move(mips);
+    image.decodeWarning = std::move(warning);
+    image.decodeAttempted = true;
     return true;
 }
 
@@ -2807,6 +3064,7 @@ void Scene::clearParsedData()
     cameras_.clear();
     lights_.clear();
     transformRevision_ = 0;
+    deferredMeshletBuild_ = false;
 }
 
 bool matrixNearlyEqual(const float4x4& lhs, const float4x4& rhs, float epsilon)

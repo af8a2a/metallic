@@ -49,6 +49,36 @@
             "dst": "Relax.noisyDiffuse",
             "id": 11,
             "src": "Rtxdi.noisyDiffuse"
+        },
+        {
+            "dst": "Confidence.noisyDiffuse",
+            "id": 12,
+            "src": "Rtxdi.noisyDiffuse"
+        },
+        {
+            "dst": "Confidence.noisySpecular",
+            "id": 13,
+            "src": "Rtxdi.noisySpecular"
+        },
+        {
+            "dst": "Confidence.baseColorMetalness",
+            "id": 14,
+            "src": "Rtxdi.baseColorMetalness"
+        },
+        {
+            "dst": "Confidence.motionVectors",
+            "id": 15,
+            "src": "Rtxdi.motionVectors"
+        },
+        {
+            "dst": "Relax.diffuseConfidence",
+            "id": 16,
+            "src": "Confidence.diffuseConfidence"
+        },
+        {
+            "dst": "Relax.specularConfidence",
+            "id": 17,
+            "src": "Confidence.specularConfidence"
         }
     ],
     "name": "RtxdiRelaxSample",
@@ -150,6 +180,7 @@
                 "motionVectorScaleY": 1.0,
                 "relaxAntiFirefly": true,
                 "relaxAtrousIterations": 5,
+                "relaxConfidenceInputs": true,
                 "relaxDiffusePrepassRadius": 30.0,
                 "relaxFastHistoryLength": 6,
                 "relaxHistoryLength": 30,
@@ -158,6 +189,22 @@
                 "resetSerial": 0
             },
             "type": "NrdDenoisePass"
+        },
+        {
+            "id": 4,
+            "name": "Confidence",
+            "position": {
+                "x": 182.0,
+                "y": -198.0
+            },
+            "properties": {
+                "confidenceHistoryLength": 0.75,
+                "gradientFilterPasses": 4,
+                "gradientLogDarknessBias": -12.0,
+                "gradientSensitivity": 8.0,
+                "resetSerial": 0
+            },
+            "type": "RtxdiConfidencePass"
         },
         {
             "id": 3,
@@ -174,7 +221,9 @@
     ],
     "outputs": [
         "Composite.color",
-        "Rtxdi.color"
+        "Rtxdi.color",
+        "Confidence.diffuseConfidence",
+        "Confidence.specularConfidence"
     ],
     "version": 1
 }

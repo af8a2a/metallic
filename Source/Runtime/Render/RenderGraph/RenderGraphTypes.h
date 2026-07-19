@@ -20,6 +20,7 @@ class Scene;
 namespace metallic::render {
 
 class HistoryResourceManager;
+class SceneResourceManager;
 
 using RenderGraphProperties = nlohmann::json;
 
@@ -144,6 +145,7 @@ struct RenderGraphCompileContext {
     Device* device = nullptr;
     Queue* graphicsQueue = nullptr;
     const scene::Scene* runtimeScene = nullptr;
+    SceneResourceManager* sceneResourceManager = nullptr;
     uint32_t width = 1;
     uint32_t height = 1;
     Format defaultFormat = Format::Rgba8Unorm;

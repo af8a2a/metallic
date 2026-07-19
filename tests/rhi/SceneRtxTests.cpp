@@ -6,10 +6,12 @@
 #include "Runtime/Scene/Scene.h"
 
 #include <cstring>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace metallic::tests {
@@ -59,16 +61,20 @@ public:
 
         render::vulkan::SceneRtxBuilder builder;
         std::string log;
-        result = builder.build(*device, *graphicsQueue, loadedScene, log);
+        result = builder.beginBuild(*device, *graphicsQueue, loadedScene, log);
         if (!result) {
             return RhiTestResult::fail(
-                std::string("SceneRtxBuilder::build returned ") +
+                std::string("SceneRtxBuilder::beginBuild returned ") +
                 toString(result) +
                 ": " +
                 log);
         }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!builder.pollBuild() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
         if (!builder.valid()) {
-            return RhiTestResult::fail("SceneRtxBuilder did not produce a valid TLAS");
+            return RhiTestResult::fail("SceneRtxBuilder asynchronous build did not produce a valid TLAS");
         }
 
         const render::vulkan::SceneRtxStats& stats = builder.stats();

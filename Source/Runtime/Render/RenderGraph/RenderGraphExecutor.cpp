@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
+#include "Runtime/Render/SceneResourceManager.h"
 
 #include <spdlog/spdlog.h>
 
@@ -128,6 +129,8 @@ struct RenderGraphExecutor::Impl {
     std::unordered_map<std::string, std::string> inputAliases;
     std::unique_ptr<BindlessHeap> bindlessHeap;
     RenderGraphStreamingSubsystem streamingSubsystem;
+    SceneResourceManager sceneResourceManager;
+    std::shared_ptr<SceneResourceSnapshot> pendingSceneResourceSnapshot;
     std::array<QueueCommandContext, 3> queueCommandContexts;
     std::vector<std::unique_ptr<CommandBuffer>> submittedCommandBuffers;
     std::unique_ptr<Semaphore> submittedTimelineSemaphore;
@@ -880,6 +883,8 @@ Result RenderGraphExecutor::compile(
             queueContext.resetForCurrentSubmit = false;
         }
         impl_->streamingSubsystem.reset();
+        impl_->pendingSceneResourceSnapshot.reset();
+        impl_->sceneResourceManager.clear();
     }
 
     const bool dimensionsChanged = impl_->width != width || impl_->height != height;
@@ -893,6 +898,7 @@ Result RenderGraphExecutor::compile(
         .device = &device,
         .graphicsQueue = device.getQueue(QueueType::Graphics),
         .runtimeScene = impl_->runtimeScene,
+        .sceneResourceManager = &impl_->sceneResourceManager,
         .width = width,
         .height = height,
         .defaultFormat = impl_->defaultFormat,
@@ -1047,6 +1053,61 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
 void RenderGraphExecutor::bindRuntimeScene(const scene::Scene* scene)
 {
     impl_->runtimeScene = scene;
+}
+
+Result RenderGraphExecutor::beginSceneResourcePreparation(
+    Device& device,
+    const RenderGraphProperties& properties,
+    const scene::Scene& scene,
+    std::string& log)
+{
+    Queue* graphicsQueue = device.getQueue(QueueType::Graphics);
+    if (graphicsQueue == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    cancelSceneResourcePreparation();
+    return impl_->sceneResourceManager.beginAcquireAsync(
+        device,
+        *graphicsQueue,
+        properties,
+        scene,
+        SceneResourceFeatureBits::Geometry |
+            SceneResourceFeatureBits::Materials |
+            SceneResourceFeatureBits::MaterialTextures |
+            SceneResourceFeatureBits::Meshlets |
+            SceneResourceFeatureBits::StandardAccelerationStructure |
+            SceneResourceFeatureBits::Environment,
+        impl_->pendingSceneResourceSnapshot,
+        log);
+}
+
+Result RenderGraphExecutor::pumpSceneResourcePreparation(
+    double budgetMilliseconds,
+    bool& complete,
+    scene::SceneLoadProgress& progress,
+    std::string& log)
+{
+    if (impl_->pendingSceneResourceSnapshot == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    Result result = impl_->sceneResourceManager.pumpAsync(
+        impl_->pendingSceneResourceSnapshot,
+        budgetMilliseconds,
+        complete,
+        progress,
+        log);
+    return result;
+}
+
+void RenderGraphExecutor::cancelSceneResourcePreparation()
+{
+    impl_->sceneResourceManager.discard(impl_->pendingSceneResourceSnapshot);
+    impl_->pendingSceneResourceSnapshot.reset();
+}
+
+void RenderGraphExecutor::acceptSceneResourcePreparation()
+{
+    impl_->pendingSceneResourceSnapshot.reset();
 }
 
 Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)

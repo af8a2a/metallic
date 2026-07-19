@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/SceneResourceManager.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -29,6 +30,13 @@ public:
         const scene::Scene* runtimeScene = runtimeSceneForPath(
             context.runtimeScene,
             scenePathFromProperties(properties()));
+        if (runtimeScene == nullptr && context.sceneResourceManager != nullptr) {
+            Result sceneResult = context.sceneResourceManager->resolveScene(
+                properties(), context.runtimeScene, runtimeScene, log);
+            if (!sceneResult) {
+                return sceneResult;
+            }
+        }
         const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
         if (program_ != nullptr && sceneRevision_ == runtimeRevision) {
             return {};
@@ -423,13 +431,9 @@ private:
         std::string& log)
     {
         const std::filesystem::path path = scenePathFromProperties(properties);
-        scene::Scene fallbackScene;
         if (runtimeScene == nullptr) {
-            if (!fallbackScene.load(path)) {
-                log = "BunnyWireframePass failed to load glTF: " + fallbackScene.lastLoadResult().error;
-                return false;
-            }
-            runtimeScene = &fallbackScene;
+            log = "BunnyWireframePass requires a runtime scene resource provider";
+            return false;
         }
         const scene::Scene& bunnyScene = *runtimeScene;
         outTransforms = buildSceneGpuTransforms(bunnyScene);

@@ -25,6 +25,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/HistoryResources.cpp
     Runtime/Render/ImportanceSampling.cpp
     Runtime/Render/ReGIR.cpp
+    Runtime/Render/SceneResourceManager.cpp
     Runtime/Render/MeshletStreamClas.cpp
     Runtime/Render/MeshletStreamPageLoader.cpp
     Runtime/Render/MeshletStreamResidency.cpp
@@ -48,6 +49,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/SceneMaterialShaderObjectPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneMaterialVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/RtxdiConfidencePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/RtxdiCompositePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRtxdiPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
@@ -108,6 +110,7 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/MeshletStreamAsset.cpp
     Runtime/Scene/Scene.cpp
     Runtime/Scene/SceneDocument.cpp
+    Runtime/Scene/SceneLoader.cpp
     Runtime/Scene/ScenePicker.cpp
     Runtime/Scene/TinyGltfImpl.cpp
 )
@@ -122,6 +125,7 @@ target_include_directories(MetallicRuntimeScene SYSTEM PRIVATE
 )
 
 target_link_libraries(MetallicRuntimeScene PUBLIC
+    MetallicRuntimeTask
     MathLib
     meshoptimizer
     nlohmann_json

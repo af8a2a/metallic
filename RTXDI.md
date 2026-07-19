@@ -59,15 +59,24 @@ the global power-PDF or uniform selector. The structure is rebuilt every frame
 so animated procedural lights remain synchronized, with an explicit storage
 buffer write-to-read barrier before the screen-space RTXDI dispatch.
 
-The sample graph then runs three passes:
+The sample graph then runs four passes:
 
 1. `SceneRtxdiPass` writes raw preview color plus demodulated diffuse and
    specular radiance/hit-distance signals, packed normal/roughness, screen-space
    motion vectors, linear view depth, base-color/metalness, and emissive data.
-2. `NrdDenoisePass` runs `RELAX_DIFFUSE_SPECULAR`. It receives current and
+2. `RtxdiConfidencePass` follows FullSample's confidence preprocessing flow.
+   It selects the brightest direct-light signal in each 3x3 gradient stratum,
+   compares current and motion-reprojected previous diffuse/specular luminance,
+   applies four A-trous filter iterations, converts the relative gradients to
+   confidence, and applies the same `power = 0.25` non-linear short-history
+   filter. The resulting diffuse and specular R8_UNORM textures are available
+   as graph outputs.
+3. `NrdDenoisePass` runs `RELAX_DIFFUSE_SPECULAR`. It receives current and
    previous camera matrices, advances RELAX history across frames, and resets
-   history when the camera or graph is reset.
-3. `RtxdiCompositePass` remodulates the denoised diffuse signal by diffuse
+   history when the camera or graph is reset. The confidence textures are bound
+   as `IN_DIFF_CONFIDENCE` and `IN_SPEC_CONFIDENCE`, with
+   `isHistoryConfidenceAvailable` enabled for RELAX.
+4. `RtxdiCompositePass` remodulates the denoised diffuse signal by diffuse
    albedo, remodulates the denoised specular signal by dielectric/metallic F0,
    adds emissive/ambient radiance, and performs exposure and tone mapping.
 
@@ -104,11 +113,14 @@ environment importance sampling, initial visibility, spatial neighbors, history
 length, temporal and spatial reuse, light animation, intensity, exposure, and
 debug views for the selected light, ReGIR cells, and reservoir history. RELAX
 settings include history lengths, A-trous iteration count, diffuse/specular prepass blur radii,
-minimum hit-distance weight, anti-firefly, disocclusion threshold, denoising
-range, and validation mode. The default sampling budget uses eight initial
+minimum hit-distance weight, anti-firefly, confidence inputs, disocclusion
+threshold, denoising range, and validation mode. Confidence preprocessing
+exposes the FullSample defaults of four gradient A-trous passes, sensitivity 8,
+darkness bias -12 EV, and a 0.75-frame confidence history. The default sampling budget uses eight initial
 local-light candidates, four environment candidates, and one spatial neighbor.
-The graph's default presentation output is `Composite.color`; `Rtxdi.color`
-remains marked as a raw/debug output for inspecting the pre-denoise result.
+The graph's default presentation output is `Composite.color`; `Rtxdi.color`,
+`Confidence.diffuseConfidence`, and `Confidence.specularConfidence` remain
+marked as debug outputs for inspecting the pre-denoise and confidence results.
 
 The shader and eight-frame GPU preview tests can be run with:
 

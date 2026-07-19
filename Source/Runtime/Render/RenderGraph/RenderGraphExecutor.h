@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/RenderGraph/RenderGraphNode.h"
 #include "Runtime/Render/RenderGraph/RenderGraphStreamingSubsystem.h"
+#include "Runtime/Scene/SceneLoad.h"
 
 namespace metallic::render {
 struct RenderGraphSubmitDesc {
@@ -55,6 +56,18 @@ public:
     Result execute(const RenderGraphSubmitDesc& desc);
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);
     void bindRuntimeScene(const scene::Scene* scene);
+    Result beginSceneResourcePreparation(
+        Device& device,
+        const RenderGraphProperties& properties,
+        const scene::Scene& scene,
+        std::string& log);
+    Result pumpSceneResourcePreparation(
+        double budgetMilliseconds,
+        bool& complete,
+        scene::SceneLoadProgress& progress,
+        std::string& log);
+    void cancelSceneResourcePreparation();
+    void acceptSceneResourcePreparation();
     bool syncProperties(const RenderGraph& graph);
     bool syncRuntimeProperties(const RenderGraph& graph);
     Result transitionOutput(

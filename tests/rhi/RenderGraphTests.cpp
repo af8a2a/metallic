@@ -839,6 +839,8 @@ public:
             render::createRenderGraphPass("ScenePathTracePass");
         const std::unique_ptr<render::RenderGraphPass> rtxdi =
             render::createRenderGraphPass("SceneRtxdiPass");
+        const std::unique_ptr<render::RenderGraphPass> rtxdiConfidence =
+            render::createRenderGraphPass("RtxdiConfidencePass");
         const std::unique_ptr<render::RenderGraphPass> rtxdiComposite =
             render::createRenderGraphPass("RtxdiCompositePass");
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
@@ -857,6 +859,7 @@ public:
             bufferWrite == nullptr ||
             pathTrace == nullptr ||
             rtxdi == nullptr ||
+            rtxdiConfidence == nullptr ||
             rtxdiComposite == nullptr ||
             materialVisualization == nullptr ||
             gpuDrivenPreview == nullptr ||
@@ -884,6 +887,10 @@ public:
         if (rtxdi->kind() != render::RenderGraphPassKind::Compute ||
             rtxdi->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("SceneRtxdiPass is not classified as Compute/Compute");
+        }
+        if (rtxdiConfidence->kind() != render::RenderGraphPassKind::Compute ||
+            rtxdiConfidence->queueType() != render::QueueType::Compute) {
+            return RhiTestResult::fail("RtxdiConfidencePass is not classified as Compute/Compute");
         }
         if (rtxdiComposite->kind() != render::RenderGraphPassKind::Compute ||
             rtxdiComposite->queueType() != render::QueueType::Compute) {
@@ -915,6 +922,7 @@ public:
         bool foundBufferWrite = false;
         bool foundPathTrace = false;
         bool foundRtxdi = false;
+        bool foundRtxdiConfidence = false;
         bool foundRtxdiComposite = false;
         bool foundMaterialVisualization = false;
         bool foundGPUDrivenPreview = false;
@@ -936,6 +944,9 @@ public:
                     passInfo.queueType == render::QueueType::Compute;
             } else if (passInfo.type == "SceneRtxdiPass") {
                 foundRtxdi = passInfo.kind == render::RenderGraphPassKind::Compute &&
+                    passInfo.queueType == render::QueueType::Compute;
+            } else if (passInfo.type == "RtxdiConfidencePass") {
+                foundRtxdiConfidence = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
             } else if (passInfo.type == "RtxdiCompositePass") {
                 foundRtxdiComposite = passInfo.kind == render::RenderGraphPassKind::Compute &&
@@ -962,6 +973,7 @@ public:
             !foundBufferWrite ||
             !foundPathTrace ||
             !foundRtxdi ||
+            !foundRtxdiConfidence ||
             !foundRtxdiComposite ||
             !foundMaterialVisualization ||
             !foundGPUDrivenPreview ||
@@ -1025,6 +1037,9 @@ public:
         }
         if (!hasBoolRuntimeSetting(*nrdDenoise, "relaxAntiFirefly")) {
             return RhiTestResult::fail("NrdDenoisePass missing RELAX runtime settings");
+        }
+        if (!hasBoolRuntimeSetting(*nrdDenoise, "relaxConfidenceInputs")) {
+            return RhiTestResult::fail("NrdDenoisePass missing RELAX confidence setting");
         }
         if (!hasBoolRuntimeSetting(*materialVisualization, "flipBitangent")) {
             return RhiTestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
@@ -1256,12 +1271,15 @@ public:
             return RhiTestResult::fail("RTXDI Sample metadata did not load as expected");
         }
         const render::RenderGraphNode* rtxdi = rtxdiSample.graph.findNode("Rtxdi");
+        const render::RenderGraphNode* confidence = rtxdiSample.graph.findNode("Confidence");
         const render::RenderGraphNode* relax = rtxdiSample.graph.findNode("Relax");
         const render::RenderGraphNode* composite = rtxdiSample.graph.findNode("Composite");
         if (rtxdi == nullptr ||
+            confidence == nullptr ||
             relax == nullptr ||
             composite == nullptr ||
             rtxdi->type != "SceneRtxdiPass" ||
+            confidence->type != "RtxdiConfidencePass" ||
             relax->type != "NrdDenoisePass" ||
             composite->type != "RtxdiCompositePass" ||
             !rtxdi->properties.is_object() ||
@@ -1278,8 +1296,12 @@ public:
             !rtxdi->properties.value("temporalReuse", false) ||
             !rtxdi->properties.value("spatialReuse", false) ||
             !rtxdi->properties.value("initialVisibility", false) ||
+            !confidence->properties.is_object() ||
+            confidence->properties.value("gradientFilterPasses", 0) != 4 ||
+            confidence->properties.value("gradientSensitivity", 0.0f) != 8.0f ||
             !relax->properties.is_object() ||
             relax->properties.value("denoiser", "") != "RELAX" ||
+            !relax->properties.value("relaxConfidenceInputs", false) ||
             !relax->properties.value("relaxAntiFirefly", false)) {
             return RhiTestResult::fail("RTXDI Sample did not apply ReSTIR DI and RELAX defaults");
         }
@@ -3516,6 +3538,28 @@ public:
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
             return RhiTestResult::fail(message);
         }
+
+        result = preview.render(sample.graph, 256, 256, "Confidence.diffuseConfidence");
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RTXDI diffuse confidence readback returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const auto* confidenceBytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const size_t confidencePixelCount =
+            static_cast<size_t>(preview.width()) * static_cast<size_t>(preview.height());
+        uint8_t minimumConfidence = std::numeric_limits<uint8_t>::max();
+        uint8_t maximumConfidence = 0;
+        for (size_t pixelIndex = 0; pixelIndex < confidencePixelCount; ++pixelIndex) {
+            minimumConfidence = std::min(minimumConfidence, confidenceBytes[pixelIndex]);
+            maximumConfidence = std::max(maximumConfidence, confidenceBytes[pixelIndex]);
+        }
+        if (maximumConfidence == 0 || minimumConfidence == maximumConfidence) {
+            return RhiTestResult::fail(
+                "RTXDI diffuse confidence output is empty or constant");
+        }
         return RhiTestResult::pass("wrote RTXDI RELAX preview");
     }
 };
@@ -3539,6 +3583,7 @@ public:
             {"BuildReGIR", "buildReGIRMain", false},
             {"PrepareLightsPdf", "prepareLightsPdfMain", false},
             {"SceneRtxdi", "sceneRtxdiMain", true},
+            {"RtxdiConfidence", "rtxdiConfidenceMain", false},
             {"RtxdiComposite", "rtxdiCompositeMain", false},
         };
         for (const ShaderEntry& entry : entries) {

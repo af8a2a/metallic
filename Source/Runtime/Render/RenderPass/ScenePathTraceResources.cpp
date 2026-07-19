@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -116,7 +117,7 @@ struct ScenePathTraceGpuScene {
 };
 
 struct ScenePathTraceTextureMipUpload {
-    std::unique_ptr<Buffer> uploadBuffer;
+    uint64_t bufferOffset = 0;
     uint32_t width = 1;
     uint32_t height = 1;
     uint64_t byteSize = 4;
@@ -124,6 +125,9 @@ struct ScenePathTraceTextureMipUpload {
 
 struct ScenePathTraceMaterialTexture {
     std::vector<ScenePathTraceTextureMipUpload> mipUploads;
+    std::shared_ptr<Buffer> uploadBuffer;
+    uint64_t uploadBufferOffset = 0;
+    uint64_t uploadAllocationSize = 0;
     std::unique_ptr<Texture> texture;
     std::unique_ptr<TextureView> view;
     uint32_t width = 1;
@@ -140,6 +144,14 @@ struct DecodedMaterialTexture {
     uint32_t width = 0;
     uint32_t height = 0;
     std::string label;
+    const std::vector<scene::RenderImage::Mip>* preparedMips = nullptr;
+};
+
+struct ScenePathTraceBufferUpload {
+    std::shared_ptr<Buffer> stagingBuffer;
+    Buffer* destination = nullptr;
+    uint64_t sourceOffset = 0;
+    uint64_t byteSize = 0;
 };
 
 struct DecodedEnvironmentTexture {
@@ -170,6 +182,122 @@ std::string resultMessage(std::string_view label, const Result& result)
     message += resultToString(result);
     return message;
 }
+
+class SceneUploadStagingArena {
+public:
+    static constexpr uint64_t kPageByteSize = 64ull * 1024ull * 1024ull;
+
+    ~SceneUploadStagingArena()
+    {
+        clear();
+    }
+
+    Result upload(
+        Device& device,
+        const void* data,
+        uint64_t byteSize,
+        uint64_t alignment,
+        std::shared_ptr<Buffer>& outBuffer,
+        uint64_t& outOffset,
+        std::string& log,
+        std::string_view label)
+    {
+        if (data == nullptr || byteSize == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        alignment = std::max<uint64_t>(alignment, 1ull);
+        Page* selectedPage = nullptr;
+        uint64_t selectedOffset = 0;
+        for (const std::unique_ptr<Page>& page : pages_) {
+            const uint64_t alignedOffset = alignUp(page->cursor, alignment);
+            if (alignedOffset <= page->capacity &&
+                byteSize <= page->capacity - alignedOffset) {
+                selectedPage = page.get();
+                selectedOffset = alignedOffset;
+                break;
+            }
+        }
+
+        if (selectedPage == nullptr) {
+            const uint64_t pageSize = std::max(kPageByteSize, alignUp(byteSize, alignment));
+            std::unique_ptr<Buffer> buffer;
+            Result result = device.createBuffer(
+                BufferDesc{
+                    .size = pageSize,
+                    .usage = BufferUsageBits::TransferSource,
+                    .memoryLocation = MemoryLocation::HostUpload,
+                    .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
+                },
+                buffer);
+            if (!result || buffer == nullptr) {
+                log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
+
+            auto page = std::make_unique<Page>();
+            page->buffer = std::shared_ptr<Buffer>(std::move(buffer));
+            page->capacity = pageSize;
+            page->mapped = page->buffer->map();
+            if (page->mapped == nullptr) {
+                log = std::string(label) + " failed to map staging page";
+                return makeError(Error::Failure);
+            }
+            selectedPage = page.get();
+            selectedOffset = 0;
+            pages_.push_back(std::move(page));
+        }
+
+        std::memcpy(
+            static_cast<uint8_t*>(selectedPage->mapped) + selectedOffset,
+            data,
+            static_cast<size_t>(byteSize));
+        selectedPage->buffer->flush(selectedOffset, byteSize);
+        selectedPage->cursor = selectedOffset + byteSize;
+        outBuffer = selectedPage->buffer;
+        outOffset = selectedOffset;
+        return {};
+    }
+
+    void reset()
+    {
+        for (const std::unique_ptr<Page>& page : pages_) {
+            page->cursor = 0;
+        }
+    }
+
+    void clear()
+    {
+        pages_.clear();
+    }
+
+private:
+    struct Page {
+        ~Page()
+        {
+            if (mapped != nullptr && buffer != nullptr) {
+                buffer->unmap();
+            }
+        }
+
+        std::shared_ptr<Buffer> buffer;
+        void* mapped = nullptr;
+        uint64_t capacity = 0;
+        uint64_t cursor = 0;
+    };
+
+    static uint64_t alignUp(uint64_t value, uint64_t alignment)
+    {
+        const uint64_t remainder = value % alignment;
+        if (remainder == 0) {
+            return value;
+        }
+        return value + alignment - remainder;
+    }
+
+    std::vector<std::unique_ptr<Page>> pages_;
+};
 
 std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
 {
@@ -234,19 +362,27 @@ Result uploadStorageBuffer(
     uint32_t structureStride,
     std::unique_ptr<Buffer>& outBuffer,
     std::string& log,
-    std::string_view label)
+    std::string_view label,
+    std::vector<ScenePathTraceBufferUpload>* pendingUploads = nullptr,
+    SceneUploadStagingArena* stagingArena = nullptr)
 {
     if (data == nullptr || byteSize == 0) {
         log = std::string(label) + " upload data is empty";
         return makeError(Error::InvalidArgument);
     }
 
+    const bool deviceLocal = pendingUploads != nullptr;
     Result result = device.createBuffer(
         BufferDesc{
             .size = byteSize,
             .structureStride = structureStride,
-            .usage = BufferUsageBits::Storage,
-            .memoryLocation = MemoryLocation::HostUpload,
+            .usage = deviceLocal
+                ? BufferUsageBits::Storage | BufferUsageBits::TransferDestination
+                : BufferUsageBits::Storage,
+            .memoryLocation = deviceLocal ? MemoryLocation::Device : MemoryLocation::HostUpload,
+            .queueAccess = deviceLocal
+                ? QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy
+                : QueueAccessBits::Graphics,
         },
         outBuffer);
     if (!result || outBuffer == nullptr) {
@@ -255,51 +391,70 @@ Result uploadStorageBuffer(
         return result ? makeError(Error::Failure) : result;
     }
 
-    void* mapped = outBuffer->map();
-    if (mapped == nullptr) {
-        log = std::string(label) + " failed to map upload buffer";
-        return makeError(Error::Failure);
+    std::shared_ptr<Buffer> stagingBuffer;
+    uint64_t stagingOffset = 0;
+    Buffer* uploadBuffer = outBuffer.get();
+    if (deviceLocal) {
+        if (stagingArena == nullptr) {
+            log = std::string(label) + " requires a staging arena for a device-local upload";
+            return makeError(Error::InvalidArgument);
+        }
+        result = stagingArena->upload(
+            device,
+            data,
+            byteSize,
+            16,
+            stagingBuffer,
+            stagingOffset,
+            log,
+            label);
+        if (!result) {
+            return result;
+        }
+        uploadBuffer = stagingBuffer.get();
     }
-    std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-    outBuffer->flush(0, byteSize);
-    outBuffer->unmap();
+
+    if (!deviceLocal) {
+        void* mapped = uploadBuffer->map();
+        if (mapped == nullptr) {
+            log = std::string(label) + " failed to map upload buffer";
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, data, static_cast<size_t>(byteSize));
+        uploadBuffer->flush(0, byteSize);
+        uploadBuffer->unmap();
+    }
+    if (deviceLocal) {
+        pendingUploads->push_back(ScenePathTraceBufferUpload{
+            .stagingBuffer = stagingBuffer,
+            .destination = outBuffer.get(),
+            .sourceOffset = stagingOffset,
+            .byteSize = byteSize,
+        });
+    }
     return {};
 }
 
 Result createTextureUploadBuffer(
     Device& device,
+    SceneUploadStagingArena& stagingArena,
     const void* data,
     uint64_t byteSize,
-    std::unique_ptr<Buffer>& outBuffer,
+    uint64_t alignment,
+    std::shared_ptr<Buffer>& outBuffer,
+    uint64_t& outOffset,
     std::string& log,
     std::string_view label)
 {
-    if (data == nullptr || byteSize == 0) {
-        return makeError(Error::InvalidArgument);
-    }
-
-    Result result = device.createBuffer(
-        BufferDesc{
-            .size = byteSize,
-            .usage = BufferUsageBits::TransferSource,
-            .memoryLocation = MemoryLocation::HostUpload,
-        },
-        outBuffer);
-    if (!result || outBuffer == nullptr) {
-        log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-
-    void* mapped = outBuffer->map();
-    if (mapped == nullptr) {
-        log = std::string(label) + " failed to map upload buffer";
-        return makeError(Error::Failure);
-    }
-    std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-    outBuffer->flush(0, byteSize);
-    outBuffer->unmap();
-    return {};
+    return stagingArena.upload(
+        device,
+        data,
+        byteSize,
+        alignment,
+        outBuffer,
+        outOffset,
+        log,
+        label);
 }
 
 uint32_t mipCountForDimensions(uint32_t width, uint32_t height)
@@ -404,6 +559,18 @@ bool decodeSceneTexture(
 
     const scene::RenderImage& image = loadedScene.images()[static_cast<size_t>(texture.imageIndex)];
     outTexture.label = texture.name.empty() ? image.name : texture.name;
+    if (!image.decodedMips.empty()) {
+        outTexture.width = image.decodedMips.front().width;
+        outTexture.height = image.decodedMips.front().height;
+        outTexture.preparedMips = &image.decodedMips;
+        return outTexture.width > 0 && outTexture.height > 0;
+    }
+    if (image.decodeAttempted) {
+        appendScenePathTraceWarning(
+            log,
+            image.decodeWarning.empty() ? "failed to decode material texture" : image.decodeWarning);
+        return false;
+    }
 
     int width = 0;
     int height = 0;
@@ -463,14 +630,17 @@ bool decodeSceneTexture(
 
 Result createMaterialTexture(
     Device& device,
+    SceneUploadStagingArena& stagingArena,
     const uint8_t* pixels,
     uint32_t width,
     uint32_t height,
     std::string_view label,
     ScenePathTraceMaterialTexture& outTexture,
-    std::string& log)
+    std::string& log,
+    const std::vector<scene::RenderImage::Mip>* preparedMips = nullptr)
 {
-    if (pixels == nullptr || width == 0 || height == 0) {
+    if ((pixels == nullptr && (preparedMips == nullptr || preparedMips->empty())) ||
+        width == 0 || height == 0) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -478,36 +648,67 @@ Result createMaterialTexture(
     outTexture.width = width;
     outTexture.height = height;
     outTexture.format = Format::Rgba8Unorm;
-    std::vector<DecodedMaterialTexture> mipChain = buildMaterialMipChain(pixels, width, height, label);
-    outTexture.mipCount = static_cast<uint32_t>(mipChain.size());
-    outTexture.mipUploads.reserve(mipChain.size());
+    std::vector<DecodedMaterialTexture> generatedMipChain;
+    if (preparedMips == nullptr || preparedMips->empty()) {
+        generatedMipChain = buildMaterialMipChain(pixels, width, height, label);
+    }
+    const size_t mipCount = preparedMips != nullptr && !preparedMips->empty()
+        ? preparedMips->size()
+        : generatedMipChain.size();
+    outTexture.mipCount = static_cast<uint32_t>(mipCount);
+    outTexture.mipUploads.reserve(mipCount);
     outTexture.byteSize = 0;
-    for (uint32_t mipIndex = 0; mipIndex < mipChain.size(); ++mipIndex) {
-        const DecodedMaterialTexture& mip = mipChain[mipIndex];
+    const uint64_t uploadAlignment = std::max<uint64_t>(
+        device.capabilities().textureUploadBufferOffsetAlignment,
+        1ull);
+    std::vector<uint8_t> packedMipData;
+    for (uint32_t mipIndex = 0; mipIndex < mipCount; ++mipIndex) {
+        const uint32_t mipWidth = preparedMips != nullptr && !preparedMips->empty()
+            ? (*preparedMips)[mipIndex].width
+            : generatedMipChain[mipIndex].width;
+        const uint32_t mipHeight = preparedMips != nullptr && !preparedMips->empty()
+            ? (*preparedMips)[mipIndex].height
+            : generatedMipChain[mipIndex].height;
+        const std::vector<uint8_t>& mipPixels = preparedMips != nullptr && !preparedMips->empty()
+            ? (*preparedMips)[mipIndex].pixels
+            : generatedMipChain[mipIndex].pixels;
         ScenePathTraceTextureMipUpload upload;
-        upload.width = mip.width;
-        upload.height = mip.height;
-        upload.byteSize = rgba8ByteSize(mip.width, mip.height);
-        outTexture.byteSize += upload.byteSize;
-
-        std::string mipLabel = "ScenePathTracePass texture upload ";
-        mipLabel += std::string(label);
-        mipLabel += " mip ";
-        mipLabel += std::to_string(mipIndex);
-        Result result = createTextureUploadBuffer(
-            device,
-            mip.pixels.data(),
-            upload.byteSize,
-            upload.uploadBuffer,
-            log,
-            mipLabel);
-        if (!result) {
-            return result;
+        upload.width = mipWidth;
+        upload.height = mipHeight;
+        upload.byteSize = rgba8ByteSize(mipWidth, mipHeight);
+        upload.bufferOffset = (packedMipData.size() + uploadAlignment - 1u) /
+            uploadAlignment * uploadAlignment;
+        if (mipPixels.size() < upload.byteSize ||
+            upload.bufferOffset > std::numeric_limits<size_t>::max() - upload.byteSize) {
+            return makeError(Error::InvalidArgument);
         }
+        packedMipData.resize(static_cast<size_t>(upload.bufferOffset + upload.byteSize));
+        std::memcpy(
+            packedMipData.data() + upload.bufferOffset,
+            mipPixels.data(),
+            static_cast<size_t>(upload.byteSize));
+        outTexture.byteSize += upload.byteSize;
         outTexture.mipUploads.push_back(std::move(upload));
     }
 
-    Result result = device.createTexture(
+    std::string uploadLabel = "ScenePathTracePass packed texture upload ";
+    uploadLabel += std::string(label);
+    Result result = createTextureUploadBuffer(
+        device,
+        stagingArena,
+        packedMipData.data(),
+        packedMipData.size(),
+        uploadAlignment,
+        outTexture.uploadBuffer,
+        outTexture.uploadBufferOffset,
+        log,
+        uploadLabel);
+    if (!result) {
+        return result;
+    }
+    outTexture.uploadAllocationSize = packedMipData.size();
+
+    result = device.createTexture(
         TextureDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
@@ -518,6 +719,7 @@ Result createMaterialTexture(
             .mipCount = outTexture.mipCount,
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
         },
         outTexture.texture);
     if (!result || outTexture.texture == nullptr) {
@@ -679,6 +881,7 @@ EnvironmentImportanceData buildEnvironmentImportanceData(const DecodedEnvironmen
 
 Result createEnvironmentTexture(
     Device& device,
+    SceneUploadStagingArena& stagingArena,
     const float* pixels,
     uint32_t width,
     uint32_t height,
@@ -704,14 +907,18 @@ Result createEnvironmentTexture(
     uploadLabel += std::string(label);
     Result result = createTextureUploadBuffer(
         device,
+        stagingArena,
         pixels,
         upload.byteSize,
-        upload.uploadBuffer,
+        std::max<uint64_t>(device.capabilities().textureUploadBufferOffsetAlignment, 1ull),
+        outTexture.uploadBuffer,
+        outTexture.uploadBufferOffset,
         log,
         uploadLabel);
     if (!result) {
         return result;
     }
+    outTexture.uploadAllocationSize = upload.byteSize;
     outTexture.mipUploads.push_back(std::move(upload));
 
     result = device.createTexture(
@@ -725,6 +932,7 @@ Result createEnvironmentTexture(
             .mipCount = 1,
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
         },
         outTexture.texture);
     if (!result || outTexture.texture == nullptr) {
@@ -1110,6 +1318,293 @@ bool buildGpuScene(
 } // namespace
 
 struct ScenePathTraceResources::Impl {
+    enum class AsyncPrepareStage : uint8_t {
+        Idle,
+        MaterialTextures,
+        Environment,
+        GpuPayload,
+        AccelerationStructure,
+        Buffers,
+        SubmitPartialUploads,
+        WaitForPartialUploads,
+        SubmitUploads,
+        WaitForGpu,
+        Ready,
+        Failed,
+    };
+
+    static constexpr uint64_t kUploadBatchByteLimit = 64ull * 1024ull * 1024ull;
+    static constexpr uint32_t kUploadBatchRegionLimit = 128;
+
+    uint64_t pendingUploadByteSize() const
+    {
+        uint64_t byteSize = 0;
+        for (const ScenePathTraceMaterialTexture& texture : materialTextures) {
+            if (!texture.uploaded && texture.uploadBuffer != nullptr) {
+                byteSize += texture.uploadAllocationSize;
+            }
+        }
+        if (!environmentTexture.uploaded && environmentTexture.uploadBuffer != nullptr) {
+            byteSize += environmentTexture.uploadAllocationSize;
+        }
+        for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
+            byteSize += upload.byteSize;
+        }
+        return byteSize;
+    }
+
+    uint32_t pendingUploadRegionCount() const
+    {
+        uint64_t regionCount = bufferUploads.size();
+        for (const ScenePathTraceMaterialTexture& texture : materialTextures) {
+            if (!texture.uploaded && texture.uploadBuffer != nullptr) {
+                regionCount += texture.mipUploads.size();
+            }
+        }
+        if (!environmentTexture.uploaded && environmentTexture.uploadBuffer != nullptr) {
+            regionCount += environmentTexture.mipUploads.size();
+        }
+        return static_cast<uint32_t>(std::min<uint64_t>(regionCount, UINT32_MAX));
+    }
+
+    uint64_t nextMaterialTextureUploadByteSize(const scene::Scene& loadedScene) const
+    {
+        if (asyncTextureCursor >= loadedScene.textures().size()) {
+            return 0;
+        }
+        const scene::RenderTexture& texture = loadedScene.textures()[asyncTextureCursor];
+        if (texture.imageIndex < 0 ||
+            static_cast<size_t>(texture.imageIndex) >= loadedScene.images().size()) {
+            return 0;
+        }
+        const size_t imageIndex = static_cast<size_t>(texture.imageIndex);
+        if (imageIndex < asyncImageTextureIndexMap.size() &&
+            asyncImageTextureIndexMap[imageIndex] != kInvalidMaterialTextureIndex) {
+            return 0;
+        }
+        uint64_t byteSize = 0;
+        for (const scene::RenderImage::Mip& mip : loadedScene.images()[imageIndex].decodedMips) {
+            byteSize += mip.pixels.size();
+        }
+        return byteSize;
+    }
+
+    uint32_t nextMaterialTextureUploadRegionCount(const scene::Scene& loadedScene) const
+    {
+        if (asyncTextureCursor >= loadedScene.textures().size()) {
+            return 0;
+        }
+        const scene::RenderTexture& texture = loadedScene.textures()[asyncTextureCursor];
+        if (texture.imageIndex < 0 ||
+            static_cast<size_t>(texture.imageIndex) >= loadedScene.images().size()) {
+            return 0;
+        }
+        const size_t imageIndex = static_cast<size_t>(texture.imageIndex);
+        if (imageIndex < asyncImageTextureIndexMap.size() &&
+            asyncImageTextureIndexMap[imageIndex] != kInvalidMaterialTextureIndex) {
+            return 0;
+        }
+        return static_cast<uint32_t>(std::min<size_t>(
+            loadedScene.images()[imageIndex].decodedMips.size(),
+            UINT32_MAX));
+    }
+
+    bool shouldFlushBefore(uint64_t additionalBytes, uint32_t additionalRegions) const
+    {
+        const uint64_t pendingBytes = pendingUploadByteSize();
+        const uint32_t pendingRegions = pendingUploadRegionCount();
+        if (pendingBytes == 0 && pendingRegions == 0) {
+            return false;
+        }
+        const bool byteLimitExceeded = additionalBytes > kUploadBatchByteLimit ||
+            pendingBytes > kUploadBatchByteLimit - additionalBytes;
+        const bool regionLimitExceeded = additionalRegions > kUploadBatchRegionLimit ||
+            pendingRegions > kUploadBatchRegionLimit - additionalRegions;
+        return byteLimitExceeded || regionLimitExceeded;
+    }
+
+    bool uploadBatchLimitReached() const
+    {
+        return pendingUploadByteSize() >= kUploadBatchByteLimit ||
+            pendingUploadRegionCount() >= kUploadBatchRegionLimit;
+    }
+
+    ~Impl()
+    {
+        clear();
+    }
+
+    Result submitTextureUploads(Device& device, Queue& graphicsQueue, std::string& log)
+    {
+        const uint64_t batchByteSize = pendingUploadByteSize();
+        const uint32_t batchRegionCount = pendingUploadRegionCount();
+        Queue* uploadQueue = device.getQueue(QueueType::Copy);
+        if (uploadQueue == nullptr) {
+            uploadQueue = &graphicsQueue;
+        }
+        const bool requiresGraphicsAcquire = uploadQueue != &graphicsQueue;
+
+        Result result = device.createCommandPool(*uploadQueue, textureUploadCommandPool);
+        if (!result || textureUploadCommandPool == nullptr) {
+            log += resultMessage("createCommandPool(scene texture uploads)", result);
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = textureUploadCommandPool->createCommandBuffer(textureUploadCommandBuffer);
+        if (!result || textureUploadCommandBuffer == nullptr) {
+            log += resultMessage("createCommandBuffer(scene texture uploads)", result);
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = device.createSemaphore(
+            SemaphoreDesc{.initialValue = 0},
+            textureUploadTimeline);
+        if (!result || textureUploadTimeline == nullptr) {
+            log += resultMessage("createSemaphore(scene uploads)", result);
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = textureUploadCommandBuffer->begin();
+        if (!result) {
+            log += resultMessage("CommandBuffer::begin(scene texture uploads)", result);
+            return result;
+        }
+        for (ScenePathTraceMaterialTexture& texture : materialTextures) {
+            result = uploadTexture(*textureUploadCommandBuffer, texture);
+            if (!result) {
+                return result;
+            }
+        }
+        if (environmentTexture.texture != nullptr) {
+            result = uploadTexture(*textureUploadCommandBuffer, environmentTexture);
+            if (!result) {
+                return result;
+            }
+        }
+        for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
+            textureUploadCommandBuffer->copyBuffer(BufferCopyDesc{
+                .source = upload.stagingBuffer.get(),
+                .destination = upload.destination,
+                .sourceOffset = upload.sourceOffset,
+                .size = upload.byteSize,
+            });
+        }
+        if (!requiresGraphicsAcquire) {
+            transitionUploadsForRendering(*textureUploadCommandBuffer);
+        }
+        result = textureUploadCommandBuffer->end();
+        if (!result) {
+            log += resultMessage("CommandBuffer::end(scene texture uploads)", result);
+            return result;
+        }
+
+        CommandBuffer* commandBuffers[] = {textureUploadCommandBuffer.get()};
+        const SemaphoreSubmitDesc signal{
+            .semaphore = textureUploadTimeline.get(),
+            .value = 1,
+            .stages = requiresGraphicsAcquire ? PipelineStageBits::Transfer : PipelineStageBits::AllCommands,
+        };
+        result = uploadQueue->submit(QueueSubmitDesc{
+            .commandBuffers = commandBuffers,
+            .commandBufferCount = 1,
+            .signalSemaphores = &signal,
+            .signalSemaphoreCount = 1,
+        });
+        if (!result) {
+            log += resultMessage("Queue::submit(scene texture uploads)", result);
+            return result;
+        }
+
+        textureUploadTimelineValue = 1;
+        textureUploadsSubmitted = true;
+        if (requiresGraphicsAcquire) {
+            result = device.createCommandPool(graphicsQueue, textureAcquireCommandPool);
+            if (!result || textureAcquireCommandPool == nullptr) {
+                log += resultMessage("createCommandPool(scene upload acquire)", result);
+                return result ? makeError(Error::Failure) : result;
+            }
+            result = textureAcquireCommandPool->createCommandBuffer(textureAcquireCommandBuffer);
+            if (!result || textureAcquireCommandBuffer == nullptr) {
+                log += resultMessage("createCommandBuffer(scene upload acquire)", result);
+                return result ? makeError(Error::Failure) : result;
+            }
+            result = textureAcquireCommandBuffer->begin();
+            if (!result) {
+                log += resultMessage("CommandBuffer::begin(scene upload acquire)", result);
+                return result;
+            }
+            transitionUploadsForRendering(*textureAcquireCommandBuffer);
+            result = textureAcquireCommandBuffer->end();
+            if (!result) {
+                log += resultMessage("CommandBuffer::end(scene upload acquire)", result);
+                return result;
+            }
+
+            CommandBuffer* acquireCommandBuffers[] = {textureAcquireCommandBuffer.get()};
+            const SemaphoreSubmitDesc wait{
+                .semaphore = textureUploadTimeline.get(),
+                .value = 1,
+                .stages = PipelineStageBits::AllCommands,
+            };
+            const SemaphoreSubmitDesc acquireSignal{
+                .semaphore = textureUploadTimeline.get(),
+                .value = 2,
+                .stages = PipelineStageBits::AllCommands,
+            };
+            result = graphicsQueue.submit(QueueSubmitDesc{
+                .waitSemaphores = &wait,
+                .waitSemaphoreCount = 1,
+                .commandBuffers = acquireCommandBuffers,
+                .commandBufferCount = 1,
+                .signalSemaphores = &acquireSignal,
+                .signalSemaphoreCount = 1,
+            });
+            if (!result) {
+                log += resultMessage("Queue::submit(scene upload acquire)", result);
+                return result;
+            }
+            textureUploadTimelineValue = 2;
+        }
+        spdlog::info(
+            "[SceneResources] Submitted scene upload batch bytes={} regions={} queue={} independentCopy={}",
+            batchByteSize,
+            batchRegionCount,
+            uploadQueue->type() == QueueType::Copy ? "copy" : "graphics",
+            device.capabilities().independentCopyQueue);
+        return {};
+    }
+
+    bool textureUploadsReady() const
+    {
+        return !textureUploadsSubmitted ||
+            (textureUploadTimeline != nullptr &&
+                textureUploadTimeline->currentValue() >= textureUploadTimelineValue);
+    }
+
+    void retireCompletedTextureUploads()
+    {
+        if (!textureUploadsReady()) {
+            return;
+        }
+        for (ScenePathTraceMaterialTexture& texture : materialTextures) {
+            texture.uploadBuffer.reset();
+        }
+        environmentTexture.uploadBuffer.reset();
+        bufferUploads.clear();
+        stagingArena.reset();
+        textureUploadCommandBuffer.reset();
+        textureUploadCommandPool.reset();
+        textureAcquireCommandBuffer.reset();
+        textureAcquireCommandPool.reset();
+        textureUploadTimeline.reset();
+        textureUploadsSubmitted = false;
+    }
+
+    void waitForTextureUploads()
+    {
+        if (textureUploadsSubmitted && textureUploadTimeline != nullptr && !textureUploadsReady()) {
+            (void)textureUploadTimeline->wait(textureUploadTimelineValue);
+        }
+        retireCompletedTextureUploads();
+    }
+
     Result buildMaterialTextures(
         Device& device,
         const scene::Scene& loadedScene,
@@ -1129,6 +1624,7 @@ struct ScenePathTraceResources::Impl {
         const auto fallbackBegin = SceneResourceLogClock::now();
         Result result = createMaterialTexture(
             device,
+            stagingArena,
             fallbackPixels,
             1,
             1,
@@ -1145,7 +1641,19 @@ struct ScenePathTraceResources::Impl {
 
         uint32_t decodedTextureCount = 0;
         uint64_t decodedTextureBytes = 0;
+        std::vector<uint32_t> imageTextureIndexMap(
+            loadedScene.images().size(),
+            kInvalidMaterialTextureIndex);
         for (uint32_t textureIndex = 0; textureIndex < loadedScene.textures().size(); ++textureIndex) {
+            const scene::RenderTexture& logicalTexture = loadedScene.textures()[textureIndex];
+            if (logicalTexture.imageIndex >= 0 &&
+                static_cast<size_t>(logicalTexture.imageIndex) < imageTextureIndexMap.size()) {
+                const uint32_t existingIndex = imageTextureIndexMap[static_cast<size_t>(logicalTexture.imageIndex)];
+                if (existingIndex != kInvalidMaterialTextureIndex) {
+                    outTextureIndexMap[textureIndex] = existingIndex;
+                    continue;
+                }
+            }
             if (materialTextures.size() >= kScenePathTraceMaxMaterialTextures) {
                 log = "ScenePathTracePass exceeded the material texture descriptor limit";
                 return makeError(Error::Unsupported);
@@ -1160,7 +1668,7 @@ struct ScenePathTraceResources::Impl {
                     sceneResourceElapsedMilliseconds(decodeBegin));
                 continue;
             }
-            if (decodedTexture.pixels.empty()) {
+            if (decodedTexture.pixels.empty() && decodedTexture.preparedMips == nullptr) {
                 spdlog::info(
                     "[SceneResources] Material texture {} decoded empty payload in {:.2f} ms",
                     textureIndex,
@@ -1176,18 +1684,26 @@ struct ScenePathTraceResources::Impl {
                 decodedTexture.pixels.size(),
                 sceneResourceElapsedMilliseconds(decodeBegin));
             ++decodedTextureCount;
-            decodedTextureBytes += decodedTexture.pixels.size();
+            if (decodedTexture.preparedMips != nullptr) {
+                for (const scene::RenderImage::Mip& mip : *decodedTexture.preparedMips) {
+                    decodedTextureBytes += mip.pixels.size();
+                }
+            } else {
+                decodedTextureBytes += decodedTexture.pixels.size();
+            }
 
             ScenePathTraceMaterialTexture materialTexture;
             const auto createBegin = SceneResourceLogClock::now();
             result = createMaterialTexture(
                 device,
+                stagingArena,
                 decodedTexture.pixels.data(),
                 decodedTexture.width,
                 decodedTexture.height,
                 decodedTexture.label,
                 materialTexture,
-                log);
+                log,
+                decodedTexture.preparedMips);
             if (!result) {
                 return result;
             }
@@ -1200,6 +1716,10 @@ struct ScenePathTraceResources::Impl {
 
             const uint32_t materialTextureIndex = static_cast<uint32_t>(materialTextures.size());
             outTextureIndexMap[textureIndex] = materialTextureIndex;
+            if (logicalTexture.imageIndex >= 0 &&
+                static_cast<size_t>(logicalTexture.imageIndex) < imageTextureIndexMap.size()) {
+                imageTextureIndexMap[static_cast<size_t>(logicalTexture.imageIndex)] = materialTextureIndex;
+            }
             materialTextures.push_back(std::move(materialTexture));
         }
 
@@ -1220,6 +1740,110 @@ struct ScenePathTraceResources::Impl {
             decodedTextureCount,
             decodedTextureBytes,
             materialTextureCount);
+        return {};
+    }
+
+    Result beginMaterialTextureBuild(
+        Device& device,
+        const scene::Scene& loadedScene,
+        std::string& log)
+    {
+        materialTextures.clear();
+        materialTextureViews.fill(nullptr);
+        materialTextureCount = 0;
+        textureIndexMap.assign(loadedScene.textures().size(), kInvalidMaterialTextureIndex);
+        asyncImageTextureIndexMap.assign(
+            loadedScene.images().size(),
+            kInvalidMaterialTextureIndex);
+        asyncTextureCursor = 0;
+
+        const uint8_t fallbackPixels[4] = {255, 255, 255, 255};
+        ScenePathTraceMaterialTexture fallbackTexture;
+        Result result = createMaterialTexture(
+            device,
+            stagingArena,
+            fallbackPixels,
+            1,
+            1,
+            "fallback",
+            fallbackTexture,
+            log);
+        if (!result) {
+            return result;
+        }
+        materialTextures.push_back(std::move(fallbackTexture));
+        return {};
+    }
+
+    Result buildMaterialTextureStep(
+        Device& device,
+        const scene::Scene& loadedScene,
+        bool& complete,
+        std::string& log)
+    {
+        complete = false;
+        if (asyncTextureCursor < loadedScene.textures().size()) {
+            const uint32_t textureIndex = static_cast<uint32_t>(asyncTextureCursor++);
+            const scene::RenderTexture& logicalTexture = loadedScene.textures()[textureIndex];
+            if (logicalTexture.imageIndex >= 0 &&
+                static_cast<size_t>(logicalTexture.imageIndex) < asyncImageTextureIndexMap.size()) {
+                const uint32_t existingIndex =
+                    asyncImageTextureIndexMap[static_cast<size_t>(logicalTexture.imageIndex)];
+                if (existingIndex != kInvalidMaterialTextureIndex) {
+                    textureIndexMap[textureIndex] = existingIndex;
+                    return {};
+                }
+            }
+            if (materialTextures.size() >= kScenePathTraceMaxMaterialTextures) {
+                log = "ScenePathTracePass exceeded the material texture descriptor limit";
+                return makeError(Error::Unsupported);
+            }
+
+            DecodedMaterialTexture decodedTexture;
+            if (!decodeSceneTexture(loadedScene, textureIndex, decodedTexture, log) ||
+                (decodedTexture.pixels.empty() && decodedTexture.preparedMips == nullptr)) {
+                return {};
+            }
+
+            ScenePathTraceMaterialTexture materialTexture;
+            Result result = createMaterialTexture(
+                device,
+                stagingArena,
+                decodedTexture.pixels.data(),
+                decodedTexture.width,
+                decodedTexture.height,
+                decodedTexture.label,
+                materialTexture,
+                log,
+                decodedTexture.preparedMips);
+            if (!result) {
+                return result;
+            }
+            const uint32_t materialTextureIndex = static_cast<uint32_t>(materialTextures.size());
+            textureIndexMap[textureIndex] = materialTextureIndex;
+            if (logicalTexture.imageIndex >= 0 &&
+                static_cast<size_t>(logicalTexture.imageIndex) < asyncImageTextureIndexMap.size()) {
+                asyncImageTextureIndexMap[static_cast<size_t>(logicalTexture.imageIndex)] =
+                    materialTextureIndex;
+            }
+            materialTextures.push_back(std::move(materialTexture));
+            return {};
+        }
+
+        TextureView* fallbackView = materialTextures.front().view.get();
+        if (fallbackView == nullptr) {
+            return makeError(Error::Failure);
+        }
+        materialTextureViews.fill(fallbackView);
+        for (uint32_t textureIndex = 0; textureIndex < materialTextures.size(); ++textureIndex) {
+            if (materialTextures[textureIndex].view == nullptr) {
+                return makeError(Error::Failure);
+            }
+            materialTextureViews[textureIndex] = materialTextures[textureIndex].view.get();
+        }
+        materialTextureCount = static_cast<uint32_t>(materialTextures.size());
+        asyncImageTextureIndexMap.clear();
+        complete = true;
         return {};
     }
 
@@ -1247,6 +1871,7 @@ struct ScenePathTraceResources::Impl {
                 const auto textureBegin = SceneResourceLogClock::now();
                 Result result = createEnvironmentTexture(
                     device,
+                    stagingArena,
                     decodedEnvironment.pixels.data(),
                     decodedEnvironment.width,
                     decodedEnvironment.height,
@@ -1274,7 +1899,9 @@ struct ScenePathTraceResources::Impl {
                     sizeof(EnvironmentAliasEntry),
                     environmentImportanceBuffer,
                     log,
-                    "ScenePathTracePass environment importance alias table");
+                    "ScenePathTracePass environment importance alias table",
+                    &bufferUploads,
+                    &stagingArena);
                 if (!result) {
                     return result;
                 }
@@ -1296,6 +1923,7 @@ struct ScenePathTraceResources::Impl {
         const auto fallbackBegin = SceneResourceLogClock::now();
         Result result = createEnvironmentTexture(
             device,
+            stagingArena,
             fallbackPixels,
             1,
             1,
@@ -1318,7 +1946,9 @@ struct ScenePathTraceResources::Impl {
             sizeof(EnvironmentAliasEntry),
             environmentImportanceBuffer,
             log,
-            "ScenePathTracePass environment fallback importance alias table");
+            "ScenePathTracePass environment fallback importance alias table",
+            &bufferUploads,
+            &stagingArena);
         spdlog::info(
             "[SceneResources] Environment fallback importance upload in {:.2f} ms",
             sceneResourceElapsedMilliseconds(uploadBegin));
@@ -1351,13 +1981,14 @@ struct ScenePathTraceResources::Impl {
 
         for (uint32_t mipIndex = 0; mipIndex < texture.mipUploads.size(); ++mipIndex) {
             const ScenePathTraceTextureMipUpload& upload = texture.mipUploads[mipIndex];
-            if (upload.uploadBuffer == nullptr || upload.width == 0 || upload.height == 0) {
+            if (texture.uploadBuffer == nullptr || upload.width == 0 || upload.height == 0) {
                 return makeError(Error::InvalidArgument);
             }
 
             commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
-                .buffer = upload.uploadBuffer.get(),
+                .buffer = texture.uploadBuffer.get(),
                 .texture = texture.texture.get(),
+                .bufferOffset = texture.uploadBufferOffset + upload.bufferOffset,
                 .width = upload.width,
                 .height = upload.height,
                 .depth = 1,
@@ -1366,26 +1997,63 @@ struct ScenePathTraceResources::Impl {
             });
         }
 
-        TextureBarrierDesc toShaderRead{
-            .texture = texture.texture.get(),
-            .before = texture.state,
-            .after = ResourceState::ShaderRead,
-            .baseMip = 0,
-            .mipCount = texture.mipCount,
-            .baseLayer = 0,
-            .layerCount = 1,
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = &toShaderRead,
-            .textureCount = 1,
-        });
-        texture.state = ResourceState::ShaderRead;
         texture.uploaded = true;
         return {};
     }
 
+    void transitionUploadsForRendering(CommandBuffer& commandBuffer)
+    {
+        auto transitionTexture = [&commandBuffer](ScenePathTraceMaterialTexture& texture) {
+            if (texture.texture == nullptr || texture.state != ResourceState::TransferDestination) {
+                return;
+            }
+            TextureBarrierDesc toShaderRead{
+                .texture = texture.texture.get(),
+                .before = ResourceState::TransferDestination,
+                .after = ResourceState::ShaderRead,
+                .baseMip = 0,
+                .mipCount = texture.mipCount,
+                .baseLayer = 0,
+                .layerCount = 1,
+            };
+            commandBuffer.barrier(BarrierDesc{
+                .textures = &toShaderRead,
+                .textureCount = 1,
+            });
+            texture.state = ResourceState::ShaderRead;
+        };
+
+        for (ScenePathTraceMaterialTexture& texture : materialTextures) {
+            transitionTexture(texture);
+        }
+        transitionTexture(environmentTexture);
+
+        std::vector<BufferBarrierDesc> bufferBarriers;
+        bufferBarriers.reserve(bufferUploads.size());
+        for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
+            bufferBarriers.push_back(BufferBarrierDesc{
+                .buffer = upload.destination,
+                .before = ResourceState::TransferDestination,
+                .after = ResourceState::General,
+                .offset = 0,
+                .size = upload.byteSize,
+            });
+        }
+        if (!bufferBarriers.empty()) {
+            commandBuffer.barrier(BarrierDesc{
+                .buffers = bufferBarriers.data(),
+                .bufferCount = static_cast<uint32_t>(bufferBarriers.size()),
+            });
+        }
+    }
+
     Result uploadMaterialTextures(CommandBuffer& commandBuffer)
     {
+        if (textureUploadsSubmitted) {
+            (void)commandBuffer;
+            retireCompletedTextureUploads();
+            return {};
+        }
         if (materialTextures.empty()) {
             return makeError(Error::InvalidArgument);
         }
@@ -1401,11 +2069,17 @@ struct ScenePathTraceResources::Impl {
 
     Result uploadEnvironmentTexture(CommandBuffer& commandBuffer)
     {
+        if (textureUploadsSubmitted) {
+            (void)commandBuffer;
+            retireCompletedTextureUploads();
+            return {};
+        }
         return uploadTexture(commandBuffer, environmentTexture);
     }
 
     void resetGpuBuffers()
     {
+        waitForTextureUploads();
         vertexBuffer.reset();
         indexBuffer.reset();
         primitiveBuffer.reset();
@@ -1428,6 +2102,13 @@ struct ScenePathTraceResources::Impl {
         scenePath.clear();
         environmentPath.clear();
         prepared = false;
+        asyncPrepareStage = AsyncPrepareStage::Idle;
+        partialUploadResumeStage = AsyncPrepareStage::Idle;
+        asyncScene = nullptr;
+        asyncScenePath.clear();
+        asyncEnvironmentPath.clear();
+        asyncGpuScene = ScenePathTraceGpuScene{};
+        asyncBufferStep = 0;
     }
 
     bool valid() const
@@ -1460,17 +2141,35 @@ struct ScenePathTraceResources::Impl {
     std::unique_ptr<Buffer> primitiveBuffer;
     std::unique_ptr<Buffer> instanceBuffer;
     std::unique_ptr<Buffer> materialBuffer;
+    SceneUploadStagingArena stagingArena;
+    std::vector<ScenePathTraceBufferUpload> bufferUploads;
     std::vector<ScenePathTraceMaterialTexture> materialTextures;
     std::vector<uint32_t> textureIndexMap;
+    std::vector<uint32_t> asyncImageTextureIndexMap;
+    size_t asyncTextureCursor = 0;
     std::array<TextureView*, kScenePathTraceMaxMaterialTextures> materialTextureViews{};
     uint32_t materialTextureCount = 0;
     ScenePathTraceMaterialTexture environmentTexture;
     std::unique_ptr<Buffer> environmentImportanceBuffer;
     uint32_t environmentImportanceTexelCount = 1;
     bool environmentMapAvailable = false;
+    std::unique_ptr<CommandPool> textureUploadCommandPool;
+    std::unique_ptr<CommandBuffer> textureUploadCommandBuffer;
+    std::unique_ptr<CommandPool> textureAcquireCommandPool;
+    std::unique_ptr<CommandBuffer> textureAcquireCommandBuffer;
+    std::unique_ptr<Semaphore> textureUploadTimeline;
+    uint64_t textureUploadTimelineValue = 1;
+    bool textureUploadsSubmitted = false;
+    AsyncPrepareStage asyncPrepareStage = AsyncPrepareStage::Idle;
+    AsyncPrepareStage partialUploadResumeStage = AsyncPrepareStage::Idle;
+    const scene::Scene* asyncScene = nullptr;
+    std::filesystem::path asyncScenePath;
+    std::filesystem::path asyncEnvironmentPath;
+    ScenePathTraceGpuScene asyncGpuScene;
+    uint32_t asyncBufferStep = 0;
 };
 ScenePathTraceResources::ScenePathTraceResources() :
-    impl_(std::make_unique<Impl>())
+    impl_(std::make_shared<Impl>())
 {
 }
 
@@ -1572,7 +2271,11 @@ Result ScenePathTraceResources::prepare(
     std::string rtxLog;
     {
         SceneResourceLogScope scope("build RTX acceleration structures for render pass");
-        result = impl_->rtxBuilder.build(device, graphicsQueue, loadedScene, rtxLog);
+        Queue* accelerationQueue = device.getQueue(QueueType::Compute);
+        if (accelerationQueue == nullptr) {
+            accelerationQueue = &graphicsQueue;
+        }
+        result = impl_->rtxBuilder.beginBuild(device, *accelerationQueue, loadedScene, rtxLog);
     }
     if (!result) {
         appendLogBlock(log, rtxLog);
@@ -1590,7 +2293,9 @@ Result ScenePathTraceResources::prepare(
             sizeof(ScenePathTraceGpuVertex),
             impl_->vertexBuffer,
             log,
-            "ScenePathTracePass vertices");
+            "ScenePathTracePass vertices",
+            &impl_->bufferUploads,
+            &impl_->stagingArena);
         if (!result) {
             impl_->clear();
             return result;
@@ -1602,7 +2307,9 @@ Result ScenePathTraceResources::prepare(
             sizeof(uint32_t),
             impl_->indexBuffer,
             log,
-            "ScenePathTracePass indices");
+            "ScenePathTracePass indices",
+            &impl_->bufferUploads,
+            &impl_->stagingArena);
         if (!result) {
             impl_->clear();
             return result;
@@ -1614,7 +2321,9 @@ Result ScenePathTraceResources::prepare(
             sizeof(ScenePathTraceGpuPrimitive),
             impl_->primitiveBuffer,
             log,
-            "ScenePathTracePass primitives");
+            "ScenePathTracePass primitives",
+            &impl_->bufferUploads,
+            &impl_->stagingArena);
         if (!result) {
             impl_->clear();
             return result;
@@ -1626,7 +2335,9 @@ Result ScenePathTraceResources::prepare(
             sizeof(ScenePathTraceGpuInstance),
             impl_->instanceBuffer,
             log,
-            "ScenePathTracePass instances");
+            "ScenePathTracePass instances",
+            &impl_->bufferUploads,
+            &impl_->stagingArena);
         if (!result) {
             impl_->clear();
             return result;
@@ -1638,11 +2349,22 @@ Result ScenePathTraceResources::prepare(
             sizeof(ScenePathTraceGpuMaterial),
             impl_->materialBuffer,
             log,
-            "ScenePathTracePass materials");
+            "ScenePathTracePass materials",
+            &impl_->bufferUploads,
+            &impl_->stagingArena);
         if (!result) {
             impl_->clear();
             return result;
         }
+    }
+
+    {
+        SceneResourceLogScope scope("submit asynchronous scene uploads");
+        result = impl_->submitTextureUploads(device, graphicsQueue, log);
+    }
+    if (!result) {
+        impl_->clear();
+        return result;
     }
 
     impl_->drawBounds = loadedScene.bounds();
@@ -1658,6 +2380,301 @@ Result ScenePathTraceResources::prepare(
         impl_->environmentMapAvailable,
         impl_->environmentImportanceTexelCount);
     return {};
+}
+
+Result ScenePathTraceResources::beginPrepareAsync(
+    Device& device,
+    Queue& graphicsQueue,
+    const RenderGraphProperties& properties,
+    const scene::Scene& runtimeScene,
+    std::string& log)
+{
+    const std::filesystem::path path = scenePathFromProperties(properties);
+    const std::filesystem::path environmentPath = environmentPathFromProperties(properties);
+    const scene::Scene* boundScene = runtimeSceneForPath(&runtimeScene, path);
+    if (boundScene == nullptr || !boundScene->bounds().valid) {
+        log = "Asynchronous scene preparation requires a matching valid runtime scene";
+        return makeError(Error::InvalidArgument);
+    }
+    if (impl_->valid() && impl_->scenePath == path && impl_->environmentPath == environmentPath) {
+        return {};
+    }
+
+    impl_->clear();
+    impl_->device = &device;
+    impl_->graphicsQueue = &graphicsQueue;
+    impl_->asyncScene = boundScene;
+    impl_->asyncScenePath = path;
+    impl_->asyncEnvironmentPath = environmentPath;
+    Result result = impl_->beginMaterialTextureBuild(device, *boundScene, log);
+    if (!result) {
+        impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+        return result;
+    }
+    impl_->asyncPrepareStage = Impl::AsyncPrepareStage::MaterialTextures;
+    return {};
+}
+
+Result ScenePathTraceResources::pumpPrepareAsync(
+    double budgetMilliseconds,
+    bool& complete,
+    scene::SceneLoadProgress& progress,
+    std::string& log)
+{
+    complete = false;
+    progress.status = scene::SceneLoadStatus::Running;
+    if (impl_->asyncPrepareStage == Impl::AsyncPrepareStage::Ready || impl_->valid()) {
+        complete = true;
+        progress.status = scene::SceneLoadStatus::Succeeded;
+        progress.phase = scene::SceneLoadPhase::Completed;
+        progress.fraction = 1.0f;
+        return {};
+    }
+    if (impl_->asyncPrepareStage == Impl::AsyncPrepareStage::Idle ||
+        impl_->asyncPrepareStage == Impl::AsyncPrepareStage::Failed ||
+        impl_->device == nullptr ||
+        impl_->graphicsQueue == nullptr ||
+        impl_->asyncScene == nullptr) {
+        progress.status = scene::SceneLoadStatus::Failed;
+        progress.phase = scene::SceneLoadPhase::Failed;
+        progress.error = log.empty() ? "Scene resource preparation is not active" : log;
+        return makeError(Error::InvalidArgument);
+    }
+
+    const auto begin = SceneResourceLogClock::now();
+    const double budget = std::max(budgetMilliseconds, 0.1);
+    Result result;
+    while (sceneResourceElapsedMilliseconds(begin) < budget) {
+        switch (impl_->asyncPrepareStage) {
+        case Impl::AsyncPrepareStage::MaterialTextures: {
+            const uint64_t nextUploadBytes =
+                impl_->nextMaterialTextureUploadByteSize(*impl_->asyncScene);
+            const uint32_t nextUploadRegions =
+                impl_->nextMaterialTextureUploadRegionCount(*impl_->asyncScene);
+            if (impl_->shouldFlushBefore(nextUploadBytes, nextUploadRegions)) {
+                impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::MaterialTextures;
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitPartialUploads;
+                continue;
+            }
+            bool texturesComplete = false;
+            result = impl_->buildMaterialTextureStep(
+                *impl_->device,
+                *impl_->asyncScene,
+                texturesComplete,
+                log);
+            if (!result) {
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+                return result;
+            }
+            progress.phase = scene::SceneLoadPhase::GpuUpload;
+            progress.completedUnits = impl_->asyncTextureCursor;
+            progress.totalUnits = impl_->asyncScene->textures().size();
+            progress.fraction = 0.65f + 0.10f * static_cast<float>(impl_->asyncTextureCursor) /
+                static_cast<float>(std::max<size_t>(impl_->asyncScene->textures().size(), 1u));
+            if (texturesComplete) {
+                impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::Environment;
+                impl_->asyncPrepareStage = impl_->pendingUploadByteSize() > 0
+                    ? Impl::AsyncPrepareStage::SubmitPartialUploads
+                    : Impl::AsyncPrepareStage::Environment;
+            } else if (impl_->uploadBatchLimitReached()) {
+                impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::MaterialTextures;
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitPartialUploads;
+            }
+            return {};
+        }
+        case Impl::AsyncPrepareStage::Environment:
+            result = impl_->buildEnvironmentTexture(
+                *impl_->device,
+                impl_->asyncEnvironmentPath,
+                log);
+            if (!result) {
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+                return result;
+            }
+            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::GpuPayload;
+            progress.phase = scene::SceneLoadPhase::GpuUpload;
+            progress.fraction = 0.77f;
+            return {};
+        case Impl::AsyncPrepareStage::GpuPayload:
+            if (!buildGpuScene(
+                    *impl_->asyncScene,
+                    impl_->textureIndexMap,
+                    impl_->asyncGpuScene,
+                    log)) {
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+                return makeError(Error::Failure);
+            }
+            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::AccelerationStructure;
+            progress.phase = scene::SceneLoadPhase::GpuUpload;
+            progress.fraction = 0.82f;
+            return {};
+        case Impl::AsyncPrepareStage::AccelerationStructure: {
+            Queue* accelerationQueue = impl_->device->getQueue(QueueType::Compute);
+            if (accelerationQueue == nullptr) {
+                accelerationQueue = impl_->graphicsQueue;
+            }
+            result = impl_->rtxBuilder.beginBuild(
+                *impl_->device,
+                *accelerationQueue,
+                *impl_->asyncScene,
+                log);
+            if (!result) {
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+                return result;
+            }
+            impl_->asyncBufferStep = 0;
+            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Buffers;
+            progress.phase = scene::SceneLoadPhase::AccelerationStructures;
+            progress.fraction = 0.87f;
+            return {};
+        }
+        case Impl::AsyncPrepareStage::Buffers: {
+            const void* data = nullptr;
+            uint64_t byteSize = 0;
+            uint32_t stride = 0;
+            std::unique_ptr<Buffer>* destination = nullptr;
+            const char* label = nullptr;
+            switch (impl_->asyncBufferStep) {
+            case 0:
+                data = impl_->asyncGpuScene.vertices.data();
+                byteSize = impl_->asyncGpuScene.vertices.size() * sizeof(ScenePathTraceGpuVertex);
+                stride = sizeof(ScenePathTraceGpuVertex);
+                destination = &impl_->vertexBuffer;
+                label = "ScenePathTracePass vertices";
+                break;
+            case 1:
+                data = impl_->asyncGpuScene.indices.data();
+                byteSize = impl_->asyncGpuScene.indices.size() * sizeof(uint32_t);
+                stride = sizeof(uint32_t);
+                destination = &impl_->indexBuffer;
+                label = "ScenePathTracePass indices";
+                break;
+            case 2:
+                data = impl_->asyncGpuScene.primitives.data();
+                byteSize = impl_->asyncGpuScene.primitives.size() * sizeof(ScenePathTraceGpuPrimitive);
+                stride = sizeof(ScenePathTraceGpuPrimitive);
+                destination = &impl_->primitiveBuffer;
+                label = "ScenePathTracePass primitives";
+                break;
+            case 3:
+                data = impl_->asyncGpuScene.instances.data();
+                byteSize = impl_->asyncGpuScene.instances.size() * sizeof(ScenePathTraceGpuInstance);
+                stride = sizeof(ScenePathTraceGpuInstance);
+                destination = &impl_->instanceBuffer;
+                label = "ScenePathTracePass instances";
+                break;
+            case 4:
+                data = impl_->asyncGpuScene.materials.data();
+                byteSize = impl_->asyncGpuScene.materials.size() * sizeof(ScenePathTraceGpuMaterial);
+                stride = sizeof(ScenePathTraceGpuMaterial);
+                destination = &impl_->materialBuffer;
+                label = "ScenePathTracePass materials";
+                break;
+            default:
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitUploads;
+                continue;
+            }
+            if (impl_->shouldFlushBefore(byteSize, 1)) {
+                impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::Buffers;
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitPartialUploads;
+                continue;
+            }
+            result = uploadStorageBuffer(
+                *impl_->device,
+                data,
+                byteSize,
+                stride,
+                *destination,
+                log,
+                label,
+                &impl_->bufferUploads,
+                &impl_->stagingArena);
+            if (!result) {
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+                return result;
+            }
+            ++impl_->asyncBufferStep;
+            progress.phase = scene::SceneLoadPhase::GpuUpload;
+            progress.fraction = 0.88f + 0.03f * static_cast<float>(impl_->asyncBufferStep) / 5.0f;
+            if (impl_->uploadBatchLimitReached()) {
+                impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::Buffers;
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitPartialUploads;
+            }
+            return {};
+        }
+        case Impl::AsyncPrepareStage::SubmitPartialUploads:
+            result = impl_->submitTextureUploads(
+                *impl_->device,
+                *impl_->graphicsQueue,
+                log);
+            if (!result) {
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+                return result;
+            }
+            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::WaitForPartialUploads;
+            progress.phase = scene::SceneLoadPhase::GpuUpload;
+            progress.fraction = std::max(progress.fraction, 0.70f);
+            return {};
+        case Impl::AsyncPrepareStage::WaitForPartialUploads:
+            progress.phase = scene::SceneLoadPhase::GpuUpload;
+            progress.fraction = std::max(progress.fraction, 0.70f);
+            if (!impl_->textureUploadsReady()) {
+                return {};
+            }
+            impl_->retireCompletedTextureUploads();
+            impl_->asyncPrepareStage = impl_->partialUploadResumeStage;
+            impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::Idle;
+            return {};
+        case Impl::AsyncPrepareStage::SubmitUploads:
+            result = impl_->submitTextureUploads(
+                *impl_->device,
+                *impl_->graphicsQueue,
+                log);
+            if (!result) {
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+                return result;
+            }
+            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::WaitForGpu;
+            progress.phase = scene::SceneLoadPhase::AccelerationStructures;
+            progress.fraction = 0.94f;
+            return {};
+        case Impl::AsyncPrepareStage::WaitForGpu:
+            progress.phase = scene::SceneLoadPhase::AccelerationStructures;
+            progress.fraction = 0.97f;
+            if (!impl_->textureUploadsReady() || !impl_->rtxBuilder.pollBuild()) {
+                return {};
+            }
+            impl_->retireCompletedTextureUploads();
+            impl_->drawBounds = impl_->asyncScene->bounds();
+            impl_->scenePath = impl_->asyncScenePath;
+            impl_->environmentPath = impl_->asyncEnvironmentPath;
+            impl_->sourceTransformRevision = impl_->asyncScene->transformRevision();
+            impl_->prepared = true;
+            ++impl_->revision;
+            impl_->asyncScene = nullptr;
+            impl_->asyncGpuScene = ScenePathTraceGpuScene{};
+            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Ready;
+            complete = true;
+            progress.status = scene::SceneLoadStatus::Succeeded;
+            progress.phase = scene::SceneLoadPhase::Finalizing;
+            progress.fraction = 0.97f;
+            return {};
+        case Impl::AsyncPrepareStage::Ready:
+        case Impl::AsyncPrepareStage::Idle:
+        case Impl::AsyncPrepareStage::Failed:
+            break;
+        }
+        break;
+    }
+    return {};
+}
+
+bool ScenePathTraceResources::preparing() const
+{
+    return impl_ != nullptr &&
+        impl_->asyncPrepareStage != Impl::AsyncPrepareStage::Idle &&
+        impl_->asyncPrepareStage != Impl::AsyncPrepareStage::Ready &&
+        impl_->asyncPrepareStage != Impl::AsyncPrepareStage::Failed;
 }
 
 Result ScenePathTraceResources::syncRuntimeScene(
@@ -1792,6 +2809,19 @@ TextureView* ScenePathTraceResources::environmentTextureView() const
 Buffer* ScenePathTraceResources::environmentImportanceBuffer() const
 {
     return impl_->environmentImportanceBuffer.get();
+}
+
+bool ScenePathTraceResources::textureUploadsReady() const
+{
+    return impl_->textureUploadsReady();
+}
+
+bool ScenePathTraceResources::gpuWorkComplete()
+{
+    const bool accelerationStructureComplete =
+        impl_->rtxBuilder.buildState() != vulkan::SceneRtxBuildState::Building ||
+        impl_->rtxBuilder.pollBuild();
+    return impl_->textureUploadsReady() && accelerationStructureComplete;
 }
 
 uint32_t ScenePathTraceResources::environmentImportanceTexelCount() const

@@ -1670,6 +1670,7 @@ struct VulkanPhysicalDeviceCandidate {
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     uint32_t graphicsFamily = 0;
     uint32_t computeFamily = 0;
+    uint32_t copyFamily = UINT32_MAX;
     VulkanDeviceFeatureSelection features;
     int32_t featureScore = -1;
 };
@@ -2174,6 +2175,8 @@ struct DeviceImpl {
     DescriptorHeapWriter descriptorHeapWriter;
     uint32_t graphicsFamily = 0;
     uint32_t computeFamily = 0;
+    uint32_t copyFamily = UINT32_MAX;
+    uint32_t copyQueueIndex = UINT32_MAX;
     SDL_SharedObject* vulkanLoaderHandle = nullptr;
     bool sdlVulkanLoaded = false;
     bool validationEnabled = false;
@@ -2253,6 +2256,28 @@ void DeviceImpl::addQueue(VkQueue queue, uint32_t familyIndex, QueueType type)
     impl->familyIndex = familyIndex;
     impl->type = type;
     queues.emplace_back(new Queue(std::move(impl)));
+}
+
+std::vector<uint32_t> queueFamiliesForAccess(const DeviceImpl& device, QueueAccessBits access)
+{
+    std::vector<uint32_t> families;
+    const auto appendUnique = [&families](uint32_t family) {
+        if (std::find(families.begin(), families.end(), family) == families.end()) {
+            families.push_back(family);
+        }
+    };
+    if (hasFlag(access, QueueAccessBits::Graphics) || access == QueueAccessBits::None) {
+        appendUnique(device.graphicsFamily);
+    }
+    if (hasFlag(access, QueueAccessBits::Compute)) {
+        appendUnique(device.computeFamily);
+    }
+    if (hasFlag(access, QueueAccessBits::Copy)) {
+        appendUnique(device.capabilities.independentCopyQueue
+            ? device.copyFamily
+            : device.graphicsFamily);
+    }
+    return families;
 }
 
 BindlessHeapImpl::~BindlessHeapImpl()
@@ -4373,11 +4398,16 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
         usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     }
 
+    const std::vector<uint32_t> queueFamilies = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
     VkBufferCreateInfo bufferInfo{
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = desc.size,
         .usage = usage,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .sharingMode = queueFamilies.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = queueFamilies.size() > 1
+            ? static_cast<uint32_t>(queueFamilies.size())
+            : 0,
+        .pQueueFamilyIndices = queueFamilies.size() > 1 ? queueFamilies.data() : nullptr,
     };
 
     VmaAllocationCreateInfo allocationInfo = allocationInfoForMemory(desc.memoryLocation);
@@ -4480,6 +4510,7 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     }
     activateVolkDevice(impl_->device);
 
+    const std::vector<uint32_t> queueFamilies = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
     VkImageCreateInfo imageInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = toVkImageType(desc.type),
@@ -4490,7 +4521,11 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = toVkImageUsage(desc.usage),
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .sharingMode = queueFamilies.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = queueFamilies.size() > 1
+            ? static_cast<uint32_t>(queueFamilies.size())
+            : 0,
+        .pQueueFamilyIndices = queueFamilies.size() > 1 ? queueFamilies.data() : nullptr,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
 
@@ -5262,6 +5297,33 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             continue;
         }
 
+        uint32_t copyFamily = UINT32_MAX;
+        for (uint32_t queueIndex = 0; queueIndex < queueFamilyCount; ++queueIndex) {
+            const VkQueueFlags flags = queueFamilies[queueIndex].queueFlags;
+            if ((flags & VK_QUEUE_TRANSFER_BIT) != 0 &&
+                (flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0) {
+                copyFamily = queueIndex;
+                break;
+            }
+        }
+        if (copyFamily == UINT32_MAX) {
+            for (uint32_t queueIndex = 0; queueIndex < queueFamilyCount; ++queueIndex) {
+                const VkQueueFlags flags = queueFamilies[queueIndex].queueFlags;
+                if ((flags & VK_QUEUE_TRANSFER_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) == 0) {
+                    copyFamily = queueIndex;
+                    break;
+                }
+            }
+        }
+        if (copyFamily == UINT32_MAX) {
+            for (uint32_t queueIndex = 0; queueIndex < queueFamilyCount; ++queueIndex) {
+                if ((queueFamilies[queueIndex].queueFlags & VK_QUEUE_TRANSFER_BIT) != 0) {
+                    copyFamily = queueIndex;
+                    break;
+                }
+            }
+        }
+
         const VulkanDeviceFeatureSelection featureSelection = VulkanDeviceFeatureSelection::select(
             requestedFeatures,
             physicalDevice,
@@ -5273,6 +5335,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
                 .physicalDevice = physicalDevice,
                 .graphicsFamily = graphicsFamily,
                 .computeFamily = computeFamily,
+                .copyFamily = copyFamily,
                 .features = featureSelection,
                 .featureScore = featureScore,
             };
@@ -5282,6 +5345,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             deviceImpl->physicalDevice = physicalDevice;
             deviceImpl->graphicsFamily = graphicsFamily;
             deviceImpl->computeFamily = computeFamily;
+            deviceImpl->copyFamily = copyFamily;
             selectedFeatures = featureSelection;
             break;
         }
@@ -5291,6 +5355,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         deviceImpl->physicalDevice = bestCandidate.physicalDevice;
         deviceImpl->graphicsFamily = bestCandidate.graphicsFamily;
         deviceImpl->computeFamily = bestCandidate.computeFamily;
+        deviceImpl->copyFamily = bestCandidate.copyFamily;
         selectedFeatures = bestCandidate.features;
     }
 
@@ -5298,28 +5363,60 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         return makeError(Error::Unsupported);
     }
 
-    const float queuePriority = 1.0f;
-    std::array<uint32_t, 2> queueFamilies = {
-        deviceImpl->graphicsFamily,
-        deviceImpl->computeFamily,
-    };
-    std::vector<VkDeviceQueueCreateInfo> queueInfos;
-    queueInfos.reserve(queueFamilies.size());
-    for (uint32_t queueFamily : queueFamilies) {
-        const bool alreadyAdded = std::any_of(
-            queueInfos.begin(),
-            queueInfos.end(),
-            [queueFamily](const VkDeviceQueueCreateInfo& info) {
-                return info.queueFamilyIndex == queueFamily;
-            });
-        if (alreadyAdded) {
-            continue;
+    uint32_t selectedQueueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(
+        deviceImpl->physicalDevice,
+        &selectedQueueFamilyCount,
+        nullptr);
+    std::vector<VkQueueFamilyProperties> selectedQueueFamilies(selectedQueueFamilyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(
+        deviceImpl->physicalDevice,
+        &selectedQueueFamilyCount,
+        selectedQueueFamilies.data());
+
+    deviceImpl->copyQueueIndex = UINT32_MAX;
+    if (deviceImpl->copyFamily < selectedQueueFamilies.size()) {
+        const bool copyUsesExistingQueue =
+            deviceImpl->copyFamily == deviceImpl->graphicsFamily ||
+            deviceImpl->copyFamily == deviceImpl->computeFamily;
+        if (!copyUsesExistingQueue) {
+            deviceImpl->copyQueueIndex = 0;
+        } else if (selectedQueueFamilies[deviceImpl->copyFamily].queueCount > 1) {
+            deviceImpl->copyQueueIndex = 1;
         }
+    }
+
+    struct QueueFamilyRequest {
+        uint32_t family = UINT32_MAX;
+        uint32_t count = 0;
+    };
+    std::vector<QueueFamilyRequest> queueRequests;
+    const auto requestQueues = [&queueRequests](uint32_t family, uint32_t count) {
+        const auto found = std::find_if(
+            queueRequests.begin(),
+            queueRequests.end(),
+            [family](const QueueFamilyRequest& request) { return request.family == family; });
+        if (found == queueRequests.end()) {
+            queueRequests.push_back(QueueFamilyRequest{.family = family, .count = count});
+        } else {
+            found->count = std::max(found->count, count);
+        }
+    };
+    requestQueues(deviceImpl->graphicsFamily, 1);
+    requestQueues(deviceImpl->computeFamily, 1);
+    if (deviceImpl->copyQueueIndex != UINT32_MAX) {
+        requestQueues(deviceImpl->copyFamily, deviceImpl->copyQueueIndex + 1);
+    }
+
+    const std::array<float, 2> queuePriorities{1.0f, 1.0f};
+    std::vector<VkDeviceQueueCreateInfo> queueInfos;
+    queueInfos.reserve(queueRequests.size());
+    for (const QueueFamilyRequest& request : queueRequests) {
         queueInfos.push_back({
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .queueFamilyIndex = queueFamily,
-            .queueCount = 1,
-            .pQueuePriorities = &queuePriority,
+            .queueFamilyIndex = request.family,
+            .queueCount = request.count,
+            .pQueuePriorities = queuePriorities.data(),
         });
     }
 
@@ -5440,6 +5537,21 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     VkQueue computeQueue = VK_NULL_HANDLE;
     vkGetDeviceQueue(deviceImpl->device, deviceImpl->computeFamily, 0, &computeQueue);
     deviceImpl->addQueue(computeQueue, deviceImpl->computeFamily, QueueType::Compute);
+
+    if (deviceImpl->copyQueueIndex != UINT32_MAX) {
+        VkQueue copyQueue = VK_NULL_HANDLE;
+        vkGetDeviceQueue(
+            deviceImpl->device,
+            deviceImpl->copyFamily,
+            deviceImpl->copyQueueIndex,
+            &copyQueue);
+        if (copyQueue != VK_NULL_HANDLE && copyQueue != graphicsQueue && copyQueue != computeQueue) {
+            deviceImpl->addQueue(copyQueue, deviceImpl->copyFamily, QueueType::Copy);
+            deviceImpl->capabilities.independentCopyQueue = true;
+        } else {
+            deviceImpl->copyQueueIndex = UINT32_MAX;
+        }
+    }
 
     if (deviceImpl->streamlineInitialized && selectedFeatures.streamline) {
         std::string streamlineLog;

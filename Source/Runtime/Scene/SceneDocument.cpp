@@ -125,6 +125,28 @@ std::filesystem::path SceneDocument::sidecarPathForSource(
 
 bool SceneDocument::load(const std::filesystem::path& path)
 {
+    return loadInternal(path, {}, false);
+}
+
+bool SceneDocument::load(
+    const std::filesystem::path& path,
+    const SceneLoadProgressCallback& progressCallback)
+{
+    return loadInternal(path, progressCallback, false);
+}
+
+bool SceneDocument::loadDeferredMeshlets(
+    const std::filesystem::path& path,
+    const SceneLoadProgressCallback& progressCallback)
+{
+    return loadInternal(path, progressCallback, true);
+}
+
+bool SceneDocument::loadInternal(
+    const std::filesystem::path& path,
+    const SceneLoadProgressCallback& progressCallback,
+    bool deferMeshletBuild)
+{
     clear();
     documentWarning_.clear();
 
@@ -149,7 +171,20 @@ bool SceneDocument::load(const std::filesystem::path& path)
     }
 
     sourcePath = normalizedPath(sourcePath);
-    if (!Scene::load(sourcePath)) {
+    const SceneLoadProgressCallback sceneProgress = progressCallback
+        ? SceneLoadProgressCallback([&progressCallback](const SceneLoadProgress& sourceProgress) {
+            SceneLoadProgress progress = sourceProgress;
+            progress.fraction *= 0.95f;
+            if (progress.phase == SceneLoadPhase::Completed) {
+                progress.phase = SceneLoadPhase::Finalizing;
+            }
+            return progressCallback(progress);
+        })
+        : SceneLoadProgressCallback{};
+    const bool loaded = deferMeshletBuild
+        ? Scene::loadDeferredMeshlets(sourcePath, sceneProgress)
+        : Scene::load(sourcePath, sceneProgress);
+    if (!loaded) {
         return false;
     }
 
@@ -166,7 +201,31 @@ bool SceneDocument::load(const std::filesystem::path& path)
         documentPath_.clear();
         return false;
     }
+    if (progressCallback && !progressCallback(SceneLoadProgress{
+            .status = SceneLoadStatus::Running,
+            .phase = SceneLoadPhase::Finalizing,
+            .fraction = 0.99f,
+            .completedUnits = 1,
+            .totalUnits = 1,
+            .currentItem = documentPath_.string(),
+        })) {
+        Scene::clear();
+        sourcePath_.clear();
+        documentPath_.clear();
+        documentWarning_ = "Scene load cancelled.";
+        return false;
+    }
     dirty_ = false;
+    if (progressCallback) {
+        (void)progressCallback(SceneLoadProgress{
+            .status = SceneLoadStatus::Succeeded,
+            .phase = SceneLoadPhase::Completed,
+            .fraction = 1.0f,
+            .completedUnits = 1,
+            .totalUnits = 1,
+            .currentItem = sourcePath_.string(),
+        });
+    }
     return true;
 }
 

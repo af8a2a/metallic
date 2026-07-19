@@ -191,6 +191,13 @@ enum class StoreOp : uint8_t {
     DontCare,
 };
 
+enum class QueueAccessBits : uint8_t {
+    None = 0,
+    Graphics = 1u << 0,
+    Compute = 1u << 1,
+    Copy = 1u << 2,
+};
+
 enum class CompareOp : uint8_t {
     Never,
     Less,
@@ -224,6 +231,12 @@ constexpr TextureUsageBits operator|(TextureUsageBits lhs, TextureUsageBits rhs)
         static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
 }
 
+constexpr QueueAccessBits operator|(QueueAccessBits lhs, QueueAccessBits rhs)
+{
+    return static_cast<QueueAccessBits>(
+        static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
+}
+
 constexpr bool hasFlag(BufferUsageBits value, BufferUsageBits flag)
 {
     return (static_cast<uint32_t>(value) & static_cast<uint32_t>(flag)) != 0;
@@ -232,6 +245,11 @@ constexpr bool hasFlag(BufferUsageBits value, BufferUsageBits flag)
 constexpr bool hasFlag(TextureUsageBits value, TextureUsageBits flag)
 {
     return (static_cast<uint32_t>(value) & static_cast<uint32_t>(flag)) != 0;
+}
+
+constexpr bool hasFlag(QueueAccessBits value, QueueAccessBits flag)
+{
+    return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flag)) != 0;
 }
 
 struct ColorValue {
@@ -269,6 +287,7 @@ struct DeviceDesc {
 };
 
 struct DeviceCapabilities {
+    bool independentCopyQueue = false;
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool meshShader = false;
@@ -295,6 +314,7 @@ struct BufferDesc {
     uint32_t structureStride = 0;
     BufferUsageBits usage = BufferUsageBits::None;
     MemoryLocation memoryLocation = MemoryLocation::Device;
+    QueueAccessBits queueAccess = QueueAccessBits::Graphics;
 };
 
 enum class BufferViewType : uint8_t {
@@ -322,6 +342,7 @@ struct TextureDesc {
     uint32_t mipCount = 1;
     uint32_t layerCount = 1;
     MemoryLocation memoryLocation = MemoryLocation::Device;
+    QueueAccessBits queueAccess = QueueAccessBits::Graphics;
 };
 
 struct TextureViewDesc {

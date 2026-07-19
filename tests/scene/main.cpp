@@ -1,7 +1,9 @@
 #include "Runtime/Scene/Scene.h"
 #include "Runtime/Scene/SceneDocument.h"
+#include "Runtime/Scene/SceneLoader.h"
 #include "Runtime/Scene/ScenePicker.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Task/TaskSystem.h"
 #include "meshoptimizer.h"
 
 #include <nlohmann/json.hpp>
@@ -11,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -2460,6 +2463,78 @@ void testScenePickerBvh(const std::filesystem::path& directory)
     EXPECT_EQ(hit.nodeIndex, 1);
 }
 
+void waitForSceneLoad(metallic::scene::SceneLoadHandle& handle)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    float previousFraction = 0.0f;
+    while (!handle.complete() && std::chrono::steady_clock::now() < deadline) {
+        const metallic::scene::SceneLoadProgress progress = handle.progress();
+        EXPECT_GE(progress.fraction, previousFraction);
+        previousFraction = progress.fraction;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(handle.complete());
+}
+
+void testAsyncSceneLoad(const std::filesystem::path& directory)
+{
+    const auto initialization = metallic::task::initializeTaskSystem({.workerCount = 2});
+    ASSERT_TRUE(initialization.has_value()) << initialization.error().message;
+    struct ShutdownGuard {
+        ~ShutdownGuard() { metallic::task::shutdownTaskSystem(); }
+    } shutdownGuard;
+
+    const std::filesystem::path path = writeFullScene(directory);
+    metallic::scene::SceneDocument synchronous;
+    ASSERT_TRUE(synchronous.load(path)) << synchronous.lastLoadResult().error;
+    std::error_code cacheRemoveError;
+    std::filesystem::remove(
+        std::filesystem::path(path.string() + ".meshlets.bin"),
+        cacheRemoveError);
+
+    metallic::scene::SceneLoader loader;
+    metallic::scene::SceneLoadHandle handle = loader.request(path);
+    ASSERT_TRUE(handle.valid());
+    waitForSceneLoad(handle);
+
+    const metallic::scene::SceneLoadProgress progress = handle.progress();
+    EXPECT_EQ(progress.status, metallic::scene::SceneLoadStatus::Succeeded);
+    EXPECT_EQ(progress.phase, metallic::scene::SceneLoadPhase::Completed);
+    EXPECT_FLOAT_EQ(progress.fraction, 1.0f);
+
+    std::unique_ptr<metallic::scene::SceneDocument> loaded = handle.takeResult();
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->nodes().size(), synchronous.nodes().size());
+    EXPECT_EQ(loaded->renderPrimitives().size(), synchronous.renderPrimitives().size());
+    EXPECT_EQ(loaded->stats().triangleCount, synchronous.stats().triangleCount);
+    EXPECT_EQ(
+        loaded->stats().meshletClusterCount,
+        synchronous.stats().meshletClusterCount);
+    EXPECT_TRUE(loaded->lastLoadResult().meshletCacheSaved);
+    EXPECT_EQ(handle.takeResult(), nullptr);
+
+    const std::filesystem::path materialPath = writeMaterialFeatureScene(directory);
+    metallic::scene::SceneLoadHandle images = loader.request(
+        materialPath,
+        metallic::scene::SceneLoadOptions{
+            .decodeConcurrency = 2,
+            .maxDecodedBytesInFlight = 1,
+        });
+    waitForSceneLoad(images);
+    std::unique_ptr<metallic::scene::SceneDocument> imageScene = images.takeResult();
+    ASSERT_NE(imageScene, nullptr);
+    ASSERT_EQ(imageScene->images().size(), 9u);
+    for (const metallic::scene::RenderImage& image : imageScene->images()) {
+        EXPECT_TRUE(image.decodeAttempted);
+    }
+
+    metallic::scene::SceneLoadHandle cancelled = loader.request(path);
+    ASSERT_TRUE(cancelled.cancel());
+    waitForSceneLoad(cancelled);
+    EXPECT_EQ(cancelled.progress().status, metallic::scene::SceneLoadStatus::Cancelled);
+    EXPECT_EQ(cancelled.takeResult(), nullptr);
+}
+
 } // namespace
 
 TEST(SceneImport, FullScene)
@@ -2535,4 +2610,9 @@ TEST(SceneEditing, DocumentRoundTrip)
 TEST(SceneEditing, PickerBvh)
 {
     testScenePickerBvh(prepareOutputDirectory());
+}
+
+TEST(SceneLoading, AsyncProgressAndCancellation)
+{
+    testAsyncSceneLoad(prepareOutputDirectory());
 }

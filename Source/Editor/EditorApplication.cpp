@@ -1833,6 +1833,9 @@ int EditorApplication::run(
     smokeTest_ = smokeTest;
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
     startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";
+    if (smokeTest_ && startupSampleId_.empty()) {
+        startupSampleId_ = "material-visualization-abeautiful-game";
+    }
     startupScenePath_ = startupScenePath != nullptr ? startupScenePath : "";
     startupStreamAssetPath_ = startupStreamAssetPath != nullptr ? startupStreamAssetPath : "";
     spdlog::info(
@@ -1850,6 +1853,21 @@ int EditorApplication::run(
     }
 
     if (smokeTest) {
+        if (!waitForPendingSceneLoad(30000)) {
+            spdlog::error("Smoke test scene load did not complete: {}", sceneStatus_);
+            shutdown();
+            return 1;
+        }
+        if (render::RenderGraphNode* previewNode = activePreviewRenderGraphNode();
+            previewNode != nullptr && previewNode->type == "ScenePathTracePass") {
+            previewNode->properties["samples"] = 1;
+            previewNode->properties["maxDepth"] = 1;
+            previewNode->properties["accumulate"] = false;
+            previewNode->properties["bsdf"] = "standard";
+            (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "samples", 1);
+            (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "maxDepth", 1);
+            (void)renderGraph_.setNodeRuntimeProperty(previewNode->id, "accumulate", false);
+        }
         auto profileFrame = profiler_.beginFrame();
         {
             auto profileScope = profiler_.scope("Poll Events");
@@ -1996,8 +2014,8 @@ bool EditorApplication::initializeRhi()
                 .enableRayQuery = true,
                 .enablePushDescriptor = true,
                 .enableClusterAccelerationStructure = true,
-                .enableStreamline = true,
-                .enableAftermath = true,
+                .enableStreamline = !smokeTest_,
+                .enableAftermath = !smokeTest_,
             },
             device_);
     }
@@ -2242,6 +2260,7 @@ bool EditorApplication::createViewportSampler()
 
 void EditorApplication::shutdown()
 {
+    cancelSceneLoad();
     if (device_ != nullptr) {
         (void)device_->waitIdle();
     }
@@ -2494,6 +2513,8 @@ void EditorApplication::drawDockspace()
         }
     }
 
+    pollSceneLoad();
+
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Render Graph")) {
@@ -2640,6 +2661,26 @@ void EditorApplication::drawScenePanel()
     ImGui::SameLine();
     if (ImGui::Button("Clear RTX AS")) {
         clearSceneRtx();
+    }
+
+    if (pendingSceneLoad_.valid() || pendingSceneResourcePreparation_) {
+        const scene::SceneLoadProgress progress = pendingSceneResourcePreparation_
+            ? pendingSceneResourceProgress_
+            : pendingSceneLoad_.progress();
+        const double elapsedSeconds = std::chrono::duration<double>(progress.elapsed).count();
+        ImGui::Separator();
+        ImGui::Text(
+            "Loading: %s (%.1fs)",
+            scene::sceneLoadPhaseName(progress.phase),
+            elapsedSeconds);
+        ImGui::ProgressBar(progress.fraction, ImVec2(-1.0f, 0.0f));
+        if (!progress.currentItem.empty()) {
+            ImGui::TextWrapped("%s", progress.currentItem.c_str());
+        }
+        if (progress.status == scene::SceneLoadStatus::Running && ImGui::Button("Cancel Load")) {
+            cancelSceneLoad();
+            sceneStatus_ = "Scene load cancellation requested.";
+        }
     }
 
     if (!sceneStatus_.empty()) {
@@ -3804,6 +3845,7 @@ void EditorApplication::executePendingSceneAction()
 
     switch (action) {
     case PendingSceneAction::Clear:
+        cancelSceneLoad();
         clearSceneRtx();
         scene_.clear();
         resetTransformHistory();
@@ -3825,6 +3867,11 @@ void EditorApplication::executePendingSceneAction()
         break;
     case PendingSceneAction::LoadSample:
         loadBuiltInSample(value.c_str());
+        break;
+    case PendingSceneAction::CommitLoadedScene:
+        if (readySceneLoad_ != nullptr) {
+            commitLoadedScene(std::move(readySceneLoad_));
+        }
         break;
     case PendingSceneAction::None:
         break;
@@ -3862,6 +3909,15 @@ void EditorApplication::drawUnsavedSceneModal()
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(100.0f * mainScale_, 0.0f))) {
+        if (pendingSceneAction_ == PendingSceneAction::CommitLoadedScene) {
+            if (graphExecutor_ != nullptr) {
+                graphExecutor_->cancelSceneResourcePreparation();
+            }
+            readySceneLoad_.reset();
+            pendingSceneLoad_ = {};
+            pendingSceneLoadPath_.clear();
+            sceneStatus_ = "Loaded scene switch cancelled.";
+        }
         pendingSceneAction_ = PendingSceneAction::None;
         pendingScenePath_.clear();
         pendingSceneValue_.clear();
@@ -4129,14 +4185,19 @@ void EditorApplication::drawViewportPanel()
     ImGui::ItemSize(available);
     const float width = max.x - min.x;
     const float height = max.y - min.y;
-    const uint32_t previewWidth = std::clamp(
-        static_cast<uint32_t>(std::ceil(width)),
-        1u,
-        kMaxViewportPreviewSize);
-    const uint32_t previewHeight = std::clamp(
-        static_cast<uint32_t>(std::ceil(height)),
-        1u,
-        kMaxViewportPreviewSize);
+    constexpr uint32_t kSmokeTestPreviewSize = 256;
+    const uint32_t previewWidth = smokeTest_
+        ? kSmokeTestPreviewSize
+        : std::clamp(
+              static_cast<uint32_t>(std::ceil(width)),
+              1u,
+              kMaxViewportPreviewSize);
+    const uint32_t previewHeight = smokeTest_
+        ? kSmokeTestPreviewSize
+        : std::clamp(
+              static_cast<uint32_t>(std::ceil(height)),
+              1u,
+              kMaxViewportPreviewSize);
     const bool hasRhiPreview = updateViewportPreview(previewWidth, previewHeight);
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -4170,6 +4231,35 @@ void EditorApplication::drawViewportPanel()
     }
 
     drawList->AddRect(min, max, IM_COL32(58, 67, 80, 255));
+    if (pendingSceneLoad_.valid() || pendingSceneResourcePreparation_) {
+        const scene::SceneLoadProgress progress = pendingSceneResourcePreparation_
+            ? pendingSceneResourceProgress_
+            : pendingSceneLoad_.progress();
+        const float panelWidth = std::min(width * 0.70f, 520.0f * mainScale_);
+        const float panelHeight = 72.0f * mainScale_;
+        const ImVec2 panelMin(
+            min.x + (width - panelWidth) * 0.5f,
+            min.y + 24.0f * mainScale_);
+        const ImVec2 panelMax(panelMin.x + panelWidth, panelMin.y + panelHeight);
+        drawList->AddRectFilled(panelMin, panelMax, IM_COL32(10, 12, 16, 220), 5.0f * mainScale_);
+        drawList->AddRect(panelMin, panelMax, IM_COL32(100, 115, 138, 255), 5.0f * mainScale_);
+        const std::string label = std::string("Loading scene - ") + scene::sceneLoadPhaseName(progress.phase);
+        drawList->AddText(
+            ImVec2(panelMin.x + 12.0f * mainScale_, panelMin.y + 10.0f * mainScale_),
+            IM_COL32(235, 238, 242, 255),
+            label.c_str());
+        const ImVec2 barMin(
+            panelMin.x + 12.0f * mainScale_,
+            panelMin.y + 42.0f * mainScale_);
+        const ImVec2 barMax(
+            panelMax.x - 12.0f * mainScale_,
+            panelMin.y + 58.0f * mainScale_);
+        drawList->AddRectFilled(barMin, barMax, IM_COL32(35, 40, 48, 255), 3.0f * mainScale_);
+        const ImVec2 fillMax(
+            barMin.x + (barMax.x - barMin.x) * scene::clampSceneLoadFraction(progress.fraction),
+            barMax.y);
+        drawList->AddRectFilled(barMin, fillMax, IM_COL32(71, 140, 255, 255), 3.0f * mainScale_);
+    }
     drawViewportGizmo(min, max);
     drawList->PopClipRect();
 
@@ -4294,6 +4384,10 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
 bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
 {
     if (device_ == nullptr || graphExecutor_ == nullptr || viewportSampler_ == VK_NULL_HANDLE) {
+        return false;
+    }
+    if ((pendingSceneLoad_.valid() || pendingSceneResourcePreparation_) &&
+        !scene_.valid() && !viewportPreviewValid_) {
         return false;
     }
 
@@ -4461,6 +4555,9 @@ bool EditorApplication::renderVulkanFrame()
         return false;
     }
 
+    if (smokeTest_) {
+        spdlog::info("[Smoke] Begin editor Vulkan frame");
+    }
     render::Result result = frameFence_->wait();
     if (!result) {
         spdlog::error("frameFence wait failed with Result {}", render::resultToString(result));
@@ -4471,6 +4568,9 @@ bool EditorApplication::renderVulkanFrame()
     {
         auto profileScope = profiler_.scope("Acquire Swapchain Image");
         result = swapchain_->acquireNextImage(*imageAvailableSemaphore_, imageIndex);
+    }
+    if (smokeTest_) {
+        spdlog::info("[Smoke] Acquired swapchain image {}", imageIndex);
     }
     if (!result) {
         if (render::hasError(result, render::Error::OutOfDate)) {
@@ -4526,6 +4626,9 @@ bool EditorApplication::renderVulkanFrame()
             endFrameLabel();
             return false;
         }
+    }
+    if (smokeTest_) {
+        spdlog::info("[Smoke] Recorded RenderGraph preview");
     }
 
     render::Texture* swapchainTexture = swapchain_->texture(imageIndex);
@@ -4637,6 +4740,9 @@ bool EditorApplication::renderVulkanFrame()
         spdlog::error("graphicsQueue submit failed with Result {}", render::resultToString(result));
         return false;
     }
+    if (smokeTest_) {
+        spdlog::info("[Smoke] Submitted editor frame");
+    }
     {
         auto profileScope = profiler_.scope("Present");
         result = swapchain_->present(*graphicsQueue_, imageIndex, *renderFinishedSemaphores_[imageIndex]);
@@ -4648,6 +4754,10 @@ bool EditorApplication::renderVulkanFrame()
         }
         spdlog::error("swapchain present failed with Result {}", render::resultToString(result));
         return false;
+    }
+
+    if (smokeTest_) {
+        spdlog::info("[Smoke] Presented editor frame");
     }
 
     return true;
@@ -4883,12 +4993,12 @@ void EditorApplication::applyLoadedSceneToRenderGraph(const std::filesystem::pat
         if (node == nullptr) {
             continue;
         }
-        render::RenderGraphProperties properties = node->properties.is_object()
-            ? node->properties
+        render::RenderGraphProperties properties = node->runtimeProperties.is_object()
+            ? node->runtimeProperties
             : render::RenderGraphProperties::object();
         if (!properties.contains("path") || !properties["path"].is_string() || properties["path"] != graphScenePath) {
             properties["path"] = graphScenePath;
-            changed = renderGraph_.setNodeProperties(node->id, std::move(properties)) || changed;
+            changed = renderGraph_.setNodeRuntimeProperties(node->id, std::move(properties)) || changed;
         }
     }
 
@@ -4897,6 +5007,9 @@ void EditorApplication::applyLoadedSceneToRenderGraph(const std::filesystem::pat
     }
 
     historyResources_.invalidateAll();
+    if (graphExecutor_ != nullptr && graphExecutor_->compiled()) {
+        graphExecutor_->syncRuntimeProperties(renderGraph_);
+    }
     viewportPreviewValid_ = false;
     viewportPreviewNeedsRender_ = true;
     renderGraphStatus_ = "Synchronized RenderGraph scene path: " + graphScenePath;
@@ -5057,25 +5170,193 @@ void EditorApplication::loadScene()
         return;
     }
 
-    clearSceneRtx();
-    historyResources_.invalidateAll();
-
     if (path.empty()) {
         sceneStatus_ = "Scene path is empty.";
         return;
     }
 
-    if (!scene_.load(path)) {
-        const scene::LoadResult& loadResult = scene_.lastLoadResult();
-        const std::string error = !loadResult.error.empty()
-            ? loadResult.error
-            : scene_.documentWarning();
-        sceneStatus_ = error.empty()
-            ? "Failed to load scene."
-            : "Failed to load scene: " + error;
-        spdlog::warn("[Startup] Scene load failed: {}", sceneStatus_);
+    cancelSceneLoad();
+    ++sceneLoadGeneration_;
+    pendingSceneLoadPath_ = path;
+    pendingSceneLoad_ = sceneLoader_.request(path);
+    if (!pendingSceneLoad_.valid()) {
+        sceneStatus_ = "Failed to schedule scene load.";
         return;
     }
+    sceneStatus_ = "Loading scene: " + path.string();
+    spdlog::info(
+        "[Startup] Scheduled asynchronous editor scene load generation={} path='{}'",
+        sceneLoadGeneration_,
+        path.string());
+}
+
+void EditorApplication::pollSceneLoad()
+{
+    if (pendingSceneResourcePreparation_) {
+        bool resourcesComplete = false;
+        std::string log;
+        const render::Result result = graphExecutor_->pumpSceneResourcePreparation(
+            2.0,
+            resourcesComplete,
+            pendingSceneResourceProgress_,
+            log);
+        if (!result) {
+            pendingSceneResourcePreparation_ = false;
+            graphExecutor_->cancelSceneResourcePreparation();
+            readySceneLoad_.reset();
+            pendingSceneLoadPath_.clear();
+            sceneStatus_ = log.empty()
+                ? "Failed to prepare scene GPU resources."
+                : "Failed to prepare scene GPU resources: " + log;
+            return;
+        }
+        if (!resourcesComplete) {
+            return;
+        }
+        pendingSceneResourcePreparation_ = false;
+        pendingSceneResourceProgress_.phase = scene::SceneLoadPhase::Finalizing;
+        pendingSceneResourceProgress_.fraction = 0.97f;
+        if (scene_.dirty()) {
+            pendingSceneAction_ = PendingSceneAction::CommitLoadedScene;
+            sceneStatus_ = "New scene is ready; resolve unsaved changes before switching.";
+            return;
+        }
+        commitLoadedScene(std::move(readySceneLoad_));
+        return;
+    }
+
+    if (!pendingSceneLoad_.valid() || !pendingSceneLoad_.complete()) {
+        return;
+    }
+
+    const scene::SceneLoadProgress progress = pendingSceneLoad_.progress();
+    if (progress.status == scene::SceneLoadStatus::Cancelled) {
+        sceneStatus_ = "Scene load cancelled.";
+        pendingSceneLoad_ = {};
+        pendingSceneLoadPath_.clear();
+        return;
+    }
+    if (progress.status == scene::SceneLoadStatus::Failed) {
+        sceneStatus_ = progress.error.empty()
+            ? "Failed to load scene."
+            : "Failed to load scene: " + progress.error;
+        spdlog::warn("[Startup] Scene load failed: {}", sceneStatus_);
+        pendingSceneLoad_ = {};
+        pendingSceneLoadPath_.clear();
+        return;
+    }
+    if (progress.status != scene::SceneLoadStatus::Succeeded) {
+        return;
+    }
+
+    readySceneLoad_ = pendingSceneLoad_.takeResult();
+    if (readySceneLoad_ == nullptr) {
+        sceneStatus_ = "Scene load completed without a scene result.";
+        pendingSceneLoad_ = {};
+        pendingSceneLoadPath_.clear();
+        return;
+    }
+    pendingSceneLoad_ = {};
+
+    if (device_ != nullptr &&
+        graphExecutor_ != nullptr &&
+        device_->capabilities().rayTracingAccelerationStructure &&
+        device_->capabilities().rayQuery) {
+        render::RenderGraphProperties properties = render::RenderGraphProperties::object();
+        properties["path"] = displayPathForProperty(readySceneLoad_->sourcePath());
+        for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
+            if (!isSceneAwareRenderPassType(node.type) || !node.properties.is_object()) {
+                continue;
+            }
+            if (node.properties.contains("environment") &&
+                node.properties["environment"].is_object()) {
+                properties["environment"] = node.properties["environment"];
+                break;
+            }
+        }
+        std::string log;
+        const render::Result result = graphExecutor_->beginSceneResourcePreparation(
+            *device_,
+            properties,
+            *readySceneLoad_,
+            log);
+        if (!result) {
+            readySceneLoad_.reset();
+            pendingSceneLoadPath_.clear();
+            sceneStatus_ = log.empty()
+                ? "Failed to begin scene GPU resource preparation."
+                : "Failed to begin scene GPU resource preparation: " + log;
+            return;
+        }
+        pendingSceneResourcePreparation_ = true;
+        pendingSceneResourceProgress_ = progress;
+        pendingSceneResourceProgress_.status = scene::SceneLoadStatus::Running;
+        pendingSceneResourceProgress_.phase = scene::SceneLoadPhase::GpuUpload;
+        pendingSceneResourceProgress_.fraction = 0.65f;
+        sceneStatus_ = "Preparing scene GPU resources while the current scene remains active.";
+        return;
+    }
+    if (scene_.dirty()) {
+        pendingSceneAction_ = PendingSceneAction::CommitLoadedScene;
+        sceneStatus_ = "New scene is ready; resolve unsaved changes before switching.";
+        return;
+    }
+    commitLoadedScene(std::move(readySceneLoad_));
+}
+
+void EditorApplication::cancelSceneLoad()
+{
+    if (pendingSceneLoad_.valid() && !pendingSceneLoad_.complete()) {
+        (void)pendingSceneLoad_.cancel();
+    }
+    pendingSceneLoad_ = {};
+    if (pendingSceneResourcePreparation_ && graphExecutor_ != nullptr) {
+        graphExecutor_->cancelSceneResourcePreparation();
+    }
+    pendingSceneResourcePreparation_ = false;
+    pendingSceneResourceProgress_ = {};
+    readySceneLoad_.reset();
+    pendingSceneLoadPath_.clear();
+    if (pendingSceneAction_ == PendingSceneAction::CommitLoadedScene) {
+        pendingSceneAction_ = PendingSceneAction::None;
+    }
+}
+
+bool EditorApplication::waitForPendingSceneLoad(uint32_t timeoutMilliseconds)
+{
+    if (!pendingSceneLoad_.valid() && !pendingSceneResourcePreparation_) {
+        return true;
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeoutMilliseconds);
+    while ((pendingSceneLoad_.valid() || pendingSceneResourcePreparation_) &&
+           std::chrono::steady_clock::now() < deadline) {
+        pollSceneLoad();
+        if (!pendingSceneLoad_.valid() && !pendingSceneResourcePreparation_) {
+            return scene_.valid();
+        }
+        SDL_Delay(1);
+    }
+    return !pendingSceneLoad_.valid() && !pendingSceneResourcePreparation_ && scene_.valid();
+}
+
+void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> loadedScene)
+{
+    if (loadedScene == nullptr || !loadedScene->valid()) {
+        sceneStatus_ = "Cannot commit an invalid loaded scene.";
+        return;
+    }
+
+    clearSceneRtx();
+    if (graphExecutor_ != nullptr) {
+        graphExecutor_->acceptSceneResourcePreparation();
+    }
+    historyResources_.invalidateAll();
+    scene_ = std::move(*loadedScene);
+    pendingSceneLoad_ = {};
+    pendingSceneResourcePreparation_ = false;
+    pendingSceneResourceProgress_ = {};
+    pendingSceneLoadPath_.clear();
 
     sceneSelection_ = SceneSelection{};
     resetTransformHistory();
@@ -5084,7 +5365,7 @@ void EditorApplication::loadScene()
     addRecentScenePath(sourcePath);
     applyLoadedSceneToRenderGraph(sourcePath);
     applyLoadedSceneCamera();
-    buildSceneRtx();
+    sceneRtxStatus_ = "RTX AS will be prepared by the active render pass.";
 
     const scene::SceneStats& stats = scene_.stats();
     sceneStatus_ = "Loaded " + sourcePath.string() + " (" + std::to_string(stats.renderNodeCount) +

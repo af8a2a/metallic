@@ -20,6 +20,13 @@ struct SceneRtxStats {
     uint64_t scratchBytes = 0;
 };
 
+enum class SceneRtxBuildState : uint8_t {
+    Idle,
+    Building,
+    Ready,
+    Failed,
+};
+
 struct SceneClusterRtxStats {
     uint32_t clasCount = 0;
     uint32_t clusterBlasCount = 0;
@@ -64,6 +71,9 @@ public:
     SceneRtxBuilder& operator=(const SceneRtxBuilder&) = delete;
 
     Result build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
+    Result beginBuild(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
+    bool pollBuild();
+    SceneRtxBuildState buildState() const;
     Result updateInstanceTransforms(
         Device& device,
         Queue& queue,
@@ -78,6 +88,12 @@ private:
     friend class SceneRayQueryProgram;
 
     struct Impl;
+    Result buildInternal(
+        Device& device,
+        Queue& queue,
+        const scene::Scene& scene,
+        bool waitForCompletion,
+        std::string& log);
     std::unique_ptr<Impl> impl_;
 };
 

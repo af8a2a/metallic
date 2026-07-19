@@ -61,6 +61,8 @@ inline constexpr const char* kScenePathTraceShaderModuleName = "ScenePathTrace";
 inline constexpr const char* kScenePathTraceEntryPoint = "scenePathTraceMain";
 inline constexpr const char* kSceneRtxdiShaderModuleName = "SceneRtxdi";
 inline constexpr const char* kSceneRtxdiEntryPoint = "sceneRtxdiMain";
+inline constexpr const char* kRtxdiConfidenceShaderModuleName = "RtxdiConfidence";
+inline constexpr const char* kRtxdiConfidenceEntryPoint = "rtxdiConfidenceMain";
 inline constexpr const char* kRtxdiCompositeShaderModuleName = "RtxdiComposite";
 inline constexpr const char* kRtxdiCompositeEntryPoint = "rtxdiCompositeMain";
 inline constexpr const char* kScenePathTraceGuidesShaderModuleName = "ScenePathTraceGuides";
@@ -513,6 +515,23 @@ struct SceneRtxdiPush {
 };
 
 static_assert(sizeof(SceneRtxdiPush) == 256);
+
+struct RtxdiConfidencePush {
+    uint32_t mode = 0;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t gradientWidth = 1;
+    uint32_t gradientHeight = 1;
+    uint32_t hasHistory = 0;
+    uint32_t filterStep = 1;
+    uint32_t padding0 = 0;
+    float darknessBias = 0.000244140625f;
+    float sensitivity = 8.0f;
+    float blendFactor = 1.0f;
+    float padding1 = 0.0f;
+};
+
+static_assert(sizeof(RtxdiConfidencePush) == 48);
 
 struct RtxdiCompositePush {
     uint32_t width = 1;
