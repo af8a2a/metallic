@@ -17,6 +17,7 @@
                     "rotationDegrees": 0.0,
                     "visible": true
                 },
+                "freezeCullingCamera": false,
                 "instanceFrustumCull": true,
                 "instanceHzbCull": true,
                 "meshletFrustumCull": true,

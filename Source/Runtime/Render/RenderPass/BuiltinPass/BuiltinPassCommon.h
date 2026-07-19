@@ -428,6 +428,7 @@ struct GPUDrivenPreviewGpuInstance {
 };
 
 struct GPUDrivenPreviewGpuParams {
+    // Culling camera. This matches the render camera unless culling is frozen.
     float eye[4] = {};
     float center[4] = {};
     float upProjection[4] = {};
@@ -439,6 +440,12 @@ struct GPUDrivenPreviewGpuParams {
     float previousUpProjection[4] = {};
     float previousViewport[4] = {};
     float previousClipOrtho[4] = {};
+    // Viewport camera used only to project the surviving meshlets.
+    float renderEye[4] = {};
+    float renderCenter[4] = {};
+    float renderUpProjection[4] = {};
+    float renderViewport[4] = {};
+    float renderClipOrtho[4] = {};
     uint32_t mode = kGPUDrivenPreviewModeMeshlet;
     uint32_t meshletOffset = 0;
     uint32_t meshletCount = 0;
@@ -477,12 +484,12 @@ struct GPUDrivenPreviewUserPush {
     uint32_t visibilityImage = 0;
     uint32_t passIndex = 0;
     uint32_t mipLevel = 0;
-    uint32_t padding = 0;
+    uint32_t projectWithCullingCamera = 0;
 };
 
 static_assert(sizeof(GPUDrivenPreviewGpuMeshlet) == 96);
 static_assert(sizeof(GPUDrivenPreviewGpuInstance) == 32);
-static_assert(sizeof(GPUDrivenPreviewGpuParams) == 224);
+static_assert(sizeof(GPUDrivenPreviewGpuParams) == 304);
 static_assert(sizeof(GPUDrivenPreviewUserPush) == 80);
 
 struct SceneMaterialVisualizationPush {

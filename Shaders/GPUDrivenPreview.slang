@@ -30,7 +30,7 @@ struct GPUDrivenPreviewPush
     uint visibilityImage;
     uint passIndex;
     uint mipLevel;
-    uint padding;
+    uint projectWithCullingCamera;
 };
 
 struct SceneTransform
@@ -82,6 +82,11 @@ struct GPUDrivenPreviewParams
     float4 previousUpProjection;
     float4 previousViewport;
     float4 previousClipOrtho;
+    float4 renderEye;
+    float4 renderCenter;
+    float4 renderUpProjection;
+    float4 renderViewport;
+    float4 renderClipOrtho;
     uint mode;
     uint meshletOffset;
     uint meshletCount;
@@ -148,7 +153,7 @@ float3 transformNormal(SceneTransform transform, float3 localNormal)
         float3(0.0, 0.0, 1.0));
 }
 
-CameraData currentCamera(GPUDrivenPreviewParams params)
+CameraData cullingCamera(GPUDrivenPreviewParams params)
 {
     CameraData camera;
     camera.eye = params.eye;
@@ -159,7 +164,18 @@ CameraData currentCamera(GPUDrivenPreviewParams params)
     return camera;
 }
 
-CameraData previousCamera(GPUDrivenPreviewParams params)
+CameraData renderCamera(GPUDrivenPreviewParams params)
+{
+    CameraData camera;
+    camera.eye = params.renderEye;
+    camera.center = params.renderCenter;
+    camera.upProjection = params.renderUpProjection;
+    camera.viewport = params.renderViewport;
+    camera.clipOrtho = params.renderClipOrtho;
+    return camera;
+}
+
+CameraData previousCullingCamera(GPUDrivenPreviewParams params)
 {
     CameraData camera;
     camera.eye = params.previousEye;
@@ -359,7 +375,7 @@ bool meshletVisible(
     SceneTransform transform,
     GPUDrivenPreviewParams params)
 {
-    CameraData camera = currentCamera(params);
+    CameraData camera = cullingCamera(params);
     float radius = max(meshlet.boundingSphere.w * transformMaxScale(transform), 0.0);
     float3 center = transformPoint(transform, meshlet.boundingSphere.xyz);
     if ((params.cullingFlags & kCullMeshletFrustum) != 0 &&
@@ -427,7 +443,7 @@ void gpuDrivenPreviewInstanceCullMain(
     SceneTransform transform = transforms[instance.transformIndex];
     float3 center = transformPoint(transform, instance.boundingSphere.xyz);
     float radius = max(instance.boundingSphere.w * transformMaxScale(transform), 0.000001);
-    CameraData camera = currentCamera(params);
+    CameraData camera = cullingCamera(params);
 
     if ((params.cullingFlags & kCullInstanceFrustum) != 0 &&
         !sphereInsideFrustum(center, radius, camera)) {
@@ -442,7 +458,7 @@ void gpuDrivenPreviewInstanceCullMain(
 
     uint currentHzb = params.frameIndex & 1u;
     uint hzbIndex = push.passIndex == 0 ? (currentHzb ^ 1u) : currentHzb;
-    CameraData hzbCamera = push.passIndex == 0 ? previousCamera(params) : camera;
+    CameraData hzbCamera = push.passIndex == 0 ? previousCullingCamera(params) : camera;
     bool occluded = sphereOccluded(center, radius, hzbCamera, params, push, hzbIndex);
     visibility[instanceIndex] = occluded ? (push.passIndex == 0 ? 2u : 0u) :
         (push.passIndex == 0 ? 1u : 3u);
@@ -537,7 +553,9 @@ void gpuDrivenPreviewMeshMain(
         if (vertexIndex < vertexCount) {
             uint positionIndex = meshletVertices[meshlet.vertexOffset + vertexIndex];
             float3 worldPosition = transformPoint(transform, positions[positionIndex].xyz);
-            float4 position = projectPosition(worldPosition, currentCamera(params));
+            CameraData projectionCamera = push.projectWithCullingCamera != 0u ?
+                cullingCamera(params) : renderCamera(params);
+            float4 position = projectPosition(worldPosition, projectionCamera);
             position.y = -position.y;
             vertices[vertexIndex].position = position;
             vertices[vertexIndex].visibilityId = meshletIndex + 1u;

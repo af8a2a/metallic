@@ -19,6 +19,8 @@ build-msvc-x64\Source\MetallicGPUDrivenSample.exe --smoke-test
 
 当前 deferred 阶段不读取材质，也不做实际光照。双面材质会跳过 normal-cone backface 剔除。
 
+启用固定剔除相机后，Pass 会在切换瞬间锁存当前相机的完整 pose、投影和裁剪参数。实例视锥/HZB、meshlet 包围球和 normal cone 都继续使用这台虚拟相机；viewport 相机只负责投影幸存的 meshlet，因此可以自由移动到视锥外观察剔除结果。固定模式使用独立的内部 visibility/depth 生成 2-pass HZB，避免把观察相机的深度误用于虚拟相机剔除。
+
 ## 可调开关
 
 `GPUDrivenPreviewPass` 暴露以下运行时设置，默认全部开启：
@@ -27,6 +29,7 @@ build-msvc-x64\Source\MetallicGPUDrivenSample.exe --smoke-test
 - `instanceHzbCull`
 - `meshletFrustumCull`
 - `meshletNormalConeCull`
+- `freezeCullingCamera`：勾选时捕获当前相机作为固定剔除相机；取消勾选后恢复使用实时 viewport 相机剔除。
 
 ## 验证
 

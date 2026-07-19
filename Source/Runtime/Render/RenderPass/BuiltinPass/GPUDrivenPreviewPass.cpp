@@ -10,6 +10,13 @@ struct GPUDrivenPreviewMeshletRange {
     uint32_t count = 0;
 };
 
+struct GPUDrivenPreviewCullingTargets {
+    std::unique_ptr<Texture> visibility;
+    std::unique_ptr<TextureView> visibilityView;
+    std::unique_ptr<Texture> depth;
+    std::unique_ptr<TextureView> depthView;
+};
+
 class GPUDrivenPreviewPass final : public RasterPass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
@@ -44,6 +51,7 @@ public:
             runtimeBoolSetting("instanceHzbCull", "Instance HZB Cull", true),
             runtimeBoolSetting("meshletFrustumCull", "Meshlet Sphere / Frustum Cull", true),
             runtimeBoolSetting("meshletNormalConeCull", "Meshlet Normal Cone Cull", true),
+            runtimeBoolSetting("freezeCullingCamera", "Freeze Culling Camera", false),
         };
         appendCameraRuntimeSettings(
             settings,
@@ -125,6 +133,9 @@ public:
         previousCameraValid_ = false;
         internalBuffersInitialized_ = false;
         frameBuffersInitialized_ = false;
+        cullingTargetsInitialized_ = false;
+        freezeCullingCamera_ = false;
+        frozenCullingCameraValid_ = false;
 
         GPUDrivenPreviewGpuParams params;
         buildParams(
@@ -264,10 +275,19 @@ public:
         if (!result) {
             return result;
         }
+        result = createCullingTargets(
+            *context.device,
+            frameWidth_,
+            frameHeight_,
+            cullingTargets_,
+            log);
+        if (!result) {
+            return result;
+        }
 
         result = context.device->createBindlessHeap(
             BindlessHeapDesc{
-                .maxSampledImages = 2,
+                .maxSampledImages = 3,
                 .maxBuffers = 15,
             },
             bindlessHeap_);
@@ -364,6 +384,21 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
+        result = bindlessHeap_->allocateSampledImage(cullingDepthImageHandle_);
+        if (!result || !cullingDepthImageHandle_.valid()) {
+            log += resultMessage("allocateSampledImage(GPUDrivenPreviewPass culling depth)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = bindlessHeap_->writeSampledImage(
+            cullingDepthImageHandle_,
+            *cullingTargets_.depthView,
+            ResourceState::ShaderRead);
+        if (!result) {
+            log += resultMessage("writeSampledImage(GPUDrivenPreviewPass culling depth)", result);
+            log += '\n';
+            return result;
+        }
 
         result = createPipelines(*context.device, log);
         if (!result) {
@@ -423,6 +458,8 @@ public:
             bindlessHeap_ == nullptr ||
             visibilityPipeline_ == nullptr ||
             compositePipeline_ == nullptr ||
+            cullingTargets_.visibilityView == nullptr ||
+            cullingTargets_.depthView == nullptr ||
             drawTaskCount_ == 0) {
             return makeError(Error::InvalidArgument);
         }
@@ -456,18 +493,63 @@ public:
         initializeInternalBuffers(commandBuffer);
 
         dispatchCulling(commandBuffer, 0);
-        drawVisibility(commandBuffer, visibility, depth, 0, LoadOp::Clear);
-
-        transitionTexture(commandBuffer, *depth.texture(), ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
-        buildHzb(commandBuffer);
-        transitionTexture(commandBuffer, *depth.texture(), ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
+        if (freezeCullingCamera_) {
+            drawVisibility(
+                commandBuffer,
+                *cullingTargets_.visibilityView,
+                *cullingTargets_.depthView,
+                0,
+                LoadOp::Clear,
+                true);
+            transitionTexture(
+                commandBuffer,
+                *cullingTargets_.depth,
+                ResourceState::DepthStencilAttachment,
+                ResourceState::ShaderRead);
+            buildHzb(commandBuffer);
+            transitionTexture(
+                commandBuffer,
+                *cullingTargets_.depth,
+                ResourceState::ShaderRead,
+                ResourceState::DepthStencilAttachment);
+            drawVisibility(commandBuffer, *visibility.view(), *depth.view(), 0, LoadOp::Clear);
+        } else {
+            drawVisibility(commandBuffer, *visibility.view(), *depth.view(), 0, LoadOp::Clear);
+            transitionTexture(commandBuffer, *depth.texture(), ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
+            buildHzb(commandBuffer);
+            transitionTexture(commandBuffer, *depth.texture(), ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
+        }
 
         dispatchCulling(commandBuffer, 1);
-        drawVisibility(commandBuffer, visibility, depth, 1, LoadOp::Load);
+        if (freezeCullingCamera_) {
+            drawVisibility(
+                commandBuffer,
+                *cullingTargets_.visibilityView,
+                *cullingTargets_.depthView,
+                1,
+                LoadOp::Load,
+                true);
+            transitionTexture(
+                commandBuffer,
+                *cullingTargets_.depth,
+                ResourceState::DepthStencilAttachment,
+                ResourceState::ShaderRead);
+            buildHzb(commandBuffer);
+            transitionTexture(
+                commandBuffer,
+                *cullingTargets_.depth,
+                ResourceState::ShaderRead,
+                ResourceState::DepthStencilAttachment);
+            drawVisibility(commandBuffer, *visibility.view(), *depth.view(), 1, LoadOp::Load);
+        } else {
+            drawVisibility(commandBuffer, *visibility.view(), *depth.view(), 1, LoadOp::Load);
+        }
 
         transitionTexture(commandBuffer, *visibility.texture(), ResourceState::ColorAttachment, ResourceState::ShaderRead);
         transitionTexture(commandBuffer, *depth.texture(), ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
-        buildHzb(commandBuffer);
+        if (!freezeCullingCamera_) {
+            buildHzb(commandBuffer);
+        }
         dispatchDeferred(commandBuffer);
         barrierBuffer(commandBuffer, *deferredColorBuffer_, ResourceState::General, ResourceState::General);
         transitionTexture(commandBuffer, *visibility.texture(), ResourceState::ShaderRead, ResourceState::ColorAttachment);
@@ -532,6 +614,73 @@ private:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
+        return {};
+    }
+
+    static Result createCullingTargets(
+        Device& device,
+        uint32_t width,
+        uint32_t height,
+        GPUDrivenPreviewCullingTargets& outTargets,
+        std::string& log)
+    {
+        GPUDrivenPreviewCullingTargets targets;
+        Result result = device.createTexture(
+            TextureDesc{
+                .type = TextureType::Texture2D,
+                .usage = TextureUsageBits::ColorAttachment,
+                .format = Format::R32Uint,
+                .width = std::max(width, 1u),
+                .height = std::max(height, 1u),
+                .depth = 1,
+                .mipCount = 1,
+                .layerCount = 1,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            targets.visibility);
+        if (!result || targets.visibility == nullptr) {
+            log += resultMessage("createTexture(GPUDrivenPreviewPass culling visibility)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = device.createTextureView(
+            *targets.visibility,
+            TextureViewDesc{.format = Format::R32Uint},
+            targets.visibilityView);
+        if (!result || targets.visibilityView == nullptr) {
+            log += resultMessage("createTextureView(GPUDrivenPreviewPass culling visibility)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = device.createTexture(
+            TextureDesc{
+                .type = TextureType::Texture2D,
+                .usage = TextureUsageBits::DepthStencilAttachment | TextureUsageBits::Sampled,
+                .format = Format::D32Sfloat,
+                .width = std::max(width, 1u),
+                .height = std::max(height, 1u),
+                .depth = 1,
+                .mipCount = 1,
+                .layerCount = 1,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            targets.depth);
+        if (!result || targets.depth == nullptr) {
+            log += resultMessage("createTexture(GPUDrivenPreviewPass culling depth)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = device.createTextureView(
+            *targets.depth,
+            TextureViewDesc{.format = Format::D32Sfloat},
+            targets.depthView);
+        if (!result || targets.depthView == nullptr) {
+            log += resultMessage("createTextureView(GPUDrivenPreviewPass culling depth)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        outTargets = std::move(targets);
         return {};
     }
 
@@ -648,7 +797,10 @@ private:
         return createCompute(*deferredShader_, deferredPipeline_, "deferred");
     }
 
-    GPUDrivenPreviewUserPush makePush(uint32_t passIndex = 0, uint32_t mipLevel = 0) const
+    GPUDrivenPreviewUserPush makePush(
+        uint32_t passIndex = 0,
+        uint32_t mipLevel = 0,
+        bool projectWithCullingCamera = false) const
     {
         return GPUDrivenPreviewUserPush{
             .positionBuffer = positionHandle_.index,
@@ -666,10 +818,13 @@ private:
             .hzbBuffer0 = hzbHandles_[0].index,
             .hzbBuffer1 = hzbHandles_[1].index,
             .deferredColorBuffer = deferredColorHandle_.index,
-            .depthImage = depthImageHandle_.index,
+            .depthImage = freezeCullingCamera_
+                ? cullingDepthImageHandle_.index
+                : depthImageHandle_.index,
             .visibilityImage = visibilityImageHandle_.index,
             .passIndex = passIndex,
             .mipLevel = mipLevel,
+            .projectWithCullingCamera = projectWithCullingCamera ? 1u : 0u,
         };
     }
 
@@ -736,6 +891,26 @@ private:
             });
             frameBuffersInitialized_ = true;
         }
+
+        if (!cullingTargetsInitialized_) {
+            const std::array<TextureBarrierDesc, 2> barriers{
+                TextureBarrierDesc{
+                    .texture = cullingTargets_.visibility.get(),
+                    .before = ResourceState::Undefined,
+                    .after = ResourceState::ColorAttachment,
+                },
+                TextureBarrierDesc{
+                    .texture = cullingTargets_.depth.get(),
+                    .before = ResourceState::Undefined,
+                    .after = ResourceState::DepthStencilAttachment,
+                },
+            };
+            commandBuffer.barrier(BarrierDesc{
+                .textures = barriers.data(),
+                .textureCount = static_cast<uint32_t>(barriers.size()),
+            });
+            cullingTargetsInitialized_ = true;
+        }
     }
 
     void dispatchCulling(CommandBuffer& commandBuffer, uint32_t passIndex)
@@ -774,10 +949,11 @@ private:
 
     void drawVisibility(
         CommandBuffer& commandBuffer,
-        TextureHandle visibility,
-        TextureHandle depth,
+        TextureView& visibility,
+        TextureView& depth,
         uint32_t passIndex,
-        LoadOp loadOp)
+        LoadOp loadOp,
+        bool projectWithCullingCamera = false)
     {
         const Rect renderArea{
             .x = 0,
@@ -786,14 +962,14 @@ private:
             .height = frameHeight_,
         };
         const RenderingAttachmentDesc visibilityAttachment{
-            .view = visibility.view(),
+            .view = &visibility,
             .state = ResourceState::ColorAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
         };
         const RenderingAttachmentDesc depthAttachment{
-            .view = depth.view(),
+            .view = &depth,
             .state = ResourceState::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
@@ -815,7 +991,7 @@ private:
         });
         commandBuffer.setScissor(renderArea);
         commandBuffer.bindGraphicsPipeline(*visibilityPipeline_);
-        const GPUDrivenPreviewUserPush push = makePush(passIndex);
+        const GPUDrivenPreviewUserPush push = makePush(passIndex, 0, projectWithCullingCamera);
         commandBuffer.pushBindlessData(&push, sizeof(push));
         commandBuffer.drawMeshTasksIndirect(*indirectBuffers_[passIndex]);
         commandBuffer.endRendering();
@@ -982,6 +1158,7 @@ private:
         const uint64_t elementCount = computeHzbElementCount(width, height, mipCount);
         std::array<std::unique_ptr<Buffer>, 2> resizedHzbBuffers;
         std::unique_ptr<Buffer> resizedDeferredColorBuffer;
+        GPUDrivenPreviewCullingTargets resizedCullingTargets;
         std::string log;
         for (uint32_t bufferIndex = 0; bufferIndex < resizedHzbBuffers.size(); ++bufferIndex) {
             Result result = createDeviceStorageBuffer(
@@ -1007,9 +1184,20 @@ private:
             spdlog::error("[GPUDrivenPreviewPass] {}", log);
             return result;
         }
+        result = createCullingTargets(
+            *device_,
+            width,
+            height,
+            resizedCullingTargets,
+            log);
+        if (!result) {
+            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+            return result;
+        }
 
         hzbBuffers_ = std::move(resizedHzbBuffers);
         deferredColorBuffer_ = std::move(resizedDeferredColorBuffer);
+        cullingTargets_ = std::move(resizedCullingTargets);
         for (uint32_t bufferIndex = 0; bufferIndex < hzbBuffers_.size(); ++bufferIndex) {
             result = bindlessHeap_->writeStorageBuffer(hzbHandles_[bufferIndex], *hzbBuffers_[bufferIndex]);
             if (!result) {
@@ -1017,6 +1205,13 @@ private:
             }
         }
         result = bindlessHeap_->writeStorageBuffer(deferredColorHandle_, *deferredColorBuffer_);
+        if (!result) {
+            return result;
+        }
+        result = bindlessHeap_->writeSampledImage(
+            cullingDepthImageHandle_,
+            *cullingTargets_.depthView,
+            ResourceState::ShaderRead);
         if (!result) {
             return result;
         }
@@ -1035,6 +1230,7 @@ private:
         hzbValid_ = false;
         previousCameraValid_ = false;
         frameBuffersInitialized_ = false;
+        cullingTargetsInitialized_ = false;
         return {};
     }
 
@@ -1204,6 +1400,37 @@ private:
         out[1] = value.y;
         out[2] = value.z;
         out[3] = w;
+    }
+
+    static void copyCullingCamera(
+        const GPUDrivenPreviewGpuParams& source,
+        GPUDrivenPreviewGpuParams& destination)
+    {
+        std::memcpy(destination.eye, source.eye, sizeof(destination.eye));
+        std::memcpy(destination.center, source.center, sizeof(destination.center));
+        std::memcpy(destination.upProjection, source.upProjection, sizeof(destination.upProjection));
+        std::memcpy(destination.viewport, source.viewport, sizeof(destination.viewport));
+        std::memcpy(destination.clipOrtho, source.clipOrtho, sizeof(destination.clipOrtho));
+    }
+
+    static void copyCullingCameraToPrevious(
+        const GPUDrivenPreviewGpuParams& source,
+        GPUDrivenPreviewGpuParams& destination)
+    {
+        std::memcpy(destination.previousEye, source.eye, sizeof(destination.previousEye));
+        std::memcpy(destination.previousCenter, source.center, sizeof(destination.previousCenter));
+        std::memcpy(destination.previousUpProjection, source.upProjection, sizeof(destination.previousUpProjection));
+        std::memcpy(destination.previousViewport, source.viewport, sizeof(destination.previousViewport));
+        std::memcpy(destination.previousClipOrtho, source.clipOrtho, sizeof(destination.previousClipOrtho));
+    }
+
+    static void copyCullingCameraToRender(GPUDrivenPreviewGpuParams& params)
+    {
+        std::memcpy(params.renderEye, params.eye, sizeof(params.renderEye));
+        std::memcpy(params.renderCenter, params.center, sizeof(params.renderCenter));
+        std::memcpy(params.renderUpProjection, params.upProjection, sizeof(params.renderUpProjection));
+        std::memcpy(params.renderViewport, params.viewport, sizeof(params.renderViewport));
+        std::memcpy(params.renderClipOrtho, params.clipOrtho, sizeof(params.renderClipOrtho));
     }
 
     struct PrimitiveInstanceRef {
@@ -1564,6 +1791,7 @@ private:
         outParams.clipOrtho[1] = zFar;
         outParams.clipOrtho[2] = orthoHeight;
         outParams.clipOrtho[3] = kDefaultReversedZ ? 1.0f : 0.0f;
+        copyCullingCameraToRender(outParams);
         outParams.clearColor[0] = 0.015f;
         outParams.clearColor[1] = 0.018f;
         outParams.clearColor[2] = 0.024f;
@@ -1617,6 +1845,20 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
+        const bool freezeCullingCamera = boolProperty(
+            &properties,
+            "freezeCullingCamera",
+            false);
+        const bool freezeStateChanged = freezeCullingCamera != freezeCullingCamera_;
+        if (freezeStateChanged) {
+            frameIndex_ = 0;
+            hzbValid_ = false;
+            previousCameraValid_ = false;
+            if (!freezeCullingCamera) {
+                frozenCullingCameraValid_ = false;
+            }
+        }
+
         GPUDrivenPreviewGpuParams params;
         buildParams(
             width,
@@ -1632,6 +1874,19 @@ private:
             previousCameraValid_ ? &previousParams_ : nullptr,
             params);
 
+        if (freezeCullingCamera &&
+            (!frozenCullingCameraValid_ || freezeStateChanged)) {
+            frozenCullingCamera_ = params;
+            frozenCullingCameraValid_ = true;
+        }
+        if (freezeCullingCamera) {
+            copyCullingCamera(frozenCullingCamera_, params);
+        }
+
+        const GPUDrivenPreviewGpuParams& previousCullingCamera =
+            previousCameraValid_ ? previousParams_ : params;
+        copyCullingCameraToPrevious(previousCullingCamera, params);
+
         void* mapped = paramsBuffer_->map();
         if (mapped == nullptr) {
             return makeError(Error::Failure);
@@ -1642,6 +1897,7 @@ private:
         activeMeshletCount_ = params.meshletCount;
         previousParams_ = params;
         previousCameraValid_ = true;
+        freezeCullingCamera_ = freezeCullingCamera;
         return {};
     }
 
@@ -1657,6 +1913,7 @@ private:
     std::array<std::unique_ptr<Buffer>, 2> indirectBuffers_;
     std::array<std::unique_ptr<Buffer>, 2> hzbBuffers_;
     std::unique_ptr<Buffer> deferredColorBuffer_;
+    GPUDrivenPreviewCullingTargets cullingTargets_;
     Device* device_ = nullptr;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     BindlessHandle positionHandle_;
@@ -1673,6 +1930,7 @@ private:
     BindlessHandle deferredColorHandle_;
     BindlessHandle depthImageHandle_;
     BindlessHandle visibilityImageHandle_;
+    BindlessHandle cullingDepthImageHandle_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<ShaderModule> resetShader_;
@@ -1694,6 +1952,7 @@ private:
     GPUDrivenPreviewMeshletRange baseMeshletRange_;
     std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges_;
     GPUDrivenPreviewGpuParams previousParams_;
+    GPUDrivenPreviewGpuParams frozenCullingCamera_;
     uint32_t drawTaskCount_ = 0;
     uint32_t activeMeshletCount_ = 0;
     uint32_t instanceCount_ = 0;
@@ -1706,6 +1965,9 @@ private:
     bool previousCameraValid_ = false;
     bool internalBuffersInitialized_ = false;
     bool frameBuffersInitialized_ = false;
+    bool cullingTargetsInitialized_ = false;
+    bool freezeCullingCamera_ = false;
+    bool frozenCullingCameraValid_ = false;
 };
 
 } // namespace

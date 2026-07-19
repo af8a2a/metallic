@@ -1050,7 +1050,8 @@ public:
         if (!hasBoolRuntimeSetting(*gpuDrivenPreview, "instanceFrustumCull") ||
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "instanceHzbCull") ||
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "meshletFrustumCull") ||
-            !hasBoolRuntimeSetting(*gpuDrivenPreview, "meshletNormalConeCull")) {
+            !hasBoolRuntimeSetting(*gpuDrivenPreview, "meshletNormalConeCull") ||
+            !hasBoolRuntimeSetting(*gpuDrivenPreview, "freezeCullingCamera")) {
             return RhiTestResult::fail("GPUDrivenPreviewPass missing visibility culling runtime settings");
         }
         if (!hasBoolRuntimeSetting(*gpuDrivenStreamAsset, "enableGpuLodSelection")) {
@@ -5192,6 +5193,101 @@ public:
                 " pixels");
         }
 
+        render::RenderGraphNode* gpuDrivenNode = graph.findNode("GPUDriven");
+        if (gpuDrivenNode == nullptr ||
+            !graph.setNodeRuntimeProperty(gpuDrivenNode->id, "camera.fovDegrees", 20.0f)) {
+            return RhiTestResult::fail("failed to configure the GPUDriven culling test camera");
+        }
+        result = preview.render(graph, 192, 192);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass narrow culling-camera render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const std::vector<uint32_t> capturedCullingPixels = preview.pixels();
+
+        if (
+            !graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", true)) {
+            return RhiTestResult::fail("failed to freeze the GPUDriven culling camera");
+        }
+        result = preview.render(graph, 192, 192);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass frozen-camera capture render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        if (preview.pixels() != capturedCullingPixels) {
+            return RhiTestResult::fail(
+                "freezing the GPUDriven culling camera changed the captured view");
+        }
+
+        const render::RenderGraphProperties oppositeEye =
+            render::RenderGraphProperties::array({0.22f, 0.110154f, -0.00153695f});
+        if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "camera.eye", oppositeEye)) {
+            return RhiTestResult::fail("failed to move the GPUDriven observation camera");
+        }
+        result = preview.render(graph, 192, 192);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass frozen-culling observation render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const uint32_t frozenVisiblePixelCount = countVisiblePixels(preview.pixels());
+        if (frozenVisiblePixelCount < 512) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass frozen culling produced too few visible pixels: ") +
+                std::to_string(frozenVisiblePixelCount));
+        }
+        const std::vector<uint32_t> frozenObservationPixels = preview.pixels();
+
+        result = preview.render(graph, 192, 192);
+        if (!result || preview.pixels() != frozenObservationPixels) {
+            return RhiTestResult::fail(
+                "GPUDrivenPreviewPass frozen culling camera was not stable while observing from another view");
+        }
+
+        if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", false)) {
+            return RhiTestResult::fail("failed to restore live GPUDriven camera culling");
+        }
+        result = preview.render(graph, 192, 192);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass restored live-camera render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const uint32_t liveVisiblePixelCount = countVisiblePixels(preview.pixels());
+        if (liveVisiblePixelCount < 512) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass restored live culling produced too few visible pixels: ") +
+                std::to_string(liveVisiblePixelCount));
+        }
+        size_t cullingCameraMismatchCount = 0;
+        for (size_t pixelIndex = 0; pixelIndex < frozenObservationPixels.size(); ++pixelIndex) {
+            cullingCameraMismatchCount +=
+                preview.pixels()[pixelIndex] != frozenObservationPixels[pixelIndex] ? 1u : 0u;
+        }
+        if (cullingCameraMismatchCount < 64) {
+            return RhiTestResult::fail(
+                "disabling the frozen culling camera did not restore view-dependent culling");
+        }
+
+        const render::RenderGraphProperties originalEye =
+            render::RenderGraphProperties::array({-0.0168404f, 0.110154f, 0.22f});
+        if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "camera.eye", originalEye)) {
+            return RhiTestResult::fail("failed to restore the GPUDriven observation camera");
+        }
+        if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "camera.fovDegrees", 60.0f)) {
+            return RhiTestResult::fail("failed to restore the GPUDriven camera FOV");
+        }
+
         result = preview.render(graph, 128, 96);
         if (!result) {
             return RhiTestResult::fail(
@@ -5342,6 +5438,24 @@ public:
                 std::string("SuperSponza stationary meshlet visualization changed ") +
                 std::to_string(mismatchCount) +
                 " pixels");
+        }
+        render::RenderGraphNode* gpuDrivenNode = graph.findNode("GPUDriven");
+        if (gpuDrivenNode == nullptr ||
+            !graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", true)) {
+            return RhiTestResult::fail("failed to freeze the SuperSponza culling camera");
+        }
+        result = preview.render(graph, 256, 256);
+        if (!result || preview.pixels() != firstFramePixels) {
+            return RhiTestResult::fail(
+                "SuperSponza changed when switching to the captured culling camera");
+        }
+        result = preview.render(graph, 256, 256);
+        if (!result || preview.pixels() != firstFramePixels) {
+            return RhiTestResult::fail(
+                "SuperSponza frozen-camera HZB result was not stable");
+        }
+        if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", false)) {
+            return RhiTestResult::fail("failed to restore live SuperSponza camera culling");
         }
         return RhiTestResult::pass(
             std::string("SuperSponza visibility pixels=") + std::to_string(visiblePixelCount));
