@@ -17,6 +17,10 @@
                     "rotationDegrees": 0.0,
                     "visible": true
                 },
+                "instanceFrustumCull": true,
+                "instanceHzbCull": true,
+                "meshletFrustumCull": true,
+                "meshletNormalConeCull": true,
                 "mode": "meshlet",
                 "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"
             },

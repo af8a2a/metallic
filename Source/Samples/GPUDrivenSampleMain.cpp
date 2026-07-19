@@ -17,8 +17,9 @@ void printUsage()
         "MetallicGPUDrivenSample options:\n"
         "  --smoke-test                 Render one frame and exit\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization\n"
+        "  --visibility-buffer          Load the visibility-buffer variant (default)\n"
         "  --streamasset                Load the default meshlet StreamAsset variant\n"
-        "  --legacy-preloaded           Load the legacy fully preloaded variant\n"
+        "  --legacy-preloaded           Alias for the visibility-buffer variant\n"
         "  --rtas-visualization         Load the RTAS visualization variant\n"
         "  --scene <source.gltf>        Override the sample source scene\n"
         "  --streamasset-path <file>    Override the StreamAsset cache path");
@@ -30,7 +31,7 @@ int main(int argc, char** argv)
 {
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
-    const char* sampleId = kGPUDrivenStreamAssetSampleId;
+    const char* sampleId = kGPUDrivenSampleId;
     std::string scenePath;
     std::string streamAssetPath;
     for (int index = 1; index < argc; ++index) {
@@ -51,7 +52,7 @@ int main(int argc, char** argv)
             sampleId = kGPUDrivenStreamAssetSampleId;
             continue;
         }
-        if (argument == "--legacy-preloaded") {
+        if (argument == "--visibility-buffer" || argument == "--legacy-preloaded") {
             sampleId = kGPUDrivenSampleId;
             continue;
         }
@@ -75,7 +76,7 @@ int main(int argc, char** argv)
     }
 
     if (!streamAssetPath.empty() && std::string_view(sampleId) == kGPUDrivenSampleId) {
-        spdlog::error("--streamasset-path cannot be used with --legacy-preloaded");
+        spdlog::error("--streamasset-path cannot be used with the visibility-buffer variant");
         return 1;
     }
 

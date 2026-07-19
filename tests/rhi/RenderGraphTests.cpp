@@ -1017,12 +1017,15 @@ public:
             render::createRenderGraphPass("NrdDenoisePass");
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
+        const std::unique_ptr<render::RenderGraphPass> gpuDrivenPreview =
+            render::createRenderGraphPass("GPUDrivenPreviewPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
             render::createRenderGraphPass("GPUDrivenStreamAssetPass");
         if (pathTrace == nullptr ||
             rtxdi == nullptr ||
             nrdDenoise == nullptr ||
             materialVisualization == nullptr ||
+            gpuDrivenPreview == nullptr ||
             gpuDrivenStreamAsset == nullptr) {
             return RhiTestResult::fail("failed to create passes for runtime settings declaration test");
         }
@@ -1043,6 +1046,12 @@ public:
         }
         if (!hasBoolRuntimeSetting(*materialVisualization, "flipBitangent")) {
             return RhiTestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
+        }
+        if (!hasBoolRuntimeSetting(*gpuDrivenPreview, "instanceFrustumCull") ||
+            !hasBoolRuntimeSetting(*gpuDrivenPreview, "instanceHzbCull") ||
+            !hasBoolRuntimeSetting(*gpuDrivenPreview, "meshletFrustumCull") ||
+            !hasBoolRuntimeSetting(*gpuDrivenPreview, "meshletNormalConeCull")) {
+            return RhiTestResult::fail("GPUDrivenPreviewPass missing visibility culling runtime settings");
         }
         if (!hasBoolRuntimeSetting(*gpuDrivenStreamAsset, "enableGpuLodSelection")) {
             return RhiTestResult::fail("GPUDrivenStreamAssetPass missing Bool runtime setting enableGpuLodSelection");
@@ -2141,11 +2150,48 @@ public:
             return RhiTestResult::fail("GPUDrivenPreview fragment shader produced empty SPIR-V");
         }
 
+        constexpr std::array<const char*, 7> additionalEntryPoints{
+            "gpuDrivenPreviewResetMain",
+            "gpuDrivenPreviewInstanceCullMain",
+            "gpuDrivenPreviewCompactMain",
+            "gpuDrivenPreviewHzbMain",
+            "gpuDrivenPreviewDeferredMain",
+            "gpuDrivenPreviewCompositeVertexMain",
+            "gpuDrivenPreviewCompositeFragmentMain",
+        };
+        size_t additionalWordCount = 0;
+        for (const char* entryPoint : additionalEntryPoints) {
+            render::ShaderCompileResult compile;
+            result = render::compileSlangShaderToSpirv(
+                render::SlangShaderDesc{
+                    .moduleName = "GPUDrivenPreview",
+                    .entryPointName = entryPoint,
+                    .searchPath = kShaderSearchPath,
+                },
+                compile);
+            if (!result) {
+                return RhiTestResult::fail(
+                    std::string("GPUDrivenPreview shader compile returned ") +
+                    toString(result) +
+                    " for " +
+                    entryPoint +
+                    ": " +
+                    compile.diagnostics);
+            }
+            if (compile.spirv.empty()) {
+                return RhiTestResult::fail(
+                    std::string("GPUDrivenPreview shader produced empty SPIR-V for ") + entryPoint);
+            }
+            additionalWordCount += compile.spirv.size();
+        }
+
         return RhiTestResult::pass(
             std::string("compiled GPUDrivenPreview shaders, mesh words=") +
             std::to_string(meshCompile.spirv.size()) +
             ", fragment words=" +
-            std::to_string(fragmentCompile.spirv.size()));
+            std::to_string(fragmentCompile.spirv.size()) +
+            ", additional words=" +
+            std::to_string(additionalWordCount));
     }
 };
 
@@ -5119,6 +5165,62 @@ public:
                 std::string("GPUDrivenPreviewPass produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
+        const std::vector<uint32_t> firstFramePixels = preview.pixels();
+
+        result = preview.render(graph, 192, 192);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass second-frame HZB render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const uint32_t hzbVisiblePixelCount = countVisiblePixels(preview.pixels());
+        if (hzbVisiblePixelCount < 512) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass second-frame HZB render produced too few visible pixels: ") +
+                std::to_string(hzbVisiblePixelCount));
+        }
+        if (preview.pixels() != firstFramePixels) {
+            size_t mismatchCount = 0;
+            for (size_t pixelIndex = 0; pixelIndex < firstFramePixels.size(); ++pixelIndex) {
+                mismatchCount += preview.pixels()[pixelIndex] != firstFramePixels[pixelIndex] ? 1u : 0u;
+            }
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass stationary HZB frame changed ") +
+                std::to_string(mismatchCount) +
+                " pixels");
+        }
+
+        result = preview.render(graph, 128, 96);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass resize-down render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const uint32_t resizedDownVisiblePixelCount = countVisiblePixels(preview.pixels());
+        if (resizedDownVisiblePixelCount < 128) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass resize-down render produced too few visible pixels: ") +
+                std::to_string(resizedDownVisiblePixelCount));
+        }
+
+        result = preview.render(graph, 256, 144);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass resize-up render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const uint32_t resizedUpVisiblePixelCount = countVisiblePixels(preview.pixels());
+        if (resizedUpVisiblePixelCount < 256) {
+            return RhiTestResult::fail(
+                std::string("GPUDrivenPreviewPass resize-up render produced too few visible pixels: ") +
+                std::to_string(resizedUpVisiblePixelCount));
+        }
 
         render::RenderGraph lodGraph;
         lodGraph.setName("GPUDrivenPreviewLodRender");
@@ -5163,6 +5265,86 @@ public:
         }
 
         return RhiTestResult::pass();
+    }
+};
+
+class RenderGraphGPUDrivenSponzaVisibilityRenderTest : public RhiTest {
+public:
+    RenderGraphGPUDrivenSponzaVisibilityRenderTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_gpu_driven_sponza_visibility_render";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(context.enableValidation, false);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip("RenderGraphPreviewRenderer is unsupported");
+            }
+            return RhiTestResult::fail(
+                std::string("RenderGraphPreviewRenderer::initialize returned ") +
+                toString(result));
+        }
+
+        render::RenderGraph graph;
+        graph.setName("GPUDrivenSponzaVisibilityRender");
+        graph.addNode(
+            "GPUDrivenPreviewPass",
+            "GPUDriven",
+            render::RenderGraphProperties{
+                {"path", "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"},
+                {"mode", "meshlet"},
+                {"instanceFrustumCull", true},
+                {"instanceHzbCull", true},
+                {"meshletFrustumCull", true},
+                {"meshletNormalConeCull", true},
+            });
+        graph.markOutput("GPUDriven.color");
+
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("SuperSponza visibility rendering is unsupported: ") + preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("SuperSponza visibility render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+
+        const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
+        if (visiblePixelCount < 2048) {
+            return RhiTestResult::fail(
+                std::string("SuperSponza visibility render produced too few visible pixels: ") +
+                std::to_string(visiblePixelCount));
+        }
+        const std::vector<uint32_t> firstFramePixels = preview.pixels();
+
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("SuperSponza stationary HZB render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        if (preview.pixels() != firstFramePixels) {
+            size_t mismatchCount = 0;
+            for (size_t pixelIndex = 0; pixelIndex < firstFramePixels.size(); ++pixelIndex) {
+                mismatchCount += preview.pixels()[pixelIndex] != firstFramePixels[pixelIndex] ? 1u : 0u;
+            }
+            return RhiTestResult::fail(
+                std::string("SuperSponza stationary meshlet visualization changed ") +
+                std::to_string(mismatchCount) +
+                " pixels");
+        }
+        return RhiTestResult::pass(
+            std::string("SuperSponza visibility pixels=") + std::to_string(visiblePixelCount));
     }
 };
 
@@ -5294,6 +5476,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphMaterialShaderObjectPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassRenderTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenSponzaVisibilityRenderTest);
 METALLIC_REGISTER_RHI_TEST(ImportancePdfMipChainTest);
 METALLIC_REGISTER_RHI_TEST(ReGIRGridLayoutTest);
 

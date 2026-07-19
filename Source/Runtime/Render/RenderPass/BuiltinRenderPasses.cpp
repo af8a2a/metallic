@@ -45,7 +45,7 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createSceneRayQueryVisualizationPass(); });
     registerRenderGraphPassType(
         "GPUDrivenPreviewPass",
-        "Visualize glTF meshlet clusters with mesh shaders",
+        "Render meshlet visibility with two-pass HZB culling and compute deferred visualization",
         []() { return builtin_pass::createGPUDrivenPreviewPass(); });
     registerRenderGraphPassType(
         "GPUDrivenStreamAssetPass",

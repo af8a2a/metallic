@@ -51,6 +51,15 @@ inline constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQu
 inline constexpr const char* kGPUDrivenPreviewShaderModuleName = "GPUDrivenPreview";
 inline constexpr const char* kGPUDrivenPreviewMeshEntryPoint = "gpuDrivenPreviewMeshMain";
 inline constexpr const char* kGPUDrivenPreviewFragmentEntryPoint = "gpuDrivenPreviewFragmentMain";
+inline constexpr const char* kGPUDrivenPreviewResetEntryPoint = "gpuDrivenPreviewResetMain";
+inline constexpr const char* kGPUDrivenPreviewInstanceCullEntryPoint = "gpuDrivenPreviewInstanceCullMain";
+inline constexpr const char* kGPUDrivenPreviewCompactEntryPoint = "gpuDrivenPreviewCompactMain";
+inline constexpr const char* kGPUDrivenPreviewHzbEntryPoint = "gpuDrivenPreviewHzbMain";
+inline constexpr const char* kGPUDrivenPreviewDeferredEntryPoint = "gpuDrivenPreviewDeferredMain";
+inline constexpr const char* kGPUDrivenPreviewCompositeVertexEntryPoint =
+    "gpuDrivenPreviewCompositeVertexMain";
+inline constexpr const char* kGPUDrivenPreviewCompositeFragmentEntryPoint =
+    "gpuDrivenPreviewCompositeFragmentMain";
 inline constexpr const char* kGPUDrivenStreamAssetShaderModuleName = "GPUDrivenStreamAsset";
 inline constexpr const char* kGPUDrivenStreamAssetMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kGPUDrivenStreamAssetFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
@@ -87,6 +96,10 @@ inline constexpr uint32_t kRayQueryVisualizationGranularityClusterId = 2;
 inline constexpr uint32_t kGPUDrivenPreviewModeMeshlet = 0;
 inline constexpr uint32_t kGPUDrivenPreviewModePrimitive = 1;
 inline constexpr uint32_t kGPUDrivenPreviewModeLod = 2;
+inline constexpr uint32_t kGPUDrivenPreviewCullInstanceFrustum = 1u << 0u;
+inline constexpr uint32_t kGPUDrivenPreviewCullInstanceHzb = 1u << 1u;
+inline constexpr uint32_t kGPUDrivenPreviewCullMeshletFrustum = 1u << 2u;
+inline constexpr uint32_t kGPUDrivenPreviewCullMeshletNormalCone = 1u << 3u;
 inline constexpr uint32_t kGPUDrivenStreamAssetDebugPage = 0;
 inline constexpr uint32_t kGPUDrivenStreamAssetDebugLod = 1;
 inline constexpr uint32_t kGPUDrivenStreamAssetDebugPrimitive = 2;
@@ -398,9 +411,20 @@ struct GPUDrivenPreviewGpuMeshlet {
     uint32_t lodLevel = 0;
     uint32_t lodGroupIndex = 0;
     uint32_t transformIndex = 0;
+    uint32_t instanceIndex = 0;
+    uint32_t flags = 0;
+    uint32_t padding0 = 0;
+    float boundingSphere[4] = {};
+    float coneApexCutoff[4] = {};
+    float coneAxis[4] = {};
+};
+
+struct GPUDrivenPreviewGpuInstance {
+    float boundingSphere[4] = {};
+    uint32_t transformIndex = 0;
+    uint32_t primitiveIndex = 0;
     uint32_t padding0 = 0;
     uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
 };
 
 struct GPUDrivenPreviewGpuParams {
@@ -410,10 +434,27 @@ struct GPUDrivenPreviewGpuParams {
     float viewport[4] = {};
     float clipOrtho[4] = {};
     float clearColor[4] = {};
+    float previousEye[4] = {};
+    float previousCenter[4] = {};
+    float previousUpProjection[4] = {};
+    float previousViewport[4] = {};
+    float previousClipOrtho[4] = {};
     uint32_t mode = kGPUDrivenPreviewModeMeshlet;
     uint32_t meshletOffset = 0;
     uint32_t meshletCount = 0;
     uint32_t selectedLodLevel = 0;
+    uint32_t instanceCount = 0;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t hzbMipCount = 1;
+    uint32_t frameIndex = 0;
+    uint32_t hzbValid = 0;
+    uint32_t cullingFlags =
+        kGPUDrivenPreviewCullInstanceFrustum |
+        kGPUDrivenPreviewCullInstanceHzb |
+        kGPUDrivenPreviewCullMeshletFrustum |
+        kGPUDrivenPreviewCullMeshletNormalCone;
+    uint32_t padding = 0;
 };
 
 struct GPUDrivenPreviewUserPush {
@@ -423,9 +464,26 @@ struct GPUDrivenPreviewUserPush {
     uint32_t meshletTriangleBuffer = 0;
     uint32_t paramsBuffer = 0;
     uint32_t transformBuffer = 0;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
+    uint32_t instanceBuffer = 0;
+    uint32_t instanceVisibilityBuffer = 0;
+    uint32_t visibleMeshletBuffer0 = 0;
+    uint32_t visibleMeshletBuffer1 = 0;
+    uint32_t indirectBuffer0 = 0;
+    uint32_t indirectBuffer1 = 0;
+    uint32_t hzbBuffer0 = 0;
+    uint32_t hzbBuffer1 = 0;
+    uint32_t deferredColorBuffer = 0;
+    uint32_t depthImage = 0;
+    uint32_t visibilityImage = 0;
+    uint32_t passIndex = 0;
+    uint32_t mipLevel = 0;
+    uint32_t padding = 0;
 };
+
+static_assert(sizeof(GPUDrivenPreviewGpuMeshlet) == 96);
+static_assert(sizeof(GPUDrivenPreviewGpuInstance) == 32);
+static_assert(sizeof(GPUDrivenPreviewGpuParams) == 224);
+static_assert(sizeof(GPUDrivenPreviewUserPush) == 80);
 
 struct SceneMaterialVisualizationPush {
     float eye[4] = {};

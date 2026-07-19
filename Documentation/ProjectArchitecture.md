@@ -122,7 +122,7 @@ flowchart LR
 | `MetallicMaterialVisualizationSample` | 可执行文件 | 材质诊断样例 |
 | `MetallicPathTracingSample` | 可执行文件 | OpenPBR 路径追踪，可切换 DLSS-RR |
 | `MetallicRtxdiSample` | 可执行文件 | RTXDI/ReSTIR DI 样例 |
-| `MetallicGPUDrivenSample` | 可执行文件 | 预加载、StreamAsset 和 RTAS 可视化变体 |
+| `MetallicGPUDrivenSample` | 可执行文件 | Visibility Buffer（默认）、StreamAsset 和 RTAS 可视化变体 |
 | `MetallicTaskTests` | 测试可执行文件 | TaskSystem GoogleTest |
 | `MetallicSceneTests` | 测试可执行文件 | Scene GoogleTest |
 | `MetallicRhiTests` | 测试可执行文件 | 自定义 RHI 用例注册表适配到 GoogleTest |
@@ -261,7 +261,7 @@ sequenceDiagram
 | RTXDI | `RtxdiCompositePass` | 合成去噪 diffuse/specular、材质和 emissive |
 | 去噪 | `NrdDenoisePass` | NRD RELAX 去噪 |
 | 去噪 | `StreamlineDlssRrPass` | NVIDIA Streamline DLSS Ray Reconstruction |
-| GPU-driven | `GPUDrivenPreviewPass` | 预加载 meshlet 的 Mesh Shader 可视化 |
+| GPU-driven | `GPUDrivenPreviewPass` | Visibility Buffer、两阶段 HZB 实例剔除、meshlet 剔除及 compute deferred 可视化 |
 | GPU-driven | `GPUDrivenStreamAssetPass` | 分页 StreamAsset、GPU LOD/遍历和 Mesh Shader 绘制 |
 | 测试 | `RenderGraphBufferWritePass`、`RenderGraphBufferCopyPass` | 缓冲、Bindless 和拷贝路径验证 |
 

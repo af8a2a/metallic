@@ -15,10 +15,19 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addTextureOutput("color", "Mesh shader meshlet scene preview")
+        reflection.addTextureOutput("color", "Deferred meshlet visualization")
             .format = Format::Rgba8Unorm;
-        reflection.addTextureOutput("depth", "Mesh shader meshlet scene depth")
-            .depthStencilWrite();
+        RenderGraphField& visibility = reflection.addTextureOutput(
+            "visibility",
+            "Mesh shader visibility buffer");
+        visibility.colorWrite();
+        visibility.format = Format::R32Uint;
+        visibility.usage = visibility.usage | TextureUsageBits::Sampled;
+        RenderGraphField& depth = reflection.addTextureOutput(
+            "depth",
+            "Visibility pass depth and HZB source");
+        depth.depthStencilWrite();
+        depth.usage = depth.usage | TextureUsageBits::Sampled;
         return reflection;
     }
 
@@ -31,6 +40,10 @@ public:
                 "meshlet",
                 {{"Meshlet", "meshlet"}, {"Primitive", "primitive"}, {"LOD Group", "lod"}}),
             runtimeIntSetting("lodLevel", "LOD Level", 0, 0, 31),
+            runtimeBoolSetting("instanceFrustumCull", "Instance Frustum Cull", true),
+            runtimeBoolSetting("instanceHzbCull", "Instance HZB Cull", true),
+            runtimeBoolSetting("meshletFrustumCull", "Meshlet Sphere / Frustum Cull", true),
+            runtimeBoolSetting("meshletNormalConeCull", "Meshlet Normal Cone Cull", true),
         };
         appendCameraRuntimeSettings(
             settings,
@@ -50,6 +63,7 @@ public:
             log = "GPUDrivenPreviewPass requires meshShader and bindlessDescriptorHeap capabilities";
             return makeError(Error::Unsupported);
         }
+        device_ = context.device;
         const scene::Scene* runtimeScene = runtimeSceneForPath(
             context.runtimeScene,
             scenePathFromProperties(properties()));
@@ -61,7 +75,11 @@ public:
             }
         }
         const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
-        if (pipeline_ != nullptr && drawTaskCount_ > 0 && sceneRevision_ == runtimeRevision) {
+        if (visibilityPipeline_ != nullptr &&
+            drawTaskCount_ > 0 &&
+            sceneRevision_ == runtimeRevision &&
+            frameWidth_ == context.width &&
+            frameHeight_ == context.height) {
             return {};
         }
 
@@ -70,6 +88,7 @@ public:
         std::vector<uint32_t> meshletVertices;
         std::vector<uint32_t> meshletTriangles;
         std::vector<SceneGpuTransform> transforms;
+        std::vector<GPUDrivenPreviewGpuInstance> instances;
         std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges;
         GPUDrivenPreviewMeshletRange baseMeshletRange;
         if (!loadMeshletScene(
@@ -80,6 +99,7 @@ public:
                 meshletVertices,
                 meshletTriangles,
                 transforms,
+                instances,
                 drawBounds_,
                 baseMeshletRange,
                 lodLevelRanges,
@@ -90,6 +110,21 @@ public:
         baseMeshletRange_ = baseMeshletRange;
         lodLevelRanges_ = std::move(lodLevelRanges);
         drawTaskCount_ = maxMeshletRangeCount(baseMeshletRange_, lodLevelRanges_);
+        instanceCount_ = static_cast<uint32_t>(instances.size());
+        if (drawTaskCount_ == 0 || instanceCount_ == 0) {
+            log = "GPUDrivenPreviewPass found no drawable meshlet instances";
+            return makeError(Error::Failure);
+        }
+
+        frameWidth_ = std::max(context.width, 1u);
+        frameHeight_ = std::max(context.height, 1u);
+        hzbMipCount_ = computeHzbMipCount(frameWidth_, frameHeight_);
+        hzbElementCount_ = computeHzbElementCount(frameWidth_, frameHeight_, hzbMipCount_);
+        frameIndex_ = 0;
+        hzbValid_ = false;
+        previousCameraValid_ = false;
+        internalBuffersInitialized_ = false;
+        frameBuffersInitialized_ = false;
 
         GPUDrivenPreviewGpuParams params;
         buildParams(
@@ -99,6 +134,11 @@ public:
             drawBounds_,
             baseMeshletRange_,
             lodLevelRanges_,
+            instanceCount_,
+            hzbMipCount_,
+            frameIndex_,
+            false,
+            nullptr,
             params);
 
         Result result = uploadStorageBuffer(
@@ -161,10 +201,74 @@ public:
         if (!result) {
             return result;
         }
+        result = uploadStorageBuffer(
+            *context.device,
+            instances.data(),
+            static_cast<uint64_t>(instances.size() * sizeof(GPUDrivenPreviewGpuInstance)),
+            instanceBuffer_,
+            log,
+            "GPUDrivenPreviewPass instances");
+        if (!result) {
+            return result;
+        }
+
+        result = createDeviceStorageBuffer(
+            *context.device,
+            static_cast<uint64_t>(instanceCount_) * sizeof(uint32_t),
+            BufferUsageBits::Storage,
+            instanceVisibilityBuffer_,
+            log,
+            "instance visibility");
+        if (!result) {
+            return result;
+        }
+        for (uint32_t passIndex = 0; passIndex < 2; ++passIndex) {
+            result = createDeviceStorageBuffer(
+                *context.device,
+                static_cast<uint64_t>(drawTaskCount_) * sizeof(uint32_t),
+                BufferUsageBits::Storage,
+                visibleMeshletBuffers_[passIndex],
+                log,
+                "visible meshlets");
+            if (!result) {
+                return result;
+            }
+            result = createDeviceStorageBuffer(
+                *context.device,
+                3u * sizeof(uint32_t),
+                BufferUsageBits::Storage | BufferUsageBits::Indirect,
+                indirectBuffers_[passIndex],
+                log,
+                "mesh task indirect arguments");
+            if (!result) {
+                return result;
+            }
+            result = createDeviceStorageBuffer(
+                *context.device,
+                hzbElementCount_ * sizeof(float),
+                BufferUsageBits::Storage,
+                hzbBuffers_[passIndex],
+                log,
+                "HZB");
+            if (!result) {
+                return result;
+            }
+        }
+        result = createDeviceStorageBuffer(
+            *context.device,
+            static_cast<uint64_t>(frameWidth_) * frameHeight_ * sizeof(uint32_t),
+            BufferUsageBits::Storage,
+            deferredColorBuffer_,
+            log,
+            "deferred color");
+        if (!result) {
+            return result;
+        }
 
         result = context.device->createBindlessHeap(
             BindlessHeapDesc{
-                .maxBuffers = 6,
+                .maxSampledImages = 2,
+                .maxBuffers = 15,
             },
             bindlessHeap_);
         if (!result || bindlessHeap_ == nullptr) {
@@ -197,71 +301,79 @@ public:
         if (!result) {
             return result;
         }
-
-        ShaderCompileResult meshCompile;
-        const char* capabilities[] = {"spvMeshShadingEXT"};
-        result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
-                .moduleName = kGPUDrivenPreviewShaderModuleName,
-                .entryPointName = kGPUDrivenPreviewMeshEntryPoint,
-                .searchPath = kTriangleShaderSearchPath,
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-            },
-            meshCompile);
+        result = allocateAndWriteBuffer(*bindlessHeap_, *instanceBuffer_, instanceHandle_, log, "instances");
         if (!result) {
-            log += "compileSlangShaderToSpirv(";
-            log += kGPUDrivenPreviewShaderModuleName;
-            log += ".";
-            log += kGPUDrivenPreviewMeshEntryPoint;
-            log += ") returned ";
-            log += resultToString(result);
-            if (!meshCompile.diagnostics.empty()) {
-                log += ": ";
-                log += meshCompile.diagnostics;
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *instanceVisibilityBuffer_,
+            instanceVisibilityHandle_,
+            log,
+            "instance visibility");
+        if (!result) {
+            return result;
+        }
+        for (uint32_t passIndex = 0; passIndex < 2; ++passIndex) {
+            result = allocateAndWriteBuffer(
+                *bindlessHeap_,
+                *visibleMeshletBuffers_[passIndex],
+                visibleMeshletHandles_[passIndex],
+                log,
+                "visible meshlets");
+            if (!result) {
+                return result;
             }
-            log += '\n';
-            return result;
+            result = allocateAndWriteBuffer(
+                *bindlessHeap_,
+                *indirectBuffers_[passIndex],
+                indirectHandles_[passIndex],
+                log,
+                "indirect arguments");
+            if (!result) {
+                return result;
+            }
+            result = allocateAndWriteBuffer(
+                *bindlessHeap_,
+                *hzbBuffers_[passIndex],
+                hzbHandles_[passIndex],
+                log,
+                "HZB");
+            if (!result) {
+                return result;
+            }
         }
-
-        ShaderCompileResult fragmentCompile;
-        result = compileSlangShader(
-            kGPUDrivenPreviewShaderModuleName,
-            kGPUDrivenPreviewFragmentEntryPoint,
-            fragmentCompile,
-            log);
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *deferredColorBuffer_,
+            deferredColorHandle_,
+            log,
+            "deferred color");
         if (!result) {
             return result;
         }
-
-        result = context.device->createShaderModule(
-            ShaderModuleDesc{
-                .code = meshCompile.spirv.data(),
-                .byteSize = static_cast<uint64_t>(meshCompile.spirv.size() * sizeof(uint32_t)),
-            },
-            meshShader_);
-        if (!result) {
-            log += resultMessage("createShaderModule(GPUDrivenPreviewPass mesh)", result);
+        result = bindlessHeap_->allocateSampledImage(depthImageHandle_);
+        if (!result || !depthImageHandle_.valid()) {
+            log += resultMessage("allocateSampledImage(GPUDrivenPreviewPass depth)", result);
             log += '\n';
-            return result;
+            return result ? makeError(Error::Failure) : result;
         }
-        result = context.device->createShaderModule(
-            ShaderModuleDesc{
-                .code = fragmentCompile.spirv.data(),
-                .byteSize = static_cast<uint64_t>(fragmentCompile.spirv.size() * sizeof(uint32_t)),
-            },
-            fragmentShader_);
-        if (!result) {
-            log += resultMessage("createShaderModule(GPUDrivenPreviewPass fragment)", result);
+        result = bindlessHeap_->allocateSampledImage(visibilityImageHandle_);
+        if (!result || !visibilityImageHandle_.valid()) {
+            log += resultMessage("allocateSampledImage(GPUDrivenPreviewPass visibility)", result);
             log += '\n';
-            return result;
+            return result ? makeError(Error::Failure) : result;
         }
 
+        result = createPipelines(*context.device, log);
+        if (!result) {
+            return result;
+        }
         result = context.device->createGraphicsPipeline(
             GraphicsPipelineDesc{
                 .meshShader = meshShader_.get(),
                 .fragmentShader = fragmentShader_.get(),
-                .colorFormat = Format::Rgba8Unorm,
+                .colorFormat = Format::R32Uint,
                 .depthStencilFormat = Format::D32Sfloat,
                 .depthStencil = DepthStencilState{
                     .depthTestEnable = true,
@@ -270,14 +382,29 @@ public:
                 },
                 .usesBindlessHeap = true,
             },
-            pipeline_);
-        if (!result || pipeline_ == nullptr) {
-            log += resultMessage("createGraphicsPipeline(GPUDrivenPreviewPass)", result);
+            visibilityPipeline_);
+        if (!result || visibilityPipeline_ == nullptr) {
+            log += resultMessage("createGraphicsPipeline(GPUDrivenPreviewPass visibility)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = context.device->createGraphicsPipeline(
+            GraphicsPipelineDesc{
+                .vertexShader = compositeVertexShader_.get(),
+                .fragmentShader = compositeFragmentShader_.get(),
+                .colorFormat = Format::Rgba8Unorm,
+                .topology = PrimitiveTopology::TriangleList,
+                .usesBindlessHeap = true,
+            },
+            compositePipeline_);
+        if (!result || compositePipeline_ == nullptr) {
+            log += resultMessage("createGraphicsPipeline(GPUDrivenPreviewPass composite)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
 
         sceneRevision_ = runtimeRevision;
+        previousParams_ = params;
         return {};
     }
 
@@ -288,72 +415,473 @@ public:
             return syncResult;
         }
         TextureHandle color = context.outputTexture("color");
+        TextureHandle visibility = context.outputTexture("visibility");
         TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
+            !visibility.valid() ||
             !depth.valid() ||
             bindlessHeap_ == nullptr ||
-            pipeline_ == nullptr ||
+            visibilityPipeline_ == nullptr ||
+            compositePipeline_ == nullptr ||
             drawTaskCount_ == 0) {
             return makeError(Error::InvalidArgument);
         }
 
-        Result result = updateParamsBuffer(context.width(), context.height(), context.properties());
+        Result result = ensureFrameResources(context.width(), context.height());
+        if (!result) {
+            return result;
+        }
+        result = updateParamsBuffer(context.width(), context.height(), context.properties());
         if (!result) {
             return result;
         }
 
-        const Rect renderArea{
-            .x = 0,
-            .y = 0,
-            .width = context.width(),
-            .height = context.height(),
+        result = bindlessHeap_->writeSampledImage(
+            depthImageHandle_,
+            *depth.view(),
+            ResourceState::ShaderRead);
+        if (!result) {
+            return result;
+        }
+        result = bindlessHeap_->writeSampledImage(
+            visibilityImageHandle_,
+            *visibility.view(),
+            ResourceState::ShaderRead);
+        if (!result) {
+            return result;
+        }
+
+        CommandBuffer& commandBuffer = context.commandBuffer();
+        commandBuffer.bindBindlessHeap(*bindlessHeap_);
+        initializeInternalBuffers(commandBuffer);
+
+        dispatchCulling(commandBuffer, 0);
+        drawVisibility(commandBuffer, visibility, depth, 0, LoadOp::Clear);
+
+        transitionTexture(commandBuffer, *depth.texture(), ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
+        buildHzb(commandBuffer);
+        transitionTexture(commandBuffer, *depth.texture(), ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
+
+        dispatchCulling(commandBuffer, 1);
+        drawVisibility(commandBuffer, visibility, depth, 1, LoadOp::Load);
+
+        transitionTexture(commandBuffer, *visibility.texture(), ResourceState::ColorAttachment, ResourceState::ShaderRead);
+        transitionTexture(commandBuffer, *depth.texture(), ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
+        buildHzb(commandBuffer);
+        dispatchDeferred(commandBuffer);
+        barrierBuffer(commandBuffer, *deferredColorBuffer_, ResourceState::General, ResourceState::General);
+        transitionTexture(commandBuffer, *visibility.texture(), ResourceState::ShaderRead, ResourceState::ColorAttachment);
+        transitionTexture(commandBuffer, *depth.texture(), ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
+        drawComposite(commandBuffer, color);
+
+        hzbValid_ = true;
+        ++frameIndex_;
+        return {};
+    }
+
+private:
+    static uint32_t divideRoundUp(uint32_t value, uint32_t divisor)
+    {
+        return (value + divisor - 1u) / divisor;
+    }
+
+    static uint32_t computeHzbMipCount(uint32_t width, uint32_t height)
+    {
+        uint32_t mipCount = 1;
+        while (width > 1 || height > 1) {
+            width = std::max(1u, (width + 1u) / 2u);
+            height = std::max(1u, (height + 1u) / 2u);
+            ++mipCount;
+        }
+        return mipCount;
+    }
+
+    static uint64_t computeHzbElementCount(uint32_t width, uint32_t height, uint32_t mipCount)
+    {
+        uint64_t elementCount = 0;
+        for (uint32_t mipLevel = 0; mipLevel < mipCount; ++mipLevel) {
+            elementCount += static_cast<uint64_t>(width) * height;
+            width = std::max(1u, (width + 1u) / 2u);
+            height = std::max(1u, (height + 1u) / 2u);
+        }
+        return elementCount;
+    }
+
+    static Result createDeviceStorageBuffer(
+        Device& device,
+        uint64_t byteSize,
+        BufferUsageBits usage,
+        std::unique_ptr<Buffer>& outBuffer,
+        std::string& log,
+        std::string_view label)
+    {
+        if (byteSize == 0) {
+            log = std::string("GPUDrivenPreviewPass ") + std::string(label) + " buffer size is zero";
+            return makeError(Error::InvalidArgument);
+        }
+        Result result = device.createBuffer(
+            BufferDesc{
+                .size = byteSize,
+                .structureStride = 0,
+                .usage = usage,
+                .memoryLocation = MemoryLocation::Device,
+            },
+            outBuffer);
+        if (!result || outBuffer == nullptr) {
+            log += resultMessage(std::string("createBuffer(GPUDrivenPreviewPass ") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
+    }
+
+    static Result createShader(
+        Device& device,
+        const char* entryPoint,
+        bool meshShader,
+        std::unique_ptr<ShaderModule>& outShader,
+        std::string& log)
+    {
+        ShaderCompileResult compileResult;
+        const char* capabilities[] = {"spvMeshShadingEXT"};
+        Result result = compileSlangShaderToSpirv(
+            SlangShaderDesc{
+                .moduleName = kGPUDrivenPreviewShaderModuleName,
+                .entryPointName = entryPoint,
+                .searchPath = kTriangleShaderSearchPath,
+                .capabilities = meshShader ? capabilities : nullptr,
+                .capabilityCount = meshShader ? static_cast<uint32_t>(std::size(capabilities)) : 0u,
+            },
+            compileResult);
+        if (!result) {
+            log += "compileSlangShaderToSpirv(";
+            log += kGPUDrivenPreviewShaderModuleName;
+            log += ".";
+            log += entryPoint;
+            log += ") returned ";
+            log += resultToString(result);
+            if (!compileResult.diagnostics.empty()) {
+                log += ": ";
+                log += compileResult.diagnostics;
+            }
+            log += '\n';
+            return result;
+        }
+        result = device.createShaderModule(
+            ShaderModuleDesc{
+                .code = compileResult.spirv.data(),
+                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+            },
+            outShader);
+        if (!result) {
+            log += resultMessage(
+                std::string("createShaderModule(GPUDrivenPreviewPass ") + entryPoint + ")",
+                result);
+            log += '\n';
+        }
+        return result;
+    }
+
+    Result createPipelines(Device& device, std::string& log)
+    {
+        struct ShaderRequest {
+            const char* entryPoint = nullptr;
+            bool meshShader = false;
+            std::unique_ptr<ShaderModule>* shader = nullptr;
         };
-        RenderingAttachmentDesc attachment{
-            .view = color.view(),
-            .state = ResourceState::ColorAttachment,
-            .loadOp = LoadOp::Clear,
-            .storeOp = StoreOp::Store,
-            .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
+        const std::array<ShaderRequest, 9> requests{
+            ShaderRequest{kGPUDrivenPreviewMeshEntryPoint, true, &meshShader_},
+            ShaderRequest{kGPUDrivenPreviewFragmentEntryPoint, false, &fragmentShader_},
+            ShaderRequest{kGPUDrivenPreviewResetEntryPoint, false, &resetShader_},
+            ShaderRequest{kGPUDrivenPreviewInstanceCullEntryPoint, false, &instanceCullShader_},
+            ShaderRequest{kGPUDrivenPreviewCompactEntryPoint, false, &compactShader_},
+            ShaderRequest{kGPUDrivenPreviewHzbEntryPoint, false, &hzbShader_},
+            ShaderRequest{kGPUDrivenPreviewDeferredEntryPoint, false, &deferredShader_},
+            ShaderRequest{kGPUDrivenPreviewCompositeVertexEntryPoint, false, &compositeVertexShader_},
+            ShaderRequest{kGPUDrivenPreviewCompositeFragmentEntryPoint, false, &compositeFragmentShader_},
         };
-        RenderingAttachmentDesc depthAttachment{
-            .view = depth.view(),
-            .state = ResourceState::DepthStencilAttachment,
-            .loadOp = LoadOp::Clear,
-            .storeOp = StoreOp::Store,
-            .clearDepth = depthClearValue(kDefaultReversedZ),
+        for (const ShaderRequest& request : requests) {
+            Result result = createShader(
+                device,
+                request.entryPoint,
+                request.meshShader,
+                *request.shader,
+                log);
+            if (!result) {
+                return result;
+            }
+        }
+
+        auto createCompute = [&](ShaderModule& shader, std::unique_ptr<ComputePipeline>& pipeline, const char* label) {
+            Result result = device.createComputePipeline(
+                ComputePipelineDesc{
+                    .computeShader = &shader,
+                    .computeEntryPoint = "main",
+                    .usesBindlessHeap = true,
+                    .bindlessUserPushDataSize = sizeof(GPUDrivenPreviewUserPush),
+                },
+                pipeline);
+            if (!result || pipeline == nullptr) {
+                log += resultMessage(std::string("createComputePipeline(GPUDrivenPreviewPass ") + label + ")", result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
+            return result;
         };
-        context.commandBuffer().beginRendering(RenderingDesc{
-            .renderArea = renderArea,
-            .colorAttachments = &attachment,
-            .colorAttachmentCount = 1,
-            .depthStencilAttachment = &depthAttachment,
-        });
-        context.commandBuffer().setViewport(Viewport{
-            .x = 0.0f,
-            .y = 0.0f,
-            .width = static_cast<float>(context.width()),
-            .height = static_cast<float>(context.height()),
-            .minDepth = 0.0f,
-            .maxDepth = 1.0f,
-        });
-        context.commandBuffer().setScissor(renderArea);
-        context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
-        context.commandBuffer().bindGraphicsPipeline(*pipeline_);
-        const GPUDrivenPreviewUserPush push{
+
+        Result result = createCompute(*resetShader_, resetPipeline_, "reset");
+        if (!result) {
+            return result;
+        }
+        result = createCompute(*instanceCullShader_, instanceCullPipeline_, "instance cull");
+        if (!result) {
+            return result;
+        }
+        result = createCompute(*compactShader_, compactPipeline_, "compact");
+        if (!result) {
+            return result;
+        }
+        result = createCompute(*hzbShader_, hzbPipeline_, "HZB");
+        if (!result) {
+            return result;
+        }
+        return createCompute(*deferredShader_, deferredPipeline_, "deferred");
+    }
+
+    GPUDrivenPreviewUserPush makePush(uint32_t passIndex = 0, uint32_t mipLevel = 0) const
+    {
+        return GPUDrivenPreviewUserPush{
             .positionBuffer = positionHandle_.index,
             .meshletBuffer = meshletHandle_.index,
             .meshletVertexBuffer = meshletVertexHandle_.index,
             .meshletTriangleBuffer = meshletTriangleHandle_.index,
             .paramsBuffer = paramsHandle_.index,
             .transformBuffer = transformHandle_.index,
+            .instanceBuffer = instanceHandle_.index,
+            .instanceVisibilityBuffer = instanceVisibilityHandle_.index,
+            .visibleMeshletBuffer0 = visibleMeshletHandles_[0].index,
+            .visibleMeshletBuffer1 = visibleMeshletHandles_[1].index,
+            .indirectBuffer0 = indirectHandles_[0].index,
+            .indirectBuffer1 = indirectHandles_[1].index,
+            .hzbBuffer0 = hzbHandles_[0].index,
+            .hzbBuffer1 = hzbHandles_[1].index,
+            .deferredColorBuffer = deferredColorHandle_.index,
+            .depthImage = depthImageHandle_.index,
+            .visibilityImage = visibilityImageHandle_.index,
+            .passIndex = passIndex,
+            .mipLevel = mipLevel,
         };
-        context.commandBuffer().pushBindlessData(&push, sizeof(push));
-        context.commandBuffer().drawMeshTasks(drawTaskCount_);
-        context.commandBuffer().endRendering();
-        return {};
     }
 
-private:
+    static void transitionTexture(
+        CommandBuffer& commandBuffer,
+        Texture& texture,
+        ResourceState before,
+        ResourceState after)
+    {
+        const TextureBarrierDesc barrier{
+            .texture = &texture,
+            .before = before,
+            .after = after,
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .textures = &barrier,
+            .textureCount = 1,
+        });
+    }
+
+    static void barrierBuffer(
+        CommandBuffer& commandBuffer,
+        Buffer& buffer,
+        ResourceState before,
+        ResourceState after)
+    {
+        const BufferBarrierDesc barrier{
+            .buffer = &buffer,
+            .before = before,
+            .after = after,
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .buffers = &barrier,
+            .bufferCount = 1,
+        });
+    }
+
+    void initializeInternalBuffers(CommandBuffer& commandBuffer)
+    {
+        if (!internalBuffersInitialized_) {
+            const std::array<BufferBarrierDesc, 5> barriers{
+                BufferBarrierDesc{.buffer = instanceVisibilityBuffer_.get(), .before = ResourceState::Undefined, .after = ResourceState::General},
+                BufferBarrierDesc{.buffer = visibleMeshletBuffers_[0].get(), .before = ResourceState::Undefined, .after = ResourceState::General},
+                BufferBarrierDesc{.buffer = visibleMeshletBuffers_[1].get(), .before = ResourceState::Undefined, .after = ResourceState::General},
+                BufferBarrierDesc{.buffer = indirectBuffers_[0].get(), .before = ResourceState::Undefined, .after = ResourceState::General},
+                BufferBarrierDesc{.buffer = indirectBuffers_[1].get(), .before = ResourceState::Undefined, .after = ResourceState::General},
+            };
+            commandBuffer.barrier(BarrierDesc{
+                .buffers = barriers.data(),
+                .bufferCount = static_cast<uint32_t>(barriers.size()),
+            });
+            internalBuffersInitialized_ = true;
+        }
+
+        if (!frameBuffersInitialized_) {
+            const std::array<BufferBarrierDesc, 3> barriers{
+                BufferBarrierDesc{.buffer = hzbBuffers_[0].get(), .before = ResourceState::Undefined, .after = ResourceState::General},
+                BufferBarrierDesc{.buffer = hzbBuffers_[1].get(), .before = ResourceState::Undefined, .after = ResourceState::General},
+                BufferBarrierDesc{.buffer = deferredColorBuffer_.get(), .before = ResourceState::Undefined, .after = ResourceState::General},
+            };
+            commandBuffer.barrier(BarrierDesc{
+                .buffers = barriers.data(),
+                .bufferCount = static_cast<uint32_t>(barriers.size()),
+            });
+            frameBuffersInitialized_ = true;
+        }
+    }
+
+    void dispatchCulling(CommandBuffer& commandBuffer, uint32_t passIndex)
+    {
+        GPUDrivenPreviewUserPush push = makePush(passIndex);
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.bindComputePipeline(*resetPipeline_);
+        commandBuffer.dispatch(1, 1, 1);
+
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.bindComputePipeline(*instanceCullPipeline_);
+        commandBuffer.dispatch(divideRoundUp(instanceCount_, 64u), 1, 1);
+
+        const std::array<BufferBarrierDesc, 2> cullBarriers{
+            BufferBarrierDesc{.buffer = indirectBuffers_[passIndex].get(), .before = ResourceState::General, .after = ResourceState::General},
+            BufferBarrierDesc{.buffer = instanceVisibilityBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General},
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .buffers = cullBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(cullBarriers.size()),
+        });
+
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.bindComputePipeline(*compactPipeline_);
+        commandBuffer.dispatch(divideRoundUp(activeMeshletCount_, 64u), 1, 1);
+
+        const std::array<BufferBarrierDesc, 2> compactBarriers{
+            BufferBarrierDesc{.buffer = visibleMeshletBuffers_[passIndex].get(), .before = ResourceState::General, .after = ResourceState::General},
+            BufferBarrierDesc{.buffer = indirectBuffers_[passIndex].get(), .before = ResourceState::General, .after = ResourceState::General},
+        };
+        commandBuffer.barrier(BarrierDesc{
+            .buffers = compactBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(compactBarriers.size()),
+        });
+    }
+
+    void drawVisibility(
+        CommandBuffer& commandBuffer,
+        TextureHandle visibility,
+        TextureHandle depth,
+        uint32_t passIndex,
+        LoadOp loadOp)
+    {
+        const Rect renderArea{
+            .x = 0,
+            .y = 0,
+            .width = frameWidth_,
+            .height = frameHeight_,
+        };
+        const RenderingAttachmentDesc visibilityAttachment{
+            .view = visibility.view(),
+            .state = ResourceState::ColorAttachment,
+            .loadOp = loadOp,
+            .storeOp = StoreOp::Store,
+            .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
+        };
+        const RenderingAttachmentDesc depthAttachment{
+            .view = depth.view(),
+            .state = ResourceState::DepthStencilAttachment,
+            .loadOp = loadOp,
+            .storeOp = StoreOp::Store,
+            .clearDepth = depthClearValue(kDefaultReversedZ),
+        };
+        commandBuffer.beginRendering(RenderingDesc{
+            .renderArea = renderArea,
+            .colorAttachments = &visibilityAttachment,
+            .colorAttachmentCount = 1,
+            .depthStencilAttachment = &depthAttachment,
+        });
+        commandBuffer.setViewport(Viewport{
+            .x = 0.0f,
+            .y = 0.0f,
+            .width = static_cast<float>(frameWidth_),
+            .height = static_cast<float>(frameHeight_),
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f,
+        });
+        commandBuffer.setScissor(renderArea);
+        commandBuffer.bindGraphicsPipeline(*visibilityPipeline_);
+        const GPUDrivenPreviewUserPush push = makePush(passIndex);
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.drawMeshTasksIndirect(*indirectBuffers_[passIndex]);
+        commandBuffer.endRendering();
+    }
+
+    void buildHzb(CommandBuffer& commandBuffer)
+    {
+        Buffer& currentHzb = *hzbBuffers_[frameIndex_ & 1u];
+        barrierBuffer(commandBuffer, currentHzb, ResourceState::General, ResourceState::General);
+        uint32_t mipWidth = frameWidth_;
+        uint32_t mipHeight = frameHeight_;
+        for (uint32_t mipLevel = 0; mipLevel < hzbMipCount_; ++mipLevel) {
+            const GPUDrivenPreviewUserPush push = makePush(0, mipLevel);
+            commandBuffer.pushBindlessData(&push, sizeof(push));
+            commandBuffer.bindComputePipeline(*hzbPipeline_);
+            commandBuffer.dispatch(divideRoundUp(mipWidth, 8u), divideRoundUp(mipHeight, 8u), 1);
+            barrierBuffer(commandBuffer, currentHzb, ResourceState::General, ResourceState::General);
+            mipWidth = std::max(1u, (mipWidth + 1u) / 2u);
+            mipHeight = std::max(1u, (mipHeight + 1u) / 2u);
+        }
+    }
+
+    void dispatchDeferred(CommandBuffer& commandBuffer)
+    {
+        const GPUDrivenPreviewUserPush push = makePush();
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.bindComputePipeline(*deferredPipeline_);
+        commandBuffer.dispatch(divideRoundUp(frameWidth_, 8u), divideRoundUp(frameHeight_, 8u), 1);
+    }
+
+    void drawComposite(CommandBuffer& commandBuffer, TextureHandle color)
+    {
+        const Rect renderArea{
+            .x = 0,
+            .y = 0,
+            .width = frameWidth_,
+            .height = frameHeight_,
+        };
+        const RenderingAttachmentDesc attachment{
+            .view = color.view(),
+            .state = ResourceState::ColorAttachment,
+            .loadOp = LoadOp::Clear,
+            .storeOp = StoreOp::Store,
+            .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
+        };
+        commandBuffer.beginRendering(RenderingDesc{
+            .renderArea = renderArea,
+            .colorAttachments = &attachment,
+            .colorAttachmentCount = 1,
+        });
+        commandBuffer.setViewport(Viewport{
+            .x = 0.0f,
+            .y = 0.0f,
+            .width = static_cast<float>(frameWidth_),
+            .height = static_cast<float>(frameHeight_),
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f,
+        });
+        commandBuffer.setScissor(renderArea);
+        commandBuffer.bindGraphicsPipeline(*compositePipeline_);
+        const GPUDrivenPreviewUserPush push = makePush();
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.draw(3);
+        commandBuffer.endRendering();
+    }
+
     Result syncRuntimeGeometry(const scene::Scene* runtimeScene)
     {
         runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
@@ -375,6 +903,7 @@ private:
         transformBuffer_->unmap();
         drawBounds_ = runtimeScene->bounds();
         sceneRevision_ = runtimeScene->transformRevision();
+        hzbValid_ = false;
         return {};
     }
 
@@ -436,6 +965,77 @@ private:
             log += '\n';
         }
         return result;
+    }
+
+    Result ensureFrameResources(uint32_t width, uint32_t height)
+    {
+        width = std::max(width, 1u);
+        height = std::max(height, 1u);
+        if (frameWidth_ == width && frameHeight_ == height) {
+            return {};
+        }
+        if (device_ == nullptr || bindlessHeap_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        const uint32_t mipCount = computeHzbMipCount(width, height);
+        const uint64_t elementCount = computeHzbElementCount(width, height, mipCount);
+        std::array<std::unique_ptr<Buffer>, 2> resizedHzbBuffers;
+        std::unique_ptr<Buffer> resizedDeferredColorBuffer;
+        std::string log;
+        for (uint32_t bufferIndex = 0; bufferIndex < resizedHzbBuffers.size(); ++bufferIndex) {
+            Result result = createDeviceStorageBuffer(
+                *device_,
+                elementCount * sizeof(float),
+                BufferUsageBits::Storage,
+                resizedHzbBuffers[bufferIndex],
+                log,
+                "resized HZB");
+            if (!result) {
+                spdlog::error("[GPUDrivenPreviewPass] {}", log);
+                return result;
+            }
+        }
+        Result result = createDeviceStorageBuffer(
+            *device_,
+            static_cast<uint64_t>(width) * height * sizeof(uint32_t),
+            BufferUsageBits::Storage,
+            resizedDeferredColorBuffer,
+            log,
+            "resized deferred color");
+        if (!result) {
+            spdlog::error("[GPUDrivenPreviewPass] {}", log);
+            return result;
+        }
+
+        hzbBuffers_ = std::move(resizedHzbBuffers);
+        deferredColorBuffer_ = std::move(resizedDeferredColorBuffer);
+        for (uint32_t bufferIndex = 0; bufferIndex < hzbBuffers_.size(); ++bufferIndex) {
+            result = bindlessHeap_->writeStorageBuffer(hzbHandles_[bufferIndex], *hzbBuffers_[bufferIndex]);
+            if (!result) {
+                return result;
+            }
+        }
+        result = bindlessHeap_->writeStorageBuffer(deferredColorHandle_, *deferredColorBuffer_);
+        if (!result) {
+            return result;
+        }
+
+        spdlog::info(
+            "[GPUDrivenPreviewPass] Resized frame resources {}x{} -> {}x{}",
+            frameWidth_,
+            frameHeight_,
+            width,
+            height);
+        frameWidth_ = width;
+        frameHeight_ = height;
+        hzbMipCount_ = mipCount;
+        hzbElementCount_ = elementCount;
+        frameIndex_ = 0;
+        hzbValid_ = false;
+        previousCameraValid_ = false;
+        frameBuffersInitialized_ = false;
+        return {};
     }
 
     static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
@@ -612,6 +1212,8 @@ private:
         uint32_t primitiveIndex = 0;
         uint32_t materialIndex = 0;
         uint32_t transformIndex = 0;
+        uint32_t instanceIndex = 0;
+        uint32_t meshletFlags = 0;
     };
 
     static bool appendPrimitivePositions(
@@ -649,6 +1251,8 @@ private:
         uint32_t primitiveIndex,
         uint32_t materialIndex,
         uint32_t transformIndex,
+        uint32_t instanceIndex,
+        uint32_t meshletFlags,
         std::vector<GPUDrivenPreviewGpuMeshlet>& outMeshlets,
         std::vector<uint32_t>& outMeshletVertices,
         std::vector<uint32_t>& outMeshletTriangles,
@@ -705,6 +1309,26 @@ private:
                 .lodLevel = cluster.lodLevel,
                 .lodGroupIndex = static_cast<uint32_t>(std::max(cluster.lodGroupIndex, 0)),
                 .transformIndex = transformIndex,
+                .instanceIndex = instanceIndex,
+                .flags = meshletFlags,
+                .boundingSphere = {
+                    cluster.boundingSphereCenter.x,
+                    cluster.boundingSphereCenter.y,
+                    cluster.boundingSphereCenter.z,
+                    std::max(cluster.boundingSphereRadius, 0.0f),
+                },
+                .coneApexCutoff = {
+                    cluster.coneApex.x,
+                    cluster.coneApex.y,
+                    cluster.coneApex.z,
+                    cluster.coneCutoff,
+                },
+                .coneAxis = {
+                    cluster.coneAxis.x,
+                    cluster.coneAxis.y,
+                    cluster.coneAxis.z,
+                    0.0f,
+                },
             });
         }
 
@@ -719,6 +1343,7 @@ private:
         std::vector<uint32_t>& outMeshletVertices,
         std::vector<uint32_t>& outMeshletTriangles,
         std::vector<SceneGpuTransform>& outTransforms,
+        std::vector<GPUDrivenPreviewGpuInstance>& outInstances,
         scene::Bounds& outBounds,
         GPUDrivenPreviewMeshletRange& outBaseMeshletRange,
         std::vector<GPUDrivenPreviewMeshletRange>& outLodLevelRanges,
@@ -739,6 +1364,7 @@ private:
         outMeshlets.clear();
         outMeshletVertices.clear();
         outMeshletTriangles.clear();
+        outInstances.clear();
         outBaseMeshletRange = GPUDrivenPreviewMeshletRange{};
         outLodLevelRanges.clear();
         outBounds = loadedScene.bounds();
@@ -767,12 +1393,36 @@ private:
             if (!appendPrimitivePositions(primitive, outPositions, positionBase, log)) {
                 return false;
             }
+            if (!primitive.localBounds.valid ||
+                outInstances.size() >= std::numeric_limits<uint32_t>::max()) {
+                log = "GPUDrivenPreviewPass found invalid or unaddressable instance bounds";
+                return false;
+            }
+            const uint32_t materialIndex = static_cast<uint32_t>(std::max(renderNode.materialIndex, 0));
+            const uint32_t instanceIndex = static_cast<uint32_t>(outInstances.size());
+            const float3 instanceCenter = primitive.localBounds.center();
+            outInstances.push_back(GPUDrivenPreviewGpuInstance{
+                .boundingSphere = {
+                    instanceCenter.x,
+                    instanceCenter.y,
+                    instanceCenter.z,
+                    std::max(primitive.localBounds.radius(), 0.000001f),
+                },
+                .transformIndex = static_cast<uint32_t>(renderNodeIndex),
+                .primitiveIndex = static_cast<uint32_t>(std::max(renderNode.renderPrimitiveIndex, 0)),
+            });
+            const bool doubleSided =
+                renderNode.materialIndex >= 0 &&
+                static_cast<size_t>(renderNode.materialIndex) < loadedScene.materials().size() &&
+                loadedScene.materials()[static_cast<size_t>(renderNode.materialIndex)].doubleSided;
             primitiveInstances.push_back(PrimitiveInstanceRef{
                 .primitive = &primitive,
                 .positionBase = positionBase,
                 .primitiveIndex = static_cast<uint32_t>(std::max(renderNode.renderPrimitiveIndex, 0)),
-                .materialIndex = static_cast<uint32_t>(std::max(renderNode.materialIndex, 0)),
+                .materialIndex = materialIndex,
                 .transformIndex = static_cast<uint32_t>(renderNodeIndex),
+                .instanceIndex = instanceIndex,
+                .meshletFlags = doubleSided ? 1u : 0u,
             });
             maxLodLevelCount = std::max(maxLodLevelCount, primitive.meshletLodLevels.size());
         }
@@ -791,6 +1441,8 @@ private:
                     instance.primitiveIndex,
                     instance.materialIndex,
                     instance.transformIndex,
+                    instance.instanceIndex,
+                    instance.meshletFlags,
                     outMeshlets,
                     outMeshletVertices,
                     outMeshletTriangles,
@@ -822,6 +1474,8 @@ private:
                         instance.primitiveIndex,
                         instance.materialIndex,
                         instance.transformIndex,
+                        instance.instanceIndex,
+                        instance.meshletFlags,
                         outMeshlets,
                         outMeshletVertices,
                         outMeshletTriangles,
@@ -837,11 +1491,12 @@ private:
         if (outPositions.empty() ||
             outMeshlets.empty() ||
             outMeshletVertices.empty() ||
-            outMeshletTriangles.empty()) {
+            outMeshletTriangles.empty() ||
+            outInstances.empty()) {
             log = "GPUDrivenPreviewPass found no drawable meshlet geometry in " + path.string();
             return false;
         }
-        if (outMeshlets.size() > std::numeric_limits<uint32_t>::max()) {
+        if (outMeshlets.size() >= std::numeric_limits<uint32_t>::max()) {
             log = "GPUDrivenPreviewPass scene has too many meshlets";
             return false;
         }
@@ -859,6 +1514,11 @@ private:
         const scene::Bounds& drawBounds,
         const GPUDrivenPreviewMeshletRange& baseMeshletRange,
         const std::vector<GPUDrivenPreviewMeshletRange>& lodLevelRanges,
+        uint32_t instanceCount,
+        uint32_t hzbMipCount,
+        uint32_t frameIndex,
+        bool hzbValid,
+        const GPUDrivenPreviewGpuParams* previousParams,
         GPUDrivenPreviewGpuParams& outParams)
     {
         outParams = GPUDrivenPreviewGpuParams{};
@@ -920,6 +1580,32 @@ private:
         outParams.meshletOffset = meshletRange.offset;
         outParams.meshletCount = meshletRange.count;
         outParams.selectedLodLevel = selectedLodLevel;
+        outParams.instanceCount = instanceCount;
+        outParams.width = std::max(width, 1u);
+        outParams.height = std::max(height, 1u);
+        outParams.hzbMipCount = std::max(hzbMipCount, 1u);
+        outParams.frameIndex = frameIndex;
+        outParams.hzbValid = hzbValid ? 1u : 0u;
+        outParams.cullingFlags = 0;
+        if (boolProperty(&properties, "instanceFrustumCull", true)) {
+            outParams.cullingFlags |= kGPUDrivenPreviewCullInstanceFrustum;
+        }
+        if (boolProperty(&properties, "instanceHzbCull", true)) {
+            outParams.cullingFlags |= kGPUDrivenPreviewCullInstanceHzb;
+        }
+        if (boolProperty(&properties, "meshletFrustumCull", true)) {
+            outParams.cullingFlags |= kGPUDrivenPreviewCullMeshletFrustum;
+        }
+        if (boolProperty(&properties, "meshletNormalConeCull", true)) {
+            outParams.cullingFlags |= kGPUDrivenPreviewCullMeshletNormalCone;
+        }
+
+        const GPUDrivenPreviewGpuParams& previous = previousParams != nullptr ? *previousParams : outParams;
+        std::memcpy(outParams.previousEye, previous.eye, sizeof(outParams.previousEye));
+        std::memcpy(outParams.previousCenter, previous.center, sizeof(outParams.previousCenter));
+        std::memcpy(outParams.previousUpProjection, previous.upProjection, sizeof(outParams.previousUpProjection));
+        std::memcpy(outParams.previousViewport, previous.viewport, sizeof(outParams.previousViewport));
+        std::memcpy(outParams.previousClipOrtho, previous.clipOrtho, sizeof(outParams.previousClipOrtho));
     }
 
     Result updateParamsBuffer(
@@ -932,7 +1618,19 @@ private:
         }
 
         GPUDrivenPreviewGpuParams params;
-        buildParams(width, height, properties, drawBounds_, baseMeshletRange_, lodLevelRanges_, params);
+        buildParams(
+            width,
+            height,
+            properties,
+            drawBounds_,
+            baseMeshletRange_,
+            lodLevelRanges_,
+            instanceCount_,
+            hzbMipCount_,
+            frameIndex_,
+            hzbValid_,
+            previousCameraValid_ ? &previousParams_ : nullptr,
+            params);
 
         void* mapped = paramsBuffer_->map();
         if (mapped == nullptr) {
@@ -941,6 +1639,9 @@ private:
         std::memcpy(mapped, &params, sizeof(params));
         paramsBuffer_->flush(0, sizeof(params));
         paramsBuffer_->unmap();
+        activeMeshletCount_ = params.meshletCount;
+        previousParams_ = params;
+        previousCameraValid_ = true;
         return {};
     }
 
@@ -950,6 +1651,13 @@ private:
     std::unique_ptr<Buffer> meshletTriangleBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
     std::unique_ptr<Buffer> transformBuffer_;
+    std::unique_ptr<Buffer> instanceBuffer_;
+    std::unique_ptr<Buffer> instanceVisibilityBuffer_;
+    std::array<std::unique_ptr<Buffer>, 2> visibleMeshletBuffers_;
+    std::array<std::unique_ptr<Buffer>, 2> indirectBuffers_;
+    std::array<std::unique_ptr<Buffer>, 2> hzbBuffers_;
+    std::unique_ptr<Buffer> deferredColorBuffer_;
+    Device* device_ = nullptr;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     BindlessHandle positionHandle_;
     BindlessHandle meshletHandle_;
@@ -957,14 +1665,47 @@ private:
     BindlessHandle meshletTriangleHandle_;
     BindlessHandle paramsHandle_;
     BindlessHandle transformHandle_;
+    BindlessHandle instanceHandle_;
+    BindlessHandle instanceVisibilityHandle_;
+    std::array<BindlessHandle, 2> visibleMeshletHandles_;
+    std::array<BindlessHandle, 2> indirectHandles_;
+    std::array<BindlessHandle, 2> hzbHandles_;
+    BindlessHandle deferredColorHandle_;
+    BindlessHandle depthImageHandle_;
+    BindlessHandle visibilityImageHandle_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
-    std::unique_ptr<GraphicsPipeline> pipeline_;
+    std::unique_ptr<ShaderModule> resetShader_;
+    std::unique_ptr<ShaderModule> instanceCullShader_;
+    std::unique_ptr<ShaderModule> compactShader_;
+    std::unique_ptr<ShaderModule> hzbShader_;
+    std::unique_ptr<ShaderModule> deferredShader_;
+    std::unique_ptr<ShaderModule> compositeVertexShader_;
+    std::unique_ptr<ShaderModule> compositeFragmentShader_;
+    std::unique_ptr<GraphicsPipeline> visibilityPipeline_;
+    std::unique_ptr<GraphicsPipeline> compositePipeline_;
+    std::unique_ptr<ComputePipeline> resetPipeline_;
+    std::unique_ptr<ComputePipeline> instanceCullPipeline_;
+    std::unique_ptr<ComputePipeline> compactPipeline_;
+    std::unique_ptr<ComputePipeline> hzbPipeline_;
+    std::unique_ptr<ComputePipeline> deferredPipeline_;
     scene::Bounds drawBounds_;
     uint64_t sceneRevision_ = 0;
     GPUDrivenPreviewMeshletRange baseMeshletRange_;
     std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges_;
+    GPUDrivenPreviewGpuParams previousParams_;
     uint32_t drawTaskCount_ = 0;
+    uint32_t activeMeshletCount_ = 0;
+    uint32_t instanceCount_ = 0;
+    uint32_t frameWidth_ = 1;
+    uint32_t frameHeight_ = 1;
+    uint32_t hzbMipCount_ = 1;
+    uint64_t hzbElementCount_ = 1;
+    uint32_t frameIndex_ = 0;
+    bool hzbValid_ = false;
+    bool previousCameraValid_ = false;
+    bool internalBuffersInitialized_ = false;
+    bool frameBuffersInitialized_ = false;
 };
 
 } // namespace
