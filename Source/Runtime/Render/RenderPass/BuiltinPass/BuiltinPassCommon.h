@@ -49,6 +49,7 @@ inline constexpr const char* kMaterialShaderObjectAlternateFragmentEntryPoint =
 inline constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "SceneRayQueryVisualize";
 inline constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
 inline constexpr const char* kGPUDrivenPreviewShaderModuleName = "GPUDrivenPreview";
+inline constexpr const char* kGPUDrivenDeferredShaderModuleName = "GPUDrivenDeferred";
 inline constexpr const char* kGPUDrivenPreviewMeshEntryPoint = "gpuDrivenPreviewMeshMain";
 inline constexpr const char* kGPUDrivenPreviewFragmentEntryPoint = "gpuDrivenPreviewFragmentMain";
 inline constexpr const char* kGPUDrivenPreviewResetEntryPoint = "gpuDrivenPreviewResetMain";
@@ -96,6 +97,10 @@ inline constexpr uint32_t kRayQueryVisualizationGranularityClusterId = 2;
 inline constexpr uint32_t kGPUDrivenPreviewModeMeshlet = 0;
 inline constexpr uint32_t kGPUDrivenPreviewModePrimitive = 1;
 inline constexpr uint32_t kGPUDrivenPreviewModeLod = 2;
+inline constexpr uint32_t kGPUDrivenPreviewModeShaded = 3;
+inline constexpr uint32_t kGPUDrivenPreviewModeBaseColor = 4;
+inline constexpr uint32_t kGPUDrivenPreviewMeshletTriangleChunkSize = 64;
+inline constexpr uint32_t kGPUDrivenPreviewMeshletChunkCount = 2;
 inline constexpr uint32_t kGPUDrivenPreviewCullInstanceFrustum = 1u << 0u;
 inline constexpr uint32_t kGPUDrivenPreviewCullInstanceHzb = 1u << 1u;
 inline constexpr uint32_t kGPUDrivenPreviewCullMeshletFrustum = 1u << 2u;
@@ -394,11 +399,39 @@ struct SceneRayQueryVisualizationPush {
     uint32_t padding = 0;
 };
 
-struct GPUDrivenPreviewGpuPosition {
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-    float w = 1.0f;
+struct GPUDrivenPreviewGpuVertex {
+    float position[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    float normal[4] = {0.0f, 0.0f, 1.0f, 0.0f};
+    float tangent[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    float texcoord[4] = {};
+};
+
+struct GPUDrivenPreviewGpuTextureInfo {
+    uint32_t textureIndex = UINT32_MAX;
+    uint32_t texCoord = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    float transform0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+    float transform1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
+};
+
+struct GPUDrivenPreviewGpuMaterial {
+    float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float emissive[4] = {};
+    float params[4] = {1.0f, 1.0f, 0.5f, 0.0f};
+    float textureParams[4] = {1.0f, 1.0f, 0.0f, 0.0f};
+    float glassParams[4] = {0.0f, 1.5f, 0.0f, 0.0f};
+    float attenuationColor[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    float diffuseTransmission[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    GPUDrivenPreviewGpuTextureInfo baseColorTexture;
+    GPUDrivenPreviewGpuTextureInfo metallicRoughnessTexture;
+    GPUDrivenPreviewGpuTextureInfo normalTexture;
+    GPUDrivenPreviewGpuTextureInfo occlusionTexture;
+    GPUDrivenPreviewGpuTextureInfo emissiveTexture;
+    GPUDrivenPreviewGpuTextureInfo transmissionTexture;
+    GPUDrivenPreviewGpuTextureInfo thicknessTexture;
+    GPUDrivenPreviewGpuTextureInfo diffuseTransmissionTexture;
+    GPUDrivenPreviewGpuTextureInfo diffuseTransmissionColorTexture;
 };
 
 struct GPUDrivenPreviewGpuMeshlet {
@@ -461,7 +494,16 @@ struct GPUDrivenPreviewGpuParams {
         kGPUDrivenPreviewCullInstanceHzb |
         kGPUDrivenPreviewCullMeshletFrustum |
         kGPUDrivenPreviewCullMeshletNormalCone;
-    uint32_t padding = 0;
+    uint32_t materialTextureCount = 0;
+    float environmentIntensity = 1.0f;
+    float environmentRotationRadians = 0.0f;
+    uint32_t environmentMode = 2;
+    uint32_t environmentVisible = 1;
+    uint32_t materialCount = 1;
+    uint32_t shadingPadding0 = 0;
+    uint32_t shadingPadding1 = 0;
+    uint32_t shadingPadding2 = 0;
+    float environmentSH[9][4] = {};
 };
 
 struct GPUDrivenPreviewUserPush {
@@ -485,12 +527,19 @@ struct GPUDrivenPreviewUserPush {
     uint32_t passIndex = 0;
     uint32_t mipLevel = 0;
     uint32_t projectWithCullingCamera = 0;
+    uint32_t materialBuffer = 0;
+    uint32_t materialTextureImageBase = 0;
+    uint32_t environmentImage = 0;
+    uint32_t padding = 0;
 };
 
+static_assert(sizeof(GPUDrivenPreviewGpuVertex) == 64);
+static_assert(sizeof(GPUDrivenPreviewGpuTextureInfo) == 48);
+static_assert(sizeof(GPUDrivenPreviewGpuMaterial) == 544);
 static_assert(sizeof(GPUDrivenPreviewGpuMeshlet) == 96);
 static_assert(sizeof(GPUDrivenPreviewGpuInstance) == 32);
-static_assert(sizeof(GPUDrivenPreviewGpuParams) == 304);
-static_assert(sizeof(GPUDrivenPreviewUserPush) == 80);
+static_assert(sizeof(GPUDrivenPreviewGpuParams) == 480);
+static_assert(sizeof(GPUDrivenPreviewUserPush) == 96);
 
 struct SceneMaterialVisualizationPush {
     float eye[4] = {};

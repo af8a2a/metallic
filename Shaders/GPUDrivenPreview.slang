@@ -1,5 +1,8 @@
 static const uint kMaxMeshletVertices = 128;
 static const uint kMaxMeshletTriangles = 128;
+static const uint kMeshletTriangleChunkSize = 64;
+static const uint kMeshletChunkCount = 2;
+static const uint kMaxMeshOutputVertices = kMeshletTriangleChunkSize * 3;
 
 static const uint kCullInstanceFrustum = 1u << 0u;
 static const uint kCullInstanceHzb = 1u << 1u;
@@ -31,6 +34,18 @@ struct GPUDrivenPreviewPush
     uint passIndex;
     uint mipLevel;
     uint projectWithCullingCamera;
+    uint materialBuffer;
+    uint materialTextureImageBase;
+    uint environmentImage;
+    uint padding;
+};
+
+struct GPUDrivenPreviewVertex
+{
+    float4 position;
+    float4 normal;
+    float4 tangent;
+    float4 texcoord;
 };
 
 struct SceneTransform
@@ -98,7 +113,16 @@ struct GPUDrivenPreviewParams
     uint frameIndex;
     uint hzbValid;
     uint cullingFlags;
-    uint padding;
+    uint materialTextureCount;
+    float environmentIntensity;
+    float environmentRotationRadians;
+    uint environmentMode;
+    uint environmentVisible;
+    uint materialCount;
+    uint shadingPadding0;
+    uint shadingPadding1;
+    uint shadingPadding2;
+    float4 environmentSH[9];
 };
 
 struct CameraData
@@ -498,9 +522,18 @@ void gpuDrivenPreviewCompactMain(
     DescriptorHandle<RWStructuredBuffer<uint>> indirectHandle =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + indirectHandleIndex, 0));
 
+    uint chunkCount = min(
+        kMeshletChunkCount,
+        (meshlets[meshletIndex].triangleCount + kMeshletTriangleChunkSize - 1u) /
+            kMeshletTriangleChunkSize);
     uint outputIndex = 0;
-    InterlockedAdd(indirectHandle[0], 1u, outputIndex);
-    visibleHandle[outputIndex] = meshletIndex;
+    InterlockedAdd(indirectHandle[0], chunkCount, outputIndex);
+    for (uint chunkIndex = 0u; chunkIndex < kMeshletChunkCount; ++chunkIndex) {
+        if (chunkIndex < chunkCount) {
+            visibleHandle[outputIndex + chunkIndex] =
+                (meshletIndex << 1u) | chunkIndex;
+        }
+    }
 }
 
 [shader("mesh")]
@@ -508,12 +541,12 @@ void gpuDrivenPreviewCompactMain(
 [outputtopology("triangle")]
 void gpuDrivenPreviewMeshMain(
     uint3 groupID : SV_GroupID,
-    out vertices GPUDrivenPreviewVertexOutput vertices[kMaxMeshletVertices],
-    out indices uint3 triangles[kMaxMeshletTriangles],
+    out vertices GPUDrivenPreviewVertexOutput vertices[kMaxMeshOutputVertices],
+    out indices uint3 triangles[kMeshletTriangleChunkSize],
     uniform GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<float4>> positionHandle =
-        DescriptorHandle<StructuredBuffer<float4>>(uint2(push.bufferShaderIndexBase + push.positionBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> positionHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(uint2(push.bufferShaderIndexBase + push.positionBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
     DescriptorHandle<StructuredBuffer<uint>> meshletVertexHandle =
@@ -528,7 +561,7 @@ void gpuDrivenPreviewMeshMain(
     DescriptorHandle<StructuredBuffer<uint>> visibleHandle =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + visibleHandleIndex, 0));
 
-    StructuredBuffer<float4> positions = positionHandle;
+    StructuredBuffer<GPUDrivenPreviewVertex> verticesBuffer = positionHandle;
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
     StructuredBuffer<uint> meshletVertices = meshletVertexHandle;
     StructuredBuffer<uint> meshletTriangles = meshletTriangleHandle;
@@ -536,7 +569,9 @@ void gpuDrivenPreviewMeshMain(
     StructuredBuffer<SceneTransform> transforms = transformHandle;
     StructuredBuffer<uint> visibleMeshlets = visibleHandle;
 
-    uint meshletIndex = visibleMeshlets[groupID.x];
+    uint meshletChunk = visibleMeshlets[groupID.x];
+    uint meshletIndex = meshletChunk >> 1u;
+    uint chunkIndex = meshletChunk & 1u;
     GPUDrivenPreviewMeshlet meshlet = meshlets[meshletIndex];
     SceneTransform transform = transforms[meshlet.transformIndex];
     GPUDrivenPreviewParams params = paramsBuffer[0];
@@ -545,30 +580,42 @@ void gpuDrivenPreviewMeshMain(
         return;
     }
 
-    uint vertexCount = min(meshlet.vertexCount, kMaxMeshletVertices);
-    uint triangleCount = min(meshlet.triangleCount, kMaxMeshletTriangles);
+    uint triangleStart = chunkIndex * kMeshletTriangleChunkSize;
+    if (triangleStart >= meshlet.triangleCount) {
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
+    uint triangleCount = min(
+        meshlet.triangleCount - triangleStart,
+        kMeshletTriangleChunkSize);
+    uint vertexCount = triangleCount * 3u;
     SetMeshOutputCounts(vertexCount, triangleCount);
 
-    for (uint vertexIndex = 0; vertexIndex < kMaxMeshletVertices; ++vertexIndex) {
+    CameraData projectionCamera = push.projectWithCullingCamera != 0u ?
+        cullingCamera(params) : renderCamera(params);
+    for (uint vertexIndex = 0; vertexIndex < kMaxMeshOutputVertices; ++vertexIndex) {
         if (vertexIndex < vertexCount) {
-            uint positionIndex = meshletVertices[meshlet.vertexOffset + vertexIndex];
-            float3 worldPosition = transformPoint(transform, positions[positionIndex].xyz);
-            CameraData projectionCamera = push.projectWithCullingCamera != 0u ?
-                cullingCamera(params) : renderCamera(params);
+            uint chunkTriangleIndex = vertexIndex / 3u;
+            uint triangleCorner = vertexIndex % 3u;
+            uint meshletTriangleIndex = triangleStart + chunkTriangleIndex;
+            uint triangleBase = meshlet.triangleOffset + meshletTriangleIndex * 3u;
+            uint localVertexIndex = meshletTriangles[triangleBase + triangleCorner];
+            uint positionIndex = meshletVertices[meshlet.vertexOffset + localVertexIndex];
+            float3 worldPosition = transformPoint(transform, verticesBuffer[positionIndex].position.xyz);
             float4 position = projectPosition(worldPosition, projectionCamera);
             position.y = -position.y;
             vertices[vertexIndex].position = position;
-            vertices[vertexIndex].visibilityId = meshletIndex + 1u;
+            vertices[vertexIndex].visibilityId =
+                ((meshletIndex + 1u) << 7u) | meshletTriangleIndex;
         }
     }
 
-    for (uint triangleIndex = 0; triangleIndex < kMaxMeshletTriangles; ++triangleIndex) {
+    for (uint triangleIndex = 0; triangleIndex < kMeshletTriangleChunkSize; ++triangleIndex) {
         if (triangleIndex < triangleCount) {
-            uint baseIndex = meshlet.triangleOffset + triangleIndex * 3u;
             triangles[triangleIndex] = uint3(
-                meshletTriangles[baseIndex + 0u],
-                meshletTriangles[baseIndex + 1u],
-                meshletTriangles[baseIndex + 2u]);
+                triangleIndex * 3u,
+                triangleIndex * 3u + 1u,
+                triangleIndex * 3u + 2u);
         }
     }
 }
@@ -628,57 +675,6 @@ void gpuDrivenPreviewHzbMain(
     hzb[destinationIndex] = params.clipOrtho.w > 0.5 ?
         min(min(depth0, depth1), min(depth2, depth3)) :
         max(max(depth0, depth1), max(depth2, depth3));
-}
-
-float3 hashColor(uint seed)
-{
-    float3 value = frac(sin(float3(seed, seed * 17u + 13u, seed * 31u + 7u) * 0.017453292) * 43758.5453);
-    return lerp(float3(0.18, 0.34, 0.62), float3(0.95, 0.82, 0.35), value);
-}
-
-uint packColor(float3 color)
-{
-    uint3 rgb = uint3(saturate(color) * 255.0 + 0.5);
-    return rgb.x | (rgb.y << 8u) | (rgb.z << 16u) | 0xff000000u;
-}
-
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void gpuDrivenPreviewDeferredMain(
-    uint3 dispatchThreadId : SV_DispatchThreadID,
-    uniform GPUDrivenPreviewPush push)
-{
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
-    GPUDrivenPreviewParams params = paramsHandle[0];
-    if (dispatchThreadId.x >= params.width || dispatchThreadId.y >= params.height) {
-        return;
-    }
-
-    DescriptorHandle<Texture2D<uint>> visibilityHandle =
-        DescriptorHandle<Texture2D<uint>>(uint2(push.imageShaderIndexBase + push.visibilityImage, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> colorHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.deferredColorBuffer, 0));
-    Texture2D<uint> visibility = visibilityHandle;
-    RWStructuredBuffer<uint> colors = colorHandle;
-    uint visibilityId = visibility.Load(int3(dispatchThreadId.xy, 0));
-    uint outputIndex = dispatchThreadId.y * params.width + dispatchThreadId.x;
-    if (visibilityId == 0u) {
-        colors[outputIndex] = packColor(params.clearColor.xyz);
-        return;
-    }
-
-    uint meshletIndex = visibilityId - 1u;
-    uint colorSeed = meshletIndex;
-    if (params.mode != 0u) {
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
-            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
-        StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
-        GPUDrivenPreviewMeshlet meshlet = meshlets[meshletIndex];
-        colorSeed = params.mode == 1u ? meshlet.primitiveIndex :
-            meshlet.primitiveIndex * 1009u + meshlet.lodGroupIndex * 131u + meshlet.lodLevel * 17u + 1u;
-    }
-    colors[outputIndex] = packColor(hashColor(colorSeed + 1u));
 }
 
 static const float2 kFullscreenTrianglePositions[3] =

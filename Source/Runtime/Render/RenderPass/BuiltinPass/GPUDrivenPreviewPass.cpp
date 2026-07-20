@@ -2,8 +2,585 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/SceneResourceManager.h"
 
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+#include "openpbr_data_constants.h"
+
 namespace metallic::render::builtin_pass {
 namespace {
+
+constexpr uint32_t kGPUDrivenMaxMaterialTextures = 256;
+constexpr uint32_t kGPUDrivenVisibilityTriangleBits = 7;
+constexpr uint32_t kGPUDrivenMaxEncodedMeshlets = (1u << (32u - kGPUDrivenVisibilityTriangleBits)) - 1u;
+constexpr uint32_t kGPUDrivenEnvironmentModeProcedural = 0;
+constexpr uint32_t kGPUDrivenEnvironmentModeMap = 1;
+constexpr uint32_t kGPUDrivenEnvironmentModeDisabled = 2;
+constexpr uint32_t kGPUDrivenOpenPBRLut2DCount = 6;
+constexpr uint32_t kGPUDrivenOpenPBRLut3DCount = 2;
+constexpr uint32_t kGPUDrivenOpenPBRLutSize = OpenPBR_EnergyTableSize;
+constexpr uint32_t kGPUDrivenOpenPBRLtcSize = OpenPBR_LTCTableSize;
+constexpr float kGPUDrivenOpenPBRLutScale = 1.0f / 65535.0f;
+
+using GPUDrivenOpenPBRLutScalar = uint16_t;
+
+struct GPUDrivenOpenPBRVec3 {
+    float x;
+    float y;
+    float z;
+};
+
+constexpr GPUDrivenOpenPBRVec3 vec3(float x, float y, float z)
+{
+    return GPUDrivenOpenPBRVec3{x, y, z};
+}
+
+static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBRIdealDielectricEnergyComplement[] = {
+#include "impl/data/openpbr_ideal_dielectric_energy_complement_data.h"
+};
+
+static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBRIdealDielectricAverageEnergyComplement[] = {
+#include "impl/data/openpbr_ideal_dielectric_avg_energy_complement_data.h"
+};
+
+static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBRIdealDielectricReflectionRatio[] = {
+#include "impl/data/openpbr_ideal_dielectric_reflection_ratio_data.h"
+};
+
+static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBROpaqueDielectricEnergyComplement[] = {
+#include "impl/data/openpbr_opaque_dielectric_energy_complement_data.h"
+};
+
+static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBROpaqueDielectricAverageEnergyComplement[] = {
+#include "impl/data/openpbr_opaque_dielectric_avg_energy_complement_data.h"
+};
+
+static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBRIdealMetalEnergyComplement[] = {
+#include "impl/data/openpbr_ideal_metal_energy_complement_data.h"
+};
+
+static constexpr GPUDrivenOpenPBRLutScalar kGPUDrivenOpenPBRIdealMetalAverageEnergyComplement[] = {
+#include "impl/data/openpbr_ideal_metal_avg_energy_complement_data.h"
+};
+
+static constexpr GPUDrivenOpenPBRVec3 kGPUDrivenOpenPBRLtc[] = {
+#include "impl/data/openpbr_ltc_data.h"
+};
+
+static_assert(std::size(kGPUDrivenOpenPBRIdealDielectricEnergyComplement) ==
+    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
+static_assert(std::size(kGPUDrivenOpenPBRIdealDielectricAverageEnergyComplement) ==
+    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
+static_assert(std::size(kGPUDrivenOpenPBRIdealDielectricReflectionRatio) ==
+    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
+static_assert(std::size(kGPUDrivenOpenPBROpaqueDielectricEnergyComplement) ==
+    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
+static_assert(std::size(kGPUDrivenOpenPBROpaqueDielectricAverageEnergyComplement) ==
+    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
+static_assert(std::size(kGPUDrivenOpenPBRIdealMetalEnergyComplement) ==
+    kGPUDrivenOpenPBRLutSize * kGPUDrivenOpenPBRLutSize);
+static_assert(std::size(kGPUDrivenOpenPBRIdealMetalAverageEnergyComplement) == kGPUDrivenOpenPBRLutSize);
+static_assert(std::size(kGPUDrivenOpenPBRLtc) == kGPUDrivenOpenPBRLtcSize * kGPUDrivenOpenPBRLtcSize);
+
+struct GPUDrivenPreviewTextureResource {
+    std::unique_ptr<Buffer> uploadBuffer;
+    std::unique_ptr<Texture> texture;
+    std::unique_ptr<TextureView> view;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t depth = 1;
+    Format format = Format::Rgba8Unorm;
+    ResourceState state = ResourceState::Undefined;
+    bool uploaded = false;
+};
+
+struct GPUDrivenPreviewDecodedImage {
+    std::vector<uint8_t> pixels;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+using GPUDrivenPreviewEnvironmentSH = std::array<std::array<float, 4>, 9>;
+
+GPUDrivenPreviewEnvironmentSH computeEnvironmentSH(
+    const std::vector<float>& pixels,
+    uint32_t width,
+    uint32_t height)
+{
+    GPUDrivenPreviewEnvironmentSH coefficients{};
+    if (pixels.size() < static_cast<size_t>(width) * height * 4u || width == 0 || height == 0) {
+        return coefficients;
+    }
+
+    constexpr uint32_t kMaxSampleWidth = 256;
+    constexpr uint32_t kMaxSampleHeight = 128;
+    constexpr float kPi = 3.14159265358979323846f;
+    const uint32_t sampleWidth = std::min(width, kMaxSampleWidth);
+    const uint32_t sampleHeight = std::min(height, kMaxSampleHeight);
+    const float deltaPhi = 2.0f * kPi / static_cast<float>(sampleWidth);
+    const float deltaTheta = kPi / static_cast<float>(sampleHeight);
+
+    for (uint32_t sampleY = 0; sampleY < sampleHeight; ++sampleY) {
+        const float v = (static_cast<float>(sampleY) + 0.5f) /
+            static_cast<float>(sampleHeight);
+        const float theta = v * kPi;
+        const float sineTheta = std::sin(theta);
+        const float directionY = std::cos(theta);
+        const uint32_t sourceY = std::min(
+            static_cast<uint32_t>(v * static_cast<float>(height)),
+            height - 1u);
+        const float solidAngle = sineTheta * deltaPhi * deltaTheta;
+
+        for (uint32_t sampleX = 0; sampleX < sampleWidth; ++sampleX) {
+            const float u = (static_cast<float>(sampleX) + 0.5f) /
+                static_cast<float>(sampleWidth);
+            const float phi = (u - 0.5f) * 2.0f * kPi;
+            const float directionX = std::cos(phi) * sineTheta;
+            const float directionZ = std::sin(phi) * sineTheta;
+            const uint32_t sourceX = std::min(
+                static_cast<uint32_t>(u * static_cast<float>(width)),
+                width - 1u);
+            const size_t pixelIndex =
+                (static_cast<size_t>(sourceY) * width + sourceX) * 4u;
+            const std::array<float, 3> radiance{
+                std::max(pixels[pixelIndex], 0.0f),
+                std::max(pixels[pixelIndex + 1u], 0.0f),
+                std::max(pixels[pixelIndex + 2u], 0.0f),
+            };
+            const std::array<float, 9> basis{
+                0.282095f,
+                0.488603f * directionY,
+                0.488603f * directionZ,
+                0.488603f * directionX,
+                1.092548f * directionX * directionY,
+                1.092548f * directionY * directionZ,
+                0.315392f * (3.0f * directionZ * directionZ - 1.0f),
+                1.092548f * directionX * directionZ,
+                0.546274f * (directionX * directionX - directionY * directionY),
+            };
+            for (size_t coefficientIndex = 0; coefficientIndex < coefficients.size(); ++coefficientIndex) {
+                for (size_t channel = 0; channel < radiance.size(); ++channel) {
+                    coefficients[coefficientIndex][channel] +=
+                        radiance[channel] * basis[coefficientIndex] * solidAngle;
+                }
+            }
+        }
+    }
+    return coefficients;
+}
+
+std::string gpuDrivenResultMessage(std::string_view label, const Result& result)
+{
+    return std::string(label) + " returned " + resultToString(result);
+}
+
+Result createGPUDrivenTexture(
+    Device& device,
+    const void* pixels,
+    uint64_t byteSize,
+    uint32_t width,
+    uint32_t height,
+    Format format,
+    std::string_view label,
+    GPUDrivenPreviewTextureResource& outTexture,
+    std::string& log,
+    uint32_t depth = 1)
+{
+    if (pixels == nullptr || byteSize == 0 || width == 0 || height == 0 || depth == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    GPUDrivenPreviewTextureResource texture;
+    texture.width = width;
+    texture.height = height;
+    texture.depth = depth;
+    texture.format = format;
+    Result result = device.createBuffer(
+        BufferDesc{
+            .size = byteSize,
+            .usage = BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::HostUpload,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
+        },
+        texture.uploadBuffer);
+    if (!result || texture.uploadBuffer == nullptr) {
+        log += gpuDrivenResultMessage(std::string("createBuffer(") + std::string(label) + " upload)", result);
+        log += '\n';
+        return result ? makeError(Error::Failure) : result;
+    }
+    void* mapped = texture.uploadBuffer->map();
+    if (mapped == nullptr) {
+        log += std::string(label) + " upload buffer map failed\n";
+        return makeError(Error::Failure);
+    }
+    std::memcpy(mapped, pixels, static_cast<size_t>(byteSize));
+    texture.uploadBuffer->flush(0, byteSize);
+    texture.uploadBuffer->unmap();
+
+    result = device.createTexture(
+        TextureDesc{
+            .type = depth > 1 ? TextureType::Texture3D : TextureType::Texture2D,
+            .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+            .format = format,
+            .width = width,
+            .height = height,
+            .depth = depth,
+            .mipCount = 1,
+            .layerCount = 1,
+            .memoryLocation = MemoryLocation::Device,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
+        },
+        texture.texture);
+    if (!result || texture.texture == nullptr) {
+        log += gpuDrivenResultMessage(std::string("createTexture(") + std::string(label) + ")", result);
+        log += '\n';
+        return result ? makeError(Error::Failure) : result;
+    }
+    result = device.createTextureView(
+        *texture.texture,
+        TextureViewDesc{
+            .format = format,
+            .baseMip = 0,
+            .mipCount = 1,
+            .baseLayer = 0,
+            .layerCount = 1,
+        },
+        texture.view);
+    if (!result || texture.view == nullptr) {
+        log += gpuDrivenResultMessage(std::string("createTextureView(") + std::string(label) + ")", result);
+        log += '\n';
+        return result ? makeError(Error::Failure) : result;
+    }
+    outTexture = std::move(texture);
+    return {};
+}
+
+template <size_t ValueCount>
+Result createGPUDrivenOpenPBRScalarLut(
+    Device& device,
+    const GPUDrivenOpenPBRLutScalar (&values)[ValueCount],
+    uint32_t width,
+    uint32_t height,
+    uint32_t depth,
+    std::string_view label,
+    GPUDrivenPreviewTextureResource& outTexture,
+    std::string& log)
+{
+    const uint64_t texelCount =
+        static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * static_cast<uint64_t>(depth);
+    if (texelCount != ValueCount) {
+        return makeError(Error::InvalidArgument);
+    }
+    std::vector<float> pixels(static_cast<size_t>(texelCount) * 4u, 0.0f);
+    for (size_t index = 0; index < static_cast<size_t>(texelCount); ++index) {
+        pixels[index * 4u] = static_cast<float>(values[index]) * kGPUDrivenOpenPBRLutScale;
+        pixels[index * 4u + 3u] = 1.0f;
+    }
+    return createGPUDrivenTexture(
+        device,
+        pixels.data(),
+        static_cast<uint64_t>(pixels.size() * sizeof(float)),
+        width,
+        height,
+        Format::Rgba32Sfloat,
+        label,
+        outTexture,
+        log,
+        depth);
+}
+
+Result prepareGPUDrivenOpenPBRLuts(
+    Device& device,
+    std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut2DCount>& lut2D,
+    std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut3DCount>& lut3D,
+    std::string& log)
+{
+    Result result = createGPUDrivenOpenPBRScalarLut(
+        device,
+        kGPUDrivenOpenPBRIdealDielectricAverageEnergyComplement,
+        kGPUDrivenOpenPBRLutSize,
+        kGPUDrivenOpenPBRLutSize,
+        1,
+        "GPUDriven OpenPBR ideal dielectric average energy complement LUT",
+        lut2D[0],
+        log);
+    if (!result) {
+        return result;
+    }
+    result = createGPUDrivenOpenPBRScalarLut(
+        device,
+        kGPUDrivenOpenPBRIdealDielectricReflectionRatio,
+        kGPUDrivenOpenPBRLutSize,
+        kGPUDrivenOpenPBRLutSize,
+        1,
+        "GPUDriven OpenPBR ideal dielectric reflection ratio LUT",
+        lut2D[1],
+        log);
+    if (!result) {
+        return result;
+    }
+    result = createGPUDrivenOpenPBRScalarLut(
+        device,
+        kGPUDrivenOpenPBROpaqueDielectricAverageEnergyComplement,
+        kGPUDrivenOpenPBRLutSize,
+        kGPUDrivenOpenPBRLutSize,
+        1,
+        "GPUDriven OpenPBR opaque dielectric average energy complement LUT",
+        lut2D[2],
+        log);
+    if (!result) {
+        return result;
+    }
+    result = createGPUDrivenOpenPBRScalarLut(
+        device,
+        kGPUDrivenOpenPBRIdealMetalEnergyComplement,
+        kGPUDrivenOpenPBRLutSize,
+        kGPUDrivenOpenPBRLutSize,
+        1,
+        "GPUDriven OpenPBR ideal metal energy complement LUT",
+        lut2D[3],
+        log);
+    if (!result) {
+        return result;
+    }
+    result = createGPUDrivenOpenPBRScalarLut(
+        device,
+        kGPUDrivenOpenPBRIdealMetalAverageEnergyComplement,
+        kGPUDrivenOpenPBRLutSize,
+        1,
+        1,
+        "GPUDriven OpenPBR ideal metal average energy complement LUT",
+        lut2D[4],
+        log);
+    if (!result) {
+        return result;
+    }
+
+    std::vector<float> ltcPixels(std::size(kGPUDrivenOpenPBRLtc) * 4u, 0.0f);
+    for (size_t index = 0; index < std::size(kGPUDrivenOpenPBRLtc); ++index) {
+        ltcPixels[index * 4u] = kGPUDrivenOpenPBRLtc[index].x;
+        ltcPixels[index * 4u + 1u] = kGPUDrivenOpenPBRLtc[index].y;
+        ltcPixels[index * 4u + 2u] = kGPUDrivenOpenPBRLtc[index].z;
+        ltcPixels[index * 4u + 3u] = 1.0f;
+    }
+    result = createGPUDrivenTexture(
+        device,
+        ltcPixels.data(),
+        static_cast<uint64_t>(ltcPixels.size() * sizeof(float)),
+        kGPUDrivenOpenPBRLtcSize,
+        kGPUDrivenOpenPBRLtcSize,
+        Format::Rgba32Sfloat,
+        "GPUDriven OpenPBR LTC LUT",
+        lut2D[5],
+        log);
+    if (!result) {
+        return result;
+    }
+    result = createGPUDrivenOpenPBRScalarLut(
+        device,
+        kGPUDrivenOpenPBRIdealDielectricEnergyComplement,
+        kGPUDrivenOpenPBRLutSize,
+        kGPUDrivenOpenPBRLutSize,
+        kGPUDrivenOpenPBRLutSize,
+        "GPUDriven OpenPBR ideal dielectric energy complement LUT",
+        lut3D[0],
+        log);
+    if (!result) {
+        return result;
+    }
+    return createGPUDrivenOpenPBRScalarLut(
+        device,
+        kGPUDrivenOpenPBROpaqueDielectricEnergyComplement,
+        kGPUDrivenOpenPBRLutSize,
+        kGPUDrivenOpenPBRLutSize,
+        kGPUDrivenOpenPBRLutSize,
+        "GPUDriven OpenPBR opaque dielectric energy complement LUT",
+        lut3D[1],
+        log);
+}
+
+Result uploadGPUDrivenTexture(CommandBuffer& commandBuffer, GPUDrivenPreviewTextureResource& texture)
+{
+    if (texture.uploaded) {
+        return {};
+    }
+    if (texture.uploadBuffer == nullptr || texture.texture == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    TextureBarrierDesc toTransfer{
+        .texture = texture.texture.get(),
+        .before = texture.state,
+        .after = ResourceState::TransferDestination,
+        .baseMip = 0,
+        .mipCount = 1,
+        .baseLayer = 0,
+        .layerCount = 1,
+    };
+    commandBuffer.barrier(BarrierDesc{
+        .textures = &toTransfer,
+        .textureCount = 1,
+    });
+    texture.state = ResourceState::TransferDestination;
+    commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
+        .buffer = texture.uploadBuffer.get(),
+        .texture = texture.texture.get(),
+        .width = texture.width,
+        .height = texture.height,
+        .depth = texture.depth,
+        .mipLevel = 0,
+        .baseLayer = 0,
+    });
+    TextureBarrierDesc toShaderRead{
+        .texture = texture.texture.get(),
+        .before = texture.state,
+        .after = ResourceState::ShaderRead,
+        .baseMip = 0,
+        .mipCount = 1,
+        .baseLayer = 0,
+        .layerCount = 1,
+    };
+    commandBuffer.barrier(BarrierDesc{
+        .textures = &toShaderRead,
+        .textureCount = 1,
+    });
+    texture.state = ResourceState::ShaderRead;
+    texture.uploaded = true;
+    return {};
+}
+
+bool decodeGPUDrivenMaterialTexture(
+    const scene::Scene& loadedScene,
+    uint32_t textureIndex,
+    GPUDrivenPreviewDecodedImage& outImage,
+    std::string& log)
+{
+    outImage = GPUDrivenPreviewDecodedImage{};
+    if (textureIndex >= loadedScene.textures().size()) {
+        return false;
+    }
+    const scene::RenderTexture& texture = loadedScene.textures()[textureIndex];
+    if (texture.imageIndex < 0 || static_cast<size_t>(texture.imageIndex) >= loadedScene.images().size()) {
+        return false;
+    }
+    const scene::RenderImage& image = loadedScene.images()[static_cast<size_t>(texture.imageIndex)];
+    if (!image.decodedMips.empty()) {
+        const scene::RenderImage::Mip& mip = image.decodedMips.front();
+        const uint64_t byteSize = static_cast<uint64_t>(mip.width) * mip.height * 4ull;
+        if (mip.width == 0 || mip.height == 0 || mip.pixels.size() < byteSize) {
+            return false;
+        }
+        outImage.width = mip.width;
+        outImage.height = mip.height;
+        outImage.pixels.assign(mip.pixels.begin(), mip.pixels.begin() + static_cast<size_t>(byteSize));
+        return true;
+    }
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc* pixels = nullptr;
+    if (!image.encodedData.empty() && image.encodedData.size() <= static_cast<size_t>(std::numeric_limits<int>::max())) {
+        pixels = stbi_load_from_memory(
+            image.encodedData.data(),
+            static_cast<int>(image.encodedData.size()),
+            &width,
+            &height,
+            &channels,
+            4);
+    } else if (!image.uri.empty() && image.uri.rfind("data:", 0) != 0) {
+        std::filesystem::path imagePath = image.uri;
+        if (imagePath.is_relative()) {
+            imagePath = loadedScene.filename().parent_path() / imagePath;
+        }
+        pixels = stbi_load(imagePath.string().c_str(), &width, &height, &channels, 4);
+    }
+    if (pixels == nullptr || width <= 0 || height <= 0) {
+        log += "Warning: GPUDrivenPreviewPass failed to decode material texture ";
+        log += texture.name.empty() ? image.name : texture.name;
+        if (const char* reason = stbi_failure_reason()) {
+            log += ": ";
+            log += reason;
+        }
+        log += '\n';
+        if (pixels != nullptr) {
+            stbi_image_free(pixels);
+        }
+        return false;
+    }
+    const uint64_t byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
+    if (byteSize > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        stbi_image_free(pixels);
+        return false;
+    }
+    outImage.width = static_cast<uint32_t>(width);
+    outImage.height = static_cast<uint32_t>(height);
+    outImage.pixels.assign(pixels, pixels + static_cast<size_t>(byteSize));
+    stbi_image_free(pixels);
+    return true;
+}
+
+GPUDrivenPreviewGpuTextureInfo gpuDrivenTextureInfo(
+    const scene::RenderTextureInfo& textureInfo,
+    const std::vector<uint32_t>& textureIndexMap)
+{
+    GPUDrivenPreviewGpuTextureInfo result;
+    if (textureInfo.textureIndex >= 0 &&
+        static_cast<size_t>(textureInfo.textureIndex) < textureIndexMap.size()) {
+        result.textureIndex = textureIndexMap[static_cast<size_t>(textureInfo.textureIndex)];
+    }
+    result.texCoord = 0;
+    result.transform0[0] = textureInfo.uvTransform[0];
+    result.transform0[1] = textureInfo.uvTransform[1];
+    result.transform0[2] = textureInfo.uvTransform[2];
+    result.transform1[0] = textureInfo.uvTransform[3];
+    result.transform1[1] = textureInfo.uvTransform[4];
+    result.transform1[2] = textureInfo.uvTransform[5];
+    return result;
+}
+
+GPUDrivenPreviewGpuMaterial gpuDrivenMaterial(
+    const scene::RenderMaterial& material,
+    const std::vector<uint32_t>& textureIndexMap)
+{
+    GPUDrivenPreviewGpuMaterial result;
+    result.baseColor[0] = material.baseColorFactor.x;
+    result.baseColor[1] = material.baseColorFactor.y;
+    result.baseColor[2] = material.baseColorFactor.z;
+    result.baseColor[3] = material.baseColorFactor.w;
+    result.emissive[0] = material.emissiveFactor.x;
+    result.emissive[1] = material.emissiveFactor.y;
+    result.emissive[2] = material.emissiveFactor.z;
+    result.params[0] = material.metallicFactor;
+    result.params[1] = material.roughnessFactor;
+    result.params[2] = material.alphaCutoff;
+    result.params[3] = material.doubleSided ? 1.0f : 0.0f;
+    result.textureParams[0] = material.normalTextureScale;
+    result.textureParams[1] = material.occlusionTextureStrength;
+    result.glassParams[0] = material.transmissionFactor;
+    result.glassParams[1] = material.ior;
+    result.glassParams[2] = material.thicknessFactor;
+    result.glassParams[3] = material.attenuationDistance;
+    result.attenuationColor[0] = material.attenuationColor.x;
+    result.attenuationColor[1] = material.attenuationColor.y;
+    result.attenuationColor[2] = material.attenuationColor.z;
+    result.diffuseTransmission[0] = material.diffuseTransmissionColor.x;
+    result.diffuseTransmission[1] = material.diffuseTransmissionColor.y;
+    result.diffuseTransmission[2] = material.diffuseTransmissionColor.z;
+    result.diffuseTransmission[3] = material.diffuseTransmissionFactor;
+    result.baseColorTexture = gpuDrivenTextureInfo(material.baseColorTexture, textureIndexMap);
+    result.metallicRoughnessTexture = gpuDrivenTextureInfo(material.metallicRoughnessTexture, textureIndexMap);
+    result.normalTexture = gpuDrivenTextureInfo(material.normalTexture, textureIndexMap);
+    result.occlusionTexture = gpuDrivenTextureInfo(material.occlusionTexture, textureIndexMap);
+    result.emissiveTexture = gpuDrivenTextureInfo(material.emissiveTexture, textureIndexMap);
+    result.transmissionTexture = gpuDrivenTextureInfo(material.transmissionTexture, textureIndexMap);
+    result.thicknessTexture = gpuDrivenTextureInfo(material.thicknessTexture, textureIndexMap);
+    result.diffuseTransmissionTexture = gpuDrivenTextureInfo(material.diffuseTransmissionTexture, textureIndexMap);
+    result.diffuseTransmissionColorTexture = gpuDrivenTextureInfo(
+        material.diffuseTransmissionColorTexture,
+        textureIndexMap);
+    return result;
+}
 
 struct GPUDrivenPreviewMeshletRange {
     uint32_t offset = 0;
@@ -22,7 +599,7 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addTextureOutput("color", "Deferred meshlet visualization")
+        reflection.addTextureOutput("color", "OpenPBR deferred shading and meshlet visualization")
             .format = Format::Rgba8Unorm;
         RenderGraphField& visibility = reflection.addTextureOutput(
             "visibility",
@@ -45,7 +622,7 @@ public:
                 "mode",
                 "Mode",
                 "meshlet",
-                {{"Meshlet", "meshlet"}, {"Primitive", "primitive"}, {"LOD Group", "lod"}}),
+                {{"Shaded", "shaded"}, {"Base Color", "baseColor"}, {"Meshlet", "meshlet"}, {"Primitive", "primitive"}, {"LOD Group", "lod"}}),
             runtimeIntSetting("lodLevel", "LOD Level", 0, 0, 31),
             runtimeBoolSetting("instanceFrustumCull", "Instance Frustum Cull", true),
             runtimeBoolSetting("instanceHzbCull", "Instance HZB Cull", true),
@@ -91,7 +668,7 @@ public:
             return {};
         }
 
-        std::vector<GPUDrivenPreviewGpuPosition> positions;
+        std::vector<GPUDrivenPreviewGpuVertex> vertices;
         std::vector<GPUDrivenPreviewGpuMeshlet> meshlets;
         std::vector<uint32_t> meshletVertices;
         std::vector<uint32_t> meshletTriangles;
@@ -102,7 +679,7 @@ public:
         if (!loadMeshletScene(
                 properties(),
                 runtimeScene,
-                positions,
+                vertices,
                 meshlets,
                 meshletVertices,
                 meshletTriangles,
@@ -114,6 +691,22 @@ public:
                 log)) {
             return makeError(Error::Failure);
         }
+        if (runtimeScene == nullptr) {
+            log = "GPUDrivenPreviewPass shading requires a runtime scene";
+            return makeError(Error::InvalidArgument);
+        }
+        std::vector<GPUDrivenPreviewGpuMaterial> materials;
+        Result result = prepareShadingResources(
+            *context.device,
+            *runtimeScene,
+            properties(),
+            materials,
+            log);
+        if (!result) {
+            return result;
+        }
+        materialCount_ = static_cast<uint32_t>(materials.size());
+        materialTextureCount_ = static_cast<uint32_t>(materialTextures_.size());
 
         baseMeshletRange_ = baseMeshletRange;
         lodLevelRanges_ = std::move(lodLevelRanges);
@@ -150,12 +743,16 @@ public:
             frameIndex_,
             false,
             nullptr,
+            materialTextureCount_,
+            materialCount_,
+            environmentMapAvailable_,
+            environmentSH_,
             params);
 
-        Result result = uploadStorageBuffer(
+        result = uploadStorageBuffer(
             *context.device,
-            positions.data(),
-            static_cast<uint64_t>(positions.size() * sizeof(GPUDrivenPreviewGpuPosition)),
+            vertices.data(),
+            static_cast<uint64_t>(vertices.size() * sizeof(GPUDrivenPreviewGpuVertex)),
             positionBuffer_,
             log,
             "GPUDrivenPreviewPass positions");
@@ -222,6 +819,16 @@ public:
         if (!result) {
             return result;
         }
+        result = uploadStorageBuffer(
+            *context.device,
+            materials.data(),
+            static_cast<uint64_t>(materials.size() * sizeof(GPUDrivenPreviewGpuMaterial)),
+            materialBuffer_,
+            log,
+            "GPUDrivenPreviewPass materials");
+        if (!result) {
+            return result;
+        }
 
         result = createDeviceStorageBuffer(
             *context.device,
@@ -236,7 +843,8 @@ public:
         for (uint32_t passIndex = 0; passIndex < 2; ++passIndex) {
             result = createDeviceStorageBuffer(
                 *context.device,
-                static_cast<uint64_t>(drawTaskCount_) * sizeof(uint32_t),
+                static_cast<uint64_t>(drawTaskCount_) *
+                    kGPUDrivenPreviewMeshletChunkCount * sizeof(uint32_t),
                 BufferUsageBits::Storage,
                 visibleMeshletBuffers_[passIndex],
                 log,
@@ -287,8 +895,9 @@ public:
 
         result = context.device->createBindlessHeap(
             BindlessHeapDesc{
-                .maxSampledImages = 3,
-                .maxBuffers = 15,
+                .maxSampledImages = 4u + materialTextureCount_ +
+                    kGPUDrivenOpenPBRLut2DCount + kGPUDrivenOpenPBRLut3DCount,
+                .maxBuffers = 16,
             },
             bindlessHeap_);
         if (!result || bindlessHeap_ == nullptr) {
@@ -372,6 +981,15 @@ public:
         if (!result) {
             return result;
         }
+        result = allocateAndWriteBuffer(
+            *bindlessHeap_,
+            *materialBuffer_,
+            materialHandle_,
+            log,
+            "materials");
+        if (!result) {
+            return result;
+        }
         result = bindlessHeap_->allocateSampledImage(depthImageHandle_);
         if (!result || !depthImageHandle_.valid()) {
             log += resultMessage("allocateSampledImage(GPUDrivenPreviewPass depth)", result);
@@ -398,6 +1016,80 @@ public:
             log += resultMessage("writeSampledImage(GPUDrivenPreviewPass culling depth)", result);
             log += '\n';
             return result;
+        }
+        materialTextureHandles_.resize(materialTextures_.size());
+        for (size_t textureIndex = 0; textureIndex < materialTextures_.size(); ++textureIndex) {
+            result = bindlessHeap_->allocateSampledImage(materialTextureHandles_[textureIndex]);
+            if (!result || !materialTextureHandles_[textureIndex].valid()) {
+                log += resultMessage("allocateSampledImage(GPUDrivenPreviewPass material)", result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
+            if (textureIndex > 0 &&
+                materialTextureHandles_[textureIndex].index != materialTextureHandles_[0].index + textureIndex) {
+                log += "GPUDrivenPreviewPass material texture descriptors are not contiguous\n";
+                return makeError(Error::Failure);
+            }
+            result = bindlessHeap_->writeSampledImage(
+                materialTextureHandles_[textureIndex],
+                *materialTextures_[textureIndex].view,
+                ResourceState::ShaderRead);
+            if (!result) {
+                return result;
+            }
+        }
+        result = bindlessHeap_->allocateSampledImage(environmentTextureHandle_);
+        if (!result || !environmentTextureHandle_.valid()) {
+            log += resultMessage("allocateSampledImage(GPUDrivenPreviewPass environment)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = bindlessHeap_->writeSampledImage(
+            environmentTextureHandle_,
+            *environmentTexture_.view,
+            ResourceState::ShaderRead);
+        if (!result) {
+            return result;
+        }
+        for (size_t textureIndex = 0; textureIndex < openPBRLut2D_.size(); ++textureIndex) {
+            result = bindlessHeap_->allocateSampledImage(openPBRLut2DHandles_[textureIndex]);
+            if (!result || !openPBRLut2DHandles_[textureIndex].valid()) {
+                log += resultMessage("allocateSampledImage(GPUDrivenPreviewPass OpenPBR 2D LUT)", result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
+            if (textureIndex > 0 &&
+                openPBRLut2DHandles_[textureIndex].index != openPBRLut2DHandles_[0].index + textureIndex) {
+                log += "GPUDrivenPreviewPass OpenPBR 2D LUT descriptors are not contiguous\n";
+                return makeError(Error::Failure);
+            }
+            result = bindlessHeap_->writeSampledImage(
+                openPBRLut2DHandles_[textureIndex],
+                *openPBRLut2D_[textureIndex].view,
+                ResourceState::ShaderRead);
+            if (!result) {
+                return result;
+            }
+        }
+        for (size_t textureIndex = 0; textureIndex < openPBRLut3D_.size(); ++textureIndex) {
+            result = bindlessHeap_->allocateSampledImage(openPBRLut3DHandles_[textureIndex]);
+            if (!result || !openPBRLut3DHandles_[textureIndex].valid()) {
+                log += resultMessage("allocateSampledImage(GPUDrivenPreviewPass OpenPBR 3D LUT)", result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
+            if (textureIndex > 0 &&
+                openPBRLut3DHandles_[textureIndex].index != openPBRLut3DHandles_[0].index + textureIndex) {
+                log += "GPUDrivenPreviewPass OpenPBR 3D LUT descriptors are not contiguous\n";
+                return makeError(Error::Failure);
+            }
+            result = bindlessHeap_->writeSampledImage(
+                openPBRLut3DHandles_[textureIndex],
+                *openPBRLut3D_[textureIndex].view,
+                ResourceState::ShaderRead);
+            if (!result) {
+                return result;
+            }
         }
 
         result = createPipelines(*context.device, log);
@@ -489,6 +1181,10 @@ public:
         }
 
         CommandBuffer& commandBuffer = context.commandBuffer();
+        result = uploadShadingTextures(commandBuffer);
+        if (!result) {
+            return result;
+        }
         commandBuffer.bindBindlessHeap(*bindlessHeap_);
         initializeInternalBuffers(commandBuffer);
 
@@ -686,25 +1382,30 @@ private:
 
     static Result createShader(
         Device& device,
+        const char* moduleName,
         const char* entryPoint,
         bool meshShader,
         std::unique_ptr<ShaderModule>& outShader,
-        std::string& log)
+        std::string& log,
+        const SlangMacroDefine* macroDefines = nullptr,
+        uint32_t macroDefineCount = 0)
     {
         ShaderCompileResult compileResult;
         const char* capabilities[] = {"spvMeshShadingEXT"};
         Result result = compileSlangShaderToSpirv(
             SlangShaderDesc{
-                .moduleName = kGPUDrivenPreviewShaderModuleName,
+                .moduleName = moduleName,
                 .entryPointName = entryPoint,
                 .searchPath = kTriangleShaderSearchPath,
                 .capabilities = meshShader ? capabilities : nullptr,
                 .capabilityCount = meshShader ? static_cast<uint32_t>(std::size(capabilities)) : 0u,
+                .macroDefines = macroDefines,
+                .macroDefineCount = macroDefineCount,
             },
             compileResult);
         if (!result) {
             log += "compileSlangShaderToSpirv(";
-            log += kGPUDrivenPreviewShaderModuleName;
+            log += moduleName;
             log += ".";
             log += entryPoint;
             log += ") returned ";
@@ -734,28 +1435,39 @@ private:
     Result createPipelines(Device& device, std::string& log)
     {
         struct ShaderRequest {
+            const char* moduleName = kGPUDrivenPreviewShaderModuleName;
             const char* entryPoint = nullptr;
             bool meshShader = false;
             std::unique_ptr<ShaderModule>* shader = nullptr;
         };
         const std::array<ShaderRequest, 9> requests{
-            ShaderRequest{kGPUDrivenPreviewMeshEntryPoint, true, &meshShader_},
-            ShaderRequest{kGPUDrivenPreviewFragmentEntryPoint, false, &fragmentShader_},
-            ShaderRequest{kGPUDrivenPreviewResetEntryPoint, false, &resetShader_},
-            ShaderRequest{kGPUDrivenPreviewInstanceCullEntryPoint, false, &instanceCullShader_},
-            ShaderRequest{kGPUDrivenPreviewCompactEntryPoint, false, &compactShader_},
-            ShaderRequest{kGPUDrivenPreviewHzbEntryPoint, false, &hzbShader_},
-            ShaderRequest{kGPUDrivenPreviewDeferredEntryPoint, false, &deferredShader_},
-            ShaderRequest{kGPUDrivenPreviewCompositeVertexEntryPoint, false, &compositeVertexShader_},
-            ShaderRequest{kGPUDrivenPreviewCompositeFragmentEntryPoint, false, &compositeFragmentShader_},
+            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewMeshEntryPoint, true, &meshShader_},
+            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewFragmentEntryPoint, false, &fragmentShader_},
+            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewResetEntryPoint, false, &resetShader_},
+            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewInstanceCullEntryPoint, false, &instanceCullShader_},
+            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewCompactEntryPoint, false, &compactShader_},
+            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewHzbEntryPoint, false, &hzbShader_},
+            ShaderRequest{kGPUDrivenDeferredShaderModuleName, kGPUDrivenPreviewDeferredEntryPoint, false, &deferredShader_},
+            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewCompositeVertexEntryPoint, false, &compositeVertexShader_},
+            ShaderRequest{kGPUDrivenPreviewShaderModuleName, kGPUDrivenPreviewCompositeFragmentEntryPoint, false, &compositeFragmentShader_},
+        };
+        const std::string lut2DShaderBase = std::to_string(openPBRLut2DHandles_[0].shaderIndex);
+        const std::string lut3DShaderBase = std::to_string(openPBRLut3DHandles_[0].shaderIndex);
+        const std::array<SlangMacroDefine, 2> openPBRDefines{
+            SlangMacroDefine{"GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE", lut2DShaderBase.c_str()},
+            SlangMacroDefine{"GPU_DRIVEN_OPENPBR_LUT_3D_SHADER_BASE", lut3DShaderBase.c_str()},
         };
         for (const ShaderRequest& request : requests) {
+            const bool isDeferred = request.moduleName == kGPUDrivenDeferredShaderModuleName;
             Result result = createShader(
                 device,
+                request.moduleName,
                 request.entryPoint,
                 request.meshShader,
                 *request.shader,
-                log);
+                log,
+                isDeferred ? openPBRDefines.data() : nullptr,
+                isDeferred ? static_cast<uint32_t>(openPBRDefines.size()) : 0u);
             if (!result) {
                 return result;
             }
@@ -825,6 +1537,11 @@ private:
             .passIndex = passIndex,
             .mipLevel = mipLevel,
             .projectWithCullingCamera = projectWithCullingCamera ? 1u : 0u,
+            .materialBuffer = materialHandle_.index,
+            .materialTextureImageBase = materialTextureHandles_.empty()
+                ? 0u
+                : materialTextureHandles_.front().index,
+            .environmentImage = environmentTextureHandle_.index,
         };
     }
 
@@ -1083,6 +1800,156 @@ private:
         return {};
     }
 
+    Result prepareShadingResources(
+        Device& device,
+        const scene::Scene& loadedScene,
+        const RenderGraphProperties& properties,
+        std::vector<GPUDrivenPreviewGpuMaterial>& outMaterials,
+        std::string& log)
+    {
+        materialTextures_.clear();
+        materialTextureHandles_.clear();
+        environmentTexture_ = GPUDrivenPreviewTextureResource{};
+        environmentTextureHandle_ = {};
+        openPBRLut2D_ = {};
+        openPBRLut3D_ = {};
+        openPBRLut2DHandles_ = {};
+        openPBRLut3DHandles_ = {};
+        environmentMapAvailable_ = false;
+        environmentSH_ = {};
+
+        const uint8_t whitePixel[4] = {255u, 255u, 255u, 255u};
+        GPUDrivenPreviewTextureResource fallbackTexture;
+        Result result = createGPUDrivenTexture(
+            device,
+            whitePixel,
+            sizeof(whitePixel),
+            1,
+            1,
+            Format::Rgba8Unorm,
+            "GPUDrivenPreviewPass material fallback",
+            fallbackTexture,
+            log);
+        if (!result) {
+            return result;
+        }
+        materialTextures_.push_back(std::move(fallbackTexture));
+
+        std::vector<uint32_t> textureIndexMap(
+            loadedScene.textures().size(),
+            std::numeric_limits<uint32_t>::max());
+        for (uint32_t textureIndex = 0;
+             textureIndex < loadedScene.textures().size() &&
+                 materialTextures_.size() < kGPUDrivenMaxMaterialTextures;
+             ++textureIndex) {
+            GPUDrivenPreviewDecodedImage decoded;
+            if (!decodeGPUDrivenMaterialTexture(loadedScene, textureIndex, decoded, log)) {
+                continue;
+            }
+            GPUDrivenPreviewTextureResource texture;
+            result = createGPUDrivenTexture(
+                device,
+                decoded.pixels.data(),
+                static_cast<uint64_t>(decoded.pixels.size()),
+                decoded.width,
+                decoded.height,
+                Format::Rgba8Unorm,
+                "GPUDrivenPreviewPass material texture",
+                texture,
+                log);
+            if (!result) {
+                return result;
+            }
+            textureIndexMap[textureIndex] = static_cast<uint32_t>(materialTextures_.size());
+            materialTextures_.push_back(std::move(texture));
+        }
+
+        outMaterials.clear();
+        outMaterials.reserve(std::max<size_t>(loadedScene.materials().size(), 1u));
+        if (loadedScene.materials().empty()) {
+            outMaterials.push_back(GPUDrivenPreviewGpuMaterial{});
+        } else {
+            for (const scene::RenderMaterial& material : loadedScene.materials()) {
+                outMaterials.push_back(gpuDrivenMaterial(material, textureIndexMap));
+            }
+        }
+
+        const float blackPixel[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        std::vector<float> environmentPixels(std::begin(blackPixel), std::end(blackPixel));
+        uint32_t environmentWidth = 1;
+        uint32_t environmentHeight = 1;
+        const std::filesystem::path environmentPath = environmentPathFromProperties(properties);
+        if (!environmentPath.empty()) {
+            int width = 0;
+            int height = 0;
+            int channels = 0;
+            float* decoded = stbi_loadf(environmentPath.string().c_str(), &width, &height, &channels, 4);
+            if (decoded != nullptr && width > 0 && height > 0) {
+                const uint64_t componentCount =
+                    static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
+                if (componentCount <= static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+                    environmentPixels.assign(decoded, decoded + static_cast<size_t>(componentCount));
+                    environmentWidth = static_cast<uint32_t>(width);
+                    environmentHeight = static_cast<uint32_t>(height);
+                    environmentMapAvailable_ = true;
+                    environmentSH_ = computeEnvironmentSH(
+                        environmentPixels,
+                        environmentWidth,
+                        environmentHeight);
+                }
+            }
+            if (decoded != nullptr) {
+                stbi_image_free(decoded);
+            }
+            if (!environmentMapAvailable_) {
+                log += "Warning: GPUDrivenPreviewPass failed to decode environment map '";
+                log += environmentPath.string();
+                log += "'\n";
+            }
+        }
+        result = createGPUDrivenTexture(
+            device,
+            environmentPixels.data(),
+            static_cast<uint64_t>(environmentPixels.size() * sizeof(float)),
+            environmentWidth,
+            environmentHeight,
+            Format::Rgba32Sfloat,
+            "GPUDrivenPreviewPass environment",
+            environmentTexture_,
+            log);
+        if (!result) {
+            return result;
+        }
+        return prepareGPUDrivenOpenPBRLuts(device, openPBRLut2D_, openPBRLut3D_, log);
+    }
+
+    Result uploadShadingTextures(CommandBuffer& commandBuffer)
+    {
+        for (GPUDrivenPreviewTextureResource& texture : materialTextures_) {
+            Result result = uploadGPUDrivenTexture(commandBuffer, texture);
+            if (!result) {
+                return result;
+            }
+        }
+        Result result = uploadGPUDrivenTexture(commandBuffer, environmentTexture_);
+        if (!result) {
+            return result;
+        }
+        for (GPUDrivenPreviewTextureResource& texture : openPBRLut2D_) {
+            result = uploadGPUDrivenTexture(commandBuffer, texture);
+            if (!result) {
+                return result;
+            }
+        }
+        for (GPUDrivenPreviewTextureResource& texture : openPBRLut3D_) {
+            result = uploadGPUDrivenTexture(commandBuffer, texture);
+            if (!result) {
+                return result;
+            }
+        }
+        return {};
+    }
+
     static Result uploadStorageBuffer(
         Device& device,
         const void* data,
@@ -1246,6 +2113,25 @@ private:
         return kDefaultGPUDrivenScenePath;
     }
 
+    static std::filesystem::path environmentPathFromProperties(const RenderGraphProperties& props)
+    {
+        if (!props.contains("environment") || !props["environment"].is_object()) {
+            return {};
+        }
+        const RenderGraphProperties& environment = props["environment"];
+        if (!environment.contains("path") || !environment["path"].is_string()) {
+            return {};
+        }
+        std::filesystem::path path = environment["path"].get<std::string>();
+        if (path.empty()) {
+            return {};
+        }
+        if (path.is_relative()) {
+            path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
+        }
+        return path;
+    }
+
     static float finiteOr(float value, float fallback)
     {
         return std::isfinite(value) ? value : fallback;
@@ -1329,6 +2215,12 @@ private:
         }
         if (value == "lod" || value == "lodLevel" || value == "lod level" || value == "LOD") {
             return kGPUDrivenPreviewModeLod;
+        }
+        if (value == "shaded" || value == "openpbr" || value == "material") {
+            return kGPUDrivenPreviewModeShaded;
+        }
+        if (value == "baseColor" || value == "base color" || value == "albedo") {
+            return kGPUDrivenPreviewModeBaseColor;
         }
         return kGPUDrivenPreviewModeMeshlet;
     }
@@ -1443,26 +2335,44 @@ private:
         uint32_t meshletFlags = 0;
     };
 
-    static bool appendPrimitivePositions(
+    static bool appendPrimitiveVertices(
         const scene::RenderPrimitive& primitive,
-        std::vector<GPUDrivenPreviewGpuPosition>& outPositions,
+        std::vector<GPUDrivenPreviewGpuVertex>& outVertices,
         uint32_t& outPositionBase,
         std::string& log)
     {
-        if (outPositions.size() + primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
+        if (outVertices.size() + primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
             log = "GPUDrivenPreviewPass scene is too large to address with uint32 vertex indices";
             return false;
         }
 
-        outPositionBase = static_cast<uint32_t>(outPositions.size());
-        outPositions.reserve(outPositions.size() + primitive.positions.size());
-        for (const float3& localPosition : primitive.positions) {
-            outPositions.push_back(GPUDrivenPreviewGpuPosition{
-                .x = localPosition.x,
-                .y = localPosition.y,
-                .z = localPosition.z,
-                .w = 1.0f,
-            });
+        outPositionBase = static_cast<uint32_t>(outVertices.size());
+        outVertices.reserve(outVertices.size() + primitive.positions.size());
+        for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
+            const float3& localPosition = primitive.positions[vertexIndex];
+            const float3 localNormal = vertexIndex < primitive.normals.size()
+                ? primitive.normals[vertexIndex]
+                : float3(0.0f, 0.0f, 1.0f);
+            const float4 localTangent = vertexIndex < primitive.tangents.size()
+                ? primitive.tangents[vertexIndex]
+                : float4(1.0f, 0.0f, 0.0f, 1.0f);
+            const float2 texcoord = vertexIndex < primitive.texcoords0.size()
+                ? primitive.texcoords0[vertexIndex]
+                : float2(0.0f, 0.0f);
+            GPUDrivenPreviewGpuVertex vertex;
+            vertex.position[0] = localPosition.x;
+            vertex.position[1] = localPosition.y;
+            vertex.position[2] = localPosition.z;
+            vertex.normal[0] = localNormal.x;
+            vertex.normal[1] = localNormal.y;
+            vertex.normal[2] = localNormal.z;
+            vertex.tangent[0] = localTangent.x;
+            vertex.tangent[1] = localTangent.y;
+            vertex.tangent[2] = localTangent.z;
+            vertex.tangent[3] = localTangent.w;
+            vertex.texcoord[0] = texcoord.x;
+            vertex.texcoord[1] = texcoord.y;
+            outVertices.push_back(vertex);
         }
         return true;
     }
@@ -1565,7 +2475,7 @@ private:
     static bool loadMeshletScene(
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
-        std::vector<GPUDrivenPreviewGpuPosition>& outPositions,
+        std::vector<GPUDrivenPreviewGpuVertex>& outVertices,
         std::vector<GPUDrivenPreviewGpuMeshlet>& outMeshlets,
         std::vector<uint32_t>& outMeshletVertices,
         std::vector<uint32_t>& outMeshletTriangles,
@@ -1587,7 +2497,7 @@ private:
             return false;
         }
 
-        outPositions.clear();
+        outVertices.clear();
         outMeshlets.clear();
         outMeshletVertices.clear();
         outMeshletTriangles.clear();
@@ -1617,7 +2527,7 @@ private:
             }
 
             uint32_t positionBase = 0;
-            if (!appendPrimitivePositions(primitive, outPositions, positionBase, log)) {
+            if (!appendPrimitiveVertices(primitive, outVertices, positionBase, log)) {
                 return false;
             }
             if (!primitive.localBounds.valid ||
@@ -1715,7 +2625,7 @@ private:
             outLodLevelRanges[lodLevel] = range;
         }
 
-        if (outPositions.empty() ||
+        if (outVertices.empty() ||
             outMeshlets.empty() ||
             outMeshletVertices.empty() ||
             outMeshletTriangles.empty() ||
@@ -1723,8 +2633,8 @@ private:
             log = "GPUDrivenPreviewPass found no drawable meshlet geometry in " + path.string();
             return false;
         }
-        if (outMeshlets.size() >= std::numeric_limits<uint32_t>::max()) {
-            log = "GPUDrivenPreviewPass scene has too many meshlets";
+        if (outMeshlets.size() > kGPUDrivenMaxEncodedMeshlets) {
+            log = "GPUDrivenPreviewPass scene has too many meshlets for the packed visibility format";
             return false;
         }
         if (outBaseMeshletRange.count == 0) {
@@ -1746,6 +2656,10 @@ private:
         uint32_t frameIndex,
         bool hzbValid,
         const GPUDrivenPreviewGpuParams* previousParams,
+        uint32_t materialTextureCount,
+        uint32_t materialCount,
+        bool environmentMapAvailable,
+        const GPUDrivenPreviewEnvironmentSH& environmentSH,
         GPUDrivenPreviewGpuParams& outParams)
     {
         outParams = GPUDrivenPreviewGpuParams{};
@@ -1827,6 +2741,28 @@ private:
         if (boolProperty(&properties, "meshletNormalConeCull", true)) {
             outParams.cullingFlags |= kGPUDrivenPreviewCullMeshletNormalCone;
         }
+        const RenderGraphProperties* environment = nullptr;
+        const auto environmentIter = properties.find("environment");
+        if (environmentIter != properties.end() && environmentIter->is_object()) {
+            environment = &(*environmentIter);
+        }
+        const bool environmentEnabled =
+            environment != nullptr && boolProperty(environment, "enabled", true);
+        outParams.materialTextureCount = std::max(materialTextureCount, 1u);
+        outParams.materialCount = std::max(materialCount, 1u);
+        outParams.environmentIntensity = std::max(
+            cameraFloat(environment, "intensity", 1.0f),
+            0.0f);
+        outParams.environmentRotationRadians =
+            cameraFloat(environment, "rotationDegrees", 0.0f) * (kPi / 180.0f);
+        outParams.environmentMode = !environmentEnabled
+            ? kGPUDrivenEnvironmentModeDisabled
+            : (environmentMapAvailable
+                ? kGPUDrivenEnvironmentModeMap
+                : kGPUDrivenEnvironmentModeProcedural);
+        outParams.environmentVisible =
+            environmentEnabled && boolProperty(environment, "visible", true) ? 1u : 0u;
+        std::memcpy(outParams.environmentSH, environmentSH.data(), sizeof(outParams.environmentSH));
 
         const GPUDrivenPreviewGpuParams& previous = previousParams != nullptr ? *previousParams : outParams;
         std::memcpy(outParams.previousEye, previous.eye, sizeof(outParams.previousEye));
@@ -1872,6 +2808,10 @@ private:
             frameIndex_,
             hzbValid_,
             previousCameraValid_ ? &previousParams_ : nullptr,
+            materialTextureCount_,
+            materialCount_,
+            environmentMapAvailable_,
+            environmentSH_,
             params);
 
         if (freezeCullingCamera &&
@@ -1908,12 +2848,17 @@ private:
     std::unique_ptr<Buffer> paramsBuffer_;
     std::unique_ptr<Buffer> transformBuffer_;
     std::unique_ptr<Buffer> instanceBuffer_;
+    std::unique_ptr<Buffer> materialBuffer_;
     std::unique_ptr<Buffer> instanceVisibilityBuffer_;
     std::array<std::unique_ptr<Buffer>, 2> visibleMeshletBuffers_;
     std::array<std::unique_ptr<Buffer>, 2> indirectBuffers_;
     std::array<std::unique_ptr<Buffer>, 2> hzbBuffers_;
     std::unique_ptr<Buffer> deferredColorBuffer_;
     GPUDrivenPreviewCullingTargets cullingTargets_;
+    std::vector<GPUDrivenPreviewTextureResource> materialTextures_;
+    GPUDrivenPreviewTextureResource environmentTexture_;
+    std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut2DCount> openPBRLut2D_;
+    std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut3DCount> openPBRLut3D_;
     Device* device_ = nullptr;
     std::unique_ptr<BindlessHeap> bindlessHeap_;
     BindlessHandle positionHandle_;
@@ -1923,6 +2868,7 @@ private:
     BindlessHandle paramsHandle_;
     BindlessHandle transformHandle_;
     BindlessHandle instanceHandle_;
+    BindlessHandle materialHandle_;
     BindlessHandle instanceVisibilityHandle_;
     std::array<BindlessHandle, 2> visibleMeshletHandles_;
     std::array<BindlessHandle, 2> indirectHandles_;
@@ -1931,6 +2877,10 @@ private:
     BindlessHandle depthImageHandle_;
     BindlessHandle visibilityImageHandle_;
     BindlessHandle cullingDepthImageHandle_;
+    std::vector<BindlessHandle> materialTextureHandles_;
+    BindlessHandle environmentTextureHandle_;
+    std::array<BindlessHandle, kGPUDrivenOpenPBRLut2DCount> openPBRLut2DHandles_;
+    std::array<BindlessHandle, kGPUDrivenOpenPBRLut3DCount> openPBRLut3DHandles_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<ShaderModule> resetShader_;
@@ -1956,6 +2906,8 @@ private:
     uint32_t drawTaskCount_ = 0;
     uint32_t activeMeshletCount_ = 0;
     uint32_t instanceCount_ = 0;
+    uint32_t materialCount_ = 1;
+    uint32_t materialTextureCount_ = 1;
     uint32_t frameWidth_ = 1;
     uint32_t frameHeight_ = 1;
     uint32_t hzbMipCount_ = 1;
@@ -1968,6 +2920,8 @@ private:
     bool cullingTargetsInitialized_ = false;
     bool freezeCullingCamera_ = false;
     bool frozenCullingCameraValid_ = false;
+    bool environmentMapAvailable_ = false;
+    GPUDrivenPreviewEnvironmentSH environmentSH_{};
 };
 
 } // namespace

@@ -228,7 +228,7 @@ public:
     std::string_view category() const override { return "GPUDriven"; }
     std::string_view description() const override
     {
-        return "SuperSponza visibility-buffer sample with two-pass HZB instance culling, meshlet culling, and compute deferred visualization.";
+        return "SuperSponza visibility-buffer sample with two-pass HZB culling and compute OpenPBR environment shading.";
     }
     std::string scenePath() const override { return "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"; }
     bool loadSceneInEditor() const override { return false; }
@@ -242,7 +242,7 @@ public:
         return RenderSampleEnvironmentDesc{
             .enabled = true,
             .path = "Asset/ABeautifulGame/environment.hdr",
-            .intensity = 1.0f,
+            .intensity = 3.0f,
             .rotationDegrees = 0.0f,
             .visible = true,
         };

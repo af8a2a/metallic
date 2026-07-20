@@ -10,9 +10,31 @@
                 "y": 281.0
             },
             "properties": {
+                "camera": {
+                    "center": [
+                        5.630164,
+                        5.576646,
+                        1.765344
+                    ],
+                    "eye": [
+                        5.433790,
+                        5.599402,
+                        1.739370
+                    ],
+                    "fovDegrees": 60.0,
+                    "projection": "perspective",
+                    "reversedZ": true,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 10000.0,
+                    "znear": 0.1
+                },
                 "environment": {
                     "enabled": true,
-                    "intensity": 1.0,
+                    "intensity": 3.0,
                     "path": "Asset/ABeautifulGame/environment.hdr",
                     "rotationDegrees": 0.0,
                     "visible": true
@@ -22,7 +44,7 @@
                 "instanceHzbCull": true,
                 "meshletFrustumCull": true,
                 "meshletNormalConeCull": true,
-                "mode": "meshlet",
+                "mode": "shaded",
                 "path": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"
             },
             "type": "GPUDrivenPreviewPass"

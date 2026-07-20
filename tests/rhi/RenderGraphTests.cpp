@@ -1398,7 +1398,11 @@ public:
             gpuDriven->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
             !gpuDriven->properties.contains("environment") ||
             !gpuDriven->properties["environment"].is_object() ||
-            gpuDriven->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr") {
+            gpuDriven->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr" ||
+            gpuDriven->properties["environment"].value("intensity", 0.0f) != 3.0f ||
+            gpuDriven->properties.value("mode", "") != "shaded" ||
+            !gpuDriven->properties.contains("camera") ||
+            !gpuDriven->properties["camera"].is_object()) {
             return RhiTestResult::fail("GPUDrivenSample did not apply scene, environment, and pass defaults");
         }
         if (!gpuDrivenSample.graph.validate(validationLog)) {
@@ -2151,12 +2155,11 @@ public:
             return RhiTestResult::fail("GPUDrivenPreview fragment shader produced empty SPIR-V");
         }
 
-        constexpr std::array<const char*, 7> additionalEntryPoints{
+        constexpr std::array<const char*, 6> additionalEntryPoints{
             "gpuDrivenPreviewResetMain",
             "gpuDrivenPreviewInstanceCullMain",
             "gpuDrivenPreviewCompactMain",
             "gpuDrivenPreviewHzbMain",
-            "gpuDrivenPreviewDeferredMain",
             "gpuDrivenPreviewCompositeVertexMain",
             "gpuDrivenPreviewCompositeFragmentMain",
         };
@@ -2185,6 +2188,23 @@ public:
             }
             additionalWordCount += compile.spirv.size();
         }
+
+        render::ShaderCompileResult deferredCompile;
+        result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "GPUDrivenDeferred",
+                .entryPointName = "gpuDrivenPreviewDeferredMain",
+                .searchPath = kShaderSearchPath,
+            },
+            deferredCompile);
+        if (!result || deferredCompile.spirv.empty()) {
+            return RhiTestResult::fail(
+                std::string("GPUDriven OpenPBR deferred shader compile returned ") +
+                toString(result) +
+                ": " +
+                deferredCompile.diagnostics);
+        }
+        additionalWordCount += deferredCompile.spirv.size();
 
         return RhiTestResult::pass(
             std::string("compiled GPUDrivenPreview shaders, mesh words=") +
@@ -5392,11 +5412,28 @@ public:
             "GPUDriven",
             render::RenderGraphProperties{
                 {"path", "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"},
-                {"mode", "meshlet"},
+                {"mode", "shaded"},
                 {"instanceFrustumCull", true},
                 {"instanceHzbCull", true},
                 {"meshletFrustumCull", true},
                 {"meshletNormalConeCull", true},
+                {"camera", {
+                    {"eye", {5.433790f, 5.599402f, 1.739370f}},
+                    {"center", {5.630164f, 5.576646f, 1.765344f}},
+                    {"up", {0.0f, 1.0f, 0.0f}},
+                    {"projection", "perspective"},
+                    {"fovDegrees", 60.0f},
+                    {"znear", 0.1f},
+                    {"zfar", 10000.0f},
+                    {"reversedZ", true},
+                }},
+                {"environment", {
+                    {"enabled", true},
+                    {"intensity", 3.0f},
+                    {"path", "Asset/ABeautifulGame/environment.hdr"},
+                    {"rotationDegrees", 0.0f},
+                    {"visible", true},
+                }},
             });
         graph.markOutput("GPUDriven.color");
 
@@ -5440,7 +5477,44 @@ public:
                 " pixels");
         }
         render::RenderGraphNode* gpuDrivenNode = graph.findNode("GPUDriven");
-        if (gpuDrivenNode == nullptr ||
+        if (gpuDrivenNode == nullptr) {
+            return RhiTestResult::fail("failed to find the SuperSponza GPUDriven node");
+        }
+        if (!graph.setNodeRuntimeProperty(
+                gpuDrivenNode->id,
+                "environment.rotationDegrees",
+                90.0f)) {
+            return RhiTestResult::fail("failed to rotate the SuperSponza environment map");
+        }
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("SuperSponza rotated-environment render returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        size_t environmentMismatchCount = 0;
+        for (size_t pixelIndex = 0; pixelIndex < firstFramePixels.size(); ++pixelIndex) {
+            environmentMismatchCount +=
+                preview.pixels()[pixelIndex] != firstFramePixels[pixelIndex] ? 1u : 0u;
+        }
+        if (environmentMismatchCount < 4096) {
+            return RhiTestResult::fail(
+                "rotating the HDR environment did not materially change the OpenPBR resolve");
+        }
+        if (!graph.setNodeRuntimeProperty(
+                gpuDrivenNode->id,
+                "environment.rotationDegrees",
+                0.0f)) {
+            return RhiTestResult::fail("failed to restore the SuperSponza environment rotation");
+        }
+        result = preview.render(graph, 256, 256);
+        if (!result || preview.pixels() != firstFramePixels) {
+            return RhiTestResult::fail(
+                "restoring the HDR environment rotation did not restore the deterministic OpenPBR image");
+        }
+        if (
             !graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", true)) {
             return RhiTestResult::fail("failed to freeze the SuperSponza culling camera");
         }
@@ -5457,8 +5531,73 @@ public:
         if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", false)) {
             return RhiTestResult::fail("failed to restore live SuperSponza camera culling");
         }
+        if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "mode", "meshlet")) {
+            return RhiTestResult::fail("failed to select the SuperSponza meshlet debug resolve");
+        }
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("SuperSponza meshlet debug comparison returned ") +
+                toString(result));
+        }
+        size_t debugMismatchCount = 0;
+        for (size_t pixelIndex = 0; pixelIndex < firstFramePixels.size(); ++pixelIndex) {
+            debugMismatchCount +=
+                preview.pixels()[pixelIndex] != firstFramePixels[pixelIndex] ? 1u : 0u;
+        }
+        if (debugMismatchCount < 4096) {
+            return RhiTestResult::fail(
+                "SuperSponza OpenPBR shading was not distinguishable from meshlet debug colors");
+        }
+
+        const auto* debugBytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const std::filesystem::path debugOutputPath =
+            context.outputDirectory / "render_graph_gpu_driven_sponza_meshlets.png";
+        std::string outputMessage;
+        if (!saveRgba8Png(
+                debugOutputPath,
+                debugBytes,
+                256,
+                256,
+                outputMessage)) {
+            return RhiTestResult::fail(outputMessage);
+        }
+
+        if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "mode", "baseColor")) {
+            return RhiTestResult::fail("failed to select the SuperSponza base-color resolve");
+        }
+        result = preview.render(graph, 256, 256);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("SuperSponza base-color resolve returned ") + toString(result));
+        }
+        const auto* baseColorBytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const std::filesystem::path baseColorOutputPath =
+            context.outputDirectory / "render_graph_gpu_driven_sponza_base_color.png";
+        if (!saveRgba8Png(
+                baseColorOutputPath,
+                baseColorBytes,
+                256,
+                256,
+                outputMessage)) {
+            return RhiTestResult::fail(outputMessage);
+        }
+
+        const auto* bytes = reinterpret_cast<const uint8_t*>(firstFramePixels.data());
+        const std::filesystem::path outputPath =
+            context.outputDirectory / "render_graph_gpu_driven_sponza_openpbr.png";
+        if (!saveRgba8Png(
+                outputPath,
+                bytes,
+                256,
+                256,
+                outputMessage)) {
+            return RhiTestResult::fail(outputMessage);
+        }
         return RhiTestResult::pass(
-            std::string("SuperSponza visibility pixels=") + std::to_string(visiblePixelCount));
+            std::string("SuperSponza OpenPBR pixels=") + std::to_string(visiblePixelCount) +
+            ", environment mismatches=" + std::to_string(environmentMismatchCount) +
+            ", wrote " + outputPath.string());
     }
 };
 
