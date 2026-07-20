@@ -8,8 +8,26 @@
 
 #include "openpbr_data_constants.h"
 
+#include <atomic>
+#include <chrono>
+#include <thread>
+
 namespace metallic::render::builtin_pass {
 namespace {
+
+using GPUDrivenCompileClock = std::chrono::steady_clock;
+
+void logGPUDrivenCompileStage(
+    std::string_view stage,
+    GPUDrivenCompileClock::time_point begin)
+{
+    const double elapsedMilliseconds = std::chrono::duration<double, std::milli>(
+        GPUDrivenCompileClock::now() - begin).count();
+    spdlog::info(
+        "[GPUDrivenPreviewPass] Compile stage '{}' completed in {:.2f} ms",
+        stage,
+        elapsedMilliseconds);
+}
 
 constexpr uint32_t kGPUDrivenMaxMaterialTextures = 256;
 constexpr uint32_t kGPUDrivenVisibilityTriangleBits = 7;
@@ -676,6 +694,7 @@ public:
         std::vector<GPUDrivenPreviewGpuInstance> instances;
         std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges;
         GPUDrivenPreviewMeshletRange baseMeshletRange;
+        auto compileStageBegin = GPUDrivenCompileClock::now();
         if (!loadMeshletScene(
                 properties(),
                 runtimeScene,
@@ -691,11 +710,13 @@ public:
                 log)) {
             return makeError(Error::Failure);
         }
+        logGPUDrivenCompileStage("meshlet scene", compileStageBegin);
         if (runtimeScene == nullptr) {
             log = "GPUDrivenPreviewPass shading requires a runtime scene";
             return makeError(Error::InvalidArgument);
         }
         std::vector<GPUDrivenPreviewGpuMaterial> materials;
+        compileStageBegin = GPUDrivenCompileClock::now();
         Result result = prepareShadingResources(
             *context.device,
             *runtimeScene,
@@ -705,6 +726,7 @@ public:
         if (!result) {
             return result;
         }
+        logGPUDrivenCompileStage("shading resources", compileStageBegin);
         materialCount_ = static_cast<uint32_t>(materials.size());
         materialTextureCount_ = static_cast<uint32_t>(materialTextures_.size());
 
@@ -749,6 +771,7 @@ public:
             environmentSH_,
             params);
 
+        compileStageBegin = GPUDrivenCompileClock::now();
         result = uploadStorageBuffer(
             *context.device,
             vertices.data(),
@@ -1092,10 +1115,14 @@ public:
             }
         }
 
+        logGPUDrivenCompileStage("GPU resources and descriptors", compileStageBegin);
+        compileStageBegin = GPUDrivenCompileClock::now();
         result = createPipelines(*context.device, log);
         if (!result) {
             return result;
         }
+        logGPUDrivenCompileStage("shader and compute pipelines", compileStageBegin);
+        compileStageBegin = GPUDrivenCompileClock::now();
         result = context.device->createGraphicsPipeline(
             GraphicsPipelineDesc{
                 .meshShader = meshShader_.get(),
@@ -1129,6 +1156,7 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
+        logGPUDrivenCompileStage("graphics pipelines", compileStageBegin);
 
         sceneRevision_ = runtimeRevision;
         previousParams_ = params;
@@ -1459,6 +1487,7 @@ private:
         };
         for (const ShaderRequest& request : requests) {
             const bool isDeferred = request.moduleName == kGPUDrivenDeferredShaderModuleName;
+            const auto shaderCompileBegin = GPUDrivenCompileClock::now();
             Result result = createShader(
                 device,
                 request.moduleName,
@@ -1471,9 +1500,13 @@ private:
             if (!result) {
                 return result;
             }
+            logGPUDrivenCompileStage(
+                std::string("Slang ") + request.entryPoint,
+                shaderCompileBegin);
         }
 
         auto createCompute = [&](ShaderModule& shader, std::unique_ptr<ComputePipeline>& pipeline, const char* label) {
+            const auto pipelineBegin = GPUDrivenCompileClock::now();
             Result result = device.createComputePipeline(
                 ComputePipelineDesc{
                     .computeShader = &shader,
@@ -1487,6 +1520,7 @@ private:
                 log += '\n';
                 return result ? makeError(Error::Failure) : result;
             }
+            logGPUDrivenCompileStage(std::string("compute pipeline ") + label, pipelineBegin);
             return result;
         };
 
@@ -1838,31 +1872,92 @@ private:
         std::vector<uint32_t> textureIndexMap(
             loadedScene.textures().size(),
             std::numeric_limits<uint32_t>::max());
-        for (uint32_t textureIndex = 0;
-             textureIndex < loadedScene.textures().size() &&
-                 materialTextures_.size() < kGPUDrivenMaxMaterialTextures;
-             ++textureIndex) {
-            GPUDrivenPreviewDecodedImage decoded;
-            if (!decodeGPUDrivenMaterialTexture(loadedScene, textureIndex, decoded, log)) {
-                continue;
+
+        struct MaterialDecodeTaskResult {
+            GPUDrivenPreviewDecodedImage image;
+            std::string warning;
+            bool decoded = false;
+        };
+        const size_t textureCount = loadedScene.textures().size();
+        const size_t hardwareThreads =
+            std::max<size_t>(std::thread::hardware_concurrency(), 1u);
+        const size_t decodeWorkerLimit = std::min<size_t>(
+            8u,
+            std::max<size_t>(hardwareThreads / 2u, 1u));
+        double materialDecodeWallMilliseconds = 0.0;
+        double materialTextureCreateMilliseconds = 0.0;
+        size_t attemptedTextureCount = 0;
+        for (size_t batchBegin = 0;
+             batchBegin < textureCount && materialTextures_.size() < kGPUDrivenMaxMaterialTextures;
+             batchBegin += decodeWorkerLimit) {
+            const size_t batchCount = std::min(decodeWorkerLimit, textureCount - batchBegin);
+            attemptedTextureCount += batchCount;
+            std::vector<MaterialDecodeTaskResult> decodedBatch(batchCount);
+            std::atomic_size_t nextDecode{0};
+            const auto decodeBatchBegin = GPUDrivenCompileClock::now();
+            const auto processDecodeTasks = [&]() {
+                for (;;) {
+                    const size_t localIndex = nextDecode.fetch_add(1, std::memory_order_relaxed);
+                    if (localIndex >= batchCount) {
+                        return;
+                    }
+                    MaterialDecodeTaskResult& decoded = decodedBatch[localIndex];
+                    decoded.decoded = decodeGPUDrivenMaterialTexture(
+                        loadedScene,
+                        static_cast<uint32_t>(batchBegin + localIndex),
+                        decoded.image,
+                        decoded.warning);
+                }
+            };
+            std::vector<std::thread> workers;
+            workers.reserve(batchCount > 0 ? batchCount - 1u : 0u);
+            for (size_t workerIndex = 1; workerIndex < batchCount; ++workerIndex) {
+                workers.emplace_back(processDecodeTasks);
             }
-            GPUDrivenPreviewTextureResource texture;
-            result = createGPUDrivenTexture(
-                device,
-                decoded.pixels.data(),
-                static_cast<uint64_t>(decoded.pixels.size()),
-                decoded.width,
-                decoded.height,
-                Format::Rgba8Unorm,
-                "GPUDrivenPreviewPass material texture",
-                texture,
-                log);
-            if (!result) {
-                return result;
+            processDecodeTasks();
+            for (std::thread& worker : workers) {
+                worker.join();
             }
-            textureIndexMap[textureIndex] = static_cast<uint32_t>(materialTextures_.size());
-            materialTextures_.push_back(std::move(texture));
+            materialDecodeWallMilliseconds += std::chrono::duration<double, std::milli>(
+                GPUDrivenCompileClock::now() - decodeBatchBegin).count();
+
+            for (size_t localIndex = 0; localIndex < batchCount; ++localIndex) {
+                if (materialTextures_.size() >= kGPUDrivenMaxMaterialTextures) {
+                    break;
+                }
+                MaterialDecodeTaskResult& decoded = decodedBatch[localIndex];
+                log += decoded.warning;
+                if (!decoded.decoded) {
+                    continue;
+                }
+                GPUDrivenPreviewTextureResource texture;
+                const auto textureCreateBegin = GPUDrivenCompileClock::now();
+                result = createGPUDrivenTexture(
+                    device,
+                    decoded.image.pixels.data(),
+                    static_cast<uint64_t>(decoded.image.pixels.size()),
+                    decoded.image.width,
+                    decoded.image.height,
+                    Format::Rgba8Unorm,
+                    "GPUDrivenPreviewPass material texture",
+                    texture,
+                    log);
+                if (!result) {
+                    return result;
+                }
+                materialTextureCreateMilliseconds += std::chrono::duration<double, std::milli>(
+                    GPUDrivenCompileClock::now() - textureCreateBegin).count();
+                const size_t textureIndex = batchBegin + localIndex;
+                textureIndexMap[textureIndex] = static_cast<uint32_t>(materialTextures_.size());
+                materialTextures_.push_back(std::move(texture));
+            }
         }
+        spdlog::info(
+            "[GPUDrivenPreviewPass] Processed {} material texture decodes with {} workers in {:.2f} ms and created textures in {:.2f} ms",
+            attemptedTextureCount,
+            decodeWorkerLimit,
+            materialDecodeWallMilliseconds,
+            materialTextureCreateMilliseconds);
 
         outMaterials.clear();
         outMaterials.reserve(std::max<size_t>(loadedScene.materials().size(), 1u));
@@ -1874,6 +1969,7 @@ private:
             }
         }
 
+        auto shadingStageBegin = GPUDrivenCompileClock::now();
         const float blackPixel[4] = {0.0f, 0.0f, 0.0f, 1.0f};
         std::vector<float> environmentPixels(std::begin(blackPixel), std::end(blackPixel));
         uint32_t environmentWidth = 1;
@@ -1920,7 +2016,11 @@ private:
         if (!result) {
             return result;
         }
-        return prepareGPUDrivenOpenPBRLuts(device, openPBRLut2D_, openPBRLut3D_, log);
+        logGPUDrivenCompileStage("environment texture", shadingStageBegin);
+        shadingStageBegin = GPUDrivenCompileClock::now();
+        result = prepareGPUDrivenOpenPBRLuts(device, openPBRLut2D_, openPBRLut3D_, log);
+        logGPUDrivenCompileStage("OpenPBR LUT textures", shadingStageBegin);
+        return result;
     }
 
     Result uploadShadingTextures(CommandBuffer& commandBuffer)
