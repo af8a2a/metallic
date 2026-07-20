@@ -30,6 +30,17 @@ struct ShaderCompileResult {
     std::string diagnostics;
 };
 
+struct SlangShaderCacheOptions {
+    // Null uses the project-local .cache/shaders/spirv directory.
+    const char* cacheDirectory = nullptr;
+    bool enableDiskCache = true;
+    bool* outCacheHit = nullptr;
+};
+
 Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult);
+Result compileSlangShaderToSpirv(
+    const SlangShaderDesc& desc,
+    const SlangShaderCacheOptions& cacheOptions,
+    ShaderCompileResult& outResult);
 
 } // namespace metallic::render

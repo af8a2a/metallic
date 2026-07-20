@@ -454,6 +454,29 @@ struct ShaderModuleDesc {
     uint64_t byteSize = 0;
 };
 
+enum class PipelineCacheLoadStatus : uint8_t {
+    NotFound,
+    Loaded,
+    Invalid,
+    Incompatible,
+};
+
+struct PipelineCacheDesc {
+    // Persistent caches use the backend-neutral .pso container. A null or empty
+    // path creates an in-memory cache.
+    const char* filePath = nullptr;
+    bool saveOnDestroy = true;
+};
+
+struct PipelineCacheStats {
+    PipelineCacheLoadStatus loadStatus = PipelineCacheLoadStatus::NotFound;
+    uint64_t storedPsoCount = 0;
+    uint64_t sessionPsoCount = 0;
+    uint64_t hitCount = 0;
+    uint64_t missCount = 0;
+    uint64_t backendDataSize = 0;
+};
+
 struct GraphicsPipelineDesc {
     class ShaderModule* vertexShader = nullptr;
     class ShaderModule* meshShader = nullptr;
@@ -466,6 +489,7 @@ struct GraphicsPipelineDesc {
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
     DepthStencilState depthStencil;
     bool usesBindlessHeap = false;
+    class PipelineCache* pipelineCache = nullptr;
 };
 
 struct ComputePipelineDesc {
@@ -473,6 +497,7 @@ struct ComputePipelineDesc {
     const char* computeEntryPoint = "main";
     bool usesBindlessHeap = false;
     uint32_t bindlessUserPushDataSize = 0;
+    class PipelineCache* pipelineCache = nullptr;
 };
 
 struct GraphicsShaderObjectProgramDesc {
@@ -659,6 +684,7 @@ struct TextureImpl;
 struct TextureViewImpl;
 struct StreamerImpl;
 struct ShaderModuleImpl;
+struct PipelineCacheImpl;
 struct GraphicsPipelineImpl;
 struct ComputePipelineImpl;
 struct GraphicsShaderObjectProgramImpl;
@@ -876,10 +902,37 @@ public:
     ShaderModule(const ShaderModule&) = delete;
     ShaderModule& operator=(const ShaderModule&) = delete;
 
+    uint64_t contentHash() const;
+
 private:
     explicit ShaderModule(std::unique_ptr<detail::ShaderModuleImpl> impl);
 
     std::unique_ptr<detail::ShaderModuleImpl> impl_;
+
+    friend class Device;
+    friend struct detail::DeviceImpl;
+};
+
+class PipelineCache {
+public:
+    PipelineCache() = default;
+    ~PipelineCache();
+    PipelineCache(PipelineCache&&) noexcept;
+    PipelineCache& operator=(PipelineCache&&) noexcept;
+
+    PipelineCache(const PipelineCache&) = delete;
+    PipelineCache& operator=(const PipelineCache&) = delete;
+
+    const char* filePath() const;
+    PipelineCacheStats stats() const;
+    // Persists pending cache changes. This is a no-op when no new PSO hash was
+    // recorded since loading or the previous save.
+    Result save();
+
+private:
+    explicit PipelineCache(std::unique_ptr<detail::PipelineCacheImpl> impl);
+
+    std::unique_ptr<detail::PipelineCacheImpl> impl_;
 
     friend class Device;
     friend struct detail::DeviceImpl;
@@ -894,6 +947,11 @@ public:
 
     GraphicsPipeline(const GraphicsPipeline&) = delete;
     GraphicsPipeline& operator=(const GraphicsPipeline&) = delete;
+
+    // pipelineCacheHit reports an exact PSO hash-table hit. The backend may
+    // still perform implementation-defined validation when creating the PSO.
+    uint64_t psoHash() const;
+    bool pipelineCacheHit() const;
 
 private:
     explicit GraphicsPipeline(std::unique_ptr<detail::GraphicsPipelineImpl> impl);
@@ -914,6 +972,11 @@ public:
 
     ComputePipeline(const ComputePipeline&) = delete;
     ComputePipeline& operator=(const ComputePipeline&) = delete;
+
+    // pipelineCacheHit reports an exact PSO hash-table hit. The backend may
+    // still perform implementation-defined validation when creating the PSO.
+    uint64_t psoHash() const;
+    bool pipelineCacheHit() const;
 
 private:
     explicit ComputePipeline(std::unique_ptr<detail::ComputePipelineImpl> impl);
@@ -1129,6 +1192,7 @@ public:
     Result createTextureView(Texture& texture, const TextureViewDesc& desc, std::unique_ptr<TextureView>& outTextureView);
     Result createStreamer(const StreamerDesc& desc, std::unique_ptr<Streamer>& outStreamer);
     Result createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule);
+    Result createPipelineCache(const PipelineCacheDesc& desc, std::unique_ptr<PipelineCache>& outPipelineCache);
     Result createGraphicsPipeline(const GraphicsPipelineDesc& desc, std::unique_ptr<GraphicsPipeline>& outGraphicsPipeline);
     Result createComputePipeline(const ComputePipelineDesc& desc, std::unique_ptr<ComputePipeline>& outComputePipeline);
     Result createGraphicsShaderObjectProgram(

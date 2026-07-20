@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -1081,9 +1082,217 @@ public:
     }
 };
 
+class PipelineCachePersistenceTest : public RhiTest {
+public:
+    PipelineCachePersistenceTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "pipeline_cache_persistence_and_shader_invalidation";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        const std::filesystem::path cachePath =
+            context.outputDirectory / "pipeline_cache_persistence.pso";
+        std::error_code fileError;
+        std::filesystem::remove(cachePath, fileError);
+        if (fileError) {
+            return RhiTestResult::fail(
+                "failed to remove previous .pso test file: " + fileError.message());
+        }
+        const std::string cachePathString = cachePath.string();
+
+        std::unique_ptr<render::ShaderModule> vertexShader;
+        RhiTestResult testResult = createTriangleShaderModule(
+            context.device,
+            kTriangleVertexEntryPoint,
+            vertexShader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::ShaderModule> fragmentShader;
+        testResult = createTriangleShaderModule(
+            context.device,
+            kTriangleFragmentEntryPoint,
+            fragmentShader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        std::unique_ptr<render::ShaderModule> changedFragmentShader;
+        testResult = createTriangleShaderModule(
+            context.device,
+            kSolidGreenFragmentEntryPoint,
+            changedFragmentShader);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        if (fragmentShader->contentHash() == 0 ||
+            changedFragmentShader->contentHash() == 0 ||
+            fragmentShader->contentHash() == changedFragmentShader->contentHash()) {
+            return RhiTestResult::fail("shader content hashes did not distinguish changed SPIR-V");
+        }
+
+        const auto createPipeline = [&](
+                                        render::PipelineCache& cache,
+                                        render::ShaderModule& fragment,
+                                        std::unique_ptr<render::GraphicsPipeline>& outPipeline) {
+            return context.device.createGraphicsPipeline(
+                render::GraphicsPipelineDesc{
+                    .vertexShader = vertexShader.get(),
+                    .fragmentShader = &fragment,
+                    .colorFormat = render::Format::Rgba8Unorm,
+                    .topology = render::PrimitiveTopology::TriangleList,
+                    .pipelineCache = &cache,
+                },
+                outPipeline);
+        };
+
+        std::unique_ptr<render::PipelineCache> firstCache;
+        render::Result result = context.device.createPipelineCache(
+            render::PipelineCacheDesc{
+                .filePath = cachePathString.c_str(),
+                .saveOnDestroy = false,
+            },
+            firstCache);
+        if (!result || firstCache == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createPipelineCache(first) returned ") + toString(result));
+        }
+        if (firstCache->stats().loadStatus != render::PipelineCacheLoadStatus::NotFound) {
+            return RhiTestResult::fail("first pipeline cache did not report a cold load");
+        }
+
+        std::unique_ptr<render::GraphicsPipeline> firstPipeline;
+        result = createPipeline(*firstCache, *fragmentShader, firstPipeline);
+        if (!result || firstPipeline == nullptr || firstPipeline->psoHash() == 0) {
+            return RhiTestResult::fail(
+                std::string("createGraphicsPipeline(first) returned ") + toString(result));
+        }
+        if (firstPipeline->pipelineCacheHit()) {
+            return RhiTestResult::fail("cold pipeline creation unexpectedly reported a cache hit");
+        }
+        const uint64_t originalPsoHash = firstPipeline->psoHash();
+        result = firstCache->save();
+        if (!result || !std::filesystem::exists(cachePath) ||
+            std::filesystem::file_size(cachePath) <= 80u) {
+            return RhiTestResult::fail("pipeline cache did not save a non-empty .pso file");
+        }
+        firstPipeline.reset();
+        firstCache.reset();
+
+        std::unique_ptr<render::PipelineCache> loadedCache;
+        result = context.device.createPipelineCache(
+            render::PipelineCacheDesc{
+                .filePath = cachePathString.c_str(),
+                .saveOnDestroy = false,
+            },
+            loadedCache);
+        if (!result || loadedCache == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createPipelineCache(loaded) returned ") + toString(result));
+        }
+        const render::PipelineCacheStats loadedStats = loadedCache->stats();
+        if (loadedStats.loadStatus != render::PipelineCacheLoadStatus::Loaded ||
+            loadedStats.storedPsoCount != 1) {
+            return RhiTestResult::fail("saved .pso file did not reload its PSO hash table");
+        }
+
+        std::unique_ptr<render::GraphicsPipeline> cachedPipeline;
+        result = createPipeline(*loadedCache, *fragmentShader, cachedPipeline);
+        if (!result || cachedPipeline == nullptr ||
+            !cachedPipeline->pipelineCacheHit() ||
+            cachedPipeline->psoHash() != originalPsoHash) {
+            return RhiTestResult::fail("unchanged shader did not reuse the saved PSO cache entry");
+        }
+
+        std::unique_ptr<render::GraphicsPipeline> changedPipeline;
+        result = createPipeline(*loadedCache, *changedFragmentShader, changedPipeline);
+        if (!result || changedPipeline == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createGraphicsPipeline(changed shader) returned ") + toString(result));
+        }
+        if (changedPipeline->pipelineCacheHit() ||
+            changedPipeline->psoHash() == originalPsoHash) {
+            return RhiTestResult::fail("changed shader did not invalidate the PSO hash");
+        }
+
+        result = loadedCache->save();
+        const render::PipelineCacheStats finalStats = loadedCache->stats();
+        if (!result || finalStats.hitCount != 1 || finalStats.missCount != 1 ||
+            finalStats.storedPsoCount != 2) {
+            return RhiTestResult::fail("pipeline cache hit/miss statistics are inconsistent");
+        }
+
+        changedPipeline.reset();
+        cachedPipeline.reset();
+        loadedCache.reset();
+        {
+            std::ofstream corruptStream(cachePath, std::ios::binary | std::ios::trunc);
+            corruptStream.put('\0');
+            if (!corruptStream) {
+                return RhiTestResult::fail("failed to create a corrupt .pso test file");
+            }
+        }
+
+        std::unique_ptr<render::PipelineCache> recoveredCache;
+        result = context.device.createPipelineCache(
+            render::PipelineCacheDesc{
+                .filePath = cachePathString.c_str(),
+                .saveOnDestroy = false,
+            },
+            recoveredCache);
+        if (!result || recoveredCache == nullptr ||
+            recoveredCache->stats().loadStatus != render::PipelineCacheLoadStatus::Invalid) {
+            return RhiTestResult::fail("corrupt .pso file did not fall back to an empty cache");
+        }
+        std::unique_ptr<render::GraphicsPipeline> recoveredPipeline;
+        result = createPipeline(*recoveredCache, *fragmentShader, recoveredPipeline);
+        if (!result || recoveredPipeline == nullptr || recoveredPipeline->pipelineCacheHit()) {
+            return RhiTestResult::fail("recovered cache did not rebuild the PSO after corruption");
+        }
+        result = recoveredCache->save();
+        if (!result || std::filesystem::file_size(cachePath) <= 80u) {
+            return RhiTestResult::fail("recovered cache did not replace the corrupt .pso file");
+        }
+        recoveredPipeline.reset();
+        recoveredCache.reset();
+
+        std::unique_ptr<render::PipelineCache> repairedCache;
+        result = context.device.createPipelineCache(
+            render::PipelineCacheDesc{
+                .filePath = cachePathString.c_str(),
+                .saveOnDestroy = false,
+            },
+            repairedCache);
+        if (!result || repairedCache == nullptr ||
+            repairedCache->stats().loadStatus != render::PipelineCacheLoadStatus::Loaded) {
+            return RhiTestResult::fail("repaired .pso file could not be loaded");
+        }
+        std::unique_ptr<render::GraphicsPipeline> repairedPipeline;
+        result = createPipeline(*repairedCache, *fragmentShader, repairedPipeline);
+        if (!result || repairedPipeline == nullptr || !repairedPipeline->pipelineCacheHit()) {
+            return RhiTestResult::fail("repaired .pso file did not contain the rebuilt PSO hash");
+        }
+
+        const std::string invalidPath =
+            (context.outputDirectory / "pipeline_cache_invalid.bin").string();
+        std::unique_ptr<render::PipelineCache> invalidCache;
+        result = context.device.createPipelineCache(
+            render::PipelineCacheDesc{.filePath = invalidPath.c_str()},
+            invalidCache);
+        if (!render::hasError(result, render::Error::InvalidArgument) || invalidCache != nullptr) {
+            return RhiTestResult::fail("pipeline cache accepted a file without the .pso extension");
+        }
+
+        return RhiTestResult::pass(
+            "validated cold miss, warm hit, shader invalidation, corruption recovery, and .pso persistence");
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(OffscreenTriangleTest);
 METALLIC_REGISTER_RHI_TEST(ReversedZDepthRenderingTest);
 METALLIC_REGISTER_RHI_TEST(ShaderObjectMaterialRenderingTest);
+METALLIC_REGISTER_RHI_TEST(PipelineCachePersistenceTest);
 
 } // namespace
 } // namespace metallic::tests

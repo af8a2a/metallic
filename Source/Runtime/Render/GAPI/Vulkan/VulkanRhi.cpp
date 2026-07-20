@@ -1,4 +1,6 @@
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/PipelineCacheFile.h"
+#include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightAftermath.h"
@@ -19,9 +21,12 @@
 #include <array>
 #include <cassert>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <mutex>
 #include <new>
+#include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -34,6 +39,7 @@ namespace {
 
 constexpr uint32_t kVulkanApiVersion = VK_API_VERSION_1_4;
 constexpr uint64_t kAcquireTimeoutNanoseconds = std::numeric_limits<uint64_t>::max();
+constexpr uint32_t kVulkanPipelineCacheBackendTag = 0x4b56544du;
 
 struct StateInfo {
     VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
@@ -2076,6 +2082,26 @@ struct TextureViewImpl {
 struct ShaderModuleImpl {
     DeviceImpl* device = nullptr;
     VkShaderModule module = VK_NULL_HANDLE;
+    uint64_t contentHash = 0;
+};
+
+struct PipelineCacheImpl {
+    DeviceImpl* device = nullptr;
+    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
+    std::filesystem::path filePath;
+    std::string filePathString;
+    PipelineCacheFileIdentity fileIdentity;
+    PipelineCacheStats stats;
+    std::unordered_set<uint64_t> storedPsoHashes;
+    std::unordered_set<uint64_t> sessionPsoHashes;
+    mutable std::mutex mutex;
+    bool saveOnDestroy = true;
+    bool dirty = false;
+
+    ~PipelineCacheImpl();
+    Result initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc);
+    Result saveLocked();
+    bool recordPsoLocked(uint64_t psoHash);
 };
 
 struct GraphicsPipelineImpl {
@@ -2084,6 +2110,8 @@ struct GraphicsPipelineImpl {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkShaderStageFlags bindlessPushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     bool usesBindlessHeap = false;
+    uint64_t psoHash = 0;
+    bool pipelineCacheHit = false;
 };
 
 struct ComputePipelineImpl {
@@ -2091,6 +2119,8 @@ struct ComputePipelineImpl {
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     bool usesBindlessHeap = false;
+    uint64_t psoHash = 0;
+    bool pipelineCacheHit = false;
 };
 
 struct GraphicsShaderObjectProgramImpl {
@@ -2172,6 +2202,7 @@ struct DeviceImpl {
     VkDevice device = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
     DeviceCapabilities capabilities;
+    PipelineCacheFileIdentity pipelineCacheFileIdentity;
     DescriptorHeapWriter descriptorHeapWriter;
     uint32_t graphicsFamily = 0;
     uint32_t computeFamily = 0;
@@ -2246,6 +2277,199 @@ DeviceImpl::~DeviceImpl()
         SDL_UnloadObject(vulkanLoaderHandle);
         vulkanLoaderHandle = nullptr;
     }
+}
+
+PipelineCacheImpl::~PipelineCacheImpl()
+{
+    if (device == nullptr || pipelineCache == VK_NULL_HANDLE) {
+        return;
+    }
+    activateVolkDevice(device->device);
+    {
+        std::lock_guard lock(mutex);
+        if (saveOnDestroy && dirty && !filePath.empty()) {
+            const Result result = saveLocked();
+            if (!result) {
+                spdlog::warn("Failed to save pipeline cache '{}'", filePath.string());
+            }
+        }
+        vkDestroyPipelineCache(device->device, pipelineCache, nullptr);
+        pipelineCache = VK_NULL_HANDLE;
+    }
+}
+
+Result PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc)
+{
+    device = &owningDevice;
+    saveOnDestroy = desc.saveOnDestroy;
+    fileIdentity = owningDevice.pipelineCacheFileIdentity;
+    if (desc.filePath != nullptr && desc.filePath[0] != '\0') {
+        filePath = desc.filePath;
+        filePathString = filePath.string();
+        if (!isPipelineCacheFilePath(filePath)) {
+            return makeError(Error::InvalidArgument);
+        }
+    }
+
+    PipelineCacheFileData fileData;
+    PipelineCacheFileLoadStatus fileStatus = PipelineCacheFileLoadStatus::NotFound;
+    std::string reason;
+    if (!filePath.empty()) {
+        fileStatus = loadPipelineCacheFile(filePath, fileIdentity, fileData, reason);
+    }
+    switch (fileStatus) {
+    case PipelineCacheFileLoadStatus::NotFound:
+        stats.loadStatus = PipelineCacheLoadStatus::NotFound;
+        break;
+    case PipelineCacheFileLoadStatus::Loaded:
+        stats.loadStatus = PipelineCacheLoadStatus::Loaded;
+        break;
+    case PipelineCacheFileLoadStatus::Invalid:
+        stats.loadStatus = PipelineCacheLoadStatus::Invalid;
+        break;
+    case PipelineCacheFileLoadStatus::Incompatible:
+        stats.loadStatus = PipelineCacheLoadStatus::Incompatible;
+        break;
+    }
+
+    VkPipelineCacheCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .initialDataSize = fileStatus == PipelineCacheFileLoadStatus::Loaded
+            ? fileData.backendData.size()
+            : 0,
+        .pInitialData = fileStatus == PipelineCacheFileLoadStatus::Loaded &&
+                !fileData.backendData.empty()
+            ? fileData.backendData.data()
+            : nullptr,
+    };
+    VkResult vkResult = vkCreatePipelineCache(
+        owningDevice.device,
+        &createInfo,
+        nullptr,
+        &pipelineCache);
+    if (vkResult != VK_SUCCESS && createInfo.initialDataSize > 0) {
+        stats.loadStatus = PipelineCacheLoadStatus::Incompatible;
+        fileData = {};
+        createInfo.initialDataSize = 0;
+        createInfo.pInitialData = nullptr;
+        vkResult = vkCreatePipelineCache(
+            owningDevice.device,
+            &createInfo,
+            nullptr,
+            &pipelineCache);
+    }
+    if (vkResult != VK_SUCCESS) {
+        return resultFromVk(vkResult);
+    }
+
+    if (stats.loadStatus == PipelineCacheLoadStatus::Loaded) {
+        storedPsoHashes.insert(fileData.psoHashes.begin(), fileData.psoHashes.end());
+        stats.storedPsoCount = storedPsoHashes.size();
+        stats.backendDataSize = fileData.backendData.size();
+        spdlog::info(
+            "Loaded pipeline cache '{}' with {} PSO hashes and {} backend bytes",
+            filePath.string(),
+            stats.storedPsoCount,
+            stats.backendDataSize);
+    } else if (!filePath.empty() &&
+               stats.loadStatus != PipelineCacheLoadStatus::NotFound) {
+        spdlog::warn(
+            "Ignored pipeline cache '{}': {}",
+            filePath.string(),
+            reason.empty() ? "native cache data is incompatible" : reason);
+    }
+    return {};
+}
+
+Result PipelineCacheImpl::saveLocked()
+{
+    if (device == nullptr || pipelineCache == VK_NULL_HANDLE) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (filePath.empty()) {
+        return {};
+    }
+    if (!dirty) {
+        return {};
+    }
+
+    activateVolkDevice(device->device);
+    size_t byteSize = 0;
+    VkResult vkResult = vkGetPipelineCacheData(
+        device->device,
+        pipelineCache,
+        &byteSize,
+        nullptr);
+    if (vkResult != VK_SUCCESS) {
+        return resultFromVk(vkResult);
+    }
+
+    std::vector<uint8_t> backendData(byteSize);
+    for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+        size_t writtenSize = backendData.size();
+        vkResult = vkGetPipelineCacheData(
+            device->device,
+            pipelineCache,
+            &writtenSize,
+            backendData.empty() ? nullptr : backendData.data());
+        if (vkResult == VK_SUCCESS) {
+            backendData.resize(writtenSize);
+            break;
+        }
+        if (vkResult != VK_INCOMPLETE) {
+            return resultFromVk(vkResult);
+        }
+
+        byteSize = 0;
+        vkResult = vkGetPipelineCacheData(
+            device->device,
+            pipelineCache,
+            &byteSize,
+            nullptr);
+        if (vkResult != VK_SUCCESS) {
+            return resultFromVk(vkResult);
+        }
+        backendData.resize(byteSize);
+    }
+    if (vkResult != VK_SUCCESS) {
+        return resultFromVk(vkResult);
+    }
+
+    std::vector<uint64_t> hashes;
+    hashes.reserve(storedPsoHashes.size() + sessionPsoHashes.size());
+    hashes.insert(hashes.end(), storedPsoHashes.begin(), storedPsoHashes.end());
+    hashes.insert(hashes.end(), sessionPsoHashes.begin(), sessionPsoHashes.end());
+    std::string reason;
+    if (!savePipelineCacheFile(filePath, fileIdentity, hashes, backendData, reason)) {
+        spdlog::warn("Failed to write pipeline cache '{}': {}", filePath.string(), reason);
+        return makeError(Error::Failure);
+    }
+
+    storedPsoHashes.insert(sessionPsoHashes.begin(), sessionPsoHashes.end());
+    stats.storedPsoCount = storedPsoHashes.size();
+    stats.backendDataSize = backendData.size();
+    dirty = false;
+    spdlog::info(
+        "Saved pipeline cache '{}' with {} PSO hashes and {} backend bytes",
+        filePath.string(),
+        stats.storedPsoCount,
+        stats.backendDataSize);
+    return {};
+}
+
+bool PipelineCacheImpl::recordPsoLocked(uint64_t psoHash)
+{
+    const bool cacheHit = storedPsoHashes.contains(psoHash) ||
+        sessionPsoHashes.contains(psoHash);
+    sessionPsoHashes.insert(psoHash);
+    stats.sessionPsoCount = sessionPsoHashes.size();
+    if (cacheHit) {
+        ++stats.hitCount;
+    } else {
+        ++stats.missCount;
+        dirty = true;
+    }
+    return cacheHit;
 }
 
 void DeviceImpl::addQueue(VkQueue queue, uint32_t familyIndex, QueueType type)
@@ -2995,6 +3219,43 @@ ShaderModule::~ShaderModule()
 ShaderModule::ShaderModule(ShaderModule&&) noexcept = default;
 ShaderModule& ShaderModule::operator=(ShaderModule&&) noexcept = default;
 
+uint64_t ShaderModule::contentHash() const
+{
+    return impl_ != nullptr ? impl_->contentHash : 0;
+}
+
+PipelineCache::PipelineCache(std::unique_ptr<detail::PipelineCacheImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+PipelineCache::~PipelineCache() = default;
+PipelineCache::PipelineCache(PipelineCache&&) noexcept = default;
+PipelineCache& PipelineCache::operator=(PipelineCache&&) noexcept = default;
+
+const char* PipelineCache::filePath() const
+{
+    return impl_ != nullptr ? impl_->filePathString.c_str() : "";
+}
+
+PipelineCacheStats PipelineCache::stats() const
+{
+    if (impl_ == nullptr) {
+        return {};
+    }
+    std::lock_guard lock(impl_->mutex);
+    return impl_->stats;
+}
+
+Result PipelineCache::save()
+{
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    std::lock_guard lock(impl_->mutex);
+    return impl_->saveLocked();
+}
+
 GraphicsPipeline::GraphicsPipeline(std::unique_ptr<detail::GraphicsPipelineImpl> impl)
     : impl_(std::move(impl))
 {
@@ -3017,6 +3278,16 @@ GraphicsPipeline::~GraphicsPipeline()
 GraphicsPipeline::GraphicsPipeline(GraphicsPipeline&&) noexcept = default;
 GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&&) noexcept = default;
 
+uint64_t GraphicsPipeline::psoHash() const
+{
+    return impl_ != nullptr ? impl_->psoHash : 0;
+}
+
+bool GraphicsPipeline::pipelineCacheHit() const
+{
+    return impl_ != nullptr && impl_->pipelineCacheHit;
+}
+
 ComputePipeline::ComputePipeline(std::unique_ptr<detail::ComputePipelineImpl> impl)
     : impl_(std::move(impl))
 {
@@ -3038,6 +3309,16 @@ ComputePipeline::~ComputePipeline()
 
 ComputePipeline::ComputePipeline(ComputePipeline&&) noexcept = default;
 ComputePipeline& ComputePipeline::operator=(ComputePipeline&&) noexcept = default;
+
+uint64_t ComputePipeline::psoHash() const
+{
+    return impl_ != nullptr ? impl_->psoHash : 0;
+}
+
+bool ComputePipeline::pipelineCacheHit() const
+{
+    return impl_ != nullptr && impl_->pipelineCacheHit;
+}
 
 GraphicsShaderObjectProgram::GraphicsShaderObjectProgram(
     std::unique_ptr<detail::GraphicsShaderObjectProgramImpl> impl)
@@ -4624,7 +4905,27 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
     auto shaderImpl = std::make_unique<detail::ShaderModuleImpl>();
     shaderImpl->device = impl_.get();
     shaderImpl->module = module;
+    shaderImpl->contentHash = detail::shaderContentHash(desc);
     outShaderModule.reset(new ShaderModule(std::move(shaderImpl)));
+    return {};
+}
+
+Result Device::createPipelineCache(
+    const PipelineCacheDesc& desc,
+    std::unique_ptr<PipelineCache>& outPipelineCache)
+{
+    outPipelineCache.reset();
+    if (impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    activateVolkDevice(impl_->device);
+
+    auto cacheImpl = std::make_unique<detail::PipelineCacheImpl>();
+    Result result = cacheImpl->initialize(*impl_, desc);
+    if (!result) {
+        return result;
+    }
+    outPipelineCache.reset(new PipelineCache(std::move(cacheImpl)));
     return {};
 }
 
@@ -4658,6 +4959,20 @@ Result Device::createGraphicsPipeline(
     const bool hasDepthStencilFormat = desc.depthStencilFormat != Format::Unknown;
     if ((desc.depthStencil.depthTestEnable || desc.depthStencil.depthWriteEnable) && !hasDepthStencilFormat) {
         return makeError(Error::InvalidArgument);
+    }
+
+    detail::PipelineCacheImpl* pipelineCache =
+        desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
+    if (desc.pipelineCache != nullptr &&
+        (pipelineCache == nullptr ||
+         pipelineCache->device != impl_.get() ||
+         pipelineCache->pipelineCache == VK_NULL_HANDLE)) {
+        return makeError(Error::InvalidArgument);
+    }
+    const uint64_t psoHash = detail::graphicsPipelineStateHash(desc);
+    std::unique_lock<std::mutex> pipelineCacheLock;
+    if (pipelineCache != nullptr) {
+        pipelineCacheLock = std::unique_lock<std::mutex>(pipelineCache->mutex);
     }
 
     const char* vertexEntryPoint = desc.vertexEntryPoint != nullptr ? desc.vertexEntryPoint : "main";
@@ -4838,7 +5153,13 @@ Result Device::createGraphicsPipeline(
     };
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    result = vkCreateGraphicsPipelines(impl_->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    result = vkCreateGraphicsPipelines(
+        impl_->device,
+        pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
+        1,
+        &pipelineInfo,
+        nullptr,
+        &pipeline);
     if (result != VK_SUCCESS) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(impl_->device, layout, nullptr);
@@ -4852,6 +5173,9 @@ Result Device::createGraphicsPipeline(
     pipelineImpl->pipeline = pipeline;
     pipelineImpl->bindlessPushStages = graphicsShaderStages;
     pipelineImpl->usesBindlessHeap = desc.usesBindlessHeap;
+    pipelineImpl->psoHash = psoHash;
+    pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
+        pipelineCache->recordPsoLocked(psoHash);
     outGraphicsPipeline.reset(new GraphicsPipeline(std::move(pipelineImpl)));
     return {};
 }
@@ -4874,6 +5198,20 @@ Result Device::createComputePipeline(
         if (impl_->descriptorHeapWriter.maxPushDataSize() < requiredPushDataSize) {
             return makeError(Error::Unsupported);
         }
+    }
+
+    detail::PipelineCacheImpl* pipelineCache =
+        desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
+    if (desc.pipelineCache != nullptr &&
+        (pipelineCache == nullptr ||
+         pipelineCache->device != impl_.get() ||
+         pipelineCache->pipelineCache == VK_NULL_HANDLE)) {
+        return makeError(Error::InvalidArgument);
+    }
+    const uint64_t psoHash = detail::computePipelineStateHash(desc);
+    std::unique_lock<std::mutex> pipelineCacheLock;
+    if (pipelineCache != nullptr) {
+        pipelineCacheLock = std::unique_lock<std::mutex>(pipelineCache->mutex);
     }
 
     const char* computeEntryPoint = desc.computeEntryPoint != nullptr ? desc.computeEntryPoint : "main";
@@ -4950,7 +5288,13 @@ Result Device::createComputePipeline(
     };
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    result = vkCreateComputePipelines(impl_->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    result = vkCreateComputePipelines(
+        impl_->device,
+        pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
+        1,
+        &pipelineInfo,
+        nullptr,
+        &pipeline);
     if (result != VK_SUCCESS) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(impl_->device, layout, nullptr);
@@ -4963,6 +5307,9 @@ Result Device::createComputePipeline(
     pipelineImpl->layout = layout;
     pipelineImpl->pipeline = pipeline;
     pipelineImpl->usesBindlessHeap = desc.usesBindlessHeap;
+    pipelineImpl->psoHash = psoHash;
+    pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
+        pipelineCache->recordPsoLocked(psoHash);
     outComputePipeline.reset(new ComputePipeline(std::move(pipelineImpl)));
     return {};
 }
@@ -5439,6 +5786,27 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
     VkPhysicalDeviceProperties selectedProperties{};
     vkGetPhysicalDeviceProperties(deviceImpl->physicalDevice, &selectedProperties);
+    deviceImpl->pipelineCacheFileIdentity.backendTag = kVulkanPipelineCacheBackendTag;
+    std::memcpy(
+        deviceImpl->pipelineCacheFileIdentity.compatibilityKey.data() + 0,
+        &selectedProperties.vendorID,
+        sizeof(selectedProperties.vendorID));
+    std::memcpy(
+        deviceImpl->pipelineCacheFileIdentity.compatibilityKey.data() + 4,
+        &selectedProperties.deviceID,
+        sizeof(selectedProperties.deviceID));
+    std::memcpy(
+        deviceImpl->pipelineCacheFileIdentity.compatibilityKey.data() + 8,
+        &selectedProperties.driverVersion,
+        sizeof(selectedProperties.driverVersion));
+    std::memcpy(
+        deviceImpl->pipelineCacheFileIdentity.compatibilityKey.data() + 12,
+        &selectedProperties.apiVersion,
+        sizeof(selectedProperties.apiVersion));
+    std::memcpy(
+        deviceImpl->pipelineCacheFileIdentity.compatibilityKey.data() + 16,
+        selectedProperties.pipelineCacheUUID,
+        VK_UUID_SIZE);
     deviceImpl->capabilities.bufferCopyOffsetAlignment =
         std::max<uint64_t>(selectedProperties.limits.optimalBufferCopyOffsetAlignment, 1);
     deviceImpl->capabilities.textureUploadBufferOffsetAlignment =

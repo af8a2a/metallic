@@ -2000,6 +2000,20 @@ bool EditorApplication::initializeRhi()
 {
     StartupLogScope initializeScope("RHI initialization");
 
+    bool enableStreamline = !smokeTest_;
+    if (enableStreamline && !startupSampleId_.empty()) {
+        bool sampleRequiresStreamline = false;
+        if (render::queryBuiltInRenderSampleStreamlineRequirement(
+                startupSampleId_,
+                sampleRequiresStreamline)) {
+            enableStreamline = sampleRequiresStreamline;
+        }
+    }
+    spdlog::info(
+        "[Startup] Streamline device integration {} for startup sample '{}'",
+        enableStreamline ? "enabled" : "disabled",
+        startupSampleId_.empty() ? "<generic-editor>" : startupSampleId_);
+
     render::Result result;
     {
         StartupLogScope scope("RHI createDevice");
@@ -2014,7 +2028,7 @@ bool EditorApplication::initializeRhi()
                 .enableRayQuery = true,
                 .enablePushDescriptor = true,
                 .enableClusterAccelerationStructure = true,
-                .enableStreamline = !smokeTest_,
+                .enableStreamline = enableStreamline,
                 .enableAftermath = !smokeTest_,
             },
             device_);

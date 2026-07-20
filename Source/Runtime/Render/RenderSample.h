@@ -29,6 +29,7 @@ struct RenderSampleDesc {
     RenderSampleEnvironmentDesc environment;
     std::vector<std::string> environmentTargets;
     std::string previewOutput;
+    bool requiresStreamline = false;
 };
 
 struct RenderSampleLoadResult {
@@ -52,6 +53,7 @@ public:
     virtual RenderSampleEnvironmentDesc environment() const { return {}; }
     virtual std::vector<std::string> environmentTargets() const { return {}; }
     virtual std::string previewOutput() const { return {}; }
+    virtual bool requiresStreamline() const { return false; }
 
     RenderSampleDesc desc() const;
 };
@@ -65,6 +67,9 @@ bool loadBuiltInRenderSample(
     std::string_view id,
     RenderSampleLoadResult& outResult,
     std::string& outMessage);
+bool queryBuiltInRenderSampleStreamlineRequirement(
+    std::string_view id,
+    bool& outRequiresStreamline);
 bool setRenderSampleScenePath(
     RenderSampleLoadResult& sample,
     std::string scenePath,

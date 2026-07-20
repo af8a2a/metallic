@@ -30,6 +30,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/MeshletStreamPageLoader.cpp
     Runtime/Render/MeshletStreamResidency.cpp
     Runtime/Render/MeshletStreamRuntime.cpp
+    Runtime/Render/GAPI/PipelineCacheFile.cpp
+    Runtime/Render/GAPI/PipelineStateHash.cpp
     Runtime/Render/GAPI/Streamer.cpp
     Runtime/Render/RenderSample.cpp
     Runtime/Render/SlangCompiler.cpp

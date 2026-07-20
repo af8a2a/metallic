@@ -5,6 +5,19 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Ninja parses MSVC /showIncludes output to track header dependencies. Force
+# English diagnostics so the dependency prefix remains byte-stable even when
+# the configure shell and build shell use different Windows code pages.
+if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
+    set(CMAKE_C_COMPILER_LAUNCHER
+        "${CMAKE_COMMAND};-P;${CMAKE_SOURCE_DIR}/cmake/RunMsvcCompiler.cmake;--")
+    set(CMAKE_CXX_COMPILER_LAUNCHER
+        "${CMAKE_COMMAND};-P;${CMAKE_SOURCE_DIR}/cmake/RunMsvcCompiler.cmake;--")
+    set(CMAKE_C_CL_SHOWINCLUDES_PREFIX "Note: including file:  ")
+    set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "Note: including file:  ")
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "Note: including file:  ")
+endif()
+
 option(METALLIC_CLUSTER_LOD_TOPOLOGY_NYX
     "Build ClusterLOD topology with the experimental Nyx-style top-level BVH instead of the selector chain"
     OFF)

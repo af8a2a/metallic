@@ -29,6 +29,17 @@ void logGPUDrivenCompileStage(
         elapsedMilliseconds);
 }
 
+const char* pipelineCacheLoadStatusName(PipelineCacheLoadStatus status)
+{
+    switch (status) {
+    case PipelineCacheLoadStatus::NotFound: return "not-found";
+    case PipelineCacheLoadStatus::Loaded: return "loaded";
+    case PipelineCacheLoadStatus::Invalid: return "invalid";
+    case PipelineCacheLoadStatus::Incompatible: return "incompatible";
+    }
+    return "unknown";
+}
+
 constexpr uint32_t kGPUDrivenMaxMaterialTextures = 256;
 constexpr uint32_t kGPUDrivenVisibilityTriangleBits = 7;
 constexpr uint32_t kGPUDrivenMaxEncodedMeshlets = (1u << (32u - kGPUDrivenVisibilityTriangleBits)) - 1u;
@@ -40,6 +51,8 @@ constexpr uint32_t kGPUDrivenOpenPBRLut3DCount = 2;
 constexpr uint32_t kGPUDrivenOpenPBRLutSize = OpenPBR_EnergyTableSize;
 constexpr uint32_t kGPUDrivenOpenPBRLtcSize = OpenPBR_LTCTableSize;
 constexpr float kGPUDrivenOpenPBRLutScale = 1.0f / 65535.0f;
+constexpr const char* kGPUDrivenPipelineCachePath =
+    PROJECT_SOURCE_DIR "/.cache/pso/GPUDrivenPreviewPass.pso";
 
 using GPUDrivenOpenPBRLutScalar = uint16_t;
 
@@ -1135,6 +1148,7 @@ public:
                     .depthCompareOp = depthCompareOp(kDefaultReversedZ),
                 },
                 .usesBindlessHeap = true,
+                .pipelineCache = pipelineCache_.get(),
             },
             visibilityPipeline_);
         if (!result || visibilityPipeline_ == nullptr) {
@@ -1149,6 +1163,7 @@ public:
                 .colorFormat = Format::Rgba8Unorm,
                 .topology = PrimitiveTopology::TriangleList,
                 .usesBindlessHeap = true,
+                .pipelineCache = pipelineCache_.get(),
             },
             compositePipeline_);
         if (!result || compositePipeline_ == nullptr) {
@@ -1157,6 +1172,20 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
         logGPUDrivenCompileStage("graphics pipelines", compileStageBegin);
+        if (pipelineCache_ != nullptr) {
+            const Result saveResult = pipelineCache_->save();
+            const PipelineCacheStats stats = pipelineCache_->stats();
+            spdlog::info(
+                "[GPUDrivenPreviewPass] PSO cache status={} hits={} misses={} stored={} bytes={}",
+                pipelineCacheLoadStatusName(stats.loadStatus),
+                stats.hitCount,
+                stats.missCount,
+                stats.storedPsoCount,
+                stats.backendDataSize);
+            if (!saveResult) {
+                log += "Warning: GPUDrivenPreviewPass failed to save PSO cache\n";
+            }
+        }
 
         sceneRevision_ = runtimeRevision;
         previousParams_ = params;
@@ -1505,6 +1534,15 @@ private:
                 shaderCompileBegin);
         }
 
+        Result result = device.createPipelineCache(
+            PipelineCacheDesc{.filePath = kGPUDrivenPipelineCachePath},
+            pipelineCache_);
+        if (!result || pipelineCache_ == nullptr) {
+            log += resultMessage("createPipelineCache(GPUDrivenPreviewPass)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
         auto createCompute = [&](ShaderModule& shader, std::unique_ptr<ComputePipeline>& pipeline, const char* label) {
             const auto pipelineBegin = GPUDrivenCompileClock::now();
             Result result = device.createComputePipeline(
@@ -1513,6 +1551,7 @@ private:
                     .computeEntryPoint = "main",
                     .usesBindlessHeap = true,
                     .bindlessUserPushDataSize = sizeof(GPUDrivenPreviewUserPush),
+                    .pipelineCache = pipelineCache_.get(),
                 },
                 pipeline);
             if (!result || pipeline == nullptr) {
@@ -1524,7 +1563,7 @@ private:
             return result;
         };
 
-        Result result = createCompute(*resetShader_, resetPipeline_, "reset");
+        result = createCompute(*resetShader_, resetPipeline_, "reset");
         if (!result) {
             return result;
         }
@@ -2990,6 +3029,7 @@ private:
     std::unique_ptr<ShaderModule> deferredShader_;
     std::unique_ptr<ShaderModule> compositeVertexShader_;
     std::unique_ptr<ShaderModule> compositeFragmentShader_;
+    std::unique_ptr<PipelineCache> pipelineCache_;
     std::unique_ptr<GraphicsPipeline> visibilityPipeline_;
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
     std::unique_ptr<ComputePipeline> resetPipeline_;

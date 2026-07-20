@@ -1331,7 +1331,8 @@ public:
             dlssRrSample.desc.category != "PathTracing" ||
             dlssRrSample.desc.scenePath != "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf" ||
             dlssRrSample.desc.graphPath != "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json" ||
-            dlssRrSample.desc.previewOutput != "DlssRr.color") {
+            dlssRrSample.desc.previewOutput != "DlssRr.color" ||
+            !dlssRrSample.desc.requiresStreamline) {
             return RhiTestResult::fail("DLSS-RR PathTracingSample metadata did not load as expected");
         }
         const render::RenderGraphNode* dlssRrPathTrace = dlssRrSample.graph.findNode("PathTrace");
@@ -1388,7 +1389,8 @@ public:
             gpuDrivenSample.desc.loadSceneInEditor ||
             gpuDrivenSample.desc.graphPath != "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json" ||
             gpuDrivenSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||
-            gpuDrivenSample.desc.previewOutput != "GPUDriven.color") {
+            gpuDrivenSample.desc.previewOutput != "GPUDriven.color" ||
+            gpuDrivenSample.desc.requiresStreamline) {
             return RhiTestResult::fail("GPUDrivenSample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDriven = gpuDrivenSample.graph.findNode("GPUDriven");
@@ -1410,6 +1412,20 @@ public:
         }
         if (gpuDrivenSample.graph.firstOutputName() != "GPUDriven.color") {
             return RhiTestResult::fail("GPUDrivenSample graph first output changed");
+        }
+        bool requiresStreamline = true;
+        if (!render::queryBuiltInRenderSampleStreamlineRequirement(
+                "gpu-driven-sample",
+                requiresStreamline) ||
+            requiresStreamline ||
+            !render::queryBuiltInRenderSampleStreamlineRequirement(
+                "pathtracing-sample-dlss-rr",
+                requiresStreamline) ||
+            !requiresStreamline ||
+            render::queryBuiltInRenderSampleStreamlineRequirement(
+                "unknown-sample",
+                requiresStreamline)) {
+            return RhiTestResult::fail("built-in Sample Streamline requirements are inconsistent");
         }
 
         render::RenderSampleLoadResult gpuDrivenStreamAssetSample;
@@ -2064,6 +2080,120 @@ public:
         }
 
         return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+    }
+};
+
+class SlangShaderDiskCacheTest : public RhiTest {
+public:
+    SlangShaderDiskCacheTest()
+    {
+        type = RhiTestType::Resource;
+        name = "slang_shader_disk_cache_and_source_invalidation";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        const std::filesystem::path testRoot =
+            context.outputDirectory / "slang_shader_disk_cache";
+        std::error_code fileError;
+        std::filesystem::remove_all(testRoot, fileError);
+        if (fileError) {
+            return RhiTestResult::fail(
+                "failed to clear shader cache test directory: " + fileError.message());
+        }
+        const std::filesystem::path sourceDirectory = testRoot / "source";
+        const std::filesystem::path cacheDirectory = testRoot / "cache";
+        std::filesystem::create_directories(sourceDirectory, fileError);
+        if (fileError) {
+            return RhiTestResult::fail(
+                "failed to create shader cache test directory: " + fileError.message());
+        }
+        const std::filesystem::path sourcePath = sourceDirectory / "ShaderCacheTest.slang";
+        const std::filesystem::path dependencyPath =
+            sourceDirectory / "ShaderCacheValue.slang";
+        const auto writeShader = [&]() {
+            std::ofstream stream(sourcePath, std::ios::binary | std::ios::trunc);
+            stream << "#include \"ShaderCacheValue.slang\"\n"
+                   << "RWStructuredBuffer<uint> outputBuffer;\n"
+                   << "[shader(\"compute\")]\n"
+                   << "[numthreads(1, 1, 1)]\n"
+                   << "void shaderCacheMain(uint3 dispatchId : SV_DispatchThreadID)\n"
+                   << "{\n"
+                   << "    outputBuffer[dispatchId.x] = kShaderCacheValue;\n"
+                   << "}\n";
+            return static_cast<bool>(stream);
+        };
+        const auto writeDependency = [&](uint32_t value) {
+            std::ofstream stream(dependencyPath, std::ios::binary | std::ios::trunc);
+            stream << "static const uint kShaderCacheValue = " << value << "u;\n";
+            return static_cast<bool>(stream);
+        };
+        if (!writeShader() || !writeDependency(1u)) {
+            return RhiTestResult::fail("failed to write initial shader cache test source");
+        }
+
+        const std::string sourceDirectoryString = sourceDirectory.string();
+        const std::string cacheDirectoryString = cacheDirectory.string();
+        const render::SlangShaderDesc shaderDesc{
+            .moduleName = "ShaderCacheTest",
+            .entryPointName = "shaderCacheMain",
+            .searchPath = sourceDirectoryString.c_str(),
+        };
+        bool cacheHit = false;
+        const render::SlangShaderCacheOptions cacheOptions{
+            .cacheDirectory = cacheDirectoryString.c_str(),
+            .outCacheHit = &cacheHit,
+        };
+
+        render::ShaderCompileResult firstCompile;
+        render::Result result = render::compileSlangShaderToSpirv(
+            shaderDesc,
+            cacheOptions,
+            firstCompile);
+        if (!result || firstCompile.spirv.empty() || cacheHit) {
+            return RhiTestResult::fail(
+                std::string("initial shader cache compile returned ") +
+                toString(result) +
+                ": " +
+                firstCompile.diagnostics);
+        }
+
+        render::ShaderCompileResult cachedCompile;
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedCompile);
+        if (!result || !cacheHit ||
+            cachedCompile.spirv != firstCompile.spirv) {
+            return RhiTestResult::fail("unchanged shader source did not hit the SPIR-V disk cache");
+        }
+
+        if (!writeDependency(123456u)) {
+            return RhiTestResult::fail("failed to update shader cache dependency source");
+        }
+        render::ShaderCompileResult changedCompile;
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, changedCompile);
+        if (!result || changedCompile.spirv.empty() || cacheHit ||
+            changedCompile.spirv == firstCompile.spirv) {
+            return RhiTestResult::fail("changed shader dependency did not invalidate the SPIR-V cache");
+        }
+
+        render::ShaderCompileResult changedCachedCompile;
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, changedCachedCompile);
+        if (!result || !cacheHit ||
+            changedCachedCompile.spirv != changedCompile.spirv) {
+            return RhiTestResult::fail("rebuilt shader did not become the new disk cache entry");
+        }
+
+        size_t cacheFileCount = 0;
+        for (const std::filesystem::directory_entry& entry :
+             std::filesystem::directory_iterator(cacheDirectory)) {
+            cacheFileCount += entry.is_regular_file() && entry.path().extension() == ".spv"
+                ? 1u
+                : 0u;
+        }
+        if (cacheFileCount != 1) {
+            return RhiTestResult::fail("shader cache did not maintain one entry per compile request");
+        }
+        return RhiTestResult::pass(
+            "validated SPIR-V cold compile, warm hit, and include-content invalidation");
     }
 };
 
@@ -5706,6 +5836,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneMaterialVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
+METALLIC_REGISTER_RHI_TEST(SlangShaderDiskCacheTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetShaderCompileTest);

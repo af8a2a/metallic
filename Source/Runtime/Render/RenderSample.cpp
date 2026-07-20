@@ -172,6 +172,7 @@ public:
     }
     std::vector<std::string> environmentTargets() const override { return {"PathTrace"}; }
     std::string previewOutput() const override { return "DlssRr.color"; }
+    bool requiresStreamline() const override { return true; }
 };
 
 class RtxdiSample final : public RenderSample {
@@ -378,6 +379,7 @@ RenderSampleDesc RenderSample::desc() const
         .environment = environment(),
         .environmentTargets = environmentTargets(),
         .previewOutput = previewOutput(),
+        .requiresStreamline = requiresStreamline(),
     };
 }
 
@@ -458,6 +460,20 @@ bool loadBuiltInRenderSample(
 
     outResult = RenderSampleLoadResult{};
     outMessage = std::string("Unknown built-in Sample: ") + std::string(id);
+    return false;
+}
+
+bool queryBuiltInRenderSampleStreamlineRequirement(
+    std::string_view id,
+    bool& outRequiresStreamline)
+{
+    outRequiresStreamline = false;
+    for (const RenderSample* sample : builtInRenderSamples()) {
+        if (sample->id() == id) {
+            outRequiresStreamline = sample->requiresStreamline();
+            return true;
+        }
+    }
     return false;
 }
 

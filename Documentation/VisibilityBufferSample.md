@@ -22,6 +22,8 @@ cmake-build-release-visual-studio\Source\MetallicGPUDrivenSample.exe --smoke-tes
 
 当前路径刻意不创建 RTAS、不发起 ray query，也不计算阴影或环境遮挡。双面材质会跳过 normal-cone backface 剔除。
 
+Pass 的 5 条 compute PSO 与 2 条 graphics PSO 共用 `.cache/pso/GPUDrivenPreviewPass.pso`。首次运行创建缓存；后续运行在 shader 二进制和 pipeline state 未变化时复用 Vulkan pipeline cache。shader 内容变化会产生新的 PSO hash 并只重建受影响的管线。日志中的 `PSO cache status/hits/misses/stored/bytes` 可用于确认冷、热启动行为；Slang 到 SPIR-V 的前端编译仍会执行。
+
 启用固定剔除相机后，Pass 会在切换瞬间锁存当前相机的完整 pose、投影和裁剪参数。实例视锥/HZB、meshlet 包围球和 normal cone 都继续使用这台虚拟相机；viewport 相机只负责投影幸存的 meshlet，因此可以自由移动到视锥外观察剔除结果。固定模式使用独立的内部 visibility/depth 生成 2-pass HZB，避免把观察相机的深度误用于虚拟相机剔除。
 
 ## 可调开关
