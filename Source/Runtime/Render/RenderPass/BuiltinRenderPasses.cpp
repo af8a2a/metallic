@@ -68,6 +68,10 @@ void registerBuiltInRenderGraphPasses()
         "Composite NRD-denoised RTXDI diffuse and specular lighting",
         []() { return builtin_pass::createRtxdiCompositePass(); });
     registerRenderGraphPassType(
+        "RtxcrMaterialSamplePass",
+        "Visualize RTXCR Chiang hair, far-field hair, and subsurface material models",
+        []() { return builtin_pass::createRtxcrMaterialSamplePass(); });
+    registerRenderGraphPassType(
         "NrdDenoisePass",
         "Denoise connected NRD radiance resources",
         []() { return builtin_pass::createNrdDenoisePass(); });

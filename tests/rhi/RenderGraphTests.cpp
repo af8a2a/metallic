@@ -1322,6 +1322,35 @@ public:
             return RhiTestResult::fail("RTXDI Sample graph first output changed");
         }
 
+        render::RenderSampleLoadResult rtxcrSample;
+        if (!render::loadBuiltInRenderSample("rtxcr-material-sample", rtxcrSample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (rtxcrSample.desc.id != "rtxcr-material-sample" ||
+            rtxcrSample.desc.name != "RTXCR Material Showcase" ||
+            rtxcrSample.desc.category != "RTXCR" ||
+            rtxcrSample.desc.loadSceneInEditor ||
+            rtxcrSample.desc.graphPath !=
+                "Pipelines/Samples/rtxcr_material_showcase.metallic_graph.json" ||
+            rtxcrSample.desc.previewOutput != "RTXCR.color") {
+            return RhiTestResult::fail("RTXCR Sample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* rtxcr = rtxcrSample.graph.findNode("RTXCR");
+        if (rtxcr == nullptr ||
+            rtxcr->type != "RtxcrMaterialSamplePass" ||
+            !rtxcr->properties.is_object() ||
+            rtxcr->properties.value("view", "") != "overview" ||
+            rtxcr->properties.value("hairMelanin", 0.0f) != 0.55f ||
+            rtxcr->properties.value("sssScale", 0.0f) != 1.0f) {
+            return RhiTestResult::fail("RTXCR Sample did not preserve material defaults");
+        }
+        if (!rtxcrSample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (rtxcrSample.graph.firstOutputName() != "RTXCR.color") {
+            return RhiTestResult::fail("RTXCR Sample graph first output changed");
+        }
+
         render::RenderSampleLoadResult dlssRrSample;
         if (!render::loadBuiltInRenderSample("pathtracing-sample-dlss-rr", dlssRrSample, message)) {
             return RhiTestResult::fail(message);
@@ -1514,6 +1543,7 @@ public:
         bool listedGPUDriven = false;
         bool listedGPUDrivenStreamAsset = false;
         bool listedGPUDrivenRtasVisualization = false;
+        bool listedRtxcr = false;
         for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
             listedPathTrace = listedPathTrace || desc.id == "pathtracing-meet-mat";
             listedOpenPBRPathTrace = listedOpenPBRPathTrace || desc.id == "pathtracing-sample";
@@ -1524,6 +1554,7 @@ public:
             listedGPUDrivenStreamAsset = listedGPUDrivenStreamAsset || desc.id == "gpu-driven-streamasset";
             listedGPUDrivenRtasVisualization = listedGPUDrivenRtasVisualization ||
                 desc.id == "gpu-driven-rtas-visualization";
+            listedRtxcr = listedRtxcr || desc.id == "rtxcr-material-sample";
         }
         if (!listedPathTrace ||
             !listedOpenPBRPathTrace ||
@@ -1531,7 +1562,8 @@ public:
             !listedMaterialVisualization ||
             !listedGPUDriven ||
             !listedGPUDrivenStreamAsset ||
-            !listedGPUDrivenRtasVisualization) {
+            !listedGPUDrivenRtasVisualization ||
+            !listedRtxcr) {
             return RhiTestResult::fail("built-in Sample list did not contain expected samples");
         }
         return RhiTestResult::pass();
@@ -3761,6 +3793,91 @@ public:
     }
 };
 
+#if defined(METALLIC_HAS_RTXCR) && METALLIC_HAS_RTXCR
+class RenderGraphRtxcrMaterialShaderCompileTest : public RhiTest {
+public:
+    RenderGraphRtxcrMaterialShaderCompileTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_rtxcr_material_shader_compile";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
+        render::ShaderCompileResult compileResult;
+        render::Result result = render::compileSlangShaderToSpirv(
+            render::SlangShaderDesc{
+                .moduleName = "RtxcrMaterialSample",
+                .entryPointName = "rtxcrMaterialSampleMain",
+                .searchPath = kShaderSearchPath,
+                .additionalSearchPaths = additionalSearchPaths,
+                .additionalSearchPathCount =
+                    static_cast<uint32_t>(std::size(additionalSearchPaths)),
+            },
+            compileResult);
+        if (!result || compileResult.spirv.empty()) {
+            return RhiTestResult::fail(
+                std::string("RTXCR material shader compile returned ") +
+                toString(result) +
+                ": " +
+                compileResult.diagnostics);
+        }
+        return RhiTestResult::pass(
+            std::string("compiled RTXCR material shader, words=") +
+            std::to_string(compileResult.spirv.size()));
+    }
+};
+
+class RenderGraphRtxcrMaterialPreviewTest : public RhiTest {
+public:
+    RenderGraphRtxcrMaterialPreviewTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_rtxcr_material_preview";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string message;
+        if (!render::loadBuiltInRenderSample("rtxcr-material-sample", sample, message)) {
+            return RhiTestResult::fail(message);
+        }
+
+        render::RenderGraphPreviewRenderer preview;
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(
+                std::string("RenderGraphPreviewRenderer::initialize returned ") +
+                toString(result));
+        }
+        result = preview.render(sample.graph, 768, 432, sample.desc.previewOutput);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("RTXCR material preview returned ") +
+                toString(result) +
+                ": " +
+                preview.lastLog());
+        }
+        const uint32_t brightPixelCount = countBrightPixels(preview.pixels());
+        if (brightPixelCount < 1024) {
+            return RhiTestResult::fail(
+                std::string("RTXCR material preview produced too few bright pixels: ") +
+                std::to_string(brightPixelCount));
+        }
+
+        const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+        const std::filesystem::path outputPath =
+            context.outputDirectory / "render_graph_rtxcr_material_preview.png";
+        if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
+            return RhiTestResult::fail(message);
+        }
+        return RhiTestResult::pass("wrote " + outputPath.string());
+    }
+};
+#endif
+
 class RenderGraphRtxdiShaderCompileTest : public RhiTest {
 public:
     RenderGraphRtxdiShaderCompileTest()
@@ -5838,6 +5955,10 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphSceneMaterialVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(SlangShaderDiskCacheTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
+#if defined(METALLIC_HAS_RTXCR) && METALLIC_HAS_RTXCR
+METALLIC_REGISTER_RHI_TEST(RenderGraphRtxcrMaterialShaderCompileTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphRtxcrMaterialPreviewTest);
+#endif
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetTraversalDemandTest);

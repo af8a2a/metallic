@@ -22,6 +22,7 @@ std::unique_ptr<RenderGraphPass> createScenePathTracePass();
 std::unique_ptr<RenderGraphPass> createSceneRtxdiPass();
 std::unique_ptr<RenderGraphPass> createRtxdiConfidencePass();
 std::unique_ptr<RenderGraphPass> createRtxdiCompositePass();
+std::unique_ptr<RenderGraphPass> createRtxcrMaterialSamplePass();
 std::unique_ptr<RenderGraphPass> createNrdDenoisePass();
 std::unique_ptr<RenderGraphPass> createStreamlineDlssRrPass();
 std::unique_ptr<RenderGraphPass> createRenderGraphBufferWritePass();

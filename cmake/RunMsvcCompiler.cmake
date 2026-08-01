@@ -11,7 +11,14 @@ endif()
 math(EXPR compilerArgumentLast "${CMAKE_ARGC} - 1")
 set(compilerCommand)
 foreach(argumentIndex RANGE 4 ${compilerArgumentLast})
-    list(APPEND compilerCommand "${CMAKE_ARGV${argumentIndex}}")
+    set(compilerArgument "${CMAKE_ARGV${argumentIndex}}")
+    # CMake list separators interact badly with a trailing backslash in MSVC's
+    # directory-form /Fd argument (Ninja commonly emits `/Fdpath\\`). Normalize
+    # only that path so /FS remains a separate compiler option.
+    if(compilerArgument MATCHES "^/Fd")
+        string(REPLACE "\\" "/" compilerArgument "${compilerArgument}")
+    endif()
+    list(APPEND compilerCommand "${compilerArgument}")
 endforeach()
 
 execute_process(

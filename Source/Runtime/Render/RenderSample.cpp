@@ -204,6 +204,25 @@ public:
     std::string previewOutput() const override { return "Composite.color"; }
 };
 
+class RtxcrMaterialSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "rtxcr-material-sample"; }
+    std::string_view name() const override { return "RTXCR Material Showcase"; }
+    std::string_view category() const override { return "RTXCR"; }
+    std::string_view description() const override
+    {
+        return "Procedural comparison of RTXCR Chiang hair, far-field hair, and Burley subsurface scattering material models.";
+    }
+    std::string scenePath() const override { return "Asset/meet_mat.glb"; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/rtxcr_material_showcase.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {}; }
+    std::string previewOutput() const override { return "RTXCR.color"; }
+};
+
 class MaterialVisualizationABeautifulGameSample final : public RenderSample {
 public:
     std::string_view id() const override { return "material-visualization-abeautiful-game"; }
@@ -331,6 +350,12 @@ const RenderSample& rtxdiSample()
     return sample;
 }
 
+const RenderSample& rtxcrMaterialSample()
+{
+    static const RtxcrMaterialSample sample;
+    return sample;
+}
+
 const RenderSample& gpuDrivenSample()
 {
     static const GPUDrivenSample sample;
@@ -356,6 +381,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &pathTracingSample(),
         &pathTracingDlssRrSample(),
         &rtxdiSample(),
+        &rtxcrMaterialSample(),
         &materialVisualizationABeautifulGameSample(),
         &gpuDrivenSample(),
         &gpuDrivenStreamAssetSample(),

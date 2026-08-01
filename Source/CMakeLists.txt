@@ -53,6 +53,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/RtxdiConfidencePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/RtxdiCompositePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/RtxcrMaterialSamplePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRtxdiPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/StreamlineDlssRrPass.cpp
@@ -98,6 +99,18 @@ endif()
 target_compile_definitions(MetallicRuntimeRender PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+if(METALLIC_RTXCR_MATERIAL_ROOT)
+    target_compile_definitions(MetallicRuntimeRender PUBLIC
+        METALLIC_HAS_RTXCR=1
+        METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}"
+    )
+else()
+    target_compile_definitions(MetallicRuntimeRender PUBLIC
+        METALLIC_HAS_RTXCR=0
+        METALLIC_RTXCR_SHADER_INCLUDE_DIR=""
+    )
+endif()
 
 if(WIN32)
     target_compile_definitions(MetallicRuntimeRender PRIVATE NOMINMAX)
@@ -283,3 +296,9 @@ add_executable(MetallicGPUDrivenSample
     ${METALLIC_EDITOR_SOURCES}
 )
 configure_metallic_editor_sample(MetallicGPUDrivenSample)
+
+add_executable(MetallicRtxcrSample
+    Samples/RtxcrSampleMain.cpp
+    ${METALLIC_EDITOR_SOURCES}
+)
+configure_metallic_editor_sample(MetallicRtxcrSample)

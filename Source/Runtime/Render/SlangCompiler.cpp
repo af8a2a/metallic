@@ -36,7 +36,7 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 1;
-constexpr uint32_t kShaderCacheRequestVersion = 1;
+constexpr uint32_t kShaderCacheRequestVersion = 2;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
@@ -114,6 +114,12 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc)
     hash = hashText(hash, desc.profileName != nullptr ? desc.profileName : kDefaultSlangProfileName);
     const std::string searchPath = normalizedAbsolutePath(desc.searchPath).generic_string();
     hash = hashText(hash, searchPath.c_str());
+    hash = hashValue(hash, desc.additionalSearchPathCount);
+    for (uint32_t index = 0; index < desc.additionalSearchPathCount; ++index) {
+        const std::string additionalSearchPath = normalizedAbsolutePath(
+            desc.additionalSearchPaths[index]).generic_string();
+        hash = hashText(hash, additionalSearchPath.c_str());
+    }
     hash = hashValue(hash, desc.capabilityCount);
     for (uint32_t index = 0; index < desc.capabilityCount; ++index) {
         hash = hashText(hash, desc.capabilities != nullptr ? desc.capabilities[index] : nullptr);
@@ -320,7 +326,7 @@ bool replaceShaderCacheFile(
 
 std::vector<std::filesystem::path> collectShaderDependencies(
     slang::IModule& module,
-    const std::filesystem::path& searchPath)
+    std::span<const std::filesystem::path> searchPaths)
 {
     std::vector<std::filesystem::path> dependencies;
     const SlangInt32 dependencyCount = module.getDependencyFileCount();
@@ -332,10 +338,13 @@ std::vector<std::filesystem::path> collectShaderDependencies(
         }
         std::filesystem::path dependencyPath(dependency);
         if (dependencyPath.is_relative()) {
-            const std::filesystem::path searchRelative = searchPath / dependencyPath;
-            std::error_code existsError;
-            if (std::filesystem::exists(searchRelative, existsError) && !existsError) {
-                dependencyPath = searchRelative;
+            for (const std::filesystem::path& searchPath : searchPaths) {
+                const std::filesystem::path searchRelative = searchPath / dependencyPath;
+                std::error_code existsError;
+                if (std::filesystem::exists(searchRelative, existsError) && !existsError) {
+                    dependencyPath = searchRelative;
+                    break;
+                }
             }
         }
         dependencies.push_back(normalizedAbsolutePath(dependencyPath));
@@ -453,8 +462,15 @@ Result compileSlangShaderToSpirv(
         *cacheOptions.outCacheHit = false;
     }
 
-    if (desc.moduleName == nullptr || desc.entryPointName == nullptr || desc.searchPath == nullptr) {
+    if (desc.moduleName == nullptr || desc.entryPointName == nullptr || desc.searchPath == nullptr ||
+        (desc.additionalSearchPathCount > 0 && desc.additionalSearchPaths == nullptr)) {
         return makeError(Error::InvalidArgument);
+    }
+    for (uint32_t index = 0; index < desc.additionalSearchPathCount; ++index) {
+        if (desc.additionalSearchPaths[index] == nullptr ||
+            desc.additionalSearchPaths[index][0] == '\0') {
+            return makeError(Error::InvalidArgument);
+        }
     }
 
     const uint64_t requestHash = shaderRequestHash(desc);
@@ -487,7 +503,23 @@ Result compileSlangShaderToSpirv(
         return makeError(Error::InvalidArgument);
     }
 
-    const char* searchPaths[] = {desc.searchPath};
+    std::vector<std::filesystem::path> normalizedSearchPaths;
+    normalizedSearchPaths.reserve(1u + desc.additionalSearchPathCount);
+    normalizedSearchPaths.push_back(normalizedAbsolutePath(desc.searchPath));
+    for (uint32_t index = 0; index < desc.additionalSearchPathCount; ++index) {
+        normalizedSearchPaths.push_back(
+            normalizedAbsolutePath(desc.additionalSearchPaths[index]));
+    }
+    std::vector<std::string> searchPathStorage;
+    searchPathStorage.reserve(normalizedSearchPaths.size());
+    for (const std::filesystem::path& searchPath : normalizedSearchPaths) {
+        searchPathStorage.push_back(searchPath.string());
+    }
+    std::vector<const char*> searchPaths;
+    searchPaths.reserve(searchPathStorage.size());
+    for (const std::string& searchPath : searchPathStorage) {
+        searchPaths.push_back(searchPath.c_str());
+    }
     std::vector<slang::CompilerOptionEntry> compilerOptions;
     compilerOptions.reserve(desc.capabilityCount + desc.macroDefineCount);
     for (uint32_t capabilityIndex = 0;
@@ -525,8 +557,8 @@ Result compileSlangShaderToSpirv(
     slang::SessionDesc sessionDesc{};
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
-    sessionDesc.searchPaths = searchPaths;
-    sessionDesc.searchPathCount = 1;
+    sessionDesc.searchPaths = searchPaths.data();
+    sessionDesc.searchPathCount = static_cast<SlangInt>(searchPaths.size());
     sessionDesc.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
     sessionDesc.compilerOptionEntries = compilerOptions.empty() ? nullptr : compilerOptions.data();
     sessionDesc.compilerOptionEntryCount = compilerOptions.size();
@@ -589,7 +621,7 @@ Result compileSlangShaderToSpirv(
     if (cacheOptions.enableDiskCache) {
         const std::vector<std::filesystem::path> dependencies = collectShaderDependencies(
             *module,
-            normalizedAbsolutePath(desc.searchPath));
+            normalizedSearchPaths);
         if (!saveCachedShader(cachePath, requestHash, dependencies, outResult.spirv)) {
             spdlog::debug(
                 "[ShaderCache] Could not persist {}.{} to '{}'",

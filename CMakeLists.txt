@@ -23,6 +23,43 @@ option(METALLIC_CLUSTER_LOD_TOPOLOGY_NYX
     OFF)
 option(METALLIC_BUILD_TESTS "Build Metallic test targets" ON)
 
+set(RTXCR_ROOT "" CACHE PATH
+    "RTXCR checkout or RTXCR Material Library root used by the RTXCR sample")
+set(_METALLIC_RTXCR_CANDIDATES)
+if(RTXCR_ROOT)
+    list(APPEND _METALLIC_RTXCR_CANDIDATES
+        "${RTXCR_ROOT}"
+        "${RTXCR_ROOT}/libraries/rtxcr/material")
+endif()
+list(APPEND _METALLIC_RTXCR_CANDIDATES
+    "${CMAKE_SOURCE_DIR}/External/RTXCR-Material"
+    "${CMAKE_SOURCE_DIR}/../RTXCR/libraries/rtxcr/material")
+
+set(METALLIC_RTXCR_MATERIAL_ROOT "")
+foreach(_METALLIC_RTXCR_CANDIDATE IN LISTS _METALLIC_RTXCR_CANDIDATES)
+    if(EXISTS "${_METALLIC_RTXCR_CANDIDATE}/shaders/include/rtxcr/HairChiangBSDF.hlsli" AND
+       EXISTS "${_METALLIC_RTXCR_CANDIDATE}/shaders/include/rtxcr/SubsurfaceScattering.hlsli")
+        get_filename_component(METALLIC_RTXCR_MATERIAL_ROOT
+            "${_METALLIC_RTXCR_CANDIDATE}" ABSOLUTE)
+        break()
+    endif()
+endforeach()
+unset(_METALLIC_RTXCR_CANDIDATE)
+unset(_METALLIC_RTXCR_CANDIDATES)
+
+if(METALLIC_RTXCR_MATERIAL_ROOT)
+    set(METALLIC_RTXCR_SHADER_INCLUDE_DIR
+        "${METALLIC_RTXCR_MATERIAL_ROOT}/shaders/include")
+    message(STATUS
+        "RTXCR Material Library: ${METALLIC_RTXCR_MATERIAL_ROOT}")
+else()
+    set(METALLIC_RTXCR_SHADER_INCLUDE_DIR "")
+    message(WARNING
+        "RTXCR Material Library was not found. MetallicRtxcrSample will build, "
+        "but its shader cannot run until RTXCR_ROOT points to an RTXCR checkout "
+        "or RTXCR-Material-Library is placed in External/RTXCR-Material.")
+endif()
+
 foreach(METALLIC_SETUP_MODULE IN ITEMS
     SetupSlang
     SetupStreamline

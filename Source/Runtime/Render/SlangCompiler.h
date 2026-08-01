@@ -18,6 +18,8 @@ struct SlangShaderDesc {
     const char* moduleName = nullptr;
     const char* entryPointName = nullptr;
     const char* searchPath = nullptr;
+    const char* const* additionalSearchPaths = nullptr;
+    uint32_t additionalSearchPathCount = 0;
     const char* profileName = kDefaultSlangProfileName;
     const char* const* capabilities = nullptr;
     uint32_t capabilityCount = 0;
