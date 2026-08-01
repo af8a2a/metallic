@@ -89,6 +89,10 @@ struct ScenePathTraceGpuMaterial {
     float glassParams[4] = {0.0f, 1.5f, 0.0f, 0.0f};
     float attenuationColor[4] = {1.0f, 1.0f, 1.0f, 0.0f};
     float diffuseTransmission[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    float rtxcrHairBaseColor[4] = {0.2f, 0.2f, 0.2f, 0.0f};
+    float rtxcrHairParams0[4] = {0.3f, 0.3f, 1.55f, 3.0f};
+    float rtxcrHairParams1[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+    float rtxcrHairDiffuseTint[4] = {};
     struct TextureInfo {
         uint32_t textureIndex = kInvalidMaterialTextureIndex;
         uint32_t texCoord = 0;
@@ -1051,6 +1055,20 @@ ScenePathTraceGpuMaterial makeMaterial(
     gpuMaterial.diffuseTransmission[1] = material.diffuseTransmissionColor.y;
     gpuMaterial.diffuseTransmission[2] = material.diffuseTransmissionColor.z;
     gpuMaterial.diffuseTransmission[3] = material.diffuseTransmissionFactor;
+    gpuMaterial.rtxcrHairBaseColor[0] = material.rtxcrHairBaseColor.x;
+    gpuMaterial.rtxcrHairBaseColor[1] = material.rtxcrHairBaseColor.y;
+    gpuMaterial.rtxcrHairBaseColor[2] = material.rtxcrHairBaseColor.z;
+    gpuMaterial.rtxcrHairBaseColor[3] = material.rtxcrHair ? 1.0f : 0.0f;
+    gpuMaterial.rtxcrHairParams0[0] = material.rtxcrHairLongitudinalRoughness;
+    gpuMaterial.rtxcrHairParams0[1] = material.rtxcrHairAzimuthalRoughness;
+    gpuMaterial.rtxcrHairParams0[2] = material.rtxcrHairIor;
+    gpuMaterial.rtxcrHairParams0[3] = material.rtxcrHairCuticleAngleDegrees;
+    gpuMaterial.rtxcrHairParams1[0] = material.rtxcrHairMelanin;
+    gpuMaterial.rtxcrHairParams1[1] = material.rtxcrHairMelaninRedness;
+    gpuMaterial.rtxcrHairParams1[2] = material.rtxcrHairDiffuseReflectionWeight;
+    gpuMaterial.rtxcrHairDiffuseTint[0] = material.rtxcrHairDiffuseReflectionTint.x;
+    gpuMaterial.rtxcrHairDiffuseTint[1] = material.rtxcrHairDiffuseReflectionTint.y;
+    gpuMaterial.rtxcrHairDiffuseTint[2] = material.rtxcrHairDiffuseReflectionTint.z;
     gpuMaterial.baseColorTexture = makeGpuTextureInfo(material.baseColorTexture, textureIndexMap, log, "baseColorTexture");
     gpuMaterial.metallicRoughnessTexture = makeGpuTextureInfo(
         material.metallicRoughnessTexture,

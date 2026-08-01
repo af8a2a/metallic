@@ -1,74 +1,113 @@
-# RTXCR Material Showcase
+# RTXCR Claire Ponytail Sample
 
-`MetallicRtxcrSample` integrates the shader-only portions of NVIDIA RTX Character
-Rendering (RTXCR) with Metallic's Slang-to-SPIR-V and Vulkan RenderGraph path.
-The procedural overview renders three spheres so the material responses can be
-compared without downloading the large Claire asset package:
+`MetallicRtxcrSample` renders an NVIDIA Claire reference groom through Metallic's
+Vulkan ray-query path. The sample works directly from the pinned upstream
+repositories instead of copying NVIDIA source or assets into Metallic:
 
-- RTXCR Chiang near-field hair BCSDF
-- RTXCR analytical far-field hair BCSDF
-- RTXCR Burley diffusion-profile subsurface scattering and volume coefficients
+- [`External/RTXCR-Material`](https://github.com/NVIDIA-RTX/RTXCR-Material-Library)
+  (`v1.2.0`) supplies the RTXCR Chiang hair BSDF.
+- [`External/RTXCR-Geometry`](https://github.com/NVIDIA-RTX/RTXCR-Geometry-Library)
+  (`v1.1.0`) supplies the CPU DOTS conversion.
+- [`External/RTXCR-Assets`](https://github.com/NVIDIA-RTX/RTXCR-Assets)
+  (`v1.1.0`) supplies the Claire ponytail and studio HDR.
 
-The sample uses the upstream RTXCR Material Library as an external dependency;
-the NVIDIA sources are not copied into this repository.
+The gitlinks, rather than branch names, define the reproducible revisions used by
+the project.
 
-## Configure
+## License acceptance and checkout
 
-Point `RTXCR_ROOT` at either a full RTXCR checkout or the standalone RTXCR
-Material Library:
+Read and accept the licenses before initializing or using these submodules:
+
+- [`External/RTXCR-Material/License.txt`](../External/RTXCR-Material/License.txt)
+- [`External/RTXCR-Geometry/License.txt`](../External/RTXCR-Geometry/License.txt)
+- [`External/RTXCR-Assets/License.txt`](../External/RTXCR-Assets/License.txt)
+- [Claire asset license](../External/RTXCR-Assets/Claire/NVIDIA%20License%20for%20Claire%20Assets%20(2024.11.18)%20%5BFINAL%5D.pdf)
+
+The Claire license is restricted. In particular, it permits the asset solely for
+use with NVIDIA Avatar Cloud Engine technologies when building and deploying game
+characters and interactive avatars. It does not permit distributing Claire as a
+stand-alone asset. Preserve all copyright and proprietary notices, do not imply
+NVIDIA sponsorship or endorsement, and review the complete license rather than
+relying on this summary.
+
+This sample confines the asset to RTXCR character rendering. NVIDIA lists RTX
+Character Rendering under ACE's
+[Digital Human Rendering Technologies](https://developer.nvidia.com/ace).
+
+After accepting the terms, initialize the exact revisions recorded by Metallic:
 
 ```powershell
-cmake -S . -B build -DRTXCR_ROOT=E:/RTXCR -DMETALLIC_BUILD_TESTS=ON
+git submodule update --init --recursive -- `
+    External/RTXCR-Material `
+    External/RTXCR-Geometry `
+    External/RTXCR-Assets
+git -C External/RTXCR-Assets lfs pull
+git -C External/RTXCR-Assets lfs ls-files
 ```
 
-The default discovery also checks these locations:
+The CMake check does not enable the Claire asset integration when its `.bin` is
+still a small Git LFS pointer, and emits a configuration warning with the recovery
+commands instead of deferring the problem to an opaque runtime import error.
 
-- `External/RTXCR-Material`
-- a sibling `../RTXCR/libraries/rtxcr/material` checkout
+## Configure, build, and run
 
-The standalone dependency can be obtained from
-`https://github.com/NVIDIA-RTX/RTXCR-Material-Library.git`.
-
-## Build and run
+The default configuration discovers the three `External/RTXCR-*` submodules:
 
 ```powershell
+cmake -S . -B build -DMETALLIC_BUILD_TESTS=ON
 cmake --build build --target MetallicRtxcrSample --config Debug
-# Visual Studio / other multi-config generators
 build\Source\Debug\MetallicRtxcrSample.exe
-# Ninja / other single-config generators
-build\Source\MetallicRtxcrSample.exe
 ```
 
-For a one-frame integration check:
+For a one-frame Vulkan integration check:
 
 ```powershell
 build\Source\Debug\MetallicRtxcrSample.exe --smoke-test
 ```
 
-For a single-config build, omit the `Debug` directory in the smoke-test path.
+Single-config generators place the executable directly under `build\Source`.
+External checkouts can instead be selected with `RTXCR_ROOT` and
+`RTXCR_ASSETS_ROOT` at CMake configure time.
 
-The runtime settings panel exposes the overview and individual material views,
-hair melanin/redness, longitudinal and azimuthal roughness, cuticle angle, IOR,
-subsurface scale/anisotropy/sample radius, light azimuth, and exposure.
+## Integration path
 
-## Architecture
+The default sample loads
+`External/RTXCR-Assets/Claire/ponyTail_15vtx.gltf`. This is the real, reduced
+Claire reference groom: 30,108 line endpoints form 15,054 segments. The importer
+reads its `_RADIUS` attribute and `NV_materials_hair` extension, then calls the
+upstream `rtxcr::geometry::convertToDisjointOrthogonalTriangleStrips` function.
+The result contains 180,648 vertices and 60,216 triangles suitable for Metallic's
+existing Vulkan triangle BLAS path.
 
-`RtxcrMaterialSamplePass` compiles `Shaders/RtxcrMaterialSample.slang` with two
-Slang search roots: Metallic's `Shaders/` directory and the detected RTXCR
-`shaders/include` directory. Imported RTXCR files are included in Metallic's
-shader dependency tracking and invalidate the SPIR-V disk cache when changed.
-The pass writes a RenderGraph storage image through Metallic's Vulkan compute
-program wrapper.
+`ScenePathTrace.slang` keeps authored/world-space normal and tangent data stable
+while constructing the hair interaction frame. It evaluates and importance
+samples the upstream RTXCR Chiang BSDF using the material values authored in the
+Claire glTF. The sample uses the repository's
+`EnvironmentMaps/studio_small_09_1k.hdr` reference environment.
 
-The Burley view evaluates the upstream RTXCR diffusion-profile sampler over a
-procedural tangent-plane neighborhood and combines it with RTXCR volume
-coefficients for a compact transmission demonstration. It is intended to make
-the library functions and parameter response easy to validate; it is not a
-replacement for a production mesh-space BSSRDF integrator.
+Generated meshlet data is written under `.cache/scenes/rtxcr-assets`, not beside
+the licensed source asset, so running the sample does not dirty the asset
+submodule.
 
-## Scope
+This first reference-asset integration deliberately uses DOTS over the portable
+triangle acceleration-structure path. RTXCR hardware Linear-Swept Sphere
+intersection, animation/morph targets, and the full Claire body/skin scene remain
+future work.
 
-This integration covers the RTXCR Material Library. RTXCR Geometry Library
-features such as DOTS, Linear-Swept Spheres (LSS), morph-target animation, and
-hardware LSS intersection require additional scene import and Vulkan
-acceleration-structure work and are not enabled by this sample.
+## NVIDIA notice
+
+This software contains source code provided by NVIDIA Corporation.
+
+The NVIDIA sources and assets remain in their separately licensed submodules.
+Any redistribution must satisfy the applicable SDK and asset licenses, including
+the source-notice and application-distribution requirements.
+
+## Focused validation
+
+```powershell
+build\tests\Debug\MetallicSceneTests.exe `
+    --gtest_filter=SceneImport.RtxcrClairePonytailDots
+build\tests\Debug\MetallicRhiTests.exe --filter rtxcr
+```
+
+For a single-config build, omit the `Debug` path component.

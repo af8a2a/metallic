@@ -12,6 +12,14 @@
 #endif
 #include "../External/Rtxtf/STFSamplerState.hlsli"
 
+#ifndef METALLIC_HAS_RTXCR
+#define METALLIC_HAS_RTXCR 0
+#endif
+
+#if METALLIC_HAS_RTXCR
+#include <rtxcr/HairChiangBSDF.hlsli>
+#endif
+
 [[vk::binding(0, 0)]]
 RaytracingAccelerationStructure gScene;
 
@@ -65,6 +73,10 @@ struct PathTraceMaterial
     float4 glassParams;
     float4 attenuationColor;
     float4 diffuseTransmission;
+    float4 rtxcrHairBaseColor;
+    float4 rtxcrHairParams0;
+    float4 rtxcrHairParams1;
+    float4 rtxcrHairDiffuseTint;
     PathTraceTextureInfo baseColorTexture;
     PathTraceTextureInfo metallicRoughnessTexture;
     PathTraceTextureInfo normalTexture;
@@ -204,6 +216,46 @@ float rand(inout uint state)
     state = hash(state);
     return float(state & 0x00ffffffu) / 16777216.0;
 }
+
+bool isRtxcrHairMaterial(PathTraceMaterial material)
+{
+    return material.rtxcrHairBaseColor.w > 0.5;
+}
+
+#if METALLIC_HAS_RTXCR
+RTXCR_HairMaterialData makeRtxcrHairMaterial(PathTraceMaterial material)
+{
+    RTXCR_HairMaterialData hair;
+    hair.baseColor = saturate(material.rtxcrHairBaseColor.rgb);
+    hair.longitudinalRoughness = clamp(material.rtxcrHairParams0.x, 0.02, 1.0);
+    hair.azimuthalRoughness = clamp(material.rtxcrHairParams0.y, 0.02, 1.0);
+    hair.ior = clamp(material.rtxcrHairParams0.z, 1.01, 3.0);
+    hair.eta = 1.0 / hair.ior;
+    hair.fresnelApproximation = 1u;
+    hair.absorptionModel = RTXCR_HairAbsorptionModel_Normalized;
+    hair.melanin = saturate(material.rtxcrHairParams1.x);
+    hair.melaninRedness = saturate(material.rtxcrHairParams1.y);
+    hair.cuticleAngleInDegrees = clamp(material.rtxcrHairParams0.w, -10.0, 10.0);
+    return hair;
+}
+
+RTXCR_HairInteractionSurface makeRtxcrHairSurface(
+    float3 stableNormal,
+    float3 tangent,
+    float3 viewDirection)
+{
+    RTXCR_HairInteractionSurface surface;
+    surface.shadingNormal = safeNormalize(stableNormal, float3(0.0, 0.0, 1.0));
+    float3 tangentFallback = abs(surface.shadingNormal.y) < 0.99
+        ? cross(float3(0.0, 1.0, 0.0), surface.shadingNormal)
+        : cross(float3(1.0, 0.0, 0.0), surface.shadingNormal);
+    surface.tangent = safeNormalize(
+        tangent - surface.shadingNormal * dot(surface.shadingNormal, tangent),
+        tangentFallback);
+    surface.incidentRayDirection = safeNormalize(viewDirection, -surface.shadingNormal);
+    return surface;
+}
+#endif
 
 float4 rand4(inout uint state)
 {
@@ -1174,6 +1226,7 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
             deterministicGlassTextures,
             seed);
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
+        float3 stableShadingNormal = hit.normal;
         hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
         float occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
 
@@ -1195,6 +1248,87 @@ float3 pathTrace(Ray ray, RayCone rayCone, ScenePathTracePush push, inout uint s
 
         float3 emissive = max(material.emissive.rgb * srgbToLinear(emissiveSample.rgb), float3(0.0, 0.0, 0.0));
         radiance += throughput * emissive;
+
+#if METALLIC_HAS_RTXCR
+        if (isRtxcrHairMaterial(material)) {
+            RTXCR_HairMaterialData hairMaterial = makeRtxcrHairMaterial(material);
+            RTXCR_HairInteractionSurface hairSurface = makeRtxcrHairSurface(
+                stableShadingNormal,
+                hit.tangent.xyz,
+                -ray.direction);
+
+            EnvironmentLightSample hairLightSample;
+            if (sampleEnvironmentLight(push, seed, hairLightSample)) {
+                float approximateHairPdf = fallbackBsdfPdf(
+                    ray.direction,
+                    hit.normal,
+                    hairLightSample.direction,
+                    0.0,
+                    hairMaterial.longitudinalRoughness,
+                    0.5);
+                float lightMisWeight = environmentLightMisWeight(
+                    push,
+                    hairLightSample.pdfSolidAngle,
+                    approximateHairPdf);
+                float3 lightRadianceOverPdf =
+                    hairLightSample.radiance * lightMisWeight /
+                    max(hairLightSample.pdfSolidAngle, 0.000001);
+                float3 shadowOffsetNormal = dot(hairLightSample.direction, hit.geometryNormal) >= 0.0
+                    ? hit.geometryNormal
+                    : -hit.geometryNormal;
+                bool occluded = traceShadow(
+                    offsetRay(hit.position, shadowOffsetNormal),
+                    hairLightSample.direction,
+                    10000.0,
+                    push);
+                if (!occluded) {
+                    float3 hairBsdf = RTXCR_HairChiangBsdfEval(
+                        hairMaterial,
+                        hairSurface,
+                        hairLightSample.direction);
+                    radiance += throughput * max(hairBsdf, 0.0) * lightRadianceOverPdf;
+                }
+            }
+
+            float2 hairRandom[2] = {
+                float2(rand(seed), rand(seed)),
+                float2(rand(seed), rand(seed)),
+            };
+            float3 hairDirection;
+            float hairPdf;
+            float3 hairWeight;
+            RTXCR_HairLobeType hairLobe;
+            if (!RTXCR_SampleChiangBsdf(
+                    hairMaterial,
+                    hairSurface,
+                    hairRandom,
+                    hairDirection,
+                    hairPdf,
+                    hairWeight,
+                    hairLobe)) {
+                break;
+            }
+
+            ray.direction = safeNormalize(hairDirection, reflect(ray.direction, hit.normal));
+            throughput *= max(hairWeight, 0.0) / max(hairPdf, 0.000001);
+            previousBsdfPdf = max(hairPdf, 0.000001);
+            previousScatterDelta = false;
+            rayCone = expandRayConeAfterScatter(rayCone, previousBsdfPdf);
+            float3 offsetNormal = dot(ray.direction, hit.geometryNormal) >= 0.0
+                ? hit.geometryNormal
+                : -hit.geometryNormal;
+            ray.origin = offsetRay(hit.position, offsetNormal);
+
+            if (depth >= 2u) {
+                float continueProbability = min(luminanceMax(throughput) + 0.05, 0.92);
+                if (rand(seed) > continueProbability) {
+                    break;
+                }
+                throughput /= max(continueProbability, 0.001);
+            }
+            continue;
+        }
+#endif
 
         if (transmission > 0.01) {
             float eta = hit.frontFace ? 1.0 / max(ior, 1.001) : max(ior, 1.001);

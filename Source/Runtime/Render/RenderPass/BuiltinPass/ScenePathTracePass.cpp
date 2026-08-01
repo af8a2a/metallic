@@ -4,6 +4,14 @@
 
 #include "openpbr_data_constants.h"
 
+#ifndef METALLIC_HAS_RTXCR
+#define METALLIC_HAS_RTXCR 0
+#endif
+
+#ifndef METALLIC_RTXCR_SHADER_INCLUDE_DIR
+#define METALLIC_RTXCR_SHADER_INCLUDE_DIR ""
+#endif
+
 namespace metallic::render::builtin_pass {
 namespace {
 
@@ -615,13 +623,29 @@ public:
 
         ShaderCompileResult computeCompile;
         const char* capabilities[] = {"spvRayQueryKHR"};
+        const SlangMacroDefine macroDefines[] = {
+            SlangMacroDefine{
+                .name = "METALLIC_HAS_RTXCR",
+                .value = METALLIC_HAS_RTXCR ? "1" : "0",
+            },
+        };
+#if METALLIC_HAS_RTXCR
+        const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
+#endif
         result = compileSlangShaderToSpirv(
             SlangShaderDesc{
                 .moduleName = moduleName,
                 .entryPointName = entryPointName,
                 .searchPath = kTriangleShaderSearchPath,
+#if METALLIC_HAS_RTXCR
+                .additionalSearchPaths = additionalSearchPaths,
+                .additionalSearchPathCount =
+                    static_cast<uint32_t>(std::size(additionalSearchPaths)),
+#endif
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                .macroDefines = macroDefines,
+                .macroDefineCount = static_cast<uint32_t>(std::size(macroDefines)),
             },
             computeCompile);
         if (!result) {

@@ -1327,27 +1327,29 @@ public:
             return RhiTestResult::fail(message);
         }
         if (rtxcrSample.desc.id != "rtxcr-material-sample" ||
-            rtxcrSample.desc.name != "RTXCR Material Showcase" ||
+            rtxcrSample.desc.name != "RTXCR Claire Ponytail" ||
             rtxcrSample.desc.category != "RTXCR" ||
-            rtxcrSample.desc.loadSceneInEditor ||
+            !rtxcrSample.desc.loadSceneInEditor ||
             rtxcrSample.desc.graphPath !=
                 "Pipelines/Samples/rtxcr_material_showcase.metallic_graph.json" ||
-            rtxcrSample.desc.previewOutput != "RTXCR.color") {
+            rtxcrSample.desc.scenePath.find("ponyTail_15vtx.gltf") == std::string::npos ||
+            rtxcrSample.desc.previewOutput != "PathTrace.color") {
             return RhiTestResult::fail("RTXCR Sample metadata did not load as expected");
         }
-        const render::RenderGraphNode* rtxcr = rtxcrSample.graph.findNode("RTXCR");
+        const render::RenderGraphNode* rtxcr = rtxcrSample.graph.findNode("PathTrace");
         if (rtxcr == nullptr ||
-            rtxcr->type != "RtxcrMaterialSamplePass" ||
+            rtxcr->type != "ScenePathTracePass" ||
             !rtxcr->properties.is_object() ||
-            rtxcr->properties.value("view", "") != "overview" ||
-            rtxcr->properties.value("hairMelanin", 0.0f) != 0.55f ||
-            rtxcr->properties.value("sssScale", 0.0f) != 1.0f) {
-            return RhiTestResult::fail("RTXCR Sample did not preserve material defaults");
+            rtxcr->properties.value("samples", 0) != 4 ||
+            rtxcr->properties.value("maxDepth", 0) != 4 ||
+            rtxcr->properties.value("path", "").find("ponyTail_15vtx.gltf") ==
+                std::string::npos) {
+            return RhiTestResult::fail("RTXCR Sample did not preserve Claire groom defaults");
         }
         if (!rtxcrSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
         }
-        if (rtxcrSample.graph.firstOutputName() != "RTXCR.color") {
+        if (rtxcrSample.graph.firstOutputName() != "PathTrace.color") {
             return RhiTestResult::fail("RTXCR Sample graph first output changed");
         }
 
@@ -3829,6 +3831,8 @@ public:
     }
 };
 
+#if defined(METALLIC_HAS_RTXCR_GEOMETRY) && METALLIC_HAS_RTXCR_GEOMETRY && \
+    defined(METALLIC_HAS_RTXCR_ASSETS) && METALLIC_HAS_RTXCR_ASSETS
 class RenderGraphRtxcrMaterialPreviewTest : public RhiTest {
 public:
     RenderGraphRtxcrMaterialPreviewTest()
@@ -3876,6 +3880,7 @@ public:
         return RhiTestResult::pass("wrote " + outputPath.string());
     }
 };
+#endif
 #endif
 
 class RenderGraphRtxdiShaderCompileTest : public RhiTest {
@@ -5957,7 +5962,10 @@ METALLIC_REGISTER_RHI_TEST(SlangShaderDiskCacheTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
 #if defined(METALLIC_HAS_RTXCR) && METALLIC_HAS_RTXCR
 METALLIC_REGISTER_RHI_TEST(RenderGraphRtxcrMaterialShaderCompileTest);
+#if defined(METALLIC_HAS_RTXCR_GEOMETRY) && METALLIC_HAS_RTXCR_GEOMETRY && \
+    defined(METALLIC_HAS_RTXCR_ASSETS) && METALLIC_HAS_RTXCR_ASSETS
 METALLIC_REGISTER_RHI_TEST(RenderGraphRtxcrMaterialPreviewTest);
+#endif
 #endif
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetShaderCompileTest);

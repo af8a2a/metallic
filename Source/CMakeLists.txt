@@ -112,6 +112,30 @@ else()
     )
 endif()
 
+if(METALLIC_RTXCR_GEOMETRY_ROOT)
+    target_compile_definitions(MetallicRuntimeRender PUBLIC
+        METALLIC_HAS_RTXCR_GEOMETRY=1
+        METALLIC_RTXCR_GEOMETRY_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_GEOMETRY_SHADER_INCLUDE_DIR}"
+    )
+else()
+    target_compile_definitions(MetallicRuntimeRender PUBLIC
+        METALLIC_HAS_RTXCR_GEOMETRY=0
+        METALLIC_RTXCR_GEOMETRY_SHADER_INCLUDE_DIR=""
+    )
+endif()
+
+if(METALLIC_RTXCR_ASSETS_ROOT)
+    target_compile_definitions(MetallicRuntimeRender PUBLIC
+        METALLIC_HAS_RTXCR_ASSETS=1
+        METALLIC_RTXCR_ASSETS_ROOT="${METALLIC_RTXCR_ASSETS_ROOT}"
+    )
+else()
+    target_compile_definitions(MetallicRuntimeRender PUBLIC
+        METALLIC_HAS_RTXCR_ASSETS=0
+        METALLIC_RTXCR_ASSETS_ROOT=""
+    )
+endif()
+
 if(WIN32)
     target_compile_definitions(MetallicRuntimeRender PRIVATE NOMINMAX)
     target_compile_options(MetallicRuntimeRender PRIVATE /EHsc)
@@ -137,6 +161,24 @@ target_include_directories(MetallicRuntimeScene PUBLIC
 target_include_directories(MetallicRuntimeScene SYSTEM PRIVATE
     "${CMAKE_SOURCE_DIR}/External/meshoptimizer/demo"
     "${CMAKE_SOURCE_DIR}/External/stb"
+)
+
+if(METALLIC_RTXCR_GEOMETRY_ROOT)
+    target_include_directories(MetallicRuntimeScene SYSTEM PRIVATE
+        "${METALLIC_RTXCR_GEOMETRY_ROOT}/include"
+    )
+    target_compile_definitions(MetallicRuntimeScene PUBLIC
+        METALLIC_HAS_RTXCR_GEOMETRY=1
+    )
+else()
+    target_compile_definitions(MetallicRuntimeScene PUBLIC
+        METALLIC_HAS_RTXCR_GEOMETRY=0
+    )
+endif()
+
+target_compile_definitions(MetallicRuntimeScene PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    METALLIC_RTXCR_ASSETS_ROOT="${METALLIC_RTXCR_ASSETS_ROOT}"
 )
 
 target_link_libraries(MetallicRuntimeScene PUBLIC

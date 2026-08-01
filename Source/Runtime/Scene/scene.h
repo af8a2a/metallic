@@ -205,6 +205,16 @@ struct RenderMaterial {
     float3 attenuationColor{1.0f, 1.0f, 1.0f};
     float diffuseTransmissionFactor = 0.0f;
     float3 diffuseTransmissionColor{1.0f, 1.0f, 1.0f};
+    bool rtxcrHair = false;
+    float3 rtxcrHairBaseColor{0.2f, 0.2f, 0.2f};
+    float rtxcrHairMelanin = 1.0f;
+    float rtxcrHairMelaninRedness = 0.0f;
+    float rtxcrHairLongitudinalRoughness = 0.3f;
+    float rtxcrHairAzimuthalRoughness = 0.3f;
+    float rtxcrHairIor = 1.55f;
+    float rtxcrHairCuticleAngleDegrees = 3.0f;
+    float rtxcrHairDiffuseReflectionWeight = 0.0f;
+    float3 rtxcrHairDiffuseReflectionTint{0.0f, 0.0f, 0.0f};
     RenderTextureInfo baseColorTexture;
     RenderTextureInfo metallicRoughnessTexture;
     RenderTextureInfo normalTexture;

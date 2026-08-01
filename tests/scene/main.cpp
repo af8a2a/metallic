@@ -6,7 +6,7 @@
 #include "Runtime/Task/TaskSystem.h"
 #include "meshoptimizer.h"
 
-#include <nlohmann/json.hpp>
+#include "json.hpp"
 
 #include <gtest/gtest.h>
 
@@ -2536,6 +2536,42 @@ void testAsyncSceneLoad(const std::filesystem::path& directory)
 }
 
 } // namespace
+
+#if defined(METALLIC_HAS_RTXCR_GEOMETRY) && METALLIC_HAS_RTXCR_GEOMETRY
+TEST(SceneImport, RtxcrClairePonytailDots)
+{
+    const std::filesystem::path path =
+        std::filesystem::path(PROJECT_SOURCE_DIR) /
+        "External/RTXCR-Assets/Claire/ponyTail_15vtx.gltf";
+    if (!std::filesystem::exists(path)) {
+        GTEST_SKIP() << "RTXCR-Assets submodule is not initialized";
+    }
+
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.load(path)) << scene.lastLoadResult().error;
+    ASSERT_EQ(scene.renderPrimitives().size(), 1u);
+    ASSERT_EQ(scene.materials().size(), 1u);
+
+    const metallic::scene::RenderPrimitive& primitive = scene.renderPrimitives().front();
+    EXPECT_EQ(primitive.mode, 4);
+    EXPECT_EQ(primitive.vertexCount, 180648u);
+    EXPECT_EQ(primitive.indexCount, 180648u);
+    EXPECT_EQ(primitive.triangleCount, 60216u);
+    EXPECT_TRUE(primitive.hasAuthoredNormals);
+    EXPECT_TRUE(primitive.hasAuthoredTangents);
+    EXPECT_TRUE(primitive.localBounds.valid);
+    EXPECT_NE(
+        scene.lastLoadResult().meshletCachePath.string().find(".cache"),
+        std::string::npos);
+
+    const metallic::scene::RenderMaterial& material = scene.materials().front();
+    EXPECT_TRUE(material.rtxcrHair);
+    EXPECT_TRUE(nearlyEqual(material.rtxcrHairMelanin, 0.98f));
+    EXPECT_TRUE(nearlyEqual(material.rtxcrHairLongitudinalRoughness, 0.15f));
+    EXPECT_TRUE(nearlyEqual(material.rtxcrHairAzimuthalRoughness, 0.2f));
+    EXPECT_TRUE(nearlyEqual(material.rtxcrHairIor, 1.55f));
+}
+#endif
 
 TEST(SceneImport, FullScene)
 {

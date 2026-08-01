@@ -1,33 +1,39 @@
 {
     "edges": [],
-    "name": "RTXCRMaterialShowcase",
+    "name": "RTXCRClairePonytail",
     "nodes": [
         {
             "id": 1,
-            "name": "RTXCR",
+            "name": "PathTrace",
             "position": {
                 "x": 320.0,
                 "y": 240.0
             },
             "properties": {
-                "exposure": 1.0,
-                "hairAzimuthalRoughness": 0.35,
-                "hairCuticleAngleDegrees": 3.0,
-                "hairIor": 1.55,
-                "hairLongitudinalRoughness": 0.28,
-                "hairMelanin": 0.55,
-                "hairMelaninRedness": 0.35,
-                "lightAzimuthDegrees": -35.0,
-                "sssAnisotropy": 0.0,
-                "sssMaxSampleRadius": 0.12,
-                "sssScale": 1.0,
-                "view": "overview"
+                "accumulate": true,
+                "bsdf": "standard",
+                "camera": {
+                    "farPlaneScale": 100.0,
+                    "fovDegrees": 34.0,
+                    "nearPlaneScale": 0.001,
+                    "orbitPitchDegrees": -4.0,
+                    "orbitYawDegrees": 10.0
+                },
+                "environment": {
+                    "enabled": true,
+                    "intensity": 1.5,
+                    "rotationDegrees": 25.0,
+                    "visible": true
+                },
+                "flipBitangent": false,
+                "maxDepth": 4,
+                "samples": 4
             },
-            "type": "RtxcrMaterialSamplePass"
+            "type": "ScenePathTracePass"
         }
     ],
     "outputs": [
-        "RTXCR.color"
+        "PathTrace.color"
     ],
     "version": 1
 }

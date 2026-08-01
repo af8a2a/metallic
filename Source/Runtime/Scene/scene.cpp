@@ -15,6 +15,22 @@
 #include "json.hpp"
 #include "tiny_gltf.h"
 
+#ifndef METALLIC_HAS_RTXCR_GEOMETRY
+#define METALLIC_HAS_RTXCR_GEOMETRY 0
+#endif
+
+#ifndef PROJECT_SOURCE_DIR
+#define PROJECT_SOURCE_DIR "."
+#endif
+
+#ifndef METALLIC_RTXCR_ASSETS_ROOT
+#define METALLIC_RTXCR_ASSETS_ROOT ""
+#endif
+
+#if METALLIC_HAS_RTXCR_GEOMETRY
+#include "CurveTessellation.h"
+#endif
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -48,10 +64,12 @@ namespace {
 
 constexpr const char* kExtensionLightsPunctual = "KHR_lights_punctual";
 constexpr const char* kExtensionMaterialsDiffuseTransmission = "KHR_materials_diffuse_transmission";
+constexpr const char* kExtensionMaterialsClearcoat = "KHR_materials_clearcoat";
 constexpr const char* kExtensionMaterialsEmissiveStrength = "KHR_materials_emissive_strength";
 constexpr const char* kExtensionMaterialsIor = "KHR_materials_ior";
 constexpr const char* kExtensionMaterialsTransmission = "KHR_materials_transmission";
 constexpr const char* kExtensionMaterialsVolume = "KHR_materials_volume";
+constexpr const char* kExtensionMaterialsRtxcrHair = "NV_materials_hair";
 constexpr const char* kExtensionNodeVisibility = "KHR_node_visibility";
 constexpr const char* kExtensionTextureTransform = "KHR_texture_transform";
 constexpr double kFallbackCameraYFov = 0.7853981633974483;
@@ -231,6 +249,25 @@ const std::unordered_set<std::string>& supportedRequiredExtensions()
         kExtensionTextureTransform,
     };
     return kExtensions;
+}
+
+bool toleratesUnusedRtxcrRequiredExtension(
+    const tinygltf::Model& model,
+    const std::string& extension)
+{
+    if (extension != kExtensionMaterialsClearcoat) {
+        return false;
+    }
+
+    bool hasRtxcrHairMaterial = false;
+    for (const tinygltf::Material& material : model.materials) {
+        if (material.extensions.contains(kExtensionMaterialsClearcoat)) {
+            return false;
+        }
+        hasRtxcrHairMaterial = hasRtxcrHairMaterial ||
+            material.extensions.contains(kExtensionMaterialsRtxcrHair);
+    }
+    return hasRtxcrHairMaterial;
 }
 
 std::string lowerExtension(const std::filesystem::path& path)
@@ -557,6 +594,38 @@ std::vector<float2> readFloat2Accessor(const tinygltf::Model& model, const tinyg
     return values;
 }
 
+std::vector<float> readFloatAccessor(const tinygltf::Model& model, const tinygltf::Accessor& accessor)
+{
+    std::vector<float> values;
+    if (accessor.type != TINYGLTF_TYPE_SCALAR ||
+        accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
+        return values;
+    }
+
+    const tinygltf::BufferView* bufferView = nullptr;
+    int stride = 0;
+    const uint8_t* data = accessorData(model, accessor, bufferView, stride);
+    if (data == nullptr || bufferView == nullptr) {
+        return values;
+    }
+
+    values.reserve(accessor.count);
+    const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView->buffer)];
+    for (size_t index = 0; index < accessor.count; ++index) {
+        const size_t elementOffset = static_cast<size_t>(stride) * index;
+        if (bufferView->byteOffset + accessor.byteOffset + elementOffset + sizeof(float) >
+            buffer.data.size()) {
+            values.clear();
+            return values;
+        }
+
+        float value = 0.0f;
+        std::memcpy(&value, data + elementOffset, sizeof(value));
+        values.push_back(value);
+    }
+    return values;
+}
+
 std::vector<float4> readFloat4Accessor(const tinygltf::Model& model, const tinygltf::Accessor& accessor)
 {
     std::vector<float4> values;
@@ -647,6 +716,117 @@ std::vector<uint32_t> readIndexAccessor(const tinygltf::Model& model, const tiny
     }
     return indices;
 }
+
+#if METALLIC_HAS_RTXCR_GEOMETRY
+float3 unpackRtxcrSnorm8(uint32_t packed)
+{
+    const auto component = [packed](uint32_t shift) {
+        return static_cast<float>(static_cast<int8_t>((packed >> shift) & 0xffu)) / 127.0f;
+    };
+    return normalizedOr(
+        float3(component(0), component(8), component(16)),
+        float3(0.0f, 1.0f, 0.0f));
+}
+
+bool convertRtxcrLinePrimitiveToDots(
+    RenderPrimitive& primitive,
+    const std::vector<float>& radii)
+{
+    if (primitive.mode != TINYGLTF_MODE_LINE ||
+        primitive.positions.size() != radii.size() ||
+        primitive.indices.size() < 2) {
+        return false;
+    }
+
+    std::vector<rtxcr::geometry::LineSegment> lineSegments;
+    lineSegments.reserve(primitive.indices.size() / 2);
+    for (size_t index = 0; index + 1 < primitive.indices.size(); index += 2) {
+        const uint32_t vertexIndices[2] = {
+            primitive.indices[index],
+            primitive.indices[index + 1],
+        };
+        if (vertexIndices[0] >= primitive.positions.size() ||
+            vertexIndices[1] >= primitive.positions.size()) {
+            continue;
+        }
+        const float3 delta = primitive.positions[vertexIndices[1]] - primitive.positions[vertexIndices[0]];
+        if (dot(delta, delta) <= 0.000000000001f) {
+            continue;
+        }
+
+        rtxcr::geometry::LineSegment segment;
+        for (uint32_t endpoint = 0; endpoint < 2; ++endpoint) {
+            const uint32_t vertexIndex = vertexIndices[endpoint];
+            const float3& position = primitive.positions[vertexIndex];
+            segment.vertices[endpoint].position[0] = position.x;
+            segment.vertices[endpoint].position[1] = position.y;
+            segment.vertices[endpoint].position[2] = position.z;
+            segment.vertices[endpoint].radius = std::max(radii[vertexIndex], 0.001f);
+            if (vertexIndex < primitive.texcoords0.size()) {
+                segment.vertices[endpoint].texCoord[0] = primitive.texcoords0[vertexIndex].x;
+                segment.vertices[endpoint].texCoord[1] = primitive.texcoords0[vertexIndex].y;
+            }
+        }
+        lineSegments.push_back(segment);
+    }
+
+    constexpr size_t kDotsVerticesPerSegment = 12;
+    if (lineSegments.empty() ||
+        lineSegments.size() > std::numeric_limits<uint32_t>::max() / kDotsVerticesPerSegment) {
+        return false;
+    }
+
+    const size_t vertexCount = lineSegments.size() * kDotsVerticesPerSegment;
+    std::vector<uint32_t> indices(vertexCount);
+    std::vector<float> positions(vertexCount * 3u);
+    std::vector<uint32_t> normals(vertexCount);
+    std::vector<uint32_t> tangents(vertexCount);
+    std::vector<float> texcoords(vertexCount * 2u);
+    std::vector<float> expandedRadii(vertexCount);
+    rtxcr::geometry::convertToDisjointOrthogonalTriangleStrips(
+        lineSegments,
+        static_cast<uint32_t>(lineSegments.size()),
+        indices.data(),
+        positions.data(),
+        normals.data(),
+        tangents.data(),
+        texcoords.data(),
+        expandedRadii.data());
+
+    primitive.positions.clear();
+    primitive.normals.clear();
+    primitive.tangents.clear();
+    primitive.texcoords0.clear();
+    primitive.positions.reserve(vertexCount);
+    primitive.normals.reserve(vertexCount);
+    primitive.tangents.reserve(vertexCount);
+    primitive.texcoords0.reserve(vertexCount);
+    primitive.localBounds.reset();
+    for (size_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex) {
+        const float3 position(
+            positions[vertexIndex * 3u],
+            positions[vertexIndex * 3u + 1u],
+            positions[vertexIndex * 3u + 2u]);
+        primitive.positions.push_back(position);
+        primitive.localBounds.include(position);
+        primitive.normals.push_back(unpackRtxcrSnorm8(normals[vertexIndex]));
+        const float3 tangent = unpackRtxcrSnorm8(tangents[vertexIndex]);
+        primitive.tangents.emplace_back(tangent.x, tangent.y, tangent.z, 1.0f);
+        primitive.texcoords0.emplace_back(
+            expandedRadii[vertexIndex],
+            texcoords[vertexIndex * 2u + 1u]);
+    }
+
+    primitive.indices = std::move(indices);
+    primitive.mode = TINYGLTF_MODE_TRIANGLES;
+    primitive.vertexCount = primitive.positions.size();
+    primitive.indexCount = primitive.indices.size();
+    primitive.triangleCount = primitive.indices.size() / 3u;
+    primitive.hasAuthoredNormals = true;
+    primitive.hasAuthoredTangents = true;
+    return true;
+}
+#endif
 
 bool readFloatArray2(const tinygltf::Value& value, const char* key, float out[2])
 {
@@ -1353,6 +1533,34 @@ bool buildMeshletLods(RenderPrimitive& primitive)
 
 std::filesystem::path meshletCachePathFor(const std::filesystem::path& sourcePath)
 {
+#if METALLIC_HAS_RTXCR_GEOMETRY
+    if (std::string_view(METALLIC_RTXCR_ASSETS_ROOT).size() > 0) {
+        std::error_code canonicalError;
+        const std::filesystem::path assetsRoot =
+            std::filesystem::weakly_canonical(METALLIC_RTXCR_ASSETS_ROOT, canonicalError);
+        const std::filesystem::path canonicalSource = canonicalError
+            ? std::filesystem::path{}
+            : std::filesystem::weakly_canonical(sourcePath, canonicalError);
+        if (!canonicalError) {
+            const std::filesystem::path relativeSource = canonicalSource.lexically_relative(assetsRoot);
+            bool isAssetPath = !relativeSource.empty() && !relativeSource.is_absolute();
+            for (const std::filesystem::path& component : relativeSource) {
+                if (component == "..") {
+                    isAssetPath = false;
+                    break;
+                }
+            }
+            if (isAssetPath) {
+                std::filesystem::path cachePath =
+                    std::filesystem::path(PROJECT_SOURCE_DIR) /
+                    ".cache/scenes/rtxcr-assets" /
+                    relativeSource;
+                cachePath += kMeshletCacheSuffix;
+                return cachePath;
+            }
+        }
+    }
+#endif
     std::filesystem::path cachePath = sourcePath;
     cachePath += kMeshletCacheSuffix;
     return cachePath;
@@ -2051,6 +2259,16 @@ bool saveMeshletCache(
 {
     reason.clear();
 
+    std::error_code directoryError;
+    const std::filesystem::path cacheDirectory = cachePath.parent_path();
+    if (!cacheDirectory.empty()) {
+        std::filesystem::create_directories(cacheDirectory, directoryError);
+        if (directoryError) {
+            reason = "cache directory cannot be created: " + directoryError.message();
+            return false;
+        }
+    }
+
     if (primitives.size() > std::numeric_limits<uint32_t>::max()) {
         reason = "too many render primitives";
         return false;
@@ -2258,14 +2476,16 @@ void appendWarning(std::string& warning, std::string message)
 bool validateRequiredExtensions(const tinygltf::Model& model, LoadResult& loadResult)
 {
     for (const std::string& extension : model.extensionsRequired) {
-        if (!supportedRequiredExtensions().contains(extension)) {
+        if (!supportedRequiredExtensions().contains(extension) &&
+            !toleratesUnusedRtxcrRequiredExtension(model, extension)) {
             loadResult.error = "Required extension unsupported: " + extension;
             return false;
         }
     }
 
     for (const std::string& extension : model.extensionsUsed) {
-        if (!supportedRequiredExtensions().contains(extension)) {
+        if (!supportedRequiredExtensions().contains(extension) &&
+            !toleratesUnusedRtxcrRequiredExtension(model, extension)) {
             appendWarning(loadResult.warning, "Used extension ignored: " + extension);
         }
     }
@@ -2577,6 +2797,57 @@ bool Scene::loadInternal(
                 "diffuseTransmissionColorTexture",
                 material.diffuseTransmissionColorTexture);
         }
+
+        const auto rtxcrHairExtension = gltfMaterial.extensions.find(kExtensionMaterialsRtxcrHair);
+        if (rtxcrHairExtension != gltfMaterial.extensions.end()) {
+            const tinygltf::Value& hair = rtxcrHairExtension->second;
+            material.rtxcrHair = true;
+            readVec3Value(hair, "baseColor", material.rtxcrHairBaseColor);
+            material.rtxcrHairMelanin = std::clamp(
+                readFloatValue(hair, "melanin", material.rtxcrHairMelanin),
+                0.0f,
+                1.0f);
+            material.rtxcrHairMelaninRedness = std::clamp(
+                readFloatValue(hair, "melaninRedness", material.rtxcrHairMelaninRedness),
+                0.0f,
+                1.0f);
+            material.rtxcrHairLongitudinalRoughness = std::clamp(
+                readFloatValue(
+                    hair,
+                    "longitudinalRoughness",
+                    material.rtxcrHairLongitudinalRoughness),
+                0.02f,
+                1.0f);
+            material.rtxcrHairAzimuthalRoughness = std::clamp(
+                readFloatValue(
+                    hair,
+                    "azimuthalRoughness",
+                    material.rtxcrHairAzimuthalRoughness),
+                0.02f,
+                1.0f);
+            material.rtxcrHairIor = std::clamp(
+                readFloatValue(hair, "ior", material.rtxcrHairIor),
+                1.01f,
+                3.0f);
+            material.rtxcrHairCuticleAngleDegrees = std::clamp(
+                readFloatValue(
+                    hair,
+                    "cuticleAngle",
+                    material.rtxcrHairCuticleAngleDegrees),
+                -10.0f,
+                10.0f);
+            material.rtxcrHairDiffuseReflectionWeight = std::clamp(
+                readFloatValue(
+                    hair,
+                    "diffuseReflectionWeight",
+                    material.rtxcrHairDiffuseReflectionWeight),
+                0.0f,
+                1.0f);
+            readVec3Value(
+                hair,
+                "diffuseReflectionTint",
+                material.rtxcrHairDiffuseReflectionTint);
+        }
         materials_.push_back(material);
     }
     logSceneLoadStep("asset metadata, images, textures, and materials", metadataBegin);
@@ -2708,6 +2979,18 @@ bool Scene::loadInternal(
                     }
                 }
 
+                std::vector<float> rtxcrCurveRadii;
+                const auto radiusAccessorIter = gltfPrimitive.attributes.find("_RADIUS");
+                if (radiusAccessorIter != gltfPrimitive.attributes.end() &&
+                    validIndex(radiusAccessorIter->second, model.accessors.size())) {
+                    rtxcrCurveRadii = readFloatAccessor(
+                        model,
+                        model.accessors[static_cast<size_t>(radiusAccessorIter->second)]);
+                    if (rtxcrCurveRadii.size() != primitive.positions.size()) {
+                        rtxcrCurveRadii.clear();
+                    }
+                }
+
                 if (validIndex(gltfPrimitive.indices, model.accessors.size())) {
                     const tinygltf::Accessor& indexAccessor =
                         model.accessors[static_cast<size_t>(gltfPrimitive.indices)];
@@ -2720,7 +3003,27 @@ bool Scene::loadInternal(
                         primitive.indices.push_back(static_cast<uint32_t>(index));
                     }
                 }
-                primitive.triangleCount = triangleCountForPrimitive(primitive.mode, primitive.indexCount);
+                bool convertedRtxcrCurve = false;
+#if METALLIC_HAS_RTXCR_GEOMETRY
+                if (validIndex(primitive.materialIndex, materials_.size()) &&
+                    materials_[static_cast<size_t>(primitive.materialIndex)].rtxcrHair &&
+                    !rtxcrCurveRadii.empty()) {
+                    convertedRtxcrCurve = convertRtxcrLinePrimitiveToDots(
+                        primitive,
+                        rtxcrCurveRadii);
+                }
+#endif
+                if (!convertedRtxcrCurve) {
+                    primitive.triangleCount = triangleCountForPrimitive(
+                        primitive.mode,
+                        primitive.indexCount);
+                    if (primitive.mode == TINYGLTF_MODE_LINE && !rtxcrCurveRadii.empty()) {
+                        appendWarning(
+                            lastLoadResult_.warning,
+                            "RTXCR curve primitive '" + primitive.name +
+                                "' could not be converted to DOTS geometry");
+                    }
+                }
                 if (primitive.tangents.empty()) {
                     generateTangents(primitive);
                 }

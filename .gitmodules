@@ -41,3 +41,12 @@
 [submodule "External/ImGuizmo"]
 	path = External/ImGuizmo
 	url = https://github.com/CedricGuillemet/ImGuizmo.git
+[submodule "External/RTXCR-Material"]
+	path = External/RTXCR-Material
+	url = https://github.com/NVIDIA-RTX/RTXCR-Material-Library.git
+[submodule "External/RTXCR-Assets"]
+	path = External/RTXCR-Assets
+	url = https://github.com/NVIDIA-RTX/RTXCR-Assets.git
+[submodule "External/RTXCR-Geometry"]
+	path = External/RTXCR-Geometry
+	url = https://github.com/NVIDIA-RTX/RTXCR-Geometry-Library.git

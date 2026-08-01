@@ -8,6 +8,10 @@
 #define PROJECT_SOURCE_DIR "."
 #endif
 
+#ifndef METALLIC_RTXCR_ASSETS_ROOT
+#define METALLIC_RTXCR_ASSETS_ROOT ""
+#endif
+
 namespace metallic::render {
 namespace {
 
@@ -207,20 +211,35 @@ public:
 class RtxcrMaterialSample final : public RenderSample {
 public:
     std::string_view id() const override { return "rtxcr-material-sample"; }
-    std::string_view name() const override { return "RTXCR Material Showcase"; }
+    std::string_view name() const override { return "RTXCR Claire Ponytail"; }
     std::string_view category() const override { return "RTXCR"; }
     std::string_view description() const override
     {
-        return "Procedural comparison of RTXCR Chiang hair, far-field hair, and Burley subsurface scattering material models.";
+        return "NVIDIA Claire reference groom rendered with RTXCR DOTS geometry and the Chiang hair BSDF.";
     }
-    std::string scenePath() const override { return "Asset/meet_mat.glb"; }
-    bool loadSceneInEditor() const override { return false; }
+    std::string scenePath() const override
+    {
+        return std::string(METALLIC_RTXCR_ASSETS_ROOT) + "/Claire/ponyTail_15vtx.gltf";
+    }
+    bool loadSceneInEditor() const override { return true; }
     std::string graphPath() const override
     {
         return "Pipelines/Samples/rtxcr_material_showcase.metallic_graph.json";
     }
-    std::vector<std::string> scenePathTargets() const override { return {}; }
-    std::string previewOutput() const override { return "RTXCR.color"; }
+    std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
+    RenderSampleEnvironmentDesc environment() const override
+    {
+        return RenderSampleEnvironmentDesc{
+            .enabled = true,
+            .path = std::string(METALLIC_RTXCR_ASSETS_ROOT) +
+                "/EnvironmentMaps/studio_small_09_1k.hdr",
+            .intensity = 1.5f,
+            .rotationDegrees = 25.0f,
+            .visible = true,
+        };
+    }
+    std::vector<std::string> environmentTargets() const override { return {"PathTrace"}; }
+    std::string previewOutput() const override { return "PathTrace.color"; }
 };
 
 class MaterialVisualizationABeautifulGameSample final : public RenderSample {
