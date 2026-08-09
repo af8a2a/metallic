@@ -20,6 +20,7 @@ public:
     void clear();
     bool save(std::string& message);
     bool revert(std::string& message);
+    bool setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
     bool setEnvironment(EnvironmentSettings environment);
 

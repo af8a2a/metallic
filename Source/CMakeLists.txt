@@ -154,6 +154,7 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/MeshletStreamAsset.cpp
     Runtime/Scene/Scene.cpp
     Runtime/Scene/SceneDocument.cpp
+    Runtime/Scene/SceneGraph.cpp
     Runtime/Scene/SceneLoader.cpp
     Runtime/Scene/ScenePicker.cpp
     Runtime/Scene/TinyGltfImpl.cpp
@@ -187,6 +188,7 @@ target_compile_definitions(MetallicRuntimeScene PRIVATE
 )
 
 target_link_libraries(MetallicRuntimeScene PUBLIC
+    EnTT::EnTT
     MetallicRuntimeTask
     MathLib
     meshoptimizer

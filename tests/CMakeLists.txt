@@ -28,6 +28,7 @@ set_tests_properties(MetallicTaskTests PROPERTIES
 
 add_executable(MetallicSceneTests
     scene/Main.cpp
+    scene/SceneGraphTests.cpp
 )
 
 target_include_directories(MetallicSceneTests PRIVATE

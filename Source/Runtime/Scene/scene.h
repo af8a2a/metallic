@@ -8,6 +8,7 @@
 #include <vector>
 #include "ml.h"
 #include "Runtime/Scene/SceneLoad.h"
+#include "Runtime/Scene/SceneGraph.h"
 
 namespace metallic::scene {
 
@@ -109,6 +110,7 @@ struct MeshletLodLevel {
     float minMaxQuadricError = 0.0f;
 };
 
+// Read-only compatibility projection of the ECS-owned scene object data.
 struct SceneNode {
     std::string name;
     int32_t parent = kInvalidSceneIndex;
@@ -179,6 +181,7 @@ struct RenderTextureInfo {
 };
 
 struct RenderNode {
+    SceneEntity object = kNullSceneEntity;
     int32_t nodeIndex = kInvalidSceneIndex;
     int32_t renderPrimitiveIndex = kInvalidSceneIndex;
     int32_t materialIndex = kInvalidSceneIndex;
@@ -230,6 +233,7 @@ bool buildMeshletsForPrimitive(RenderPrimitive& primitive);
 bool buildStreamMeshletsForPrimitive(RenderPrimitive& primitive);
 
 struct RenderCamera {
+    SceneEntity object = kNullSceneEntity;
     std::string name;
     int32_t nodeIndex = kInvalidSceneIndex;
     int32_t cameraIndex = kInvalidSceneIndex;
@@ -247,6 +251,7 @@ struct RenderCamera {
 };
 
 struct RenderLight {
+    SceneEntity object = kNullSceneEntity;
     std::string name;
     std::string type;
     int32_t nodeIndex = kInvalidSceneIndex;
@@ -261,6 +266,12 @@ struct RenderLight {
 
 class Scene {
 public:
+    Scene() = default;
+    Scene(const Scene&) = delete;
+    Scene& operator=(const Scene&) = delete;
+    Scene(Scene&&) noexcept = default;
+    Scene& operator=(Scene&&) noexcept = default;
+
     bool load(const std::filesystem::path& filename);
     bool load(
         const std::filesystem::path& filename,
@@ -272,6 +283,7 @@ public:
     bool buildDeferredMeshlet(size_t primitiveIndex);
     bool finalizeDeferredMeshlets();
     void clear();
+    bool setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
     bool setImageDecodeResult(
         size_t imageIndex,
@@ -286,6 +298,8 @@ public:
     const SceneAssetInfo& assetInfo() const { return assetInfo_; }
     const SceneStats& stats() const { return stats_; }
     const Bounds& bounds() const { return bounds_; }
+    const SceneGraph& sceneGraph() const { return sceneGraph_; }
+    ConstSceneObject objectForNode(int32_t nodeIndex) const;
     const std::vector<int32_t>& rootNodeIndices() const { return rootNodeIndices_; }
     const std::vector<SceneNode>& nodes() const { return nodes_; }
     const std::vector<SceneMesh>& meshes() const { return meshes_; }
@@ -296,7 +310,7 @@ public:
     const std::vector<RenderMaterial>& materials() const { return materials_; }
     const std::vector<RenderCamera>& cameras() const { return cameras_; }
     const std::vector<RenderLight>& lights() const { return lights_; }
-    uint64_t transformRevision() const { return transformRevision_; }
+    uint64_t transformRevision() const { return sceneGraph_.transformRevision(); }
 
 private:
     bool loadInternal(
@@ -305,6 +319,7 @@ private:
         bool deferMeshletBuild);
     void clearParsedData();
     void refreshTransforms();
+    void syncSceneNodeProjection();
 
     LoadResult lastLoadResult_;
     std::filesystem::path filename_;
@@ -313,6 +328,7 @@ private:
     SceneAssetInfo assetInfo_;
     SceneStats stats_;
     Bounds bounds_;
+    SceneGraph sceneGraph_;
     std::vector<int32_t> rootNodeIndices_;
     std::vector<SceneNode> nodes_;
     std::vector<SceneMesh> meshes_;
@@ -323,7 +339,6 @@ private:
     std::vector<RenderMaterial> materials_;
     std::vector<RenderCamera> cameras_;
     std::vector<RenderLight> lights_;
-    uint64_t transformRevision_ = 0;
     bool deferredMeshletBuild_ = false;
 };
 

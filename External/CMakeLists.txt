@@ -28,6 +28,16 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/stdexec/include/stdexec/execution.hpp")
     )
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/entt/entt/entity/registry.hpp")
+    add_library(metallic_entt INTERFACE)
+    add_library(EnTT::EnTT ALIAS metallic_entt)
+    target_include_directories(metallic_entt SYSTEM INTERFACE
+        "${CMAKE_CURRENT_SOURCE_DIR}/entt"
+    )
+else()
+    find_package(EnTT CONFIG REQUIRED)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/volk/volk.c")
     add_library(volk STATIC
         volk/volk.c

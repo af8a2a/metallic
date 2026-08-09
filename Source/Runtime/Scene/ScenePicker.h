@@ -13,6 +13,7 @@ struct ScenePickRay {
 };
 
 struct ScenePickResult {
+    SceneEntity object = kNullSceneEntity;
     int32_t nodeIndex = kInvalidSceneIndex;
     int32_t renderNodeIndex = kInvalidSceneIndex;
     int32_t renderPrimitiveIndex = kInvalidSceneIndex;

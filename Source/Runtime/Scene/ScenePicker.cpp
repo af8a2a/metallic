@@ -200,7 +200,9 @@ struct ScenePicker::Impl {
     };
 
     std::filesystem::path scenePath;
+    uint64_t sceneLifetimeRevision = std::numeric_limits<uint64_t>::max();
     uint64_t transformRevision = std::numeric_limits<uint64_t>::max();
+    uint64_t structuralRevision = std::numeric_limits<uint64_t>::max();
     std::vector<PrimitiveBvh> primitiveBvhs;
     std::vector<InstanceReference> instances;
     std::vector<uint32_t> instanceOrder;
@@ -258,6 +260,7 @@ struct ScenePicker::Impl {
             }
         }
         scenePath = scene.filename();
+        sceneLifetimeRevision = scene.sceneGraph().lifetimeRevision();
     }
 
     void buildInstances(const Scene& scene)
@@ -297,6 +300,7 @@ struct ScenePicker::Impl {
                 static_cast<uint32_t>(instanceOrder.size()));
         }
         transformRevision = scene.transformRevision();
+        structuralRevision = scene.sceneGraph().structuralRevision();
     }
 
     bool hitPrimitive(
@@ -367,12 +371,14 @@ ScenePickResult ScenePicker::pick(const Scene& scene, const ScenePickRay& ray)
         return result;
     }
     if (impl_->scenePath != scene.filename() ||
+        impl_->sceneLifetimeRevision != scene.sceneGraph().lifetimeRevision() ||
         impl_->primitiveBvhs.size() != scene.renderPrimitives().size()) {
         impl_->buildPrimitives(scene);
         impl_->transformRevision = std::numeric_limits<uint64_t>::max();
+        impl_->structuralRevision = std::numeric_limits<uint64_t>::max();
     }
     if (impl_->transformRevision != scene.transformRevision() ||
-        impl_->instances.size() > scene.renderNodes().size()) {
+        impl_->structuralRevision != scene.sceneGraph().structuralRevision()) {
         impl_->buildInstances(scene);
     }
     if (impl_->instanceNodes.empty()) {
@@ -421,6 +427,7 @@ ScenePickResult ScenePicker::pick(const Scene& scene, const ScenePickRay& ray)
                     nearestDistance,
                     triangleIndex)) {
                 result = ScenePickResult{
+                    .object = renderNode.object,
                     .nodeIndex = renderNode.nodeIndex,
                     .renderNodeIndex = reference.renderNodeIndex,
                     .renderPrimitiveIndex = primitiveIndex,

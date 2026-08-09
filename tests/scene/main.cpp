@@ -1003,6 +1003,28 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(scene.nodes()[1].parent == 0, "child parent index should be assigned");
     expect(scene.nodes()[0].children.size() == 4, "root children should be preserved");
 
+    const metallic::scene::SceneGraph& sceneGraph = scene.sceneGraph();
+    expect(sceneGraph.size() == 5, "scene graph should own one entity per source node");
+    expect(sceneGraph.sourceNodeCount() == 5, "scene graph source mapping count");
+    expect(sceneGraph.roots().size() == 1, "scene graph active root count");
+    const metallic::scene::ConstSceneObject rootObject = scene.objectForNode(0);
+    const metallic::scene::ConstSceneObject meshObject = scene.objectForNode(1);
+    expect(static_cast<bool>(rootObject), "root scene object should resolve from its stable node index");
+    expect(static_cast<bool>(meshObject), "mesh scene object should resolve from its stable node index");
+    expect(rootObject.hasComponent<metallic::scene::RootComponent>(), "root component");
+    expect(rootObject.hasComponent<metallic::scene::ActiveSceneComponent>(), "active root component");
+    expect(
+        rootObject.getComponent<metallic::scene::RelationshipComponent>().children.size() == 4,
+        "relationship component children");
+    expect(meshObject.hasComponent<metallic::scene::MeshComponent>(), "mesh component");
+    expect(
+        meshObject.getComponent<metallic::scene::MeshComponent>().renderNodeIndices ==
+            std::vector<int32_t>{0},
+        "mesh component stable render-node mapping");
+    expect(
+        scene.renderNodes().front().object == meshObject.entity(),
+        "render node should retain its source scene object");
+
     const float3 meshWorldTranslation(
         scene.nodes()[1].worldMatrix.a03,
         scene.nodes()[1].worldMatrix.a13,
@@ -1119,6 +1141,9 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(scene.cameras().size() == 2, "camera count");
     const metallic::scene::RenderCamera& perspectiveCamera = scene.cameras()[0];
     expect(
+        perspectiveCamera.object == scene.objectForNode(2).entity(),
+        "perspective camera object mapping");
+    expect(
         perspectiveCamera.type == metallic::scene::CameraType::Perspective,
         "first camera should be perspective");
     expect(nearlyEqual(static_cast<float>(perspectiveCamera.yfov), 0.75f), "perspective yfov");
@@ -1128,6 +1153,9 @@ void testFullSceneImport(const std::filesystem::path& directory)
 
     const metallic::scene::RenderCamera& orthoCamera = scene.cameras()[1];
     expect(
+        orthoCamera.object == scene.objectForNode(3).entity(),
+        "orthographic camera object mapping");
+    expect(
         orthoCamera.type == metallic::scene::CameraType::Orthographic,
         "second camera should be orthographic");
     expect(nearlyEqual(static_cast<float>(orthoCamera.xmag), 4.0f), "orthographic xmag");
@@ -1135,6 +1163,42 @@ void testFullSceneImport(const std::filesystem::path& directory)
 
     expect(scene.lights().size() == 1, "punctual light count");
     expect(scene.lights().front().type == "directional", "punctual light type");
+    expect(
+        scene.lights().front().object == scene.objectForNode(4).entity(),
+        "light object mapping");
+}
+
+void testInvalidSceneHierarchy(const std::filesystem::path& baseDirectory)
+{
+    const std::filesystem::path directory = baseDirectory / "invalid_hierarchy";
+    std::filesystem::create_directories(directory);
+    const std::filesystem::path gltfPath = writeFullScene(directory);
+
+    nlohmann::json gltf;
+    {
+        std::ifstream stream(gltfPath, std::ios::binary);
+        stream >> gltf;
+    }
+    gltf["nodes"][1]["children"] = nlohmann::json::array({0});
+    writeTextFile(gltfPath, gltf.dump(2));
+
+    metallic::scene::Scene cyclic;
+    EXPECT_FALSE(cyclic.load(gltfPath));
+    EXPECT_NE(cyclic.lastLoadResult().error.find("hierarchy"), std::string::npos);
+
+    writeFullScene(directory);
+    {
+        std::ifstream stream(gltfPath, std::ios::binary);
+        stream >> gltf;
+    }
+    gltf["nodes"][2]["children"] = nlohmann::json::array({1});
+    writeTextFile(gltfPath, gltf.dump(2));
+
+    metallic::scene::Scene multiplyParented;
+    EXPECT_FALSE(multiplyParented.load(gltfPath));
+    EXPECT_NE(
+        multiplyParented.lastLoadResult().error.find("multiply-parented"),
+        std::string::npos);
 }
 
 void testMeshletLodPartition(const std::filesystem::path& directory)
@@ -2253,6 +2317,18 @@ void testFallbackCamera(const std::filesystem::path& directory)
     expect(scene.sceneIndex() == 0, "missing default scene should fall back to scene 0");
     expect(scene.cameras().size() == 1, "fallback scene should expose one camera");
     expect(scene.cameras().front().fallback, "camera should be marked as fallback");
+    const metallic::scene::ConstSceneObject fallbackObject =
+        scene.sceneGraph().object(scene.cameras().front().object);
+    expect(static_cast<bool>(fallbackObject), "fallback camera should be a scene object");
+    expect(
+        fallbackObject.hasComponent<metallic::scene::GeneratedComponent>(),
+        "fallback camera generated component");
+    expect(
+        fallbackObject.hasComponent<metallic::scene::CameraComponent>(),
+        "fallback camera component");
+    expect(
+        !fallbackObject.hasComponent<metallic::scene::SourceNodeComponent>(),
+        "fallback camera should not consume a stable source-node slot");
     expect(
         scene.cameras().front().type == metallic::scene::CameraType::Perspective,
         "fallback camera should be perspective");
@@ -2326,6 +2402,13 @@ void testMutableSceneTransforms(const std::filesystem::path& directory)
     EXPECT_EQ(scene.nodes()[0].transformRevision, 1u);
     EXPECT_EQ(scene.nodes()[1].transformRevision, 1u);
     EXPECT_EQ(scene.renderNodes()[0].transformRevision, 1u);
+    const metallic::scene::TransformComponent& rootTransform =
+        scene.objectForNode(0).getComponent<metallic::scene::TransformComponent>();
+    const metallic::scene::TransformComponent& meshTransform =
+        scene.objectForNode(1).getComponent<metallic::scene::TransformComponent>();
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(rootTransform.localMatrix, editedRoot));
+    EXPECT_EQ(rootTransform.transformRevision, 1u);
+    EXPECT_EQ(meshTransform.transformRevision, 1u);
     expectVec3(
         float3(
             scene.nodes()[1].worldMatrix.a03,
@@ -2369,7 +2452,8 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
     EXPECT_FALSE(document.dirty());
     float4x4 edited = document.nodes()[1].localMatrix;
     edited.a03 = 9.0f;
-    EXPECT_TRUE(document.setNodeLocalMatrix(1, edited));
+    EXPECT_TRUE(document.setObjectLocalMatrix(document.objectForNode(1).entity(), edited));
+    EXPECT_TRUE(document.dirty());
     const std::filesystem::path environmentPath = directory / "lighting" / "studio.hdr";
     std::filesystem::create_directories(environmentPath.parent_path());
     writeTextFile(environmentPath, "test environment placeholder");
@@ -2474,6 +2558,7 @@ void testScenePickerBvh(const std::filesystem::path& directory)
         });
     ASSERT_TRUE(hit.hit());
     EXPECT_EQ(hit.nodeIndex, 1);
+    EXPECT_EQ(hit.object, scene.objectForNode(1).entity());
     EXPECT_EQ(hit.renderPrimitiveIndex, 0);
     EXPECT_EQ(hit.triangleIndex, 0u);
     EXPECT_TRUE(nearlyEqual(hit.distance, 7.0f));
@@ -2491,6 +2576,24 @@ void testScenePickerBvh(const std::filesystem::path& directory)
         scene,
         metallic::scene::ScenePickRay{
             .origin = float3(15.75f, 2.25f, 10.0f),
+            .direction = float3(0.0f, 0.0f, -1.0f),
+        });
+    ASSERT_TRUE(hit.hit());
+    EXPECT_EQ(hit.nodeIndex, 1);
+
+    metallic::scene::Scene otherScene;
+    ASSERT_TRUE(otherScene.load(scene.filename())) << otherScene.lastLoadResult().error;
+    float4x4 otherRoot = otherScene.nodes()[0].localMatrix;
+    otherRoot.a03 -= 10.0f;
+    ASSERT_TRUE(otherScene.setNodeLocalMatrix(0, otherRoot));
+    EXPECT_EQ(otherScene.transformRevision(), scene.transformRevision());
+    EXPECT_NE(
+        otherScene.sceneGraph().lifetimeRevision(),
+        scene.sceneGraph().lifetimeRevision());
+    hit = picker.pick(
+        otherScene,
+        metallic::scene::ScenePickRay{
+            .origin = float3(-4.25f, 2.25f, 10.0f),
             .direction = float3(0.0f, 0.0f, -1.0f),
         });
     ASSERT_TRUE(hit.hit());
@@ -2539,6 +2642,12 @@ void testAsyncSceneLoad(const std::filesystem::path& directory)
     std::unique_ptr<metallic::scene::SceneDocument> loaded = handle.takeResult();
     ASSERT_NE(loaded, nullptr);
     EXPECT_EQ(loaded->nodes().size(), synchronous.nodes().size());
+    EXPECT_EQ(loaded->sceneGraph().size(), synchronous.sceneGraph().size());
+    const metallic::scene::ConstSceneObject loadedMeshObject = loaded->objectForNode(1);
+    ASSERT_TRUE(loadedMeshObject);
+    EXPECT_EQ(
+        loadedMeshObject.getComponent<metallic::scene::TagComponent>().name,
+        "Mesh Node");
     EXPECT_EQ(loaded->renderPrimitives().size(), synchronous.renderPrimitives().size());
     EXPECT_EQ(loaded->stats().triangleCount, synchronous.stats().triangleCount);
     EXPECT_EQ(
@@ -2610,6 +2719,11 @@ TEST(SceneImport, RtxcrClairePonytailDots)
 TEST(SceneImport, FullScene)
 {
     testFullSceneImport(prepareOutputDirectory());
+}
+
+TEST(SceneImport, RejectsInvalidHierarchy)
+{
+    testInvalidSceneHierarchy(prepareOutputDirectory());
 }
 
 TEST(SceneImport, MeshletLodPartition)

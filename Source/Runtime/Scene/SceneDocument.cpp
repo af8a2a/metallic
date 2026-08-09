@@ -251,6 +251,15 @@ bool SceneDocument::setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localM
     return true;
 }
 
+bool SceneDocument::setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix)
+{
+    if (!Scene::setObjectLocalMatrix(object, localMatrix)) {
+        return false;
+    }
+    dirty_ = true;
+    return true;
+}
+
 bool SceneDocument::setEnvironment(EnvironmentSettings environment)
 {
     environment.intensity = std::isfinite(environment.intensity)

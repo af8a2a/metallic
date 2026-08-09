@@ -2861,65 +2861,109 @@ bool Scene::loadInternal(
     }
 
     const auto sceneGraphBegin = SceneLoadClock::now();
-    nodes_.resize(model.nodes.size());
     for (size_t nodeIndex = 0; nodeIndex < model.nodes.size(); ++nodeIndex) {
         const tinygltf::Node& gltfNode = model.nodes[nodeIndex];
-        SceneNode& node = nodes_[nodeIndex];
-        node.name = defaultName(gltfNode.name, "Node", static_cast<int32_t>(nodeIndex));
-        node.children = gltfNode.children;
-        node.meshIndex = gltfNode.mesh;
-        node.cameraIndex = gltfNode.camera;
-        node.lightIndex = gltfNode.light;
-        node.localMatrix = makeNodeLocalMatrix(gltfNode);
-        node.authoredLocalMatrix = node.localMatrix;
-        node.worldMatrix = float4x4::Identity();
-        node.visible = readNodeVisibility(gltfNode);
+        const float4x4 authoredLocalMatrix = makeNodeLocalMatrix(gltfNode);
+        SceneObject object = sceneGraph_.createObject(
+            defaultName(gltfNode.name, "Node", static_cast<int32_t>(nodeIndex)),
+            static_cast<int32_t>(nodeIndex),
+            authoredLocalMatrix,
+            readNodeVisibility(gltfNode));
+        if (!object) {
+            lastLoadResult_.error = "glTF node contains a non-finite local transform";
+            clearParsedData();
+            return false;
+        }
+        if (gltfNode.mesh != kInvalidSceneIndex) {
+            object.addComponent<MeshComponent>(gltfNode.mesh);
+        }
+        if (gltfNode.camera != kInvalidSceneIndex) {
+            object.addComponent<CameraComponent>(gltfNode.camera);
+        }
+        if (gltfNode.light != kInvalidSceneIndex) {
+            object.addComponent<LightComponent>(gltfNode.light);
+        }
     }
 
+    std::vector<int32_t> parentAssignments(model.nodes.size(), kInvalidSceneIndex);
     for (size_t nodeIndex = 0; nodeIndex < model.nodes.size(); ++nodeIndex) {
         for (const int32_t child : model.nodes[nodeIndex].children) {
-            if (validIndex(child, nodes_.size())) {
-                nodes_[static_cast<size_t>(child)].parent = static_cast<int32_t>(nodeIndex);
+            if (!validIndex(child, model.nodes.size())) {
+                lastLoadResult_.error = "glTF node references an out-of-range child";
+                clearParsedData();
+                return false;
             }
+            if (parentAssignments[static_cast<size_t>(child)] != kInvalidSceneIndex) {
+                lastLoadResult_.error =
+                    "glTF node hierarchy contains a duplicate or multiply-parented child";
+                clearParsedData();
+                return false;
+            }
+            if (!sceneGraph_.setParent(
+                    sceneGraph_.objectFromSourceNode(child).entity(),
+                    sceneGraph_.objectFromSourceNode(static_cast<int32_t>(nodeIndex)).entity())) {
+                lastLoadResult_.error = "glTF node hierarchy contains a self-reference or cycle";
+                clearParsedData();
+                return false;
+            }
+            parentAssignments[static_cast<size_t>(child)] = static_cast<int32_t>(nodeIndex);
         }
     }
 
     const tinygltf::Scene& gltfScene = model.scenes[static_cast<size_t>(sceneIndex)];
+    std::vector<SceneEntity> rootObjects;
+    rootObjects.reserve(gltfScene.nodes.size());
     for (const int32_t nodeIndex : gltfScene.nodes) {
-        if (!validIndex(nodeIndex, nodes_.size())) {
+        if (!validIndex(nodeIndex, model.nodes.size())) {
             lastLoadResult_.error = "glTF scene references an out-of-range root node";
             clearParsedData();
             return false;
         }
-        rootNodeIndices_.push_back(nodeIndex);
+        rootObjects.push_back(sceneGraph_.objectFromSourceNode(nodeIndex).entity());
     }
+    if (!sceneGraph_.setRoots(rootObjects) && rootObjects != sceneGraph_.roots()) {
+        lastLoadResult_.error =
+            "glTF scene roots must be valid, unique, and hierarchy-disjoint";
+        clearParsedData();
+        return false;
+    }
+    sceneGraph_.updateTransforms();
+    sceneGraph_.resetRevisions();
+    syncSceneNodeProjection();
 
-    std::function<void(int32_t, const float4x4&, bool)> traverseNode;
+    std::function<void(int32_t)> traverseNode;
     uint64_t traversedNodeCount = 0;
     bool traversalCancelled = false;
-    traverseNode = [&](int32_t nodeIndex, const float4x4& parentWorld, bool parentVisible) {
+    traverseNode = [&](int32_t nodeIndex) {
         if (traversalCancelled) {
             return;
         }
-        SceneNode& node = nodes_[static_cast<size_t>(nodeIndex)];
-        node.worldMatrix = parentWorld * node.localMatrix;
-        node.visible = parentVisible && node.visible;
+        const SceneNode& node = nodes_[static_cast<size_t>(nodeIndex)];
+        SceneObject object = sceneGraph_.objectFromSourceNode(nodeIndex);
 
         const tinygltf::Node& gltfNode = model.nodes[static_cast<size_t>(nodeIndex)];
         if (validIndex(gltfNode.camera, model.cameras.size())) {
-            cameras_.push_back(makeRenderCamera(
+            RenderCamera camera = makeRenderCamera(
                 model.cameras[static_cast<size_t>(gltfNode.camera)],
                 gltfNode,
                 nodeIndex,
                 gltfNode.camera,
-                node.worldMatrix));
+                node.worldMatrix);
+            camera.object = object.entity();
+            CameraComponent& cameraComponent = object.getComponent<CameraComponent>();
+            cameraComponent.renderCameraIndex = static_cast<int32_t>(cameras_.size());
+            cameras_.push_back(std::move(camera));
         }
         if (validIndex(gltfNode.light, model.lights.size())) {
-            lights_.push_back(makeRenderLight(
+            RenderLight light = makeRenderLight(
                 model.lights[static_cast<size_t>(gltfNode.light)],
                 nodeIndex,
                 gltfNode.light,
-                node.worldMatrix));
+                node.worldMatrix);
+            light.object = object.entity();
+            LightComponent& lightComponent = object.getComponent<LightComponent>();
+            lightComponent.renderLightIndex = static_cast<int32_t>(lights_.size());
+            lights_.push_back(std::move(light));
         }
         if (validIndex(gltfNode.mesh, model.meshes.size())) {
             const tinygltf::Mesh& mesh = model.meshes[static_cast<size_t>(gltfNode.mesh)];
@@ -3029,23 +3073,27 @@ bool Scene::loadInternal(
                 }
 
                 RenderNode renderNode;
+                renderNode.object = object.entity();
                 renderNode.nodeIndex = nodeIndex;
                 renderNode.renderPrimitiveIndex = static_cast<int32_t>(renderPrimitives_.size());
                 renderNode.materialIndex = primitive.materialIndex;
                 renderNode.worldMatrix = node.worldMatrix;
-                renderNode.transformRevision = transformRevision_;
+                renderNode.transformRevision = transformRevision();
                 renderNode.visible = node.visible;
 
                 bounds_.include(transformBounds(primitive.localBounds, node.worldMatrix));
                 stats_.triangleCount += primitive.triangleCount;
                 renderPrimitives_.push_back(primitive);
+                if (MeshComponent* mesh = object.tryGetComponent<MeshComponent>()) {
+                    mesh->renderNodeIndices.push_back(static_cast<int32_t>(renderNodes_.size()));
+                }
                 renderNodes_.push_back(renderNode);
             }
         }
 
         for (const int32_t child : node.children) {
             if (validIndex(child, nodes_.size())) {
-                traverseNode(child, node.worldMatrix, node.visible);
+                traverseNode(child);
             }
         }
 
@@ -3062,7 +3110,7 @@ bool Scene::loadInternal(
     };
 
     for (const int32_t rootNodeIndex : rootNodeIndices_) {
-        traverseNode(rootNodeIndex, float4x4::Identity(), true);
+        traverseNode(rootNodeIndex);
         if (traversalCancelled) {
             return cancelLoad();
         }
@@ -3151,8 +3199,16 @@ bool Scene::loadInternal(
     accumulateMeshletStats(renderPrimitives_, stats_);
 
     if (cameras_.empty()) {
-        cameras_.push_back(makeFallbackCamera(bounds_));
+        SceneObject fallbackCamera = sceneGraph_.createObject("Fallback Camera");
+        fallbackCamera.addComponent<GeneratedComponent>();
+        CameraComponent& cameraComponent =
+            fallbackCamera.addComponent<CameraComponent>(kInvalidSceneIndex);
+        cameraComponent.renderCameraIndex = 0;
+        RenderCamera camera = makeFallbackCamera(bounds_);
+        camera.object = fallbackCamera.entity();
+        cameras_.push_back(std::move(camera));
     }
+    sceneGraph_.resetRevisions();
 
     stats_.primitiveCount = renderPrimitives_.size();
     stats_.renderNodeCount = renderNodes_.size();
@@ -3236,26 +3292,29 @@ bool Scene::finalizeDeferredMeshlets()
     return true;
 }
 
+ConstSceneObject Scene::objectForNode(int32_t nodeIndex) const
+{
+    return sceneGraph_.objectFromSourceNode(nodeIndex);
+}
+
 bool Scene::setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix)
 {
-    if (!valid() || !validIndex(nodeIndex, nodes_.size())) {
-        return false;
-    }
-    for (const float value : localMatrix.a) {
-        if (!std::isfinite(value)) {
-            return false;
-        }
-    }
-
-    SceneNode& node = nodes_[static_cast<size_t>(nodeIndex)];
-    if (matrixNearlyEqual(node.localMatrix, localMatrix)) {
+    if (!valid()) {
         return false;
     }
 
-    node.localMatrix = localMatrix;
-    ++transformRevision_;
-    if (transformRevision_ == 0) {
-        transformRevision_ = 1;
+    const SceneObject object = sceneGraph_.objectFromSourceNode(nodeIndex);
+    return object && setObjectLocalMatrix(object.entity(), localMatrix);
+}
+
+bool Scene::setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix)
+{
+    const ConstSceneObject sceneObject =
+        static_cast<const SceneGraph&>(sceneGraph_).object(object);
+    if (!valid() || !sceneObject ||
+        sceneObject.hasComponent<GeneratedComponent>() ||
+        !sceneGraph_.setLocalMatrix(object, localMatrix)) {
+        return false;
     }
     refreshTransforms();
     return true;
@@ -3278,25 +3337,9 @@ bool Scene::setImageDecodeResult(
 
 void Scene::refreshTransforms()
 {
-    const uint64_t revision = transformRevision_;
-    std::function<void(int32_t, const float4x4&)> traverseNode;
-    traverseNode = [&](int32_t nodeIndex, const float4x4& parentWorld) {
-        if (!validIndex(nodeIndex, nodes_.size())) {
-            return;
-        }
-        SceneNode& node = nodes_[static_cast<size_t>(nodeIndex)];
-        const float4x4 worldMatrix = parentWorld * node.localMatrix;
-        if (!matrixNearlyEqual(node.worldMatrix, worldMatrix)) {
-            node.worldMatrix = worldMatrix;
-            node.transformRevision = revision;
-        }
-        for (const int32_t child : node.children) {
-            traverseNode(child, node.worldMatrix);
-        }
-    };
-    for (const int32_t rootNodeIndex : rootNodeIndices_) {
-        traverseNode(rootNodeIndex, float4x4::Identity());
-    }
+    sceneGraph_.updateTransforms();
+    syncSceneNodeProjection();
+    const uint64_t revision = transformRevision();
 
     bounds_.reset();
     for (RenderNode& renderNode : renderNodes_) {
@@ -3317,7 +3360,9 @@ void Scene::refreshTransforms()
 
     for (RenderCamera& camera : cameras_) {
         if (camera.fallback) {
+            const SceneEntity object = camera.object;
             camera = makeFallbackCamera(bounds_);
+            camera.object = object;
             continue;
         }
         if (!validIndex(camera.nodeIndex, nodes_.size())) {
@@ -3348,6 +3393,71 @@ void Scene::refreshTransforms()
     }
 }
 
+void Scene::syncSceneNodeProjection()
+{
+    rootNodeIndices_.clear();
+    rootNodeIndices_.reserve(sceneGraph_.roots().size());
+    for (const SceneEntity entity : sceneGraph_.roots()) {
+        const ConstSceneObject object = sceneGraph_.object(entity);
+        const SourceNodeComponent* source = object.tryGetComponent<SourceNodeComponent>();
+        if (source != nullptr) {
+            rootNodeIndices_.push_back(source->nodeIndex);
+        }
+    }
+
+    nodes_.clear();
+    nodes_.resize(sceneGraph_.sourceNodeCount());
+    for (size_t nodeIndex = 0; nodeIndex < nodes_.size(); ++nodeIndex) {
+        const ConstSceneObject object = sceneGraph_.objectFromSourceNode(
+            static_cast<int32_t>(nodeIndex));
+        if (!object) {
+            continue;
+        }
+
+        SceneNode node;
+        if (const TagComponent* tag = object.tryGetComponent<TagComponent>()) {
+            node.name = tag->name;
+        }
+        if (const TransformComponent* transform = object.tryGetComponent<TransformComponent>()) {
+            node.authoredLocalMatrix = transform->authoredLocalMatrix;
+            node.localMatrix = transform->localMatrix;
+            node.worldMatrix = transform->worldMatrix;
+            node.transformRevision = transform->transformRevision;
+        }
+        if (const VisibilityComponent* visibility = object.tryGetComponent<VisibilityComponent>()) {
+            node.visible = visibility->worldVisible;
+        }
+        if (const MeshComponent* mesh = object.tryGetComponent<MeshComponent>()) {
+            node.meshIndex = mesh->meshIndex;
+        }
+        if (const CameraComponent* camera = object.tryGetComponent<CameraComponent>()) {
+            node.cameraIndex = camera->cameraIndex;
+        }
+        if (const LightComponent* light = object.tryGetComponent<LightComponent>()) {
+            node.lightIndex = light->lightIndex;
+        }
+        if (const RelationshipComponent* relationship =
+                object.tryGetComponent<RelationshipComponent>()) {
+            if (relationship->parent != kNullSceneEntity) {
+                const ConstSceneObject parent = sceneGraph_.object(relationship->parent);
+                if (const SourceNodeComponent* source =
+                        parent.tryGetComponent<SourceNodeComponent>()) {
+                    node.parent = source->nodeIndex;
+                }
+            }
+            node.children.reserve(relationship->children.size());
+            for (const SceneEntity childEntity : relationship->children) {
+                const ConstSceneObject child = sceneGraph_.object(childEntity);
+                if (const SourceNodeComponent* source =
+                        child.tryGetComponent<SourceNodeComponent>()) {
+                    node.children.push_back(source->nodeIndex);
+                }
+            }
+        }
+        nodes_[nodeIndex] = std::move(node);
+    }
+}
+
 void Scene::clearParsedData()
 {
     filename_.clear();
@@ -3356,6 +3466,7 @@ void Scene::clearParsedData()
     assetInfo_ = {};
     stats_ = {};
     bounds_.reset();
+    sceneGraph_.clear();
     rootNodeIndices_.clear();
     nodes_.clear();
     meshes_.clear();
@@ -3366,7 +3477,6 @@ void Scene::clearParsedData()
     materials_.clear();
     cameras_.clear();
     lights_.clear();
-    transformRevision_ = 0;
     deferredMeshletBuild_ = false;
 }
 
