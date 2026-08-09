@@ -37,6 +37,7 @@ public:
     bool setRoots(std::span<const SceneEntity> roots);
     bool setName(SceneEntity object, std::string name);
     bool setLocalMatrix(SceneEntity object, const float4x4& localMatrix);
+    bool setWorldMatrix(SceneEntity object, const float4x4& worldMatrix);
     bool setVisible(SceneEntity object, bool visible);
     bool updateTransforms();
     void resetRevisions();

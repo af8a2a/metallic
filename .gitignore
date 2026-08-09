@@ -69,6 +69,7 @@ vcpkg_installed/
 # test output & cache
 Testing/
 rhi-test-output/
+scene-test-output/
 .cache/
 # Slang (downloaded binary)
 External/slang/

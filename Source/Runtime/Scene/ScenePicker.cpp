@@ -105,8 +105,8 @@ bool rayIntersectsBounds(
     if (!bounds.valid) {
         return false;
     }
-    float minimum = 0.0f;
-    float maximum = maximumDistance;
+    float minimum = std::max(ray.minimumDistance, 0.0f);
+    float maximum = std::min(maximumDistance, ray.maximumDistance);
     for (uint32_t axis = 0; axis < 3; ++axis) {
         const float origin = axisValue(ray.origin, axis);
         const float direction = axisValue(ray.direction, axis);
@@ -159,7 +159,8 @@ bool rayIntersectsTriangle(
         return false;
     }
     const float hitDistance = dot(edge2, q) * inverseDeterminant;
-    if (hitDistance <= 0.000001f || hitDistance >= distance) {
+    if (hitDistance < std::max(ray.minimumDistance, 0.000001f) ||
+        hitDistance > ray.maximumDistance || hitDistance > distance) {
         return false;
     }
     distance = hitDistance;
@@ -367,7 +368,10 @@ ScenePicker& ScenePicker::operator=(ScenePicker&&) noexcept = default;
 ScenePickResult ScenePicker::pick(const Scene& scene, const ScenePickRay& ray)
 {
     ScenePickResult result;
-    if (!scene.valid() || length(ray.direction) <= 0.000001f) {
+    const float directionLength = length(ray.direction);
+    if (!scene.valid() || !std::isfinite(directionLength) || directionLength <= 0.000001f ||
+        !std::isfinite(ray.minimumDistance) || ray.minimumDistance < 0.0f ||
+        std::isnan(ray.maximumDistance) || ray.maximumDistance < ray.minimumDistance) {
         return result;
     }
     if (impl_->scenePath != scene.filename() ||
@@ -386,8 +390,8 @@ ScenePickResult ScenePicker::pick(const Scene& scene, const ScenePickRay& ray)
     }
 
     ScenePickRay worldRay = ray;
-    worldRay.direction = worldRay.direction / length(worldRay.direction);
-    float nearestDistance = std::numeric_limits<float>::max();
+    worldRay.direction = worldRay.direction / directionLength;
+    float nearestDistance = worldRay.maximumDistance;
     std::vector<int32_t> stack{0};
     while (!stack.empty()) {
         const BvhNode& node = impl_->instanceNodes[static_cast<size_t>(stack.back())];
@@ -413,6 +417,8 @@ ScenePickResult ScenePicker::pick(const Scene& scene, const ScenePickRay& ray)
             const ScenePickRay localRay{
                 .origin = inverseWorld * worldRay.origin,
                 .direction = float3(localDirection4.x, localDirection4.y, localDirection4.z),
+                .minimumDistance = worldRay.minimumDistance,
+                .maximumDistance = worldRay.maximumDistance,
             };
             const int32_t primitiveIndex = renderNode.renderPrimitiveIndex;
             if (primitiveIndex < 0 ||

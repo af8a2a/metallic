@@ -3,6 +3,7 @@
 #include "Runtime/Scene/Scene.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 
 namespace metallic::scene {
@@ -10,6 +11,9 @@ namespace metallic::scene {
 struct ScenePickRay {
     float3 origin{0.0f, 0.0f, 0.0f};
     float3 direction{0.0f, 0.0f, -1.0f};
+    // Inclusive world-space interval measured along the normalized ray direction.
+    float minimumDistance = 0.0f;
+    float maximumDistance = std::numeric_limits<float>::infinity();
 };
 
 struct ScenePickResult {
@@ -20,7 +24,7 @@ struct ScenePickResult {
     uint32_t triangleIndex = 0;
     float distance = 0.0f;
 
-    bool hit() const { return nodeIndex != kInvalidSceneIndex; }
+    bool hit() const { return object != kNullSceneEntity; }
 };
 
 class ScenePicker {

@@ -253,7 +253,20 @@ bool SceneDocument::setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localM
 
 bool SceneDocument::setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix)
 {
-    if (!Scene::setObjectLocalMatrix(object, localMatrix)) {
+    const ConstSceneObject sceneObject = sceneGraph().object(object);
+    if (!sceneObject || !sceneObject.hasComponent<SourceNodeComponent>() ||
+        !Scene::setObjectLocalMatrix(object, localMatrix)) {
+        return false;
+    }
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix)
+{
+    const ConstSceneObject sceneObject = sceneGraph().object(object);
+    if (!sceneObject || !sceneObject.hasComponent<SourceNodeComponent>() ||
+        !Scene::setObjectWorldMatrix(object, worldMatrix)) {
         return false;
     }
     dirty_ = true;
@@ -476,11 +489,23 @@ bool SceneDocument::save(std::string& message)
 
 bool SceneDocument::revert(std::string& message)
 {
-    const std::filesystem::path path = documentPath_.empty() ? sourcePath_ : documentPath_;
-    if (path.empty() || !load(path)) {
-        message = documentWarning_.empty() ? lastLoadResult().error : documentWarning_;
+    std::error_code existsError;
+    const bool documentExists = !documentPath_.empty() &&
+        std::filesystem::exists(documentPath_, existsError) && !existsError;
+    const std::filesystem::path path = documentExists ? documentPath_ : sourcePath_;
+    if (path.empty()) {
+        message = "Scene document has no source to reload.";
         return false;
     }
+
+    SceneDocument reverted;
+    if (!reverted.load(path)) {
+        message = reverted.documentWarning().empty()
+            ? reverted.lastLoadResult().error
+            : reverted.documentWarning();
+        return false;
+    }
+    *this = std::move(reverted);
     message = "Reloaded scene document: " + path.string();
     return true;
 }

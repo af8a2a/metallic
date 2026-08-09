@@ -284,6 +284,7 @@ public:
     bool finalizeDeferredMeshlets();
     void clear();
     bool setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix);
+    bool setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
     bool setImageDecodeResult(
         size_t imageIndex,

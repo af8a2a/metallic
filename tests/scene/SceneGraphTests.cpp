@@ -1,9 +1,11 @@
 #include "Runtime/Scene/SceneGraph.h"
+#include "Runtime/Scene/ScenePicker.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -32,6 +34,21 @@ float4x4 translationMatrix(const float3& translation)
     float4x4 matrix;
     matrix.SetupByTranslation(translation);
     return matrix;
+}
+
+float4x4 rotationZMatrix(float angle)
+{
+    float4x4 matrix;
+    matrix.SetupByRotationZ(angle);
+    return matrix;
+}
+
+void expectMatrixNear(const float4x4& actual, const float4x4& expected)
+{
+    for (size_t index = 0; index < 16; ++index) {
+        EXPECT_NEAR(actual.a[index], expected.a[index], 0.00001f)
+            << "matrix element " << index;
+    }
 }
 
 bool hasChild(const RelationshipComponent& relationship, SceneEntity child)
@@ -166,6 +183,16 @@ TEST(SceneGraph, TransformAndVisibilityPropagation)
     EXPECT_EQ(parentTransform.transformRevision, graph.transformRevision());
     EXPECT_EQ(childTransform.transformRevision, graph.transformRevision());
 
+    float4x4 editedChildWorld = childTransform.worldMatrix;
+    editedChildWorld.a03 = 12.0f;
+    editedChildWorld.a13 = 8.0f;
+    ASSERT_TRUE(graph.setWorldMatrix(child.entity(), editedChildWorld));
+    ASSERT_TRUE(graph.updateTransforms());
+    EXPECT_FLOAT_EQ(child.getComponent<TransformComponent>().localMatrix.a03, 10.0f);
+    EXPECT_FLOAT_EQ(child.getComponent<TransformComponent>().localMatrix.a13, 5.0f);
+    EXPECT_FLOAT_EQ(child.getComponent<TransformComponent>().worldMatrix.a03, 12.0f);
+    EXPECT_FLOAT_EQ(child.getComponent<TransformComponent>().worldMatrix.a13, 8.0f);
+
     ASSERT_TRUE(graph.setVisible(parent.entity(), false));
     ASSERT_TRUE(graph.updateTransforms());
     const VisibilityComponent& hiddenParent =
@@ -183,6 +210,161 @@ TEST(SceneGraph, TransformAndVisibilityPropagation)
     EXPECT_TRUE(parent.getComponent<VisibilityComponent>().worldVisible);
     EXPECT_FALSE(child.getComponent<VisibilityComponent>().localVisible);
     EXPECT_FALSE(child.getComponent<VisibilityComponent>().worldVisible);
+
+    float4x4 singularParent = parent.getComponent<TransformComponent>().localMatrix;
+    singularParent.a00 = 0.0f;
+    ASSERT_TRUE(graph.setLocalMatrix(parent.entity(), singularParent));
+    ASSERT_TRUE(graph.updateTransforms());
+    EXPECT_FALSE(graph.setWorldMatrix(child.entity(), editedChildWorld));
+}
+
+TEST(SceneGraph, WorldMatrixUsesColumnVectorComposition)
+{
+    SceneGraph graph;
+    const SceneObject parent = graph.createObject("Parent", 0);
+    const SceneObject child = graph.createObject("Child", 1);
+    ASSERT_TRUE(graph.setParent(child.entity(), parent.entity()));
+
+    const float4x4 parentLocal =
+        translationMatrix(float3(3.0f, 4.0f, 0.0f)) *
+        rotationZMatrix(1.57079632679f);
+    const float4x4 childLocal = translationMatrix(float3(2.0f, 0.0f, 0.0f));
+    ASSERT_TRUE(graph.setLocalMatrix(parent.entity(), parentLocal));
+    ASSERT_TRUE(graph.setLocalMatrix(child.entity(), childLocal));
+    ASSERT_TRUE(graph.updateTransforms());
+
+    const TransformComponent& childTransform =
+        child.getComponent<TransformComponent>();
+    expectMatrixNear(childTransform.worldMatrix, parentLocal * childLocal);
+    EXPECT_NEAR(childTransform.worldMatrix.a03, 3.0f, 0.00001f);
+    EXPECT_NEAR(childTransform.worldMatrix.a13, 6.0f, 0.00001f);
+
+    const float4x4 desiredWorld =
+        translationMatrix(float3(-4.0f, 8.0f, 2.0f)) *
+        rotationZMatrix(-0.35f);
+    float4x4 inverseParent = parentLocal;
+    inverseParent.Invert();
+    const float4x4 expectedLocal = inverseParent * desiredWorld;
+    const uint64_t revisionBeforeEdit = graph.transformRevision();
+
+    ASSERT_TRUE(graph.setWorldMatrix(child.entity(), desiredWorld));
+    EXPECT_EQ(graph.transformRevision(), revisionBeforeEdit + 1u);
+    EXPECT_TRUE(child.getComponent<TransformComponent>().dirty);
+    expectMatrixNear(
+        child.getComponent<TransformComponent>().localMatrix,
+        expectedLocal);
+    ASSERT_TRUE(graph.updateTransforms());
+    EXPECT_FALSE(child.getComponent<TransformComponent>().dirty);
+    expectMatrixNear(
+        child.getComponent<TransformComponent>().worldMatrix,
+        desiredWorld);
+}
+
+TEST(SceneGraph, WorldMatrixUsesCurrentHierarchyAndActiveRoot)
+{
+    SceneGraph graph;
+    const SceneObject parent = graph.createObject("Parent", 0);
+    const SceneObject child = graph.createObject("Child", 1);
+    ASSERT_TRUE(graph.setParent(child.entity(), parent.entity()));
+    ASSERT_TRUE(graph.setLocalMatrix(
+        parent.entity(),
+        translationMatrix(float3(10.0f, 0.0f, 0.0f))));
+    ASSERT_TRUE(graph.setLocalMatrix(
+        child.entity(),
+        translationMatrix(float3(2.0f, 0.0f, 0.0f))));
+    ASSERT_TRUE(graph.updateTransforms());
+    EXPECT_NEAR(
+        child.getComponent<TransformComponent>().worldMatrix.a03,
+        12.0f,
+        0.00001f);
+
+    const std::array childRoot{child.entity()};
+    ASSERT_TRUE(graph.setRoots(std::span<const SceneEntity>(childRoot)));
+    ASSERT_TRUE(graph.updateTransforms());
+    EXPECT_TRUE(child.hasComponent<RootComponent>());
+    EXPECT_EQ(
+        child.getComponent<RelationshipComponent>().parent,
+        parent.entity());
+    EXPECT_NEAR(
+        child.getComponent<TransformComponent>().worldMatrix.a03,
+        2.0f,
+        0.00001f);
+
+    const float4x4 desiredWorld = translationMatrix(float3(7.0f, 1.0f, 0.0f));
+    ASSERT_TRUE(graph.setWorldMatrix(child.entity(), desiredWorld));
+    expectMatrixNear(
+        child.getComponent<TransformComponent>().localMatrix,
+        desiredWorld);
+    ASSERT_TRUE(graph.updateTransforms());
+    expectMatrixNear(
+        child.getComponent<TransformComponent>().worldMatrix,
+        desiredWorld);
+}
+
+TEST(SceneGraph, WorldMatrixRejectsNonFiniteAndCurrentSingularParent)
+{
+    SceneGraph graph;
+    const SceneObject parent = graph.createObject("Parent", 0);
+    const SceneObject child = graph.createObject("Child", 1);
+    ASSERT_TRUE(graph.setParent(child.entity(), parent.entity()));
+    graph.updateTransforms();
+
+    const TransformComponent beforeRejectedEdit =
+        child.getComponent<TransformComponent>();
+    const uint64_t revisionBeforeRejectedEdit = graph.transformRevision();
+    float4x4 nonFiniteLocal = beforeRejectedEdit.localMatrix;
+    nonFiniteLocal.a00 = std::numeric_limits<float>::quiet_NaN();
+    float4x4 nonFiniteWorld = beforeRejectedEdit.worldMatrix;
+    nonFiniteWorld.a03 = std::numeric_limits<float>::infinity();
+    EXPECT_FALSE(graph.setLocalMatrix(child.entity(), nonFiniteLocal));
+    EXPECT_FALSE(graph.setWorldMatrix(child.entity(), nonFiniteWorld));
+    EXPECT_EQ(graph.transformRevision(), revisionBeforeRejectedEdit);
+    EXPECT_FALSE(child.getComponent<TransformComponent>().dirty);
+    expectMatrixNear(
+        child.getComponent<TransformComponent>().localMatrix,
+        beforeRejectedEdit.localMatrix);
+
+    float4x4 singularParent = float4x4::Identity();
+    singularParent.a00 = 0.0f;
+    ASSERT_TRUE(graph.setLocalMatrix(parent.entity(), singularParent));
+    const uint64_t revisionAfterParentEdit = graph.transformRevision();
+    ASSERT_TRUE(child.getComponent<TransformComponent>().dirty);
+    EXPECT_FALSE(graph.setWorldMatrix(
+        child.entity(),
+        translationMatrix(float3(3.0f, 2.0f, 1.0f))));
+    EXPECT_EQ(graph.transformRevision(), revisionAfterParentEdit);
+    EXPECT_TRUE(child.getComponent<TransformComponent>().dirty);
+    expectMatrixNear(
+        child.getComponent<TransformComponent>().localMatrix,
+        beforeRejectedEdit.localMatrix);
+}
+
+TEST(SceneGraph, ResetRevisionsPreservesDirtyState)
+{
+    SceneGraph graph;
+    const SceneObject generated = graph.createObject("Generated");
+    generated.addComponent<GeneratedComponent>();
+    ASSERT_TRUE(graph.setLocalMatrix(
+        generated.entity(),
+        translationMatrix(float3(4.0f, 5.0f, 6.0f))));
+    ASSERT_TRUE(generated.getComponent<TransformComponent>().dirty);
+    ASSERT_GT(graph.transformRevision(), 0u);
+    ASSERT_GT(graph.structuralRevision(), 0u);
+
+    graph.resetRevisions();
+
+    EXPECT_EQ(graph.transformRevision(), 0u);
+    EXPECT_EQ(graph.structuralRevision(), 0u);
+    EXPECT_EQ(generated.getComponent<TransformComponent>().transformRevision, 0u);
+    EXPECT_TRUE(generated.getComponent<TransformComponent>().dirty);
+    EXPECT_TRUE(generated.hasComponent<GeneratedComponent>());
+    ASSERT_TRUE(graph.updateTransforms());
+    EXPECT_FALSE(generated.getComponent<TransformComponent>().dirty);
+    EXPECT_EQ(generated.getComponent<TransformComponent>().transformRevision, 0u);
+    EXPECT_NEAR(
+        generated.getComponent<TransformComponent>().worldMatrix.a03,
+        4.0f,
+        0.00001f);
 }
 
 TEST(SceneGraph, ActiveRoots)
@@ -269,6 +451,10 @@ TEST(SceneGraph, MovePreservesRegistryAndSourceMapping)
     EXPECT_NE(source.lifetimeRevision(), sourceLifetime);
     EXPECT_FALSE(root);
     EXPECT_FALSE(child);
+    const SceneObject reusedSource = source.createObject("Reused Source", 0);
+    ASSERT_TRUE(reusedSource);
+    EXPECT_FALSE(root);
+    EXPECT_FALSE(child);
     const SceneObject movedRoot = moveConstructed.objectFromSourceNode(0);
     const SceneObject movedChild = moveConstructed.objectFromSourceNode(1);
     ASSERT_TRUE(movedRoot);
@@ -304,6 +490,19 @@ TEST(SceneGraph, MovePreservesRegistryAndSourceMapping)
     EXPECT_EQ(assignedChild.getComponent<TestComponent>().label, "preserved");
     ASSERT_EQ(moveAssigned.roots().size(), 1u);
     EXPECT_EQ(moveAssigned.roots().front(), rootEntity);
+
+    const SceneObject reusedMoveSource = moveConstructed.createObject(
+        "Reused Move Source",
+        0);
+    ASSERT_TRUE(reusedMoveSource);
+    EXPECT_TRUE(assignedRoot);
+    EXPECT_TRUE(assignedChild);
+
+    const uint64_t lifetimeBeforeSelfMove = moveAssigned.lifetimeRevision();
+    moveAssigned = std::move(moveAssigned);
+    EXPECT_EQ(moveAssigned.lifetimeRevision(), lifetimeBeforeSelfMove);
+    EXPECT_TRUE(assignedRoot);
+    EXPECT_TRUE(assignedChild);
 }
 
 TEST(SceneGraph, Clear)
@@ -334,6 +533,29 @@ TEST(SceneGraph, Clear)
     EXPECT_FALSE(generated);
     EXPECT_EQ(graph.objectFromSourceNode(0), replacement);
     EXPECT_FALSE(graph.objectFromSourceNode(1));
+}
+
+TEST(ScenePickResult, HitUsesObjectIdentityWithoutSourceNode)
+{
+    SceneGraph graph;
+    const SceneObject object = graph.createObject("Runtime Object");
+    ASSERT_TRUE(object);
+    EXPECT_FALSE(object.hasComponent<SourceNodeComponent>());
+
+    const ScenePickResult objectHit{
+        .object = object.entity(),
+        .renderNodeIndex = 0,
+        .renderPrimitiveIndex = 0,
+    };
+    EXPECT_TRUE(objectHit.hit());
+
+    const ScenePickResult legacyNodeOnly{
+        .nodeIndex = 0,
+        .renderNodeIndex = 0,
+        .renderPrimitiveIndex = 0,
+    };
+    EXPECT_FALSE(legacyNodeOnly.hit());
+    EXPECT_FALSE(ScenePickResult{}.hit());
 }
 
 } // namespace

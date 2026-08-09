@@ -46,6 +46,7 @@ private:
     void drawStatisticsPanel();
     void drawCameraControls();
     void drawEnvironmentControls();
+    void beginEnvironmentEdit();
     void drawSceneNode(int32_t nodeIndex);
     void drawSceneGraphTab();
     void drawSceneListTab();
@@ -58,13 +59,21 @@ private:
         bool showEmptyMessage);
     void drawViewportPanel();
     void handleViewportCameraControls(const ImVec2& min, const ImVec2& max);
+    void drawViewportObjectHandles(const ImVec2& min, const ImVec2& max);
     void drawViewportGizmo(const ImVec2& min, const ImVec2& max);
     void selectViewportObject(const ImVec2& min, const ImVec2& max);
     void drawSelectedNodeTransformInspector();
+    scene::ConstSceneObject selectedSceneObject() const;
     int32_t selectedNodeIndex() const;
-    bool setSelectedNodeWorldMatrix(const float4x4& worldMatrix, std::string& reason);
+    bool setSelectedObjectWorldMatrix(const float4x4& worldMatrix, std::string& reason);
     void notifySceneTransformChanged();
-    void pushTransformCommand(int32_t nodeIndex, const float4x4& before, const float4x4& after);
+    void pushTransformCommand(
+        scene::SceneEntity object,
+        uint64_t sceneLifetimeRevision,
+        const float4x4& before,
+        const float4x4& after);
+    void updateSceneDirtyState();
+    void finishActiveTransformTransactions();
     void undoTransform();
     void redoTransform();
     void resetTransformHistory();
@@ -134,6 +143,8 @@ private:
 
     struct SceneSelection {
         SceneSelectionType type = SceneSelectionType::None;
+        scene::SceneEntity object = scene::kNullSceneEntity;
+        uint64_t sceneLifetimeRevision = 0;
         int32_t index = scene::kInvalidSceneIndex;
         int32_t nodeIndex = scene::kInvalidSceneIndex;
         int32_t meshIndex = scene::kInvalidSceneIndex;
@@ -157,7 +168,8 @@ private:
     };
 
     struct TransformCommand {
-        int32_t nodeIndex = scene::kInvalidSceneIndex;
+        scene::SceneEntity object = scene::kNullSceneEntity;
+        uint64_t sceneLifetimeRevision = 0;
         float4x4 before = float4x4::Identity();
         float4x4 after = float4x4::Identity();
     };
@@ -190,7 +202,12 @@ private:
     bool environmentUserEdited_ = false;
     bool environmentFromSample_ = false;
     bool environmentFromLegacyGraph_ = false;
+    bool environmentEditBaselineValid_ = false;
+    bool environmentEditBaselineUserEdited_ = false;
+    bool environmentEditBaselineFromSample_ = false;
+    bool environmentEditBaselineFromLegacyGraph_ = false;
     bool preserveSampleEnvironmentForNextSceneLoad_ = false;
+    render::EnvironmentSettings environmentEditBaseline_;
     std::filesystem::path pendingSceneLoadPath_;
     uint64_t sceneLoadGeneration_ = 0;
     scene::ScenePicker scenePicker_;
@@ -224,12 +241,21 @@ private:
     bool snapEnabled_ = false;
     bool gizmoLocal_ = false;
     bool gizmoWasUsing_ = false;
+    bool viewportHovered_ = false;
+    bool viewportInteractionEnabled_ = false;
+    bool viewportGizmoCapturingMouse_ = false;
+    bool sceneNonTransformDirty_ = false;
     bool inspectorTransformEditing_ = false;
     int viewportCameraDragButton_ = -1;
     GizmoOperation gizmoOperation_ = GizmoOperation::Translate;
     float translateSnap_ = 0.5f;
     float rotateSnap_ = 15.0f;
     float scaleSnap_ = 0.1f;
+    scene::SceneEntity viewportHoveredObject_ = scene::kNullSceneEntity;
+    scene::SceneEntity gizmoEditingObject_ = scene::kNullSceneEntity;
+    uint64_t gizmoEditingSceneLifetime_ = 0;
+    scene::SceneEntity inspectorEditingObject_ = scene::kNullSceneEntity;
+    uint64_t inspectorEditingSceneLifetime_ = 0;
     float4x4 gizmoStartLocalMatrix_ = float4x4::Identity();
     float4x4 inspectorStartLocalMatrix_ = float4x4::Identity();
     std::vector<TransformCommand> transformCommands_;

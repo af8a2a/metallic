@@ -852,6 +852,8 @@ struct ViewportCameraMatrices {
     CameraFrame frame;
     float4x4 view = float4x4::Identity();
     float4x4 projection = float4x4::Identity();
+    float nearPlane = 0.1f;
+    float farPlane = 10000.0f;
     bool orthographic = false;
 };
 
@@ -878,6 +880,8 @@ ViewportCameraMatrices viewportCameraMatrices(
 
     const float znear = std::max(propertyFloatOr(camera, "znear", 0.1f), 0.00001f);
     const float zfar = std::max(propertyFloatOr(camera, "zfar", 10000.0f), znear + 0.00001f);
+    result.nearPlane = znear;
+    result.farPlane = zfar;
     const bool reversedZ = camera.value("reversedZ", true);
     const uint32_t projectionFlags = reversedZ ? PROJ_REVERSED_Z : 0;
     const float aspect = std::max(viewportWidth / std::max(viewportHeight, 1.0f), 0.001f);
@@ -933,6 +937,65 @@ bool matrixHasShear(const float4x4& matrix)
     return std::abs(dot(column0 / length0, column1 / length1)) > kShearEpsilon ||
         std::abs(dot(column0 / length0, column2 / length2)) > kShearEpsilon ||
         std::abs(dot(column1 / length1, column2 / length2)) > kShearEpsilon;
+}
+
+bool matrixHasNonUniformScale(const float4x4& matrix)
+{
+    const float length0 = length(float3(matrix.a00, matrix.a10, matrix.a20));
+    const float length1 = length(float3(matrix.a01, matrix.a11, matrix.a21));
+    const float length2 = length(float3(matrix.a02, matrix.a12, matrix.a22));
+    const float maximum = std::max({length0, length1, length2});
+    const float minimum = std::min({length0, length1, length2});
+    return !std::isfinite(maximum) || maximum <= 0.000001f ||
+        maximum - minimum > maximum * 0.0005f;
+}
+
+std::pair<uint32_t, uint32_t> constrainedPreviewExtent(
+    float width,
+    float height,
+    uint32_t maximumDimension)
+{
+    width = std::max(width, 1.0f);
+    height = std::max(height, 1.0f);
+    const float scale = std::min({
+        1.0f,
+        static_cast<float>(maximumDimension) / width,
+        static_cast<float>(maximumDimension) / height,
+    });
+    return {
+        std::max(static_cast<uint32_t>(std::floor(width * scale)), 1u),
+        std::max(static_cast<uint32_t>(std::floor(height * scale)), 1u),
+    };
+}
+
+bool projectWorldToViewport(
+    const float3& worldPosition,
+    const ViewportCameraMatrices& matrices,
+    const ImVec2& min,
+    const ImVec2& max,
+    ImVec2& screenPosition)
+{
+    const float4 viewPosition = matrices.view * float4(worldPosition, 1.0f);
+    const float viewDepth = -viewPosition.z;
+    if (!std::isfinite(viewDepth) || viewDepth < matrices.nearPlane ||
+        viewDepth > matrices.farPlane) {
+        return false;
+    }
+    const float4 clipPosition = matrices.projection * viewPosition;
+    if (!std::isfinite(clipPosition.w) || std::abs(clipPosition.w) <= 0.000001f) {
+        return false;
+    }
+    const float normalizedX = clipPosition.x / clipPosition.w;
+    const float normalizedY = clipPosition.y / clipPosition.w;
+    if (!std::isfinite(normalizedX) || !std::isfinite(normalizedY) ||
+        normalizedX < -1.0f || normalizedX > 1.0f ||
+        normalizedY < -1.0f || normalizedY > 1.0f) {
+        return false;
+    }
+    screenPosition = ImVec2(
+        min.x + (normalizedX * 0.5f + 0.5f) * (max.x - min.x),
+        min.y + (1.0f - (normalizedY * 0.5f + 0.5f)) * (max.y - min.y));
+    return true;
 }
 
 CameraViewDimensions cameraViewDimensions(
@@ -2481,25 +2544,19 @@ void EditorApplication::drawDockspace()
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
 
     if (!ImGui::GetIO().WantTextInput) {
-        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) {
-            saveScene();
-        } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z)) {
-            undoTransform();
-        } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y)) {
-            redoTransform();
-        } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O)) {
-            chooseEnvironmentFile();
-        } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
-            chooseSceneFile();
-        } else if (!ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt) {
-            if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
-                gizmoOperation_ = GizmoOperation::Translate;
-            } else if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
-                gizmoOperation_ = GizmoOperation::Rotate;
-            } else if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
-                gizmoOperation_ = GizmoOperation::Scale;
-            } else if (ImGui::IsKeyPressed(ImGuiKey_X, false)) {
-                gizmoLocal_ = !gizmoLocal_;
+        const bool transformEditing = gizmoWasUsing_ || inspectorTransformEditing_ ||
+            ImGuizmo::IsUsingAny();
+        if (!transformEditing) {
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) {
+                saveScene();
+            } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z)) {
+                undoTransform();
+            } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y)) {
+                redoTransform();
+            } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O)) {
+                chooseEnvironmentFile();
+            } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
+                chooseSceneFile();
             }
         }
     }
@@ -2810,19 +2867,28 @@ void EditorApplication::drawSceneListSelectable(const char* label, int32_t index
     const SceneSelectionType selectionType = static_cast<SceneSelectionType>(type);
     const bool selected = sceneSelection_.type == selectionType && sceneSelection_.index == index;
     if (ImGui::Selectable(label, selected)) {
-        sceneSelection_ = SceneSelection{
+        SceneSelection selection{
             .type = selectionType,
             .index = index,
         };
         if (selectionType == SceneSelectionType::Node) {
-            sceneSelection_.nodeIndex = index;
+            selection.nodeIndex = index;
+            selection.object = scene_.objectForNode(index).entity();
         } else if (selectionType == SceneSelectionType::Camera &&
             index >= 0 && static_cast<size_t>(index) < scene_.cameras().size()) {
-            sceneSelection_.nodeIndex = scene_.cameras()[static_cast<size_t>(index)].nodeIndex;
+            const scene::RenderCamera& camera = scene_.cameras()[static_cast<size_t>(index)];
+            selection.nodeIndex = camera.nodeIndex;
+            selection.object = camera.object;
         } else if (selectionType == SceneSelectionType::Light &&
             index >= 0 && static_cast<size_t>(index) < scene_.lights().size()) {
-            sceneSelection_.nodeIndex = scene_.lights()[static_cast<size_t>(index)].nodeIndex;
+            const scene::RenderLight& light = scene_.lights()[static_cast<size_t>(index)];
+            selection.nodeIndex = light.nodeIndex;
+            selection.object = light.object;
         }
+        if (scene_.sceneGraph().object(selection.object)) {
+            selection.sceneLifetimeRevision = scene_.sceneGraph().lifetimeRevision();
+        }
+        sceneSelection_ = selection;
     }
 }
 
@@ -2875,15 +2941,6 @@ void EditorApplication::drawSceneListTab()
                     .meshIndex = primitive.meshIndex,
                     .primitiveIndex = primitive.primitiveIndex,
                 };
-                const auto owner = std::find_if(
-                    scene_.renderNodes().begin(),
-                    scene_.renderNodes().end(),
-                    [index](const scene::RenderNode& renderNode) {
-                        return renderNode.renderPrimitiveIndex == static_cast<int32_t>(index);
-                    });
-                if (owner != scene_.renderNodes().end()) {
-                    sceneSelection_.nodeIndex = owner->nodeIndex;
-                }
             }
         }
         ImGui::EndChild();
@@ -2949,10 +3006,48 @@ void EditorApplication::drawSceneListTab()
 
 void EditorApplication::drawInspectorPanel()
 {
+    const scene::ConstSceneObject currentObject = selectedSceneObject();
+    if (inspectorTransformEditing_ &&
+        (!inspectorOpen_ || !currentObject ||
+            inspectorEditingObject_ != currentObject.entity() ||
+            inspectorEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision())) {
+        const scene::ConstSceneObject editedObject =
+            inspectorEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
+            ? scene_.sceneGraph().object(inspectorEditingObject_)
+            : scene::ConstSceneObject{};
+        if (const scene::TransformComponent* editedTransform =
+                editedObject.tryGetComponent<scene::TransformComponent>()) {
+            pushTransformCommand(
+                inspectorEditingObject_,
+                inspectorEditingSceneLifetime_,
+                inspectorStartLocalMatrix_,
+                editedTransform->localMatrix);
+        }
+        inspectorTransformEditing_ = false;
+        inspectorEditingObject_ = scene::kNullSceneEntity;
+        inspectorEditingSceneLifetime_ = 0;
+    }
     if (!inspectorOpen_) {
         return;
     }
     if (!ImGui::Begin("Inspector", &inspectorOpen_)) {
+        if (inspectorTransformEditing_) {
+            const scene::ConstSceneObject editedObject =
+                inspectorEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
+                ? scene_.sceneGraph().object(inspectorEditingObject_)
+                : scene::ConstSceneObject{};
+            if (const scene::TransformComponent* editedTransform =
+                    editedObject.tryGetComponent<scene::TransformComponent>()) {
+                pushTransformCommand(
+                    inspectorEditingObject_,
+                    inspectorEditingSceneLifetime_,
+                    inspectorStartLocalMatrix_,
+                    editedTransform->localMatrix);
+            }
+            inspectorTransformEditing_ = false;
+            inspectorEditingObject_ = scene::kNullSceneEntity;
+            inspectorEditingSceneLifetime_ = 0;
+        }
         ImGui::End();
         return;
     }
@@ -2962,7 +3057,9 @@ void EditorApplication::drawInspectorPanel()
         ImGui::End();
         return;
     }
-    if (sceneSelection_.type == SceneSelectionType::None || sceneSelection_.index < 0) {
+    const scene::ConstSceneObject selectedObject = currentObject;
+    if (sceneSelection_.type == SceneSelectionType::None ||
+        (sceneSelection_.index < 0 && !selectedObject)) {
         ImGui::TextDisabled("No selection");
         ImGui::Separator();
         ImGui::TextWrapped("Select an element in the Scene Browser to view its properties.");
@@ -2970,14 +3067,22 @@ void EditorApplication::drawInspectorPanel()
         return;
     }
 
-    if (selectedNodeIndex() != scene::kInvalidSceneIndex) {
+    if (selectedObject) {
         drawSelectedNodeTransformInspector();
         ImGui::Separator();
     }
 
     switch (sceneSelection_.type) {
     case SceneSelectionType::Node: {
-        if (static_cast<size_t>(sceneSelection_.index) >= scene_.nodes().size()) {
+        if (sceneSelection_.index < 0 ||
+            static_cast<size_t>(sceneSelection_.index) >= scene_.nodes().size()) {
+            if (const scene::TagComponent* tag =
+                    selectedObject.tryGetComponent<scene::TagComponent>()) {
+                ImGui::Text("Object: %s", tag->name.c_str());
+            } else {
+                ImGui::Text("Object: %u", static_cast<uint32_t>(sceneSelection_.object));
+            }
+            ImGui::TextDisabled("Runtime object (no source node)");
             break;
         }
         const scene::SceneNode& node = scene_.nodes()[static_cast<size_t>(sceneSelection_.index)];
@@ -3452,15 +3557,32 @@ void EditorApplication::drawEnvironmentControls()
     if (!changed) {
         return;
     }
+    beginEnvironmentEdit();
     renderWorld_.setEnvironment(environment);
     if (scene_.valid()) {
-        scene_.setEnvironment(environment);
+        if (scene_.setEnvironment(environment)) {
+            sceneNonTransformDirty_ = true;
+            updateSceneDirtyState();
+        }
     }
     environmentUserEdited_ = true;
     environmentFromSample_ = false;
     environmentFromLegacyGraph_ = false;
+    preserveSampleEnvironmentForNextSceneLoad_ = false;
     viewportPreviewNeedsRender_ = true;
     renderGraphStatus_ = "Updated scene environment";
+}
+
+void EditorApplication::beginEnvironmentEdit()
+{
+    if (environmentEditBaselineValid_) {
+        return;
+    }
+    environmentEditBaseline_ = renderWorld_.environment();
+    environmentEditBaselineValid_ = true;
+    environmentEditBaselineUserEdited_ = environmentUserEdited_;
+    environmentEditBaselineFromSample_ = environmentFromSample_;
+    environmentEditBaselineFromLegacyGraph_ = environmentFromLegacyGraph_;
 }
 
 void EditorApplication::applyRuntimeNodeProperties(
@@ -3565,7 +3687,7 @@ void EditorApplication::drawSceneNode(int32_t nodeIndex)
     if (leaf) {
         flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
     }
-    if (sceneSelection_.type == SceneSelectionType::Node && sceneSelection_.index == nodeIndex) {
+    if (selectedNodeIndex() == nodeIndex) {
         flags |= ImGuiTreeNodeFlags_Selected;
     }
 
@@ -3577,6 +3699,8 @@ void EditorApplication::drawSceneNode(int32_t nodeIndex)
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
         sceneSelection_ = SceneSelection{
             .type = SceneSelectionType::Node,
+            .object = scene_.objectForNode(nodeIndex).entity(),
+            .sceneLifetimeRevision = scene_.sceneGraph().lifetimeRevision(),
             .index = nodeIndex,
             .nodeIndex = nodeIndex,
             .meshIndex = node.meshIndex,
@@ -3605,8 +3729,35 @@ void EditorApplication::drawSceneNode(int32_t nodeIndex)
     }
 }
 
+scene::ConstSceneObject EditorApplication::selectedSceneObject() const
+{
+    if (!scene_.valid() || sceneSelection_.object == scene::kNullSceneEntity ||
+        sceneSelection_.sceneLifetimeRevision != scene_.sceneGraph().lifetimeRevision()) {
+        return {};
+    }
+    const scene::ConstSceneObject object =
+        scene_.sceneGraph().object(sceneSelection_.object);
+    return object && object.hasComponent<scene::ActiveSceneComponent>()
+        ? object
+        : scene::ConstSceneObject{};
+}
+
 int32_t EditorApplication::selectedNodeIndex() const
 {
+    if (sceneSelection_.object != scene::kNullSceneEntity) {
+        const scene::ConstSceneObject object = selectedSceneObject();
+        if (!object) {
+            return scene::kInvalidSceneIndex;
+        }
+        if (const scene::SourceNodeComponent* source =
+                object.tryGetComponent<scene::SourceNodeComponent>()) {
+            return source->nodeIndex >= 0 &&
+                    static_cast<size_t>(source->nodeIndex) < scene_.nodes().size()
+                ? source->nodeIndex
+                : scene::kInvalidSceneIndex;
+        }
+        return scene::kInvalidSceneIndex;
+    }
     int32_t nodeIndex = sceneSelection_.nodeIndex;
     if (nodeIndex == scene::kInvalidSceneIndex && sceneSelection_.type == SceneSelectionType::Node) {
         nodeIndex = sceneSelection_.index;
@@ -3625,44 +3776,50 @@ void EditorApplication::notifySceneTransformChanged()
         viewportPreviewValid_ = false;
     }
     viewportPreviewNeedsRender_ = true;
-    sceneRtxStatus_ = "RTX AS transform data changed; runtime passes will synchronize on the next frame.";
+    if (sceneRtx_ != nullptr && sceneRtx_->valid()) {
+        sceneRtx_->clear();
+        sceneRtxStatus_ = "Static RTX AS cleared after a scene transform edit; rebuild it if needed.";
+    } else {
+        sceneRtxStatus_ = "Runtime RTX passes will synchronize transforms on the next frame.";
+    }
 }
 
-bool EditorApplication::setSelectedNodeWorldMatrix(const float4x4& worldMatrix, std::string& reason)
+bool EditorApplication::setSelectedObjectWorldMatrix(
+    const float4x4& worldMatrix,
+    std::string& reason)
 {
-    const int32_t nodeIndex = selectedNodeIndex();
-    if (nodeIndex == scene::kInvalidSceneIndex || !matrixIsFinite(worldMatrix)) {
+    const scene::ConstSceneObject object = selectedSceneObject();
+    if (!object || !matrixIsFinite(worldMatrix)) {
         reason = "Selected transform is invalid.";
         return false;
     }
-
-    const scene::SceneNode& node = scene_.nodes()[static_cast<size_t>(nodeIndex)];
-    float4x4 localMatrix = worldMatrix;
-    if (node.parent != scene::kInvalidSceneIndex) {
-        if (node.parent < 0 || static_cast<size_t>(node.parent) >= scene_.nodes().size()) {
-            reason = "The selected node has an invalid parent.";
-            return false;
-        }
-        const float4x4& parentWorld = scene_.nodes()[static_cast<size_t>(node.parent)].worldMatrix;
-        if (!std::isfinite(affineDeterminant(parentWorld)) ||
-            std::abs(affineDeterminant(parentWorld)) <= 0.0000001f) {
-            reason = "The parent world transform is singular and cannot be inverted.";
-            return false;
-        }
-        float4x4 inverseParent = parentWorld;
-        inverseParent.Invert();
-        localMatrix = inverseParent * worldMatrix;
-    }
-
-    if (!matrixIsFinite(localMatrix)) {
-        reason = "The local transform could not be updated.";
+    if (object.hasComponent<scene::GeneratedComponent>()) {
+        reason = "Generated scene objects are read-only.";
         return false;
     }
-    if (scene::matrixNearlyEqual(node.localMatrix, localMatrix)) {
+    if (!object.hasComponent<scene::SourceNodeComponent>()) {
+        reason = "Runtime-only scene objects are read-only until document serialization is available.";
+        return false;
+    }
+    const scene::TransformComponent* transform =
+        object.tryGetComponent<scene::TransformComponent>();
+    if (transform == nullptr) {
+        reason = "The selected object has no transform component.";
+        return false;
+    }
+    const float currentDeterminant = affineDeterminant(transform->worldMatrix);
+    const float editedDeterminant = affineDeterminant(worldMatrix);
+    if (!std::isfinite(editedDeterminant) || std::abs(editedDeterminant) <= 0.0000001f ||
+        (std::isfinite(currentDeterminant) && currentDeterminant * editedDeterminant < 0.0f)) {
+        reason = "The transform edit would become singular or change handedness.";
+        return false;
+    }
+    if (scene::matrixNearlyEqual(transform->worldMatrix, worldMatrix)) {
         return true;
     }
-    if (!scene_.setNodeLocalMatrix(nodeIndex, localMatrix)) {
-        reason = "The local transform could not be updated.";
+
+    if (!scene_.setObjectWorldMatrix(object.entity(), worldMatrix)) {
+        reason = "The world transform could not be converted through the current parent hierarchy.";
         return false;
     }
     notifySceneTransformChanged();
@@ -3670,13 +3827,16 @@ bool EditorApplication::setSelectedNodeWorldMatrix(const float4x4& worldMatrix, 
 }
 
 void EditorApplication::pushTransformCommand(
-    int32_t nodeIndex,
+    scene::SceneEntity object,
+    uint64_t sceneLifetimeRevision,
     const float4x4& before,
     const float4x4& after)
 {
-    if (nodeIndex < 0 || scene::matrixNearlyEqual(before, after)) {
-        scene_.setDirty(savedTransformCommandCursor_ < 0 ||
-            static_cast<int64_t>(transformCommandCursor_) != savedTransformCommandCursor_);
+    if (object == scene::kNullSceneEntity ||
+        sceneLifetimeRevision != scene_.sceneGraph().lifetimeRevision() ||
+        !scene_.sceneGraph().object(object) ||
+        scene::matrixNearlyEqual(before, after)) {
+        updateSceneDirtyState();
         return;
     }
     if (transformCommandCursor_ < transformCommands_.size()) {
@@ -3688,7 +3848,8 @@ void EditorApplication::pushTransformCommand(
         }
     }
     transformCommands_.push_back(TransformCommand{
-        .nodeIndex = nodeIndex,
+        .object = object,
+        .sceneLifetimeRevision = sceneLifetimeRevision,
         .before = before,
         .after = after,
     });
@@ -3703,38 +3864,90 @@ void EditorApplication::pushTransformCommand(
             savedTransformCommandCursor_ = -1;
         }
     }
-    scene_.setDirty(savedTransformCommandCursor_ < 0 ||
-        static_cast<int64_t>(transformCommandCursor_) != savedTransformCommandCursor_);
+    updateSceneDirtyState();
+}
+
+void EditorApplication::updateSceneDirtyState()
+{
+    const bool transformDirty = savedTransformCommandCursor_ < 0 ||
+        static_cast<int64_t>(transformCommandCursor_) != savedTransformCommandCursor_;
+    scene_.setDirty(sceneNonTransformDirty_ || transformDirty);
+}
+
+void EditorApplication::finishActiveTransformTransactions()
+{
+    if (gizmoWasUsing_) {
+        const scene::ConstSceneObject editedObject =
+            gizmoEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
+            ? scene_.sceneGraph().object(gizmoEditingObject_)
+            : scene::ConstSceneObject{};
+        if (const scene::TransformComponent* transform =
+                editedObject.tryGetComponent<scene::TransformComponent>()) {
+            pushTransformCommand(
+                gizmoEditingObject_,
+                gizmoEditingSceneLifetime_,
+                gizmoStartLocalMatrix_,
+                transform->localMatrix);
+        }
+        if (ImGuizmo::IsUsingAny()) {
+            ImGuizmo::Enable(false);
+            ImGuizmo::Enable(true);
+        }
+        gizmoWasUsing_ = false;
+        gizmoEditingObject_ = scene::kNullSceneEntity;
+        gizmoEditingSceneLifetime_ = 0;
+        viewportGizmoCapturingMouse_ = false;
+    }
+
+    if (inspectorTransformEditing_) {
+        const scene::ConstSceneObject editedObject =
+            inspectorEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
+            ? scene_.sceneGraph().object(inspectorEditingObject_)
+            : scene::ConstSceneObject{};
+        if (const scene::TransformComponent* transform =
+                editedObject.tryGetComponent<scene::TransformComponent>()) {
+            pushTransformCommand(
+                inspectorEditingObject_,
+                inspectorEditingSceneLifetime_,
+                inspectorStartLocalMatrix_,
+                transform->localMatrix);
+        }
+        inspectorTransformEditing_ = false;
+        inspectorEditingObject_ = scene::kNullSceneEntity;
+        inspectorEditingSceneLifetime_ = 0;
+    }
 }
 
 void EditorApplication::undoTransform()
 {
+    finishActiveTransformTransactions();
     if (transformCommandCursor_ == 0) {
         return;
     }
     --transformCommandCursor_;
     const TransformCommand& command = transformCommands_[transformCommandCursor_];
-    if (!scene_.setNodeLocalMatrix(command.nodeIndex, command.before)) {
+    if (command.sceneLifetimeRevision != scene_.sceneGraph().lifetimeRevision() ||
+        !scene_.setObjectLocalMatrix(command.object, command.before)) {
         ++transformCommandCursor_;
         return;
     }
-    scene_.setDirty(savedTransformCommandCursor_ < 0 ||
-        static_cast<int64_t>(transformCommandCursor_) != savedTransformCommandCursor_);
+    updateSceneDirtyState();
     notifySceneTransformChanged();
 }
 
 void EditorApplication::redoTransform()
 {
+    finishActiveTransformTransactions();
     if (transformCommandCursor_ >= transformCommands_.size()) {
         return;
     }
     const TransformCommand& command = transformCommands_[transformCommandCursor_];
-    if (!scene_.setNodeLocalMatrix(command.nodeIndex, command.after)) {
+    if (command.sceneLifetimeRevision != scene_.sceneGraph().lifetimeRevision() ||
+        !scene_.setObjectLocalMatrix(command.object, command.after)) {
         return;
     }
     ++transformCommandCursor_;
-    scene_.setDirty(savedTransformCommandCursor_ < 0 ||
-        static_cast<int64_t>(transformCommandCursor_) != savedTransformCommandCursor_);
+    updateSceneDirtyState();
     notifySceneTransformChanged();
 }
 
@@ -3744,13 +3957,23 @@ void EditorApplication::resetTransformHistory()
     transformCommandCursor_ = 0;
     savedTransformCommandCursor_ = 0;
     gizmoWasUsing_ = false;
+    gizmoEditingObject_ = scene::kNullSceneEntity;
+    gizmoEditingSceneLifetime_ = 0;
     inspectorTransformEditing_ = false;
+    inspectorEditingObject_ = scene::kNullSceneEntity;
+    inspectorEditingSceneLifetime_ = 0;
+    sceneNonTransformDirty_ = false;
+    environmentEditBaselineValid_ = false;
+    environmentEditBaselineUserEdited_ = false;
+    environmentEditBaselineFromSample_ = false;
+    environmentEditBaselineFromLegacyGraph_ = false;
     scenePicker_.clear();
     scene_.setDirty(false);
 }
 
 void EditorApplication::saveScene()
 {
+    finishActiveTransformTransactions();
     if (!scene_.valid()) {
         sceneStatus_ = "No scene is open.";
         return;
@@ -3760,7 +3983,17 @@ void EditorApplication::saveScene()
         sceneStatus_ = message.empty() ? "Failed to save scene document." : message;
         return;
     }
+    const bool persistedEnvironmentEdit = sceneNonTransformDirty_ &&
+        environmentEditBaselineValid_;
     savedTransformCommandCursor_ = static_cast<int64_t>(transformCommandCursor_);
+    sceneNonTransformDirty_ = false;
+    if (persistedEnvironmentEdit) {
+        environmentUserEdited_ = false;
+    }
+    environmentEditBaselineValid_ = false;
+    environmentEditBaselineUserEdited_ = false;
+    environmentEditBaselineFromSample_ = false;
+    environmentEditBaselineFromLegacyGraph_ = false;
     scene_.setDirty(false);
     sceneStatus_ = "Saved scene overrides: " + scene_.documentPath().string();
 }
@@ -3770,6 +4003,7 @@ void EditorApplication::requestPendingSceneAction(
     std::filesystem::path path,
     std::string value)
 {
+    finishActiveTransformTransactions();
     pendingSceneAction_ = action;
     pendingScenePath_ = std::move(path);
     pendingSceneValue_ = std::move(value);
@@ -3848,9 +4082,31 @@ void EditorApplication::drawUnsavedSceneModal()
     }
     ImGui::SameLine();
     if (ImGui::Button("Discard", ImVec2(100.0f * mainScale_, 0.0f))) {
-        scene_.setDirty(false);
-        ImGui::CloseCurrentPopup();
-        executePendingSceneAction();
+        std::string message;
+        if (!scene_.revert(message)) {
+            sceneStatus_ = message.empty()
+                ? "Failed to discard scene changes."
+                : "Failed to discard scene changes: " + message;
+        } else {
+            sceneSelection_ = SceneSelection{};
+            renderWorld_.notifySceneChanged();
+            if (environmentEditBaselineValid_) {
+                renderWorld_.setEnvironment(environmentEditBaseline_);
+                environmentUserEdited_ = environmentEditBaselineUserEdited_;
+                environmentFromSample_ = environmentEditBaselineFromSample_;
+                environmentFromLegacyGraph_ = environmentEditBaselineFromLegacyGraph_;
+                preserveSampleEnvironmentForNextSceneLoad_ = environmentFromSample_;
+            }
+            resetTransformHistory();
+            historyResources_.invalidateAll();
+            historyFrameIndex_ = 0;
+            viewportPreviewValid_ = false;
+            viewportPreviewNeedsRender_ = true;
+            clearSceneRtx();
+            sceneStatus_ = std::move(message);
+            ImGui::CloseCurrentPopup();
+            executePendingSceneAction();
+        }
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(100.0f * mainScale_, 0.0f))) {
@@ -3873,59 +4129,139 @@ void EditorApplication::drawUnsavedSceneModal()
 
 void EditorApplication::drawSelectedNodeTransformInspector()
 {
-    const int32_t nodeIndex = selectedNodeIndex();
-    if (nodeIndex == scene::kInvalidSceneIndex) {
+    const scene::ConstSceneObject object = selectedSceneObject();
+    if (!object) {
+        return;
+    }
+    if (object.hasComponent<scene::GeneratedComponent>()) {
+        ImGui::TextDisabled("Generated scene objects are read-only.");
+        return;
+    }
+    if (!object.hasComponent<scene::SourceNodeComponent>()) {
+        ImGui::TextDisabled("Runtime-only object transforms are not serialized and are read-only.");
+        return;
+    }
+    if (gizmoWasUsing_ || ImGuizmo::IsUsingAny()) {
+        ImGui::TextDisabled("Finish the viewport gizmo edit before using Inspector controls.");
+        return;
+    }
+    if (inspectorTransformEditing_ &&
+        (inspectorEditingObject_ != object.entity() ||
+            inspectorEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision())) {
+        const scene::ConstSceneObject editedObject =
+            inspectorEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
+            ? scene_.sceneGraph().object(inspectorEditingObject_)
+            : scene::ConstSceneObject{};
+        if (const scene::TransformComponent* editedTransform =
+                editedObject.tryGetComponent<scene::TransformComponent>()) {
+            pushTransformCommand(
+                inspectorEditingObject_,
+                inspectorEditingSceneLifetime_,
+                inspectorStartLocalMatrix_,
+                editedTransform->localMatrix);
+        }
+        inspectorTransformEditing_ = false;
+        inspectorEditingObject_ = scene::kNullSceneEntity;
+        inspectorEditingSceneLifetime_ = 0;
+    }
+    const scene::TransformComponent* transform =
+        object.tryGetComponent<scene::TransformComponent>();
+    if (transform == nullptr) {
         return;
     }
 
-    const scene::SceneNode& node = scene_.nodes()[static_cast<size_t>(nodeIndex)];
-    const float4x4 originalLocal = node.localMatrix;
-    const bool singular = !matrixIsFinite(originalLocal) ||
-        std::abs(affineDeterminant(originalLocal)) <= 0.0000001f;
+    const float4x4 originalLocal = transform->localMatrix;
+    const bool finite = matrixIsFinite(originalLocal);
+    const float determinant = affineDeterminant(originalLocal);
+    const bool singular = !finite ||
+        !std::isfinite(determinant) || std::abs(determinant) <= 0.0000001f;
     const bool shear = !singular && matrixHasShear(originalLocal);
-    float translation[3] = {};
+    const bool reflection = !singular && determinant < 0.0f;
+    float translation[3] = {
+        originalLocal.a03,
+        originalLocal.a13,
+        originalLocal.a23,
+    };
     float rotation[3] = {};
-    float scale[3] = {};
-    ImGuizmo::DecomposeMatrixToComponents(originalLocal.a, translation, rotation, scale);
+    float scale[3] = {1.0f, 1.0f, 1.0f};
+    if (!singular) {
+        ImGuizmo::DecomposeMatrixToComponents(originalLocal.a, translation, rotation, scale);
+        translation[0] = originalLocal.a03;
+        translation[1] = originalLocal.a13;
+        translation[2] = originalLocal.a23;
+    }
 
     ImGui::TextUnformatted("Local Transform");
-    if (singular) {
-        ImGui::TextDisabled("Read-only: the local matrix is singular.");
+    if (!finite) {
+        ImGui::TextDisabled("Read-only: the local matrix contains non-finite values.");
+    } else if (singular) {
+        ImGui::TextDisabled("Singular transform: only translation can be edited safely.");
     } else if (shear) {
         ImGui::TextDisabled("Shear detected: only translation can be edited safely.");
+    } else if (reflection) {
+        ImGui::TextDisabled("Reflected transform: rotation and scale are read-only.");
     }
 
     const auto applyEdit = [&](bool changed, bool translationOnly) {
         if (ImGui::IsItemActivated()) {
             inspectorStartLocalMatrix_ = originalLocal;
             inspectorTransformEditing_ = true;
+            inspectorEditingObject_ = object.entity();
+            inspectorEditingSceneLifetime_ = scene_.sceneGraph().lifetimeRevision();
         }
         if (changed) {
             float4x4 edited = originalLocal;
+            bool validEdit = true;
             if (translationOnly) {
                 edited.a03 = translation[0];
                 edited.a13 = translation[1];
                 edited.a23 = translation[2];
             } else {
-                ImGuizmo::RecomposeMatrixFromComponents(translation, rotation, scale, edited.a);
+                constexpr float kMinimumEditableScale = 0.0001f;
+                if (scale[0] <= kMinimumEditableScale ||
+                    scale[1] <= kMinimumEditableScale ||
+                    scale[2] <= kMinimumEditableScale) {
+                    sceneStatus_ = "Scale edit rejected: scale components must remain positive and non-zero.";
+                    validEdit = false;
+                } else {
+                    ImGuizmo::RecomposeMatrixFromComponents(translation, rotation, scale, edited.a);
+                    const float editedDeterminant = affineDeterminant(edited);
+                    if (!matrixIsFinite(edited) || !std::isfinite(editedDeterminant) ||
+                        editedDeterminant <= 0.0000001f) {
+                        sceneStatus_ = "Transform edit rejected: the result would be singular or reflected.";
+                        validEdit = false;
+                    }
+                }
             }
-            if (scene_.setNodeLocalMatrix(nodeIndex, edited)) {
+            if (validEdit && scene_.setObjectLocalMatrix(object.entity(), edited)) {
                 notifySceneTransformChanged();
             }
         }
         if (ImGui::IsItemDeactivatedAfterEdit() && inspectorTransformEditing_) {
-            const float4x4 after = scene_.nodes()[static_cast<size_t>(nodeIndex)].localMatrix;
-            pushTransformCommand(nodeIndex, inspectorStartLocalMatrix_, after);
+            const scene::ConstSceneObject editedObject =
+                inspectorEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
+                ? scene_.sceneGraph().object(inspectorEditingObject_)
+                : scene::ConstSceneObject{};
+            if (const scene::TransformComponent* editedTransform =
+                    editedObject.tryGetComponent<scene::TransformComponent>()) {
+                pushTransformCommand(
+                    inspectorEditingObject_,
+                    inspectorEditingSceneLifetime_,
+                    inspectorStartLocalMatrix_,
+                    editedTransform->localMatrix);
+            }
             inspectorTransformEditing_ = false;
+            inspectorEditingObject_ = scene::kNullSceneEntity;
+            inspectorEditingSceneLifetime_ = 0;
         }
     };
 
-    ImGui::BeginDisabled(singular);
+    ImGui::BeginDisabled(!finite);
     const bool translationChanged = ImGui::DragFloat3("Position", translation, 0.01f);
-    applyEdit(translationChanged, shear);
+    applyEdit(translationChanged, true);
     ImGui::EndDisabled();
 
-    ImGui::BeginDisabled(singular || shear);
+    ImGui::BeginDisabled(singular || shear || reflection);
     const bool rotationChanged = ImGui::DragFloat3("Rotation", rotation, 0.25f);
     applyEdit(rotationChanged, false);
     const bool scaleChanged = ImGui::DragFloat3("Scale", scale, 0.01f);
@@ -3935,41 +4271,109 @@ void EditorApplication::drawSelectedNodeTransformInspector()
     ImGui::Spacing();
     ImGui::TextUnformatted("World Transform (read-only)");
     for (uint32_t row = 0; row < 4; ++row) {
-        const float4 values = node.worldMatrix.Row(row);
+        const float4 values = transform->worldMatrix.Row(row);
         ImGui::TextDisabled("% .5f  % .5f  % .5f  % .5f", values.x, values.y, values.z, values.w);
     }
 }
 
 void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
 {
-    const int32_t nodeIndex = selectedNodeIndex();
+    viewportGizmoCapturingMouse_ = false;
+    const scene::ConstSceneObject object = selectedSceneObject();
     render::RenderGraphNode* renderNode = viewportCameraRenderGraphNode();
-    if (nodeIndex == scene::kInvalidSceneIndex || renderNode == nullptr) {
+
+    const auto finishInterruptedTransaction = [this]() {
+        if (gizmoWasUsing_ &&
+            gizmoEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()) {
+            const scene::ConstSceneObject editedObject =
+                scene_.sceneGraph().object(gizmoEditingObject_);
+            if (const scene::TransformComponent* transform =
+                    editedObject.tryGetComponent<scene::TransformComponent>()) {
+                pushTransformCommand(
+                    gizmoEditingObject_,
+                    gizmoEditingSceneLifetime_,
+                    gizmoStartLocalMatrix_,
+                    transform->localMatrix);
+            }
+        }
+        if (ImGuizmo::IsUsingAny()) {
+            ImGuizmo::Enable(false);
+            ImGuizmo::Enable(true);
+        }
         gizmoWasUsing_ = false;
+        gizmoEditingObject_ = scene::kNullSceneEntity;
+        gizmoEditingSceneLifetime_ = 0;
+    };
+
+    if (gizmoWasUsing_ &&
+        (gizmoEditingObject_ != object.entity() ||
+            gizmoEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision())) {
+        finishInterruptedTransaction();
+    }
+    if (!viewportInteractionEnabled_ || inspectorTransformEditing_ || !object ||
+        object.hasComponent<scene::GeneratedComponent>() ||
+        !object.hasComponent<scene::SourceNodeComponent>() || renderNode == nullptr) {
+        finishInterruptedTransaction();
         return;
     }
 
-    const scene::SceneNode& node = scene_.nodes()[static_cast<size_t>(nodeIndex)];
-    const bool singular = !matrixIsFinite(node.localMatrix) ||
-        std::abs(affineDeterminant(node.localMatrix)) <= 0.0000001f;
-    const bool shear = !singular && matrixHasShear(node.localMatrix);
-    const bool parentSingular = node.parent != scene::kInvalidSceneIndex &&
-        (node.parent < 0 || static_cast<size_t>(node.parent) >= scene_.nodes().size() ||
-            std::abs(affineDeterminant(scene_.nodes()[static_cast<size_t>(node.parent)].worldMatrix)) <=
-                0.0000001f);
-    const bool operationBlocked = singular || parentSingular ||
-        (shear && gizmoOperation_ != GizmoOperation::Translate);
+    const scene::TransformComponent* transform =
+        object.tryGetComponent<scene::TransformComponent>();
+    if (transform == nullptr) {
+        finishInterruptedTransaction();
+        return;
+    }
+    const float localDeterminant = affineDeterminant(transform->localMatrix);
+    const bool singular = !matrixIsFinite(transform->localMatrix) ||
+        !std::isfinite(localDeterminant) || std::abs(localDeterminant) <= 0.0000001f;
+    const bool shear = !singular && matrixHasShear(transform->localMatrix);
+    const bool reflection = !singular && localDeterminant < 0.0f;
+    const float worldDeterminant = affineDeterminant(transform->worldMatrix);
+    const bool worldInvalid = !matrixIsFinite(transform->worldMatrix) ||
+        !std::isfinite(worldDeterminant) || std::abs(worldDeterminant) <= 0.0000001f;
+    const bool worldShear = !worldInvalid && matrixHasShear(transform->worldMatrix);
+    const bool worldReflection = !worldInvalid && worldDeterminant < 0.0f;
+    bool parentSingular = false;
+    bool parentDistortsLinearTransform = false;
+    if (!object.hasComponent<scene::RootComponent>()) {
+        if (const scene::RelationshipComponent* relationship =
+            object.tryGetComponent<scene::RelationshipComponent>();
+            relationship != nullptr && relationship->parent != scene::kNullSceneEntity) {
+            const scene::ConstSceneObject parent =
+                scene_.sceneGraph().object(relationship->parent);
+            const scene::TransformComponent* parentTransform =
+                parent.tryGetComponent<scene::TransformComponent>();
+            if (parentTransform == nullptr) {
+                parentSingular = true;
+            } else {
+                const float parentDeterminant = affineDeterminant(parentTransform->worldMatrix);
+                parentSingular = !std::isfinite(parentDeterminant) ||
+                    std::abs(parentDeterminant) <= 0.0000001f;
+                parentDistortsLinearTransform = !parentSingular &&
+                    (parentDeterminant < 0.0f ||
+                        matrixHasShear(parentTransform->worldMatrix) ||
+                        matrixHasNonUniformScale(parentTransform->worldMatrix));
+            }
+        }
+    }
+    const bool editsLinearTransform = gizmoOperation_ != GizmoOperation::Translate;
+    const bool unsafeLinearEdit = editsLinearTransform &&
+        (shear || reflection || worldShear || worldReflection ||
+            parentDistortsLinearTransform);
+    const bool operationBlocked = singular || worldInvalid || parentSingular || unsafeLinearEdit;
     if (operationBlocked) {
         const char* reason = singular
             ? "Gizmo disabled: singular local transform"
-            : (parentSingular
-                    ? "Gizmo disabled: singular parent transform"
-                    : "Rotate/scale disabled: shear detected");
+            : (worldInvalid
+                    ? "Gizmo disabled: invalid world transform"
+                    : (parentSingular
+                            ? "Gizmo disabled: singular parent transform"
+                            : "Rotate/scale disabled: hierarchy contains reflection, shear, or non-uniform parent scale"));
         ImGui::GetWindowDrawList()->AddText(
             ImVec2(min.x + 10.0f, max.y - 28.0f * mainScale_),
             IM_COL32(255, 190, 90, 255),
             reason);
-        gizmoWasUsing_ = false;
+        finishInterruptedTransaction();
         return;
     }
 
@@ -3997,9 +4401,9 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         ? translateSnap_
         : (gizmoOperation_ == GizmoOperation::Rotate ? rotateSnap_ : scaleSnap_);
     const float snap[3] = {step, step, step};
-    float4x4 editedWorld = node.worldMatrix;
-    const float4x4 localBeforeManipulate = node.localMatrix;
-    ImGuizmo::PushID(nodeIndex);
+    float4x4 editedWorld = transform->worldMatrix;
+    const float4x4 localBeforeManipulate = transform->localMatrix;
+    ImGuizmo::PushID(static_cast<int>(object.entity()));
     const bool manipulated = ImGuizmo::Manipulate(
         matrices.view.a,
         matrices.projection.a,
@@ -4008,34 +4412,170 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         editedWorld.a,
         nullptr,
         useSnap ? snap : nullptr);
-    ImGuizmo::PopID();
     const bool usingNow = ImGuizmo::IsUsing();
+    const bool overNow = ImGuizmo::IsOver();
+    ImGuizmo::PopID();
+    viewportGizmoCapturingMouse_ = usingNow || overNow || ImGuizmo::IsUsingAny();
     if (usingNow && !gizmoWasUsing_) {
         gizmoStartLocalMatrix_ = localBeforeManipulate;
+        gizmoEditingObject_ = object.entity();
+        gizmoEditingSceneLifetime_ = scene_.sceneGraph().lifetimeRevision();
     }
     if (manipulated) {
         std::string reason;
-        if (!setSelectedNodeWorldMatrix(editedWorld, reason) && !reason.empty()) {
+        if (!setSelectedObjectWorldMatrix(editedWorld, reason) && !reason.empty()) {
             sceneStatus_ = reason;
         }
     }
     if (!usingNow && gizmoWasUsing_) {
-        const float4x4 after = scene_.nodes()[static_cast<size_t>(nodeIndex)].localMatrix;
-        pushTransformCommand(nodeIndex, gizmoStartLocalMatrix_, after);
+        const scene::ConstSceneObject editedObject =
+            gizmoEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
+            ? scene_.sceneGraph().object(gizmoEditingObject_)
+            : scene::ConstSceneObject{};
+        if (const scene::TransformComponent* editedTransform =
+                editedObject.tryGetComponent<scene::TransformComponent>()) {
+            pushTransformCommand(
+                gizmoEditingObject_,
+                gizmoEditingSceneLifetime_,
+                gizmoStartLocalMatrix_,
+                editedTransform->localMatrix);
+        }
+        gizmoEditingObject_ = scene::kNullSceneEntity;
+        gizmoEditingSceneLifetime_ = 0;
     }
     gizmoWasUsing_ = usingNow;
 }
 
+void EditorApplication::drawViewportObjectHandles(const ImVec2& min, const ImVec2& max)
+{
+    viewportHoveredObject_ = scene::kNullSceneEntity;
+    if (!viewportInteractionEnabled_ || !scene_.valid()) {
+        return;
+    }
+    render::RenderGraphNode* renderNode = viewportCameraRenderGraphNode();
+    if (renderNode == nullptr) {
+        return;
+    }
+
+    render::RenderGraphProperties properties = effectiveNodeProperties(*renderNode);
+    ensureCameraProperties(properties, scene_.bounds());
+    const ViewportCameraMatrices matrices = viewportCameraMatrices(
+        properties["camera"],
+        max.x - min.x,
+        max.y - min.y);
+    const scene::ConstSceneObject selectedObject = selectedSceneObject();
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const float radius = 9.0f * mainScale_;
+    float nearestDistanceSquared = radius * radius;
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+    const auto drawHandle = [&](scene::SceneEntity entity, ImU32 color, const char* label) {
+        const scene::ConstSceneObject object = scene_.sceneGraph().object(entity);
+        if (!object || object.hasComponent<scene::GeneratedComponent>() ||
+            !object.hasComponent<scene::ActiveSceneComponent>()) {
+            return;
+        }
+        const scene::TransformComponent* transform =
+            object.tryGetComponent<scene::TransformComponent>();
+        if (transform == nullptr) {
+            return;
+        }
+        ImVec2 screenPosition;
+        if (!projectWorldToViewport(
+                float3(
+                    transform->worldMatrix.a03,
+                    transform->worldMatrix.a13,
+                    transform->worldMatrix.a23),
+                matrices,
+                min,
+                max,
+                screenPosition)) {
+            return;
+        }
+
+        const float deltaX = mouse.x - screenPosition.x;
+        const float deltaY = mouse.y - screenPosition.y;
+        const float distanceSquared = deltaX * deltaX + deltaY * deltaY;
+        const bool hovered = viewportHovered_ && distanceSquared <= radius * radius;
+        if (hovered && distanceSquared <= nearestDistanceSquared) {
+            nearestDistanceSquared = distanceSquared;
+            viewportHoveredObject_ = entity;
+        }
+
+        const bool selected = selectedObject && selectedObject.entity() == entity;
+        drawList->AddCircleFilled(
+            screenPosition,
+            radius,
+            hovered ? IM_COL32(255, 225, 110, 245) : color,
+            20);
+        drawList->AddCircle(
+            screenPosition,
+            radius + (selected ? 3.0f : 1.0f) * mainScale_,
+            selected ? IM_COL32(255, 210, 70, 255) : IM_COL32(20, 22, 28, 230),
+            20,
+            selected ? 2.0f * mainScale_ : 1.0f * mainScale_);
+        const ImVec2 textSize = ImGui::CalcTextSize(label);
+        drawList->AddText(
+            ImVec2(screenPosition.x - textSize.x * 0.5f, screenPosition.y - textSize.y * 0.5f),
+            IM_COL32(20, 22, 28, 255),
+            label);
+    };
+
+    for (const scene::RenderLight& light : scene_.lights()) {
+        drawHandle(light.object, IM_COL32(255, 196, 72, 230), "L");
+    }
+    for (const scene::RenderCamera& camera : scene_.cameras()) {
+        if (!camera.fallback) {
+            drawHandle(camera.object, IM_COL32(92, 184, 255, 230), "C");
+        }
+    }
+}
+
 void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& max)
 {
-    if (!scene_.valid() || !ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
-        ImGui::GetIO().KeyAlt || ImGuizmo::IsOver() || ImGuizmo::IsUsing()) {
+    if (!viewportInteractionEnabled_ || !viewportHovered_ || !scene_.valid() ||
+        !ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::GetIO().KeyAlt ||
+        viewportGizmoCapturingMouse_ || gizmoWasUsing_ || ImGuizmo::IsUsingAny()) {
         return;
     }
     const ImVec2 mouse = ImGui::GetIO().MousePos;
-    if (mouse.x < min.x || mouse.x > max.x || mouse.y < min.y || mouse.y > max.y) {
+
+    if (viewportHoveredObject_ != scene::kNullSceneEntity) {
+        const scene::ConstSceneObject object =
+            scene_.sceneGraph().object(viewportHoveredObject_);
+        if (!object || !object.hasComponent<scene::ActiveSceneComponent>()) {
+            viewportHoveredObject_ = scene::kNullSceneEntity;
+            return;
+        }
+        SceneSelection selection{
+            .type = SceneSelectionType::Node,
+            .object = viewportHoveredObject_,
+            .sceneLifetimeRevision = scene_.sceneGraph().lifetimeRevision(),
+        };
+        if (const scene::SourceNodeComponent* source =
+                object.tryGetComponent<scene::SourceNodeComponent>()) {
+            selection.index = source->nodeIndex;
+            selection.nodeIndex = source->nodeIndex;
+        }
+        if (const scene::MeshComponent* mesh = object.tryGetComponent<scene::MeshComponent>()) {
+            selection.meshIndex = mesh->meshIndex;
+        }
+        if (const scene::LightComponent* light = object.tryGetComponent<scene::LightComponent>();
+            light != nullptr && light->renderLightIndex >= 0 &&
+            static_cast<size_t>(light->renderLightIndex) < scene_.lights().size()) {
+            selection.type = SceneSelectionType::Light;
+            selection.index = light->renderLightIndex;
+        } else if (const scene::CameraComponent* camera =
+                       object.tryGetComponent<scene::CameraComponent>();
+            camera != nullptr && camera->renderCameraIndex >= 0 &&
+            static_cast<size_t>(camera->renderCameraIndex) < scene_.cameras().size()) {
+            selection.type = SceneSelectionType::Camera;
+            selection.index = camera->renderCameraIndex;
+        }
+        sceneSelection_ = selection;
         return;
     }
+
     render::RenderGraphNode* renderNode = viewportCameraRenderGraphNode();
     if (renderNode == nullptr) {
         return;
@@ -4067,31 +4607,66 @@ void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& ma
                 matrices.frame.viewUp * (normalizedY * tangent),
             matrices.frame.forward);
     }
+    const float viewDepthAtOrigin = dot(
+        rayOrigin - matrices.frame.eye,
+        matrices.frame.forward);
+    const float viewDepthPerDistance = dot(rayDirection, matrices.frame.forward);
+    if (!std::isfinite(viewDepthPerDistance) || viewDepthPerDistance <= 0.000001f) {
+        sceneSelection_ = SceneSelection{};
+        return;
+    }
+    const float minimumPickDistance = std::max(
+        (matrices.nearPlane - viewDepthAtOrigin) / viewDepthPerDistance,
+        0.0f);
+    const float maximumPickDistance =
+        (matrices.farPlane - viewDepthAtOrigin) / viewDepthPerDistance;
+    if (!std::isfinite(minimumPickDistance) || !std::isfinite(maximumPickDistance) ||
+        maximumPickDistance < minimumPickDistance) {
+        sceneSelection_ = SceneSelection{};
+        return;
+    }
 
     const scene::ScenePickResult pick = scenePicker_.pick(
         scene_,
         scene::ScenePickRay{
             .origin = rayOrigin,
             .direction = rayDirection,
+            .minimumDistance = minimumPickDistance,
+            .maximumDistance = maximumPickDistance,
         });
     if (!pick.hit()) {
         sceneSelection_ = SceneSelection{};
         return;
     }
-    const int32_t nearestNodeIndex = pick.nodeIndex;
-    const scene::SceneNode& selected = scene_.nodes()[static_cast<size_t>(nearestNodeIndex)];
-    sceneSelection_ = SceneSelection{
+    const scene::ConstSceneObject object = scene_.sceneGraph().object(pick.object);
+    if (!object || !object.hasComponent<scene::ActiveSceneComponent>()) {
+        sceneSelection_ = SceneSelection{};
+        return;
+    }
+    SceneSelection selection{
         .type = SceneSelectionType::Node,
-        .index = nearestNodeIndex,
-        .nodeIndex = nearestNodeIndex,
-        .meshIndex = selected.meshIndex,
+        .object = pick.object,
+        .sceneLifetimeRevision = scene_.sceneGraph().lifetimeRevision(),
+        .index = pick.nodeIndex,
+        .nodeIndex = pick.nodeIndex,
     };
+    if (const scene::MeshComponent* mesh = object.tryGetComponent<scene::MeshComponent>()) {
+        selection.meshIndex = mesh->meshIndex;
+    } else if (pick.renderPrimitiveIndex >= 0 &&
+        static_cast<size_t>(pick.renderPrimitiveIndex) < scene_.renderPrimitives().size()) {
+        selection.meshIndex = scene_.renderPrimitives()[
+            static_cast<size_t>(pick.renderPrimitiveIndex)].meshIndex;
+    }
+    sceneSelection_ = selection;
 }
 
 void EditorApplication::drawViewportPanel()
 {
     ImGui::Begin("Viewport");
 
+    const bool gizmoTransactionActive = inspectorTransformEditing_ || gizmoWasUsing_ ||
+        ImGuizmo::IsUsingAny();
+    ImGui::BeginDisabled(gizmoTransactionActive);
     const auto drawToolButton = [this](const char* label, GizmoOperation operation) {
         const bool selected = gizmoOperation_ == operation;
         if (selected) {
@@ -4113,6 +4688,7 @@ void EditorApplication::drawViewportPanel()
     if (ImGui::Button(gizmoLocal_ ? "Local" : "World")) {
         gizmoLocal_ = !gizmoLocal_;
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::Checkbox("Snap", &snapEnabled_);
     ImGui::SameLine();
@@ -4125,28 +4701,50 @@ void EditorApplication::drawViewportPanel()
     ImVec2 available = ImGui::GetContentRegionAvail();
     available.x = std::max(available.x, 1.0f);
     available.y = std::max(available.y, 1.0f);
-    const ImVec2 min = ImGui::GetCursorScreenPos();
-    const ImVec2 max(min.x + available.x, min.y + available.y);
-    ImGui::ItemSize(available);
+    const ImVec2 panelMin = ImGui::GetCursorScreenPos();
+    const ImVec2 panelMax(panelMin.x + available.x, panelMin.y + available.y);
+    const float panelWidth = panelMax.x - panelMin.x;
+    const float panelHeight = panelMax.y - panelMin.y;
+    constexpr uint32_t kSmokeTestPreviewSize = 256;
+    const auto [previewWidth, previewHeight] = constrainedPreviewExtent(
+        panelWidth,
+        panelHeight,
+        smokeTest_ ? kSmokeTestPreviewSize : kMaxViewportPreviewSize);
+    const bool hasRhiPreview = updateViewportPreview(previewWidth, previewHeight);
+    const uint32_t displayWidth = hasRhiPreview && viewportTextureWidth_ > 0
+        ? viewportTextureWidth_
+        : previewWidth;
+    const uint32_t displayHeight = hasRhiPreview && viewportTextureHeight_ > 0
+        ? viewportTextureHeight_
+        : previewHeight;
+    const float previewAspect = static_cast<float>(displayWidth) /
+        static_cast<float>(std::max(displayHeight, 1u));
+    float imageWidth = panelWidth;
+    float imageHeight = imageWidth / previewAspect;
+    if (imageHeight > panelHeight) {
+        imageHeight = panelHeight;
+        imageWidth = imageHeight * previewAspect;
+    }
+    const ImVec2 min(
+        panelMin.x + (panelWidth - imageWidth) * 0.5f,
+        panelMin.y + (panelHeight - imageHeight) * 0.5f);
+    const ImVec2 max(min.x + imageWidth, min.y + imageHeight);
     const float width = max.x - min.x;
     const float height = max.y - min.y;
-    constexpr uint32_t kSmokeTestPreviewSize = 256;
-    const uint32_t previewWidth = smokeTest_
-        ? kSmokeTestPreviewSize
-        : std::clamp(
-              static_cast<uint32_t>(std::ceil(width)),
-              1u,
-              kMaxViewportPreviewSize);
-    const uint32_t previewHeight = smokeTest_
-        ? kSmokeTestPreviewSize
-        : std::clamp(
-              static_cast<uint32_t>(std::ceil(height)),
-              1u,
-              kMaxViewportPreviewSize);
-    const bool hasRhiPreview = updateViewportPreview(previewWidth, previewHeight);
+    const bool loadingScene = pendingSceneLoad_.valid() || pendingSceneResourcePreparation_;
+    const bool previewMatchesRequestedExtent = hasRhiPreview &&
+        viewportTextureWidth_ == previewWidth && viewportTextureHeight_ == previewHeight;
+    const bool popupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
+    viewportInteractionEnabled_ = previewMatchesRequestedExtent && !loadingScene && !popupOpen;
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const bool mouseInsideImage = mouse.x >= min.x && mouse.x < max.x &&
+        mouse.y >= min.y && mouse.y < max.y;
+    viewportHovered_ = viewportInteractionEnabled_ && mouseInsideImage &&
+        ImGui::IsWindowHovered();
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    drawList->PushClipRect(min, max, true);
+    drawList->PushClipRect(panelMin, panelMax, true);
+    drawList->AddRectFilled(panelMin, panelMax, IM_COL32(12, 14, 18, 255));
     drawList->AddRectFilled(min, max, IM_COL32(16, 18, 22, 255));
 
     if (hasRhiPreview) {
@@ -4176,7 +4774,10 @@ void EditorApplication::drawViewportPanel()
     }
 
     drawList->AddRect(min, max, IM_COL32(58, 67, 80, 255));
-    if (pendingSceneLoad_.valid() || pendingSceneResourcePreparation_) {
+    drawViewportObjectHandles(min, max);
+    drawViewportGizmo(min, max);
+
+    if (loadingScene) {
         const scene::SceneLoadProgress progress = pendingSceneResourcePreparation_
             ? pendingSceneResourceProgress_
             : pendingSceneLoad_.progress();
@@ -4205,9 +4806,31 @@ void EditorApplication::drawViewportPanel()
             barMax.y);
         drawList->AddRectFilled(barMin, fillMax, IM_COL32(71, 140, 255, 255), 3.0f * mainScale_);
     }
-    drawViewportGizmo(min, max);
     drawList->PopClipRect();
 
+    ImGui::Dummy(available);
+    viewportHovered_ = viewportInteractionEnabled_ && mouseInsideImage &&
+        ImGui::IsItemHovered();
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool cameraGestureActive =
+        viewportCameraDragButton_ != kNoViewportCameraDragButton ||
+        ImGui::IsMouseDown(ImGuiMouseButton_Right) ||
+        ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
+        (io.KeyAlt && ImGui::IsMouseDown(ImGuiMouseButton_Left));
+    const bool transformEditing = gizmoWasUsing_ || inspectorTransformEditing_ ||
+        viewportGizmoCapturingMouse_ || ImGuizmo::IsUsingAny();
+    if (viewportHovered_ && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt &&
+        !cameraGestureActive && !transformEditing) {
+        if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
+            gizmoOperation_ = GizmoOperation::Translate;
+        } else if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+            gizmoOperation_ = GizmoOperation::Rotate;
+        } else if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+            gizmoOperation_ = GizmoOperation::Scale;
+        } else if (ImGui::IsKeyPressed(ImGuiKey_X, false)) {
+            gizmoLocal_ = !gizmoLocal_;
+        }
+    }
     selectViewportObject(min, max);
     handleViewportCameraControls(min, max);
 
@@ -4217,17 +4840,16 @@ void EditorApplication::drawViewportPanel()
 void EditorApplication::handleViewportCameraControls(const ImVec2& min, const ImVec2& max)
 {
     render::RenderGraphNode* node = viewportCameraRenderGraphNode();
-    if (node == nullptr) {
+    if (node == nullptr || !viewportInteractionEnabled_) {
         viewportCameraDragButton_ = kNoViewportCameraDragButton;
         return;
     }
 
     const ImVec2 size(max.x - min.x, max.y - min.y);
     ImGuiIO& io = ImGui::GetIO();
-    const bool hovered = io.MousePos.x >= min.x && io.MousePos.x <= max.x &&
-        io.MousePos.y >= min.y && io.MousePos.y <= max.y &&
-        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-    const bool gizmoCapturingMouse = ImGuizmo::IsUsing() || ImGuizmo::IsOver();
+    const bool hovered = viewportHovered_;
+    const bool gizmoCapturingMouse = viewportGizmoCapturingMouse_ || gizmoWasUsing_ ||
+        ImGuizmo::IsUsingAny();
     const bool alt = ImGui::IsKeyDown(ImGuiKey_LeftAlt) || ImGui::IsKeyDown(ImGuiKey_RightAlt);
 
     if (hovered && !gizmoCapturingMouse) {
@@ -5100,13 +5722,18 @@ void EditorApplication::applyEnvironmentToRenderGraph(const std::filesystem::pat
     render::EnvironmentSettings environment = renderWorld_.environment();
     environment.enabled = true;
     environment.path = path;
+    beginEnvironmentEdit();
     renderWorld_.setEnvironment(environment);
     if (scene_.valid()) {
-        scene_.setEnvironment(environment);
+        if (scene_.setEnvironment(environment)) {
+            sceneNonTransformDirty_ = true;
+            updateSceneDirtyState();
+        }
     }
     environmentUserEdited_ = true;
     environmentFromSample_ = false;
     environmentFromLegacyGraph_ = false;
+    preserveSampleEnvironmentForNextSceneLoad_ = false;
     viewportPreviewNeedsRender_ = true;
     renderGraphStatus_ = "Loaded environment: " + displayPathForProperty(path);
 }
@@ -5173,6 +5800,7 @@ void EditorApplication::pollSceneLoad()
         pendingSceneResourcePreparation_ = false;
         pendingSceneResourceProgress_.phase = scene::SceneLoadPhase::Finalizing;
         pendingSceneResourceProgress_.fraction = 0.97f;
+        finishActiveTransformTransactions();
         if (scene_.dirty()) {
             pendingSceneAction_ = PendingSceneAction::CommitLoadedScene;
             sceneStatus_ = "New scene is ready; resolve unsaved changes before switching.";
@@ -5243,6 +5871,7 @@ void EditorApplication::pollSceneLoad()
         sceneStatus_ = "Preparing scene GPU resources while the current scene remains active.";
         return;
     }
+    finishActiveTransformTransactions();
     if (scene_.dirty()) {
         pendingSceneAction_ = PendingSceneAction::CommitLoadedScene;
         sceneStatus_ = "New scene is ready; resolve unsaved changes before switching.";
@@ -5317,8 +5946,6 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
         !environmentFromSample_ &&
         !environmentFromLegacyGraph_) {
         renderWorld_.setEnvironment(render::EnvironmentSettings{});
-    } else if (environmentUserEdited_) {
-        scene_.setEnvironment(renderWorld_.environment());
     }
     pendingSceneLoad_ = {};
     pendingSceneResourcePreparation_ = false;

@@ -3320,6 +3320,19 @@ bool Scene::setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix
     return true;
 }
 
+bool Scene::setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix)
+{
+    const ConstSceneObject sceneObject =
+        static_cast<const SceneGraph&>(sceneGraph_).object(object);
+    if (!valid() || !sceneObject ||
+        sceneObject.hasComponent<GeneratedComponent>() ||
+        !sceneGraph_.setWorldMatrix(object, worldMatrix)) {
+        return false;
+    }
+    refreshTransforms();
+    return true;
+}
+
 bool Scene::setImageDecodeResult(
     size_t imageIndex,
     std::vector<RenderImage::Mip> mips,

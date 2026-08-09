@@ -29,6 +29,65 @@ bool matricesNearlyEqual(const float4x4& lhs, const float4x4& rhs)
     return true;
 }
 
+float affineDeterminant(const float4x4& matrix)
+{
+    const float3 column0(matrix.a00, matrix.a10, matrix.a20);
+    const float3 column1(matrix.a01, matrix.a11, matrix.a21);
+    const float3 column2(matrix.a02, matrix.a12, matrix.a22);
+    return dot(column0, cross(column1, column2));
+}
+
+bool calculateParentWorldMatrix(
+    const entt::registry& registry,
+    SceneEntity object,
+    float4x4& parentWorldMatrix)
+{
+    parentWorldMatrix = float4x4::Identity();
+    if (registry.all_of<RootComponent>(object)) {
+        return true;
+    }
+
+    const RelationshipComponent* relationship =
+        registry.try_get<RelationshipComponent>(object);
+    if (relationship == nullptr || relationship->parent == kNullSceneEntity) {
+        return true;
+    }
+
+    std::vector<SceneEntity> ancestors;
+    std::unordered_set<SceneEntity> visited;
+    SceneEntity ancestor = relationship->parent;
+    while (ancestor != kNullSceneEntity) {
+        if (!registry.valid(ancestor) || !visited.insert(ancestor).second) {
+            return false;
+        }
+        ancestors.push_back(ancestor);
+        if (registry.all_of<RootComponent>(ancestor)) {
+            break;
+        }
+
+        const RelationshipComponent* ancestorRelationship =
+            registry.try_get<RelationshipComponent>(ancestor);
+        if (ancestorRelationship == nullptr) {
+            break;
+        }
+        ancestor = ancestorRelationship->parent;
+    }
+
+    for (auto iterator = ancestors.rbegin(); iterator != ancestors.rend(); ++iterator) {
+        if (const TransformComponent* transform =
+                registry.try_get<TransformComponent>(*iterator)) {
+            if (!matrixIsFinite(transform->localMatrix)) {
+                return false;
+            }
+            parentWorldMatrix = parentWorldMatrix * transform->localMatrix;
+            if (!matrixIsFinite(parentWorldMatrix)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 template <typename Type>
 void eraseValue(std::vector<Type>& values, const Type& value)
 {
@@ -60,6 +119,7 @@ SceneGraph::SceneGraph(SceneGraph&& other) noexcept
       structuralRevision_(other.structuralRevision_),
       lifetimeRevision_(nextSceneGraphLifetimeRevision())
 {
+    other.registry_ = entt::registry{};
     incrementRevision(other.objectEpoch_);
     other.lifetimeRevision_ = nextSceneGraphLifetimeRevision();
     other.roots_.clear();
@@ -366,6 +426,27 @@ bool SceneGraph::setLocalMatrix(SceneEntity objectEntity, const float4x4& localM
     incrementRevision(transformRevision_);
     markSubtreeDirty(objectEntity);
     return true;
+}
+
+bool SceneGraph::setWorldMatrix(SceneEntity objectEntity, const float4x4& worldMatrix)
+{
+    if (!registry_.valid(objectEntity) || !matrixIsFinite(worldMatrix) ||
+        !registry_.all_of<TransformComponent>(objectEntity)) {
+        return false;
+    }
+
+    float4x4 parentWorldMatrix;
+    if (!calculateParentWorldMatrix(registry_, objectEntity, parentWorldMatrix)) {
+        return false;
+    }
+
+    const float determinant = affineDeterminant(parentWorldMatrix);
+    if (!std::isfinite(determinant) || std::abs(determinant) <= 0.0000001f) {
+        return false;
+    }
+    parentWorldMatrix.Invert();
+    const float4x4 localMatrix = parentWorldMatrix * worldMatrix;
+    return setLocalMatrix(objectEntity, localMatrix);
 }
 
 bool SceneGraph::setVisible(SceneEntity objectEntity, bool visible)

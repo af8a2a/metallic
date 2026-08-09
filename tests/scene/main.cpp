@@ -2431,8 +2431,25 @@ void testMutableSceneTransforms(const std::filesystem::path& directory)
     expectVec3(scene.bounds().min, float3(6.0f, 3.0f, 4.0f), "scene bounds min updated");
     expectVec3(scene.bounds().max, float3(7.0f, 4.0f, 4.0f), "scene bounds max updated");
 
+    float4x4 editedMeshWorld = scene.nodes()[1].worldMatrix;
+    editedMeshWorld.a03 += 2.0f;
+    editedMeshWorld.a13 += 1.0f;
+    const metallic::scene::SceneEntity meshObject = scene.objectForNode(1).entity();
+    ASSERT_TRUE(scene.setObjectWorldMatrix(meshObject, editedMeshWorld));
+    EXPECT_EQ(scene.transformRevision(), 2u);
+    expectVec3(
+        float3(
+            scene.objectForNode(1).getComponent<metallic::scene::TransformComponent>().localMatrix.a03,
+            scene.objectForNode(1).getComponent<metallic::scene::TransformComponent>().localMatrix.a13,
+            scene.objectForNode(1).getComponent<metallic::scene::TransformComponent>().localMatrix.a23),
+        float3(6.0f, 1.0f, 0.0f),
+        "object world edit converted to parent-relative local transform");
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        scene.renderNodes()[0].worldMatrix,
+        editedMeshWorld));
+
     EXPECT_FALSE(scene.setNodeLocalMatrix(0, editedRoot));
-    EXPECT_EQ(scene.transformRevision(), 1u);
+    EXPECT_EQ(scene.transformRevision(), 2u);
     EXPECT_FALSE(scene.setNodeLocalMatrix(-1, editedRoot));
 }
 
@@ -2447,12 +2464,54 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
     std::filesystem::remove(sidecarPath, cleanupError);
     std::filesystem::remove(sidecarPath.string() + ".tmp", cleanupError);
 
+    metallic::scene::SceneDocument unsavedDocument;
+    ASSERT_TRUE(unsavedDocument.load(gltfPath)) << unsavedDocument.lastLoadResult().error;
+    float4x4 discarded = unsavedDocument.nodes()[1].localMatrix;
+    discarded.a03 += 25.0f;
+    ASSERT_TRUE(unsavedDocument.setObjectLocalMatrix(
+        unsavedDocument.objectForNode(1).entity(),
+        discarded));
+    ASSERT_TRUE(unsavedDocument.dirty());
+    std::string revertMessage;
+    ASSERT_TRUE(unsavedDocument.revert(revertMessage)) << revertMessage;
+    EXPECT_FALSE(unsavedDocument.dirty());
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        unsavedDocument.nodes()[1].localMatrix,
+        unsavedDocument.nodes()[1].authoredLocalMatrix));
+
+    const std::filesystem::path failedRevertDirectory = baseDirectory / "failed_scene_revert";
+    std::filesystem::create_directories(failedRevertDirectory);
+    const std::filesystem::path failedRevertSource = writeFullScene(failedRevertDirectory);
+    metallic::scene::SceneDocument preservedDocument;
+    ASSERT_TRUE(preservedDocument.load(failedRevertSource))
+        << preservedDocument.lastLoadResult().error;
+    float4x4 preservedEdit = preservedDocument.nodes()[1].localMatrix;
+    preservedEdit.a13 += 17.0f;
+    ASSERT_TRUE(preservedDocument.setObjectLocalMatrix(
+        preservedDocument.objectForNode(1).entity(),
+        preservedEdit));
+    ASSERT_TRUE(std::filesystem::remove(failedRevertSource));
+    std::string failedRevertMessage;
+    EXPECT_FALSE(preservedDocument.revert(failedRevertMessage));
+    EXPECT_TRUE(preservedDocument.valid());
+    EXPECT_TRUE(preservedDocument.dirty());
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        preservedDocument.nodes()[1].localMatrix,
+        preservedEdit));
+
     metallic::scene::SceneDocument document;
     ASSERT_TRUE(document.load(gltfPath)) << document.lastLoadResult().error;
     EXPECT_FALSE(document.dirty());
     float4x4 edited = document.nodes()[1].localMatrix;
     edited.a03 = 9.0f;
-    EXPECT_TRUE(document.setObjectLocalMatrix(document.objectForNode(1).entity(), edited));
+    const metallic::scene::ConstSceneObject editedObject = document.objectForNode(1);
+    const metallic::scene::RelationshipComponent& relationship =
+        editedObject.getComponent<metallic::scene::RelationshipComponent>();
+    ASSERT_NE(relationship.parent, metallic::scene::kNullSceneEntity);
+    const float4x4 editedWorld =
+        document.sceneGraph().object(relationship.parent)
+            .getComponent<metallic::scene::TransformComponent>().worldMatrix * edited;
+    EXPECT_TRUE(document.setObjectWorldMatrix(editedObject.entity(), editedWorld));
     EXPECT_TRUE(document.dirty());
     const std::filesystem::path environmentPath = directory / "lighting" / "studio.hdr";
     std::filesystem::create_directories(environmentPath.parent_path());
@@ -2547,8 +2606,22 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
 
 void testScenePickerBvh(const std::filesystem::path& directory)
 {
+    const std::filesystem::path scenePath = writeFullScene(directory);
+    nlohmann::json gltf;
+    {
+        std::ifstream stream(scenePath, std::ios::binary);
+        stream >> gltf;
+    }
+    gltf["nodes"].push_back({
+        {"name", "Far Mesh Node"},
+        {"translation", {4.0f, 0.0f, -5.0f}},
+        {"mesh", 0},
+    });
+    gltf["nodes"][0]["children"].push_back(5);
+    writeTextFile(scenePath, gltf.dump(2));
+
     metallic::scene::Scene scene;
-    ASSERT_TRUE(scene.load(writeFullScene(directory))) << scene.lastLoadResult().error;
+    ASSERT_TRUE(scene.load(scenePath)) << scene.lastLoadResult().error;
     metallic::scene::ScenePicker picker;
     metallic::scene::ScenePickResult hit = picker.pick(
         scene,
@@ -2562,6 +2635,26 @@ void testScenePickerBvh(const std::filesystem::path& directory)
     EXPECT_EQ(hit.renderPrimitiveIndex, 0);
     EXPECT_EQ(hit.triangleIndex, 0u);
     EXPECT_TRUE(nearlyEqual(hit.distance, 7.0f));
+
+    const metallic::scene::ScenePickResult farHit = picker.pick(
+        scene,
+        metallic::scene::ScenePickRay{
+            .origin = float3(5.75f, 2.25f, 10.0f),
+            .direction = float3(0.0f, 0.0f, -1.0f),
+            .minimumDistance = 8.0f,
+        });
+    ASSERT_TRUE(farHit.hit());
+    EXPECT_EQ(farHit.nodeIndex, 5);
+    EXPECT_EQ(farHit.object, scene.objectForNode(5).entity());
+    EXPECT_TRUE(nearlyEqual(farHit.distance, 12.0f));
+
+    EXPECT_FALSE(picker.pick(
+        scene,
+        metallic::scene::ScenePickRay{
+            .origin = float3(5.75f, 2.25f, 10.0f),
+            .direction = float3(0.0f, 0.0f, -1.0f),
+            .maximumDistance = 6.0f,
+        }).hit());
 
     float4x4 movedRoot = scene.nodes()[0].localMatrix;
     movedRoot.a03 += 10.0f;
