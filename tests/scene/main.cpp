@@ -2370,6 +2370,16 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
     float4x4 edited = document.nodes()[1].localMatrix;
     edited.a03 = 9.0f;
     EXPECT_TRUE(document.setNodeLocalMatrix(1, edited));
+    const std::filesystem::path environmentPath = directory / "lighting" / "studio.hdr";
+    std::filesystem::create_directories(environmentPath.parent_path());
+    writeTextFile(environmentPath, "test environment placeholder");
+    EXPECT_TRUE(document.setEnvironment(metallic::scene::EnvironmentSettings{
+        .enabled = true,
+        .path = environmentPath,
+        .intensity = 2.5f,
+        .rotationDegrees = 37.0f,
+        .visible = false,
+    }));
     EXPECT_TRUE(document.dirty());
     std::string message;
     ASSERT_TRUE(document.save(message)) << message;
@@ -2381,16 +2391,30 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
         std::ifstream stream(sidecarPath, std::ios::binary);
         stream >> saved;
     }
-    ASSERT_EQ(saved.value("version", 0), 1);
+    ASSERT_EQ(saved.value("version", 0), 2);
     ASSERT_TRUE(saved.contains("nodes"));
     ASSERT_EQ(saved["nodes"].size(), 1u);
     EXPECT_EQ(saved["nodes"][0].value("nodeIndex", -1), 1);
     EXPECT_EQ(saved["nodes"][0].value("sourceName", std::string{}), "Mesh Node");
+    ASSERT_TRUE(saved.contains("world"));
+    ASSERT_TRUE(saved["world"].contains("environment"));
+    const nlohmann::json& savedEnvironment = saved["world"]["environment"];
+    EXPECT_EQ(savedEnvironment.value("path", std::string{}), "lighting/studio.hdr");
+    EXPECT_FLOAT_EQ(savedEnvironment.value("intensity", 0.0f), 2.5f);
+    EXPECT_FLOAT_EQ(savedEnvironment.value("rotationDegrees", 0.0f), 37.0f);
+    EXPECT_FALSE(savedEnvironment.value("visible", true));
 
     metallic::scene::SceneDocument autoDiscovered;
     ASSERT_TRUE(autoDiscovered.load(gltfPath)) << autoDiscovered.lastLoadResult().error;
     EXPECT_TRUE(metallic::scene::matrixNearlyEqual(autoDiscovered.nodes()[1].localMatrix, edited));
     EXPECT_FALSE(autoDiscovered.dirty());
+    EXPECT_TRUE(autoDiscovered.hasEnvironmentSettings());
+    EXPECT_EQ(
+        std::filesystem::weakly_canonical(autoDiscovered.environment().path),
+        std::filesystem::weakly_canonical(environmentPath));
+    EXPECT_FLOAT_EQ(autoDiscovered.environment().intensity, 2.5f);
+    EXPECT_FLOAT_EQ(autoDiscovered.environment().rotationDegrees, 37.0f);
+    EXPECT_FALSE(autoDiscovered.environment().visible);
 
     metallic::scene::SceneDocument directlyOpened;
     ASSERT_TRUE(directlyOpened.load(sidecarPath)) << directlyOpened.lastLoadResult().error;
@@ -2400,6 +2424,16 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
         std::filesystem::weakly_canonical(gltfPath));
 
     const nlohmann::json validSaved = saved;
+    nlohmann::json versionOne = validSaved;
+    versionOne["version"] = 1;
+    versionOne.erase("world");
+    writeTextFile(sidecarPath, versionOne.dump(2));
+    metallic::scene::SceneDocument versionOneDocument;
+    ASSERT_TRUE(versionOneDocument.load(gltfPath)) << versionOneDocument.lastLoadResult().error;
+    EXPECT_FALSE(versionOneDocument.hasEnvironmentSettings());
+    EXPECT_TRUE(versionOneDocument.environment().path.empty());
+
+    saved = validSaved;
     nlohmann::json outOfRangeOverride = saved["nodes"][0];
     outOfRangeOverride["nodeIndex"] = 9999;
     saved["nodes"].push_back(std::move(outOfRangeOverride));

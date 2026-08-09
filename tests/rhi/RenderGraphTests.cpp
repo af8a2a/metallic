@@ -6,10 +6,14 @@
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Subsystem/LegacyEnvironmentMigration.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +23,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -40,6 +45,41 @@ constexpr uint16_t kSpirvOpExtension = 10u;
 constexpr uint16_t kSpirvOpCapability = 17u;
 constexpr uint16_t kSpirvOpRayQueryGetIntersectionClusterIdNv = 5345u;
 constexpr uint32_t kSpirvRayTracingClusterAccelerationStructureNv = 5437u;
+
+render::EnvironmentSettings sampleEnvironmentSettings(const render::RenderSampleDesc& desc)
+{
+    render::EnvironmentSettings environment{
+        .enabled = desc.environment.enabled,
+        .path = desc.environment.path,
+        .intensity = desc.environment.intensity,
+        .rotationDegrees = desc.environment.rotationDegrees,
+        .visible = desc.environment.visible,
+    };
+    if (!environment.path.empty() && environment.path.is_relative()) {
+        environment.path = std::filesystem::path(PROJECT_SOURCE_DIR) / environment.path;
+    }
+    return environment;
+}
+
+class ConfigurableRenderSubsystemProbe final : public render::IRenderSubsystem {
+public:
+    struct Desc {
+        uint32_t value = 0;
+    };
+
+    static constexpr render::RenderSubsystemId kSubsystemId = "test.configurable";
+
+    render::Result initialize(
+        const render::RenderSubsystemInitContext& context,
+        std::string&) override
+    {
+        const Desc* desc = context.host.configuration<ConfigurableRenderSubsystemProbe>();
+        observedValue = desc != nullptr ? desc->value : 0;
+        return {};
+    }
+
+    uint32_t observedValue = 0;
+};
 
 bool spirvContainsOpcode(const std::vector<uint32_t>& spirv, uint16_t expectedOpcode)
 {
@@ -344,6 +384,56 @@ public:
     }
 };
 
+class TestMissingSubsystemPass final : public render::ComputePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addOutput("color", "Missing-subsystem diagnostic output");
+        return reflection;
+    }
+
+    std::span<const render::RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{
+            render::RenderSubsystemId{"test.missing-required-subsystem"},
+        };
+        return required;
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext&) override
+    {
+        return {};
+    }
+};
+
+class TestEnvironmentConsumerPass final : public render::ComputePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addOutput("color", "Environment consumer output");
+        return reflection;
+    }
+
+    std::span<const render::RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{
+            render::EnvironmentLightingSubsystem::kSubsystemId,
+        };
+        return required;
+    }
+
+    render::Result execute(render::RenderGraphExecutionContext& context) override
+    {
+        const render::EnvironmentLightingSubsystem* environment =
+            context.subsystem<render::EnvironmentLightingSubsystem>();
+        return environment != nullptr && environment->snapshot().valid()
+            ? render::Result{}
+            : render::makeError(render::Error::InvalidArgument);
+    }
+};
+
 void registerTestPass()
 {
     static bool registered = false;
@@ -371,6 +461,14 @@ void registerTestPass()
         "TestResizeCompilePass",
         "Test-only pass that counts RenderGraph compile calls",
         []() { return std::make_unique<TestResizeCompilePass>(); });
+    render::registerRenderGraphPassType(
+        "TestMissingSubsystemPass",
+        "Test-only pass with an intentionally missing subsystem",
+        []() { return std::make_unique<TestMissingSubsystemPass>(); });
+    render::registerRenderGraphPassType(
+        "TestEnvironmentConsumerPass",
+        "Test-only environment subsystem consumer",
+        []() { return std::make_unique<TestEnvironmentConsumerPass>(); });
 }
 
 uint32_t countBrightPixels(const std::vector<uint32_t>& pixels)
@@ -1255,10 +1353,8 @@ public:
             !openPBRPathTrace->properties.is_object() ||
             openPBRPathTrace->properties.value("path", "") != pathTracingSample.desc.scenePath ||
             openPBRPathTrace->properties.value("bsdf", "") != "openpbr" ||
-            !openPBRPathTrace->properties.contains("environment") ||
-            !openPBRPathTrace->properties["environment"].is_object() ||
-            openPBRPathTrace->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr") {
-            return RhiTestResult::fail("OpenPBR PathTracingSample did not apply scene, BSDF, and environment properties");
+            openPBRPathTrace->properties.contains("environment")) {
+            return RhiTestResult::fail("OpenPBR PathTracingSample did not separate world environment from pass properties");
         }
         if (!pathTracingSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
@@ -1300,9 +1396,7 @@ public:
             rtxdi->properties.value("spatialSamples", 0) != 1 ||
             !rtxdi->properties.value("localLightImportanceSampling", false) ||
             !rtxdi->properties.value("environmentImportanceSampling", false) ||
-            !rtxdi->properties.contains("environment") ||
-            !rtxdi->properties["environment"].is_object() ||
-            rtxdi->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr" ||
+            rtxdi->properties.contains("environment") ||
             !rtxdi->properties.value("temporalReuse", false) ||
             !rtxdi->properties.value("spatialReuse", false) ||
             !rtxdi->properties.value("initialVisibility", false) ||
@@ -1429,14 +1523,11 @@ public:
             gpuDriven->type != "GPUDrivenPreviewPass" ||
             !gpuDriven->properties.is_object() ||
             gpuDriven->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
-            !gpuDriven->properties.contains("environment") ||
-            !gpuDriven->properties["environment"].is_object() ||
-            gpuDriven->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr" ||
-            gpuDriven->properties["environment"].value("intensity", 0.0f) != 3.0f ||
+            gpuDriven->properties.contains("environment") ||
             gpuDriven->properties.value("mode", "") != "shaded" ||
             !gpuDriven->properties.contains("camera") ||
             !gpuDriven->properties["camera"].is_object()) {
-            return RhiTestResult::fail("GPUDrivenSample did not apply scene, environment, and pass defaults");
+            return RhiTestResult::fail("GPUDrivenSample did not separate world environment from pass defaults");
         }
         if (!gpuDrivenSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
@@ -1525,11 +1616,9 @@ public:
             !gpuDrivenRtas->properties.value("enableClusterRtx", false) ||
             !gpuDrivenRtas->properties.value("rtasVisualization", false) ||
             gpuDrivenRtas->properties.value("rtasGranularity", "") != "cluster-id" ||
-            !gpuDrivenRtas->properties.contains("environment") ||
-            !gpuDrivenRtas->properties["environment"].is_object() ||
-            gpuDrivenRtas->properties["environment"].value("path", "") != "Asset/ABeautifulGame/environment.hdr") {
+            gpuDrivenRtas->properties.contains("environment")) {
             return RhiTestResult::fail(
-                "GPUDriven RTAS visualization sample did not preserve scene/environment defaults");
+                "GPUDriven RTAS visualization sample did not separate world environment defaults");
         }
         if (!gpuDrivenRtasSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
@@ -3739,6 +3828,7 @@ public:
         if (!render::loadBuiltInRenderSample("rtxdi-sample", sample, message)) {
             return RhiTestResult::fail(message);
         }
+        preview.setEnvironment(sampleEnvironmentSettings(sample.desc));
         constexpr uint32_t kRelaxFrameCount = 8;
         for (uint32_t frame = 0; frame < kRelaxFrameCount; ++frame) {
             result = preview.render(sample.graph, 256, 256, sample.desc.previewOutput);
@@ -3850,6 +3940,7 @@ public:
         }
 
         render::RenderGraphPreviewRenderer preview;
+        preview.setEnvironment(sampleEnvironmentSettings(sample.desc));
         render::Result result = preview.initialize(false, true);
         if (!result) {
             return RhiTestResult::skip(
@@ -4083,6 +4174,7 @@ public:
         }
 
         render::RenderGraphPreviewRenderer preview;
+        preview.setEnvironment(sampleEnvironmentSettings(sample.desc));
         render::Result result = preview.initialize(false, true);
         if (!result) {
             return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
@@ -4154,14 +4246,14 @@ public:
         }
 
         render::RenderGraphPreviewRenderer preview;
+        render::EnvironmentSettings environment = sampleEnvironmentSettings(sample.desc);
+        environment.rotationDegrees = 0.0f;
+        preview.setEnvironment(environment);
         render::Result result = preview.initialize(false, true);
         if (!result) {
             return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
-        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "environment.rotationDegrees", 0.0f)) {
-            return RhiTestResult::fail("failed to set initial environment rotation");
-        }
         result = preview.render(sample.graph, 96, 96, sample.desc.previewOutput);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
@@ -4176,9 +4268,8 @@ public:
         }
         const std::vector<uint32_t> rotation0Pixels = preview.pixels();
 
-        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "environment.rotationDegrees", 90.0f)) {
-            return RhiTestResult::fail("failed to set rotated environment");
-        }
+        environment.rotationDegrees = 90.0f;
+        preview.setEnvironment(environment);
         result = preview.render(sample.graph, 96, 96, sample.desc.previewOutput);
         if (!result) {
             return RhiTestResult::fail(
@@ -5388,6 +5479,13 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
+        preview.setEnvironment(render::EnvironmentSettings{
+            .enabled = true,
+            .path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/ABeautifulGame/environment.hdr",
+            .intensity = 3.0f,
+            .rotationDegrees = 0.0f,
+            .visible = true,
+        });
         render::Result result = preview.initialize(context.enableValidation, false);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
@@ -5647,6 +5745,15 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
+        render::EnvironmentSettings environment{
+            .enabled = true,
+            .path = std::filesystem::path(PROJECT_SOURCE_DIR) /
+                "Asset/ABeautifulGame/environment.hdr",
+            .intensity = 3.0f,
+            .rotationDegrees = 0.0f,
+            .visible = true,
+        };
+        preview.setEnvironment(environment);
         render::Result result = preview.initialize(context.enableValidation, false);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
@@ -5679,13 +5786,6 @@ public:
                     {"zfar", 10000.0f},
                     {"reversedZ", true},
                 }},
-                {"environment", {
-                    {"enabled", true},
-                    {"intensity", 3.0f},
-                    {"path", "Asset/ABeautifulGame/environment.hdr"},
-                    {"rotationDegrees", 0.0f},
-                    {"visible", true},
-                }},
             });
         graph.markOutput("GPUDriven.color");
 
@@ -5700,6 +5800,29 @@ public:
                 toString(result) +
                 ": " +
                 preview.lastLog());
+        }
+
+        render::EnvironmentLightingSubsystem* environmentSubsystem =
+            preview.subsystemHost()->get<render::EnvironmentLightingSubsystem>();
+        if (environmentSubsystem == nullptr) {
+            return RhiTestResult::fail("SuperSponza environment subsystem was not activated");
+        }
+        bool environmentReady = false;
+        for (uint32_t attempt = 0; attempt < 5000 && !environmentReady; ++attempt) {
+            const render::EnvironmentLightingSnapshot& snapshot = environmentSubsystem->snapshot();
+            environmentReady = snapshot.status == render::EnvironmentLightingStatus::Ready &&
+                snapshot.mapAvailable;
+            if (!environmentReady) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                result = preview.render(graph, 256, 256);
+                if (!result) {
+                    return RhiTestResult::fail(
+                        "SuperSponza failed while waiting for the environment snapshot");
+                }
+            }
+        }
+        if (!environmentReady) {
+            return RhiTestResult::fail("SuperSponza environment snapshot did not become ready");
         }
 
         const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
@@ -5732,12 +5855,8 @@ public:
         if (gpuDrivenNode == nullptr) {
             return RhiTestResult::fail("failed to find the SuperSponza GPUDriven node");
         }
-        if (!graph.setNodeRuntimeProperty(
-                gpuDrivenNode->id,
-                "environment.rotationDegrees",
-                90.0f)) {
-            return RhiTestResult::fail("failed to rotate the SuperSponza environment map");
-        }
+        environment.rotationDegrees = 90.0f;
+        preview.setEnvironment(environment);
         result = preview.render(graph, 256, 256);
         if (!result) {
             return RhiTestResult::fail(
@@ -5755,12 +5874,8 @@ public:
             return RhiTestResult::fail(
                 "rotating the HDR environment did not materially change the OpenPBR resolve");
         }
-        if (!graph.setNodeRuntimeProperty(
-                gpuDrivenNode->id,
-                "environment.rotationDegrees",
-                0.0f)) {
-            return RhiTestResult::fail("failed to restore the SuperSponza environment rotation");
-        }
+        environment.rotationDegrees = 0.0f;
+        preview.setEnvironment(environment);
         result = preview.render(graph, 256, 256);
         if (!result || preview.pixels() != firstFramePixels) {
             return RhiTestResult::fail(
@@ -5945,6 +6060,372 @@ public:
     }
 };
 
+class EnvironmentSubsystemAsyncSnapshotTest : public RhiTest {
+public:
+    EnvironmentSubsystemAsyncSnapshotTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "environment_subsystem_async_snapshot";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        registerTestPass();
+        render::RenderGraph graph;
+        graph.addNode("TestEnvironmentConsumerPass", "EnvironmentConsumerA");
+        graph.addNode("TestEnvironmentConsumerPass", "EnvironmentConsumerB");
+        if (!graph.markOutput("EnvironmentConsumerA.color") ||
+            !graph.markOutput("EnvironmentConsumerB.color")) {
+            return RhiTestResult::fail("failed to construct the shared environment graph");
+        }
+
+        render::RenderGraphPreviewRenderer preview;
+        preview.setEnvironment(render::EnvironmentSettings{});
+        render::Result result = preview.initialize(false, true);
+        if (!result) {
+            return RhiTestResult::skip(
+                std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+        }
+        result = preview.render(graph, 16, 16, "EnvironmentConsumerA.color");
+        if (!result) {
+            return RhiTestResult::fail("initial environment render failed: " + preview.lastLog());
+        }
+
+        render::EnvironmentLightingSubsystem* subsystem =
+            preview.subsystemHost()->get<render::EnvironmentLightingSubsystem>();
+        if (subsystem == nullptr ||
+            !subsystem->snapshot().valid() ||
+            subsystem->snapshot().pdfView == nullptr) {
+            return RhiTestResult::fail("environment subsystem did not publish its black fallback");
+        }
+        const render::TextureView* fallbackView = subsystem->snapshot().radianceView;
+        const uint64_t fallbackRevision = subsystem->snapshot().resourceRevision;
+
+        result = preview.render(graph, 24, 16, "EnvironmentConsumerA.color");
+        if (!result ||
+            subsystem->snapshot().radianceView != fallbackView ||
+            subsystem->snapshot().resourceRevision != fallbackRevision) {
+            return RhiTestResult::fail("RenderGraph resize recreated the active environment resource");
+        }
+
+        render::EnvironmentSettings environment;
+        environment.path = std::filesystem::path(PROJECT_SOURCE_DIR) /
+            "Asset/ABeautifulGame/environment.hdr";
+        preview.setEnvironment(environment);
+        result = preview.render(graph, 24, 16, "EnvironmentConsumerA.color");
+        if (!result ||
+            subsystem->snapshot().radianceView != fallbackView ||
+            subsystem->snapshot().resourceRevision != fallbackRevision) {
+            return RhiTestResult::fail("environment resource changed before asynchronous decode completed");
+        }
+
+        bool switched = false;
+        for (uint32_t attempt = 0; attempt < 5000 && !switched; ++attempt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            result = preview.render(graph, 24, 16, "EnvironmentConsumerA.color");
+            if (!result) {
+                return RhiTestResult::fail("environment switch render failed: " + preview.lastLog());
+            }
+            const render::EnvironmentLightingSnapshot& snapshot = subsystem->snapshot();
+            switched = snapshot.status == render::EnvironmentLightingStatus::Ready &&
+                snapshot.mapAvailable &&
+                snapshot.pdfView != nullptr &&
+                snapshot.resourceRevision > fallbackRevision;
+        }
+        if (!switched || subsystem->decodeCount() != 1u) {
+            return RhiTestResult::fail(
+                "shared environment did not complete exactly one HDR decode: status=" +
+                std::to_string(static_cast<uint32_t>(subsystem->snapshot().status)) +
+                " decodeCount=" + std::to_string(subsystem->decodeCount()) +
+                " revision=" + std::to_string(subsystem->snapshot().resourceRevision) +
+                " error=" + subsystem->snapshot().error);
+        }
+
+        const render::TextureView* readyView = subsystem->snapshot().radianceView;
+        const uint64_t readyRevision = subsystem->snapshot().resourceRevision;
+        environment.path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/does-not-exist.hdr";
+        preview.setEnvironment(environment);
+        bool degraded = false;
+        for (uint32_t attempt = 0; attempt < 100 && !degraded; ++attempt) {
+            result = preview.render(graph, 24, 16, "EnvironmentConsumerA.color");
+            if (!result) {
+                return RhiTestResult::fail("degraded environment render failed: " + preview.lastLog());
+            }
+            const render::EnvironmentLightingSnapshot& snapshot = subsystem->snapshot();
+            degraded = snapshot.status == render::EnvironmentLightingStatus::Degraded;
+            if (!degraded) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        if (!degraded ||
+            subsystem->snapshot().radianceView != readyView ||
+            subsystem->snapshot().resourceRevision != readyRevision ||
+            subsystem->decodeCount() != 2u) {
+            return RhiTestResult::fail("failed environment switch did not preserve the last ready snapshot");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+class RenderGraphMissingSubsystemDiagnosticTest : public RhiTest {
+public:
+    RenderGraphMissingSubsystemDiagnosticTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_graph_missing_subsystem_diagnostic";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        registerTestPass();
+        render::RenderGraph graph;
+        graph.addNode("TestMissingSubsystemPass", "MissingSubsystemUser");
+        if (!graph.markOutput("MissingSubsystemUser.color")) {
+            return RhiTestResult::fail("failed to construct missing-subsystem graph");
+        }
+
+        render::RenderGraphExecutor executor;
+        std::string log;
+        const render::Result result = executor.compile(context.device, graph, 16, 16, log);
+        if (result ||
+            log.find("MissingSubsystemUser") == std::string::npos ||
+            log.find("test.missing-required-subsystem") == std::string::npos) {
+            return RhiTestResult::fail("missing subsystem diagnostic did not name the pass and subsystem: " + log);
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+class RenderSubsystemHostLifecycleTest : public RhiTest {
+public:
+    RenderSubsystemHostLifecycleTest()
+    {
+        type = RhiTestType::Resource;
+        name = "render_subsystem_host_lifecycle";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        struct Probe final : render::IRenderSubsystem {
+            Probe(std::string name, std::vector<std::string>& events, bool failBegin = false)
+                : name(std::move(name)), events(events), failBegin(failBegin)
+            {
+            }
+
+            render::Result initialize(const render::RenderSubsystemInitContext&, std::string&) override
+            {
+                events.push_back("init:" + name);
+                return {};
+            }
+
+            render::Result beginFrame(
+                const render::RenderSubsystemFrameContext&,
+                render::RenderChangeBits&,
+                std::string& log) override
+            {
+                events.push_back("begin:" + name);
+                if (failBegin) {
+                    log = "probe failure";
+                    return render::makeError(render::Error::Failure);
+                }
+                return {};
+            }
+
+            void endFrame(const render::RenderSubsystemFrameContext&) override
+            {
+                events.push_back("end:" + name);
+            }
+
+            void shutdown() override
+            {
+                events.push_back("shutdown:" + name);
+            }
+
+            std::string name;
+            std::vector<std::string>& events;
+            bool failBegin = false;
+        };
+
+        auto registerProbe = [](
+                                 render::RenderSubsystemHost& host,
+                                 std::string id,
+                                 std::vector<std::string> dependencies,
+                                 std::vector<std::string>& events,
+                                 std::string& log,
+                                 bool failBegin = false) {
+            const std::string probeName = id;
+            return host.registerSubsystem(
+                render::RenderSubsystemRegistration{
+                    .id = std::move(id),
+                    .dependencies = std::move(dependencies),
+                    .factory = [probeName, &events, failBegin]() {
+                        return std::make_unique<Probe>(probeName, events, failBegin);
+                    },
+                },
+                log);
+        };
+
+        std::vector<std::string> events;
+        std::string log;
+        render::RenderSubsystemHost host;
+        if (!registerProbe(host, "test.base", {}, events, log) ||
+            !registerProbe(host, "test.consumer", {"test.base"}, events, log)) {
+            return RhiTestResult::fail(log);
+        }
+        if (registerProbe(host, "test.base", {}, events, log)) {
+            return RhiTestResult::fail("duplicate subsystem id was accepted");
+        }
+        log.clear();
+        render::Result result = host.initialize(context.device, 3, log);
+        if (!result) {
+            return RhiTestResult::fail(log);
+        }
+        result = host.activate("test.consumer", log);
+        if (!result || events != std::vector<std::string>{"init:test.base", "init:test.consumer"}) {
+            return RhiTestResult::fail("dependency initialization order is incorrect: " + log);
+        }
+        result = host.activate("test.consumer", log);
+        if (!result || events.size() != 2u) {
+            return RhiTestResult::fail("active subsystem was not kept warm");
+        }
+
+        if (!host.registerSubsystem<ConfigurableRenderSubsystemProbe>(log) ||
+            !host.configure<ConfigurableRenderSubsystemProbe>({.value = 42}, log) ||
+            !host.activate(ConfigurableRenderSubsystemProbe::kSubsystemId, log)) {
+            return RhiTestResult::fail("subsystem configuration failed: " + log);
+        }
+        const ConfigurableRenderSubsystemProbe* configured =
+            host.get<ConfigurableRenderSubsystemProbe>();
+        if (configured == nullptr || configured->observedValue != 42 ||
+            host.configure<ConfigurableRenderSubsystemProbe>({.value = 7}, log)) {
+            return RhiTestResult::fail("subsystem configuration was not applied before activation");
+        }
+
+        render::RenderWorld world;
+        host.setWorld(&world);
+        render::EnvironmentSettings environment;
+        environment.intensity = 2.0f;
+        world.setEnvironment(environment);
+        result = host.beginFrame(7, 1, nullptr, log);
+        if (!result ||
+            !render::hasRenderChange(host.lastChanges(), render::RenderChangeBits::Lighting) ||
+            !render::hasRenderChange(
+                host.lastChanges(),
+                render::RenderChangeBits::InvalidateTemporalHistory)) {
+            return RhiTestResult::fail("world change bits were not aggregated");
+        }
+        host.endFrame();
+        result = host.beginFrame(8, 2, nullptr, log);
+        if (!result || host.lastChanges() != render::RenderChangeBits::None) {
+            return RhiTestResult::fail("world change bits were not consumed exactly once");
+        }
+        host.endFrame();
+        host.shutdown();
+        const std::vector<std::string> expectedTail{
+            "shutdown:test.consumer",
+            "shutdown:test.base",
+        };
+        if (events.size() < expectedTail.size() ||
+            !std::equal(expectedTail.begin(), expectedTail.end(), events.end() - expectedTail.size())) {
+            return RhiTestResult::fail("subsystems did not shut down in reverse dependency order");
+        }
+
+        render::RenderSubsystemHost missingHost;
+        if (!registerProbe(missingHost, "test.missing-user", {"test.not-registered"}, events, log)) {
+            return RhiTestResult::fail(log);
+        }
+        result = missingHost.initialize(context.device, 1, log);
+        if (!result) {
+            return RhiTestResult::fail(log);
+        }
+        result = missingHost.activate("test.missing-user", log);
+        if (result || log.find("test.not-registered") == std::string::npos) {
+            return RhiTestResult::fail("missing dependency did not produce a named error");
+        }
+
+        render::RenderSubsystemHost cycleHost;
+        log.clear();
+        registerProbe(cycleHost, "test.cycle-a", {"test.cycle-b"}, events, log);
+        registerProbe(cycleHost, "test.cycle-b", {"test.cycle-a"}, events, log);
+        result = cycleHost.initialize(context.device, 1, log);
+        if (!result) {
+            return RhiTestResult::fail(log);
+        }
+        result = cycleHost.activate("test.cycle-a", log);
+        if (result || log.find("cycle") == std::string::npos) {
+            return RhiTestResult::fail("dependency cycle was not detected");
+        }
+
+        render::RenderSubsystemHost failingHost;
+        log.clear();
+        registerProbe(failingHost, "test.failing", {}, events, log, true);
+        result = failingHost.initialize(context.device, 1, log);
+        if (!result || !failingHost.activate("test.failing", log)) {
+            return RhiTestResult::fail(log);
+        }
+        result = failingHost.beginFrame(0, 0, nullptr, log);
+        if (result || log.find("test.failing") == std::string::npos) {
+            return RhiTestResult::fail("hook error did not propagate with subsystem id");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+class LegacyEnvironmentMigrationTest : public RhiTest {
+public:
+    LegacyEnvironmentMigrationTest()
+    {
+        type = RhiTestType::Resource;
+        name = "legacy_environment_migration";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        render::RenderGraph graph;
+        render::RenderGraphNode* first = graph.addNode(
+            "ScenePathTracePass",
+            "First",
+            {{"environment", {{"path", "first.hdr"}, {"intensity", 1.0f}}}});
+        render::RenderGraphNode* preferred = graph.addNode(
+            "SceneRtxdiPass",
+            "Preferred",
+            {{"environment", {{"path", "preferred.hdr"}, {"intensity", 3.0f}}}});
+        const uint32_t preferredId = preferred != nullptr ? preferred->id : 0;
+        render::RenderGraphNode* output = graph.addNode("CopyColorPass", "Output");
+        if (first == nullptr || preferred == nullptr || output == nullptr ||
+            !graph.setNodeRuntimeProperty(
+                preferredId,
+                "environment",
+                {{"path", "preferred-runtime.hdr"}, {"intensity", 4.0f}}) ||
+            graph.addEdge("Preferred.color", "Output.input") == nullptr ||
+            !graph.markOutput("Output.color")) {
+            return RhiTestResult::fail("failed to build legacy migration graph");
+        }
+
+        const std::filesystem::path base = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset";
+        const render::LegacyEnvironmentMigrationResult migration =
+            render::migrateLegacyEnvironmentSettings(graph, base);
+        if (!migration.found ||
+            migration.selectedNode != "Preferred" ||
+            migration.settings.path != base / "preferred-runtime.hdr" ||
+            migration.settings.intensity != 4.0f ||
+            migration.ignoredNodes != std::vector<std::string>{"First"} ||
+            migration.warning.find("First") == std::string::npos) {
+            return RhiTestResult::fail("legacy environment selection or conflict warning is incorrect");
+        }
+        for (const render::RenderGraphNode& node : graph.nodes()) {
+            if ((node.properties.is_object() && node.properties.contains("environment")) ||
+                (node.runtimeProperties.is_object() && node.runtimeProperties.contains("environment"))) {
+                return RhiTestResult::fail("legacy environment remained on a graph node");
+            }
+        }
+        if (render::serializeRenderGraphToString(graph).find("environment") != std::string::npos) {
+            return RhiTestResult::fail("environment leaked into newly serialized graph JSON");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
@@ -5992,6 +6473,10 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenSponzaVisibilityRenderTest);
 METALLIC_REGISTER_RHI_TEST(ImportancePdfMipChainTest);
 METALLIC_REGISTER_RHI_TEST(ReGIRGridLayoutTest);
+METALLIC_REGISTER_RHI_TEST(EnvironmentSubsystemAsyncSnapshotTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphMissingSubsystemDiagnosticTest);
+METALLIC_REGISTER_RHI_TEST(RenderSubsystemHostLifecycleTest);
+METALLIC_REGISTER_RHI_TEST(LegacyEnvironmentMigrationTest);
 
 } // namespace
 } // namespace metallic::tests

@@ -158,26 +158,6 @@ struct ScenePathTraceBufferUpload {
     uint64_t byteSize = 0;
 };
 
-struct DecodedEnvironmentTexture {
-    std::vector<float> pixels;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    std::string label;
-};
-
-struct EnvironmentAliasEntry {
-    float probability = 1.0f;
-    uint32_t aliasIndex = 0;
-    float texelProbability = 1.0f;
-    uint32_t padding = 0;
-};
-
-struct EnvironmentImportanceData {
-    std::vector<EnvironmentAliasEntry> aliasTable;
-    uint32_t texelCount = 1;
-};
-
-static_assert(sizeof(EnvironmentAliasEntry) == 16);
 
 std::string resultMessage(std::string_view label, const Result& result)
 {
@@ -313,26 +293,6 @@ std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props
         return path;
     }
     return kDefaultPathTraceScenePath;
-}
-
-std::filesystem::path environmentPathFromProperties(const RenderGraphProperties& props)
-{
-    if (!props.contains("environment") || !props["environment"].is_object()) {
-        return {};
-    }
-    const RenderGraphProperties& environment = props["environment"];
-    if (!environment.contains("path") || !environment["path"].is_string()) {
-        return {};
-    }
-
-    std::filesystem::path path = environment["path"].get<std::string>();
-    if (path.empty()) {
-        return {};
-    }
-    if (path.is_relative()) {
-        path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
-    }
-    return path;
 }
 
 void appendScenePathTraceWarning(std::string& log, std::string_view message)
@@ -750,219 +710,6 @@ Result createMaterialTexture(
     return {};
 }
 
-bool decodeEnvironmentTexture(
-    const std::filesystem::path& path,
-    DecodedEnvironmentTexture& outTexture,
-    std::string& log)
-{
-    outTexture = DecodedEnvironmentTexture{};
-    if (path.empty()) {
-        return false;
-    }
-
-    std::error_code existsError;
-    if (!std::filesystem::exists(path, existsError)) {
-        appendScenePathTraceWarning(log, "environment map does not exist: " + path.string());
-        return false;
-    }
-
-    int width = 0;
-    int height = 0;
-    int channelCount = 0;
-    float* pixels = stbi_loadf(path.string().c_str(), &width, &height, &channelCount, 4);
-    if (pixels == nullptr || width <= 0 || height <= 0) {
-        std::string message = "failed to decode environment map '" + path.string() + "'";
-        if (const char* reason = stbi_failure_reason()) {
-            message += ": ";
-            message += reason;
-        }
-        appendScenePathTraceWarning(log, message);
-        return false;
-    }
-
-    const uint64_t componentCount = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
-    if (componentCount > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
-        stbi_image_free(pixels);
-        appendScenePathTraceWarning(log, "decoded environment map is too large");
-        return false;
-    }
-
-    outTexture.width = static_cast<uint32_t>(width);
-    outTexture.height = static_cast<uint32_t>(height);
-    outTexture.label = path.filename().string();
-    outTexture.pixels.assign(pixels, pixels + static_cast<size_t>(componentCount));
-    stbi_image_free(pixels);
-    return true;
-}
-
-float environmentTexelWeight(const float* rgba, uint32_t y, uint32_t height)
-{
-    constexpr float kPi = 3.14159265358979323846f;
-    const float r = std::isfinite(rgba[0]) ? std::max(rgba[0], 0.0f) : 0.0f;
-    const float g = std::isfinite(rgba[1]) ? std::max(rgba[1], 0.0f) : 0.0f;
-    const float b = std::isfinite(rgba[2]) ? std::max(rgba[2], 0.0f) : 0.0f;
-    const float luminance = r * 0.2126f + g * 0.7152f + b * 0.0722f;
-    const float theta = (static_cast<float>(y) + 0.5f) * (kPi / static_cast<float>(std::max(height, 1u)));
-    return luminance * std::max(std::sin(theta), 0.0f);
-}
-
-EnvironmentImportanceData buildEnvironmentImportanceData(const DecodedEnvironmentTexture& texture)
-{
-    EnvironmentImportanceData data;
-    const uint64_t texelCount64 = static_cast<uint64_t>(texture.width) * static_cast<uint64_t>(texture.height);
-    if (texture.pixels.empty() || texture.width == 0 || texture.height == 0 || texelCount64 == 0 ||
-        texelCount64 > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
-        data.aliasTable = {EnvironmentAliasEntry{}};
-        data.texelCount = 1;
-        return data;
-    }
-
-    data.texelCount = static_cast<uint32_t>(texelCount64);
-    data.aliasTable.resize(data.texelCount);
-    std::vector<double> weights(data.texelCount, 0.0);
-    double totalWeight = 0.0;
-    for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
-        const uint32_t y = texelIndex / texture.width;
-        const float weight = environmentTexelWeight(&texture.pixels[static_cast<size_t>(texelIndex) * 4u], y, texture.height);
-        totalWeight += static_cast<double>(weight);
-        weights[texelIndex] = static_cast<double>(weight);
-    }
-
-    std::vector<double> scaledProbabilities(data.texelCount, 1.0);
-    if (totalWeight <= 0.0 || !std::isfinite(totalWeight)) {
-        for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
-            data.aliasTable[texelIndex].texelProbability = 1.0f / static_cast<float>(data.texelCount);
-        }
-    } else {
-        const double reciprocalTotalWeight = 1.0 / totalWeight;
-        for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
-            const double texelProbability = weights[texelIndex] * reciprocalTotalWeight;
-            data.aliasTable[texelIndex].texelProbability = static_cast<float>(texelProbability);
-            scaledProbabilities[texelIndex] = texelProbability * static_cast<double>(data.texelCount);
-        }
-    }
-
-    std::vector<uint32_t> small;
-    std::vector<uint32_t> large;
-    small.reserve(data.texelCount);
-    large.reserve(data.texelCount);
-    for (uint32_t texelIndex = 0; texelIndex < data.texelCount; ++texelIndex) {
-        if (scaledProbabilities[texelIndex] < 1.0) {
-            small.push_back(texelIndex);
-        } else {
-            large.push_back(texelIndex);
-        }
-        data.aliasTable[texelIndex].aliasIndex = texelIndex;
-    }
-
-    while (!small.empty() && !large.empty()) {
-        const uint32_t smallIndex = small.back();
-        small.pop_back();
-        const uint32_t largeIndex = large.back();
-
-        data.aliasTable[smallIndex].probability =
-            static_cast<float>(std::clamp(scaledProbabilities[smallIndex], 0.0, 1.0));
-        data.aliasTable[smallIndex].aliasIndex = largeIndex;
-
-        scaledProbabilities[largeIndex] =
-            (scaledProbabilities[largeIndex] + scaledProbabilities[smallIndex]) - 1.0;
-        if (scaledProbabilities[largeIndex] < 1.0) {
-            large.pop_back();
-            small.push_back(largeIndex);
-        }
-    }
-
-    for (uint32_t texelIndex : large) {
-        data.aliasTable[texelIndex].probability = 1.0f;
-        data.aliasTable[texelIndex].aliasIndex = texelIndex;
-    }
-    for (uint32_t texelIndex : small) {
-        data.aliasTable[texelIndex].probability = 1.0f;
-        data.aliasTable[texelIndex].aliasIndex = texelIndex;
-    }
-    return data;
-}
-
-Result createEnvironmentTexture(
-    Device& device,
-    SceneUploadStagingArena& stagingArena,
-    const float* pixels,
-    uint32_t width,
-    uint32_t height,
-    std::string_view label,
-    ScenePathTraceMaterialTexture& outTexture,
-    std::string& log)
-{
-    if (pixels == nullptr || width == 0 || height == 0) {
-        return makeError(Error::InvalidArgument);
-    }
-
-    outTexture = ScenePathTraceMaterialTexture{};
-    outTexture.width = width;
-    outTexture.height = height;
-    outTexture.format = Format::Rgba32Sfloat;
-    outTexture.mipCount = 1;
-    outTexture.byteSize = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull * sizeof(float);
-    ScenePathTraceTextureMipUpload upload;
-    upload.width = width;
-    upload.height = height;
-    upload.byteSize = outTexture.byteSize;
-    std::string uploadLabel = "ScenePathTracePass environment upload ";
-    uploadLabel += std::string(label);
-    Result result = createTextureUploadBuffer(
-        device,
-        stagingArena,
-        pixels,
-        upload.byteSize,
-        std::max<uint64_t>(device.capabilities().textureUploadBufferOffsetAlignment, 1ull),
-        outTexture.uploadBuffer,
-        outTexture.uploadBufferOffset,
-        log,
-        uploadLabel);
-    if (!result) {
-        return result;
-    }
-    outTexture.uploadAllocationSize = upload.byteSize;
-    outTexture.mipUploads.push_back(std::move(upload));
-
-    result = device.createTexture(
-        TextureDesc{
-            .type = TextureType::Texture2D,
-            .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-            .format = outTexture.format,
-            .width = width,
-            .height = height,
-            .depth = 1,
-            .mipCount = 1,
-            .layerCount = 1,
-            .memoryLocation = MemoryLocation::Device,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
-        },
-        outTexture.texture);
-    if (!result || outTexture.texture == nullptr) {
-        log += resultMessage(std::string("createTexture(ScenePathTracePass environment texture ") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-
-    result = device.createTextureView(
-        *outTexture.texture,
-        TextureViewDesc{
-            .format = outTexture.format,
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
-        },
-        outTexture.view);
-    if (!result || outTexture.view == nullptr) {
-        log += resultMessage(std::string("createTextureView(ScenePathTracePass environment texture ") + std::string(label) + ")", result);
-        log += '\n';
-        return result ? makeError(Error::Failure) : result;
-    }
-    return {};
-}
-
 uint32_t materialTextureIndex(
     int32_t textureIndex,
     const std::vector<uint32_t>& textureIndexMap)
@@ -1339,7 +1086,6 @@ struct ScenePathTraceResources::Impl {
     enum class AsyncPrepareStage : uint8_t {
         Idle,
         MaterialTextures,
-        Environment,
         GpuPayload,
         AccelerationStructure,
         Buffers,
@@ -1362,9 +1108,6 @@ struct ScenePathTraceResources::Impl {
                 byteSize += texture.uploadAllocationSize;
             }
         }
-        if (!environmentTexture.uploaded && environmentTexture.uploadBuffer != nullptr) {
-            byteSize += environmentTexture.uploadAllocationSize;
-        }
         for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
             byteSize += upload.byteSize;
         }
@@ -1378,9 +1121,6 @@ struct ScenePathTraceResources::Impl {
             if (!texture.uploaded && texture.uploadBuffer != nullptr) {
                 regionCount += texture.mipUploads.size();
             }
-        }
-        if (!environmentTexture.uploaded && environmentTexture.uploadBuffer != nullptr) {
-            regionCount += environmentTexture.mipUploads.size();
         }
         return static_cast<uint32_t>(std::min<uint64_t>(regionCount, UINT32_MAX));
     }
@@ -1486,12 +1226,6 @@ struct ScenePathTraceResources::Impl {
         }
         for (ScenePathTraceMaterialTexture& texture : materialTextures) {
             result = uploadTexture(*textureUploadCommandBuffer, texture);
-            if (!result) {
-                return result;
-            }
-        }
-        if (environmentTexture.texture != nullptr) {
-            result = uploadTexture(*textureUploadCommandBuffer, environmentTexture);
             if (!result) {
                 return result;
             }
@@ -1604,7 +1338,6 @@ struct ScenePathTraceResources::Impl {
         for (ScenePathTraceMaterialTexture& texture : materialTextures) {
             texture.uploadBuffer.reset();
         }
-        environmentTexture.uploadBuffer.reset();
         bufferUploads.clear();
         stagingArena.reset();
         textureUploadCommandBuffer.reset();
@@ -1633,8 +1366,6 @@ struct ScenePathTraceResources::Impl {
         materialTextureViews.fill(nullptr);
         materialTextureCount = 0;
         textureIndexMap.clear();
-        environmentTexture = ScenePathTraceMaterialTexture{};
-        environmentMapAvailable = false;
         outTextureIndexMap.assign(loadedScene.textures().size(), kInvalidMaterialTextureIndex);
 
         const uint8_t fallbackPixels[4] = {255, 255, 255, 255};
@@ -1865,114 +1596,6 @@ struct ScenePathTraceResources::Impl {
         return {};
     }
 
-    Result buildEnvironmentTexture(
-        Device& device,
-        const std::filesystem::path& path,
-        std::string& log)
-    {
-        environmentTexture = ScenePathTraceMaterialTexture{};
-        environmentImportanceBuffer.reset();
-        environmentImportanceTexelCount = 1;
-        environmentMapAvailable = false;
-
-        if (!path.empty()) {
-            DecodedEnvironmentTexture decodedEnvironment;
-            const auto decodeBegin = SceneResourceLogClock::now();
-            if (decodeEnvironmentTexture(path, decodedEnvironment, log) && !decodedEnvironment.pixels.empty()) {
-                spdlog::info(
-                    "[SceneResources] Environment decoded '{}' {}x{} texels={} in {:.2f} ms",
-                    decodedEnvironment.label,
-                    decodedEnvironment.width,
-                    decodedEnvironment.height,
-                    decodedEnvironment.pixels.size() / 4u,
-                    sceneResourceElapsedMilliseconds(decodeBegin));
-                const auto textureBegin = SceneResourceLogClock::now();
-                Result result = createEnvironmentTexture(
-                    device,
-                    stagingArena,
-                    decodedEnvironment.pixels.data(),
-                    decodedEnvironment.width,
-                    decodedEnvironment.height,
-                    decodedEnvironment.label,
-                    environmentTexture,
-                    log);
-                if (!result) {
-                    return result;
-                }
-                spdlog::info(
-                    "[SceneResources] Environment GPU texture resources uploadBytes={} in {:.2f} ms",
-                    environmentTexture.byteSize,
-                    sceneResourceElapsedMilliseconds(textureBegin));
-                const auto importanceBegin = SceneResourceLogClock::now();
-                EnvironmentImportanceData importanceData = buildEnvironmentImportanceData(decodedEnvironment);
-                spdlog::info(
-                    "[SceneResources] Environment importance table built texels={} in {:.2f} ms",
-                    importanceData.texelCount,
-                    sceneResourceElapsedMilliseconds(importanceBegin));
-                const auto uploadBegin = SceneResourceLogClock::now();
-                result = uploadStorageBuffer(
-                    device,
-                    importanceData.aliasTable.data(),
-                    static_cast<uint64_t>(importanceData.aliasTable.size() * sizeof(EnvironmentAliasEntry)),
-                    sizeof(EnvironmentAliasEntry),
-                    environmentImportanceBuffer,
-                    log,
-                    "ScenePathTracePass environment importance alias table",
-                    &bufferUploads,
-                    &stagingArena);
-                if (!result) {
-                    return result;
-                }
-                environmentImportanceTexelCount = importanceData.texelCount;
-                environmentMapAvailable = true;
-                spdlog::info(
-                    "[SceneResources] Environment importance upload aliasBytes={} in {:.2f} ms",
-                    importanceData.aliasTable.size() * sizeof(EnvironmentAliasEntry),
-                    sceneResourceElapsedMilliseconds(uploadBegin));
-                return {};
-            }
-            spdlog::info(
-                "[SceneResources] Environment decode skipped/failed '{}' in {:.2f} ms",
-                path.string(),
-                sceneResourceElapsedMilliseconds(decodeBegin));
-        }
-
-        const float fallbackPixels[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-        const auto fallbackBegin = SceneResourceLogClock::now();
-        Result result = createEnvironmentTexture(
-            device,
-            stagingArena,
-            fallbackPixels,
-            1,
-            1,
-            "environment fallback",
-            environmentTexture,
-            log);
-        if (!result) {
-            return result;
-        }
-        spdlog::info(
-            "[SceneResources] Environment fallback texture prepared in {:.2f} ms",
-            sceneResourceElapsedMilliseconds(fallbackBegin));
-
-        const EnvironmentAliasEntry fallbackAliasTable[1] = {EnvironmentAliasEntry{}};
-        const auto uploadBegin = SceneResourceLogClock::now();
-        result = uploadStorageBuffer(
-            device,
-            fallbackAliasTable,
-            sizeof(fallbackAliasTable),
-            sizeof(EnvironmentAliasEntry),
-            environmentImportanceBuffer,
-            log,
-            "ScenePathTracePass environment fallback importance alias table",
-            &bufferUploads,
-            &stagingArena);
-        spdlog::info(
-            "[SceneResources] Environment fallback importance upload in {:.2f} ms",
-            sceneResourceElapsedMilliseconds(uploadBegin));
-        return result;
-    }
-
     Result uploadTexture(CommandBuffer& commandBuffer, ScenePathTraceMaterialTexture& texture)
     {
         if (texture.uploaded) {
@@ -2044,7 +1667,6 @@ struct ScenePathTraceResources::Impl {
         for (ScenePathTraceMaterialTexture& texture : materialTextures) {
             transitionTexture(texture);
         }
-        transitionTexture(environmentTexture);
 
         std::vector<BufferBarrierDesc> bufferBarriers;
         bufferBarriers.reserve(bufferUploads.size());
@@ -2085,16 +1707,6 @@ struct ScenePathTraceResources::Impl {
         return {};
     }
 
-    Result uploadEnvironmentTexture(CommandBuffer& commandBuffer)
-    {
-        if (textureUploadsSubmitted) {
-            (void)commandBuffer;
-            retireCompletedTextureUploads();
-            return {};
-        }
-        return uploadTexture(commandBuffer, environmentTexture);
-    }
-
     void resetGpuBuffers()
     {
         waitForTextureUploads();
@@ -2106,10 +1718,6 @@ struct ScenePathTraceResources::Impl {
         materialTextures.clear();
         materialTextureViews.fill(nullptr);
         materialTextureCount = 0;
-        environmentTexture = ScenePathTraceMaterialTexture{};
-        environmentImportanceBuffer.reset();
-        environmentImportanceTexelCount = 1;
-        environmentMapAvailable = false;
     }
 
     void clear()
@@ -2118,13 +1726,11 @@ struct ScenePathTraceResources::Impl {
         rtxBuilder.clear();
         drawBounds = scene::Bounds{};
         scenePath.clear();
-        environmentPath.clear();
         prepared = false;
         asyncPrepareStage = AsyncPrepareStage::Idle;
         partialUploadResumeStage = AsyncPrepareStage::Idle;
         asyncScene = nullptr;
         asyncScenePath.clear();
-        asyncEnvironmentPath.clear();
         asyncGpuScene = ScenePathTraceGpuScene{};
         asyncBufferStep = 0;
     }
@@ -2140,9 +1746,7 @@ struct ScenePathTraceResources::Impl {
             instanceBuffer != nullptr &&
             materialBuffer != nullptr &&
             !materialTextures.empty() &&
-            materialTextureViews[0] != nullptr &&
-            environmentTexture.view != nullptr &&
-            environmentImportanceBuffer != nullptr;
+            materialTextureViews[0] != nullptr;
     }
 
     SceneRtxBuilder rtxBuilder;
@@ -2150,7 +1754,6 @@ struct ScenePathTraceResources::Impl {
     Queue* graphicsQueue = nullptr;
     scene::Bounds drawBounds;
     std::filesystem::path scenePath;
-    std::filesystem::path environmentPath;
     bool prepared = false;
     uint64_t revision = 0;
     uint64_t sourceTransformRevision = 0;
@@ -2167,10 +1770,6 @@ struct ScenePathTraceResources::Impl {
     size_t asyncTextureCursor = 0;
     std::array<TextureView*, kScenePathTraceMaxMaterialTextures> materialTextureViews{};
     uint32_t materialTextureCount = 0;
-    ScenePathTraceMaterialTexture environmentTexture;
-    std::unique_ptr<Buffer> environmentImportanceBuffer;
-    uint32_t environmentImportanceTexelCount = 1;
-    bool environmentMapAvailable = false;
     std::unique_ptr<CommandPool> textureUploadCommandPool;
     std::unique_ptr<CommandBuffer> textureUploadCommandBuffer;
     std::unique_ptr<CommandPool> textureAcquireCommandPool;
@@ -2182,7 +1781,6 @@ struct ScenePathTraceResources::Impl {
     AsyncPrepareStage partialUploadResumeStage = AsyncPrepareStage::Idle;
     const scene::Scene* asyncScene = nullptr;
     std::filesystem::path asyncScenePath;
-    std::filesystem::path asyncEnvironmentPath;
     ScenePathTraceGpuScene asyncGpuScene;
     uint32_t asyncBufferStep = 0;
 };
@@ -2207,23 +1805,18 @@ Result ScenePathTraceResources::prepare(
     impl_->device = &device;
     impl_->graphicsQueue = &graphicsQueue;
     const std::filesystem::path path = scenePathFromProperties(properties);
-    const std::filesystem::path environmentPath = environmentPathFromProperties(properties);
     const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, path);
-    if (impl_->valid() && impl_->scenePath == path && impl_->environmentPath == environmentPath &&
+    if (impl_->valid() && impl_->scenePath == path &&
         boundScene != nullptr && impl_->sourceTransformRevision != boundScene->transformRevision()) {
         return syncRuntimeScene(boundScene, log);
     }
-    if (impl_->valid() && impl_->scenePath == path && impl_->environmentPath == environmentPath &&
+    if (impl_->valid() && impl_->scenePath == path &&
         (boundScene == nullptr || impl_->sourceTransformRevision == boundScene->transformRevision())) {
-        spdlog::info(
-            "[SceneResources] Reuse prepared scene='{}' environment='{}'",
-            path.string(),
-            environmentPath.string());
+        spdlog::info("[SceneResources] Reuse prepared scene='{}'", path.string());
         return {};
     }
 
-    SceneResourceLogScope prepareScope(
-        "prepare scene='" + path.string() + "' environment='" + environmentPath.string() + "'");
+    SceneResourceLogScope prepareScope("prepare scene='" + path.string() + "'");
     impl_->clear();
 
     scene::Scene fallbackScene;
@@ -2261,15 +1854,6 @@ Result ScenePathTraceResources::prepare(
         return result;
     }
     impl_->textureIndexMap = textureIndexMap;
-    {
-        SceneResourceLogScope scope("build environment texture");
-        result = impl_->buildEnvironmentTexture(device, environmentPath, log);
-    }
-    if (!result) {
-        impl_->clear();
-        return result;
-    }
-
     ScenePathTraceGpuScene gpuScene;
     {
         SceneResourceLogScope scope("build GPU scene payload");
@@ -2387,16 +1971,13 @@ Result ScenePathTraceResources::prepare(
 
     impl_->drawBounds = loadedScene.bounds();
     impl_->scenePath = path;
-    impl_->environmentPath = environmentPath;
     impl_->sourceTransformRevision = loadedScene.transformRevision();
     impl_->prepared = true;
     ++impl_->revision;
     spdlog::info(
-        "[SceneResources] Prepared scene resources revision={} materialTextures={} environmentAvailable={} environmentTexels={}",
+        "[SceneResources] Prepared scene resources revision={} materialTextures={}",
         impl_->revision,
-        impl_->materialTextureCount,
-        impl_->environmentMapAvailable,
-        impl_->environmentImportanceTexelCount);
+        impl_->materialTextureCount);
     return {};
 }
 
@@ -2408,13 +1989,12 @@ Result ScenePathTraceResources::beginPrepareAsync(
     std::string& log)
 {
     const std::filesystem::path path = scenePathFromProperties(properties);
-    const std::filesystem::path environmentPath = environmentPathFromProperties(properties);
     const scene::Scene* boundScene = runtimeSceneForPath(&runtimeScene, path);
     if (boundScene == nullptr || !boundScene->bounds().valid) {
         log = "Asynchronous scene preparation requires a matching valid runtime scene";
         return makeError(Error::InvalidArgument);
     }
-    if (impl_->valid() && impl_->scenePath == path && impl_->environmentPath == environmentPath) {
+    if (impl_->valid() && impl_->scenePath == path) {
         return {};
     }
 
@@ -2423,7 +2003,6 @@ Result ScenePathTraceResources::beginPrepareAsync(
     impl_->graphicsQueue = &graphicsQueue;
     impl_->asyncScene = boundScene;
     impl_->asyncScenePath = path;
-    impl_->asyncEnvironmentPath = environmentPath;
     Result result = impl_->beginMaterialTextureBuild(device, *boundScene, log);
     if (!result) {
         impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
@@ -2490,29 +2069,16 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             progress.fraction = 0.65f + 0.10f * static_cast<float>(impl_->asyncTextureCursor) /
                 static_cast<float>(std::max<size_t>(impl_->asyncScene->textures().size(), 1u));
             if (texturesComplete) {
-                impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::Environment;
+                impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::GpuPayload;
                 impl_->asyncPrepareStage = impl_->pendingUploadByteSize() > 0
                     ? Impl::AsyncPrepareStage::SubmitPartialUploads
-                    : Impl::AsyncPrepareStage::Environment;
+                    : Impl::AsyncPrepareStage::GpuPayload;
             } else if (impl_->uploadBatchLimitReached()) {
                 impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::MaterialTextures;
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitPartialUploads;
             }
             return {};
         }
-        case Impl::AsyncPrepareStage::Environment:
-            result = impl_->buildEnvironmentTexture(
-                *impl_->device,
-                impl_->asyncEnvironmentPath,
-                log);
-            if (!result) {
-                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
-                return result;
-            }
-            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::GpuPayload;
-            progress.phase = scene::SceneLoadPhase::GpuUpload;
-            progress.fraction = 0.77f;
-            return {};
         case Impl::AsyncPrepareStage::GpuPayload:
             if (!buildGpuScene(
                     *impl_->asyncScene,
@@ -2665,7 +2231,6 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             impl_->retireCompletedTextureUploads();
             impl_->drawBounds = impl_->asyncScene->bounds();
             impl_->scenePath = impl_->asyncScenePath;
-            impl_->environmentPath = impl_->asyncEnvironmentPath;
             impl_->sourceTransformRevision = impl_->asyncScene->transformRevision();
             impl_->prepared = true;
             ++impl_->revision;
@@ -2749,11 +2314,6 @@ Result ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuf
     return impl_->uploadMaterialTextures(commandBuffer);
 }
 
-Result ScenePathTraceResources::uploadEnvironmentTexture(CommandBuffer& commandBuffer)
-{
-    return impl_->uploadEnvironmentTexture(commandBuffer);
-}
-
 void ScenePathTraceResources::clear()
 {
     impl_->clear();
@@ -2819,16 +2379,6 @@ uint32_t ScenePathTraceResources::materialTextureCount() const
     return impl_->materialTextureCount;
 }
 
-TextureView* ScenePathTraceResources::environmentTextureView() const
-{
-    return impl_->environmentTexture.view.get();
-}
-
-Buffer* ScenePathTraceResources::environmentImportanceBuffer() const
-{
-    return impl_->environmentImportanceBuffer.get();
-}
-
 bool ScenePathTraceResources::textureUploadsReady() const
 {
     return impl_->textureUploadsReady();
@@ -2840,26 +2390,6 @@ bool ScenePathTraceResources::gpuWorkComplete()
         impl_->rtxBuilder.buildState() != vulkan::SceneRtxBuildState::Building ||
         impl_->rtxBuilder.pollBuild();
     return impl_->textureUploadsReady() && accelerationStructureComplete;
-}
-
-uint32_t ScenePathTraceResources::environmentImportanceTexelCount() const
-{
-    return impl_->environmentImportanceTexelCount;
-}
-
-uint32_t ScenePathTraceResources::environmentTextureWidth() const
-{
-    return impl_->environmentTexture.width;
-}
-
-uint32_t ScenePathTraceResources::environmentTextureHeight() const
-{
-    return impl_->environmentTexture.height;
-}
-
-bool ScenePathTraceResources::environmentMapAvailable() const
-{
-    return impl_->environmentMapAvailable;
 }
 
 } // namespace metallic::render

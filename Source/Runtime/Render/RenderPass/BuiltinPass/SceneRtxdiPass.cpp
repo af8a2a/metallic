@@ -4,6 +4,7 @@
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -25,6 +26,14 @@ struct SceneRtxdiHistoryViews {
 class SceneRtxdiPass final : public ComputePass {
 public:
     ~SceneRtxdiPass() override = default;
+
+    std::span<const RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{
+            EnvironmentLightingSubsystem::kSubsystemId,
+        };
+        return required;
+    }
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -180,8 +189,7 @@ public:
                 SceneResourceFeatureBits::Geometry |
                     SceneResourceFeatureBits::Materials |
                     SceneResourceFeatureBits::MaterialTextures |
-                    SceneResourceFeatureBits::StandardAccelerationStructure |
-                    SceneResourceFeatureBits::Environment,
+                    SceneResourceFeatureBits::StandardAccelerationStructure,
                 snapshot,
                 log);
             if (result && snapshot != nullptr) {
@@ -201,7 +209,6 @@ public:
         const uint64_t resourceRevision = sceneResources_.revision();
         if (resourceRevision != sceneResourceRevision_) {
             sceneResourceRevision_ = resourceRevision;
-            environmentPdfBuilt_ = false;
             resetHistory_ = true;
             hasPreviousCamera_ = false;
         }
@@ -216,8 +223,6 @@ public:
         result = ensureImportancePdfResources(
             *context.device,
             uintProperty(properties(), "lightCount", kDefaultRtxdiLightCount, 1, kMaxRtxdiLightCount),
-            sceneResources_.environmentTextureWidth(),
-            sceneResources_.environmentTextureHeight(),
             log);
         if (!result) {
             return result;
@@ -321,8 +326,7 @@ public:
                 SceneResourceFeatureBits::Geometry |
                     SceneResourceFeatureBits::Materials |
                     SceneResourceFeatureBits::MaterialTextures |
-                    SceneResourceFeatureBits::StandardAccelerationStructure |
-                    SceneResourceFeatureBits::Environment,
+                    SceneResourceFeatureBits::StandardAccelerationStructure,
                 snapshot,
                 syncLog);
             if (!acquireResult || snapshot == nullptr) {
@@ -340,7 +344,6 @@ public:
         }
         if (sceneResources_.revision() != sceneResourceRevision_) {
             sceneResourceRevision_ = sceneResources_.revision();
-            environmentPdfBuilt_ = false;
             resetHistory_ = true;
             hasPreviousCamera_ = false;
         }
@@ -356,8 +359,6 @@ public:
                 kDefaultRtxdiLightCount,
                 1,
                 kMaxRtxdiLightCount),
-            sceneResources_.environmentTextureWidth(),
-            sceneResources_.environmentTextureHeight(),
             importanceLog);
         if (!importanceResult) {
             spdlog::warn("[SceneRtxdiPass] Local light PDF rebuild failed: {}", importanceLog);
@@ -368,6 +369,22 @@ public:
             spdlog::warn("[SceneRtxdiPass] ReGIR rebuild failed: {}", importanceLog);
             return reGIRResult;
         }
+        EnvironmentLightingSubsystem* environmentSubsystem =
+            context.subsystem<EnvironmentLightingSubsystem>();
+        if (environmentSubsystem == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        const EnvironmentLightingSnapshot& environment = environmentSubsystem->snapshot();
+        if (!environment.valid()) {
+            return {};
+        }
+        if (environment.resourceRevision != environmentResourceRevision_ ||
+            environment.settingsRevision != environmentSettingsRevision_) {
+            environmentResourceRevision_ = environment.resourceRevision;
+            environmentSettingsRevision_ = environment.settingsRevision;
+            resetHistory_ = true;
+            hasPreviousCamera_ = false;
+        }
         TextureHandle color = context.outputTexture("color");
         TextureHandle noisyDiffuse = context.outputTexture("noisyDiffuse");
         TextureHandle noisySpecular = context.outputTexture("noisySpecular");
@@ -377,8 +394,8 @@ public:
         TextureHandle baseColorMetalness = context.outputTexture("baseColorMetalness");
         TextureHandle emissive = context.outputTexture("emissive");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
-        TextureView* environmentTextureView = sceneResources_.environmentTextureView();
-        TextureView* environmentImportanceTextureView = environmentPdf_.view();
+        TextureView* environmentTextureView = environment.radianceView;
+        TextureView* environmentImportanceTextureView = environment.pdfView;
         if (!validTexture(color) ||
             !validTexture(noisyDiffuse) ||
             !validTexture(noisySpecular) ||
@@ -435,9 +452,10 @@ public:
             context.height(),
             context.properties(),
             sceneResources_.bounds(),
+            environment.settings,
             push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
-        if (!sceneResources_.environmentMapAvailable()) {
+        if (!environment.mapAvailable) {
             push.behaviorFlags &= ~kRtxdiBehaviorEnvironmentEnabled;
         }
         push.frameIndex = frameIndex_++;
@@ -460,23 +478,16 @@ public:
         if (!result) {
             return result;
         }
-        result = sceneResources_.uploadEnvironmentTexture(context.commandBuffer());
-        if (!result) {
-            return result;
-        }
-        result = importancePdfCompute_.build(
+        result = importancePdfCompute_.buildLocalLights(
             context.commandBuffer(),
             *environmentTextureView,
             localLightPdf_,
             push.lightCount,
             push.lightIntensity,
-            push.sceneCenterRadius[3],
-            environmentPdf_,
-            !environmentPdfBuilt_);
+            push.sceneCenterRadius[3]);
         if (!result) {
             return result;
         }
-        environmentPdfBuilt_ = true;
 
         if ((push.behaviorFlags & kRtxdiBehaviorReGIR) != 0u) {
             ReGIRBuildParameters reGIRBuild;
@@ -583,8 +594,6 @@ private:
     Result ensureImportancePdfResources(
         Device& device,
         uint32_t lightCount,
-        uint32_t environmentWidth,
-        uint32_t environmentHeight,
         std::string& log)
     {
         if (!localLightPdf_.valid() || localLightPdfLightCount_ != lightCount) {
@@ -607,28 +616,6 @@ private:
             resetHistory_ = true;
         }
 
-        environmentWidth = std::max(environmentWidth, 1u);
-        environmentHeight = std::max(environmentHeight, 1u);
-        if (!environmentPdf_.valid() ||
-            environmentPdf_.sourceWidth() != environmentWidth ||
-            environmentPdf_.sourceHeight() != environmentHeight) {
-            ImportancePdfTexture nextPdf;
-            Result result = nextPdf.initialize(
-                device,
-                environmentWidth,
-                environmentHeight,
-                "SceneRtxdiPass environment importance PDF",
-                log);
-            if (!result) {
-                return result;
-            }
-            if (environmentPdf_.valid()) {
-                retiredEnvironmentPdfs_.push_back(std::move(environmentPdf_));
-            }
-            environmentPdf_ = std::move(nextPdf);
-            environmentPdfBuilt_ = false;
-            resetHistory_ = true;
-        }
         return {};
     }
 
@@ -773,16 +760,6 @@ private:
         return finiteOr(iter->get<float>(), fallback);
     }
 
-    static const RenderGraphProperties* environmentPropertiesFrom(
-        const RenderGraphProperties& properties)
-    {
-        if (!properties.is_object()) {
-            return nullptr;
-        }
-        auto iter = properties.find("environment");
-        return iter != properties.end() && iter->is_object() ? &(*iter) : nullptr;
-    }
-
     static const RenderGraphProperties* cameraPropertiesFrom(const RenderGraphProperties& properties)
     {
         if (!properties.is_object()) {
@@ -899,6 +876,7 @@ private:
         uint32_t height,
         const RenderGraphProperties& properties,
         const scene::Bounds& drawBounds,
+        const EnvironmentSettings& environment,
         SceneRtxdiPush& outPush)
     {
         outPush = SceneRtxdiPush{};
@@ -978,19 +956,14 @@ private:
         setBehavior(
             kRtxdiBehaviorEnvironmentImportance,
             boolProperty(&properties, "environmentImportanceSampling", true));
-        const RenderGraphProperties* environment = environmentPropertiesFrom(properties);
         setBehavior(
             kRtxdiBehaviorEnvironmentEnabled,
-            boolProperty(environment, "enabled", false));
+            environment.enabled);
         setBehavior(
             kRtxdiBehaviorEnvironmentVisible,
-            boolProperty(environment, "visible", true));
-        outPush.environmentIntensity = environment != nullptr
-            ? std::max(floatProperty(*environment, "intensity", 1.0f), 0.0f)
-            : 1.0f;
-        outPush.environmentRotationRadians = environment != nullptr
-            ? floatProperty(*environment, "rotationDegrees", 0.0f) * (kPi / 180.0f)
-            : 0.0f;
+            environment.visible);
+        outPush.environmentIntensity = std::max(environment.intensity, 0.0f);
+        outPush.environmentRotationRadians = environment.rotationDegrees * (kPi / 180.0f);
     }
 
     ScenePathTraceResources sceneResources_;
@@ -1000,13 +973,12 @@ private:
     SceneResourceManager* sceneResourceManager_ = nullptr;
     ImportancePdfCompute importancePdfCompute_;
     ImportancePdfTexture localLightPdf_;
-    ImportancePdfTexture environmentPdf_;
     ReGIRLightSelector reGIR_;
     std::vector<ImportancePdfTexture> retiredLocalLightPdfs_;
-    std::vector<ImportancePdfTexture> retiredEnvironmentPdfs_;
     uint32_t localLightPdfLightCount_ = 0;
-    bool environmentPdfBuilt_ = false;
     uint64_t sceneResourceRevision_ = 0;
+    uint64_t environmentResourceRevision_ = 0;
+    uint64_t environmentSettingsRevision_ = 0;
     uint32_t frameIndex_ = 0;
     SceneRtxdiCameraSnapshot previousCamera_;
     uint32_t previousCameraWidth_ = 0;

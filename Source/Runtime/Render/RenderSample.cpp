@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/Subsystem/LegacyEnvironmentMigration.h"
 
 #include <algorithm>
 #include <string>
@@ -49,42 +50,6 @@ bool applySampleScenePath(RenderGraph& graph, const RenderSampleDesc& desc, std:
         properties["path"] = desc.scenePath;
         if (!graph.setNodeProperties(node->id, std::move(properties))) {
             outMessage = "Sample failed to update node properties: " + target;
-            return false;
-        }
-    }
-    return true;
-}
-
-RenderGraphProperties environmentProperties(const RenderSampleEnvironmentDesc& environment)
-{
-    return RenderGraphProperties{
-        {"enabled", environment.enabled},
-        {"path", environment.path},
-        {"intensity", environment.intensity},
-        {"rotationDegrees", environment.rotationDegrees},
-        {"visible", environment.visible},
-    };
-}
-
-bool applySampleEnvironment(RenderGraph& graph, const RenderSampleDesc& desc, std::string& outMessage)
-{
-    if (desc.environmentTargets.empty()) {
-        return true;
-    }
-
-    for (const std::string& target : desc.environmentTargets) {
-        RenderGraphNode* node = graph.findNode(target);
-        if (node == nullptr) {
-            outMessage = "Sample environmentTargets node not found: " + target;
-            return false;
-        }
-        RenderGraphProperties properties = node->properties;
-        if (!properties.is_object()) {
-            properties = RenderGraphProperties::object();
-        }
-        properties["environment"] = environmentProperties(desc.environment);
-        if (!graph.setNodeProperties(node->id, std::move(properties))) {
-            outMessage = "Sample failed to update environment properties: " + target;
             return false;
         }
     }
@@ -461,9 +426,9 @@ bool loadRenderSample(
     if (!applySampleScenePath(graph, desc, outMessage)) {
         return false;
     }
-    if (!applySampleEnvironment(graph, desc, outMessage)) {
-        return false;
-    }
+    const LegacyEnvironmentMigrationResult migration = migrateLegacyEnvironmentSettings(
+        graph,
+        std::filesystem::path(PROJECT_SOURCE_DIR));
 
     if (desc.previewOutput.empty()) {
         desc.previewOutput = graph.firstOutputName();
@@ -474,12 +439,25 @@ bool loadRenderSample(
     }
 
     graph.clearDirty();
+    std::optional<RenderSampleEnvironmentDesc> migratedLegacyEnvironment;
+    if (migration.found) {
+        migratedLegacyEnvironment = RenderSampleEnvironmentDesc{
+            .enabled = migration.settings.enabled,
+            .path = migration.settings.path.generic_string(),
+            .intensity = migration.settings.intensity,
+            .rotationDegrees = migration.settings.rotationDegrees,
+            .visible = migration.settings.visible,
+        };
+    }
     outResult = RenderSampleLoadResult{
         .desc = std::move(desc),
         .graph = std::move(graph),
         .graphFilePath = graphPath,
+        .migratedLegacyEnvironment = std::move(migratedLegacyEnvironment),
     };
-    outMessage = "Loaded Sample";
+    outMessage = migration.warning.empty()
+        ? "Loaded Sample"
+        : "Loaded Sample. " + migration.warning;
     return true;
 }
 

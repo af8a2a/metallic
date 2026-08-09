@@ -23,22 +23,16 @@ std::filesystem::path propertyPath(
     return {};
 }
 
-std::filesystem::path environmentPath(const RenderGraphProperties& properties)
+std::string resourceKey(const std::filesystem::path& scenePath)
 {
-    if (!properties.contains("environment") || !properties["environment"].is_object()) {
-        return {};
-    }
-    return propertyPath(properties["environment"], "path");
+    return normalizedScenePath(scenePath).generic_string();
 }
 
-std::string resourceKey(
-    const std::filesystem::path& scenePath,
-    const std::filesystem::path& environment)
+RenderGraphProperties sceneProperties(const RenderGraphProperties& properties)
 {
-    const std::string normalizedEnvironment = environment.empty()
-        ? std::string{}
-        : normalizedScenePath(environment).generic_string();
-    return normalizedScenePath(scenePath).generic_string() + "\n" + normalizedEnvironment;
+    RenderGraphProperties result = properties;
+    result.erase("environment");
+    return result;
 }
 
 } // namespace
@@ -124,8 +118,7 @@ Result SceneResourceManager::acquire(
     }
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
-    const std::filesystem::path environment = environmentPath(properties);
-    const std::string key = resourceKey(scenePath, environment);
+    const std::string key = resourceKey(scenePath);
     const auto found = impl_->snapshots.find(key);
     if (found != impl_->snapshots.end()) {
         outSnapshot = found->second;
@@ -133,9 +126,6 @@ Result SceneResourceManager::acquire(
     if (outSnapshot == nullptr) {
         outSnapshot = std::make_shared<SceneResourceSnapshot>();
         outSnapshot->scenePath = normalizedScenePath(scenePath);
-        outSnapshot->environmentPath = environment.empty()
-            ? std::filesystem::path{}
-            : normalizedScenePath(environment);
         outSnapshot->features = features;
         outSnapshot->pathTraceResources = std::make_shared<ScenePathTraceResources>();
         impl_->snapshots[key] = outSnapshot;
@@ -147,10 +137,11 @@ Result SceneResourceManager::acquire(
         }
     }
 
+    const RenderGraphProperties resourceProperties = sceneProperties(properties);
     Result result = outSnapshot->pathTraceResources->beginPrepareAsync(
         device,
         graphicsQueue,
-        properties,
+        resourceProperties,
         *resolvedScene,
         log);
     bool complete = false;
@@ -191,8 +182,7 @@ Result SceneResourceManager::beginAcquireAsync(
     impl_->device = &device;
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
-    const std::filesystem::path environment = environmentPath(properties);
-    const std::string key = resourceKey(scenePath, environment);
+    const std::string key = resourceKey(scenePath);
     const auto found = impl_->snapshots.find(key);
     if (found != impl_->snapshots.end()) {
         outSnapshot = found->second;
@@ -204,18 +194,16 @@ Result SceneResourceManager::beginAcquireAsync(
     } else {
         outSnapshot = std::make_shared<SceneResourceSnapshot>();
         outSnapshot->scenePath = normalizedScenePath(scenePath);
-        outSnapshot->environmentPath = environment.empty()
-            ? std::filesystem::path{}
-            : normalizedScenePath(environment);
         outSnapshot->features = features;
         outSnapshot->pathTraceResources = std::make_shared<ScenePathTraceResources>();
         impl_->snapshots.emplace(key, outSnapshot);
     }
 
+    const RenderGraphProperties resourceProperties = sceneProperties(properties);
     Result result = outSnapshot->pathTraceResources->beginPrepareAsync(
         device,
         graphicsQueue,
-        properties,
+        resourceProperties,
         runtimeScene,
         log);
     if (!result) {

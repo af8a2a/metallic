@@ -1,6 +1,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
@@ -131,75 +132,6 @@ struct GPUDrivenPreviewDecodedImage {
     uint32_t width = 0;
     uint32_t height = 0;
 };
-
-using GPUDrivenPreviewEnvironmentSH = std::array<std::array<float, 4>, 9>;
-
-GPUDrivenPreviewEnvironmentSH computeEnvironmentSH(
-    const std::vector<float>& pixels,
-    uint32_t width,
-    uint32_t height)
-{
-    GPUDrivenPreviewEnvironmentSH coefficients{};
-    if (pixels.size() < static_cast<size_t>(width) * height * 4u || width == 0 || height == 0) {
-        return coefficients;
-    }
-
-    constexpr uint32_t kMaxSampleWidth = 256;
-    constexpr uint32_t kMaxSampleHeight = 128;
-    constexpr float kPi = 3.14159265358979323846f;
-    const uint32_t sampleWidth = std::min(width, kMaxSampleWidth);
-    const uint32_t sampleHeight = std::min(height, kMaxSampleHeight);
-    const float deltaPhi = 2.0f * kPi / static_cast<float>(sampleWidth);
-    const float deltaTheta = kPi / static_cast<float>(sampleHeight);
-
-    for (uint32_t sampleY = 0; sampleY < sampleHeight; ++sampleY) {
-        const float v = (static_cast<float>(sampleY) + 0.5f) /
-            static_cast<float>(sampleHeight);
-        const float theta = v * kPi;
-        const float sineTheta = std::sin(theta);
-        const float directionY = std::cos(theta);
-        const uint32_t sourceY = std::min(
-            static_cast<uint32_t>(v * static_cast<float>(height)),
-            height - 1u);
-        const float solidAngle = sineTheta * deltaPhi * deltaTheta;
-
-        for (uint32_t sampleX = 0; sampleX < sampleWidth; ++sampleX) {
-            const float u = (static_cast<float>(sampleX) + 0.5f) /
-                static_cast<float>(sampleWidth);
-            const float phi = (u - 0.5f) * 2.0f * kPi;
-            const float directionX = std::cos(phi) * sineTheta;
-            const float directionZ = std::sin(phi) * sineTheta;
-            const uint32_t sourceX = std::min(
-                static_cast<uint32_t>(u * static_cast<float>(width)),
-                width - 1u);
-            const size_t pixelIndex =
-                (static_cast<size_t>(sourceY) * width + sourceX) * 4u;
-            const std::array<float, 3> radiance{
-                std::max(pixels[pixelIndex], 0.0f),
-                std::max(pixels[pixelIndex + 1u], 0.0f),
-                std::max(pixels[pixelIndex + 2u], 0.0f),
-            };
-            const std::array<float, 9> basis{
-                0.282095f,
-                0.488603f * directionY,
-                0.488603f * directionZ,
-                0.488603f * directionX,
-                1.092548f * directionX * directionY,
-                1.092548f * directionY * directionZ,
-                0.315392f * (3.0f * directionZ * directionZ - 1.0f),
-                1.092548f * directionX * directionZ,
-                0.546274f * (directionX * directionX - directionY * directionY),
-            };
-            for (size_t coefficientIndex = 0; coefficientIndex < coefficients.size(); ++coefficientIndex) {
-                for (size_t channel = 0; channel < radiance.size(); ++channel) {
-                    coefficients[coefficientIndex][channel] +=
-                        radiance[channel] * basis[coefficientIndex] * solidAngle;
-                }
-            }
-        }
-    }
-    return coefficients;
-}
 
 std::string gpuDrivenResultMessage(std::string_view label, const Result& result)
 {
@@ -627,6 +559,14 @@ struct GPUDrivenPreviewCullingTargets {
 
 class GPUDrivenPreviewPass final : public RasterPass {
 public:
+    std::span<const RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{
+            EnvironmentLightingSubsystem::kSubsystemId,
+        };
+        return required;
+    }
+
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
@@ -766,6 +706,10 @@ public:
         frozenCullingCameraValid_ = false;
 
         GPUDrivenPreviewGpuParams params;
+        const EnvironmentSettings initialEnvironment = context.world() != nullptr
+            ? context.world()->environment()
+            : EnvironmentSettings{};
+        const EnvironmentSphericalHarmonics initialEnvironmentSH{};
         buildParams(
             context.width,
             context.height,
@@ -780,8 +724,9 @@ public:
             nullptr,
             materialTextureCount_,
             materialCount_,
-            environmentMapAvailable_,
-            environmentSH_,
+            initialEnvironment,
+            false,
+            initialEnvironmentSH,
             params);
 
         compileStageBegin = GPUDrivenCompileClock::now();
@@ -1080,13 +1025,6 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        result = bindlessHeap_->writeSampledImage(
-            environmentTextureHandle_,
-            *environmentTexture_.view,
-            ResourceState::ShaderRead);
-        if (!result) {
-            return result;
-        }
         for (size_t textureIndex = 0; textureIndex < openPBRLut2D_.size(); ++textureIndex) {
             result = bindlessHeap_->allocateSampledImage(openPBRLut2DHandles_[textureIndex]);
             if (!result || !openPBRLut2DHandles_[textureIndex].valid()) {
@@ -1198,6 +1136,15 @@ public:
         if (!syncResult) {
             return syncResult;
         }
+        EnvironmentLightingSubsystem* environmentSubsystem =
+            context.subsystem<EnvironmentLightingSubsystem>();
+        if (environmentSubsystem == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        const EnvironmentLightingSnapshot& environment = environmentSubsystem->snapshot();
+        if (!environment.valid()) {
+            return {};
+        }
         TextureHandle color = context.outputTexture("color");
         TextureHandle visibility = context.outputTexture("visibility");
         TextureHandle depth = context.outputTexture("depth");
@@ -1217,9 +1164,26 @@ public:
         if (!result) {
             return result;
         }
-        result = updateParamsBuffer(context.width(), context.height(), context.properties());
+        result = updateParamsBuffer(
+            context.width(),
+            context.height(),
+            context.properties(),
+            environment.settings,
+            environment.mapAvailable,
+            *environment.sphericalHarmonics);
         if (!result) {
             return result;
+        }
+
+        if (environment.resourceRevision != environmentResourceRevision_) {
+            result = bindlessHeap_->writeSampledImage(
+                environmentTextureHandle_,
+                *environment.radianceView,
+                ResourceState::ShaderRead);
+            if (!result) {
+                return result;
+            }
+            environmentResourceRevision_ = environment.resourceRevision;
         }
 
         result = bindlessHeap_->writeSampledImage(
@@ -1882,14 +1846,12 @@ private:
     {
         materialTextures_.clear();
         materialTextureHandles_.clear();
-        environmentTexture_ = GPUDrivenPreviewTextureResource{};
         environmentTextureHandle_ = {};
         openPBRLut2D_ = {};
         openPBRLut3D_ = {};
         openPBRLut2DHandles_ = {};
         openPBRLut3DHandles_ = {};
-        environmentMapAvailable_ = false;
-        environmentSH_ = {};
+        environmentResourceRevision_ = 0;
 
         const uint8_t whitePixel[4] = {255u, 255u, 255u, 255u};
         GPUDrivenPreviewTextureResource fallbackTexture;
@@ -2009,54 +1971,6 @@ private:
         }
 
         auto shadingStageBegin = GPUDrivenCompileClock::now();
-        const float blackPixel[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-        std::vector<float> environmentPixels(std::begin(blackPixel), std::end(blackPixel));
-        uint32_t environmentWidth = 1;
-        uint32_t environmentHeight = 1;
-        const std::filesystem::path environmentPath = environmentPathFromProperties(properties);
-        if (!environmentPath.empty()) {
-            int width = 0;
-            int height = 0;
-            int channels = 0;
-            float* decoded = stbi_loadf(environmentPath.string().c_str(), &width, &height, &channels, 4);
-            if (decoded != nullptr && width > 0 && height > 0) {
-                const uint64_t componentCount =
-                    static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull;
-                if (componentCount <= static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
-                    environmentPixels.assign(decoded, decoded + static_cast<size_t>(componentCount));
-                    environmentWidth = static_cast<uint32_t>(width);
-                    environmentHeight = static_cast<uint32_t>(height);
-                    environmentMapAvailable_ = true;
-                    environmentSH_ = computeEnvironmentSH(
-                        environmentPixels,
-                        environmentWidth,
-                        environmentHeight);
-                }
-            }
-            if (decoded != nullptr) {
-                stbi_image_free(decoded);
-            }
-            if (!environmentMapAvailable_) {
-                log += "Warning: GPUDrivenPreviewPass failed to decode environment map '";
-                log += environmentPath.string();
-                log += "'\n";
-            }
-        }
-        result = createGPUDrivenTexture(
-            device,
-            environmentPixels.data(),
-            static_cast<uint64_t>(environmentPixels.size() * sizeof(float)),
-            environmentWidth,
-            environmentHeight,
-            Format::Rgba32Sfloat,
-            "GPUDrivenPreviewPass environment",
-            environmentTexture_,
-            log);
-        if (!result) {
-            return result;
-        }
-        logGPUDrivenCompileStage("environment texture", shadingStageBegin);
-        shadingStageBegin = GPUDrivenCompileClock::now();
         result = prepareGPUDrivenOpenPBRLuts(device, openPBRLut2D_, openPBRLut3D_, log);
         logGPUDrivenCompileStage("OpenPBR LUT textures", shadingStageBegin);
         return result;
@@ -2070,10 +1984,7 @@ private:
                 return result;
             }
         }
-        Result result = uploadGPUDrivenTexture(commandBuffer, environmentTexture_);
-        if (!result) {
-            return result;
-        }
+        Result result;
         for (GPUDrivenPreviewTextureResource& texture : openPBRLut2D_) {
             result = uploadGPUDrivenTexture(commandBuffer, texture);
             if (!result) {
@@ -2250,25 +2161,6 @@ private:
             return path;
         }
         return kDefaultGPUDrivenScenePath;
-    }
-
-    static std::filesystem::path environmentPathFromProperties(const RenderGraphProperties& props)
-    {
-        if (!props.contains("environment") || !props["environment"].is_object()) {
-            return {};
-        }
-        const RenderGraphProperties& environment = props["environment"];
-        if (!environment.contains("path") || !environment["path"].is_string()) {
-            return {};
-        }
-        std::filesystem::path path = environment["path"].get<std::string>();
-        if (path.empty()) {
-            return {};
-        }
-        if (path.is_relative()) {
-            path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
-        }
-        return path;
     }
 
     static float finiteOr(float value, float fallback)
@@ -2797,8 +2689,9 @@ private:
         const GPUDrivenPreviewGpuParams* previousParams,
         uint32_t materialTextureCount,
         uint32_t materialCount,
+        const EnvironmentSettings& environment,
         bool environmentMapAvailable,
-        const GPUDrivenPreviewEnvironmentSH& environmentSH,
+        const EnvironmentSphericalHarmonics& environmentSH,
         GPUDrivenPreviewGpuParams& outParams)
     {
         outParams = GPUDrivenPreviewGpuParams{};
@@ -2880,27 +2773,18 @@ private:
         if (boolProperty(&properties, "meshletNormalConeCull", true)) {
             outParams.cullingFlags |= kGPUDrivenPreviewCullMeshletNormalCone;
         }
-        const RenderGraphProperties* environment = nullptr;
-        const auto environmentIter = properties.find("environment");
-        if (environmentIter != properties.end() && environmentIter->is_object()) {
-            environment = &(*environmentIter);
-        }
-        const bool environmentEnabled =
-            environment != nullptr && boolProperty(environment, "enabled", true);
         outParams.materialTextureCount = std::max(materialTextureCount, 1u);
         outParams.materialCount = std::max(materialCount, 1u);
-        outParams.environmentIntensity = std::max(
-            cameraFloat(environment, "intensity", 1.0f),
-            0.0f);
+        outParams.environmentIntensity = std::max(environment.intensity, 0.0f);
         outParams.environmentRotationRadians =
-            cameraFloat(environment, "rotationDegrees", 0.0f) * (kPi / 180.0f);
-        outParams.environmentMode = !environmentEnabled
+            environment.rotationDegrees * (kPi / 180.0f);
+        outParams.environmentMode = !environment.enabled
             ? kGPUDrivenEnvironmentModeDisabled
             : (environmentMapAvailable
                 ? kGPUDrivenEnvironmentModeMap
                 : kGPUDrivenEnvironmentModeProcedural);
         outParams.environmentVisible =
-            environmentEnabled && boolProperty(environment, "visible", true) ? 1u : 0u;
+            environment.enabled && environment.visible ? 1u : 0u;
         std::memcpy(outParams.environmentSH, environmentSH.data(), sizeof(outParams.environmentSH));
 
         const GPUDrivenPreviewGpuParams& previous = previousParams != nullptr ? *previousParams : outParams;
@@ -2914,7 +2798,10 @@ private:
     Result updateParamsBuffer(
         uint32_t width,
         uint32_t height,
-        const RenderGraphProperties& properties)
+        const RenderGraphProperties& properties,
+        const EnvironmentSettings& environment,
+        bool environmentMapAvailable,
+        const EnvironmentSphericalHarmonics& environmentSH)
     {
         if (paramsBuffer_ == nullptr || !drawBounds_.valid) {
             return makeError(Error::InvalidArgument);
@@ -2949,8 +2836,9 @@ private:
             previousCameraValid_ ? &previousParams_ : nullptr,
             materialTextureCount_,
             materialCount_,
-            environmentMapAvailable_,
-            environmentSH_,
+            environment,
+            environmentMapAvailable,
+            environmentSH,
             params);
 
         if (freezeCullingCamera &&
@@ -2995,7 +2883,6 @@ private:
     std::unique_ptr<Buffer> deferredColorBuffer_;
     GPUDrivenPreviewCullingTargets cullingTargets_;
     std::vector<GPUDrivenPreviewTextureResource> materialTextures_;
-    GPUDrivenPreviewTextureResource environmentTexture_;
     std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut2DCount> openPBRLut2D_;
     std::array<GPUDrivenPreviewTextureResource, kGPUDrivenOpenPBRLut3DCount> openPBRLut3D_;
     Device* device_ = nullptr;
@@ -3060,8 +2947,7 @@ private:
     bool cullingTargetsInitialized_ = false;
     bool freezeCullingCamera_ = false;
     bool frozenCullingCameraValid_ = false;
-    bool environmentMapAvailable_ = false;
-    GPUDrivenPreviewEnvironmentSH environmentSH_{};
+    uint64_t environmentResourceRevision_ = 0;
 };
 
 } // namespace

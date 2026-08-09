@@ -104,6 +104,17 @@ public:
         float sceneRadius,
         ImportancePdfTexture& environmentPdf,
         bool rebuildEnvironment);
+    Result buildLocalLights(
+        CommandBuffer& commandBuffer,
+        TextureView& environmentMap,
+        ImportancePdfTexture& localLightPdf,
+        uint32_t lightCount,
+        float localLightIntensity,
+        float sceneRadius);
+    Result buildEnvironment(
+        CommandBuffer& commandBuffer,
+        TextureView& environmentMap,
+        ImportancePdfTexture& environmentPdf);
     void clear();
     bool valid() const;
 

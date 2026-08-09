@@ -4,6 +4,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/Subsystem/LegacyEnvironmentMigration.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "imnodes.h"
 #include "imgui.h"
@@ -239,25 +240,6 @@ std::string firstScenePathFromGraph(const render::RenderGraph& graph)
         }
         auto pathIter = node.properties.find("path");
         if (pathIter != node.properties.end() && pathIter->is_string()) {
-            return pathIter->get<std::string>();
-        }
-    }
-    return {};
-}
-
-std::string firstEnvironmentPathFromGraph(const render::RenderGraph& graph)
-{
-    for (const render::RenderGraphNode& node : graph.nodes()) {
-        if ((node.type != "ScenePathTracePass" && node.type != "SceneRtxdiPass") ||
-            !node.properties.is_object()) {
-            continue;
-        }
-        auto environmentIter = node.properties.find("environment");
-        if (environmentIter == node.properties.end() || !environmentIter->is_object()) {
-            continue;
-        }
-        auto pathIter = environmentIter->find("path");
-        if (pathIter != environmentIter->end() && pathIter->is_string()) {
             return pathIter->get<std::string>();
         }
     }
@@ -602,13 +584,6 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             {"maxDepth", 12},
             {"samples", 2},
             {"accumulate", true},
-            {"environment", {
-                {"enabled", true},
-                {"visible", true},
-                {"path", "Asset/ABeautifulGame/environment.hdr"},
-                {"intensity", 1.0f},
-                {"rotationDegrees", 0.0f},
-            }},
             {"camera", {
                 {"projection", "perspective"},
                 {"fovDegrees", 45.0f},
@@ -1983,7 +1958,8 @@ bool EditorApplication::initialize()
 
     {
         StartupLogScope scope("Startup render graph and scene setup");
-        graphExecutor_ = std::make_unique<render::RenderGraphExecutor>();
+        renderWorld_.setScene(&scene_);
+        graphExecutor_ = std::make_unique<render::RenderGraphExecutor>(subsystemHost_, renderWorld_);
         graphExecutor_->bindRuntimeScene(&scene_);
         sceneRtx_ = std::make_unique<render::vulkan::SceneRtxBuilder>();
         if (!startupSampleId_.empty()) {
@@ -2304,6 +2280,7 @@ void EditorApplication::shutdown()
     }
 
     graphExecutor_.reset();
+    subsystemHost_.shutdown();
     sceneRtx_.reset();
 
     if (viewportSampler_ != VK_NULL_HANDLE && device_ != nullptr) {
@@ -3443,95 +3420,47 @@ void EditorApplication::drawCameraControls()
 
 void EditorApplication::drawEnvironmentControls()
 {
-    render::RenderGraphNode* node = activePreviewRenderGraphNode();
-    if (node == nullptr) {
-        ImGui::TextDisabled("Environment: no active preview render pass.");
-        return;
-    }
-    if (node->type != "ScenePathTracePass") {
-        ImGui::TextDisabled("Environment: active pass does not consume scene environment.");
-        return;
-    }
-
-    render::RenderGraphProperties staticProperties = node->properties.is_object()
-        ? node->properties
-        : render::RenderGraphProperties::object();
-    render::RenderGraphProperties staticEnvironment =
-        staticProperties.contains("environment") && staticProperties["environment"].is_object()
-        ? staticProperties["environment"]
-        : render::RenderGraphProperties::object();
-    render::RenderGraphProperties effectiveProperties = effectiveNodeProperties(*node);
-    render::RenderGraphProperties effectiveEnvironment =
-        effectiveProperties.contains("environment") && effectiveProperties["environment"].is_object()
-        ? effectiveProperties["environment"]
-        : render::RenderGraphProperties::object();
-
-    const std::string path = staticEnvironment.contains("path")
-        ? stringValueOr(staticEnvironment["path"], "")
-        : std::string();
-    bool enabled = effectiveEnvironment.contains("enabled")
-        ? boolValueOr(effectiveEnvironment["enabled"], true)
-        : true;
-    bool visible = effectiveEnvironment.contains("visible")
-        ? boolValueOr(effectiveEnvironment["visible"], true)
-        : true;
-    float intensity = effectiveEnvironment.contains("intensity")
-        ? std::max(floatValueOr(effectiveEnvironment["intensity"], 1.0f), 0.0f)
-        : 1.0f;
-    float rotationDegrees = effectiveEnvironment.contains("rotationDegrees")
-        ? floatValueOr(effectiveEnvironment["rotationDegrees"], 0.0f)
-        : 0.0f;
-
-    render::RenderGraphProperties runtimeProperties = node->runtimeProperties.is_object()
-        ? node->runtimeProperties
-        : render::RenderGraphProperties::object();
-    bool changedRuntime = false;
+    render::EnvironmentSettings environment = renderWorld_.environment();
+    bool changed = false;
     ImGui::TextUnformatted("Environment");
     ImGui::PushID("SceneEnvironment");
 
-    if (ImGui::Checkbox("Enabled", &enabled)) {
-        setNestedProperty(runtimeProperties, "environment.enabled", enabled);
-        changedRuntime = true;
+    if (ImGui::Checkbox("Enabled", &environment.enabled)) {
+        changed = true;
     }
     ImGui::SameLine();
-    if (ImGui::Checkbox("Visible", &visible)) {
-        setNestedProperty(runtimeProperties, "environment.visible", visible);
-        changedRuntime = true;
+    if (ImGui::Checkbox("Visible", &environment.visible)) {
+        changed = true;
     }
 
-    ImGui::TextWrapped("HDRI: %s", path.empty() ? "-" : path.c_str());
+    const std::string displayPath = environment.path.empty()
+        ? std::string("-")
+        : displayPathForProperty(environment.path);
+    ImGui::TextWrapped("HDRI: %s", displayPath.c_str());
 
     ImGui::PushItemWidth(-1.0f);
-    if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 16.0f, "%.3f")) {
-        setNestedProperty(runtimeProperties, "environment.intensity", std::max(intensity, 0.0f));
-        changedRuntime = true;
+    if (ImGui::SliderFloat("Intensity", &environment.intensity, 0.0f, 16.0f, "%.3f")) {
+        environment.intensity = std::max(environment.intensity, 0.0f);
+        changed = true;
     }
-    if (ImGui::SliderFloat("Rotation", &rotationDegrees, -180.0f, 180.0f, "%.1f deg")) {
-        setNestedProperty(runtimeProperties, "environment.rotationDegrees", rotationDegrees);
-        changedRuntime = true;
+    if (ImGui::SliderFloat("Rotation", &environment.rotationDegrees, -180.0f, 180.0f, "%.1f deg")) {
+        changed = true;
     }
     ImGui::PopItemWidth();
     ImGui::PopID();
 
-    if (!changedRuntime) {
+    if (!changed) {
         return;
     }
-
-    bool updated = true;
-    updated = renderGraph_.setNodeRuntimeProperties(node->id, std::move(runtimeProperties));
-    if (updated) {
-        historyResources_.invalidateAll();
-        if (graphExecutor_ != nullptr && !renderGraph_.dirty()) {
-            graphExecutor_->syncRuntimeProperties(renderGraph_);
-        }
-        viewportPreviewNeedsRender_ = true;
+    renderWorld_.setEnvironment(environment);
+    if (scene_.valid()) {
+        scene_.setEnvironment(environment);
     }
-
-    if (updated) {
-        renderGraphStatus_ = "Updated scene environment";
-    } else {
-        renderGraphStatus_ = "Environment update failed";
-    }
+    environmentUserEdited_ = true;
+    environmentFromSample_ = false;
+    environmentFromLegacyGraph_ = false;
+    viewportPreviewNeedsRender_ = true;
+    renderGraphStatus_ = "Updated scene environment";
 }
 
 void EditorApplication::applyRuntimeNodeProperties(
@@ -3689,6 +3618,7 @@ int32_t EditorApplication::selectedNodeIndex() const
 
 void EditorApplication::notifySceneTransformChanged()
 {
+    renderWorld_.notifySceneChanged();
     historyResources_.invalidateAll();
     historyFrameIndex_ = 0;
     if (graphExecutor_ == nullptr || !graphExecutor_->compiled()) {
@@ -3862,6 +3792,7 @@ void EditorApplication::executePendingSceneAction()
         cancelSceneLoad();
         clearSceneRtx();
         scene_.clear();
+        renderWorld_.notifySceneChanged();
         resetTransformHistory();
         sceneSelection_ = SceneSelection{};
         historyResources_.invalidateAll();
@@ -4829,6 +4760,36 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         sample.desc.scenePath,
         sample.desc.previewOutput);
 
+    if (!environmentUserEdited_) {
+        const render::RenderSampleEnvironmentDesc* sourceEnvironment = nullptr;
+        if (!sample.desc.environmentTargets.empty()) {
+            sourceEnvironment = &sample.desc.environment;
+            environmentFromSample_ = true;
+            environmentFromLegacyGraph_ = false;
+        } else if (sample.migratedLegacyEnvironment.has_value()) {
+            sourceEnvironment = &(*sample.migratedLegacyEnvironment);
+            environmentFromSample_ = false;
+            environmentFromLegacyGraph_ = true;
+        } else {
+            environmentFromSample_ = false;
+            environmentFromLegacyGraph_ = false;
+        }
+        if (sourceEnvironment != nullptr) {
+            render::EnvironmentSettings environment{
+                .enabled = sourceEnvironment->enabled,
+                .path = sourceEnvironment->path,
+                .intensity = sourceEnvironment->intensity,
+                .rotationDegrees = sourceEnvironment->rotationDegrees,
+                .visible = sourceEnvironment->visible,
+            };
+            if (!environment.path.empty() && environment.path.is_relative()) {
+                environment.path = std::filesystem::path(PROJECT_SOURCE_DIR) / environment.path;
+            }
+            renderWorld_.setEnvironment(std::move(environment));
+        }
+    }
+    preserveSampleEnvironmentForNextSceneLoad_ = environmentFromSample_;
+
     renderGraph_ = std::move(sample.graph);
     graphEditorPositionsInitialized_ = false;
     selectedGraphNodeId_ = -1;
@@ -4848,6 +4809,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
 
     clearSceneRtx();
     scene_.clear();
+    renderWorld_.notifySceneChanged();
     resetTransformHistory();
     sceneSelection_ = SceneSelection{};
     sceneStatus_ = "StreamAsset-only sample: editor scene loading skipped for " + sample.desc.scenePath;
@@ -4889,6 +4851,26 @@ void EditorApplication::loadRenderGraph()
         renderGraphStatus_ = message;
         spdlog::warn("[Startup] Render graph load failed: {}", message);
         return;
+    }
+    const render::LegacyEnvironmentMigrationResult migration =
+        render::migrateLegacyEnvironmentSettings(
+            loadedGraph,
+            std::filesystem::path(PROJECT_SOURCE_DIR));
+    environmentFromSample_ = false;
+    if (!environmentUserEdited_ && migration.found) {
+        renderWorld_.setEnvironment(migration.settings);
+        environmentFromLegacyGraph_ = true;
+    } else if (!environmentUserEdited_) {
+        environmentFromLegacyGraph_ = false;
+        if (scene_.hasEnvironmentSettings()) {
+            renderWorld_.setEnvironment(scene_.environment());
+        } else {
+            renderWorld_.setEnvironment(render::EnvironmentSettings{});
+        }
+    }
+    if (!migration.warning.empty()) {
+        message += " Warning: " + migration.warning;
+        spdlog::warn("{}", migration.warning);
     }
     renderGraph_ = std::move(loadedGraph);
     graphEditorPositionsInitialized_ = false;
@@ -4935,10 +4917,10 @@ void EditorApplication::chooseSceneFile()
 
 void EditorApplication::chooseEnvironmentFile()
 {
-    const std::string currentEnvironmentPath = firstEnvironmentPathFromGraph(renderGraph_);
+    const std::filesystem::path currentEnvironmentPath = renderWorld_.environment().path;
     std::filesystem::path initialPath = currentEnvironmentPath.empty()
         ? std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset"
-        : resolveSceneAssetPath(currentEnvironmentPath.c_str());
+        : currentEnvironmentPath;
     std::string dialogError;
     const std::filesystem::path selectedPath = openEnvironmentFileDialog(window_, initialPath, dialogError);
     if (selectedPath.empty()) {
@@ -5115,63 +5097,18 @@ void EditorApplication::applyEnvironmentToRenderGraph(const std::filesystem::pat
         return;
     }
 
-    const std::string graphEnvironmentPath = displayPathForProperty(path);
-    std::vector<uint32_t> environmentNodeIds;
-    for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
-        if (node.type == "ScenePathTracePass") {
-            environmentNodeIds.push_back(node.id);
-        }
+    render::EnvironmentSettings environment = renderWorld_.environment();
+    environment.enabled = true;
+    environment.path = path;
+    renderWorld_.setEnvironment(environment);
+    if (scene_.valid()) {
+        scene_.setEnvironment(environment);
     }
-
-    if (environmentNodeIds.empty()) {
-        renderGraphStatus_ = "No ScenePathTracePass found for environment map.";
-        return;
-    }
-
-    size_t updatedCount = 0;
-    for (const uint32_t nodeId : environmentNodeIds) {
-        render::RenderGraphNode* node = renderGraph_.findNode(nodeId);
-        if (node == nullptr) {
-            continue;
-        }
-
-        render::RenderGraphProperties properties = node->properties.is_object()
-            ? node->properties
-            : render::RenderGraphProperties::object();
-        render::RenderGraphProperties environment = properties.contains("environment") &&
-            properties["environment"].is_object()
-            ? properties["environment"]
-            : render::RenderGraphProperties::object();
-        if (!environment.contains("enabled")) {
-            environment["enabled"] = true;
-        }
-        if (!environment.contains("visible")) {
-            environment["visible"] = true;
-        }
-        if (!environment.contains("intensity")) {
-            environment["intensity"] = 1.0f;
-        }
-        if (!environment.contains("rotationDegrees")) {
-            environment["rotationDegrees"] = 0.0f;
-        }
-        environment["path"] = graphEnvironmentPath;
-        properties["environment"] = std::move(environment);
-        if (renderGraph_.setNodeProperties(node->id, std::move(properties))) {
-            ++updatedCount;
-        }
-    }
-
-    if (updatedCount == 0) {
-        renderGraphStatus_ = "Environment update failed.";
-        return;
-    }
-
-    historyResources_.invalidateAll();
-    viewportPreviewValid_ = false;
+    environmentUserEdited_ = true;
+    environmentFromSample_ = false;
+    environmentFromLegacyGraph_ = false;
     viewportPreviewNeedsRender_ = true;
-    renderGraphStatus_ = "Loaded environment: " + graphEnvironmentPath +
-        " (" + std::to_string(updatedCount) + " path trace pass" +
-        (updatedCount == 1 ? ")" : "es)");
+    renderGraphStatus_ = "Loaded environment: " + displayPathForProperty(path);
 }
 
 void EditorApplication::loadScene()
@@ -5182,6 +5119,12 @@ void EditorApplication::loadScene()
     if (scene_.dirty()) {
         requestPendingSceneAction(PendingSceneAction::LoadScene, path);
         return;
+    }
+
+    if (preserveSampleEnvironmentForNextSceneLoad_) {
+        preserveSampleEnvironmentForNextSceneLoad_ = false;
+    } else {
+        environmentFromSample_ = false;
     }
 
     if (path.empty()) {
@@ -5278,16 +5221,6 @@ void EditorApplication::pollSceneLoad()
         device_->capabilities().rayQuery) {
         render::RenderGraphProperties properties = render::RenderGraphProperties::object();
         properties["path"] = displayPathForProperty(readySceneLoad_->sourcePath());
-        for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
-            if (!isSceneAwareRenderPassType(node.type) || !node.properties.is_object()) {
-                continue;
-            }
-            if (node.properties.contains("environment") &&
-                node.properties["environment"].is_object()) {
-                properties["environment"] = node.properties["environment"];
-                break;
-            }
-        }
         std::string log;
         const render::Result result = graphExecutor_->beginSceneResourcePreparation(
             *device_,
@@ -5367,6 +5300,26 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     }
     historyResources_.invalidateAll();
     scene_ = std::move(*loadedScene);
+    if (renderWorld_.scene() == &scene_) {
+        renderWorld_.notifySceneChanged();
+    } else {
+        renderWorld_.setScene(&scene_);
+    }
+    if (graphExecutor_ != nullptr) {
+        graphExecutor_->bindRuntimeScene(&scene_);
+    }
+    if (!environmentUserEdited_ &&
+        !environmentFromSample_ &&
+        scene_.hasEnvironmentSettings()) {
+        renderWorld_.setEnvironment(scene_.environment());
+        environmentFromLegacyGraph_ = false;
+    } else if (!environmentUserEdited_ &&
+        !environmentFromSample_ &&
+        !environmentFromLegacyGraph_) {
+        renderWorld_.setEnvironment(render::EnvironmentSettings{});
+    } else if (environmentUserEdited_) {
+        scene_.setEnvironment(renderWorld_.environment());
+    }
     pendingSceneLoad_ = {};
     pendingSceneResourcePreparation_ = false;
     pendingSceneResourceProgress_ = {};

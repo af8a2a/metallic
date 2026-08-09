@@ -31,6 +31,7 @@ struct RenderGraphExecutionStats {
 class RenderGraphExecutor {
 public:
     RenderGraphExecutor();
+    RenderGraphExecutor(RenderSubsystemHost& subsystemHost, RenderWorld& world);
     ~RenderGraphExecutor();
 
     RenderGraphExecutor(RenderGraphExecutor&&) noexcept;
@@ -56,6 +57,9 @@ public:
     Result execute(const RenderGraphSubmitDesc& desc);
     Result waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);
     void bindRuntimeScene(const scene::Scene* scene);
+    void bindRenderWorld(RenderWorld* world);
+    RenderSubsystemHost* subsystemHost();
+    const RenderSubsystemHost* subsystemHost() const;
     Result beginSceneResourcePreparation(
         Device& device,
         const RenderGraphProperties& properties,
@@ -102,6 +106,9 @@ public:
     Result initialize(bool enableValidation = false, bool enableRayQuery = false);
     Result render(RenderGraph& graph, uint32_t width, uint32_t height);
     Result render(RenderGraph& graph, uint32_t width, uint32_t height, std::string_view outputName);
+    void setEnvironment(EnvironmentSettings environment);
+    RenderSubsystemHost* subsystemHost();
+    const RenderSubsystemHost* subsystemHost() const;
     const std::vector<uint32_t>& pixels() const;
     uint32_t width() const;
     uint32_t height() const;

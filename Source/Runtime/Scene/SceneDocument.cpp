@@ -17,7 +17,8 @@
 namespace metallic::scene {
 namespace {
 
-constexpr int kSceneDocumentVersion = 1;
+constexpr int kSceneDocumentVersion = 2;
+constexpr int kOldestSceneDocumentVersion = 1;
 constexpr std::string_view kSceneDocumentSuffix = ".metallic_scene.json";
 
 bool isSceneDocumentPath(const std::filesystem::path& path)
@@ -235,6 +236,9 @@ void SceneDocument::clear()
     sourcePath_.clear();
     documentPath_.clear();
     documentWarning_.clear();
+    environment_ = EnvironmentSettings{};
+    sidecarLoaded_ = false;
+    hasEnvironmentSettings_ = false;
     dirty_ = false;
 }
 
@@ -247,6 +251,23 @@ bool SceneDocument::setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localM
     return true;
 }
 
+bool SceneDocument::setEnvironment(EnvironmentSettings environment)
+{
+    environment.intensity = std::isfinite(environment.intensity)
+        ? std::max(environment.intensity, 0.0f)
+        : 1.0f;
+    environment.rotationDegrees = std::isfinite(environment.rotationDegrees)
+        ? environment.rotationDegrees
+        : 0.0f;
+    if (environment_ == environment) {
+        return false;
+    }
+    environment_ = std::move(environment);
+    hasEnvironmentSettings_ = true;
+    dirty_ = true;
+    return true;
+}
+
 bool SceneDocument::applySidecar(const std::filesystem::path& path)
 {
     nlohmann::json document;
@@ -255,7 +276,8 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
         documentWarning_ = std::move(error);
         return false;
     }
-    if (document.value("version", 0) != kSceneDocumentVersion) {
+    const int version = document.value("version", 0);
+    if (version < kOldestSceneDocumentVersion || version > kSceneDocumentVersion) {
         documentWarning_ = "Unsupported scene document version in " + path.string();
         return false;
     }
@@ -275,6 +297,43 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
     if (document.value("sceneIndex", kInvalidSceneIndex) != sceneIndex()) {
         documentWarning_ = "Scene document sceneIndex does not match the loaded glTF scene.";
         return false;
+    }
+
+    environment_ = EnvironmentSettings{};
+    if (version >= 2 && document.contains("world")) {
+        if (!document["world"].is_object()) {
+            appendWarning(documentWarning_, "Ignored a non-object world setting.");
+        } else {
+            const nlohmann::json& world = document["world"];
+            if (world.contains("environment")) {
+                if (!world["environment"].is_object()) {
+                    appendWarning(documentWarning_, "Ignored a non-object world.environment setting.");
+                } else {
+                    const nlohmann::json& environment = world["environment"];
+                    hasEnvironmentSettings_ = true;
+                    environment_.enabled = environment.value("enabled", true);
+                    environment_.visible = environment.value("visible", true);
+                    environment_.intensity = environment.value("intensity", 1.0f);
+                    environment_.rotationDegrees = environment.value("rotationDegrees", 0.0f);
+                    if (!std::isfinite(environment_.intensity)) {
+                        environment_.intensity = 1.0f;
+                    }
+                    environment_.intensity = std::max(environment_.intensity, 0.0f);
+                    if (!std::isfinite(environment_.rotationDegrees)) {
+                        environment_.rotationDegrees = 0.0f;
+                    }
+                    if (environment.contains("path") && environment["path"].is_string()) {
+                        environment_.path = environment["path"].get<std::string>();
+                        if (!environment_.path.empty() && environment_.path.is_relative()) {
+                            environment_.path = path.parent_path() / environment_.path;
+                        }
+                        if (!environment_.path.empty()) {
+                            environment_.path = normalizedPath(environment_.path);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     const nlohmann::json& overrides = document.contains("nodes")
@@ -331,6 +390,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
         }
         Scene::setNodeLocalMatrix(nodeIndex, matrix);
     }
+    sidecarLoaded_ = true;
     return true;
 }
 
@@ -368,15 +428,38 @@ bool SceneDocument::save(std::string& message)
         });
     }
 
+    std::filesystem::path serializedEnvironmentPath = environment_.path;
+    if (!serializedEnvironmentPath.empty()) {
+        std::error_code environmentRelativeError;
+        const std::filesystem::path relativeEnvironment = std::filesystem::relative(
+            serializedEnvironmentPath,
+            documentPath_.parent_path(),
+            environmentRelativeError);
+        if (!environmentRelativeError && !relativeEnvironment.empty()) {
+            serializedEnvironmentPath = relativeEnvironment;
+        }
+    }
+
     const nlohmann::json document{
         {"version", kSceneDocumentVersion},
         {"source", relativeSource.generic_string()},
         {"sceneIndex", sceneIndex()},
         {"nodes", std::move(nodeOverrides)},
+        {"world", {
+            {"environment", {
+                {"enabled", environment_.enabled},
+                {"path", serializedEnvironmentPath.generic_string()},
+                {"intensity", environment_.intensity},
+                {"rotationDegrees", environment_.rotationDegrees},
+                {"visible", environment_.visible},
+            }},
+        }},
     };
     if (!writeAtomically(documentPath_, document.dump(2) + '\n', message)) {
         return false;
     }
+    sidecarLoaded_ = true;
+    hasEnvironmentSettings_ = true;
     dirty_ = false;
     message = "Saved scene document: " + documentPath_.string();
     return true;

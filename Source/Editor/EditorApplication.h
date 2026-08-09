@@ -173,6 +173,8 @@ private:
     std::unique_ptr<render::Fence> frameFence_;
     std::unique_ptr<render::SwapchainSemaphore> imageAvailableSemaphore_;
     std::vector<std::unique_ptr<render::SwapchainSemaphore>> renderFinishedSemaphores_;
+    render::RenderSubsystemHost subsystemHost_;
+    render::RenderWorld renderWorld_;
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
     render::HistoryResourceManager historyResources_;
     std::unique_ptr<render::vulkan::SceneRtxBuilder> sceneRtx_;
@@ -185,6 +187,10 @@ private:
     std::unique_ptr<scene::SceneDocument> readySceneLoad_;
     scene::SceneLoadProgress pendingSceneResourceProgress_;
     bool pendingSceneResourcePreparation_ = false;
+    bool environmentUserEdited_ = false;
+    bool environmentFromSample_ = false;
+    bool environmentFromLegacyGraph_ = false;
+    bool preserveSampleEnvironmentForNextSceneLoad_ = false;
     std::filesystem::path pendingSceneLoadPath_;
     uint64_t sceneLoadGeneration_ = 0;
     scene::ScenePicker scenePicker_;

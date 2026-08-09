@@ -39,6 +39,17 @@ int runSmokeTest()
     }
 
     metallic::render::RenderGraphPreviewRenderer preview;
+    metallic::render::EnvironmentSettings environment{
+        .enabled = sample.desc.environment.enabled,
+        .path = sample.desc.environment.path,
+        .intensity = sample.desc.environment.intensity,
+        .rotationDegrees = sample.desc.environment.rotationDegrees,
+        .visible = sample.desc.environment.visible,
+    };
+    if (!environment.path.empty() && environment.path.is_relative()) {
+        environment.path = std::filesystem::path(PROJECT_SOURCE_DIR) / environment.path;
+    }
+    preview.setEnvironment(std::move(environment));
     metallic::render::Result result = preview.initialize(false, true);
     if (!result) {
         spdlog::error(

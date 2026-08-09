@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include "json.hpp"
 
@@ -146,9 +147,20 @@ struct RenderGraphCompileContext {
     Queue* graphicsQueue = nullptr;
     const scene::Scene* runtimeScene = nullptr;
     SceneResourceManager* sceneResourceManager = nullptr;
+    RenderWorld* renderWorld = nullptr;
+    RenderSubsystemHost* subsystemHost = nullptr;
     uint32_t width = 1;
     uint32_t height = 1;
     Format defaultFormat = Format::Rgba8Unorm;
+
+    RenderWorld* world() const { return renderWorld; }
+    RenderSubsystemHost* subsystems() const { return subsystemHost; }
+
+    template <typename T>
+    T* subsystem() const
+    {
+        return subsystemHost != nullptr ? subsystemHost->get<T>() : nullptr;
+    }
 };
 
 struct RenderGraphResource {
@@ -213,6 +225,14 @@ public:
     HistoryResourceManager* historyResources() const { return historyResources_; }
     Streamer* streamer() const { return streamer_; }
     const scene::Scene* runtimeScene() const { return runtimeScene_; }
+    RenderWorld* world() const { return world_; }
+    RenderSubsystemHost* subsystems() const { return subsystems_; }
+
+    template <typename T>
+    T* subsystem() const
+    {
+        return subsystems_ != nullptr ? subsystems_->get<T>() : nullptr;
+    }
 
     RenderGraphResource* resource(std::string_view fieldName) const;
     RenderGraphResource* input(std::string_view fieldName) const;
@@ -245,7 +265,9 @@ private:
         std::vector<Binding> bindings,
         HistoryResourceManager* historyResources,
         Streamer* streamer,
-        const scene::Scene* runtimeScene);
+        const scene::Scene* runtimeScene,
+        RenderWorld* world,
+        RenderSubsystemHost* subsystems);
 
     CommandBuffer& commandBuffer_;
     uint32_t width_ = 1;
@@ -256,6 +278,8 @@ private:
     HistoryResourceManager* historyResources_ = nullptr;
     Streamer* streamer_ = nullptr;
     const scene::Scene* runtimeScene_ = nullptr;
+    RenderWorld* world_ = nullptr;
+    RenderSubsystemHost* subsystems_ = nullptr;
 
     friend class RenderGraphExecutor;
 };
@@ -267,6 +291,7 @@ public:
     virtual RenderPassReflection reflect(const RenderGraphCompileContext& context) const = 0;
     virtual RenderGraphPassKind kind() const;
     virtual QueueType queueType() const;
+    virtual std::span<const RenderSubsystemId> requiredSubsystems() const;
     virtual std::vector<RenderGraphRuntimeSetting> runtimeSettings() const;
     virtual Result compile(const RenderGraphCompileContext& context, std::string& log);
     virtual Result execute(RenderGraphExecutionContext& context) = 0;

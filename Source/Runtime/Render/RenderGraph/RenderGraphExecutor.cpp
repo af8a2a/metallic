@@ -4,6 +4,7 @@
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Subsystem/BuiltinRenderSubsystems.h"
 
 #include <spdlog/spdlog.h>
 
@@ -46,6 +47,24 @@ public:
 private:
     std::string label_;
     RenderGraphLogClock::time_point begin_ = RenderGraphLogClock::now();
+};
+
+class RenderSubsystemFrameEndScope {
+public:
+    explicit RenderSubsystemFrameEndScope(RenderSubsystemHost& host)
+        : host_(&host)
+    {
+    }
+
+    ~RenderSubsystemFrameEndScope()
+    {
+        if (host_ != nullptr) {
+            host_->endFrame();
+        }
+    }
+
+private:
+    RenderSubsystemHost* host_ = nullptr;
 };
 
 } // namespace
@@ -124,20 +143,44 @@ struct RenderGraphExecutor::Impl {
     Format defaultFormat = Format::Rgba8Unorm;
     HistoryResourceManager* historyResources = nullptr;
     const scene::Scene* runtimeScene = nullptr;
+    RenderSubsystemHost ownedSubsystemHost;
+    RenderWorld ownedWorld;
+    RenderSubsystemHost* subsystemHost = &ownedSubsystemHost;
+    RenderWorld* world = &ownedWorld;
     std::vector<CompiledNode> executionList;
     std::unordered_map<std::string, ResourceSlot> resources;
     std::unordered_map<std::string, std::string> inputAliases;
     std::unique_ptr<BindlessHeap> bindlessHeap;
-    RenderGraphStreamingSubsystem streamingSubsystem;
-    SceneResourceManager sceneResourceManager;
     std::shared_ptr<SceneResourceSnapshot> pendingSceneResourceSnapshot;
+    std::vector<std::string> requiredSubsystemIds;
     std::array<QueueCommandContext, 3> queueCommandContexts;
     std::vector<std::unique_ptr<CommandBuffer>> submittedCommandBuffers;
     std::unique_ptr<Semaphore> submittedTimelineSemaphore;
     uint64_t submittedTimelineValue = 0;
     RenderGraphExecutionStats lastExecutionStats;
+    uint64_t executionFrameIndex = 0;
     bool hasSubmittedWork = false;
     bool isCompiled = false;
+
+    RenderUploadSubsystem* uploadSubsystem() const
+    {
+        return subsystemHost != nullptr ? subsystemHost->get<RenderUploadSubsystem>() : nullptr;
+    }
+
+    SceneResourcesSubsystem* sceneResourcesSubsystem() const
+    {
+        return subsystemHost != nullptr ? subsystemHost->get<SceneResourcesSubsystem>() : nullptr;
+    }
+
+    std::vector<RenderSubsystemId> requiredSubsystemViews() const
+    {
+        std::vector<RenderSubsystemId> result;
+        result.reserve(requiredSubsystemIds.size());
+        for (const std::string& id : requiredSubsystemIds) {
+            result.push_back(id);
+        }
+        return result;
+    }
 
     RenderGraphResource* resource(std::string_view fullName)
     {
@@ -765,6 +808,7 @@ struct RenderGraphExecutor::Impl {
             commandBuffer.bindBindlessHeap(*bindlessHeap);
         }
 
+        RenderUploadSubsystem* upload = uploadSubsystem();
         RenderGraphExecutionContext context(
             commandBuffer,
             width,
@@ -773,8 +817,10 @@ struct RenderGraphExecutor::Impl {
             node.effectiveProperties,
             std::move(bindings),
             historyResources,
-            streamingSubsystem.streamer(),
-            runtimeScene);
+            upload != nullptr ? upload->streamer() : nullptr,
+            runtimeScene,
+            world,
+            subsystemHost);
         const std::string markerName = passProfileMarkerName(node.name, node.type);
         const uint32_t markerColor = profiling::nsightColorFromName(node.type);
         const profiling::NsightProfileRange passMarker(
@@ -787,8 +833,8 @@ struct RenderGraphExecutor::Impl {
         });
         const auto cpuBegin = std::chrono::steady_clock::now();
         Result result = node.pass->execute(context);
-        if (result) {
-            streamingSubsystem.flush(commandBuffer);
+        if (result && upload != nullptr) {
+            upload->flush(commandBuffer);
         }
         const auto cpuEnd = std::chrono::steady_clock::now();
         commandBuffer.endDebugLabel();
@@ -805,6 +851,13 @@ struct RenderGraphExecutor::Impl {
 RenderGraphExecutor::RenderGraphExecutor()
     : impl_(std::make_unique<Impl>())
 {
+}
+
+RenderGraphExecutor::RenderGraphExecutor(RenderSubsystemHost& subsystemHost, RenderWorld& world)
+    : impl_(std::make_unique<Impl>())
+{
+    impl_->subsystemHost = &subsystemHost;
+    impl_->world = &world;
 }
 
 RenderGraphExecutor::~RenderGraphExecutor()
@@ -882,9 +935,64 @@ Result RenderGraphExecutor::compile(
             queueContext.commandPool.reset();
             queueContext.resetForCurrentSubmit = false;
         }
-        impl_->streamingSubsystem.reset();
         impl_->pendingSceneResourceSnapshot.reset();
-        impl_->sceneResourceManager.clear();
+    }
+
+    if (!registerBuiltInRenderSubsystems(*impl_->subsystemHost, log)) {
+        impl_->isCompiled = false;
+        return makeError(Error::InvalidArgument);
+    }
+    if (impl_->subsystemHost->device() != nullptr && impl_->subsystemHost->device() != &device) {
+        if (impl_->subsystemHost != &impl_->ownedSubsystemHost) {
+            log = "RenderGraphExecutor external RenderSubsystemHost belongs to another Device";
+            impl_->isCompiled = false;
+            return makeError(Error::InvalidArgument);
+        }
+        impl_->subsystemHost->shutdown();
+    }
+    Result subsystemResult = impl_->subsystemHost->initialize(device, 3, log);
+    if (!subsystemResult) {
+        impl_->isCompiled = false;
+        return subsystemResult;
+    }
+    impl_->subsystemHost->setWorld(impl_->world);
+
+    impl_->requiredSubsystemIds.clear();
+    impl_->requiredSubsystemIds.emplace_back(SceneResourcesSubsystem::kSubsystemId);
+    std::unordered_set<std::string> requiredSubsystemSet(impl_->requiredSubsystemIds.begin(), impl_->requiredSubsystemIds.end());
+    std::vector<std::pair<std::string, std::string>> passSubsystemRequirements;
+    for (const std::string& passName : activeGraph.executionOrder) {
+        const RenderGraphNode* node = graph.findNode(passName);
+        if (node == nullptr) {
+            continue;
+        }
+        std::unique_ptr<RenderGraphPass> pass = createRenderGraphPass(node->type);
+        if (pass == nullptr) {
+            log = validationPrefix(std::string("unknown pass type '") + node->type + "'");
+            impl_->isCompiled = false;
+            return makeError(Error::InvalidArgument);
+        }
+        for (RenderSubsystemId id : pass->requiredSubsystems()) {
+            if (requiredSubsystemSet.emplace(id).second) {
+                impl_->requiredSubsystemIds.emplace_back(id);
+                passSubsystemRequirements.emplace_back(std::string(id), passName);
+            }
+        }
+    }
+    subsystemResult = impl_->subsystemHost->activate(SceneResourcesSubsystem::kSubsystemId, log);
+    if (!subsystemResult) {
+        impl_->isCompiled = false;
+        return subsystemResult;
+    }
+    for (const auto& [subsystemId, passName] : passSubsystemRequirements) {
+        std::string activationLog;
+        subsystemResult = impl_->subsystemHost->activate(subsystemId, activationLog);
+        if (!subsystemResult) {
+            log = "RenderGraph pass '" + passName + "' requires subsystem '" +
+                subsystemId + "': " + activationLog;
+            impl_->isCompiled = false;
+            return subsystemResult;
+        }
     }
 
     const bool dimensionsChanged = impl_->width != width || impl_->height != height;
@@ -894,25 +1002,24 @@ Result RenderGraphExecutor::compile(
     impl_->width = width;
     impl_->height = height;
 
+    SceneResourcesSubsystem* sceneResources = impl_->sceneResourcesSubsystem();
+    if (sceneResources == nullptr) {
+        log = "RenderGraph compile failed: render.scene-resources was not activated";
+        impl_->isCompiled = false;
+        return makeError(Error::Failure);
+    }
+
     const RenderGraphCompileContext compileContext{
         .device = &device,
         .graphicsQueue = device.getQueue(QueueType::Graphics),
         .runtimeScene = impl_->runtimeScene,
-        .sceneResourceManager = &impl_->sceneResourceManager,
+        .sceneResourceManager = &sceneResources->manager(),
+        .renderWorld = impl_->world,
+        .subsystemHost = impl_->subsystemHost,
         .width = width,
         .height = height,
         .defaultFormat = impl_->defaultFormat,
     };
-
-    Result streamingResult;
-    {
-        RenderGraphLogScope scope("prepare streaming subsystem");
-        streamingResult = impl_->streamingSubsystem.initialize(device, log);
-    }
-    if (!streamingResult) {
-        impl_->isCompiled = false;
-        return streamingResult;
-    }
 
     if (canReuseCompiledPasses) {
         impl_->isCompiled = false;
@@ -1029,30 +1136,90 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     }
 
     impl_->historyResources = historyResources;
-    RenderGraphStreamingFrameScope streamingFrame(impl_->streamingSubsystem);
+    std::string subsystemLog;
+    const uint64_t frameIndex = impl_->executionFrameIndex++;
+    Result result = impl_->subsystemHost->beginFrame(
+        frameIndex,
+        static_cast<uint32_t>(frameIndex % impl_->subsystemHost->frameSlotCount()),
+        historyResources,
+        subsystemLog);
+    if (!result) {
+        spdlog::error("[RenderGraph] {}", subsystemLog);
+        impl_->historyResources = nullptr;
+        return result;
+    }
+    RenderUploadSubsystem* upload = impl_->uploadSubsystem();
+    const std::vector<RenderSubsystemId> requiredSubsystems = impl_->requiredSubsystemViews();
+    result = impl_->subsystemHost->recordPreGraph(
+        commandBuffer,
+        upload != nullptr ? upload->streamer() : nullptr,
+        requiredSubsystems,
+        subsystemLog);
+    if (result && upload != nullptr) {
+        upload->flush(commandBuffer);
+    }
+    if (!result) {
+        spdlog::error("[RenderGraph] {}", subsystemLog);
+        std::string cleanupLog;
+        (void)impl_->subsystemHost->recordPostGraph(
+            commandBuffer,
+            upload != nullptr ? upload->streamer() : nullptr,
+            requiredSubsystems,
+            cleanupLog);
+        impl_->subsystemHost->endFrame();
+        impl_->historyResources = nullptr;
+        return result;
+    }
     impl_->lastExecutionStats = {};
     const auto cpuBegin = std::chrono::steady_clock::now();
     for (Impl::CompiledNode& node : impl_->executionList) {
-        Result result = impl_->executeNode(commandBuffer, node);
+        result = impl_->executeNode(commandBuffer, node);
         if (!result) {
-            const auto cpuEnd = std::chrono::steady_clock::now();
-            impl_->lastExecutionStats.cpuMilliseconds =
-                std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
-            impl_->historyResources = nullptr;
-            return result;
+            break;
         }
     }
     const auto cpuEnd = std::chrono::steady_clock::now();
     impl_->lastExecutionStats.cpuMilliseconds =
         std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
 
+    const Result graphResult = result;
+    Result postResult = impl_->subsystemHost->recordPostGraph(
+        commandBuffer,
+        upload != nullptr ? upload->streamer() : nullptr,
+        requiredSubsystems,
+        subsystemLog);
+    impl_->subsystemHost->endFrame();
+    if (!postResult) {
+        spdlog::error("[RenderGraph] {}", subsystemLog);
+    }
+
     impl_->historyResources = nullptr;
-    return {};
+    return graphResult ? postResult : graphResult;
 }
 
 void RenderGraphExecutor::bindRuntimeScene(const scene::Scene* scene)
 {
     impl_->runtimeScene = scene;
+    if (impl_->world != nullptr) {
+        impl_->world->setScene(scene);
+    }
+}
+
+void RenderGraphExecutor::bindRenderWorld(RenderWorld* world)
+{
+    impl_->world = world != nullptr ? world : &impl_->ownedWorld;
+    impl_->runtimeScene = impl_->world->scene();
+    impl_->subsystemHost->setWorld(impl_->world);
+}
+
+RenderSubsystemHost* RenderGraphExecutor::subsystemHost()
+{
+    return impl_->subsystemHost;
+}
+
+const RenderSubsystemHost* RenderGraphExecutor::subsystemHost() const
+{
+    return impl_->subsystemHost;
 }
 
 Result RenderGraphExecutor::beginSceneResourcePreparation(
@@ -1065,8 +1232,23 @@ Result RenderGraphExecutor::beginSceneResourcePreparation(
     if (graphicsQueue == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    if (!registerBuiltInRenderSubsystems(*impl_->subsystemHost, log)) {
+        return makeError(Error::InvalidArgument);
+    }
+    Result result = impl_->subsystemHost->initialize(device, 3, log);
+    if (!result) {
+        return result;
+    }
+    result = impl_->subsystemHost->activate(SceneResourcesSubsystem::kSubsystemId, log);
+    if (!result) {
+        return result;
+    }
+    SceneResourcesSubsystem* sceneResources = impl_->sceneResourcesSubsystem();
+    if (sceneResources == nullptr) {
+        return makeError(Error::Failure);
+    }
     cancelSceneResourcePreparation();
-    return impl_->sceneResourceManager.beginAcquireAsync(
+    return sceneResources->manager().beginAcquireAsync(
         device,
         *graphicsQueue,
         properties,
@@ -1075,8 +1257,7 @@ Result RenderGraphExecutor::beginSceneResourcePreparation(
             SceneResourceFeatureBits::Materials |
             SceneResourceFeatureBits::MaterialTextures |
             SceneResourceFeatureBits::Meshlets |
-            SceneResourceFeatureBits::StandardAccelerationStructure |
-            SceneResourceFeatureBits::Environment,
+            SceneResourceFeatureBits::StandardAccelerationStructure,
         impl_->pendingSceneResourceSnapshot,
         log);
 }
@@ -1090,7 +1271,11 @@ Result RenderGraphExecutor::pumpSceneResourcePreparation(
     if (impl_->pendingSceneResourceSnapshot == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    Result result = impl_->sceneResourceManager.pumpAsync(
+    SceneResourcesSubsystem* sceneResources = impl_->sceneResourcesSubsystem();
+    if (sceneResources == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    Result result = sceneResources->manager().pumpAsync(
         impl_->pendingSceneResourceSnapshot,
         budgetMilliseconds,
         complete,
@@ -1101,7 +1286,10 @@ Result RenderGraphExecutor::pumpSceneResourcePreparation(
 
 void RenderGraphExecutor::cancelSceneResourcePreparation()
 {
-    impl_->sceneResourceManager.discard(impl_->pendingSceneResourceSnapshot);
+    SceneResourcesSubsystem* sceneResources = impl_->sceneResourcesSubsystem();
+    if (sceneResources != nullptr) {
+        sceneResources->manager().discard(impl_->pendingSceneResourceSnapshot);
+    }
     impl_->pendingSceneResourceSnapshot.reset();
 }
 
@@ -1127,7 +1315,20 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         return makeError(Error::Unsupported);
     }
 
-    RenderGraphStreamingFrameScope streamingFrame(impl_->streamingSubsystem);
+    std::string subsystemLog;
+    const uint64_t frameIndex = impl_->executionFrameIndex++;
+    result = impl_->subsystemHost->beginFrame(
+        frameIndex,
+        static_cast<uint32_t>(frameIndex % impl_->subsystemHost->frameSlotCount()),
+        nullptr,
+        subsystemLog);
+    if (!result) {
+        spdlog::error("[RenderGraph] {}", subsystemLog);
+        return result;
+    }
+    RenderSubsystemFrameEndScope subsystemFrameScope(*impl_->subsystemHost);
+    RenderUploadSubsystem* upload = impl_->uploadSubsystem();
+    const std::vector<RenderSubsystemId> requiredSubsystems = impl_->requiredSubsystemViews();
     impl_->submittedCommandBuffers.clear();
     impl_->submittedTimelineSemaphore.reset();
     impl_->submittedTimelineValue = 0;
@@ -1142,6 +1343,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     CommandBuffer* currentCommandBuffer = nullptr;
     QueueType currentQueueType = QueueType::Graphics;
     bool hasCurrentSegment = false;
+    bool preGraphRecorded = false;
 
     auto endCurrentSegment = [&]() -> Result {
         if (currentCommandBuffer == nullptr) {
@@ -1204,11 +1406,51 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             }
         }
 
+        if (!preGraphRecorded) {
+            result = impl_->subsystemHost->recordPreGraph(
+                *currentCommandBuffer,
+                upload != nullptr ? upload->streamer() : nullptr,
+                requiredSubsystems,
+                subsystemLog);
+            if (!result) {
+                spdlog::error("[RenderGraph] {}", subsystemLog);
+                std::string cleanupLog;
+                (void)impl_->subsystemHost->recordPostGraph(
+                    *currentCommandBuffer,
+                    upload != nullptr ? upload->streamer() : nullptr,
+                    requiredSubsystems,
+                    cleanupLog);
+                return result;
+            }
+            if (upload != nullptr) {
+                upload->flush(*currentCommandBuffer);
+            }
+            preGraphRecorded = true;
+        }
+
         result = impl_->executeNode(*currentCommandBuffer, node);
         if (!result) {
+            std::string cleanupLog;
+            (void)impl_->subsystemHost->recordPostGraph(
+                *currentCommandBuffer,
+                upload != nullptr ? upload->streamer() : nullptr,
+                requiredSubsystems,
+                cleanupLog);
             const auto cpuEnd = std::chrono::steady_clock::now();
             impl_->lastExecutionStats.cpuMilliseconds =
                 std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
+            return result;
+        }
+    }
+
+    if (currentCommandBuffer != nullptr) {
+        result = impl_->subsystemHost->recordPostGraph(
+            *currentCommandBuffer,
+            upload != nullptr ? upload->streamer() : nullptr,
+            requiredSubsystems,
+            subsystemLog);
+        if (!result) {
+            spdlog::error("[RenderGraph] {}", subsystemLog);
             return result;
         }
     }
@@ -1352,7 +1594,11 @@ const RenderGraphExecutionStats& RenderGraphExecutor::executionStats() const
 
 const RenderGraphStreamingStats& RenderGraphExecutor::streamingStats() const
 {
-    return impl_->streamingSubsystem.stats();
+    static const RenderGraphStreamingStats kEmptyStats;
+    const RenderUploadSubsystem* upload = impl_->subsystemHost != nullptr
+        ? impl_->subsystemHost->get<RenderUploadSubsystem>()
+        : nullptr;
+    return upload != nullptr ? upload->stats() : kEmptyStats;
 }
 
 bool RenderGraphExecutor::compiled() const
@@ -1371,12 +1617,16 @@ uint32_t RenderGraphExecutor::height() const
 }
 
 struct RenderGraphPreviewRenderer::Impl {
+    Impl() : executor(subsystemHost, world) {}
+
     std::unique_ptr<Device> device;
     Queue* graphicsQueue = nullptr;
     std::unique_ptr<CommandPool> commandPool;
     std::unique_ptr<CommandBuffer> commandBuffer;
     std::unique_ptr<Fence> fence;
     std::unique_ptr<Buffer> readbackBuffer;
+    RenderSubsystemHost subsystemHost;
+    RenderWorld world;
     RenderGraphExecutor executor;
     HistoryResourceManager historyResources;
     std::vector<uint32_t> pixels;
@@ -1422,6 +1672,21 @@ RenderGraphPreviewRenderer::RenderGraphPreviewRenderer()
 RenderGraphPreviewRenderer::~RenderGraphPreviewRenderer() = default;
 RenderGraphPreviewRenderer::RenderGraphPreviewRenderer(RenderGraphPreviewRenderer&&) noexcept = default;
 RenderGraphPreviewRenderer& RenderGraphPreviewRenderer::operator=(RenderGraphPreviewRenderer&&) noexcept = default;
+
+void RenderGraphPreviewRenderer::setEnvironment(EnvironmentSettings environment)
+{
+    impl_->world.setEnvironment(std::move(environment));
+}
+
+RenderSubsystemHost* RenderGraphPreviewRenderer::subsystemHost()
+{
+    return &impl_->subsystemHost;
+}
+
+const RenderSubsystemHost* RenderGraphPreviewRenderer::subsystemHost() const
+{
+    return &impl_->subsystemHost;
+}
 
 Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery)
 {

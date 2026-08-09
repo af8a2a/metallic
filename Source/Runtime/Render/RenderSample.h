@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,6 +37,7 @@ struct RenderSampleLoadResult {
     RenderSampleDesc desc;
     RenderGraph graph;
     std::filesystem::path graphFilePath;
+    std::optional<RenderSampleEnvironmentDesc> migratedLegacyEnvironment;
 };
 
 class RenderSample {

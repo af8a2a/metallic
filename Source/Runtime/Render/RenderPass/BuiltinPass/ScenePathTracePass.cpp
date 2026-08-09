@@ -1,6 +1,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/SceneResourceManager.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
 #include "openpbr_data_constants.h"
 
@@ -474,6 +475,14 @@ class ScenePathTracePass final : public ComputePass {
 public:
     ~ScenePathTracePass() override = default;
 
+    std::span<const RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{
+            EnvironmentLightingSubsystem::kSubsystemId,
+        };
+        return required;
+    }
+
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         const bool exportGuides = exportDenoiserGuides(properties());
@@ -558,8 +567,7 @@ public:
                 SceneResourceFeatureBits::Geometry |
                     SceneResourceFeatureBits::Materials |
                     SceneResourceFeatureBits::MaterialTextures |
-                    SceneResourceFeatureBits::StandardAccelerationStructure |
-                    SceneResourceFeatureBits::Environment,
+                    SceneResourceFeatureBits::StandardAccelerationStructure,
                 snapshot,
                 log);
             if (result && snapshot != nullptr) {
@@ -792,8 +800,7 @@ public:
                 SceneResourceFeatureBits::Geometry |
                     SceneResourceFeatureBits::Materials |
                     SceneResourceFeatureBits::MaterialTextures |
-                    SceneResourceFeatureBits::StandardAccelerationStructure |
-                    SceneResourceFeatureBits::Environment,
+                    SceneResourceFeatureBits::StandardAccelerationStructure,
                 snapshot,
                 syncLog);
             if (!acquireResult || snapshot == nullptr) {
@@ -814,10 +821,26 @@ public:
             resetAccumulation_ = true;
             hasPreviousCamera_ = false;
         }
+        EnvironmentLightingSubsystem* environmentSubsystem =
+            context.subsystem<EnvironmentLightingSubsystem>();
+        if (environmentSubsystem == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        const EnvironmentLightingSnapshot& environment = environmentSubsystem->snapshot();
+        if (!environment.valid()) {
+            return {};
+        }
+        if (environment.resourceRevision != environmentResourceRevision_ ||
+            environment.settingsRevision != environmentSettingsRevision_) {
+            environmentResourceRevision_ = environment.resourceRevision;
+            environmentSettingsRevision_ = environment.settingsRevision;
+            resetAccumulation_ = true;
+            hasPreviousCamera_ = false;
+        }
         TextureHandle color = context.outputTexture("color");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
-        TextureView* environmentTextureView = sceneResources_.environmentTextureView();
-        Buffer* environmentImportanceBuffer = sceneResources_.environmentImportanceBuffer();
+        TextureView* environmentTextureView = environment.radianceView;
+        Buffer* environmentImportanceBuffer = environment.importanceBuffer;
         TextureView* const environmentTextureViews[] = {environmentTextureView};
         const bool useOpenPBR = useOpenPBRBsdf(properties());
         const bool exportGuides = exportDenoiserGuides(properties());
@@ -851,10 +874,11 @@ public:
             context.height(),
             context.properties(),
             sceneResources_.bounds(),
-            sceneResources_.environmentMapAvailable(),
+            environment.settings,
+            environment.mapAvailable,
             push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
-        push.environmentImportanceTexelCount = sceneResources_.environmentImportanceTexelCount();
+        push.environmentImportanceTexelCount = environment.importanceTexelCount;
         const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
         const bool previousCameraValid =
             hasPreviousCamera_ &&
@@ -879,10 +903,6 @@ public:
         }
 
         result = sceneResources_.uploadMaterialTextures(context.commandBuffer());
-        if (!result) {
-            return result;
-        }
-        result = sceneResources_.uploadEnvironmentTexture(context.commandBuffer());
         if (!result) {
             return result;
         }
@@ -1198,18 +1218,6 @@ private:
         return &(*iter);
     }
 
-    static const RenderGraphProperties* environmentPropertiesFrom(const RenderGraphProperties& properties)
-    {
-        if (!properties.is_object()) {
-            return nullptr;
-        }
-        auto iter = properties.find("environment");
-        if (iter == properties.end() || !iter->is_object()) {
-            return nullptr;
-        }
-        return &(*iter);
-    }
-
     static float cameraFloat(const RenderGraphProperties* camera, const char* key, float fallback)
     {
         if (camera == nullptr) {
@@ -1298,6 +1306,7 @@ private:
         uint32_t height,
         const RenderGraphProperties& properties,
         const scene::Bounds& drawBounds,
+        const EnvironmentSettings& environment,
         bool environmentMapAvailable,
         ScenePathTracePush& outPush)
     {
@@ -1352,22 +1361,14 @@ private:
             ? -1.0f
             : 1.0f;
 
-        const RenderGraphProperties* environmentProperties = environmentPropertiesFrom(properties);
-        outPush.environmentIntensity = 1.0f;
-        outPush.environmentRotationRadians = 0.0f;
+        outPush.environmentIntensity = std::max(environment.intensity, 0.0f);
+        outPush.environmentRotationRadians = environment.rotationDegrees * (kPi / 180.0f);
         outPush.environmentMode = kScenePathTraceEnvironmentModeProcedural;
-        outPush.environmentVisible = 1;
-        if (environmentProperties != nullptr) {
-            const bool environmentEnabled = boolProperty(*environmentProperties, "enabled", true);
-            outPush.environmentIntensity = std::max(floatProperty(*environmentProperties, "intensity", 1.0f), 0.0f);
-            outPush.environmentRotationRadians =
-                floatProperty(*environmentProperties, "rotationDegrees", 0.0f) * (kPi / 180.0f);
-            outPush.environmentVisible = boolProperty(*environmentProperties, "visible", true) ? 1u : 0u;
-            if (!environmentEnabled) {
-                outPush.environmentMode = kScenePathTraceEnvironmentModeDisabled;
-            } else if (environmentMapAvailable) {
-                outPush.environmentMode = kScenePathTraceEnvironmentModeMap;
-            }
+        outPush.environmentVisible = environment.visible ? 1u : 0u;
+        if (!environment.enabled) {
+            outPush.environmentMode = kScenePathTraceEnvironmentModeDisabled;
+        } else if (environmentMapAvailable) {
+            outPush.environmentMode = kScenePathTraceEnvironmentModeMap;
         }
     }
 
@@ -1379,6 +1380,8 @@ private:
     SceneRayQueryProgram rayQueryProgram_;
     std::string compiledShaderKey_;
     uint64_t sceneResourceRevision_ = 0;
+    uint64_t environmentResourceRevision_ = 0;
+    uint64_t environmentSettingsRevision_ = 0;
     uint32_t accumulationFrame_ = 0;
     ScenePathTraceCameraSnapshot previousCamera_;
     uint32_t previousCameraWidth_ = 0;

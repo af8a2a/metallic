@@ -291,6 +291,11 @@ QueueType RenderGraphPass::queueType() const
     return QueueType::Graphics;
 }
 
+std::span<const RenderSubsystemId> RenderGraphPass::requiredSubsystems() const
+{
+    return {};
+}
+
 std::vector<RenderGraphRuntimeSetting> RenderGraphPass::runtimeSettings() const
 {
     return {};
@@ -415,7 +420,9 @@ RenderGraphExecutionContext::RenderGraphExecutionContext(
     std::vector<Binding> bindings,
     HistoryResourceManager* historyResources,
     Streamer* streamer,
-    const scene::Scene* runtimeScene)
+    const scene::Scene* runtimeScene,
+    RenderWorld* world,
+    RenderSubsystemHost* subsystems)
     : commandBuffer_(commandBuffer)
     , width_(width)
     , height_(height)
@@ -425,6 +432,8 @@ RenderGraphExecutionContext::RenderGraphExecutionContext(
     , historyResources_(historyResources)
     , streamer_(streamer)
     , runtimeScene_(runtimeScene)
+    , world_(world)
+    , subsystems_(subsystems)
 {
 }
 
@@ -1145,11 +1154,15 @@ std::string serializeRenderGraphToString(const RenderGraph& graph)
     root["outputs"] = nlohmann::json::array();
 
     for (const RenderGraphNode& node : graph.nodes()) {
+        RenderGraphProperties properties = node.properties;
+        if (properties.is_object()) {
+            properties.erase("environment");
+        }
         root["nodes"].push_back({
             {"id", node.id},
             {"name", node.name},
             {"type", node.type},
-            {"properties", node.properties},
+            {"properties", std::move(properties)},
             {"position", {{"x", node.uiX}, {"y", node.uiY}}},
         });
     }

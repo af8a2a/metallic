@@ -624,6 +624,152 @@ Result ImportancePdfCompute::build(
     return {};
 }
 
+Result ImportancePdfCompute::buildLocalLights(
+    CommandBuffer& commandBuffer,
+    TextureView& environmentMap,
+    ImportancePdfTexture& localLightPdf,
+    uint32_t lightCount,
+    float localLightIntensity,
+    float sceneRadius)
+{
+    if (!valid() || !localLightPdf.valid() || lightCount == 0) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    TextureView* const environmentViews[] = {&environmentMap};
+    const SceneRayQueryDispatchBinding bindings[] = {
+        {
+            .binding = 0,
+            .textureViews = environmentViews,
+            .textureViewCount = static_cast<uint32_t>(std::size(environmentViews)),
+        },
+        {
+            .binding = 1,
+            .textureViews = localLightPdf.mipViews(),
+            .textureViewCount = localLightPdf.mipViewCount(),
+        },
+        {
+            .binding = 2,
+            .textureViews = localLightPdf.mipViews(),
+            .textureViewCount = localLightPdf.mipViewCount(),
+        },
+    };
+    auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t descriptorSetIndex) {
+        return impl_->program.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = bindings,
+            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (push.destinationSize[0] + 7u) / 8u,
+            .groupCountY = (push.destinationSize[1] + 7u) / 8u,
+            .groupCountZ = 1,
+            .descriptorSetIndex = descriptorSetIndex,
+        });
+    };
+
+    localLightPdf.beginGpuBuild(commandBuffer);
+    PrepareLightsPdfPush push;
+    push.mode = kPrepareLocalLightsMode;
+    push.lightCount = lightCount;
+    push.sourceSize[0] = localLightPdf.textureWidth();
+    push.sourceSize[1] = localLightPdf.textureHeight();
+    push.destinationSize[0] = localLightPdf.textureWidth();
+    push.destinationSize[1] = localLightPdf.textureHeight();
+    push.localLightIntensity = localLightIntensity;
+    push.sceneRadius = sceneRadius;
+    Result result = dispatch(push, 0u);
+    if (result) {
+        localLightPdf.synchronizeGpuBuild(commandBuffer);
+    }
+    for (uint32_t sourceMip = 0;
+         result && sourceMip + 1u < localLightPdf.mipCount();
+         ++sourceMip) {
+        push.mode = kGenerateLocalMipMode;
+        push.sourceMipLevel = sourceMip;
+        push.sourceSize[0] = dimensionAtMip(localLightPdf.textureWidth(), sourceMip);
+        push.sourceSize[1] = dimensionAtMip(localLightPdf.textureHeight(), sourceMip);
+        push.destinationSize[0] = dimensionAtMip(localLightPdf.textureWidth(), sourceMip + 1u);
+        push.destinationSize[1] = dimensionAtMip(localLightPdf.textureHeight(), sourceMip + 1u);
+        result = dispatch(push, sourceMip + 1u);
+        if (result) {
+            localLightPdf.synchronizeGpuBuild(commandBuffer);
+        }
+    }
+    localLightPdf.endGpuBuild(commandBuffer);
+    return result;
+}
+
+Result ImportancePdfCompute::buildEnvironment(
+    CommandBuffer& commandBuffer,
+    TextureView& environmentMap,
+    ImportancePdfTexture& environmentPdf)
+{
+    if (!valid() || !environmentPdf.valid()) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    TextureView* const environmentViews[] = {&environmentMap};
+    const SceneRayQueryDispatchBinding bindings[] = {
+        {
+            .binding = 0,
+            .textureViews = environmentViews,
+            .textureViewCount = static_cast<uint32_t>(std::size(environmentViews)),
+        },
+        {
+            .binding = 1,
+            .textureViews = environmentPdf.mipViews(),
+            .textureViewCount = environmentPdf.mipViewCount(),
+        },
+        {
+            .binding = 2,
+            .textureViews = environmentPdf.mipViews(),
+            .textureViewCount = environmentPdf.mipViewCount(),
+        },
+    };
+    auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t descriptorSetIndex) {
+        return impl_->program.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = bindings,
+            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (push.destinationSize[0] + 7u) / 8u,
+            .groupCountY = (push.destinationSize[1] + 7u) / 8u,
+            .groupCountZ = 1,
+            .descriptorSetIndex = descriptorSetIndex,
+        });
+    };
+
+    environmentPdf.beginGpuBuild(commandBuffer);
+    PrepareLightsPdfPush push;
+    push.mode = kPrepareEnvironmentMode;
+    push.sourceSize[0] = environmentPdf.sourceWidth();
+    push.sourceSize[1] = environmentPdf.sourceHeight();
+    push.destinationSize[0] = environmentPdf.textureWidth();
+    push.destinationSize[1] = environmentPdf.textureHeight();
+    Result result = dispatch(push, kImportancePdfMaxMipCount);
+    if (result) {
+        environmentPdf.synchronizeGpuBuild(commandBuffer);
+    }
+    for (uint32_t sourceMip = 0;
+         result && sourceMip + 1u < environmentPdf.mipCount();
+         ++sourceMip) {
+        push.mode = kGenerateEnvironmentMipMode;
+        push.sourceMipLevel = sourceMip;
+        push.sourceSize[0] = dimensionAtMip(environmentPdf.textureWidth(), sourceMip);
+        push.sourceSize[1] = dimensionAtMip(environmentPdf.textureHeight(), sourceMip);
+        push.destinationSize[0] = dimensionAtMip(environmentPdf.textureWidth(), sourceMip + 1u);
+        push.destinationSize[1] = dimensionAtMip(environmentPdf.textureHeight(), sourceMip + 1u);
+        result = dispatch(push, kImportancePdfMaxMipCount + sourceMip + 1u);
+        if (result) {
+            environmentPdf.synchronizeGpuBuild(commandBuffer);
+        }
+    }
+    environmentPdf.endGpuBuild(commandBuffer);
+    return result;
+}
+
 void ImportancePdfCompute::clear()
 {
     if (impl_ != nullptr) {

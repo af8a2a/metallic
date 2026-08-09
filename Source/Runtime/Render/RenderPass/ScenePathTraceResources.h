@@ -44,7 +44,6 @@ public:
     bool preparing() const;
     Result syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log);
     Result uploadMaterialTextures(CommandBuffer& commandBuffer);
-    Result uploadEnvironmentTexture(CommandBuffer& commandBuffer);
     bool textureUploadsReady() const;
     bool gpuWorkComplete();
 
@@ -62,12 +61,6 @@ public:
     Buffer* materialBuffer() const;
     const std::array<TextureView*, kScenePathTraceMaxMaterialTextures>& materialTextureViews() const;
     uint32_t materialTextureCount() const;
-    TextureView* environmentTextureView() const;
-    Buffer* environmentImportanceBuffer() const;
-    uint32_t environmentImportanceTexelCount() const;
-    uint32_t environmentTextureWidth() const;
-    uint32_t environmentTextureHeight() const;
-    bool environmentMapAvailable() const;
 
 private:
     struct Impl;

@@ -15,7 +15,6 @@ enum class SceneResourceFeatureBits : uint32_t {
     Meshlets = 1u << 3,
     StandardAccelerationStructure = 1u << 4,
     ClusterAccelerationStructure = 1u << 5,
-    Environment = 1u << 6,
 };
 
 constexpr SceneResourceFeatureBits operator|(
@@ -28,7 +27,6 @@ constexpr SceneResourceFeatureBits operator|(
 
 struct SceneResourceSnapshot {
     std::filesystem::path scenePath;
-    std::filesystem::path environmentPath;
     SceneResourceFeatureBits features = SceneResourceFeatureBits::None;
     std::shared_ptr<ScenePathTraceResources> pathTraceResources;
 };
