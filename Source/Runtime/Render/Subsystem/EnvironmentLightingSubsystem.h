@@ -3,27 +3,14 @@
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
-#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <future>
 #include <memory>
-#include <span>
 #include <string>
 #include <vector>
 
 namespace metallic::render {
-
-struct EnvironmentAliasEntry {
-    float probability = 1.0f;
-    uint32_t aliasIndex = 0;
-    float texelProbability = 1.0f;
-    uint32_t padding = 0;
-};
-
-static_assert(sizeof(EnvironmentAliasEntry) == 16);
-
-using EnvironmentSphericalHarmonics = std::array<std::array<float, 4>, 9>;
 
 enum class EnvironmentLightingStatus : uint8_t {
     Uninitialized,
@@ -36,13 +23,10 @@ struct EnvironmentLightingSnapshot {
     EnvironmentSettings settings;
     EnvironmentLightingStatus status = EnvironmentLightingStatus::Uninitialized;
     TextureView* radianceView = nullptr;
-    Buffer* importanceBuffer = nullptr;
     TextureView* pdfView = nullptr;
-    const EnvironmentSphericalHarmonics* sphericalHarmonics = nullptr;
-    const std::vector<EnvironmentAliasEntry>* cpuImportanceTable = nullptr;
+    Buffer* sphericalHarmonicsBuffer = nullptr;
     uint32_t width = 1;
     uint32_t height = 1;
-    uint32_t importanceTexelCount = 1;
     uint64_t settingsRevision = 0;
     uint64_t resourceRevision = 0;
     bool mapAvailable = false;
@@ -51,9 +35,8 @@ struct EnvironmentLightingSnapshot {
     bool valid() const
     {
         return radianceView != nullptr &&
-            importanceBuffer != nullptr &&
-            sphericalHarmonics != nullptr &&
-            cpuImportanceTable != nullptr;
+            pdfView != nullptr &&
+            sphericalHarmonicsBuffer != nullptr;
     }
 };
 
@@ -83,6 +66,7 @@ public:
 private:
     struct DecodedEnvironment;
     struct DecodeJob;
+    struct GpuPrecompute;
     struct Resources;
 
     void requestEnvironment(const EnvironmentSettings& settings, uint64_t settingsRevision);
@@ -98,6 +82,7 @@ private:
     RenderWorld* world_ = nullptr;
     Desc desc_;
     ImportancePdfCompute pdfCompute_;
+    std::unique_ptr<GpuPrecompute> gpuPrecompute_;
     std::shared_ptr<Resources> resources_;
     std::vector<DecodeJob> decodeJobs_;
     std::filesystem::path pendingDecodePath_;

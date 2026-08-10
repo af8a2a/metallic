@@ -709,7 +709,6 @@ public:
         const EnvironmentSettings initialEnvironment = context.world() != nullptr
             ? context.world()->environment()
             : EnvironmentSettings{};
-        const EnvironmentSphericalHarmonics initialEnvironmentSH{};
         buildParams(
             context.width,
             context.height,
@@ -726,7 +725,6 @@ public:
             materialCount_,
             initialEnvironment,
             false,
-            initialEnvironmentSH,
             params);
 
         compileStageBegin = GPUDrivenCompileClock::now();
@@ -878,7 +876,7 @@ public:
             BindlessHeapDesc{
                 .maxSampledImages = 4u + materialTextureCount_ +
                     kGPUDrivenOpenPBRLut2DCount + kGPUDrivenOpenPBRLut3DCount,
-                .maxBuffers = 16,
+                .maxBuffers = 17,
             },
             bindlessHeap_);
         if (!result || bindlessHeap_ == nullptr) {
@@ -1022,6 +1020,12 @@ public:
         result = bindlessHeap_->allocateSampledImage(environmentTextureHandle_);
         if (!result || !environmentTextureHandle_.valid()) {
             log += resultMessage("allocateSampledImage(GPUDrivenPreviewPass environment)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = bindlessHeap_->allocateBuffer(environmentSHBufferHandle_);
+        if (!result || !environmentSHBufferHandle_.valid()) {
+            log += resultMessage("allocateBuffer(GPUDrivenPreviewPass environment SH)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
@@ -1169,8 +1173,7 @@ public:
             context.height(),
             context.properties(),
             environment.settings,
-            environment.mapAvailable,
-            *environment.sphericalHarmonics);
+            environment.mapAvailable);
         if (!result) {
             return result;
         }
@@ -1180,6 +1183,12 @@ public:
                 environmentTextureHandle_,
                 *environment.radianceView,
                 ResourceState::ShaderRead);
+            if (!result) {
+                return result;
+            }
+            result = bindlessHeap_->writeStorageBuffer(
+                environmentSHBufferHandle_,
+                *environment.sphericalHarmonicsBuffer);
             if (!result) {
                 return result;
             }
@@ -1579,6 +1588,7 @@ private:
                 ? 0u
                 : materialTextureHandles_.front().index,
             .environmentImage = environmentTextureHandle_.index,
+            .environmentSHBuffer = environmentSHBufferHandle_.index,
         };
     }
 
@@ -1847,6 +1857,7 @@ private:
         materialTextures_.clear();
         materialTextureHandles_.clear();
         environmentTextureHandle_ = {};
+        environmentSHBufferHandle_ = {};
         openPBRLut2D_ = {};
         openPBRLut3D_ = {};
         openPBRLut2DHandles_ = {};
@@ -2691,7 +2702,6 @@ private:
         uint32_t materialCount,
         const EnvironmentSettings& environment,
         bool environmentMapAvailable,
-        const EnvironmentSphericalHarmonics& environmentSH,
         GPUDrivenPreviewGpuParams& outParams)
     {
         outParams = GPUDrivenPreviewGpuParams{};
@@ -2785,8 +2795,6 @@ private:
                 : kGPUDrivenEnvironmentModeProcedural);
         outParams.environmentVisible =
             environment.enabled && environment.visible ? 1u : 0u;
-        std::memcpy(outParams.environmentSH, environmentSH.data(), sizeof(outParams.environmentSH));
-
         const GPUDrivenPreviewGpuParams& previous = previousParams != nullptr ? *previousParams : outParams;
         std::memcpy(outParams.previousEye, previous.eye, sizeof(outParams.previousEye));
         std::memcpy(outParams.previousCenter, previous.center, sizeof(outParams.previousCenter));
@@ -2800,8 +2808,7 @@ private:
         uint32_t height,
         const RenderGraphProperties& properties,
         const EnvironmentSettings& environment,
-        bool environmentMapAvailable,
-        const EnvironmentSphericalHarmonics& environmentSH)
+        bool environmentMapAvailable)
     {
         if (paramsBuffer_ == nullptr || !drawBounds_.valid) {
             return makeError(Error::InvalidArgument);
@@ -2838,7 +2845,6 @@ private:
             materialCount_,
             environment,
             environmentMapAvailable,
-            environmentSH,
             params);
 
         if (freezeCullingCamera &&
@@ -2905,6 +2911,7 @@ private:
     BindlessHandle cullingDepthImageHandle_;
     std::vector<BindlessHandle> materialTextureHandles_;
     BindlessHandle environmentTextureHandle_;
+    BindlessHandle environmentSHBufferHandle_;
     std::array<BindlessHandle, kGPUDrivenOpenPBRLut2DCount> openPBRLut2DHandles_;
     std::array<BindlessHandle, kGPUDrivenOpenPBRLut3DCount> openPBRLut3DHandles_;
     std::unique_ptr<ShaderModule> meshShader_;

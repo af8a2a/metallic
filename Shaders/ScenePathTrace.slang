@@ -115,16 +115,8 @@ Texture2D<float4> gMaterialTextures[256];
 [[vk::binding(10, 0)]]
 Texture2D<float4> gEnvironmentMap;
 
-struct EnvironmentAliasEntry
-{
-    float probability;
-    uint aliasIndex;
-    float texelProbability;
-    uint padding;
-};
-
 [[vk::binding(13, 0)]]
-StructuredBuffer<EnvironmentAliasEntry> gEnvironmentImportanceAliasTable;
+Texture2D<float> gEnvironmentImportancePdf;
 
 
 static const uint kMaxMaterialTextures = 256u;
@@ -160,7 +152,7 @@ struct ScenePathTracePush
     float environmentRotationRadians;
     uint environmentMode;
     uint environmentVisible;
-    uint environmentImportanceTexelCount;
+    uint padding0;
     uint padding1;
     uint padding2;
 };
@@ -520,6 +512,78 @@ struct EnvironmentLightSample
     float pdfSolidAngle;
 };
 
+float loadEnvironmentImportanceWeight(uint2 position, uint mipLevel)
+{
+    uint width = 0u;
+    uint height = 0u;
+    uint mipCount = 0u;
+    gEnvironmentImportancePdf.GetDimensions(mipLevel, width, height, mipCount);
+    return all(position < uint2(width, height))
+        ? max(gEnvironmentImportancePdf.Load(int3(position, mipLevel)), 0.0)
+        : 0.0;
+}
+
+bool sampleEnvironmentImportanceMipmap(
+    inout uint seed,
+    out uint2 position,
+    out float probability)
+{
+    position = uint2(0u);
+    probability = 1.0;
+    uint width = 0u;
+    uint height = 0u;
+    uint mipCount = 0u;
+    gEnvironmentImportancePdf.GetDimensions(0u, width, height, mipCount);
+    if (width == 0u || height == 0u || mipCount == 0u) {
+        probability = 0.0;
+        return false;
+    }
+    for (int mipLevel = int(mipCount) - 2; mipLevel >= 0; --mipLevel) {
+        position *= 2u;
+        float4 weights = float4(
+            loadEnvironmentImportanceWeight(position + uint2(0u, 0u), uint(mipLevel)),
+            loadEnvironmentImportanceWeight(position + uint2(0u, 1u), uint(mipLevel)),
+            loadEnvironmentImportanceWeight(position + uint2(1u, 0u), uint(mipLevel)),
+            loadEnvironmentImportanceWeight(position + uint2(1u, 1u), uint(mipLevel)));
+        float weightSum = weights.x + weights.y + weights.z + weights.w;
+        if (weightSum <= 0.0) {
+            probability = 0.0;
+            return false;
+        }
+        weights /= weightSum;
+        float randomValue = rand(seed);
+        if (randomValue < weights.x) {
+            probability *= weights.x;
+        } else if (randomValue < weights.x + weights.y) {
+            position += uint2(0u, 1u);
+            probability *= weights.y;
+        } else if (randomValue < weights.x + weights.y + weights.z) {
+            position += uint2(1u, 0u);
+            probability *= weights.z;
+        } else {
+            position += uint2(1u, 1u);
+            probability *= weights.w;
+        }
+    }
+    return probability > 0.0;
+}
+
+float environmentImportanceTexelProbability(uint2 position)
+{
+    uint width = 0u;
+    uint height = 0u;
+    uint mipCount = 0u;
+    gEnvironmentImportancePdf.GetDimensions(0u, width, height, mipCount);
+    if (width == 0u || height == 0u || mipCount == 0u || any(position >= uint2(width, height))) {
+        return 0.0;
+    }
+    float averageWeight = loadEnvironmentImportanceWeight(uint2(0u), mipCount - 1u);
+    float totalWeight = averageWeight * float(width * height);
+    return totalWeight > 0.0
+        ? loadEnvironmentImportanceWeight(position, 0u) / totalWeight
+        : 0.0;
+}
+
 bool sampleEnvironmentLight(ScenePathTracePush push, inout uint seed, out EnvironmentLightSample sample)
 {
     sample.direction = float3(0.0, 1.0, 0.0);
@@ -540,29 +604,27 @@ bool sampleEnvironmentLight(ScenePathTracePush push, inout uint seed, out Enviro
     uint height = 1u;
     gEnvironmentMap.GetDimensions(width, height);
     uint textureTexelCount = width * height;
-    uint texelCount = min(max(push.environmentImportanceTexelCount, 1u), max(textureTexelCount, 1u));
-    if (width == 0u || height == 0u || texelCount == 0u) {
+    if (width == 0u || height == 0u || textureTexelCount == 0u) {
         return false;
     }
 
-    uint texelIndex = min(uint(rand(seed) * float(texelCount)), texelCount - 1u);
-    EnvironmentAliasEntry aliasEntry = gEnvironmentImportanceAliasTable[texelIndex];
-    if (rand(seed) >= aliasEntry.probability) {
-        texelIndex = min(aliasEntry.aliasIndex, texelCount - 1u);
-        aliasEntry = gEnvironmentImportanceAliasTable[texelIndex];
+    uint2 texel = uint2(0u);
+    float texelProbability = 0.0;
+    if (!sampleEnvironmentImportanceMipmap(seed, texel, texelProbability) ||
+        texel.x >= width || texel.y >= height) {
+        uint texelIndex = min(uint(rand(seed) * float(textureTexelCount)), textureTexelCount - 1u);
+        texel = uint2(texelIndex % width, texelIndex / width);
+        texelProbability = 1.0 / float(textureTexelCount);
     }
-    float texelProbability = max(aliasEntry.texelProbability, 0.0000001);
-    uint x = texelIndex % width;
-    uint y = texelIndex / width;
 
-    float2 uv = (float2(x, y) + float2(rand(seed), rand(seed))) / float2(width, height);
-    float texelSolidAngle = environmentTexelSolidAngle(y, width, height);
+    float2 uv = (float2(texel) + float2(rand(seed), rand(seed))) / float2(width, height);
+    float texelSolidAngle = environmentTexelSolidAngle(texel.y, width, height);
 
     float3 localDirection = environmentLocalDirectionFromUv(uv);
     sample.direction = safeNormalize(
         environmentLocalDirectionToWorld(localDirection, push.environmentRotationRadians),
         float3(0.0, 1.0, 0.0));
-    sample.radiance = max(gEnvironmentMap.Load(int3(int2(x, y), 0)).rgb, float3(0.0, 0.0, 0.0)) *
+    sample.radiance = max(gEnvironmentMap.Load(int3(int2(texel), 0)).rgb, float3(0.0, 0.0, 0.0)) *
         max(push.environmentIntensity, 0.0);
     sample.pdfSolidAngle = texelProbability / texelSolidAngle;
     return max(sample.radiance.x, max(sample.radiance.y, sample.radiance.z)) > 0.0 && sample.pdfSolidAngle > 0.0;
@@ -598,19 +660,16 @@ float environmentPdfSolidAngle(float3 direction, ScenePathTracePush push)
     uint height = 1u;
     gEnvironmentMap.GetDimensions(width, height);
     uint textureTexelCount = width * height;
-    uint texelCount = min(max(push.environmentImportanceTexelCount, 1u), max(textureTexelCount, 1u));
-    if (width == 0u || height == 0u || texelCount == 0u) {
+    if (width == 0u || height == 0u || textureTexelCount == 0u) {
         return 0.0;
     }
 
     float2 uv = environmentUvFromDirection(direction, push.environmentRotationRadians);
     uint2 texel = min(uint2(uv * float2(width, height)), uint2(width - 1u, height - 1u));
-    uint texelIndex = texel.y * width + texel.x;
-    if (texelIndex >= texelCount) {
-        return 0.0;
+    float texelProbability = environmentImportanceTexelProbability(texel);
+    if (texelProbability <= 0.0) {
+        texelProbability = 1.0 / float(textureTexelCount);
     }
-
-    float texelProbability = max(gEnvironmentImportanceAliasTable[texelIndex].texelProbability, 0.0);
     return texelProbability / environmentTexelSolidAngle(texel.y, width, height);
 }
 

@@ -503,7 +503,6 @@ struct GPUDrivenPreviewGpuParams {
     uint32_t shadingPadding0 = 0;
     uint32_t shadingPadding1 = 0;
     uint32_t shadingPadding2 = 0;
-    float environmentSH[9][4] = {};
 };
 
 struct GPUDrivenPreviewUserPush {
@@ -530,7 +529,7 @@ struct GPUDrivenPreviewUserPush {
     uint32_t materialBuffer = 0;
     uint32_t materialTextureImageBase = 0;
     uint32_t environmentImage = 0;
-    uint32_t padding = 0;
+    uint32_t environmentSHBuffer = 0;
 };
 
 static_assert(sizeof(GPUDrivenPreviewGpuVertex) == 64);
@@ -538,7 +537,7 @@ static_assert(sizeof(GPUDrivenPreviewGpuTextureInfo) == 48);
 static_assert(sizeof(GPUDrivenPreviewGpuMaterial) == 544);
 static_assert(sizeof(GPUDrivenPreviewGpuMeshlet) == 96);
 static_assert(sizeof(GPUDrivenPreviewGpuInstance) == 32);
-static_assert(sizeof(GPUDrivenPreviewGpuParams) == 480);
+static_assert(sizeof(GPUDrivenPreviewGpuParams) == 336);
 static_assert(sizeof(GPUDrivenPreviewUserPush) == 96);
 
 struct SceneMaterialVisualizationPush {
@@ -582,7 +581,7 @@ struct ScenePathTracePush {
     float environmentRotationRadians = 0.0f;
     uint32_t environmentMode = kScenePathTraceEnvironmentModeProcedural;
     uint32_t environmentVisible = 1;
-    uint32_t environmentImportanceTexelCount = 1;
+    uint32_t padding0 = 0;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
 };

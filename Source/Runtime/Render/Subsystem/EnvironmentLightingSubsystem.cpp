@@ -1,12 +1,14 @@
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/GAPI/SceneRtx.h"
+#include "Runtime/Render/SlangCompiler.h"
 
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
-#include <cmath>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -26,156 +28,33 @@ std::filesystem::path resolvedEnvironmentPath(const std::filesystem::path& path)
     return std::filesystem::path(PROJECT_SOURCE_DIR) / path;
 }
 
-float environmentTexelWeight(const float* rgba, uint32_t y, uint32_t height)
-{
-    constexpr float kPi = 3.14159265358979323846f;
-    const float r = std::isfinite(rgba[0]) ? std::max(rgba[0], 0.0f) : 0.0f;
-    const float g = std::isfinite(rgba[1]) ? std::max(rgba[1], 0.0f) : 0.0f;
-    const float b = std::isfinite(rgba[2]) ? std::max(rgba[2], 0.0f) : 0.0f;
-    const float luminance = r * 0.2126f + g * 0.7152f + b * 0.0722f;
-    const float theta = (static_cast<float>(y) + 0.5f) *
-        (kPi / static_cast<float>(std::max(height, 1u)));
-    return luminance * std::max(std::sin(theta), 0.0f);
-}
-
-std::vector<EnvironmentAliasEntry> buildAliasTable(
-    std::span<const float> pixels,
-    uint32_t width,
-    uint32_t height)
-{
-    const uint64_t texelCount64 = static_cast<uint64_t>(width) * height;
-    if (pixels.size() < texelCount64 * 4ull ||
-        texelCount64 == 0 ||
-        texelCount64 > std::numeric_limits<uint32_t>::max()) {
-        return {EnvironmentAliasEntry{}};
-    }
-
-    const uint32_t texelCount = static_cast<uint32_t>(texelCount64);
-    std::vector<EnvironmentAliasEntry> table(texelCount);
-    std::vector<double> weights(texelCount, 0.0);
-    double totalWeight = 0.0;
-    for (uint32_t index = 0; index < texelCount; ++index) {
-        const uint32_t y = index / width;
-        const float weight = environmentTexelWeight(&pixels[static_cast<size_t>(index) * 4u], y, height);
-        weights[index] = weight;
-        totalWeight += weight;
-    }
-
-    std::vector<double> scaled(texelCount, 1.0);
-    if (totalWeight > 0.0 && std::isfinite(totalWeight)) {
-        for (uint32_t index = 0; index < texelCount; ++index) {
-            const double probability = weights[index] / totalWeight;
-            table[index].texelProbability = static_cast<float>(probability);
-            scaled[index] = probability * texelCount;
-        }
-    } else {
-        for (EnvironmentAliasEntry& entry : table) {
-            entry.texelProbability = 1.0f / static_cast<float>(texelCount);
-        }
-    }
-
-    std::vector<uint32_t> small;
-    std::vector<uint32_t> large;
-    small.reserve(texelCount);
-    large.reserve(texelCount);
-    for (uint32_t index = 0; index < texelCount; ++index) {
-        table[index].aliasIndex = index;
-        (scaled[index] < 1.0 ? small : large).push_back(index);
-    }
-    while (!small.empty() && !large.empty()) {
-        const uint32_t smallIndex = small.back();
-        small.pop_back();
-        const uint32_t largeIndex = large.back();
-        table[smallIndex].probability = static_cast<float>(std::clamp(scaled[smallIndex], 0.0, 1.0));
-        table[smallIndex].aliasIndex = largeIndex;
-        scaled[largeIndex] = scaled[largeIndex] + scaled[smallIndex] - 1.0;
-        if (scaled[largeIndex] < 1.0) {
-            large.pop_back();
-            small.push_back(largeIndex);
-        }
-    }
-    for (uint32_t index : large) {
-        table[index].probability = 1.0f;
-        table[index].aliasIndex = index;
-    }
-    for (uint32_t index : small) {
-        table[index].probability = 1.0f;
-        table[index].aliasIndex = index;
-    }
-    return table;
-}
-
-EnvironmentSphericalHarmonics computeEnvironmentSH(
-    std::span<const float> pixels,
-    uint32_t width,
-    uint32_t height)
-{
-    EnvironmentSphericalHarmonics coefficients{};
-    if (pixels.size() < static_cast<size_t>(width) * height * 4u || width == 0 || height == 0) {
-        return coefficients;
-    }
-
-    constexpr uint32_t kMaxSampleWidth = 256;
-    constexpr uint32_t kMaxSampleHeight = 128;
-    constexpr float kPi = 3.14159265358979323846f;
-    const uint32_t sampleWidth = std::min(width, kMaxSampleWidth);
-    const uint32_t sampleHeight = std::min(height, kMaxSampleHeight);
-    const float deltaPhi = 2.0f * kPi / static_cast<float>(sampleWidth);
-    const float deltaTheta = kPi / static_cast<float>(sampleHeight);
-
-    for (uint32_t sampleY = 0; sampleY < sampleHeight; ++sampleY) {
-        const float v = (static_cast<float>(sampleY) + 0.5f) / sampleHeight;
-        const float theta = v * kPi;
-        const float sineTheta = std::sin(theta);
-        const float directionY = std::cos(theta);
-        const uint32_t sourceY = std::min(static_cast<uint32_t>(v * height), height - 1u);
-        const float solidAngle = sineTheta * deltaPhi * deltaTheta;
-        for (uint32_t sampleX = 0; sampleX < sampleWidth; ++sampleX) {
-            const float u = (static_cast<float>(sampleX) + 0.5f) / sampleWidth;
-            const float phi = (u - 0.5f) * 2.0f * kPi;
-            const float directionX = std::cos(phi) * sineTheta;
-            const float directionZ = std::sin(phi) * sineTheta;
-            const uint32_t sourceX = std::min(static_cast<uint32_t>(u * width), width - 1u);
-            const size_t pixelIndex = (static_cast<size_t>(sourceY) * width + sourceX) * 4u;
-            const std::array<float, 3> radiance{
-                std::max(pixels[pixelIndex], 0.0f),
-                std::max(pixels[pixelIndex + 1u], 0.0f),
-                std::max(pixels[pixelIndex + 2u], 0.0f),
-            };
-            const std::array<float, 9> basis{
-                0.282095f,
-                0.488603f * directionY,
-                0.488603f * directionZ,
-                0.488603f * directionX,
-                1.092548f * directionX * directionY,
-                1.092548f * directionY * directionZ,
-                0.315392f * (3.0f * directionZ * directionZ - 1.0f),
-                1.092548f * directionX * directionZ,
-                0.546274f * (directionX * directionX - directionY * directionY),
-            };
-            for (size_t coefficient = 0; coefficient < coefficients.size(); ++coefficient) {
-                for (size_t channel = 0; channel < radiance.size(); ++channel) {
-                    coefficients[coefficient][channel] +=
-                        radiance[channel] * basis[coefficient] * solidAngle;
-                }
-            }
-        }
-    }
-    return coefficients;
-}
-
 struct EnvironmentUploadResources {
     std::unique_ptr<Buffer> radiance;
-    std::unique_ptr<Buffer> importance;
+    std::unique_ptr<Buffer> sphericalHarmonicsPartials;
 };
+
+constexpr uint32_t kEnvironmentSHCoefficientCount = 9;
+constexpr uint32_t kEnvironmentSHThreadCount = 128;
+constexpr uint32_t kEnvironmentSHMaxDispatchWidth = 65535;
+
+struct EnvironmentLightingPrecomputePush {
+    uint32_t mode = 0;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t partialCount = 1;
+    uint32_t dispatchWidth = 1;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+};
+
+static_assert(sizeof(EnvironmentLightingPrecomputePush) == 32);
 
 } // namespace
 
 struct EnvironmentLightingSubsystem::DecodedEnvironment {
     uint64_t generation = 0;
     std::vector<float> pixels;
-    std::vector<EnvironmentAliasEntry> importance;
-    EnvironmentSphericalHarmonics sphericalHarmonics{};
     uint32_t width = 1;
     uint32_t height = 1;
     bool mapAvailable = false;
@@ -187,13 +66,127 @@ struct EnvironmentLightingSubsystem::DecodeJob {
     std::future<DecodedEnvironment> future;
 };
 
+struct EnvironmentLightingSubsystem::GpuPrecompute {
+    SceneRayQueryProgram program;
+
+    Result initialize(Device& device, std::string& log)
+    {
+        ShaderCompileResult compileResult;
+        Result result = compileSlangShaderToSpirv(
+            SlangShaderDesc{
+                .moduleName = "EnvironmentLightingPrecompute",
+                .entryPointName = "environmentLightingPrecomputeMain",
+                .searchPath = PROJECT_SOURCE_DIR "/Shaders",
+            },
+            compileResult);
+        if (!result) {
+            log = "EnvironmentLightingSubsystem failed to compile GPU SH precompute";
+            if (!compileResult.diagnostics.empty()) {
+                log += ": ";
+                log += compileResult.diagnostics;
+            }
+            return result;
+        }
+        const std::array bindings{
+            SceneRayQueryBindingDesc{
+                .binding = 0,
+                .kind = SceneRayQueryBindingKind::SampledImage,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 1,
+                .kind = SceneRayQueryBindingKind::StorageBuffer,
+            },
+            SceneRayQueryBindingDesc{
+                .binding = 2,
+                .kind = SceneRayQueryBindingKind::StorageBuffer,
+            },
+        };
+        return program.initialize(
+            device,
+            SceneRayQueryProgramDesc{
+                .spirv = compileResult.spirv.data(),
+                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+                .pushConstantSize = sizeof(EnvironmentLightingPrecomputePush),
+                .bindings = bindings.data(),
+                .bindingCount = static_cast<uint32_t>(bindings.size()),
+                .debugName = "EnvironmentLightingPrecompute",
+                .descriptorSetCount = 2,
+            },
+            log);
+    }
+
+    Result build(
+        CommandBuffer& commandBuffer,
+        TextureView& radianceView,
+        Buffer& partials,
+        Buffer& coefficients,
+        uint32_t width,
+        uint32_t height)
+    {
+        const uint64_t texelCount = static_cast<uint64_t>(width) * height;
+        const uint32_t partialCount = static_cast<uint32_t>(
+            (texelCount + kEnvironmentSHThreadCount - 1u) / kEnvironmentSHThreadCount);
+        const uint32_t dispatchWidth = std::min(partialCount, kEnvironmentSHMaxDispatchWidth);
+        const uint32_t dispatchHeight =
+            (partialCount + dispatchWidth - 1u) / dispatchWidth;
+        TextureView* const radianceViews[] = {&radianceView};
+        const std::array bindings{
+            SceneRayQueryDispatchBinding{
+                .binding = 0,
+                .textureViews = radianceViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(radianceViews)),
+            },
+            SceneRayQueryDispatchBinding{.binding = 1, .buffer = &partials},
+            SceneRayQueryDispatchBinding{.binding = 2, .buffer = &coefficients},
+        };
+        EnvironmentLightingPrecomputePush push{
+            .width = width,
+            .height = height,
+            .partialCount = partialCount,
+            .dispatchWidth = dispatchWidth,
+        };
+        Result result = program.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = bindings.data(),
+            .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = dispatchWidth,
+            .groupCountY = dispatchHeight,
+            .groupCountZ = 1,
+            .descriptorSetIndex = 0,
+        });
+        if (!result) {
+            return result;
+        }
+        BufferBarrierDesc partialsBarrier{
+            .buffer = &partials,
+            .before = ResourceState::General,
+            .after = ResourceState::General,
+            .offset = 0,
+            .size = partials.desc().size,
+        };
+        commandBuffer.barrier(BarrierDesc{.buffers = &partialsBarrier, .bufferCount = 1});
+        push.mode = 1;
+        return program.dispatch(SceneRayQueryDispatchDesc{
+            .commandBuffer = &commandBuffer,
+            .bindings = bindings.data(),
+            .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = kEnvironmentSHCoefficientCount,
+            .groupCountY = 1,
+            .groupCountZ = 1,
+            .descriptorSetIndex = 1,
+        });
+    }
+};
+
 struct EnvironmentLightingSubsystem::Resources {
     std::unique_ptr<Texture> radiance;
     std::unique_ptr<TextureView> radianceView;
-    std::unique_ptr<Buffer> importanceBuffer;
     ImportancePdfTexture pdf;
-    std::vector<EnvironmentAliasEntry> cpuImportance;
-    EnvironmentSphericalHarmonics sphericalHarmonics{};
+    std::unique_ptr<Buffer> sphericalHarmonicsBuffer;
     uint32_t width = 1;
     uint32_t height = 1;
     bool mapAvailable = false;
@@ -213,7 +206,12 @@ Result EnvironmentLightingSubsystem::initialize(
     desc_.maxDecodeJobs = std::max(desc_.maxDecodeJobs, 1u);
     const DeviceCapabilities& capabilities = context.device.capabilities();
     if (capabilities.rayTracingAccelerationStructure && capabilities.rayQuery) {
-        return pdfCompute_.initialize(context.device, log);
+        Result result = pdfCompute_.initialize(context.device, log);
+        if (!result) {
+            return result;
+        }
+        gpuPrecompute_ = std::make_unique<GpuPrecompute>();
+        return gpuPrecompute_->initialize(context.device, log);
     }
     return {};
 }
@@ -260,7 +258,6 @@ void EnvironmentLightingSubsystem::requestEnvironment(
         auto decoded = std::make_unique<DecodedEnvironment>();
         decoded->generation = generation;
         decoded->pixels = {0.0f, 0.0f, 0.0f, 1.0f};
-        decoded->importance = {EnvironmentAliasEntry{}};
         readyDecode_ = std::move(decoded);
         return;
     }
@@ -269,7 +266,6 @@ void EnvironmentLightingSubsystem::requestEnvironment(
         auto placeholder = std::make_unique<DecodedEnvironment>();
         placeholder->generation = generation;
         placeholder->pixels = {0.0f, 0.0f, 0.0f, 1.0f};
-        placeholder->importance = {EnvironmentAliasEntry{}};
         placeholder->placeholder = true;
         readyDecode_ = std::move(placeholder);
     }
@@ -320,8 +316,6 @@ void EnvironmentLightingSubsystem::startDecodeJob(
         decoded.height = static_cast<uint32_t>(height);
         decoded.pixels.assign(pixels, pixels + static_cast<size_t>(componentCount));
         stbi_image_free(pixels);
-        decoded.importance = buildAliasTable(decoded.pixels, decoded.width, decoded.height);
-        decoded.sphericalHarmonics = computeEnvironmentSH(decoded.pixels, decoded.width, decoded.height);
         decoded.mapAvailable = true;
         return decoded;
     });
@@ -360,7 +354,6 @@ void EnvironmentLightingSubsystem::pollDecodeJobs(RenderChangeBits& changes)
             snapshot_.error = decoded.error;
             if (resources_ == nullptr) {
                 decoded.pixels = {0.0f, 0.0f, 0.0f, 1.0f};
-                decoded.importance = {EnvironmentAliasEntry{}};
                 decoded.width = 1;
                 decoded.height = 1;
                 decoded.mapAvailable = false;
@@ -400,7 +393,10 @@ Result EnvironmentLightingSubsystem::publishDecoded(
     std::string& log)
 {
     readyDecode_.reset();
-    if (decoded.generation != requestedGeneration_ || device_ == nullptr) {
+    if (decoded.generation != requestedGeneration_ ||
+        device_ == nullptr ||
+        gpuPrecompute_ == nullptr ||
+        !pdfCompute_.valid()) {
         return {};
     }
     if (decoded.pixels.empty()) {
@@ -411,11 +407,6 @@ Result EnvironmentLightingSubsystem::publishDecoded(
     next->width = std::max(decoded.width, 1u);
     next->height = std::max(decoded.height, 1u);
     next->mapAvailable = decoded.mapAvailable;
-    next->cpuImportance = std::move(decoded.importance);
-    if (next->cpuImportance.empty()) {
-        next->cpuImportance = {EnvironmentAliasEntry{}};
-    }
-    next->sphericalHarmonics = decoded.sphericalHarmonics;
 
     Result result = device_->createTexture(
         TextureDesc{
@@ -449,30 +440,29 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         log = "EnvironmentLightingSubsystem createTextureView returned " + std::string(resultToString(result));
         return result ? makeError(Error::Failure) : result;
     }
-    const uint64_t importanceBytes = next->cpuImportance.size() * sizeof(EnvironmentAliasEntry);
+    constexpr uint64_t kSphericalHarmonicsBytes =
+        kEnvironmentSHCoefficientCount * sizeof(std::array<float, 4>);
     result = device_->createBuffer(
         BufferDesc{
-            .size = importanceBytes,
-            .structureStride = sizeof(EnvironmentAliasEntry),
-            .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
+            .size = kSphericalHarmonicsBytes,
+            .structureStride = sizeof(std::array<float, 4>),
+            .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
         },
-        next->importanceBuffer);
-    if (!result || next->importanceBuffer == nullptr) {
-        log = "EnvironmentLightingSubsystem createBuffer returned " + std::string(resultToString(result));
+        next->sphericalHarmonicsBuffer);
+    if (!result || next->sphericalHarmonicsBuffer == nullptr) {
+        log = "EnvironmentLightingSubsystem failed to create the GPU SH buffer";
         return result ? makeError(Error::Failure) : result;
     }
-    if (pdfCompute_.valid()) {
-        result = next->pdf.initialize(
-            *device_,
-            next->width,
-            next->height,
-            "EnvironmentLightingSubsystem PDF",
-            log);
-        if (!result) {
-            return result;
-        }
+    result = next->pdf.initialize(
+        *device_,
+        next->width,
+        next->height,
+        "EnvironmentLightingSubsystem PDF",
+        log);
+    if (!result) {
+        return result;
     }
 
     const uint64_t radianceBytes = decoded.pixels.size() * sizeof(float);
@@ -489,36 +479,31 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         log = "EnvironmentLightingSubsystem failed to create the radiance staging buffer";
         return result ? makeError(Error::Failure) : result;
     }
+    const uint64_t texelCount = static_cast<uint64_t>(next->width) * next->height;
+    const uint64_t partialCount =
+        (texelCount + kEnvironmentSHThreadCount - 1u) / kEnvironmentSHThreadCount;
+    const uint64_t partialBytes = partialCount * kSphericalHarmonicsBytes;
     result = device_->createBuffer(
         BufferDesc{
-            .size = importanceBytes,
-            .usage = BufferUsageBits::TransferSource,
-            .memoryLocation = MemoryLocation::HostUpload,
-            .queueAccess = QueueAccessBits::Graphics,
+            .size = partialBytes,
+            .structureStride = sizeof(std::array<float, 4>),
+            .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::Device,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
         },
-        staging->importance);
-    if (!result || staging->importance == nullptr) {
-        log = "EnvironmentLightingSubsystem failed to create the importance staging buffer";
+        staging->sphericalHarmonicsPartials);
+    if (!result || staging->sphericalHarmonicsPartials == nullptr) {
+        log = "EnvironmentLightingSubsystem failed to create the GPU SH partial buffer";
         return result ? makeError(Error::Failure) : result;
     }
     void* mappedRadiance = staging->radiance->map();
-    void* mappedImportance = staging->importance->map();
-    if (mappedRadiance == nullptr || mappedImportance == nullptr) {
-        if (mappedRadiance != nullptr) {
-            staging->radiance->unmap();
-        }
-        if (mappedImportance != nullptr) {
-            staging->importance->unmap();
-        }
-        log = "EnvironmentLightingSubsystem failed to map its staging buffers";
+    if (mappedRadiance == nullptr) {
+        log = "EnvironmentLightingSubsystem failed to map its radiance staging buffer";
         return makeError(Error::Failure);
     }
     std::memcpy(mappedRadiance, decoded.pixels.data(), static_cast<size_t>(radianceBytes));
-    std::memcpy(mappedImportance, next->cpuImportance.data(), static_cast<size_t>(importanceBytes));
     staging->radiance->flush(0, radianceBytes);
-    staging->importance->flush(0, importanceBytes);
     staging->radiance->unmap();
-    staging->importance->unmap();
 
     TextureBarrierDesc textureToTransfer{
         .texture = next->radiance.get(),
@@ -529,18 +514,29 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         .baseLayer = 0,
         .layerCount = 1,
     };
-    BufferBarrierDesc bufferToTransfer{
-        .buffer = next->importanceBuffer.get(),
-        .before = ResourceState::Undefined,
-        .after = ResourceState::TransferDestination,
-        .offset = 0,
-        .size = importanceBytes,
+    std::array precomputeToGeneral{
+        BufferBarrierDesc{
+            .buffer = staging->sphericalHarmonicsPartials.get(),
+            .before = ResourceState::Undefined,
+            .after = ResourceState::General,
+            .offset = 0,
+            .size = partialBytes,
+        },
+        BufferBarrierDesc{
+            .buffer = next->sphericalHarmonicsBuffer.get(),
+            .before = ResourceState::Undefined,
+            .after = ResourceState::General,
+            .offset = 0,
+            .size = kSphericalHarmonicsBytes,
+        },
     };
+    context.commandBuffer->barrier(BarrierDesc{
+        .buffers = precomputeToGeneral.data(),
+        .bufferCount = static_cast<uint32_t>(precomputeToGeneral.size()),
+    });
     context.commandBuffer->barrier(BarrierDesc{
         .textures = &textureToTransfer,
         .textureCount = 1,
-        .buffers = &bufferToTransfer,
-        .bufferCount = 1,
     });
 
     context.commandBuffer->copyBufferToTexture(BufferTextureCopyDesc{
@@ -550,12 +546,6 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         .height = next->height,
         .depth = 1,
     });
-    context.commandBuffer->copyBuffer(BufferCopyDesc{
-        .source = staging->importance.get(),
-        .destination = next->importanceBuffer.get(),
-        .size = importanceBytes,
-    });
-    context.host.retire(std::static_pointer_cast<void>(staging));
 
     TextureBarrierDesc textureToRead{
         .texture = next->radiance.get(),
@@ -566,29 +556,42 @@ Result EnvironmentLightingSubsystem::publishDecoded(
         .baseLayer = 0,
         .layerCount = 1,
     };
-    BufferBarrierDesc bufferToRead{
-        .buffer = next->importanceBuffer.get(),
-        .before = ResourceState::TransferDestination,
-        .after = ResourceState::ShaderRead,
-        .offset = 0,
-        .size = importanceBytes,
-    };
     context.commandBuffer->barrier(BarrierDesc{
         .textures = &textureToRead,
         .textureCount = 1,
-        .buffers = &bufferToRead,
+    });
+    result = pdfCompute_.buildEnvironment(
+        *context.commandBuffer,
+        *next->radianceView,
+        next->pdf);
+    if (!result) {
+        log = "EnvironmentLightingSubsystem failed to build the environment PDF on the GPU";
+        return result;
+    }
+    result = gpuPrecompute_->build(
+        *context.commandBuffer,
+        *next->radianceView,
+        *staging->sphericalHarmonicsPartials,
+        *next->sphericalHarmonicsBuffer,
+        next->width,
+        next->height);
+    if (!result) {
+        log = "EnvironmentLightingSubsystem failed to integrate environment SH on the GPU: ";
+        log += resultToString(result);
+        return result;
+    }
+    BufferBarrierDesc sphericalHarmonicsToRead{
+        .buffer = next->sphericalHarmonicsBuffer.get(),
+        .before = ResourceState::General,
+        .after = ResourceState::ShaderRead,
+        .offset = 0,
+        .size = kSphericalHarmonicsBytes,
+    };
+    context.commandBuffer->barrier(BarrierDesc{
+        .buffers = &sphericalHarmonicsToRead,
         .bufferCount = 1,
     });
-    if (pdfCompute_.valid()) {
-        result = pdfCompute_.buildEnvironment(
-            *context.commandBuffer,
-            *next->radianceView,
-            next->pdf);
-        if (!result) {
-            log = "EnvironmentLightingSubsystem failed to build the environment PDF";
-            return result;
-        }
-    }
+    context.host.retire(std::static_pointer_cast<void>(staging));
 
     if (resources_ != nullptr) {
         context.host.retire(std::static_pointer_cast<void>(resources_));
@@ -612,24 +615,18 @@ void EnvironmentLightingSubsystem::refreshSnapshot()
     snapshot_.resourceRevision = resourceRevision_;
     if (resources_ == nullptr) {
         snapshot_.radianceView = nullptr;
-        snapshot_.importanceBuffer = nullptr;
         snapshot_.pdfView = nullptr;
-        snapshot_.sphericalHarmonics = nullptr;
-        snapshot_.cpuImportanceTable = nullptr;
+        snapshot_.sphericalHarmonicsBuffer = nullptr;
         snapshot_.width = 1;
         snapshot_.height = 1;
-        snapshot_.importanceTexelCount = 1;
         snapshot_.mapAvailable = false;
         return;
     }
     snapshot_.radianceView = resources_->radianceView.get();
-    snapshot_.importanceBuffer = resources_->importanceBuffer.get();
     snapshot_.pdfView = resources_->pdf.valid() ? resources_->pdf.view() : nullptr;
-    snapshot_.sphericalHarmonics = &resources_->sphericalHarmonics;
-    snapshot_.cpuImportanceTable = &resources_->cpuImportance;
+    snapshot_.sphericalHarmonicsBuffer = resources_->sphericalHarmonicsBuffer.get();
     snapshot_.width = resources_->width;
     snapshot_.height = resources_->height;
-    snapshot_.importanceTexelCount = static_cast<uint32_t>(resources_->cpuImportance.size());
     snapshot_.mapAvailable = resources_->mapAvailable;
 }
 
@@ -646,6 +643,7 @@ void EnvironmentLightingSubsystem::shutdown()
     readyDecode_.reset();
     resources_.reset();
     pdfCompute_.clear();
+    gpuPrecompute_.reset();
     snapshot_ = {};
     device_ = nullptr;
     world_ = nullptr;

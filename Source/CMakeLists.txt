@@ -76,6 +76,11 @@ target_include_directories(MetallicRuntimeRender PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
+target_include_directories(MetallicRuntimeRender BEFORE PRIVATE
+    "${METALLIC_SLANG_ROOT}/include"
+)
+set_property(TARGET MetallicRuntimeRender PROPERTY NO_SYSTEM_FROM_IMPORTED ON)
+
 target_include_directories(MetallicRuntimeRender SYSTEM PRIVATE
     "${CMAKE_SOURCE_DIR}/External/openpbr-bsdf"
     "${CMAKE_SOURCE_DIR}/External/stb"

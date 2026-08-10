@@ -37,7 +37,7 @@ struct GPUDrivenPreviewPush
     uint materialBuffer;
     uint materialTextureImageBase;
     uint environmentImage;
-    uint padding;
+    uint environmentSHBuffer;
 };
 
 struct GPUDrivenPreviewVertex
@@ -122,7 +122,6 @@ struct GPUDrivenPreviewParams
     uint shadingPadding0;
     uint shadingPadding1;
     uint shadingPadding2;
-    float4 environmentSH[9];
 };
 
 struct CameraData

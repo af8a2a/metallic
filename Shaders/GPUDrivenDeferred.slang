@@ -136,7 +136,7 @@ struct GPUDrivenPreviewPush
     uint materialBuffer;
     uint materialTextureImageBase;
     uint environmentImage;
-    uint padding;
+    uint environmentSHBuffer;
 };
 
 struct GPUDrivenPreviewVertex
@@ -242,7 +242,6 @@ struct GPUDrivenPreviewParams
     uint shadingPadding0;
     uint shadingPadding1;
     uint shadingPadding2;
-    float4 environmentSH[9];
 };
 
 float3 safeNormalize(float3 value, float3 fallback)
@@ -481,7 +480,10 @@ float3 environmentRadiance(float3 direction, GPUDrivenPreviewParams params, GPUD
         float3(0.0)) * params.environmentIntensity;
 }
 
-float3 environmentSHRadiance(float3 direction, GPUDrivenPreviewParams params)
+float3 environmentSHRadiance(
+    float3 direction,
+    GPUDrivenPreviewParams params,
+    GPUDrivenPreviewPush push)
 {
     float sine = sin(params.environmentRotationRadians);
     float cosine = cos(params.environmentRotationRadians);
@@ -504,9 +506,14 @@ float3 environmentSHRadiance(float3 direction, GPUDrivenPreviewParams params)
         1.092548 * x * z,
         0.546274 * (x * x - y * y),
     };
+    DescriptorHandle<StructuredBuffer<float4>> coefficientsHandle =
+        DescriptorHandle<StructuredBuffer<float4>>(uint2(
+            push.bufferShaderIndexBase + push.environmentSHBuffer,
+            0));
+    StructuredBuffer<float4> coefficients = coefficientsHandle;
     float3 radiance = float3(0.0);
     for (uint coefficientIndex = 0u; coefficientIndex < 9u; ++coefficientIndex) {
-        radiance += params.environmentSH[coefficientIndex].xyz * basis[coefficientIndex];
+        radiance += coefficients[coefficientIndex].xyz * basis[coefficientIndex];
     }
     return max(radiance, float3(0.0)) * params.environmentIntensity;
 }
@@ -754,7 +761,7 @@ void gpuDrivenPreviewDeferredMain(
             normal);
         OpenPBR_DiffuseSpecular bsdf = openpbr_eval(prepared, lightDirection);
         float3 incidentRadiance = params.environmentMode == kEnvironmentModeMap ?
-            environmentSHRadiance(lightDirection, params) :
+            environmentSHRadiance(lightDirection, params, push) :
             environmentRadiance(lightDirection, params, push);
         reflectedEnvironment +=
             max(openpbr_get_sum_of_diffuse_specular(bsdf), float3(0.0)) *

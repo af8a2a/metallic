@@ -63,7 +63,7 @@ static constexpr OpenPBRVec3 kOpenPBRLtc[] = {
 
 constexpr uint32_t kOpenPBRLut2DBinding = 11;
 constexpr uint32_t kOpenPBRLut3DBinding = 12;
-constexpr uint32_t kEnvironmentImportanceAliasTableBinding = 13;
+constexpr uint32_t kEnvironmentImportancePdfBinding = 13;
 constexpr uint32_t kDlssRrAlbedoBinding = 14;
 constexpr uint32_t kDlssRrSpecularAlbedoBinding = 15;
 constexpr uint32_t kDlssRrNormalRoughnessBinding = 16;
@@ -719,8 +719,8 @@ public:
                 .kind = SceneRayQueryBindingKind::SampledImage,
             },
             SceneRayQueryBindingDesc{
-                .binding = kEnvironmentImportanceAliasTableBinding,
-                .kind = SceneRayQueryBindingKind::StorageBuffer,
+                .binding = kEnvironmentImportancePdfBinding,
+                .kind = SceneRayQueryBindingKind::SampledImage,
             },
         };
         if (useOpenPBR) {
@@ -840,8 +840,9 @@ public:
         TextureHandle color = context.outputTexture("color");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         TextureView* environmentTextureView = environment.radianceView;
-        Buffer* environmentImportanceBuffer = environment.importanceBuffer;
+        TextureView* environmentImportancePdfView = environment.pdfView;
         TextureView* const environmentTextureViews[] = {environmentTextureView};
+        TextureView* const environmentImportancePdfViews[] = {environmentImportancePdfView};
         const bool useOpenPBR = useOpenPBRBsdf(properties());
         const bool exportGuides = exportDenoiserGuides(properties());
         TextureHandle albedo = exportGuides ? context.outputTexture("albedo") : TextureHandle{};
@@ -856,7 +857,7 @@ public:
             !sceneResources_.valid() ||
             materialTextureViews[0] == nullptr ||
             environmentTextureView == nullptr ||
-            environmentImportanceBuffer == nullptr ||
+            environmentImportancePdfView == nullptr ||
             (useOpenPBR && !openPBRLuts_.valid()) ||
             (exportGuides &&
                 (!validTexture(albedo) ||
@@ -878,7 +879,6 @@ public:
             environment.mapAvailable,
             push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
-        push.environmentImportanceTexelCount = environment.importanceTexelCount;
         const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
         const bool previousCameraValid =
             hasPreviousCamera_ &&
@@ -961,8 +961,9 @@ public:
                 .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
             },
             SceneRayQueryDispatchBinding{
-                .binding = kEnvironmentImportanceAliasTableBinding,
-                .buffer = environmentImportanceBuffer,
+                .binding = kEnvironmentImportancePdfBinding,
+                .textureViews = environmentImportancePdfViews,
+                .textureViewCount = static_cast<uint32_t>(std::size(environmentImportancePdfViews)),
             },
         };
         if (useOpenPBR) {
