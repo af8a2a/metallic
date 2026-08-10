@@ -17,9 +17,219 @@
 namespace metallic::scene {
 namespace {
 
-constexpr int kSceneDocumentVersion = 2;
+constexpr int kSceneDocumentVersion = 3;
 constexpr int kOldestSceneDocumentVersion = 1;
 constexpr std::string_view kSceneDocumentSuffix = ".metallic_scene.json";
+
+bool nearlyEqual(double lhs, double rhs)
+{
+    constexpr double kEpsilon = 0.000000001;
+    return std::isfinite(lhs) && std::isfinite(rhs) && std::abs(lhs - rhs) <= kEpsilon;
+}
+
+bool cameraPropertiesNearlyEqualForDocument(
+    const CameraProperties& lhs,
+    const CameraProperties& rhs)
+{
+    return lhs.type == rhs.type &&
+        nearlyEqual(lhs.yfov, rhs.yfov) &&
+        nearlyEqual(lhs.aspectRatio, rhs.aspectRatio) &&
+        nearlyEqual(lhs.xmag, rhs.xmag) &&
+        nearlyEqual(lhs.ymag, rhs.ymag) &&
+        nearlyEqual(lhs.znear, rhs.znear) &&
+        nearlyEqual(lhs.zfar, rhs.zfar);
+}
+
+bool lightPropertiesNearlyEqualForDocument(
+    const LightProperties& lhs,
+    const LightProperties& rhs)
+{
+    constexpr float kColorEpsilon = 0.000001f;
+    return lhs.type == rhs.type &&
+        std::abs(lhs.color.x - rhs.color.x) <= kColorEpsilon &&
+        std::abs(lhs.color.y - rhs.color.y) <= kColorEpsilon &&
+        std::abs(lhs.color.z - rhs.color.z) <= kColorEpsilon &&
+        nearlyEqual(lhs.intensity, rhs.intensity) &&
+        nearlyEqual(lhs.range, rhs.range) &&
+        nearlyEqual(lhs.innerConeAngle, rhs.innerConeAngle) &&
+        nearlyEqual(lhs.outerConeAngle, rhs.outerConeAngle);
+}
+
+const char* cameraTypeDocumentName(CameraType type)
+{
+    return type == CameraType::Orthographic ? "orthographic" : "perspective";
+}
+
+bool readOptionalFiniteNumber(
+    const nlohmann::json& object,
+    const char* key,
+    double& value,
+    std::string& reason)
+{
+    if (!object.contains(key)) {
+        return true;
+    }
+    if (!object[key].is_number()) {
+        reason = std::string(key) + " must be a number";
+        return false;
+    }
+    value = object[key].get<double>();
+    if (!std::isfinite(value)) {
+        reason = std::string(key) + " must be finite";
+        return false;
+    }
+    return true;
+}
+
+bool readOptionalColor(
+    const nlohmann::json& object,
+    float3& color,
+    std::string& reason)
+{
+    if (!object.contains("color")) {
+        return true;
+    }
+    const nlohmann::json& value = object["color"];
+    if (!value.is_array() || value.size() != 3u) {
+        reason = "color must be a three-number array";
+        return false;
+    }
+    for (size_t index = 0; index < 3; ++index) {
+        if (!value[index].is_number()) {
+            reason = "color must be a three-number array";
+            return false;
+        }
+    }
+    color = float3(
+        value[0].get<float>(),
+        value[1].get<float>(),
+        value[2].get<float>());
+    if (!std::isfinite(color.x) || !std::isfinite(color.y) || !std::isfinite(color.z)) {
+        reason = "color must be finite";
+        return false;
+    }
+    return true;
+}
+
+bool parseCameraProperties(
+    const nlohmann::json& value,
+    const CameraProperties& current,
+    CameraProperties& properties,
+    std::string& reason)
+{
+    if (!value.is_object()) {
+        reason = "camera override must be an object";
+        return false;
+    }
+    if (!value.contains("type") || !value["type"].is_string() ||
+        value["type"].get<std::string>() != cameraTypeDocumentName(current.type)) {
+        reason = "camera type no longer matches the source";
+        return false;
+    }
+    properties = current;
+    if (!readOptionalFiniteNumber(value, "znear", properties.znear, reason) ||
+        !readOptionalFiniteNumber(value, "zfar", properties.zfar, reason)) {
+        return false;
+    }
+    if (current.type == CameraType::Perspective) {
+        if (value.contains("xmag") || value.contains("ymag")) {
+            reason = "perspective cameras do not support orthographic magnification";
+            return false;
+        }
+        return readOptionalFiniteNumber(value, "yfov", properties.yfov, reason) &&
+            readOptionalFiniteNumber(value, "aspectRatio", properties.aspectRatio, reason);
+    }
+    if (value.contains("yfov") || value.contains("aspectRatio")) {
+        reason = "orthographic cameras do not support perspective fields";
+        return false;
+    }
+    return readOptionalFiniteNumber(value, "xmag", properties.xmag, reason) &&
+        readOptionalFiniteNumber(value, "ymag", properties.ymag, reason);
+}
+
+bool parseLightProperties(
+    const nlohmann::json& value,
+    const LightProperties& current,
+    LightProperties& properties,
+    std::string& reason)
+{
+    if (!value.is_object()) {
+        reason = "light override must be an object";
+        return false;
+    }
+    if (!value.contains("type") || !value["type"].is_string() ||
+        value["type"].get<std::string>() != current.type) {
+        reason = "light type no longer matches the source";
+        return false;
+    }
+    properties = current;
+    if (!readOptionalColor(value, properties.color, reason) ||
+        !readOptionalFiniteNumber(value, "intensity", properties.intensity, reason)) {
+        return false;
+    }
+    if (current.type == "directional") {
+        if (value.contains("range") || value.contains("innerConeAngle") ||
+            value.contains("outerConeAngle")) {
+            reason = "directional lights do not support range or cone angles";
+            return false;
+        }
+        return true;
+    }
+    if (!readOptionalFiniteNumber(value, "range", properties.range, reason)) {
+        return false;
+    }
+    if (current.type == "spot") {
+        return readOptionalFiniteNumber(
+                   value,
+                   "innerConeAngle",
+                   properties.innerConeAngle,
+                   reason) &&
+            readOptionalFiniteNumber(
+                   value,
+                   "outerConeAngle",
+                   properties.outerConeAngle,
+                   reason);
+    }
+    if (value.contains("innerConeAngle") || value.contains("outerConeAngle")) {
+        reason = "non-spot lights do not support cone angles";
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json serializeCameraProperties(const CameraProperties& properties)
+{
+    nlohmann::json value{
+        {"type", cameraTypeDocumentName(properties.type)},
+        {"znear", properties.znear},
+        {"zfar", properties.zfar},
+    };
+    if (properties.type == CameraType::Perspective) {
+        value["yfov"] = properties.yfov;
+        value["aspectRatio"] = properties.aspectRatio;
+    } else {
+        value["xmag"] = properties.xmag;
+        value["ymag"] = properties.ymag;
+    }
+    return value;
+}
+
+nlohmann::json serializeLightProperties(const LightProperties& properties)
+{
+    nlohmann::json value{
+        {"type", properties.type},
+        {"color", {properties.color.x, properties.color.y, properties.color.z}},
+        {"intensity", properties.intensity},
+    };
+    if (properties.type != "directional") {
+        value["range"] = properties.range;
+    }
+    if (properties.type == "spot") {
+        value["innerConeAngle"] = properties.innerConeAngle;
+        value["outerConeAngle"] = properties.outerConeAngle;
+    }
+    return value;
+}
 
 bool isSceneDocumentPath(const std::filesystem::path& path)
 {
@@ -273,6 +483,32 @@ bool SceneDocument::setObjectWorldMatrix(SceneEntity object, const float4x4& wor
     return true;
 }
 
+bool SceneDocument::setObjectCameraProperties(
+    SceneEntity object,
+    const CameraProperties& properties)
+{
+    const ConstSceneObject sceneObject = sceneGraph().object(object);
+    if (!sceneObject || !sceneObject.hasComponent<SourceNodeComponent>() ||
+        !Scene::setObjectCameraProperties(object, properties)) {
+        return false;
+    }
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::setObjectLightProperties(
+    SceneEntity object,
+    const LightProperties& properties)
+{
+    const ConstSceneObject sceneObject = sceneGraph().object(object);
+    if (!sceneObject || !sceneObject.hasComponent<SourceNodeComponent>() ||
+        !Scene::setObjectLightProperties(object, properties)) {
+        return false;
+    }
+    dirty_ = true;
+    return true;
+}
+
 bool SceneDocument::setEnvironment(EnvironmentSettings environment)
 {
     environment.intensity = std::isfinite(environment.intensity)
@@ -385,32 +621,106 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                 "Skipped node " + std::to_string(nodeIndex) + " because its sourceName changed.");
             continue;
         }
-        if (!overrideValue.contains("localMatrix") ||
-            !overrideValue["localMatrix"].is_array() ||
-            overrideValue["localMatrix"].size() != 16) {
-            appendWarning(
-                documentWarning_,
-                "Skipped node " + std::to_string(nodeIndex) + " because localMatrix is invalid.");
-            continue;
+        bool recognizedOverride = false;
+        if (overrideValue.contains("localMatrix")) {
+            recognizedOverride = true;
+            const nlohmann::json& matrixValue = overrideValue["localMatrix"];
+            if (!matrixValue.is_array() || matrixValue.size() != 16) {
+                appendWarning(
+                    documentWarning_,
+                    "Skipped node " + std::to_string(nodeIndex) +
+                        " localMatrix because it is invalid.");
+            } else {
+                float4x4 matrix;
+                bool validMatrix = true;
+                for (size_t index = 0; index < 16; ++index) {
+                    if (!matrixValue[index].is_number()) {
+                        validMatrix = false;
+                        break;
+                    }
+                    matrix.a[index] = matrixValue[index].get<float>();
+                    validMatrix = validMatrix && std::isfinite(matrix.a[index]);
+                }
+                if (!validMatrix) {
+                    appendWarning(
+                        documentWarning_,
+                        "Skipped node " + std::to_string(nodeIndex) +
+                            " localMatrix because it is not finite.");
+                } else {
+                    Scene::setNodeLocalMatrix(nodeIndex, matrix);
+                }
+            }
         }
 
-        float4x4 matrix;
-        bool validMatrix = true;
-        for (size_t index = 0; index < 16; ++index) {
-            if (!overrideValue["localMatrix"][index].is_number()) {
-                validMatrix = false;
-                break;
+        const ConstSceneObject object = objectForNode(nodeIndex);
+        if (version >= 3 && overrideValue.contains("camera")) {
+            recognizedOverride = true;
+            const CameraComponent* camera = object.tryGetComponent<CameraComponent>();
+            if (camera == nullptr) {
+                appendWarning(
+                    documentWarning_,
+                    "Skipped node " + std::to_string(nodeIndex) +
+                        " camera override because the source node has no camera.");
+            } else {
+                CameraProperties properties;
+                std::string reason;
+                if (!parseCameraProperties(
+                        overrideValue["camera"],
+                        camera->properties,
+                        properties,
+                        reason)) {
+                    appendWarning(
+                        documentWarning_,
+                        "Skipped node " + std::to_string(nodeIndex) +
+                            " camera override: " + reason + '.');
+                } else if (!cameraPropertiesNearlyEqualForDocument(
+                               camera->properties,
+                               properties) &&
+                    !Scene::setObjectCameraProperties(object.entity(), properties)) {
+                    appendWarning(
+                        documentWarning_,
+                        "Skipped node " + std::to_string(nodeIndex) +
+                            " camera override because its values are unsupported.");
+                }
             }
-            matrix.a[index] = overrideValue["localMatrix"][index].get<float>();
-            validMatrix = validMatrix && std::isfinite(matrix.a[index]);
         }
-        if (!validMatrix) {
+        if (version >= 3 && overrideValue.contains("light")) {
+            recognizedOverride = true;
+            const LightComponent* light = object.tryGetComponent<LightComponent>();
+            if (light == nullptr) {
+                appendWarning(
+                    documentWarning_,
+                    "Skipped node " + std::to_string(nodeIndex) +
+                        " light override because the source node has no light.");
+            } else {
+                LightProperties properties;
+                std::string reason;
+                if (!parseLightProperties(
+                        overrideValue["light"],
+                        light->properties,
+                        properties,
+                        reason)) {
+                    appendWarning(
+                        documentWarning_,
+                        "Skipped node " + std::to_string(nodeIndex) +
+                            " light override: " + reason + '.');
+                } else if (!lightPropertiesNearlyEqualForDocument(
+                               light->properties,
+                               properties) &&
+                    !Scene::setObjectLightProperties(object.entity(), properties)) {
+                    appendWarning(
+                        documentWarning_,
+                        "Skipped node " + std::to_string(nodeIndex) +
+                            " light override because its values are unsupported.");
+                }
+            }
+        }
+        if (!recognizedOverride) {
             appendWarning(
                 documentWarning_,
-                "Skipped node " + std::to_string(nodeIndex) + " because localMatrix is not finite.");
-            continue;
+                "Ignored node " + std::to_string(nodeIndex) +
+                    " override because it has no supported properties.");
         }
-        Scene::setNodeLocalMatrix(nodeIndex, matrix);
     }
     sidecarLoaded_ = true;
     return true;
@@ -436,18 +746,38 @@ bool SceneDocument::save(std::string& message)
     nlohmann::json nodeOverrides = nlohmann::json::array();
     for (size_t nodeIndex = 0; nodeIndex < nodes().size(); ++nodeIndex) {
         const SceneNode& node = nodes()[nodeIndex];
-        if (matrixNearlyEqual(node.localMatrix, node.authoredLocalMatrix)) {
-            continue;
-        }
-        nlohmann::json matrix = nlohmann::json::array();
-        for (const float value : node.localMatrix.a) {
-            matrix.push_back(value);
-        }
-        nodeOverrides.push_back({
+        nlohmann::json nodeOverride{
             {"nodeIndex", nodeIndex},
             {"sourceName", node.name},
-            {"localMatrix", std::move(matrix)},
-        });
+        };
+        bool hasOverride = false;
+        if (!matrixNearlyEqual(node.localMatrix, node.authoredLocalMatrix)) {
+            nlohmann::json matrix = nlohmann::json::array();
+            for (const float value : node.localMatrix.a) {
+                matrix.push_back(value);
+            }
+            nodeOverride["localMatrix"] = std::move(matrix);
+            hasOverride = true;
+        }
+
+        const ConstSceneObject object = objectForNode(static_cast<int32_t>(nodeIndex));
+        if (const CameraComponent* camera = object.tryGetComponent<CameraComponent>();
+            camera != nullptr && !cameraPropertiesNearlyEqualForDocument(
+                camera->properties,
+                camera->authoredProperties)) {
+            nodeOverride["camera"] = serializeCameraProperties(camera->properties);
+            hasOverride = true;
+        }
+        if (const LightComponent* light = object.tryGetComponent<LightComponent>();
+            light != nullptr && !lightPropertiesNearlyEqualForDocument(
+                light->properties,
+                light->authoredProperties)) {
+            nodeOverride["light"] = serializeLightProperties(light->properties);
+            hasOverride = true;
+        }
+        if (hasOverride) {
+            nodeOverrides.push_back(std::move(nodeOverride));
+        }
     }
 
     std::filesystem::path serializedEnvironmentPath = environment_.path;

@@ -26,11 +26,6 @@ struct Bounds {
     float radius() const;
 };
 
-enum class CameraType : uint8_t {
-    Perspective,
-    Orthographic,
-};
-
 struct LoadResult {
     bool success = false;
     std::filesystem::path filename;
@@ -247,6 +242,7 @@ struct RenderCamera {
     double ymag = 0.0;
     double znear = 0.0;
     double zfar = 0.0;
+    uint64_t contentRevision = 0;
     bool fallback = false;
 };
 
@@ -262,6 +258,7 @@ struct RenderLight {
     double innerConeAngle = 0.0;
     double outerConeAngle = 0.7853981633974483;
     float4x4 worldMatrix = float4x4::Identity();
+    uint64_t contentRevision = 0;
 };
 
 class Scene {
@@ -285,6 +282,8 @@ public:
     void clear();
     bool setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix);
     bool setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix);
+    bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
+    bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
     bool setImageDecodeResult(
         size_t imageIndex,
@@ -312,6 +311,7 @@ public:
     const std::vector<RenderCamera>& cameras() const { return cameras_; }
     const std::vector<RenderLight>& lights() const { return lights_; }
     uint64_t transformRevision() const { return sceneGraph_.transformRevision(); }
+    uint64_t contentRevision() const { return sceneGraph_.contentRevision(); }
 
 private:
     bool loadInternal(

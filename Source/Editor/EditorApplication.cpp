@@ -2545,6 +2545,7 @@ void EditorApplication::drawDockspace()
 
     if (!ImGui::GetIO().WantTextInput) {
         const bool transformEditing = gizmoWasUsing_ || inspectorTransformEditing_ ||
+            inspectorPropertyEditing_ ||
             ImGuizmo::IsUsingAny();
         if (!transformEditing) {
             if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) {
@@ -2623,11 +2624,11 @@ void EditorApplication::drawDockspace()
         }
 
         if (ImGui::BeginMenu("Edit")) {
-            if (ImGui::MenuItem("Undo Transform", "Ctrl+Z", false, transformCommandCursor_ > 0)) {
+            if (ImGui::MenuItem("Undo Scene Edit", "Ctrl+Z", false, transformCommandCursor_ > 0)) {
                 undoTransform();
             }
             if (ImGui::MenuItem(
-                    "Redo Transform",
+                    "Redo Scene Edit",
                     "Ctrl+Y",
                     false,
                     transformCommandCursor_ < transformCommands_.size())) {
@@ -2960,7 +2961,8 @@ void EditorApplication::drawSceneListTab()
         ImGui::BeginChild("CamerasScrollRegion", ImVec2(0, 120.0f * mainScale_), false, ImGuiWindowFlags_HorizontalScrollbar);
         for (size_t index = 0; index < scene_.cameras().size(); ++index) {
             const scene::RenderCamera& camera = scene_.cameras()[index];
-            const std::string label = "[" + std::to_string(index) + "] " + camera.name;
+            const std::string label = "[" + std::to_string(index) + "] " + camera.name +
+                " (" + scene::cameraTypeName(camera.type) + ")";
             drawSceneListSelectable(label.c_str(), static_cast<int32_t>(index), static_cast<int32_t>(SceneSelectionType::Camera));
         }
         ImGui::EndChild();
@@ -3007,6 +3009,12 @@ void EditorApplication::drawSceneListTab()
 void EditorApplication::drawInspectorPanel()
 {
     const scene::ConstSceneObject currentObject = selectedSceneObject();
+    if (inspectorPropertyEditing_ &&
+        (!inspectorOpen_ || !currentObject ||
+            inspectorPropertyEditingObject_ != currentObject.entity() ||
+            inspectorPropertyEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision())) {
+        finishActiveInspectorPropertyTransaction();
+    }
     if (inspectorTransformEditing_ &&
         (!inspectorOpen_ || !currentObject ||
             inspectorEditingObject_ != currentObject.entity() ||
@@ -3031,6 +3039,7 @@ void EditorApplication::drawInspectorPanel()
         return;
     }
     if (!ImGui::Begin("Inspector", &inspectorOpen_)) {
+        finishActiveInspectorPropertyTransaction();
         if (inspectorTransformEditing_) {
             const scene::ConstSceneObject editedObject =
                 inspectorEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
@@ -3070,6 +3079,22 @@ void EditorApplication::drawInspectorPanel()
     if (selectedObject) {
         drawSelectedNodeTransformInspector();
         ImGui::Separator();
+
+        bool drewComponentInspector = false;
+        if (selectedObject.hasComponent<scene::CameraComponent>()) {
+            drawSelectedCameraComponentInspector();
+            drewComponentInspector = true;
+        }
+        if (selectedObject.hasComponent<scene::LightComponent>()) {
+            if (drewComponentInspector) {
+                ImGui::Separator();
+            }
+            drawSelectedLightComponentInspector();
+            drewComponentInspector = true;
+        }
+        if (drewComponentInspector) {
+            ImGui::Separator();
+        }
     }
 
     switch (sceneSelection_.type) {
@@ -3157,37 +3182,34 @@ void EditorApplication::drawInspectorPanel()
     }
     case SceneSelectionType::Camera: {
         if (static_cast<size_t>(sceneSelection_.index) >= scene_.cameras().size()) {
+            ImGui::TextDisabled("Camera render snapshot is unavailable; properties are read-only.");
             break;
         }
         const scene::RenderCamera& camera = scene_.cameras()[static_cast<size_t>(sceneSelection_.index)];
-        ImGui::Text("Camera: %s", camera.name.c_str());
-        ImGui::Separator();
-        ImGui::Text("Type: %s", scene::cameraTypeName(camera.type));
+        ImGui::TextUnformatted("Derived camera pose (read-only)");
         ImGui::Text("Eye: %s", scene::formatVec3(camera.eye).c_str());
         ImGui::Text("Center: %s", scene::formatVec3(camera.center).c_str());
         ImGui::Text("Up: %s", scene::formatVec3(camera.up).c_str());
-        ImGui::Text("Z Near: %.6f", camera.znear);
-        ImGui::Text("Z Far: %.6f", camera.zfar);
-        if (camera.type == scene::CameraType::Perspective) {
-            ImGui::Text("Y FOV: %.3f rad", camera.yfov);
-            ImGui::Text("Aspect: %.6f", camera.aspectRatio);
-        } else {
-            ImGui::Text("X Mag: %.6f", camera.xmag);
-            ImGui::Text("Y Mag: %.6f", camera.ymag);
+        if (!selectedObject || !selectedObject.hasComponent<scene::CameraComponent>()) {
+            ImGui::TextDisabled("The render snapshot has no editable CameraComponent owner.");
         }
         break;
     }
     case SceneSelectionType::Light: {
         if (static_cast<size_t>(sceneSelection_.index) >= scene_.lights().size()) {
+            ImGui::TextDisabled("Light render snapshot is unavailable; properties are read-only.");
             break;
         }
         const scene::RenderLight& light = scene_.lights()[static_cast<size_t>(sceneSelection_.index)];
-        ImGui::Text("Light: %s", light.name.c_str());
-        ImGui::Separator();
-        ImGui::Text("Type: %s", light.type.c_str());
-        ImGui::Text("Color: %s", scene::formatVec3(light.color).c_str());
-        ImGui::Text("Intensity: %.3f", light.intensity);
-        ImGui::Text("Range: %.3f", light.range);
+        ImGui::TextUnformatted("Derived light pose (read-only)");
+        ImGui::Text(
+            "World position: %.3f, %.3f, %.3f",
+            light.worldMatrix.a03,
+            light.worldMatrix.a13,
+            light.worldMatrix.a23);
+        if (!selectedObject || !selectedObject.hasComponent<scene::LightComponent>()) {
+            ImGui::TextDisabled("The render snapshot has no editable LightComponent owner.");
+        }
         break;
     }
     case SceneSelectionType::Texture: {
@@ -3784,6 +3806,17 @@ void EditorApplication::notifySceneTransformChanged()
     }
 }
 
+void EditorApplication::notifyScenePropertiesChanged()
+{
+    renderWorld_.notifySceneChanged();
+    historyResources_.invalidateAll();
+    historyFrameIndex_ = 0;
+    if (graphExecutor_ == nullptr || !graphExecutor_->compiled()) {
+        viewportPreviewValid_ = false;
+    }
+    viewportPreviewNeedsRender_ = true;
+}
+
 bool EditorApplication::setSelectedObjectWorldMatrix(
     const float4x4& worldMatrix,
     std::string& reason)
@@ -3826,16 +3859,33 @@ bool EditorApplication::setSelectedObjectWorldMatrix(
     return true;
 }
 
-void EditorApplication::pushTransformCommand(
+void EditorApplication::pushSceneEditCommand(
     scene::SceneEntity object,
     uint64_t sceneLifetimeRevision,
-    const float4x4& before,
-    const float4x4& after)
+    SceneEditValue before,
+    SceneEditValue after)
 {
+    bool valuesEqual = false;
+    if (const float4x4* beforeMatrix = std::get_if<float4x4>(&before)) {
+        const float4x4* afterMatrix = std::get_if<float4x4>(&after);
+        valuesEqual = afterMatrix != nullptr && scene::matrixNearlyEqual(*beforeMatrix, *afterMatrix);
+    } else if (const scene::CameraProperties* beforeCamera =
+                   std::get_if<scene::CameraProperties>(&before)) {
+        const scene::CameraProperties* afterCamera =
+            std::get_if<scene::CameraProperties>(&after);
+        valuesEqual = afterCamera != nullptr &&
+            scene::cameraPropertiesNearlyEqual(*beforeCamera, *afterCamera);
+    } else if (const scene::LightProperties* beforeLight =
+                   std::get_if<scene::LightProperties>(&before)) {
+        const scene::LightProperties* afterLight =
+            std::get_if<scene::LightProperties>(&after);
+        valuesEqual = afterLight != nullptr &&
+            scene::lightPropertiesNearlyEqual(*beforeLight, *afterLight);
+    }
     if (object == scene::kNullSceneEntity ||
         sceneLifetimeRevision != scene_.sceneGraph().lifetimeRevision() ||
         !scene_.sceneGraph().object(object) ||
-        scene::matrixNearlyEqual(before, after)) {
+        valuesEqual) {
         updateSceneDirtyState();
         return;
     }
@@ -3847,11 +3897,11 @@ void EditorApplication::pushTransformCommand(
             savedTransformCommandCursor_ = -1;
         }
     }
-    transformCommands_.push_back(TransformCommand{
+    transformCommands_.push_back(SceneEditCommand{
         .object = object,
         .sceneLifetimeRevision = sceneLifetimeRevision,
-        .before = before,
-        .after = after,
+        .before = std::move(before),
+        .after = std::move(after),
     });
     ++transformCommandCursor_;
     constexpr size_t kTransformCommandCapacity = 256;
@@ -3865,6 +3915,101 @@ void EditorApplication::pushTransformCommand(
         }
     }
     updateSceneDirtyState();
+}
+
+void EditorApplication::pushTransformCommand(
+    scene::SceneEntity object,
+    uint64_t sceneLifetimeRevision,
+    const float4x4& before,
+    const float4x4& after)
+{
+    pushSceneEditCommand(object, sceneLifetimeRevision, before, after);
+}
+
+void EditorApplication::beginInspectorPropertyEdit(
+    scene::SceneEntity object,
+    uint64_t sceneLifetimeRevision,
+    SceneEditValue before)
+{
+    if (inspectorPropertyEditing_ &&
+        (inspectorPropertyEditingObject_ != object ||
+            inspectorPropertyEditingSceneLifetime_ != sceneLifetimeRevision ||
+            inspectorPropertyStartValue_.index() != before.index())) {
+        finishActiveInspectorPropertyTransaction();
+    }
+    if (inspectorPropertyEditing_) {
+        return;
+    }
+    inspectorPropertyEditing_ = true;
+    inspectorPropertyEditingObject_ = object;
+    inspectorPropertyEditingSceneLifetime_ = sceneLifetimeRevision;
+    inspectorPropertyStartValue_ = std::move(before);
+}
+
+void EditorApplication::finishActiveInspectorPropertyTransaction()
+{
+    if (!inspectorPropertyEditing_) {
+        return;
+    }
+
+    SceneEditValue after = inspectorPropertyStartValue_;
+    const scene::ConstSceneObject object =
+        inspectorPropertyEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
+        ? scene_.sceneGraph().object(inspectorPropertyEditingObject_)
+        : scene::ConstSceneObject{};
+    bool hasAfter = false;
+    if (std::holds_alternative<scene::CameraProperties>(inspectorPropertyStartValue_)) {
+        if (const scene::CameraComponent* camera =
+                object.tryGetComponent<scene::CameraComponent>()) {
+            after = camera->properties;
+            hasAfter = true;
+        }
+    } else if (std::holds_alternative<scene::LightProperties>(inspectorPropertyStartValue_)) {
+        if (const scene::LightComponent* light =
+                object.tryGetComponent<scene::LightComponent>()) {
+            after = light->properties;
+            hasAfter = true;
+        }
+    }
+
+    if (hasAfter) {
+        pushSceneEditCommand(
+            inspectorPropertyEditingObject_,
+            inspectorPropertyEditingSceneLifetime_,
+            inspectorPropertyStartValue_,
+            std::move(after));
+    }
+    inspectorPropertyEditing_ = false;
+    inspectorPropertyEditingObject_ = scene::kNullSceneEntity;
+    inspectorPropertyEditingSceneLifetime_ = 0;
+    inspectorPropertyStartValue_ = float4x4::Identity();
+}
+
+bool EditorApplication::applySceneEditValue(
+    scene::SceneEntity object,
+    const SceneEditValue& value)
+{
+    if (const float4x4* matrix = std::get_if<float4x4>(&value)) {
+        if (!scene_.setObjectLocalMatrix(object, *matrix)) {
+            return false;
+        }
+        notifySceneTransformChanged();
+        return true;
+    }
+    if (const scene::CameraProperties* camera =
+            std::get_if<scene::CameraProperties>(&value)) {
+        if (!scene_.setObjectCameraProperties(object, *camera)) {
+            return false;
+        }
+        notifyScenePropertiesChanged();
+        return true;
+    }
+    const scene::LightProperties* light = std::get_if<scene::LightProperties>(&value);
+    if (light == nullptr || !scene_.setObjectLightProperties(object, *light)) {
+        return false;
+    }
+    notifyScenePropertiesChanged();
+    return true;
 }
 
 void EditorApplication::updateSceneDirtyState()
@@ -3916,6 +4061,7 @@ void EditorApplication::finishActiveTransformTransactions()
         inspectorEditingObject_ = scene::kNullSceneEntity;
         inspectorEditingSceneLifetime_ = 0;
     }
+    finishActiveInspectorPropertyTransaction();
 }
 
 void EditorApplication::undoTransform()
@@ -3925,14 +4071,13 @@ void EditorApplication::undoTransform()
         return;
     }
     --transformCommandCursor_;
-    const TransformCommand& command = transformCommands_[transformCommandCursor_];
+    const SceneEditCommand& command = transformCommands_[transformCommandCursor_];
     if (command.sceneLifetimeRevision != scene_.sceneGraph().lifetimeRevision() ||
-        !scene_.setObjectLocalMatrix(command.object, command.before)) {
+        !applySceneEditValue(command.object, command.before)) {
         ++transformCommandCursor_;
         return;
     }
     updateSceneDirtyState();
-    notifySceneTransformChanged();
 }
 
 void EditorApplication::redoTransform()
@@ -3941,14 +4086,13 @@ void EditorApplication::redoTransform()
     if (transformCommandCursor_ >= transformCommands_.size()) {
         return;
     }
-    const TransformCommand& command = transformCommands_[transformCommandCursor_];
+    const SceneEditCommand& command = transformCommands_[transformCommandCursor_];
     if (command.sceneLifetimeRevision != scene_.sceneGraph().lifetimeRevision() ||
-        !scene_.setObjectLocalMatrix(command.object, command.after)) {
+        !applySceneEditValue(command.object, command.after)) {
         return;
     }
     ++transformCommandCursor_;
     updateSceneDirtyState();
-    notifySceneTransformChanged();
 }
 
 void EditorApplication::resetTransformHistory()
@@ -3962,6 +4106,10 @@ void EditorApplication::resetTransformHistory()
     inspectorTransformEditing_ = false;
     inspectorEditingObject_ = scene::kNullSceneEntity;
     inspectorEditingSceneLifetime_ = 0;
+    inspectorPropertyEditing_ = false;
+    inspectorPropertyEditingObject_ = scene::kNullSceneEntity;
+    inspectorPropertyEditingSceneLifetime_ = 0;
+    inspectorPropertyStartValue_ = float4x4::Identity();
     sceneNonTransformDirty_ = false;
     environmentEditBaselineValid_ = false;
     environmentEditBaselineUserEdited_ = false;
@@ -4141,6 +4289,10 @@ void EditorApplication::drawSelectedNodeTransformInspector()
         ImGui::TextDisabled("Runtime-only object transforms are not serialized and are read-only.");
         return;
     }
+    if (inspectorPropertyEditing_) {
+        ImGui::TextDisabled("Finish the component property edit before using transform controls.");
+        return;
+    }
     if (gizmoWasUsing_ || ImGuizmo::IsUsingAny()) {
         ImGui::TextDisabled("Finish the viewport gizmo edit before using Inspector controls.");
         return;
@@ -4276,6 +4428,368 @@ void EditorApplication::drawSelectedNodeTransformInspector()
     }
 }
 
+void EditorApplication::drawSelectedCameraComponentInspector()
+{
+    const scene::ConstSceneObject object = selectedSceneObject();
+    const scene::CameraComponent* component =
+        object.tryGetComponent<scene::CameraComponent>();
+    if (component == nullptr) {
+        ImGui::TextDisabled("CameraComponent is unavailable; properties are read-only.");
+        return;
+    }
+
+    const scene::RenderCamera* snapshot = nullptr;
+    if (component->renderCameraIndex >= 0 &&
+        static_cast<size_t>(component->renderCameraIndex) < scene_.cameras().size()) {
+        const scene::RenderCamera& candidate =
+            scene_.cameras()[static_cast<size_t>(component->renderCameraIndex)];
+        if (candidate.object == object.entity()) {
+            snapshot = &candidate;
+        }
+    }
+
+    const scene::CameraProperties& properties = component->properties;
+    const bool supportedType = properties.type == scene::CameraType::Perspective ||
+        properties.type == scene::CameraType::Orthographic;
+    const char* readOnlyReason = nullptr;
+    if (object.hasComponent<scene::GeneratedComponent>()) {
+        readOnlyReason = "Generated cameras are runtime-owned and cannot be saved.";
+    } else if (!object.hasComponent<scene::SourceNodeComponent>()) {
+        readOnlyReason = "Runtime-only cameras are read-only until document serialization is available.";
+    } else if (!scene::validCameraProperties(properties)) {
+        readOnlyReason = "The source camera contains values unsupported by the editor and is read-only.";
+    } else if (snapshot == nullptr) {
+        readOnlyReason = "Camera render snapshot mapping is unavailable; properties are read-only.";
+    } else if (!supportedType) {
+        readOnlyReason = "This camera projection type is not supported by the Inspector.";
+    } else if (gizmoWasUsing_ || inspectorTransformEditing_ || ImGuizmo::IsUsingAny()) {
+        readOnlyReason = "Finish the active transform edit before changing camera properties.";
+    } else if (inspectorPropertyEditing_ &&
+        (inspectorPropertyEditingObject_ != object.entity() ||
+            inspectorPropertyEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision() ||
+            !std::holds_alternative<scene::CameraProperties>(inspectorPropertyStartValue_))) {
+        readOnlyReason = "Finish the active component edit before changing camera properties.";
+    }
+
+    ImGui::PushID("CameraComponentInspector");
+    ImGui::TextUnformatted("CameraComponent");
+    if (snapshot != nullptr) {
+        ImGui::Text("Name: %s", snapshot->name.c_str());
+    }
+    ImGui::Text("Type: %s (read-only)", scene::cameraTypeName(properties.type));
+    if (readOnlyReason != nullptr) {
+        ImGui::TextDisabled("%s", readOnlyReason);
+    }
+
+    scene::CameraProperties edited = properties;
+    bool changed = false;
+    bool editDeactivated = false;
+    const auto trackEditItem = [this, &object, &properties, &editDeactivated]() {
+        if (ImGui::IsItemActivated()) {
+            beginInspectorPropertyEdit(
+                object.entity(),
+                scene_.sceneGraph().lifetimeRevision(),
+                properties);
+        }
+        editDeactivated = ImGui::IsItemDeactivated() || editDeactivated;
+    };
+    constexpr double kRadiansToDegrees = 57.2957795130823208768;
+    constexpr double kDegreesToRadians = 0.01745329251994329577;
+    constexpr float kSmallStep = 0.01f;
+    constexpr float kAngleStep = 0.1f;
+    constexpr double kPositiveMinimum = 0.000001;
+    constexpr double kMaximumValue = 1000000000000.0;
+    constexpr double kMinimumFovDegrees = 1.0;
+    constexpr double kMaximumFovDegrees = 179.0;
+    constexpr double kMaximumAspectRatio = 100.0;
+    constexpr double kAutomaticValue = 0.0;
+
+    ImGui::BeginDisabled(readOnlyReason != nullptr);
+    if (properties.type == scene::CameraType::Perspective) {
+        double fovDegrees = edited.yfov * kRadiansToDegrees;
+        if (ImGui::DragScalar(
+                "Vertical FOV (deg)",
+                ImGuiDataType_Double,
+                &fovDegrees,
+                kAngleStep,
+                &kMinimumFovDegrees,
+                &kMaximumFovDegrees,
+                "%.3f",
+                ImGuiSliderFlags_AlwaysClamp)) {
+            edited.yfov = fovDegrees * kDegreesToRadians;
+            changed = true;
+        }
+        trackEditItem();
+        const bool aspectChanged = ImGui::DragScalar(
+            "Aspect Ratio",
+            ImGuiDataType_Double,
+            &edited.aspectRatio,
+            kSmallStep,
+            &kAutomaticValue,
+            &kMaximumAspectRatio,
+            "%.6f",
+            ImGuiSliderFlags_AlwaysClamp);
+        trackEditItem();
+        changed = aspectChanged || changed;
+        if (edited.aspectRatio == 0.0) {
+            ImGui::TextDisabled("Aspect: auto (uses the render target aspect)");
+        } else {
+            ImGui::TextDisabled("Set Aspect Ratio to 0 for auto.");
+        }
+    } else if (properties.type == scene::CameraType::Orthographic) {
+        const bool xmagChanged = ImGui::DragScalar(
+            "X Magnification",
+            ImGuiDataType_Double,
+            &edited.xmag,
+            kSmallStep,
+            &kPositiveMinimum,
+            &kMaximumValue,
+            "%.6f",
+            ImGuiSliderFlags_AlwaysClamp);
+        trackEditItem();
+        changed = xmagChanged || changed;
+        const bool ymagChanged = ImGui::DragScalar(
+            "Y Magnification",
+            ImGuiDataType_Double,
+            &edited.ymag,
+            kSmallStep,
+            &kPositiveMinimum,
+            &kMaximumValue,
+            "%.6f",
+            ImGuiSliderFlags_AlwaysClamp);
+        trackEditItem();
+        changed = ymagChanged || changed;
+    }
+
+    const double nearMinimum = properties.type == scene::CameraType::Perspective
+        ? kPositiveMinimum
+        : kAutomaticValue;
+    const bool nearChanged = ImGui::DragScalar(
+        "Z Near",
+        ImGuiDataType_Double,
+        &edited.znear,
+        kSmallStep,
+        &nearMinimum,
+        &kMaximumValue,
+        "%.6f",
+        ImGuiSliderFlags_AlwaysClamp);
+    trackEditItem();
+    changed = nearChanged || changed;
+    const double farMinimum = properties.type == scene::CameraType::Perspective
+        ? kAutomaticValue
+        : std::min(edited.znear + kPositiveMinimum, kMaximumValue);
+    const bool farChanged = ImGui::DragScalar(
+        "Z Far",
+        ImGuiDataType_Double,
+        &edited.zfar,
+        kSmallStep,
+        &farMinimum,
+        &kMaximumValue,
+        "%.6f",
+        ImGuiSliderFlags_AlwaysClamp);
+    trackEditItem();
+    changed = farChanged || changed;
+    if (properties.type == scene::CameraType::Perspective) {
+        if (edited.zfar == 0.0) {
+            ImGui::TextDisabled("Z Far: infinite");
+        } else {
+            ImGui::TextDisabled("Set Z Far to 0 for an infinite far plane.");
+        }
+    }
+    ImGui::EndDisabled();
+
+    if (changed) {
+        if (!inspectorPropertyEditing_) {
+            beginInspectorPropertyEdit(
+                object.entity(),
+                scene_.sceneGraph().lifetimeRevision(),
+                properties);
+        }
+        if (scene_.setObjectCameraProperties(object.entity(), edited)) {
+            notifyScenePropertiesChanged();
+            sceneStatus_ = "Updated CameraComponent properties.";
+        } else {
+            sceneStatus_ = "Camera property edit rejected; the previous values were preserved.";
+        }
+    }
+    if (editDeactivated) {
+        finishActiveInspectorPropertyTransaction();
+    }
+    ImGui::PopID();
+}
+
+void EditorApplication::drawSelectedLightComponentInspector()
+{
+    const scene::ConstSceneObject object = selectedSceneObject();
+    const scene::LightComponent* component =
+        object.tryGetComponent<scene::LightComponent>();
+    if (component == nullptr) {
+        ImGui::TextDisabled("LightComponent is unavailable; properties are read-only.");
+        return;
+    }
+
+    const scene::RenderLight* snapshot = nullptr;
+    if (component->renderLightIndex >= 0 &&
+        static_cast<size_t>(component->renderLightIndex) < scene_.lights().size()) {
+        const scene::RenderLight& candidate =
+            scene_.lights()[static_cast<size_t>(component->renderLightIndex)];
+        if (candidate.object == object.entity()) {
+            snapshot = &candidate;
+        }
+    }
+
+    const scene::LightProperties& properties = component->properties;
+    const bool directional = properties.type == "directional";
+    const bool point = properties.type == "point";
+    const bool spot = properties.type == "spot";
+    const bool supportedType = directional || point || spot;
+    const char* readOnlyReason = nullptr;
+    if (object.hasComponent<scene::GeneratedComponent>()) {
+        readOnlyReason = "Generated lights are runtime-owned and cannot be saved.";
+    } else if (!object.hasComponent<scene::SourceNodeComponent>()) {
+        readOnlyReason = "Runtime-only lights are read-only until document serialization is available.";
+    } else if (!scene::validLightProperties(properties)) {
+        readOnlyReason = "The source light contains values unsupported by the editor and is read-only.";
+    } else if (snapshot == nullptr) {
+        readOnlyReason = "Light render snapshot mapping is unavailable; properties are read-only.";
+    } else if (!supportedType) {
+        readOnlyReason = "This light type is not supported by the Inspector.";
+    } else if (gizmoWasUsing_ || inspectorTransformEditing_ || ImGuizmo::IsUsingAny()) {
+        readOnlyReason = "Finish the active transform edit before changing light properties.";
+    } else if (inspectorPropertyEditing_ &&
+        (inspectorPropertyEditingObject_ != object.entity() ||
+            inspectorPropertyEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision() ||
+            !std::holds_alternative<scene::LightProperties>(inspectorPropertyStartValue_))) {
+        readOnlyReason = "Finish the active component edit before changing light properties.";
+    }
+
+    ImGui::PushID("LightComponentInspector");
+    ImGui::TextUnformatted("LightComponent");
+    if (snapshot != nullptr) {
+        ImGui::Text("Name: %s", snapshot->name.c_str());
+    }
+    ImGui::Text("Type: %s (read-only)", properties.type.c_str());
+    if (readOnlyReason != nullptr) {
+        ImGui::TextDisabled("%s", readOnlyReason);
+    }
+
+    scene::LightProperties edited = properties;
+    bool changed = false;
+    bool editDeactivated = false;
+    const auto trackEditItem = [this, &object, &properties, &editDeactivated]() {
+        if (ImGui::IsItemActivated()) {
+            beginInspectorPropertyEdit(
+                object.entity(),
+                scene_.sceneGraph().lifetimeRevision(),
+                properties);
+        }
+        editDeactivated = ImGui::IsItemDeactivated() || editDeactivated;
+    };
+    float color[3] = {edited.color.x, edited.color.y, edited.color.z};
+    constexpr double kRadiansToDegrees = 57.2957795130823208768;
+    constexpr double kDegreesToRadians = 0.01745329251994329577;
+    constexpr float kSmallStep = 0.01f;
+    constexpr float kIntensityStep = 0.1f;
+    constexpr float kAngleStep = 0.1f;
+    constexpr double kMinimumValue = 0.0;
+    constexpr double kMaximumValue = 1000000000000.0;
+    constexpr double kMaximumConeDegrees = 90.0;
+
+    ImGui::BeginDisabled(readOnlyReason != nullptr);
+    if (ImGui::ColorEdit3("Color", color, ImGuiColorEditFlags_Float)) {
+        edited.color = float3(color[0], color[1], color[2]);
+        changed = true;
+    }
+    trackEditItem();
+    const bool intensityChanged = ImGui::DragScalar(
+        "Intensity",
+        ImGuiDataType_Double,
+        &edited.intensity,
+        kIntensityStep,
+        &kMinimumValue,
+        &kMaximumValue,
+        "%.3f",
+        ImGuiSliderFlags_AlwaysClamp);
+    trackEditItem();
+    changed = intensityChanged || changed;
+
+    if (point || spot) {
+        const bool rangeChanged = ImGui::DragScalar(
+            "Range",
+            ImGuiDataType_Double,
+            &edited.range,
+            kSmallStep,
+            &kMinimumValue,
+            &kMaximumValue,
+            "%.3f",
+            ImGuiSliderFlags_AlwaysClamp);
+        trackEditItem();
+        changed = rangeChanged || changed;
+        if (edited.range == 0.0) {
+            ImGui::TextDisabled("Range: unbounded");
+        } else {
+            ImGui::TextDisabled("Set Range to 0 for an unbounded light.");
+        }
+    } else if (directional) {
+        ImGui::TextDisabled("Range is not supported by directional lights.");
+    }
+
+    if (spot) {
+        double innerDegrees = edited.innerConeAngle * kRadiansToDegrees;
+        double outerDegrees = edited.outerConeAngle * kRadiansToDegrees;
+        if (ImGui::DragScalar(
+                "Inner Cone (deg)",
+                ImGuiDataType_Double,
+                &innerDegrees,
+                kAngleStep,
+                &kMinimumValue,
+                &kMaximumConeDegrees,
+                "%.3f",
+                ImGuiSliderFlags_AlwaysClamp)) {
+            edited.innerConeAngle = innerDegrees * kDegreesToRadians;
+            changed = true;
+        }
+        trackEditItem();
+        if (ImGui::DragScalar(
+                "Outer Cone (deg)",
+                ImGuiDataType_Double,
+                &outerDegrees,
+                kAngleStep,
+                &kMinimumValue,
+                &kMaximumConeDegrees,
+                "%.3f",
+                ImGuiSliderFlags_AlwaysClamp)) {
+            edited.outerConeAngle = outerDegrees * kDegreesToRadians;
+            changed = true;
+        }
+        trackEditItem();
+    } else if (point) {
+        ImGui::TextDisabled("Cone angles are not supported by point lights.");
+    } else if (directional) {
+        ImGui::TextDisabled("Cone angles are not supported by directional lights.");
+    }
+    ImGui::EndDisabled();
+
+    if (changed) {
+        if (!inspectorPropertyEditing_) {
+            beginInspectorPropertyEdit(
+                object.entity(),
+                scene_.sceneGraph().lifetimeRevision(),
+                properties);
+        }
+        if (scene_.setObjectLightProperties(object.entity(), edited)) {
+            notifyScenePropertiesChanged();
+            sceneStatus_ = "Updated LightComponent properties.";
+        } else {
+            sceneStatus_ = "Light property edit rejected; the previous values were preserved.";
+        }
+    }
+    if (editDeactivated) {
+        finishActiveInspectorPropertyTransaction();
+    }
+    ImGui::PopID();
+}
+
 void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
 {
     viewportGizmoCapturingMouse_ = false;
@@ -4310,7 +4824,8 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
             gizmoEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision())) {
         finishInterruptedTransaction();
     }
-    if (!viewportInteractionEnabled_ || inspectorTransformEditing_ || !object ||
+    if (!viewportInteractionEnabled_ || inspectorTransformEditing_ ||
+        inspectorPropertyEditing_ || !object ||
         object.hasComponent<scene::GeneratedComponent>() ||
         !object.hasComponent<scene::SourceNodeComponent>() || renderNode == nullptr) {
         finishInterruptedTransaction();
@@ -4664,7 +5179,8 @@ void EditorApplication::drawViewportPanel()
 {
     ImGui::Begin("Viewport");
 
-    const bool gizmoTransactionActive = inspectorTransformEditing_ || gizmoWasUsing_ ||
+    const bool gizmoTransactionActive = inspectorTransformEditing_ ||
+        inspectorPropertyEditing_ || gizmoWasUsing_ ||
         ImGuizmo::IsUsingAny();
     ImGui::BeginDisabled(gizmoTransactionActive);
     const auto drawToolButton = [this](const char* label, GizmoOperation operation) {
@@ -4818,6 +5334,7 @@ void EditorApplication::drawViewportPanel()
         ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
         (io.KeyAlt && ImGui::IsMouseDown(ImGuiMouseButton_Left));
     const bool transformEditing = gizmoWasUsing_ || inspectorTransformEditing_ ||
+        inspectorPropertyEditing_ ||
         viewportGizmoCapturingMouse_ || ImGuizmo::IsUsingAny();
     if (viewportHovered_ && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt &&
         !cameraGestureActive && !transformEditing) {

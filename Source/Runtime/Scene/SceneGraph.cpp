@@ -29,6 +29,57 @@ bool matricesNearlyEqual(const float4x4& lhs, const float4x4& rhs)
     return true;
 }
 
+bool propertyValuesNearlyEqual(double lhs, double rhs)
+{
+    if (!std::isfinite(lhs) || !std::isfinite(rhs)) {
+        return false;
+    }
+    constexpr double kEpsilon = 0.000001;
+    return std::abs(lhs - rhs) <=
+        kEpsilon * std::max({1.0, std::abs(lhs), std::abs(rhs)});
+}
+
+bool finiteColor(const float3& color)
+{
+    return std::isfinite(color.x) && std::isfinite(color.y) &&
+        std::isfinite(color.z);
+}
+
+bool validLightColor(const float3& color)
+{
+    return finiteColor(color) &&
+        color.x >= 0.0f && color.x <= 1.0f &&
+        color.y >= 0.0f && color.y <= 1.0f &&
+        color.z >= 0.0f && color.z <= 1.0f;
+}
+
+bool cameraUnsupportedPropertiesUnchanged(
+    const CameraProperties& current,
+    const CameraProperties& next)
+{
+    if (current.type == CameraType::Perspective) {
+        return current.xmag == next.xmag && current.ymag == next.ymag;
+    }
+    return current.yfov == next.yfov &&
+        current.aspectRatio == next.aspectRatio;
+}
+
+bool lightUnsupportedPropertiesUnchanged(
+    const LightProperties& current,
+    const LightProperties& next)
+{
+    if (current.type == "directional") {
+        return current.range == next.range &&
+            current.innerConeAngle == next.innerConeAngle &&
+            current.outerConeAngle == next.outerConeAngle;
+    }
+    if (current.type == "point") {
+        return current.innerConeAngle == next.innerConeAngle &&
+            current.outerConeAngle == next.outerConeAngle;
+    }
+    return current.type == "spot";
+}
+
 float affineDeterminant(const float4x4& matrix)
 {
     const float3 column0(matrix.a00, matrix.a10, matrix.a20);
@@ -106,6 +157,80 @@ uint64_t nextSceneGraphLifetimeRevision()
 
 } // namespace
 
+bool validCameraProperties(const CameraProperties& properties)
+{
+    if (!std::isfinite(properties.yfov) ||
+        !std::isfinite(properties.aspectRatio) ||
+        !std::isfinite(properties.xmag) ||
+        !std::isfinite(properties.ymag) ||
+        !std::isfinite(properties.znear) ||
+        !std::isfinite(properties.zfar)) {
+        return false;
+    }
+
+    constexpr double kPi = 3.14159265358979323846;
+    if (properties.type == CameraType::Perspective) {
+        return properties.yfov > 0.0 && properties.yfov < kPi &&
+            properties.aspectRatio >= 0.0 &&
+            properties.znear > 0.0 &&
+            (properties.zfar == 0.0 || properties.zfar > properties.znear);
+    }
+    if (properties.type == CameraType::Orthographic) {
+        return properties.xmag > 0.0 && properties.ymag > 0.0 &&
+            properties.znear >= 0.0 && properties.zfar > properties.znear;
+    }
+    return false;
+}
+
+bool validLightProperties(const LightProperties& properties)
+{
+    if (!validLightColor(properties.color) ||
+        !std::isfinite(properties.intensity) || properties.intensity < 0.0 ||
+        !std::isfinite(properties.range) ||
+        !std::isfinite(properties.innerConeAngle) ||
+        !std::isfinite(properties.outerConeAngle)) {
+        return false;
+    }
+    if (properties.type == "directional") {
+        return true;
+    }
+    if (properties.type == "point") {
+        return properties.range >= 0.0;
+    }
+    constexpr double kHalfPi = 1.57079632679489661923;
+    return properties.type == "spot" && properties.range >= 0.0 &&
+        properties.innerConeAngle >= 0.0 &&
+        properties.innerConeAngle < properties.outerConeAngle &&
+        properties.outerConeAngle <= kHalfPi;
+}
+
+bool cameraPropertiesNearlyEqual(
+    const CameraProperties& lhs,
+    const CameraProperties& rhs)
+{
+    return lhs.type == rhs.type &&
+        propertyValuesNearlyEqual(lhs.yfov, rhs.yfov) &&
+        propertyValuesNearlyEqual(lhs.aspectRatio, rhs.aspectRatio) &&
+        propertyValuesNearlyEqual(lhs.xmag, rhs.xmag) &&
+        propertyValuesNearlyEqual(lhs.ymag, rhs.ymag) &&
+        propertyValuesNearlyEqual(lhs.znear, rhs.znear) &&
+        propertyValuesNearlyEqual(lhs.zfar, rhs.zfar);
+}
+
+bool lightPropertiesNearlyEqual(
+    const LightProperties& lhs,
+    const LightProperties& rhs)
+{
+    return lhs.type == rhs.type &&
+        propertyValuesNearlyEqual(lhs.color.x, rhs.color.x) &&
+        propertyValuesNearlyEqual(lhs.color.y, rhs.color.y) &&
+        propertyValuesNearlyEqual(lhs.color.z, rhs.color.z) &&
+        propertyValuesNearlyEqual(lhs.intensity, rhs.intensity) &&
+        propertyValuesNearlyEqual(lhs.range, rhs.range) &&
+        propertyValuesNearlyEqual(lhs.innerConeAngle, rhs.innerConeAngle) &&
+        propertyValuesNearlyEqual(lhs.outerConeAngle, rhs.outerConeAngle);
+}
+
 SceneGraph::SceneGraph()
     : lifetimeRevision_(nextSceneGraphLifetimeRevision())
 {
@@ -116,6 +241,7 @@ SceneGraph::SceneGraph(SceneGraph&& other) noexcept
       roots_(std::move(other.roots_)),
       sourceNodes_(std::move(other.sourceNodes_)),
       transformRevision_(other.transformRevision_),
+      contentRevision_(other.contentRevision_),
       structuralRevision_(other.structuralRevision_),
       lifetimeRevision_(nextSceneGraphLifetimeRevision())
 {
@@ -125,6 +251,7 @@ SceneGraph::SceneGraph(SceneGraph&& other) noexcept
     other.roots_.clear();
     other.sourceNodes_.clear();
     other.transformRevision_ = 0;
+    other.contentRevision_ = 0;
     other.structuralRevision_ = 0;
 }
 
@@ -139,6 +266,7 @@ SceneGraph& SceneGraph::operator=(SceneGraph&& other) noexcept
     roots_ = std::move(other.roots_);
     sourceNodes_ = std::move(other.sourceNodes_);
     transformRevision_ = other.transformRevision_;
+    contentRevision_ = other.contentRevision_;
     structuralRevision_ = other.structuralRevision_;
     lifetimeRevision_ = nextSceneGraphLifetimeRevision();
 
@@ -146,6 +274,7 @@ SceneGraph& SceneGraph::operator=(SceneGraph&& other) noexcept
     other.roots_.clear();
     other.sourceNodes_.clear();
     other.transformRevision_ = 0;
+    other.contentRevision_ = 0;
     other.structuralRevision_ = 0;
     incrementRevision(other.objectEpoch_);
     other.lifetimeRevision_ = nextSceneGraphLifetimeRevision();
@@ -249,6 +378,7 @@ void SceneGraph::clear()
     roots_.clear();
     sourceNodes_.clear();
     transformRevision_ = 0;
+    contentRevision_ = 0;
     structuralRevision_ = 0;
 }
 
@@ -449,6 +579,48 @@ bool SceneGraph::setWorldMatrix(SceneEntity objectEntity, const float4x4& worldM
     return setLocalMatrix(objectEntity, localMatrix);
 }
 
+bool SceneGraph::setCameraProperties(
+    SceneEntity objectEntity,
+    const CameraProperties& properties)
+{
+    if (!registry_.valid(objectEntity) ||
+        registry_.all_of<GeneratedComponent>(objectEntity) ||
+        !validCameraProperties(properties)) {
+        return false;
+    }
+    CameraComponent* camera = registry_.try_get<CameraComponent>(objectEntity);
+    if (camera == nullptr || camera->renderCameraIndex < 0 ||
+        camera->properties.type != properties.type ||
+        !cameraUnsupportedPropertiesUnchanged(camera->properties, properties) ||
+        cameraPropertiesNearlyEqual(camera->properties, properties)) {
+        return false;
+    }
+    camera->properties = properties;
+    incrementRevision(contentRevision_);
+    return true;
+}
+
+bool SceneGraph::setLightProperties(
+    SceneEntity objectEntity,
+    const LightProperties& properties)
+{
+    if (!registry_.valid(objectEntity) ||
+        registry_.all_of<GeneratedComponent>(objectEntity) ||
+        !validLightProperties(properties)) {
+        return false;
+    }
+    LightComponent* light = registry_.try_get<LightComponent>(objectEntity);
+    if (light == nullptr || light->renderLightIndex < 0 ||
+        light->properties.type != properties.type ||
+        !lightUnsupportedPropertiesUnchanged(light->properties, properties) ||
+        lightPropertiesNearlyEqual(light->properties, properties)) {
+        return false;
+    }
+    light->properties = properties;
+    incrementRevision(contentRevision_);
+    return true;
+}
+
 bool SceneGraph::setVisible(SceneEntity objectEntity, bool visible)
 {
     if (!registry_.valid(objectEntity)) {
@@ -511,6 +683,7 @@ bool SceneGraph::updateTransforms()
 void SceneGraph::resetRevisions()
 {
     transformRevision_ = 0;
+    contentRevision_ = 0;
     structuralRevision_ = 0;
     for (const SceneEntity entity : registry_.view<TransformComponent>()) {
         registry_.get<TransformComponent>(entity).transformRevision = 0;

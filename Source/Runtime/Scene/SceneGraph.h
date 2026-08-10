@@ -38,6 +38,8 @@ public:
     bool setName(SceneEntity object, std::string name);
     bool setLocalMatrix(SceneEntity object, const float4x4& localMatrix);
     bool setWorldMatrix(SceneEntity object, const float4x4& worldMatrix);
+    bool setCameraProperties(SceneEntity object, const CameraProperties& properties);
+    bool setLightProperties(SceneEntity object, const LightProperties& properties);
     bool setVisible(SceneEntity object, bool visible);
     bool updateTransforms();
     void resetRevisions();
@@ -46,6 +48,7 @@ public:
     size_t sourceNodeCount() const { return sourceNodes_.size(); }
     const std::vector<SceneEntity>& roots() const { return roots_; }
     uint64_t transformRevision() const { return transformRevision_; }
+    uint64_t contentRevision() const { return contentRevision_; }
     uint64_t structuralRevision() const { return structuralRevision_; }
     uint64_t lifetimeRevision() const { return lifetimeRevision_; }
 
@@ -65,6 +68,7 @@ private:
     std::vector<SceneEntity> roots_;
     std::vector<SceneEntity> sourceNodes_;
     uint64_t transformRevision_ = 0;
+    uint64_t contentRevision_ = 0;
     uint64_t structuralRevision_ = 0;
     uint64_t objectEpoch_ = 1;
     uint64_t lifetimeRevision_ = 0;

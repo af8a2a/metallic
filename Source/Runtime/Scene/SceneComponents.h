@@ -13,6 +13,39 @@ namespace metallic::scene {
 using SceneEntity = entt::entity;
 inline constexpr SceneEntity kNullSceneEntity = entt::null;
 
+enum class CameraType : uint8_t {
+    Perspective,
+    Orthographic,
+};
+
+struct CameraProperties {
+    CameraType type = CameraType::Perspective;
+    double yfov = 0.0;
+    double aspectRatio = 0.0;
+    double xmag = 0.0;
+    double ymag = 0.0;
+    double znear = 0.0;
+    double zfar = 0.0;
+};
+
+struct LightProperties {
+    std::string type;
+    float3 color{1.0f, 1.0f, 1.0f};
+    double intensity = 1.0;
+    double range = 0.0;
+    double innerConeAngle = 0.0;
+    double outerConeAngle = 0.7853981633974483;
+};
+
+bool validCameraProperties(const CameraProperties& properties);
+bool validLightProperties(const LightProperties& properties);
+bool cameraPropertiesNearlyEqual(
+    const CameraProperties& lhs,
+    const CameraProperties& rhs);
+bool lightPropertiesNearlyEqual(
+    const LightProperties& lhs,
+    const LightProperties& rhs);
+
 struct TagComponent {
     std::string name;
 };
@@ -49,11 +82,15 @@ struct MeshComponent {
 struct CameraComponent {
     int32_t cameraIndex = -1;
     int32_t renderCameraIndex = -1;
+    CameraProperties authoredProperties;
+    CameraProperties properties;
 };
 
 struct LightComponent {
     int32_t lightIndex = -1;
     int32_t renderLightIndex = -1;
+    LightProperties authoredProperties;
+    LightProperties properties;
 };
 
 // Marks a runtime graph root, including generated root objects.

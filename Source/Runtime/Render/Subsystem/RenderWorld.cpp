@@ -11,7 +11,8 @@ void RenderWorld::setScene(const scene::Scene* scene)
     }
     scene_ = scene;
     ++sceneRevision_;
-    pendingChanges_ |= RenderChangeBits::Geometry |
+    pendingChanges_ |= RenderChangeBits::Lighting |
+        RenderChangeBits::Geometry |
         RenderChangeBits::Material |
         RenderChangeBits::InvalidateTemporalHistory;
 }
@@ -19,7 +20,8 @@ void RenderWorld::setScene(const scene::Scene* scene)
 void RenderWorld::notifySceneChanged()
 {
     ++sceneRevision_;
-    pendingChanges_ |= RenderChangeBits::Geometry |
+    pendingChanges_ |= RenderChangeBits::Lighting |
+        RenderChangeBits::Geometry |
         RenderChangeBits::Material |
         RenderChangeBits::InvalidateTemporalHistory;
 }

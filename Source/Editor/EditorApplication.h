@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include <volk.h>
@@ -63,15 +64,33 @@ private:
     void drawViewportGizmo(const ImVec2& min, const ImVec2& max);
     void selectViewportObject(const ImVec2& min, const ImVec2& max);
     void drawSelectedNodeTransformInspector();
+    void drawSelectedCameraComponentInspector();
+    void drawSelectedLightComponentInspector();
     scene::ConstSceneObject selectedSceneObject() const;
     int32_t selectedNodeIndex() const;
     bool setSelectedObjectWorldMatrix(const float4x4& worldMatrix, std::string& reason);
     void notifySceneTransformChanged();
+    void notifyScenePropertiesChanged();
+    using SceneEditValue = std::variant<
+        float4x4,
+        scene::CameraProperties,
+        scene::LightProperties>;
+    void pushSceneEditCommand(
+        scene::SceneEntity object,
+        uint64_t sceneLifetimeRevision,
+        SceneEditValue before,
+        SceneEditValue after);
     void pushTransformCommand(
         scene::SceneEntity object,
         uint64_t sceneLifetimeRevision,
         const float4x4& before,
         const float4x4& after);
+    void beginInspectorPropertyEdit(
+        scene::SceneEntity object,
+        uint64_t sceneLifetimeRevision,
+        SceneEditValue before);
+    void finishActiveInspectorPropertyTransaction();
+    bool applySceneEditValue(scene::SceneEntity object, const SceneEditValue& value);
     void updateSceneDirtyState();
     void finishActiveTransformTransactions();
     void undoTransform();
@@ -167,11 +186,11 @@ private:
         CommitLoadedScene,
     };
 
-    struct TransformCommand {
+    struct SceneEditCommand {
         scene::SceneEntity object = scene::kNullSceneEntity;
         uint64_t sceneLifetimeRevision = 0;
-        float4x4 before = float4x4::Identity();
-        float4x4 after = float4x4::Identity();
+        SceneEditValue before = float4x4::Identity();
+        SceneEditValue after = float4x4::Identity();
     };
 
     SDL_Window* window_ = nullptr;
@@ -246,6 +265,7 @@ private:
     bool viewportGizmoCapturingMouse_ = false;
     bool sceneNonTransformDirty_ = false;
     bool inspectorTransformEditing_ = false;
+    bool inspectorPropertyEditing_ = false;
     int viewportCameraDragButton_ = -1;
     GizmoOperation gizmoOperation_ = GizmoOperation::Translate;
     float translateSnap_ = 0.5f;
@@ -256,9 +276,12 @@ private:
     uint64_t gizmoEditingSceneLifetime_ = 0;
     scene::SceneEntity inspectorEditingObject_ = scene::kNullSceneEntity;
     uint64_t inspectorEditingSceneLifetime_ = 0;
+    scene::SceneEntity inspectorPropertyEditingObject_ = scene::kNullSceneEntity;
+    uint64_t inspectorPropertyEditingSceneLifetime_ = 0;
     float4x4 gizmoStartLocalMatrix_ = float4x4::Identity();
     float4x4 inspectorStartLocalMatrix_ = float4x4::Identity();
-    std::vector<TransformCommand> transformCommands_;
+    SceneEditValue inspectorPropertyStartValue_ = float4x4::Identity();
+    std::vector<SceneEditCommand> transformCommands_;
     size_t transformCommandCursor_ = 0;
     int64_t savedTransformCommandCursor_ = 0;
     PendingSceneAction pendingSceneAction_ = PendingSceneAction::None;

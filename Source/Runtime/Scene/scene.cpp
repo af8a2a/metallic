@@ -2361,8 +2361,61 @@ void accumulateMeshletStats(const std::vector<RenderPrimitive>& primitives, Scen
     }
 }
 
+CameraProperties makeCameraProperties(const tinygltf::Camera& camera)
+{
+    CameraProperties properties;
+    if (camera.type == "orthographic") {
+        properties.type = CameraType::Orthographic;
+        properties.xmag = camera.orthographic.xmag;
+        properties.ymag = camera.orthographic.ymag;
+        properties.znear = camera.orthographic.znear;
+        properties.zfar = camera.orthographic.zfar;
+    } else {
+        properties.type = CameraType::Perspective;
+        properties.yfov = camera.perspective.yfov;
+        properties.aspectRatio = camera.perspective.aspectRatio;
+        properties.znear = camera.perspective.znear;
+        properties.zfar = camera.perspective.zfar;
+    }
+    return properties;
+}
+
+LightProperties makeLightProperties(const tinygltf::Light& light)
+{
+    return LightProperties{
+        .type = light.type,
+        .color = makeFloat3(light.color, float3(1.0f, 1.0f, 1.0f)),
+        .intensity = light.intensity,
+        .range = light.range,
+        .innerConeAngle = light.spot.innerConeAngle,
+        .outerConeAngle = light.spot.outerConeAngle,
+    };
+}
+
+void applyCameraProperties(RenderCamera& camera, const CameraProperties& properties)
+{
+    camera.type = properties.type;
+    camera.yfov = properties.yfov;
+    camera.aspectRatio = properties.aspectRatio;
+    camera.xmag = properties.xmag;
+    camera.ymag = properties.ymag;
+    camera.znear = properties.znear;
+    camera.zfar = properties.zfar;
+}
+
+void applyLightProperties(RenderLight& light, const LightProperties& properties)
+{
+    light.type = properties.type;
+    light.color = properties.color;
+    light.intensity = properties.intensity;
+    light.range = properties.range;
+    light.innerConeAngle = properties.innerConeAngle;
+    light.outerConeAngle = properties.outerConeAngle;
+}
+
 RenderCamera makeRenderCamera(
     const tinygltf::Camera& camera,
+    const CameraProperties& properties,
     const tinygltf::Node& node,
     int32_t nodeIndex,
     int32_t cameraIndex,
@@ -2373,19 +2426,7 @@ RenderCamera makeRenderCamera(
     renderCamera.nodeIndex = nodeIndex;
     renderCamera.cameraIndex = cameraIndex;
 
-    if (camera.type == "orthographic") {
-        renderCamera.type = CameraType::Orthographic;
-        renderCamera.xmag = camera.orthographic.xmag;
-        renderCamera.ymag = camera.orthographic.ymag;
-        renderCamera.znear = camera.orthographic.znear;
-        renderCamera.zfar = camera.orthographic.zfar;
-    } else {
-        renderCamera.type = CameraType::Perspective;
-        renderCamera.yfov = camera.perspective.yfov;
-        renderCamera.aspectRatio = camera.perspective.aspectRatio;
-        renderCamera.znear = camera.perspective.znear;
-        renderCamera.zfar = camera.perspective.zfar;
-    }
+    applyCameraProperties(renderCamera, properties);
 
     renderCamera.eye = matrixTranslation(worldMatrix);
     const float3 forward = normalizedOr(
@@ -2406,20 +2447,16 @@ RenderCamera makeRenderCamera(
 
 RenderLight makeRenderLight(
     const tinygltf::Light& light,
+    const LightProperties& properties,
     int32_t nodeIndex,
     int32_t lightIndex,
     const float4x4& worldMatrix)
 {
     RenderLight renderLight;
     renderLight.name = defaultName(light.name, "Light", lightIndex);
-    renderLight.type = light.type;
     renderLight.nodeIndex = nodeIndex;
     renderLight.lightIndex = lightIndex;
-    renderLight.color = makeFloat3(light.color, float3(1.0f, 1.0f, 1.0f));
-    renderLight.intensity = light.intensity;
-    renderLight.range = light.range;
-    renderLight.innerConeAngle = light.spot.innerConeAngle;
-    renderLight.outerConeAngle = light.spot.outerConeAngle;
+    applyLightProperties(renderLight, properties);
     renderLight.worldMatrix = worldMatrix;
     return renderLight;
 }
@@ -2878,10 +2915,24 @@ bool Scene::loadInternal(
             object.addComponent<MeshComponent>(gltfNode.mesh);
         }
         if (gltfNode.camera != kInvalidSceneIndex) {
-            object.addComponent<CameraComponent>(gltfNode.camera);
+            const CameraProperties properties = validIndex(gltfNode.camera, model.cameras.size())
+                ? makeCameraProperties(model.cameras[static_cast<size_t>(gltfNode.camera)])
+                : CameraProperties{};
+            object.addComponent<CameraComponent>(CameraComponent{
+                .cameraIndex = gltfNode.camera,
+                .authoredProperties = properties,
+                .properties = properties,
+            });
         }
         if (gltfNode.light != kInvalidSceneIndex) {
-            object.addComponent<LightComponent>(gltfNode.light);
+            const LightProperties properties = validIndex(gltfNode.light, model.lights.size())
+                ? makeLightProperties(model.lights[static_cast<size_t>(gltfNode.light)])
+                : LightProperties{};
+            object.addComponent<LightComponent>(LightComponent{
+                .lightIndex = gltfNode.light,
+                .authoredProperties = properties,
+                .properties = properties,
+            });
         }
     }
 
@@ -2943,26 +2994,33 @@ bool Scene::loadInternal(
 
         const tinygltf::Node& gltfNode = model.nodes[static_cast<size_t>(nodeIndex)];
         if (validIndex(gltfNode.camera, model.cameras.size())) {
+            const CameraComponent& cameraComponent =
+                object.getComponent<CameraComponent>();
             RenderCamera camera = makeRenderCamera(
                 model.cameras[static_cast<size_t>(gltfNode.camera)],
+                cameraComponent.properties,
                 gltfNode,
                 nodeIndex,
                 gltfNode.camera,
                 node.worldMatrix);
             camera.object = object.entity();
-            CameraComponent& cameraComponent = object.getComponent<CameraComponent>();
-            cameraComponent.renderCameraIndex = static_cast<int32_t>(cameras_.size());
+            CameraComponent boundCameraComponent = cameraComponent;
+            boundCameraComponent.renderCameraIndex = static_cast<int32_t>(cameras_.size());
+            object.addOrReplaceComponent<CameraComponent>(std::move(boundCameraComponent));
             cameras_.push_back(std::move(camera));
         }
         if (validIndex(gltfNode.light, model.lights.size())) {
+            const LightComponent& lightComponent = object.getComponent<LightComponent>();
             RenderLight light = makeRenderLight(
                 model.lights[static_cast<size_t>(gltfNode.light)],
+                lightComponent.properties,
                 nodeIndex,
                 gltfNode.light,
                 node.worldMatrix);
             light.object = object.entity();
-            LightComponent& lightComponent = object.getComponent<LightComponent>();
-            lightComponent.renderLightIndex = static_cast<int32_t>(lights_.size());
+            LightComponent boundLightComponent = lightComponent;
+            boundLightComponent.renderLightIndex = static_cast<int32_t>(lights_.size());
+            object.addOrReplaceComponent<LightComponent>(std::move(boundLightComponent));
             lights_.push_back(std::move(light));
         }
         if (validIndex(gltfNode.mesh, model.meshes.size())) {
@@ -3201,10 +3259,22 @@ bool Scene::loadInternal(
     if (cameras_.empty()) {
         SceneObject fallbackCamera = sceneGraph_.createObject("Fallback Camera");
         fallbackCamera.addComponent<GeneratedComponent>();
-        CameraComponent& cameraComponent =
-            fallbackCamera.addComponent<CameraComponent>(kInvalidSceneIndex);
-        cameraComponent.renderCameraIndex = 0;
         RenderCamera camera = makeFallbackCamera(bounds_);
+        const CameraProperties properties{
+            .type = camera.type,
+            .yfov = camera.yfov,
+            .aspectRatio = camera.aspectRatio,
+            .xmag = camera.xmag,
+            .ymag = camera.ymag,
+            .znear = camera.znear,
+            .zfar = camera.zfar,
+        };
+        fallbackCamera.addComponent<CameraComponent>(CameraComponent{
+            .cameraIndex = kInvalidSceneIndex,
+            .renderCameraIndex = 0,
+            .authoredProperties = properties,
+            .properties = properties,
+        });
         camera.object = fallbackCamera.entity();
         cameras_.push_back(std::move(camera));
     }
@@ -3330,6 +3400,60 @@ bool Scene::setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix
         return false;
     }
     refreshTransforms();
+    return true;
+}
+
+bool Scene::setObjectCameraProperties(
+    SceneEntity object,
+    const CameraProperties& properties)
+{
+    const ConstSceneObject sceneObject =
+        static_cast<const SceneGraph&>(sceneGraph_).object(object);
+    const CameraComponent* cameraComponent =
+        sceneObject.tryGetComponent<CameraComponent>();
+    if (!valid() || !sceneObject ||
+        sceneObject.hasComponent<GeneratedComponent>() ||
+        cameraComponent == nullptr || cameraComponent->renderCameraIndex < 0 ||
+        static_cast<size_t>(cameraComponent->renderCameraIndex) >= cameras_.size()) {
+        return false;
+    }
+    RenderCamera& camera = cameras_[static_cast<size_t>(cameraComponent->renderCameraIndex)];
+    if (camera.object != object || camera.cameraIndex != cameraComponent->cameraIndex ||
+        !sceneGraph_.setCameraProperties(object, properties)) {
+        return false;
+    }
+
+    const CameraComponent& updated =
+        sceneGraph_.object(object).getComponent<CameraComponent>();
+    applyCameraProperties(camera, updated.properties);
+    camera.contentRevision = contentRevision();
+    return true;
+}
+
+bool Scene::setObjectLightProperties(
+    SceneEntity object,
+    const LightProperties& properties)
+{
+    const ConstSceneObject sceneObject =
+        static_cast<const SceneGraph&>(sceneGraph_).object(object);
+    const LightComponent* lightComponent =
+        sceneObject.tryGetComponent<LightComponent>();
+    if (!valid() || !sceneObject ||
+        sceneObject.hasComponent<GeneratedComponent>() ||
+        lightComponent == nullptr || lightComponent->renderLightIndex < 0 ||
+        static_cast<size_t>(lightComponent->renderLightIndex) >= lights_.size()) {
+        return false;
+    }
+    RenderLight& light = lights_[static_cast<size_t>(lightComponent->renderLightIndex)];
+    if (light.object != object || light.lightIndex != lightComponent->lightIndex ||
+        !sceneGraph_.setLightProperties(object, properties)) {
+        return false;
+    }
+
+    const LightComponent& updated =
+        sceneGraph_.object(object).getComponent<LightComponent>();
+    applyLightProperties(light, updated.properties);
+    light.contentRevision = contentRevision();
     return true;
 }
 

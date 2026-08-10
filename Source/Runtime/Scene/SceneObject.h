@@ -21,6 +21,12 @@ inline constexpr bool kSceneGraphCoreComponent =
     std::same_as<Component, RootComponent> ||
     std::same_as<Component, ActiveSceneComponent>;
 
+template <typename Component>
+inline constexpr bool kSceneGraphReadOnlyComponent =
+    kSceneGraphCoreComponent<Component> ||
+    std::same_as<Component, CameraComponent> ||
+    std::same_as<Component, LightComponent>;
+
 template <typename Registry>
 class BasicSceneObject {
 public:
@@ -62,7 +68,7 @@ public:
     decltype(auto) getComponent() const
     {
         requireValid();
-        if constexpr (std::is_const_v<Registry> || kSceneGraphCoreComponent<Component>) {
+        if constexpr (std::is_const_v<Registry> || kSceneGraphReadOnlyComponent<Component>) {
             return std::as_const(registry_->template get<Component>(entity_));
         } else {
             return registry_->template get<Component>(entity_);
@@ -74,7 +80,7 @@ public:
     auto tryGetComponent() const
     {
         using Pointer = std::conditional_t<
-            std::is_const_v<Registry> || kSceneGraphCoreComponent<Component>,
+            std::is_const_v<Registry> || kSceneGraphReadOnlyComponent<Component>,
             const Component*,
             Component*>;
         if (!valid()) {

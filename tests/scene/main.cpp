@@ -106,6 +106,68 @@ void expectVec4(
         label);
 }
 
+void expectCameraProperties(
+    const metallic::scene::CameraProperties& actual,
+    const metallic::scene::CameraProperties& expected,
+    const std::string& label)
+{
+    EXPECT_EQ(actual.type, expected.type) << label << " type";
+    EXPECT_NEAR(actual.yfov, expected.yfov, 0.000000001) << label << " yfov";
+    EXPECT_NEAR(actual.aspectRatio, expected.aspectRatio, 0.000000001)
+        << label << " aspectRatio";
+    EXPECT_NEAR(actual.xmag, expected.xmag, 0.000000001) << label << " xmag";
+    EXPECT_NEAR(actual.ymag, expected.ymag, 0.000000001) << label << " ymag";
+    EXPECT_NEAR(actual.znear, expected.znear, 0.000000001) << label << " znear";
+    EXPECT_NEAR(actual.zfar, expected.zfar, 0.000000001) << label << " zfar";
+}
+
+void expectLightProperties(
+    const metallic::scene::LightProperties& actual,
+    const metallic::scene::LightProperties& expected,
+    const std::string& label)
+{
+    EXPECT_EQ(actual.type, expected.type) << label << " type";
+    expectVec3(actual.color, expected.color, label + " color");
+    EXPECT_NEAR(actual.intensity, expected.intensity, 0.000000001)
+        << label << " intensity";
+    EXPECT_NEAR(actual.range, expected.range, 0.000000001) << label << " range";
+    EXPECT_NEAR(actual.innerConeAngle, expected.innerConeAngle, 0.000000001)
+        << label << " innerConeAngle";
+    EXPECT_NEAR(actual.outerConeAngle, expected.outerConeAngle, 0.000000001)
+        << label << " outerConeAngle";
+}
+
+void expectCameraSnapshot(
+    const metallic::scene::RenderCamera& actual,
+    const metallic::scene::CameraProperties& expected,
+    const std::string& label)
+{
+    EXPECT_EQ(actual.type, expected.type) << label << " type";
+    EXPECT_NEAR(actual.yfov, expected.yfov, 0.000000001) << label << " yfov";
+    EXPECT_NEAR(actual.aspectRatio, expected.aspectRatio, 0.000000001)
+        << label << " aspectRatio";
+    EXPECT_NEAR(actual.xmag, expected.xmag, 0.000000001) << label << " xmag";
+    EXPECT_NEAR(actual.ymag, expected.ymag, 0.000000001) << label << " ymag";
+    EXPECT_NEAR(actual.znear, expected.znear, 0.000000001) << label << " znear";
+    EXPECT_NEAR(actual.zfar, expected.zfar, 0.000000001) << label << " zfar";
+}
+
+void expectLightSnapshot(
+    const metallic::scene::RenderLight& actual,
+    const metallic::scene::LightProperties& expected,
+    const std::string& label)
+{
+    EXPECT_EQ(actual.type, expected.type) << label << " type";
+    expectVec3(actual.color, expected.color, label + " color");
+    EXPECT_NEAR(actual.intensity, expected.intensity, 0.000000001)
+        << label << " intensity";
+    EXPECT_NEAR(actual.range, expected.range, 0.000000001) << label << " range";
+    EXPECT_NEAR(actual.innerConeAngle, expected.innerConeAngle, 0.000000001)
+        << label << " innerConeAngle";
+    EXPECT_NEAR(actual.outerConeAngle, expected.outerConeAngle, 0.000000001)
+        << label << " outerConeAngle";
+}
+
 void expectTextureInfo(
     const metallic::scene::RenderTextureInfo& actual,
     int32_t expectedTextureIndex,
@@ -648,6 +710,71 @@ std::filesystem::path writeFullScene(const std::filesystem::path& directory)
   ],
   "scenes": [
     { "name": "Default Scene", "nodes": [0] }
+  ]
+}
+)json");
+    return gltfPath;
+}
+
+std::filesystem::path writeEditablePropertiesScene(const std::filesystem::path& directory)
+{
+    const std::filesystem::path gltfPath = directory / "editable_properties.gltf";
+    writeTextFile(gltfPath, R"json(
+{
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "extensionsUsed": ["KHR_lights_punctual"],
+  "extensions": {
+    "KHR_lights_punctual": {
+      "lights": [
+        {
+          "name": "Editable Spot Light",
+          "type": "spot",
+          "color": [1.0, 0.8, 0.6],
+          "intensity": 3.0,
+          "range": 12.0,
+          "spot": {
+            "innerConeAngle": 0.1,
+            "outerConeAngle": 0.5
+          }
+        }
+      ]
+    }
+  },
+  "cameras": [
+    {
+      "name": "Editable Perspective Camera",
+      "type": "perspective",
+      "perspective": {
+        "aspectRatio": 1.7777778,
+        "yfov": 0.75,
+        "znear": 0.1,
+        "zfar": 100.0
+      }
+    },
+    {
+      "name": "Editable Orthographic Camera",
+      "type": "orthographic",
+      "orthographic": {
+        "xmag": 4.0,
+        "ymag": 3.0,
+        "znear": 0.01,
+        "zfar": 50.0
+      }
+    }
+  ],
+  "nodes": [
+    { "name": "Perspective Properties Node", "camera": 0 },
+    { "name": "Orthographic Properties Node", "camera": 1 },
+    {
+      "name": "Spot Light Properties Node",
+      "extensions": {
+        "KHR_lights_punctual": { "light": 0 }
+      }
+    }
+  ],
+  "scenes": [
+    { "name": "Editable Properties Scene", "nodes": [0, 1, 2] }
   ]
 }
 )json");
@@ -2534,7 +2661,7 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
         std::ifstream stream(sidecarPath, std::ios::binary);
         stream >> saved;
     }
-    ASSERT_EQ(saved.value("version", 0), 2);
+    ASSERT_EQ(saved.value("version", 0), 3);
     ASSERT_TRUE(saved.contains("nodes"));
     ASSERT_EQ(saved["nodes"].size(), 1u);
     EXPECT_EQ(saved["nodes"][0].value("nodeIndex", -1), 1);
@@ -2567,6 +2694,16 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
         std::filesystem::weakly_canonical(gltfPath));
 
     const nlohmann::json validSaved = saved;
+    nlohmann::json versionTwo = validSaved;
+    versionTwo["version"] = 2;
+    writeTextFile(sidecarPath, versionTwo.dump(2));
+    metallic::scene::SceneDocument versionTwoDocument;
+    ASSERT_TRUE(versionTwoDocument.load(gltfPath)) << versionTwoDocument.lastLoadResult().error;
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        versionTwoDocument.nodes()[1].localMatrix,
+        edited));
+    EXPECT_TRUE(versionTwoDocument.hasEnvironmentSettings());
+
     nlohmann::json versionOne = validSaved;
     versionOne["version"] = 1;
     versionOne.erase("world");
@@ -2602,6 +2739,369 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
         mismatched.nodes()[1].localMatrix,
         mismatched.nodes()[1].authoredLocalMatrix));
     EXPECT_NE(mismatched.documentWarning().find("sourceName"), std::string::npos);
+}
+
+void testSceneDocumentPropertyRoundTrip(const std::filesystem::path& baseDirectory)
+{
+    const std::filesystem::path directory = baseDirectory / "scene_property_document";
+    std::filesystem::create_directories(directory);
+    const std::filesystem::path gltfPath = writeEditablePropertiesScene(directory);
+    const std::filesystem::path sidecarPath =
+        metallic::scene::SceneDocument::sidecarPathForSource(gltfPath);
+    std::error_code cleanupError;
+    std::filesystem::remove(sidecarPath, cleanupError);
+    std::filesystem::remove(sidecarPath.string() + ".tmp", cleanupError);
+
+    metallic::scene::SceneDocument document;
+    ASSERT_TRUE(document.load(gltfPath)) << document.lastLoadResult().error;
+    ASSERT_EQ(document.cameras().size(), 2u);
+    ASSERT_EQ(document.lights().size(), 1u);
+
+    constexpr int32_t kPerspectiveNodeIndex = 0;
+    constexpr int32_t kOrthographicNodeIndex = 1;
+    constexpr int32_t kLightNodeIndex = 2;
+    const metallic::scene::ConstSceneObject perspectiveObject =
+        document.objectForNode(kPerspectiveNodeIndex);
+    const metallic::scene::ConstSceneObject orthographicObject =
+        document.objectForNode(kOrthographicNodeIndex);
+    const metallic::scene::ConstSceneObject lightObject =
+        document.objectForNode(kLightNodeIndex);
+    ASSERT_TRUE(perspectiveObject);
+    ASSERT_TRUE(orthographicObject);
+    ASSERT_TRUE(lightObject);
+
+    const metallic::scene::CameraComponent& perspectiveComponent =
+        perspectiveObject.getComponent<metallic::scene::CameraComponent>();
+    const metallic::scene::CameraComponent& orthographicComponent =
+        orthographicObject.getComponent<metallic::scene::CameraComponent>();
+    const metallic::scene::LightComponent& lightComponent =
+        lightObject.getComponent<metallic::scene::LightComponent>();
+    const metallic::scene::CameraProperties authoredPerspective =
+        perspectiveComponent.authoredProperties;
+    const metallic::scene::CameraProperties authoredOrthographic =
+        orthographicComponent.authoredProperties;
+    const metallic::scene::LightProperties authoredLight = lightComponent.authoredProperties;
+    expectCameraProperties(
+        perspectiveComponent.properties,
+        authoredPerspective,
+        "initial perspective component");
+    expectCameraProperties(
+        orthographicComponent.properties,
+        authoredOrthographic,
+        "initial orthographic component");
+    expectLightProperties(lightComponent.properties, authoredLight, "initial light component");
+
+    const uint64_t initialContentRevision = document.sceneGraph().contentRevision();
+    const uint64_t initialTransformRevision = document.transformRevision();
+
+    metallic::scene::CameraProperties invalidPerspective = authoredPerspective;
+    invalidPerspective.znear = 0.0;
+    EXPECT_FALSE(document.setObjectCameraProperties(
+        perspectiveObject.entity(),
+        invalidPerspective));
+    metallic::scene::CameraProperties unsupportedPerspective = authoredPerspective;
+    unsupportedPerspective.yfov += 0.1;
+    unsupportedPerspective.xmag += 0.0000005;
+    EXPECT_FALSE(document.setObjectCameraProperties(
+        perspectiveObject.entity(),
+        unsupportedPerspective));
+    metallic::scene::LightProperties invalidLight = authoredLight;
+    invalidLight.innerConeAngle = invalidLight.outerConeAngle;
+    EXPECT_FALSE(document.setObjectLightProperties(lightObject.entity(), invalidLight));
+    EXPECT_FALSE(document.setObjectCameraProperties(lightObject.entity(), authoredPerspective));
+    EXPECT_FALSE(document.setObjectLightProperties(
+        perspectiveObject.entity(),
+        authoredLight));
+    EXPECT_FALSE(document.dirty());
+    EXPECT_EQ(document.sceneGraph().contentRevision(), initialContentRevision);
+    EXPECT_EQ(document.transformRevision(), initialTransformRevision);
+    expectCameraProperties(
+        perspectiveComponent.properties,
+        authoredPerspective,
+        "rejected perspective component");
+    expectLightProperties(lightComponent.properties, authoredLight, "rejected light component");
+    expectCameraSnapshot(
+        document.cameras()[static_cast<size_t>(perspectiveComponent.renderCameraIndex)],
+        authoredPerspective,
+        "rejected perspective snapshot");
+    expectLightSnapshot(
+        document.lights()[static_cast<size_t>(lightComponent.renderLightIndex)],
+        authoredLight,
+        "rejected light snapshot");
+
+    metallic::scene::CameraProperties editedPerspective = authoredPerspective;
+    editedPerspective.yfov = 1.1;
+    editedPerspective.aspectRatio = 1.5;
+    editedPerspective.znear = 0.25;
+    editedPerspective.zfar = 500.0;
+    metallic::scene::CameraProperties editedOrthographic = authoredOrthographic;
+    editedOrthographic.xmag = 8.0;
+    editedOrthographic.ymag = 6.0;
+    editedOrthographic.znear = 0.05;
+    editedOrthographic.zfar = 90.0;
+    metallic::scene::LightProperties editedLight = authoredLight;
+    editedLight.color = float3(0.2f, 0.4f, 0.8f);
+    editedLight.intensity = 12.5;
+    editedLight.range = 25.0;
+    editedLight.innerConeAngle = 0.2;
+    editedLight.outerConeAngle = 1.57079632679489661923;
+
+    ASSERT_TRUE(document.setObjectCameraProperties(
+        perspectiveObject.entity(),
+        editedPerspective));
+    EXPECT_EQ(
+        document.sceneGraph().contentRevision(),
+        initialContentRevision + 1u);
+    expectCameraProperties(
+        perspectiveComponent.properties,
+        editedPerspective,
+        "immediate perspective component");
+    expectCameraSnapshot(
+        document.cameras()[static_cast<size_t>(perspectiveComponent.renderCameraIndex)],
+        editedPerspective,
+        "immediate perspective snapshot");
+    ASSERT_TRUE(document.setObjectCameraProperties(
+        orthographicObject.entity(),
+        editedOrthographic));
+    EXPECT_EQ(
+        document.sceneGraph().contentRevision(),
+        initialContentRevision + 2u);
+    expectCameraProperties(
+        orthographicComponent.properties,
+        editedOrthographic,
+        "immediate orthographic component");
+    expectCameraSnapshot(
+        document.cameras()[static_cast<size_t>(orthographicComponent.renderCameraIndex)],
+        editedOrthographic,
+        "immediate orthographic snapshot");
+    ASSERT_TRUE(document.setObjectLightProperties(lightObject.entity(), editedLight));
+    EXPECT_EQ(
+        document.sceneGraph().contentRevision(),
+        initialContentRevision + 3u);
+    expectLightProperties(
+        lightComponent.properties,
+        editedLight,
+        "immediate light component");
+    expectLightSnapshot(
+        document.lights()[static_cast<size_t>(lightComponent.renderLightIndex)],
+        editedLight,
+        "immediate light snapshot");
+    EXPECT_TRUE(document.dirty());
+    EXPECT_EQ(document.transformRevision(), initialTransformRevision);
+    EXPECT_EQ(
+        document.sceneGraph().contentRevision(),
+        initialContentRevision + 3u);
+    expectCameraProperties(
+        perspectiveComponent.properties,
+        editedPerspective,
+        "edited perspective component");
+    expectCameraProperties(
+        orthographicComponent.properties,
+        editedOrthographic,
+        "edited orthographic component");
+    expectLightProperties(lightComponent.properties, editedLight, "edited light component");
+    expectCameraSnapshot(
+        document.cameras()[static_cast<size_t>(perspectiveComponent.renderCameraIndex)],
+        editedPerspective,
+        "edited perspective snapshot");
+    expectCameraSnapshot(
+        document.cameras()[static_cast<size_t>(orthographicComponent.renderCameraIndex)],
+        editedOrthographic,
+        "edited orthographic snapshot");
+    expectLightSnapshot(
+        document.lights()[static_cast<size_t>(lightComponent.renderLightIndex)],
+        editedLight,
+        "edited light snapshot");
+    expectCameraProperties(
+        perspectiveComponent.authoredProperties,
+        authoredPerspective,
+        "preserved authored perspective");
+    expectCameraProperties(
+        orthographicComponent.authoredProperties,
+        authoredOrthographic,
+        "preserved authored orthographic");
+    expectLightProperties(
+        lightComponent.authoredProperties,
+        authoredLight,
+        "preserved authored light");
+
+    std::string saveMessage;
+    ASSERT_TRUE(document.save(saveMessage)) << saveMessage;
+    EXPECT_FALSE(document.dirty());
+    ASSERT_TRUE(std::filesystem::exists(sidecarPath));
+
+    nlohmann::json saved;
+    {
+        std::ifstream stream(sidecarPath, std::ios::binary);
+        stream >> saved;
+    }
+    ASSERT_EQ(saved.value("version", 0), 3);
+    ASSERT_TRUE(saved.contains("nodes"));
+    ASSERT_TRUE(saved["nodes"].is_array());
+    ASSERT_EQ(saved["nodes"].size(), 3u);
+    const auto findOverride = [&](int32_t nodeIndex) -> const nlohmann::json* {
+        for (const nlohmann::json& value : saved["nodes"]) {
+            if (value.is_object() && value.value("nodeIndex", -1) == nodeIndex) {
+                return &value;
+            }
+        }
+        return nullptr;
+    };
+
+    const nlohmann::json* savedPerspective = findOverride(kPerspectiveNodeIndex);
+    const nlohmann::json* savedOrthographic = findOverride(kOrthographicNodeIndex);
+    const nlohmann::json* savedLight = findOverride(kLightNodeIndex);
+    ASSERT_NE(savedPerspective, nullptr);
+    ASSERT_NE(savedOrthographic, nullptr);
+    ASSERT_NE(savedLight, nullptr);
+    EXPECT_FALSE(savedPerspective->contains("localMatrix"));
+    EXPECT_FALSE(savedOrthographic->contains("localMatrix"));
+    EXPECT_FALSE(savedLight->contains("localMatrix"));
+    ASSERT_TRUE(savedPerspective->contains("camera"));
+    ASSERT_TRUE(savedOrthographic->contains("camera"));
+    ASSERT_TRUE(savedLight->contains("light"));
+    const nlohmann::json& savedPerspectiveCamera = (*savedPerspective)["camera"];
+    EXPECT_EQ(savedPerspectiveCamera.value("type", std::string{}), "perspective");
+    EXPECT_DOUBLE_EQ(savedPerspectiveCamera.value("yfov", 0.0), editedPerspective.yfov);
+    EXPECT_DOUBLE_EQ(
+        savedPerspectiveCamera.value("aspectRatio", 0.0),
+        editedPerspective.aspectRatio);
+    EXPECT_DOUBLE_EQ(savedPerspectiveCamera.value("znear", 0.0), editedPerspective.znear);
+    EXPECT_DOUBLE_EQ(savedPerspectiveCamera.value("zfar", 0.0), editedPerspective.zfar);
+    EXPECT_FALSE(savedPerspectiveCamera.contains("xmag"));
+    EXPECT_FALSE(savedPerspectiveCamera.contains("ymag"));
+    const nlohmann::json& savedOrthographicCamera = (*savedOrthographic)["camera"];
+    EXPECT_EQ(savedOrthographicCamera.value("type", std::string{}), "orthographic");
+    EXPECT_DOUBLE_EQ(savedOrthographicCamera.value("xmag", 0.0), editedOrthographic.xmag);
+    EXPECT_DOUBLE_EQ(savedOrthographicCamera.value("ymag", 0.0), editedOrthographic.ymag);
+    EXPECT_DOUBLE_EQ(
+        savedOrthographicCamera.value("znear", 0.0),
+        editedOrthographic.znear);
+    EXPECT_DOUBLE_EQ(savedOrthographicCamera.value("zfar", 0.0), editedOrthographic.zfar);
+    EXPECT_FALSE(savedOrthographicCamera.contains("yfov"));
+    EXPECT_FALSE(savedOrthographicCamera.contains("aspectRatio"));
+    const nlohmann::json& savedLightProperties = (*savedLight)["light"];
+    EXPECT_EQ(savedLightProperties.value("type", std::string{}), "spot");
+    ASSERT_TRUE(savedLightProperties.contains("color"));
+    ASSERT_EQ(savedLightProperties["color"].size(), 3u);
+    EXPECT_FLOAT_EQ(savedLightProperties["color"][0].get<float>(), editedLight.color.x);
+    EXPECT_FLOAT_EQ(savedLightProperties["color"][1].get<float>(), editedLight.color.y);
+    EXPECT_FLOAT_EQ(savedLightProperties["color"][2].get<float>(), editedLight.color.z);
+    EXPECT_DOUBLE_EQ(savedLightProperties.value("intensity", 0.0), editedLight.intensity);
+    EXPECT_DOUBLE_EQ(savedLightProperties.value("range", 0.0), editedLight.range);
+    EXPECT_DOUBLE_EQ(
+        savedLightProperties.value("innerConeAngle", 0.0),
+        editedLight.innerConeAngle);
+    EXPECT_DOUBLE_EQ(
+        savedLightProperties.value("outerConeAngle", 0.0),
+        editedLight.outerConeAngle);
+
+    const auto expectPersistedProperties = [&](const metallic::scene::SceneDocument& loaded) {
+        const metallic::scene::ConstSceneObject loadedPerspective =
+            loaded.objectForNode(kPerspectiveNodeIndex);
+        const metallic::scene::ConstSceneObject loadedOrthographic =
+            loaded.objectForNode(kOrthographicNodeIndex);
+        const metallic::scene::ConstSceneObject loadedLight =
+            loaded.objectForNode(kLightNodeIndex);
+        ASSERT_TRUE(loadedPerspective);
+        ASSERT_TRUE(loadedOrthographic);
+        ASSERT_TRUE(loadedLight);
+        const metallic::scene::CameraComponent& loadedPerspectiveComponent =
+            loadedPerspective.getComponent<metallic::scene::CameraComponent>();
+        const metallic::scene::CameraComponent& loadedOrthographicComponent =
+            loadedOrthographic.getComponent<metallic::scene::CameraComponent>();
+        const metallic::scene::LightComponent& loadedLightComponent =
+            loadedLight.getComponent<metallic::scene::LightComponent>();
+        expectCameraProperties(
+            loadedPerspectiveComponent.properties,
+            editedPerspective,
+            "reloaded perspective component");
+        expectCameraProperties(
+            loadedOrthographicComponent.properties,
+            editedOrthographic,
+            "reloaded orthographic component");
+        expectLightProperties(
+            loadedLightComponent.properties,
+            editedLight,
+            "reloaded light component");
+        expectCameraSnapshot(
+            loaded.cameras()[static_cast<size_t>(
+                loadedPerspectiveComponent.renderCameraIndex)],
+            editedPerspective,
+            "reloaded perspective snapshot");
+        expectCameraSnapshot(
+            loaded.cameras()[static_cast<size_t>(
+                loadedOrthographicComponent.renderCameraIndex)],
+            editedOrthographic,
+            "reloaded orthographic snapshot");
+        expectLightSnapshot(
+            loaded.lights()[static_cast<size_t>(loadedLightComponent.renderLightIndex)],
+            editedLight,
+            "reloaded light snapshot");
+        EXPECT_FALSE(loaded.dirty());
+    };
+
+    metallic::scene::SceneDocument autoDiscovered;
+    ASSERT_TRUE(autoDiscovered.load(gltfPath)) << autoDiscovered.lastLoadResult().error;
+    expectPersistedProperties(autoDiscovered);
+
+    metallic::scene::SceneDocument directlyOpened;
+    ASSERT_TRUE(directlyOpened.load(sidecarPath)) << directlyOpened.lastLoadResult().error;
+    expectPersistedProperties(directlyOpened);
+
+    metallic::scene::CameraProperties unsavedPerspective = editedPerspective;
+    unsavedPerspective.yfov = 0.9;
+    const metallic::scene::SceneEntity autoPerspectiveObject =
+        autoDiscovered.objectForNode(kPerspectiveNodeIndex).entity();
+    ASSERT_TRUE(autoDiscovered.setObjectCameraProperties(
+        autoPerspectiveObject,
+        unsavedPerspective));
+    EXPECT_TRUE(autoDiscovered.dirty());
+    std::string revertMessage;
+    ASSERT_TRUE(autoDiscovered.revert(revertMessage)) << revertMessage;
+    expectPersistedProperties(autoDiscovered);
+
+    const std::filesystem::path fallbackDirectory = directory / "fallback";
+    std::filesystem::create_directories(fallbackDirectory);
+    const std::filesystem::path fallbackPath = writeFallbackScene(fallbackDirectory);
+    const std::filesystem::path fallbackSidecar =
+        metallic::scene::SceneDocument::sidecarPathForSource(fallbackPath);
+    std::filesystem::remove(fallbackSidecar, cleanupError);
+    std::filesystem::remove(fallbackSidecar.string() + ".tmp", cleanupError);
+    metallic::scene::SceneDocument fallbackDocument;
+    ASSERT_TRUE(fallbackDocument.load(fallbackPath))
+        << fallbackDocument.lastLoadResult().error;
+    ASSERT_EQ(fallbackDocument.cameras().size(), 1u);
+    const metallic::scene::RenderCamera fallbackSnapshot = fallbackDocument.cameras().front();
+    const metallic::scene::ConstSceneObject fallbackObject =
+        fallbackDocument.sceneGraph().object(fallbackSnapshot.object);
+    ASSERT_TRUE(fallbackObject);
+    EXPECT_TRUE(fallbackObject.hasComponent<metallic::scene::GeneratedComponent>());
+    EXPECT_FALSE(fallbackObject.hasComponent<metallic::scene::SourceNodeComponent>());
+    const metallic::scene::CameraComponent& fallbackComponent =
+        fallbackObject.getComponent<metallic::scene::CameraComponent>();
+    const metallic::scene::CameraProperties fallbackOriginal = fallbackComponent.properties;
+    metallic::scene::CameraProperties fallbackEdit = fallbackComponent.properties;
+    fallbackEdit.yfov *= 0.8;
+    const uint64_t fallbackContentRevision =
+        fallbackDocument.sceneGraph().contentRevision();
+    const uint64_t fallbackTransformRevision = fallbackDocument.transformRevision();
+    EXPECT_FALSE(fallbackDocument.setObjectCameraProperties(
+        fallbackObject.entity(),
+        fallbackEdit));
+    EXPECT_FALSE(fallbackDocument.dirty());
+    EXPECT_EQ(
+        fallbackDocument.sceneGraph().contentRevision(),
+        fallbackContentRevision);
+    EXPECT_EQ(fallbackDocument.transformRevision(), fallbackTransformRevision);
+    expectCameraProperties(
+        fallbackComponent.properties,
+        fallbackOriginal,
+        "generated fallback component");
+    expectCameraSnapshot(
+        fallbackDocument.cameras().front(),
+        fallbackComponent.properties,
+        "generated fallback snapshot");
 }
 
 void testScenePickerBvh(const std::filesystem::path& directory)
@@ -2882,6 +3382,11 @@ TEST(SceneEditing, MutableTransforms)
 TEST(SceneEditing, DocumentRoundTrip)
 {
     testSceneDocumentRoundTrip(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, ComponentPropertyRoundTrip)
+{
+    testSceneDocumentPropertyRoundTrip(prepareOutputDirectory());
 }
 
 TEST(SceneEditing, PickerBvh)
