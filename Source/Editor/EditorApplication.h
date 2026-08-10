@@ -271,6 +271,7 @@ private:
     float translateSnap_ = 0.5f;
     float rotateSnap_ = 15.0f;
     float scaleSnap_ = 0.1f;
+    float viewportCameraSpeed_ = 1.0f;
     scene::SceneEntity viewportHoveredObject_ = scene::kNullSceneEntity;
     scene::SceneEntity gizmoEditingObject_ = scene::kNullSceneEntity;
     uint64_t gizmoEditingSceneLifetime_ = 0;

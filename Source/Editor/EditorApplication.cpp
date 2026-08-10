@@ -54,6 +54,9 @@ constexpr int kNoViewportCameraDragButton = -1;
 constexpr float kKeyboardMoveRate = 2.5f;
 constexpr float kFastCameraMoveMultiplier = 5.0f;
 constexpr float kSlowCameraMoveMultiplier = 0.1f;
+constexpr float kMinViewportCameraSpeed = 0.01f;
+constexpr float kMaxViewportCameraSpeed = 100.0f;
+constexpr float kViewportCameraWheelSpeedStep = 1.25f;
 constexpr float kMaxDollyDisplacement = 0.99f;
 constexpr const char* kDefaultRenderSampleId = "pathtracing-sample";
 constexpr const char* kDefaultImGuiIni = R"ini([Window][Viewport]
@@ -3061,6 +3064,21 @@ void EditorApplication::drawInspectorPanel()
         return;
     }
 
+    if (ImGui::CollapsingHeader("Viewport Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushItemWidth(-1.0f);
+        ImGui::DragFloat(
+            "Movement Speed",
+            &viewportCameraSpeed_,
+            0.05f,
+            kMinViewportCameraSpeed,
+            kMaxViewportCameraSpeed,
+            "%.2fx",
+            ImGuiSliderFlags_AlwaysClamp);
+        ImGui::PopItemWidth();
+        ImGui::TextDisabled("Hold RMB and scroll to adjust speed quickly.");
+    }
+    ImGui::Separator();
+
     if (!scene_.valid()) {
         ImGui::TextDisabled("No scene loaded");
         ImGui::End();
@@ -5389,15 +5407,23 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
     render::RenderGraphProperties& camera = properties["camera"];
     bool changed = false;
 
-    if (hovered && !gizmoCapturingMouse && io.MouseWheel != 0.0f) {
-        changed = dollyCamera(io.MouseWheel, camera) || changed;
+    if (!gizmoCapturingMouse && io.MouseWheel != 0.0f) {
+        if (viewportCameraDragButton_ == ImGuiMouseButton_Right) {
+            viewportCameraSpeed_ = std::clamp(
+                viewportCameraSpeed_ * std::pow(kViewportCameraWheelSpeedStep, io.MouseWheel),
+                kMinViewportCameraSpeed,
+                kMaxViewportCameraSpeed);
+            ImGui::SetTooltip("Camera speed: %.2fx", viewportCameraSpeed_);
+        } else if (hovered) {
+            changed = dollyCamera(io.MouseWheel, camera) || changed;
+        }
     }
 
     if (viewportCameraDragButton_ == ImGuiMouseButton_Right && !io.WantTextInput) {
         if (!alt) {
             const bool shift = ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
             const bool ctrl = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
-            float speedMultiplier = 1.0f;
+            float speedMultiplier = viewportCameraSpeed_;
             if (shift) {
                 speedMultiplier *= kFastCameraMoveMultiplier;
             }
