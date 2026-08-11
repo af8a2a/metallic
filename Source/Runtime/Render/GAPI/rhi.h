@@ -131,6 +131,7 @@ enum class ResourceState : uint8_t {
     ColorAttachment,
     DepthStencilAttachment,
     ShaderRead,
+    IndirectArgument,
     TransferSource,
     TransferDestination,
     General,
@@ -211,6 +212,17 @@ enum class CompareOp : uint8_t {
 
 enum class PrimitiveTopology : uint8_t {
     TriangleList,
+};
+
+enum class CullMode : uint8_t {
+    None,
+    Front,
+    Back,
+};
+
+enum class FrontFace : uint8_t {
+    CounterClockwise,
+    Clockwise,
 };
 
 constexpr PipelineStageBits operator|(PipelineStageBits lhs, PipelineStageBits rhs)
@@ -449,6 +461,11 @@ struct DepthStencilState {
     CompareOp depthCompareOp = CompareOp::LessEqual;
 };
 
+struct RasterizationState {
+    CullMode cullMode = CullMode::None;
+    FrontFace frontFace = FrontFace::CounterClockwise;
+};
+
 struct ShaderModuleDesc {
     const uint32_t* code = nullptr;
     uint64_t byteSize = 0;
@@ -487,6 +504,7 @@ struct GraphicsPipelineDesc {
     Format colorFormat = Format::Unknown;
     Format depthStencilFormat = Format::Unknown;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+    RasterizationState rasterization;
     DepthStencilState depthStencil;
     bool usesBindlessHeap = false;
     class PipelineCache* pipelineCache = nullptr;

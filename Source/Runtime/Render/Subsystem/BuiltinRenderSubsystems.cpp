@@ -1,5 +1,6 @@
 #include "Runtime/Render/Subsystem/BuiltinRenderSubsystems.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include <array>
 
@@ -56,6 +57,13 @@ bool registerBuiltInRenderSubsystems(RenderSubsystemHost& host, std::string& log
     };
     if (!host.isRegistered(SceneResourcesSubsystem::kSubsystemId) &&
         !host.registerSubsystem<SceneResourcesSubsystem>(sceneDependencies, log)) {
+        return false;
+    }
+    constexpr std::array<RenderSubsystemId, 1> gpuSceneDependencies{
+        RenderUploadSubsystem::kSubsystemId,
+    };
+    if (!host.isRegistered(GPUSceneSubsystem::kSubsystemId) &&
+        !host.registerSubsystem<GPUSceneSubsystem>(gpuSceneDependencies, log)) {
         return false;
     }
     constexpr std::array<RenderSubsystemId, 1> environmentDependencies{

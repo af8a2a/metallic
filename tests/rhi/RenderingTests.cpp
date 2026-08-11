@@ -1135,13 +1135,15 @@ public:
         const auto createPipeline = [&](
                                         render::PipelineCache& cache,
                                         render::ShaderModule& fragment,
-                                        std::unique_ptr<render::GraphicsPipeline>& outPipeline) {
+                                        std::unique_ptr<render::GraphicsPipeline>& outPipeline,
+                                        render::RasterizationState rasterization = {}) {
             return context.device.createGraphicsPipeline(
                 render::GraphicsPipelineDesc{
                     .vertexShader = vertexShader.get(),
                     .fragmentShader = &fragment,
                     .colorFormat = render::Format::Rgba8Unorm,
                     .topology = render::PrimitiveTopology::TriangleList,
+                    .rasterization = rasterization,
                     .pipelineCache = &cache,
                 },
                 outPipeline);
@@ -1205,6 +1207,64 @@ public:
             return RhiTestResult::fail("unchanged shader did not reuse the saved PSO cache entry");
         }
 
+        std::unique_ptr<render::GraphicsPipeline> explicitDefaultPipeline;
+        result = createPipeline(
+            *loadedCache,
+            *fragmentShader,
+            explicitDefaultPipeline,
+            render::RasterizationState{
+                .cullMode = render::CullMode::None,
+                .frontFace = render::FrontFace::CounterClockwise,
+            });
+        if (!result || explicitDefaultPipeline == nullptr ||
+            !explicitDefaultPipeline->pipelineCacheHit() ||
+            explicitDefaultPipeline->psoHash() != originalPsoHash) {
+            return RhiTestResult::fail("explicit default rasterization state changed the PSO hash");
+        }
+
+        std::unique_ptr<render::GraphicsPipeline> frontCullPipeline;
+        result = createPipeline(
+            *loadedCache,
+            *fragmentShader,
+            frontCullPipeline,
+            render::RasterizationState{
+                .cullMode = render::CullMode::Front,
+                .frontFace = render::FrontFace::CounterClockwise,
+            });
+        if (!result || frontCullPipeline == nullptr || frontCullPipeline->pipelineCacheHit() ||
+            frontCullPipeline->psoHash() == originalPsoHash) {
+            return RhiTestResult::fail("front-face culling did not invalidate the PSO hash");
+        }
+
+        std::unique_ptr<render::GraphicsPipeline> backCullPipeline;
+        result = createPipeline(
+            *loadedCache,
+            *fragmentShader,
+            backCullPipeline,
+            render::RasterizationState{
+                .cullMode = render::CullMode::Back,
+                .frontFace = render::FrontFace::CounterClockwise,
+            });
+        if (!result || backCullPipeline == nullptr || backCullPipeline->pipelineCacheHit() ||
+            backCullPipeline->psoHash() == originalPsoHash ||
+            backCullPipeline->psoHash() == frontCullPipeline->psoHash()) {
+            return RhiTestResult::fail("back-face culling did not produce a distinct PSO hash");
+        }
+
+        std::unique_ptr<render::GraphicsPipeline> clockwisePipeline;
+        result = createPipeline(
+            *loadedCache,
+            *fragmentShader,
+            clockwisePipeline,
+            render::RasterizationState{
+                .cullMode = render::CullMode::Back,
+                .frontFace = render::FrontFace::Clockwise,
+            });
+        if (!result || clockwisePipeline == nullptr || clockwisePipeline->pipelineCacheHit() ||
+            clockwisePipeline->psoHash() == backCullPipeline->psoHash()) {
+            return RhiTestResult::fail("front-face winding did not invalidate the PSO hash");
+        }
+
         std::unique_ptr<render::GraphicsPipeline> changedPipeline;
         result = createPipeline(*loadedCache, *changedFragmentShader, changedPipeline);
         if (!result || changedPipeline == nullptr) {
@@ -1218,12 +1278,16 @@ public:
 
         result = loadedCache->save();
         const render::PipelineCacheStats finalStats = loadedCache->stats();
-        if (!result || finalStats.hitCount != 1 || finalStats.missCount != 1 ||
-            finalStats.storedPsoCount != 2) {
+        if (!result || finalStats.hitCount != 2 || finalStats.missCount != 4 ||
+            finalStats.storedPsoCount != 5) {
             return RhiTestResult::fail("pipeline cache hit/miss statistics are inconsistent");
         }
 
         changedPipeline.reset();
+        clockwisePipeline.reset();
+        backCullPipeline.reset();
+        frontCullPipeline.reset();
+        explicitDefaultPipeline.reset();
         cachedPipeline.reset();
         loadedCache.reset();
         {
@@ -1285,7 +1349,7 @@ public:
         }
 
         return RhiTestResult::pass(
-            "validated cold miss, warm hit, shader invalidation, corruption recovery, and .pso persistence");
+            "validated raster state hashing, cold miss, warm hit, shader invalidation, corruption recovery, and .pso persistence");
     }
 };
 

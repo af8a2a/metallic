@@ -115,12 +115,15 @@ struct GPUDrivenPreviewPush
     uint bufferShaderIndexBase;
     uint positionBuffer;
     uint meshletBuffer;
+    uint meshletDrawBuffer;
     uint meshletVertexBuffer;
     uint meshletTriangleBuffer;
     uint paramsBuffer;
     uint transformBuffer;
     uint instanceBuffer;
     uint instanceVisibilityBuffer;
+    uint visibleInstanceIdsBuffer;
+    uint visibleInstanceCounterBuffer;
     uint visibleMeshletBuffer0;
     uint visibleMeshletBuffer1;
     uint indirectBuffer0;
@@ -134,7 +137,7 @@ struct GPUDrivenPreviewPush
     uint mipLevel;
     uint projectWithCullingCamera;
     uint materialBuffer;
-    uint materialTextureImageBase;
+    uint materialTextureRemapBuffer;
     uint environmentImage;
     uint environmentSHBuffer;
 };
@@ -144,7 +147,9 @@ struct GPUDrivenPreviewVertex
     float4 position;
     float4 normal;
     float4 tangent;
-    float4 texcoord;
+    float2 texcoord;
+    uint flags;
+    uint reserved;
 };
 
 struct SceneTransform
@@ -157,21 +162,43 @@ struct SceneTransform
 
 struct GPUDrivenPreviewMeshlet
 {
-    uint vertexOffset;
-    uint vertexCount;
-    uint triangleOffset;
-    uint triangleCount;
-    uint primitiveIndex;
-    uint materialIndex;
-    uint lodLevel;
-    uint lodGroupIndex;
-    uint transformIndex;
-    uint instanceIndex;
-    uint flags;
-    uint padding0;
+    uint4 ranges;
+    uint4 lod;
     float4 boundingSphere;
     float4 coneApexCutoff;
-    float4 coneAxis;
+    float4 coneAxisLodError;
+};
+
+struct GPUDrivenPreviewMeshletDraw
+{
+    uint meshletIndex;
+    uint instanceIndex;
+    uint geometryIndex;
+    uint drawBucket;
+};
+
+struct GPUDrivenPreviewGeometry
+{
+    uint4 source;
+    uint4 counts;
+    uint4 payload;
+    uint4 meshletPayload;
+    float4 localBoundingSphere;
+    uint4 identity;
+};
+
+struct GPUDrivenPreviewInstance
+{
+    float4 world0;
+    float4 world1;
+    float4 world2;
+    float4 world3;
+    float4 previousWorld0;
+    float4 previousWorld1;
+    float4 previousWorld2;
+    float4 previousWorld3;
+    float4 localBoundingSphere;
+    uint4 identity;
 };
 
 struct GPUDrivenPreviewTextureInfo
@@ -202,7 +229,29 @@ struct GPUDrivenPreviewMaterial
     GPUDrivenPreviewTextureInfo thicknessTexture;
     GPUDrivenPreviewTextureInfo diffuseTransmissionTexture;
     GPUDrivenPreviewTextureInfo diffuseTransmissionColorTexture;
+    uint4 identity;
 };
+
+SceneTransform instanceTransform(GPUDrivenPreviewInstance instance)
+{
+    SceneTransform transform;
+    transform.world0 = instance.world0;
+    transform.world1 = instance.world1;
+    transform.world2 = instance.world2;
+    transform.world3 = instance.world3;
+    return transform;
+}
+
+uint loadPackedMeshletTriangleIndex(
+    StructuredBuffer<uint> triangleWords,
+    uint firstWord,
+    uint triangleIndex,
+    uint triangleCorner)
+{
+    uint byteOffset = triangleIndex * 3u + triangleCorner;
+    uint word = triangleWords[firstWord + (byteOffset >> 2u)];
+    return (word >> ((byteOffset & 3u) * 8u)) & 0xffu;
+}
 
 struct GPUDrivenPreviewParams
 {
@@ -239,7 +288,7 @@ struct GPUDrivenPreviewParams
     uint environmentMode;
     uint environmentVisible;
     uint materialCount;
-    uint shadingPadding0;
+    uint visibleMeshletCapacity;
     uint shadingPadding1;
     uint shadingPadding2;
 };
@@ -435,9 +484,14 @@ float4 sampleMaterialTexture(
         textureInfo.textureIndex >= params.materialTextureCount) {
         return fallback;
     }
+    DescriptorHandle<StructuredBuffer<uint>> remapHandle =
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(
+            push.bufferShaderIndexBase + push.materialTextureRemapBuffer,
+            0));
+    StructuredBuffer<uint> remap = remapHandle;
     DescriptorHandle<Texture2D<float4>> textureHandle =
         DescriptorHandle<Texture2D<float4>>(uint2(
-            push.imageShaderIndexBase + push.materialTextureImageBase + textureInfo.textureIndex,
+            push.imageShaderIndexBase + remap[textureInfo.textureIndex],
             0));
     Texture2D<float4> texture = textureHandle;
     return sampleImageBilinear(texture, transformMaterialUv(textureInfo, uv), true);
@@ -599,19 +653,39 @@ void gpuDrivenPreviewDeferredMain(
 
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshletDraw>> meshletDrawHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshletDraw>>(uint2(
+            push.bufferShaderIndexBase + push.meshletDrawBuffer,
+            0));
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
-    GPUDrivenPreviewMeshlet meshlet = meshlets[meshletIndex];
-    if (triangleIndex >= meshlet.triangleCount) {
+    StructuredBuffer<GPUDrivenPreviewMeshletDraw> meshletDraws = meshletDrawHandle;
+    GPUDrivenPreviewMeshletDraw meshletDraw = meshletDraws[meshletIndex];
+    GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.meshletIndex];
+    if (triangleIndex >= meshlet.ranges.w) {
         colors[outputIndex] = packColor(params.clearColor.xyz);
         return;
     }
 
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewGeometry>> geometryHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewGeometry>>(uint2(
+            push.bufferShaderIndexBase + push.transformBuffer,
+            0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instanceHandle =
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(
+            push.bufferShaderIndexBase + push.instanceBuffer,
+            0));
+    StructuredBuffer<GPUDrivenPreviewGeometry> geometries = geometryHandle;
+    StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
+    GPUDrivenPreviewGeometry geometry = geometries[meshletDraw.geometryIndex];
+    GPUDrivenPreviewInstance instance = instances[meshletDraw.instanceIndex];
+
     if (params.mode != kModeShaded && params.mode != kModeBaseColor) {
         uint colorSeed = meshletIndex;
         if (params.mode == kModePrimitive) {
-            colorSeed = meshlet.primitiveIndex;
+            colorSeed = geometry.source.x;
         } else if (params.mode == kModeLod) {
-            colorSeed = meshlet.primitiveIndex * 1009u + meshlet.lodGroupIndex * 131u + meshlet.lodLevel * 17u + 1u;
+            colorSeed = geometry.source.x * 1009u +
+                meshlet.lod.y * 131u + meshlet.lod.x * 17u + 1u;
         }
         colors[outputIndex] = packColor(hashColor(colorSeed + 1u));
         return;
@@ -623,26 +697,22 @@ void gpuDrivenPreviewDeferredMain(
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.meshletVertexBuffer, 0));
     DescriptorHandle<StructuredBuffer<uint>> meshletTriangleHandle =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.meshletTriangleBuffer, 0));
-    DescriptorHandle<StructuredBuffer<SceneTransform>> transformHandle =
-        DescriptorHandle<StructuredBuffer<SceneTransform>>(uint2(push.bufferShaderIndexBase + push.transformBuffer, 0));
     StructuredBuffer<GPUDrivenPreviewVertex> vertices = vertexHandle;
     StructuredBuffer<uint> meshletVertices = meshletVertexHandle;
     StructuredBuffer<uint> meshletTriangles = meshletTriangleHandle;
-    StructuredBuffer<SceneTransform> transforms = transformHandle;
 
-    uint triangleBase = meshlet.triangleOffset + triangleIndex * 3u;
     uint3 localIndices = uint3(
-        meshletTriangles[triangleBase],
-        meshletTriangles[triangleBase + 1u],
-        meshletTriangles[triangleBase + 2u]);
+        loadPackedMeshletTriangleIndex(meshletTriangles, meshlet.ranges.z, triangleIndex, 0u),
+        loadPackedMeshletTriangleIndex(meshletTriangles, meshlet.ranges.z, triangleIndex, 1u),
+        loadPackedMeshletTriangleIndex(meshletTriangles, meshlet.ranges.z, triangleIndex, 2u));
     uint3 vertexIndices = uint3(
-        meshletVertices[meshlet.vertexOffset + localIndices.x],
-        meshletVertices[meshlet.vertexOffset + localIndices.y],
-        meshletVertices[meshlet.vertexOffset + localIndices.z]);
+        geometry.payload.x + meshletVertices[meshlet.ranges.x + localIndices.x],
+        geometry.payload.x + meshletVertices[meshlet.ranges.x + localIndices.y],
+        geometry.payload.x + meshletVertices[meshlet.ranges.x + localIndices.z]);
     GPUDrivenPreviewVertex vertex0 = vertices[vertexIndices.x];
     GPUDrivenPreviewVertex vertex1 = vertices[vertexIndices.y];
     GPUDrivenPreviewVertex vertex2 = vertices[vertexIndices.z];
-    SceneTransform transform = transforms[meshlet.transformIndex];
+    SceneTransform transform = instanceTransform(instance);
 
     float3 world0 = transformPoint(transform, vertex0.position.xyz);
     float3 world1 = transformPoint(transform, vertex1.position.xyz);
@@ -659,10 +729,6 @@ void gpuDrivenPreviewDeferredMain(
     float3 geometryNormal = safeNormalize(cross(world1 - world0, world2 - world0), float3(0.0, 0.0, 1.0));
     float3 normal = transformNormal(transform, localNormal);
     float3 viewDirection = safeNormalize(params.renderEye.xyz - worldPosition, -cameraRayDirection(pixelCenter, params));
-    if (dot(geometryNormal, viewDirection) < 0.0) {
-        geometryNormal = -geometryNormal;
-        normal = -normal;
-    }
     if (dot(normal, geometryNormal) < 0.0) {
         normal = -normal;
     }
@@ -676,7 +742,7 @@ void gpuDrivenPreviewDeferredMain(
     float tangentSign = localTangent.w < 0.0 ? -1.0 : 1.0;
     float3 bitangent = safeNormalize(cross(normal, tangent) * tangentSign, float3(0.0, 1.0, 0.0));
 
-    uint materialIndex = min(meshlet.materialIndex, max(params.materialCount, 1u) - 1u);
+    uint materialIndex = min(instance.identity.y, max(params.materialCount, 1u) - 1u);
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materialHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(uint2(push.bufferShaderIndexBase + push.materialBuffer, 0));
     StructuredBuffer<GPUDrivenPreviewMaterial> materials = materialHandle;
@@ -695,6 +761,9 @@ void gpuDrivenPreviewDeferredMain(
         tangent * tangentNormal.x + bitangent * tangentNormal.y + normal * tangentNormal.z,
         normal);
     if (dot(normal, geometryNormal) < 0.0) {
+        normal = -normal;
+    }
+    if (dot(normal, viewDirection) < 0.0) {
         normal = -normal;
     }
     tangent = safeNormalize(tangent - normal * dot(normal, tangent), tangent);

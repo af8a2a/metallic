@@ -45,6 +45,7 @@ public:
     void beginFrame(uint64_t frameIndex);
     void invalidate(std::string_view name);
     void invalidateAll();
+    uint64_t invalidationRevision() const;
 
     Result ensureTexture(
         std::string_view name,

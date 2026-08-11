@@ -169,6 +169,9 @@ struct SceneRayQueryProgramDesc {
     // Multiple sets let a command buffer record several dispatches without
     // updating a descriptor set that is still referenced by an earlier dispatch.
     uint32_t descriptorSetCount = 1;
+    // Most users execute ray-query shaders and therefore require both RTAS and
+    // ray-query support. Pure compute users may opt out explicitly.
+    bool requiresRayQuery = true;
 };
 
 struct SceneRayQueryDispatchBinding {

@@ -111,6 +111,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
                 .bindingCount = static_cast<uint32_t>(bindings.size()),
                 .debugName = "EnvironmentLightingPrecompute",
                 .descriptorSetCount = 2,
+                .requiresRayQuery = false,
             },
             log);
     }
@@ -204,16 +205,12 @@ Result EnvironmentLightingSubsystem::initialize(
         desc_ = *desc;
     }
     desc_.maxDecodeJobs = std::max(desc_.maxDecodeJobs, 1u);
-    const DeviceCapabilities& capabilities = context.device.capabilities();
-    if (capabilities.rayTracingAccelerationStructure && capabilities.rayQuery) {
-        Result result = pdfCompute_.initialize(context.device, log);
-        if (!result) {
-            return result;
-        }
-        gpuPrecompute_ = std::make_unique<GpuPrecompute>();
-        return gpuPrecompute_->initialize(context.device, log);
+    Result result = pdfCompute_.initialize(context.device, log);
+    if (!result) {
+        return result;
     }
-    return {};
+    gpuPrecompute_ = std::make_unique<GpuPrecompute>();
+    return gpuPrecompute_->initialize(context.device, log);
 }
 
 void EnvironmentLightingSubsystem::onWorldChanged(RenderWorld* world)

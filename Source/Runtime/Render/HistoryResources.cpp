@@ -132,7 +132,16 @@ struct HistoryResourceManager::Impl {
     uint32_t currentSlot = 0;
     uint32_t previousSlot = 1;
     uint64_t frameIndex = 0;
+    uint64_t invalidationRevision = 1;
     std::unordered_map<std::string, Record> records;
+
+    void advanceInvalidationRevision()
+    {
+        ++invalidationRevision;
+        if (invalidationRevision == 0) {
+            invalidationRevision = 1;
+        }
+    }
 
     static bool textureRecordComplete(const Record& record)
     {
@@ -298,6 +307,7 @@ Result HistoryResourceManager::initialize(Device& device)
     impl_->currentSlot = 0;
     impl_->previousSlot = 1;
     impl_->frameIndex = 0;
+    impl_->advanceInvalidationRevision();
     return {};
 }
 
@@ -308,6 +318,7 @@ void HistoryResourceManager::reset()
     impl_->currentSlot = 0;
     impl_->previousSlot = 1;
     impl_->frameIndex = 0;
+    impl_->advanceInvalidationRevision();
 }
 
 void HistoryResourceManager::beginFrame(uint64_t frameIndex)
@@ -341,6 +352,12 @@ void HistoryResourceManager::invalidateAll()
         (void)name;
         Impl::invalidateRecord(record);
     }
+    impl_->advanceInvalidationRevision();
+}
+
+uint64_t HistoryResourceManager::invalidationRevision() const
+{
+    return impl_->invalidationRevision;
 }
 
 Result HistoryResourceManager::ensureTexture(

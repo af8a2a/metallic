@@ -48,6 +48,12 @@ public:
             return RhiTestResult::fail(std::string("HistoryResourceManager::initialize returned ") + toString(result));
         }
 
+        const uint64_t initialInvalidationRevision = manager.invalidationRevision();
+        manager.invalidateAll();
+        if (manager.invalidationRevision() == initialInvalidationRevision) {
+            return RhiTestResult::fail("invalidateAll did not advance the history invalidation revision");
+        }
+
         manager.beginFrame(0);
         result = manager.ensureTexture("color", desc);
         if (!result) {

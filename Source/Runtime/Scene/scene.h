@@ -282,6 +282,7 @@ public:
     void clear();
     bool setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix);
     bool setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix);
+    bool setObjectVisible(SceneEntity object, bool visible);
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
@@ -312,6 +313,7 @@ public:
     const std::vector<RenderLight>& lights() const { return lights_; }
     uint64_t transformRevision() const { return sceneGraph_.transformRevision(); }
     uint64_t contentRevision() const { return sceneGraph_.contentRevision(); }
+    uint64_t visibilityRevision() const { return sceneGraph_.visibilityRevision(); }
 
 private:
     bool loadInternal(

@@ -2580,6 +2580,57 @@ void testMutableSceneTransforms(const std::filesystem::path& directory)
     EXPECT_FALSE(scene.setNodeLocalMatrix(-1, editedRoot));
 }
 
+void testMutableSceneVisibility(const std::filesystem::path& directory)
+{
+    const std::filesystem::path gltfPath = writeFullScene(directory);
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.load(gltfPath)) << scene.lastLoadResult().error;
+    ASSERT_EQ(scene.nodes().size(), 5u);
+    ASSERT_EQ(scene.renderNodes().size(), 1u);
+
+    const metallic::scene::SceneEntity rootObject = scene.objectForNode(0).entity();
+    const metallic::scene::SceneEntity meshObject = scene.objectForNode(1).entity();
+    const uint64_t initialVisibilityRevision = scene.visibilityRevision();
+    const uint64_t initialStructuralRevision = scene.sceneGraph().structuralRevision();
+    const uint64_t initialTransformRevision = scene.transformRevision();
+
+    ASSERT_TRUE(scene.setObjectVisible(rootObject, false));
+    EXPECT_EQ(scene.visibilityRevision(), initialVisibilityRevision + 1u);
+    EXPECT_EQ(scene.sceneGraph().structuralRevision(), initialStructuralRevision);
+    EXPECT_EQ(scene.transformRevision(), initialTransformRevision);
+    EXPECT_FALSE(scene.nodes()[0].visible);
+    EXPECT_FALSE(scene.nodes()[1].visible);
+    EXPECT_FALSE(scene.renderNodes()[0].visible);
+    EXPECT_FALSE(
+        scene.objectForNode(0).getComponent<metallic::scene::VisibilityComponent>().worldVisible);
+    EXPECT_FALSE(
+        scene.objectForNode(1).getComponent<metallic::scene::VisibilityComponent>().worldVisible);
+
+    EXPECT_FALSE(scene.setObjectVisible(rootObject, false));
+    EXPECT_EQ(scene.visibilityRevision(), initialVisibilityRevision + 1u);
+
+    ASSERT_TRUE(scene.setObjectVisible(rootObject, true));
+    EXPECT_EQ(scene.visibilityRevision(), initialVisibilityRevision + 2u);
+    EXPECT_TRUE(scene.nodes()[0].visible);
+    EXPECT_TRUE(scene.nodes()[1].visible);
+    EXPECT_TRUE(scene.renderNodes()[0].visible);
+
+    ASSERT_TRUE(scene.setObjectVisible(meshObject, false));
+    EXPECT_EQ(scene.visibilityRevision(), initialVisibilityRevision + 3u);
+    EXPECT_TRUE(scene.nodes()[0].visible);
+    EXPECT_FALSE(scene.nodes()[1].visible);
+    EXPECT_FALSE(scene.renderNodes()[0].visible);
+    EXPECT_TRUE(
+        scene.objectForNode(0).getComponent<metallic::scene::VisibilityComponent>().localVisible);
+    EXPECT_FALSE(
+        scene.objectForNode(1).getComponent<metallic::scene::VisibilityComponent>().localVisible);
+    EXPECT_EQ(scene.sceneGraph().structuralRevision(), initialStructuralRevision);
+    EXPECT_EQ(scene.transformRevision(), initialTransformRevision);
+
+    EXPECT_FALSE(scene.setObjectVisible(metallic::scene::kNullSceneEntity, true));
+    EXPECT_EQ(scene.visibilityRevision(), initialVisibilityRevision + 3u);
+}
+
 void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
 {
     const std::filesystem::path directory = baseDirectory / "scene_document";
@@ -3377,6 +3428,11 @@ TEST(SceneImport, UnsupportedRequiredExtension)
 TEST(SceneEditing, MutableTransforms)
 {
     testMutableSceneTransforms(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, MutableVisibility)
+{
+    testMutableSceneVisibility(prepareOutputDirectory());
 }
 
 TEST(SceneEditing, DocumentRoundTrip)

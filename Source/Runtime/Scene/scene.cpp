@@ -3403,6 +3403,15 @@ bool Scene::setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix
     return true;
 }
 
+bool Scene::setObjectVisible(SceneEntity object, bool visible)
+{
+    if (!valid() || !sceneGraph_.setVisible(object, visible)) {
+        return false;
+    }
+    refreshTransforms();
+    return true;
+}
+
 bool Scene::setObjectCameraProperties(
     SceneEntity object,
     const CameraProperties& properties)

@@ -9,7 +9,7 @@ namespace {
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 // Increment when an implicit RHI pipeline state changes without a desc change.
-constexpr uint32_t kPipelineStateHashVersion = 1;
+constexpr uint32_t kPipelineStateHashVersion = 2;
 constexpr uint32_t kGraphicsPipelineTag = 0x4750534fu;
 constexpr uint32_t kComputePipelineTag = 0x4350534fu;
 
@@ -73,6 +73,8 @@ uint64_t graphicsPipelineStateHash(const GraphicsPipelineDesc& desc)
     hash = hashValue(hash, static_cast<uint32_t>(desc.colorFormat));
     hash = hashValue(hash, static_cast<uint32_t>(desc.depthStencilFormat));
     hash = hashValue(hash, static_cast<uint32_t>(desc.topology));
+    hash = hashValue(hash, static_cast<uint32_t>(desc.rasterization.cullMode));
+    hash = hashValue(hash, static_cast<uint32_t>(desc.rasterization.frontFace));
     hash = hashValue(hash, hashBool(desc.depthStencil.depthTestEnable));
     hash = hashValue(hash, hashBool(desc.depthStencil.depthWriteEnable));
     hash = hashValue(hash, static_cast<uint32_t>(desc.depthStencil.depthCompareOp));

@@ -50,6 +50,7 @@ public:
     uint64_t transformRevision() const { return transformRevision_; }
     uint64_t contentRevision() const { return contentRevision_; }
     uint64_t structuralRevision() const { return structuralRevision_; }
+    uint64_t visibilityRevision() const { return visibilityRevision_; }
     uint64_t lifetimeRevision() const { return lifetimeRevision_; }
 
     const entt::registry& registry() const { return registry_; }
@@ -70,6 +71,7 @@ private:
     uint64_t transformRevision_ = 0;
     uint64_t contentRevision_ = 0;
     uint64_t structuralRevision_ = 0;
+    uint64_t visibilityRevision_ = 0;
     uint64_t objectEpoch_ = 1;
     uint64_t lifetimeRevision_ = 0;
 };

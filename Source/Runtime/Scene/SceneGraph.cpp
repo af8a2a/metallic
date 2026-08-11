@@ -243,6 +243,7 @@ SceneGraph::SceneGraph(SceneGraph&& other) noexcept
       transformRevision_(other.transformRevision_),
       contentRevision_(other.contentRevision_),
       structuralRevision_(other.structuralRevision_),
+      visibilityRevision_(other.visibilityRevision_),
       lifetimeRevision_(nextSceneGraphLifetimeRevision())
 {
     other.registry_ = entt::registry{};
@@ -253,6 +254,7 @@ SceneGraph::SceneGraph(SceneGraph&& other) noexcept
     other.transformRevision_ = 0;
     other.contentRevision_ = 0;
     other.structuralRevision_ = 0;
+    other.visibilityRevision_ = 0;
 }
 
 SceneGraph& SceneGraph::operator=(SceneGraph&& other) noexcept
@@ -268,6 +270,7 @@ SceneGraph& SceneGraph::operator=(SceneGraph&& other) noexcept
     transformRevision_ = other.transformRevision_;
     contentRevision_ = other.contentRevision_;
     structuralRevision_ = other.structuralRevision_;
+    visibilityRevision_ = other.visibilityRevision_;
     lifetimeRevision_ = nextSceneGraphLifetimeRevision();
 
     other.registry_.clear();
@@ -276,6 +279,7 @@ SceneGraph& SceneGraph::operator=(SceneGraph&& other) noexcept
     other.transformRevision_ = 0;
     other.contentRevision_ = 0;
     other.structuralRevision_ = 0;
+    other.visibilityRevision_ = 0;
     incrementRevision(other.objectEpoch_);
     other.lifetimeRevision_ = nextSceneGraphLifetimeRevision();
     return *this;
@@ -380,6 +384,7 @@ void SceneGraph::clear()
     transformRevision_ = 0;
     contentRevision_ = 0;
     structuralRevision_ = 0;
+    visibilityRevision_ = 0;
 }
 
 SceneObject SceneGraph::object(SceneEntity entity)
@@ -632,7 +637,7 @@ bool SceneGraph::setVisible(SceneEntity objectEntity, bool visible)
         return false;
     }
     visibility.localVisible = visible;
-    incrementRevision(structuralRevision_);
+    incrementRevision(visibilityRevision_);
     return true;
 }
 
@@ -685,6 +690,7 @@ void SceneGraph::resetRevisions()
     transformRevision_ = 0;
     contentRevision_ = 0;
     structuralRevision_ = 0;
+    visibilityRevision_ = 0;
     for (const SceneEntity entity : registry_.view<TransformComponent>()) {
         registry_.get<TransformComponent>(entity).transformRevision = 0;
     }

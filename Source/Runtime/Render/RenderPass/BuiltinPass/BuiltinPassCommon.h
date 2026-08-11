@@ -6,6 +6,7 @@
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Scene/Scene.h"
 
 #include <spdlog/spdlog.h>
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -20,8 +22,10 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -52,6 +56,8 @@ inline constexpr const char* kGPUDrivenPreviewShaderModuleName = "GPUDrivenPrevi
 inline constexpr const char* kGPUDrivenDeferredShaderModuleName = "GPUDrivenDeferred";
 inline constexpr const char* kGPUDrivenPreviewMeshEntryPoint = "gpuDrivenPreviewMeshMain";
 inline constexpr const char* kGPUDrivenPreviewFragmentEntryPoint = "gpuDrivenPreviewFragmentMain";
+inline constexpr const char* kGPUDrivenPreviewMaskedFragmentEntryPoint =
+    "gpuDrivenPreviewMaskedFragmentMain";
 inline constexpr const char* kGPUDrivenPreviewResetEntryPoint = "gpuDrivenPreviewResetMain";
 inline constexpr const char* kGPUDrivenPreviewInstanceCullEntryPoint = "gpuDrivenPreviewInstanceCullMain";
 inline constexpr const char* kGPUDrivenPreviewCompactEntryPoint = "gpuDrivenPreviewCompactMain";
@@ -101,6 +107,12 @@ inline constexpr uint32_t kGPUDrivenPreviewModeShaded = 3;
 inline constexpr uint32_t kGPUDrivenPreviewModeBaseColor = 4;
 inline constexpr uint32_t kGPUDrivenPreviewMeshletTriangleChunkSize = 64;
 inline constexpr uint32_t kGPUDrivenPreviewMeshletChunkCount = 2;
+inline constexpr uint32_t kGPUDrivenPreviewDrawBucketCount = 4;
+inline constexpr uint32_t kGPUDrivenPreviewIndirectArgumentUintCount = 4;
+inline constexpr uint32_t kGPUDrivenPreviewMeshletDoubleSided = 1u << 0u;
+inline constexpr uint32_t kGPUDrivenPreviewMeshletAlphaMasked = 1u << 1u;
+inline constexpr uint32_t kGPUDrivenPreviewMeshletAlphaBlend = 1u << 2u;
+inline constexpr uint32_t kGPUDrivenPreviewInstanceVisible = 1u << 0u;
 inline constexpr uint32_t kGPUDrivenPreviewCullInstanceFrustum = 1u << 0u;
 inline constexpr uint32_t kGPUDrivenPreviewCullInstanceHzb = 1u << 1u;
 inline constexpr uint32_t kGPUDrivenPreviewCullMeshletFrustum = 1u << 2u;
@@ -432,6 +444,7 @@ struct GPUDrivenPreviewGpuMaterial {
     GPUDrivenPreviewGpuTextureInfo thicknessTexture;
     GPUDrivenPreviewGpuTextureInfo diffuseTransmissionTexture;
     GPUDrivenPreviewGpuTextureInfo diffuseTransmissionColorTexture;
+    uint32_t identity[4] = {};
 };
 
 struct GPUDrivenPreviewGpuMeshlet {
@@ -439,24 +452,134 @@ struct GPUDrivenPreviewGpuMeshlet {
     uint32_t vertexCount = 0;
     uint32_t triangleOffset = 0;
     uint32_t triangleCount = 0;
-    uint32_t primitiveIndex = 0;
-    uint32_t materialIndex = 0;
     uint32_t lodLevel = 0;
     uint32_t lodGroupIndex = 0;
-    uint32_t transformIndex = 0;
-    uint32_t instanceIndex = 0;
-    uint32_t flags = 0;
     uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
     float boundingSphere[4] = {};
     float coneApexCutoff[4] = {};
     float coneAxis[4] = {};
 };
 
+// Per-instance draw metadata. Geometry payload, including meshlet bounds and
+// topology offsets, lives in GPUDrivenPreviewGpuMeshlet and is uploaded once.
+struct GPUDrivenPreviewGpuMeshletDraw {
+    uint32_t geometryMeshletIndex = 0;
+    uint32_t primitiveIndex = 0;
+    uint32_t materialIndex = 0;
+    uint32_t transformIndex = 0;
+    uint32_t instanceIndex = 0;
+    uint32_t flags = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+};
+
+struct GPUDrivenPreviewGeometrySource {
+    const scene::RenderPrimitive* primitive = nullptr;
+    uint32_t renderPrimitiveIndex = 0;
+};
+
+struct GPUDrivenPreviewGeometryDedupPlan {
+    std::vector<uint32_t> geometryIndices;
+    uint32_t geometryCount = 0;
+    uint32_t conflictingPayloadCount = 0;
+};
+
+inline uint64_t gpuDrivenPreviewGeometryKey(
+    const scene::RenderPrimitive& primitive,
+    uint32_t renderPrimitiveIndex)
+{
+    if (primitive.meshIndex >= 0 && primitive.primitiveIndex >= 0) {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(primitive.meshIndex)) << 32u) |
+            static_cast<uint32_t>(primitive.primitiveIndex);
+    }
+    return (1ull << 63u) | renderPrimitiveIndex;
+}
+
+template <typename T>
+inline bool gpuDrivenPreviewEqualVectorBytes(
+    const std::vector<T>& left,
+    const std::vector<T>& right)
+{
+    return left.size() == right.size() &&
+        (left.empty() || std::memcmp(left.data(), right.data(), left.size() * sizeof(T)) == 0);
+}
+
+inline bool gpuDrivenPreviewMatchingGeometryPayload(
+    const scene::RenderPrimitive& left,
+    const scene::RenderPrimitive& right)
+{
+    return left.mode == right.mode &&
+        left.vertexCount == right.vertexCount &&
+        left.indexCount == right.indexCount &&
+        left.triangleCount == right.triangleCount &&
+        left.localBounds.valid == right.localBounds.valid &&
+        std::memcmp(&left.localBounds.min, &right.localBounds.min, sizeof(left.localBounds.min)) == 0 &&
+        std::memcmp(&left.localBounds.max, &right.localBounds.max, sizeof(left.localBounds.max)) == 0 &&
+        left.hasAuthoredNormals == right.hasAuthoredNormals &&
+        left.hasAuthoredTangents == right.hasAuthoredTangents &&
+        gpuDrivenPreviewEqualVectorBytes(left.positions, right.positions) &&
+        gpuDrivenPreviewEqualVectorBytes(left.normals, right.normals) &&
+        gpuDrivenPreviewEqualVectorBytes(left.tangents, right.tangents) &&
+        gpuDrivenPreviewEqualVectorBytes(left.texcoords0, right.texcoords0) &&
+        gpuDrivenPreviewEqualVectorBytes(left.indices, right.indices) &&
+        gpuDrivenPreviewEqualVectorBytes(left.meshletClusters, right.meshletClusters) &&
+        gpuDrivenPreviewEqualVectorBytes(left.meshletVertices, right.meshletVertices) &&
+        gpuDrivenPreviewEqualVectorBytes(left.meshletTriangles, right.meshletTriangles) &&
+        gpuDrivenPreviewEqualVectorBytes(left.meshletLodLevels, right.meshletLodLevels) &&
+        gpuDrivenPreviewEqualVectorBytes(left.meshletLodGroups, right.meshletLodGroups) &&
+        gpuDrivenPreviewEqualVectorBytes(left.meshletLodClusters, right.meshletLodClusters) &&
+        gpuDrivenPreviewEqualVectorBytes(left.meshletLodVertices, right.meshletLodVertices) &&
+        gpuDrivenPreviewEqualVectorBytes(left.meshletLodTriangles, right.meshletLodTriangles);
+}
+
+inline GPUDrivenPreviewGeometryDedupPlan buildGPUDrivenPreviewGeometryDedupPlan(
+    std::span<const GPUDrivenPreviewGeometrySource> sources)
+{
+    struct Candidate {
+        const scene::RenderPrimitive* primitive = nullptr;
+        uint32_t geometryIndex = 0;
+    };
+
+    GPUDrivenPreviewGeometryDedupPlan result;
+    result.geometryIndices.resize(sources.size(), UINT32_MAX);
+    std::unordered_map<uint64_t, std::vector<Candidate>> candidatesByKey;
+    for (size_t sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex) {
+        const GPUDrivenPreviewGeometrySource& source = sources[sourceIndex];
+        if (source.primitive == nullptr) {
+            continue;
+        }
+        const uint64_t key = gpuDrivenPreviewGeometryKey(
+            *source.primitive,
+            source.renderPrimitiveIndex);
+        std::vector<Candidate>& candidates = candidatesByKey[key];
+        for (const Candidate& candidate : candidates) {
+            if (gpuDrivenPreviewMatchingGeometryPayload(*candidate.primitive, *source.primitive)) {
+                result.geometryIndices[sourceIndex] = candidate.geometryIndex;
+                break;
+            }
+        }
+        if (result.geometryIndices[sourceIndex] != UINT32_MAX) {
+            continue;
+        }
+        if (!candidates.empty()) {
+            ++result.conflictingPayloadCount;
+        }
+        const uint32_t geometryIndex = result.geometryCount++;
+        candidates.push_back(Candidate{
+            .primitive = source.primitive,
+            .geometryIndex = geometryIndex,
+        });
+        result.geometryIndices[sourceIndex] = geometryIndex;
+    }
+    return result;
+}
+
 struct GPUDrivenPreviewGpuInstance {
     float boundingSphere[4] = {};
     uint32_t transformIndex = 0;
     uint32_t primitiveIndex = 0;
-    uint32_t padding0 = 0;
+    uint32_t flags = kGPUDrivenPreviewInstanceVisible;
     uint32_t padding1 = 0;
 };
 
@@ -500,7 +623,7 @@ struct GPUDrivenPreviewGpuParams {
     uint32_t environmentMode = 2;
     uint32_t environmentVisible = 1;
     uint32_t materialCount = 1;
-    uint32_t shadingPadding0 = 0;
+    uint32_t visibleMeshletCapacity = 0;
     uint32_t shadingPadding1 = 0;
     uint32_t shadingPadding2 = 0;
 };
@@ -508,12 +631,15 @@ struct GPUDrivenPreviewGpuParams {
 struct GPUDrivenPreviewUserPush {
     uint32_t positionBuffer = 0;
     uint32_t meshletBuffer = 0;
+    uint32_t meshletDrawBuffer = 0;
     uint32_t meshletVertexBuffer = 0;
     uint32_t meshletTriangleBuffer = 0;
     uint32_t paramsBuffer = 0;
     uint32_t transformBuffer = 0;
     uint32_t instanceBuffer = 0;
     uint32_t instanceVisibilityBuffer = 0;
+    uint32_t visibleInstanceIdsBuffer = 0;
+    uint32_t visibleInstanceCounterBuffer = 0;
     uint32_t visibleMeshletBuffer0 = 0;
     uint32_t visibleMeshletBuffer1 = 0;
     uint32_t indirectBuffer0 = 0;
@@ -527,18 +653,26 @@ struct GPUDrivenPreviewUserPush {
     uint32_t mipLevel = 0;
     uint32_t projectWithCullingCamera = 0;
     uint32_t materialBuffer = 0;
-    uint32_t materialTextureImageBase = 0;
+    uint32_t materialTextureRemapBuffer = 0;
     uint32_t environmentImage = 0;
     uint32_t environmentSHBuffer = 0;
 };
 
 static_assert(sizeof(GPUDrivenPreviewGpuVertex) == 64);
 static_assert(sizeof(GPUDrivenPreviewGpuTextureInfo) == 48);
-static_assert(sizeof(GPUDrivenPreviewGpuMaterial) == 544);
-static_assert(sizeof(GPUDrivenPreviewGpuMeshlet) == 96);
+static_assert(sizeof(GPUDrivenPreviewGpuMaterial) == sizeof(GPUSceneGpuMaterialRecord));
+static_assert(offsetof(GPUDrivenPreviewGpuMaterial, identity) ==
+    offsetof(GPUSceneGpuMaterialRecord, identity));
+static_assert(sizeof(GPUDrivenPreviewGpuMeshlet) == 80);
+static_assert(sizeof(GPUDrivenPreviewGpuMeshletDraw) == 32);
 static_assert(sizeof(GPUDrivenPreviewGpuInstance) == 32);
+static_assert(sizeof(GPUDrivenPreviewGpuVertex) == sizeof(GPUSceneGpuVertexRecord));
+static_assert(sizeof(GPUDrivenPreviewGpuMeshlet) == sizeof(GPUSceneGpuMeshletRecord));
+static_assert(sizeof(GPUSceneGpuMeshletDrawRecord) == 16);
+static_assert(sizeof(GPUSceneGpuInstanceRecord) == 160);
+static_assert(sizeof(GPUSceneGpuGeometryRecord) == 96);
 static_assert(sizeof(GPUDrivenPreviewGpuParams) == 336);
-static_assert(sizeof(GPUDrivenPreviewUserPush) == 96);
+static_assert(sizeof(GPUDrivenPreviewUserPush) == 108);
 
 struct SceneMaterialVisualizationPush {
     float eye[4] = {};

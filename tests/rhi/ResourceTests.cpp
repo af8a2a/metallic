@@ -150,7 +150,102 @@ public:
     }
 };
 
+class IndirectArgumentBarrierTest : public RhiTest {
+public:
+    IndirectArgumentBarrierTest()
+    {
+        type = RhiTestType::Command;
+        name = "indirect_argument_barrier";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Buffer> indirectBuffer;
+        render::Result result = context.device.createBuffer(
+            render::BufferDesc{
+                .size = 16,
+                .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::Indirect,
+                .memoryLocation = render::MemoryLocation::Device,
+            },
+            indirectBuffer);
+        if (!result || indirectBuffer == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createBuffer(indirect) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandPool> commandPool;
+        result = context.device.createCommandPool(context.graphicsQueue, commandPool);
+        if (!result || commandPool == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createCommandPool returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::CommandBuffer> commandBuffer;
+        result = commandPool->createCommandBuffer(commandBuffer);
+        if (!result || commandBuffer == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createCommandBuffer returned ") + toString(result));
+        }
+
+        result = commandBuffer->begin();
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("CommandBuffer::begin returned ") + toString(result));
+        }
+
+        const render::BufferBarrierDesc toIndirect{
+            .buffer = indirectBuffer.get(),
+            .before = render::ResourceState::Undefined,
+            .after = render::ResourceState::IndirectArgument,
+        };
+        commandBuffer->barrier(
+            render::BarrierDesc{.buffers = &toIndirect, .bufferCount = 1});
+
+        const render::BufferBarrierDesc toGeneral{
+            .buffer = indirectBuffer.get(),
+            .before = render::ResourceState::IndirectArgument,
+            .after = render::ResourceState::General,
+        };
+        commandBuffer->barrier(
+            render::BarrierDesc{.buffers = &toGeneral, .bufferCount = 1});
+
+        result = commandBuffer->end();
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("CommandBuffer::end returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::Fence> fence;
+        result = context.device.createFence(false, fence);
+        if (!result || fence == nullptr) {
+            return RhiTestResult::fail(
+                std::string("createFence returned ") + toString(result));
+        }
+
+        render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+        result = context.graphicsQueue.submit(
+            render::QueueSubmitDesc{
+                .commandBuffers = commandBuffers,
+                .commandBufferCount = 1,
+                .signalFence = fence.get(),
+            });
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("Queue::submit returned ") + toString(result));
+        }
+
+        result = fence->wait(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("Fence::wait returned ") + toString(result));
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(ResourceLifecycleTest);
+METALLIC_REGISTER_RHI_TEST(IndirectArgumentBarrierTest);
 
 } // namespace
 } // namespace metallic::tests

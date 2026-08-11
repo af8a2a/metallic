@@ -1,6 +1,7 @@
 #include "RhiTest.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/RenderSample.h"
@@ -551,7 +552,8 @@ bool writeBinaryArray(std::ofstream& stream, const std::array<T, N>& values)
 bool writeAlphaMaskScene(
     const std::filesystem::path& directory,
     std::filesystem::path& outPath,
-    std::string& outMessage)
+    std::string& outMessage,
+    bool maskedDoubleSided = true)
 {
     std::error_code error;
     std::filesystem::create_directories(directory, error);
@@ -659,7 +661,9 @@ bool writeAlphaMaskScene(
       "name": "Masked Red",
       "alphaMode": "MASK",
       "alphaCutoff": 0.5,
-      "doubleSided": true,
+      "doubleSided": )json"
+         << (maskedDoubleSided ? "true" : "false")
+         << R"json(,
       "emissiveFactor": [1.0, 0.0, 0.0],
       "pbrMetallicRoughness": {
         "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
@@ -998,9 +1002,9 @@ public:
             materialVisualization->queueType() != render::QueueType::Compute) {
             return RhiTestResult::fail("SceneMaterialVisualizationPass is not classified as Compute/Compute");
         }
-        if (gpuDrivenPreview->kind() != render::RenderGraphPassKind::Raster ||
+        if (gpuDrivenPreview->kind() != render::RenderGraphPassKind::Unsafe ||
             gpuDrivenPreview->queueType() != render::QueueType::Graphics) {
-            return RhiTestResult::fail("GPUDrivenPreviewPass is not classified as Raster/Graphics");
+            return RhiTestResult::fail("GPUDrivenPreviewPass is not classified as Unsafe/Graphics");
         }
         if (gpuDrivenStreamAsset->kind() != render::RenderGraphPassKind::Unsafe ||
             gpuDrivenStreamAsset->queueType() != render::QueueType::Graphics) {
@@ -1053,7 +1057,7 @@ public:
                 foundMaterialVisualization = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
             } else if (passInfo.type == "GPUDrivenPreviewPass") {
-                foundGPUDrivenPreview = passInfo.kind == render::RenderGraphPassKind::Raster &&
+                foundGPUDrivenPreview = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
                     passInfo.queueType == render::QueueType::Graphics;
             } else if (passInfo.type == "GPUDrivenStreamAssetPass") {
                 foundGPUDrivenStreamAsset = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
@@ -2357,6 +2361,60 @@ public:
     }
 };
 
+class GPUDrivenPreviewGeometryDedupPlanTest : public RhiTest {
+public:
+    GPUDrivenPreviewGeometryDedupPlanTest()
+    {
+        type = RhiTestType::Validation;
+        name = "gpu_driven_preview_geometry_dedup_plan";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        scene::RenderPrimitive shared;
+        shared.meshIndex = 7;
+        shared.primitiveIndex = 3;
+        shared.mode = 4;
+        shared.vertexCount = 3;
+        shared.indexCount = 3;
+        shared.triangleCount = 1;
+        shared.positions = {
+            float3(-1.0f, 0.0f, 0.0f),
+            float3(1.0f, 0.0f, 0.0f),
+            float3(0.0f, 1.0f, 0.0f),
+        };
+        shared.indices = {0u, 1u, 2u};
+        shared.meshletClusters.resize(1);
+        shared.meshletClusters[0].vertexCount = 3;
+        shared.meshletClusters[0].triangleCount = 1;
+        shared.meshletVertices = {0u, 1u, 2u};
+        shared.meshletTriangles = {0u, 1u, 2u};
+
+        scene::RenderPrimitive conflicting = shared;
+        conflicting.positions[0].x = -2.0f;
+        scene::RenderPrimitive distinct = shared;
+        distinct.primitiveIndex = 4;
+
+        const std::array<render::builtin_pass::GPUDrivenPreviewGeometrySource, 4> sources{{
+            {.primitive = &shared, .renderPrimitiveIndex = 11u},
+            {.primitive = &shared, .renderPrimitiveIndex = 11u},
+            {.primitive = &conflicting, .renderPrimitiveIndex = 12u},
+            {.primitive = &distinct, .renderPrimitiveIndex = 13u},
+        }};
+        const render::builtin_pass::GPUDrivenPreviewGeometryDedupPlan plan =
+            render::builtin_pass::buildGPUDrivenPreviewGeometryDedupPlan(sources);
+        const std::array<uint32_t, 4> expected{0u, 0u, 1u, 2u};
+        if (plan.geometryCount != 3u ||
+            plan.conflictingPayloadCount != 1u ||
+            !std::equal(plan.geometryIndices.begin(), plan.geometryIndices.end(), expected.begin())) {
+            return RhiTestResult::fail(
+                "shared geometry was not deduplicated or conflicting payload fallback was lost");
+        }
+        return RhiTestResult::pass(
+            "two instances share one geometry payload; conflicting and distinct keys remain separate");
+    }
+};
+
 class RenderGraphGPUDrivenPreviewShaderCompileTest : public RhiTest {
 public:
     RenderGraphGPUDrivenPreviewShaderCompileTest()
@@ -2408,7 +2466,8 @@ public:
             return RhiTestResult::fail("GPUDrivenPreview fragment shader produced empty SPIR-V");
         }
 
-        constexpr std::array<const char*, 6> additionalEntryPoints{
+        constexpr std::array<const char*, 7> additionalEntryPoints{
+            "gpuDrivenPreviewMaskedFragmentMain",
             "gpuDrivenPreviewResetMain",
             "gpuDrivenPreviewInstanceCullMain",
             "gpuDrivenPreviewCompactMain",
@@ -5734,6 +5793,172 @@ public:
     }
 };
 
+class RenderGraphGPUDrivenAlphaMaskRenderTest : public RhiTest {
+public:
+    RenderGraphGPUDrivenAlphaMaskRenderTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_gpu_driven_alpha_mask_render";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::filesystem::path scenePath;
+        std::string message;
+        if (!writeAlphaMaskScene(
+                context.outputDirectory / "gpu-driven-alpha-mask-scene",
+                scenePath,
+                message)) {
+            return RhiTestResult::fail(message);
+        }
+        std::filesystem::path singleSidedScenePath;
+        if (!writeAlphaMaskScene(
+                context.outputDirectory / "gpu-driven-alpha-mask-single-sided-scene",
+                singleSidedScenePath,
+                message,
+                false)) {
+            return RhiTestResult::fail(message);
+        }
+
+        render::RenderGraphPreviewRenderer preview;
+        preview.setEnvironment(render::EnvironmentSettings{
+            .enabled = false,
+            .intensity = 0.0f,
+            .visible = false,
+        });
+        render::Result result = preview.initialize(context.enableValidation, false);
+        if (!result) {
+            return render::hasError(result, render::Error::Unsupported)
+                ? RhiTestResult::skip("GPUDriven alpha-mask preview is unsupported")
+                : RhiTestResult::fail(
+                      std::string("RenderGraphPreviewRenderer::initialize returned ") +
+                      toString(result));
+        }
+
+        render::RenderGraph graph;
+        graph.setName("GPUDrivenAlphaMaskRender");
+        graph.addNode(
+            "GPUDrivenPreviewPass",
+            "GPUDriven",
+            render::RenderGraphProperties{
+                {"path", scenePath.string()},
+                {"mode", "shaded"},
+                {"instanceHzbCull", false},
+                {"meshletNormalConeCull", false},
+                {"camera", {
+                    {"projection", "perspective"},
+                    {"fovDegrees", 60.0f},
+                    {"znear", 0.01f},
+                    {"zfar", 10.0f},
+                    {"reversedZ", true},
+                    {"eye", {0.0f, 0.0f, 2.0f}},
+                    {"center", {0.0f, 0.0f, 0.0f}},
+                    {"up", {0.0f, 1.0f, 0.0f}},
+                }},
+            });
+        graph.markOutput("GPUDriven.color");
+
+        auto classifyPixels = [&preview]() {
+            std::array<uint32_t, 3> counts{};
+            for (uint32_t pixel : preview.pixels()) {
+                const uint8_t r = static_cast<uint8_t>(pixel & 0xffu);
+                const uint8_t g = static_cast<uint8_t>((pixel >> 8u) & 0xffu);
+                const uint8_t b = static_cast<uint8_t>((pixel >> 16u) & 0xffu);
+                if (r > 48 && r > g + 32 && r > b + 32) {
+                    ++counts[0];
+                }
+                if (b > 48 && b > r + 32 && b > g + 32) {
+                    ++counts[1];
+                }
+                if (r < 32 && g < 32 && b < 32) {
+                    ++counts[2];
+                }
+            }
+            return counts;
+        };
+
+        result = preview.render(graph, 128, 128);
+        if (!result) {
+            if (render::hasError(result, render::Error::Unsupported)) {
+                return RhiTestResult::skip(
+                    std::string("GPUDrivenPreviewPass is unsupported: ") +
+                    preview.lastLog());
+            }
+            return RhiTestResult::fail(
+                std::string("GPUDriven alpha-mask front render returned ") +
+                toString(result) + ": " + preview.lastLog());
+        }
+        const std::array<uint32_t, 3> front = classifyPixels();
+        if (front[0] < 1024 || front[2] < 1024 || front[1] > 64) {
+            return RhiTestResult::fail(
+                "GPUDriven MASK/BLEND classification is incorrect on the front face: red=" +
+                std::to_string(front[0]) + " blue=" + std::to_string(front[1]) +
+                " dark=" + std::to_string(front[2]));
+        }
+
+        render::RenderGraphNode* node = graph.findNode("GPUDriven");
+        if (node == nullptr ||
+            !graph.setNodeRuntimeProperty(
+                node->id,
+                "camera.eye",
+                render::RenderGraphProperties::array({0.0f, 0.0f, -2.0f}))) {
+            return RhiTestResult::fail("failed to move the GPUDriven camera behind the double-sided MASK quad");
+        }
+        result = preview.render(graph, 128, 128);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDriven alpha-mask back render returned ") +
+                toString(result) + ": " + preview.lastLog());
+        }
+        const std::array<uint32_t, 3> back = classifyPixels();
+        if (back[0] < 1024 || back[2] < 1024 || back[1] > 64) {
+            return RhiTestResult::fail(
+                "GPUDriven double-sided MASK did not survive back-face rendering: red=" +
+                std::to_string(back[0]) + " blue=" + std::to_string(back[1]) +
+                " dark=" + std::to_string(back[2]));
+        }
+
+        render::RenderGraph singleSidedGraph;
+        singleSidedGraph.setName("GPUDrivenSingleSidedMaskRender");
+        singleSidedGraph.addNode(
+            "GPUDrivenPreviewPass",
+            "GPUDriven",
+            render::RenderGraphProperties{
+                {"path", singleSidedScenePath.string()},
+                {"mode", "shaded"},
+                {"instanceHzbCull", false},
+                {"meshletNormalConeCull", false},
+                {"camera", {
+                    {"projection", "perspective"},
+                    {"fovDegrees", 60.0f},
+                    {"znear", 0.01f},
+                    {"zfar", 10.0f},
+                    {"reversedZ", true},
+                    {"eye", {0.0f, 0.0f, -2.0f}},
+                    {"center", {0.0f, 0.0f, 0.0f}},
+                    {"up", {0.0f, 1.0f, 0.0f}},
+                }},
+            });
+        singleSidedGraph.markOutput("GPUDriven.color");
+        result = preview.render(singleSidedGraph, 128, 128);
+        if (!result) {
+            return RhiTestResult::fail(
+                std::string("GPUDriven single-sided MASK back render returned ") +
+                toString(result) + ": " + preview.lastLog());
+        }
+        const std::array<uint32_t, 3> singleSidedBack = classifyPixels();
+        if (singleSidedBack[0] > 64 || singleSidedBack[1] > 64 ||
+            singleSidedBack[2] < 4096) {
+            return RhiTestResult::fail(
+                "GPUDriven single-sided MASK was not back-face culled: red=" +
+                std::to_string(singleSidedBack[0]) + " blue=" +
+                std::to_string(singleSidedBack[1]) + " dark=" +
+                std::to_string(singleSidedBack[2]));
+        }
+        return RhiTestResult::pass();
+    }
+};
+
 class RenderGraphGPUDrivenSponzaVisibilityRenderTest : public RhiTest {
 public:
     RenderGraphGPUDrivenSponzaVisibilityRenderTest()
@@ -6081,7 +6306,7 @@ public:
 
         render::RenderGraphPreviewRenderer preview;
         preview.setEnvironment(render::EnvironmentSettings{});
-        render::Result result = preview.initialize(false, true);
+        render::Result result = preview.initialize(false, false);
         if (!result) {
             return RhiTestResult::skip(
                 std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
@@ -6448,6 +6673,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphRtxcrMaterialShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRtxcrMaterialPreviewTest);
 #endif
 #endif
+METALLIC_REGISTER_RHI_TEST(GPUDrivenPreviewGeometryDedupPlanTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetTraversalDemandTest);
@@ -6470,6 +6696,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphMaterialShaderObjectPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassRenderTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenAlphaMaskRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenSponzaVisibilityRenderTest);
 METALLIC_REGISTER_RHI_TEST(ImportancePdfMipChainTest);
 METALLIC_REGISTER_RHI_TEST(ReGIRGridLayoutTest);

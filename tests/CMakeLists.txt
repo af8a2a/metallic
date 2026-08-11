@@ -61,6 +61,7 @@ add_executable(MetallicRhiTests
     rhi/RhiTest.h
     rhi/BindlessBufferTests.cpp
     rhi/CommandSubmissionTests.cpp
+    rhi/GPUSceneSubsystemTests.cpp
     rhi/HistoryResourcesTests.cpp
     rhi/RenderGraphTests.cpp
     rhi/RenderingTests.cpp

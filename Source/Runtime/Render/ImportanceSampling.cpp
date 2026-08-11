@@ -502,6 +502,7 @@ Result ImportancePdfCompute::initialize(Device& device, std::string& log)
             .bindingCount = static_cast<uint32_t>(std::size(bindings)),
             .debugName = "ImportancePdfCompute",
             .descriptorSetCount = kImportancePdfMaxMipCount * 2u,
+            .requiresRayQuery = false,
         },
         log);
 }

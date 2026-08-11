@@ -193,8 +193,17 @@ TEST(SceneGraph, TransformAndVisibilityPropagation)
     EXPECT_FLOAT_EQ(child.getComponent<TransformComponent>().worldMatrix.a03, 12.0f);
     EXPECT_FLOAT_EQ(child.getComponent<TransformComponent>().worldMatrix.a13, 8.0f);
 
+    const uint64_t visibilityRevisionBeforeHide = graph.visibilityRevision();
+    const uint64_t structuralRevisionBeforeHide = graph.structuralRevision();
+    const uint64_t transformRevisionBeforeHide = graph.transformRevision();
     ASSERT_TRUE(graph.setVisible(parent.entity(), false));
+    EXPECT_EQ(graph.visibilityRevision(), visibilityRevisionBeforeHide + 1u);
+    EXPECT_EQ(graph.structuralRevision(), structuralRevisionBeforeHide);
+    EXPECT_EQ(graph.transformRevision(), transformRevisionBeforeHide);
+    EXPECT_FALSE(graph.setVisible(parent.entity(), false));
+    EXPECT_EQ(graph.visibilityRevision(), visibilityRevisionBeforeHide + 1u);
     ASSERT_TRUE(graph.updateTransforms());
+    EXPECT_EQ(graph.visibilityRevision(), visibilityRevisionBeforeHide + 1u);
     const VisibilityComponent& hiddenParent =
         parent.getComponent<VisibilityComponent>();
     const VisibilityComponent& hiddenChild =
@@ -204,8 +213,12 @@ TEST(SceneGraph, TransformAndVisibilityPropagation)
     EXPECT_TRUE(hiddenChild.localVisible);
     EXPECT_FALSE(hiddenChild.worldVisible);
 
+    const uint64_t visibilityRevisionBeforeChildHide = graph.visibilityRevision();
     ASSERT_TRUE(graph.setVisible(parent.entity(), true));
     ASSERT_TRUE(graph.setVisible(child.entity(), false));
+    EXPECT_EQ(graph.visibilityRevision(), visibilityRevisionBeforeChildHide + 2u);
+    EXPECT_EQ(graph.structuralRevision(), structuralRevisionBeforeHide);
+    EXPECT_EQ(graph.transformRevision(), transformRevisionBeforeHide);
     ASSERT_TRUE(graph.updateTransforms());
     EXPECT_TRUE(parent.getComponent<VisibilityComponent>().worldVisible);
     EXPECT_FALSE(child.getComponent<VisibilityComponent>().localVisible);
@@ -347,14 +360,17 @@ TEST(SceneGraph, ResetRevisionsPreservesDirtyState)
     ASSERT_TRUE(graph.setLocalMatrix(
         generated.entity(),
         translationMatrix(float3(4.0f, 5.0f, 6.0f))));
+    ASSERT_TRUE(graph.setVisible(generated.entity(), false));
     ASSERT_TRUE(generated.getComponent<TransformComponent>().dirty);
     ASSERT_GT(graph.transformRevision(), 0u);
     ASSERT_GT(graph.structuralRevision(), 0u);
+    ASSERT_GT(graph.visibilityRevision(), 0u);
 
     graph.resetRevisions();
 
     EXPECT_EQ(graph.transformRevision(), 0u);
     EXPECT_EQ(graph.structuralRevision(), 0u);
+    EXPECT_EQ(graph.visibilityRevision(), 0u);
     EXPECT_EQ(generated.getComponent<TransformComponent>().transformRevision, 0u);
     EXPECT_TRUE(generated.getComponent<TransformComponent>().dirty);
     EXPECT_TRUE(generated.hasComponent<GeneratedComponent>());
@@ -443,12 +459,17 @@ TEST(SceneGraph, MovePreservesRegistryAndSourceMapping)
         .label = "preserved",
     });
     ASSERT_TRUE(source.setParent(child.entity(), root.entity()));
+    ASSERT_TRUE(source.setVisible(child.entity(), false));
+    ASSERT_TRUE(source.updateTransforms());
+    const uint64_t sourceVisibilityRevision = source.visibilityRevision();
     const SceneEntity rootEntity = root.entity();
     const SceneEntity childEntity = child.entity();
 
     SceneGraph moveConstructed(std::move(source));
     EXPECT_NE(moveConstructed.lifetimeRevision(), sourceLifetime);
     EXPECT_NE(source.lifetimeRevision(), sourceLifetime);
+    EXPECT_EQ(moveConstructed.visibilityRevision(), sourceVisibilityRevision);
+    EXPECT_EQ(source.visibilityRevision(), 0u);
     EXPECT_FALSE(root);
     EXPECT_FALSE(child);
     const SceneObject reusedSource = source.createObject("Reused Source", 0);
@@ -467,6 +488,8 @@ TEST(SceneGraph, MovePreservesRegistryAndSourceMapping)
     EXPECT_EQ(movedChild.getComponent<TestComponent>().value, 41);
     EXPECT_TRUE(movedRoot.hasComponent<RootComponent>());
     EXPECT_TRUE(movedChild.hasComponent<ActiveSceneComponent>());
+    EXPECT_FALSE(movedChild.getComponent<VisibilityComponent>().localVisible);
+    EXPECT_FALSE(movedChild.getComponent<VisibilityComponent>().worldVisible);
 
     SceneGraph moveAssigned;
     const uint64_t assignmentTargetLifetime = moveAssigned.lifetimeRevision();
@@ -474,6 +497,8 @@ TEST(SceneGraph, MovePreservesRegistryAndSourceMapping)
     ASSERT_TRUE(replacedObject);
     moveAssigned = std::move(moveConstructed);
     EXPECT_NE(moveAssigned.lifetimeRevision(), assignmentTargetLifetime);
+    EXPECT_EQ(moveAssigned.visibilityRevision(), sourceVisibilityRevision);
+    EXPECT_EQ(moveConstructed.visibilityRevision(), 0u);
     EXPECT_FALSE(replacedObject);
     EXPECT_THROW(replacedObject.getComponent<TagComponent>(), std::logic_error);
     EXPECT_THROW(
@@ -513,6 +538,8 @@ TEST(SceneGraph, Clear)
     const SceneObject generated = graph.createObject("Generated");
     generated.addComponent<GeneratedComponent>();
     ASSERT_TRUE(graph.setParent(child.entity(), root.entity()));
+    ASSERT_TRUE(graph.setVisible(child.entity(), false));
+    ASSERT_GT(graph.visibilityRevision(), 0u);
     const uint64_t lifetimeBeforeClear = graph.lifetimeRevision();
 
     graph.clear();
@@ -524,6 +551,7 @@ TEST(SceneGraph, Clear)
     EXPECT_FALSE(replacement.hasComponent<TestComponent>());
 
     EXPECT_NE(graph.lifetimeRevision(), lifetimeBeforeClear);
+    EXPECT_EQ(graph.visibilityRevision(), 0u);
     EXPECT_EQ(graph.size(), 1u);
     EXPECT_EQ(graph.sourceNodeCount(), 1u);
     ASSERT_EQ(graph.roots().size(), 1u);

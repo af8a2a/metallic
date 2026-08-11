@@ -3096,7 +3096,8 @@ Result SceneRayQueryProgram::initialize(
         log = "SceneRayQueryProgramDesc is invalid";
         return makeError(Error::InvalidArgument);
     }
-    if (!device.capabilities().rayTracingAccelerationStructure || !device.capabilities().rayQuery) {
+    if (desc.requiresRayQuery &&
+        (!device.capabilities().rayTracingAccelerationStructure || !device.capabilities().rayQuery)) {
         log = "SceneRayQueryProgram requires rayTracingAccelerationStructure and rayQuery capabilities";
         return makeError(Error::Unsupported);
     }

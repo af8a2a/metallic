@@ -654,6 +654,32 @@ VkPrimitiveTopology toVkPrimitiveTopology(PrimitiveTopology topology)
     return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
+VkCullModeFlags toVkCullMode(CullMode cullMode)
+{
+    switch (cullMode) {
+    case CullMode::None:
+        return VK_CULL_MODE_NONE;
+    case CullMode::Front:
+        return VK_CULL_MODE_FRONT_BIT;
+    case CullMode::Back:
+        return VK_CULL_MODE_BACK_BIT;
+    }
+
+    return VK_CULL_MODE_NONE;
+}
+
+VkFrontFace toVkFrontFace(FrontFace frontFace)
+{
+    switch (frontFace) {
+    case FrontFace::CounterClockwise:
+        return VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    case FrontFace::Clockwise:
+        return VK_FRONT_FACE_CLOCKWISE;
+    }
+
+    return VK_FRONT_FACE_COUNTER_CLOCKWISE;
+}
+
 VkCompareOp toVkCompareOp(CompareOp compareOp)
 {
     switch (compareOp) {
@@ -680,6 +706,11 @@ VkCompareOp toVkCompareOp(CompareOp compareOp)
 
 StateInfo stateInfo(ResourceState state)
 {
+    const VkPipelineStageFlags2 shaderReadStages =
+        VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT |
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+
     switch (state) {
     case ResourceState::Undefined:
         return {
@@ -707,11 +738,15 @@ StateInfo stateInfo(ResourceState state)
         };
     case ResourceState::ShaderRead:
         return {
-            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            shaderReadStages,
             VK_ACCESS_2_SHADER_READ_BIT,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+    case ResourceState::IndirectArgument:
+        return {
+            VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+            VK_IMAGE_LAYOUT_UNDEFINED,
         };
     case ResourceState::TransferSource:
         return {
@@ -1375,6 +1410,7 @@ struct VulkanDeviceFeatureProbe {
 };
 
 struct VulkanDeviceFeatureSelection {
+    bool shaderDemoteToHelperInvocation = false;
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool meshShader = false;
@@ -1402,6 +1438,8 @@ struct VulkanDeviceFeatureSelection {
         const bool meshShaderSupported = probe.supportsMeshShader(extensions);
 
         VulkanDeviceFeatureSelection result;
+        result.shaderDemoteToHelperInvocation =
+            probe.vulkan13Features.shaderDemoteToHelperInvocation == VK_TRUE;
         result.bindlessDescriptorHeap =
             request.bindlessDescriptorHeap &&
             extensions.descriptorHeap &&
@@ -1550,6 +1588,8 @@ struct VulkanEnabledFeatureChain {
         vulkan12Features.timelineSemaphore = VK_TRUE;
         vulkan13Features.synchronization2 = VK_TRUE;
         vulkan13Features.dynamicRendering = VK_TRUE;
+        vulkan13Features.shaderDemoteToHelperInvocation =
+            selection.shaderDemoteToHelperInvocation ? VK_TRUE : VK_FALSE;
         descriptorHeapFeatures.descriptorHeap = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         shaderObjectFeatures.shaderObject = selection.shaderObject ? VK_TRUE : VK_FALSE;
 #ifdef VK_EXT_mesh_shader
@@ -5067,8 +5107,8 @@ Result Device::createGraphicsPipeline(
     VkPipelineRasterizationStateCreateInfo rasterizationState{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_NONE,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .cullMode = toVkCullMode(desc.rasterization.cullMode),
+        .frontFace = toVkFrontFace(desc.rasterization.frontFace),
         .lineWidth = 1.0f,
     };
     VkPipelineMultisampleStateCreateInfo multisampleState{
