@@ -24,6 +24,13 @@ public:
         int32_t sourceNodeIndex,
         const float4x4& authoredLocalMatrix,
         bool visible);
+    SceneObject createObject(
+        std::string name,
+        int32_t sourceNodeIndex,
+        const float4x4& authoredLocalMatrix,
+        bool visible,
+        std::string sourceId,
+        int32_t localSourceNodeIndex);
     bool destroyObject(SceneEntity object);
     void clear();
 

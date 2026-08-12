@@ -2694,9 +2694,9 @@ void EditorApplication::drawScenePanel()
 {
     ImGui::Begin("Scene Browser");
 
-    ImGui::TextUnformatted("glTF Scene");
+    ImGui::TextUnformatted(scene_.sources().size() > 1u ? "Composite Scene" : "glTF Scene");
     if (scene_.valid()) {
-        ImGui::TextWrapped("Path: %s", scene_.filename().string().c_str());
+        ImGui::TextWrapped("Path: %s", scene_.sourcePath().string().c_str());
         ImGui::Text("Document: %s%s", scene_.documentPath().string().c_str(), scene_.dirty() ? " *" : "");
     } else {
         ImGui::TextDisabled("No scene loaded.");
@@ -2785,15 +2785,47 @@ void EditorApplication::drawScenePanel()
 
     if (!scene_.valid()) {
         ImGui::Separator();
-        ImGui::TextDisabled("Load a .gltf or .glb file to inspect its CPU scene graph.");
+        ImGui::TextDisabled(
+            "Load a .gltf, .glb, or .metallic_scene.json file to inspect its scene graph.");
         ImGui::End();
         return;
     }
 
     ImGui::Separator();
+    if (scene_.sources().size() > 1u &&
+        ImGui::CollapsingHeader(
+            ("Sources (" + std::to_string(scene_.sources().size()) + ")").c_str(),
+            ImGuiTreeNodeFlags_DefaultOpen)) {
+        for (size_t sourceIndex = 0; sourceIndex < scene_.sources().size(); ++sourceIndex) {
+            const scene::SceneSourceDesc& source = scene_.sources()[sourceIndex];
+            ImGui::PushID(static_cast<int>(sourceIndex));
+            bool enabled = source.enabled;
+            if (ImGui::Checkbox("##SourceEnabled", &enabled) &&
+                scene_.setSourceEnabled(source.id, enabled)) {
+                sceneNonTransformDirty_ = true;
+                updateSceneDirtyState();
+                notifyScenePropertiesChanged();
+                sceneStatus_ = enabled
+                    ? "Enabled scene source: " + source.id
+                    : "Disabled scene source: " + source.id;
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted(source.id.c_str());
+            ImGui::Indent();
+            ImGui::TextWrapped("%s", source.path.string().c_str());
+            ImGui::TextDisabled(
+                "Mount translation: %.3f, %.3f, %.3f",
+                source.mountMatrix.a03,
+                source.mountMatrix.a13,
+                source.mountMatrix.a23);
+            ImGui::Unindent();
+            ImGui::PopID();
+        }
+    }
+
     if (ImGui::CollapsingHeader("Asset Info")) {
         const scene::SceneAssetInfo& asset = scene_.assetInfo();
-        ImGui::Text("Path: %s", scene_.filename().string().c_str());
+        ImGui::Text("Path: %s", scene_.sourcePath().string().c_str());
         ImGui::Text("glTF Version: %s", asset.version.empty() ? "-" : asset.version.c_str());
         if (!asset.generator.empty()) {
             ImGui::TextWrapped("Generator: %s", asset.generator.c_str());
@@ -2845,7 +2877,9 @@ void EditorApplication::drawSceneGraphTab()
 
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    const std::string sceneLabel = "Scene-" + std::to_string(scene_.sceneIndex()) + " " + scene_.sceneName();
+    const std::string sceneLabel = scene_.sources().size() > 1u
+        ? scene_.sceneName()
+        : "Scene-" + std::to_string(scene_.sceneIndex()) + " " + scene_.sceneName();
     const bool sceneOpen = ImGui::TreeNodeEx(
         "SceneRoot",
         ImGuiTreeNodeFlags_DefaultOpen |
@@ -5049,10 +5083,12 @@ void EditorApplication::drawViewportObjectHandles(const ImVec2& min, const ImVec
     };
 
     for (const scene::RenderLight& light : scene_.lights()) {
-        drawHandle(light.object, IM_COL32(255, 196, 72, 230), "L");
+        if (light.visible) {
+            drawHandle(light.object, IM_COL32(255, 196, 72, 230), "L");
+        }
     }
     for (const scene::RenderCamera& camera : scene_.cameras()) {
-        if (!camera.fallback) {
+        if (!camera.fallback && camera.visible) {
             drawHandle(camera.object, IM_COL32(92, 184, 255, 230), "C");
         }
     }
@@ -6160,13 +6196,21 @@ void EditorApplication::applyLoadedSceneCamera()
 
     const scene::RenderCamera* selectedCamera = nullptr;
     for (const scene::RenderCamera& camera : scene_.cameras()) {
-        if (!camera.fallback) {
+        if (!camera.fallback && camera.visible) {
             selectedCamera = &camera;
             break;
         }
     }
     if (selectedCamera == nullptr) {
-        selectedCamera = &scene_.cameras().front();
+        for (const scene::RenderCamera& camera : scene_.cameras()) {
+            if (camera.fallback || camera.visible) {
+                selectedCamera = &camera;
+                break;
+            }
+        }
+        if (selectedCamera == nullptr) {
+            return;
+        }
     }
 
     std::vector<uint32_t> sceneNodeIds;
@@ -6296,6 +6340,7 @@ void EditorApplication::pollSceneLoad()
         bool resourcesComplete = false;
         std::string log;
         const render::Result result = graphExecutor_->pumpSceneResourcePreparation(
+            *readySceneLoad_,
             2.0,
             resourcesComplete,
             pendingSceneResourceProgress_,
@@ -6470,6 +6515,11 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     const std::filesystem::path sourcePath = scene_.sourcePath();
     copyToBuffer(displayPathForProperty(sourcePath), sceneFilePath_, sizeof(sceneFilePath_));
     addRecentScenePath(sourcePath);
+    // A same-path reload still replaces the runtime scene identity and may change
+    // resident geometry. Force the preview passes to compile against the new scene
+    // even when no RenderGraph property needs to change.
+    viewportPreviewValid_ = false;
+    viewportPreviewNeedsRender_ = true;
     applyLoadedSceneToRenderGraph(sourcePath);
     applyLoadedSceneCamera();
     sceneRtxStatus_ = "RTX AS will be prepared by the active render pass.";

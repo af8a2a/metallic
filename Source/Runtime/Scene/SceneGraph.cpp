@@ -300,6 +300,23 @@ SceneObject SceneGraph::createObject(
     const float4x4& authoredLocalMatrix,
     bool visible)
 {
+    return createObject(
+        std::move(name),
+        sourceNodeIndex,
+        authoredLocalMatrix,
+        visible,
+        {},
+        sourceNodeIndex);
+}
+
+SceneObject SceneGraph::createObject(
+    std::string name,
+    int32_t sourceNodeIndex,
+    const float4x4& authoredLocalMatrix,
+    bool visible,
+    std::string sourceId,
+    int32_t localSourceNodeIndex)
+{
     if (!matrixIsFinite(authoredLocalMatrix)) {
         return {};
     }
@@ -325,7 +342,11 @@ SceneObject SceneGraph::createObject(
     registry_.emplace<RootComponent>(entity);
     registry_.emplace<ActiveSceneComponent>(entity);
     if (sourceNodeIndex >= 0) {
-        registry_.emplace<SourceNodeComponent>(entity, sourceNodeIndex);
+        registry_.emplace<SourceNodeComponent>(entity, SourceNodeComponent{
+            .nodeIndex = sourceNodeIndex,
+            .sourceId = std::move(sourceId),
+            .sourceNodeIndex = localSourceNodeIndex,
+        });
         sourceNodes_[static_cast<size_t>(sourceNodeIndex)] = entity;
     }
     roots_.push_back(entity);

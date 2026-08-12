@@ -89,6 +89,16 @@ constexpr uint64_t kFnvPrime = 1099511628211ull;
 
 using SceneLoadClock = std::chrono::steady_clock;
 
+uint64_t nextSceneResourceIdentity()
+{
+    static std::atomic<uint64_t> identity{0};
+    uint64_t next = identity.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (next == 0) {
+        next = identity.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+    return next;
+}
+
 double sceneLoadElapsedMilliseconds(SceneLoadClock::time_point begin)
 {
     return std::chrono::duration<double, std::milli>(SceneLoadClock::now() - begin).count();
@@ -1620,10 +1630,12 @@ uint64_t hashIndexVector(uint64_t hash, const std::vector<uint32_t>& values)
     return hash;
 }
 
-uint64_t hashPrimitiveGeometry(const RenderPrimitive& primitive)
+uint64_t hashPrimitiveGeometry(
+    const RenderPrimitive& primitive,
+    int32_t meshIndex)
 {
     uint64_t hash = kFnvOffset;
-    hash = hashValue(hash, primitive.meshIndex);
+    hash = hashValue(hash, meshIndex);
     hash = hashValue(hash, primitive.primitiveIndex);
     hash = hashValue(hash, primitive.mode);
     hash = hashValue(hash, primitive.vertexCount);
@@ -1633,6 +1645,11 @@ uint64_t hashPrimitiveGeometry(const RenderPrimitive& primitive)
     hash = hashFloat3Vector(hash, primitive.normals);
     hash = hashIndexVector(hash, primitive.indices);
     return hash;
+}
+
+uint64_t hashPrimitiveGeometry(const RenderPrimitive& primitive)
+{
+    return hashPrimitiveGeometry(primitive, primitive.meshIndex);
 }
 
 CachedBounds makeCachedBounds(const Bounds& bounds)
@@ -1971,7 +1988,7 @@ bool validateMeshletData(
 
 MeshletCacheHeader makeMeshletCacheHeader(
     const std::filesystem::path& sourcePath,
-    const std::vector<RenderPrimitive>& primitives)
+    size_t primitiveCount)
 {
     MeshletCacheHeader header;
     std::memcpy(header.magic, kMeshletCacheMagic.data(), kMeshletCacheMagic.size());
@@ -1979,7 +1996,7 @@ MeshletCacheHeader makeMeshletCacheHeader(
     header.endian = kMeshletCacheEndian;
     header.sourceFileSize = sourceFileSize(sourcePath);
     header.sourceWriteTime = sourceWriteTime(sourcePath);
-    header.primitiveCount = static_cast<uint32_t>(primitives.size());
+    header.primitiveCount = static_cast<uint32_t>(primitiveCount);
     header.maxVertices = static_cast<uint32_t>(kMeshletClusterMaxVertices);
     header.minTriangles = static_cast<uint32_t>(kMeshletClusterMinTriangles);
     header.maxTriangles = static_cast<uint32_t>(kMeshletClusterMaxTriangles);
@@ -1988,6 +2005,13 @@ MeshletCacheHeader makeMeshletCacheHeader(
     header.lodErrorMergePrevious = kMeshletLodErrorMergePrevious;
     header.lodErrorMergeAdditive = kMeshletLodErrorMergeAdditive;
     return header;
+}
+
+MeshletCacheHeader makeMeshletCacheHeader(
+    const std::filesystem::path& sourcePath,
+    const std::vector<RenderPrimitive>& primitives)
+{
+    return makeMeshletCacheHeader(sourcePath, primitives.size());
 }
 
 bool meshletCacheHeaderMatches(const MeshletCacheHeader& header, const MeshletCacheHeader& expected)
@@ -2007,17 +2031,20 @@ bool meshletCacheHeaderMatches(const MeshletCacheHeader& header, const MeshletCa
         header.lodErrorMergeAdditive == expected.lodErrorMergeAdditive;
 }
 
-MeshletCachePrimitiveHeader makeMeshletCachePrimitiveHeader(const RenderPrimitive& primitive)
+MeshletCachePrimitiveHeader makeMeshletCachePrimitiveHeader(
+    const RenderPrimitive& primitive,
+    int32_t meshIndex,
+    int32_t materialIndex)
 {
     MeshletCachePrimitiveHeader header;
-    header.meshIndex = primitive.meshIndex;
+    header.meshIndex = meshIndex;
     header.primitiveIndex = primitive.primitiveIndex;
-    header.materialIndex = primitive.materialIndex;
+    header.materialIndex = materialIndex;
     header.mode = primitive.mode;
     header.vertexCount = primitive.vertexCount;
     header.indexCount = primitive.indexCount;
     header.triangleCount = primitive.triangleCount;
-    header.geometryHash = hashPrimitiveGeometry(primitive);
+    header.geometryHash = hashPrimitiveGeometry(primitive, meshIndex);
     header.meshletClusterCount = primitive.meshletClusters.size();
     header.meshletVertexCount = primitive.meshletVertices.size();
     header.meshletTriangleCount = primitive.meshletTriangles.size();
@@ -2165,9 +2192,16 @@ bool readMeshletCachePrimitive(
     return true;
 }
 
-bool writeMeshletCachePrimitive(std::ostream& stream, const RenderPrimitive& primitive)
+bool writeMeshletCachePrimitive(
+    std::ostream& stream,
+    const RenderPrimitive& primitive,
+    int32_t meshIndex,
+    int32_t materialIndex)
 {
-    const MeshletCachePrimitiveHeader header = makeMeshletCachePrimitiveHeader(primitive);
+    const MeshletCachePrimitiveHeader header = makeMeshletCachePrimitiveHeader(
+        primitive,
+        meshIndex,
+        materialIndex);
     return writePod(stream, header) &&
         writeConvertedArray<MeshletCluster, CachedMeshletCluster>(
             stream,
@@ -2251,13 +2285,23 @@ bool loadMeshletCache(
     return true;
 }
 
-bool saveMeshletCache(
+bool saveMeshletCacheRange(
     const std::filesystem::path& cachePath,
     const std::filesystem::path& sourcePath,
     const std::vector<RenderPrimitive>& primitives,
+    size_t primitiveOffset,
+    size_t primitiveCount,
+    int32_t meshBase,
+    int32_t materialBase,
     std::string& reason)
 {
     reason.clear();
+
+    if (primitiveOffset > primitives.size() ||
+        primitiveCount > primitives.size() - primitiveOffset) {
+        reason = "primitive range is out of bounds";
+        return false;
+    }
 
     std::error_code directoryError;
     const std::filesystem::path cacheDirectory = cachePath.parent_path();
@@ -2269,7 +2313,7 @@ bool saveMeshletCache(
         }
     }
 
-    if (primitives.size() > std::numeric_limits<uint32_t>::max()) {
+    if (primitiveCount > std::numeric_limits<uint32_t>::max()) {
         reason = "too many render primitives";
         return false;
     }
@@ -2293,7 +2337,9 @@ bool saveMeshletCache(
             return false;
         }
 
-        const MeshletCacheHeader header = makeMeshletCacheHeader(sourcePath, primitives);
+        const MeshletCacheHeader header = makeMeshletCacheHeader(
+            sourcePath,
+            primitiveCount);
         if (!writePod(stream, header)) {
             reason = "cache header write failed";
             stream.close();
@@ -2301,8 +2347,30 @@ bool saveMeshletCache(
             return false;
         }
 
-        for (const RenderPrimitive& primitive : primitives) {
-            if (!writeMeshletCachePrimitive(stream, primitive)) {
+        for (size_t primitiveIndex = 0;
+             primitiveIndex < primitiveCount;
+             ++primitiveIndex) {
+            const RenderPrimitive& primitive =
+                primitives[primitiveOffset + primitiveIndex];
+            if ((primitive.meshIndex >= 0 && primitive.meshIndex < meshBase) ||
+                (primitive.materialIndex >= 0 &&
+                 primitive.materialIndex < materialBase)) {
+                reason = "flattened primitive index precedes its source base";
+                stream.close();
+                removeTemporary();
+                return false;
+            }
+            const int32_t localMeshIndex = primitive.meshIndex < 0
+                ? primitive.meshIndex
+                : primitive.meshIndex - meshBase;
+            const int32_t localMaterialIndex = primitive.materialIndex < 0
+                ? primitive.materialIndex
+                : primitive.materialIndex - materialBase;
+            if (!writeMeshletCachePrimitive(
+                    stream,
+                    primitive,
+                    localMeshIndex,
+                    localMaterialIndex)) {
                 reason = "primitive payload write failed";
                 stream.close();
                 removeTemporary();
@@ -2603,10 +2671,16 @@ float Bounds::radius() const
     return length((max - min) * 0.5f);
 }
 
+Scene::Scene()
+    : resourceIdentity_(nextSceneResourceIdentity())
+{
+}
+
 void Scene::clear()
 {
     clearParsedData();
     lastLoadResult_ = {};
+    resourceIdentity_ = nextSceneResourceIdentity();
 }
 
 bool Scene::load(const std::filesystem::path& filename)
@@ -2628,11 +2702,548 @@ bool Scene::loadDeferredMeshlets(
     return loadInternal(filename, progressCallback, true);
 }
 
+bool Scene::compose(
+    std::vector<SceneSourceDesc> sources,
+    std::string& error,
+    const std::filesystem::path& resourcePath,
+    const SceneLoadProgressCallback& progressCallback,
+    bool deferMeshletBuild)
+{
+    error.clear();
+    if (sources.empty()) {
+        error = "A composed scene requires at least one source.";
+        return false;
+    }
+
+    std::unordered_set<std::string> sourceIds;
+    for (SceneSourceDesc& source : sources) {
+        if (source.id.empty() || source.path.empty()) {
+            error = "Every composed scene source requires a non-empty id and path.";
+            return false;
+        }
+        if (!sourceIds.emplace(source.id).second) {
+            error = "A composed scene contains duplicate source id '" + source.id + "'.";
+            return false;
+        }
+        for (const float value : source.mountMatrix.a) {
+            if (!std::isfinite(value)) {
+                error = "Composed scene source '" + source.id +
+                    "' has a non-finite mount matrix.";
+                return false;
+            }
+        }
+        std::error_code pathError;
+        std::filesystem::path normalized = std::filesystem::weakly_canonical(
+            source.path,
+            pathError);
+        if (pathError) {
+            normalized = std::filesystem::absolute(source.path, pathError);
+        }
+        source.path = (pathError ? source.path : normalized).lexically_normal();
+    }
+
+    Scene composed;
+    composed.sources_ = sources;
+    composed.sourceMountObjects_.reserve(sources.size());
+    composed.filename_ = resourcePath.empty() ? sources.front().path : resourcePath;
+    composed.sceneName_ = resourcePath.empty()
+        ? std::string("Composed Scene")
+        : resourcePath.stem().string();
+    if (composed.sceneName_.empty()) {
+        composed.sceneName_ = "Composed Scene";
+    }
+    composed.lastLoadResult_.filename = composed.filename_;
+
+    const auto rebaseIndex = [](
+                                 size_t base,
+                                 int32_t local,
+                                 size_t localCount) {
+        if (local < 0 || static_cast<size_t>(local) >= localCount ||
+            base > static_cast<size_t>(std::numeric_limits<int32_t>::max()) -
+                static_cast<size_t>(local)) {
+            return kInvalidSceneIndex;
+        }
+        return static_cast<int32_t>(base + static_cast<size_t>(local));
+    };
+    const auto rebaseResourceIndex = [](
+                                         int32_t base,
+                                         int32_t local,
+                                         int32_t localCount) {
+        if (local < 0 || local >= localCount ||
+            base > std::numeric_limits<int32_t>::max() - local) {
+            return kInvalidSceneIndex;
+        }
+        return base + local;
+    };
+
+    int32_t cameraResourceBase = 0;
+    int32_t lightResourceBase = 0;
+    bool allSourceMeshletCachesLoaded = true;
+    for (size_t sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex) {
+        const SceneSourceDesc& sourceDesc = sources[sourceIndex];
+        Scene source;
+        const SceneLoadProgressCallback sourceProgress = progressCallback
+            ? SceneLoadProgressCallback(
+                  [&progressCallback,
+                   sourceIndex,
+                   sourceCount = sources.size(),
+                   sourceId = sourceDesc.id](
+                      const SceneLoadProgress& sourceUpdate) {
+                      SceneLoadProgress update = sourceUpdate;
+                      update.status = SceneLoadStatus::Running;
+                      if (update.phase == SceneLoadPhase::Completed) {
+                          update.phase = SceneLoadPhase::Finalizing;
+                      }
+                      update.fraction = (
+                          static_cast<float>(sourceIndex) + sourceUpdate.fraction) /
+                          static_cast<float>(sourceCount);
+                      update.completedUnits = sourceIndex;
+                      update.totalUnits = sourceCount;
+                      update.currentItem = sourceId + ": " + sourceUpdate.currentItem;
+                      return progressCallback(update);
+                  })
+            : SceneLoadProgressCallback{};
+        const bool sourceLoaded = deferMeshletBuild
+            ? source.loadDeferredMeshlets(sourceDesc.path, sourceProgress)
+            : source.load(sourceDesc.path, sourceProgress);
+        if (!sourceLoaded) {
+            if (source.lastLoadResult().error == "Scene load cancelled.") {
+                error = source.lastLoadResult().error;
+                return false;
+            }
+            error = "Failed to load composed scene source '" + sourceDesc.id + "': " +
+                (source.lastLoadResult().error.empty()
+                        ? std::string("unknown glTF load failure")
+                        : source.lastLoadResult().error);
+            return false;
+        }
+        if (!source.lastLoadResult().warning.empty()) {
+            appendWarning(
+                composed.lastLoadResult_.warning,
+                "Source '" + sourceDesc.id + "': " + source.lastLoadResult().warning);
+        }
+        allSourceMeshletCachesLoaded =
+            allSourceMeshletCachesLoaded &&
+            source.lastLoadResult().meshletCacheLoaded;
+        if (composed.assetInfo_.version.empty()) {
+            composed.assetInfo_ = source.assetInfo();
+        }
+
+        const size_t nodeBase = composed.sceneGraph_.sourceNodeCount();
+        const size_t meshBase = composed.meshes_.size();
+        const size_t primitiveBase = composed.renderPrimitives_.size();
+        const size_t renderNodeBase = composed.renderNodes_.size();
+        const size_t imageBase = composed.images_.size();
+        const size_t textureBase = composed.textures_.size();
+        const size_t materialBase = composed.materials_.size();
+        const size_t maximumIndex = static_cast<size_t>(
+            std::numeric_limits<int32_t>::max());
+        const auto exceedsIndexCapacity = [maximumIndex](size_t base, size_t count) {
+            return count > maximumIndex || base > maximumIndex - count;
+        };
+        if (exceedsIndexCapacity(nodeBase, source.nodes().size()) ||
+            exceedsIndexCapacity(meshBase, source.meshes().size()) ||
+            exceedsIndexCapacity(primitiveBase, source.renderPrimitives().size()) ||
+            exceedsIndexCapacity(renderNodeBase, source.renderNodes().size()) ||
+            exceedsIndexCapacity(imageBase, source.images().size()) ||
+            exceedsIndexCapacity(textureBase, source.textures().size()) ||
+            exceedsIndexCapacity(materialBase, source.materials().size())) {
+            error = "Composed scene source '" + sourceDesc.id +
+                "' exceeds 32-bit flattened scene index capacity.";
+            return false;
+        }
+
+        int32_t sourceCameraResourceCount = 0;
+        int32_t sourceLightResourceCount = 0;
+        for (size_t nodeIndex = 0; nodeIndex < source.nodes().size(); ++nodeIndex) {
+            const ConstSceneObject object = source.objectForNode(
+                static_cast<int32_t>(nodeIndex));
+            if (const CameraComponent* camera = object.tryGetComponent<CameraComponent>();
+                camera != nullptr && camera->cameraIndex >= 0 &&
+                camera->cameraIndex < std::numeric_limits<int32_t>::max()) {
+                sourceCameraResourceCount = std::max(
+                    sourceCameraResourceCount,
+                    camera->cameraIndex + 1);
+            }
+            if (const LightComponent* light = object.tryGetComponent<LightComponent>();
+                light != nullptr && light->lightIndex >= 0 &&
+                light->lightIndex < std::numeric_limits<int32_t>::max()) {
+                sourceLightResourceCount = std::max(
+                    sourceLightResourceCount,
+                    light->lightIndex + 1);
+            }
+        }
+        if (cameraResourceBase > std::numeric_limits<int32_t>::max() -
+                sourceCameraResourceCount ||
+            lightResourceBase > std::numeric_limits<int32_t>::max() -
+                sourceLightResourceCount) {
+            error = "Composed scene camera or light index capacity was exceeded.";
+            return false;
+        }
+
+        SceneObject mount = composed.sceneGraph_.createObject(
+            sourceDesc.id,
+            kInvalidSceneIndex,
+            sourceDesc.mountMatrix,
+            sourceDesc.enabled);
+        if (!mount) {
+            error = "Failed to create mount object for source '" + sourceDesc.id + "'.";
+            return false;
+        }
+        mount.addComponent<GeneratedComponent>();
+        mount.addComponent<SceneSourceComponent>(sourceDesc.id);
+        composed.sourceMountObjects_.push_back(mount.entity());
+
+        composed.meshes_.insert(
+            composed.meshes_.end(),
+            source.meshes().begin(),
+            source.meshes().end());
+        for (RenderImage image : source.images()) {
+            if (!image.uri.empty() && image.uri.rfind("data:", 0) != 0) {
+                std::filesystem::path imagePath = image.uri;
+                if (imagePath.is_relative()) {
+                    imagePath = source.filename().parent_path() / imagePath;
+                }
+                std::error_code imageError;
+                std::filesystem::path absoluteImage =
+                    std::filesystem::weakly_canonical(imagePath, imageError);
+                if (imageError) {
+                    absoluteImage = std::filesystem::absolute(imagePath, imageError);
+                }
+                image.uri = (imageError ? imagePath : absoluteImage)
+                                .lexically_normal()
+                                .generic_string();
+            }
+            composed.images_.push_back(std::move(image));
+        }
+        for (RenderTexture texture : source.textures()) {
+            texture.imageIndex = rebaseIndex(
+                imageBase,
+                texture.imageIndex,
+                source.images().size());
+            composed.textures_.push_back(std::move(texture));
+        }
+        const auto rebaseTexture = [&](RenderTextureInfo& info) {
+            info.textureIndex = rebaseIndex(
+                textureBase,
+                info.textureIndex,
+                source.textures().size());
+        };
+        for (RenderMaterial material : source.materials()) {
+            rebaseTexture(material.baseColorTexture);
+            rebaseTexture(material.metallicRoughnessTexture);
+            rebaseTexture(material.normalTexture);
+            rebaseTexture(material.occlusionTexture);
+            rebaseTexture(material.emissiveTexture);
+            rebaseTexture(material.transmissionTexture);
+            rebaseTexture(material.thicknessTexture);
+            rebaseTexture(material.diffuseTransmissionTexture);
+            rebaseTexture(material.diffuseTransmissionColorTexture);
+            composed.materials_.push_back(std::move(material));
+        }
+        for (RenderPrimitive primitive : source.renderPrimitives()) {
+            primitive.meshIndex = rebaseIndex(
+                meshBase,
+                primitive.meshIndex,
+                source.meshes().size());
+            primitive.materialIndex = rebaseIndex(
+                materialBase,
+                primitive.materialIndex,
+                source.materials().size());
+            composed.renderPrimitives_.push_back(std::move(primitive));
+        }
+        const bool sourceNeedsDeferredMeshlets = source.hasDeferredMeshlets();
+        composed.deferredMeshletBuildMask_.insert(
+            composed.deferredMeshletBuildMask_.end(),
+            source.renderPrimitives().size(),
+            sourceNeedsDeferredMeshlets ? uint8_t{1} : uint8_t{0});
+        if (sourceNeedsDeferredMeshlets) {
+            composed.deferredMeshletCacheTargets_.push_back(
+                DeferredMeshletCacheTarget{
+                    .sourceId = sourceDesc.id,
+                    .sourcePath = source.filename(),
+                    .cachePath = source.lastLoadResult().meshletCachePath,
+                    .primitiveOffset = primitiveBase,
+                    .primitiveCount = source.renderPrimitives().size(),
+                    .meshBase = static_cast<int32_t>(meshBase),
+                    .materialBase = static_cast<int32_t>(materialBase),
+                });
+        }
+        composed.deferredMeshletBuild_ =
+            composed.deferredMeshletBuild_ || sourceNeedsDeferredMeshlets;
+
+        std::vector<SceneEntity> objects(source.nodes().size(), kNullSceneEntity);
+        for (size_t localNodeIndex = 0;
+             localNodeIndex < source.nodes().size();
+             ++localNodeIndex) {
+            const ConstSceneObject sourceObject = source.objectForNode(
+                static_cast<int32_t>(localNodeIndex));
+            const TransformComponent* transform =
+                sourceObject.tryGetComponent<TransformComponent>();
+            const VisibilityComponent* visibility =
+                sourceObject.tryGetComponent<VisibilityComponent>();
+            SceneObject object = composed.sceneGraph_.createObject(
+                source.nodes()[localNodeIndex].name,
+                static_cast<int32_t>(nodeBase + localNodeIndex),
+                transform != nullptr
+                    ? transform->authoredLocalMatrix
+                    : source.nodes()[localNodeIndex].authoredLocalMatrix,
+                visibility != nullptr
+                    ? visibility->localVisible
+                    : source.nodes()[localNodeIndex].visible,
+                sourceDesc.id,
+                static_cast<int32_t>(localNodeIndex));
+            if (!object) {
+                error = "Failed to clone node " + std::to_string(localNodeIndex) +
+                    " from source '" + sourceDesc.id + "'.";
+                return false;
+            }
+            objects[localNodeIndex] = object.entity();
+            if (transform != nullptr && !matrixNearlyEqual(
+                    transform->localMatrix,
+                    transform->authoredLocalMatrix)) {
+                (void)composed.sceneGraph_.setLocalMatrix(
+                    object.entity(),
+                    transform->localMatrix);
+            }
+            if (const MeshComponent* value =
+                    sourceObject.tryGetComponent<MeshComponent>()) {
+                MeshComponent component = *value;
+                component.meshIndex = rebaseIndex(
+                    meshBase,
+                    component.meshIndex,
+                    source.meshes().size());
+                for (int32_t& renderNodeIndex : component.renderNodeIndices) {
+                    renderNodeIndex = rebaseIndex(
+                        renderNodeBase,
+                        renderNodeIndex,
+                        source.renderNodes().size());
+                }
+                object.addComponent<MeshComponent>(std::move(component));
+            }
+            if (const CameraComponent* value =
+                    sourceObject.tryGetComponent<CameraComponent>()) {
+                CameraComponent component = *value;
+                component.cameraIndex = rebaseResourceIndex(
+                    cameraResourceBase,
+                    component.cameraIndex,
+                    sourceCameraResourceCount);
+                component.renderCameraIndex = kInvalidSceneIndex;
+                object.addComponent<CameraComponent>(std::move(component));
+            }
+            if (const LightComponent* value =
+                    sourceObject.tryGetComponent<LightComponent>()) {
+                LightComponent component = *value;
+                component.lightIndex = rebaseResourceIndex(
+                    lightResourceBase,
+                    component.lightIndex,
+                    sourceLightResourceCount);
+                component.renderLightIndex = kInvalidSceneIndex;
+                object.addComponent<LightComponent>(std::move(component));
+            }
+        }
+
+        for (size_t localNodeIndex = 0;
+             localNodeIndex < source.nodes().size();
+             ++localNodeIndex) {
+            const int32_t parent = source.nodes()[localNodeIndex].parent;
+            if (parent >= 0 &&
+                (static_cast<size_t>(parent) >= objects.size() ||
+                    !composed.sceneGraph_.setParent(
+                        objects[localNodeIndex],
+                        objects[static_cast<size_t>(parent)]))) {
+                error = "Failed to clone hierarchy for source '" + sourceDesc.id + "'.";
+                return false;
+            }
+        }
+        for (const int32_t sourceRoot : source.rootNodeIndices()) {
+            if (sourceRoot < 0 || static_cast<size_t>(sourceRoot) >= objects.size() ||
+                !composed.sceneGraph_.setParent(
+                    objects[static_cast<size_t>(sourceRoot)],
+                    mount.entity())) {
+                error = "Failed to mount a root for source '" + sourceDesc.id + "'.";
+                return false;
+            }
+        }
+
+        for (const RenderNode& value : source.renderNodes()) {
+            RenderNode node = value;
+            node.nodeIndex = rebaseIndex(
+                nodeBase,
+                value.nodeIndex,
+                source.nodes().size());
+            node.renderPrimitiveIndex = rebaseIndex(
+                primitiveBase,
+                value.renderPrimitiveIndex,
+                source.renderPrimitives().size());
+            node.materialIndex = rebaseIndex(
+                materialBase,
+                value.materialIndex,
+                source.materials().size());
+            node.object = value.nodeIndex >= 0 &&
+                    static_cast<size_t>(value.nodeIndex) < objects.size()
+                ? objects[static_cast<size_t>(value.nodeIndex)]
+                : kNullSceneEntity;
+            composed.renderNodes_.push_back(std::move(node));
+        }
+
+        for (const RenderCamera& value : source.cameras()) {
+            if (value.fallback || value.nodeIndex < 0 ||
+                static_cast<size_t>(value.nodeIndex) >= objects.size()) {
+                continue;
+            }
+            RenderCamera camera = value;
+            camera.object = objects[static_cast<size_t>(value.nodeIndex)];
+            camera.nodeIndex = static_cast<int32_t>(nodeBase) + value.nodeIndex;
+            camera.cameraIndex = rebaseResourceIndex(
+                cameraResourceBase,
+                value.cameraIndex,
+                sourceCameraResourceCount);
+            camera.contentRevision = 0;
+            const int32_t renderCameraIndex = static_cast<int32_t>(
+                composed.cameras_.size());
+            composed.cameras_.push_back(std::move(camera));
+            SceneObject object = composed.sceneGraph_.object(
+                objects[static_cast<size_t>(value.nodeIndex)]);
+            if (const CameraComponent* current =
+                    object.tryGetComponent<CameraComponent>()) {
+                CameraComponent component = *current;
+                component.cameraIndex = composed.cameras_.back().cameraIndex;
+                component.renderCameraIndex = renderCameraIndex;
+                object.addOrReplaceComponent<CameraComponent>(std::move(component));
+            }
+        }
+        for (const RenderLight& value : source.lights()) {
+            if (value.nodeIndex < 0 ||
+                static_cast<size_t>(value.nodeIndex) >= objects.size()) {
+                continue;
+            }
+            RenderLight light = value;
+            light.object = objects[static_cast<size_t>(value.nodeIndex)];
+            light.nodeIndex = static_cast<int32_t>(nodeBase) + value.nodeIndex;
+            light.lightIndex = rebaseResourceIndex(
+                lightResourceBase,
+                value.lightIndex,
+                sourceLightResourceCount);
+            light.contentRevision = 0;
+            const int32_t renderLightIndex = static_cast<int32_t>(
+                composed.lights_.size());
+            composed.lights_.push_back(std::move(light));
+            SceneObject object = composed.sceneGraph_.object(
+                objects[static_cast<size_t>(value.nodeIndex)]);
+            if (const LightComponent* current =
+                    object.tryGetComponent<LightComponent>()) {
+                LightComponent component = *current;
+                component.lightIndex = composed.lights_.back().lightIndex;
+                component.renderLightIndex = renderLightIndex;
+                object.addOrReplaceComponent<LightComponent>(std::move(component));
+            }
+        }
+        cameraResourceBase += sourceCameraResourceCount;
+        lightResourceBase += sourceLightResourceCount;
+    }
+
+    if (!composed.sceneGraph_.setRoots(composed.sourceMountObjects_) &&
+        composed.sceneGraph_.roots() != composed.sourceMountObjects_) {
+        error = "Failed to install composed scene source mounts as roots.";
+        return false;
+    }
+    composed.refreshTransforms();
+    if (composed.cameras_.empty()) {
+        SceneObject fallback = composed.sceneGraph_.createObject("Fallback Camera");
+        if (!fallback) {
+            error = "Failed to create the composed scene fallback camera.";
+            return false;
+        }
+        fallback.addComponent<GeneratedComponent>();
+        RenderCamera camera = makeFallbackCamera(composed.bounds_);
+        const CameraProperties properties{
+            .type = camera.type,
+            .yfov = camera.yfov,
+            .aspectRatio = camera.aspectRatio,
+            .xmag = camera.xmag,
+            .ymag = camera.ymag,
+            .znear = camera.znear,
+            .zfar = camera.zfar,
+        };
+        fallback.addComponent<CameraComponent>(CameraComponent{
+            .cameraIndex = kInvalidSceneIndex,
+            .renderCameraIndex = 0,
+            .authoredProperties = properties,
+            .properties = properties,
+        });
+        camera.object = fallback.entity();
+        composed.cameras_.push_back(std::move(camera));
+        // createObject keeps the global fallback active as an additional
+        // generated runtime root. Compatibility rootNodeIndices deliberately
+        // exposes only authored roots beneath source mount objects.
+        composed.sceneGraph_.updateTransforms();
+        composed.syncSceneNodeProjection();
+    }
+
+    composed.stats_.meshCount = composed.meshes_.size();
+    composed.stats_.materialCount = composed.materials_.size();
+    composed.stats_.textureCount = composed.textures_.size();
+    composed.stats_.imageCount = composed.images_.size();
+    composed.stats_.primitiveCount = composed.renderPrimitives_.size();
+    composed.stats_.renderNodeCount = composed.renderNodes_.size();
+    composed.stats_.triangleCount = 0;
+    for (const RenderPrimitive& primitive : composed.renderPrimitives_) {
+        composed.stats_.triangleCount += primitive.triangleCount;
+    }
+    accumulateMeshletStats(composed.renderPrimitives_, composed.stats_);
+    composed.lastLoadResult_.meshletCacheLoaded =
+        allSourceMeshletCachesLoaded;
+    if (composed.deferredMeshletBuild_) {
+        composed.lastLoadResult_.meshletCachePath.clear();
+    } else {
+        composed.deferredMeshletBuildMask_.clear();
+    }
+    composed.resourceIdentity_ = nextSceneResourceIdentity();
+    composed.sceneGraph_.resetRevisions();
+    composed.syncSceneNodeProjection();
+    for (RenderNode& renderNode : composed.renderNodes_) {
+        renderNode.transformRevision = 0;
+    }
+    composed.lastLoadResult_.success = true;
+    if (progressCallback) {
+        (void)progressCallback(SceneLoadProgress{
+            .status = SceneLoadStatus::Succeeded,
+            .phase = SceneLoadPhase::Completed,
+            .fraction = 1.0f,
+            .completedUnits = sources.size(),
+            .totalUnits = sources.size(),
+            .currentItem = composed.filename_.string(),
+        });
+    }
+    *this = std::move(composed);
+    return true;
+}
+
+
+bool saveMeshletCache(
+    const std::filesystem::path& cachePath,
+    const std::filesystem::path& sourcePath,
+    const std::vector<RenderPrimitive>& primitives,
+    std::string& reason)
+{
+    return saveMeshletCacheRange(
+        cachePath,
+        sourcePath,
+        primitives,
+        0,
+        primitives.size(),
+        0,
+        0,
+        reason);
+}
+
 bool Scene::loadInternal(
     const std::filesystem::path& filename,
     const SceneLoadProgressCallback& progressCallback,
     bool deferMeshletBuild)
 {
+    resourceIdentity_ = nextSceneResourceIdentity();
     clearParsedData();
     lastLoadResult_ = {};
     lastLoadResult_.filename = filename;
@@ -2697,6 +3308,12 @@ bool Scene::loadInternal(
 
     const auto metadataBegin = SceneLoadClock::now();
     filename_ = filename;
+    sources_.push_back(SceneSourceDesc{
+        .id = "main",
+        .path = filename,
+        .mountMatrix = float4x4::Identity(),
+        .enabled = true,
+    });
     sceneIndex_ = sceneIndex;
     lastLoadResult_.sceneIndex = sceneIndex;
     sceneName_ = defaultName(model.scenes[static_cast<size_t>(sceneIndex)].name, filename.stem().string(), sceneIndex);
@@ -2905,7 +3522,9 @@ bool Scene::loadInternal(
             defaultName(gltfNode.name, "Node", static_cast<int32_t>(nodeIndex)),
             static_cast<int32_t>(nodeIndex),
             authoredLocalMatrix,
-            readNodeVisibility(gltfNode));
+            readNodeVisibility(gltfNode),
+            "main",
+            static_cast<int32_t>(nodeIndex));
         if (!object) {
             lastLoadResult_.error = "glTF node contains a non-finite local transform";
             clearParsedData();
@@ -3004,6 +3623,7 @@ bool Scene::loadInternal(
                 gltfNode.camera,
                 node.worldMatrix);
             camera.object = object.entity();
+            camera.visible = node.visible;
             CameraComponent boundCameraComponent = cameraComponent;
             boundCameraComponent.renderCameraIndex = static_cast<int32_t>(cameras_.size());
             object.addOrReplaceComponent<CameraComponent>(std::move(boundCameraComponent));
@@ -3018,6 +3638,7 @@ bool Scene::loadInternal(
                 gltfNode.light,
                 node.worldMatrix);
             light.object = object.entity();
+            light.visible = node.visible;
             LightComponent boundLightComponent = lightComponent;
             boundLightComponent.renderLightIndex = static_cast<int32_t>(lights_.size());
             object.addOrReplaceComponent<LightComponent>(std::move(boundLightComponent));
@@ -3321,6 +3942,11 @@ bool Scene::buildDeferredMeshlet(size_t primitiveIndex)
     if (!deferredMeshletBuild_ || primitiveIndex >= renderPrimitives_.size()) {
         return false;
     }
+    if (!deferredMeshletBuildMask_.empty() &&
+        (primitiveIndex >= deferredMeshletBuildMask_.size() ||
+         deferredMeshletBuildMask_[primitiveIndex] == 0)) {
+        return true;
+    }
     RenderPrimitive& primitive = renderPrimitives_[primitiveIndex];
     buildMeshletClusters(primitive);
     buildMeshletLods(primitive);
@@ -3333,6 +3959,62 @@ bool Scene::finalizeDeferredMeshlets()
         return true;
     }
 
+    finalizeDeferredMeshletStats();
+    if (!deferredMeshletCacheTargets_.empty()) {
+        bool allCachesSaved = true;
+        for (const DeferredMeshletCacheTarget& target : deferredMeshletCacheTargets_) {
+            std::string cacheReason;
+            const auto saveBegin = SceneLoadClock::now();
+            if (saveMeshletCacheRange(
+                    target.cachePath,
+                    target.sourcePath,
+                    renderPrimitives_,
+                    target.primitiveOffset,
+                    target.primitiveCount,
+                    target.meshBase,
+                    target.materialBase,
+                    cacheReason)) {
+                spdlog::info(
+                    "[SceneLoad] Meshlet cache for source '{}' saved '{}' in {:.2f} ms",
+                    target.sourceId,
+                    target.cachePath.string(),
+                    sceneLoadElapsedMilliseconds(saveBegin));
+            } else {
+                allCachesSaved = false;
+                if (!cacheReason.empty()) {
+                    appendWarning(
+                        lastLoadResult_.warning,
+                        "Source '" + target.sourceId +
+                            "' meshlet cache save failed: " + cacheReason);
+                }
+            }
+        }
+        lastLoadResult_.meshletCacheSaved = allCachesSaved;
+    } else if (!lastLoadResult_.meshletCachePath.empty()) {
+        std::string cacheReason;
+        const auto saveBegin = SceneLoadClock::now();
+        if (saveMeshletCache(
+                lastLoadResult_.meshletCachePath,
+                filename_,
+                renderPrimitives_,
+                cacheReason)) {
+            lastLoadResult_.meshletCacheSaved = true;
+            spdlog::info(
+                "[SceneLoad] Meshlet cache saved '{}' in {:.2f} ms",
+                lastLoadResult_.meshletCachePath.string(),
+                sceneLoadElapsedMilliseconds(saveBegin));
+        } else if (!cacheReason.empty()) {
+            appendWarning(lastLoadResult_.warning, "Meshlet cache save failed: " + cacheReason);
+        }
+    }
+    deferredMeshletCacheTargets_.clear();
+    deferredMeshletBuildMask_.clear();
+    deferredMeshletBuild_ = false;
+    return true;
+}
+
+void Scene::finalizeDeferredMeshletStats()
+{
     stats_.meshletClusterCount = 0;
     stats_.meshletVertexReferenceCount = 0;
     stats_.meshletTriangleIndexCount = 0;
@@ -3342,29 +4024,31 @@ bool Scene::finalizeDeferredMeshlets()
     stats_.meshletLodVertexReferenceCount = 0;
     stats_.meshletLodTriangleIndexCount = 0;
     accumulateMeshletStats(renderPrimitives_, stats_);
-
-    std::string cacheReason;
-    const auto saveBegin = SceneLoadClock::now();
-    if (saveMeshletCache(
-            lastLoadResult_.meshletCachePath,
-            filename_,
-            renderPrimitives_,
-            cacheReason)) {
-        lastLoadResult_.meshletCacheSaved = true;
-        spdlog::info(
-            "[SceneLoad] Meshlet cache saved '{}' in {:.2f} ms",
-            lastLoadResult_.meshletCachePath.string(),
-            sceneLoadElapsedMilliseconds(saveBegin));
-    } else if (!cacheReason.empty()) {
-        appendWarning(lastLoadResult_.warning, "Meshlet cache save failed: " + cacheReason);
-    }
-    deferredMeshletBuild_ = false;
-    return true;
 }
 
 ConstSceneObject Scene::objectForNode(int32_t nodeIndex) const
 {
     return sceneGraph_.objectFromSourceNode(nodeIndex);
+}
+
+ConstSceneObject Scene::objectForSourceNode(
+    std::string_view sourceId,
+    int32_t sourceNodeIndex) const
+{
+    if (sourceNodeIndex < 0) {
+        return {};
+    }
+    for (size_t nodeIndex = 0; nodeIndex < sceneGraph_.sourceNodeCount(); ++nodeIndex) {
+        const ConstSceneObject object = sceneGraph_.objectFromSourceNode(
+            static_cast<int32_t>(nodeIndex));
+        const SourceNodeComponent* source =
+            object.tryGetComponent<SourceNodeComponent>();
+        if (source != nullptr && source->sourceId == sourceId &&
+            source->sourceNodeIndex == sourceNodeIndex) {
+            return object;
+        }
+    }
+    return {};
 }
 
 bool Scene::setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix)
@@ -3466,6 +4150,50 @@ bool Scene::setObjectLightProperties(
     return true;
 }
 
+bool Scene::setSourceMountMatrix(
+    std::string_view sourceId,
+    const float4x4& mountMatrix)
+{
+    if (!valid()) {
+        return false;
+    }
+    for (size_t sourceIndex = 0; sourceIndex < sources_.size(); ++sourceIndex) {
+        if (sources_[sourceIndex].id != sourceId ||
+            sourceIndex >= sourceMountObjects_.size()) {
+            continue;
+        }
+        if (!sceneGraph_.setLocalMatrix(
+                sourceMountObjects_[sourceIndex],
+                mountMatrix)) {
+            return false;
+        }
+        sources_[sourceIndex].mountMatrix = mountMatrix;
+        refreshTransforms();
+        return true;
+    }
+    return false;
+}
+
+bool Scene::setSourceEnabled(std::string_view sourceId, bool enabled)
+{
+    if (!valid()) {
+        return false;
+    }
+    for (size_t sourceIndex = 0; sourceIndex < sources_.size(); ++sourceIndex) {
+        if (sources_[sourceIndex].id != sourceId ||
+            sourceIndex >= sourceMountObjects_.size()) {
+            continue;
+        }
+        if (!sceneGraph_.setVisible(sourceMountObjects_[sourceIndex], enabled)) {
+            return false;
+        }
+        sources_[sourceIndex].enabled = enabled;
+        refreshTransforms();
+        return true;
+    }
+    return false;
+}
+
 bool Scene::setImageDecodeResult(
     size_t imageIndex,
     std::vector<RenderImage::Mip> mips,
@@ -3515,6 +4243,7 @@ void Scene::refreshTransforms()
             continue;
         }
         const SceneNode& node = nodes_[static_cast<size_t>(camera.nodeIndex)];
+        camera.visible = node.visible;
         if (node.transformRevision != revision) {
             continue;
         }
@@ -3533,6 +4262,7 @@ void Scene::refreshTransforms()
             continue;
         }
         const SceneNode& node = nodes_[static_cast<size_t>(light.nodeIndex)];
+        light.visible = node.visible;
         if (node.transformRevision == revision) {
             light.worldMatrix = node.worldMatrix;
         }
@@ -3542,12 +4272,28 @@ void Scene::refreshTransforms()
 void Scene::syncSceneNodeProjection()
 {
     rootNodeIndices_.clear();
-    rootNodeIndices_.reserve(sceneGraph_.roots().size());
+    rootNodeIndices_.reserve(sceneGraph_.roots().size() + sources_.size());
     for (const SceneEntity entity : sceneGraph_.roots()) {
         const ConstSceneObject object = sceneGraph_.object(entity);
         const SourceNodeComponent* source = object.tryGetComponent<SourceNodeComponent>();
         if (source != nullptr) {
             rootNodeIndices_.push_back(source->nodeIndex);
+            continue;
+        }
+        if (!object.hasComponent<SceneSourceComponent>()) {
+            continue;
+        }
+        const RelationshipComponent* relationship =
+            object.tryGetComponent<RelationshipComponent>();
+        if (relationship == nullptr) {
+            continue;
+        }
+        for (const SceneEntity childEntity : relationship->children) {
+            const ConstSceneObject child = sceneGraph_.object(childEntity);
+            if (const SourceNodeComponent* childSource =
+                    child.tryGetComponent<SourceNodeComponent>()) {
+                rootNodeIndices_.push_back(childSource->nodeIndex);
+            }
         }
     }
 
@@ -3623,6 +4369,10 @@ void Scene::clearParsedData()
     materials_.clear();
     cameras_.clear();
     lights_.clear();
+    sources_.clear();
+    sourceMountObjects_.clear();
+    deferredMeshletCacheTargets_.clear();
+    deferredMeshletBuildMask_.clear();
     deferredMeshletBuild_ = false;
 }
 

@@ -2,9 +2,11 @@
 
 #include "Runtime/Render/GAPI/Vulkan/VulkanMeshletStreamClas.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanSceneRtx.h"
+#include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
 
+#include <algorithm>
 #include <cstring>
 #include <chrono>
 #include <filesystem>
@@ -103,6 +105,131 @@ public:
             statsAfterUpdate.instanceCount != statsBeforeUpdate.instanceCount ||
             statsAfterUpdate.triangleCount != statsBeforeUpdate.triangleCount) {
             return RhiTestResult::fail("TLAS refit changed BLAS, instance, or triangle counts");
+        }
+
+        bool visibilityChanged = false;
+        for (const scene::RenderNode& renderNode : loadedScene.renderNodes()) {
+            if (renderNode.object != scene::kNullSceneEntity) {
+                visibilityChanged =
+                    loadedScene.setObjectVisible(renderNode.object, false) || visibilityChanged;
+            }
+        }
+        if (!visibilityChanged ||
+            std::any_of(
+                loadedScene.renderNodes().begin(),
+                loadedScene.renderNodes().end(),
+                [](const scene::RenderNode& node) { return node.visible; })) {
+            return RhiTestResult::fail("failed to hide every RTX test instance");
+        }
+
+        result = builder.build(*device, *graphicsQueue, loadedScene, log);
+        if (!result || !builder.valid()) {
+            return RhiTestResult::fail(
+                std::string("SceneRtxBuilder empty-scene build returned ") +
+                toString(result) + ": " + log);
+        }
+        const render::vulkan::SceneRtxStats emptyStats = builder.stats();
+        if (emptyStats.blasCount == 0 ||
+            emptyStats.instanceCount != 0 ||
+            emptyStats.triangleCount == 0) {
+            return RhiTestResult::fail("empty TLAS did not preserve geometry with zero visible instances");
+        }
+
+        float4x4 hiddenMovedLocal =
+            loadedScene.nodes()[static_cast<size_t>(movedNodeIndex)].localMatrix;
+        hiddenMovedLocal.a13 += 1.0f;
+        if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, hiddenMovedLocal)) {
+            return RhiTestResult::fail("failed to move a hidden RTX test instance");
+        }
+        result = builder.updateInstanceTransforms(*device, *graphicsQueue, loadedScene, log);
+        if (!result || builder.stats().instanceCount != 0) {
+            return RhiTestResult::fail(
+                std::string("empty TLAS transform sync returned ") +
+                toString(result) + ": " + log);
+        }
+
+        {
+            render::ScenePathTraceResources resources;
+            const render::RenderGraphProperties properties{
+                {"path", scenePath.string()},
+            };
+            result = resources.beginPrepareAsync(
+                *device,
+                *graphicsQueue,
+                properties,
+                loadedScene,
+                log);
+            bool resourcesComplete = false;
+            scene::SceneLoadProgress progress;
+            const auto resourceDeadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            while (result && !resourcesComplete &&
+                   std::chrono::steady_clock::now() < resourceDeadline) {
+                result = resources.pumpPrepareAsync(
+                    10.0,
+                    resourcesComplete,
+                    progress,
+                    log);
+                if (result && !resourcesComplete) {
+                    std::this_thread::yield();
+                }
+            }
+            if (!result || !resourcesComplete || !resources.valid() ||
+                resources.accelerationStructure().stats().instanceCount != 0 ||
+                resources.instanceBuffer() == nullptr ||
+                resources.instanceBuffer()->desc().size == 0) {
+                return RhiTestResult::fail(
+                    std::string("ScenePathTraceResources empty-scene preparation failed: ") + log);
+            }
+
+            const uint64_t resourcesRevision = resources.revision();
+            hiddenMovedLocal.a23 += 1.0f;
+            if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, hiddenMovedLocal)) {
+                return RhiTestResult::fail("failed to move a hidden path-trace instance");
+            }
+            result = resources.syncRuntimeScene(&loadedScene, log);
+            if (!result || !resources.valid() ||
+                resources.revision() <= resourcesRevision ||
+                resources.accelerationStructure().stats().instanceCount != 0) {
+                return RhiTestResult::fail(
+                    std::string("ScenePathTraceResources empty-scene sync failed: ") + log);
+            }
+
+            std::vector<scene::SceneEntity> renderObjects;
+            renderObjects.reserve(loadedScene.renderNodes().size());
+            for (const scene::RenderNode& renderNode : loadedScene.renderNodes()) {
+                if (renderNode.object != scene::kNullSceneEntity) {
+                    renderObjects.push_back(renderNode.object);
+                }
+            }
+            bool visibilityRestored = false;
+            for (scene::SceneEntity object : renderObjects) {
+                visibilityRestored =
+                    loadedScene.setObjectVisible(object, true) || visibilityRestored;
+            }
+            if (!visibilityRestored ||
+                std::none_of(
+                    loadedScene.renderNodes().begin(),
+                    loadedScene.renderNodes().end(),
+                    [](const scene::RenderNode& node) { return node.visible; })) {
+                return RhiTestResult::fail("failed to restore path-trace instance visibility");
+            }
+
+            const uint64_t topologyRevision = resources.revision();
+            result = resources.syncRuntimeScene(&loadedScene, log);
+            if (!result || !resources.valid() ||
+                resources.revision() <= topologyRevision ||
+                resources.accelerationStructure().stats().instanceCount == 0) {
+                return RhiTestResult::fail(
+                    std::string("ScenePathTraceResources topology rebuild failed: ") + log);
+            }
+
+            resources.clear();
+        }
+
+        result = device->waitIdle();
+        if (!result) {
+            return RhiTestResult::fail("failed to wait for empty-scene resource retirement");
         }
 
         return RhiTestResult::pass(log);

@@ -739,6 +739,9 @@ public:
                 }
             }
         }
+        const uint64_t runtimeResourceIdentity = runtimeScene != nullptr
+            ? runtimeScene->resourceIdentity()
+            : 0;
         const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
         const uint64_t runtimeLifetimeRevision = runtimeScene != nullptr
             ? runtimeScene->sceneGraph().lifetimeRevision()
@@ -752,6 +755,7 @@ public:
         if (visibilityPipelines_[0] != nullptr &&
             drawTaskCount_ > 0 &&
             compiledScene_ == runtimeScene &&
+            sceneResourceIdentity_ == runtimeResourceIdentity &&
             sceneLifetimeRevision_ == runtimeLifetimeRevision &&
             sceneStructuralRevision_ == runtimeStructuralRevision &&
             sceneContentRevision_ == runtimeContentRevision &&
@@ -983,6 +987,7 @@ public:
             }
         }
 
+        sceneResourceIdentity_ = runtimeResourceIdentity;
         sceneRevision_ = runtimeRevision;
         sceneVisibilityRevision_ = runtimeScene != nullptr ? runtimeScene->visibilityRevision() : 0;
         sceneLifetimeRevision_ = runtimeLifetimeRevision;
@@ -3670,6 +3675,7 @@ private:
     std::unique_ptr<ComputePipeline> hzbPipeline_;
     std::unique_ptr<ComputePipeline> deferredPipeline_;
     scene::Bounds drawBounds_;
+    uint64_t sceneResourceIdentity_ = 0;
     uint64_t sceneRevision_ = 0;
     uint64_t sceneVisibilityRevision_ = 0;
     uint64_t sceneLifetimeRevision_ = 0;

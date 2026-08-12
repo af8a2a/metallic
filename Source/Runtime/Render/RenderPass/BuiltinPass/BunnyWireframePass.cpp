@@ -37,8 +37,17 @@ public:
                 return sceneResult;
             }
         }
-        const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
-        if (program_ != nullptr && sceneRevision_ == runtimeRevision) {
+        const uint64_t resourceIdentity = runtimeScene != nullptr ? runtimeScene->resourceIdentity() : 0;
+        const uint64_t structuralRevision = runtimeScene != nullptr
+            ? runtimeScene->sceneGraph().structuralRevision()
+            : 0;
+        const uint64_t transformRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
+        const uint64_t visibilityRevision = runtimeScene != nullptr ? runtimeScene->visibilityRevision() : 0;
+        if (program_ != nullptr &&
+            resourceIdentity_ == resourceIdentity &&
+            structuralRevision_ == structuralRevision &&
+            transformRevision_ == transformRevision &&
+            visibilityRevision_ == visibilityRevision) {
             return {};
         }
 
@@ -52,7 +61,16 @@ public:
             log = "BunnyWireframePass geometry is too large to draw";
             return makeError(Error::Unsupported);
         }
-        buildBunnyParams(context.width, context.height, properties(), drawBounds_, params);
+        const uint32_t drawVertexCount = static_cast<uint32_t>(positions.size());
+        if (positions.empty()) {
+            positions.emplace_back();
+        }
+        if (transforms.empty()) {
+            transforms.emplace_back();
+        }
+        if (drawBounds_.valid) {
+            buildBunnyParams(context.width, context.height, properties(), drawBounds_, params);
+        }
 
         Result result = uploadStorageBuffer(
             *context.device,
@@ -168,8 +186,12 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
 
-        drawVertexCount_ = static_cast<uint32_t>(positions.size());
-        sceneRevision_ = runtimeRevision;
+        device_ = context.device;
+        drawVertexCount_ = drawVertexCount;
+        resourceIdentity_ = resourceIdentity;
+        structuralRevision_ = structuralRevision;
+        transformRevision_ = transformRevision;
+        visibilityRevision_ = visibilityRevision;
         return {};
     }
 
@@ -184,14 +206,15 @@ public:
         if (!color.valid() ||
             !depth.valid() ||
             bindlessHeap_ == nullptr ||
-            program_ == nullptr ||
-            drawVertexCount_ == 0) {
+            program_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        Result result = updateParamsBuffer(context.width(), context.height(), context.properties());
-        if (!result) {
-            return result;
+        if (drawVertexCount_ > 0) {
+            Result result = updateParamsBuffer(context.width(), context.height(), context.properties());
+            if (!result) {
+                return result;
+            }
         }
 
         const Rect renderArea{
@@ -221,6 +244,10 @@ public:
             .colorAttachmentCount = 1,
             .depthStencilAttachment = &depthAttachment,
         });
+        if (drawVertexCount_ == 0) {
+            context.commandBuffer().endRendering();
+            return {};
+        }
         context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
@@ -291,7 +318,17 @@ private:
     Result syncRuntimeGeometry(const scene::Scene* runtimeScene)
     {
         runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
-        if (runtimeScene == nullptr || runtimeScene->transformRevision() == sceneRevision_) {
+        if (runtimeScene == nullptr) {
+            return {};
+        }
+        const bool geometryChanged =
+            runtimeScene->resourceIdentity() != resourceIdentity_ ||
+            runtimeScene->sceneGraph().structuralRevision() != structuralRevision_ ||
+            runtimeScene->visibilityRevision() != visibilityRevision_;
+        if (geometryChanged) {
+            return rebuildRuntimeGeometry(*runtimeScene);
+        }
+        if (runtimeScene->transformRevision() == transformRevision_) {
             return {};
         }
         const std::vector<SceneGpuTransform> transforms = buildSceneGpuTransforms(*runtimeScene);
@@ -308,7 +345,75 @@ private:
         transformBuffer_->flush(0, transformBuffer_->desc().size);
         transformBuffer_->unmap();
         drawBounds_ = runtimeScene->bounds();
-        sceneRevision_ = runtimeScene->transformRevision();
+        transformRevision_ = runtimeScene->transformRevision();
+        return {};
+    }
+
+    Result rebuildRuntimeGeometry(const scene::Scene& runtimeScene)
+    {
+        if (device_ == nullptr || bindlessHeap_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        std::vector<BunnyWireframeGpuPosition> positions;
+        std::vector<SceneGpuTransform> transforms;
+        scene::Bounds bounds;
+        std::string log;
+        if (!loadBunnyGeometry(properties(), &runtimeScene, positions, transforms, bounds, log)) {
+            spdlog::warn("[BunnyWireframePass] Runtime geometry rebuild failed: {}", log);
+            return makeError(Error::Failure);
+        }
+        if (positions.size() > std::numeric_limits<uint32_t>::max()) {
+            return makeError(Error::Unsupported);
+        }
+
+        const uint32_t drawVertexCount = static_cast<uint32_t>(positions.size());
+        if (positions.empty()) {
+            positions.emplace_back();
+        }
+        if (transforms.empty()) {
+            transforms.emplace_back();
+        }
+
+        std::unique_ptr<Buffer> positionBuffer;
+        Result result = uploadStorageBuffer(
+            *device_,
+            positions.data(),
+            static_cast<uint64_t>(positions.size() * sizeof(BunnyWireframeGpuPosition)),
+            positionBuffer,
+            log,
+            "BunnyWireframePass runtime positions");
+        if (!result) {
+            return result;
+        }
+        std::unique_ptr<Buffer> transformBuffer;
+        result = uploadStorageBuffer(
+            *device_,
+            transforms.data(),
+            static_cast<uint64_t>(transforms.size() * sizeof(SceneGpuTransform)),
+            transformBuffer,
+            log,
+            "BunnyWireframePass runtime transforms");
+        if (!result) {
+            return result;
+        }
+        result = bindlessHeap_->writeStorageBuffer(positionHandle_, *positionBuffer);
+        if (!result) {
+            return result;
+        }
+        result = bindlessHeap_->writeStorageBuffer(transformHandle_, *transformBuffer);
+        if (!result) {
+            return result;
+        }
+
+        positionBuffer_ = std::move(positionBuffer);
+        transformBuffer_ = std::move(transformBuffer);
+        drawBounds_ = bounds;
+        drawVertexCount_ = drawVertexCount;
+        resourceIdentity_ = runtimeScene.resourceIdentity();
+        structuralRevision_ = runtimeScene.sceneGraph().structuralRevision();
+        transformRevision_ = runtimeScene.transformRevision();
+        visibilityRevision_ = runtimeScene.visibilityRevision();
         return {};
     }
 
@@ -430,7 +535,6 @@ private:
         scene::Bounds& outBounds,
         std::string& log)
     {
-        const std::filesystem::path path = scenePathFromProperties(properties);
         if (runtimeScene == nullptr) {
             log = "BunnyWireframePass requires a runtime scene resource provider";
             return false;
@@ -441,7 +545,8 @@ private:
         outBounds.reset();
         for (size_t renderNodeIndex = 0; renderNodeIndex < bunnyScene.renderNodes().size(); ++renderNodeIndex) {
             const scene::RenderNode& renderNode = bunnyScene.renderNodes()[renderNodeIndex];
-            if (renderNode.renderPrimitiveIndex < 0 ||
+            if (!renderNode.visible ||
+                renderNode.renderPrimitiveIndex < 0 ||
                 static_cast<size_t>(renderNode.renderPrimitiveIndex) >= bunnyScene.renderPrimitives().size()) {
                 continue;
             }
@@ -479,11 +584,6 @@ private:
                     appendVertex(static_cast<uint32_t>(index));
                 }
             }
-        }
-
-        if (outPositions.empty() || !outBounds.valid) {
-            log = "BunnyWireframePass found no drawable triangle geometry in " + path.string();
-            return false;
         }
 
         return true;
@@ -561,7 +661,11 @@ private:
     BindlessHandle paramsHandle_;
     std::unique_ptr<GraphicsShaderObjectProgram> program_;
     scene::Bounds drawBounds_;
-    uint64_t sceneRevision_ = 0;
+    Device* device_ = nullptr;
+    uint64_t resourceIdentity_ = 0;
+    uint64_t structuralRevision_ = 0;
+    uint64_t transformRevision_ = 0;
+    uint64_t visibilityRevision_ = 0;
     uint32_t drawVertexCount_ = 0;
 };
 

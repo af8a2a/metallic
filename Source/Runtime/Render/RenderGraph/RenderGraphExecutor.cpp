@@ -1263,6 +1263,7 @@ Result RenderGraphExecutor::beginSceneResourcePreparation(
 }
 
 Result RenderGraphExecutor::pumpSceneResourcePreparation(
+    const scene::Scene& scene,
     double budgetMilliseconds,
     bool& complete,
     scene::SceneLoadProgress& progress,
@@ -1277,6 +1278,7 @@ Result RenderGraphExecutor::pumpSceneResourcePreparation(
     }
     Result result = sceneResources->manager().pumpAsync(
         impl_->pendingSceneResourceSnapshot,
+        scene,
         budgetMilliseconds,
         complete,
         progress,

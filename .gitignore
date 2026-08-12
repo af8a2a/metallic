@@ -84,6 +84,7 @@ _builds
 .claude
 Asset/MeshletCache/
 *.meshstream.bin.partial
+*.meshlets.bin
 *.meshopt-cache/
 cache/
 Asset/SuperSponza/

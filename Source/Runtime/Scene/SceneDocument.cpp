@@ -2,8 +2,10 @@
 
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 
 #include <json.hpp>
 
@@ -17,7 +19,8 @@
 namespace metallic::scene {
 namespace {
 
-constexpr int kSceneDocumentVersion = 3;
+constexpr int kSceneDocumentVersion = 4;
+constexpr int kSingleSourceSceneDocumentVersion = 3;
 constexpr int kOldestSceneDocumentVersion = 1;
 constexpr std::string_view kSceneDocumentSuffix = ".metallic_scene.json";
 
@@ -325,6 +328,100 @@ bool readJsonFile(
     return true;
 }
 
+bool readMatrix(
+    const nlohmann::json& value,
+    float4x4& matrix,
+    std::string& reason)
+{
+    if (!value.is_array() || value.size() != 16u) {
+        reason = "matrix must be a 16-number array";
+        return false;
+    }
+    for (size_t index = 0; index < 16u; ++index) {
+        if (!value[index].is_number()) {
+            reason = "matrix must be a 16-number array";
+            return false;
+        }
+        matrix.a[index] = value[index].get<float>();
+        if (!std::isfinite(matrix.a[index])) {
+            reason = "matrix must be finite";
+            return false;
+        }
+    }
+    return true;
+}
+
+nlohmann::json serializeMatrix(const float4x4& matrix)
+{
+    nlohmann::json value = nlohmann::json::array();
+    for (const float component : matrix.a) {
+        value.push_back(component);
+    }
+    return value;
+}
+
+bool parseCompositeSources(
+    const nlohmann::json& document,
+    const std::filesystem::path& documentPath,
+    std::vector<SceneSourceDesc>& sources,
+    std::string& error)
+{
+    if (!document.contains("sources") || !document["sources"].is_array() ||
+        document["sources"].empty()) {
+        error = "Scene document sources must be a non-empty array.";
+        return false;
+    }
+
+    std::unordered_set<std::string> sourceIds;
+    sources.clear();
+    sources.reserve(document["sources"].size());
+    for (size_t sourceIndex = 0; sourceIndex < document["sources"].size(); ++sourceIndex) {
+        const nlohmann::json& value = document["sources"][sourceIndex];
+        const std::string prefix = "Scene source " + std::to_string(sourceIndex) + ' ';
+        if (!value.is_object()) {
+            error = prefix + "must be an object.";
+            return false;
+        }
+        if (!value.contains("id") || !value["id"].is_string() ||
+            value["id"].get_ref<const std::string&>().empty()) {
+            error = prefix + "has no non-empty string id.";
+            return false;
+        }
+        if (!value.contains("path") || !value["path"].is_string() ||
+            value["path"].get_ref<const std::string&>().empty()) {
+            error = prefix + "has no non-empty string path.";
+            return false;
+        }
+        if (value.contains("enabled") && !value["enabled"].is_boolean()) {
+            error = prefix + "enabled must be a boolean.";
+            return false;
+        }
+
+        SceneSourceDesc source;
+        source.id = value["id"].get<std::string>();
+        if (!sourceIds.emplace(source.id).second) {
+            error = "Scene document contains duplicate source id '" + source.id + "'.";
+            return false;
+        }
+        source.path = value["path"].get<std::string>();
+        if (source.path.is_relative()) {
+            source.path = documentPath.parent_path() / source.path;
+        }
+        source.path = normalizedPath(source.path);
+        source.mountMatrix = float4x4::Identity();
+        if (value.contains("mountMatrix")) {
+            std::string reason;
+            if (!readMatrix(value["mountMatrix"], source.mountMatrix, reason)) {
+                error = prefix + "mountMatrix is invalid: " + reason + '.';
+                return false;
+            }
+        }
+        source.enabled = value.value("enabled", true);
+        sources.push_back(std::move(source));
+    }
+    return true;
+}
+
 } // namespace
 
 std::filesystem::path SceneDocument::sidecarPathForSource(
@@ -358,11 +455,37 @@ bool SceneDocument::loadInternal(
     const SceneLoadProgressCallback& progressCallback,
     bool deferMeshletBuild)
 {
+    SceneDocument candidate;
+    if (!candidate.loadInternalInPlace(
+            path,
+            progressCallback,
+            deferMeshletBuild)) {
+        if (!valid()) {
+            *this = std::move(candidate);
+        } else {
+            documentWarning_ = candidate.documentWarning_;
+            if (documentWarning_.empty()) {
+                documentWarning_ = candidate.lastLoadResult().error;
+            }
+        }
+        return false;
+    }
+    *this = std::move(candidate);
+    return true;
+}
+
+bool SceneDocument::loadInternalInPlace(
+    const std::filesystem::path& path,
+    const SceneLoadProgressCallback& progressCallback,
+    bool deferMeshletBuild)
+{
     clear();
     documentWarning_.clear();
 
     std::filesystem::path sourcePath = path;
     std::filesystem::path documentPath;
+    bool compositionDocument = false;
+    std::vector<SceneSourceDesc> compositionSources;
     if (isSceneDocumentPath(path)) {
         nlohmann::json document;
         std::string error;
@@ -370,21 +493,41 @@ bool SceneDocument::loadInternal(
             documentWarning_ = std::move(error);
             return false;
         }
-        if (!document.contains("source") || !document["source"].is_string()) {
-            documentWarning_ = "Scene document has no string source field.";
+        if (!document.contains("version") || !document["version"].is_number_integer()) {
+            documentWarning_ = "Scene document has no integer version field.";
             return false;
         }
-        sourcePath = document["source"].get<std::string>();
-        if (sourcePath.is_relative()) {
-            sourcePath = path.parent_path() / sourcePath;
+        const int version = document.value("version", 0);
+        if (version < kOldestSceneDocumentVersion || version > kSceneDocumentVersion) {
+            documentWarning_ = "Unsupported scene document version in " + path.string();
+            return false;
         }
-        documentPath = path;
+        if (version == kSceneDocumentVersion) {
+            if (!parseCompositeSources(document, path, compositionSources, error)) {
+                documentWarning_ = std::move(error);
+                return false;
+            }
+            compositionDocument = true;
+            documentPath = normalizedPath(path);
+            sourcePath = documentPath;
+        } else {
+            if (!document.contains("source") || !document["source"].is_string()) {
+                documentWarning_ = "Scene document has no string source field.";
+                return false;
+            }
+            sourcePath = document["source"].get<std::string>();
+            if (sourcePath.is_relative()) {
+                sourcePath = path.parent_path() / sourcePath;
+            }
+            documentPath = path;
+        }
     }
 
     sourcePath = normalizedPath(sourcePath);
     const SceneLoadProgressCallback sceneProgress = progressCallback
         ? SceneLoadProgressCallback([&progressCallback](const SceneLoadProgress& sourceProgress) {
             SceneLoadProgress progress = sourceProgress;
+            progress.status = SceneLoadStatus::Running;
             progress.fraction *= 0.95f;
             if (progress.phase == SceneLoadPhase::Completed) {
                 progress.phase = SceneLoadPhase::Finalizing;
@@ -392,9 +535,25 @@ bool SceneDocument::loadInternal(
             return progressCallback(progress);
         })
         : SceneLoadProgressCallback{};
-    const bool loaded = deferMeshletBuild
-        ? Scene::loadDeferredMeshlets(sourcePath, sceneProgress)
-        : Scene::load(sourcePath, sceneProgress);
+    bool loaded = false;
+    if (compositionDocument) {
+        std::string error;
+        loaded = Scene::compose(
+            std::move(compositionSources),
+            error,
+            documentPath,
+            sceneProgress,
+            deferMeshletBuild);
+        if (!loaded) {
+            documentWarning_ = error.empty()
+                ? "Failed to compose scene document."
+                : std::move(error);
+        }
+    } else {
+        loaded = deferMeshletBuild
+            ? Scene::loadDeferredMeshlets(sourcePath, sceneProgress)
+            : Scene::load(sourcePath, sceneProgress);
+    }
     if (!loaded) {
         return false;
     }
@@ -403,6 +562,7 @@ bool SceneDocument::loadInternal(
     documentPath_ = documentPath.empty()
         ? sidecarPathForSource(sourcePath_)
         : normalizedPath(documentPath);
+    compositionDocument_ = compositionDocument;
 
     std::error_code existsError;
     if (std::filesystem::exists(documentPath_, existsError) &&
@@ -410,6 +570,7 @@ bool SceneDocument::loadInternal(
         Scene::clear();
         sourcePath_.clear();
         documentPath_.clear();
+        compositionDocument_ = false;
         return false;
     }
     if (progressCallback && !progressCallback(SceneLoadProgress{
@@ -423,6 +584,7 @@ bool SceneDocument::loadInternal(
         Scene::clear();
         sourcePath_.clear();
         documentPath_.clear();
+        compositionDocument_ = false;
         documentWarning_ = "Scene load cancelled.";
         return false;
     }
@@ -449,6 +611,7 @@ void SceneDocument::clear()
     environment_ = EnvironmentSettings{};
     sidecarLoaded_ = false;
     hasEnvironmentSettings_ = false;
+    compositionDocument_ = false;
     dirty_ = false;
 }
 
@@ -509,6 +672,26 @@ bool SceneDocument::setObjectLightProperties(
     return true;
 }
 
+bool SceneDocument::setSourceMountMatrix(
+    std::string_view sourceId,
+    const float4x4& mountMatrix)
+{
+    if (!Scene::setSourceMountMatrix(sourceId, mountMatrix)) {
+        return false;
+    }
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::setSourceEnabled(std::string_view sourceId, bool enabled)
+{
+    if (!Scene::setSourceEnabled(sourceId, enabled)) {
+        return false;
+    }
+    dirty_ = true;
+    return true;
+}
+
 bool SceneDocument::setEnvironment(EnvironmentSettings environment)
 {
     environment.intensity = std::isfinite(environment.intensity)
@@ -534,27 +717,55 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
         documentWarning_ = std::move(error);
         return false;
     }
+    if (!document.contains("version") || !document["version"].is_number_integer()) {
+        documentWarning_ = "Scene document has no integer version field.";
+        return false;
+    }
     const int version = document.value("version", 0);
     if (version < kOldestSceneDocumentVersion || version > kSceneDocumentVersion) {
         documentWarning_ = "Unsupported scene document version in " + path.string();
         return false;
     }
-    if (!document.contains("source") || !document["source"].is_string()) {
-        documentWarning_ = "Scene document has no string source field.";
-        return false;
-    }
+    if (version == kSceneDocumentVersion) {
+        std::vector<SceneSourceDesc> declaredSources;
+        if (!parseCompositeSources(document, path, declaredSources, documentWarning_)) {
+            return false;
+        }
+        if (!compositionDocument_ || normalizedPath(path) != normalizedPath(sourcePath_) ||
+            declaredSources.size() != sources().size()) {
+            documentWarning_ = "Scene document sources do not match the loaded composition.";
+            return false;
+        }
+        for (size_t index = 0; index < declaredSources.size(); ++index) {
+            const SceneSourceDesc& declared = declaredSources[index];
+            const SceneSourceDesc& loaded = sources()[index];
+            if (declared.id != loaded.id ||
+                normalizedPath(declared.path) != normalizedPath(loaded.path) ||
+                declared.enabled != loaded.enabled ||
+                !matrixNearlyEqual(declared.mountMatrix, loaded.mountMatrix)) {
+                documentWarning_ = "Scene document source '" + declared.id +
+                    "' does not match the loaded composition.";
+                return false;
+            }
+        }
+    } else {
+        if (!document.contains("source") || !document["source"].is_string()) {
+            documentWarning_ = "Scene document has no string source field.";
+            return false;
+        }
 
-    std::filesystem::path declaredSource = document["source"].get<std::string>();
-    if (declaredSource.is_relative()) {
-        declaredSource = path.parent_path() / declaredSource;
-    }
-    if (normalizedPath(declaredSource) != normalizedPath(sourcePath_)) {
-        documentWarning_ = "Scene document source does not match the loaded glTF.";
-        return false;
-    }
-    if (document.value("sceneIndex", kInvalidSceneIndex) != sceneIndex()) {
-        documentWarning_ = "Scene document sceneIndex does not match the loaded glTF scene.";
-        return false;
+        std::filesystem::path declaredSource = document["source"].get<std::string>();
+        if (declaredSource.is_relative()) {
+            declaredSource = path.parent_path() / declaredSource;
+        }
+        if (normalizedPath(declaredSource) != normalizedPath(sourcePath_)) {
+            documentWarning_ = "Scene document source does not match the loaded glTF.";
+            return false;
+        }
+        if (document.value("sceneIndex", kInvalidSceneIndex) != sceneIndex()) {
+            documentWarning_ = "Scene document sceneIndex does not match the loaded glTF scene.";
+            return false;
+        }
     }
 
     environment_ = EnvironmentSettings{};
@@ -568,6 +779,20 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     appendWarning(documentWarning_, "Ignored a non-object world.environment setting.");
                 } else {
                     const nlohmann::json& environment = world["environment"];
+                    if ((environment.contains("enabled") &&
+                         !environment["enabled"].is_boolean()) ||
+                        (environment.contains("visible") &&
+                         !environment["visible"].is_boolean()) ||
+                        (environment.contains("intensity") &&
+                         !environment["intensity"].is_number()) ||
+                        (environment.contains("rotationDegrees") &&
+                         !environment["rotationDegrees"].is_number()) ||
+                        (environment.contains("path") &&
+                         !environment["path"].is_string())) {
+                        documentWarning_ =
+                            "Scene document world.environment fields have invalid types.";
+                        return false;
+                    }
                     hasEnvironmentSettings_ = true;
                     environment_.enabled = environment.value("enabled", true);
                     environment_.visible = environment.value("visible", true);
@@ -580,7 +805,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     if (!std::isfinite(environment_.rotationDegrees)) {
                         environment_.rotationDegrees = 0.0f;
                     }
-                    if (environment.contains("path") && environment["path"].is_string()) {
+                    if (environment.contains("path")) {
                         environment_.path = environment["path"].get<std::string>();
                         if (!environment_.path.empty() && environment_.path.is_relative()) {
                             environment_.path = path.parent_path() / environment_.path;
@@ -607,59 +832,96 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
             appendWarning(documentWarning_, "Skipped a non-object node override.");
             continue;
         }
-        const int32_t nodeIndex = overrideValue.value("nodeIndex", kInvalidSceneIndex);
-        if (nodeIndex < 0 || static_cast<size_t>(nodeIndex) >= nodes().size()) {
-            appendWarning(documentWarning_, "Skipped an out-of-range node override.");
+        if (!overrideValue.contains("nodeIndex") ||
+            !overrideValue["nodeIndex"].is_number_integer()) {
+            appendWarning(documentWarning_, "Skipped a node override with no integer nodeIndex.");
             continue;
         }
+        int32_t serializedNodeIndex = kInvalidSceneIndex;
+        if (overrideValue["nodeIndex"].is_number_unsigned()) {
+            const uint64_t value = overrideValue["nodeIndex"].get<uint64_t>();
+            if (value > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+                appendWarning(documentWarning_, "Skipped an out-of-range node override.");
+                continue;
+            }
+            serializedNodeIndex = static_cast<int32_t>(value);
+        } else {
+            const int64_t value = overrideValue["nodeIndex"].get<int64_t>();
+            if (value < 0 || value > std::numeric_limits<int32_t>::max()) {
+                appendWarning(documentWarning_, "Skipped an out-of-range node override.");
+                continue;
+            }
+            serializedNodeIndex = static_cast<int32_t>(value);
+        }
+        int32_t nodeIndex = serializedNodeIndex;
+        ConstSceneObject object;
+        std::string nodeDescription = "node " + std::to_string(serializedNodeIndex);
+        if (version == kSceneDocumentVersion) {
+            if (!overrideValue.contains("sourceId") ||
+                !overrideValue["sourceId"].is_string() ||
+                overrideValue["sourceId"].get_ref<const std::string&>().empty()) {
+                appendWarning(
+                    documentWarning_,
+                    "Skipped node " + std::to_string(serializedNodeIndex) +
+                        " because it has no non-empty sourceId.");
+                continue;
+            }
+            const std::string sourceId = overrideValue["sourceId"].get<std::string>();
+            nodeDescription = "source '" + sourceId + "' node " +
+                std::to_string(serializedNodeIndex);
+            object = objectForSourceNode(sourceId, serializedNodeIndex);
+            const SourceNodeComponent* sourceNode =
+                object.tryGetComponent<SourceNodeComponent>();
+            if (sourceNode == nullptr || sourceNode->nodeIndex < 0 ||
+                static_cast<size_t>(sourceNode->nodeIndex) >= nodes().size()) {
+                appendWarning(
+                    documentWarning_,
+                    "Skipped an out-of-range " + nodeDescription + " override.");
+                continue;
+            }
+            nodeIndex = sourceNode->nodeIndex;
+        } else {
+            if (nodeIndex < 0 || static_cast<size_t>(nodeIndex) >= nodes().size()) {
+                appendWarning(documentWarning_, "Skipped an out-of-range node override.");
+                continue;
+            }
+            object = objectForNode(nodeIndex);
+        }
+
         const SceneNode& node = nodes()[static_cast<size_t>(nodeIndex)];
         if (!overrideValue.contains("sourceName") ||
             !overrideValue["sourceName"].is_string() ||
             overrideValue["sourceName"].get<std::string>() != node.name) {
             appendWarning(
                 documentWarning_,
-                "Skipped node " + std::to_string(nodeIndex) + " because its sourceName changed.");
+                "Skipped " + nodeDescription + " because its sourceName changed.");
             continue;
         }
         bool recognizedOverride = false;
         if (overrideValue.contains("localMatrix")) {
             recognizedOverride = true;
-            const nlohmann::json& matrixValue = overrideValue["localMatrix"];
-            if (!matrixValue.is_array() || matrixValue.size() != 16) {
+            float4x4 matrix;
+            std::string reason;
+            if (!readMatrix(overrideValue["localMatrix"], matrix, reason)) {
                 appendWarning(
                     documentWarning_,
-                    "Skipped node " + std::to_string(nodeIndex) +
-                        " localMatrix because it is invalid.");
-            } else {
-                float4x4 matrix;
-                bool validMatrix = true;
-                for (size_t index = 0; index < 16; ++index) {
-                    if (!matrixValue[index].is_number()) {
-                        validMatrix = false;
-                        break;
-                    }
-                    matrix.a[index] = matrixValue[index].get<float>();
-                    validMatrix = validMatrix && std::isfinite(matrix.a[index]);
-                }
-                if (!validMatrix) {
-                    appendWarning(
-                        documentWarning_,
-                        "Skipped node " + std::to_string(nodeIndex) +
-                            " localMatrix because it is not finite.");
-                } else {
-                    Scene::setNodeLocalMatrix(nodeIndex, matrix);
-                }
+                    "Skipped " + nodeDescription + " localMatrix because it is invalid: " +
+                        reason + '.');
+            } else if (!Scene::setObjectLocalMatrix(object.entity(), matrix)) {
+                appendWarning(
+                    documentWarning_,
+                    "Skipped " + nodeDescription +
+                        " localMatrix because the source node is not editable.");
             }
         }
 
-        const ConstSceneObject object = objectForNode(nodeIndex);
         if (version >= 3 && overrideValue.contains("camera")) {
             recognizedOverride = true;
             const CameraComponent* camera = object.tryGetComponent<CameraComponent>();
             if (camera == nullptr) {
                 appendWarning(
                     documentWarning_,
-                    "Skipped node " + std::to_string(nodeIndex) +
+                    "Skipped " + nodeDescription +
                         " camera override because the source node has no camera.");
             } else {
                 CameraProperties properties;
@@ -671,7 +933,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                         reason)) {
                     appendWarning(
                         documentWarning_,
-                        "Skipped node " + std::to_string(nodeIndex) +
+                        "Skipped " + nodeDescription +
                             " camera override: " + reason + '.');
                 } else if (!cameraPropertiesNearlyEqualForDocument(
                                camera->properties,
@@ -679,7 +941,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     !Scene::setObjectCameraProperties(object.entity(), properties)) {
                     appendWarning(
                         documentWarning_,
-                        "Skipped node " + std::to_string(nodeIndex) +
+                        "Skipped " + nodeDescription +
                             " camera override because its values are unsupported.");
                 }
             }
@@ -690,7 +952,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
             if (light == nullptr) {
                 appendWarning(
                     documentWarning_,
-                    "Skipped node " + std::to_string(nodeIndex) +
+                    "Skipped " + nodeDescription +
                         " light override because the source node has no light.");
             } else {
                 LightProperties properties;
@@ -702,7 +964,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                         reason)) {
                     appendWarning(
                         documentWarning_,
-                        "Skipped node " + std::to_string(nodeIndex) +
+                        "Skipped " + nodeDescription +
                             " light override: " + reason + '.');
                 } else if (!lightPropertiesNearlyEqualForDocument(
                                light->properties,
@@ -710,7 +972,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     !Scene::setObjectLightProperties(object.entity(), properties)) {
                     appendWarning(
                         documentWarning_,
-                        "Skipped node " + std::to_string(nodeIndex) +
+                        "Skipped " + nodeDescription +
                             " light override because its values are unsupported.");
                 }
             }
@@ -718,7 +980,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
         if (!recognizedOverride) {
             appendWarning(
                 documentWarning_,
-                "Ignored node " + std::to_string(nodeIndex) +
+                "Ignored " + nodeDescription +
                     " override because it has no supported properties.");
         }
     }
@@ -734,29 +996,36 @@ bool SceneDocument::save(std::string& message)
         return false;
     }
 
-    std::error_code relativeError;
-    std::filesystem::path relativeSource = std::filesystem::relative(
-        sourcePath_,
-        documentPath_.parent_path(),
-        relativeError);
-    if (relativeError || relativeSource.empty()) {
-        relativeSource = sourcePath_;
+    const bool compositionDocument = compositionDocument_ || sources().size() > 1u;
+    struct SourceNodeIdentity {
+        std::string sourceId;
+        int32_t nodeIndex = kInvalidSceneIndex;
+    };
+    std::vector<SourceNodeIdentity> sourceNodeIdentities(nodes().size());
+    if (compositionDocument) {
+        for (size_t nodeIndex = 0; nodeIndex < nodes().size(); ++nodeIndex) {
+            const SourceNodeComponent* component = objectForNode(
+                static_cast<int32_t>(nodeIndex)).tryGetComponent<SourceNodeComponent>();
+            if (component == nullptr || component->nodeIndex != static_cast<int32_t>(nodeIndex) ||
+                component->sourceId.empty() || component->sourceNodeIndex < 0) {
+                message = "Composite scene node mapping is invalid for node " +
+                    std::to_string(nodeIndex) + '.';
+                return false;
+            }
+            sourceNodeIdentities[nodeIndex] = {
+                .sourceId = component->sourceId,
+                .nodeIndex = component->sourceNodeIndex,
+            };
+        }
     }
 
     nlohmann::json nodeOverrides = nlohmann::json::array();
     for (size_t nodeIndex = 0; nodeIndex < nodes().size(); ++nodeIndex) {
         const SceneNode& node = nodes()[nodeIndex];
-        nlohmann::json nodeOverride{
-            {"nodeIndex", nodeIndex},
-            {"sourceName", node.name},
-        };
+        nlohmann::json nodeOverride;
         bool hasOverride = false;
         if (!matrixNearlyEqual(node.localMatrix, node.authoredLocalMatrix)) {
-            nlohmann::json matrix = nlohmann::json::array();
-            for (const float value : node.localMatrix.a) {
-                matrix.push_back(value);
-            }
-            nodeOverride["localMatrix"] = std::move(matrix);
+            nodeOverride["localMatrix"] = serializeMatrix(node.localMatrix);
             hasOverride = true;
         }
 
@@ -776,6 +1045,18 @@ bool SceneDocument::save(std::string& message)
             hasOverride = true;
         }
         if (hasOverride) {
+            if (compositionDocument) {
+                const SourceNodeIdentity& identity = sourceNodeIdentities[nodeIndex];
+                if (identity.sourceId.empty() || identity.nodeIndex < 0) {
+                    message = "Composite scene node has no stable source identity: " + node.name;
+                    return false;
+                }
+                nodeOverride["sourceId"] = identity.sourceId;
+                nodeOverride["nodeIndex"] = identity.nodeIndex;
+            } else {
+                nodeOverride["nodeIndex"] = nodeIndex;
+            }
+            nodeOverride["sourceName"] = node.name;
             nodeOverrides.push_back(std::move(nodeOverride));
         }
     }
@@ -792,19 +1073,48 @@ bool SceneDocument::save(std::string& message)
         }
     }
 
-    const nlohmann::json document{
-        {"version", kSceneDocumentVersion},
-        {"source", relativeSource.generic_string()},
-        {"sceneIndex", sceneIndex()},
-        {"nodes", std::move(nodeOverrides)},
-        {"world", {
-            {"environment", {
-                {"enabled", environment_.enabled},
-                {"path", serializedEnvironmentPath.generic_string()},
-                {"intensity", environment_.intensity},
-                {"rotationDegrees", environment_.rotationDegrees},
-                {"visible", environment_.visible},
-            }},
+    nlohmann::json document;
+    if (compositionDocument) {
+        nlohmann::json serializedSources = nlohmann::json::array();
+        for (const SceneSourceDesc& source : sources()) {
+            std::error_code relativeError;
+            std::filesystem::path serializedPath = std::filesystem::relative(
+                source.path,
+                documentPath_.parent_path(),
+                relativeError);
+            if (relativeError || serializedPath.empty()) {
+                serializedPath = source.path;
+            }
+            serializedSources.push_back(nlohmann::json{
+                {"id", source.id},
+                {"path", serializedPath.generic_string()},
+                {"mountMatrix", serializeMatrix(source.mountMatrix)},
+                {"enabled", source.enabled},
+            });
+        }
+        document["version"] = kSceneDocumentVersion;
+        document["sources"] = std::move(serializedSources);
+    } else {
+        std::error_code relativeError;
+        std::filesystem::path relativeSource = std::filesystem::relative(
+            sourcePath_,
+            documentPath_.parent_path(),
+            relativeError);
+        if (relativeError || relativeSource.empty()) {
+            relativeSource = sourcePath_;
+        }
+        document["version"] = kSingleSourceSceneDocumentVersion;
+        document["source"] = relativeSource.generic_string();
+        document["sceneIndex"] = sceneIndex();
+    }
+    document["nodes"] = std::move(nodeOverrides);
+    document["world"] = {
+        {"environment", {
+            {"enabled", environment_.enabled},
+            {"path", serializedEnvironmentPath.generic_string()},
+            {"intensity", environment_.intensity},
+            {"rotationDegrees", environment_.rotationDegrees},
+            {"visible", environment_.visible},
         }},
     };
     if (!writeAtomically(documentPath_, document.dump(2) + '\n', message)) {
@@ -812,6 +1122,7 @@ bool SceneDocument::save(std::string& message)
     }
     sidecarLoaded_ = true;
     hasEnvironmentSettings_ = true;
+    compositionDocument_ = compositionDocument;
     dirty_ = false;
     message = "Saved scene document: " + documentPath_.string();
     return true;

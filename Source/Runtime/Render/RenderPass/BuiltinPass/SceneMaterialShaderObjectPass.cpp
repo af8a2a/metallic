@@ -37,8 +37,17 @@ public:
                 return sceneResult;
             }
         }
-        const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
-        if (defaultProgram_ != nullptr && !batches_.empty() && sceneRevision_ == runtimeRevision) {
+        const uint64_t resourceIdentity = runtimeScene != nullptr ? runtimeScene->resourceIdentity() : 0;
+        const uint64_t structuralRevision = runtimeScene != nullptr
+            ? runtimeScene->sceneGraph().structuralRevision()
+            : 0;
+        const uint64_t transformRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
+        const uint64_t visibilityRevision = runtimeScene != nullptr ? runtimeScene->visibilityRevision() : 0;
+        if (defaultProgram_ != nullptr &&
+            resourceIdentity_ == resourceIdentity &&
+            structuralRevision_ == structuralRevision &&
+            transformRevision_ == transformRevision &&
+            visibilityRevision_ == visibilityRevision) {
             return {};
         }
 
@@ -59,8 +68,18 @@ public:
             return makeError(Error::Failure);
         }
 
+        if (positions.empty()) {
+            positions.emplace_back();
+            materialIndices.push_back(0);
+        }
+        if (transforms.empty()) {
+            transforms.emplace_back();
+        }
+
         MaterialShaderObjectGpuParams params;
-        buildParams(context.width, context.height, drawBounds_, params);
+        if (drawBounds_.valid) {
+            buildParams(context.width, context.height, drawBounds_, params);
+        }
 
         Result result = uploadStorageBuffer(
             *context.device,
@@ -182,7 +201,11 @@ public:
             return result;
         }
 
-        sceneRevision_ = runtimeRevision;
+        device_ = context.device;
+        resourceIdentity_ = resourceIdentity;
+        structuralRevision_ = structuralRevision;
+        transformRevision_ = transformRevision;
+        visibilityRevision_ = visibilityRevision;
         return {};
     }
 
@@ -198,14 +221,15 @@ public:
             !depth.valid() ||
             bindlessHeap_ == nullptr ||
             defaultProgram_ == nullptr ||
-            alternateProgram_ == nullptr ||
-            batches_.empty()) {
+            alternateProgram_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        Result result = updateParamsBuffer(context.width(), context.height());
-        if (!result) {
-            return result;
+        if (!batches_.empty()) {
+            Result result = updateParamsBuffer(context.width(), context.height());
+            if (!result) {
+                return result;
+            }
         }
 
         const Rect renderArea{
@@ -235,6 +259,10 @@ public:
             .colorAttachmentCount = 1,
             .depthStencilAttachment = &depthAttachment,
         });
+        if (batches_.empty()) {
+            context.commandBuffer().endRendering();
+            return {};
+        }
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
         context.commandBuffer().bindGraphicsShaderObjectProgram(*defaultProgram_);
         context.commandBuffer().setViewport(Viewport{
@@ -287,7 +315,17 @@ private:
     Result syncRuntimeGeometry(const scene::Scene* runtimeScene)
     {
         runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
-        if (runtimeScene == nullptr || runtimeScene->transformRevision() == sceneRevision_) {
+        if (runtimeScene == nullptr) {
+            return {};
+        }
+        const bool geometryChanged =
+            runtimeScene->resourceIdentity() != resourceIdentity_ ||
+            runtimeScene->sceneGraph().structuralRevision() != structuralRevision_ ||
+            runtimeScene->visibilityRevision() != visibilityRevision_;
+        if (geometryChanged) {
+            return rebuildRuntimeGeometry(*runtimeScene);
+        }
+        if (runtimeScene->transformRevision() == transformRevision_) {
             return {};
         }
         const std::vector<SceneGpuTransform> transforms = buildSceneGpuTransforms(*runtimeScene);
@@ -304,7 +342,116 @@ private:
         transformBuffer_->flush(0, transformBuffer_->desc().size);
         transformBuffer_->unmap();
         drawBounds_ = runtimeScene->bounds();
-        sceneRevision_ = runtimeScene->transformRevision();
+        transformRevision_ = runtimeScene->transformRevision();
+        return {};
+    }
+
+    Result rebuildRuntimeGeometry(const scene::Scene& runtimeScene)
+    {
+        if (device_ == nullptr || bindlessHeap_ == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        std::vector<MaterialShaderObjectGpuPosition> positions;
+        std::vector<uint32_t> materialIndices;
+        std::vector<MaterialShaderObjectGpuMaterial> materials;
+        std::vector<SceneGpuTransform> transforms;
+        std::vector<MaterialShaderObjectBatch> batches;
+        scene::Bounds bounds;
+        std::string log;
+        if (!loadSceneGeometry(
+                properties(),
+                &runtimeScene,
+                positions,
+                materialIndices,
+                materials,
+                transforms,
+                batches,
+                bounds,
+                log)) {
+            spdlog::warn("[SceneMaterialShaderObjectPass] Runtime geometry rebuild failed: {}", log);
+            return makeError(Error::Failure);
+        }
+        if (positions.empty()) {
+            positions.emplace_back();
+            materialIndices.push_back(0);
+        }
+        if (transforms.empty()) {
+            transforms.emplace_back();
+        }
+
+        std::unique_ptr<Buffer> positionBuffer;
+        Result result = uploadStorageBuffer(
+            *device_,
+            positions.data(),
+            static_cast<uint64_t>(positions.size() * sizeof(MaterialShaderObjectGpuPosition)),
+            positionBuffer,
+            log,
+            "SceneMaterialShaderObjectPass runtime positions");
+        if (!result) {
+            return result;
+        }
+        std::unique_ptr<Buffer> transformBuffer;
+        result = uploadStorageBuffer(
+            *device_,
+            transforms.data(),
+            static_cast<uint64_t>(transforms.size() * sizeof(SceneGpuTransform)),
+            transformBuffer,
+            log,
+            "SceneMaterialShaderObjectPass runtime transforms");
+        if (!result) {
+            return result;
+        }
+        std::unique_ptr<Buffer> materialIndexBuffer;
+        result = uploadStorageBuffer(
+            *device_,
+            materialIndices.data(),
+            static_cast<uint64_t>(materialIndices.size() * sizeof(uint32_t)),
+            materialIndexBuffer,
+            log,
+            "SceneMaterialShaderObjectPass runtime material indices");
+        if (!result) {
+            return result;
+        }
+        std::unique_ptr<Buffer> materialBuffer;
+        result = uploadStorageBuffer(
+            *device_,
+            materials.data(),
+            static_cast<uint64_t>(materials.size() * sizeof(MaterialShaderObjectGpuMaterial)),
+            materialBuffer,
+            log,
+            "SceneMaterialShaderObjectPass runtime materials");
+        if (!result) {
+            return result;
+        }
+
+        result = bindlessHeap_->writeStorageBuffer(positionHandle_, *positionBuffer);
+        if (!result) {
+            return result;
+        }
+        result = bindlessHeap_->writeStorageBuffer(transformHandle_, *transformBuffer);
+        if (!result) {
+            return result;
+        }
+        result = bindlessHeap_->writeStorageBuffer(materialIndexHandle_, *materialIndexBuffer);
+        if (!result) {
+            return result;
+        }
+        result = bindlessHeap_->writeStorageBuffer(materialHandle_, *materialBuffer);
+        if (!result) {
+            return result;
+        }
+
+        positionBuffer_ = std::move(positionBuffer);
+        transformBuffer_ = std::move(transformBuffer);
+        materialIndexBuffer_ = std::move(materialIndexBuffer);
+        materialBuffer_ = std::move(materialBuffer);
+        batches_ = std::move(batches);
+        drawBounds_ = bounds;
+        resourceIdentity_ = runtimeScene.resourceIdentity();
+        structuralRevision_ = runtimeScene.sceneGraph().structuralRevision();
+        transformRevision_ = runtimeScene.transformRevision();
+        visibilityRevision_ = runtimeScene.visibilityRevision();
         return {};
     }
 
@@ -449,7 +596,6 @@ private:
         scene::Bounds& outBounds,
         std::string& log)
     {
-        const std::filesystem::path path = scenePathFromProperties(properties);
         if (runtimeScene == nullptr) {
             log = "SceneMaterialShaderObjectPass requires a runtime scene resource provider";
             return false;
@@ -539,8 +685,8 @@ private:
             });
         }
 
-        if (outPositions.empty() || outMaterialIndices.size() != outPositions.size() || !outBounds.valid) {
-            log = "SceneMaterialShaderObjectPass found no drawable triangle geometry in " + path.string();
+        if (outMaterialIndices.size() != outPositions.size()) {
+            log = "SceneMaterialShaderObjectPass generated mismatched geometry streams";
             return false;
         }
         if (outPositions.size() > std::numeric_limits<uint32_t>::max()) {
@@ -620,7 +766,11 @@ private:
     std::unique_ptr<GraphicsShaderObjectProgram> alternateProgram_;
     std::vector<MaterialShaderObjectBatch> batches_;
     scene::Bounds drawBounds_;
-    uint64_t sceneRevision_ = 0;
+    Device* device_ = nullptr;
+    uint64_t resourceIdentity_ = 0;
+    uint64_t structuralRevision_ = 0;
+    uint64_t transformRevision_ = 0;
+    uint64_t visibilityRevision_ = 0;
 };
 
 } // namespace

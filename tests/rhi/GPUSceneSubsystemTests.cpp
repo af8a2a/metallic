@@ -572,6 +572,207 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(GPUSceneCpuCoreTest);
 
+class GPUSceneCompositeFlatSourceTest final : public RhiTest {
+public:
+    GPUSceneCompositeFlatSourceTest()
+    {
+        type = RhiTestType::Resource;
+        name = "gpu_scene_composite_flat_source";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        std::vector<scene::RenderPrimitive> primitives{
+            makeTrianglePrimitive(),
+            makeTrianglePrimitive(0.25f),
+        };
+        primitives[0].name = "source A triangle";
+        primitives[0].meshIndex = 0;
+        primitives[0].primitiveIndex = 0;
+        primitives[0].materialIndex = 0;
+        primitives[1].name = "source B triangle";
+        primitives[1].meshIndex = 0;
+        primitives[1].primitiveIndex = 0;
+        primitives[1].materialIndex = 1;
+
+        std::vector<scene::RenderMaterial> materials(2);
+        materials[0].name = "source A material";
+        materials[1].name = "source B material";
+        materials[1].baseColorFactor = float4(0.25f, 0.5f, 0.75f, 1.0f);
+
+        const scene::SceneEntity objectA = static_cast<scene::SceneEntity>(101);
+        const scene::SceneEntity objectB = static_cast<scene::SceneEntity>(202);
+        std::vector<scene::RenderNode> nodes(2);
+        nodes[0].object = objectA;
+        nodes[0].nodeIndex = 0;
+        nodes[0].renderPrimitiveIndex = 0;
+        nodes[0].materialIndex = 0;
+        nodes[0].worldMatrix = translationMatrix(float3(1.0f, 0.0f, 0.0f));
+        nodes[0].transformRevision = 1;
+        nodes[1].object = objectB;
+        nodes[1].nodeIndex = 1;
+        nodes[1].renderPrimitiveIndex = 1;
+        nodes[1].materialIndex = 1;
+        nodes[1].worldMatrix = translationMatrix(float3(-2.0f, 0.0f, 0.0f));
+        nodes[1].transformRevision = 1;
+
+        render::GPUScene gpuScene;
+        std::string log;
+        render::Result result = gpuScene.rebuild(
+            makeSourceView(primitives, nodes, materials, 1, 1, 1),
+            log);
+        if (!result) {
+            return RhiTestResult::fail(
+                "GPUScene failed to build a flattened composite source: " + log);
+        }
+
+        const render::GPUSceneGeometryId geometryA =
+            gpuScene.geometryForRenderPrimitive(0);
+        const render::GPUSceneGeometryId geometryB =
+            gpuScene.geometryForRenderPrimitive(1);
+        const render::GPUSceneMaterialId materialA =
+            gpuScene.materialForSourceMaterial(0);
+        const render::GPUSceneInstanceId instanceA =
+            gpuScene.instanceForRenderNode(0);
+        const render::GPUSceneInstanceId instanceB =
+            gpuScene.instanceForRenderNode(1);
+        const scene::RenderPrimitive* geometrySourceA =
+            gpuScene.geometrySourcePrimitive(geometryA);
+        const scene::RenderPrimitive* geometrySourceB =
+            gpuScene.geometrySourcePrimitive(geometryB);
+        if (gpuScene.stats().geometryCount != 2 ||
+            gpuScene.stats().materialCount != 2 ||
+            gpuScene.stats().instanceCount != 2 ||
+            gpuScene.stats().geometryPayloadConflictCount != 1 ||
+            !geometryA || !geometryB || geometryA == geometryB ||
+            !materialA || !instanceA || !instanceB ||
+            geometrySourceA == nullptr || geometrySourceB == nullptr ||
+            geometrySourceA->meshIndex != 0 || geometrySourceB->meshIndex != 0 ||
+            geometrySourceA->primitiveIndex != 0 ||
+            geometrySourceB->primitiveIndex != 0 ||
+            geometrySourceA->positions[0].x == geometrySourceB->positions[0].x ||
+            gpuScene.instancesForObject(objectA).size() != 1 ||
+            gpuScene.instancesForObject(objectB).size() != 1 ||
+            gpuScene.instance(instanceA) == nullptr ||
+            gpuScene.instance(instanceA)->sourceObject != objectA ||
+            gpuScene.instance(instanceB) == nullptr ||
+            gpuScene.instance(instanceB)->sourceObject != objectB) {
+            return RhiTestResult::fail(
+                "GPUScene flattened composite identity or duplicate local primitive handling is incorrect");
+        }
+
+        const uint32_t initialGeneration = gpuScene.drawSet().generation;
+        const uint64_t initialRevision = gpuScene.drawSet().revision;
+        const float4x4 previousWorldB = nodes[1].worldMatrix;
+        const float4x4 updatedWorldB =
+            translationMatrix(float3(-2.0f, 3.0f, 4.0f));
+        nodes[1].worldMatrix = updatedWorldB;
+        nodes[1].transformRevision = 2;
+        if (gpuScene.sync(makeSourceView(primitives, nodes, materials, 2, 1, 1)) !=
+                render::GPUSceneSyncResult::Updated ||
+            gpuScene.drawSet().generation != initialGeneration ||
+            gpuScene.drawSet().revision == initialRevision ||
+            gpuScene.instanceForRenderNode(0) != instanceA ||
+            gpuScene.instanceForRenderNode(1) != instanceB ||
+            gpuScene.instance(instanceB) == nullptr ||
+            !sameMatrix(gpuScene.instance(instanceB)->worldMatrix, updatedWorldB) ||
+            !sameMatrix(gpuScene.instance(instanceB)->previousWorldMatrix, previousWorldB)) {
+            return RhiTestResult::fail(
+                "GPUScene composite transform sync did not preserve IDs and transform history");
+        }
+
+        const uint64_t updatedRevision = gpuScene.drawSet().revision;
+        if (gpuScene.sync(makeSourceView(primitives, nodes, materials, 2, 1, 1)) !=
+                render::GPUSceneSyncResult::HistoryUpdated ||
+            gpuScene.drawSet().generation != initialGeneration ||
+            gpuScene.drawSet().revision == updatedRevision ||
+            gpuScene.instance(instanceB) == nullptr ||
+            !sameMatrix(
+                gpuScene.instance(instanceB)->previousWorldMatrix,
+                updatedWorldB)) {
+            return RhiTestResult::fail(
+                "GPUScene composite transform history did not converge on the next sync");
+        }
+
+        const uint64_t convergedRevision = gpuScene.drawSet().revision;
+        if (gpuScene.sync(makeSourceView(primitives, nodes, materials, 2, 1, 1)) !=
+                render::GPUSceneSyncResult::Unchanged ||
+            gpuScene.drawSet().generation != initialGeneration ||
+            gpuScene.drawSet().revision != convergedRevision) {
+            return RhiTestResult::fail(
+                "GPUScene composite transform history did not settle after convergence");
+        }
+
+        nodes[0].visible = false;
+        if (gpuScene.sync(makeSourceView(primitives, nodes, materials, 2, 2, 1)) !=
+                render::GPUSceneSyncResult::Updated ||
+            gpuScene.drawSet().generation != initialGeneration ||
+            gpuScene.instanceForRenderNode(0) != instanceA ||
+            gpuScene.instance(instanceA) == nullptr ||
+            gpuScene.instance(instanceA)->visible ||
+            gpuScene.instance(instanceB) == nullptr ||
+            !gpuScene.instance(instanceB)->visible) {
+            return RhiTestResult::fail(
+                "GPUScene composite visibility update did not remain incremental");
+        }
+        const render::GPUSceneViewId view = gpuScene.createView();
+        if (!view || !gpuScene.prepareView(view, 0) ||
+            gpuScene.visibleDrawSet(view, 0) == nullptr ||
+            gpuScene.visibleDrawSet(view, 0)->instances.size() != 1 ||
+            gpuScene.visibleDrawSet(view, 0)->instances.front() != instanceB) {
+            return RhiTestResult::fail(
+                "GPUScene composite visibility did not refresh the visible DrawSet");
+        }
+
+        primitives.push_back(makeTrianglePrimitive(-0.25f));
+        primitives.back().name = "source C triangle";
+        primitives.back().meshIndex = 0;
+        primitives.back().primitiveIndex = 0;
+        primitives.back().materialIndex = 2;
+        materials.emplace_back();
+        materials.back().name = "source C material";
+        const scene::SceneEntity objectC = static_cast<scene::SceneEntity>(303);
+        scene::RenderNode nodeC;
+        nodeC.object = objectC;
+        nodeC.nodeIndex = 2;
+        nodeC.renderPrimitiveIndex = 2;
+        nodeC.materialIndex = 2;
+        nodeC.worldMatrix = translationMatrix(float3(0.0f, 5.0f, 0.0f));
+        nodeC.transformRevision = 2;
+        nodes.push_back(nodeC);
+        render::GPUSceneSourceView expandedSource =
+            makeSourceView(primitives, nodes, materials, 2, 2, 2);
+        expandedSource.structuralRevision = 2;
+        if (gpuScene.sync(expandedSource) !=
+            render::GPUSceneSyncResult::RebuildRequired) {
+            return RhiTestResult::fail(
+                "GPUScene did not request a rebuild after adding a composite source");
+        }
+
+        result = gpuScene.rebuild(expandedSource, log);
+        const render::GPUSceneInstanceId instanceC =
+            gpuScene.instanceForRenderNode(2);
+        if (!result || gpuScene.drawSet().generation == initialGeneration ||
+            gpuScene.geometry(geometryA) != nullptr ||
+            gpuScene.material(materialA) != nullptr ||
+            gpuScene.instance(instanceA) != nullptr ||
+            gpuScene.stats().geometryCount != 3 ||
+            gpuScene.stats().materialCount != 3 ||
+            gpuScene.stats().instanceCount != 3 ||
+            !instanceC || gpuScene.instance(instanceC) == nullptr ||
+            gpuScene.instance(instanceC)->sourceObject != objectC ||
+            gpuScene.instancesForObject(objectC).size() != 1 ||
+            !gpuScene.prepareView(view, 0)) {
+            return RhiTestResult::fail(
+                "GPUScene composite topology rebuild did not replace generations and mappings");
+        }
+
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GPUSceneCompositeFlatSourceTest);
+
 class GPUSceneSourceOverrideLeaseTest final : public RhiTest {
 public:
     GPUSceneSourceOverrideLeaseTest()

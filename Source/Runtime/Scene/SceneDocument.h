@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace metallic::scene {
 
@@ -24,6 +25,8 @@ public:
     bool setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix);
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
+    bool setSourceMountMatrix(std::string_view sourceId, const float4x4& mountMatrix);
+    bool setSourceEnabled(std::string_view sourceId, bool enabled);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
     bool setEnvironment(EnvironmentSettings environment);
 
@@ -43,6 +46,10 @@ private:
         const std::filesystem::path& path,
         const SceneLoadProgressCallback& progressCallback,
         bool deferMeshletBuild);
+    bool loadInternalInPlace(
+        const std::filesystem::path& path,
+        const SceneLoadProgressCallback& progressCallback,
+        bool deferMeshletBuild);
     bool applySidecar(const std::filesystem::path& path);
 
     std::filesystem::path sourcePath_;
@@ -51,6 +58,7 @@ private:
     EnvironmentSettings environment_;
     bool sidecarLoaded_ = false;
     bool hasEnvironmentSettings_ = false;
+    bool compositionDocument_ = false;
     bool dirty_ = false;
 };
 

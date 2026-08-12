@@ -66,6 +66,7 @@ public:
         const scene::Scene& scene,
         std::string& log);
     Result pumpSceneResourcePreparation(
+        const scene::Scene& scene,
         double budgetMilliseconds,
         bool& complete,
         scene::SceneLoadProgress& progress,

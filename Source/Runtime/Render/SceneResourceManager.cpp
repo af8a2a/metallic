@@ -1,6 +1,7 @@
 #include "Runtime/Render/SceneResourceManager.h"
 
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
+#include "Runtime/Scene/SceneDocument.h"
 
 #include <algorithm>
 #include <limits>
@@ -28,6 +29,25 @@ std::string resourceKey(const std::filesystem::path& scenePath)
     return normalizedScenePath(scenePath).generic_string();
 }
 
+void stampSnapshot(
+    SceneResourceSnapshot& snapshot,
+    const scene::Scene& sourceScene)
+{
+    snapshot.sourceResourceIdentity = sourceScene.resourceIdentity();
+    snapshot.sourceStructuralRevision = sourceScene.sceneGraph().structuralRevision();
+    snapshot.sourceTransformRevision = sourceScene.transformRevision();
+    snapshot.sourceVisibilityRevision = sourceScene.visibilityRevision();
+}
+
+bool snapshotMatchesScene(
+    const SceneResourceSnapshot& snapshot,
+    const scene::Scene& sourceScene)
+{
+    return snapshot.sourceResourceIdentity == sourceScene.resourceIdentity() &&
+        snapshot.sourceStructuralRevision == sourceScene.sceneGraph().structuralRevision() &&
+        snapshot.sourceVisibilityRevision == sourceScene.visibilityRevision();
+}
+
 } // namespace
 
 struct SceneResourceManager::Impl {
@@ -47,7 +67,7 @@ struct SceneResourceManager::Impl {
 
     Device* device = nullptr;
     std::unordered_map<std::string, std::shared_ptr<SceneResourceSnapshot>> snapshots;
-    std::unordered_map<std::string, std::shared_ptr<scene::Scene>> scenes;
+    std::unordered_map<std::string, std::shared_ptr<scene::SceneDocument>> scenes;
     std::vector<std::shared_ptr<SceneResourceSnapshot>> retiredSnapshots;
 };
 
@@ -74,10 +94,14 @@ Result SceneResourceManager::resolveScene(
         return {};
     }
 
-    auto loadedScene = std::make_shared<scene::Scene>();
+    auto loadedScene = std::make_shared<scene::SceneDocument>();
     const std::filesystem::path resolvedPath = normalizedScenePath(scenePath);
     if (!loadedScene->load(resolvedPath)) {
-        log = "SceneResourceManager failed to load glTF: " + loadedScene->lastLoadResult().error;
+        const std::string& detail = loadedScene->documentWarning().empty()
+            ? loadedScene->lastLoadResult().error
+            : loadedScene->documentWarning();
+        log = "SceneResourceManager failed to load scene: " +
+            detail;
         return makeError(Error::Failure);
     }
     outScene = loadedScene.get();
@@ -112,14 +136,24 @@ Result SceneResourceManager::acquire(
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
     const std::string key = resourceKey(scenePath);
-    const auto found = impl_->snapshots.find(key);
+    auto found = impl_->snapshots.find(key);
     if (found != impl_->snapshots.end()) {
-        outSnapshot = found->second;
+        if (found->second != nullptr &&
+            snapshotMatchesScene(*found->second, *resolvedScene)) {
+            outSnapshot = found->second;
+        } else {
+            if (found->second != nullptr) {
+                impl_->retiredSnapshots.push_back(found->second);
+            }
+            impl_->snapshots.erase(found);
+            outSnapshot.reset();
+        }
     }
     if (outSnapshot == nullptr) {
         outSnapshot = std::make_shared<SceneResourceSnapshot>();
         outSnapshot->scenePath = normalizedScenePath(scenePath);
         outSnapshot->features = features;
+        stampSnapshot(*outSnapshot, *resolvedScene);
         outSnapshot->pathTraceResources = std::make_shared<ScenePathTraceResources>();
         impl_->snapshots[key] = outSnapshot;
     } else {
@@ -175,18 +209,29 @@ Result SceneResourceManager::beginAcquireAsync(
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
     const std::string key = resourceKey(scenePath);
-    const auto found = impl_->snapshots.find(key);
+    auto found = impl_->snapshots.find(key);
     if (found != impl_->snapshots.end()) {
-        outSnapshot = found->second;
-        outSnapshot->features = outSnapshot->features | features;
-        if (outSnapshot->pathTraceResources->valid() ||
-            outSnapshot->pathTraceResources->preparing()) {
-            return {};
+        if (found->second != nullptr &&
+            snapshotMatchesScene(*found->second, runtimeScene)) {
+            outSnapshot = found->second;
+            outSnapshot->features = outSnapshot->features | features;
+            if (outSnapshot->pathTraceResources->valid() ||
+                outSnapshot->pathTraceResources->preparing()) {
+                return {};
+            }
+        } else {
+            if (found->second != nullptr) {
+                impl_->retiredSnapshots.push_back(found->second);
+            }
+            impl_->snapshots.erase(found);
+            outSnapshot.reset();
         }
-    } else {
+    }
+    if (outSnapshot == nullptr) {
         outSnapshot = std::make_shared<SceneResourceSnapshot>();
         outSnapshot->scenePath = normalizedScenePath(scenePath);
         outSnapshot->features = features;
+        stampSnapshot(*outSnapshot, runtimeScene);
         outSnapshot->pathTraceResources = std::make_shared<ScenePathTraceResources>();
         impl_->snapshots.emplace(key, outSnapshot);
     }
@@ -206,6 +251,7 @@ Result SceneResourceManager::beginAcquireAsync(
 
 Result SceneResourceManager::pumpAsync(
     const std::shared_ptr<SceneResourceSnapshot>& snapshot,
+    const scene::Scene& runtimeScene,
     double budgetMilliseconds,
     bool& complete,
     scene::SceneLoadProgress& progress,
@@ -214,14 +260,34 @@ Result SceneResourceManager::pumpAsync(
     if (snapshot == nullptr || snapshot->pathTraceResources == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    if (snapshot->sourceResourceIdentity != runtimeScene.resourceIdentity() ||
+        snapshot->sourceStructuralRevision !=
+            runtimeScene.sceneGraph().structuralRevision() ||
+        snapshot->sourceVisibilityRevision !=
+            runtimeScene.visibilityRevision()) {
+        log = "Scene changed while asynchronous GPU resources were being prepared.";
+        return makeError(Error::Failure);
+    }
     if (impl_ != nullptr) {
         impl_->collectRetired();
     }
-    return snapshot->pathTraceResources->pumpPrepareAsync(
+    Result result = snapshot->pathTraceResources->pumpPrepareAsync(
         budgetMilliseconds,
         complete,
         progress,
         log);
+    if (result && complete && snapshot->pathTraceResources->valid() &&
+        snapshot->sourceTransformRevision !=
+            runtimeScene.transformRevision()) {
+        result = snapshot->pathTraceResources->syncRuntimeScene(
+            &runtimeScene,
+            log);
+        if (result) {
+            snapshot->sourceTransformRevision =
+                runtimeScene.transformRevision();
+        }
+    }
+    return result;
 }
 
 void SceneResourceManager::discard(const std::shared_ptr<SceneResourceSnapshot>& snapshot)

@@ -28,6 +28,10 @@ constexpr SceneResourceFeatureBits operator|(
 struct SceneResourceSnapshot {
     std::filesystem::path scenePath;
     SceneResourceFeatureBits features = SceneResourceFeatureBits::None;
+    uint64_t sourceResourceIdentity = 0;
+    uint64_t sourceStructuralRevision = 0;
+    uint64_t sourceTransformRevision = 0;
+    uint64_t sourceVisibilityRevision = 0;
     std::shared_ptr<ScenePathTraceResources> pathTraceResources;
 };
 
@@ -56,6 +60,7 @@ public:
         std::string& log);
     Result pumpAsync(
         const std::shared_ptr<SceneResourceSnapshot>& snapshot,
+        const scene::Scene& runtimeScene,
         double budgetMilliseconds,
         bool& complete,
         scene::SceneLoadProgress& progress,

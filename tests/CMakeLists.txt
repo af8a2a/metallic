@@ -106,22 +106,38 @@ if(WIN32)
         )
     endforeach()
 
-    if(TARGET SDL3-shared)
-        add_custom_command(TARGET MetallicRhiTests POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:SDL3-shared>"
-                "$<TARGET_FILE_DIR:MetallicRhiTests>"
-        )
-    elseif(TARGET SDL3::SDL3-shared)
-        add_custom_command(TARGET MetallicRhiTests POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:SDL3::SDL3-shared>"
-                "$<TARGET_FILE_DIR:MetallicRhiTests>"
-        )
-    endif()
-
     metallic_copy_streamline_runtime(MetallicRhiTests)
     metallic_copy_aftermath_runtime(MetallicRhiTests)
+endif()
+
+if(WIN32)
+    set(METALLIC_TEST_SDL_RUNTIME_TARGET "")
+    if(TARGET SDL3-shared)
+        set(METALLIC_TEST_SDL_RUNTIME_TARGET SDL3-shared)
+    elseif(TARGET SDL3::SDL3-shared)
+        set(METALLIC_TEST_SDL_RUNTIME_TARGET SDL3::SDL3-shared)
+    endif()
+
+    if(METALLIC_TEST_SDL_RUNTIME_TARGET)
+        # A POST_BUILD copy is skipped when MSBuild considers a test executable
+        # up to date, leaving CTest unable to start after a cleaned DLL. This
+        # utility target is deliberately always out of date and is shared by
+        # every test executable, so building any focused test target restores
+        # SDL3.dll in the common configuration output directory.
+        add_custom_target(MetallicTestSdlRuntime
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MetallicTaskTests>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:${METALLIC_TEST_SDL_RUNTIME_TARGET}>"
+                "$<TARGET_FILE_DIR:MetallicTaskTests>"
+            DEPENDS ${METALLIC_TEST_SDL_RUNTIME_TARGET}
+            COMMENT "Deploying SDL3 runtime for Metallic tests"
+            VERBATIM
+        )
+        add_dependencies(MetallicTaskTests MetallicTestSdlRuntime)
+        add_dependencies(MetallicSceneTests MetallicTestSdlRuntime)
+        add_dependencies(MetallicRhiTests MetallicTestSdlRuntime)
+    endif()
 endif()
 
 add_test(

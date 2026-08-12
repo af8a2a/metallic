@@ -53,7 +53,16 @@ struct TagComponent {
 // Stable import identity used by documents and compatibility projections.
 // EnTT entity values are intentionally never serialized.
 struct SourceNodeComponent {
+    // nodeIndex addresses the flattened compatibility projection. sourceId and
+    // sourceNodeIndex preserve the stable identity inside a composed document.
     int32_t nodeIndex = -1;
+    std::string sourceId;
+    int32_t sourceNodeIndex = -1;
+};
+
+// Identifies the runtime mount object that owns one composed glTF source.
+struct SceneSourceComponent {
+    std::string sourceId;
 };
 
 struct TransformComponent {

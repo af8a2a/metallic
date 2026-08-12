@@ -64,12 +64,20 @@ public:
                 return sceneResult;
             }
         }
-        const uint64_t runtimeRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
+        const uint64_t resourceIdentity = runtimeScene != nullptr ? runtimeScene->resourceIdentity() : 0;
+        const uint64_t structuralRevision = runtimeScene != nullptr
+            ? runtimeScene->sceneGraph().structuralRevision()
+            : 0;
+        const uint64_t transformRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
+        const uint64_t visibilityRevision = runtimeScene != nullptr ? runtimeScene->visibilityRevision() : 0;
         if (rayQueryProgram_.valid() &&
             sceneResources_.accelerationStructure().valid() &&
-            sceneRevision_ == runtimeRevision &&
+            resourceIdentity_ == resourceIdentity &&
+            structuralRevision_ == structuralRevision &&
+            transformRevision_ == transformRevision &&
+            visibilityRevision_ == visibilityRevision &&
             clusterIdShaderEnabled_ == clusterIdSupported &&
-            (!clusterIdSupported || clusterRtxBuilder_.valid())) {
+            (!clusterIdRequested || clusterRtxBuilder_.valid())) {
             return {};
         }
 
@@ -187,7 +195,7 @@ public:
         }
         clusterIdShaderEnabled_ = clusterIdSupported;
 
-        sceneRevision_ = runtimeRevision;
+        stampSceneState(loadedScene);
         return {};
     }
 
@@ -261,27 +269,59 @@ private:
     Result syncRuntimeScene(const scene::Scene* runtimeScene)
     {
         runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
-        if (runtimeScene == nullptr || runtimeScene->transformRevision() == sceneRevision_) {
+        if (runtimeScene == nullptr) {
+            return {};
+        }
+        const bool sceneResourcesChanged =
+            runtimeScene->resourceIdentity() != resourceIdentity_ ||
+            runtimeScene->sceneGraph().structuralRevision() != structuralRevision_ ||
+            runtimeScene->visibilityRevision() != visibilityRevision_;
+        const bool transformsChanged =
+            runtimeScene->transformRevision() != transformRevision_;
+        if (!sceneResourcesChanged && !transformsChanged) {
             return {};
         }
         if (device_ == nullptr || graphicsQueue_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
         std::string log;
-        Result result = sceneResources_.syncRuntimeScene(runtimeScene, log);
-        if (!result) {
-            spdlog::warn("[SceneRayQueryVisualizationPass] Runtime TLAS refit failed: {}", log);
-            return result;
-        }
-        if (clusterIdShaderEnabled_ && clusterRtxBuilder_.valid()) {
-            result = clusterRtxBuilder_.build(*device_, *graphicsQueue_, *runtimeScene, log);
+        if (!sceneResourcesChanged) {
+            Result result = sceneResources_.syncRuntimeScene(runtimeScene, log);
             if (!result) {
+                spdlog::warn("[SceneRayQueryVisualizationPass] Runtime TLAS refit failed: {}", log);
                 return result;
             }
         }
+
+        if (clusterIdShaderEnabled_ &&
+            (sceneResourcesChanged || clusterRtxBuilder_.valid())) {
+            Result result = clusterRtxBuilder_.build(*device_, *graphicsQueue_, *runtimeScene, log);
+            if (!result) {
+                clusterRtxBuilder_.clear();
+                drawBounds_ = runtimeScene->bounds();
+                stampSceneState(*runtimeScene);
+                spdlog::warn(
+                    "[SceneRayQueryVisualizationPass] Runtime cluster acceleration structure rebuild failed: {}",
+                    log);
+                if (visualizationModeFromProperties(properties()) ==
+                    kRayQueryVisualizationGranularityClusterId) {
+                    return hasError(result, Error::Unsupported)
+                        ? makeError(Error::Unsupported)
+                        : result;
+                }
+            }
+        }
         drawBounds_ = runtimeScene->bounds();
-        sceneRevision_ = runtimeScene->transformRevision();
+        stampSceneState(*runtimeScene);
         return {};
+    }
+
+    void stampSceneState(const scene::Scene& runtimeScene)
+    {
+        resourceIdentity_ = runtimeScene.resourceIdentity();
+        structuralRevision_ = runtimeScene.sceneGraph().structuralRevision();
+        transformRevision_ = runtimeScene.transformRevision();
+        visibilityRevision_ = runtimeScene.visibilityRevision();
     }
 
     static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
@@ -451,7 +491,10 @@ private:
     SceneClusterRtxBuilder clusterRtxBuilder_;
     SceneRayQueryProgram rayQueryProgram_;
     scene::Bounds drawBounds_;
-    uint64_t sceneRevision_ = 0;
+    uint64_t resourceIdentity_ = 0;
+    uint64_t structuralRevision_ = 0;
+    uint64_t transformRevision_ = 0;
+    uint64_t visibilityRevision_ = 0;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     SceneResourceManager* sceneResourceManager_ = nullptr;

@@ -1121,6 +1121,13 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(scene.load(gltfPath), scene.lastLoadResult().error);
 
     expect(scene.valid(), "loaded scene should be valid");
+    ASSERT_EQ(scene.sources().size(), 1u);
+    EXPECT_EQ(scene.sources().front().id, "main");
+    EXPECT_EQ(scene.sources().front().path, gltfPath);
+    EXPECT_TRUE(scene.sources().front().enabled);
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        scene.sources().front().mountMatrix,
+        float4x4::Identity()));
     expect(scene.sceneIndex() == 0, "default scene index should be 0");
     expect(scene.sceneName() == "Default Scene", "scene name should come from glTF scene");
     expect(scene.assetInfo().version == "2.0", "asset version should be preserved");
@@ -1136,10 +1143,18 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(sceneGraph.roots().size() == 1, "scene graph active root count");
     const metallic::scene::ConstSceneObject rootObject = scene.objectForNode(0);
     const metallic::scene::ConstSceneObject meshObject = scene.objectForNode(1);
+    EXPECT_EQ(scene.objectForSourceNode("main", 0), rootObject);
+    EXPECT_EQ(scene.objectForSourceNode("main", 1), meshObject);
+    EXPECT_FALSE(scene.objectForSourceNode("unknown", 0));
     expect(static_cast<bool>(rootObject), "root scene object should resolve from its stable node index");
     expect(static_cast<bool>(meshObject), "mesh scene object should resolve from its stable node index");
     expect(rootObject.hasComponent<metallic::scene::RootComponent>(), "root component");
     expect(rootObject.hasComponent<metallic::scene::ActiveSceneComponent>(), "active root component");
+    const metallic::scene::SourceNodeComponent& rootSource =
+        rootObject.getComponent<metallic::scene::SourceNodeComponent>();
+    EXPECT_EQ(rootSource.nodeIndex, 0);
+    EXPECT_EQ(rootSource.sourceId, "main");
+    EXPECT_EQ(rootSource.sourceNodeIndex, 0);
     expect(
         rootObject.getComponent<metallic::scene::RelationshipComponent>().children.size() == 4,
         "relationship component children");
@@ -1293,6 +1308,449 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(
         scene.lights().front().object == scene.objectForNode(4).entity(),
         "light object mapping");
+}
+
+void testCompositeSceneImport(const std::filesystem::path& baseDirectory)
+{
+    const std::filesystem::path directory = baseDirectory / "composition";
+    const std::filesystem::path sourceADirectory = directory / "source_a";
+    const std::filesystem::path sourceBDirectory = directory / "source_b";
+    std::filesystem::create_directories(sourceADirectory);
+    std::filesystem::create_directories(sourceBDirectory);
+
+    const std::filesystem::path sourceAPath = writeFullScene(sourceADirectory);
+    const std::filesystem::path sourceBPath = writeFullScene(sourceBDirectory);
+    nlohmann::json sourceBJson;
+    {
+        std::ifstream stream(sourceBPath, std::ios::binary);
+        ASSERT_TRUE(stream.good());
+        stream >> sourceBJson;
+    }
+    sourceBJson["scenes"][0]["name"] = "Source B Scene";
+    sourceBJson["nodes"][0]["name"] = "Source B Root";
+    sourceBJson["nodes"][1]["name"] = "Source B Mesh Node";
+    sourceBJson["meshes"][0]["name"] = "Source B Triangle Mesh";
+    sourceBJson["materials"][0]["name"] = "Source B Material";
+    writeTextFile(sourceBPath, sourceBJson.dump(2));
+
+    float4x4 sourceBMount = float4x4::Identity();
+    sourceBMount.SetupByTranslation(float3(20.0f, 0.0f, 0.0f));
+    std::vector<metallic::scene::SceneSourceDesc> sources{
+        metallic::scene::SceneSourceDesc{
+            .id = "source-a",
+            .path = sourceAPath,
+            .mountMatrix = float4x4::Identity(),
+            .enabled = true,
+        },
+        metallic::scene::SceneSourceDesc{
+            .id = "source-b",
+            .path = sourceBPath,
+            .mountMatrix = sourceBMount,
+            .enabled = true,
+        },
+    };
+
+    metallic::scene::Scene scene;
+    const uint64_t lifetimeBeforeCompose = scene.sceneGraph().lifetimeRevision();
+    std::string error;
+    ASSERT_TRUE(scene.compose(sources, error)) << error;
+    EXPECT_TRUE(scene.valid());
+    ASSERT_EQ(scene.sources().size(), 2u);
+    EXPECT_EQ(scene.sources()[0].id, "source-a");
+    EXPECT_EQ(scene.sources()[1].id, "source-b");
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        scene.sources()[1].mountMatrix,
+        sourceBMount));
+    EXPECT_TRUE(scene.sources()[0].enabled);
+    EXPECT_TRUE(scene.sources()[1].enabled);
+    EXPECT_NE(scene.sceneGraph().lifetimeRevision(), lifetimeBeforeCompose);
+
+    const metallic::scene::ConstSceneObject sourceARoot =
+        scene.objectForSourceNode("source-a", 0);
+    const metallic::scene::ConstSceneObject sourceBRoot =
+        scene.objectForSourceNode("source-b", 0);
+    const metallic::scene::ConstSceneObject sourceAMesh =
+        scene.objectForSourceNode("source-a", 1);
+    const metallic::scene::ConstSceneObject sourceBMesh =
+        scene.objectForSourceNode("source-b", 1);
+    ASSERT_TRUE(sourceARoot);
+    ASSERT_TRUE(sourceBRoot);
+    ASSERT_TRUE(sourceAMesh);
+    ASSERT_TRUE(sourceBMesh);
+    EXPECT_NE(sourceARoot.entity(), sourceBRoot.entity());
+    EXPECT_NE(sourceAMesh.entity(), sourceBMesh.entity());
+    const metallic::scene::SourceNodeComponent& sourceARootIdentity =
+        sourceARoot.getComponent<metallic::scene::SourceNodeComponent>();
+    const metallic::scene::SourceNodeComponent& sourceBRootIdentity =
+        sourceBRoot.getComponent<metallic::scene::SourceNodeComponent>();
+    EXPECT_EQ(sourceARootIdentity.nodeIndex, 0);
+    EXPECT_EQ(sourceARootIdentity.sourceId, "source-a");
+    EXPECT_EQ(sourceARootIdentity.sourceNodeIndex, 0);
+    EXPECT_EQ(sourceBRootIdentity.nodeIndex, 5);
+    EXPECT_EQ(sourceBRootIdentity.sourceId, "source-b");
+    EXPECT_EQ(sourceBRootIdentity.sourceNodeIndex, 0);
+    EXPECT_EQ(
+        sourceARoot.getComponent<metallic::scene::TagComponent>().name,
+        "Root");
+    EXPECT_EQ(
+        sourceBRoot.getComponent<metallic::scene::TagComponent>().name,
+        "Source B Root");
+
+    ASSERT_EQ(scene.nodes().size(), 10u);
+    ASSERT_EQ(scene.meshes().size(), 2u);
+    ASSERT_EQ(scene.renderPrimitives().size(), 2u);
+    ASSERT_EQ(scene.renderNodes().size(), 2u);
+    ASSERT_EQ(scene.materials().size(), 4u);
+    ASSERT_EQ(scene.cameras().size(), 4u);
+    ASSERT_EQ(scene.lights().size(), 2u);
+    ASSERT_EQ(scene.rootNodeIndices(), std::vector<int32_t>({0, 5}));
+    EXPECT_EQ(scene.nodes()[0].name, "Root");
+    EXPECT_EQ(scene.nodes()[5].name, "Source B Root");
+    EXPECT_EQ(scene.meshes()[0].name, "Triangle Mesh");
+    EXPECT_EQ(scene.meshes()[1].name, "Source B Triangle Mesh");
+    EXPECT_EQ(scene.materials()[0].name, "Test Material");
+    EXPECT_EQ(scene.materials()[2].name, "Source B Material");
+
+    const metallic::scene::MeshComponent& sourceAMeshComponent =
+        sourceAMesh.getComponent<metallic::scene::MeshComponent>();
+    const metallic::scene::MeshComponent& sourceBMeshComponent =
+        sourceBMesh.getComponent<metallic::scene::MeshComponent>();
+    EXPECT_EQ(sourceAMeshComponent.meshIndex, 0);
+    EXPECT_EQ(sourceBMeshComponent.meshIndex, 1);
+    ASSERT_EQ(sourceAMeshComponent.renderNodeIndices, std::vector<int32_t>{0});
+    ASSERT_EQ(sourceBMeshComponent.renderNodeIndices, std::vector<int32_t>{1});
+    const metallic::scene::RenderNode& sourceARenderNode = scene.renderNodes()[0];
+    const metallic::scene::RenderNode& sourceBRenderNode = scene.renderNodes()[1];
+    EXPECT_EQ(sourceARenderNode.object, sourceAMesh.entity());
+    EXPECT_EQ(sourceBRenderNode.object, sourceBMesh.entity());
+    EXPECT_EQ(sourceARenderNode.nodeIndex, 1);
+    EXPECT_EQ(sourceBRenderNode.nodeIndex, 6);
+    EXPECT_EQ(sourceARenderNode.renderPrimitiveIndex, 0);
+    EXPECT_EQ(sourceBRenderNode.renderPrimitiveIndex, 1);
+    EXPECT_EQ(sourceARenderNode.materialIndex, 0);
+    EXPECT_EQ(sourceBRenderNode.materialIndex, 2);
+    EXPECT_EQ(scene.renderPrimitives()[0].meshIndex, 0);
+    EXPECT_EQ(scene.renderPrimitives()[1].meshIndex, 1);
+    EXPECT_EQ(scene.renderPrimitives()[0].materialIndex, 0);
+    EXPECT_EQ(scene.renderPrimitives()[1].materialIndex, 2);
+
+    const metallic::scene::CameraComponent& sourceACamera =
+        scene.objectForSourceNode("source-a", 2)
+            .getComponent<metallic::scene::CameraComponent>();
+    const metallic::scene::CameraComponent& sourceBCamera =
+        scene.objectForSourceNode("source-b", 2)
+            .getComponent<metallic::scene::CameraComponent>();
+    const metallic::scene::LightComponent& sourceALight =
+        scene.objectForSourceNode("source-a", 4)
+            .getComponent<metallic::scene::LightComponent>();
+    const metallic::scene::LightComponent& sourceBLight =
+        scene.objectForSourceNode("source-b", 4)
+            .getComponent<metallic::scene::LightComponent>();
+    EXPECT_EQ(sourceACamera.cameraIndex, 0);
+    EXPECT_EQ(sourceACamera.renderCameraIndex, 0);
+    EXPECT_EQ(sourceBCamera.cameraIndex, 2);
+    EXPECT_EQ(sourceBCamera.renderCameraIndex, 2);
+    EXPECT_EQ(sourceALight.lightIndex, 0);
+    EXPECT_EQ(sourceALight.renderLightIndex, 0);
+    EXPECT_EQ(sourceBLight.lightIndex, 1);
+    EXPECT_EQ(sourceBLight.renderLightIndex, 1);
+
+    EXPECT_EQ(scene.stats().meshCount, 2u);
+    EXPECT_EQ(scene.stats().materialCount, 4u);
+    EXPECT_EQ(scene.stats().primitiveCount, 2u);
+    EXPECT_EQ(scene.stats().renderNodeCount, 2u);
+    EXPECT_EQ(scene.stats().triangleCount, 2u);
+    ASSERT_TRUE(scene.bounds().valid);
+    expectVec3(scene.bounds().min, float3(5.0f, 2.0f, 3.0f), "composite bounds min");
+    expectVec3(scene.bounds().max, float3(26.0f, 3.0f, 3.0f), "composite bounds max");
+    expectVec3(
+        float3(
+            sourceARenderNode.worldMatrix.a03,
+            sourceARenderNode.worldMatrix.a13,
+            sourceARenderNode.worldMatrix.a23),
+        float3(5.0f, 2.0f, 3.0f),
+        "source A render transform");
+    expectVec3(
+        float3(
+            sourceBRenderNode.worldMatrix.a03,
+            sourceBRenderNode.worldMatrix.a13,
+            sourceBRenderNode.worldMatrix.a23),
+        float3(25.0f, 2.0f, 3.0f),
+        "source B mounted render transform");
+
+    const uint64_t structuralRevision = scene.sceneGraph().structuralRevision();
+    const uint64_t lifetimeRevision = scene.sceneGraph().lifetimeRevision();
+    const uint64_t contentRevision = scene.contentRevision();
+    const uint64_t transformRevision = scene.transformRevision();
+    const uint64_t visibilityRevision = scene.visibilityRevision();
+    const float4x4 sourceAWorldBeforeEdit = scene.renderNodes()[0].worldMatrix;
+    const float4x4 sourceBWorldBeforeEdit = scene.renderNodes()[1].worldMatrix;
+    float4x4 editedSourceBMount = sourceBMount;
+    editedSourceBMount.a13 += 4.0f;
+    ASSERT_TRUE(scene.setSourceMountMatrix("source-b", editedSourceBMount));
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        scene.sources()[1].mountMatrix,
+        editedSourceBMount));
+    EXPECT_GT(scene.transformRevision(), transformRevision);
+    EXPECT_EQ(scene.visibilityRevision(), visibilityRevision);
+    EXPECT_EQ(scene.contentRevision(), contentRevision);
+    EXPECT_EQ(scene.sceneGraph().structuralRevision(), structuralRevision);
+    EXPECT_EQ(scene.sceneGraph().lifetimeRevision(), lifetimeRevision);
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        scene.renderNodes()[0].worldMatrix,
+        sourceAWorldBeforeEdit));
+    EXPECT_NEAR(
+        scene.renderNodes()[1].worldMatrix.a13,
+        sourceBWorldBeforeEdit.a13 + 4.0f,
+        0.0001f);
+
+    const uint64_t transformAfterEdit = scene.transformRevision();
+    ASSERT_TRUE(scene.setSourceEnabled("source-b", false));
+    EXPECT_FALSE(scene.sources()[1].enabled);
+    EXPECT_EQ(scene.transformRevision(), transformAfterEdit);
+    EXPECT_GT(scene.visibilityRevision(), visibilityRevision);
+    EXPECT_EQ(scene.contentRevision(), contentRevision);
+    EXPECT_EQ(scene.sceneGraph().structuralRevision(), structuralRevision);
+    EXPECT_EQ(scene.sceneGraph().lifetimeRevision(), lifetimeRevision);
+    EXPECT_TRUE(scene.renderNodes()[0].visible);
+    EXPECT_FALSE(scene.renderNodes()[1].visible);
+    EXPECT_TRUE(scene.nodes()[0].visible);
+    EXPECT_FALSE(scene.nodes()[5].visible);
+    EXPECT_TRUE(scene.cameras()[0].visible);
+    EXPECT_TRUE(scene.cameras()[1].visible);
+    EXPECT_FALSE(scene.cameras()[2].visible);
+    EXPECT_FALSE(scene.cameras()[3].visible);
+    EXPECT_TRUE(scene.lights()[0].visible);
+    EXPECT_FALSE(scene.lights()[1].visible);
+
+    const uint64_t visibilityAfterDisable = scene.visibilityRevision();
+    EXPECT_FALSE(scene.setSourceEnabled("source-b", false));
+    EXPECT_FALSE(scene.setSourceEnabled("unknown", true));
+    EXPECT_EQ(scene.visibilityRevision(), visibilityAfterDisable);
+    float4x4 invalidMount = sourceBMount;
+    invalidMount.a00 = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(scene.setSourceMountMatrix("source-b", invalidMount));
+    EXPECT_FALSE(scene.setSourceMountMatrix("unknown", sourceBMount));
+    EXPECT_EQ(scene.transformRevision(), transformAfterEdit);
+
+    const uint64_t lifetimeBeforeFailedCompose =
+        scene.sceneGraph().lifetimeRevision();
+    const metallic::scene::SceneEntity sourceBRootEntity = sourceBRoot.entity();
+    const size_t renderNodeCountBeforeFailedCompose = scene.renderNodes().size();
+    std::vector<metallic::scene::SceneSourceDesc> invalidSources{
+        sources.front(),
+        metallic::scene::SceneSourceDesc{
+            .id = "missing-source",
+            .path = directory / "missing.gltf",
+            .mountMatrix = float4x4::Identity(),
+            .enabled = true,
+        },
+    };
+    error.clear();
+    EXPECT_FALSE(scene.compose(std::move(invalidSources), error));
+    EXPECT_FALSE(error.empty());
+    EXPECT_EQ(scene.sceneGraph().lifetimeRevision(), lifetimeBeforeFailedCompose);
+    EXPECT_EQ(scene.renderNodes().size(), renderNodeCountBeforeFailedCompose);
+    ASSERT_EQ(scene.sources().size(), 2u);
+    EXPECT_EQ(scene.sources()[1].id, "source-b");
+    EXPECT_EQ(
+        scene.objectForSourceNode("source-b", 0).entity(),
+        sourceBRootEntity);
+}
+
+void testCompositeFallbackCamera(const std::filesystem::path& baseDirectory)
+{
+    const std::filesystem::path directory = baseDirectory / "composite_fallback";
+    const std::filesystem::path sourceADirectory = directory / "source_a";
+    const std::filesystem::path sourceBDirectory = directory / "source_b";
+    std::filesystem::create_directories(sourceADirectory);
+    std::filesystem::create_directories(sourceBDirectory);
+
+    const std::filesystem::path sourceAPath = writeFallbackScene(sourceADirectory);
+    const std::filesystem::path sourceBPath = writeFallbackScene(sourceBDirectory);
+    float4x4 sourceBMount = float4x4::Identity();
+    sourceBMount.SetupByTranslation(float3(10.0f, 0.0f, 0.0f));
+    metallic::scene::Scene scene;
+    std::string error;
+    ASSERT_TRUE(scene.compose(
+        {
+            metallic::scene::SceneSourceDesc{
+                .id = "source-a",
+                .path = sourceAPath,
+            },
+            metallic::scene::SceneSourceDesc{
+                .id = "source-b",
+                .path = sourceBPath,
+                .mountMatrix = sourceBMount,
+                .enabled = false,
+            },
+        },
+        error)) << error;
+
+    ASSERT_EQ(scene.sources().size(), 2u);
+    EXPECT_TRUE(scene.sources()[0].enabled);
+    EXPECT_FALSE(scene.sources()[1].enabled);
+    ASSERT_EQ(scene.nodes().size(), 2u);
+    ASSERT_EQ(scene.renderNodes().size(), 2u);
+    EXPECT_TRUE(scene.renderNodes()[0].visible);
+    EXPECT_FALSE(scene.renderNodes()[1].visible);
+    ASSERT_EQ(scene.cameras().size(), 1u);
+    const metallic::scene::RenderCamera& fallback = scene.cameras().front();
+    EXPECT_TRUE(fallback.fallback);
+    EXPECT_EQ(fallback.nodeIndex, metallic::scene::kInvalidSceneIndex);
+    EXPECT_EQ(fallback.cameraIndex, metallic::scene::kInvalidSceneIndex);
+    const metallic::scene::ConstSceneObject fallbackObject =
+        scene.sceneGraph().object(fallback.object);
+    ASSERT_TRUE(fallbackObject);
+    EXPECT_TRUE(fallbackObject.hasComponent<metallic::scene::GeneratedComponent>());
+    EXPECT_FALSE(fallbackObject.hasComponent<metallic::scene::SourceNodeComponent>());
+    EXPECT_FALSE(fallbackObject.hasComponent<metallic::scene::SceneSourceComponent>());
+    EXPECT_EQ(
+        scene.objectForSourceNode("source-a", 0)
+            .getComponent<metallic::scene::TagComponent>().name,
+        "Fallback Mesh Node");
+    EXPECT_EQ(
+        scene.objectForSourceNode("source-b", 0)
+            .getComponent<metallic::scene::TagComponent>().name,
+        "Fallback Mesh Node");
+
+    const uint64_t visibilityRevision = scene.visibilityRevision();
+    ASSERT_TRUE(scene.setSourceEnabled("source-b", true));
+    EXPECT_GT(scene.visibilityRevision(), visibilityRevision);
+    EXPECT_TRUE(scene.renderNodes()[1].visible);
+    EXPECT_EQ(scene.cameras().size(), 1u);
+    EXPECT_EQ(scene.cameras().front().object, fallback.object);
+}
+
+void testCompositeSceneDocumentValidation(const std::filesystem::path& baseDirectory)
+{
+    const std::filesystem::path directory =
+        baseDirectory / "composite_scene_document_validation";
+    const std::filesystem::path sourceADirectory = directory / "source_a";
+    const std::filesystem::path sourceBDirectory = directory / "source_b";
+    std::filesystem::create_directories(sourceADirectory);
+    std::filesystem::create_directories(sourceBDirectory);
+    writeFullScene(sourceADirectory);
+    writeFullScene(sourceBDirectory);
+    const std::filesystem::path documentPath =
+        directory / "invalid.metallic_scene.json";
+
+    const auto serializeMatrix = [](const float4x4& matrix) {
+        nlohmann::json value = nlohmann::json::array();
+        for (const float component : matrix.a) {
+            value.push_back(component);
+        }
+        return value;
+    };
+    const auto source = [&](std::string id, std::string path) {
+        return nlohmann::json{
+            {"id", std::move(id)},
+            {"path", std::move(path)},
+            {"mountMatrix", serializeMatrix(float4x4::Identity())},
+            {"enabled", true},
+        };
+    };
+    const auto manifest = [&](nlohmann::json sources, nlohmann::json nodes) {
+        return nlohmann::json{
+            {"version", 4},
+            {"sources", std::move(sources)},
+            {"nodes", std::move(nodes)},
+        };
+    };
+    const auto expectRejected =
+        [&](nlohmann::json document,
+            const std::string& warningFragment) {
+            writeTextFile(documentPath, document.dump(2));
+            metallic::scene::SceneDocument rejected;
+            EXPECT_FALSE(rejected.load(documentPath));
+            EXPECT_NE(
+                rejected.documentWarning().find(warningFragment),
+                std::string::npos) << rejected.documentWarning();
+            EXPECT_FALSE(rejected.valid());
+            EXPECT_TRUE(rejected.sources().empty());
+        };
+
+    expectRejected(
+        manifest(
+            nlohmann::json::array({
+                source("duplicate", "source_a/scene.gltf"),
+                source("duplicate", "source_b/scene.gltf"),
+            }),
+            nlohmann::json::array()),
+        "duplicate source id");
+
+    nlohmann::json invalidMount = source("source-a", "source_a/scene.gltf");
+    invalidMount["mountMatrix"] = nlohmann::json::array({1.0f, 0.0f});
+    expectRejected(
+        manifest(
+            nlohmann::json::array({std::move(invalidMount)}),
+            nlohmann::json::array()),
+        "mountMatrix is invalid");
+
+    nlohmann::json invalidEnabled = source("source-a", "source_a/scene.gltf");
+    invalidEnabled["enabled"] = "yes";
+    expectRejected(
+        manifest(
+            nlohmann::json::array({std::move(invalidEnabled)}),
+            nlohmann::json::array()),
+        "enabled must be a boolean");
+
+    nlohmann::json invalidEnvironment = manifest(
+        nlohmann::json::array({source("source-a", "source_a/scene.gltf")}),
+        nlohmann::json::array());
+    invalidEnvironment["world"] = {
+        {"environment", {
+            {"enabled", "yes"},
+            {"intensity", nlohmann::json::object()},
+        }},
+    };
+    expectRejected(
+        std::move(invalidEnvironment),
+        "world.environment fields have invalid types");
+
+    expectRejected(
+        manifest(
+            nlohmann::json::array({source("missing", "missing.gltf")}),
+            nlohmann::json::array()),
+        "Failed to load composed scene source 'missing'");
+
+    float4x4 ignoredOverride = float4x4::Identity();
+    ignoredOverride.a03 = 42.0f;
+    writeTextFile(
+        documentPath,
+        manifest(
+            nlohmann::json::array({
+                source("source-a", "source_a/scene.gltf"),
+                source("source-b", "source_b/scene.gltf"),
+            }),
+            nlohmann::json::array({
+                {
+                    {"sourceId", "unknown"},
+                    {"nodeIndex", 1},
+                    {"sourceName", "Mesh Node"},
+                    {"localMatrix", serializeMatrix(ignoredOverride)},
+                },
+            })).dump(2));
+    metallic::scene::SceneDocument partiallyApplied;
+    ASSERT_TRUE(partiallyApplied.load(documentPath))
+        << partiallyApplied.documentWarning();
+    EXPECT_NE(
+        partiallyApplied.documentWarning().find(
+            "out-of-range source 'unknown' node 1 override"),
+        std::string::npos) << partiallyApplied.documentWarning();
+    ASSERT_EQ(partiallyApplied.sources().size(), 2u);
+    const metallic::scene::ConstSceneObject sourceAMesh =
+        partiallyApplied.objectForSourceNode("source-a", 1);
+    const metallic::scene::ConstSceneObject sourceBMesh =
+        partiallyApplied.objectForSourceNode("source-b", 1);
+    ASSERT_TRUE(sourceAMesh);
+    ASSERT_TRUE(sourceBMesh);
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        sourceAMesh.getComponent<metallic::scene::TransformComponent>().localMatrix,
+        sourceAMesh.getComponent<metallic::scene::TransformComponent>().authoredLocalMatrix));
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        sourceBMesh.getComponent<metallic::scene::TransformComponent>().localMatrix,
+        sourceBMesh.getComponent<metallic::scene::TransformComponent>().authoredLocalMatrix));
 }
 
 void testInvalidSceneHierarchy(const std::filesystem::path& baseDirectory)
@@ -3155,6 +3613,175 @@ void testSceneDocumentPropertyRoundTrip(const std::filesystem::path& baseDirecto
         "generated fallback snapshot");
 }
 
+void testCompositeSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
+{
+    const std::filesystem::path directory = baseDirectory / "composite_scene_document";
+    const std::filesystem::path sourceADirectory = directory / "source_a";
+    const std::filesystem::path sourceBDirectory = directory / "source_b";
+    std::filesystem::create_directories(sourceADirectory);
+    std::filesystem::create_directories(sourceBDirectory);
+    const std::filesystem::path sourceAPath = writeFullScene(sourceADirectory);
+    const std::filesystem::path sourceBPath = writeFullScene(sourceBDirectory);
+    const std::filesystem::path documentPath = directory / "world.metallic_scene.json";
+
+    const auto serializeMatrix = [](const float4x4& matrix) {
+        nlohmann::json value = nlohmann::json::array();
+        for (const float component : matrix.a) {
+            value.push_back(component);
+        }
+        return value;
+    };
+    float4x4 sourceBMount = float4x4::Identity();
+    sourceBMount.SetupByTranslation(float3(20.0f, 0.0f, 0.0f));
+    float4x4 sourceBMeshOverride = float4x4::Identity();
+    sourceBMeshOverride.SetupByTranslation(float3(8.0f, 4.0f, 0.0f));
+    nlohmann::json manifest{
+        {"version", 4},
+        {"sources", {
+            {
+                {"id", "source-a"},
+                {"path", "source_a/scene.gltf"},
+                {"mountMatrix", serializeMatrix(float4x4::Identity())},
+                {"enabled", true},
+            },
+            {
+                {"id", "source-b"},
+                {"path", "source_b/scene.gltf"},
+                {"mountMatrix", serializeMatrix(sourceBMount)},
+                {"enabled", true},
+            },
+        }},
+        {"nodes", {
+            {
+                {"sourceId", "source-b"},
+                {"nodeIndex", 1},
+                {"sourceName", "Mesh Node"},
+                {"localMatrix", serializeMatrix(sourceBMeshOverride)},
+            },
+        }},
+        {"world", {
+            {"environment", {
+                {"enabled", true},
+                {"path", ""},
+                {"intensity", 1.5f},
+                {"rotationDegrees", 15.0f},
+                {"visible", true},
+            }},
+        }},
+    };
+    writeTextFile(documentPath, manifest.dump(2));
+
+    metallic::scene::SceneDocument document;
+    ASSERT_TRUE(document.load(documentPath))
+        << (document.documentWarning().empty()
+                ? document.lastLoadResult().error
+                : document.documentWarning());
+    EXPECT_TRUE(document.sidecarLoaded());
+    EXPECT_FALSE(document.dirty());
+    ASSERT_EQ(document.sources().size(), 2u);
+    EXPECT_EQ(document.sources()[0].id, "source-a");
+    EXPECT_EQ(document.sources()[1].id, "source-b");
+    EXPECT_EQ(
+        std::filesystem::weakly_canonical(document.sourcePath()),
+        std::filesystem::weakly_canonical(documentPath));
+    EXPECT_EQ(
+        std::filesystem::weakly_canonical(document.filename()),
+        std::filesystem::weakly_canonical(documentPath));
+
+    const metallic::scene::ConstSceneObject sourceAMesh =
+        document.objectForSourceNode("source-a", 1);
+    const metallic::scene::ConstSceneObject sourceBMesh =
+        document.objectForSourceNode("source-b", 1);
+    ASSERT_TRUE(sourceAMesh);
+    ASSERT_TRUE(sourceBMesh);
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        sourceAMesh.getComponent<metallic::scene::TransformComponent>().localMatrix,
+        sourceAMesh.getComponent<metallic::scene::TransformComponent>().authoredLocalMatrix));
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        sourceBMesh.getComponent<metallic::scene::TransformComponent>().localMatrix,
+        sourceBMeshOverride));
+    ASSERT_EQ(document.renderNodes().size(), 2u);
+    EXPECT_NEAR(document.renderNodes()[0].worldMatrix.a03, 5.0f, 0.0001f);
+    EXPECT_NEAR(document.renderNodes()[1].worldMatrix.a03, 29.0f, 0.0001f);
+    EXPECT_NEAR(document.renderNodes()[1].worldMatrix.a13, 6.0f, 0.0001f);
+    const uint64_t visibilityRevision = document.visibilityRevision();
+    ASSERT_TRUE(document.setSourceEnabled("source-b", false));
+    EXPECT_TRUE(document.dirty());
+    EXPECT_GT(document.visibilityRevision(), visibilityRevision);
+    EXPECT_FALSE(document.renderNodes()[1].visible);
+
+    std::string saveMessage;
+    ASSERT_TRUE(document.save(saveMessage)) << saveMessage;
+    nlohmann::json saved;
+    {
+        std::ifstream stream(documentPath, std::ios::binary);
+        ASSERT_TRUE(stream.good());
+        stream >> saved;
+    }
+    EXPECT_EQ(saved.value("version", 0), 4);
+    EXPECT_FALSE(saved.contains("source"));
+    ASSERT_TRUE(saved.contains("sources"));
+    ASSERT_EQ(saved["sources"].size(), 2u);
+    EXPECT_EQ(saved["sources"][0].value("path", std::string{}), "source_a/scene.gltf");
+    EXPECT_EQ(saved["sources"][1].value("path", std::string{}), "source_b/scene.gltf");
+    EXPECT_FALSE(saved["sources"][1].value("enabled", true));
+    ASSERT_TRUE(saved.contains("nodes"));
+    ASSERT_EQ(saved["nodes"].size(), 1u);
+    EXPECT_EQ(saved["nodes"][0].value("sourceId", std::string{}), "source-b");
+    EXPECT_EQ(saved["nodes"][0].value("nodeIndex", -1), 1);
+    EXPECT_EQ(saved["nodes"][0].value("sourceName", std::string{}), "Mesh Node");
+
+    metallic::scene::SceneDocument reloaded;
+    ASSERT_TRUE(reloaded.load(documentPath))
+        << (reloaded.documentWarning().empty()
+                ? reloaded.lastLoadResult().error
+                : reloaded.documentWarning());
+    const metallic::scene::ConstSceneObject reloadedSourceAMesh =
+        reloaded.objectForSourceNode("source-a", 1);
+    const metallic::scene::ConstSceneObject reloadedSourceBMesh =
+        reloaded.objectForSourceNode("source-b", 1);
+    ASSERT_TRUE(reloadedSourceAMesh);
+    ASSERT_TRUE(reloadedSourceBMesh);
+    ASSERT_EQ(reloaded.sources().size(), 2u);
+    EXPECT_FALSE(reloaded.sources()[1].enabled);
+    ASSERT_EQ(reloaded.renderNodes().size(), 2u);
+    EXPECT_FALSE(reloaded.renderNodes()[1].visible);
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        reloadedSourceAMesh.getComponent<metallic::scene::TransformComponent>().localMatrix,
+        reloadedSourceAMesh.getComponent<metallic::scene::TransformComponent>().authoredLocalMatrix));
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        reloadedSourceBMesh.getComponent<metallic::scene::TransformComponent>().localMatrix,
+        sourceBMeshOverride));
+
+    float4x4 unsavedSourceAMesh =
+        reloadedSourceAMesh.getComponent<metallic::scene::TransformComponent>().localMatrix;
+    unsavedSourceAMesh.a23 += 3.0f;
+    ASSERT_TRUE(reloaded.setObjectLocalMatrix(
+        reloadedSourceAMesh.entity(),
+        unsavedSourceAMesh));
+    ASSERT_TRUE(reloaded.dirty());
+    const uint64_t preservedLifetime = reloaded.sceneGraph().lifetimeRevision();
+    const metallic::scene::SceneEntity preservedSourceBEntity =
+        reloadedSourceBMesh.entity();
+    const std::filesystem::path invalidDocumentPath =
+        directory / "invalid_world.metallic_scene.json";
+    nlohmann::json invalidManifest = saved;
+    invalidManifest["sources"][1]["path"] = "missing.gltf";
+    writeTextFile(invalidDocumentPath, invalidManifest.dump(2));
+    EXPECT_FALSE(reloaded.load(invalidDocumentPath));
+    EXPECT_TRUE(reloaded.valid());
+    EXPECT_TRUE(reloaded.dirty());
+    EXPECT_FALSE(reloaded.documentWarning().empty());
+    EXPECT_EQ(reloaded.sceneGraph().lifetimeRevision(), preservedLifetime);
+    EXPECT_EQ(
+        reloaded.objectForSourceNode("source-b", 1).entity(),
+        preservedSourceBEntity);
+    EXPECT_TRUE(metallic::scene::matrixNearlyEqual(
+        reloaded.objectForSourceNode("source-a", 1)
+            .getComponent<metallic::scene::TransformComponent>().localMatrix,
+        unsavedSourceAMesh));
+}
+
 void testScenePickerBvh(const std::filesystem::path& directory)
 {
     const std::filesystem::path scenePath = writeFullScene(directory);
@@ -3300,6 +3927,82 @@ void testAsyncSceneLoad(const std::filesystem::path& directory)
     EXPECT_TRUE(loaded->lastLoadResult().meshletCacheSaved);
     EXPECT_EQ(handle.takeResult(), nullptr);
 
+    const std::filesystem::path compositeDirectory = directory / "async_composite";
+    const std::filesystem::path sourceADirectory = compositeDirectory / "source_a";
+    const std::filesystem::path sourceBDirectory = compositeDirectory / "source_b";
+    std::filesystem::create_directories(sourceADirectory);
+    std::filesystem::create_directories(sourceBDirectory);
+    writeFullScene(sourceADirectory);
+    writeFullScene(sourceBDirectory);
+    const std::filesystem::path manifestPath =
+        compositeDirectory / "world.metallic_scene.json";
+    const auto serializeMatrix = [](const float4x4& matrix) {
+        nlohmann::json value = nlohmann::json::array();
+        for (const float component : matrix.a) {
+            value.push_back(component);
+        }
+        return value;
+    };
+    writeTextFile(
+        manifestPath,
+        nlohmann::json{
+            {"version", 4},
+            {"sources", {
+                {
+                    {"id", "source-a"},
+                    {"path", "source_a/scene.gltf"},
+                    {"mountMatrix", serializeMatrix(float4x4::Identity())},
+                    {"enabled", true},
+                },
+                {
+                    {"id", "source-b"},
+                    {"path", "source_b/scene.gltf"},
+                    {"mountMatrix", serializeMatrix(float4x4::Identity())},
+                    {"enabled", true},
+                },
+            }},
+            {"nodes", nlohmann::json::array()},
+        }.dump(2));
+    std::filesystem::remove(
+        std::filesystem::path((sourceADirectory / "scene.gltf").string() +
+            ".meshlets.bin"),
+        cacheRemoveError);
+    std::filesystem::remove(
+        std::filesystem::path((sourceBDirectory / "scene.gltf").string() +
+            ".meshlets.bin"),
+        cacheRemoveError);
+    metallic::scene::SceneLoadHandle composite = loader.request(manifestPath);
+    waitForSceneLoad(composite);
+    std::unique_ptr<metallic::scene::SceneDocument> compositeScene =
+        composite.takeResult();
+    ASSERT_NE(compositeScene, nullptr);
+    EXPECT_EQ(compositeScene->sources().size(), 2u);
+    EXPECT_EQ(compositeScene->renderPrimitives().size(), 2u);
+    EXPECT_FALSE(compositeScene->hasDeferredMeshlets());
+    EXPECT_GT(compositeScene->stats().meshletClusterCount, 0u);
+    EXPECT_TRUE(compositeScene->lastLoadResult().meshletCacheSaved);
+    const std::filesystem::path sourceACache =
+        std::filesystem::path((sourceADirectory / "scene.gltf").string() +
+            ".meshlets.bin");
+    const std::filesystem::path sourceBCache =
+        std::filesystem::path((sourceBDirectory / "scene.gltf").string() +
+            ".meshlets.bin");
+    EXPECT_TRUE(std::filesystem::exists(sourceACache));
+    EXPECT_TRUE(std::filesystem::exists(sourceBCache));
+
+    metallic::scene::Scene cachedSourceA;
+    ASSERT_TRUE(cachedSourceA.load(sourceADirectory / "scene.gltf"))
+        << cachedSourceA.lastLoadResult().error;
+    EXPECT_TRUE(cachedSourceA.lastLoadResult().meshletCacheLoaded);
+    metallic::scene::Scene cachedSourceB;
+    ASSERT_TRUE(cachedSourceB.load(sourceBDirectory / "scene.gltf"))
+        << cachedSourceB.lastLoadResult().error;
+    EXPECT_TRUE(cachedSourceB.lastLoadResult().meshletCacheLoaded);
+    metallic::scene::SceneDocument cachedComposite;
+    ASSERT_TRUE(cachedComposite.load(manifestPath))
+        << cachedComposite.documentWarning();
+    EXPECT_TRUE(cachedComposite.lastLoadResult().meshletCacheLoaded);
+
     const std::filesystem::path materialPath = writeMaterialFeatureScene(directory);
     metallic::scene::SceneLoadHandle images = loader.request(
         materialPath,
@@ -3363,6 +4066,16 @@ TEST(SceneImport, RtxcrClairePonytailDots)
 TEST(SceneImport, FullScene)
 {
     testFullSceneImport(prepareOutputDirectory());
+}
+
+TEST(SceneComposition, LoadsMultipleSourcesAndMaintainsGpuSnapshot)
+{
+    testCompositeSceneImport(prepareOutputDirectory());
+}
+
+TEST(SceneComposition, UsesOneFallbackCameraAndHonorsInitialDisabledSources)
+{
+    testCompositeFallbackCamera(prepareOutputDirectory());
 }
 
 TEST(SceneImport, RejectsInvalidHierarchy)
@@ -3443,6 +4156,16 @@ TEST(SceneEditing, DocumentRoundTrip)
 TEST(SceneEditing, ComponentPropertyRoundTrip)
 {
     testSceneDocumentPropertyRoundTrip(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, CompositeDocumentRoundTrip)
+{
+    testCompositeSceneDocumentRoundTrip(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, CompositeDocumentValidation)
+{
+    testCompositeSceneDocumentValidation(prepareOutputDirectory());
 }
 
 TEST(SceneEditing, PickerBvh)

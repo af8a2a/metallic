@@ -5,6 +5,7 @@
 #include <array>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "ml.h"
 #include "Runtime/Scene/SceneLoad.h"
@@ -244,6 +245,7 @@ struct RenderCamera {
     double zfar = 0.0;
     uint64_t contentRevision = 0;
     bool fallback = false;
+    bool visible = true;
 };
 
 struct RenderLight {
@@ -259,11 +261,21 @@ struct RenderLight {
     double outerConeAngle = 0.7853981633974483;
     float4x4 worldMatrix = float4x4::Identity();
     uint64_t contentRevision = 0;
+    bool visible = true;
+};
+
+// Stable description of one glTF asset mounted into a composed scene. The id,
+// not its vector position or an EnTT entity value, is the serialized identity.
+struct SceneSourceDesc {
+    std::string id;
+    std::filesystem::path path;
+    float4x4 mountMatrix = float4x4::Identity();
+    bool enabled = true;
 };
 
 class Scene {
 public:
-    Scene() = default;
+    Scene();
     Scene(const Scene&) = delete;
     Scene& operator=(const Scene&) = delete;
     Scene(Scene&&) noexcept = default;
@@ -276,6 +288,12 @@ public:
     bool loadDeferredMeshlets(
         const std::filesystem::path& filename,
         const SceneLoadProgressCallback& progressCallback);
+    bool compose(
+        std::vector<SceneSourceDesc> sources,
+        std::string& error,
+        const std::filesystem::path& resourcePath = {},
+        const SceneLoadProgressCallback& progressCallback = {},
+        bool deferMeshletBuild = false);
     bool hasDeferredMeshlets() const { return deferredMeshletBuild_; }
     bool buildDeferredMeshlet(size_t primitiveIndex);
     bool finalizeDeferredMeshlets();
@@ -285,6 +303,8 @@ public:
     bool setObjectVisible(SceneEntity object, bool visible);
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
+    bool setSourceMountMatrix(std::string_view sourceId, const float4x4& mountMatrix);
+    bool setSourceEnabled(std::string_view sourceId, bool enabled);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
     bool setImageDecodeResult(
         size_t imageIndex,
@@ -301,6 +321,10 @@ public:
     const Bounds& bounds() const { return bounds_; }
     const SceneGraph& sceneGraph() const { return sceneGraph_; }
     ConstSceneObject objectForNode(int32_t nodeIndex) const;
+    ConstSceneObject objectForSourceNode(
+        std::string_view sourceId,
+        int32_t sourceNodeIndex) const;
+    const std::vector<SceneSourceDesc>& sources() const { return sources_; }
     const std::vector<int32_t>& rootNodeIndices() const { return rootNodeIndices_; }
     const std::vector<SceneNode>& nodes() const { return nodes_; }
     const std::vector<SceneMesh>& meshes() const { return meshes_; }
@@ -314,12 +338,24 @@ public:
     uint64_t transformRevision() const { return sceneGraph_.transformRevision(); }
     uint64_t contentRevision() const { return sceneGraph_.contentRevision(); }
     uint64_t visibilityRevision() const { return sceneGraph_.visibilityRevision(); }
+    uint64_t resourceIdentity() const { return resourceIdentity_; }
 
 private:
+    struct DeferredMeshletCacheTarget {
+        std::string sourceId;
+        std::filesystem::path sourcePath;
+        std::filesystem::path cachePath;
+        size_t primitiveOffset = 0;
+        size_t primitiveCount = 0;
+        int32_t meshBase = 0;
+        int32_t materialBase = 0;
+    };
+
     bool loadInternal(
         const std::filesystem::path& filename,
         const SceneLoadProgressCallback& progressCallback,
         bool deferMeshletBuild);
+    void finalizeDeferredMeshletStats();
     void clearParsedData();
     void refreshTransforms();
     void syncSceneNodeProjection();
@@ -342,7 +378,12 @@ private:
     std::vector<RenderMaterial> materials_;
     std::vector<RenderCamera> cameras_;
     std::vector<RenderLight> lights_;
+    std::vector<SceneSourceDesc> sources_;
+    std::vector<SceneEntity> sourceMountObjects_;
+    std::vector<DeferredMeshletCacheTarget> deferredMeshletCacheTargets_;
+    std::vector<uint8_t> deferredMeshletBuildMask_;
     bool deferredMeshletBuild_ = false;
+    uint64_t resourceIdentity_ = 0;
 };
 
 bool matrixNearlyEqual(const float4x4& lhs, const float4x4& rhs, float epsilon = 0.000001f);

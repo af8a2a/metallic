@@ -1163,10 +1163,17 @@ Result SceneRtxBuilder::buildInternal(
         instances.size(),
         rtxElapsedMilliseconds(collectInstancesBegin));
 
+    const uint32_t visibleInstanceCount = static_cast<uint32_t>(instances.size());
     if (instances.empty()) {
-        log = "Scene contains no visible RTX instances.";
-        clear();
-        return makeError(Error::Unsupported);
+        // Keep a valid TLAS descriptor for an intentionally empty scene. A
+        // masked sentinel avoids zero-sized instance buffers and zero-primitive
+        // AS builds, which are not handled consistently by every Vulkan driver.
+        VkAccelerationStructureInstanceKHR sentinel{};
+        sentinel.transform = toVkTransform(float4x4::Identity());
+        sentinel.mask = 0;
+        sentinel.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        sentinel.accelerationStructureReference = impl_->blases.front().address;
+        instances.push_back(sentinel);
     }
 
     const auto createTlasInputsBegin = RtxLogClock::now();
@@ -1189,8 +1196,9 @@ Result SceneRtxBuilder::buildInternal(
     }
 
     const NativeBuffer nativeInstanceBuffer = nativeBuffer(*impl_->instanceBuffer);
-    if (nativeInstanceBuffer.address == 0) {
-        log = "RTX instance buffer does not have a device address.";
+    if (nativeInstanceBuffer.address == 0 ||
+        nativeInstanceBuffer.address % 16 != 0) {
+        log = "RTX instance buffer does not have a valid 16-byte-aligned device address.";
         clear();
         return makeError(Error::Failure);
     }
@@ -1374,7 +1382,7 @@ Result SceneRtxBuilder::buildInternal(
 
     impl_->stats = SceneRtxStats{
         .blasCount = static_cast<uint32_t>(impl_->blases.size()),
-        .instanceCount = static_cast<uint32_t>(instances.size()),
+        .instanceCount = visibleInstanceCount,
         .triangleCount = triangleCount,
         .vertexCount = vertices.size(),
         .indexCount = indices.size(),
@@ -1480,6 +1488,11 @@ Result SceneRtxBuilder::updateInstanceTransforms(
         log = "Scene RTX instance layout changed; a full acceleration-structure rebuild is required.";
         return makeError(Error::InvalidArgument);
     }
+    if (instances.empty()) {
+        impl_->sourceTransformRevision = scene.transformRevision();
+        log = "Scene has no visible RTX instances; the empty TLAS requires no transform refit.";
+        return {};
+    }
 
     Result result = uploadVector(*impl_->instanceBuffer, instances, "RTX instance transform update", log);
     if (!result) {
@@ -1489,8 +1502,10 @@ Result SceneRtxBuilder::updateInstanceTransforms(
     const NativeBuffer nativeScratchBuffer = nativeBuffer(*impl_->scratchBuffer);
     const VkDeviceSize alignment = scratchAlignment(nativeDeviceInfo.physicalDevice);
     const VkDeviceAddress scratchAddress = alignUp(nativeScratchBuffer.address, alignment);
-    if (nativeInstanceBuffer.address == 0 || scratchAddress == 0) {
-        log = "Scene RTX instance update buffers do not have valid device addresses.";
+    if (nativeInstanceBuffer.address == 0 ||
+        nativeInstanceBuffer.address % 16 != 0 ||
+        scratchAddress == 0) {
+        log = "Scene RTX instance update buffers do not have valid aligned device addresses.";
         return makeError(Error::Failure);
     }
 

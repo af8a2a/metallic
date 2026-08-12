@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/ScenePathTraceResources.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
+#include "Runtime/Scene/SceneDocument.h"
 
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
@@ -1072,10 +1073,14 @@ bool buildGpuScene(
     if (outScene.vertices.empty() ||
         outScene.indices.empty() ||
         outScene.primitives.empty() ||
-        outScene.instances.empty() ||
         outScene.materials.empty()) {
-        log = "ScenePathTracePass found no visible triangle geometry for path tracing";
+        log = "ScenePathTracePass found no triangle geometry suitable for path tracing";
         return false;
+    }
+    if (outScene.instances.empty()) {
+        // Storage buffers cannot be empty, while an empty TLAS guarantees that
+        // this placeholder is never addressed by a committed ray-query hit.
+        outScene.instances.push_back(ScenePathTraceGpuInstance{});
     }
     return true;
 }
@@ -1731,6 +1736,14 @@ struct ScenePathTraceResources::Impl {
         partialUploadResumeStage = AsyncPrepareStage::Idle;
         asyncScene = nullptr;
         asyncScenePath.clear();
+        sourceResourceIdentity = 0;
+        sourceStructuralRevision = 0;
+        sourceTransformRevision = 0;
+        sourceVisibilityRevision = 0;
+        asyncSourceResourceIdentity = 0;
+        asyncSourceStructuralRevision = 0;
+        asyncSourceTransformRevision = 0;
+        asyncSourceVisibilityRevision = 0;
         asyncGpuScene = ScenePathTraceGpuScene{};
         asyncBufferStep = 0;
     }
@@ -1749,6 +1762,23 @@ struct ScenePathTraceResources::Impl {
             materialTextureViews[0] != nullptr;
     }
 
+    bool sourceTopologyMatches(const scene::Scene& sourceScene) const
+    {
+        return sourceResourceIdentity == sourceScene.resourceIdentity() &&
+            sourceStructuralRevision ==
+                sourceScene.sceneGraph().structuralRevision() &&
+            sourceVisibilityRevision == sourceScene.visibilityRevision();
+    }
+
+    void stampSource(const scene::Scene& sourceScene)
+    {
+        sourceResourceIdentity = sourceScene.resourceIdentity();
+        sourceStructuralRevision =
+            sourceScene.sceneGraph().structuralRevision();
+        sourceTransformRevision = sourceScene.transformRevision();
+        sourceVisibilityRevision = sourceScene.visibilityRevision();
+    }
+
     SceneRtxBuilder rtxBuilder;
     Device* device = nullptr;
     Queue* graphicsQueue = nullptr;
@@ -1756,7 +1786,10 @@ struct ScenePathTraceResources::Impl {
     std::filesystem::path scenePath;
     bool prepared = false;
     uint64_t revision = 0;
+    uint64_t sourceResourceIdentity = 0;
+    uint64_t sourceStructuralRevision = 0;
     uint64_t sourceTransformRevision = 0;
+    uint64_t sourceVisibilityRevision = 0;
     std::unique_ptr<Buffer> vertexBuffer;
     std::unique_ptr<Buffer> indexBuffer;
     std::unique_ptr<Buffer> primitiveBuffer;
@@ -1781,6 +1814,10 @@ struct ScenePathTraceResources::Impl {
     AsyncPrepareStage partialUploadResumeStage = AsyncPrepareStage::Idle;
     const scene::Scene* asyncScene = nullptr;
     std::filesystem::path asyncScenePath;
+    uint64_t asyncSourceResourceIdentity = 0;
+    uint64_t asyncSourceStructuralRevision = 0;
+    uint64_t asyncSourceTransformRevision = 0;
+    uint64_t asyncSourceVisibilityRevision = 0;
     ScenePathTraceGpuScene asyncGpuScene;
     uint32_t asyncBufferStep = 0;
 };
@@ -1807,11 +1844,14 @@ Result ScenePathTraceResources::prepare(
     const std::filesystem::path path = scenePathFromProperties(properties);
     const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, path);
     if (impl_->valid() && impl_->scenePath == path &&
-        boundScene != nullptr && impl_->sourceTransformRevision != boundScene->transformRevision()) {
+        boundScene != nullptr && impl_->sourceTopologyMatches(*boundScene) &&
+        impl_->sourceTransformRevision != boundScene->transformRevision()) {
         return syncRuntimeScene(boundScene, log);
     }
     if (impl_->valid() && impl_->scenePath == path &&
-        (boundScene == nullptr || impl_->sourceTransformRevision == boundScene->transformRevision())) {
+        (boundScene == nullptr ||
+         (impl_->sourceTopologyMatches(*boundScene) &&
+          impl_->sourceTransformRevision == boundScene->transformRevision()))) {
         spdlog::info("[SceneResources] Reuse prepared scene='{}'", path.string());
         return {};
     }
@@ -1819,11 +1859,12 @@ Result ScenePathTraceResources::prepare(
     SceneResourceLogScope prepareScope("prepare scene='" + path.string() + "'");
     impl_->clear();
 
-    scene::Scene fallbackScene;
+    scene::SceneDocument fallbackScene;
     if (boundScene == nullptr) {
         SceneResourceLogScope scope("load scene for render pass resources");
         if (!fallbackScene.load(path)) {
-            log = "ScenePathTracePass failed to load glTF: " + fallbackScene.lastLoadResult().error;
+            log = "ScenePathTracePass failed to load scene: " +
+                fallbackScene.lastLoadResult().error;
             return makeError(Error::Failure);
         }
         boundScene = &fallbackScene;
@@ -1971,7 +2012,7 @@ Result ScenePathTraceResources::prepare(
 
     impl_->drawBounds = loadedScene.bounds();
     impl_->scenePath = path;
-    impl_->sourceTransformRevision = loadedScene.transformRevision();
+    impl_->stampSource(loadedScene);
     impl_->prepared = true;
     ++impl_->revision;
     spdlog::info(
@@ -1994,8 +2035,11 @@ Result ScenePathTraceResources::beginPrepareAsync(
         log = "Asynchronous scene preparation requires a matching valid runtime scene";
         return makeError(Error::InvalidArgument);
     }
-    if (impl_->valid() && impl_->scenePath == path) {
-        return {};
+    if (impl_->valid() && impl_->scenePath == path &&
+        impl_->sourceTopologyMatches(*boundScene)) {
+        return impl_->sourceTransformRevision == boundScene->transformRevision()
+            ? Result{}
+            : syncRuntimeScene(boundScene, log);
     }
 
     impl_->clear();
@@ -2003,6 +2047,11 @@ Result ScenePathTraceResources::beginPrepareAsync(
     impl_->graphicsQueue = &graphicsQueue;
     impl_->asyncScene = boundScene;
     impl_->asyncScenePath = path;
+    impl_->asyncSourceResourceIdentity = boundScene->resourceIdentity();
+    impl_->asyncSourceStructuralRevision =
+        boundScene->sceneGraph().structuralRevision();
+    impl_->asyncSourceTransformRevision = boundScene->transformRevision();
+    impl_->asyncSourceVisibilityRevision = boundScene->visibilityRevision();
     Result result = impl_->beginMaterialTextureBuild(device, *boundScene, log);
     if (!result) {
         impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
@@ -2035,6 +2084,19 @@ Result ScenePathTraceResources::pumpPrepareAsync(
         progress.status = scene::SceneLoadStatus::Failed;
         progress.phase = scene::SceneLoadPhase::Failed;
         progress.error = log.empty() ? "Scene resource preparation is not active" : log;
+        return makeError(Error::InvalidArgument);
+    }
+    if (impl_->asyncScene->resourceIdentity() !=
+            impl_->asyncSourceResourceIdentity ||
+        impl_->asyncScene->sceneGraph().structuralRevision() !=
+            impl_->asyncSourceStructuralRevision ||
+        impl_->asyncScene->visibilityRevision() !=
+            impl_->asyncSourceVisibilityRevision) {
+        log = "Scene topology changed during asynchronous resource preparation.";
+        impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+        progress.status = scene::SceneLoadStatus::Failed;
+        progress.phase = scene::SceneLoadPhase::Failed;
+        progress.error = log;
         return makeError(Error::InvalidArgument);
     }
 
@@ -2231,7 +2293,10 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             impl_->retireCompletedTextureUploads();
             impl_->drawBounds = impl_->asyncScene->bounds();
             impl_->scenePath = impl_->asyncScenePath;
-            impl_->sourceTransformRevision = impl_->asyncScene->transformRevision();
+            impl_->sourceResourceIdentity = impl_->asyncSourceResourceIdentity;
+            impl_->sourceStructuralRevision = impl_->asyncSourceStructuralRevision;
+            impl_->sourceTransformRevision = impl_->asyncSourceTransformRevision;
+            impl_->sourceVisibilityRevision = impl_->asyncSourceVisibilityRevision;
             impl_->prepared = true;
             ++impl_->revision;
             impl_->asyncScene = nullptr;
@@ -2266,13 +2331,60 @@ Result ScenePathTraceResources::syncRuntimeScene(
 {
     log.clear();
     const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, impl_->scenePath);
-    if (boundScene == nullptr || !impl_->valid() ||
-        impl_->sourceTransformRevision == boundScene->transformRevision()) {
+    if (boundScene == nullptr || !impl_->valid()) {
         return {};
     }
     if (impl_->device == nullptr || impl_->graphicsQueue == nullptr) {
         log = "Scene resources have no device or graphics queue for a runtime transform update.";
         return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->sourceTopologyMatches(*boundScene)) {
+        Device& device = *impl_->device;
+        Queue& graphicsQueue = *impl_->graphicsQueue;
+        const RenderGraphProperties properties{
+            {"path", impl_->scenePath.string()},
+        };
+        Result result = prepare(
+            device,
+            graphicsQueue,
+            properties,
+            boundScene,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        // prepare() deliberately submits its acceleration-structure build
+        // asynchronously. A direct runtime sync, however, has no async pump
+        // to advance that build, so complete it before reporting success.
+        Queue* accelerationQueue = device.getQueue(QueueType::Compute);
+        if (accelerationQueue == nullptr) {
+            accelerationQueue = &graphicsQueue;
+        }
+        if (impl_->rtxBuilder.buildState() ==
+            vulkan::SceneRtxBuildState::Building) {
+            result = accelerationQueue->waitIdle();
+            if (!result) {
+                appendLogBlock(
+                    log,
+                    resultMessage(
+                        "Queue::waitIdle(runtime scene topology rebuild)",
+                        result));
+                impl_->clear();
+                return result;
+            }
+        }
+        if (!impl_->rtxBuilder.pollBuild() || !impl_->valid()) {
+            appendLogBlock(
+                log,
+                "Runtime scene topology rebuild did not produce valid scene resources.");
+            impl_->clear();
+            return makeError(Error::Failure);
+        }
+        return {};
+    }
+    if (impl_->sourceTransformRevision == boundScene->transformRevision()) {
+        return {};
     }
 
     ScenePathTraceGpuScene gpuScene;
@@ -2301,7 +2413,7 @@ Result ScenePathTraceResources::syncRuntimeScene(
         return result;
     }
     impl_->drawBounds = boundScene->bounds();
-    impl_->sourceTransformRevision = boundScene->transformRevision();
+    impl_->stampSource(*boundScene);
     ++impl_->revision;
     spdlog::info(
         "[SceneResources] Updated instance transforms and refit TLAS revision={}",
