@@ -19,12 +19,6 @@
                     "orbitPitchDegrees": -4.0,
                     "orbitYawDegrees": 10.0
                 },
-                "environment": {
-                    "enabled": true,
-                    "intensity": 1.5,
-                    "rotationDegrees": 25.0,
-                    "visible": true
-                },
                 "flipBitangent": false,
                 "maxDepth": 4,
                 "samples": 4

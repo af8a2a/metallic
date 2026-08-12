@@ -30,7 +30,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Subsystem/EnvironmentLightingSubsystem.cpp
     Runtime/Render/Subsystem/GPUScene.cpp
     Runtime/Render/Subsystem/GPUSceneSubsystem.cpp
-    Runtime/Render/Subsystem/LegacyEnvironmentMigration.cpp
     Runtime/Render/Subsystem/RenderSubsystem.cpp
     Runtime/Render/Subsystem/RenderWorld.cpp
     Runtime/Render/MeshletStreamClas.cpp

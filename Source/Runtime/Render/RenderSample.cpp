@@ -1,5 +1,4 @@
 #include "Runtime/Render/RenderSample.h"
-#include "Runtime/Render/Subsystem/LegacyEnvironmentMigration.h"
 
 #include <algorithm>
 #include <string>
@@ -71,7 +70,7 @@ public:
         return "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
-    RenderSampleEnvironmentDesc environment() const override
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
     {
         return RenderSampleEnvironmentDesc{
             .enabled = true,
@@ -81,7 +80,6 @@ public:
             .visible = true,
         };
     }
-    std::vector<std::string> environmentTargets() const override { return {"PathTrace"}; }
     std::string previewOutput() const override { return "PathTrace.color"; }
 };
 
@@ -100,7 +98,7 @@ public:
         return "Pipelines/Samples/pathtracing_abeautiful_game_openpbr.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
-    RenderSampleEnvironmentDesc environment() const override
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
     {
         return RenderSampleEnvironmentDesc{
             .enabled = true,
@@ -110,7 +108,6 @@ public:
             .visible = true,
         };
     }
-    std::vector<std::string> environmentTargets() const override { return {"PathTrace"}; }
     std::string previewOutput() const override { return "PathTrace.color"; }
 };
 
@@ -129,7 +126,7 @@ public:
         return "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
-    RenderSampleEnvironmentDesc environment() const override
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
     {
         return RenderSampleEnvironmentDesc{
             .enabled = true,
@@ -139,7 +136,6 @@ public:
             .visible = true,
         };
     }
-    std::vector<std::string> environmentTargets() const override { return {"PathTrace"}; }
     std::string previewOutput() const override { return "DlssRr.color"; }
     bool requiresStreamline() const override { return true; }
 };
@@ -159,7 +155,7 @@ public:
         return "Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"Rtxdi"}; }
-    RenderSampleEnvironmentDesc environment() const override
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
     {
         return RenderSampleEnvironmentDesc{
             .enabled = true,
@@ -169,7 +165,6 @@ public:
             .visible = true,
         };
     }
-    std::vector<std::string> environmentTargets() const override { return {"Rtxdi"}; }
     std::string previewOutput() const override { return "Composite.color"; }
 };
 
@@ -192,7 +187,7 @@ public:
         return "Pipelines/Samples/rtxcr_material_showcase.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
-    RenderSampleEnvironmentDesc environment() const override
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
     {
         return RenderSampleEnvironmentDesc{
             .enabled = true,
@@ -203,7 +198,6 @@ public:
             .visible = true,
         };
     }
-    std::vector<std::string> environmentTargets() const override { return {"PathTrace"}; }
     std::string previewOutput() const override { return "PathTrace.color"; }
 };
 
@@ -241,7 +235,7 @@ public:
         return "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
-    RenderSampleEnvironmentDesc environment() const override
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
     {
         return RenderSampleEnvironmentDesc{
             .enabled = true,
@@ -251,7 +245,6 @@ public:
             .visible = true,
         };
     }
-    std::vector<std::string> environmentTargets() const override { return {"GPUDriven"}; }
     std::string previewOutput() const override { return "GPUDriven.color"; }
 };
 
@@ -271,7 +264,7 @@ public:
         return "Pipelines/Samples/gpu_driven_sponza_rtas_visualization.metallic_graph.json";
     }
     std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
-    RenderSampleEnvironmentDesc environment() const override
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
     {
         return RenderSampleEnvironmentDesc{
             .enabled = true,
@@ -281,7 +274,6 @@ public:
             .visible = true,
         };
     }
-    std::vector<std::string> environmentTargets() const override { return {"GPUDriven"}; }
     std::string previewOutput() const override { return "GPUDriven.color"; }
 };
 
@@ -387,7 +379,6 @@ RenderSampleDesc RenderSample::desc() const
         .graphPath = graphPath(),
         .scenePathTargets = scenePathTargets(),
         .environment = environment(),
-        .environmentTargets = environmentTargets(),
         .previewOutput = previewOutput(),
         .requiresStreamline = requiresStreamline(),
     };
@@ -426,10 +417,6 @@ bool loadRenderSample(
     if (!applySampleScenePath(graph, desc, outMessage)) {
         return false;
     }
-    const LegacyEnvironmentMigrationResult migration = migrateLegacyEnvironmentSettings(
-        graph,
-        std::filesystem::path(PROJECT_SOURCE_DIR));
-
     if (desc.previewOutput.empty()) {
         desc.previewOutput = graph.firstOutputName();
     }
@@ -439,25 +426,12 @@ bool loadRenderSample(
     }
 
     graph.clearDirty();
-    std::optional<RenderSampleEnvironmentDesc> migratedLegacyEnvironment;
-    if (migration.found) {
-        migratedLegacyEnvironment = RenderSampleEnvironmentDesc{
-            .enabled = migration.settings.enabled,
-            .path = migration.settings.path.generic_string(),
-            .intensity = migration.settings.intensity,
-            .rotationDegrees = migration.settings.rotationDegrees,
-            .visible = migration.settings.visible,
-        };
-    }
     outResult = RenderSampleLoadResult{
         .desc = std::move(desc),
         .graph = std::move(graph),
         .graphFilePath = graphPath,
-        .migratedLegacyEnvironment = std::move(migratedLegacyEnvironment),
     };
-    outMessage = migration.warning.empty()
-        ? "Loaded Sample"
-        : "Loaded Sample. " + migration.warning;
+    outMessage = "Loaded Sample";
     return true;
 }
 

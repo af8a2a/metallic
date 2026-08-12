@@ -128,7 +128,7 @@ private:
     void addRecentScenePath(const std::filesystem::path& path);
     void applyLoadedSceneToRenderGraph(const std::filesystem::path& path);
     void applyLoadedSceneCamera();
-    void applyEnvironmentToRenderGraph(const std::filesystem::path& path);
+    void setEnvironmentPath(const std::filesystem::path& path);
     void buildSceneRtx();
     void clearSceneRtx();
     void addRenderGraphNode(std::string type, ImVec2 screenPosition);
@@ -220,11 +220,9 @@ private:
     bool pendingSceneResourcePreparation_ = false;
     bool environmentUserEdited_ = false;
     bool environmentFromSample_ = false;
-    bool environmentFromLegacyGraph_ = false;
     bool environmentEditBaselineValid_ = false;
     bool environmentEditBaselineUserEdited_ = false;
     bool environmentEditBaselineFromSample_ = false;
-    bool environmentEditBaselineFromLegacyGraph_ = false;
     bool preserveSampleEnvironmentForNextSceneLoad_ = false;
     render::EnvironmentSettings environmentEditBaseline_;
     std::filesystem::path pendingSceneLoadPath_;

@@ -34,13 +34,6 @@
                     "zfar": 10000.0,
                     "znear": 0.0010000000474974513
                 },
-                "environment": {
-                    "enabled": true,
-                    "intensity": 1.0,
-                    "path": "Asset/ABeautifulGame/environment.hdr",
-                    "rotationDegrees": 0.0,
-                    "visible": true
-                },
                 "maxDepth": 12,
                 "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
                 "samples": 2

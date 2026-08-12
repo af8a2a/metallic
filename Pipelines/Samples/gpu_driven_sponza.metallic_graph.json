@@ -32,13 +32,6 @@
                     "zfar": 10000.0,
                     "znear": 0.1
                 },
-                "environment": {
-                    "enabled": true,
-                    "intensity": 3.0,
-                    "path": "Asset/ABeautifulGame/environment.hdr",
-                    "rotationDegrees": 0.0,
-                    "visible": true
-                },
                 "freezeCullingCamera": false,
                 "instanceFrustumCull": true,
                 "instanceHzbCull": true,

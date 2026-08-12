@@ -4,7 +4,6 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
-#include "Runtime/Render/Subsystem/LegacyEnvironmentMigration.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "imnodes.h"
 #include "imgui.h"
@@ -3607,7 +3606,6 @@ void EditorApplication::drawEnvironmentControls()
     }
     environmentUserEdited_ = true;
     environmentFromSample_ = false;
-    environmentFromLegacyGraph_ = false;
     preserveSampleEnvironmentForNextSceneLoad_ = false;
     viewportPreviewNeedsRender_ = true;
     renderGraphStatus_ = "Updated scene environment";
@@ -3622,7 +3620,6 @@ void EditorApplication::beginEnvironmentEdit()
     environmentEditBaselineValid_ = true;
     environmentEditBaselineUserEdited_ = environmentUserEdited_;
     environmentEditBaselineFromSample_ = environmentFromSample_;
-    environmentEditBaselineFromLegacyGraph_ = environmentFromLegacyGraph_;
 }
 
 void EditorApplication::applyRuntimeNodeProperties(
@@ -4132,7 +4129,6 @@ void EditorApplication::resetTransformHistory()
     environmentEditBaselineValid_ = false;
     environmentEditBaselineUserEdited_ = false;
     environmentEditBaselineFromSample_ = false;
-    environmentEditBaselineFromLegacyGraph_ = false;
     scenePicker_.clear();
     scene_.setDirty(false);
 }
@@ -4159,7 +4155,6 @@ void EditorApplication::saveScene()
     environmentEditBaselineValid_ = false;
     environmentEditBaselineUserEdited_ = false;
     environmentEditBaselineFromSample_ = false;
-    environmentEditBaselineFromLegacyGraph_ = false;
     scene_.setDirty(false);
     sceneStatus_ = "Saved scene overrides: " + scene_.documentPath().string();
 }
@@ -4260,7 +4255,6 @@ void EditorApplication::drawUnsavedSceneModal()
                 renderWorld_.setEnvironment(environmentEditBaseline_);
                 environmentUserEdited_ = environmentEditBaselineUserEdited_;
                 environmentFromSample_ = environmentEditBaselineFromSample_;
-                environmentFromLegacyGraph_ = environmentEditBaselineFromLegacyGraph_;
                 preserveSampleEnvironmentForNextSceneLoad_ = environmentFromSample_;
             }
             resetTransformHistory();
@@ -5926,31 +5920,23 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         sample.desc.previewOutput);
 
     if (!environmentUserEdited_) {
-        const render::RenderSampleEnvironmentDesc* sourceEnvironment = nullptr;
-        if (!sample.desc.environmentTargets.empty()) {
-            sourceEnvironment = &sample.desc.environment;
+        if (sample.desc.environment.has_value()) {
+            const render::RenderSampleEnvironmentDesc& sourceEnvironment =
+                *sample.desc.environment;
             environmentFromSample_ = true;
-            environmentFromLegacyGraph_ = false;
-        } else if (sample.migratedLegacyEnvironment.has_value()) {
-            sourceEnvironment = &(*sample.migratedLegacyEnvironment);
-            environmentFromSample_ = false;
-            environmentFromLegacyGraph_ = true;
-        } else {
-            environmentFromSample_ = false;
-            environmentFromLegacyGraph_ = false;
-        }
-        if (sourceEnvironment != nullptr) {
             render::EnvironmentSettings environment{
-                .enabled = sourceEnvironment->enabled,
-                .path = sourceEnvironment->path,
-                .intensity = sourceEnvironment->intensity,
-                .rotationDegrees = sourceEnvironment->rotationDegrees,
-                .visible = sourceEnvironment->visible,
+                .enabled = sourceEnvironment.enabled,
+                .path = sourceEnvironment.path,
+                .intensity = sourceEnvironment.intensity,
+                .rotationDegrees = sourceEnvironment.rotationDegrees,
+                .visible = sourceEnvironment.visible,
             };
             if (!environment.path.empty() && environment.path.is_relative()) {
                 environment.path = std::filesystem::path(PROJECT_SOURCE_DIR) / environment.path;
             }
             renderWorld_.setEnvironment(std::move(environment));
+        } else {
+            environmentFromSample_ = false;
         }
     }
     preserveSampleEnvironmentForNextSceneLoad_ = environmentFromSample_;
@@ -6017,25 +6003,13 @@ void EditorApplication::loadRenderGraph()
         spdlog::warn("[Startup] Render graph load failed: {}", message);
         return;
     }
-    const render::LegacyEnvironmentMigrationResult migration =
-        render::migrateLegacyEnvironmentSettings(
-            loadedGraph,
-            std::filesystem::path(PROJECT_SOURCE_DIR));
     environmentFromSample_ = false;
-    if (!environmentUserEdited_ && migration.found) {
-        renderWorld_.setEnvironment(migration.settings);
-        environmentFromLegacyGraph_ = true;
-    } else if (!environmentUserEdited_) {
-        environmentFromLegacyGraph_ = false;
+    if (!environmentUserEdited_) {
         if (scene_.hasEnvironmentSettings()) {
             renderWorld_.setEnvironment(scene_.environment());
         } else {
             renderWorld_.setEnvironment(render::EnvironmentSettings{});
         }
-    }
-    if (!migration.warning.empty()) {
-        message += " Warning: " + migration.warning;
-        spdlog::warn("{}", migration.warning);
     }
     renderGraph_ = std::move(loadedGraph);
     graphEditorPositionsInitialized_ = false;
@@ -6095,7 +6069,7 @@ void EditorApplication::chooseEnvironmentFile()
         return;
     }
 
-    applyEnvironmentToRenderGraph(selectedPath);
+    setEnvironmentPath(selectedPath);
 }
 
 void EditorApplication::addRecentScenePath(const std::filesystem::path& path)
@@ -6255,7 +6229,7 @@ void EditorApplication::applyLoadedSceneCamera()
     renderGraphStatus_ = "Applied glTF camera: " + selectedCamera->name;
 }
 
-void EditorApplication::applyEnvironmentToRenderGraph(const std::filesystem::path& path)
+void EditorApplication::setEnvironmentPath(const std::filesystem::path& path)
 {
     if (path.empty()) {
         renderGraphStatus_ = "Environment path is empty.";
@@ -6275,7 +6249,6 @@ void EditorApplication::applyEnvironmentToRenderGraph(const std::filesystem::pat
     }
     environmentUserEdited_ = true;
     environmentFromSample_ = false;
-    environmentFromLegacyGraph_ = false;
     preserveSampleEnvironmentForNextSceneLoad_ = false;
     viewportPreviewNeedsRender_ = true;
     renderGraphStatus_ = "Loaded environment: " + displayPathForProperty(path);
@@ -6480,15 +6453,12 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     if (graphExecutor_ != nullptr) {
         graphExecutor_->bindRuntimeScene(&scene_);
     }
-    if (!environmentUserEdited_ &&
-        !environmentFromSample_ &&
-        scene_.hasEnvironmentSettings()) {
-        renderWorld_.setEnvironment(scene_.environment());
-        environmentFromLegacyGraph_ = false;
-    } else if (!environmentUserEdited_ &&
-        !environmentFromSample_ &&
-        !environmentFromLegacyGraph_) {
-        renderWorld_.setEnvironment(render::EnvironmentSettings{});
+    if (!environmentUserEdited_ && !environmentFromSample_) {
+        if (scene_.hasEnvironmentSettings()) {
+            renderWorld_.setEnvironment(scene_.environment());
+        } else {
+            renderWorld_.setEnvironment(render::EnvironmentSettings{});
+        }
     }
     pendingSceneLoad_ = {};
     pendingSceneResourcePreparation_ = false;

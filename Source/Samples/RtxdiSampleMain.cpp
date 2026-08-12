@@ -37,14 +37,20 @@ int runSmokeTest()
         spdlog::error("RTXDI smoke test failed to load Sample: {}", message);
         return 1;
     }
+    if (!sample.desc.environment.has_value()) {
+        spdlog::error("RTXDI smoke test Sample does not define an environment");
+        return 1;
+    }
 
     metallic::render::RenderGraphPreviewRenderer preview;
+    const metallic::render::RenderSampleEnvironmentDesc& sampleEnvironment =
+        *sample.desc.environment;
     metallic::render::EnvironmentSettings environment{
-        .enabled = sample.desc.environment.enabled,
-        .path = sample.desc.environment.path,
-        .intensity = sample.desc.environment.intensity,
-        .rotationDegrees = sample.desc.environment.rotationDegrees,
-        .visible = sample.desc.environment.visible,
+        .enabled = sampleEnvironment.enabled,
+        .path = sampleEnvironment.path,
+        .intensity = sampleEnvironment.intensity,
+        .rotationDegrees = sampleEnvironment.rotationDegrees,
+        .visible = sampleEnvironment.visible,
     };
     if (!environment.path.empty() && environment.path.is_relative()) {
         environment.path = std::filesystem::path(PROJECT_SOURCE_DIR) / environment.path;

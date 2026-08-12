@@ -27,8 +27,7 @@ struct RenderSampleDesc {
     bool loadSceneInEditor = true;
     std::string graphPath;
     std::vector<std::string> scenePathTargets;
-    RenderSampleEnvironmentDesc environment;
-    std::vector<std::string> environmentTargets;
+    std::optional<RenderSampleEnvironmentDesc> environment;
     std::string previewOutput;
     bool requiresStreamline = false;
 };
@@ -37,7 +36,6 @@ struct RenderSampleLoadResult {
     RenderSampleDesc desc;
     RenderGraph graph;
     std::filesystem::path graphFilePath;
-    std::optional<RenderSampleEnvironmentDesc> migratedLegacyEnvironment;
 };
 
 class RenderSample {
@@ -52,8 +50,10 @@ public:
     virtual bool loadSceneInEditor() const { return true; }
     virtual std::string graphPath() const = 0;
     virtual std::vector<std::string> scenePathTargets() const = 0;
-    virtual RenderSampleEnvironmentDesc environment() const { return {}; }
-    virtual std::vector<std::string> environmentTargets() const { return {}; }
+    virtual std::optional<RenderSampleEnvironmentDesc> environment() const
+    {
+        return std::nullopt;
+    }
     virtual std::string previewOutput() const { return {}; }
     virtual bool requiresStreamline() const { return false; }
 

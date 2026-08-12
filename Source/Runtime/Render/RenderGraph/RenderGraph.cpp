@@ -1154,15 +1154,11 @@ std::string serializeRenderGraphToString(const RenderGraph& graph)
     root["outputs"] = nlohmann::json::array();
 
     for (const RenderGraphNode& node : graph.nodes()) {
-        RenderGraphProperties properties = node.properties;
-        if (properties.is_object()) {
-            properties.erase("environment");
-        }
         root["nodes"].push_back({
             {"id", node.id},
             {"name", node.name},
             {"type", node.type},
-            {"properties", std::move(properties)},
+            {"properties", node.properties},
             {"position", {{"x", node.uiX}, {"y", node.uiY}}},
         });
     }

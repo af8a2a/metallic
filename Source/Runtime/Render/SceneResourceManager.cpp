@@ -28,13 +28,6 @@ std::string resourceKey(const std::filesystem::path& scenePath)
     return normalizedScenePath(scenePath).generic_string();
 }
 
-RenderGraphProperties sceneProperties(const RenderGraphProperties& properties)
-{
-    RenderGraphProperties result = properties;
-    result.erase("environment");
-    return result;
-}
-
 } // namespace
 
 struct SceneResourceManager::Impl {
@@ -137,11 +130,10 @@ Result SceneResourceManager::acquire(
         }
     }
 
-    const RenderGraphProperties resourceProperties = sceneProperties(properties);
     Result result = outSnapshot->pathTraceResources->beginPrepareAsync(
         device,
         graphicsQueue,
-        resourceProperties,
+        properties,
         *resolvedScene,
         log);
     bool complete = false;
@@ -199,11 +191,10 @@ Result SceneResourceManager::beginAcquireAsync(
         impl_->snapshots.emplace(key, outSnapshot);
     }
 
-    const RenderGraphProperties resourceProperties = sceneProperties(properties);
     Result result = outSnapshot->pathTraceResources->beginPrepareAsync(
         device,
         graphicsQueue,
-        resourceProperties,
+        properties,
         runtimeScene,
         log);
     if (!result) {

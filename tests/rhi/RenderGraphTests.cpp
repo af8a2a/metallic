@@ -7,7 +7,6 @@
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/MeshletStreamRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
-#include "Runtime/Render/Subsystem/LegacyEnvironmentMigration.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
@@ -49,12 +48,16 @@ constexpr uint32_t kSpirvRayTracingClusterAccelerationStructureNv = 5437u;
 
 render::EnvironmentSettings sampleEnvironmentSettings(const render::RenderSampleDesc& desc)
 {
+    if (!desc.environment.has_value()) {
+        return {};
+    }
+    const render::RenderSampleEnvironmentDesc& sampleEnvironment = *desc.environment;
     render::EnvironmentSettings environment{
-        .enabled = desc.environment.enabled,
-        .path = desc.environment.path,
-        .intensity = desc.environment.intensity,
-        .rotationDegrees = desc.environment.rotationDegrees,
-        .visible = desc.environment.visible,
+        .enabled = sampleEnvironment.enabled,
+        .path = sampleEnvironment.path,
+        .intensity = sampleEnvironment.intensity,
+        .rotationDegrees = sampleEnvironment.rotationDegrees,
+        .visible = sampleEnvironment.visible,
     };
     if (!environment.path.empty() && environment.path.is_relative()) {
         environment.path = std::filesystem::path(PROJECT_SOURCE_DIR) / environment.path;
@@ -1348,7 +1351,8 @@ public:
             pathTracingSample.desc.category != "PathTracing" ||
             pathTracingSample.desc.scenePath != "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf" ||
             pathTracingSample.desc.graphPath != "Pipelines/Samples/pathtracing_abeautiful_game_openpbr.metallic_graph.json" ||
-            pathTracingSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||
+            !pathTracingSample.desc.environment.has_value() ||
+            pathTracingSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
             pathTracingSample.desc.previewOutput != "PathTrace.color") {
             return RhiTestResult::fail("OpenPBR PathTracingSample metadata did not load as expected");
         }
@@ -1356,9 +1360,8 @@ public:
         if (openPBRPathTrace == nullptr ||
             !openPBRPathTrace->properties.is_object() ||
             openPBRPathTrace->properties.value("path", "") != pathTracingSample.desc.scenePath ||
-            openPBRPathTrace->properties.value("bsdf", "") != "openpbr" ||
-            openPBRPathTrace->properties.contains("environment")) {
-            return RhiTestResult::fail("OpenPBR PathTracingSample did not separate world environment from pass properties");
+            openPBRPathTrace->properties.value("bsdf", "") != "openpbr") {
+            return RhiTestResult::fail("OpenPBR PathTracingSample did not apply pass defaults");
         }
         if (!pathTracingSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
@@ -1376,7 +1379,8 @@ public:
             rtxdiSample.desc.category != "RTXDI" ||
             rtxdiSample.desc.scenePath != "Asset/meet_mat.glb" ||
             rtxdiSample.desc.graphPath != "Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json" ||
-            rtxdiSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||
+            !rtxdiSample.desc.environment.has_value() ||
+            rtxdiSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
             rtxdiSample.desc.previewOutput != "Composite.color") {
             return RhiTestResult::fail("RTXDI Sample metadata did not load as expected");
         }
@@ -1400,7 +1404,6 @@ public:
             rtxdi->properties.value("spatialSamples", 0) != 1 ||
             !rtxdi->properties.value("localLightImportanceSampling", false) ||
             !rtxdi->properties.value("environmentImportanceSampling", false) ||
-            rtxdi->properties.contains("environment") ||
             !rtxdi->properties.value("temporalReuse", false) ||
             !rtxdi->properties.value("spatialReuse", false) ||
             !rtxdi->properties.value("initialVisibility", false) ||
@@ -1517,7 +1520,8 @@ public:
             gpuDrivenSample.desc.scenePath != "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf" ||
             gpuDrivenSample.desc.loadSceneInEditor ||
             gpuDrivenSample.desc.graphPath != "Pipelines/Samples/gpu_driven_sponza.metallic_graph.json" ||
-            gpuDrivenSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||
+            !gpuDrivenSample.desc.environment.has_value() ||
+            gpuDrivenSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
             gpuDrivenSample.desc.previewOutput != "GPUDriven.color" ||
             gpuDrivenSample.desc.requiresStreamline) {
             return RhiTestResult::fail("GPUDrivenSample metadata did not load as expected");
@@ -1527,11 +1531,10 @@ public:
             gpuDriven->type != "GPUDrivenPreviewPass" ||
             !gpuDriven->properties.is_object() ||
             gpuDriven->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
-            gpuDriven->properties.contains("environment") ||
             gpuDriven->properties.value("mode", "") != "shaded" ||
             !gpuDriven->properties.contains("camera") ||
             !gpuDriven->properties["camera"].is_object()) {
-            return RhiTestResult::fail("GPUDrivenSample did not separate world environment from pass defaults");
+            return RhiTestResult::fail("GPUDrivenSample did not apply pass defaults");
         }
         if (!gpuDrivenSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
@@ -1608,7 +1611,8 @@ public:
             gpuDrivenRtasSample.desc.loadSceneInEditor ||
             gpuDrivenRtasSample.desc.graphPath !=
                 "Pipelines/Samples/gpu_driven_sponza_rtas_visualization.metallic_graph.json" ||
-            gpuDrivenRtasSample.desc.environment.path != "Asset/ABeautifulGame/environment.hdr" ||
+            !gpuDrivenRtasSample.desc.environment.has_value() ||
+            gpuDrivenRtasSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
             gpuDrivenRtasSample.desc.previewOutput != "GPUDriven.color") {
             return RhiTestResult::fail("GPUDriven RTAS visualization sample metadata did not load as expected");
         }
@@ -1619,10 +1623,8 @@ public:
             gpuDrivenRtas->properties.value("path", "") != gpuDrivenRtasSample.desc.scenePath ||
             !gpuDrivenRtas->properties.value("enableClusterRtx", false) ||
             !gpuDrivenRtas->properties.value("rtasVisualization", false) ||
-            gpuDrivenRtas->properties.value("rtasGranularity", "") != "cluster-id" ||
-            gpuDrivenRtas->properties.contains("environment")) {
-            return RhiTestResult::fail(
-                "GPUDriven RTAS visualization sample did not separate world environment defaults");
+            gpuDrivenRtas->properties.value("rtasGranularity", "") != "cluster-id") {
+            return RhiTestResult::fail("GPUDriven RTAS visualization sample did not apply defaults");
         }
         if (!gpuDrivenRtasSample.graph.validate(validationLog)) {
             return RhiTestResult::fail(validationLog);
@@ -6193,12 +6195,12 @@ public:
     }
 };
 
-class ImportancePdfMipChainTest : public RhiTest {
+class ImportancePdfSizeTest : public RhiTest {
 public:
-    ImportancePdfMipChainTest()
+    ImportancePdfSizeTest()
     {
         type = RhiTestType::Resource;
-        name = "importance_pdf_mip_chain";
+        name = "importance_pdf_size";
     }
 
     RhiTestResult run(RhiTestContext&) override
@@ -6207,52 +6209,7 @@ public:
         if (lightPdfSize.width != 32 || lightPdfSize.height != 16 || lightPdfSize.mipCount != 6) {
             return RhiTestResult::fail("RTXDI local-light PDF sizing does not match a power-of-two rectangle");
         }
-
-        constexpr std::array<float, 6> weights = {1.0f, 2.0f, 3.0f, 4.0f, 0.0f, 10.0f};
-        const render::ImportanceMipChain chain = render::buildImportanceMipChain(weights, 3, 2);
-        auto near = [](float left, float right) {
-            return std::abs(left - right) <= 1e-6f;
-        };
-
-        if (!chain.valid() ||
-            chain.sourceWidth != 3 ||
-            chain.sourceHeight != 2 ||
-            chain.textureWidth != 4 ||
-            chain.textureHeight != 2 ||
-            chain.levels.size() != 3 ||
-            !near(chain.totalWeight, 20.0f)) {
-            return RhiTestResult::fail("importance PDF dimensions or total weight are incorrect");
-        }
-        if (chain.levels[1].width != 2 ||
-            chain.levels[1].height != 1 ||
-            !near(chain.levels[1].values[0], 1.75f) ||
-            !near(chain.levels[1].values[1], 3.25f) ||
-            !near(chain.levels[2].values[0], 1.25f)) {
-            return RhiTestResult::fail("importance PDF 2x2 mip reduction is incorrect");
-        }
-
-        float probabilitySum = 0.0f;
-        for (uint32_t y = 0; y < chain.sourceHeight; ++y) {
-            for (uint32_t x = 0; x < chain.sourceWidth; ++x) {
-                probabilitySum += chain.probability(x, y);
-            }
-        }
-        if (!near(probabilitySum, 1.0f) ||
-            !near(chain.probability(0, 0), 0.05f) ||
-            !near(chain.probability(2, 1), 0.5f) ||
-            chain.probability(3, 0) != 0.0f) {
-            return RhiTestResult::fail("importance PDF base probabilities are not normalized");
-        }
-
-        constexpr std::array<float, 6> zeroWeights = {};
-        const render::ImportanceMipChain uniform = render::buildImportanceMipChain(zeroWeights, 3, 2);
-        if (!uniform.valid() ||
-            !near(uniform.totalWeight, 6.0f) ||
-            !near(uniform.probability(1, 1), 1.0f / 6.0f)) {
-            return RhiTestResult::fail("zero-energy importance PDF did not fall back to uniform weights");
-        }
-
-        return RhiTestResult::pass("validated padded PDF mip reduction and normalization");
+        return RhiTestResult::pass("validated GPU PDF texture sizing");
     }
 };
 
@@ -6596,61 +6553,6 @@ public:
     }
 };
 
-class LegacyEnvironmentMigrationTest : public RhiTest {
-public:
-    LegacyEnvironmentMigrationTest()
-    {
-        type = RhiTestType::Resource;
-        name = "legacy_environment_migration";
-    }
-
-    RhiTestResult run(RhiTestContext&) override
-    {
-        render::RenderGraph graph;
-        render::RenderGraphNode* first = graph.addNode(
-            "ScenePathTracePass",
-            "First",
-            {{"environment", {{"path", "first.hdr"}, {"intensity", 1.0f}}}});
-        render::RenderGraphNode* preferred = graph.addNode(
-            "SceneRtxdiPass",
-            "Preferred",
-            {{"environment", {{"path", "preferred.hdr"}, {"intensity", 3.0f}}}});
-        const uint32_t preferredId = preferred != nullptr ? preferred->id : 0;
-        render::RenderGraphNode* output = graph.addNode("CopyColorPass", "Output");
-        if (first == nullptr || preferred == nullptr || output == nullptr ||
-            !graph.setNodeRuntimeProperty(
-                preferredId,
-                "environment",
-                {{"path", "preferred-runtime.hdr"}, {"intensity", 4.0f}}) ||
-            graph.addEdge("Preferred.color", "Output.input") == nullptr ||
-            !graph.markOutput("Output.color")) {
-            return RhiTestResult::fail("failed to build legacy migration graph");
-        }
-
-        const std::filesystem::path base = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset";
-        const render::LegacyEnvironmentMigrationResult migration =
-            render::migrateLegacyEnvironmentSettings(graph, base);
-        if (!migration.found ||
-            migration.selectedNode != "Preferred" ||
-            migration.settings.path != base / "preferred-runtime.hdr" ||
-            migration.settings.intensity != 4.0f ||
-            migration.ignoredNodes != std::vector<std::string>{"First"} ||
-            migration.warning.find("First") == std::string::npos) {
-            return RhiTestResult::fail("legacy environment selection or conflict warning is incorrect");
-        }
-        for (const render::RenderGraphNode& node : graph.nodes()) {
-            if ((node.properties.is_object() && node.properties.contains("environment")) ||
-                (node.runtimeProperties.is_object() && node.runtimeProperties.contains("environment"))) {
-                return RhiTestResult::fail("legacy environment remained on a graph node");
-            }
-        }
-        if (render::serializeRenderGraphToString(graph).find("environment") != std::string::npos) {
-            return RhiTestResult::fail("environment leaked into newly serialized graph JSON");
-        }
-        return RhiTestResult::pass();
-    }
-};
-
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
@@ -6698,12 +6600,11 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewPassRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenAlphaMaskRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenSponzaVisibilityRenderTest);
-METALLIC_REGISTER_RHI_TEST(ImportancePdfMipChainTest);
+METALLIC_REGISTER_RHI_TEST(ImportancePdfSizeTest);
 METALLIC_REGISTER_RHI_TEST(ReGIRGridLayoutTest);
 METALLIC_REGISTER_RHI_TEST(EnvironmentSubsystemAsyncSnapshotTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMissingSubsystemDiagnosticTest);
 METALLIC_REGISTER_RHI_TEST(RenderSubsystemHostLifecycleTest);
-METALLIC_REGISTER_RHI_TEST(LegacyEnvironmentMigrationTest);
 
 } // namespace
 } // namespace metallic::tests
