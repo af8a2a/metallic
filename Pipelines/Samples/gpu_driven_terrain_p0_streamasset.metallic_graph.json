@@ -1,0 +1,55 @@
+{
+    "edges": [],
+    "name": "GPUDrivenTerrainP0StreamAsset",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "GPUDriven",
+            "position": {
+                "x": 335.0,
+                "y": 281.0
+            },
+            "properties": {
+                "autoBuildStreamAsset": false,
+                "camera": {
+                    "center": [
+                        0.0,
+                        12.0,
+                        0.0
+                    ],
+                    "eye": [
+                        190.0,
+                        170.0,
+                        190.0
+                    ],
+                    "fovDegrees": 50.0,
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "zfar": 2000.0,
+                    "znear": 0.1
+                },
+                "debugColorMode": "lod",
+                "enableGpuLodSelection": true,
+                "maxActiveGroups": 4096,
+                "maxPageUploadsPerFrame": 64,
+                "maxPageLoadsInFlight": 64,
+                "maxLockedFallbackPages": 16,
+                "maxResidentPages": 256,
+                "maxTraversalWorkers": 256,
+                "maxTraversalWorkItems": 65536,
+                "pageLoadConcurrency": 2,
+                "path": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf",
+                "selectedLodLevel": 0,
+                "streamAssetPath": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshstream.bin"
+            },
+            "type": "GPUDrivenStreamAssetPass"
+        }
+    ],
+    "outputs": [
+        "GPUDriven.color"
+    ],
+    "version": 1
+}

@@ -1600,6 +1600,43 @@ public:
             return RhiTestResult::fail("GPUDriven StreamAsset scene override failed");
         }
 
+        render::RenderSampleLoadResult gpuDrivenTerrainP0Sample;
+        if (!render::loadBuiltInRenderSample("gpu-driven-terrain-p0", gpuDrivenTerrainP0Sample, message)) {
+            return RhiTestResult::fail(message);
+        }
+        if (gpuDrivenTerrainP0Sample.desc.id != "gpu-driven-terrain-p0" ||
+            gpuDrivenTerrainP0Sample.desc.name != "GPUDrivenSample / Terrain P0" ||
+            gpuDrivenTerrainP0Sample.desc.category != "GPUDriven" ||
+            gpuDrivenTerrainP0Sample.desc.scenePath !=
+                "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf" ||
+            gpuDrivenTerrainP0Sample.desc.loadSceneInEditor ||
+            gpuDrivenTerrainP0Sample.desc.graphPath !=
+                "Pipelines/Samples/gpu_driven_terrain_p0_streamasset.metallic_graph.json" ||
+            gpuDrivenTerrainP0Sample.desc.previewOutput != "GPUDriven.color") {
+            return RhiTestResult::fail("GPUDriven Terrain P0 sample metadata did not load as expected");
+        }
+        const render::RenderGraphNode* gpuDrivenTerrainP0 =
+            gpuDrivenTerrainP0Sample.graph.findNode("GPUDriven");
+        if (gpuDrivenTerrainP0 == nullptr ||
+            gpuDrivenTerrainP0->type != "GPUDrivenStreamAssetPass" ||
+            !gpuDrivenTerrainP0->properties.is_object() ||
+            gpuDrivenTerrainP0->properties.value("path", "") != gpuDrivenTerrainP0Sample.desc.scenePath ||
+            gpuDrivenTerrainP0->properties.value("streamAssetPath", "") !=
+                "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshstream.bin" ||
+            gpuDrivenTerrainP0->properties.value("autoBuildStreamAsset", true) ||
+            !gpuDrivenTerrainP0->properties.value("enableGpuLodSelection", false) ||
+            gpuDrivenTerrainP0->properties.value("debugColorMode", "") != "lod" ||
+            !gpuDrivenTerrainP0->properties.contains("camera") ||
+            !gpuDrivenTerrainP0->properties["camera"].is_object()) {
+            return RhiTestResult::fail("GPUDriven Terrain P0 sample did not preserve terrain defaults");
+        }
+        if (!gpuDrivenTerrainP0Sample.graph.validate(validationLog)) {
+            return RhiTestResult::fail(validationLog);
+        }
+        if (gpuDrivenTerrainP0Sample.graph.firstOutputName() != "GPUDriven.color") {
+            return RhiTestResult::fail("GPUDriven Terrain P0 graph first output changed");
+        }
+
         render::RenderSampleLoadResult gpuDrivenRtasSample;
         if (!render::loadBuiltInRenderSample("gpu-driven-rtas-visualization", gpuDrivenRtasSample, message)) {
             return RhiTestResult::fail(message);
@@ -1639,6 +1676,7 @@ public:
         bool listedMaterialVisualization = false;
         bool listedGPUDriven = false;
         bool listedGPUDrivenStreamAsset = false;
+        bool listedGPUDrivenTerrainP0 = false;
         bool listedGPUDrivenRtasVisualization = false;
         bool listedRtxcr = false;
         for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
@@ -1649,6 +1687,7 @@ public:
                 desc.id == "material-visualization-abeautiful-game";
             listedGPUDriven = listedGPUDriven || desc.id == "gpu-driven-sample";
             listedGPUDrivenStreamAsset = listedGPUDrivenStreamAsset || desc.id == "gpu-driven-streamasset";
+            listedGPUDrivenTerrainP0 = listedGPUDrivenTerrainP0 || desc.id == "gpu-driven-terrain-p0";
             listedGPUDrivenRtasVisualization = listedGPUDrivenRtasVisualization ||
                 desc.id == "gpu-driven-rtas-visualization";
             listedRtxcr = listedRtxcr || desc.id == "rtxcr-material-sample";
@@ -1659,6 +1698,7 @@ public:
             !listedMaterialVisualization ||
             !listedGPUDriven ||
             !listedGPUDrivenStreamAsset ||
+            !listedGPUDrivenTerrainP0 ||
             !listedGPUDrivenRtasVisualization ||
             !listedRtxcr) {
             return RhiTestResult::fail("built-in Sample list did not contain expected samples");

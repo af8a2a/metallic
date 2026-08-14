@@ -296,6 +296,28 @@ public:
     std::string previewOutput() const override { return "GPUDriven.color"; }
 };
 
+class GPUDrivenTerrainP0Sample final : public RenderSample {
+public:
+    std::string_view id() const override { return "gpu-driven-terrain-p0"; }
+    std::string_view name() const override { return "GPUDrivenSample / Terrain P0"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override
+    {
+        return "Houdini height-field vertical slice using the generic MeshletStreamAsset mesh-shader path.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf";
+    }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/gpu_driven_terrain_p0_streamasset.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"GPUDriven"}; }
+    std::string previewOutput() const override { return "GPUDriven.color"; }
+};
+
 const RenderSample& pathTracingMeetMatSample()
 {
     static const PathTracingMeetMatSample sample;
@@ -350,6 +372,12 @@ const RenderSample& gpuDrivenStreamAssetSample()
     return sample;
 }
 
+const RenderSample& gpuDrivenTerrainP0Sample()
+{
+    static const GPUDrivenTerrainP0Sample sample;
+    return sample;
+}
+
 std::vector<const RenderSample*> builtInRenderSamples()
 {
     return {
@@ -361,6 +389,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &materialVisualizationABeautifulGameSample(),
         &gpuDrivenSample(),
         &gpuDrivenStreamAssetSample(),
+        &gpuDrivenTerrainP0Sample(),
         &gpuDrivenRtasVisualizationSample(),
     };
 }
